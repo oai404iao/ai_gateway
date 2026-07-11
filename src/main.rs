@@ -9,7 +9,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .nth(1)
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("config.toml"));
-    let config = AppConfig::load(&config_path)?;
+    let config = AppConfig::load(&config_path)?.compile()?;
 
     observability::init(&config.observability.filter);
 

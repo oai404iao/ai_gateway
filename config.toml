@@ -21,3 +21,37 @@ reload_interval_seconds = 30
 
 [observability]
 filter = "ai_gateway=debug,tower_http=info"
+
+# The following dynamic routing records are compiled into an immutable runtime
+# snapshot at startup. Client key plaintext is discarded after compilation; use
+# a unique production key in a non-versioned config.local.toml.
+#
+# [[api_keys]]
+# id = "local-client"
+# key = "replace-with-a-long-random-client-key"
+# allowed_api_formats = ["open_ai_chat_completions", "open_ai_responses"]
+# permissions = ["proxy", "models.read"]
+#
+# [[channels]]
+# id = "openai-chat"
+# api_format = "open_ai_chat_completions"
+# base_url = "https://api.openai.com"
+# upstream_bearer_token = "replace-with-upstream-key"
+#
+# [[channels]]
+# id = "openai-responses"
+# api_format = "open_ai_responses"
+# base_url = "https://api.openai.com"
+# upstream_bearer_token = "replace-with-upstream-key"
+#
+# [[model_rules]]
+# client_model = "gpt-4.1"
+# api_format = "open_ai_chat_completions"
+# upstream_model = "gpt-4.1-2025-04-14"
+# channel_id = "openai-chat"
+#
+# [[model_rules]]
+# client_model = "gpt-4.1"
+# api_format = "open_ai_responses"
+# upstream_model = "gpt-4.1-2025-04-14"
+# channel_id = "openai-responses"

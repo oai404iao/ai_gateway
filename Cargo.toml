@@ -14,7 +14,9 @@ rust_decimal = { version = "1.36", features = ["serde"] }
 secrecy = "0.10"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+sha2 = "0.10"
 sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio-rustls", "migrate", "chrono", "uuid", "json", "rust_decimal"] }
+subtle = "2.6"
 thiserror = "2.0"
 tokio = { version = "1.43", features = ["macros", "net", "rt-multi-thread"] }
 toml = "0.8"
