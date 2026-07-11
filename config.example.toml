@@ -1,0 +1,23 @@
+# Copy this file to config.toml when creating an environment-specific setup.
+# Do not use a .env file; the application loads TOML configuration directly.
+
+[server]
+host = "127.0.0.1"
+port = 3000
+max_request_body_bytes = 1_048_576
+
+[database]
+url = "postgres://ai_gateway:ai_gateway@127.0.0.1:5432/ai_gateway"
+max_connections = 10
+connect_timeout_seconds = 5
+
+[upstream]
+connect_timeout_seconds = 10
+response_header_timeout_seconds = 30
+stream_idle_timeout_seconds = 90
+
+[runtime_config]
+reload_interval_seconds = 30
+
+[observability]
+filter = "ai_gateway=debug,tower_http=info"

@@ -1,0 +1,23 @@
+# Local development configuration. This file is intentionally TOML-based;
+# configuration is not loaded from dotenv files.
+
+[server]
+host = "127.0.0.1"
+port = 3000
+max_request_body_bytes = 1_048_576
+
+[database]
+url = "postgres://ai_gateway:ai_gateway@127.0.0.1:5432/ai_gateway"
+max_connections = 10
+connect_timeout_seconds = 5
+
+[upstream]
+connect_timeout_seconds = 10
+response_header_timeout_seconds = 30
+stream_idle_timeout_seconds = 90
+
+[runtime_config]
+reload_interval_seconds = 30
+
+[observability]
+filter = "ai_gateway=debug,tower_http=info"

@@ -1,0 +1,22 @@
+# Rust build artifacts
+/target/
+*.rs.bk
+
+# SQLx's offline query cache can be regenerated locally
+/.sqlx/
+
+# Local tooling and editor state
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Runtime logs and local overrides
+*.log
+config.local.toml
+
+# This project uses config.toml, never dotenv files
+.env
+.env.*
+!.env.example
