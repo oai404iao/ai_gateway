@@ -1,14 +1,34 @@
-use std::{env, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    env, io,
+    net::SocketAddr,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use ai_gateway::{
-    domain::{ApiFormat, ApiKeyPermission},
-    persistence::{ControlPlaneRepository, MIGRATOR},
+    application::{ProxyService, QueueRequestLogSink, RequestLogSink},
+    domain::{ApiFormat, ApiKeyPermission, RequestLogEvent, RequestLogOutcome},
+    persistence::{
+        ControlPlaneRepository, MIGRATOR, RequestLogInsertOutcome, RequestLogRepository,
+    },
     routing,
     runtime_config::{RuntimeConfig, compile_control_plane},
-    workers::ControlPlaneReloader,
+    workers::{ControlPlaneReloader, RequestLogWorker},
 };
+use axum::{
+    Router,
+    body::{Body, Bytes},
+    extract::State,
+    http::StatusCode,
+    response::Response,
+    routing::post,
+};
+use chrono::{DateTime, Utc};
+use futures_util::{StreamExt, stream};
 use reqwest::Url;
-use sqlx::{PgPool, postgres::PgPoolOptions};
+use sqlx::{FromRow, PgPool, postgres::PgPoolOptions};
+use tokio::{net::TcpListener, task::JoinHandle};
 use uuid::Uuid;
 
 const DEFAULT_ADMIN_URL: &str = "postgres://ai_gateway:ai_gateway@127.0.0.1:5432/postgres";
@@ -17,6 +37,173 @@ struct TestDatabase {
     pool: PgPool,
     admin: PgPool,
     name: String,
+}
+
+struct TestServer {
+    address: SocketAddr,
+    task: JoinHandle<()>,
+}
+
+impl Drop for TestServer {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+async fn start_server(app: Router) -> TestServer {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let task = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    TestServer { address, task }
+}
+
+#[derive(Clone)]
+enum UpstreamMode {
+    Immediate(StatusCode),
+    HeaderDelay,
+    OneChunkThenIdle,
+    TwoChunks,
+}
+
+#[derive(Clone)]
+struct UpstreamState(Arc<Mutex<UpstreamMode>>);
+
+async fn upstream(State(state): State<UpstreamState>) -> Response {
+    let mode = { state.0.lock().unwrap().clone() };
+    match mode {
+        UpstreamMode::Immediate(status) => Response::builder()
+            .status(status)
+            .body(Body::from("upstream"))
+            .unwrap(),
+        UpstreamMode::HeaderDelay => {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            Response::new(Body::from("late"))
+        }
+        UpstreamMode::OneChunkThenIdle => Response::new(Body::from_stream(
+            stream::once(async { Ok::<Bytes, io::Error>(Bytes::from_static(b"first")) })
+                .chain(stream::pending()),
+        )),
+        UpstreamMode::TwoChunks => Response::new(Body::from_stream(stream::iter(vec![
+            Ok::<Bytes, io::Error>(Bytes::from_static(b"first")),
+            Ok::<Bytes, io::Error>(Bytes::from_static(b"second")),
+        ]))),
+    }
+}
+
+#[derive(FromRow)]
+struct PersistedLog {
+    started_at: DateTime<Utc>,
+    completed_at: DateTime<Utc>,
+    user_id: Uuid,
+    api_key_id: Uuid,
+    api_format: String,
+    client_model: String,
+    upstream_model: Option<String>,
+    model_rule_id: Option<Uuid>,
+    channel_group_id: Option<Uuid>,
+    channel_id: Option<Uuid>,
+    model_id: Option<Uuid>,
+    outcome: String,
+    response_status_code: Option<i16>,
+    streamed: bool,
+    ttft_ms: Option<i32>,
+    total_duration_ms: Option<i32>,
+    error_code: Option<String>,
+}
+
+#[derive(FromRow)]
+struct TerminalLogCount {
+    api_key_id: Uuid,
+    client_model: String,
+    outcome: String,
+    error_code: Option<String>,
+    count: i64,
+}
+
+fn assert_log_timing(log: &PersistedLog) {
+    assert!(log.completed_at >= log.started_at);
+    let total_duration_ms = log
+        .total_duration_ms
+        .expect("proxy terminal logs must record a total duration");
+    assert!(total_duration_ms >= 0);
+    if let Some(ttft_ms) = log.ttft_ms {
+        assert!(ttft_ms >= 0);
+        assert!(ttft_ms <= total_duration_ms);
+    }
+}
+
+async fn wait_for_log(pool: &PgPool, api_key_id: Uuid, client_model: &str) -> PersistedLog {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        let rows = sqlx::query_as::<_, PersistedLog>("SELECT started_at, completed_at, user_id, api_key_id, api_format::text AS api_format, client_model, upstream_model, model_rule_id, channel_group_id, channel_id, model_id, outcome, response_status_code, streamed, ttft_ms, total_duration_ms, error_code FROM request_logs WHERE api_key_id = $1 AND client_model = $2")
+            .bind(api_key_id)
+            .bind(client_model)
+            .fetch_all(pool)
+            .await
+            .unwrap();
+        if rows.len() == 1 {
+            let log = rows.into_iter().next().unwrap();
+            assert_log_timing(&log);
+            return log;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "request log was not persisted exactly once"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+async fn wait_for_terminal_log(
+    pool: &PgPool,
+    api_key_id: Uuid,
+    client_model: &str,
+    outcome: &str,
+    error_code: Option<&str>,
+) -> PersistedLog {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        let rows = sqlx::query_as::<_, PersistedLog>("SELECT started_at, completed_at, user_id, api_key_id, api_format::text AS api_format, client_model, upstream_model, model_rule_id, channel_group_id, channel_id, model_id, outcome, response_status_code, streamed, ttft_ms, total_duration_ms, error_code FROM request_logs WHERE api_key_id = $1 AND client_model = $2 AND outcome = $3 AND error_code IS NOT DISTINCT FROM $4")
+            .bind(api_key_id)
+            .bind(client_model)
+            .bind(outcome)
+            .bind(error_code)
+            .fetch_all(pool)
+            .await
+            .unwrap();
+        if rows.len() == 1 {
+            let log = rows.into_iter().next().unwrap();
+            assert_log_timing(&log);
+            return log;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "terminal request log was not persisted exactly once"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+async fn wait_for_blocked_request_log_insert(pool: &PgPool) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        let blocked: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE relation = 'request_logs'::regclass AND mode = 'RowExclusiveLock' AND NOT granted)",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        if blocked {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "request log worker did not reach the database lock"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }
 
 impl TestDatabase {
@@ -133,6 +320,95 @@ async fn seed(pool: &PgPool) -> Seed {
         .await
         .unwrap();
     seed
+}
+
+fn request_log_event(seed: &Seed, outcome: RequestLogOutcome) -> RequestLogEvent {
+    let now = Utc::now();
+    RequestLogEvent {
+        id: Uuid::new_v4(),
+        started_at: now,
+        completed_at: now,
+        user_id: seed.user,
+        api_key_id: seed.key,
+        api_format: ApiFormat::OpenAiChatCompletions,
+        client_model: seed.client_model.clone(),
+        upstream_model: Some("upstream-v1".into()),
+        model_rule_id: Some(seed.rule),
+        channel_group_id: Some(seed.group),
+        channel_id: Some(seed.channel),
+        model_id: Some(seed.model),
+        outcome,
+        response_status_code: Some(200),
+        streamed: true,
+        ttft_ms: Some(1),
+        total_duration_ms: 2,
+        error_code: None,
+    }
+}
+
+#[tokio::test]
+async fn request_log_insert_is_idempotent_and_worker_continues_after_failure() {
+    let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
+    let repository = RequestLogRepository::new(database.pool.clone());
+    let event = request_log_event(&seed, RequestLogOutcome::Succeeded);
+
+    assert_eq!(
+        repository.insert(&event).await.unwrap(),
+        RequestLogInsertOutcome::Inserted
+    );
+    assert_eq!(
+        repository.insert(&event).await.unwrap(),
+        RequestLogInsertOutcome::ExactDuplicate
+    );
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM request_logs WHERE id = $1")
+        .bind(event.id)
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 1);
+
+    let mut conflicting = event.clone();
+    conflicting.error_code = Some("different_terminal_fact");
+    assert!(matches!(
+        repository.insert(&conflicting).await,
+        Err(ai_gateway::persistence::RepositoryError::DuplicateConflict { .. })
+    ));
+    let mut invalid_status = request_log_event(&seed, RequestLogOutcome::Failed);
+    invalid_status.response_status_code = Some(99);
+    assert!(matches!(
+        repository.insert(&invalid_status).await,
+        Err(ai_gateway::persistence::RepositoryError::InvalidResponseStatus { status: 99 })
+    ));
+
+    let (sink, worker) = RequestLogWorker::start(repository, 2);
+    let mut invalid = request_log_event(&seed, RequestLogOutcome::Failed);
+    invalid.user_id = Uuid::new_v4();
+    sink.try_record(invalid);
+    let valid = request_log_event(&seed, RequestLogOutcome::Cancelled);
+    let valid_id = valid.id;
+    sink.try_record(valid);
+    for _ in 0..20 {
+        let persisted: i64 = sqlx::query_scalar("SELECT count(*) FROM request_logs WHERE id = $1")
+            .bind(valid_id)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+        if persisted == 1 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let persisted: i64 = sqlx::query_scalar("SELECT count(*) FROM request_logs WHERE id = $1")
+        .bind(valid_id)
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    assert_eq!(persisted, 1);
+    // Keep a producer clone alive: shutdown must close acceptance and drain
+    // without waiting for it to be dropped.
+    worker.shutdown().await;
+    database.cleanup().await;
 }
 
 #[tokio::test]
@@ -388,5 +664,425 @@ async fn admission_controls_and_invalid_channel_targets_are_rejected_before_stag
         .await
         .unwrap();
     assert!(compile_control_plane(records).is_err());
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn proxy_request_logs_reach_postgres_for_terminal_and_rejected_requests() {
+    let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
+    let state = UpstreamState(Arc::new(Mutex::new(UpstreamMode::Immediate(
+        StatusCode::OK,
+    ))));
+    let upstream_server = start_server(
+        Router::new()
+            .route("/v1/chat/completions", post(upstream))
+            .with_state(state.clone()),
+    )
+    .await;
+    sqlx::query("UPDATE channels SET base_url = $1 WHERE id = $2")
+        .bind(format!("http://{}", upstream_server.address))
+        .bind(seed.channel)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+
+    let inaccessible_key = Uuid::new_v4();
+    let inaccessible_secret = format!("inaccessible-{}", Uuid::new_v4());
+    sqlx::query("INSERT INTO api_keys (id, user_id, name, secret_value, status, allowed_api_formats, permissions, allowed_group_ids) VALUES ($1, $2, 'inaccessible', $3, 'active', ARRAY['open_ai_chat_completions']::api_format[], ARRAY['proxy'], ARRAY[$4]::uuid[])")
+        .bind(inaccessible_key)
+        .bind(seed.user)
+        .bind(&inaccessible_secret)
+        .bind(seed.other_group)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+
+    let runtime = Arc::new(RuntimeConfig::new(
+        compile_control_plane(
+            ControlPlaneRepository::new(database.pool.clone())
+                .load()
+                .await
+                .unwrap(),
+        )
+        .unwrap(),
+    ));
+    let (sink, worker): (QueueRequestLogSink, RequestLogWorker) =
+        RequestLogWorker::start(RequestLogRepository::new(database.pool.clone()), 32);
+    let proxy = ProxyService::with_log_sink(
+        runtime,
+        1_048_576,
+        &ai_gateway::runtime_config::UpstreamConfig {
+            connect_timeout_seconds: 1,
+            response_header_timeout_seconds: 1,
+            stream_idle_timeout_seconds: 1,
+        },
+        Arc::new(sink),
+    )
+    .unwrap();
+    let gateway = start_server(ai_gateway::http::router(proxy)).await;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(4))
+        .build()
+        .unwrap();
+    let request = |key: &str, model: &str, stream: bool| {
+        client
+            .post(format!("http://{}/v1/chat/completions", gateway.address))
+            .header("authorization", format!("Bearer {key}"))
+            .header("content-type", "application/json")
+            .body(
+                serde_json::to_vec(&serde_json::json!({ "model": model, "stream": stream }))
+                    .unwrap(),
+            )
+    };
+
+    *state.0.lock().unwrap() = UpstreamMode::TwoChunks;
+    let response = request(&seed.secret, &seed.client_model, true)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.bytes().await.unwrap().as_ref(), b"firstsecond");
+    let success = wait_for_log(&database.pool, seed.key, &seed.client_model).await;
+    assert_eq!(success.outcome, "succeeded");
+    assert_eq!(success.user_id, seed.user);
+    assert_eq!(success.api_key_id, seed.key);
+    assert_eq!(success.api_format, "open_ai_chat_completions");
+    assert_eq!(success.client_model, seed.client_model);
+    assert_eq!(success.upstream_model.as_deref(), Some("upstream-v1"));
+    assert_eq!(success.model_rule_id, Some(seed.rule));
+    assert_eq!(success.channel_group_id, Some(seed.group));
+    assert_eq!(success.channel_id, Some(seed.channel));
+    assert_eq!(success.model_id, Some(seed.model));
+    assert_eq!(success.response_status_code, Some(200));
+    assert!(success.streamed);
+    assert!(success.ttft_ms.is_some());
+    assert_eq!(success.error_code, None);
+
+    *state.0.lock().unwrap() = UpstreamMode::Immediate(StatusCode::TOO_MANY_REQUESTS);
+    let response = request(&seed.secret, &seed.client_model, false)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(response.bytes().await.unwrap().as_ref(), b"upstream");
+    let upstream_failure = wait_for_terminal_log(
+        &database.pool,
+        seed.key,
+        &seed.client_model,
+        "failed",
+        Some("upstream_http_error"),
+    )
+    .await;
+    assert_eq!(upstream_failure.response_status_code, Some(429));
+
+    *state.0.lock().unwrap() = UpstreamMode::HeaderDelay;
+    let response = request(&seed.secret, &seed.client_model, false)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+    let header_timeout = wait_for_terminal_log(
+        &database.pool,
+        seed.key,
+        &seed.client_model,
+        "failed",
+        Some("response_header_timeout"),
+    )
+    .await;
+    assert_eq!(header_timeout.outcome, "failed");
+    assert_eq!(header_timeout.response_status_code, Some(504));
+    assert_eq!(
+        header_timeout.error_code.as_deref(),
+        Some("response_header_timeout")
+    );
+
+    *state.0.lock().unwrap() = UpstreamMode::OneChunkThenIdle;
+    let response = request(&seed.secret, &seed.client_model, false)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(response.bytes().await.is_err());
+    let idle = wait_for_terminal_log(
+        &database.pool,
+        seed.key,
+        &seed.client_model,
+        "failed",
+        Some("stream_idle_timeout"),
+    )
+    .await;
+    assert_eq!(idle.response_status_code, Some(200));
+
+    *state.0.lock().unwrap() = UpstreamMode::OneChunkThenIdle;
+    let response = request(&seed.secret, &seed.client_model, false)
+        .send()
+        .await
+        .unwrap();
+    let mut chunks = response.bytes_stream();
+    assert_eq!(chunks.next().await.unwrap().unwrap().as_ref(), b"first");
+    drop(chunks);
+    let cancelled = wait_for_terminal_log(
+        &database.pool,
+        seed.key,
+        &seed.client_model,
+        "cancelled",
+        Some("client_cancelled"),
+    )
+    .await;
+    assert_eq!(cancelled.response_status_code, Some(200));
+
+    let unknown = format!("unknown-{}", Uuid::new_v4());
+    let response = request(&seed.secret, &unknown, false).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let rejected = wait_for_log(&database.pool, seed.key, &unknown).await;
+    assert_eq!(rejected.outcome, "rejected");
+    assert_eq!(rejected.response_status_code, Some(404));
+    assert_eq!(rejected.upstream_model, None);
+    assert_eq!(rejected.model_rule_id, None);
+    assert_eq!(rejected.channel_id, None);
+
+    let response = request(&inaccessible_secret, &seed.client_model, false)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let inaccessible = wait_for_log(&database.pool, inaccessible_key, &seed.client_model).await;
+    assert_eq!(inaccessible.outcome, "rejected");
+    assert_eq!(inaccessible.api_key_id, inaccessible_key);
+    assert_eq!(inaccessible.channel_group_id, None);
+
+    let before: i64 = sqlx::query_scalar("SELECT count(*) FROM request_logs")
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        client
+            .post(format!("http://{}/v1/chat/completions", gateway.address))
+            .header("content-type", "application/json")
+            .body(serde_json::to_vec(&serde_json::json!({"model": seed.client_model})).unwrap())
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        request(&seed.secret, " ", false)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        request(&seed.secret, &"x".repeat(301), false)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    let after: i64 = sqlx::query_scalar("SELECT count(*) FROM request_logs")
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    assert_eq!(before, after);
+
+    worker.shutdown().await;
+    let total: i64 = sqlx::query_scalar("SELECT count(*) FROM request_logs")
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    assert_eq!(total, 7);
+    let grouped = sqlx::query_as::<_, TerminalLogCount>(
+        "SELECT api_key_id, client_model, outcome, error_code, count(*) AS count FROM request_logs GROUP BY api_key_id, client_model, outcome, error_code",
+    )
+    .fetch_all(&database.pool)
+    .await
+    .unwrap()
+    .into_iter()
+    .map(|row| {
+        (
+            (
+                row.api_key_id,
+                row.client_model,
+                row.outcome,
+                row.error_code,
+            ),
+            row.count,
+        )
+    })
+    .collect::<BTreeMap<_, _>>();
+    let expected = BTreeMap::from([
+        (
+            (
+                seed.key,
+                seed.client_model.clone(),
+                "succeeded".into(),
+                None,
+            ),
+            1,
+        ),
+        (
+            (
+                seed.key,
+                seed.client_model.clone(),
+                "failed".into(),
+                Some("upstream_http_error".into()),
+            ),
+            1,
+        ),
+        (
+            (
+                seed.key,
+                seed.client_model.clone(),
+                "failed".into(),
+                Some("response_header_timeout".into()),
+            ),
+            1,
+        ),
+        (
+            (
+                seed.key,
+                seed.client_model.clone(),
+                "failed".into(),
+                Some("stream_idle_timeout".into()),
+            ),
+            1,
+        ),
+        (
+            (
+                seed.key,
+                seed.client_model.clone(),
+                "cancelled".into(),
+                Some("client_cancelled".into()),
+            ),
+            1,
+        ),
+        (
+            (
+                seed.key,
+                unknown,
+                "rejected".into(),
+                Some("model_not_found".into()),
+            ),
+            1,
+        ),
+        (
+            (
+                inaccessible_key,
+                seed.client_model.clone(),
+                "rejected".into(),
+                Some("model_not_found".into()),
+            ),
+            1,
+        ),
+    ]);
+    assert_eq!(grouped, expected);
+    drop(gateway);
+    drop(upstream_server);
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn saturated_request_log_queue_does_not_delay_proxy_responses_and_drains_accepted_events() {
+    let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
+    let state = UpstreamState(Arc::new(Mutex::new(UpstreamMode::Immediate(
+        StatusCode::OK,
+    ))));
+    let upstream_server = start_server(
+        Router::new()
+            .route("/v1/chat/completions", post(upstream))
+            .with_state(state),
+    )
+    .await;
+    sqlx::query("UPDATE channels SET base_url = $1 WHERE id = $2")
+        .bind(format!("http://{}", upstream_server.address))
+        .bind(seed.channel)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    let runtime = Arc::new(RuntimeConfig::new(
+        compile_control_plane(
+            ControlPlaneRepository::new(database.pool.clone())
+                .load()
+                .await
+                .unwrap(),
+        )
+        .unwrap(),
+    ));
+    let (sink, worker): (QueueRequestLogSink, RequestLogWorker) =
+        RequestLogWorker::start(RequestLogRepository::new(database.pool.clone()), 2);
+    // Keeping this clone alive verifies shutdown closes acceptance before draining.
+    let producer_clone = sink.clone();
+    let proxy = ProxyService::with_log_sink(
+        runtime,
+        1_048_576,
+        &ai_gateway::runtime_config::UpstreamConfig {
+            connect_timeout_seconds: 1,
+            response_header_timeout_seconds: 1,
+            stream_idle_timeout_seconds: 1,
+        },
+        Arc::new(sink),
+    )
+    .unwrap();
+    let gateway = start_server(ai_gateway::http::router(proxy)).await;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .unwrap();
+    let send_request = || async {
+        let response = client
+            .post(format!("http://{}/v1/chat/completions", gateway.address))
+            .header("authorization", format!("Bearer {}", seed.secret))
+            .header("content-type", "application/json")
+            .body(serde_json::to_vec(&serde_json::json!({ "model": seed.client_model })).unwrap())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.bytes().await.unwrap().as_ref(), b"upstream");
+    };
+
+    let mut table_lock = database.pool.begin().await.unwrap();
+    sqlx::query("LOCK TABLE request_logs IN ACCESS EXCLUSIVE MODE")
+        .execute(&mut *table_lock)
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), send_request())
+        .await
+        .expect("first proxy response should not wait for request-log persistence");
+    wait_for_blocked_request_log_insert(&database.pool).await;
+
+    for _ in 0..3 {
+        tokio::time::timeout(Duration::from_secs(2), send_request())
+            .await
+            .expect("proxy response should not wait for a saturated request-log queue");
+    }
+
+    table_lock.rollback().await.unwrap();
+    worker.shutdown().await;
+    drop(producer_clone);
+    let total: i64 = sqlx::query_scalar("SELECT count(*) FROM request_logs")
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        total, 3,
+        "three accepted events must drain; the overflow event drops"
+    );
+    let accepted: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM request_logs WHERE api_key_id = $1 AND client_model = $2 AND outcome = 'succeeded'",
+    )
+    .bind(seed.key)
+    .bind(&seed.client_model)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(accepted, 3);
+    drop(gateway);
+    drop(upstream_server);
     database.cleanup().await;
 }

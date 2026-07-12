@@ -21,9 +21,14 @@ use reqwest::{Client, redirect::Policy};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::time::timeout;
+use uuid::Uuid;
 
 use crate::{
-    domain::{ApiFormat, ApiKeyPermission, CompiledChannel, CompiledModelRule, UpstreamAuth},
+    application::{NoopRequestLogSink, RequestLogSink},
+    domain::{
+        ApiFormat, ApiKeyPermission, CompiledApiKey, CompiledChannel, CompiledModelRule,
+        RequestLogEvent, RequestLogOutcome, UpstreamAuth,
+    },
     routing,
     runtime_config::{RuntimeConfig, UpstreamConfig},
 };
@@ -37,6 +42,7 @@ pub struct ProxyService {
     max_request_body_bytes: usize,
     response_header_timeout: Duration,
     stream_idle_timeout: Duration,
+    request_log_sink: Arc<dyn RequestLogSink>,
 }
 
 impl ProxyService {
@@ -44,6 +50,20 @@ impl ProxyService {
         runtime: Arc<RuntimeConfig>,
         max_request_body_bytes: usize,
         upstream: &UpstreamConfig,
+    ) -> Result<Self, reqwest::Error> {
+        Self::with_log_sink(
+            runtime,
+            max_request_body_bytes,
+            upstream,
+            Arc::new(NoopRequestLogSink),
+        )
+    }
+
+    pub fn with_log_sink(
+        runtime: Arc<RuntimeConfig>,
+        max_request_body_bytes: usize,
+        upstream: &UpstreamConfig,
+        request_log_sink: Arc<dyn RequestLogSink>,
     ) -> Result<Self, reqwest::Error> {
         let upstream_client = Client::builder()
             .connect_timeout(Duration::from_secs(upstream.connect_timeout_seconds))
@@ -56,6 +76,7 @@ impl ProxyService {
             max_request_body_bytes,
             response_header_timeout: Duration::from_secs(upstream.response_header_timeout_seconds),
             stream_idle_timeout: Duration::from_secs(upstream.stream_idle_timeout_seconds),
+            request_log_sink,
         })
     }
 
@@ -65,39 +86,89 @@ impl ProxyService {
         request: Request<Body>,
     ) -> Result<AxumResponse, ProxyError> {
         let started_at = Instant::now();
+        let started_wall_at = chrono::Utc::now();
         let (parts, body) = request.into_parts();
-        let client_key = parse_bearer_token(&parts.headers)?;
+        let client_key = match parse_bearer_token(&parts.headers) {
+            Ok(value) => value,
+            Err(error) => {
+                trace_unlogged("invalid_api_key");
+                return Err(error);
+            }
+        };
         let snapshot = self.runtime.snapshot();
-        let api_key = snapshot
-            .authenticate(client_key)
-            .ok_or_else(ProxyError::invalid_api_key)?;
+        let api_key = match snapshot.authenticate(client_key) {
+            Some(value) => value,
+            None => {
+                trace_unlogged("invalid_or_expired_api_key");
+                return Err(ProxyError::invalid_api_key());
+            }
+        };
         if !api_key.permits(api_format, ApiKeyPermission::Proxy) {
+            trace_unlogged("proxy_permission_denied");
             return Err(ProxyError::forbidden(
                 "This API key cannot proxy requests in this API format.",
             ));
         }
 
-        let original_body = to_bytes(body, self.max_request_body_bytes)
-            .await
-            .map_err(request_body_error)?;
-        let model = parse_model(&original_body)?;
-        let route = routing::select(&snapshot, &api_key, api_format, &model)
-            .ok_or_else(|| ProxyError::unknown_model(&model))?;
-        let body = rewrite_model_alias(original_body, &model, &route.rule)?;
-
-        let url = upstream_url(&route.channel, &parts.uri)?;
-        let mut headers = forward_request_headers(&parts.headers);
-        inject_upstream_auth(&mut headers, &route.channel)?;
-        let api_key_id = api_key.id().to_string();
-        let channel_id = route.channel.id().to_string();
+        let original_body = match to_bytes(body, self.max_request_body_bytes).await {
+            Ok(value) => value,
+            Err(error) => {
+                trace_unlogged("unreadable_or_oversized_body");
+                return Err(request_body_error(error));
+            }
+        };
+        let parsed = match parse_request(&original_body) {
+            Ok(value) => value,
+            Err(error) => {
+                trace_unlogged("malformed_or_overlength_model");
+                return Err(error);
+            }
+        };
+        let route = match routing::select(&snapshot, &api_key, api_format, &parsed.model) {
+            Some(route) => route,
+            None => {
+                self.record_rejected(
+                    &api_key,
+                    api_format,
+                    &parsed.model,
+                    parsed.streamed,
+                    started_wall_at,
+                    started_at,
+                );
+                return Err(ProxyError::unknown_model(&parsed.model));
+            }
+        };
         let mut completion = CompletionGuard::new(
-            &api_key_id,
-            &model,
-            route.rule.upstream_model(),
-            &channel_id,
+            Arc::clone(&self.request_log_sink),
+            &api_key,
+            &parsed.model,
+            parsed.streamed,
             api_format,
+            &route.rule,
+            &route.channel,
+            started_wall_at,
             started_at,
         );
+        let body = match rewrite_model_alias(original_body, &parsed.model, &route.rule) {
+            Ok(value) => value,
+            Err(error) => {
+                completion.finish(RequestOutcome::ClientRequestError);
+                return Err(error);
+            }
+        };
+
+        let url = match upstream_url(&route.channel, &parts.uri) {
+            Ok(value) => value,
+            Err(error) => {
+                completion.finish(RequestOutcome::UpstreamUnavailable);
+                return Err(error);
+            }
+        };
+        let mut headers = forward_request_headers(&parts.headers);
+        if let Err(error) = inject_upstream_auth(&mut headers, &route.channel) {
+            completion.finish(RequestOutcome::UpstreamUnavailable);
+            return Err(error);
+        }
 
         let upstream_request = self
             .upstream_client
@@ -126,6 +197,40 @@ impl ProxyService {
             self.stream_idle_timeout,
             completion,
         ))
+    }
+
+    fn record_rejected(
+        &self,
+        api_key: &CompiledApiKey,
+        api_format: ApiFormat,
+        client_model: &str,
+        streamed: bool,
+        started_at: chrono::DateTime<chrono::Utc>,
+        started: Instant,
+    ) {
+        let elapsed = clamp_duration_ms(started.elapsed());
+        let event = RequestLogEvent {
+            id: Uuid::new_v4(),
+            started_at,
+            completed_at: completed_at(started_at, started.elapsed()),
+            user_id: api_key.user_id(),
+            api_key_id: api_key.id(),
+            api_format,
+            client_model: client_model.to_owned(),
+            upstream_model: None,
+            model_rule_id: None,
+            channel_group_id: None,
+            channel_id: None,
+            model_id: None,
+            outcome: RequestLogOutcome::Rejected,
+            response_status_code: Some(StatusCode::NOT_FOUND.as_u16()),
+            streamed,
+            ttft_ms: None,
+            total_duration_ms: elapsed,
+            error_code: Some("model_not_found"),
+        };
+        tracing::info!(event = "proxy_request_completed", api_key_id = %api_key.id(), api_format = ?api_format, outcome = "rejected", "proxy request completed");
+        self.request_log_sink.try_record(event);
     }
 
     pub fn list_models(&self, headers: &HeaderMap) -> Result<ModelsResponse, ProxyError> {
@@ -304,23 +409,47 @@ impl IntoResponse for ProxyError {
 }
 
 #[derive(Deserialize)]
-struct ModelProbe {
+struct RequestProbe {
     model: String,
+    #[serde(default)]
+    stream: bool,
 }
 
-fn parse_model(body: &[u8]) -> Result<String, ProxyError> {
-    let model = serde_json::from_slice::<ModelProbe>(body)
-        .map_err(|_| {
-            ProxyError::invalid_request("Request body must contain a string model.", "model")
-        })?
-        .model;
-    if model.trim().is_empty() {
+struct ParsedRequest {
+    model: String,
+    streamed: bool,
+}
+
+fn parse_request(body: &[u8]) -> Result<ParsedRequest, ProxyError> {
+    let probe = serde_json::from_slice::<RequestProbe>(body).map_err(|_| {
+        ProxyError::invalid_request("Request body must contain a string model.", "model")
+    })?;
+    if probe.model.trim().is_empty() {
         return Err(ProxyError::invalid_request(
             "Request body must contain a non-empty model.",
             "model",
         ));
     }
-    Ok(model)
+    if probe.model.chars().count() > 300 {
+        return Err(ProxyError::invalid_request(
+            "Request model exceeds the supported length.",
+            "model",
+        ));
+    }
+    Ok(ParsedRequest {
+        model: probe.model,
+        streamed: probe.stream,
+    })
+}
+
+/// Documents the deliberate no-row policy for requests that cannot be safely
+/// represented by the append-only request_logs schema.
+fn trace_unlogged(reason: &'static str) {
+    tracing::debug!(
+        event = "proxy_request_unlogged",
+        reason,
+        "proxy request has no request log"
+    );
 }
 
 fn request_body_error(error: axum::Error) -> ProxyError {
@@ -480,7 +609,8 @@ fn response_from_upstream(
         .expect("reqwest status code is valid for an Axum response");
     completion.set_upstream_status(upstream_status.as_u16());
     let headers = forward_response_headers(upstream_response.headers());
-    if response_has_no_body(status) {
+    let expected_body_bytes = upstream_response.content_length();
+    if response_has_no_body(status) || expected_body_bytes == Some(0) {
         completion.finish(if upstream_status.is_success() {
             RequestOutcome::Succeeded
         } else {
@@ -496,6 +626,7 @@ fn response_from_upstream(
         stream_idle_timeout,
         completion,
         upstream_status.is_success(),
+        expected_body_bytes,
     );
     let mut response = Response::new(Body::from_stream(stream));
     *response.status_mut() = status;
@@ -517,6 +648,7 @@ struct StreamState {
     idle_timeout: Duration,
     completion: CompletionGuard,
     upstream_succeeded: bool,
+    remaining_bytes: Option<u64>,
 }
 
 fn timed_upstream_stream(
@@ -524,6 +656,7 @@ fn timed_upstream_stream(
     idle_timeout: Duration,
     completion: CompletionGuard,
     upstream_succeeded: bool,
+    remaining_bytes: Option<u64>,
 ) -> impl Stream<Item = Result<Bytes, BodyStreamError>> + Send {
     stream::unfold(
         StreamState {
@@ -531,6 +664,7 @@ fn timed_upstream_stream(
             idle_timeout,
             completion,
             upstream_succeeded,
+            remaining_bytes,
         },
         |mut state| async move {
             let next = match state.upstream.as_mut() {
@@ -540,7 +674,19 @@ fn timed_upstream_stream(
 
             match next {
                 Ok(Some(Ok(bytes))) => {
-                    state.completion.record_first_byte();
+                    if !bytes.is_empty() {
+                        state.completion.record_first_byte();
+                    }
+                    if let Some(remaining) = &mut state.remaining_bytes {
+                        *remaining = remaining.saturating_sub(bytes.len() as u64);
+                        if *remaining == 0 {
+                            state.completion.finish(if state.upstream_succeeded {
+                                RequestOutcome::Succeeded
+                            } else {
+                                RequestOutcome::UpstreamHttpError
+                            });
+                        }
+                    }
                     Some((Ok(bytes), state))
                 }
                 Ok(Some(Err(error))) => {
@@ -581,10 +727,11 @@ enum RequestOutcome {
     UpstreamBodyError,
     StreamIdleTimeout,
     Cancelled,
+    ClientRequestError,
 }
 
 impl RequestOutcome {
-    const fn as_str(self) -> &'static str {
+    const fn tracing_outcome(self) -> &'static str {
         match self {
             Self::Succeeded => "succeeded",
             Self::UpstreamHttpError => "upstream_http_error",
@@ -594,19 +741,71 @@ impl RequestOutcome {
             Self::UpstreamBodyError => "upstream_body_error",
             Self::StreamIdleTimeout => "stream_idle_timeout",
             Self::Cancelled => "cancelled",
+            Self::ClientRequestError => "client_request_error",
+        }
+    }
+
+    const fn log_outcome(self) -> RequestLogOutcome {
+        match self {
+            Self::Succeeded => RequestLogOutcome::Succeeded,
+            Self::Cancelled => RequestLogOutcome::Cancelled,
+            Self::UpstreamHttpError
+            | Self::ConnectTimeout
+            | Self::ResponseHeaderTimeout
+            | Self::UpstreamUnavailable
+            | Self::UpstreamBodyError
+            | Self::StreamIdleTimeout
+            | Self::ClientRequestError => RequestLogOutcome::Failed,
+        }
+    }
+
+    const fn error_code(self) -> Option<&'static str> {
+        match self {
+            Self::Succeeded => None,
+            Self::UpstreamHttpError => Some("upstream_http_error"),
+            Self::ConnectTimeout => Some("connect_timeout"),
+            Self::ResponseHeaderTimeout => Some("response_header_timeout"),
+            Self::UpstreamUnavailable => Some("upstream_unavailable"),
+            Self::UpstreamBodyError => Some("upstream_body_error"),
+            Self::StreamIdleTimeout => Some("stream_idle_timeout"),
+            Self::Cancelled => Some("client_cancelled"),
+            Self::ClientRequestError => Some("invalid_request"),
+        }
+    }
+
+    const fn fallback_status(self) -> Option<u16> {
+        match self {
+            Self::ConnectTimeout | Self::ResponseHeaderTimeout => {
+                Some(StatusCode::GATEWAY_TIMEOUT.as_u16())
+            }
+            Self::UpstreamUnavailable => Some(StatusCode::BAD_GATEWAY.as_u16()),
+            Self::ClientRequestError => Some(StatusCode::BAD_REQUEST.as_u16()),
+            Self::Succeeded
+            | Self::UpstreamHttpError
+            | Self::UpstreamBodyError
+            | Self::StreamIdleTimeout
+            | Self::Cancelled => None,
         }
     }
 }
 
 struct CompletionContext {
-    api_key_id: Arc<str>,
-    client_model: Arc<str>,
-    upstream_model: Arc<str>,
-    channel_id: Arc<str>,
+    event_id: Uuid,
+    user_id: Uuid,
+    api_key_id: Uuid,
+    client_model: String,
+    upstream_model: String,
+    model_rule_id: Uuid,
+    channel_group_id: Uuid,
+    channel_id: Uuid,
+    model_id: Uuid,
     api_format: ApiFormat,
+    streamed: bool,
+    started_wall_at: chrono::DateTime<chrono::Utc>,
     started_at: Instant,
     first_byte_at: Option<Duration>,
     upstream_status: Option<u16>,
+    sink: Arc<dyn RequestLogSink>,
 }
 
 /// Emits exactly one event, including when Axum drops an in-flight response
@@ -616,24 +815,36 @@ struct CompletionGuard {
 }
 
 impl CompletionGuard {
+    #[allow(clippy::too_many_arguments)] // terminal event requires all selected-route context
     fn new(
-        api_key_id: &str,
+        sink: Arc<dyn RequestLogSink>,
+        api_key: &CompiledApiKey,
         client_model: &str,
-        upstream_model: &str,
-        channel_id: &str,
+        streamed: bool,
         api_format: ApiFormat,
+        rule: &CompiledModelRule,
+        channel: &CompiledChannel,
+        started_wall_at: chrono::DateTime<chrono::Utc>,
         started_at: Instant,
     ) -> Self {
         Self {
             context: Some(CompletionContext {
-                api_key_id: Arc::from(api_key_id),
-                client_model: Arc::from(client_model),
-                upstream_model: Arc::from(upstream_model),
-                channel_id: Arc::from(channel_id),
+                event_id: Uuid::new_v4(),
+                user_id: api_key.user_id(),
+                api_key_id: api_key.id(),
+                client_model: client_model.to_owned(),
+                upstream_model: rule.upstream_model().to_owned(),
+                model_rule_id: rule.id(),
+                channel_group_id: channel.group_id(),
+                channel_id: channel.id(),
+                model_id: rule.model_id(),
                 api_format,
+                streamed,
+                started_wall_at,
                 started_at,
                 first_byte_at: None,
                 upstream_status: None,
+                sink,
             }),
         }
     }
@@ -666,10 +877,45 @@ impl CompletionGuard {
             upstream_status = ?context.upstream_status,
             latency_ms = context.started_at.elapsed().as_millis(),
             ttft_ms = ?context.first_byte_at.map(|duration| duration.as_millis()),
-            outcome = outcome.as_str(),
+            outcome = outcome.tracing_outcome(),
             "proxy request completed"
         );
+        let total_duration_ms = clamp_duration_ms(context.started_at.elapsed());
+        let event = RequestLogEvent {
+            id: context.event_id,
+            started_at: context.started_wall_at,
+            completed_at: completed_at(context.started_wall_at, context.started_at.elapsed()),
+            user_id: context.user_id,
+            api_key_id: context.api_key_id,
+            api_format: context.api_format,
+            client_model: context.client_model,
+            upstream_model: Some(context.upstream_model),
+            model_rule_id: Some(context.model_rule_id),
+            channel_group_id: Some(context.channel_group_id),
+            channel_id: Some(context.channel_id),
+            model_id: Some(context.model_id),
+            outcome: outcome.log_outcome(),
+            response_status_code: context.upstream_status.or(outcome.fallback_status()),
+            streamed: context.streamed,
+            ttft_ms: context.first_byte_at.map(clamp_duration_ms),
+            total_duration_ms,
+            error_code: outcome.error_code(),
+        };
+        context.sink.try_record(event);
     }
+}
+
+fn clamp_duration_ms(duration: Duration) -> i32 {
+    i32::try_from(duration.as_millis()).unwrap_or(i32::MAX)
+}
+
+fn completed_at(
+    started_at: chrono::DateTime<chrono::Utc>,
+    elapsed: Duration,
+) -> chrono::DateTime<chrono::Utc> {
+    let elapsed = chrono::Duration::from_std(elapsed)
+        .unwrap_or_else(|_| chrono::Duration::milliseconds(i64::MAX));
+    started_at.checked_add_signed(elapsed).unwrap_or(started_at)
 }
 
 impl Drop for CompletionGuard {

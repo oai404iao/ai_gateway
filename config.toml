@@ -5,6 +5,8 @@
 host = "127.0.0.1"
 port = 3000
 max_request_body_bytes = 1_048_576
+# After this deadline, in-flight responses are cancelled during shutdown.
+shutdown_grace_period_seconds = 30
 
 [database]
 url = "postgres://ai_gateway:ai_gateway@127.0.0.1:5432/ai_gateway"
@@ -18,6 +20,10 @@ stream_idle_timeout_seconds = 90
 
 [runtime_config]
 reload_interval_seconds = 30
+
+[request_logging]
+# Accepted logs are persisted asynchronously; a full queue drops the log only.
+queue_capacity = 1_024
 
 [observability]
 filter = "ai_gateway=debug,tower_http=info"

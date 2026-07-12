@@ -6,7 +6,7 @@ use std::{
 };
 
 use ai_gateway::{
-    application::ProxyService,
+    application::{ProxyService, RecordingRequestLogSink},
     http,
     persistence::{
         ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ControlPlaneRecords, ModelRuleRecord,
@@ -83,6 +83,7 @@ struct Harness {
     gateway: TestServer,
     _upstream: TestServer,
     requests: Arc<Mutex<Vec<CapturedRequest>>>,
+    logs: RecordingRequestLogSink,
 }
 
 impl Harness {
@@ -92,6 +93,10 @@ impl Harness {
 
     fn upstream_requests(&self) -> Vec<CapturedRequest> {
         self.requests.lock().unwrap().clone()
+    }
+
+    fn logs(&self) -> Vec<ai_gateway::domain::RequestLogEvent> {
+        self.logs.events()
     }
 }
 
@@ -108,17 +113,19 @@ async fn harness(status: StatusCode, body: impl Into<Vec<u8>>) -> Harness {
             }),
     )
     .await;
-    let proxy = proxy_service(&format!("http://{}", upstream.address));
+    let logs = RecordingRequestLogSink::default();
+    let proxy = proxy_service(&format!("http://{}", upstream.address), logs.clone());
     let gateway = start_server(http::router(proxy)).await;
 
     Harness {
         gateway,
         _upstream: upstream,
         requests,
+        logs,
     }
 }
 
-fn proxy_service(upstream_url: &str) -> ProxyService {
+fn proxy_service(upstream_url: &str, logs: RecordingRequestLogSink) -> ProxyService {
     let chat_group = Uuid::new_v4();
     let responses_group = Uuid::new_v4();
     let empty_chat_group = Uuid::new_v4();
@@ -249,7 +256,7 @@ fn proxy_service(upstream_url: &str) -> ProxyService {
         ],
     };
     let runtime = Arc::new(RuntimeConfig::new(compile_control_plane(records).unwrap()));
-    ProxyService::new(
+    ProxyService::with_log_sink(
         runtime,
         1_048_576,
         &UpstreamConfig {
@@ -257,6 +264,7 @@ fn proxy_service(upstream_url: &str) -> ProxyService {
             response_header_timeout_seconds: 2,
             stream_idle_timeout_seconds: 1,
         },
+        Arc::new(logs),
     )
     .unwrap()
 }
@@ -289,6 +297,7 @@ async fn health_is_available_without_authentication() {
 
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
     assert!(harness.upstream_requests().is_empty());
+    assert!(harness.logs().is_empty());
 }
 
 #[tokio::test]
@@ -309,6 +318,7 @@ async fn missing_bearer_key_returns_unauthorized_without_upstream_contact() {
         "Bearer"
     );
     assert!(harness.upstream_requests().is_empty());
+    assert!(harness.logs().is_empty());
 }
 
 #[tokio::test]
@@ -327,6 +337,10 @@ async fn unknown_model_returns_not_found_without_upstream_contact() {
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     assert!(harness.upstream_requests().is_empty());
+    let logs = harness.logs();
+    assert_eq!(logs.len(), 1);
+    assert_eq!(logs[0].outcome.as_str(), "rejected");
+    assert_eq!(logs[0].response_status_code, Some(404));
 }
 
 #[tokio::test]
@@ -380,6 +394,11 @@ async fn matching_chat_model_preserves_body_and_forwards_response_safely() {
     assert_eq!(response.status(), StatusCode::CREATED);
     assert_eq!(response.bytes().await.unwrap().as_ref(), upstream_body);
 
+    let logs = harness.logs();
+    assert_eq!(logs.len(), 1);
+    assert_eq!(logs[0].outcome.as_str(), "succeeded");
+    assert_eq!(logs[0].response_status_code, Some(201));
+
     let requests = harness.upstream_requests();
     assert_eq!(requests.len(), 1);
     let request = &requests[0];
@@ -391,6 +410,24 @@ async fn matching_chat_model_preserves_body_and_forwards_response_safely() {
     assert!(request.headers.get("connection").is_none());
     assert!(request.headers.get("x-internal-hop").is_none());
     assert_eq!(request.headers.get("x-request-id").unwrap(), "forward-me");
+}
+
+#[tokio::test]
+async fn malformed_model_is_trace_only_and_not_persisted() {
+    let harness = harness(StatusCode::OK, Vec::new()).await;
+
+    let response = authorized_post(
+        &client(),
+        harness.url("/v1/chat/completions"),
+        CLIENT_KEY,
+        br#"{"model":false}"#.to_vec(),
+    )
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(harness.logs().is_empty());
 }
 
 #[tokio::test]

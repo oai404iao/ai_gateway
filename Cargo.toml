@@ -11,6 +11,8 @@ arc-swap = "1.7"
 axum = "0.8"
 chrono = { version = "0.4", features = ["serde"] }
 futures-util = "0.3"
+hyper = { version = "1", features = ["server", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["server-auto", "server-graceful", "service", "tokio"] }
 http-body-util = "0.1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 rust_decimal = { version = "1.36", features = ["serde"] }
@@ -21,11 +23,12 @@ sha2 = "0.10"
 sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio-rustls", "migrate", "chrono", "uuid", "json", "rust_decimal", "macros"] }
 subtle = "2.6"
 thiserror = "2.0"
-tokio = { version = "1.43", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1.43", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 toml = "0.8"
-tower = "0.5"
+tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["trace"] }
 tracing = "0.1"
+tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 zeroize = { version = "1.8", features = ["derive"] }
 uuid = { version = "1.11", features = ["v4", "serde"] }

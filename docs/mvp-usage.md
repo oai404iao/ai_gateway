@@ -1,4 +1,4 @@
-# MVP 2 阶段 1 运行说明
+# MVP 2 阶段 2 运行说明
 
 OpenAI Chat Completions 与 Responses 以相同格式透明转发。TOML 仅包含监听、PostgreSQL、默认上游超时、重载间隔和日志设置；API Key、模型规则、渠道组和渠道必须存储在 PostgreSQL 控制面。TOML 中的 `api_keys`、`channels` 和 `model_rules` 会被明确拒绝。
 
@@ -20,4 +20,6 @@ OpenAI Chat Completions 与 Responses 以相同格式透明转发。TOML 仅包�
 
 无模型别名时，请求 JSON 保持原始字节直通；仅当 `upstream_model` 与 `client_model` 不同时，网关才会重写顶层 `model` 字段。响应通过 reqwest 字节流直接传给客户端，不缓冲 SSE。响应头、流空闲和建连超时分别受配置约束；客户端断开会丢弃上游流。
 
-每次已选路请求都会写出一个 `proxy_request_completed` tracing 事件，其中包含渠道 ID、API 格式、上游状态、TTFT、总延迟和结果。该日志目前是可观测性事件，不是数据库请求日志。
+每次已选路请求都会写出一个 `proxy_request_completed` tracing 事件，并尽力异步持久化一条终态 `request_logs` 记录。`[request_logging] queue_capacity` 必须为正数；队列过载、关闭或数据库写入失败时，请求日志可能丢失，但不会阻塞或改变代理响应和流式转发。
+
+收到 SIGTERM 或 Ctrl-C 后，网关停止接收新连接并在 `[server] shutdown_grace_period_seconds`（必须为正数）内等待进行中的请求。超过该期限仍未完成的连接会被强制关闭；其响应会被取消，并以 `cancelled` 终态处理。连接关闭后才开始请求日志 worker 的有界排空。

@@ -1,12 +1,14 @@
-//! SQLx control-plane repository and embedded database migrations.
+//! SQLx control-plane and append-only request-log repositories.
 
 use std::fmt;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Timelike, Utc};
 use serde_json::Value;
 use sqlx::{FromRow, PgPool, Postgres, Transaction};
 use thiserror::Error;
 use uuid::Uuid;
+
+use crate::domain::RequestLogEvent;
 
 pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
@@ -133,6 +135,147 @@ impl fmt::Debug for ChannelRecord {
 pub struct ControlPlaneRepository {
     pool: PgPool,
 }
+
+#[derive(Clone)]
+pub struct RequestLogRepository {
+    pool: PgPool,
+}
+
+impl RequestLogRepository {
+    #[must_use]
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+
+    /// Inserts one terminal event without changing schema-owned defaults.
+    ///
+    /// A duplicate id is successful only if every field owned by this event is
+    /// identical after PostgreSQL's microsecond timestamp normalization.
+    pub async fn insert(
+        &self,
+        event: &RequestLogEvent,
+    ) -> Result<RequestLogInsertOutcome, RepositoryError> {
+        let status = event
+            .response_status_code
+            .map(validate_response_status)
+            .transpose()?;
+        let started_at = normalize_timestamp(event.started_at);
+        let completed_at = normalize_timestamp(event.completed_at);
+        let inserted = sqlx::query_scalar::<_, Uuid>("INSERT INTO request_logs (id, started_at, completed_at, user_id, api_key_id, api_format, client_model, upstream_model, model_rule_id, channel_group_id, channel_id, outcome, response_status_code, streamed, ttft_ms, total_duration_ms, model_id, error_code) VALUES ($1, $2, $3, $4, $5, $6::api_format, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) ON CONFLICT (id) DO NOTHING RETURNING id")
+            .bind(event.id)
+            .bind(started_at)
+            .bind(completed_at)
+            .bind(event.user_id)
+            .bind(event.api_key_id)
+            .bind(match event.api_format {
+                crate::domain::ApiFormat::OpenAiChatCompletions => "open_ai_chat_completions",
+                crate::domain::ApiFormat::OpenAiResponses => "open_ai_responses",
+            })
+            .bind(&event.client_model)
+            .bind(&event.upstream_model)
+            .bind(event.model_rule_id)
+            .bind(event.channel_group_id)
+            .bind(event.channel_id)
+            .bind(event.outcome.as_str())
+            .bind(status)
+            .bind(event.streamed)
+            .bind(event.ttft_ms)
+            .bind(event.total_duration_ms)
+            .bind(event.model_id)
+            .bind(event.error_code)
+            .fetch_optional(&self.pool)
+            .await?;
+        if inserted.is_some() {
+            return Ok(RequestLogInsertOutcome::Inserted);
+        }
+
+        let existing = sqlx::query_as::<_, StoredRequestLog>("SELECT started_at, completed_at, user_id, api_key_id, api_format::text AS api_format, client_model, upstream_model, model_rule_id, channel_group_id, channel_id, outcome, response_status_code, streamed, ttft_ms, total_duration_ms, model_id, error_code FROM request_logs WHERE id = $1")
+            .bind(event.id)
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or(RepositoryError::DuplicateDisappeared { id: event.id })?;
+        if existing.matches(event, started_at, completed_at, status) {
+            Ok(RequestLogInsertOutcome::ExactDuplicate)
+        } else {
+            Err(RepositoryError::DuplicateConflict { id: event.id })
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RequestLogInsertOutcome {
+    Inserted,
+    ExactDuplicate,
+}
+
+#[derive(FromRow)]
+struct StoredRequestLog {
+    started_at: DateTime<Utc>,
+    completed_at: DateTime<Utc>,
+    user_id: Uuid,
+    api_key_id: Uuid,
+    api_format: String,
+    client_model: String,
+    upstream_model: Option<String>,
+    model_rule_id: Option<Uuid>,
+    channel_group_id: Option<Uuid>,
+    channel_id: Option<Uuid>,
+    outcome: String,
+    response_status_code: Option<i16>,
+    streamed: bool,
+    ttft_ms: Option<i32>,
+    total_duration_ms: Option<i32>,
+    model_id: Option<Uuid>,
+    error_code: Option<String>,
+}
+
+impl StoredRequestLog {
+    fn matches(
+        &self,
+        event: &RequestLogEvent,
+        started_at: DateTime<Utc>,
+        completed_at: DateTime<Utc>,
+        response_status_code: Option<i16>,
+    ) -> bool {
+        self.started_at == started_at
+            && self.completed_at == completed_at
+            && self.user_id == event.user_id
+            && self.api_key_id == event.api_key_id
+            && self.api_format == api_format_name(event)
+            && self.client_model == event.client_model
+            && self.upstream_model == event.upstream_model
+            && self.model_rule_id == event.model_rule_id
+            && self.channel_group_id == event.channel_group_id
+            && self.channel_id == event.channel_id
+            && self.outcome == event.outcome.as_str()
+            && self.response_status_code == response_status_code
+            && self.streamed == event.streamed
+            && self.ttft_ms == event.ttft_ms
+            && self.total_duration_ms == Some(event.total_duration_ms)
+            && self.model_id == event.model_id
+            && self.error_code.as_deref() == event.error_code
+    }
+}
+
+fn api_format_name(event: &RequestLogEvent) -> &'static str {
+    match event.api_format {
+        crate::domain::ApiFormat::OpenAiChatCompletions => "open_ai_chat_completions",
+        crate::domain::ApiFormat::OpenAiResponses => "open_ai_responses",
+    }
+}
+
+fn validate_response_status(status: u16) -> Result<i16, RepositoryError> {
+    if !(100..=599).contains(&status) {
+        return Err(RepositoryError::InvalidResponseStatus { status });
+    }
+    i16::try_from(status).map_err(|_| RepositoryError::InvalidResponseStatus { status })
+}
+
+fn normalize_timestamp(value: DateTime<Utc>) -> DateTime<Utc> {
+    value
+        .with_nanosecond((value.nanosecond() / 1_000) * 1_000)
+        .unwrap_or(value)
+}
 impl ControlPlaneRepository {
     #[must_use]
     pub fn new(pool: PgPool) -> Self {
@@ -167,4 +310,10 @@ impl ControlPlaneRepository {
 pub enum RepositoryError {
     #[error("control-plane database operation failed")]
     Sql(#[from] sqlx::Error),
+    #[error("request log response status is outside the HTTP range")]
+    InvalidResponseStatus { status: u16 },
+    #[error("request log id already exists with different immutable facts")]
+    DuplicateConflict { id: Uuid },
+    #[error("request log duplicate disappeared before it could be compared")]
+    DuplicateDisappeared { id: Uuid },
 }

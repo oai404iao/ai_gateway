@@ -35,6 +35,8 @@ pub struct AppConfig {
     pub database: DatabaseConfig,
     pub upstream: UpstreamConfig,
     pub runtime_config: RuntimeConfigSettings,
+    #[serde(default)]
+    pub request_logging: RequestLoggingConfig,
     pub observability: ObservabilityConfig,
 }
 impl AppConfig {
@@ -58,12 +60,18 @@ impl AppConfig {
                 "runtime_config reload_interval_seconds must be greater than zero".into(),
             ));
         }
+        if self.request_logging.queue_capacity == 0 {
+            return Err(ConfigError::Compile(
+                "request_logging queue_capacity must be greater than zero".into(),
+            ));
+        }
         require("observability filter", &self.observability.filter)?;
         Ok(BootstrapConfig {
             server: self.server,
             database: self.database,
             upstream: self.upstream,
             runtime_config: self.runtime_config,
+            request_logging: self.request_logging,
             observability: self.observability,
         })
     }
@@ -74,6 +82,7 @@ pub struct BootstrapConfig {
     pub database: DatabaseConfig,
     pub upstream: UpstreamConfig,
     pub runtime_config: RuntimeConfigSettings,
+    pub request_logging: RequestLoggingConfig,
     pub observability: ObservabilityConfig,
 }
 #[derive(Clone, Debug, Deserialize)]
@@ -82,6 +91,8 @@ pub struct ServerConfig {
     pub host: String,
     pub port: u16,
     pub max_request_body_bytes: usize,
+    #[serde(default = "default_shutdown_grace_period_seconds")]
+    pub shutdown_grace_period_seconds: u64,
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -104,8 +115,27 @@ pub struct RuntimeConfigSettings {
 }
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct RequestLoggingConfig {
+    pub queue_capacity: usize,
+}
+impl Default for RequestLoggingConfig {
+    fn default() -> Self {
+        Self {
+            queue_capacity: default_request_log_queue_capacity(),
+        }
+    }
+}
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ObservabilityConfig {
     pub filter: String,
+}
+
+const fn default_shutdown_grace_period_seconds() -> u64 {
+    30
+}
+const fn default_request_log_queue_capacity() -> usize {
+    1_024
 }
 
 pub struct RuntimeConfig {
@@ -607,9 +637,10 @@ fn dup(field: &str) -> ConfigError {
 }
 fn validate_server(server: &ServerConfig) -> Result<(), ConfigError> {
     require("server host", &server.host)?;
-    if server.max_request_body_bytes == 0 {
+    if server.max_request_body_bytes == 0 || server.shutdown_grace_period_seconds == 0 {
         return Err(ConfigError::Compile(
-            "server max_request_body_bytes must be greater than zero".into(),
+            "server max_request_body_bytes and shutdown_grace_period_seconds must be greater than zero"
+                .into(),
         ));
     }
     Ok(())
@@ -664,7 +695,40 @@ mod tests {
     use super::*;
     #[test]
     fn bootstrap_rejects_dynamic_toml() {
-        let value = "[server]\nhost='x'\nport=1\nmax_request_body_bytes=1\n[database]\nurl='postgres://x'\nmax_connections=1\nconnect_timeout_seconds=1\n[upstream]\nconnect_timeout_seconds=1\nresponse_header_timeout_seconds=2\nstream_idle_timeout_seconds=1\n[runtime_config]\nreload_interval_seconds=1\n[observability]\nfilter='info'\n[[api_keys]]\nid='bad'";
+        let value = "[server]\nhost='x'\nport=1\nmax_request_body_bytes=1\nshutdown_grace_period_seconds=1\n[database]\nurl='postgres://x'\nmax_connections=1\nconnect_timeout_seconds=1\n[upstream]\nconnect_timeout_seconds=1\nresponse_header_timeout_seconds=2\nstream_idle_timeout_seconds=1\n[runtime_config]\nreload_interval_seconds=1\n[request_logging]\nqueue_capacity=1\n[observability]\nfilter='info'\n[[api_keys]]\nid='bad'";
         assert!(toml::from_str::<AppConfig>(value).is_err());
+    }
+
+    #[test]
+    fn bootstrap_rejects_zero_shutdown_grace_period() {
+        let value = "[server]\nhost='x'\nport=1\nmax_request_body_bytes=1\nshutdown_grace_period_seconds=0\n[database]\nurl='postgres://x'\nmax_connections=1\nconnect_timeout_seconds=1\n[upstream]\nconnect_timeout_seconds=1\nresponse_header_timeout_seconds=2\nstream_idle_timeout_seconds=1\n[runtime_config]\nreload_interval_seconds=1\n[request_logging]\nqueue_capacity=1\n[observability]\nfilter='info'";
+        assert!(
+            toml::from_str::<AppConfig>(value)
+                .unwrap()
+                .validate()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn bootstrap_defaults_stage_two_settings_when_absent() {
+        let value = "[server]\nhost='x'\nport=1\nmax_request_body_bytes=1\n[database]\nurl='postgres://x'\nmax_connections=1\nconnect_timeout_seconds=1\n[upstream]\nconnect_timeout_seconds=1\nresponse_header_timeout_seconds=2\nstream_idle_timeout_seconds=1\n[runtime_config]\nreload_interval_seconds=1\n[observability]\nfilter='info'";
+        let config = toml::from_str::<AppConfig>(value)
+            .unwrap()
+            .validate()
+            .unwrap();
+        assert_eq!(config.server.shutdown_grace_period_seconds, 30);
+        assert_eq!(config.request_logging.queue_capacity, 1_024);
+    }
+
+    #[test]
+    fn bootstrap_rejects_zero_request_log_queue_capacity() {
+        let value = "[server]\nhost='x'\nport=1\nmax_request_body_bytes=1\nshutdown_grace_period_seconds=1\n[database]\nurl='postgres://x'\nmax_connections=1\nconnect_timeout_seconds=1\n[upstream]\nconnect_timeout_seconds=1\nresponse_header_timeout_seconds=2\nstream_idle_timeout_seconds=1\n[runtime_config]\nreload_interval_seconds=1\n[request_logging]\nqueue_capacity=0\n[observability]\nfilter='info'";
+        assert!(
+            toml::from_str::<AppConfig>(value)
+                .unwrap()
+                .validate()
+                .is_err()
+        );
     }
 }
