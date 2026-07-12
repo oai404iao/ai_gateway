@@ -4,19 +4,20 @@ use std::{sync::Arc, time::Duration};
 
 use thiserror::Error;
 use tokio::{
-    sync::{Mutex, mpsc, oneshot},
+    sync::{mpsc, oneshot},
     task::JoinHandle,
     time::{Instant, MissedTickBehavior, interval, timeout, timeout_at},
 };
 
 use crate::{
     application::QueueRequestLogSink,
+    application::{ControlPlaneCoordinator, ControlPlaneError},
     domain::RequestLogEvent,
     persistence::{
         ControlPlaneRepository, RepositoryError, RequestLogInsertOutcome, RequestLogRepository,
     },
-    routing::RoutingRuntime,
-    runtime_config::{ConfigError, RuntimeConfig, compile_control_plane},
+    routing::{PassiveHealthPolicy, RoutingRuntime},
+    runtime_config::{ConfigError, RuntimeConfig},
 };
 
 /// Bounds an individual database write so a stalled connection cannot stop the
@@ -132,35 +133,30 @@ async fn persist_event(
 
 #[derive(Clone)]
 pub struct ControlPlaneReloader {
-    repository: ControlPlaneRepository,
-    runtime: Arc<RuntimeConfig>,
-    serial: Arc<Mutex<()>>,
-    routing: Option<RoutingRuntime>,
+    coordinator: ControlPlaneCoordinator,
 }
 impl ControlPlaneReloader {
     #[must_use]
     pub fn new(repository: ControlPlaneRepository, runtime: Arc<RuntimeConfig>) -> Self {
         Self {
-            repository,
-            runtime,
-            serial: Arc::new(Mutex::new(())),
-            routing: None,
+            coordinator: ControlPlaneCoordinator::new(
+                repository,
+                runtime,
+                RoutingRuntime::new(PassiveHealthPolicy::default()),
+            ),
         }
     }
     #[must_use]
+    pub fn from_coordinator(coordinator: ControlPlaneCoordinator) -> Self {
+        Self { coordinator }
+    }
+    #[must_use]
     pub fn with_routing(mut self, routing: RoutingRuntime) -> Self {
-        self.routing = Some(routing);
+        self.coordinator = self.coordinator.with_routing(routing);
         self
     }
     pub async fn reload(&self) -> Result<(), ReloadError> {
-        let _guard = self.serial.lock().await;
-        let records = self.repository.load().await?;
-        let next = Arc::new(compile_control_plane(records)?);
-        if let Some(routing) = &self.routing {
-            routing.reconcile(&next);
-        }
-        self.runtime.replace_snapshot(Arc::clone(&next));
-        Ok(())
+        self.coordinator.reload().await.map_err(ReloadError::from)
     }
     pub fn spawn(self, frequency: Duration) {
         tokio::spawn(async move {
@@ -182,4 +178,15 @@ pub enum ReloadError {
     Repository(#[from] RepositoryError),
     #[error("control-plane compilation failed: {0}")]
     Compile(#[from] ConfigError),
+    #[error("configured admin actor is not active")]
+    InvalidActor,
+}
+impl From<ControlPlaneError> for ReloadError {
+    fn from(value: ControlPlaneError) -> Self {
+        match value {
+            ControlPlaneError::Repository(error) => Self::Repository(error),
+            ControlPlaneError::Compile(error) => Self::Compile(error),
+            ControlPlaneError::InvalidActor => Self::InvalidActor,
+        }
+    }
 }

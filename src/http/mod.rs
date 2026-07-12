@@ -1,5 +1,7 @@
 //! Axum routes, middleware, and HTTP error responses.
 
+pub mod admin;
+
 use axum::{
     Json, Router,
     extract::{Request, State},
@@ -46,4 +48,48 @@ async fn responses(
     request: Request,
 ) -> Result<Response, ProxyError> {
     proxy.proxy(ApiFormat::OpenAiResponses, request).await
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    use crate::{
+        application::ProxyService,
+        runtime_config::{RuntimeConfig, UpstreamConfig, compile_control_plane},
+    };
+
+    use super::router;
+
+    #[tokio::test]
+    async fn public_router_does_not_expose_admin_paths() {
+        let runtime = Arc::new(RuntimeConfig::new(
+            compile_control_plane(Default::default()).unwrap(),
+        ));
+        let proxy = ProxyService::new(
+            runtime,
+            1_024,
+            &UpstreamConfig {
+                connect_timeout_seconds: 1,
+                response_header_timeout_seconds: 2,
+                stream_idle_timeout_seconds: 1,
+            },
+        )
+        .unwrap();
+        let response = router(proxy)
+            .oneshot(
+                Request::get("/admin/v1/api-keys")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
 }

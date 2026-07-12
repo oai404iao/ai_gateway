@@ -31,6 +31,15 @@ queue_capacity = 1_024
 connection_failure_threshold = 3
 cooldown_seconds = 30
 
+# Disabled by default. Enable only with a loopback host, active users.id UUID,
+# and an environment-specific high-entropy bearer token (never commit it).
+[admin]
+enabled = false
+# host = "127.0.0.1"
+# port = 3001
+# actor_user_id = "00000000-0000-0000-0000-000000000000"
+# bearer_token = "replace-with-a-unique-high-entropy-secret"
+
 [observability]
 filter = "ai_gateway=debug,tower_http=info"
 

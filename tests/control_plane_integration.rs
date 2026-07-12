@@ -7,12 +7,13 @@ use std::{
 };
 
 use ai_gateway::{
-    application::{ProxyService, QueueRequestLogSink, RequestLogSink},
+    application::{ControlPlaneCoordinator, ProxyService, QueueRequestLogSink, RequestLogSink},
     domain::{ApiFormat, ApiKeyPermission, RequestLogEvent, RequestLogOutcome},
+    http::admin::{self, AdminState},
     persistence::{
         ControlPlaneRepository, MIGRATOR, RequestLogInsertOutcome, RequestLogRepository,
     },
-    routing,
+    routing::{self, PassiveHealthPolicy, RoutingRuntime},
     runtime_config::{RuntimeConfig, compile_control_plane},
     workers::{ControlPlaneReloader, RequestLogWorker},
 };
@@ -26,9 +27,11 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use futures_util::{StreamExt, stream};
+use http_body_util::BodyExt;
 use reqwest::Url;
 use sqlx::{FromRow, PgPool, postgres::PgPoolOptions};
 use tokio::{net::TcpListener, task::JoinHandle};
+use tower::ServiceExt;
 use uuid::Uuid;
 
 const DEFAULT_ADMIN_URL: &str = "postgres://ai_gateway:ai_gateway@127.0.0.1:5432/postgres";
@@ -411,6 +414,458 @@ async fn request_log_insert_is_idempotent_and_worker_continues_after_failure() {
     database.cleanup().await;
 }
 
+const ADMIN_TOKEN: &str = "stage-four-admin-token-with-at-least-32-characters";
+
+async fn admin_app(pool: PgPool, actor: Uuid) -> (Router, Arc<RuntimeConfig>) {
+    let repository = ControlPlaneRepository::new(pool);
+    let runtime = Arc::new(RuntimeConfig::new(
+        compile_control_plane(repository.load().await.unwrap()).unwrap(),
+    ));
+    let coordinator = ControlPlaneCoordinator::new(
+        repository,
+        Arc::clone(&runtime),
+        RoutingRuntime::new(PassiveHealthPolicy::default()),
+    );
+    (
+        admin::router(AdminState {
+            coordinator,
+            actor_user_id: actor,
+            verifier: ai_gateway::domain::AdminTokenVerifier::from_token(ADMIN_TOKEN),
+        }),
+        runtime,
+    )
+}
+
+async fn admin_request(
+    app: Router,
+    method: &str,
+    path: &str,
+    body: serde_json::Value,
+) -> axum::response::Response {
+    admin_request_with_headers(app, method, path, body, &[]).await
+}
+
+async fn admin_request_with_headers(
+    app: Router,
+    method: &str,
+    path: &str,
+    body: serde_json::Value,
+    headers: &[(&str, &str)],
+) -> axum::response::Response {
+    let mut request = axum::http::Request::builder()
+        .method(method)
+        .uri(path)
+        .header("authorization", format!("Bearer {ADMIN_TOKEN}"))
+        .header("content-type", "application/json");
+    for (name, value) in headers {
+        request = request.header(*name, *value);
+    }
+    let request = request
+        .body(Body::from(serde_json::to_vec(&body).unwrap()))
+        .unwrap();
+    app.oneshot(request).await.unwrap()
+}
+
+#[tokio::test]
+async fn admin_key_create_publishes_immediately_and_audits_redacted() {
+    let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
+    let (app, runtime) = admin_app(database.pool.clone(), seed.user).await;
+    let response = admin_request(
+        app,
+        "POST",
+        "/admin/v1/api-keys",
+        serde_json::json!({
+            "user_id": seed.user,
+            "name": format!("managed-{}", Uuid::new_v4()),
+            "allowed_api_formats": ["open_ai_chat_completions"],
+            "permissions": ["proxy"],
+            "allowed_group_ids": [seed.group],
+            "expires_at": null
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let created: serde_json::Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let secret = created["secret"].as_str().unwrap();
+    assert!(runtime.snapshot().authenticate(secret).is_some());
+    let audit: serde_json::Value = sqlx::query_scalar(
+        "SELECT after_redacted FROM audit_logs WHERE action = 'create' AND object_type = 'api_key'",
+    )
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert!(audit.get("secret_value").is_none());
+    assert!(!audit.to_string().contains(secret));
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn invalid_admin_mutation_rolls_back_database_audit_and_snapshot() {
+    let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
+    let (app, runtime) = admin_app(database.pool.clone(), seed.user).await;
+    let audit_before: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_logs")
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    let response = admin_request(
+        app,
+        "PUT",
+        &format!("/admin/v1/channels/{}", seed.channel),
+        serde_json::json!({
+            "channel_group_id": seed.group, "api_format": "open_ai_chat_completions",
+            "name": format!("test-channel-{}", seed.channel), "base_url": "https://example.test",
+            "enabled": false, "auto_disabled": false, "weight": 1,
+            "upstream_auth_kind": "bearer", "upstream_api_key": "upstream-secret",
+            "available_models": ["upstream-v1"]
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let enabled: bool = sqlx::query_scalar("SELECT enabled FROM channels WHERE id=$1")
+        .bind(seed.channel)
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    assert!(enabled);
+    let audit_after: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_logs")
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    assert_eq!(audit_before, audit_after);
+    assert!(runtime.snapshot().channel(seed.channel).is_some());
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn revoked_api_key_cannot_be_reactivated() {
+    let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
+    let (app, _) = admin_app(database.pool.clone(), seed.user).await;
+    let revoked = admin_request(
+        app.clone(),
+        "POST",
+        &format!("/admin/v1/api-keys/{}/revoke", seed.key),
+        serde_json::json!({"reason":"incident"}),
+    )
+    .await;
+    assert_eq!(revoked.status(), StatusCode::OK);
+    let updated = admin_request(app, "PUT", &format!("/admin/v1/api-keys/{}", seed.key), serde_json::json!({
+        "name":"test", "status":"active", "allowed_api_formats":["open_ai_chat_completions"],
+        "permissions":["proxy","models.read"], "allowed_group_ids":[seed.group], "expires_at":null
+    })).await;
+    assert_eq!(updated.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let status: String = sqlx::query_scalar("SELECT status FROM api_keys WHERE id=$1")
+        .bind(seed.key)
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    assert_eq!(status, "revoked");
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn overly_long_revoke_reason_is_a_safe_unprocessable_response() {
+    let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
+    let (app, _) = admin_app(database.pool.clone(), seed.user).await;
+    let response = admin_request(
+        app,
+        "POST",
+        &format!("/admin/v1/api-keys/{}/revoke", seed.key),
+        serde_json::json!({"reason": "x".repeat(501)}),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(
+        body.as_ref(),
+        br#"{"error":"management operation rejected"}"#
+    );
+    let status: String = sqlx::query_scalar("SELECT status FROM api_keys WHERE id=$1")
+        .bind(seed.key)
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    assert_eq!(status, "active");
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn management_channel_credentials_are_redacted_kept_replaced_and_cleared_safely() {
+    let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
+    let (app, _) = admin_app(database.pool.clone(), seed.user).await;
+    let path = format!("/admin/v1/channels/{}", seed.channel);
+    let detail = admin_request(app.clone(), "GET", &path, serde_json::json!({})).await;
+    assert_eq!(detail.status(), StatusCode::OK);
+    assert_eq!(detail.headers()["cache-control"], "no-store");
+    let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
+    let detail: serde_json::Value =
+        serde_json::from_slice(&detail.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(detail["upstream_credential_configured"], true);
+    assert!(!detail.to_string().contains("upstream-secret"));
+
+    let update = |credential: serde_json::Value| {
+        serde_json::json!({
+            "channel_group_id": seed.group, "api_format": "open_ai_chat_completions",
+            "name": format!("test-channel-{}", seed.channel), "base_url": "https://example.test",
+            "enabled": true, "weight": 1, "upstream_auth_kind": "bearer",
+            "available_models": ["upstream-v1"], "upstream_api_key": credential
+        })
+    };
+    let keep = admin_request_with_headers(
+        app.clone(),
+        "PUT",
+        &path,
+        update(serde_json::json!("replaced-secret")),
+        &[("if-match", &etag)],
+    )
+    .await;
+    assert_eq!(keep.status(), StatusCode::OK);
+    let secret: String = sqlx::query_scalar("SELECT upstream_api_key FROM channels WHERE id=$1")
+        .bind(seed.channel)
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    assert_eq!(secret, "replaced-secret");
+    let current = admin_request(app.clone(), "GET", &path, serde_json::json!({})).await;
+    let etag = current.headers()["etag"].to_str().unwrap().to_owned();
+    let keep = admin_request_with_headers(app.clone(), "PUT", &path, serde_json::json!({
+        "channel_group_id": seed.group, "api_format": "open_ai_chat_completions", "name": format!("test-channel-{}", seed.channel),
+        "base_url": "https://example.test", "enabled": true, "weight": 1, "upstream_auth_kind": "bearer", "available_models": ["upstream-v1"]
+    }), &[("if-match", &etag)]).await;
+    assert_eq!(keep.status(), StatusCode::OK);
+    let secret: String = sqlx::query_scalar("SELECT upstream_api_key FROM channels WHERE id=$1")
+        .bind(seed.channel)
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    assert_eq!(secret, "replaced-secret");
+    let current = admin_request(app.clone(), "GET", &path, serde_json::json!({})).await;
+    let etag = current.headers()["etag"].to_str().unwrap().to_owned();
+    let invalid_clear = admin_request_with_headers(
+        app,
+        "PUT",
+        &path,
+        update(serde_json::Value::Null),
+        &[("if-match", &etag)],
+    )
+    .await;
+    assert_eq!(invalid_clear.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn channel_documents_are_rejected_and_never_escape_admin_or_audit_allowlists() {
+    let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
+    let (app, _) = admin_app(database.pool.clone(), seed.user).await;
+    let path = format!("/admin/v1/channels/{}", seed.channel);
+    let audits_before: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_logs")
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    let rejected_create = admin_request(
+        app.clone(),
+        "POST",
+        "/admin/v1/channels",
+        serde_json::json!({
+            "channel_group_id": seed.group, "api_format": "open_ai_chat_completions",
+            "name": format!("rejected-channel-{}", Uuid::new_v4()),
+            "base_url": "https://example.test", "enabled": true, "weight": 1,
+            "upstream_auth_kind": "bearer", "upstream_api_key": "upstream-secret",
+            "available_models": ["upstream-v1"],
+            "override_document": {"headers": {"Authorization": "rejected-create-secret"}},
+            "health_check": {"body": {"cookie": "rejected-create-cookie"}}
+        }),
+    )
+    .await;
+    assert_eq!(rejected_create.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let rejected_create = rejected_create
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let rejected_create = std::str::from_utf8(&rejected_create).unwrap();
+    assert!(!rejected_create.contains("Authorization"));
+    assert!(!rejected_create.contains("cookie"));
+    assert!(!rejected_create.contains("body"));
+    let audits_after_create: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_logs")
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    assert_eq!(audits_after_create, audits_before);
+    let persisted_override = serde_json::json!({
+        "headers": {"Authorization": "nested-authorization-secret", "cookie": "nested-cookie-secret"},
+        "body": {"token": "nested-body-secret"}
+    });
+    let persisted_health = serde_json::json!({
+        "request": {"Authorization": "health-authorization-secret", "cookie": "health-cookie-secret"},
+        "body": {"token": "health-body-secret"}
+    });
+    sqlx::query("UPDATE channels SET override_document=$1, health_check=$2 WHERE id=$3")
+        .bind(&persisted_override)
+        .bind(&persisted_health)
+        .bind(seed.channel)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+
+    let detail = admin_request(app.clone(), "GET", &path, serde_json::json!({})).await;
+    assert_eq!(detail.status(), StatusCode::OK);
+    let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
+    let detail: serde_json::Value =
+        serde_json::from_slice(&detail.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let rendered = detail.to_string();
+    assert!(detail.get("override_document").is_none());
+    assert!(detail.get("health_check").is_none());
+    for forbidden in [
+        "Authorization",
+        "cookie",
+        "body",
+        "nested-authorization-secret",
+        "nested-cookie-secret",
+        "nested-body-secret",
+        "health-authorization-secret",
+        "health-cookie-secret",
+        "health-body-secret",
+    ] {
+        assert!(
+            !rendered.contains(forbidden),
+            "public response leaked {forbidden}"
+        );
+    }
+
+    let valid_update = serde_json::json!({
+        "channel_group_id": seed.group, "api_format": "open_ai_chat_completions",
+        "name": format!("test-channel-{}", seed.channel), "base_url": "https://example.test",
+        "enabled": true, "weight": 1, "upstream_auth_kind": "bearer",
+        "available_models": ["upstream-v1"], "upstream_api_key": "upstream-secret"
+    });
+    assert_eq!(
+        admin_request_with_headers(
+            app.clone(),
+            "PUT",
+            &path,
+            valid_update,
+            &[("if-match", &etag)]
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    let audit: serde_json::Value = sqlx::query_scalar(
+        "SELECT jsonb_build_object('before', before_redacted, 'after', after_redacted) FROM audit_logs WHERE object_id=$1 AND object_type='channel' AND action='update' ORDER BY occurred_at DESC LIMIT 1",
+    )
+    .bind(seed.channel)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    let audit = audit.to_string();
+    for forbidden in [
+        "override_document",
+        "health_check",
+        "Authorization",
+        "cookie",
+        "body",
+        "nested-authorization-secret",
+        "nested-cookie-secret",
+        "nested-body-secret",
+        "health-authorization-secret",
+        "health-cookie-secret",
+        "health-body-secret",
+    ] {
+        assert!(
+            !audit.contains(forbidden),
+            "audit snapshot leaked {forbidden}"
+        );
+    }
+
+    let detail = admin_request(app.clone(), "GET", &path, serde_json::json!({})).await;
+    let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
+    let rejected_update = serde_json::json!({
+        "channel_group_id": seed.group, "api_format": "open_ai_chat_completions",
+        "name": format!("test-channel-{}", seed.channel), "base_url": "https://example.test",
+        "enabled": true, "weight": 1, "upstream_auth_kind": "bearer",
+        "available_models": ["upstream-v1"], "upstream_api_key": "upstream-secret",
+        "override_document": {"headers": {"Authorization": "rejected-secret"}},
+        "health_check": {"body": {"cookie": "rejected-cookie"}}
+    });
+    let audits_before_update: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_logs")
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        admin_request_with_headers(app, "PUT", &path, rejected_update, &[("if-match", &etag)],)
+            .await
+            .status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let audits_after_update: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_logs")
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    assert_eq!(audits_after_update, audits_before_update);
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn full_put_requires_current_etag_and_stale_update_does_not_audit() {
+    let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
+    let (app, _) = admin_app(database.pool.clone(), seed.user).await;
+    let path = format!("/admin/v1/api-keys/{}", seed.key);
+    let detail = admin_request(app.clone(), "GET", &path, serde_json::json!({})).await;
+    assert_eq!(detail.status(), StatusCode::OK);
+    let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
+    let input = serde_json::json!({"name":"updated", "status":"active", "allowed_api_formats":["open_ai_chat_completions"], "permissions":["proxy"], "allowed_group_ids":[seed.group], "expires_at":null});
+    assert_eq!(
+        admin_request(app.clone(), "PUT", &path, input.clone())
+            .await
+            .status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        admin_request_with_headers(
+            app.clone(),
+            "PUT",
+            &path,
+            input.clone(),
+            &[("if-match", &etag)]
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    let audits: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_logs WHERE object_id=$1 AND action='update'",
+    )
+    .bind(seed.key)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        admin_request_with_headers(app, "PUT", &path, input, &[("if-match", &etag)])
+            .await
+            .status(),
+        StatusCode::CONFLICT
+    );
+    let after: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_logs WHERE object_id=$1 AND action='update'",
+    )
+    .bind(seed.key)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(after, audits);
+    database.cleanup().await;
+}
+
 #[tokio::test]
 async fn repository_migrates_compiles_seeded_snapshot_and_authenticates() {
     let database = TestDatabase::new().await;
@@ -438,6 +893,24 @@ async fn dangling_enabled_route_is_rejected() {
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
     sqlx::query("UPDATE model_rules SET channel_ids = ARRAY[$1]::uuid[] WHERE id = $2")
+        .bind(Uuid::new_v4())
+        .bind(seed.rule)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    let records = ControlPlaneRepository::new(database.pool.clone())
+        .load()
+        .await
+        .unwrap();
+    assert!(compile_control_plane(records).is_err());
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn disabled_rules_still_require_structurally_valid_targets() {
+    let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
+    sqlx::query("UPDATE model_rules SET enabled=false, channel_ids=ARRAY[$1]::uuid[] WHERE id=$2")
         .bind(Uuid::new_v4())
         .bind(seed.rule)
         .execute(&database.pool)

@@ -3,6 +3,7 @@
 use std::{
     collections::{HashMap, HashSet},
     fs, io,
+    net::SocketAddr,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -15,13 +16,13 @@ use reqwest::{
 use serde::Deserialize;
 use thiserror::Error;
 use uuid::Uuid;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::{
     domain::{
-        ApiFormat, ApiKeyHash, ApiKeyPermission, CompiledApiKey, CompiledChannel,
-        CompiledChannelGroup, CompiledModelRule, CompiledRouteTier, CompiledRuntimeConfig,
-        ModelRouteKey, SelectionStrategy, UpstreamAuth,
+        AdminTokenVerifier, ApiFormat, ApiKeyHash, ApiKeyPermission, CompiledApiKey,
+        CompiledChannel, CompiledChannelGroup, CompiledModelRule, CompiledRouteTier,
+        CompiledRuntimeConfig, ModelRouteKey, SelectionStrategy, UpstreamAuth,
     },
     persistence::{
         ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ControlPlaneRecords, ModelRuleRecord,
@@ -39,24 +40,37 @@ pub struct AppConfig {
     pub request_logging: RequestLoggingConfig,
     #[serde(default)]
     pub passive_health: PassiveHealthConfig,
+    #[serde(default)]
+    pub admin: AdminFileConfig,
     pub observability: ObservabilityConfig,
 }
 impl AppConfig {
     pub fn load(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
         let path = path.as_ref();
-        let contents = fs::read_to_string(path).map_err(|source| ConfigError::Read {
-            path: path.to_path_buf(),
-            source,
-        })?;
+        let contents =
+            Zeroizing::new(
+                fs::read_to_string(path).map_err(|source| ConfigError::Read {
+                    path: path.to_path_buf(),
+                    source,
+                })?,
+            );
         toml::from_str(&contents).map_err(|source| ConfigError::Parse {
             path: path.to_path_buf(),
-            source,
+            line: source
+                .span()
+                .and_then(|span| contents[..span.start].lines().count().checked_add(1)),
+            column: source.span().and_then(|span| {
+                contents[..span.start]
+                    .rsplit_once('\n')
+                    .map_or(Some(span.start + 1), |(_, line)| line.len().checked_add(1))
+            }),
         })
     }
     pub fn validate(self) -> Result<BootstrapConfig, ConfigError> {
         validate_server(&self.server)?;
         validate_database(&self.database)?;
         validate_upstream(&self.upstream)?;
+        let admin = validate_admin(self.admin)?;
         if self.runtime_config.reload_interval_seconds == 0 {
             return Err(ConfigError::Compile(
                 "runtime_config reload_interval_seconds must be greater than zero".into(),
@@ -82,6 +96,7 @@ impl AppConfig {
             runtime_config: self.runtime_config,
             request_logging: self.request_logging,
             passive_health: self.passive_health,
+            admin,
             observability: self.observability,
         })
     }
@@ -94,6 +109,7 @@ pub struct BootstrapConfig {
     pub runtime_config: RuntimeConfigSettings,
     pub request_logging: RequestLoggingConfig,
     pub passive_health: PassiveHealthConfig,
+    pub admin: Option<AdminListenerConfig>,
     pub observability: ObservabilityConfig,
 }
 #[derive(Clone, Debug, Deserialize)]
@@ -160,6 +176,33 @@ pub struct ObservabilityConfig {
     pub filter: String,
 }
 
+/// File-only representation. It is consumed by `validate` so the raw token
+/// cannot outlive bootstrap construction.
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdminFileConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    pub host: Option<String>,
+    pub port: Option<u16>,
+    pub actor_user_id: Option<Uuid>,
+    pub bearer_token: Option<String>,
+}
+impl Drop for AdminFileConfig {
+    fn drop(&mut self) {
+        if let Some(token) = &mut self.bearer_token {
+            token.zeroize();
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct AdminListenerConfig {
+    pub address: SocketAddr,
+    pub actor_user_id: Uuid,
+    pub verifier: AdminTokenVerifier,
+}
+
 const fn default_shutdown_grace_period_seconds() -> u64 {
     30
 }
@@ -217,12 +260,14 @@ pub fn compile_control_plane(
         }
     }
     let mut channels = HashMap::new();
+    let mut all_channels = HashMap::new();
     let mut channel_ids = HashSet::new();
     for channel in records.channels {
         if !channel_ids.insert(channel.id) {
             return Err(dup("channel id"));
         }
         validate_channel(&channel, &all_groups)?;
+        all_channels.insert(channel.id, channel.clone());
         if channel.enabled && !channel.auto_disabled {
             let auth = compile_auth(&channel)?;
             channels.insert(
@@ -244,7 +289,13 @@ pub fn compile_control_plane(
         }
     }
     let api_keys = compile_keys(records.api_keys, &all_groups)?;
-    let model_rules = compile_rules(records.model_rules, &all_groups, &groups, &channels)?;
+    let model_rules = compile_rules(
+        records.model_rules,
+        &all_groups,
+        &all_channels,
+        &groups,
+        &channels,
+    )?;
     Ok(CompiledRuntimeConfig::new(
         api_keys,
         model_rules,
@@ -309,6 +360,7 @@ fn compile_keys(
 fn compile_rules(
     records: Vec<ModelRuleRecord>,
     all_groups: &HashMap<Uuid, ChannelGroupRecord>,
+    all_channels: &HashMap<Uuid, ChannelRecord>,
     groups: &HashMap<Uuid, Arc<CompiledChannelGroup>>,
     channels: &HashMap<Uuid, Arc<CompiledChannel>>,
 ) -> Result<HashMap<ModelRouteKey, Arc<CompiledModelRule>>, ConfigError> {
@@ -319,6 +371,7 @@ fn compile_rules(
             return Err(dup("model rule id"));
         }
         validate_rule(&record)?;
+        validate_rule_references(&record, all_groups, all_channels)?;
         if !record.enabled {
             continue;
         }
@@ -450,6 +503,34 @@ fn compile_rules(
     }
     Ok(result)
 }
+fn validate_rule_references(
+    record: &ModelRuleRecord,
+    groups: &HashMap<Uuid, ChannelGroupRecord>,
+    channels: &HashMap<Uuid, ChannelRecord>,
+) -> Result<(), ConfigError> {
+    let format = parse_format(&record.api_format)?;
+    for group_id in &record.channel_group_ids {
+        let group = groups.get(group_id).ok_or_else(|| {
+            ConfigError::Compile("model rule references a missing channel group".into())
+        })?;
+        if parse_format(&group.api_format)? != format {
+            return Err(ConfigError::Compile(
+                "model rule references a cross-format channel group".into(),
+            ));
+        }
+    }
+    for channel_id in &record.channel_ids {
+        let channel = channels.get(channel_id).ok_or_else(|| {
+            ConfigError::Compile("model rule references a missing channel".into())
+        })?;
+        if parse_format(&channel.api_format)? != format {
+            return Err(ConfigError::Compile(
+                "model rule references a cross-format channel".into(),
+            ));
+        }
+    }
+    Ok(())
+}
 
 fn validate_group(record: &ChannelGroupRecord) -> Result<(), ConfigError> {
     require("channel group name", &record.name)?;
@@ -471,6 +552,11 @@ fn validate_channel(
 ) -> Result<(), ConfigError> {
     require("channel name", &record.name)?;
     let format = parse_format(&record.api_format)?;
+    if !is_empty_document(&record.override_document) || !is_empty_document(&record.health_check) {
+        return Err(ConfigError::Compile(
+            "channel documents must be empty objects in MVP-2 stage 4".into(),
+        ));
+    }
     if record.weight <= 0 {
         return Err(ConfigError::Compile(
             "channel weight must be positive".into(),
@@ -500,17 +586,9 @@ fn validate_channel(
         parse_url(record.id, &record.base_url)?;
         if record.proxy_id.is_some()
             || record.config_template_id.is_some()
-            || !record
-                .override_document
-                .as_object()
-                .is_some_and(|value| value.is_empty())
             || record.connect_timeout_ms.is_some()
             || record.response_header_timeout_ms.is_some()
             || record.stream_idle_timeout_ms.is_some()
-            || !record
-                .health_check
-                .as_object()
-                .is_some_and(|value| value.is_empty())
         {
             return Err(ConfigError::Compile(
                 "enabled channel uses a control-plane feature not supported in MVP-2 stage 1"
@@ -520,6 +598,9 @@ fn validate_channel(
         compile_auth(record)?;
     }
     Ok(())
+}
+fn is_empty_document(value: &serde_json::Value) -> bool {
+    value.as_object().is_some_and(serde_json::Map::is_empty)
 }
 fn validate_key(
     record: &ApiKeyRecord,
@@ -559,16 +640,14 @@ fn validate_key(
             ));
         }
         unique(allowed, "API key allowed_group_ids")?;
-        if record.status == "active" && record.user_status == "active" {
-            for id in allowed {
-                let group = groups.get(id).ok_or_else(|| {
-                    ConfigError::Compile("API key references a missing group".into())
-                })?;
-                if !formats.contains(&parse_format(&group.api_format)?) {
-                    return Err(ConfigError::Compile(
-                        "API key group access references a disallowed format".into(),
-                    ));
-                }
+        for id in allowed {
+            let group = groups
+                .get(id)
+                .ok_or_else(|| ConfigError::Compile("API key references a missing group".into()))?;
+            if !formats.contains(&parse_format(&group.api_format)?) {
+                return Err(ConfigError::Compile(
+                    "API key group access references a disallowed format".into(),
+                ));
             }
         }
     }
@@ -750,6 +829,47 @@ fn validate_upstream(upstream: &UpstreamConfig) -> Result<(), ConfigError> {
     }
     Ok(())
 }
+fn validate_admin(mut config: AdminFileConfig) -> Result<Option<AdminListenerConfig>, ConfigError> {
+    if !config.enabled {
+        return Ok(None);
+    }
+    let host = config
+        .host
+        .take()
+        .ok_or_else(|| ConfigError::Compile("enabled admin host is required".into()))?;
+    let address = host
+        .parse::<std::net::IpAddr>()
+        .map_err(|_| ConfigError::Compile("admin host must be a loopback IP address".into()))?;
+    if !address.is_loopback() {
+        return Err(ConfigError::Compile(
+            "admin host must be a loopback IP address".into(),
+        ));
+    }
+    let port = config
+        .port
+        .filter(|port| *port != 0)
+        .ok_or_else(|| ConfigError::Compile("enabled admin port is required".into()))?;
+    let actor_user_id = config
+        .actor_user_id
+        .ok_or_else(|| ConfigError::Compile("enabled admin actor_user_id is required".into()))?;
+    let mut token = config
+        .bearer_token
+        .take()
+        .ok_or_else(|| ConfigError::Compile("enabled admin bearer_token is required".into()))?;
+    if token.trim().len() < 32 {
+        token.zeroize();
+        return Err(ConfigError::Compile(
+            "admin bearer_token must contain at least 32 characters".into(),
+        ));
+    }
+    let verifier = AdminTokenVerifier::from_token(&token);
+    token.zeroize();
+    Ok(Some(AdminListenerConfig {
+        address: SocketAddr::new(address, port),
+        actor_user_id,
+        verifier,
+    }))
+}
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
@@ -759,11 +879,11 @@ pub enum ConfigError {
         #[source]
         source: io::Error,
     },
-    #[error("failed to parse TOML configuration file {path}")]
+    #[error("failed to parse TOML configuration file {path} (line {line:?}, column {column:?})")]
     Parse {
         path: PathBuf,
-        #[source]
-        source: toml::de::Error,
+        line: Option<usize>,
+        column: Option<usize>,
     },
     #[error("invalid runtime configuration: {0}")]
     Compile(String),
@@ -850,6 +970,26 @@ mod tests {
     }
 
     #[test]
+    fn malformed_toml_error_never_retains_or_formats_raw_config() {
+        let token = "fake-admin-token-must-never-appear-in-an-error";
+        let path = std::env::temp_dir().join(format!("ai-gateway-invalid-{}.toml", Uuid::new_v4()));
+        std::fs::write(
+            &path,
+            format!("[admin]\nbearer_token = '{token}'\nnot valid toml"),
+        )
+        .unwrap();
+        let error = match AppConfig::load(&path) {
+            Err(error) => error,
+            Ok(_) => panic!("malformed TOML unexpectedly parsed"),
+        };
+        let display = error.to_string();
+        let debug = format!("{error:?}");
+        std::fs::remove_file(path).unwrap();
+        assert!(!display.contains(token));
+        assert!(!debug.contains(token));
+    }
+
+    #[test]
     fn bootstrap_rejects_zero_shutdown_grace_period() {
         let value = "[server]\nhost='x'\nport=1\nmax_request_body_bytes=1\nshutdown_grace_period_seconds=0\n[database]\nurl='postgres://x'\nmax_connections=1\nconnect_timeout_seconds=1\n[upstream]\nconnect_timeout_seconds=1\nresponse_header_timeout_seconds=2\nstream_idle_timeout_seconds=1\n[runtime_config]\nreload_interval_seconds=1\n[request_logging]\nqueue_capacity=1\n[observability]\nfilter='info'";
         assert!(
@@ -871,6 +1011,20 @@ mod tests {
         assert_eq!(config.request_logging.queue_capacity, 1_024);
         assert_eq!(config.passive_health.connection_failure_threshold, 3);
         assert_eq!(config.passive_health.cooldown_seconds, 30);
+    }
+
+    #[test]
+    fn bootstrap_preserves_ipv6_admin_socket_address() {
+        let value = "[server]\nhost='127.0.0.1'\nport=1\nmax_request_body_bytes=1\nshutdown_grace_period_seconds=1\n[database]\nurl='postgres://x'\nmax_connections=1\nconnect_timeout_seconds=1\n[upstream]\nconnect_timeout_seconds=1\nresponse_header_timeout_seconds=2\nstream_idle_timeout_seconds=1\n[runtime_config]\nreload_interval_seconds=1\n[observability]\nfilter='info'\n[admin]\nenabled=true\nhost='::1'\nport=9443\nactor_user_id='00000000-0000-0000-0000-000000000001'\nbearer_token='at-least-thirty-two-characters-long-token'";
+        let config = toml::from_str::<AppConfig>(value)
+            .unwrap()
+            .validate()
+            .unwrap();
+
+        assert_eq!(
+            config.admin.unwrap().address,
+            std::net::SocketAddr::new(std::net::Ipv6Addr::LOCALHOST.into(), 9443)
+        );
     }
 
     #[test]
@@ -928,5 +1082,16 @@ mod tests {
             ))
             .is_err()
         );
+    }
+
+    #[test]
+    fn compiler_rejects_nonempty_channel_documents_even_when_disabled() {
+        let mut records = route_records(0, "weighted_random", 1, "weighted_random", false);
+        records.channels[0].enabled = false;
+        records.channels[0].override_document = serde_json::json!({
+            "headers": {"Authorization": "must-not-be-accepted"}
+        });
+
+        assert!(compile_control_plane(records).is_err());
     }
 }

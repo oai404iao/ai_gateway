@@ -1,7 +1,7 @@
 use std::{error::Error, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 use ai_gateway::{
-    application::ProxyService,
+    application::{ControlPlaneCoordinator, ProxyService},
     http, observability,
     persistence::{ControlPlaneRepository, MIGRATOR, RequestLogRepository},
     routing::{PassiveHealthPolicy, RoutingRuntime},
@@ -48,7 +48,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let address = format!("{}:{}", config.server.host, config.server.port);
     let (request_log_sink, request_log_worker) = RequestLogWorker::start(
-        RequestLogRepository::new(pool),
+        RequestLogRepository::new(pool.clone()),
         config.request_logging.queue_capacity,
     );
     let routing = RoutingRuntime::new(PassiveHealthPolicy {
@@ -63,17 +63,32 @@ async fn main() -> Result<(), Box<dyn Error>> {
         Arc::new(request_log_sink),
         routing.clone(),
     )?;
-    ControlPlaneReloader::new(repository, runtime)
-        .with_routing(routing)
-        .spawn(std::time::Duration::from_secs(
-            config.runtime_config.reload_interval_seconds,
-        ));
+    let coordinator =
+        ControlPlaneCoordinator::new(repository, Arc::clone(&runtime), routing.clone());
+    ControlPlaneReloader::from_coordinator(coordinator.clone()).spawn(
+        std::time::Duration::from_secs(config.runtime_config.reload_interval_seconds),
+    );
     let listener = TcpListener::bind(&address).await?;
     tracing::info!(%address, "AI gateway listening");
+    let admin = if let Some(admin) = config.admin {
+        coordinator.verify_active_actor(admin.actor_user_id).await?;
+        let listener = TcpListener::bind(admin.address).await?;
+        tracing::info!(address = %admin.address, "AI gateway admin listener enabled");
+        Some((
+            listener,
+            http::admin::router(http::admin::AdminState {
+                coordinator: coordinator.clone(),
+                actor_user_id: admin.actor_user_id,
+                verifier: admin.verifier,
+            }),
+        ))
+    } else {
+        None
+    };
 
-    let serve_result = run_server(
-        listener,
-        http::router(proxy),
+    let serve_result = run_servers(
+        (listener, http::router(proxy)),
+        admin,
         Duration::from_secs(config.server.shutdown_grace_period_seconds),
     )
     .await;
@@ -82,21 +97,61 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Accepts connections until shutdown, retaining ownership of every connection
-/// task so the grace deadline can drop sockets and streaming response bodies.
-async fn run_server(
-    listener: TcpListener,
-    router: Router,
+/// Runs both listeners from one shutdown signal. The public and management
+/// routers never share a route tree, only the shutdown lifecycle.
+async fn run_servers(
+    public: (TcpListener, Router),
+    admin: Option<(TcpListener, Router)>,
     shutdown_grace_period: Duration,
 ) -> Result<(), std::io::Error> {
     let (shutdown_sender, shutdown_receiver) = watch::channel(());
+    let mut servers = JoinSet::new();
+    servers.spawn(run_server_until(
+        public.0,
+        public.1,
+        shutdown_grace_period,
+        shutdown_receiver.clone(),
+    ));
+    if let Some((listener, router)) = admin {
+        servers.spawn(run_server_until(
+            listener,
+            router,
+            shutdown_grace_period,
+            shutdown_receiver.clone(),
+        ));
+    }
+    let first_error = tokio::select! {
+        _ = shutdown_signal() => None,
+        result = servers.join_next() => match result {
+            Some(Ok(Err(error))) => Some(error),
+            Some(Err(error)) => Some(std::io::Error::other(error)),
+            _ => None,
+        },
+    };
+    let _ = shutdown_sender.send(());
+    let mut error = first_error;
+    while let Some(result) = servers.join_next().await {
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(next)) if error.is_none() => error = Some(next),
+            Ok(Err(next)) => tracing::warn!(%next, "listener task failed while draining"),
+            Err(next) => tracing::warn!(%next, "listener task join failed while draining"),
+        }
+    }
+    error.map_or(Ok(()), Err)
+}
+
+async fn run_server_until(
+    listener: TcpListener,
+    router: Router,
+    shutdown_grace_period: Duration,
+    mut shutdown_receiver: watch::Receiver<()>,
+) -> Result<(), std::io::Error> {
     let mut connections = JoinSet::new();
-    let shutdown = shutdown_signal();
-    tokio::pin!(shutdown);
 
     let stop_reason = loop {
         tokio::select! {
-            _ = &mut shutdown => break StopReason::ShutdownSignal,
+            _ = shutdown_receiver.changed() => break StopReason::ShutdownSignal,
             accepted = listener.accept() => match accepted {
                 Ok((stream, peer_address)) => {
                     connections.spawn(serve_connection(
@@ -118,13 +173,11 @@ async fn run_server(
 
     match stop_reason {
         StopReason::ShutdownSignal => {
-            let _ = shutdown_sender.send(());
             drain_connections(&mut connections, shutdown_grace_period).await;
             Ok(())
         }
         StopReason::ListenerError(error) => {
-            connections.abort_all();
-            join_connections(&mut connections).await;
+            drain_connections(&mut connections, shutdown_grace_period).await;
             Err(error)
         }
     }
