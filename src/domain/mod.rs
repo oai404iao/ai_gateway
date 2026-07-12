@@ -10,7 +10,9 @@ pub use admin_auth::AdminTokenVerifier;
 pub use api_format::ApiFormat;
 pub use api_key::ApiKeyHash;
 pub use compiled_routing::{
-    ApiKeyPermission, CompiledApiKey, CompiledChannel, CompiledChannelGroup, CompiledModelRule,
-    CompiledRouteTier, CompiledRuntimeConfig, ModelRouteKey, SelectionStrategy, UpstreamAuth,
+    ApiKeyPermission, ChannelTimeoutPolicy, CompiledApiKey, CompiledChannel, CompiledChannelGroup,
+    CompiledChannelUpstreamPolicy, CompiledConfigTemplate, CompiledModelRule, CompiledProxy,
+    CompiledRouteTier, CompiledRuntimeConfig, ModelRouteKey, NoProxyHost, NoProxyHostError,
+    SelectionStrategy, UpstreamAuth,
 };
 pub use request_log::{RequestLogEvent, RequestLogOutcome};

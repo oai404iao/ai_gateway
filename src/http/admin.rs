@@ -17,7 +17,7 @@ use crate::{
     domain::AdminTokenVerifier,
     persistence::{
         AdminMutation, ApiKeyCreate, ApiKeyUpdate, ChannelCreateInput, ChannelGroupInput,
-        ChannelInput, ModelRuleInput,
+        ChannelInput, ConfigTemplateInput, ModelRuleInput, ProxyCreateInput, ProxyInput,
     },
 };
 
@@ -59,6 +59,16 @@ pub fn router(state: AdminState) -> Router {
         )
         .route("/admin/v1/model-rules", get(list_rules).post(create_rule))
         .route("/admin/v1/model-rules/{id}", get(get_rule).put(update_rule))
+        .route("/admin/v1/proxies", get(list_proxies).post(create_proxy))
+        .route("/admin/v1/proxies/{id}", get(get_proxy).put(update_proxy))
+        .route(
+            "/admin/v1/config-templates",
+            get(list_config_templates).post(create_config_template),
+        )
+        .route(
+            "/admin/v1/config-templates/{id}",
+            get(get_config_template).put(update_config_template),
+        )
         .route("/admin/v1/reload", post(reload))
         .route_layer(middleware::from_fn_with_state(state.clone(), authenticate))
         .layer(middleware::from_fn(no_store))
@@ -163,6 +173,22 @@ async fn list_rules(
 ) -> Result<Json<serde_json::Value>, AdminError> {
     Ok(Json(
         serde_json::to_value(state.coordinator.lists().await?.model_rules)
+            .expect("admin DTO serializes"),
+    ))
+}
+async fn list_proxies(
+    State(state): State<AdminState>,
+) -> Result<Json<serde_json::Value>, AdminError> {
+    Ok(Json(
+        serde_json::to_value(state.coordinator.lists().await?.proxies)
+            .expect("admin DTO serializes"),
+    ))
+}
+async fn list_config_templates(
+    State(state): State<AdminState>,
+) -> Result<Json<serde_json::Value>, AdminError> {
+    Ok(Json(
+        serde_json::to_value(state.coordinator.lists().await?.config_templates)
             .expect("admin DTO serializes"),
     ))
 }
@@ -292,6 +318,62 @@ async fn update_rule(
     )
     .await
 }
+async fn create_proxy(
+    State(state): State<AdminState>,
+    Json(input): Json<ProxyCreateInput>,
+) -> Result<(StatusCode, Json<MutationResponse>), AdminError> {
+    mutate_created(&state, AdminMutation::CreateProxy(input)).await
+}
+async fn get_proxy(
+    State(state): State<AdminState>,
+    Path(id): Path<Uuid>,
+) -> Result<Response, AdminError> {
+    get_resource(state, id, Resource::Proxy).await
+}
+async fn update_proxy(
+    State(state): State<AdminState>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(input): Json<ProxyInput>,
+) -> Result<Json<MutationResponse>, AdminError> {
+    mutate(
+        &state,
+        AdminMutation::UpdateProxy {
+            id,
+            input,
+            expected_updated_at: if_match(&headers)?,
+        },
+    )
+    .await
+}
+async fn create_config_template(
+    State(state): State<AdminState>,
+    Json(input): Json<ConfigTemplateInput>,
+) -> Result<(StatusCode, Json<MutationResponse>), AdminError> {
+    mutate_created(&state, AdminMutation::CreateConfigTemplate(input)).await
+}
+async fn get_config_template(
+    State(state): State<AdminState>,
+    Path(id): Path<Uuid>,
+) -> Result<Response, AdminError> {
+    get_resource(state, id, Resource::ConfigTemplate).await
+}
+async fn update_config_template(
+    State(state): State<AdminState>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(input): Json<ConfigTemplateInput>,
+) -> Result<Json<MutationResponse>, AdminError> {
+    mutate(
+        &state,
+        AdminMutation::UpdateConfigTemplate {
+            id,
+            input,
+            expected_updated_at: if_match(&headers)?,
+        },
+    )
+    .await
+}
 async fn reload(State(state): State<AdminState>) -> Result<Json<ReloadResponse>, AdminError> {
     let correlation_id = state.coordinator.manual_reload(state.actor_user_id).await?;
     Ok(Json(ReloadResponse { correlation_id }))
@@ -301,6 +383,8 @@ enum Resource {
     Group,
     Channel,
     Rule,
+    Proxy,
+    ConfigTemplate,
 }
 async fn get_resource(
     state: AdminState,
@@ -326,6 +410,16 @@ async fn get_resource(
             .map(|item| serde_json::to_value(item).expect("admin DTO serializes")),
         Resource::Rule => lists
             .model_rules
+            .into_iter()
+            .find(|item| item.id == id)
+            .map(|item| serde_json::to_value(item).expect("admin DTO serializes")),
+        Resource::Proxy => lists
+            .proxies
+            .into_iter()
+            .find(|item| item.id == id)
+            .map(|item| serde_json::to_value(item).expect("admin DTO serializes")),
+        Resource::ConfigTemplate => lists
+            .config_templates
             .into_iter()
             .find(|item| item.id == id)
             .map(|item| serde_json::to_value(item).expect("admin DTO serializes")),

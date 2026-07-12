@@ -353,6 +353,8 @@ fn configured_proxy_with_policy(
                 responses,
             ),
         ],
+        proxies: vec![],
+        templates: vec![],
     };
     let client_key = records
         .api_keys

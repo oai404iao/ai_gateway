@@ -261,6 +261,8 @@ struct Seed {
     group: Uuid,
     other_group: Uuid,
     channel: Uuid,
+    proxy: Uuid,
+    template: Uuid,
     key: Uuid,
     rule: Uuid,
     secret: String,
@@ -274,6 +276,8 @@ async fn seed(pool: &PgPool) -> Seed {
         group: Uuid::new_v4(),
         other_group: Uuid::new_v4(),
         channel: Uuid::new_v4(),
+        proxy: Uuid::new_v4(),
+        template: Uuid::new_v4(),
         key: Uuid::new_v4(),
         rule: Uuid::new_v4(),
         secret: format!("test-client-{}", Uuid::new_v4()),
@@ -303,6 +307,23 @@ async fn seed(pool: &PgPool) -> Seed {
         .bind(seed.channel)
         .bind(seed.group)
         .bind(format!("test-channel-{}", seed.channel))
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO proxies (id, name, proxy_url, username, password, no_proxy_hosts, enabled) VALUES ($1, $2, 'https://seed-proxy.test', 'seed-proxy-user', 'seed-proxy-password', ARRAY['seed.internal']::text[], true)")
+        .bind(seed.proxy)
+        .bind(format!("seed-proxy-{}", seed.proxy))
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO config_templates (id, name, description, document, enabled) VALUES ($1, $2, 'seed template', $3, true)")
+        .bind(seed.template)
+        .bind(format!("seed-template-{}", seed.template))
+        .bind(serde_json::json!({
+            "version": 1,
+            "api_format": "open_ai_chat_completions",
+            "request_headers": {"set": {"x-seed-template": "seed-default"}}
+        }))
         .execute(pool)
         .await
         .unwrap();
@@ -703,6 +724,355 @@ async fn invalid_admin_mutation_rolls_back_database_audit_and_snapshot() {
         .unwrap();
     assert_eq!(audit_before, audit_after);
     assert!(runtime.snapshot().channel(seed.channel).is_some());
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn proxy_template_management_is_redacted_and_publishes_or_rolls_back_atomically() {
+    let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
+    let (app, runtime) = admin_app(database.pool.clone(), seed.user).await;
+    let proxy_password = "created-proxy-password";
+    let proxy_username = "created-proxy-user";
+    let template_value = "template-document-private-value";
+    let channel_value = "channel-override-private-value";
+
+    let created_proxy = admin_request(
+        app.clone(),
+        "POST",
+        "/admin/v1/proxies",
+        serde_json::json!({
+            "name": "managed-proxy",
+            "proxy_url": "https://managed-proxy.test:8443",
+            "username": proxy_username,
+            "password": proxy_password,
+            "no_proxy_hosts": ["internal.test"],
+            "enabled": true
+        }),
+    )
+    .await;
+    assert_eq!(created_proxy.status(), StatusCode::CREATED);
+    let created_proxy: serde_json::Value = serde_json::from_slice(
+        &created_proxy
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes(),
+    )
+    .unwrap();
+    let proxy_id: Uuid = serde_json::from_value(created_proxy["id"].clone()).unwrap();
+
+    let template_document = serde_json::json!({
+        "version": 1,
+        "api_format": "open_ai_chat_completions",
+        "request_headers": {"set": {"x-template": template_value}}
+    });
+    let created_template = admin_request(
+        app.clone(),
+        "POST",
+        "/admin/v1/config-templates",
+        serde_json::json!({
+            "name": "managed-template",
+            "description": "managed template",
+            "document": template_document,
+            "enabled": true
+        }),
+    )
+    .await;
+    assert_eq!(created_template.status(), StatusCode::CREATED);
+    let created_template: serde_json::Value = serde_json::from_slice(
+        &created_template
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes(),
+    )
+    .unwrap();
+    let template_id: Uuid = serde_json::from_value(created_template["id"].clone()).unwrap();
+
+    let proxy_list = admin_request(
+        app.clone(),
+        "GET",
+        "/admin/v1/proxies",
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(proxy_list.status(), StatusCode::OK);
+    let proxy_list: serde_json::Value =
+        serde_json::from_slice(&proxy_list.into_body().collect().await.unwrap().to_bytes())
+            .unwrap();
+    assert!(
+        proxy_list
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["id"] == proxy_id.to_string())
+    );
+    assert!(!proxy_list.to_string().contains(proxy_password));
+    assert!(!proxy_list.to_string().contains(proxy_username));
+
+    let proxy_path = format!("/admin/v1/proxies/{proxy_id}");
+    let proxy_detail = admin_request(app.clone(), "GET", &proxy_path, serde_json::json!({})).await;
+    assert_eq!(proxy_detail.status(), StatusCode::OK);
+    let proxy_etag = proxy_detail.headers()["etag"].to_str().unwrap().to_owned();
+    let proxy_detail: serde_json::Value =
+        serde_json::from_slice(&proxy_detail.into_body().collect().await.unwrap().to_bytes())
+            .unwrap();
+    assert_eq!(proxy_detail["credential_configured"], true);
+    assert!(proxy_detail.get("username").is_none());
+    assert!(proxy_detail.get("password").is_none());
+    assert!(!proxy_detail.to_string().contains(proxy_password));
+
+    let updated_proxy = admin_request_with_headers(
+        app.clone(),
+        "PUT",
+        &proxy_path,
+        serde_json::json!({
+            "name": "managed-proxy-updated",
+            "proxy_url": "https://managed-proxy.test:9443",
+            "password": "updated-proxy-password",
+            "no_proxy_hosts": ["internal.test", "metadata.test"],
+            "enabled": true
+        }),
+        &[("if-match", &proxy_etag)],
+    )
+    .await;
+    assert_eq!(updated_proxy.status(), StatusCode::OK);
+
+    let template_list = admin_request(
+        app.clone(),
+        "GET",
+        "/admin/v1/config-templates",
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(template_list.status(), StatusCode::OK);
+    let template_list: serde_json::Value = serde_json::from_slice(
+        &template_list
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes(),
+    )
+    .unwrap();
+    assert!(
+        template_list
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["id"] == template_id.to_string())
+    );
+    assert!(!template_list.to_string().contains(template_value));
+
+    let template_path = format!("/admin/v1/config-templates/{template_id}");
+    let template_detail =
+        admin_request(app.clone(), "GET", &template_path, serde_json::json!({})).await;
+    assert_eq!(template_detail.status(), StatusCode::OK);
+    let template_etag = template_detail.headers()["etag"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let template_detail: serde_json::Value = serde_json::from_slice(
+        &template_detail
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes(),
+    )
+    .unwrap();
+    assert!(template_detail.get("document").is_none());
+    assert!(!template_detail.to_string().contains(template_value));
+    assert_eq!(
+        admin_request_with_headers(
+            app.clone(),
+            "PUT",
+            &template_path,
+            serde_json::json!({
+                "name": "managed-template-updated",
+                "description": "updated template",
+                "document": template_document,
+                "enabled": true
+            }),
+            &[("if-match", &template_etag)],
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+
+    let channel_path = format!("/admin/v1/channels/{}", seed.channel);
+    let channel_detail =
+        admin_request(app.clone(), "GET", &channel_path, serde_json::json!({})).await;
+    let channel_etag = channel_detail.headers()["etag"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let valid_channel = serde_json::json!({
+        "channel_group_id": seed.group,
+        "api_format": "open_ai_chat_completions",
+        "name": format!("test-channel-{}", seed.channel),
+        "base_url": "https://example.test",
+        "enabled": true,
+        "weight": 1,
+        "proxy_id": proxy_id,
+        "config_template_id": template_id,
+        "override_document": {
+            "version": 1,
+            "api_format": "open_ai_chat_completions",
+            "request_headers": {"set": {"x-channel": channel_value}}
+        },
+        "connect_timeout_ms": 11,
+        "response_header_timeout_ms": 22,
+        "stream_idle_timeout_ms": 33,
+        "upstream_auth_kind": "bearer",
+        "available_models": ["upstream-v1"]
+    });
+    assert_eq!(
+        admin_request_with_headers(
+            app.clone(),
+            "PUT",
+            &channel_path,
+            valid_channel.clone(),
+            &[("if-match", &channel_etag)],
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    let published = runtime.snapshot();
+    let channel = published.channel(seed.channel).unwrap();
+    let policy = channel.upstream_policy();
+    assert_eq!(policy.proxy().unwrap().id(), proxy_id);
+    assert_eq!(policy.template().unwrap().id(), template_id);
+    assert_eq!(policy.timeouts().connect(), Some(Duration::from_millis(11)));
+    assert_eq!(
+        policy.timeouts().response_header(),
+        Some(Duration::from_millis(22))
+    );
+    assert_eq!(
+        policy.timeouts().stream_idle(),
+        Some(Duration::from_millis(33))
+    );
+    assert_eq!(
+        policy
+            .effective_transforms()
+            .request_headers()
+            .operations()
+            .len(),
+        2
+    );
+    let channel_read =
+        admin_request(app.clone(), "GET", &channel_path, serde_json::json!({})).await;
+    assert_eq!(channel_read.status(), StatusCode::OK);
+    let channel_read: serde_json::Value =
+        serde_json::from_slice(&channel_read.into_body().collect().await.unwrap().to_bytes())
+            .unwrap();
+    assert!(channel_read.get("override_document").is_none());
+    assert!(!channel_read.to_string().contains(channel_value));
+
+    let audit: serde_json::Value = sqlx::query_scalar(
+        "SELECT jsonb_agg(jsonb_build_object('before', before_redacted, 'after', after_redacted)) FROM audit_logs WHERE object_id = ANY($1)",
+    )
+    .bind(vec![proxy_id, template_id, seed.channel])
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    let audit = audit.to_string();
+    for secret in [
+        proxy_password,
+        proxy_username,
+        template_value,
+        channel_value,
+    ] {
+        assert!(!audit.contains(secret), "audit leaked {secret}");
+    }
+    assert!(!audit.contains("password"));
+    assert!(!audit.contains("username"));
+    assert!(!audit.contains("document"));
+    assert!(!audit.contains("override_document"));
+
+    let current = admin_request(app.clone(), "GET", &channel_path, serde_json::json!({})).await;
+    let stable_etag = current.headers()["etag"].to_str().unwrap().to_owned();
+    let audit_before: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_logs")
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    let proxy_count_before: i64 = sqlx::query_scalar("SELECT count(*) FROM proxies")
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    let template_count_before: i64 = sqlx::query_scalar("SELECT count(*) FROM config_templates")
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    let invalid_channel_inputs = [
+        serde_json::json!({"proxy_id": Uuid::new_v4()}),
+        serde_json::json!({"connect_timeout_ms": 0}),
+    ];
+    for changes in invalid_channel_inputs {
+        let mut invalid = valid_channel.clone();
+        for (key, value) in changes.as_object().unwrap() {
+            invalid[key] = value.clone();
+        }
+        let response = admin_request_with_headers(
+            app.clone(),
+            "PUT",
+            &channel_path,
+            invalid,
+            &[("if-match", &stable_etag)],
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(
+            !std::str::from_utf8(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap()
+                .contains(channel_value)
+        );
+    }
+    for (path, body, secret) in [
+        (
+            "/admin/v1/proxies",
+            serde_json::json!({"name":"invalid-proxy", "proxy_url":"ftp://invalid.test", "password":"invalid-proxy-password", "enabled":true}),
+            "invalid-proxy-password",
+        ),
+        (
+            "/admin/v1/config-templates",
+            serde_json::json!({"name":"invalid-template", "document":{"version":1,"api_format":"open_ai_chat_completions","unknown":"invalid-document-value"}, "enabled":true}),
+            "invalid-document-value",
+        ),
+    ] {
+        let response = admin_request(app.clone(), "POST", path, body).await;
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(
+            !std::str::from_utf8(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap()
+                .contains(secret)
+        );
+    }
+    let audit_after: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_logs")
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    assert_eq!(audit_after, audit_before);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM proxies")
+            .fetch_one(&database.pool)
+            .await
+            .unwrap(),
+        proxy_count_before
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM config_templates")
+            .fetch_one(&database.pool)
+            .await
+            .unwrap(),
+        template_count_before
+    );
+    assert!(Arc::ptr_eq(&published, &runtime.snapshot()));
     database.cleanup().await;
 }
 

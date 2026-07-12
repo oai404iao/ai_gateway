@@ -145,6 +145,8 @@ fn proxy_fixture(
             channel_ids: vec![],
             enabled: true,
         }],
+        proxies: vec![],
+        templates: vec![],
     };
     let runtime = Arc::new(RuntimeConfig::new(compile_control_plane(records).unwrap()));
     let service = ProxyService::with_log_sink_and_routing(

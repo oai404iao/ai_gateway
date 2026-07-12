@@ -20,13 +20,16 @@ use zeroize::{Zeroize, Zeroizing};
 
 use crate::{
     domain::{
-        AdminTokenVerifier, ApiFormat, ApiKeyHash, ApiKeyPermission, CompiledApiKey,
-        CompiledChannel, CompiledChannelGroup, CompiledModelRule, CompiledRouteTier,
-        CompiledRuntimeConfig, ModelRouteKey, SelectionStrategy, UpstreamAuth,
+        AdminTokenVerifier, ApiFormat, ApiKeyHash, ApiKeyPermission, ChannelTimeoutPolicy,
+        CompiledApiKey, CompiledChannel, CompiledChannelGroup, CompiledChannelUpstreamPolicy,
+        CompiledConfigTemplate, CompiledModelRule, CompiledProxy, CompiledRouteTier,
+        CompiledRuntimeConfig, ModelRouteKey, NoProxyHost, SelectionStrategy, UpstreamAuth,
     },
     persistence::{
-        ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ControlPlaneRecords, ModelRuleRecord,
+        ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ConfigTemplateRecord, ControlPlaneRecords,
+        ModelRuleRecord, ProxyRecord,
     },
+    transforms::{TransformCompileError, TransformPlan, compile_document, declared_api_format},
 };
 
 #[derive(Deserialize)]
@@ -259,23 +262,57 @@ pub fn compile_control_plane(
             );
         }
     }
+    let proxies = compile_proxies(records.proxies)?;
+    let templates = compile_templates(records.templates)?;
     let mut channels = HashMap::new();
     let mut all_channels = HashMap::new();
+    let mut validated_channels = Vec::new();
     let mut channel_ids = HashSet::new();
     for channel in records.channels {
         if !channel_ids.insert(channel.id) {
             return Err(dup("channel id"));
         }
         validate_channel(&channel, &all_groups)?;
+        validate_channel_resources(&channel, &proxies, &templates)?;
         all_channels.insert(channel.id, channel.clone());
+        validated_channels.push(channel);
+    }
+    for channel in validated_channels {
         if channel.enabled && !channel.auto_disabled {
             let auth = compile_auth(&channel)?;
+            let api_format = parse_format(&channel.api_format)?;
+            let proxy = channel.proxy_id.map(|id| {
+                proxies
+                    .get(&id)
+                    .cloned()
+                    .expect("validated proxy reference")
+            });
+            let template = channel.config_template_id.map(|id| {
+                templates
+                    .get(&id)
+                    .cloned()
+                    .expect("validated template reference")
+            });
+            let channel_override = compile_channel_document(&channel, api_format)?;
+            let defaults = template.as_ref().map_or_else(
+                || TransformPlan::noop(api_format),
+                |template| template.transform_plan(api_format).clone(),
+            );
+            let effective_transforms = TransformPlan::compose(&defaults, &channel_override)
+                .map_err(transform_error("channel effective transform plan"))?;
+            let upstream_policy = CompiledChannelUpstreamPolicy::new(
+                proxy,
+                template,
+                channel_override,
+                effective_transforms,
+                compile_timeouts(&channel)?,
+            );
             channels.insert(
                 channel.id,
-                Arc::new(CompiledChannel::new(
+                Arc::new(CompiledChannel::new_with_policy(
                     channel.id,
                     channel.channel_group_id,
-                    parse_format(&channel.api_format)?,
+                    api_format,
                     parse_url(channel.id, &channel.base_url)?,
                     channel.weight,
                     auth,
@@ -284,6 +321,7 @@ pub fn compile_control_plane(
                         .iter()
                         .map(|model| Arc::<str>::from(model.as_str()))
                         .collect(),
+                    upstream_policy,
                 )),
             );
         }
@@ -296,12 +334,147 @@ pub fn compile_control_plane(
         &groups,
         &channels,
     )?;
-    Ok(CompiledRuntimeConfig::new(
+    Ok(CompiledRuntimeConfig::with_resources(
         api_keys,
         model_rules,
         channels,
         groups,
+        proxies,
+        templates,
     ))
+}
+
+fn compile_proxies(
+    records: Vec<ProxyRecord>,
+) -> Result<HashMap<Uuid, Arc<CompiledProxy>>, ConfigError> {
+    let mut result = HashMap::new();
+    let mut ids = HashSet::new();
+    for record in records {
+        if !ids.insert(record.id) {
+            return Err(dup("proxy id"));
+        }
+        require("proxy name", &record.name)?;
+        let url = Url::parse(&record.proxy_url)
+            .map_err(|_| ConfigError::Compile("proxy has an invalid URL".into()))?;
+        if !matches!(url.scheme(), "http" | "https" | "socks4" | "socks5")
+            || url.host().is_none()
+            || url.query().is_some()
+            || url.fragment().is_some()
+            || !url.username().is_empty()
+            || url.password().is_some()
+        {
+            return Err(ConfigError::Compile(
+                "proxy URL must use http, https, socks4, or socks5 without embedded credentials, query, or fragment".into(),
+            ));
+        }
+        let no_proxy_hosts = record
+            .no_proxy_hosts
+            .iter()
+            .map(|host| NoProxyHost::parse(host).map_err(|_| invalid_no_proxy_host()))
+            .collect::<Result<Vec<_>, ConfigError>>()?;
+        unique(&no_proxy_hosts, "proxy no_proxy_hosts")?;
+        if let Some(username) = &record.username {
+            require("proxy username", username)?;
+        }
+        if let Some(password) = &record.password {
+            require("proxy password", password)?;
+        }
+        if record.enabled {
+            result.insert(
+                record.id,
+                Arc::new(CompiledProxy::new(
+                    record.id,
+                    Arc::from(record.name),
+                    url,
+                    record.username.map(Arc::from),
+                    record.password.map(Arc::from),
+                    no_proxy_hosts.into(),
+                )),
+            );
+        }
+    }
+    Ok(result)
+}
+
+fn compile_templates(
+    records: Vec<ConfigTemplateRecord>,
+) -> Result<HashMap<Uuid, Arc<CompiledConfigTemplate>>, ConfigError> {
+    let mut result = HashMap::new();
+    let mut ids = HashSet::new();
+    for record in records {
+        if !ids.insert(record.id) {
+            return Err(dup("config template id"));
+        }
+        require("config template name", &record.name)?;
+        let declared = declared_api_format(&record.document)
+            .map_err(transform_error("config template document"))?;
+        let chat = if declared.is_none() || declared == Some(ApiFormat::OpenAiChatCompletions) {
+            compile_document(&record.document, ApiFormat::OpenAiChatCompletions)
+                .map_err(transform_error("config template document"))?
+        } else {
+            TransformPlan::noop(ApiFormat::OpenAiChatCompletions)
+        };
+        let responses = if declared.is_none() || declared == Some(ApiFormat::OpenAiResponses) {
+            compile_document(&record.document, ApiFormat::OpenAiResponses)
+                .map_err(transform_error("config template document"))?
+        } else {
+            TransformPlan::noop(ApiFormat::OpenAiResponses)
+        };
+        if record.enabled {
+            result.insert(
+                record.id,
+                Arc::new(CompiledConfigTemplate::new(
+                    record.id,
+                    Arc::from(record.name),
+                    record.description.map(Arc::from),
+                    declared,
+                    chat,
+                    responses,
+                )),
+            );
+        }
+    }
+    Ok(result)
+}
+
+fn compile_channel_document(
+    channel: &ChannelRecord,
+    format: ApiFormat,
+) -> Result<TransformPlan, ConfigError> {
+    compile_document(&channel.override_document, format)
+        .map_err(transform_error("channel override document"))
+}
+
+fn compile_timeouts(channel: &ChannelRecord) -> Result<ChannelTimeoutPolicy, ConfigError> {
+    Ok(ChannelTimeoutPolicy::new(
+        positive_timeout(channel.connect_timeout_ms, "connect_timeout_ms")?,
+        positive_timeout(
+            channel.response_header_timeout_ms,
+            "response_header_timeout_ms",
+        )?,
+        positive_timeout(channel.stream_idle_timeout_ms, "stream_idle_timeout_ms")?,
+    ))
+}
+
+fn positive_timeout(
+    value: Option<i32>,
+    name: &str,
+) -> Result<Option<std::time::Duration>, ConfigError> {
+    value
+        .map(|value| {
+            u64::try_from(value)
+                .ok()
+                .filter(|value| *value > 0)
+                .map(std::time::Duration::from_millis)
+                .ok_or_else(|| {
+                    ConfigError::Compile(format!("channel {name} must be positive when configured"))
+                })
+        })
+        .transpose()
+}
+
+fn transform_error(context: &'static str) -> impl FnOnce(TransformCompileError) -> ConfigError {
+    move |error| ConfigError::Compile(format!("{context} is invalid: {error}"))
 }
 
 fn compile_keys(
@@ -556,11 +729,14 @@ fn validate_channel(
 ) -> Result<(), ConfigError> {
     require("channel name", &record.name)?;
     let format = parse_format(&record.api_format)?;
-    if !is_empty_document(&record.override_document) || !is_empty_document(&record.health_check) {
+    if !is_empty_document(&record.health_check) {
         return Err(ConfigError::Compile(
-            "channel documents must be empty objects in MVP-2 stage 4".into(),
+            "channel health check document must be an empty object".into(),
         ));
     }
+    compile_document(&record.override_document, format)
+        .map_err(transform_error("channel override document"))?;
+    compile_timeouts(record)?;
     if record.weight <= 0 {
         return Err(ConfigError::Compile(
             "channel weight must be positive".into(),
@@ -588,18 +764,33 @@ fn validate_channel(
             ));
         }
         parse_url(record.id, &record.base_url)?;
-        if record.proxy_id.is_some()
-            || record.config_template_id.is_some()
-            || record.connect_timeout_ms.is_some()
-            || record.response_header_timeout_ms.is_some()
-            || record.stream_idle_timeout_ms.is_some()
+        compile_auth(record)?;
+    }
+    Ok(())
+}
+fn validate_channel_resources(
+    record: &ChannelRecord,
+    proxies: &HashMap<Uuid, Arc<CompiledProxy>>,
+    templates: &HashMap<Uuid, Arc<CompiledConfigTemplate>>,
+) -> Result<(), ConfigError> {
+    let format = parse_format(&record.api_format)?;
+    if record.proxy_id.is_some_and(|id| !proxies.contains_key(&id)) {
+        return Err(ConfigError::Compile(
+            "channel references a missing or disabled proxy".into(),
+        ));
+    }
+    if let Some(template_id) = record.config_template_id {
+        let template = templates.get(&template_id).ok_or_else(|| {
+            ConfigError::Compile("channel references a missing or disabled template".into())
+        })?;
+        if template
+            .api_format()
+            .is_some_and(|template_format| template_format != format)
         {
             return Err(ConfigError::Compile(
-                "enabled channel uses a control-plane feature not supported in MVP-2 stage 1"
-                    .into(),
+                "channel references a cross-format template".into(),
             ));
         }
-        compile_auth(record)?;
     }
     Ok(())
 }
@@ -791,6 +982,9 @@ fn require(field: &str, value: &str) -> Result<(), ConfigError> {
         Ok(())
     }
 }
+fn invalid_no_proxy_host() -> ConfigError {
+    ConfigError::Compile("proxy no_proxy host pattern is invalid".into())
+}
 fn unique<T: Eq + std::hash::Hash>(items: &[T], field: &str) -> Result<(), ConfigError> {
     if items.iter().collect::<HashSet<_>>().len() != items.len() {
         Err(ConfigError::Compile(format!("duplicate {field} item")))
@@ -912,7 +1106,8 @@ pub enum ConfigError {
 #[cfg(test)]
 mod tests {
     use crate::persistence::{
-        ChannelGroupRecord, ChannelRecord, ControlPlaneRecords, ModelRuleRecord,
+        ChannelGroupRecord, ChannelRecord, ConfigTemplateRecord, ControlPlaneRecords,
+        ModelRuleRecord, ProxyRecord,
     };
 
     use super::*;
@@ -981,6 +1176,8 @@ mod tests {
                     .collect(),
                 enabled: true,
             }],
+            proxies: vec![],
+            templates: vec![],
         }
     }
     #[test]
@@ -1113,5 +1310,290 @@ mod tests {
         });
 
         assert!(compile_control_plane(records).is_err());
+    }
+
+    fn proxy(id: Uuid, url: &str, enabled: bool) -> ProxyRecord {
+        ProxyRecord {
+            id,
+            name: "egress".into(),
+            proxy_url: url.into(),
+            username: Some("proxy-user".into()),
+            password: Some("proxy-password".into()),
+            no_proxy_hosts: vec!["internal.test".into()],
+            enabled,
+        }
+    }
+
+    fn template(id: Uuid, format: &str, enabled: bool) -> ConfigTemplateRecord {
+        ConfigTemplateRecord {
+            id,
+            name: "defaults".into(),
+            description: None,
+            document: serde_json::json!({
+                "version": 1,
+                "api_format": format,
+                "request_headers": {"set": {"x-template": "template-default"}}
+            }),
+            enabled,
+        }
+    }
+
+    #[test]
+    fn compiler_validates_proxy_schemes_no_proxy_hosts_and_never_leaks_credentials() {
+        for scheme in ["http", "https", "socks4", "socks5"] {
+            let mut records = route_records(0, "weighted_random", 1, "weighted_random", false);
+            let id = Uuid::new_v4();
+            records.proxies = vec![proxy(id, &format!("{scheme}://proxy.test:1080"), true)];
+            records.channels[0].proxy_id = Some(id);
+            assert!(
+                compile_control_plane(records).is_ok(),
+                "{scheme} should compile"
+            );
+        }
+
+        let mut invalid_scheme = route_records(0, "weighted_random", 1, "weighted_random", false);
+        let id = Uuid::new_v4();
+        invalid_scheme.proxies = vec![proxy(id, "ftp://proxy.test", true)];
+        invalid_scheme.channels[0].proxy_id = Some(id);
+        let error = compile_control_plane(invalid_scheme)
+            .unwrap_err()
+            .to_string();
+        assert!(!error.contains("proxy-password"));
+        assert!(!error.contains("proxy-user"));
+
+        for hosts in [
+            vec![" ".into()],
+            vec!["same.test".into(), "same.test".into()],
+        ] {
+            let mut records = route_records(0, "weighted_random", 1, "weighted_random", false);
+            records.proxies = vec![ProxyRecord {
+                no_proxy_hosts: hosts,
+                ..proxy(Uuid::new_v4(), "https://proxy.test", true)
+            }];
+            assert!(compile_control_plane(records).is_err());
+        }
+    }
+
+    #[test]
+    fn compiler_validates_channel_resources_timeouts_and_template_composition() {
+        let proxy_id = Uuid::new_v4();
+        let template_id = Uuid::new_v4();
+        let mut records = route_records(0, "weighted_random", 1, "weighted_random", false);
+        records.proxies = vec![proxy(proxy_id, "https://proxy.test", true)];
+        records.templates = vec![template(template_id, "open_ai_chat_completions", true)];
+        records.channels[0].proxy_id = Some(proxy_id);
+        records.channels[0].config_template_id = Some(template_id);
+        records.channels[0].override_document = serde_json::json!({
+            "version": 1,
+            "api_format": "open_ai_chat_completions",
+            "request_headers": {"set": {"x-channel": "channel-override"}}
+        });
+        records.channels[0].connect_timeout_ms = Some(10);
+        records.channels[0].response_header_timeout_ms = Some(20);
+        records.channels[0].stream_idle_timeout_ms = Some(30);
+        let channel_id = records.channels[0].id;
+
+        let snapshot = compile_control_plane(records).unwrap();
+        let channel = snapshot.channel(channel_id).unwrap();
+        let policy = channel.upstream_policy();
+        assert_eq!(policy.proxy().unwrap().id(), proxy_id);
+        assert_eq!(policy.template().unwrap().id(), template_id);
+        assert_eq!(
+            policy.timeouts().connect(),
+            Some(std::time::Duration::from_millis(10))
+        );
+        assert_eq!(
+            policy.timeouts().response_header(),
+            Some(std::time::Duration::from_millis(20))
+        );
+        assert_eq!(
+            policy.timeouts().stream_idle(),
+            Some(std::time::Duration::from_millis(30))
+        );
+        assert_eq!(
+            policy
+                .effective_transforms()
+                .request_headers()
+                .operations()
+                .len(),
+            2
+        );
+
+        let invalid_records = [
+            (Some(Uuid::new_v4()), None, None, None),
+            (Some(proxy_id), None, None, Some(false)),
+            (None, Some(Uuid::new_v4()), None, None),
+            (None, Some(template_id), None, Some(false)),
+            (None, Some(template_id), Some(0), None),
+        ];
+        for (missing_proxy, template_reference, timeout, disabled) in invalid_records {
+            let mut records = route_records(0, "weighted_random", 1, "weighted_random", false);
+            let proxy_enabled = disabled.unwrap_or(true);
+            records.proxies = vec![proxy(proxy_id, "https://proxy.test", proxy_enabled)];
+            records.templates = vec![template(
+                template_id,
+                "open_ai_responses",
+                disabled.unwrap_or(true),
+            )];
+            records.channels[0].proxy_id = missing_proxy;
+            records.channels[0].config_template_id = template_reference;
+            records.channels[0].connect_timeout_ms = timeout;
+            let error = compile_control_plane(records).unwrap_err().to_string();
+            assert!(!error.contains("proxy-password"));
+            assert!(!error.contains("template-default"));
+        }
+    }
+
+    #[test]
+    fn compiler_validates_disabled_resources_without_leaking_record_values() {
+        let url_user = "sentinel-proxy-url-user";
+        let url_password = "sentinel-proxy-url-password";
+        let document_value = "sentinel-disabled-template-value";
+
+        let mut invalid_proxy = route_records(0, "weighted_random", 1, "weighted_random", false);
+        invalid_proxy.proxies = vec![proxy(
+            Uuid::new_v4(),
+            &format!("https://{url_user}:{url_password}@proxy.test"),
+            false,
+        )];
+        let proxy_error = compile_control_plane(invalid_proxy).unwrap_err();
+        let proxy_rendered = format!("{proxy_error:?} {proxy_error}");
+        assert!(!proxy_rendered.contains(url_user));
+        assert!(!proxy_rendered.contains(url_password));
+
+        let mut invalid_template = route_records(0, "weighted_random", 1, "weighted_random", false);
+        invalid_template.templates = vec![ConfigTemplateRecord {
+            document: serde_json::json!({
+                "version": 1,
+                "api_format": "open_ai_chat_completions",
+                "unknown": document_value
+            }),
+            ..template(Uuid::new_v4(), "open_ai_chat_completions", false)
+        }];
+        let template_error = compile_control_plane(invalid_template).unwrap_err();
+        let template_rendered = format!("{template_error:?} {template_error}");
+        assert!(!template_rendered.contains(document_value));
+    }
+
+    #[test]
+    fn compiler_validates_resources_referenced_by_disabled_and_auto_disabled_channels() {
+        let cases = [
+            (
+                false,
+                false,
+                None,
+                None,
+                Some(Uuid::new_v4()),
+                None,
+                "missing proxy",
+            ),
+            (
+                true,
+                true,
+                Some(false),
+                None,
+                Some(Uuid::new_v4()),
+                None,
+                "disabled proxy",
+            ),
+            (
+                false,
+                false,
+                None,
+                None,
+                None,
+                Some(Uuid::new_v4()),
+                "missing template",
+            ),
+            (
+                true,
+                true,
+                None,
+                Some(false),
+                None,
+                Some(Uuid::new_v4()),
+                "disabled template",
+            ),
+        ];
+        for (
+            enabled,
+            auto_disabled,
+            proxy_enabled,
+            template_enabled,
+            proxy_id,
+            template_id,
+            label,
+        ) in cases
+        {
+            let mut records = route_records(0, "weighted_random", 1, "weighted_random", false);
+            records.channels[0].enabled = enabled;
+            records.channels[0].auto_disabled = auto_disabled;
+            records.channels[0].proxy_id = proxy_id;
+            records.channels[0].config_template_id = template_id;
+            if let Some(proxy_enabled) = proxy_enabled {
+                records.proxies = vec![proxy(
+                    proxy_id.unwrap(),
+                    "https://proxy.test",
+                    proxy_enabled,
+                )];
+            }
+            if let Some(template_enabled) = template_enabled {
+                records.templates = vec![template(
+                    template_id.unwrap(),
+                    "open_ai_chat_completions",
+                    template_enabled,
+                )];
+            }
+            assert!(
+                compile_control_plane(records).is_err(),
+                "{label} was accepted"
+            );
+        }
+
+        let mut cross_format = route_records(0, "weighted_random", 1, "weighted_random", false);
+        cross_format.channels[0].enabled = false;
+        let template_id = Uuid::new_v4();
+        cross_format.channels[0].config_template_id = Some(template_id);
+        cross_format.templates = vec![template(template_id, "open_ai_responses", true)];
+        assert!(compile_control_plane(cross_format).is_err());
+    }
+
+    #[test]
+    fn no_proxy_hosts_normalize_and_match_only_the_accepted_grammar() {
+        let exact = NoProxyHost::parse("API.Example.Test").unwrap();
+        assert_eq!(exact.dns_name(), Some("api.example.test"));
+        assert!(exact.matches_host("api.example.test"));
+        assert!(!exact.matches_host("sub.api.example.test"));
+
+        let ipv4 = NoProxyHost::parse("192.0.2.1").unwrap();
+        assert_eq!(ipv4.ip_addr(), Some("192.0.2.1".parse().unwrap()));
+        assert!(ipv4.matches_host("192.0.2.1"));
+        assert!(!ipv4.matches_host("192.0.2.2"));
+        let ipv6 = NoProxyHost::parse("::1").unwrap();
+        assert!(ipv6.matches_host("::1"));
+
+        let suffix = NoProxyHost::parse("*.Example.Test").unwrap();
+        assert!(suffix.is_dns_suffix());
+        assert_eq!(suffix.dns_name(), Some("example.test"));
+        assert!(suffix.matches_host("api.example.test"));
+        assert!(suffix.matches_host("deep.api.example.test"));
+        assert!(!suffix.matches_host("example.test"));
+        assert!(!suffix.matches_host("other-example.test"));
+
+        for malformed in [
+            "sentinel malformed pattern",
+            "api.example.test:443",
+            "http://api.example.test",
+            "*",
+            "*.bad_underscore.test",
+            "999.0.0.1",
+            "api..example.test",
+            "api.example.test.",
+            "api*example.test",
+        ] {
+            let error = NoProxyHost::parse(malformed).unwrap_err();
+            let rendered = format!("{error:?} {error}");
+            assert!(!rendered.contains(malformed));
+        }
     }
 }

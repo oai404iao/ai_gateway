@@ -115,6 +115,8 @@ fn proxy_service(
             channel_ids: vec![channel_id],
             enabled: true,
         }],
+        proxies: vec![],
+        templates: vec![],
     };
     ProxyService::new(
         Arc::new(RuntimeConfig::new(compile_control_plane(records).unwrap())),

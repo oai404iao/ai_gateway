@@ -1,16 +1,340 @@
 use std::{
     collections::{HashMap, HashSet},
     fmt,
+    net::IpAddr,
+    str::FromStr,
     sync::Arc,
+    time::Duration,
 };
 
 use chrono::{DateTime, Utc};
 use reqwest::{Url, header::HeaderName};
 use rust_decimal::Decimal;
 use serde::Deserialize;
+use thiserror::Error;
 use uuid::Uuid;
 
 use super::{ApiFormat, ApiKeyHash};
+use crate::transforms::TransformPlan;
+
+/// A normalized `no_proxy_hosts` pattern.
+///
+/// The accepted grammar is deliberately small and deterministic: an exact
+/// ASCII DNS name (`api.example.test`), an IP address (`192.0.2.1` or `::1`),
+/// or an ASCII DNS suffix prefixed by `*.` (`*.example.test`). DNS labels are
+/// lower-cased, must be 1--63 characters, and consist of ASCII letters,
+/// digits, and interior hyphens; names are at most 253 characters. Suffixes
+/// match subdomains only, never their apex. Paths, ports, whitespace, bare
+/// wildcards, and malformed IP addresses or DNS names are rejected.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub enum NoProxyHost {
+    ExactDns(Arc<str>),
+    Ip(IpAddr),
+    DnsSuffix(Arc<str>),
+}
+impl NoProxyHost {
+    /// Parses and normalizes a persisted no-proxy host pattern.
+    pub fn parse(value: &str) -> Result<Self, NoProxyHostError> {
+        if value.is_empty() || value.bytes().any(|byte| byte.is_ascii_whitespace()) {
+            return Err(NoProxyHostError);
+        }
+        if let Some(suffix) = value.strip_prefix("*.") {
+            return normalize_dns_name(suffix)
+                .map(|suffix| Self::DnsSuffix(Arc::from(suffix)))
+                .ok_or(NoProxyHostError);
+        }
+        if value.contains('*') {
+            return Err(NoProxyHostError);
+        }
+        if let Ok(address) = IpAddr::from_str(value) {
+            return Ok(Self::Ip(address));
+        }
+        if looks_like_ipv4_address(value) {
+            return Err(NoProxyHostError);
+        }
+        normalize_dns_name(value)
+            .map(|name| Self::ExactDns(Arc::from(name)))
+            .ok_or(NoProxyHostError)
+    }
+
+    /// Returns whether this pattern bypasses the proxy for `host`.
+    #[must_use]
+    pub fn matches_host(&self, host: &str) -> bool {
+        match self {
+            Self::ExactDns(name) => normalize_dns_name(host).is_some_and(|host| host == **name),
+            Self::Ip(address) => IpAddr::from_str(host).is_ok_and(|host| host == *address),
+            Self::DnsSuffix(suffix) => normalize_dns_name(host).is_some_and(|host| {
+                host.len() > suffix.len()
+                    && host.ends_with(suffix.as_ref())
+                    && host.as_bytes()[host.len() - suffix.len() - 1] == b'.'
+            }),
+        }
+    }
+
+    /// Returns the normalized DNS name for an exact-name or suffix pattern.
+    #[must_use]
+    pub fn dns_name(&self) -> Option<&str> {
+        match self {
+            Self::ExactDns(name) | Self::DnsSuffix(name) => Some(name),
+            Self::Ip(_) => None,
+        }
+    }
+
+    /// Returns the exact IP address when this is an IP pattern.
+    #[must_use]
+    pub fn ip_addr(&self) -> Option<IpAddr> {
+        match self {
+            Self::Ip(address) => Some(*address),
+            Self::ExactDns(_) | Self::DnsSuffix(_) => None,
+        }
+    }
+
+    /// Returns whether this pattern matches DNS subdomains rather than one host.
+    #[must_use]
+    pub fn is_dns_suffix(&self) -> bool {
+        matches!(self, Self::DnsSuffix(_))
+    }
+}
+
+/// Safe, value-free parse error for persisted no-proxy patterns.
+#[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
+#[error("invalid no_proxy host pattern")]
+pub struct NoProxyHostError;
+
+fn looks_like_ipv4_address(value: &str) -> bool {
+    value.contains('.')
+        && value
+            .split('.')
+            .all(|label| !label.is_empty() && label.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
+fn normalize_dns_name(value: &str) -> Option<String> {
+    if value.is_empty() || value.len() > 253 || !value.is_ascii() || value.ends_with('.') {
+        return None;
+    }
+    let name = value.to_ascii_lowercase();
+    name.split('.').all(valid_dns_label).then_some(name)
+}
+
+fn valid_dns_label(label: &str) -> bool {
+    let bytes = label.as_bytes();
+    bytes.len() <= 63
+        && !bytes.is_empty()
+        && bytes.first().is_some_and(u8::is_ascii_alphanumeric)
+        && bytes.last().is_some_and(u8::is_ascii_alphanumeric)
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'-')
+}
+
+/// Immutable, validated outbound proxy configuration. Credential-bearing
+/// fields are intentionally redacted from `Debug`.
+#[derive(Clone)]
+pub struct CompiledProxy {
+    id: Uuid,
+    name: Arc<str>,
+    url: Url,
+    username: Option<Arc<str>>,
+    password: Option<Arc<str>>,
+    no_proxy_hosts: Arc<[NoProxyHost]>,
+}
+impl CompiledProxy {
+    #[must_use]
+    pub fn id(&self) -> Uuid {
+        self.id
+    }
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    #[must_use]
+    pub fn url(&self) -> &Url {
+        &self.url
+    }
+    #[must_use]
+    pub fn username(&self) -> Option<&str> {
+        self.username.as_deref()
+    }
+    #[must_use]
+    pub fn password(&self) -> Option<&str> {
+        self.password.as_deref()
+    }
+    #[must_use]
+    pub fn no_proxy_hosts(&self) -> &[NoProxyHost] {
+        &self.no_proxy_hosts
+    }
+    pub(crate) fn new(
+        id: Uuid,
+        name: Arc<str>,
+        url: Url,
+        username: Option<Arc<str>>,
+        password: Option<Arc<str>>,
+        no_proxy_hosts: Arc<[NoProxyHost]>,
+    ) -> Self {
+        Self {
+            id,
+            name,
+            url,
+            username,
+            password,
+            no_proxy_hosts,
+        }
+    }
+}
+impl fmt::Debug for CompiledProxy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CompiledProxy")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("url", &self.url)
+            .field("username", &self.username.as_ref().map(|_| "REDACTED"))
+            .field("password", &self.password.as_ref().map(|_| "REDACTED"))
+            .field("no_proxy_hosts", &self.no_proxy_hosts)
+            .finish()
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct CompiledConfigTemplate {
+    id: Uuid,
+    name: Arc<str>,
+    description: Option<Arc<str>>,
+    api_format: Option<ApiFormat>,
+    chat_completions_plan: TransformPlan,
+    responses_plan: TransformPlan,
+}
+impl CompiledConfigTemplate {
+    #[must_use]
+    pub fn id(&self) -> Uuid {
+        self.id
+    }
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    #[must_use]
+    pub fn description(&self) -> Option<&str> {
+        self.description.as_deref()
+    }
+    #[must_use]
+    pub fn api_format(&self) -> Option<ApiFormat> {
+        self.api_format
+    }
+    #[must_use]
+    pub fn transform_plan(&self, api_format: ApiFormat) -> &TransformPlan {
+        match api_format {
+            ApiFormat::OpenAiChatCompletions => &self.chat_completions_plan,
+            ApiFormat::OpenAiResponses => &self.responses_plan,
+        }
+    }
+    pub(crate) fn new(
+        id: Uuid,
+        name: Arc<str>,
+        description: Option<Arc<str>>,
+        api_format: Option<ApiFormat>,
+        chat_completions_plan: TransformPlan,
+        responses_plan: TransformPlan,
+    ) -> Self {
+        Self {
+            id,
+            name,
+            description,
+            api_format,
+            chat_completions_plan,
+            responses_plan,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ChannelTimeoutPolicy {
+    connect: Option<Duration>,
+    response_header: Option<Duration>,
+    stream_idle: Option<Duration>,
+}
+impl ChannelTimeoutPolicy {
+    #[must_use]
+    pub fn connect(&self) -> Option<Duration> {
+        self.connect
+    }
+    #[must_use]
+    pub fn response_header(&self) -> Option<Duration> {
+        self.response_header
+    }
+    #[must_use]
+    pub fn stream_idle(&self) -> Option<Duration> {
+        self.stream_idle
+    }
+    pub(crate) fn new(
+        connect: Option<Duration>,
+        response_header: Option<Duration>,
+        stream_idle: Option<Duration>,
+    ) -> Self {
+        Self {
+            connect,
+            response_header,
+            stream_idle,
+        }
+    }
+}
+
+/// The fully compiled per-channel policy used by future outbound client code.
+#[derive(Clone, Debug)]
+pub struct CompiledChannelUpstreamPolicy {
+    proxy: Option<Arc<CompiledProxy>>,
+    template: Option<Arc<CompiledConfigTemplate>>,
+    channel_override: TransformPlan,
+    effective_transforms: TransformPlan,
+    timeouts: ChannelTimeoutPolicy,
+}
+impl CompiledChannelUpstreamPolicy {
+    #[must_use]
+    pub fn proxy(&self) -> Option<&Arc<CompiledProxy>> {
+        self.proxy.as_ref()
+    }
+    #[must_use]
+    pub fn template(&self) -> Option<&Arc<CompiledConfigTemplate>> {
+        self.template.as_ref()
+    }
+    #[must_use]
+    pub fn channel_override(&self) -> &TransformPlan {
+        &self.channel_override
+    }
+    #[must_use]
+    pub fn effective_transforms(&self) -> &TransformPlan {
+        &self.effective_transforms
+    }
+    #[must_use]
+    pub fn timeouts(&self) -> &ChannelTimeoutPolicy {
+        &self.timeouts
+    }
+    pub(crate) fn new(
+        proxy: Option<Arc<CompiledProxy>>,
+        template: Option<Arc<CompiledConfigTemplate>>,
+        channel_override: TransformPlan,
+        effective_transforms: TransformPlan,
+        timeouts: ChannelTimeoutPolicy,
+    ) -> Self {
+        Self {
+            proxy,
+            template,
+            channel_override,
+            effective_transforms,
+            timeouts,
+        }
+    }
+
+    #[allow(dead_code)] // retained for callers constructing a transparent policy directly
+    pub(crate) fn transparent(api_format: ApiFormat) -> Self {
+        Self::new(
+            None,
+            None,
+            TransformPlan::noop(api_format),
+            TransformPlan::noop(api_format),
+            ChannelTimeoutPolicy::default(),
+        )
+    }
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq)]
 pub enum ApiKeyPermission {
@@ -157,6 +481,7 @@ pub struct CompiledChannel {
     weight: i32,
     upstream_auth: UpstreamAuth,
     available_models: HashSet<Arc<str>>,
+    upstream_policy: CompiledChannelUpstreamPolicy,
 }
 impl CompiledChannel {
     #[must_use]
@@ -184,9 +509,14 @@ impl CompiledChannel {
         &self.upstream_auth
     }
     #[must_use]
+    pub fn upstream_policy(&self) -> &CompiledChannelUpstreamPolicy {
+        &self.upstream_policy
+    }
+    #[must_use]
     pub fn supports_model(&self, model: &str) -> bool {
         self.available_models.contains(model)
     }
+    #[allow(dead_code)] // compatibility constructor for callers without a policy
     pub(crate) fn new(
         id: Uuid,
         group_id: Uuid,
@@ -196,6 +526,29 @@ impl CompiledChannel {
         upstream_auth: UpstreamAuth,
         available_models: HashSet<Arc<str>>,
     ) -> Self {
+        let upstream_policy = CompiledChannelUpstreamPolicy::transparent(api_format);
+        Self::new_with_policy(
+            id,
+            group_id,
+            api_format,
+            base_url,
+            weight,
+            upstream_auth,
+            available_models,
+            upstream_policy,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_with_policy(
+        id: Uuid,
+        group_id: Uuid,
+        api_format: ApiFormat,
+        base_url: Url,
+        weight: i32,
+        upstream_auth: UpstreamAuth,
+        available_models: HashSet<Arc<str>>,
+        upstream_policy: CompiledChannelUpstreamPolicy,
+    ) -> Self {
         Self {
             id,
             group_id,
@@ -204,6 +557,7 @@ impl CompiledChannel {
             weight,
             upstream_auth,
             available_models,
+            upstream_policy,
         }
     }
 }
@@ -368,6 +722,8 @@ pub struct CompiledRuntimeConfig {
     model_rules: HashMap<ModelRouteKey, Arc<CompiledModelRule>>,
     channels: HashMap<Uuid, Arc<CompiledChannel>>,
     groups: HashMap<Uuid, Arc<CompiledChannelGroup>>,
+    proxies: HashMap<Uuid, Arc<CompiledProxy>>,
+    templates: HashMap<Uuid, Arc<CompiledConfigTemplate>>,
 }
 impl CompiledRuntimeConfig {
     #[must_use]
@@ -377,11 +733,31 @@ impl CompiledRuntimeConfig {
         channels: HashMap<Uuid, Arc<CompiledChannel>>,
         groups: HashMap<Uuid, Arc<CompiledChannelGroup>>,
     ) -> Self {
+        Self::with_resources(
+            api_keys,
+            model_rules,
+            channels,
+            groups,
+            HashMap::new(),
+            HashMap::new(),
+        )
+    }
+    #[must_use]
+    pub fn with_resources(
+        api_keys: HashMap<ApiKeyHash, Arc<CompiledApiKey>>,
+        model_rules: HashMap<ModelRouteKey, Arc<CompiledModelRule>>,
+        channels: HashMap<Uuid, Arc<CompiledChannel>>,
+        groups: HashMap<Uuid, Arc<CompiledChannelGroup>>,
+        proxies: HashMap<Uuid, Arc<CompiledProxy>>,
+        templates: HashMap<Uuid, Arc<CompiledConfigTemplate>>,
+    ) -> Self {
         Self {
             api_keys,
             model_rules,
             channels,
             groups,
+            proxies,
+            templates,
         }
     }
     #[must_use]
@@ -414,6 +790,14 @@ impl CompiledRuntimeConfig {
     pub fn group(&self, id: Uuid) -> Option<Arc<CompiledChannelGroup>> {
         self.groups.get(&id).cloned()
     }
+    #[must_use]
+    pub fn proxy(&self, id: Uuid) -> Option<Arc<CompiledProxy>> {
+        self.proxies.get(&id).cloned()
+    }
+    #[must_use]
+    pub fn template(&self, id: Uuid) -> Option<Arc<CompiledConfigTemplate>> {
+        self.templates.get(&id).cloned()
+    }
     pub fn api_keys(&self) -> impl Iterator<Item = &Arc<CompiledApiKey>> {
         self.api_keys.values()
     }
@@ -422,6 +806,12 @@ impl CompiledRuntimeConfig {
     }
     pub fn channels(&self) -> impl Iterator<Item = &Arc<CompiledChannel>> {
         self.channels.values()
+    }
+    pub fn proxies(&self) -> impl Iterator<Item = &Arc<CompiledProxy>> {
+        self.proxies.values()
+    }
+    pub fn templates(&self) -> impl Iterator<Item = &Arc<CompiledConfigTemplate>> {
+        self.templates.values()
     }
     #[must_use]
     pub fn models_for(&self, key: &CompiledApiKey, format: ApiFormat) -> Vec<Arc<str>> {

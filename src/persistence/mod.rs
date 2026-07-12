@@ -19,6 +19,8 @@ pub struct ControlPlaneRecords {
     pub model_rules: Vec<ModelRuleRecord>,
     pub groups: Vec<ChannelGroupRecord>,
     pub channels: Vec<ChannelRecord>,
+    pub proxies: Vec<ProxyRecord>,
+    pub templates: Vec<ConfigTemplateRecord>,
 }
 
 #[derive(FromRow)]
@@ -116,7 +118,7 @@ impl fmt::Debug for ChannelRecord {
             .field("weight", &self.weight)
             .field("proxy_id", &self.proxy_id)
             .field("config_template_id", &self.config_template_id)
-            .field("override_document", &self.override_document)
+            .field("override_document", &"REDACTED")
             .field("connect_timeout_ms", &self.connect_timeout_ms)
             .field(
                 "response_header_timeout_ms",
@@ -128,6 +130,52 @@ impl fmt::Debug for ChannelRecord {
             .field("upstream_api_key", &"REDACTED")
             .field("available_models", &self.available_models)
             .field("health_check", &self.health_check)
+            .finish()
+    }
+}
+
+#[derive(FromRow)]
+pub struct ProxyRecord {
+    pub id: Uuid,
+    pub name: String,
+    pub proxy_url: String,
+    pub username: Option<String>,
+    pub password: Option<String>,
+    pub no_proxy_hosts: Vec<String>,
+    pub enabled: bool,
+}
+impl fmt::Debug for ProxyRecord {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProxyRecord")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("proxy_url", &"REDACTED")
+            .field("username", &"REDACTED")
+            .field("password", &"REDACTED")
+            .field("no_proxy_hosts", &self.no_proxy_hosts)
+            .field("enabled", &self.enabled)
+            .finish()
+    }
+}
+
+#[derive(FromRow)]
+pub struct ConfigTemplateRecord {
+    pub id: Uuid,
+    pub name: String,
+    pub description: Option<String>,
+    pub document: Value,
+    pub enabled: bool,
+}
+impl fmt::Debug for ConfigTemplateRecord {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ConfigTemplateRecord")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("description", &self.description)
+            .field("document", &"REDACTED")
+            .field("enabled", &self.enabled)
             .finish()
     }
 }
@@ -251,6 +299,43 @@ pub struct ModelRuleInput {
     pub channel_ids: Vec<Uuid>,
     pub enabled: bool,
 }
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProxyCreateInput {
+    pub name: String,
+    pub proxy_url: String,
+    #[serde(default)]
+    pub username: Option<String>,
+    #[serde(default)]
+    pub password: Option<String>,
+    #[serde(default)]
+    pub no_proxy_hosts: Vec<String>,
+    pub enabled: bool,
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProxyInput {
+    pub name: String,
+    pub proxy_url: String,
+    /// Absent keeps the current credential component; null explicitly clears it.
+    #[serde(default, deserialize_with = "deserialize_optional_credential")]
+    pub username: Option<Option<String>>,
+    /// Absent keeps the current credential component; null explicitly clears it.
+    #[serde(default, deserialize_with = "deserialize_optional_credential")]
+    pub password: Option<Option<String>>,
+    #[serde(default)]
+    pub no_proxy_hosts: Vec<String>,
+    pub enabled: bool,
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigTemplateInput {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    pub document: Value,
+    pub enabled: bool,
+}
 fn empty_object() -> Value {
     json!({})
 }
@@ -357,6 +442,18 @@ pub enum AdminMutation {
         input: ModelRuleInput,
         expected_updated_at: DateTime<Utc>,
     },
+    CreateProxy(ProxyCreateInput),
+    UpdateProxy {
+        id: Uuid,
+        input: ProxyInput,
+        expected_updated_at: DateTime<Utc>,
+    },
+    CreateConfigTemplate(ConfigTemplateInput),
+    UpdateConfigTemplate {
+        id: Uuid,
+        input: ConfigTemplateInput,
+        expected_updated_at: DateTime<Utc>,
+    },
 }
 
 pub struct MutationResult {
@@ -377,6 +474,8 @@ pub struct AdminLists {
     pub channel_groups: Vec<AdminChannelGroup>,
     pub channels: Vec<AdminChannel>,
     pub model_rules: Vec<AdminModelRule>,
+    pub proxies: Vec<AdminProxy>,
+    pub config_templates: Vec<AdminConfigTemplate>,
 }
 #[derive(Serialize, FromRow)]
 pub struct AdminApiKey {
@@ -490,6 +589,26 @@ pub struct AdminModelRule {
     pub channel_group_ids: Vec<Uuid>,
     pub channel_ids: Vec<Uuid>,
     pub enabled: bool,
+    pub updated_at: DateTime<Utc>,
+}
+#[derive(Serialize, FromRow)]
+pub struct AdminProxy {
+    pub id: Uuid,
+    pub name: String,
+    pub proxy_url: String,
+    pub no_proxy_hosts: Vec<String>,
+    pub enabled: bool,
+    pub credential_configured: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+#[derive(Serialize, FromRow)]
+pub struct AdminConfigTemplate {
+    pub id: Uuid,
+    pub name: String,
+    pub description: Option<String>,
+    pub enabled: bool,
+    pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -654,11 +773,19 @@ impl ControlPlaneRepository {
         let model_rules = sqlx::query_as::<_, ModelRuleRecord>("SELECT r.id, r.client_model, r.api_format::text AS api_format, r.model_id, m.enabled AS model_enabled, r.upstream_model, r.channel_group_ids, r.channel_ids, r.enabled FROM model_rules r JOIN models m ON m.id = r.model_id ORDER BY r.id").fetch_all(&mut **transaction).await?;
         let groups = sqlx::query_as::<_, ChannelGroupRecord>("SELECT id, name, api_format::text AS api_format, priority, selection_strategy, enabled FROM channel_groups ORDER BY id").fetch_all(&mut **transaction).await?;
         let channels = sqlx::query_as::<_, ChannelRecord>("SELECT id, channel_group_id, api_format::text AS api_format, name, base_url, enabled, auto_disabled, weight, proxy_id, config_template_id, override_document, connect_timeout_ms, response_header_timeout_ms, stream_idle_timeout_ms, upstream_auth_kind, upstream_auth_header_name, upstream_api_key, available_models, health_check FROM channels ORDER BY id").fetch_all(&mut **transaction).await?;
+        let proxies = sqlx::query_as::<_, ProxyRecord>("SELECT id, name, proxy_url, username, password, no_proxy_hosts, enabled FROM proxies ORDER BY id").fetch_all(&mut **transaction).await?;
+        let templates = sqlx::query_as::<_, ConfigTemplateRecord>(
+            "SELECT id, name, description, document, enabled FROM config_templates ORDER BY id",
+        )
+        .fetch_all(&mut **transaction)
+        .await?;
         Ok(ControlPlaneRecords {
             api_keys,
             model_rules,
             groups,
             channels,
+            proxies,
+            templates,
         })
     }
 
@@ -688,11 +815,15 @@ impl ControlPlaneRepository {
         let channel_groups = sqlx::query_as::<_, AdminChannelGroup>("SELECT id,name,api_format::text AS api_format,priority,selection_strategy,enabled,updated_at FROM channel_groups ORDER BY id").fetch_all(&self.pool).await?;
         let channels = sqlx::query_as::<_, AdminChannelRow>("SELECT id,channel_group_id,api_format::text AS api_format,name,base_url,enabled,auto_disabled,auto_disabled_reason,weight,proxy_id,config_template_id,connect_timeout_ms,response_header_timeout_ms,stream_idle_timeout_ms,upstream_auth_kind,upstream_auth_header_name,(upstream_api_key IS NOT NULL) AS upstream_credential_configured,available_models,created_at,updated_at FROM channels ORDER BY id").fetch_all(&self.pool).await?;
         let model_rules = sqlx::query_as::<_, AdminModelRule>("SELECT r.id,r.client_model,r.api_format::text AS api_format,r.model_id,m.enabled AS model_enabled,r.upstream_model,r.description,r.channel_group_ids,r.channel_ids,r.enabled,r.updated_at FROM model_rules r JOIN models m ON m.id=r.model_id ORDER BY r.id").fetch_all(&self.pool).await?;
+        let proxies = sqlx::query_as::<_, AdminProxy>("SELECT id,name,regexp_replace(regexp_replace(proxy_url, '^([^:/?#]+://)[^/?#]*@', E'\\1'), '[?#].*$', '') AS proxy_url,no_proxy_hosts,enabled,(username IS NOT NULL OR password IS NOT NULL) AS credential_configured,created_at,updated_at FROM proxies ORDER BY id").fetch_all(&self.pool).await?;
+        let config_templates = sqlx::query_as::<_, AdminConfigTemplate>("SELECT id,name,description,enabled,created_at,updated_at FROM config_templates ORDER BY id").fetch_all(&self.pool).await?;
         Ok(AdminLists {
             api_keys,
             channel_groups,
             channels: channels.into_iter().map(Into::into).collect(),
             model_rules,
+            proxies,
+            config_templates,
         })
     }
 
@@ -788,6 +919,25 @@ impl ControlPlaneRepository {
                 input,
                 expected_updated_at,
             } => rule_insert(transaction, id, input, false, Some(expected_updated_at)).await,
+            AdminMutation::CreateProxy(input) => {
+                proxy_insert(transaction, Uuid::new_v4(), input).await
+            }
+            AdminMutation::UpdateProxy {
+                id,
+                input,
+                expected_updated_at,
+            } => proxy_update(transaction, id, input, expected_updated_at).await,
+            AdminMutation::CreateConfigTemplate(input) => {
+                config_template_insert(transaction, Uuid::new_v4(), input, true, None).await
+            }
+            AdminMutation::UpdateConfigTemplate {
+                id,
+                input,
+                expected_updated_at,
+            } => {
+                config_template_insert(transaction, id, input, false, Some(expected_updated_at))
+                    .await
+            }
         }
     }
 
@@ -877,6 +1027,36 @@ async fn rule_audit(
     };
     Ok(value)
 }
+async fn proxy_audit(
+    transaction: &mut Transaction<'_, Postgres>,
+    id: Uuid,
+) -> Result<Value, RepositoryError> {
+    let value = sqlx::query_scalar::<_, Value>(
+        "SELECT json_build_object('id',id,'name',name,'proxy_url',regexp_replace(regexp_replace(proxy_url, '^([^:/?#]+://)[^/?#]*@', E'\\1'), '[?#].*$', ''),'no_proxy_hosts',no_proxy_hosts,'enabled',enabled,'credential_configured',(username IS NOT NULL OR password IS NOT NULL),'created_at',created_at,'updated_at',updated_at) FROM proxies WHERE id=$1 FOR UPDATE",
+    )
+    .bind(id)
+    .fetch_optional(&mut **transaction)
+    .await?;
+    let Some(value) = value else {
+        return Err(RepositoryError::NotFound);
+    };
+    Ok(value)
+}
+async fn config_template_audit(
+    transaction: &mut Transaction<'_, Postgres>,
+    id: Uuid,
+) -> Result<Value, RepositoryError> {
+    let value = sqlx::query_scalar::<_, Value>(
+        "SELECT json_build_object('id',id,'name',name,'description',description,'enabled',enabled,'created_at',created_at,'updated_at',updated_at) FROM config_templates WHERE id=$1 FOR UPDATE",
+    )
+    .bind(id)
+    .fetch_optional(&mut **transaction)
+    .await?;
+    let Some(value) = value else {
+        return Err(RepositoryError::NotFound);
+    };
+    Ok(value)
+}
 async fn group_insert(
     transaction: &mut Transaction<'_, Postgres>,
     id: Uuid,
@@ -914,7 +1094,7 @@ async fn channel_insert(
     expected_updated_at: Option<DateTime<Utc>>,
 ) -> Result<MutationResult, RepositoryError> {
     let input = input.into();
-    if !is_empty_document(&input.override_document) || !is_empty_document(&input.health_check) {
+    if input.override_document.as_object().is_none() || !is_empty_document(&input.health_check) {
         return Err(RepositoryError::Validation);
     }
     if matches!(input.upstream_api_key, Some(None)) && input.upstream_auth_kind != "none" {
@@ -969,6 +1149,113 @@ async fn rule_insert(
         action: if create { "create" } else { "update" },
         before_redacted: before,
         after_redacted: rule_audit(transaction, id).await?,
+        created_secret: None,
+        reason: None,
+        updated_at,
+        correlation_id: None,
+    })
+}
+async fn proxy_insert(
+    transaction: &mut Transaction<'_, Postgres>,
+    id: Uuid,
+    input: ProxyCreateInput,
+) -> Result<MutationResult, RepositoryError> {
+    let updated_at = sqlx::query_scalar("INSERT INTO proxies (id,name,proxy_url,username,password,no_proxy_hosts,enabled) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING updated_at")
+        .bind(id)
+        .bind(&input.name)
+        .bind(&input.proxy_url)
+        .bind(&input.username)
+        .bind(&input.password)
+        .bind(&input.no_proxy_hosts)
+        .bind(input.enabled)
+        .fetch_one(&mut **transaction)
+        .await?;
+    Ok(MutationResult {
+        id,
+        object_type: "proxy",
+        action: "create",
+        before_redacted: json!({}),
+        after_redacted: proxy_audit(transaction, id).await?,
+        created_secret: None,
+        reason: None,
+        updated_at,
+        correlation_id: None,
+    })
+}
+async fn proxy_update(
+    transaction: &mut Transaction<'_, Postgres>,
+    id: Uuid,
+    input: ProxyInput,
+    expected_updated_at: DateTime<Utc>,
+) -> Result<MutationResult, RepositoryError> {
+    let before = proxy_audit(transaction, id).await?;
+    let username_present = input.username.is_some();
+    let password_present = input.password.is_some();
+    let updated_at = sqlx::query_scalar("UPDATE proxies SET name=$2,proxy_url=$3,username=CASE WHEN $4 THEN $5 ELSE username END,password=CASE WHEN $6 THEN $7 ELSE password END,no_proxy_hosts=$8,enabled=$9 WHERE id=$1 AND updated_at=$10 RETURNING updated_at")
+        .bind(id)
+        .bind(&input.name)
+        .bind(&input.proxy_url)
+        .bind(username_present)
+        .bind(input.username.flatten())
+        .bind(password_present)
+        .bind(input.password.flatten())
+        .bind(&input.no_proxy_hosts)
+        .bind(input.enabled)
+        .bind(expected_updated_at)
+        .fetch_optional(&mut **transaction)
+        .await?
+        .ok_or(RepositoryError::Conflict)?;
+    Ok(MutationResult {
+        id,
+        object_type: "proxy",
+        action: "update",
+        before_redacted: before,
+        after_redacted: proxy_audit(transaction, id).await?,
+        created_secret: None,
+        reason: None,
+        updated_at,
+        correlation_id: None,
+    })
+}
+async fn config_template_insert(
+    transaction: &mut Transaction<'_, Postgres>,
+    id: Uuid,
+    input: ConfigTemplateInput,
+    create: bool,
+    expected_updated_at: Option<DateTime<Utc>>,
+) -> Result<MutationResult, RepositoryError> {
+    let before = if create {
+        json!({})
+    } else {
+        config_template_audit(transaction, id).await?
+    };
+    let updated_at = if create {
+        sqlx::query_scalar("INSERT INTO config_templates (id,name,description,document,enabled) VALUES ($1,$2,$3,$4,$5) RETURNING updated_at")
+            .bind(id)
+            .bind(&input.name)
+            .bind(&input.description)
+            .bind(&input.document)
+            .bind(input.enabled)
+            .fetch_one(&mut **transaction)
+            .await?
+    } else {
+        sqlx::query_scalar("UPDATE config_templates SET name=$2,description=$3,document=$4,enabled=$5 WHERE id=$1 AND updated_at=$6 RETURNING updated_at")
+            .bind(id)
+            .bind(&input.name)
+            .bind(&input.description)
+            .bind(&input.document)
+            .bind(input.enabled)
+            .bind(expected_updated_at.expect("PUT version"))
+            .fetch_optional(&mut **transaction)
+            .await?
+            .ok_or(RepositoryError::Conflict)?
+    };
+    Ok(MutationResult {
+        id,
+        object_type: "config_template",
+        action: if create { "create" } else { "update" },
+        before_redacted: before,
+        after_redacted: config_template_audit(transaction, id).await?,
         created_secret: None,
         reason: None,
         updated_at,

@@ -612,6 +612,8 @@ mod tests {
                 channel_ids: vec![],
                 enabled: true,
             }],
+            proxies: vec![],
+            templates: vec![],
         };
         (compile_control_plane(records).unwrap(), secret)
     }
