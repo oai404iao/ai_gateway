@@ -148,6 +148,9 @@ pub struct ApiKeyCreate {
     pub permissions: Vec<String>,
     pub allowed_group_ids: Option<Vec<Uuid>>,
     pub expires_at: Option<DateTime<Utc>>,
+    pub requests_per_minute: Option<i32>,
+    pub max_concurrent_requests: Option<i32>,
+    pub quota_limit_amount: Option<rust_decimal::Decimal>,
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -158,6 +161,9 @@ pub struct ApiKeyUpdate {
     pub permissions: Vec<String>,
     pub allowed_group_ids: Option<Vec<Uuid>>,
     pub expires_at: Option<DateTime<Utc>>,
+    pub requests_per_minute: Option<i32>,
+    pub max_concurrent_requests: Option<i32>,
+    pub quota_limit_amount: Option<rust_decimal::Decimal>,
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -700,8 +706,8 @@ impl ControlPlaneRepository {
                 let id = Uuid::new_v4();
                 // Two independent UUIDv4 values provide 32 random bytes in a transport-safe form.
                 let secret = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
-                let updated_at = sqlx::query_scalar("INSERT INTO api_keys (id, user_id, name, secret_value, status, expires_at, allowed_api_formats, permissions, allowed_group_ids) VALUES ($1,$2,$3,$4,'active',$5,$6::api_format[],$7,$8) RETURNING updated_at")
-                    .bind(id).bind(input.user_id).bind(&input.name).bind(&secret).bind(input.expires_at).bind(&input.allowed_api_formats).bind(&input.permissions).bind(&input.allowed_group_ids).fetch_one(&mut **transaction).await?;
+                let updated_at = sqlx::query_scalar("INSERT INTO api_keys (id, user_id, name, secret_value, status, expires_at, allowed_api_formats, permissions, allowed_group_ids, requests_per_minute, max_concurrent_requests, quota_limit_amount) VALUES ($1,$2,$3,$4,'active',$5,$6::api_format[],$7,$8,$9,$10,$11) RETURNING updated_at")
+                    .bind(id).bind(input.user_id).bind(&input.name).bind(&secret).bind(input.expires_at).bind(&input.allowed_api_formats).bind(&input.permissions).bind(&input.allowed_group_ids).bind(input.requests_per_minute).bind(input.max_concurrent_requests).bind(input.quota_limit_amount).fetch_one(&mut **transaction).await?;
                 Ok(MutationResult {
                     id,
                     object_type: "api_key",
@@ -720,8 +726,8 @@ impl ControlPlaneRepository {
                 expected_updated_at,
             } => {
                 let before = key_audit(transaction, id).await?;
-                let updated_at = sqlx::query_scalar("UPDATE api_keys SET name=$2,status=$3,expires_at=$4,allowed_api_formats=$5::api_format[],permissions=$6,allowed_group_ids=$7 WHERE id=$1 AND updated_at=$8 AND NOT (status='revoked' AND $3 <> 'revoked') RETURNING updated_at")
-                    .bind(id).bind(&input.name).bind(&input.status).bind(input.expires_at).bind(&input.allowed_api_formats).bind(&input.permissions).bind(&input.allowed_group_ids).bind(expected_updated_at).fetch_optional(&mut **transaction).await?.ok_or(RepositoryError::Conflict)?;
+                let updated_at = sqlx::query_scalar("UPDATE api_keys SET name=$2,status=$3,expires_at=$4,allowed_api_formats=$5::api_format[],permissions=$6,allowed_group_ids=$7,requests_per_minute=$8,max_concurrent_requests=$9,quota_limit_amount=$10 WHERE id=$1 AND updated_at=$11 AND NOT (status='revoked' AND $3 <> 'revoked') RETURNING updated_at")
+                    .bind(id).bind(&input.name).bind(&input.status).bind(input.expires_at).bind(&input.allowed_api_formats).bind(&input.permissions).bind(&input.allowed_group_ids).bind(input.requests_per_minute).bind(input.max_concurrent_requests).bind(input.quota_limit_amount).bind(expected_updated_at).fetch_optional(&mut **transaction).await?.ok_or(RepositoryError::Conflict)?;
                 Ok(MutationResult {
                     id,
                     object_type: "api_key",
@@ -813,7 +819,7 @@ async fn key_audit(
     id: Uuid,
 ) -> Result<Value, RepositoryError> {
     let value = sqlx::query_scalar::<_, Value>(
-        "SELECT to_jsonb(api_keys) - 'secret_value' FROM api_keys WHERE id=$1 FOR UPDATE",
+        "SELECT json_build_object('id',id,'user_id',user_id,'name',name,'status',status,'expires_at',expires_at,'allowed_api_formats',allowed_api_formats,'permissions',permissions,'allowed_group_ids',allowed_group_ids,'requests_per_minute',requests_per_minute,'tokens_per_minute',tokens_per_minute,'max_concurrent_requests',max_concurrent_requests,'quota_limit_amount',quota_limit_amount,'quota_used_amount',quota_used_amount,'created_at',created_at,'updated_at',updated_at) FROM api_keys WHERE id=$1 FOR UPDATE",
     )
     .bind(id)
     .fetch_optional(&mut **transaction)

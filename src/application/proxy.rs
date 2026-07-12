@@ -24,6 +24,7 @@ use tokio::time::timeout;
 use uuid::Uuid;
 
 use crate::{
+    admission::{AdmissionError, AdmissionLease, AdmissionRuntime},
     application::{NoopRequestLogSink, RequestLogSink},
     domain::{
         ApiFormat, ApiKeyPermission, CompiledApiKey, CompiledChannel, CompiledModelRule,
@@ -44,6 +45,7 @@ pub struct ProxyService {
     stream_idle_timeout: Duration,
     request_log_sink: Arc<dyn RequestLogSink>,
     routing: RoutingRuntime,
+    admission: AdmissionRuntime,
 }
 
 impl ProxyService {
@@ -82,6 +84,24 @@ impl ProxyService {
         request_log_sink: Arc<dyn RequestLogSink>,
         routing: RoutingRuntime,
     ) -> Result<Self, reqwest::Error> {
+        Self::with_dependencies(
+            runtime,
+            max_request_body_bytes,
+            upstream,
+            request_log_sink,
+            routing,
+            AdmissionRuntime::new(),
+        )
+    }
+
+    pub fn with_dependencies(
+        runtime: Arc<RuntimeConfig>,
+        max_request_body_bytes: usize,
+        upstream: &UpstreamConfig,
+        request_log_sink: Arc<dyn RequestLogSink>,
+        routing: RoutingRuntime,
+        admission: AdmissionRuntime,
+    ) -> Result<Self, reqwest::Error> {
         let upstream_client = Client::builder()
             .connect_timeout(Duration::from_secs(upstream.connect_timeout_seconds))
             .redirect(Policy::none())
@@ -95,6 +115,7 @@ impl ProxyService {
             stream_idle_timeout: Duration::from_secs(upstream.stream_idle_timeout_seconds),
             request_log_sink,
             routing,
+            admission,
         })
     }
 
@@ -127,6 +148,21 @@ impl ProxyService {
                 "This API key cannot proxy requests in this API format.",
             ));
         }
+        let admission = match self.admission.admit(&api_key) {
+            Ok(lease) => lease,
+            Err(AdmissionError::RateLimited { retry_after }) => {
+                trace_unlogged("rate_limited");
+                return Err(ProxyError::rate_limited(retry_after));
+            }
+            Err(AdmissionError::ConcurrentLimited) => {
+                trace_unlogged("concurrent_limited");
+                return Err(ProxyError::concurrent_limited());
+            }
+            Err(AdmissionError::InsufficientQuota) => {
+                trace_unlogged("insufficient_quota");
+                return Err(ProxyError::insufficient_quota());
+            }
+        };
 
         let original_body = match to_bytes(body, self.max_request_body_bytes).await {
             Ok(value) => value,
@@ -180,6 +216,7 @@ impl ProxyService {
             &route.rule,
             &route.channel,
             route.lease,
+            admission,
             started_wall_at,
             started_at,
         );
@@ -369,6 +406,7 @@ pub struct ProxyError {
     param: Option<&'static str>,
     code: Option<&'static str>,
     authenticate: bool,
+    retry_after: Option<u64>,
 }
 
 impl ProxyError {
@@ -380,6 +418,7 @@ impl ProxyError {
             param: None,
             code: "invalid_api_key".into(),
             authenticate: true,
+            retry_after: None,
         }
     }
 
@@ -391,6 +430,7 @@ impl ProxyError {
             param: None,
             code: "permission_denied".into(),
             authenticate: false,
+            retry_after: None,
         }
     }
 
@@ -402,6 +442,7 @@ impl ProxyError {
             param: None,
             code: "request_too_large".into(),
             authenticate: false,
+            retry_after: None,
         }
     }
 
@@ -413,6 +454,7 @@ impl ProxyError {
             param: Some(param),
             code: "invalid_request".into(),
             authenticate: false,
+            retry_after: None,
         }
     }
 
@@ -424,6 +466,7 @@ impl ProxyError {
             param: Some("model"),
             code: "model_not_found".into(),
             authenticate: false,
+            retry_after: None,
         }
     }
 
@@ -435,6 +478,7 @@ impl ProxyError {
             param: None,
             code: "upstream_unavailable".into(),
             authenticate: false,
+            retry_after: None,
         }
     }
 
@@ -447,6 +491,7 @@ impl ProxyError {
             param: None,
             code: "response_header_timeout".into(),
             authenticate: false,
+            retry_after: None,
         }
     }
 
@@ -458,6 +503,7 @@ impl ProxyError {
             param: None,
             code: "connect_timeout".into(),
             authenticate: false,
+            retry_after: None,
         }
     }
 
@@ -470,6 +516,41 @@ impl ProxyError {
             param: None,
             code: Some("no_healthy_channel"),
             authenticate: false,
+            retry_after: None,
+        }
+    }
+
+    fn rate_limited(retry_after: u64) -> Self {
+        Self {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            message: "Request rate limit exceeded.".to_owned(),
+            error_type: "rate_limit_error",
+            param: None,
+            code: Some("rate_limit_exceeded"),
+            authenticate: false,
+            retry_after: Some(retry_after),
+        }
+    }
+    fn concurrent_limited() -> Self {
+        Self {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            message: "Concurrent request limit exceeded.".to_owned(),
+            error_type: "rate_limit_error",
+            param: None,
+            code: Some("concurrent_limit_exceeded"),
+            authenticate: false,
+            retry_after: None,
+        }
+    }
+    fn insufficient_quota() -> Self {
+        Self {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            message: "Quota has been exhausted.".to_owned(),
+            error_type: "insufficient_quota",
+            param: None,
+            code: Some("insufficient_quota"),
+            authenticate: false,
+            retry_after: None,
         }
     }
 }
@@ -492,6 +573,11 @@ impl IntoResponse for ProxyError {
             response
                 .headers_mut()
                 .insert("www-authenticate", HeaderValue::from_static("Bearer"));
+        }
+        if let Some(retry_after) = self.retry_after {
+            if let Ok(value) = HeaderValue::from_str(&retry_after.to_string()) {
+                response.headers_mut().insert("retry-after", value);
+            }
         }
         response
     }
@@ -604,6 +690,7 @@ fn upstream_url(channel: &CompiledChannel, uri: &Uri) -> Result<reqwest::Url, Pr
         param: None,
         code: "invalid_upstream_url".into(),
         authenticate: false,
+        retry_after: None,
     })
 }
 
@@ -618,6 +705,7 @@ fn inject_upstream_auth(
         param: None,
         code: "invalid_upstream_credentials".into(),
         authenticate: false,
+        retry_after: None,
     };
     match channel.upstream_auth() {
         UpstreamAuth::None => {}
@@ -902,6 +990,7 @@ struct CompletionContext {
 struct CompletionGuard {
     context: Option<CompletionContext>,
     lease: Option<ChannelLease>,
+    _admission: Option<AdmissionLease>,
 }
 
 impl CompletionGuard {
@@ -915,6 +1004,7 @@ impl CompletionGuard {
         rule: &CompiledModelRule,
         channel: &CompiledChannel,
         lease: ChannelLease,
+        admission: AdmissionLease,
         started_wall_at: chrono::DateTime<chrono::Utc>,
         started_at: Instant,
     ) -> Self {
@@ -938,6 +1028,7 @@ impl CompletionGuard {
                 sink,
             }),
             lease: Some(lease),
+            _admission: Some(admission),
         }
     }
 

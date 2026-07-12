@@ -1,6 +1,6 @@
 # 数据库设计（首版简化方案）
 
-> 状态：设计基线已由 [`0001_initial_schema.sql`](../migrations/0001_initial_schema.sql) 实现。当前服务尚未接入数据库连接池、迁移运行器或 repository。本版本只保留 [`PRD.md`](PRD.md) 明确列出的 11 张表；不新增授权关联表、价格版本表、路由目标表、账本表、配置版本表或渠道运行状态表。
+> 状态：设计基线已由迁移实现，服务通过数据库 repository 编译控制面快照。本版本只保留 [`PRD.md`](PRD.md) 明确列出的 11 张表；不新增授权关联表、价格版本表、路由目标表、账本表、配置版本表或渠道运行状态表。
 
 ## 1. 设计原则
 
@@ -100,7 +100,7 @@ updated_at timestamptz not null
 | `currency` | `char(3)` | 非空；首版系统统一币种。 |
 | `created_at` / `updated_at` | `timestamptz` | 通用时间列。 |
 
-`balance_amount` 在请求完成计费时与 `request_logs` 的 `billed_at` 同事务更新。首版没有独立账本：充值、退款和人工修正直接更新余额，并必须写入 `audit_logs`；需要严格财务账本时再新增相应实体。
+`balance_amount` 是为余额投影保留的 schema 列。当前实现不解析用量、不计算或结算费用，也不会在请求完成时更新该列或 `request_logs.billed_at`。未来启用计费后，若仍不设独立账本，充值、退款和人工修正可直接更新余额并必须写入 `audit_logs`；需要严格财务账本时再新增相应实体。
 
 ### 4.2 `api_keys`
 
@@ -139,11 +139,9 @@ CHECK (max_concurrent_requests IS NULL OR max_concurrent_requests > 0);
 CHECK (quota_limit_amount IS NULL OR quota_limit_amount >= 0);
 ```
 
-分钟级限流、并发数和额度都在单实例内存中维护。启动时，运行时从 `api_keys.quota_used_amount` 初始化每个 Key 的可变 `QuotaState`，并扫描已完成但 `billed_at IS NULL` 的 `request_logs`，把其 `cost_amount` 作为待确认保留额；若这次初始化失败，带硬额度的 Key 不接受请求。`ArcSwap` 快照只保存额度**规则**，不保存会变化的已用额度，因此每次准入不会读取过期快照或查询数据库。
+分钟级限流和并发数在单实例内存中维护；每次请求只读取 `ArcSwap` 中的已编译快照，不查询数据库。Stage 5 的额度是**软预检查**：存在 `quota_limit_amount` 时，只有快照中已结算的 `quota_used_amount >= quota_limit_amount` 才拒绝。它不估算本次费用、不预留金额、也不在请求终态结算或释放金额。因此一笔在额度内开始、随后结算到上限之外的请求是允许的；数据库保留两个金额非负检查，但不再限制 `quota_used_amount <= quota_limit_amount`。
 
-首版额度只有生命周期总额度，不提供日/月窗口。存在 `quota_limit_amount` 时，准入阶段在该 Key 的异步互斥锁下计算费用上界 `upper_bound`；只有 `used_amount + reserved_amount + upper_bound <= quota_limit_amount` 才允许请求并将 `upper_bound` 加入 `reserved_amount`。费用上界必须同时包含输入、缓存读、缓存写和输出：输入上界由 `server.max_request_body_bytes` 保守换算，缓存读/写均不得超过输入上界，输出上界由客户端显式最大输出参数或 `system_settings.quota_policy.default_max_output_tokens` 给出；无法计算有限上界时，硬额度 Key 拒绝该请求。
-
-结算阶段持有同一锁，并在 PostgreSQL 事务中以 `billed_at IS NULL` 原子标记日志、累加 `quota_used_amount`、更新余额；提交成功后才以实际费用替换内存保留额。事务失败或提交结果不明确时，保留额**不得释放**，由持久化重试 worker 先检查 `billed_at` 再幂等重试；确认已结算后重新同步已用额，确认未结算后继续保留并重试。锁在整个结算操作中不允许新的准入，进程若在提交后崩溃，重启时从数据库和未结算日志重建状态。因此数据库与内存不是同一个事务，但在单实例下不会产生额度竞态或静态快照滞后。
+未来若需要硬额度，须另行设计保留和结算：按 Key 串行化 `used + reserved + upper_bound`，持久化并幂等确认 `billed_at`，仅在确认未结算时释放保留额，并从未结算日志恢复。该未来设计不能被当前软预检查暗示为已实现。
 
 ### 4.3 `models`
 
@@ -311,7 +309,7 @@ CHECK (jsonb_typeof(health_check) = 'object');
 - 四个价格字段、币种、计价单位和价格生效时间要么全部为空（未计费），要么全部存在。
 - 费用计算为：`(input - cached_input) * input_price / unit + cached_input * cached_input_price / unit + cache_write * cache_write_price / unit + output * output_price / unit`。
 - 只有在尚未收到上游任何字节时才允许追加下一项 `attempts`。收到响应头或首字节后不得切换渠道或重试。
-- 完成后，以 `UPDATE ... WHERE id = ? AND billed_at IS NULL RETURNING cost_amount` 取得唯一结算权，再在同一事务更新 `users.balance_amount` 和 `api_keys.quota_used_amount`；这避免异步 worker 重投导致重复扣费。
+- **未来计费设计（当前未实现）：** 完成后，以 `UPDATE ... WHERE id = ? AND billed_at IS NULL RETURNING cost_amount` 取得唯一结算权，再在同一事务更新 `users.balance_amount` 和 `api_keys.quota_used_amount`；这避免异步 worker 重投导致重复扣费。当前日志 worker 只持久化终态日志，Stage 5 仅将已存的 `quota_used_amount` 用于软预检查，不会结算或更新余额/额度。
 
 不保存请求体、响应体、完整 Header、任何密钥、Cookie、原始 IP 或未清洗的上游错误。请求遥测清理前，必须确认它仍是首版唯一的计费审计依据；在引入独立账本前，不应任意缩短其保留期。
 
@@ -340,7 +338,7 @@ CHECK (jsonb_typeof(health_check) = 'object');
 | `value` | `jsonb` | 非空、对象；固定 schema 的配置。 |
 | `updated_at` | `timestamptz` | 非空。 |
 
-首版键包括 `retry_policy`、`timeout_policy`、`quota_policy`、`health_check_policy`、`registration_policy` 和 `log_retention_policy`。它们分别覆盖重试次数/自动禁用阈值、默认超时、硬额度请求的默认最大输出 Token、定时测试、是否允许注册和日志保留期。每个 key 都有 Rust 结构体，保存时拒绝未知字段和非法值。
+首版键包括 `retry_policy`、`timeout_policy`、`quota_policy`、`health_check_policy`、`registration_policy` 和 `log_retention_policy`。它们分别覆盖重试次数/自动禁用阈值、默认超时、未来硬额度策略、定时测试、是否允许注册和日志保留期。每个 key 都有 Rust 结构体，保存时拒绝未知字段和非法值。
 
 ## 5. 约束边界与请求处理
 
@@ -369,12 +367,12 @@ CHECK (jsonb_typeof(health_check) = 'object');
 
 ```text
 Bearer Key
-  → 内存快照校验 Key 状态、格式、权限和分组；可变额度计数器校验当前已用额度
+  → 内存快照校验 Key 状态、格式、权限和分组；软额度预检查 `used >= limit` 时拒绝
   → 根据 (api_format, client_model) 找到 model_rule
   → 展开数组目标，按组优先级、渠道权重和内存健康状态选择渠道
   → 模板默认值 + 渠道覆盖 + 上游鉴权
   → 原路径流式转发
-  → 异步写入一条 request_logs，并在一次性 billed_at 结算时更新余额/额度
+  → 异步写入一条 request_logs；Stage 5 不结算或更新额度
 ```
 
 即使为读取 `model` 而解析过 JSON，只要没有变换或 `client_model != upstream_model` 的别名映射，请求体仍使用原始字节。普通流式响应不缓冲；经过 SSE 变换时按 `data:` 事件边界处理。
@@ -400,6 +398,6 @@ Bearer Key
 - 不保留模型价格、模板或渠道配置的版本历史；`audit_logs` 只用于查阅变更，不能完整回滚配置。
 - 同一规则不能针对不同目标设置不同上游模型名或不同计价模型。
 - 不存在独立账本；`request_logs` 和 `users.balance_amount` 是首版计费依据，财务对账/退款复杂后再拆分。
-- 渠道运行状态、分钟级限流计数和并发数不跨重启、不跨实例；PRD 当前只考虑单实例，这一限制可接受。额度已用金额会持久化并在启动时恢复。
+- 渠道运行状态、分钟级限流计数和并发数不跨重启、不跨实例；PRD 当前只考虑单实例，这一限制可接受。额度已用金额会持久化并随控制面快照重载；Stage 5 只作软预检查，不提供硬额度保留或结算。
 
 这些限制都是有意识地换取更少的表、更少的迁移和更直观的控制面。后续只在业务确实需要某项能力时，再将对应字段拆为独立表。

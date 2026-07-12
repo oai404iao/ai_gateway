@@ -6,6 +6,7 @@ use std::{
 
 use chrono::{DateTime, Utc};
 use reqwest::{Url, header::HeaderName};
+use rust_decimal::Decimal;
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -27,6 +28,10 @@ pub struct CompiledApiKey {
     permissions: HashSet<ApiKeyPermission>,
     allowed_group_ids: Option<HashSet<Uuid>>,
     expires_at: Option<DateTime<Utc>>,
+    requests_per_minute: Option<u32>,
+    max_concurrent_requests: Option<u32>,
+    quota_limit_amount: Option<Decimal>,
+    quota_used_amount: Decimal,
 }
 impl CompiledApiKey {
     #[must_use]
@@ -53,6 +58,28 @@ impl CompiledApiKey {
     pub fn is_expired(&self) -> bool {
         self.expires_at.is_some_and(|expires| expires <= Utc::now())
     }
+    #[must_use]
+    pub fn requests_per_minute(&self) -> Option<u32> {
+        self.requests_per_minute
+    }
+    #[must_use]
+    pub fn max_concurrent_requests(&self) -> Option<u32> {
+        self.max_concurrent_requests
+    }
+    #[must_use]
+    pub fn quota_limit_amount(&self) -> Option<Decimal> {
+        self.quota_limit_amount
+    }
+    #[must_use]
+    pub fn quota_used_amount(&self) -> Decimal {
+        self.quota_used_amount
+    }
+    #[must_use]
+    pub fn quota_exhausted(&self) -> bool {
+        self.quota_limit_amount
+            .is_some_and(|limit| self.quota_used_amount >= limit)
+    }
+    #[allow(clippy::too_many_arguments)] // immutable compiled key construction mirrors validated records
     pub(crate) fn new(
         id: Uuid,
         user_id: Uuid,
@@ -60,6 +87,10 @@ impl CompiledApiKey {
         permissions: HashSet<ApiKeyPermission>,
         groups: Option<HashSet<Uuid>>,
         expires_at: Option<DateTime<Utc>>,
+        requests_per_minute: Option<u32>,
+        max_concurrent_requests: Option<u32>,
+        quota_limit_amount: Option<Decimal>,
+        quota_used_amount: Decimal,
     ) -> Self {
         Self {
             id,
@@ -68,7 +99,32 @@ impl CompiledApiKey {
             permissions,
             allowed_group_ids: groups,
             expires_at,
+            requests_per_minute,
+            max_concurrent_requests,
+            quota_limit_amount,
+            quota_used_amount,
         }
+    }
+    #[cfg(test)]
+    pub(crate) fn test_with_policy(
+        id: Uuid,
+        requests_per_minute: Option<u32>,
+        max_concurrent_requests: Option<u32>,
+        quota_limit_amount: Option<Decimal>,
+        quota_used_amount: Decimal,
+    ) -> Self {
+        Self::new(
+            id,
+            Uuid::new_v4(),
+            HashSet::new(),
+            HashSet::new(),
+            None,
+            None,
+            requests_per_minute,
+            max_concurrent_requests,
+            quota_limit_amount,
+            quota_used_amount,
+        )
     }
 }
 
@@ -420,6 +476,10 @@ mod tests {
             HashSet::new(),
             None,
             Some(Utc::now() - Duration::seconds(1)),
+            None,
+            None,
+            None,
+            rust_decimal::Decimal::ZERO,
         ));
         let snapshot = CompiledRuntimeConfig::new(
             HashMap::from([(ApiKeyHash::from_secret(secret), key)]),

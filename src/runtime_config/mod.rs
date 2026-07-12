@@ -319,9 +319,9 @@ fn compile_keys(
         if !usable {
             continue;
         }
-        if has_admission_control(&record) {
+        if record.tokens_per_minute.is_some() {
             return Err(ConfigError::Compile(
-                "active API key uses admission control not supported in MVP-2 stage 1".into(),
+                "active API key uses unsupported tokens_per_minute admission control".into(),
             ));
         }
         let formats = record
@@ -345,6 +345,10 @@ fn compile_keys(
             permissions,
             groups,
             record.expires_at,
+            positive_policy(record.requests_per_minute, "requests_per_minute")?,
+            positive_policy(record.max_concurrent_requests, "max_concurrent_requests")?,
+            record.quota_limit_amount,
+            record.quota_used_amount,
         ));
         if result
             .insert(ApiKeyHash::from_secret(secret.as_str()), key)
@@ -651,14 +655,30 @@ fn validate_key(
             }
         }
     }
+    positive_policy(record.requests_per_minute, "requests_per_minute")?;
+    positive_policy(record.max_concurrent_requests, "max_concurrent_requests")?;
+    if record
+        .quota_limit_amount
+        .is_some_and(|amount| amount.is_sign_negative())
+        || record.quota_used_amount.is_sign_negative()
+    {
+        return Err(ConfigError::Compile(
+            "API key quota amounts must be non-negative".into(),
+        ));
+    }
     Ok(())
 }
-fn has_admission_control(record: &ApiKeyRecord) -> bool {
-    record.requests_per_minute.is_some()
-        || record.tokens_per_minute.is_some()
-        || record.max_concurrent_requests.is_some()
-        || record.quota_limit_amount.is_some()
-        || !record.quota_used_amount.is_zero()
+fn positive_policy(value: Option<i32>, name: &str) -> Result<Option<u32>, ConfigError> {
+    value
+        .map(|value| {
+            u32::try_from(value)
+                .ok()
+                .filter(|value| *value > 0)
+                .ok_or_else(|| {
+                    ConfigError::Compile(format!("API key {name} must be positive when configured"))
+                })
+        })
+        .transpose()
 }
 fn validate_rule(record: &ModelRuleRecord) -> Result<(), ConfigError> {
     require("model rule client_model", &record.client_model)?;

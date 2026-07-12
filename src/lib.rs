@@ -1,5 +1,6 @@
 //! Core modules for the single-binary LLM gateway.
 
+pub mod admission;
 pub mod application;
 pub mod domain;
 pub mod http;

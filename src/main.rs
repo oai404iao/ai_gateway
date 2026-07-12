@@ -1,6 +1,7 @@
 use std::{error::Error, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 use ai_gateway::{
+    admission::AdmissionRuntime,
     application::{ControlPlaneCoordinator, ProxyService},
     http, observability,
     persistence::{ControlPlaneRepository, MIGRATOR, RequestLogRepository},
@@ -56,12 +57,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         cooldown: Duration::from_secs(config.passive_health.cooldown_seconds),
     });
     routing.reconcile(&runtime.snapshot());
-    let proxy = ProxyService::with_log_sink_and_routing(
+    let proxy = ProxyService::with_dependencies(
         Arc::clone(&runtime),
         config.server.max_request_body_bytes,
         &config.upstream,
         Arc::new(request_log_sink),
         routing.clone(),
+        AdmissionRuntime::new(),
     )?;
     let coordinator =
         ControlPlaneCoordinator::new(repository, Arc::clone(&runtime), routing.clone());

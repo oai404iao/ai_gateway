@@ -502,6 +502,173 @@ async fn admin_key_create_publishes_immediately_and_audits_redacted() {
 }
 
 #[tokio::test]
+async fn admin_api_key_policies_persist_publish_and_are_audited_without_secrets() {
+    let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
+    let (app, runtime) = admin_app(database.pool.clone(), seed.user).await;
+    let created = admin_request(
+        app.clone(),
+        "POST",
+        "/admin/v1/api-keys",
+        serde_json::json!({
+            "user_id": seed.user,
+            "name": format!("policy-managed-{}", Uuid::new_v4()),
+            "allowed_api_formats": ["open_ai_chat_completions"],
+            "permissions": ["proxy"],
+            "allowed_group_ids": [seed.group],
+            "expires_at": null,
+            "requests_per_minute": 7,
+            "max_concurrent_requests": 3,
+            "quota_limit_amount": 125.50
+        }),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let created: serde_json::Value =
+        serde_json::from_slice(&created.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let id = Uuid::parse_str(created["id"].as_str().unwrap()).unwrap();
+    let secret = created["secret"].as_str().unwrap().to_owned();
+
+    let persisted: (Option<i32>, Option<i32>, Option<rust_decimal::Decimal>) = sqlx::query_as(
+        "SELECT requests_per_minute, max_concurrent_requests, quota_limit_amount FROM api_keys WHERE id=$1",
+    )
+    .bind(id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        persisted,
+        (
+            Some(7),
+            Some(3),
+            Some(rust_decimal::Decimal::new(12_550, 2)),
+        )
+    );
+    let compiled = runtime.snapshot().authenticate(&secret).unwrap();
+    assert_eq!(compiled.requests_per_minute(), Some(7));
+    assert_eq!(compiled.max_concurrent_requests(), Some(3));
+    assert_eq!(
+        compiled.quota_limit_amount(),
+        Some(rust_decimal::Decimal::new(12_550, 2))
+    );
+    assert!(!compiled.quota_exhausted());
+
+    let list = admin_request(
+        app.clone(),
+        "GET",
+        "/admin/v1/api-keys",
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(list.status(), StatusCode::OK);
+    let list: serde_json::Value =
+        serde_json::from_slice(&list.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let listed = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"] == id.to_string())
+        .unwrap();
+    assert_eq!(listed["requests_per_minute"], 7);
+    assert_eq!(listed["max_concurrent_requests"], 3);
+    assert_eq!(listed["quota_limit_amount"], "125.50000000");
+    assert_eq!(listed["quota_used_amount"], "0");
+    assert!(listed["tokens_per_minute"].is_null());
+
+    let path = format!("/admin/v1/api-keys/{id}");
+    let detail = admin_request(app.clone(), "GET", &path, serde_json::json!({})).await;
+    assert_eq!(detail.status(), StatusCode::OK);
+    let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
+    let detail: serde_json::Value =
+        serde_json::from_slice(&detail.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(detail["requests_per_minute"], 7);
+    assert_eq!(detail["max_concurrent_requests"], 3);
+    assert_eq!(detail["quota_limit_amount"], "125.50000000");
+    assert_eq!(detail["quota_used_amount"], "0");
+    assert!(detail["tokens_per_minute"].is_null());
+
+    let updated = admin_request_with_headers(
+        app.clone(),
+        "PUT",
+        &path,
+        serde_json::json!({
+            "name": detail["name"].clone(),
+            "status": "active",
+            "allowed_api_formats": ["open_ai_chat_completions"],
+            "permissions": ["proxy"],
+            "allowed_group_ids": [seed.group],
+            "expires_at": null,
+            "requests_per_minute": 9,
+            "max_concurrent_requests": 4,
+            "quota_limit_amount": 200.00
+        }),
+        &[("if-match", &etag)],
+    )
+    .await;
+    assert_eq!(updated.status(), StatusCode::OK);
+    let persisted: (Option<i32>, Option<i32>, Option<rust_decimal::Decimal>) = sqlx::query_as(
+        "SELECT requests_per_minute, max_concurrent_requests, quota_limit_amount FROM api_keys WHERE id=$1",
+    )
+    .bind(id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        persisted,
+        (
+            Some(9),
+            Some(4),
+            Some(rust_decimal::Decimal::new(20_000, 2)),
+        )
+    );
+    let compiled = runtime.snapshot().authenticate(&secret).unwrap();
+    assert_eq!(compiled.requests_per_minute(), Some(9));
+    assert_eq!(compiled.max_concurrent_requests(), Some(4));
+    assert_eq!(
+        compiled.quota_limit_amount(),
+        Some(rust_decimal::Decimal::new(20_000, 2))
+    );
+
+    let audit: serde_json::Value = sqlx::query_scalar(
+        "SELECT jsonb_build_object('before', before_redacted, 'after', after_redacted) FROM audit_logs WHERE object_id=$1 AND action='update' AND object_type='api_key'",
+    )
+    .bind(id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(audit["before"]["requests_per_minute"], 7);
+    assert_eq!(audit["before"]["max_concurrent_requests"], 3);
+    assert_eq!(audit["before"]["quota_limit_amount"], 125.50000000);
+    assert_eq!(audit["after"]["requests_per_minute"], 9);
+    assert_eq!(audit["after"]["max_concurrent_requests"], 4);
+    assert_eq!(audit["after"]["quota_limit_amount"], 200.00000000);
+    assert!(audit["before"].get("secret_value").is_none());
+    assert!(audit["after"].get("secret_value").is_none());
+    assert!(!audit.to_string().contains(&secret));
+
+    let token_edit = admin_request(
+        app,
+        "POST",
+        "/admin/v1/api-keys",
+        serde_json::json!({
+            "user_id": seed.user,
+            "name": format!("token-edit-{}", Uuid::new_v4()),
+            "allowed_api_formats": ["open_ai_chat_completions"],
+            "permissions": ["proxy"],
+            "allowed_group_ids": [seed.group],
+            "expires_at": null,
+            "requests_per_minute": 1,
+            "max_concurrent_requests": 1,
+            "quota_limit_amount": 1,
+            "tokens_per_minute": 1
+        }),
+    )
+    .await;
+    assert_eq!(token_edit.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    database.cleanup().await;
+}
+
+#[tokio::test]
 async fn invalid_admin_mutation_rolls_back_database_audit_and_snapshot() {
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
@@ -867,6 +1034,88 @@ async fn full_put_requires_current_etag_and_stale_update_does_not_audit() {
 }
 
 #[tokio::test]
+async fn disabled_legacy_key_tpm_is_visible_audited_and_cannot_be_activated() {
+    let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
+    sqlx::query("UPDATE api_keys SET status='disabled', tokens_per_minute=42 WHERE id=$1")
+        .bind(seed.key)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    let (app, _) = admin_app(database.pool.clone(), seed.user).await;
+    let list = admin_request(
+        app.clone(),
+        "GET",
+        "/admin/v1/api-keys",
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(list.status(), StatusCode::OK);
+    let list: serde_json::Value =
+        serde_json::from_slice(&list.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(
+        list.as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["id"] == seed.key.to_string())
+            .unwrap()["tokens_per_minute"],
+        42
+    );
+
+    let path = format!("/admin/v1/api-keys/{}", seed.key);
+    let detail = admin_request(app.clone(), "GET", &path, serde_json::json!({})).await;
+    assert_eq!(detail.status(), StatusCode::OK);
+    let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
+    let detail: serde_json::Value =
+        serde_json::from_slice(&detail.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(detail["tokens_per_minute"], 42);
+    let input = serde_json::json!({
+        "name":"test", "status":"disabled",
+        "allowed_api_formats":["open_ai_chat_completions"], "permissions":["proxy","models.read"],
+        "allowed_group_ids":[seed.group], "expires_at":null,
+        "requests_per_minute":null, "max_concurrent_requests":null, "quota_limit_amount":null
+    });
+    assert_eq!(
+        admin_request_with_headers(
+            app.clone(),
+            "PUT",
+            &path,
+            input.clone(),
+            &[("if-match", &etag)]
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    let audit: serde_json::Value = sqlx::query_scalar(
+        "SELECT after_redacted FROM audit_logs WHERE object_id=$1 AND action='update' ORDER BY occurred_at DESC LIMIT 1",
+    )
+    .bind(seed.key)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(audit["tokens_per_minute"], 42);
+
+    let detail = admin_request(app.clone(), "GET", &path, serde_json::json!({})).await;
+    let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
+    let mut activation = input;
+    activation["status"] = serde_json::json!("active");
+    assert_eq!(
+        admin_request_with_headers(app, "PUT", &path, activation, &[("if-match", &etag)])
+            .await
+            .status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let status: String = sqlx::query_scalar("SELECT status FROM api_keys WHERE id=$1")
+        .bind(seed.key)
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    assert_eq!(status, "disabled");
+    database.cleanup().await;
+}
+
+#[tokio::test]
 async fn repository_migrates_compiles_seeded_snapshot_and_authenticates() {
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
@@ -885,6 +1134,62 @@ async fn repository_migrates_compiles_seeded_snapshot_and_authenticates() {
         "upstream-v1"
     );
     assert!(!format!("{snapshot:?}").contains("upstream-secret"));
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn migrated_soft_quota_allows_over_limit_usage_and_rejects_the_seeded_key() {
+    let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
+    sqlx::query("UPDATE api_keys SET quota_limit_amount=$1, quota_used_amount=$2 WHERE id=$3")
+        .bind(rust_decimal::Decimal::new(100, 2))
+        .bind(rust_decimal::Decimal::new(101, 2))
+        .bind(seed.key)
+        .execute(&database.pool)
+        .await
+        .expect("0003 must allow settled usage above the soft quota limit");
+
+    let snapshot = compile_control_plane(
+        ControlPlaneRepository::new(database.pool.clone())
+            .load()
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        snapshot
+            .authenticate(&seed.secret)
+            .unwrap()
+            .quota_exhausted()
+    );
+    let proxy = ProxyService::new(
+        Arc::new(RuntimeConfig::new(snapshot)),
+        1_048_576,
+        &ai_gateway::runtime_config::UpstreamConfig {
+            connect_timeout_seconds: 1,
+            response_header_timeout_seconds: 1,
+            stream_idle_timeout_seconds: 1,
+        },
+    )
+    .unwrap();
+    let response = ai_gateway::http::router(proxy)
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("authorization", format!("Bearer {}", seed.secret))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&serde_json::json!({"model": seed.client_model})).unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    let body: serde_json::Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(body["error"]["code"], "insufficient_quota");
     database.cleanup().await;
 }
 
@@ -1081,20 +1386,10 @@ async fn group_authorization_and_expired_keys_are_not_usable() {
 }
 
 #[tokio::test]
-async fn admission_controls_and_invalid_channel_targets_are_rejected_before_stage_five() {
+async fn admission_controls_are_compiled_and_invalid_channel_targets_are_rejected() {
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
     sqlx::query("UPDATE api_keys SET requests_per_minute = 1 WHERE id = $1")
-        .bind(seed.key)
-        .execute(&database.pool)
-        .await
-        .unwrap();
-    let records = ControlPlaneRepository::new(database.pool.clone())
-        .load()
-        .await
-        .unwrap();
-    assert!(compile_control_plane(records).is_err());
-    sqlx::query("UPDATE api_keys SET status = 'disabled' WHERE id = $1")
         .bind(seed.key)
         .execute(&database.pool)
         .await
