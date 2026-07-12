@@ -6,7 +6,10 @@
 
 use std::{collections::HashSet, fmt, sync::Arc};
 
-use reqwest::header::{HeaderName, HeaderValue};
+use axum::body::Bytes;
+use json_patch::{AddOperation, PatchOperation, RemoveOperation, ReplaceOperation};
+use jsonptr::PointerBuf;
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::{Map, Value};
 use thiserror::Error;
 
@@ -132,6 +135,11 @@ impl HeaderPlan {
             operations: operations.into(),
         }
     }
+
+    /// Applies the already compiled operations in their declared order.
+    pub fn apply(&self, headers: &mut HeaderMap) -> Result<(), TransformApplyError> {
+        apply_header_plan(headers, self)
+    }
 }
 
 #[derive(Clone)]
@@ -189,6 +197,153 @@ impl JsonPatchPlan {
             operations: operations.into(),
         }
     }
+
+    /// Applies the already compiled patch operations, retaining exact bytes for
+    /// an empty plan.
+    pub fn apply(&self, body: Bytes) -> Result<Bytes, TransformApplyError> {
+        apply_json_patch_plan(body, self)
+    }
+}
+
+/// Applies a compiled request-header plan. Header names are revalidated here so
+/// execution remains safe even if an invalid plan is constructed internally.
+pub fn apply_header_plan(
+    headers: &mut HeaderMap,
+    plan: &HeaderPlan,
+) -> Result<(), TransformApplyError> {
+    let connection_names = connection_header_names(headers);
+    for operation in plan.operations() {
+        match operation {
+            HeaderOperation::Set { name, value } => {
+                ensure_runtime_header_allowed(name, &connection_names)?;
+                headers.insert(name.clone(), value.clone());
+            }
+            HeaderOperation::Remove { name } => {
+                ensure_runtime_header_allowed(name, &connection_names)?;
+                headers.remove(name);
+            }
+            HeaderOperation::Rename { from, to } => {
+                ensure_runtime_header_allowed(from, &connection_names)?;
+                ensure_runtime_header_allowed(to, &connection_names)?;
+                let values = headers.get_all(from).iter().cloned().collect::<Vec<_>>();
+                if values.is_empty() {
+                    continue;
+                }
+                headers.remove(from);
+                for value in values {
+                    headers.append(to.clone(), value);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Applies a compiled JSON Patch plan atomically. An empty plan returns the
+/// original `Bytes` unchanged and does not parse or serialize it.
+pub fn apply_json_patch_plan(
+    body: Bytes,
+    plan: &JsonPatchPlan,
+) -> Result<Bytes, TransformApplyError> {
+    if plan.is_empty() {
+        return Ok(body);
+    }
+
+    let mut document =
+        serde_json::from_slice(&body).map_err(|_| TransformApplyError::InvalidJsonBody)?;
+    let operations = plan
+        .operations()
+        .iter()
+        .map(compile_runtime_patch_operation)
+        .collect::<Result<Vec<_>, _>>()?;
+    json_patch::patch(&mut document, &operations).map_err(|_| TransformApplyError::PatchFailed)?;
+    serde_json::to_vec(&document)
+        .map(Bytes::from)
+        .map_err(|_| TransformApplyError::SerializationFailed)
+}
+
+fn compile_runtime_patch_operation(
+    operation: &JsonPatchOperation,
+) -> Result<PatchOperation, TransformApplyError> {
+    match operation {
+        JsonPatchOperation::Add { path, value } => Ok(PatchOperation::Add(AddOperation {
+            path: runtime_pointer(path)?,
+            value: value.clone(),
+        })),
+        JsonPatchOperation::Replace { path, value } => {
+            Ok(PatchOperation::Replace(ReplaceOperation {
+                path: runtime_pointer(path)?,
+                value: value.clone(),
+            }))
+        }
+        JsonPatchOperation::Remove { path } => Ok(PatchOperation::Remove(RemoveOperation {
+            path: runtime_pointer(path)?,
+        })),
+    }
+}
+
+fn runtime_pointer(pointer: &JsonPointer) -> Result<PointerBuf, TransformApplyError> {
+    PointerBuf::parse(pointer.as_str()).map_err(|_| TransformApplyError::InvalidJsonPointer)
+}
+
+/// Parses the header names declared by one `Connection` header field value.
+///
+/// Values are split and ASCII-trimmed as bytes so an opaque non-UTF-8 token
+/// does not discard valid neighboring tokens.
+pub(crate) fn parse_connection_header_names(
+    value: &HeaderValue,
+) -> impl Iterator<Item = HeaderName> + '_ {
+    value
+        .as_bytes()
+        .split(|byte| *byte == b',')
+        .map(trim_ascii_bytes)
+        .filter_map(|name| HeaderName::from_bytes(name).ok())
+}
+
+fn connection_header_names(headers: &HeaderMap) -> HashSet<HeaderName> {
+    headers
+        .get_all("connection")
+        .iter()
+        .flat_map(parse_connection_header_names)
+        .collect()
+}
+
+fn trim_ascii_bytes(bytes: &[u8]) -> &[u8] {
+    let Some(start) = bytes.iter().position(|byte| !byte.is_ascii_whitespace()) else {
+        return bytes;
+    };
+    let end = bytes
+        .iter()
+        .rposition(|byte| !byte.is_ascii_whitespace())
+        .expect("a non-empty byte slice with a non-whitespace byte has an end");
+    &bytes[start..=end]
+}
+
+fn ensure_runtime_header_allowed(
+    name: &HeaderName,
+    connection_names: &HashSet<HeaderName>,
+) -> Result<(), TransformApplyError> {
+    if is_protected_header(name.as_str(), HeaderScope::Request) || connection_names.contains(name) {
+        Err(TransformApplyError::ProtectedHeader)
+    } else {
+        Ok(())
+    }
+}
+
+/// Safe execution failures. Variants deliberately contain no configuration,
+/// header, pointer, document, credential, or upstream data.
+#[derive(Debug, Error)]
+pub enum TransformApplyError {
+    #[error("transform operates on a protected header")]
+    ProtectedHeader,
+    #[error("transform JSON body is invalid")]
+    InvalidJsonBody,
+    #[error("transform JSON pointer is invalid")]
+    InvalidJsonPointer,
+    #[error("transform JSON patch could not be applied")]
+    PatchFailed,
+    #[error("transform JSON body could not be serialized")]
+    SerializationFailed,
 }
 
 #[derive(Clone)]
@@ -1225,5 +1380,150 @@ mod tests {
         )
         .unwrap();
         assert!(TransformPlan::compose(&removed_ancestor, &recovery).is_ok());
+    }
+
+    #[test]
+    fn executor_applies_header_set_remove_and_rename_in_declared_plan_order() {
+        let plan = compile_document(
+            &json!({
+                "version": 1,
+                "api_format": "open_ai_chat_completions",
+                "request_headers": {
+                    "set": {"x-set": "new"},
+                    "remove": ["x-remove"],
+                    "rename": {"x-rename": "x-renamed"}
+                }
+            }),
+            CHAT,
+        )
+        .unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-set", HeaderValue::from_static("old"));
+        headers.insert("x-remove", HeaderValue::from_static("discard"));
+        headers.append("x-rename", HeaderValue::from_static("first"));
+        headers.append("x-rename", HeaderValue::from_static("second"));
+
+        apply_header_plan(&mut headers, plan.request_headers()).unwrap();
+
+        assert_eq!(headers.get("x-set").unwrap(), "new");
+        assert!(headers.get("x-remove").is_none());
+        assert!(headers.get("x-rename").is_none());
+        assert_eq!(headers.get_all("x-renamed").iter().count(), 2);
+    }
+
+    #[test]
+    fn executor_rejects_headers_declared_hop_by_hop_by_the_client_connection_header() {
+        let plan = compile_document(
+            &json!({
+                "version": 1,
+                "api_format": "open_ai_chat_completions",
+                "request_headers": {"set": {"x-client-hop": "changed"}}
+            }),
+            CHAT,
+        )
+        .unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("connection", HeaderValue::from_static("x-client-hop"));
+        headers.insert("x-client-hop", HeaderValue::from_static("original"));
+
+        assert!(matches!(
+            apply_header_plan(&mut headers, plan.request_headers()),
+            Err(TransformApplyError::ProtectedHeader)
+        ));
+        assert_eq!(headers.get("x-client-hop").unwrap(), "original");
+    }
+
+    #[test]
+    fn connection_parser_keeps_valid_tokens_beside_opaque_bytes() {
+        let value = HeaderValue::from_bytes(b" \tx-before\t,\xff, x-after \t").unwrap();
+
+        let names = parse_connection_header_names(&value).collect::<Vec<_>>();
+
+        assert_eq!(
+            names,
+            [
+                HeaderName::from_static("x-before"),
+                HeaderName::from_static("x-after"),
+            ]
+        );
+    }
+
+    #[test]
+    fn executor_applies_rfc_json_patch_add_replace_and_remove() {
+        let plan = compile_document(
+            &json!({
+                "version": 1,
+                "api_format": "open_ai_chat_completions",
+                "request_json": [
+                    {"op": "add", "path": "/payload/added", "value": true},
+                    {"op": "replace", "path": "/payload/replace", "value": "after"},
+                    {"op": "remove", "path": "/payload/remove"}
+                ]
+            }),
+            CHAT,
+        )
+        .unwrap();
+
+        let body = apply_json_patch_plan(
+            Bytes::from_static(br#"{"payload":{"replace":"before","remove":"gone"}}"#),
+            plan.request_json(),
+        )
+        .unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(value["payload"]["added"], true);
+        assert_eq!(value["payload"]["replace"], "after");
+        assert!(value["payload"].get("remove").is_none());
+    }
+
+    #[test]
+    fn executor_reports_patch_failure_without_mutating_the_original_body_bytes() {
+        let plan = compile_document(
+            &json!({
+                "version": 1,
+                "api_format": "open_ai_chat_completions",
+                "request_json": [
+                    {"op": "replace", "path": "/payload/value", "value": "changed"},
+                    {"op": "remove", "path": "/payload/missing"}
+                ]
+            }),
+            CHAT,
+        )
+        .unwrap();
+        let original = Bytes::from_static(br#"{"payload":{"value":"original"}}"#);
+
+        assert!(matches!(
+            apply_json_patch_plan(original.clone(), plan.request_json()),
+            Err(TransformApplyError::PatchFailed)
+        ));
+        assert_eq!(original, br#"{"payload":{"value":"original"}}"#.as_slice());
+    }
+
+    #[test]
+    fn executor_rejects_invalid_json_only_when_a_patch_is_enabled() {
+        let patched = compile_document(
+            &json!({
+                "version": 1,
+                "api_format": "open_ai_chat_completions",
+                "request_json": [{"op": "add", "path": "/added", "value": true}]
+            }),
+            CHAT,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            apply_json_patch_plan(Bytes::from_static(b"not-json"), patched.request_json()),
+            Err(TransformApplyError::InvalidJsonBody)
+        ));
+    }
+
+    #[test]
+    fn executor_returns_empty_body_plans_byte_for_byte_without_parsing() {
+        let plan = TransformPlan::noop(CHAT);
+        let original = Bytes::from_static(b"not-json \xff with unusual whitespace\n");
+
+        let forwarded = apply_json_patch_plan(original.clone(), plan.request_json()).unwrap();
+
+        assert_eq!(forwarded, original);
     }
 }

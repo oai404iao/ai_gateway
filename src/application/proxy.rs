@@ -32,6 +32,7 @@ use crate::{
     },
     routing::{ChannelLease, RoutingRuntime, SelectionResult},
     runtime_config::{RuntimeConfig, UpstreamConfig},
+    transforms::{apply_header_plan, apply_json_patch_plan, parse_connection_header_names},
 };
 
 /// Data-plane use case backed by a single immutable configuration snapshot per
@@ -220,6 +221,7 @@ impl ProxyService {
             started_wall_at,
             started_at,
         );
+        let transforms = route.channel.upstream_policy().effective_transforms();
         let body = match rewrite_model_alias(original_body, &parsed.model, &route.rule) {
             Ok(value) => value,
             Err(error) => {
@@ -227,6 +229,23 @@ impl ProxyService {
                 return Err(error);
             }
         };
+        let body = match apply_json_patch_plan(body, transforms.request_json()) {
+            Ok(value) => value,
+            Err(_) => {
+                completion.finish(RequestOutcome::ClientRequestError);
+                return Err(ProxyError::transform_failed());
+            }
+        };
+
+        // Apply the plan before hop-by-hop cleanup so `HeaderPlan` can reject
+        // dynamically protected names declared by the client `Connection`
+        // header. Cleanup then removes those client-controlled names again.
+        let mut headers = parts.headers.clone();
+        if apply_header_plan(&mut headers, transforms.request_headers()).is_err() {
+            completion.finish(RequestOutcome::ClientRequestError);
+            return Err(ProxyError::transform_failed());
+        }
+        let mut headers = forward_request_headers(&headers);
 
         let url = match upstream_url(&route.channel, &parts.uri) {
             Ok(value) => value,
@@ -235,7 +254,6 @@ impl ProxyService {
                 return Err(error);
             }
         };
-        let mut headers = forward_request_headers(&parts.headers);
         if let Err(error) = inject_upstream_auth(&mut headers, &route.channel) {
             completion.finish(RequestOutcome::UpstreamUnavailable);
             return Err(error);
@@ -456,6 +474,10 @@ impl ProxyError {
             authenticate: false,
             retry_after: None,
         }
+    }
+
+    fn transform_failed() -> Self {
+        Self::invalid_request("Request transform could not be applied.", "body")
     }
 
     fn unknown_model(model: &str) -> Self {
@@ -755,9 +777,7 @@ fn connection_header_names(headers: &HeaderMap) -> HashSet<HeaderName> {
     headers
         .get_all(CONNECTION)
         .iter()
-        .filter_map(|value| value.to_str().ok())
-        .flat_map(|value| value.split(','))
-        .filter_map(|name| HeaderName::from_bytes(name.trim().as_bytes()).ok())
+        .flat_map(parse_connection_header_names)
         .collect()
 }
 
@@ -1153,7 +1173,10 @@ mod tests {
     #[test]
     fn removes_static_and_connection_declared_hop_by_hop_request_headers() {
         let mut headers = HeaderMap::new();
-        headers.insert(CONNECTION, HeaderValue::from_static("x-internal-hop"));
+        headers.insert(
+            CONNECTION,
+            HeaderValue::from_bytes(b"x-internal-hop,\xff").unwrap(),
+        );
         headers.insert("x-internal-hop", HeaderValue::from_static("discard"));
         headers.insert(
             "authorization",

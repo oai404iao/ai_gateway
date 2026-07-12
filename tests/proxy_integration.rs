@@ -9,7 +9,8 @@ use ai_gateway::{
     application::{ProxyService, RecordingRequestLogSink},
     http,
     persistence::{
-        ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ControlPlaneRecords, ModelRuleRecord,
+        ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ConfigTemplateRecord, ControlPlaneRecords,
+        ModelRuleRecord,
     },
     runtime_config::{RuntimeConfig, UpstreamConfig, compile_control_plane},
 };
@@ -17,7 +18,7 @@ use axum::{
     Router,
     body::{Body, to_bytes},
     extract::{Request, State},
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, HeaderValue, StatusCode},
     response::Response,
     routing::post,
 };
@@ -184,10 +185,71 @@ async fn harness_with_policy(
     }
 }
 
+async fn harness_with_transforms(transforms: TransformDocuments) -> Harness {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let upstream = start_server(
+        Router::new()
+            .route("/v1/chat/completions", post(capture_upstream))
+            .route("/v1/responses", post(capture_upstream))
+            .with_state(MockUpstream {
+                requests: Arc::clone(&requests),
+                status: StatusCode::OK,
+                body: b"ok".to_vec(),
+            }),
+    )
+    .await;
+    let logs = RecordingRequestLogSink::default();
+    let configured = configured_proxy_with_policy_and_transforms(
+        &format!("http://{}", upstream.address),
+        logs.clone(),
+        None,
+        None,
+        None,
+        Default::default(),
+        None,
+        UpstreamConfig {
+            connect_timeout_seconds: 1,
+            response_header_timeout_seconds: 2,
+            stream_idle_timeout_seconds: 1,
+        },
+        transforms,
+    );
+    let gateway = start_server(http::router(configured.proxy)).await;
+
+    Harness {
+        gateway,
+        _upstream: upstream,
+        requests,
+        logs,
+    }
+}
+
 struct ConfiguredProxy {
     proxy: ProxyService,
     runtime: Arc<RuntimeConfig>,
     client_key_id: Uuid,
+}
+
+struct TransformDocuments {
+    template: Option<Value>,
+    chat_override: Value,
+    responses_override: Value,
+    upstream_auth_kind: &'static str,
+    upstream_auth_header_name: Option<&'static str>,
+    upstream_api_key: Option<&'static str>,
+}
+
+impl Default for TransformDocuments {
+    fn default() -> Self {
+        Self {
+            template: None,
+            chat_override: serde_json::json!({}),
+            responses_override: serde_json::json!({}),
+            upstream_auth_kind: "bearer",
+            upstream_auth_header_name: None,
+            upstream_api_key: Some(UPSTREAM_KEY),
+        }
+    }
 }
 
 fn proxy_service_with_policy(
@@ -225,6 +287,31 @@ fn configured_proxy_with_policy(
     client_key_id: Option<Uuid>,
     upstream_config: UpstreamConfig,
 ) -> ConfiguredProxy {
+    configured_proxy_with_policy_and_transforms(
+        upstream_url,
+        logs,
+        requests_per_minute,
+        max_concurrent_requests,
+        quota_limit_amount,
+        quota_used_amount,
+        client_key_id,
+        upstream_config,
+        TransformDocuments::default(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn configured_proxy_with_policy_and_transforms(
+    upstream_url: &str,
+    logs: RecordingRequestLogSink,
+    requests_per_minute: Option<i32>,
+    max_concurrent_requests: Option<i32>,
+    quota_limit_amount: Option<rust_decimal::Decimal>,
+    quota_used_amount: rust_decimal::Decimal,
+    client_key_id: Option<Uuid>,
+    upstream_config: UpstreamConfig,
+    transforms: TransformDocuments,
+) -> ConfiguredProxy {
     let chat_group = Uuid::new_v4();
     let responses_group = Uuid::new_v4();
     let empty_chat_group = Uuid::new_v4();
@@ -238,6 +325,7 @@ fn configured_proxy_with_policy(
         selection_strategy: "weighted_random".into(),
         enabled: true,
     };
+    let template_id = transforms.template.as_ref().map(|_| Uuid::new_v4());
     let channel = |id: Uuid, group_id: Uuid, api_format: &str| ChannelRecord {
         id,
         channel_group_id: group_id,
@@ -248,14 +336,20 @@ fn configured_proxy_with_policy(
         auto_disabled: false,
         weight: 1,
         proxy_id: None,
-        config_template_id: None,
-        override_document: serde_json::json!({}),
+        config_template_id: (api_format == "open_ai_chat_completions")
+            .then_some(template_id)
+            .flatten(),
+        override_document: match api_format {
+            "open_ai_chat_completions" => transforms.chat_override.clone(),
+            "open_ai_responses" => transforms.responses_override.clone(),
+            _ => serde_json::json!({}),
+        },
         connect_timeout_ms: None,
         response_header_timeout_ms: None,
         stream_idle_timeout_ms: None,
-        upstream_auth_kind: "bearer".into(),
-        upstream_auth_header_name: None,
-        upstream_api_key: Some(UPSTREAM_KEY.into()),
+        upstream_auth_kind: transforms.upstream_auth_kind.into(),
+        upstream_auth_header_name: transforms.upstream_auth_header_name.map(str::to_owned),
+        upstream_api_key: transforms.upstream_api_key.map(str::to_owned),
         available_models: match api_format {
             "open_ai_chat_completions" => vec![
                 "same-model".into(),
@@ -354,7 +448,18 @@ fn configured_proxy_with_policy(
             ),
         ],
         proxies: vec![],
-        templates: vec![],
+        templates: template_id
+            .zip(transforms.template)
+            .map(|(id, document)| {
+                vec![ConfigTemplateRecord {
+                    id,
+                    name: "transform-template".into(),
+                    description: None,
+                    document,
+                    enabled: true,
+                }]
+            })
+            .unwrap_or_default(),
     };
     let client_key = records
         .api_keys
@@ -535,6 +640,264 @@ async fn matching_chat_model_preserves_body_and_forwards_response_safely() {
     assert!(request.headers.get("connection").is_none());
     assert!(request.headers.get("x-internal-hop").is_none());
     assert_eq!(request.headers.get("x-request-id").unwrap(), "forward-me");
+}
+
+#[tokio::test]
+async fn template_then_channel_override_layers_request_headers_and_json_body() {
+    let harness = harness_with_transforms(TransformDocuments {
+        template: Some(serde_json::json!({
+            "version": 1,
+            "api_format": "open_ai_chat_completions",
+            "request_headers": {"set": {"x-layer": "template", "x-template": "enabled"}},
+            "request_json": [{"op": "add", "path": "/metadata/template", "value": true}]
+        })),
+        chat_override: serde_json::json!({
+            "version": 1,
+            "api_format": "open_ai_chat_completions",
+            "request_headers": {"set": {"x-layer": "channel", "x-channel": "enabled"}},
+            "request_json": [{"op": "add", "path": "/metadata/channel", "value": true}]
+        }),
+        ..Default::default()
+    })
+    .await;
+
+    let response = authorized_post(
+        &client(),
+        harness.url("/v1/chat/completions"),
+        CLIENT_KEY,
+        br#"{"model":"same-model","metadata":{}}"#.to_vec(),
+    )
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let requests = harness.upstream_requests();
+    assert_eq!(requests.len(), 1);
+    let request = &requests[0];
+    assert_eq!(request.headers.get("x-layer").unwrap(), "channel");
+    assert_eq!(request.headers.get("x-template").unwrap(), "enabled");
+    assert_eq!(request.headers.get("x-channel").unwrap(), "enabled");
+    let body: Value = serde_json::from_slice(&request.body).unwrap();
+    assert_eq!(body["metadata"]["template"], true);
+    assert_eq!(body["metadata"]["channel"], true);
+}
+
+#[tokio::test]
+async fn client_authorization_is_never_forwarded_when_the_channel_has_no_upstream_auth() {
+    let harness = harness_with_transforms(TransformDocuments {
+        upstream_auth_kind: "none",
+        upstream_api_key: None,
+        ..Default::default()
+    })
+    .await;
+
+    let response = authorized_post(
+        &client(),
+        harness.url("/v1/chat/completions"),
+        CLIENT_KEY,
+        br#"{"model":"same-model"}"#.to_vec(),
+    )
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let requests = harness.upstream_requests();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].headers.get("authorization").is_none());
+}
+
+#[tokio::test]
+async fn configured_custom_upstream_auth_is_injected_after_header_plans() {
+    let harness = harness_with_transforms(TransformDocuments {
+        template: Some(serde_json::json!({
+            "version": 1,
+            "api_format": "open_ai_chat_completions",
+            "request_headers": {"set": {"x-api-key": "template-value"}}
+        })),
+        chat_override: serde_json::json!({
+            "version": 1,
+            "api_format": "open_ai_chat_completions",
+            "request_headers": {"set": {"x-api-key": "channel-value"}}
+        }),
+        upstream_auth_kind: "header",
+        upstream_auth_header_name: Some("x-api-key"),
+        upstream_api_key: Some("configured-upstream-key"),
+        ..Default::default()
+    })
+    .await;
+
+    let response = authorized_post(
+        &client(),
+        harness.url("/v1/chat/completions"),
+        CLIENT_KEY,
+        br#"{"model":"same-model"}"#.to_vec(),
+    )
+    .header("x-api-key", "client-value")
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let requests = harness.upstream_requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0].headers.get("x-api-key").unwrap(),
+        "configured-upstream-key"
+    );
+}
+
+#[tokio::test]
+async fn no_transform_plan_preserves_unusual_json_body_bytes_exactly() {
+    let harness = harness_with_transforms(TransformDocuments::default()).await;
+    let request_body =
+        br#"{ "z" : [3,2], "model":"same-model", "nested" : { "b":2,"a":1 } }"#.to_vec();
+
+    let response = authorized_post(
+        &client(),
+        harness.url("/v1/chat/completions"),
+        CLIENT_KEY,
+        request_body.clone(),
+    )
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let requests = harness.upstream_requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].body, request_body);
+}
+
+#[tokio::test]
+async fn chat_and_responses_transform_plans_remain_format_isolated() {
+    let harness = harness_with_transforms(TransformDocuments {
+        template: Some(serde_json::json!({
+            "version": 1,
+            "api_format": "open_ai_chat_completions",
+            "request_headers": {"set": {"x-chat-template": "enabled"}}
+        })),
+        chat_override: serde_json::json!({
+            "version": 1,
+            "api_format": "open_ai_chat_completions",
+            "request_headers": {"set": {"x-chat-override": "enabled"}}
+        }),
+        responses_override: serde_json::json!({
+            "version": 1,
+            "api_format": "open_ai_responses",
+            "request_headers": {"set": {"x-responses-override": "enabled"}}
+        }),
+        ..Default::default()
+    })
+    .await;
+    let client = client();
+
+    let chat = authorized_post(
+        &client,
+        harness.url("/v1/chat/completions"),
+        CLIENT_KEY,
+        br#"{"model":"same-model"}"#.to_vec(),
+    )
+    .send()
+    .await
+    .unwrap();
+    let responses = authorized_post(
+        &client,
+        harness.url("/v1/responses"),
+        CLIENT_KEY,
+        br#"{"model":"responses-model"}"#.to_vec(),
+    )
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(chat.status(), StatusCode::OK);
+    assert_eq!(responses.status(), StatusCode::OK);
+    let requests = harness.upstream_requests();
+    assert_eq!(requests.len(), 2);
+    let chat = requests
+        .iter()
+        .find(|request| request.headers.get("x-chat-template").is_some())
+        .unwrap();
+    let responses = requests
+        .iter()
+        .find(|request| request.headers.get("x-responses-override").is_some())
+        .unwrap();
+    assert_eq!(chat.headers.get("x-chat-override").unwrap(), "enabled");
+    assert!(chat.headers.get("x-responses-override").is_none());
+    assert!(responses.headers.get("x-chat-template").is_none());
+    assert!(responses.headers.get("x-chat-override").is_none());
+}
+
+#[tokio::test]
+async fn failed_patch_for_a_routed_model_returns_safe_bad_request_without_upstream_contact() {
+    let harness = harness_with_transforms(TransformDocuments {
+        chat_override: serde_json::json!({
+            "version": 1,
+            "api_format": "open_ai_chat_completions",
+            "request_json": [{"op": "remove", "path": "/missing"}]
+        }),
+        ..Default::default()
+    })
+    .await;
+
+    let response = authorized_post(
+        &client(),
+        harness.url("/v1/chat/completions"),
+        CLIENT_KEY,
+        br#"{"model":"same-model"}"#.to_vec(),
+    )
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+    assert_eq!(body["error"]["code"], "invalid_request");
+    assert_eq!(body["error"]["param"], "body");
+    assert_eq!(
+        body["error"]["message"],
+        "Request transform could not be applied."
+    );
+    assert!(harness.upstream_requests().is_empty());
+}
+
+#[tokio::test]
+async fn connection_declared_header_plan_with_opaque_bytes_is_rejected_without_upstream_contact() {
+    let harness = harness_with_transforms(TransformDocuments {
+        chat_override: serde_json::json!({
+            "version": 1,
+            "api_format": "open_ai_chat_completions",
+            "request_headers": {"set": {"x-hop": "changed"}}
+        }),
+        ..Default::default()
+    })
+    .await;
+    let mut request = authorized_post(
+        &client(),
+        harness.url("/v1/chat/completions"),
+        CLIENT_KEY,
+        br#"{"model":"same-model"}"#.to_vec(),
+    )
+    .build()
+    .unwrap();
+    request.headers_mut().insert(
+        "connection",
+        HeaderValue::from_bytes(b"x-hop,\xff").unwrap(),
+    );
+
+    let response = client().execute(request).await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+    assert_eq!(body["error"]["code"], "invalid_request");
+    assert_eq!(body["error"]["param"], "body");
+    assert_eq!(
+        body["error"]["message"],
+        "Request transform could not be applied."
+    );
+    assert!(harness.upstream_requests().is_empty());
 }
 
 #[tokio::test]
