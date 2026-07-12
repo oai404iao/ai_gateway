@@ -9,7 +9,10 @@ use std::{
 use ai_gateway::{
     application::ProxyService,
     http,
-    runtime_config::{AppConfig, GatewayConfig},
+    persistence::{
+        ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ControlPlaneRecords, ModelRuleRecord,
+    },
+    runtime_config::{RuntimeConfig, UpstreamConfig, compile_control_plane},
 };
 use axum::{
     Router,
@@ -22,6 +25,7 @@ use axum::{
 use futures_util::{StreamExt, stream};
 use serde_json::Value;
 use tokio::{net::TcpListener, sync::oneshot, task::JoinHandle, time::timeout};
+use uuid::Uuid;
 
 const CLIENT_KEY: &str = "client-key";
 const OUTER_TIMEOUT: Duration = Duration::from_secs(4);
@@ -52,58 +56,76 @@ fn proxy_service(
     response_header_timeout: u64,
     stream_idle_timeout: u64,
 ) -> ProxyService {
-    let config = toml::from_str::<AppConfig>(&format!(
-        r#"
-[server]
-host = "127.0.0.1"
-port = 0
-max_request_body_bytes = 1048576
-
-[database]
-url = "postgres://gateway:gateway@127.0.0.1/gateway"
-max_connections = 1
-connect_timeout_seconds = 1
-
-[upstream]
-connect_timeout_seconds = 1
-response_header_timeout_seconds = {response_header_timeout}
-stream_idle_timeout_seconds = {stream_idle_timeout}
-
-[runtime_config]
-reload_interval_seconds = 60
-
-[observability]
-filter = "off"
-
-[[api_keys]]
-id = "client"
-key = "{CLIENT_KEY}"
-allowed_api_formats = ["open_ai_chat_completions"]
-permissions = ["proxy"]
-
-[[channels]]
-id = "chat"
-api_format = "open_ai_chat_completions"
-base_url = "{upstream_url}"
-upstream_bearer_token = "upstream-key"
-
-[[model_rules]]
-client_model = "stream-model"
-api_format = "open_ai_chat_completions"
-upstream_model = "stream-model"
-channel_id = "chat"
-"#
-    ))
+    let group_id = Uuid::new_v4();
+    let channel_id = Uuid::new_v4();
+    let records = ControlPlaneRecords {
+        api_keys: vec![ApiKeyRecord {
+            id: Uuid::new_v4(),
+            user_id: Uuid::new_v4(),
+            user_status: "active".into(),
+            secret_value: CLIENT_KEY.into(),
+            status: "active".into(),
+            expires_at: None,
+            allowed_api_formats: vec!["open_ai_chat_completions".into()],
+            permissions: vec!["proxy".into()],
+            allowed_group_ids: Some(vec![group_id]),
+            requests_per_minute: None,
+            tokens_per_minute: None,
+            max_concurrent_requests: None,
+            quota_limit_amount: None,
+            quota_used_amount: Default::default(),
+        }],
+        groups: vec![ChannelGroupRecord {
+            id: group_id,
+            name: "chat".into(),
+            api_format: "open_ai_chat_completions".into(),
+            priority: 0,
+            selection_strategy: "weighted_random".into(),
+            enabled: true,
+        }],
+        channels: vec![ChannelRecord {
+            id: channel_id,
+            channel_group_id: group_id,
+            api_format: "open_ai_chat_completions".into(),
+            name: "chat".into(),
+            base_url: upstream_url.into(),
+            enabled: true,
+            auto_disabled: false,
+            weight: 1,
+            proxy_id: None,
+            config_template_id: None,
+            override_document: serde_json::json!({}),
+            connect_timeout_ms: None,
+            response_header_timeout_ms: None,
+            stream_idle_timeout_ms: None,
+            upstream_auth_kind: "bearer".into(),
+            upstream_auth_header_name: None,
+            upstream_api_key: Some("upstream-key".into()),
+            available_models: vec!["stream-model".into()],
+            health_check: serde_json::json!({}),
+        }],
+        model_rules: vec![ModelRuleRecord {
+            id: Uuid::new_v4(),
+            client_model: "stream-model".into(),
+            api_format: "open_ai_chat_completions".into(),
+            model_id: Uuid::new_v4(),
+            model_enabled: true,
+            upstream_model: "stream-model".into(),
+            channel_group_ids: vec![],
+            channel_ids: vec![channel_id],
+            enabled: true,
+        }],
+    };
+    ProxyService::new(
+        Arc::new(RuntimeConfig::new(compile_control_plane(records).unwrap())),
+        1_048_576,
+        &UpstreamConfig {
+            connect_timeout_seconds: 1,
+            response_header_timeout_seconds: response_header_timeout,
+            stream_idle_timeout_seconds: stream_idle_timeout,
+        },
+    )
     .unwrap()
-    .compile()
-    .unwrap();
-    build_proxy_service(config)
-}
-
-fn build_proxy_service(config: GatewayConfig) -> ProxyService {
-    let max_request_body_bytes = config.server.max_request_body_bytes;
-    let upstream = config.upstream.clone();
-    ProxyService::new(Arc::new(config.runtime), max_request_body_bytes, &upstream).unwrap()
 }
 
 fn client() -> reqwest::Client {

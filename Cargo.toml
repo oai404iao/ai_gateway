@@ -9,6 +9,7 @@ license = "UNLICENSED"
 [dependencies]
 arc-swap = "1.7"
 axum = "0.8"
+chrono = { version = "0.4", features = ["serde"] }
 futures-util = "0.3"
 http-body-util = "0.1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
@@ -17,7 +18,7 @@ secrecy = "0.10"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
-sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio-rustls", "migrate", "chrono", "uuid", "json", "rust_decimal"] }
+sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio-rustls", "migrate", "chrono", "uuid", "json", "rust_decimal", "macros"] }
 subtle = "2.6"
 thiserror = "2.0"
 tokio = { version = "1.43", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
@@ -27,3 +28,4 @@ tower-http = { version = "0.6", features = ["trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 zeroize = { version = "1.8", features = ["derive"] }
+uuid = { version = "1.11", features = ["v4", "serde"] }

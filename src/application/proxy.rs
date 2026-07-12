@@ -23,7 +23,8 @@ use serde_json::{Value, json};
 use tokio::time::timeout;
 
 use crate::{
-    domain::{ApiFormat, ApiKeyPermission, CompiledChannel, CompiledModelRule},
+    domain::{ApiFormat, ApiKeyPermission, CompiledChannel, CompiledModelRule, UpstreamAuth},
+    routing,
     runtime_config::{RuntimeConfig, UpstreamConfig},
 };
 
@@ -80,19 +81,20 @@ impl ProxyService {
             .await
             .map_err(request_body_error)?;
         let model = parse_model(&original_body)?;
-        let rule = snapshot
-            .model_rule(api_format, &model)
+        let route = routing::select(&snapshot, &api_key, api_format, &model)
             .ok_or_else(|| ProxyError::unknown_model(&model))?;
-        let body = rewrite_model_alias(original_body, &model, &rule)?;
+        let body = rewrite_model_alias(original_body, &model, &route.rule)?;
 
-        let url = upstream_url(rule.channel(), &parts.uri)?;
+        let url = upstream_url(&route.channel, &parts.uri)?;
         let mut headers = forward_request_headers(&parts.headers);
-        inject_upstream_auth(&mut headers, rule.channel())?;
+        inject_upstream_auth(&mut headers, &route.channel)?;
+        let api_key_id = api_key.id().to_string();
+        let channel_id = route.channel.id().to_string();
         let mut completion = CompletionGuard::new(
-            api_key.id(),
+            &api_key_id,
             &model,
-            rule.upstream_model(),
-            rule.channel().id(),
+            route.rule.upstream_model(),
+            &channel_id,
             api_format,
             started_at,
         );
@@ -133,15 +135,22 @@ impl ProxyService {
             .authenticate(client_key)
             .ok_or_else(ProxyError::invalid_api_key)?;
 
-        let models = [ApiFormat::OpenAiChatCompletions, ApiFormat::OpenAiResponses]
+        let can_list_models = [ApiFormat::OpenAiChatCompletions, ApiFormat::OpenAiResponses]
             .into_iter()
-            .flat_map(|api_format| snapshot.models_for(&api_key, api_format))
-            .collect::<BTreeSet<_>>();
-        if models.is_empty() {
+            .any(|api_format| {
+                api_key.permits(api_format, ApiKeyPermission::Proxy)
+                    && api_key.permits(api_format, ApiKeyPermission::ModelsRead)
+            });
+        if !can_list_models {
             return Err(ProxyError::forbidden(
                 "This API key cannot list models in any API format.",
             ));
         }
+
+        let models = [ApiFormat::OpenAiChatCompletions, ApiFormat::OpenAiResponses]
+            .into_iter()
+            .flat_map(|api_format| snapshot.models_for(&api_key, api_format))
+            .collect::<BTreeSet<_>>();
 
         Ok(ModelsResponse {
             object: "list",
@@ -384,16 +393,28 @@ fn inject_upstream_auth(
     headers: &mut HeaderMap,
     channel: &CompiledChannel,
 ) -> Result<(), ProxyError> {
-    if let Some(token) = channel.upstream_auth().bearer_token() {
-        let value = HeaderValue::from_str(&format!("Bearer {token}")).map_err(|_| ProxyError {
-            status: StatusCode::BAD_GATEWAY,
-            message: "The selected upstream channel has invalid credentials.".to_owned(),
-            error_type: "api_error",
-            param: None,
-            code: "invalid_upstream_credentials".into(),
-            authenticate: false,
-        })?;
-        headers.insert(AUTHORIZATION, value);
+    let invalid = || ProxyError {
+        status: StatusCode::BAD_GATEWAY,
+        message: "The selected upstream channel has invalid credentials.".to_owned(),
+        error_type: "api_error",
+        param: None,
+        code: "invalid_upstream_credentials".into(),
+        authenticate: false,
+    };
+    match channel.upstream_auth() {
+        UpstreamAuth::None => {}
+        UpstreamAuth::Bearer(token) => {
+            headers.insert(
+                AUTHORIZATION,
+                HeaderValue::from_str(&format!("Bearer {token}")).map_err(|_| invalid())?,
+            );
+        }
+        UpstreamAuth::Header { name, value } => {
+            headers.insert(
+                name.clone(),
+                HeaderValue::from_str(value).map_err(|_| invalid())?,
+            );
+        }
     }
     Ok(())
 }
@@ -660,10 +681,16 @@ impl Drop for CompletionGuard {
 #[cfg(test)]
 mod tests {
     use axum::http::{HeaderMap, HeaderValue, StatusCode, header::CONNECTION};
+    use std::{collections::HashSet, sync::Arc};
+
+    use reqwest::{Url, header::HeaderName};
+    use uuid::Uuid;
 
     use super::{
-        forward_request_headers, forward_response_headers, parse_bearer_token, response_has_no_body,
+        forward_request_headers, forward_response_headers, inject_upstream_auth,
+        parse_bearer_token, response_has_no_body,
     };
+    use crate::domain::{ApiFormat, CompiledChannel, UpstreamAuth};
 
     #[test]
     fn rejects_malformed_bearer_values() {
@@ -716,5 +743,25 @@ mod tests {
         assert!(response_has_no_body(StatusCode::NOT_MODIFIED));
         assert!(response_has_no_body(StatusCode::CONTINUE));
         assert!(!response_has_no_body(StatusCode::OK));
+    }
+
+    #[test]
+    fn injects_a_configured_custom_upstream_auth_header() {
+        let channel = CompiledChannel::new(
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            ApiFormat::OpenAiChatCompletions,
+            Url::parse("https://example.test").unwrap(),
+            1,
+            UpstreamAuth::Header {
+                name: HeaderName::from_static("x-api-key"),
+                value: Arc::from("upstream-secret"),
+            },
+            HashSet::new(),
+        );
+        let mut headers = HeaderMap::new();
+        inject_upstream_auth(&mut headers, &channel).unwrap();
+        assert_eq!(headers.get("x-api-key").unwrap(), "upstream-secret");
+        assert!(headers.get("authorization").is_none());
     }
 }

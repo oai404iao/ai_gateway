@@ -8,7 +8,10 @@ use std::{
 use ai_gateway::{
     application::ProxyService,
     http,
-    runtime_config::{AppConfig, GatewayConfig},
+    persistence::{
+        ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ControlPlaneRecords, ModelRuleRecord,
+    },
+    runtime_config::{RuntimeConfig, UpstreamConfig, compile_control_plane},
 };
 use axum::{
     Router,
@@ -20,9 +23,12 @@ use axum::{
 };
 use serde_json::Value;
 use tokio::{net::TcpListener, task::JoinHandle};
+use uuid::Uuid;
 
 const CLIENT_KEY: &str = "client-key";
 const CHAT_ONLY_KEY: &str = "chat-only-key";
+const MODELS_READ_ONLY_KEY: &str = "models-read-only-key";
+const NO_REACHABLE_MODELS_KEY: &str = "no-reachable-models-key";
 const UPSTREAM_KEY: &str = "upstream-key";
 
 #[derive(Clone)]
@@ -102,8 +108,7 @@ async fn harness(status: StatusCode, body: impl Into<Vec<u8>>) -> Harness {
             }),
     )
     .await;
-    let config = compile_config(&format!("http://{}", upstream.address));
-    let proxy = proxy_service(config);
+    let proxy = proxy_service(&format!("http://{}", upstream.address));
     let gateway = start_server(http::router(proxy)).await;
 
     Harness {
@@ -113,88 +118,147 @@ async fn harness(status: StatusCode, body: impl Into<Vec<u8>>) -> Harness {
     }
 }
 
-fn compile_config(upstream_url: &str) -> GatewayConfig {
-    toml::from_str::<AppConfig>(&format!(
-        r#"
-[server]
-host = "127.0.0.1"
-port = 0
-max_request_body_bytes = 1048576
-
-[database]
-url = "postgres://gateway:gateway@127.0.0.1/gateway"
-max_connections = 1
-connect_timeout_seconds = 1
-
-[upstream]
-connect_timeout_seconds = 1
-response_header_timeout_seconds = 2
-stream_idle_timeout_seconds = 1
-
-[runtime_config]
-reload_interval_seconds = 60
-
-[observability]
-filter = "off"
-
-[[api_keys]]
-id = "full-access"
-key = "{CLIENT_KEY}"
-allowed_api_formats = ["open_ai_chat_completions", "open_ai_responses"]
-permissions = ["proxy", "models.read"]
-
-[[api_keys]]
-id = "chat-only"
-key = "{CHAT_ONLY_KEY}"
-allowed_api_formats = ["open_ai_chat_completions"]
-permissions = ["proxy", "models.read"]
-
-[[channels]]
-id = "chat"
-api_format = "open_ai_chat_completions"
-base_url = "{upstream_url}"
-upstream_bearer_token = "{UPSTREAM_KEY}"
-
-[[channels]]
-id = "responses"
-api_format = "open_ai_responses"
-base_url = "{upstream_url}"
-upstream_bearer_token = "{UPSTREAM_KEY}"
-
-[[model_rules]]
-client_model = "same-model"
-api_format = "open_ai_chat_completions"
-upstream_model = "same-model"
-channel_id = "chat"
-
-[[model_rules]]
-client_model = "alias-model"
-api_format = "open_ai_chat_completions"
-upstream_model = "upstream-alias-model"
-channel_id = "chat"
-
-[[model_rules]]
-client_model = "chat-only-model"
-api_format = "open_ai_chat_completions"
-upstream_model = "chat-only-model"
-channel_id = "chat"
-
-[[model_rules]]
-client_model = "responses-model"
-api_format = "open_ai_responses"
-upstream_model = "responses-model"
-channel_id = "responses"
-"#
-    ))
+fn proxy_service(upstream_url: &str) -> ProxyService {
+    let chat_group = Uuid::new_v4();
+    let responses_group = Uuid::new_v4();
+    let empty_chat_group = Uuid::new_v4();
+    let chat = Uuid::new_v4();
+    let responses = Uuid::new_v4();
+    let group = |id: Uuid, api_format: &str| ChannelGroupRecord {
+        id,
+        name: id.to_string(),
+        api_format: api_format.to_owned(),
+        priority: 0,
+        selection_strategy: "weighted_random".into(),
+        enabled: true,
+    };
+    let channel = |id: Uuid, group_id: Uuid, api_format: &str| ChannelRecord {
+        id,
+        channel_group_id: group_id,
+        api_format: api_format.into(),
+        name: id.to_string(),
+        base_url: upstream_url.into(),
+        enabled: true,
+        auto_disabled: false,
+        weight: 1,
+        proxy_id: None,
+        config_template_id: None,
+        override_document: serde_json::json!({}),
+        connect_timeout_ms: None,
+        response_header_timeout_ms: None,
+        stream_idle_timeout_ms: None,
+        upstream_auth_kind: "bearer".into(),
+        upstream_auth_header_name: None,
+        upstream_api_key: Some(UPSTREAM_KEY.into()),
+        available_models: match api_format {
+            "open_ai_chat_completions" => vec![
+                "same-model".into(),
+                "upstream-alias-model".into(),
+                "chat-only-model".into(),
+            ],
+            "open_ai_responses" => vec!["responses-model".into()],
+            _ => vec![],
+        },
+        health_check: serde_json::json!({}),
+    };
+    let key = |secret: &str, formats: Vec<&str>, groups: Vec<Uuid>, permissions: Vec<&str>| {
+        ApiKeyRecord {
+            id: Uuid::new_v4(),
+            user_id: Uuid::new_v4(),
+            user_status: "active".into(),
+            secret_value: secret.into(),
+            status: "active".into(),
+            expires_at: None,
+            allowed_api_formats: formats.into_iter().map(str::to_owned).collect(),
+            permissions: permissions.into_iter().map(str::to_owned).collect(),
+            allowed_group_ids: Some(groups),
+            requests_per_minute: None,
+            tokens_per_minute: None,
+            max_concurrent_requests: None,
+            quota_limit_amount: None,
+            quota_used_amount: Default::default(),
+        }
+    };
+    let rule = |model: &str, upstream: &str, format: &str, channel_id: Uuid| ModelRuleRecord {
+        id: Uuid::new_v4(),
+        client_model: model.into(),
+        api_format: format.into(),
+        model_id: Uuid::new_v4(),
+        model_enabled: true,
+        upstream_model: upstream.into(),
+        channel_group_ids: vec![],
+        channel_ids: vec![channel_id],
+        enabled: true,
+    };
+    let records = ControlPlaneRecords {
+        api_keys: vec![
+            key(
+                CLIENT_KEY,
+                vec!["open_ai_chat_completions", "open_ai_responses"],
+                vec![chat_group, responses_group],
+                vec!["proxy", "models.read"],
+            ),
+            key(
+                CHAT_ONLY_KEY,
+                vec!["open_ai_chat_completions"],
+                vec![chat_group],
+                vec!["proxy", "models.read"],
+            ),
+            key(
+                MODELS_READ_ONLY_KEY,
+                vec!["open_ai_chat_completions"],
+                vec![chat_group],
+                vec!["models.read"],
+            ),
+            key(
+                NO_REACHABLE_MODELS_KEY,
+                vec!["open_ai_chat_completions"],
+                vec![empty_chat_group],
+                vec!["proxy", "models.read"],
+            ),
+        ],
+        groups: vec![
+            group(chat_group, "open_ai_chat_completions"),
+            group(responses_group, "open_ai_responses"),
+            group(empty_chat_group, "open_ai_chat_completions"),
+        ],
+        channels: vec![
+            channel(chat, chat_group, "open_ai_chat_completions"),
+            channel(responses, responses_group, "open_ai_responses"),
+        ],
+        model_rules: vec![
+            rule("same-model", "same-model", "open_ai_chat_completions", chat),
+            rule(
+                "alias-model",
+                "upstream-alias-model",
+                "open_ai_chat_completions",
+                chat,
+            ),
+            rule(
+                "chat-only-model",
+                "chat-only-model",
+                "open_ai_chat_completions",
+                chat,
+            ),
+            rule(
+                "responses-model",
+                "responses-model",
+                "open_ai_responses",
+                responses,
+            ),
+        ],
+    };
+    let runtime = Arc::new(RuntimeConfig::new(compile_control_plane(records).unwrap()));
+    ProxyService::new(
+        runtime,
+        1_048_576,
+        &UpstreamConfig {
+            connect_timeout_seconds: 1,
+            response_header_timeout_seconds: 2,
+            stream_idle_timeout_seconds: 1,
+        },
+    )
     .unwrap()
-    .compile()
-    .unwrap()
-}
-
-fn proxy_service(config: GatewayConfig) -> ProxyService {
-    let max_request_body_bytes = config.server.max_request_body_bytes;
-    let upstream = config.upstream.clone();
-    ProxyService::new(Arc::new(config.runtime), max_request_body_bytes, &upstream).unwrap()
 }
 
 fn client() -> reqwest::Client {
@@ -388,4 +452,34 @@ async fn models_endpoint_filters_by_api_format_and_requires_authentication() {
         unauthenticated.headers().get("www-authenticate").unwrap(),
         "Bearer"
     );
+}
+
+#[tokio::test]
+async fn models_endpoint_requires_proxy_and_models_read_permissions() {
+    let harness = harness(StatusCode::OK, Vec::new()).await;
+
+    let response = client()
+        .get(harness.url("/v1/models"))
+        .header("authorization", format!("Bearer {MODELS_READ_ONLY_KEY}"))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn models_endpoint_returns_an_empty_list_when_authorized_key_has_no_reachable_models() {
+    let harness = harness(StatusCode::OK, Vec::new()).await;
+
+    let response = client()
+        .get(harness.url("/v1/models"))
+        .header("authorization", format!("Bearer {NO_REACHABLE_MODELS_KEY}"))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+    assert_eq!(body["data"], serde_json::json!([]));
 }
