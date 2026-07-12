@@ -12,7 +12,10 @@ use axum::{
     body::{Body, Bytes, to_bytes},
     http::{
         HeaderMap, HeaderName, HeaderValue, Request, Response, StatusCode, Uri,
-        header::{AUTHORIZATION, CONNECTION, CONTENT_LENGTH, HOST, PROXY_AUTHORIZATION},
+        header::{
+            ACCEPT_ENCODING, AUTHORIZATION, CONNECTION, CONTENT_ENCODING, CONTENT_LENGTH, HOST,
+            PROXY_AUTHORIZATION,
+        },
     },
     response::{IntoResponse, Response as AxumResponse},
 };
@@ -32,7 +35,10 @@ use crate::{
     },
     routing::{ChannelLease, RoutingRuntime, SelectionResult},
     runtime_config::{RuntimeConfig, UpstreamConfig},
-    transforms::{apply_header_plan, apply_json_patch_plan, parse_connection_header_names},
+    transforms::{
+        SseEventPatchPlan, SseTransformer, apply_header_plan, apply_json_patch_plan,
+        apply_response_header_plan, parse_connection_header_names,
+    },
 };
 
 /// Data-plane use case backed by a single immutable configuration snapshot per
@@ -246,6 +252,10 @@ impl ProxyService {
             return Err(ProxyError::transform_failed());
         }
         let mut headers = forward_request_headers(&headers);
+        let sse_transform_active = transforms.sse_event_patches().has_operations();
+        if sse_transform_active {
+            headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("identity"));
+        }
 
         let url = match upstream_url(&route.channel, &parts.uri) {
             Ok(value) => value,
@@ -289,11 +299,13 @@ impl ProxyService {
                 }
             };
 
-        Ok(response_from_upstream(
+        response_from_upstream(
             upstream_response,
             self.stream_idle_timeout,
             completion,
-        ))
+            transforms.response_headers(),
+            transforms.sse_event_patches().clone(),
+        )
     }
 
     fn record_rejected(
@@ -478,6 +490,18 @@ impl ProxyError {
 
     fn transform_failed() -> Self {
         Self::invalid_request("Request transform could not be applied.", "body")
+    }
+
+    fn response_transform_failed() -> Self {
+        Self {
+            status: StatusCode::BAD_GATEWAY,
+            message: "Upstream response transform could not be applied.".to_owned(),
+            error_type: "api_error",
+            param: None,
+            code: Some("response_transform_failed"),
+            authenticate: false,
+            retry_after: None,
+        }
     }
 
     fn unknown_model(model: &str) -> Self {
@@ -800,13 +824,38 @@ fn response_from_upstream(
     upstream_response: reqwest::Response,
     stream_idle_timeout: Duration,
     mut completion: CompletionGuard,
-) -> AxumResponse {
+    response_headers: &crate::transforms::HeaderPlan,
+    sse_event_patches: SseEventPatchPlan,
+) -> Result<AxumResponse, ProxyError> {
     let upstream_status = upstream_response.status();
     let status = StatusCode::from_u16(upstream_status.as_u16())
         .expect("reqwest status code is valid for an Axum response");
     completion.set_upstream_status(upstream_status.as_u16());
-    let headers = forward_response_headers(upstream_response.headers());
-    let expected_body_bytes = upstream_response.content_length();
+    // Framing is a property of the upstream response, not of configured
+    // presentation headers. Response plans are also forbidden from touching
+    // these headers, but classify first to keep that invariant explicit.
+    let original_upstream_headers = upstream_response.headers();
+    let transform_sse =
+        sse_event_patches.has_operations() && is_sse_response(original_upstream_headers);
+    let sse_has_identity_encoding = has_identity_content_encoding(original_upstream_headers);
+    let mut upstream_headers = original_upstream_headers.clone();
+    if apply_response_header_plan(&mut upstream_headers, response_headers).is_err() {
+        completion.set_client_visible_status(StatusCode::BAD_GATEWAY.as_u16());
+        completion.finish(RequestOutcome::ResponseTransformFailed);
+        return Err(ProxyError::response_transform_failed());
+    }
+    if transform_sse && !sse_has_identity_encoding {
+        completion.set_client_visible_status(StatusCode::BAD_GATEWAY.as_u16());
+        completion.finish(RequestOutcome::ResponseTransformFailed);
+        return Err(ProxyError::response_transform_failed());
+    }
+    let mut headers = forward_response_headers(&upstream_headers);
+    if transform_sse {
+        remove_transformed_entity_headers(&mut headers);
+    }
+    let expected_body_bytes = (!transform_sse)
+        .then(|| upstream_response.content_length())
+        .flatten();
     if response_has_no_body(status) || expected_body_bytes == Some(0) {
         completion.finish(if upstream_status.is_success() {
             RequestOutcome::Succeeded
@@ -816,7 +865,7 @@ fn response_from_upstream(
         let mut response = Response::new(Body::empty());
         *response.status_mut() = status;
         *response.headers_mut() = headers;
-        return response;
+        return Ok(response);
     }
     let stream = timed_upstream_stream(
         upstream_response.bytes_stream(),
@@ -824,11 +873,42 @@ fn response_from_upstream(
         completion,
         upstream_status.is_success(),
         expected_body_bytes,
+        transform_sse.then(|| SseTransformer::new(sse_event_patches)),
     );
     let mut response = Response::new(Body::from_stream(stream));
     *response.status_mut() = status;
     *response.headers_mut() = headers;
-    response
+    Ok(response)
+}
+
+fn is_sse_response(headers: &HeaderMap) -> bool {
+    headers
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("text/event-stream"))
+}
+
+fn has_identity_content_encoding(headers: &HeaderMap) -> bool {
+    headers.get_all(CONTENT_ENCODING).iter().all(|value| {
+        value
+            .to_str()
+            .is_ok_and(|value| value.trim().eq_ignore_ascii_case("identity"))
+    })
+}
+
+fn remove_transformed_entity_headers(headers: &mut HeaderMap) {
+    for name in [
+        CONTENT_LENGTH,
+        HeaderName::from_static("etag"),
+        HeaderName::from_static("last-modified"),
+        HeaderName::from_static("content-md5"),
+        HeaderName::from_static("digest"),
+        HeaderName::from_static("content-digest"),
+        HeaderName::from_static("repr-digest"),
+    ] {
+        headers.remove(name);
+    }
 }
 
 fn response_has_no_body(status: StatusCode) -> bool {
@@ -846,6 +926,8 @@ struct StreamState {
     completion: CompletionGuard,
     upstream_succeeded: bool,
     remaining_bytes: Option<u64>,
+    sse_transformer: Option<SseTransformer>,
+    yield_after_sse_frame: bool,
 }
 
 fn timed_upstream_stream(
@@ -854,6 +936,7 @@ fn timed_upstream_stream(
     completion: CompletionGuard,
     upstream_succeeded: bool,
     remaining_bytes: Option<u64>,
+    sse_transformer: Option<SseTransformer>,
 ) -> impl Stream<Item = Result<Bytes, BodyStreamError>> + Send {
     stream::unfold(
         StreamState {
@@ -862,57 +945,115 @@ fn timed_upstream_stream(
             completion,
             upstream_succeeded,
             remaining_bytes,
+            sse_transformer,
+            yield_after_sse_frame: false,
         },
         |mut state| async move {
-            let next = match state.upstream.as_mut() {
-                Some(upstream) => timeout(state.idle_timeout, upstream.next()).await,
-                None => return None,
-            };
-
-            match next {
-                Ok(Some(Ok(bytes))) => {
-                    if !bytes.is_empty() {
-                        state.completion.record_first_byte();
-                    }
-                    if let Some(remaining) = &mut state.remaining_bytes {
-                        *remaining = remaining.saturating_sub(bytes.len() as u64);
-                        if *remaining == 0 {
-                            state.completion.finish(if state.upstream_succeeded {
-                                RequestOutcome::Succeeded
-                            } else {
-                                RequestOutcome::UpstreamHttpError
-                            });
+            if state.yield_after_sse_frame {
+                state.yield_after_sse_frame = false;
+                tokio::task::yield_now().await;
+            }
+            loop {
+                if let Some(transformer) = &mut state.sse_transformer {
+                    match transformer.next_frame() {
+                        Ok(Some(frame)) => {
+                            record_stream_bytes(&mut state, &frame);
+                            state.yield_after_sse_frame = true;
+                            return Some((Ok(frame), state));
+                        }
+                        Ok(None) => {}
+                        Err(_) => {
+                            state.upstream.take();
+                            state.sse_transformer = None;
+                            state
+                                .completion
+                                .finish(RequestOutcome::ResponseTransformFailed);
+                            let error: BodyStreamError = Box::new(ResponseTransformBodyError);
+                            return Some((Err(error), state));
                         }
                     }
-                    Some((Ok(bytes), state))
                 }
-                Ok(Some(Err(error))) => {
-                    state.upstream.take();
-                    state.completion.finish(RequestOutcome::UpstreamBodyError);
-                    let error: BodyStreamError = Box::new(error);
-                    Some((Err(error), state))
-                }
-                Ok(None) => {
-                    state.completion.finish(if state.upstream_succeeded {
-                        RequestOutcome::Succeeded
-                    } else {
-                        RequestOutcome::UpstreamHttpError
-                    });
-                    None
-                }
-                Err(_) => {
-                    state.upstream.take();
-                    state.completion.finish(RequestOutcome::StreamIdleTimeout);
-                    let error: BodyStreamError = Box::new(io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        "upstream response stream was idle for too long",
-                    ));
-                    Some((Err(error), state))
+                let next = match state.upstream.as_mut() {
+                    Some(upstream) => timeout(state.idle_timeout, upstream.next()).await,
+                    None => return None,
+                };
+
+                match next {
+                    Ok(Some(Ok(bytes))) => {
+                        if let Some(transformer) = &mut state.sse_transformer {
+                            transformer.push(bytes);
+                            continue;
+                        }
+                        record_stream_bytes(&mut state, &bytes);
+                        return Some((Ok(bytes), state));
+                    }
+                    Ok(Some(Err(error))) => {
+                        state.upstream.take();
+                        state.completion.finish(RequestOutcome::UpstreamBodyError);
+                        let error: BodyStreamError = Box::new(error);
+                        return Some((Err(error), state));
+                    }
+                    Ok(None) => {
+                        state.upstream.take();
+                        if let Some(transformer) = &mut state.sse_transformer {
+                            if let Some(residual) = transformer.finish() {
+                                record_stream_bytes(&mut state, &residual);
+                                state.completion.finish(if state.upstream_succeeded {
+                                    RequestOutcome::Succeeded
+                                } else {
+                                    RequestOutcome::UpstreamHttpError
+                                });
+                                return Some((Ok(residual), state));
+                            }
+                        }
+                        state.completion.finish(if state.upstream_succeeded {
+                            RequestOutcome::Succeeded
+                        } else {
+                            RequestOutcome::UpstreamHttpError
+                        });
+                        return None;
+                    }
+                    Err(_) => {
+                        state.upstream.take();
+                        state.completion.finish(RequestOutcome::StreamIdleTimeout);
+                        let error: BodyStreamError = Box::new(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "upstream response stream was idle for too long",
+                        ));
+                        return Some((Err(error), state));
+                    }
                 }
             }
         },
     )
 }
+
+fn record_stream_bytes(state: &mut StreamState, bytes: &Bytes) {
+    if !bytes.is_empty() {
+        state.completion.record_first_byte();
+    }
+    if let Some(remaining) = &mut state.remaining_bytes {
+        *remaining = remaining.saturating_sub(bytes.len() as u64);
+        if *remaining == 0 {
+            state.completion.finish(if state.upstream_succeeded {
+                RequestOutcome::Succeeded
+            } else {
+                RequestOutcome::UpstreamHttpError
+            });
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ResponseTransformBodyError;
+
+impl std::fmt::Display for ResponseTransformBodyError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("response_transform_failed")
+    }
+}
+
+impl Error for ResponseTransformBodyError {}
 
 #[derive(Clone, Copy)]
 enum RequestOutcome {
@@ -923,6 +1064,7 @@ enum RequestOutcome {
     UpstreamUnavailable,
     UpstreamBodyError,
     StreamIdleTimeout,
+    ResponseTransformFailed,
     Cancelled,
     ClientRequestError,
 }
@@ -937,6 +1079,7 @@ impl RequestOutcome {
             Self::UpstreamUnavailable => "upstream_unavailable",
             Self::UpstreamBodyError => "upstream_body_error",
             Self::StreamIdleTimeout => "stream_idle_timeout",
+            Self::ResponseTransformFailed => "response_transform_failed",
             Self::Cancelled => "cancelled",
             Self::ClientRequestError => "client_request_error",
         }
@@ -952,6 +1095,7 @@ impl RequestOutcome {
             | Self::UpstreamUnavailable
             | Self::UpstreamBodyError
             | Self::StreamIdleTimeout
+            | Self::ResponseTransformFailed
             | Self::ClientRequestError => RequestLogOutcome::Failed,
         }
     }
@@ -965,6 +1109,7 @@ impl RequestOutcome {
             Self::UpstreamUnavailable => Some("upstream_unavailable"),
             Self::UpstreamBodyError => Some("upstream_body_error"),
             Self::StreamIdleTimeout => Some("stream_idle_timeout"),
+            Self::ResponseTransformFailed => Some("response_transform_failed"),
             Self::Cancelled => Some("client_cancelled"),
             Self::ClientRequestError => Some("invalid_request"),
         }
@@ -976,6 +1121,7 @@ impl RequestOutcome {
                 Some(StatusCode::GATEWAY_TIMEOUT.as_u16())
             }
             Self::UpstreamUnavailable => Some(StatusCode::BAD_GATEWAY.as_u16()),
+            Self::ResponseTransformFailed => Some(StatusCode::BAD_GATEWAY.as_u16()),
             Self::ClientRequestError => Some(StatusCode::BAD_REQUEST.as_u16()),
             Self::Succeeded
             | Self::UpstreamHttpError
@@ -1002,6 +1148,7 @@ struct CompletionContext {
     started_at: Instant,
     first_byte_at: Option<Duration>,
     upstream_status: Option<u16>,
+    client_visible_status: Option<u16>,
     sink: Arc<dyn RequestLogSink>,
 }
 
@@ -1045,6 +1192,7 @@ impl CompletionGuard {
                 started_at,
                 first_byte_at: None,
                 upstream_status: None,
+                client_visible_status: None,
                 sink,
             }),
             lease: Some(lease),
@@ -1055,6 +1203,12 @@ impl CompletionGuard {
     fn set_upstream_status(&mut self, status: u16) {
         if let Some(context) = &mut self.context {
             context.upstream_status = Some(status);
+        }
+    }
+
+    fn set_client_visible_status(&mut self, status: u16) {
+        if let Some(context) = &mut self.context {
+            context.client_visible_status = Some(status);
         }
     }
 
@@ -1116,7 +1270,10 @@ impl CompletionGuard {
             channel_id: Some(context.channel_id),
             model_id: Some(context.model_id),
             outcome: outcome.log_outcome(),
-            response_status_code: context.upstream_status.or(outcome.fallback_status()),
+            response_status_code: context
+                .client_visible_status
+                .or(context.upstream_status)
+                .or(outcome.fallback_status()),
             streamed: context.streamed,
             ttft_ms: context.first_byte_at.map(clamp_duration_ms),
             total_duration_ms,

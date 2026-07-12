@@ -9,6 +9,7 @@ license = "UNLICENSED"
 [dependencies]
 arc-swap = "1.7"
 axum = "0.8"
+bytes = "1.10"
 chrono = { version = "0.4", features = ["serde"] }
 futures-util = "0.3"
 hyper = { version = "1", features = ["server", "http1", "http2"] }

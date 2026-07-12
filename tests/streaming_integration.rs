@@ -7,17 +7,18 @@ use std::{
 };
 
 use ai_gateway::{
-    application::ProxyService,
+    application::{ProxyService, RecordingRequestLogSink},
     http,
     persistence::{
-        ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ControlPlaneRecords, ModelRuleRecord,
+        ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ConfigTemplateRecord, ControlPlaneRecords,
+        ModelRuleRecord,
     },
     runtime_config::{RuntimeConfig, UpstreamConfig, compile_control_plane},
 };
 use axum::{
     Router,
     body::{Body, Bytes},
-    extract::State,
+    extract::{Request, State},
     http::StatusCode,
     response::Response,
     routing::post,
@@ -56,8 +57,27 @@ fn proxy_service(
     response_header_timeout: u64,
     stream_idle_timeout: u64,
 ) -> ProxyService {
+    proxy_service_with_documents(
+        upstream_url,
+        response_header_timeout,
+        stream_idle_timeout,
+        None,
+        serde_json::json!({}),
+        RecordingRequestLogSink::default(),
+    )
+}
+
+fn proxy_service_with_documents(
+    upstream_url: &str,
+    response_header_timeout: u64,
+    stream_idle_timeout: u64,
+    template: Option<Value>,
+    override_document: Value,
+    logs: RecordingRequestLogSink,
+) -> ProxyService {
     let group_id = Uuid::new_v4();
     let channel_id = Uuid::new_v4();
+    let template_id = template.as_ref().map(|_| Uuid::new_v4());
     let records = ControlPlaneRecords {
         api_keys: vec![ApiKeyRecord {
             id: Uuid::new_v4(),
@@ -93,8 +113,8 @@ fn proxy_service(
             auto_disabled: false,
             weight: 1,
             proxy_id: None,
-            config_template_id: None,
-            override_document: serde_json::json!({}),
+            config_template_id: template_id,
+            override_document,
             connect_timeout_ms: None,
             response_header_timeout_ms: None,
             stream_idle_timeout_ms: None,
@@ -116,9 +136,20 @@ fn proxy_service(
             enabled: true,
         }],
         proxies: vec![],
-        templates: vec![],
+        templates: template_id
+            .zip(template)
+            .map(|(id, document)| {
+                vec![ConfigTemplateRecord {
+                    id,
+                    name: "stream-transform-template".into(),
+                    description: None,
+                    document,
+                    enabled: true,
+                }]
+            })
+            .unwrap_or_default(),
     };
-    ProxyService::new(
+    ProxyService::with_log_sink(
         Arc::new(RuntimeConfig::new(compile_control_plane(records).unwrap())),
         1_048_576,
         &UpstreamConfig {
@@ -126,8 +157,17 @@ fn proxy_service(
             response_header_timeout_seconds: response_header_timeout,
             stream_idle_timeout_seconds: stream_idle_timeout,
         },
+        Arc::new(logs),
     )
     .unwrap()
+}
+
+fn active_chat_sse_document(patch: Value) -> Value {
+    serde_json::json!({
+        "version": 1,
+        "api_format": "open_ai_chat_completions",
+        "sse": [{"event": "chat.completion.chunk", "json": patch}]
+    })
 }
 
 fn client() -> reqwest::Client {
@@ -148,6 +188,16 @@ fn sse_response(body: Body) -> Response {
         .header("content-type", "text/event-stream")
         .body(body)
         .unwrap()
+}
+
+fn sse_response_with_headers(body: Body, headers: &[(&str, &str)]) -> Response {
+    let mut builder = Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "text/event-stream");
+    for (name, value) in headers {
+        builder = builder.header(*name, *value);
+    }
+    builder.body(body).unwrap()
 }
 
 struct DropSignal(Option<oneshot::Sender<()>>);
@@ -228,11 +278,16 @@ struct TwoChunkState {
 
 async fn two_chunk_sse(State(state): State<TwoChunkState>) -> Response {
     let release_second = state.release_second.lock().unwrap().take().unwrap();
-    let first =
-        stream::once(async { Ok::<Bytes, Infallible>(Bytes::from_static(b"data: first\n\n")) });
+    let first = stream::once(async {
+        Ok::<Bytes, Infallible>(Bytes::from_static(
+            b"data: {\"object\":\"chat.completion.chunk\"}\n\n",
+        ))
+    });
     let second = stream::once(async move {
         release_second.await.unwrap();
-        Ok::<Bytes, Infallible>(Bytes::from_static(b"data: second\n\n"))
+        Ok::<Bytes, Infallible>(Bytes::from_static(
+            b"data: {\"object\":\"chat.completion.chunk\"}\n\n",
+        ))
     });
     sse_response(Body::from_stream(first.chain(second)))
 }
@@ -248,10 +303,15 @@ async fn sse_first_chunk_is_forwarded_without_waiting_for_the_second_chunk() {
             }),
     )
     .await;
-    let gateway = start_server(http::router(proxy_service(
+    let gateway = start_server(http::router(proxy_service_with_documents(
         &format!("http://{}", upstream.address),
         5,
         5,
+        None,
+        active_chat_sse_document(serde_json::json!([
+            {"op": "add", "path": "/patched", "value": true}
+        ])),
+        RecordingRequestLogSink::default(),
     )))
     .await;
 
@@ -266,7 +326,7 @@ async fn sse_first_chunk_is_forwarded_without_waiting_for_the_second_chunk() {
             .expect("first SSE chunk was buffered")
             .unwrap()
             .unwrap(),
-        Bytes::from_static(b"data: first\n\n")
+        Bytes::from_static(b"data: {\"object\":\"chat.completion.chunk\",\"patched\":true}\n\n")
     );
 
     release_second_tx.send(()).unwrap();
@@ -276,7 +336,7 @@ async fn sse_first_chunk_is_forwarded_without_waiting_for_the_second_chunk() {
             .expect("second SSE chunk was not forwarded")
             .unwrap()
             .unwrap(),
-        Bytes::from_static(b"data: second\n\n")
+        Bytes::from_static(b"data: {\"object\":\"chat.completion.chunk\",\"patched\":true}\n\n")
     );
 }
 
@@ -286,8 +346,11 @@ struct HangingStreamState {
 }
 
 async fn hanging_sse(State(state): State<HangingStreamState>) -> Response {
-    let first =
-        stream::once(async { Ok::<Bytes, Infallible>(Bytes::from_static(b"data: first\n\n")) });
+    let first = stream::once(async {
+        Ok::<Bytes, Infallible>(Bytes::from_static(
+            b"data: {\"object\":\"chat.completion.chunk\"}\n\n",
+        ))
+    });
     let wait_forever = stream::unfold(take_signal(&state.body_dropped), |guard| async move {
         pending::<()>().await;
         drop(guard);
@@ -307,10 +370,15 @@ async fn idle_upstream_stream_keeps_status_then_terminates_and_releases_body() {
             }),
     )
     .await;
-    let gateway = start_server(http::router(proxy_service(
+    let gateway = start_server(http::router(proxy_service_with_documents(
         &format!("http://{}", upstream.address),
         5,
         1,
+        None,
+        active_chat_sse_document(serde_json::json!([
+            {"op": "add", "path": "/patched", "value": true}
+        ])),
+        RecordingRequestLogSink::default(),
     )))
     .await;
 
@@ -325,7 +393,7 @@ async fn idle_upstream_stream_keeps_status_then_terminates_and_releases_body() {
             .expect("gateway did not forward the first SSE chunk")
             .unwrap()
             .unwrap(),
-        b"data: first\n\n".as_slice()
+        b"data: {\"object\":\"chat.completion.chunk\",\"patched\":true}\n\n".as_slice()
     );
     match timeout(OUTER_TIMEOUT, response.chunk())
         .await
@@ -351,10 +419,15 @@ async fn client_disconnect_drops_upstream_response_body_without_background_pump(
             }),
     )
     .await;
-    let gateway = start_server(http::router(proxy_service(
+    let gateway = start_server(http::router(proxy_service_with_documents(
         &format!("http://{}", upstream.address),
         5,
         5,
+        None,
+        active_chat_sse_document(serde_json::json!([
+            {"op": "add", "path": "/patched", "value": true}
+        ])),
+        RecordingRequestLogSink::default(),
     )))
     .await;
 
@@ -369,7 +442,7 @@ async fn client_disconnect_drops_upstream_response_body_without_background_pump(
             .expect("gateway did not forward the first SSE chunk")
             .unwrap()
             .unwrap(),
-        b"data: first\n\n".as_slice()
+        b"data: {\"object\":\"chat.completion.chunk\",\"patched\":true}\n\n".as_slice()
     );
     assert!(
         timeout(Duration::from_millis(100), &mut dropped_rx)
@@ -383,4 +456,429 @@ async fn client_disconnect_drops_upstream_response_body_without_background_pump(
         .await
         .expect("dropping the client response did not release the upstream body")
         .unwrap();
+}
+
+async fn split_crlf_sse() -> Response {
+    let chunks = stream::iter([
+        Ok::<Bytes, Infallible>(Bytes::from_static(
+            b"data: {\"object\":\"chat.completion.chunk\",\"meta\":{}}\r",
+        )),
+        Ok(Bytes::from_static(b"\n\r")),
+        Ok(Bytes::from_static(b"\n")),
+    ]);
+    sse_response(Body::from_stream(chunks))
+}
+
+#[tokio::test]
+async fn active_sse_transform_handles_a_frame_split_between_cr_and_lf() {
+    let upstream =
+        start_server(Router::new().route("/v1/chat/completions", post(split_crlf_sse))).await;
+    let gateway = start_server(http::router(proxy_service_with_documents(
+        &format!("http://{}", upstream.address),
+        5,
+        5,
+        None,
+        active_chat_sse_document(serde_json::json!([
+            {"op": "add", "path": "/meta/patched", "value": true}
+        ])),
+        RecordingRequestLogSink::default(),
+    )))
+    .await;
+
+    let response = request(&client(), gateway.address).send().await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.bytes().await.unwrap(),
+        b"data: {\"meta\":{\"patched\":true},\"object\":\"chat.completion.chunk\"}\r\n\r\n"
+            .as_slice()
+    );
+}
+
+async fn decorated_sse() -> Response {
+    let body = b"data: {\"object\":\"chat.completion.chunk\"}\n\n";
+    sse_response_with_headers(
+        Body::from(body.as_slice()),
+        &[
+            ("content-length", "42"),
+            ("etag", "upstream-etag"),
+            ("last-modified", "Wed, 21 Oct 2015 07:28:00 GMT"),
+            ("content-md5", "upstream-md5"),
+            ("digest", "sha-256=upstream"),
+        ],
+    )
+}
+
+#[tokio::test]
+async fn transformed_sse_response_applies_layered_headers_and_removes_entity_metadata() {
+    let upstream =
+        start_server(Router::new().route("/v1/chat/completions", post(decorated_sse))).await;
+    let gateway = start_server(http::router(proxy_service_with_documents(
+        &format!("http://{}", upstream.address),
+        5,
+        5,
+        Some(serde_json::json!({
+            "version": 1,
+            "api_format": "open_ai_chat_completions",
+            "response_headers": {"set": {"x-layer": "template"}}
+        })),
+        serde_json::json!({
+            "version": 1,
+            "api_format": "open_ai_chat_completions",
+            "response_headers": {"set": {"x-layer": "channel"}},
+            "sse": [{
+                "event": "chat.completion.chunk",
+                "json": [{"op": "add", "path": "/patched", "value": true}]
+            }]
+        }),
+        RecordingRequestLogSink::default(),
+    )))
+    .await;
+
+    let response = request(&client(), gateway.address).send().await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers().get("x-layer").unwrap(), "channel");
+    for name in [
+        "content-length",
+        "etag",
+        "last-modified",
+        "content-md5",
+        "digest",
+    ] {
+        assert!(
+            response.headers().get(name).is_none(),
+            "stale {name} leaked"
+        );
+    }
+    assert_eq!(
+        response.bytes().await.unwrap(),
+        b"data: {\"object\":\"chat.completion.chunk\",\"patched\":true}\n\n".as_slice()
+    );
+}
+
+async fn ordinary_json_response() -> Response {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "application/json")
+        .header("etag", "ordinary-etag")
+        .body(Body::from(Bytes::from_static(b"{ \"upstream\" : true }")))
+        .unwrap()
+}
+
+async fn unusual_sse_response() -> Response {
+    sse_response_with_headers(
+        Body::from(Bytes::from_static(b": note\r\ndata: [DONE]\r\n\r\n")),
+        &[("etag", "transparent-etag")],
+    )
+}
+
+#[tokio::test]
+async fn no_sse_plan_keeps_sse_bytes_and_entity_headers_transparent() {
+    let upstream =
+        start_server(Router::new().route("/v1/chat/completions", post(unusual_sse_response))).await;
+    let gateway = start_server(http::router(proxy_service(
+        &format!("http://{}", upstream.address),
+        5,
+        5,
+    )))
+    .await;
+
+    let response = request(&client(), gateway.address).send().await.unwrap();
+
+    assert_eq!(response.headers().get("etag").unwrap(), "transparent-etag");
+    assert_eq!(
+        response.bytes().await.unwrap(),
+        b": note\r\ndata: [DONE]\r\n\r\n".as_slice()
+    );
+}
+
+#[tokio::test]
+async fn active_plan_leaves_non_sse_response_bytes_and_entity_headers_transparent() {
+    let upstream =
+        start_server(Router::new().route("/v1/chat/completions", post(ordinary_json_response)))
+            .await;
+    let gateway = start_server(http::router(proxy_service_with_documents(
+        &format!("http://{}", upstream.address),
+        5,
+        5,
+        None,
+        active_chat_sse_document(serde_json::json!([
+            {"op": "add", "path": "/patched", "value": true}
+        ])),
+        RecordingRequestLogSink::default(),
+    )))
+    .await;
+
+    let response = request(&client(), gateway.address).send().await.unwrap();
+
+    assert_eq!(response.headers().get("etag").unwrap(), "ordinary-etag");
+    assert_eq!(
+        response.bytes().await.unwrap(),
+        b"{ \"upstream\" : true }".as_slice()
+    );
+}
+
+#[derive(Clone)]
+struct AcceptEncodingState(Arc<Mutex<Option<String>>>);
+
+async fn capture_accept_encoding(
+    State(state): State<AcceptEncodingState>,
+    request: Request,
+) -> Response {
+    *state.0.lock().unwrap() = request
+        .headers()
+        .get("accept-encoding")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    sse_response(Body::from(Bytes::from_static(
+        b"data: {\"object\":\"chat.completion.chunk\"}\n\n",
+    )))
+}
+
+#[tokio::test]
+async fn active_sse_plan_forces_identity_encoding_upstream() {
+    let captured = Arc::new(Mutex::new(None));
+    let upstream = start_server(
+        Router::new()
+            .route("/v1/chat/completions", post(capture_accept_encoding))
+            .with_state(AcceptEncodingState(Arc::clone(&captured))),
+    )
+    .await;
+    let gateway = start_server(http::router(proxy_service_with_documents(
+        &format!("http://{}", upstream.address),
+        5,
+        5,
+        None,
+        active_chat_sse_document(serde_json::json!([
+            {"op": "add", "path": "/patched", "value": true}
+        ])),
+        RecordingRequestLogSink::default(),
+    )))
+    .await;
+
+    let response = request(&client(), gateway.address).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.bytes().await.unwrap(),
+        b"data: {\"object\":\"chat.completion.chunk\",\"patched\":true}\n\n".as_slice()
+    );
+    assert_eq!(captured.lock().unwrap().as_deref(), Some("identity"));
+}
+
+async fn compressed_sse() -> Response {
+    sse_response_with_headers(
+        Body::from(Bytes::from_static(b"not-actually-gzip")),
+        &[("content-encoding", "gzip")],
+    )
+}
+
+#[tokio::test]
+async fn compressed_sse_with_an_active_plan_fails_before_downstream_headers() {
+    let upstream =
+        start_server(Router::new().route("/v1/chat/completions", post(compressed_sse))).await;
+    let logs = RecordingRequestLogSink::default();
+    let gateway = start_server(http::router(proxy_service_with_documents(
+        &format!("http://{}", upstream.address),
+        5,
+        5,
+        None,
+        active_chat_sse_document(serde_json::json!([
+            {"op": "add", "path": "/patched", "value": true}
+        ])),
+        logs.clone(),
+    )))
+    .await;
+
+    let response = request(&client(), gateway.address).send().await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let body: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+    assert_eq!(body["error"]["code"], "response_transform_failed");
+    let events = logs.events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(
+        events[0].response_status_code,
+        Some(StatusCode::BAD_GATEWAY.as_u16())
+    );
+}
+
+async fn response_with_dynamic_hop_header() -> Response {
+    Response::builder()
+        .status(StatusCode::IM_A_TEAPOT)
+        .header("content-type", "text/event-stream")
+        .header("connection", "x-upstream-hop")
+        .header("x-upstream-hop", "upstream")
+        .body(Body::from(Bytes::from_static(b"data: [DONE]\n\n")))
+        .unwrap()
+}
+
+#[tokio::test]
+async fn response_header_plan_failure_before_headers_logs_the_client_visible_status() {
+    let upstream = start_server(Router::new().route(
+        "/v1/chat/completions",
+        post(response_with_dynamic_hop_header),
+    ))
+    .await;
+    let logs = RecordingRequestLogSink::default();
+    let gateway = start_server(http::router(proxy_service_with_documents(
+        &format!("http://{}", upstream.address),
+        5,
+        5,
+        None,
+        serde_json::json!({
+            "version": 1,
+            "api_format": "open_ai_chat_completions",
+            "response_headers": {"set": {"x-upstream-hop": "configured"}}
+        }),
+        logs.clone(),
+    )))
+    .await;
+
+    let response = request(&client(), gateway.address).send().await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let events = logs.events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(
+        events[0].response_status_code,
+        Some(StatusCode::BAD_GATEWAY.as_u16())
+    );
+}
+
+#[derive(Clone)]
+struct PatchFailureState {
+    release_first: Arc<Mutex<Option<oneshot::Receiver<()>>>>,
+    body_dropped: Arc<Mutex<Option<oneshot::Sender<()>>>>,
+}
+
+async fn failing_patch_sse(State(state): State<PatchFailureState>) -> Response {
+    let release_first = state.release_first.lock().unwrap().take().unwrap();
+    let first = stream::once(async move {
+        release_first.await.unwrap();
+        Ok::<Bytes, Infallible>(Bytes::from_static(
+            b"data: {\"object\":\"chat.completion.chunk\"}\n\n",
+        ))
+    });
+    let wait_forever = stream::unfold(take_signal(&state.body_dropped), |guard| async move {
+        pending::<()>().await;
+        drop(guard);
+        None::<(Result<Bytes, Infallible>, DropSignal)>
+    });
+    sse_response(Body::from_stream(first.chain(wait_forever)))
+}
+
+#[tokio::test]
+async fn event_patch_failure_after_headers_terminates_the_body_releases_upstream_and_logs_once() {
+    let (dropped_tx, dropped_rx) = oneshot::channel();
+    let (release_first_tx, release_first_rx) = oneshot::channel();
+    let upstream = start_server(
+        Router::new()
+            .route("/v1/chat/completions", post(failing_patch_sse))
+            .with_state(PatchFailureState {
+                release_first: Arc::new(Mutex::new(Some(release_first_rx))),
+                body_dropped: Arc::new(Mutex::new(Some(dropped_tx))),
+            }),
+    )
+    .await;
+    let logs = RecordingRequestLogSink::default();
+    let gateway = start_server(http::router(proxy_service_with_documents(
+        &format!("http://{}", upstream.address),
+        5,
+        5,
+        None,
+        active_chat_sse_document(serde_json::json!([
+            {"op": "replace", "path": "/missing", "value": true}
+        ])),
+        logs.clone(),
+    )))
+    .await;
+
+    let mut response = request(&client(), gateway.address).send().await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    release_first_tx.send(()).unwrap();
+    assert!(matches!(response.chunk().await, Err(_) | Ok(None)));
+    timeout(CANCELLATION_TIMEOUT, dropped_rx)
+        .await
+        .expect("event patch failure did not release the upstream body")
+        .unwrap();
+    let events = logs.events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].outcome.as_str(), "failed");
+    assert_eq!(events[0].error_code, Some("response_transform_failed"));
+    assert_eq!(
+        events[0].response_status_code,
+        Some(StatusCode::OK.as_u16())
+    );
+}
+
+async fn done_then_failing_frame_in_one_chunk() -> Response {
+    sse_response(Body::from(Bytes::from_static(
+        b"data: [DONE]\n\ndata: {\"object\":\"chat.completion.chunk\"}\n\n",
+    )))
+}
+
+#[tokio::test]
+async fn later_same_chunk_sse_failure_preserves_earlier_unmatched_frame() {
+    let upstream = start_server(Router::new().route(
+        "/v1/chat/completions",
+        post(done_then_failing_frame_in_one_chunk),
+    ))
+    .await;
+    let gateway = start_server(http::router(proxy_service_with_documents(
+        &format!("http://{}", upstream.address),
+        5,
+        5,
+        None,
+        active_chat_sse_document(serde_json::json!([
+            {"op": "replace", "path": "/missing", "value": true}
+        ])),
+        RecordingRequestLogSink::default(),
+    )))
+    .await;
+
+    let mut response = request(&client(), gateway.address).send().await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.chunk().await.unwrap().unwrap(),
+        Bytes::from_static(b"data: [DONE]\n\n")
+    );
+    assert!(matches!(response.chunk().await, Err(_) | Ok(None)));
+}
+
+async fn residual_sse() -> Response {
+    sse_response(Body::from(Bytes::from_static(
+        b"data: {\"object\":\"chat.completion.chunk\"}",
+    )))
+}
+
+#[tokio::test]
+async fn eof_residual_is_accounted_before_success_completion() {
+    let upstream =
+        start_server(Router::new().route("/v1/chat/completions", post(residual_sse))).await;
+    let logs = RecordingRequestLogSink::default();
+    let gateway = start_server(http::router(proxy_service_with_documents(
+        &format!("http://{}", upstream.address),
+        5,
+        5,
+        None,
+        active_chat_sse_document(serde_json::json!([
+            {"op": "add", "path": "/patched", "value": true}
+        ])),
+        logs.clone(),
+    )))
+    .await;
+
+    let response = request(&client(), gateway.address).send().await.unwrap();
+
+    assert_eq!(
+        response.bytes().await.unwrap(),
+        b"data: {\"object\":\"chat.completion.chunk\"}".as_slice()
+    );
+    let events = logs.events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].outcome.as_str(), "succeeded");
+    assert!(events[0].ttft_ms.is_some());
 }

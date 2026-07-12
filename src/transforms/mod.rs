@@ -7,6 +7,7 @@
 use std::{collections::HashSet, fmt, sync::Arc};
 
 use axum::body::Bytes;
+use bytes::BytesMut;
 use json_patch::{AddOperation, PatchOperation, RemoveOperation, ReplaceOperation};
 use jsonptr::PointerBuf;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
@@ -140,6 +141,12 @@ impl HeaderPlan {
     pub fn apply(&self, headers: &mut HeaderMap) -> Result<(), TransformApplyError> {
         apply_header_plan(headers, self)
     }
+
+    /// Applies this plan to upstream response headers using response-specific
+    /// protected-header rules.
+    pub fn apply_to_response(&self, headers: &mut HeaderMap) -> Result<(), TransformApplyError> {
+        apply_response_header_plan(headers, self)
+    }
 }
 
 #[derive(Clone)]
@@ -211,20 +218,36 @@ pub fn apply_header_plan(
     headers: &mut HeaderMap,
     plan: &HeaderPlan,
 ) -> Result<(), TransformApplyError> {
+    apply_header_plan_in_scope(headers, plan, HeaderScope::Request)
+}
+
+/// Applies a compiled response-header plan before upstream hop-by-hop cleanup.
+pub fn apply_response_header_plan(
+    headers: &mut HeaderMap,
+    plan: &HeaderPlan,
+) -> Result<(), TransformApplyError> {
+    apply_header_plan_in_scope(headers, plan, HeaderScope::Response)
+}
+
+fn apply_header_plan_in_scope(
+    headers: &mut HeaderMap,
+    plan: &HeaderPlan,
+    scope: HeaderScope,
+) -> Result<(), TransformApplyError> {
     let connection_names = connection_header_names(headers);
     for operation in plan.operations() {
         match operation {
             HeaderOperation::Set { name, value } => {
-                ensure_runtime_header_allowed(name, &connection_names)?;
+                ensure_runtime_header_allowed(name, &connection_names, scope)?;
                 headers.insert(name.clone(), value.clone());
             }
             HeaderOperation::Remove { name } => {
-                ensure_runtime_header_allowed(name, &connection_names)?;
+                ensure_runtime_header_allowed(name, &connection_names, scope)?;
                 headers.remove(name);
             }
             HeaderOperation::Rename { from, to } => {
-                ensure_runtime_header_allowed(from, &connection_names)?;
-                ensure_runtime_header_allowed(to, &connection_names)?;
+                ensure_runtime_header_allowed(from, &connection_names, scope)?;
+                ensure_runtime_header_allowed(to, &connection_names, scope)?;
                 let values = headers.get_all(from).iter().cloned().collect::<Vec<_>>();
                 if values.is_empty() {
                     continue;
@@ -251,15 +274,24 @@ pub fn apply_json_patch_plan(
 
     let mut document =
         serde_json::from_slice(&body).map_err(|_| TransformApplyError::InvalidJsonBody)?;
+    apply_json_patch_value(&mut document, plan)?;
+    serde_json::to_vec(&document)
+        .map(Bytes::from)
+        .map_err(|_| TransformApplyError::SerializationFailed)
+}
+
+/// Applies a compiled plan to a parsed document. SSE processing uses this to
+/// parse an event once while applying matching entries in their stored order.
+pub fn apply_json_patch_value(
+    document: &mut Value,
+    plan: &JsonPatchPlan,
+) -> Result<(), TransformApplyError> {
     let operations = plan
         .operations()
         .iter()
         .map(compile_runtime_patch_operation)
         .collect::<Result<Vec<_>, _>>()?;
-    json_patch::patch(&mut document, &operations).map_err(|_| TransformApplyError::PatchFailed)?;
-    serde_json::to_vec(&document)
-        .map(Bytes::from)
-        .map_err(|_| TransformApplyError::SerializationFailed)
+    json_patch::patch(document, &operations).map_err(|_| TransformApplyError::PatchFailed)
 }
 
 fn compile_runtime_patch_operation(
@@ -322,8 +354,9 @@ fn trim_ascii_bytes(bytes: &[u8]) -> &[u8] {
 fn ensure_runtime_header_allowed(
     name: &HeaderName,
     connection_names: &HashSet<HeaderName>,
+    scope: HeaderScope,
 ) -> Result<(), TransformApplyError> {
-    if is_protected_header(name.as_str(), HeaderScope::Request) || connection_names.contains(name) {
+    if is_protected_header(name.as_str(), scope) || connection_names.contains(name) {
         Err(TransformApplyError::ProtectedHeader)
     } else {
         Ok(())
@@ -344,6 +377,8 @@ pub enum TransformApplyError {
     PatchFailed,
     #[error("transform JSON body could not be serialized")]
     SerializationFailed,
+    #[error("SSE event frame exceeds the configured limit")]
+    SseFrameTooLarge,
 }
 
 #[derive(Clone)]
@@ -437,6 +472,22 @@ impl SseEventPatchPlan {
         }
     }
 
+    /// Empty entries are semantic no-ops and must not activate SSE handling.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        !self.has_operations()
+    }
+
+    #[must_use]
+    pub fn has_operations(&self) -> bool {
+        match self {
+            Self::OpenAiChatCompletions { entries } => {
+                entries.iter().any(|entry| !entry.json.is_empty())
+            }
+            Self::OpenAiResponses { entries } => entries.iter().any(|entry| !entry.json.is_empty()),
+        }
+    }
+
     fn append(&self, other: &Self) -> Self {
         match (self, other) {
             (
@@ -452,6 +503,304 @@ impl SseEventPatchPlan {
             }
             _ => unreachable!("transform plans were format-checked before composition"),
         }
+    }
+}
+
+/// Pull-driven SSE frame transformer. It holds at most one original upstream
+/// chunk plus the current unfinished frame, and yields at most one frame per
+/// call to [`Self::next_frame`].
+pub struct SseTransformer {
+    plan: SseEventPatchPlan,
+    frame: BytesMut,
+    source: Option<Bytes>,
+    source_offset: usize,
+    line_has_content: bool,
+    pending_cr: bool,
+}
+
+impl SseTransformer {
+    pub const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
+
+    #[must_use]
+    pub fn new(plan: SseEventPatchPlan) -> Self {
+        Self {
+            plan,
+            frame: BytesMut::new(),
+            source: None,
+            source_offset: 0,
+            line_has_content: false,
+            pending_cr: false,
+        }
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.plan.is_empty()
+    }
+
+    #[must_use]
+    pub fn has_operations(&self) -> bool {
+        self.plan.has_operations()
+    }
+
+    /// Supplies one upstream chunk. Call [`Self::next_frame`] until it returns
+    /// `Ok(None)` before supplying the next chunk.
+    pub fn push(&mut self, bytes: Bytes) {
+        assert!(
+            self.source.is_none(),
+            "source chunk must be drained before push"
+        );
+        self.source = Some(bytes);
+        self.source_offset = 0;
+    }
+
+    /// Scans the supplied source incrementally and yields at most one complete
+    /// frame. Frame bytes are retained only after the 8 MiB ceiling check.
+    pub fn next_frame(&mut self) -> Result<Option<Bytes>, TransformApplyError> {
+        loop {
+            let Some(source_len) = self.source.as_ref().map(Bytes::len) else {
+                return Ok(None);
+            };
+            if self.source_offset == source_len {
+                self.source = None;
+                self.source_offset = 0;
+                return Ok(None);
+            }
+
+            // A CR is ambiguous until its successor is available. Resolve it
+            // before consuming that successor so a completed frame never skips
+            // a byte from the following frame.
+            if self.pending_cr {
+                let byte = self.source.as_ref().expect("source checked above")[self.source_offset];
+                self.pending_cr = false;
+                if byte == b'\n' {
+                    self.append(byte)?;
+                    self.source_offset += 1;
+                }
+                if self.finish_line() {
+                    return transform_sse_frame(self.take_frame(), &self.plan).map(Some);
+                }
+                if byte == b'\n' {
+                    continue;
+                }
+            }
+
+            let byte = self.source.as_ref().expect("source checked above")[self.source_offset];
+            self.append(byte)?;
+            self.source_offset += 1;
+            match byte {
+                b'\n' => {
+                    if self.finish_line() {
+                        return transform_sse_frame(self.take_frame(), &self.plan).map(Some);
+                    }
+                }
+                b'\r' => self.pending_cr = true,
+                _ => self.line_has_content = true,
+            }
+        }
+    }
+
+    fn append(&mut self, byte: u8) -> Result<(), TransformApplyError> {
+        if self.frame.len() == Self::MAX_FRAME_BYTES {
+            return Err(TransformApplyError::SseFrameTooLarge);
+        }
+        self.frame.extend_from_slice(&[byte]);
+        Ok(())
+    }
+
+    fn finish_line(&mut self) -> bool {
+        let complete_frame = !self.line_has_content;
+        self.line_has_content = false;
+        complete_frame
+    }
+
+    fn take_frame(&mut self) -> Bytes {
+        self.frame.split().freeze()
+    }
+
+    /// A clean EOF preserves an unfinished frame exactly as received. A final
+    /// CR remains residual because it may have been the first half of CRLF.
+    pub fn finish(&mut self) -> Option<Bytes> {
+        (!self.frame.is_empty()).then(|| self.frame.split().freeze())
+    }
+}
+
+struct SseLine {
+    start: usize,
+    content_end: usize,
+    end: usize,
+}
+
+fn transform_sse_frame(
+    frame: Bytes,
+    plan: &SseEventPatchPlan,
+) -> Result<Bytes, TransformApplyError> {
+    let mut event = None;
+    let mut data = Vec::new();
+    let mut has_data = false;
+    let mut cursor = 0;
+    while let Some(line) = next_sse_line(&frame, &mut cursor) {
+        if line.start == line.content_end {
+            break;
+        }
+        let content = &frame[line.start..line.content_end];
+        let Some((field, value)) = sse_field(content) else {
+            continue;
+        };
+        match field {
+            b"event" => event = Some(value),
+            b"data" => {
+                if has_data {
+                    data.push(b'\n');
+                }
+                data.extend_from_slice(value);
+                has_data = true;
+            }
+            _ => {}
+        }
+    }
+    if !has_data {
+        return Ok(frame);
+    }
+    let Ok(mut value) = serde_json::from_slice::<Value>(&data) else {
+        return Ok(frame);
+    };
+    if !value.is_object() {
+        return Ok(frame);
+    }
+
+    let changed = match plan {
+        SseEventPatchPlan::OpenAiChatCompletions { entries } => {
+            let chat_chunk =
+                value.get("object").and_then(Value::as_str) == Some("chat.completion.chunk");
+            if !chat_chunk || event.is_some_and(|name| !name.is_empty()) {
+                false
+            } else {
+                apply_matching_chat_entries(&mut value, entries)?
+            }
+        }
+        SseEventPatchPlan::OpenAiResponses { entries } => {
+            let Some(event_type) = value.get("type").and_then(Value::as_str) else {
+                return Ok(frame);
+            };
+            let Some(selector) = response_selector(event_type) else {
+                return Ok(frame);
+            };
+            if event.is_some_and(|name| name != event_type.as_bytes()) {
+                false
+            } else {
+                apply_matching_response_entries(&mut value, entries, selector)?
+            }
+        }
+    };
+    if !changed {
+        return Ok(frame);
+    }
+
+    let json = serde_json::to_vec(&value).map_err(|_| TransformApplyError::SerializationFailed)?;
+    let rewritten = rewrite_sse_data_lines(&frame, &json);
+    Ok(Bytes::from(rewritten))
+}
+
+fn next_sse_line(frame: &[u8], cursor: &mut usize) -> Option<SseLine> {
+    let start = *cursor;
+    let mut index = start;
+    while index < frame.len() {
+        let end = match frame[index] {
+            b'\n' => index + 1,
+            b'\r' if index + 1 < frame.len() && frame[index + 1] == b'\n' => index + 2,
+            b'\r' => index + 1,
+            _ => {
+                index += 1;
+                continue;
+            }
+        };
+        *cursor = end;
+        return Some(SseLine {
+            start,
+            content_end: index,
+            end,
+        });
+    }
+    None
+}
+
+fn rewrite_sse_data_lines(frame: &[u8], json: &[u8]) -> Vec<u8> {
+    let mut rewritten = Vec::with_capacity(frame.len() + json.len());
+    let mut frame_cursor = 0;
+    let mut scan_cursor = 0;
+    let mut replaced = false;
+    while let Some(line) = next_sse_line(frame, &mut scan_cursor) {
+        if line.start == line.content_end {
+            break;
+        }
+        if sse_field(&frame[line.start..line.content_end])
+            .is_some_and(|(field, _)| field == b"data")
+        {
+            rewritten.extend_from_slice(&frame[frame_cursor..line.start]);
+            if !replaced {
+                rewritten.extend_from_slice(b"data: ");
+                rewritten.extend_from_slice(json);
+                rewritten.extend_from_slice(&frame[line.content_end..line.end]);
+                replaced = true;
+            }
+            frame_cursor = line.end;
+        }
+    }
+    rewritten.extend_from_slice(&frame[frame_cursor..]);
+    rewritten
+}
+
+fn sse_field(line: &[u8]) -> Option<(&[u8], &[u8])> {
+    if line.first() == Some(&b':') {
+        return None;
+    }
+    let (field, value) = match line.iter().position(|byte| *byte == b':') {
+        Some(position) => (&line[..position], &line[position + 1..]),
+        None => (line, &[][..]),
+    };
+    Some((field, value.strip_prefix(b" ").unwrap_or(value)))
+}
+
+fn apply_matching_chat_entries(
+    value: &mut Value,
+    entries: &[ChatCompletionsSsePatchEntry],
+) -> Result<bool, TransformApplyError> {
+    let mut changed = false;
+    for entry in entries {
+        if entry.event == ChatCompletionsSseEvent::ChatCompletionChunk && !entry.json.is_empty() {
+            apply_json_patch_value(value, &entry.json)?;
+            changed = true;
+        }
+    }
+    Ok(changed)
+}
+
+fn apply_matching_response_entries(
+    value: &mut Value,
+    entries: &[ResponsesSsePatchEntry],
+    selector: ResponsesSseEvent,
+) -> Result<bool, TransformApplyError> {
+    let mut changed = false;
+    for entry in entries {
+        if entry.event == selector && !entry.json.is_empty() {
+            apply_json_patch_value(value, &entry.json)?;
+            changed = true;
+        }
+    }
+    Ok(changed)
+}
+
+fn response_selector(event: &str) -> Option<ResponsesSseEvent> {
+    match event {
+        "response.output_text.delta" => Some(ResponsesSseEvent::ResponseOutputTextDelta),
+        "response.refusal.delta" => Some(ResponsesSseEvent::ResponseRefusalDelta),
+        "response.function_call_arguments.delta" => {
+            Some(ResponsesSseEvent::ResponseFunctionCallArgumentsDelta)
+        }
+        "response.output_text.done" => Some(ResponsesSseEvent::ResponseOutputTextDone),
+        "response.completed" => Some(ResponsesSseEvent::ResponseCompleted),
+        _ => None,
     }
 }
 
@@ -1019,6 +1368,7 @@ fn is_protected_header(name: &str, scope: HeaderScope) -> bool {
         "connection",
         "keep-alive",
         "proxy-authenticate",
+        "proxy-authorization",
         "proxy-connection",
         "te",
         "trailer",
@@ -1033,7 +1383,12 @@ fn is_protected_header(name: &str, scope: HeaderScope) -> bool {
             name,
             "host" | "content-length" | "authorization" | "proxy-authorization" | "cookie"
         ),
-        HeaderScope::Response => matches!(name, "content-length" | "set-cookie"),
+        HeaderScope::Response => {
+            matches!(
+                name,
+                "content-length" | "content-type" | "set-cookie" | "content-encoding"
+            )
+        }
     }
 }
 
@@ -1525,5 +1880,259 @@ mod tests {
         let forwarded = apply_json_patch_plan(original.clone(), plan.request_json()).unwrap();
 
         assert_eq!(forwarded, original);
+    }
+
+    fn sse_plan(document: Value, api_format: ApiFormat) -> SseEventPatchPlan {
+        compile_document(&document, api_format)
+            .unwrap()
+            .sse_event_patches()
+            .clone()
+    }
+
+    fn transform_chunks(plan: SseEventPatchPlan, chunks: &[&[u8]]) -> Vec<u8> {
+        let mut transformer = SseTransformer::new(plan);
+        let mut output = Vec::new();
+        for chunk in chunks {
+            transformer.push(Bytes::copy_from_slice(chunk));
+            while let Some(frame) = transformer.next_frame().unwrap() {
+                output.extend_from_slice(&frame);
+            }
+        }
+        if let Some(residual) = transformer.finish() {
+            output.extend_from_slice(&residual);
+        }
+        output
+    }
+
+    #[test]
+    fn sse_transformer_handles_lf_crlf_and_a_split_crlf_delimiter() {
+        let plan = sse_plan(
+            json!({
+                "version": 1,
+                "api_format": "open_ai_chat_completions",
+                "sse": [{
+                    "event": "chat.completion.chunk",
+                    "json": [{"op": "add", "path": "/patched", "value": true}]
+                }]
+            }),
+            CHAT,
+        );
+        let output = transform_chunks(
+            plan,
+            &[
+                b"data: {\"object\":\"chat.completion.chunk\"}\r",
+                b"\n\r",
+                b"\ndata: {\"object\":\"chat.completion.chunk\"}\n",
+                b"\n",
+            ],
+        );
+
+        assert_eq!(
+            output,
+            b"data: {\"object\":\"chat.completion.chunk\",\"patched\":true}\r\n\r\ndata: {\"object\":\"chat.completion.chunk\",\"patched\":true}\n\n"
+        );
+    }
+
+    #[test]
+    fn sse_transformer_matches_only_format_specific_events_and_event_names() {
+        let chat = sse_plan(
+            json!({
+                "version": 1,
+                "api_format": "open_ai_chat_completions",
+                "sse": [{"event": "chat.completion.chunk", "json": [{"op": "add", "path": "/patched", "value": "chat"}]}]
+            }),
+            CHAT,
+        );
+        assert_eq!(
+            transform_chunks(
+                chat,
+                &[
+                    b"event: other\ndata: {\"object\":\"chat.completion.chunk\"}\n\n",
+                    b"data: {\"type\":\"response.output_text.delta\"}\n\n",
+                ],
+            ),
+            b"event: other\ndata: {\"object\":\"chat.completion.chunk\"}\n\ndata: {\"type\":\"response.output_text.delta\"}\n\n"
+        );
+
+        let responses = sse_plan(
+            json!({
+                "version": 1,
+                "api_format": "open_ai_responses",
+                "sse": [{"event": "response.output_text.delta", "json": [{"op": "add", "path": "/patched", "value": "responses"}]}]
+            }),
+            RESPONSES,
+        );
+        assert_eq!(
+            transform_chunks(
+                responses,
+                &[
+                    b"event: response.completed\ndata: {\"type\":\"response.output_text.delta\"}\n\n",
+                    b"event: response.output_text.delta\ndata: {\"type\":\"response.completed\"}\n\n",
+                    b"event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\"}\n\n",
+                ],
+            ),
+            b"event: response.completed\ndata: {\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.completed\"}\n\nevent: response.output_text.delta\ndata: {\"patched\":\"responses\",\"type\":\"response.output_text.delta\"}\n\n"
+        );
+    }
+
+    #[test]
+    fn composed_sse_entries_run_template_before_channel_and_reconstruct_multiline_data() {
+        let defaults = compile_document(
+            &json!({
+                "version": 1,
+                "api_format": "open_ai_chat_completions",
+                "sse": [{"event": "chat.completion.chunk", "json": [{"op": "add", "path": "/metadata/layer", "value": "template"}]}]
+            }),
+            CHAT,
+        )
+        .unwrap();
+        let channel = compile_document(
+            &json!({
+                "version": 1,
+                "api_format": "open_ai_chat_completions",
+                "sse": [{"event": "chat.completion.chunk", "json": [{"op": "replace", "path": "/metadata/layer", "value": "channel"}]}]
+            }),
+            CHAT,
+        )
+        .unwrap();
+        let output = transform_chunks(
+            TransformPlan::compose(&defaults, &channel)
+                .unwrap()
+                .sse_event_patches()
+                .clone(),
+            &[
+                b": keep\ndata: {\"object\":\"chat.completion.chunk\",\"metadata\":\n",
+                b"data: {}}\nunknown: retained\n\n",
+            ],
+        );
+
+        assert_eq!(
+            output,
+            b": keep\ndata: {\"metadata\":{\"layer\":\"channel\"},\"object\":\"chat.completion.chunk\"}\nunknown: retained\n\n"
+        );
+    }
+
+    #[test]
+    fn sse_transformer_preserves_non_matching_frames_and_clean_eof_residuals_exactly() {
+        let plan = sse_plan(
+            json!({
+                "version": 1,
+                "api_format": "open_ai_chat_completions",
+                "sse": [{"event": "chat.completion.chunk", "json": [{"op": "add", "path": "/patched", "value": true}]}]
+            }),
+            CHAT,
+        );
+        let passthrough =
+            b": comment\nunknown: field\ndata: [DONE]\n\ndata: not-json\n\ndata: [1,2]\n\n";
+        let residual = b"data: {\"object\":\"chat.completion.chunk\"}";
+        let output = transform_chunks(plan, &[passthrough, residual]);
+
+        assert_eq!(
+            output,
+            [passthrough.as_slice(), residual.as_slice()].concat()
+        );
+    }
+
+    #[test]
+    fn sse_transformer_rejects_frames_larger_than_its_ceiling() {
+        let mut transformer =
+            SseTransformer::new(TransformPlan::noop(CHAT).sse_event_patches().clone());
+
+        transformer.push(Bytes::from(vec![b'x'; SseTransformer::MAX_FRAME_BYTES + 1]));
+        assert!(matches!(
+            transformer.next_frame(),
+            Err(TransformApplyError::SseFrameTooLarge)
+        ));
+    }
+
+    #[test]
+    fn sse_transformer_yields_prior_same_chunk_frames_before_a_later_patch_failure() {
+        let plan = sse_plan(
+            json!({
+                "version": 1,
+                "api_format": "open_ai_chat_completions",
+                "sse": [{
+                    "event": "chat.completion.chunk",
+                    "json": [{"op": "replace", "path": "/missing", "value": true}]
+                }]
+            }),
+            CHAT,
+        );
+        let mut transformer = SseTransformer::new(plan);
+        transformer.push(Bytes::from_static(
+            b"data: [DONE]\n\ndata: {\"object\":\"chat.completion.chunk\"}\n\n",
+        ));
+
+        assert_eq!(
+            transformer.next_frame().unwrap(),
+            Some(Bytes::from_static(b"data: [DONE]\n\n"))
+        );
+        assert!(matches!(
+            transformer.next_frame(),
+            Err(TransformApplyError::PatchFailed)
+        ));
+    }
+
+    #[test]
+    fn response_header_plans_apply_in_layer_order_and_protect_static_and_dynamic_hops() {
+        let template = compile_document(
+            &json!({
+                "version": 1,
+                "api_format": "open_ai_chat_completions",
+                "response_headers": {"set": {"x-layer": "template"}}
+            }),
+            CHAT,
+        )
+        .unwrap();
+        let channel = compile_document(
+            &json!({
+                "version": 1,
+                "api_format": "open_ai_chat_completions",
+                "response_headers": {"set": {"x-layer": "channel"}}
+            }),
+            CHAT,
+        )
+        .unwrap();
+        let plan = TransformPlan::compose(&template, &channel).unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-layer", HeaderValue::from_static("upstream"));
+        plan.response_headers()
+            .apply_to_response(&mut headers)
+            .unwrap();
+        assert_eq!(headers.get("x-layer").unwrap(), "channel");
+
+        for protected in [
+            "content-length",
+            "content-type",
+            "set-cookie",
+            "content-encoding",
+            "connection",
+        ] {
+            let document = json!({
+                "version": 1,
+                "api_format": "open_ai_chat_completions",
+                "response_headers": {"set": {protected: "changed"}}
+            });
+            assert!(matches!(
+                compile_document(&document, CHAT),
+                Err(TransformCompileError::ProtectedHeader)
+            ));
+        }
+
+        let dynamic = compile_document(
+            &json!({
+                "version": 1,
+                "api_format": "open_ai_chat_completions",
+                "response_headers": {"set": {"x-upstream-hop": "changed"}}
+            }),
+            CHAT,
+        )
+        .unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("connection", HeaderValue::from_static("x-upstream-hop"));
+        assert!(matches!(
+            dynamic.response_headers().apply_to_response(&mut headers),
+            Err(TransformApplyError::ProtectedHeader)
+        ));
     }
 }
