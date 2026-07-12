@@ -218,6 +218,16 @@ fn authorized_post(
 }
 
 #[tokio::test]
+async fn health_is_available_without_authentication() {
+    let harness = harness(StatusCode::OK, Vec::new()).await;
+
+    let response = client().get(harness.url("/health")).send().await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert!(harness.upstream_requests().is_empty());
+}
+
+#[tokio::test]
 async fn missing_bearer_key_returns_unauthorized_without_upstream_contact() {
     let harness = harness(StatusCode::OK, br#"{"unexpected":true}"#.to_vec()).await;
 
