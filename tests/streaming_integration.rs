@@ -75,6 +75,28 @@ fn proxy_service_with_documents(
     override_document: Value,
     logs: RecordingRequestLogSink,
 ) -> ProxyService {
+    proxy_service_with_network_policy(
+        upstream_url,
+        UpstreamConfig {
+            connect_timeout_seconds: 1,
+            response_header_timeout_seconds: response_header_timeout,
+            stream_idle_timeout_seconds: stream_idle_timeout,
+        },
+        (None, None, None),
+        template,
+        override_document,
+        logs,
+    )
+}
+
+fn proxy_service_with_network_policy(
+    upstream_url: &str,
+    upstream_config: UpstreamConfig,
+    channel_timeouts: (Option<i32>, Option<i32>, Option<i32>),
+    template: Option<Value>,
+    override_document: Value,
+    logs: RecordingRequestLogSink,
+) -> ProxyService {
     let group_id = Uuid::new_v4();
     let channel_id = Uuid::new_v4();
     let template_id = template.as_ref().map(|_| Uuid::new_v4());
@@ -115,9 +137,9 @@ fn proxy_service_with_documents(
             proxy_id: None,
             config_template_id: template_id,
             override_document,
-            connect_timeout_ms: None,
-            response_header_timeout_ms: None,
-            stream_idle_timeout_ms: None,
+            connect_timeout_ms: channel_timeouts.0,
+            response_header_timeout_ms: channel_timeouts.1,
+            stream_idle_timeout_ms: channel_timeouts.2,
             upstream_auth_kind: "bearer".into(),
             upstream_auth_header_name: None,
             upstream_api_key: Some("upstream-key".into()),
@@ -152,11 +174,7 @@ fn proxy_service_with_documents(
     ProxyService::with_log_sink(
         Arc::new(RuntimeConfig::new(compile_control_plane(records).unwrap())),
         1_048_576,
-        &UpstreamConfig {
-            connect_timeout_seconds: 1,
-            response_header_timeout_seconds: response_header_timeout,
-            stream_idle_timeout_seconds: stream_idle_timeout,
-        },
+        &upstream_config,
         Arc::new(logs),
     )
     .unwrap()
@@ -268,6 +286,50 @@ async fn response_header_timeout_returns_openai_error_and_cancels_upstream_reque
     timeout(CANCELLATION_TIMEOUT, cancelled_rx)
         .await
         .expect("header-timeout cancellation did not drop the upstream request")
+        .unwrap();
+}
+
+#[tokio::test]
+async fn channel_response_header_timeout_overrides_the_longer_toml_default() {
+    let (accepted_tx, accepted_rx) = oneshot::channel();
+    let (cancelled_tx, cancelled_rx) = oneshot::channel();
+    let upstream = start_server(
+        Router::new()
+            .route("/v1/chat/completions", post(never_responds))
+            .with_state(HeaderTimeoutState {
+                accepted: Arc::new(Mutex::new(Some(accepted_tx))),
+                cancelled: Arc::new(Mutex::new(Some(cancelled_tx))),
+            }),
+    )
+    .await;
+    let gateway = start_server(http::router(proxy_service_with_network_policy(
+        &format!("http://{}", upstream.address),
+        UpstreamConfig {
+            connect_timeout_seconds: 5,
+            response_header_timeout_seconds: 5,
+            stream_idle_timeout_seconds: 5,
+        },
+        (Some(50), Some(100), None),
+        None,
+        serde_json::json!({}),
+        RecordingRequestLogSink::default(),
+    )))
+    .await;
+
+    let response = timeout(
+        Duration::from_secs(1),
+        request(&client(), gateway.address).send(),
+    )
+    .await
+    .expect("channel response-header override was ignored")
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+    let body: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+    assert_eq!(body["error"]["code"], "response_header_timeout");
+    timeout(OUTER_TIMEOUT, accepted_rx).await.unwrap().unwrap();
+    timeout(CANCELLATION_TIMEOUT, cancelled_rx)
+        .await
+        .expect("channel response-header timeout did not cancel upstream")
         .unwrap();
 }
 
@@ -405,6 +467,46 @@ async fn idle_upstream_stream_keeps_status_then_terminates_and_releases_body() {
     timeout(CANCELLATION_TIMEOUT, dropped_rx)
         .await
         .expect("idle timeout did not release the upstream response body")
+        .unwrap();
+}
+
+#[tokio::test]
+async fn channel_stream_idle_timeout_overrides_the_longer_toml_default() {
+    let (dropped_tx, dropped_rx) = oneshot::channel();
+    let upstream = start_server(
+        Router::new()
+            .route("/v1/chat/completions", post(hanging_sse))
+            .with_state(HangingStreamState {
+                body_dropped: Arc::new(Mutex::new(Some(dropped_tx))),
+            }),
+    )
+    .await;
+    let gateway = start_server(http::router(proxy_service_with_network_policy(
+        &format!("http://{}", upstream.address),
+        UpstreamConfig {
+            connect_timeout_seconds: 5,
+            response_header_timeout_seconds: 6,
+            stream_idle_timeout_seconds: 5,
+        },
+        (None, None, Some(100)),
+        None,
+        serde_json::json!({}),
+        RecordingRequestLogSink::default(),
+    )))
+    .await;
+
+    let mut response = request(&client(), gateway.address).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(response.chunk().await.unwrap().is_some());
+    assert!(matches!(
+        timeout(Duration::from_secs(1), response.chunk())
+            .await
+            .expect("channel stream-idle override was ignored"),
+        Ok(None) | Err(_)
+    ));
+    timeout(CANCELLATION_TIMEOUT, dropped_rx)
+        .await
+        .expect("channel stream-idle timeout did not release upstream")
         .unwrap();
 }
 

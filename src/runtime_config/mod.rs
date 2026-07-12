@@ -356,15 +356,18 @@ fn compile_proxies(
         require("proxy name", &record.name)?;
         let url = Url::parse(&record.proxy_url)
             .map_err(|_| ConfigError::Compile("proxy has an invalid URL".into()))?;
-        if !matches!(url.scheme(), "http" | "https" | "socks4" | "socks5")
-            || url.host().is_none()
+        if !matches!(
+            url.scheme(),
+            "http" | "https" | "socks4" | "socks4a" | "socks5" | "socks5h"
+        ) || url.host().is_none()
             || url.query().is_some()
             || url.fragment().is_some()
+            || !matches!(url.path(), "" | "/")
             || !url.username().is_empty()
             || url.password().is_some()
         {
             return Err(ConfigError::Compile(
-                "proxy URL must use http, https, socks4, or socks5 without embedded credentials, query, or fragment".into(),
+                "proxy URL must use http, https, socks4, socks4a, socks5, or socks5h with a root path and without embedded credentials, query, or fragment".into(),
             ));
         }
         let no_proxy_hosts = record
@@ -379,6 +382,11 @@ fn compile_proxies(
         if let Some(password) = &record.password {
             require("proxy password", password)?;
         }
+        validate_proxy_credentials(
+            url.scheme(),
+            record.username.as_deref(),
+            record.password.as_deref(),
+        )?;
         if record.enabled {
             result.insert(
                 record.id,
@@ -394,6 +402,34 @@ fn compile_proxies(
         }
     }
     Ok(result)
+}
+
+fn validate_proxy_credentials(
+    scheme: &str,
+    username: Option<&str>,
+    password: Option<&str>,
+) -> Result<(), ConfigError> {
+    match scheme {
+        "socks4" | "socks4a" if username.is_some() || password.is_some() => Err(
+            ConfigError::Compile("SOCKS4 proxy credentials are not supported".into()),
+        ),
+        "socks5" | "socks5h" if username.is_some() != password.is_some() => {
+            Err(ConfigError::Compile(
+                "SOCKS5 proxy credentials must include both username and password".into(),
+            ))
+        }
+        "socks5" | "socks5h" => {
+            for credential in [username, password].into_iter().flatten() {
+                if !(1..=255).contains(&credential.len()) {
+                    return Err(ConfigError::Compile(
+                        "SOCKS5 proxy credentials have an invalid length".into(),
+                    ));
+                }
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
 }
 
 fn compile_templates(
@@ -1340,7 +1376,7 @@ mod tests {
 
     #[test]
     fn compiler_validates_proxy_schemes_no_proxy_hosts_and_never_leaks_credentials() {
-        for scheme in ["http", "https", "socks4", "socks5"] {
+        for scheme in ["http", "https", "socks5", "socks5h"] {
             let mut records = route_records(0, "weighted_random", 1, "weighted_random", false);
             let id = Uuid::new_v4();
             records.proxies = vec![proxy(id, &format!("{scheme}://proxy.test:1080"), true)];
@@ -1348,6 +1384,21 @@ mod tests {
             assert!(
                 compile_control_plane(records).is_ok(),
                 "{scheme} should compile"
+            );
+        }
+
+        for scheme in ["socks4", "socks4a"] {
+            let mut records = route_records(0, "weighted_random", 1, "weighted_random", false);
+            let id = Uuid::new_v4();
+            records.proxies = vec![ProxyRecord {
+                username: None,
+                password: None,
+                ..proxy(id, &format!("{scheme}://proxy.test:1080"), true)
+            }];
+            records.channels[0].proxy_id = Some(id);
+            assert!(
+                compile_control_plane(records).is_ok(),
+                "{scheme} without credentials should compile"
             );
         }
 
@@ -1371,6 +1422,52 @@ mod tests {
                 ..proxy(Uuid::new_v4(), "https://proxy.test", true)
             }];
             assert!(compile_control_plane(records).is_err());
+        }
+    }
+
+    #[test]
+    fn compiler_rejects_invalid_socks_credentials_without_leaking_them() {
+        const USERNAME: &str = "socks-credential-username-sentinel";
+        const PASSWORD: &str = "socks-credential-password-sentinel";
+
+        let compile_proxy = |scheme: &str, username: Option<String>, password: Option<String>| {
+            let mut records = route_records(0, "weighted_random", 1, "weighted_random", false);
+            records.proxies = vec![ProxyRecord {
+                username,
+                password,
+                ..proxy(Uuid::new_v4(), &format!("{scheme}://proxy.test:1080"), true)
+            }];
+            compile_control_plane(records)
+        };
+
+        for scheme in ["socks4", "socks4a"] {
+            for (username, password) in [
+                (Some(USERNAME.to_owned()), None),
+                (None, Some(PASSWORD.to_owned())),
+                (Some(USERNAME.to_owned()), Some(PASSWORD.to_owned())),
+            ] {
+                let error = compile_proxy(scheme, username, password).unwrap_err();
+                let rendered = format!("{error:?} {error}");
+                assert!(!rendered.contains(USERNAME));
+                assert!(!rendered.contains(PASSWORD));
+            }
+        }
+
+        for scheme in ["socks5", "socks5h"] {
+            assert!(compile_proxy(scheme, None, None).is_ok());
+            assert!(compile_proxy(scheme, Some("u".repeat(255)), Some("p".repeat(255)),).is_ok());
+
+            for (username, password) in [
+                (Some(USERNAME.to_owned()), None),
+                (None, Some(PASSWORD.to_owned())),
+                (Some("é".repeat(128)), Some(PASSWORD.to_owned())),
+                (Some(USERNAME.to_owned()), Some("é".repeat(128))),
+            ] {
+                let error = compile_proxy(scheme, username, password).unwrap_err();
+                let rendered = format!("{error:?} {error}");
+                assert!(!rendered.contains(USERNAME));
+                assert!(!rendered.contains(PASSWORD));
+            }
         }
     }
 

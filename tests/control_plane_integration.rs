@@ -14,7 +14,7 @@ use ai_gateway::{
         ControlPlaneRepository, MIGRATOR, RequestLogInsertOutcome, RequestLogRepository,
     },
     routing::{self, PassiveHealthPolicy, RoutingRuntime},
-    runtime_config::{RuntimeConfig, compile_control_plane},
+    runtime_config::{RuntimeConfig, UpstreamConfig, compile_control_plane},
     workers::{ControlPlaneReloader, RequestLogWorker},
 };
 use axum::{
@@ -437,6 +437,14 @@ async fn request_log_insert_is_idempotent_and_worker_continues_after_failure() {
 
 const ADMIN_TOKEN: &str = "stage-four-admin-token-with-at-least-32-characters";
 
+fn upstream_defaults() -> UpstreamConfig {
+    UpstreamConfig {
+        connect_timeout_seconds: 1,
+        response_header_timeout_seconds: 2,
+        stream_idle_timeout_seconds: 3,
+    }
+}
+
 async fn admin_app(pool: PgPool, actor: Uuid) -> (Router, Arc<RuntimeConfig>) {
     let repository = ControlPlaneRepository::new(pool);
     let runtime = Arc::new(RuntimeConfig::new(
@@ -446,6 +454,7 @@ async fn admin_app(pool: PgPool, actor: Uuid) -> (Router, Arc<RuntimeConfig>) {
         repository,
         Arc::clone(&runtime),
         RoutingRuntime::new(PassiveHealthPolicy::default()),
+        upstream_defaults(),
     );
     (
         admin::router(AdminState {
@@ -1012,6 +1021,7 @@ async fn proxy_template_management_is_redacted_and_publishes_or_rolls_back_atomi
     let invalid_channel_inputs = [
         serde_json::json!({"proxy_id": Uuid::new_v4()}),
         serde_json::json!({"connect_timeout_ms": 0}),
+        serde_json::json!({"response_header_timeout_ms": 10}),
     ];
     for changes in invalid_channel_inputs {
         let mut invalid = valid_channel.clone();
@@ -1058,6 +1068,16 @@ async fn proxy_template_management_is_redacted_and_publishes_or_rolls_back_atomi
         .await
         .unwrap();
     assert_eq!(audit_after, audit_before);
+    assert_eq!(
+        sqlx::query_scalar::<_, Option<i32>>(
+            "SELECT response_header_timeout_ms FROM channels WHERE id=$1",
+        )
+        .bind(seed.channel)
+        .fetch_one(&database.pool)
+        .await
+        .unwrap(),
+        Some(22)
+    );
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT count(*) FROM proxies")
             .fetch_one(&database.pool)
@@ -1537,7 +1557,7 @@ async fn migrated_soft_quota_allows_over_limit_usage_and_rejects_the_seeded_key(
         1_048_576,
         &ai_gateway::runtime_config::UpstreamConfig {
             connect_timeout_seconds: 1,
-            response_header_timeout_seconds: 1,
+            response_header_timeout_seconds: 2,
             stream_idle_timeout_seconds: 1,
         },
     )
@@ -1640,7 +1660,7 @@ async fn reloader_replaces_atomically_retains_old_arcs_and_rolls_back_failures()
     let runtime = Arc::new(RuntimeConfig::new(
         compile_control_plane(repository.load().await.unwrap()).unwrap(),
     ));
-    let reloader = ControlPlaneReloader::new(repository, Arc::clone(&runtime));
+    let reloader = ControlPlaneReloader::new(repository, Arc::clone(&runtime), upstream_defaults());
     let old = runtime.snapshot();
     sqlx::query(
         "UPDATE channels SET available_models = ARRAY['upstream-v2']::text[] WHERE id = $1",
@@ -1687,6 +1707,53 @@ async fn reloader_replaces_atomically_retains_old_arcs_and_rolls_back_failures()
 }
 
 #[tokio::test]
+async fn invalid_effective_upstream_policy_preserves_reload_manual_reload_and_snapshot_state() {
+    let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
+    let repository = ControlPlaneRepository::new(database.pool.clone());
+    let runtime = Arc::new(RuntimeConfig::new(
+        compile_control_plane(repository.load().await.unwrap()).unwrap(),
+    ));
+    let coordinator = ControlPlaneCoordinator::new(
+        repository,
+        Arc::clone(&runtime),
+        RoutingRuntime::new(PassiveHealthPolicy::default()),
+        upstream_defaults(),
+    );
+    let published = runtime.snapshot();
+    let audits_before: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_logs")
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE channels SET connect_timeout_ms = 2000, response_header_timeout_ms = 1000 WHERE id = $1",
+    )
+    .bind(seed.channel)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+
+    assert!(coordinator.reload().await.is_err());
+    assert!(coordinator.manual_reload(seed.user).await.is_err());
+
+    let timeouts: (Option<i32>, Option<i32>) = sqlx::query_as(
+        "SELECT connect_timeout_ms, response_header_timeout_ms FROM channels WHERE id = $1",
+    )
+    .bind(seed.channel)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(timeouts, (Some(2000), Some(1000)));
+    let audits_after: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_logs")
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    assert_eq!(audits_after, audits_before);
+    assert!(Arc::ptr_eq(&published, &runtime.snapshot()));
+    database.cleanup().await;
+}
+
+#[tokio::test]
 async fn suspending_a_user_publishes_a_snapshot_that_revokes_their_keys() {
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
@@ -1694,7 +1761,7 @@ async fn suspending_a_user_publishes_a_snapshot_that_revokes_their_keys() {
     let runtime = Arc::new(RuntimeConfig::new(
         compile_control_plane(repository.load().await.unwrap()).unwrap(),
     ));
-    let reloader = ControlPlaneReloader::new(repository, Arc::clone(&runtime));
+    let reloader = ControlPlaneReloader::new(repository, Arc::clone(&runtime), upstream_defaults());
     let old = runtime.snapshot();
     sqlx::query("UPDATE users SET status = 'suspended' WHERE id = $1")
         .bind(seed.user)
@@ -1852,7 +1919,7 @@ async fn proxy_request_logs_reach_postgres_for_terminal_and_rejected_requests() 
         1_048_576,
         &ai_gateway::runtime_config::UpstreamConfig {
             connect_timeout_seconds: 1,
-            response_header_timeout_seconds: 1,
+            response_header_timeout_seconds: 2,
             stream_idle_timeout_seconds: 1,
         },
         Arc::new(sink),
@@ -2160,7 +2227,7 @@ async fn saturated_request_log_queue_does_not_delay_proxy_responses_and_drains_a
         1_048_576,
         &ai_gateway::runtime_config::UpstreamConfig {
             connect_timeout_seconds: 1,
-            response_header_timeout_seconds: 1,
+            response_header_timeout_seconds: 2,
             stream_idle_timeout_seconds: 1,
         },
         Arc::new(sink),

@@ -11,6 +11,7 @@ use chrono::{DateTime, Utc};
 use reqwest::{Url, header::HeaderName};
 use rust_decimal::Decimal;
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -252,6 +253,19 @@ pub struct ChannelTimeoutPolicy {
     response_header: Option<Duration>,
     stream_idle: Option<Duration>,
 }
+
+/// Opaque, credential-safe digest of a channel's outbound network policy.
+///
+/// The raw proxy URL, credentials, no-proxy rules, and connect-timeout override
+/// are only used as SHA-256 input and are never exposed through this type.
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+pub struct OutboundNetworkPolicyFingerprint([u8; 32]);
+
+impl fmt::Debug for OutboundNetworkPolicyFingerprint {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("OutboundNetworkPolicyFingerprint(REDACTED)")
+    }
+}
 impl ChannelTimeoutPolicy {
     #[must_use]
     pub fn connect(&self) -> Option<Duration> {
@@ -286,6 +300,7 @@ pub struct CompiledChannelUpstreamPolicy {
     channel_override: TransformPlan,
     effective_transforms: TransformPlan,
     timeouts: ChannelTimeoutPolicy,
+    outbound_network_policy_fingerprint: OutboundNetworkPolicyFingerprint,
 }
 impl CompiledChannelUpstreamPolicy {
     #[must_use]
@@ -308,6 +323,11 @@ impl CompiledChannelUpstreamPolicy {
     pub fn timeouts(&self) -> &ChannelTimeoutPolicy {
         &self.timeouts
     }
+    /// Returns an opaque identity for the outbound network policy.
+    #[must_use]
+    pub fn outbound_network_policy_fingerprint(&self) -> OutboundNetworkPolicyFingerprint {
+        self.outbound_network_policy_fingerprint
+    }
     pub(crate) fn new(
         proxy: Option<Arc<CompiledProxy>>,
         template: Option<Arc<CompiledConfigTemplate>>,
@@ -315,12 +335,15 @@ impl CompiledChannelUpstreamPolicy {
         effective_transforms: TransformPlan,
         timeouts: ChannelTimeoutPolicy,
     ) -> Self {
+        let outbound_network_policy_fingerprint =
+            outbound_network_policy_fingerprint(proxy.as_deref(), timeouts.connect());
         Self {
             proxy,
             template,
             channel_override,
             effective_transforms,
             timeouts,
+            outbound_network_policy_fingerprint,
         }
     }
 
@@ -333,6 +356,65 @@ impl CompiledChannelUpstreamPolicy {
             TransformPlan::noop(api_format),
             ChannelTimeoutPolicy::default(),
         )
+    }
+}
+
+fn outbound_network_policy_fingerprint(
+    proxy: Option<&CompiledProxy>,
+    connect_timeout: Option<Duration>,
+) -> OutboundNetworkPolicyFingerprint {
+    let mut hasher = Sha256::new();
+    hasher.update(b"ai-gateway/outbound-network-policy/v1\0");
+    match proxy {
+        None => hasher.update([0]),
+        Some(proxy) => {
+            hasher.update([1]);
+            hash_policy_value(&mut hasher, proxy.url().as_str().as_bytes());
+            hash_optional_policy_value(&mut hasher, proxy.username());
+            hash_optional_policy_value(&mut hasher, proxy.password());
+            let mut no_proxy_hosts = proxy
+                .no_proxy_hosts()
+                .iter()
+                .map(canonical_no_proxy_host)
+                .collect::<Vec<_>>();
+            no_proxy_hosts.sort_unstable();
+            hasher.update((no_proxy_hosts.len() as u64).to_be_bytes());
+            for host in no_proxy_hosts {
+                hash_policy_value(&mut hasher, host.as_bytes());
+            }
+        }
+    }
+    match connect_timeout {
+        None => hasher.update([0]),
+        Some(timeout) => {
+            hasher.update([1]);
+            hasher.update(timeout.as_secs().to_be_bytes());
+            hasher.update(timeout.subsec_nanos().to_be_bytes());
+        }
+    }
+    OutboundNetworkPolicyFingerprint(hasher.finalize().into())
+}
+
+fn hash_optional_policy_value(hasher: &mut Sha256, value: Option<&str>) {
+    match value {
+        None => hasher.update([0]),
+        Some(value) => {
+            hasher.update([1]);
+            hash_policy_value(hasher, value.as_bytes());
+        }
+    }
+}
+
+fn hash_policy_value(hasher: &mut Sha256, value: &[u8]) {
+    hasher.update((value.len() as u64).to_be_bytes());
+    hasher.update(value);
+}
+
+fn canonical_no_proxy_host(host: &NoProxyHost) -> String {
+    match host {
+        NoProxyHost::ExactDns(name) => format!("exact:{name}"),
+        NoProxyHost::Ip(address) => format!("ip:{address}"),
+        NoProxyHost::DnsSuffix(name) => format!("suffix:{name}"),
     }
 }
 

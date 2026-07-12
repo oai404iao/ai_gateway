@@ -17,7 +17,7 @@ use crate::{
         ControlPlaneRepository, RepositoryError, RequestLogInsertOutcome, RequestLogRepository,
     },
     routing::{PassiveHealthPolicy, RoutingRuntime},
-    runtime_config::{ConfigError, RuntimeConfig},
+    runtime_config::{ConfigError, RuntimeConfig, UpstreamConfig},
 };
 
 /// Bounds an individual database write so a stalled connection cannot stop the
@@ -137,12 +137,17 @@ pub struct ControlPlaneReloader {
 }
 impl ControlPlaneReloader {
     #[must_use]
-    pub fn new(repository: ControlPlaneRepository, runtime: Arc<RuntimeConfig>) -> Self {
+    pub fn new(
+        repository: ControlPlaneRepository,
+        runtime: Arc<RuntimeConfig>,
+        upstream_defaults: UpstreamConfig,
+    ) -> Self {
         Self {
             coordinator: ControlPlaneCoordinator::new(
                 repository,
                 runtime,
                 RoutingRuntime::new(PassiveHealthPolicy::default()),
+                upstream_defaults,
             ),
         }
     }

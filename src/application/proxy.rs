@@ -20,7 +20,6 @@ use axum::{
     response::{IntoResponse, Response as AxumResponse},
 };
 use futures_util::{Stream, StreamExt, stream};
-use reqwest::{Client, redirect::Policy};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::time::timeout;
@@ -39,17 +38,17 @@ use crate::{
         SseEventPatchPlan, SseTransformer, apply_header_plan, apply_json_patch_plan,
         apply_response_header_plan, parse_connection_header_names,
     },
+    upstream::{ResolvedUpstreamPolicy, UpstreamClientRegistry},
 };
 
 /// Data-plane use case backed by a single immutable configuration snapshot per
-/// request and a reusable reqwest client.
+/// request and a process-shared upstream client registry.
 #[derive(Clone)]
 pub struct ProxyService {
     runtime: Arc<RuntimeConfig>,
-    upstream_client: Client,
+    upstream_clients: Arc<UpstreamClientRegistry>,
+    upstream_defaults: UpstreamConfig,
     max_request_body_bytes: usize,
-    response_header_timeout: Duration,
-    stream_idle_timeout: Duration,
     request_log_sink: Arc<dyn RequestLogSink>,
     routing: RoutingRuntime,
     admission: AdmissionRuntime,
@@ -109,17 +108,32 @@ impl ProxyService {
         routing: RoutingRuntime,
         admission: AdmissionRuntime,
     ) -> Result<Self, reqwest::Error> {
-        let upstream_client = Client::builder()
-            .connect_timeout(Duration::from_secs(upstream.connect_timeout_seconds))
-            .redirect(Policy::none())
-            .build()?;
+        Self::with_dependencies_and_registry(
+            runtime,
+            max_request_body_bytes,
+            upstream,
+            Arc::new(UpstreamClientRegistry::new()),
+            request_log_sink,
+            routing,
+            admission,
+        )
+    }
 
+    /// Constructs a proxy with a process-shared registry supplied by the host.
+    pub fn with_dependencies_and_registry(
+        runtime: Arc<RuntimeConfig>,
+        max_request_body_bytes: usize,
+        upstream: &UpstreamConfig,
+        upstream_clients: Arc<UpstreamClientRegistry>,
+        request_log_sink: Arc<dyn RequestLogSink>,
+        routing: RoutingRuntime,
+        admission: AdmissionRuntime,
+    ) -> Result<Self, reqwest::Error> {
         Ok(Self {
             runtime,
-            upstream_client,
+            upstream_clients,
+            upstream_defaults: upstream.clone(),
             max_request_body_bytes,
-            response_header_timeout: Duration::from_secs(upstream.response_header_timeout_seconds),
-            stream_idle_timeout: Duration::from_secs(upstream.stream_idle_timeout_seconds),
             request_log_sink,
             routing,
             admission,
@@ -268,40 +282,63 @@ impl ProxyService {
             completion.finish(RequestOutcome::UpstreamUnavailable);
             return Err(error);
         }
+        let upstream_policy = match ResolvedUpstreamPolicy::try_resolve(
+            &self.upstream_defaults,
+            route.channel.upstream_policy(),
+        ) {
+            Ok(policy) => policy,
+            Err(_) => {
+                completion.finish(RequestOutcome::UpstreamUnavailable);
+                return Err(ProxyError::upstream_unavailable());
+            }
+        };
+        let upstream_client = match self
+            .upstream_clients
+            .client_for(route.channel.upstream_policy(), upstream_policy)
+        {
+            Ok(client) => client,
+            Err(_) => {
+                completion.finish(RequestOutcome::UpstreamUnavailable);
+                return Err(ProxyError::upstream_unavailable());
+            }
+        };
 
-        let upstream_request = self
-            .upstream_client
+        let upstream_request = upstream_client
             .request(parts.method, url)
             .headers(headers)
             .body(body);
-        let upstream_response =
-            match timeout(self.response_header_timeout, upstream_request.send()).await {
-                Err(_) => {
-                    completion.probe_failed();
-                    completion.finish(RequestOutcome::ResponseHeaderTimeout);
-                    return Err(ProxyError::response_header_timeout());
+        let upstream_response = match timeout(
+            upstream_policy.timeouts().response_header(),
+            upstream_request.send(),
+        )
+        .await
+        {
+            Err(_) => {
+                completion.probe_failed();
+                completion.finish(RequestOutcome::ResponseHeaderTimeout);
+                return Err(ProxyError::response_header_timeout());
+            }
+            Ok(Err(error)) => {
+                if error.is_timeout() && error.is_connect() {
+                    completion.connection_failed();
+                    completion.finish(RequestOutcome::ConnectTimeout);
+                    return Err(ProxyError::connect_timeout());
                 }
-                Ok(Err(error)) => {
-                    if error.is_timeout() && error.is_connect() {
-                        completion.connection_failed();
-                        completion.finish(RequestOutcome::ConnectTimeout);
-                        return Err(ProxyError::connect_timeout());
-                    }
-                    if error.is_connect() {
-                        completion.connection_failed();
-                    }
-                    completion.finish(RequestOutcome::UpstreamUnavailable);
-                    return Err(ProxyError::upstream_unavailable());
+                if error.is_connect() {
+                    completion.connection_failed();
                 }
-                Ok(Ok(response)) => {
-                    completion.response_headers_received();
-                    response
-                }
-            };
+                completion.finish(RequestOutcome::UpstreamUnavailable);
+                return Err(ProxyError::upstream_unavailable());
+            }
+            Ok(Ok(response)) => {
+                completion.response_headers_received();
+                response
+            }
+        };
 
         response_from_upstream(
             upstream_response,
-            self.stream_idle_timeout,
+            upstream_policy.timeouts().stream_idle(),
             completion,
             transforms.response_headers(),
             transforms.sse_event_patches().clone(),

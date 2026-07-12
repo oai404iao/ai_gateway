@@ -10,7 +10,7 @@ use ai_gateway::{
     http,
     persistence::{
         ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ConfigTemplateRecord, ControlPlaneRecords,
-        ModelRuleRecord,
+        ModelRuleRecord, ProxyRecord,
     },
     runtime_config::{RuntimeConfig, UpstreamConfig, compile_control_plane},
 };
@@ -20,10 +20,14 @@ use axum::{
     extract::{Request, State},
     http::{HeaderMap, HeaderValue, StatusCode},
     response::Response,
-    routing::post,
+    routing::{any, post},
 };
 use serde_json::Value;
-use tokio::{net::TcpListener, task::JoinHandle};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::{TcpListener, TcpStream},
+    task::JoinHandle,
+};
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -101,6 +105,36 @@ async fn first_response_header_hangs(
     }
 }
 
+async fn first_stream_hangs_then_succeeds(
+    State(upstream): State<MockUpstream>,
+    request: Request,
+) -> Response {
+    let (parts, body) = request.into_parts();
+    let body = to_bytes(body, usize::MAX).await.unwrap().to_vec();
+    let first = {
+        let mut requests = upstream.requests.lock().unwrap();
+        let first = requests.is_empty();
+        requests.push(CapturedRequest {
+            headers: parts.headers,
+            body,
+        });
+        first
+    };
+    if first {
+        Response::builder()
+            .status(upstream.status)
+            .body(Body::from_stream(futures_util::stream::pending::<
+                Result<axum::body::Bytes, std::io::Error>,
+            >()))
+            .unwrap()
+    } else {
+        Response::builder()
+            .status(upstream.status)
+            .body(Body::from(upstream.body))
+            .unwrap()
+    }
+}
+
 struct TestServer {
     address: SocketAddr,
     task: JoinHandle<()>,
@@ -119,6 +153,169 @@ async fn start_server(app: Router) -> TestServer {
         axum::serve(listener, app).await.unwrap();
     });
     TestServer { address, task }
+}
+
+#[derive(Clone, Debug)]
+struct ProxyCapture {
+    target: String,
+    proxy_authorization: Option<String>,
+}
+
+#[derive(Clone)]
+struct ForwardingProxyState {
+    captures: Arc<Mutex<Vec<ProxyCapture>>>,
+}
+
+async fn forward_http_proxy(
+    State(state): State<ForwardingProxyState>,
+    request: Request,
+) -> Response {
+    let (parts, body) = request.into_parts();
+    state.captures.lock().unwrap().push(ProxyCapture {
+        target: parts.uri.to_string(),
+        proxy_authorization: parts
+            .headers
+            .get("proxy-authorization")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned),
+    });
+    let headers = parts
+        .headers
+        .iter()
+        .filter(|(name, _)| *name != "proxy-authorization" && *name != "proxy-connection")
+        .fold(HeaderMap::new(), |mut headers, (name, value)| {
+            headers.append(name, value.clone());
+            headers
+        });
+    let response = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .unwrap()
+        .request(parts.method, parts.uri.to_string())
+        .headers(headers)
+        .body(to_bytes(body, usize::MAX).await.unwrap())
+        .send()
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = response.bytes().await.unwrap();
+    Response::builder()
+        .status(status)
+        .body(Body::from(bytes))
+        .unwrap()
+}
+
+async fn start_http_proxy() -> (TestServer, Arc<Mutex<Vec<ProxyCapture>>>) {
+    let captures = Arc::new(Mutex::new(Vec::new()));
+    let server = start_server(Router::new().fallback(any(forward_http_proxy)).with_state(
+        ForwardingProxyState {
+            captures: Arc::clone(&captures),
+        },
+    ))
+    .await;
+    (server, captures)
+}
+
+struct SocksProxy {
+    address: SocketAddr,
+    task: JoinHandle<()>,
+    credentials: Arc<Mutex<Option<(String, String)>>>,
+}
+
+impl Drop for SocksProxy {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+async fn start_socks5_proxy() -> SocksProxy {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let credentials = Arc::new(Mutex::new(None));
+    let captured = Arc::clone(&credentials);
+    let task = tokio::spawn(async move {
+        let (mut client, _) = listener.accept().await.unwrap();
+        let mut greeting = [0; 2];
+        client.read_exact(&mut greeting).await.unwrap();
+        assert_eq!(greeting[0], 5);
+        let mut methods = vec![0; usize::from(greeting[1])];
+        client.read_exact(&mut methods).await.unwrap();
+        assert!(methods.contains(&2));
+        client.write_all(&[5, 2]).await.unwrap();
+
+        let mut auth_header = [0; 2];
+        client.read_exact(&mut auth_header).await.unwrap();
+        assert_eq!(auth_header[0], 1);
+        let mut username = vec![0; usize::from(auth_header[1])];
+        client.read_exact(&mut username).await.unwrap();
+        let mut password_length = [0; 1];
+        client.read_exact(&mut password_length).await.unwrap();
+        let mut password = vec![0; usize::from(password_length[0])];
+        client.read_exact(&mut password).await.unwrap();
+        *captured.lock().unwrap() = Some((
+            String::from_utf8(username).unwrap(),
+            String::from_utf8(password).unwrap(),
+        ));
+        client.write_all(&[1, 0]).await.unwrap();
+
+        let mut request_header = [0; 4];
+        client.read_exact(&mut request_header).await.unwrap();
+        assert_eq!(&request_header[..3], &[5, 1, 0]);
+        let host = match request_header[3] {
+            1 => {
+                let mut address = [0; 4];
+                client.read_exact(&mut address).await.unwrap();
+                std::net::Ipv4Addr::from(address).to_string()
+            }
+            3 => {
+                let mut length = [0; 1];
+                client.read_exact(&mut length).await.unwrap();
+                let mut name = vec![0; usize::from(length[0])];
+                client.read_exact(&mut name).await.unwrap();
+                String::from_utf8(name).unwrap()
+            }
+            4 => {
+                let mut address = [0; 16];
+                client.read_exact(&mut address).await.unwrap();
+                std::net::Ipv6Addr::from(address).to_string()
+            }
+            atyp => panic!("unexpected SOCKS address type {atyp}"),
+        };
+        let mut port = [0; 2];
+        client.read_exact(&mut port).await.unwrap();
+        let mut upstream = TcpStream::connect((host.as_str(), u16::from_be_bytes(port)))
+            .await
+            .unwrap();
+        client
+            .write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0])
+            .await
+            .unwrap();
+        tokio::io::copy_bidirectional(&mut client, &mut upstream)
+            .await
+            .unwrap();
+    });
+    SocksProxy {
+        address,
+        task,
+        credentials,
+    }
+}
+
+fn proxy_record(
+    proxy_url: String,
+    username: Option<&str>,
+    password: Option<&str>,
+    no_proxy_hosts: Vec<&str>,
+) -> ProxyRecord {
+    ProxyRecord {
+        id: Uuid::new_v4(),
+        name: "test-proxy".into(),
+        proxy_url,
+        username: username.map(str::to_owned),
+        password: password.map(str::to_owned),
+        no_proxy_hosts: no_proxy_hosts.into_iter().map(str::to_owned).collect(),
+        enabled: true,
+    }
 }
 
 struct Harness {
@@ -213,6 +410,7 @@ async fn harness_with_transforms(transforms: TransformDocuments) -> Harness {
             stream_idle_timeout_seconds: 1,
         },
         transforms,
+        OutboundTestPolicy::default(),
     );
     let gateway = start_server(http::router(configured.proxy)).await;
 
@@ -237,6 +435,14 @@ struct TransformDocuments {
     upstream_auth_kind: &'static str,
     upstream_auth_header_name: Option<&'static str>,
     upstream_api_key: Option<&'static str>,
+}
+
+#[derive(Default)]
+struct OutboundTestPolicy {
+    proxy: Option<ProxyRecord>,
+    connect_timeout_ms: Option<i32>,
+    response_header_timeout_ms: Option<i32>,
+    stream_idle_timeout_ms: Option<i32>,
 }
 
 impl Default for TransformDocuments {
@@ -297,6 +503,27 @@ fn configured_proxy_with_policy(
         client_key_id,
         upstream_config,
         TransformDocuments::default(),
+        OutboundTestPolicy::default(),
+    )
+}
+
+fn configured_proxy_with_outbound_policy(
+    upstream_url: &str,
+    logs: RecordingRequestLogSink,
+    upstream_config: UpstreamConfig,
+    outbound: OutboundTestPolicy,
+) -> ConfiguredProxy {
+    configured_proxy_with_policy_and_transforms(
+        upstream_url,
+        logs,
+        None,
+        None,
+        None,
+        Default::default(),
+        None,
+        upstream_config,
+        TransformDocuments::default(),
+        outbound,
     )
 }
 
@@ -311,6 +538,7 @@ fn configured_proxy_with_policy_and_transforms(
     client_key_id: Option<Uuid>,
     upstream_config: UpstreamConfig,
     transforms: TransformDocuments,
+    outbound: OutboundTestPolicy,
 ) -> ConfiguredProxy {
     let chat_group = Uuid::new_v4();
     let responses_group = Uuid::new_v4();
@@ -461,6 +689,19 @@ fn configured_proxy_with_policy_and_transforms(
             })
             .unwrap_or_default(),
     };
+    let OutboundTestPolicy {
+        proxy,
+        connect_timeout_ms,
+        response_header_timeout_ms,
+        stream_idle_timeout_ms,
+    } = outbound;
+    records.channels[0].connect_timeout_ms = connect_timeout_ms;
+    records.channels[0].response_header_timeout_ms = response_header_timeout_ms;
+    records.channels[0].stream_idle_timeout_ms = stream_idle_timeout_ms;
+    if let Some(proxy) = proxy {
+        records.channels[0].proxy_id = Some(proxy.id);
+        records.proxies.push(proxy);
+    }
     let client_key = records
         .api_keys
         .iter_mut()
@@ -1118,7 +1359,7 @@ async fn admission_keeps_streaming_work_across_snapshot_replacement_and_consumes
         None,
         UpstreamConfig {
             connect_timeout_seconds: 1,
-            response_header_timeout_seconds: 1,
+            response_header_timeout_seconds: 2,
             stream_idle_timeout_seconds: 1,
         },
     );
@@ -1132,7 +1373,7 @@ async fn admission_keeps_streaming_work_across_snapshot_replacement_and_consumes
         Some(current.client_key_id),
         UpstreamConfig {
             connect_timeout_seconds: 1,
-            response_header_timeout_seconds: 1,
+            response_header_timeout_seconds: 2,
             stream_idle_timeout_seconds: 1,
         },
     );
@@ -1258,7 +1499,7 @@ async fn admission_releases_capacity_after_response_header_timeout() {
         None,
         UpstreamConfig {
             connect_timeout_seconds: 1,
-            response_header_timeout_seconds: 1,
+            response_header_timeout_seconds: 2,
             stream_idle_timeout_seconds: 1,
         },
     );
@@ -1272,4 +1513,367 @@ async fn admission_releases_capacity_after_response_header_timeout() {
     let next = app.oneshot(proxy_request("same-model")).await.unwrap();
     assert_eq!(next.status(), StatusCode::OK);
     assert_eq!(requests.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn invalid_effective_timeout_policy_never_contacts_upstream_or_cools_the_channel() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let upstream = start_server(
+        Router::new()
+            .route("/v1/chat/completions", post(capture_upstream))
+            .with_state(MockUpstream {
+                requests: Arc::clone(&requests),
+                status: StatusCode::OK,
+                body: b"unexpected".to_vec(),
+            }),
+    )
+    .await;
+    let configured = configured_proxy_with_outbound_policy(
+        &format!("http://{}", upstream.address),
+        RecordingRequestLogSink::default(),
+        UpstreamConfig {
+            connect_timeout_seconds: 1,
+            response_header_timeout_seconds: 2,
+            stream_idle_timeout_seconds: 1,
+        },
+        OutboundTestPolicy {
+            connect_timeout_ms: Some(2_000),
+            response_header_timeout_ms: Some(1_000),
+            ..Default::default()
+        },
+    );
+    let app = http::router(configured.proxy);
+
+    for _ in 0..4 {
+        let response = app
+            .clone()
+            .oneshot(proxy_request("same-model"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    }
+    assert!(requests.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn http_proxy_routes_nonmatching_targets_and_explicit_no_proxy_hosts_bypass_it() {
+    const PROXY_PASSWORD: &str = "sentinel-proxy-password";
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let upstream = start_server(
+        Router::new()
+            .route("/v1/chat/completions", post(capture_upstream))
+            .with_state(MockUpstream {
+                requests: Arc::clone(&requests),
+                status: StatusCode::OK,
+                body: b"upstream-response".to_vec(),
+            }),
+    )
+    .await;
+    let (http_proxy, captures) = start_http_proxy().await;
+    let upstream_url = format!("http://{}", upstream.address);
+    let defaults = UpstreamConfig {
+        connect_timeout_seconds: 1,
+        response_header_timeout_seconds: 2,
+        stream_idle_timeout_seconds: 1,
+    };
+    let logs = RecordingRequestLogSink::default();
+    let proxied = configured_proxy_with_outbound_policy(
+        &upstream_url,
+        logs.clone(),
+        defaults.clone(),
+        OutboundTestPolicy {
+            proxy: Some(proxy_record(
+                format!("http://{}", http_proxy.address),
+                Some("user"),
+                Some(PROXY_PASSWORD),
+                vec![],
+            )),
+            ..Default::default()
+        },
+    );
+    let proxied_gateway = start_server(http::router(proxied.proxy)).await;
+
+    let response = authorized_post(
+        &client(),
+        format!("http://{}/v1/chat/completions", proxied_gateway.address),
+        CLIENT_KEY,
+        br#"{"model":"same-model"}"#.to_vec(),
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.bytes().await.unwrap(),
+        b"upstream-response".as_slice()
+    );
+    let captured = captures.lock().unwrap().clone();
+    assert_eq!(captured.len(), 1);
+    assert_eq!(
+        captured[0].target,
+        format!("{upstream_url}/v1/chat/completions")
+    );
+    assert_eq!(
+        captured[0].proxy_authorization.as_deref(),
+        Some("Basic dXNlcjpzZW50aW5lbC1wcm94eS1wYXNzd29yZA==")
+    );
+    assert!(
+        requests.lock().unwrap()[0]
+            .headers
+            .get("proxy-authorization")
+            .is_none()
+    );
+
+    let bypassed = configured_proxy_with_outbound_policy(
+        &upstream_url,
+        logs.clone(),
+        defaults,
+        OutboundTestPolicy {
+            proxy: Some(proxy_record(
+                format!("http://{}", http_proxy.address),
+                Some("user"),
+                Some(PROXY_PASSWORD),
+                vec!["127.0.0.1"],
+            )),
+            ..Default::default()
+        },
+    );
+    let bypassed_gateway = start_server(http::router(bypassed.proxy)).await;
+    let response = authorized_post(
+        &client(),
+        format!("http://{}/v1/chat/completions", bypassed_gateway.address),
+        CLIENT_KEY,
+        br#"{"model":"same-model"}"#.to_vec(),
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(captures.lock().unwrap().len(), 1);
+    let upstream_requests = requests.lock().unwrap();
+    assert_eq!(upstream_requests.len(), 2);
+    assert!(
+        upstream_requests
+            .iter()
+            .all(|request| request.headers.get("proxy-authorization").is_none())
+    );
+    assert!(!format!("{:?}", logs.events()).contains(PROXY_PASSWORD));
+}
+
+#[tokio::test]
+async fn dead_configured_proxy_returns_safe_bad_gateway_without_direct_upstream_contact() {
+    const PROXY_PASSWORD: &str = "dead-proxy-sentinel";
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let upstream = start_server(
+        Router::new()
+            .route("/v1/chat/completions", post(capture_upstream))
+            .with_state(MockUpstream {
+                requests: Arc::clone(&requests),
+                status: StatusCode::OK,
+                body: b"reachable".to_vec(),
+            }),
+    )
+    .await;
+    let unused_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let dead_proxy_address = unused_listener.local_addr().unwrap();
+    drop(unused_listener);
+    let logs = RecordingRequestLogSink::default();
+    let configured = configured_proxy_with_outbound_policy(
+        &format!("http://{}", upstream.address),
+        logs.clone(),
+        UpstreamConfig {
+            connect_timeout_seconds: 1,
+            response_header_timeout_seconds: 2,
+            stream_idle_timeout_seconds: 1,
+        },
+        OutboundTestPolicy {
+            proxy: Some(proxy_record(
+                format!("http://{dead_proxy_address}"),
+                Some("user"),
+                Some(PROXY_PASSWORD),
+                vec![],
+            )),
+            ..Default::default()
+        },
+    );
+    let gateway = start_server(http::router(configured.proxy)).await;
+
+    let response = authorized_post(
+        &client(),
+        format!("http://{}/v1/chat/completions", gateway.address),
+        CLIENT_KEY,
+        br#"{"model":"same-model"}"#.to_vec(),
+    )
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    assert!(!response.text().await.unwrap().contains(PROXY_PASSWORD));
+    assert!(requests.lock().unwrap().is_empty());
+    assert!(!format!("{:?}", logs.events()).contains(PROXY_PASSWORD));
+}
+
+#[tokio::test]
+async fn socks5_proxy_connects_and_keeps_credentials_out_of_upstream_and_logs() {
+    const SOCKS_PASSWORD: &str = "socks-sentinel";
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let upstream = start_server(
+        Router::new()
+            .route("/v1/chat/completions", post(capture_upstream))
+            .with_state(MockUpstream {
+                requests: Arc::clone(&requests),
+                status: StatusCode::OK,
+                body: b"socks-upstream".to_vec(),
+            }),
+    )
+    .await;
+    let socks_proxy = start_socks5_proxy().await;
+    let logs = RecordingRequestLogSink::default();
+    let configured = configured_proxy_with_outbound_policy(
+        &format!("http://{}", upstream.address),
+        logs.clone(),
+        UpstreamConfig {
+            connect_timeout_seconds: 1,
+            response_header_timeout_seconds: 2,
+            stream_idle_timeout_seconds: 1,
+        },
+        OutboundTestPolicy {
+            proxy: Some(proxy_record(
+                format!("socks5://{}", socks_proxy.address),
+                Some("socks-user"),
+                Some(SOCKS_PASSWORD),
+                vec![],
+            )),
+            ..Default::default()
+        },
+    );
+    let gateway = start_server(http::router(configured.proxy)).await;
+
+    let response = authorized_post(
+        &client(),
+        format!("http://{}/v1/chat/completions", gateway.address),
+        CLIENT_KEY,
+        br#"{"model":"same-model"}"#.to_vec(),
+    )
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.bytes().await.unwrap(),
+        b"socks-upstream".as_slice()
+    );
+    assert_eq!(
+        socks_proxy
+            .credentials
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|(username, password)| (username.as_str(), password.as_str())),
+        Some(("socks-user", SOCKS_PASSWORD))
+    );
+    let upstream_requests = requests.lock().unwrap();
+    assert_eq!(upstream_requests.len(), 1);
+    assert!(
+        upstream_requests[0]
+            .headers
+            .get("proxy-authorization")
+            .is_none()
+    );
+    assert!(!format!("{:?}", logs.events()).contains(SOCKS_PASSWORD));
+}
+
+#[tokio::test]
+async fn rejected_upstream_response_is_attempted_once_without_automatic_retry() {
+    let harness = harness(StatusCode::SERVICE_UNAVAILABLE, b"unavailable".to_vec()).await;
+
+    let response = authorized_post(
+        &client(),
+        harness.url("/v1/chat/completions"),
+        CLIENT_KEY,
+        br#"{"model":"same-model"}"#.to_vec(),
+    )
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(harness.upstream_requests().len(), 1);
+}
+
+#[tokio::test]
+async fn snapshot_replacement_uses_new_proxy_policy_after_cancelling_an_existing_direct_stream() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let upstream = start_server(
+        Router::new()
+            .route(
+                "/v1/chat/completions",
+                post(first_stream_hangs_then_succeeds),
+            )
+            .with_state(MockUpstream {
+                requests: Arc::clone(&requests),
+                status: StatusCode::OK,
+                body: b"after-replacement".to_vec(),
+            }),
+    )
+    .await;
+    let (http_proxy, captures) = start_http_proxy().await;
+    let upstream_url = format!("http://{}", upstream.address);
+    let defaults = UpstreamConfig {
+        connect_timeout_seconds: 1,
+        response_header_timeout_seconds: 2,
+        stream_idle_timeout_seconds: 2,
+    };
+    let current = configured_proxy_with_policy(
+        &upstream_url,
+        RecordingRequestLogSink::default(),
+        None,
+        None,
+        None,
+        Default::default(),
+        None,
+        defaults.clone(),
+    );
+    let next = configured_proxy_with_policy_and_transforms(
+        &upstream_url,
+        RecordingRequestLogSink::default(),
+        None,
+        Some(1),
+        None,
+        Default::default(),
+        Some(current.client_key_id),
+        defaults,
+        TransformDocuments::default(),
+        OutboundTestPolicy {
+            proxy: Some(proxy_record(
+                format!("http://{}", http_proxy.address),
+                None,
+                None,
+                vec![],
+            )),
+            ..Default::default()
+        },
+    );
+    let app = http::router(current.proxy);
+
+    let existing = app
+        .clone()
+        .oneshot(proxy_request("same-model"))
+        .await
+        .unwrap();
+    assert_eq!(existing.status(), StatusCode::OK);
+    current.runtime.replace_snapshot(next.runtime.snapshot());
+    assert_eq!(requests.lock().unwrap().len(), 1);
+
+    // The old stream remains owned by its original client and lease until the
+    // downstream response is cancelled. The next request must then resolve the
+    // replacement snapshot and its HTTP proxy client.
+    drop(existing);
+    let replacement = app.oneshot(proxy_request("same-model")).await.unwrap();
+    assert_eq!(replacement.status(), StatusCode::OK);
+    assert_eq!(captures.lock().unwrap().len(), 1);
+    assert_eq!(requests.lock().unwrap().len(), 2);
+    drop(replacement);
 }

@@ -8,7 +8,7 @@ use std::{
 
 use crate::domain::{
     ApiFormat, CompiledApiKey, CompiledChannel, CompiledModelRule, CompiledRuntimeConfig,
-    SelectionStrategy,
+    OutboundNetworkPolicyFingerprint, SelectionStrategy,
 };
 use uuid::Uuid;
 
@@ -94,12 +94,16 @@ struct RuntimeState {
 struct ChannelIdentity {
     id: Uuid,
     connectivity_fingerprint: Arc<str>,
+    outbound_network_policy_fingerprint: OutboundNetworkPolicyFingerprint,
 }
 impl ChannelIdentity {
     fn from_channel(channel: &CompiledChannel) -> Self {
         Self {
             id: channel.id(),
             connectivity_fingerprint: Arc::from(channel.base_url().as_str()),
+            outbound_network_policy_fingerprint: channel
+                .upstream_policy()
+                .outbound_network_policy_fingerprint(),
         }
     }
 }
@@ -501,6 +505,7 @@ mod tests {
         domain::{ApiFormat, CompiledRuntimeConfig},
         persistence::{
             ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ControlPlaneRecords, ModelRuleRecord,
+            ProxyRecord,
         },
         runtime_config::compile_control_plane,
     };
@@ -628,6 +633,88 @@ mod tests {
             SelectionResult::Selected(route) => route,
             _ => panic!("fixture must select a route"),
         }
+    }
+
+    fn snapshot_with_outbound_policy(
+        proxy_url: &str,
+        username: &str,
+        password: &str,
+        no_proxy_hosts: &[&str],
+        connect_timeout_ms: Option<i32>,
+    ) -> (CompiledRuntimeConfig, String) {
+        let group_id = Uuid::from_u128(1);
+        let channel_id = Uuid::from_u128(100);
+        let proxy_id = Uuid::from_u128(200);
+        let secret = "routing-network-policy-key".to_owned();
+        let records = ControlPlaneRecords {
+            api_keys: vec![ApiKeyRecord {
+                id: Uuid::from_u128(300),
+                user_id: Uuid::from_u128(301),
+                user_status: "active".into(),
+                secret_value: secret.clone(),
+                status: "active".into(),
+                expires_at: None,
+                allowed_api_formats: vec!["open_ai_chat_completions".into()],
+                permissions: vec!["proxy".into()],
+                allowed_group_ids: None,
+                requests_per_minute: None,
+                tokens_per_minute: None,
+                max_concurrent_requests: None,
+                quota_limit_amount: None,
+                quota_used_amount: Default::default(),
+            }],
+            groups: vec![ChannelGroupRecord {
+                id: group_id,
+                name: "group".into(),
+                api_format: "open_ai_chat_completions".into(),
+                priority: 0,
+                selection_strategy: "weighted_random".into(),
+                enabled: true,
+            }],
+            channels: vec![ChannelRecord {
+                id: channel_id,
+                channel_group_id: group_id,
+                api_format: "open_ai_chat_completions".into(),
+                name: "channel".into(),
+                base_url: "https://upstream.test".into(),
+                enabled: true,
+                auto_disabled: false,
+                weight: 1,
+                proxy_id: Some(proxy_id),
+                config_template_id: None,
+                override_document: serde_json::json!({}),
+                connect_timeout_ms,
+                response_header_timeout_ms: None,
+                stream_idle_timeout_ms: None,
+                upstream_auth_kind: "none".into(),
+                upstream_auth_header_name: None,
+                upstream_api_key: None,
+                available_models: vec!["upstream".into()],
+                health_check: serde_json::json!({}),
+            }],
+            model_rules: vec![ModelRuleRecord {
+                id: Uuid::from_u128(400),
+                client_model: "model".into(),
+                api_format: "open_ai_chat_completions".into(),
+                model_id: Uuid::from_u128(401),
+                model_enabled: true,
+                upstream_model: "upstream".into(),
+                channel_group_ids: vec![],
+                channel_ids: vec![channel_id],
+                enabled: true,
+            }],
+            proxies: vec![ProxyRecord {
+                id: proxy_id,
+                name: "egress".into(),
+                proxy_url: proxy_url.into(),
+                username: Some(username.into()),
+                password: Some(password.into()),
+                no_proxy_hosts: no_proxy_hosts.iter().map(|host| (*host).into()).collect(),
+                enabled: true,
+            }],
+            templates: vec![],
+        };
+        (compile_control_plane(records).unwrap(), secret)
     }
 
     #[test]
@@ -858,6 +945,98 @@ mod tests {
             runtime.health(&old_channel).consecutive_connection_failures,
             0
         );
+    }
+
+    #[test]
+    fn reconciliation_isolates_in_flight_failures_for_each_outbound_network_policy() {
+        let (initial, secret) = snapshot_with_outbound_policy(
+            "http://proxy.test:8080",
+            "user",
+            "password-one",
+            &["*.internal.test"],
+            None,
+        );
+        let initial_channel = initial.channel(Uuid::from_u128(100)).unwrap();
+        let initial_fingerprint = initial_channel
+            .upstream_policy()
+            .outbound_network_policy_fingerprint();
+
+        for (proxy_url, username, password, no_proxy_hosts, connect_timeout_ms) in [
+            (
+                "http://proxy.test:8080",
+                "user",
+                "password-two",
+                vec!["*.internal.test"],
+                None,
+            ),
+            (
+                "http://replacement-proxy.test:8080",
+                "user",
+                "password-one",
+                vec!["*.internal.test"],
+                None,
+            ),
+            (
+                "http://proxy.test:8080",
+                "user",
+                "password-one",
+                vec!["*.replacement.internal.test"],
+                None,
+            ),
+            (
+                "http://proxy.test:8080",
+                "user",
+                "password-one",
+                vec!["*.internal.test"],
+                Some(500),
+            ),
+        ] {
+            let (replacement, _) = snapshot_with_outbound_policy(
+                proxy_url,
+                username,
+                password,
+                &no_proxy_hosts,
+                connect_timeout_ms,
+            );
+            let replacement_channel = replacement.channel(Uuid::from_u128(100)).unwrap();
+            assert_ne!(
+                initial_fingerprint,
+                replacement_channel
+                    .upstream_policy()
+                    .outbound_network_policy_fingerprint()
+            );
+
+            let runtime = RoutingRuntime::with_seams(
+                PassiveHealthPolicy {
+                    connection_failure_threshold: 1,
+                    cooldown: Duration::from_secs(10),
+                },
+                Arc::new(TestClock(AtomicU64::new(0))),
+                Arc::new(Tickets(Mutex::new(VecDeque::new()))),
+            );
+            let mut old = select(&runtime, &initial, &secret);
+            runtime.reconcile(&replacement);
+            old.lease.connection_failed();
+
+            assert!(runtime.health(&initial_channel).cooling_down);
+            assert_eq!(runtime.health(&replacement_channel).in_flight, 0);
+            assert_eq!(
+                runtime
+                    .health(&replacement_channel)
+                    .consecutive_connection_failures,
+                0
+            );
+            assert!(matches!(
+                runtime.select(
+                    &replacement,
+                    &replacement.authenticate(&secret).unwrap(),
+                    ApiFormat::OpenAiChatCompletions,
+                    "model"
+                ),
+                SelectionResult::Selected(_)
+            ));
+            drop(old);
+        }
     }
 
     #[test]

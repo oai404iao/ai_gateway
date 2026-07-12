@@ -17,7 +17,7 @@ hyper-util = { version = "0.1", features = ["server-auto", "server-graceful", "s
 http-body-util = "0.1"
 json-patch = "4.2"
 jsonptr = "0.7"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "socks", "stream"] }
 rust_decimal = { version = "1.36", features = ["serde"] }
 secrecy = "0.10"
 serde = { version = "1.0", features = ["derive"] }

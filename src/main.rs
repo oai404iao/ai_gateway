@@ -7,6 +7,7 @@ use ai_gateway::{
     persistence::{ControlPlaneRepository, MIGRATOR, RequestLogRepository},
     routing::{PassiveHealthPolicy, RoutingRuntime},
     runtime_config::{AppConfig, RuntimeConfig, compile_control_plane},
+    upstream::{UpstreamClientRegistry, validate_snapshot_upstream_policies},
     workers::{ControlPlaneReloader, RequestLogWorker},
 };
 use axum::{Router, body::Body};
@@ -45,6 +46,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     MIGRATOR.run(&pool).await?;
     let repository = ControlPlaneRepository::new(pool.clone());
     let initial = compile_control_plane(repository.load().await?)?;
+    validate_snapshot_upstream_policies(&initial, &config.upstream)?;
     let runtime = Arc::new(RuntimeConfig::new(initial));
 
     let address = format!("{}:{}", config.server.host, config.server.port);
@@ -57,16 +59,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
         cooldown: Duration::from_secs(config.passive_health.cooldown_seconds),
     });
     routing.reconcile(&runtime.snapshot());
-    let proxy = ProxyService::with_dependencies(
+    let upstream_clients = Arc::new(UpstreamClientRegistry::new());
+    let proxy = ProxyService::with_dependencies_and_registry(
         Arc::clone(&runtime),
         config.server.max_request_body_bytes,
         &config.upstream,
+        Arc::clone(&upstream_clients),
         Arc::new(request_log_sink),
         routing.clone(),
         AdmissionRuntime::new(),
     )?;
-    let coordinator =
-        ControlPlaneCoordinator::new(repository, Arc::clone(&runtime), routing.clone());
+    let coordinator = ControlPlaneCoordinator::new_with_upstream_registry(
+        repository,
+        Arc::clone(&runtime),
+        routing.clone(),
+        upstream_clients,
+        config.upstream.clone(),
+    )?;
     ControlPlaneReloader::from_coordinator(coordinator.clone()).spawn(
         std::time::Duration::from_secs(config.runtime_config.reload_interval_seconds),
     );

@@ -216,7 +216,7 @@ async fn header_timeout_makes_one_attempt_and_remains_neutral_for_ordinary_chann
         &[format!("http://{}", upstream.address)],
         &[0],
         &[0],
-        upstream_config(1, 2),
+        upstream_config(2, 2),
         RoutingRuntime::new(PassiveHealthPolicy {
             connection_failure_threshold: 1,
             cooldown: Duration::from_secs(30),
@@ -267,7 +267,7 @@ async fn header_timeout_does_not_retry_the_lower_priority_channel() {
         ],
         &[0, 1],
         &[0, 1],
-        upstream_config(1, 2),
+        upstream_config(2, 2),
         RoutingRuntime::new(PassiveHealthPolicy::default()),
     );
     let gateway = start_server(http::router(fixture.service)).await;

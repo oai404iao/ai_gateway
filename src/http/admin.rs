@@ -559,7 +559,7 @@ mod tests {
         application::ControlPlaneCoordinator,
         persistence::ControlPlaneRepository,
         routing::{PassiveHealthPolicy, RoutingRuntime},
-        runtime_config::{RuntimeConfig, compile_control_plane},
+        runtime_config::{RuntimeConfig, UpstreamConfig, compile_control_plane},
     };
 
     use super::{AdminState, router};
@@ -575,6 +575,11 @@ mod tests {
             ControlPlaneRepository::new(pool),
             runtime,
             RoutingRuntime::new(PassiveHealthPolicy::default()),
+            UpstreamConfig {
+                connect_timeout_seconds: 1,
+                response_header_timeout_seconds: 2,
+                stream_idle_timeout_seconds: 3,
+            },
         );
         router(AdminState {
             coordinator,
