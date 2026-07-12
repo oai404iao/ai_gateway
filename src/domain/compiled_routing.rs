@@ -152,12 +152,27 @@ impl CompiledChannel {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SelectionStrategy {
+    WeightedRandom,
+    WeightedRoundRobin,
+}
+impl SelectionStrategy {
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        match value {
+            "weighted_random" => Some(Self::WeightedRandom),
+            "weighted_round_robin" => Some(Self::WeightedRoundRobin),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct CompiledChannelGroup {
     id: Uuid,
     api_format: ApiFormat,
     priority: i32,
-    selection_strategy: Arc<str>,
+    selection_strategy: SelectionStrategy,
 }
 impl CompiledChannelGroup {
     #[must_use]
@@ -173,14 +188,14 @@ impl CompiledChannelGroup {
         self.priority
     }
     #[must_use]
-    pub fn selection_strategy(&self) -> &str {
-        &self.selection_strategy
+    pub fn selection_strategy(&self) -> SelectionStrategy {
+        self.selection_strategy
     }
     pub(crate) fn new(
         id: Uuid,
         api_format: ApiFormat,
         priority: i32,
-        selection_strategy: Arc<str>,
+        selection_strategy: SelectionStrategy,
     ) -> Self {
         Self {
             id,
@@ -192,13 +207,45 @@ impl CompiledChannelGroup {
 }
 
 #[derive(Clone, Debug)]
+pub struct CompiledRouteTier {
+    priority: i32,
+    strategy: SelectionStrategy,
+    channel_ids: Arc<[Uuid]>,
+}
+impl CompiledRouteTier {
+    #[must_use]
+    pub fn priority(&self) -> i32 {
+        self.priority
+    }
+    #[must_use]
+    pub fn strategy(&self) -> SelectionStrategy {
+        self.strategy
+    }
+    #[must_use]
+    pub fn channel_ids(&self) -> &[Uuid] {
+        &self.channel_ids
+    }
+    pub(crate) fn new(
+        priority: i32,
+        strategy: SelectionStrategy,
+        channel_ids: Arc<[Uuid]>,
+    ) -> Self {
+        Self {
+            priority,
+            strategy,
+            channel_ids,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct CompiledModelRule {
     id: Uuid,
     model_id: Uuid,
     client_model: Arc<str>,
     api_format: ApiFormat,
     upstream_model: Arc<str>,
-    candidate_channel_ids: Arc<[Uuid]>,
+    tiers: Arc<[CompiledRouteTier]>,
 }
 impl CompiledModelRule {
     #[must_use]
@@ -222,8 +269,8 @@ impl CompiledModelRule {
         &self.upstream_model
     }
     #[must_use]
-    pub fn candidate_channel_ids(&self) -> &[Uuid] {
-        &self.candidate_channel_ids
+    pub fn tiers(&self) -> &[CompiledRouteTier] {
+        &self.tiers
     }
     pub(crate) fn new(
         id: Uuid,
@@ -231,7 +278,7 @@ impl CompiledModelRule {
         client_model: Arc<str>,
         api_format: ApiFormat,
         upstream_model: Arc<str>,
-        candidates: Arc<[Uuid]>,
+        tiers: Arc<[CompiledRouteTier]>,
     ) -> Self {
         Self {
             id,
@@ -239,7 +286,7 @@ impl CompiledModelRule {
             client_model,
             api_format,
             upstream_model,
-            candidate_channel_ids: candidates,
+            tiers,
         }
     }
 }
@@ -311,6 +358,15 @@ impl CompiledRuntimeConfig {
     pub fn group(&self, id: Uuid) -> Option<Arc<CompiledChannelGroup>> {
         self.groups.get(&id).cloned()
     }
+    pub fn api_keys(&self) -> impl Iterator<Item = &Arc<CompiledApiKey>> {
+        self.api_keys.values()
+    }
+    pub fn model_rules(&self) -> impl Iterator<Item = &Arc<CompiledModelRule>> {
+        self.model_rules.values()
+    }
+    pub fn channels(&self) -> impl Iterator<Item = &Arc<CompiledChannel>> {
+        self.channels.values()
+    }
     #[must_use]
     pub fn models_for(&self, key: &CompiledApiKey, format: ApiFormat) -> Vec<Arc<str>> {
         if !key.permits(format, ApiKeyPermission::Proxy)
@@ -323,11 +379,15 @@ impl CompiledRuntimeConfig {
             .values()
             .filter(|rule| {
                 rule.api_format == format
-                    && rule.candidate_channel_ids.iter().any(|id| {
-                        self.channels
-                            .get(id)
-                            .is_some_and(|channel| key.permits_group(channel.group_id))
-                    })
+                    && rule
+                        .tiers
+                        .iter()
+                        .flat_map(CompiledRouteTier::channel_ids)
+                        .any(|id| {
+                            self.channels
+                                .get(id)
+                                .is_some_and(|channel| key.permits_group(channel.group_id))
+                        })
             })
             .map(|rule| Arc::clone(&rule.client_model))
             .collect::<Vec<_>>();

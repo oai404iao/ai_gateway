@@ -15,6 +15,7 @@ use crate::{
     persistence::{
         ControlPlaneRepository, RepositoryError, RequestLogInsertOutcome, RequestLogRepository,
     },
+    routing::RoutingRuntime,
     runtime_config::{ConfigError, RuntimeConfig, compile_control_plane},
 };
 
@@ -134,6 +135,7 @@ pub struct ControlPlaneReloader {
     repository: ControlPlaneRepository,
     runtime: Arc<RuntimeConfig>,
     serial: Arc<Mutex<()>>,
+    routing: Option<RoutingRuntime>,
 }
 impl ControlPlaneReloader {
     #[must_use]
@@ -142,13 +144,22 @@ impl ControlPlaneReloader {
             repository,
             runtime,
             serial: Arc::new(Mutex::new(())),
+            routing: None,
         }
+    }
+    #[must_use]
+    pub fn with_routing(mut self, routing: RoutingRuntime) -> Self {
+        self.routing = Some(routing);
+        self
     }
     pub async fn reload(&self) -> Result<(), ReloadError> {
         let _guard = self.serial.lock().await;
         let records = self.repository.load().await?;
         let next = Arc::new(compile_control_plane(records)?);
-        self.runtime.replace_snapshot(next);
+        if let Some(routing) = &self.routing {
+            routing.reconcile(&next);
+        }
+        self.runtime.replace_snapshot(Arc::clone(&next));
         Ok(())
     }
     pub fn spawn(self, frequency: Duration) {

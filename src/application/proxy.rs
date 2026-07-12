@@ -29,7 +29,7 @@ use crate::{
         ApiFormat, ApiKeyPermission, CompiledApiKey, CompiledChannel, CompiledModelRule,
         RequestLogEvent, RequestLogOutcome, UpstreamAuth,
     },
-    routing,
+    routing::{ChannelLease, RoutingRuntime, SelectionResult},
     runtime_config::{RuntimeConfig, UpstreamConfig},
 };
 
@@ -43,6 +43,7 @@ pub struct ProxyService {
     response_header_timeout: Duration,
     stream_idle_timeout: Duration,
     request_log_sink: Arc<dyn RequestLogSink>,
+    routing: RoutingRuntime,
 }
 
 impl ProxyService {
@@ -65,6 +66,22 @@ impl ProxyService {
         upstream: &UpstreamConfig,
         request_log_sink: Arc<dyn RequestLogSink>,
     ) -> Result<Self, reqwest::Error> {
+        Self::with_log_sink_and_routing(
+            runtime,
+            max_request_body_bytes,
+            upstream,
+            request_log_sink,
+            RoutingRuntime::new(crate::routing::PassiveHealthPolicy::default()),
+        )
+    }
+
+    pub fn with_log_sink_and_routing(
+        runtime: Arc<RuntimeConfig>,
+        max_request_body_bytes: usize,
+        upstream: &UpstreamConfig,
+        request_log_sink: Arc<dyn RequestLogSink>,
+        routing: RoutingRuntime,
+    ) -> Result<Self, reqwest::Error> {
         let upstream_client = Client::builder()
             .connect_timeout(Duration::from_secs(upstream.connect_timeout_seconds))
             .redirect(Policy::none())
@@ -77,6 +94,7 @@ impl ProxyService {
             response_header_timeout: Duration::from_secs(upstream.response_header_timeout_seconds),
             stream_idle_timeout: Duration::from_secs(upstream.stream_idle_timeout_seconds),
             request_log_sink,
+            routing,
         })
     }
 
@@ -124,9 +142,12 @@ impl ProxyService {
                 return Err(error);
             }
         };
-        let route = match routing::select(&snapshot, &api_key, api_format, &parsed.model) {
-            Some(route) => route,
-            None => {
+        let route = match self
+            .routing
+            .select(&snapshot, &api_key, api_format, &parsed.model)
+        {
+            SelectionResult::Selected(route) => route,
+            SelectionResult::UnknownOrInaccessibleModel => {
                 self.record_rejected(
                     &api_key,
                     api_format,
@@ -137,6 +158,18 @@ impl ProxyService {
                 );
                 return Err(ProxyError::unknown_model(&parsed.model));
             }
+            SelectionResult::NoHealthyChannel { rule } => {
+                self.record_no_healthy_channel(
+                    &api_key,
+                    api_format,
+                    &parsed.model,
+                    parsed.streamed,
+                    &rule,
+                    started_wall_at,
+                    started_at,
+                );
+                return Err(ProxyError::no_healthy_channel());
+            }
         };
         let mut completion = CompletionGuard::new(
             Arc::clone(&self.request_log_sink),
@@ -146,6 +179,7 @@ impl ProxyService {
             api_format,
             &route.rule,
             &route.channel,
+            route.lease,
             started_wall_at,
             started_at,
         );
@@ -178,18 +212,26 @@ impl ProxyService {
         let upstream_response =
             match timeout(self.response_header_timeout, upstream_request.send()).await {
                 Err(_) => {
+                    completion.probe_failed();
                     completion.finish(RequestOutcome::ResponseHeaderTimeout);
                     return Err(ProxyError::response_header_timeout());
                 }
                 Ok(Err(error)) => {
                     if error.is_timeout() && error.is_connect() {
+                        completion.connection_failed();
                         completion.finish(RequestOutcome::ConnectTimeout);
                         return Err(ProxyError::connect_timeout());
+                    }
+                    if error.is_connect() {
+                        completion.connection_failed();
                     }
                     completion.finish(RequestOutcome::UpstreamUnavailable);
                     return Err(ProxyError::upstream_unavailable());
                 }
-                Ok(Ok(response)) => response,
+                Ok(Ok(response)) => {
+                    completion.response_headers_received();
+                    response
+                }
             };
 
         Ok(response_from_upstream(
@@ -230,6 +272,41 @@ impl ProxyService {
             error_code: Some("model_not_found"),
         };
         tracing::info!(event = "proxy_request_completed", api_key_id = %api_key.id(), api_format = ?api_format, outcome = "rejected", "proxy request completed");
+        self.request_log_sink.try_record(event);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn record_no_healthy_channel(
+        &self,
+        api_key: &CompiledApiKey,
+        api_format: ApiFormat,
+        client_model: &str,
+        streamed: bool,
+        rule: &CompiledModelRule,
+        started_at: chrono::DateTime<chrono::Utc>,
+        started: Instant,
+    ) {
+        let event = RequestLogEvent {
+            id: Uuid::new_v4(),
+            started_at,
+            completed_at: completed_at(started_at, started.elapsed()),
+            user_id: api_key.user_id(),
+            api_key_id: api_key.id(),
+            api_format,
+            client_model: client_model.to_owned(),
+            upstream_model: Some(rule.upstream_model().to_owned()),
+            model_rule_id: Some(rule.id()),
+            channel_group_id: None,
+            channel_id: None,
+            model_id: Some(rule.model_id()),
+            outcome: RequestLogOutcome::Failed,
+            response_status_code: Some(StatusCode::SERVICE_UNAVAILABLE.as_u16()),
+            streamed,
+            ttft_ms: None,
+            total_duration_ms: clamp_duration_ms(started.elapsed()),
+            error_code: Some("no_healthy_channel"),
+        };
+        tracing::info!(event = "proxy_request_completed", api_key_id = %api_key.id(), api_format = ?api_format, outcome = "no_healthy_channel", "proxy request completed");
         self.request_log_sink.try_record(event);
     }
 
@@ -380,6 +457,18 @@ impl ProxyError {
             error_type: "api_error",
             param: None,
             code: "connect_timeout".into(),
+            authenticate: false,
+        }
+    }
+
+    fn no_healthy_channel() -> Self {
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message: "No healthy upstream channel is currently available for this model."
+                .to_owned(),
+            error_type: "api_error",
+            param: None,
+            code: Some("no_healthy_channel"),
             authenticate: false,
         }
     }
@@ -812,6 +901,7 @@ struct CompletionContext {
 /// body after a downstream client disconnects.
 struct CompletionGuard {
     context: Option<CompletionContext>,
+    lease: Option<ChannelLease>,
 }
 
 impl CompletionGuard {
@@ -824,6 +914,7 @@ impl CompletionGuard {
         api_format: ApiFormat,
         rule: &CompiledModelRule,
         channel: &CompiledChannel,
+        lease: ChannelLease,
         started_wall_at: chrono::DateTime<chrono::Utc>,
         started_at: Instant,
     ) -> Self {
@@ -846,6 +937,7 @@ impl CompletionGuard {
                 upstream_status: None,
                 sink,
             }),
+            lease: Some(lease),
         }
     }
 
@@ -860,6 +952,24 @@ impl CompletionGuard {
             context
                 .first_byte_at
                 .get_or_insert_with(|| context.started_at.elapsed());
+        }
+    }
+
+    fn response_headers_received(&mut self) {
+        if let Some(lease) = &mut self.lease {
+            lease.response_headers_received();
+        }
+    }
+
+    fn connection_failed(&mut self) {
+        if let Some(lease) = &mut self.lease {
+            lease.connection_failed();
+        }
+    }
+
+    fn probe_failed(&mut self) {
+        if let Some(lease) = &mut self.lease {
+            lease.probe_failed();
         }
     }
 

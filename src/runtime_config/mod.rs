@@ -20,8 +20,8 @@ use zeroize::Zeroizing;
 use crate::{
     domain::{
         ApiFormat, ApiKeyHash, ApiKeyPermission, CompiledApiKey, CompiledChannel,
-        CompiledChannelGroup, CompiledModelRule, CompiledRuntimeConfig, ModelRouteKey,
-        UpstreamAuth,
+        CompiledChannelGroup, CompiledModelRule, CompiledRouteTier, CompiledRuntimeConfig,
+        ModelRouteKey, SelectionStrategy, UpstreamAuth,
     },
     persistence::{
         ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ControlPlaneRecords, ModelRuleRecord,
@@ -37,6 +37,8 @@ pub struct AppConfig {
     pub runtime_config: RuntimeConfigSettings,
     #[serde(default)]
     pub request_logging: RequestLoggingConfig,
+    #[serde(default)]
+    pub passive_health: PassiveHealthConfig,
     pub observability: ObservabilityConfig,
 }
 impl AppConfig {
@@ -65,6 +67,13 @@ impl AppConfig {
                 "request_logging queue_capacity must be greater than zero".into(),
             ));
         }
+        if self.passive_health.connection_failure_threshold == 0
+            || self.passive_health.cooldown_seconds == 0
+        {
+            return Err(ConfigError::Compile(
+                "passive_health threshold and cooldown must be greater than zero".into(),
+            ));
+        }
         require("observability filter", &self.observability.filter)?;
         Ok(BootstrapConfig {
             server: self.server,
@@ -72,6 +81,7 @@ impl AppConfig {
             upstream: self.upstream,
             runtime_config: self.runtime_config,
             request_logging: self.request_logging,
+            passive_health: self.passive_health,
             observability: self.observability,
         })
     }
@@ -83,6 +93,7 @@ pub struct BootstrapConfig {
     pub upstream: UpstreamConfig,
     pub runtime_config: RuntimeConfigSettings,
     pub request_logging: RequestLoggingConfig,
+    pub passive_health: PassiveHealthConfig,
     pub observability: ObservabilityConfig,
 }
 #[derive(Clone, Debug, Deserialize)]
@@ -118,6 +129,24 @@ pub struct RuntimeConfigSettings {
 pub struct RequestLoggingConfig {
     pub queue_capacity: usize,
 }
+/// Process-wide passive connectivity policy. Defaults are three connection
+/// failures and a 30 second cooldown, documented in the shipped TOML files.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PassiveHealthConfig {
+    #[serde(default = "default_connection_failure_threshold")]
+    pub connection_failure_threshold: u32,
+    #[serde(default = "default_passive_health_cooldown_seconds")]
+    pub cooldown_seconds: u64,
+}
+impl Default for PassiveHealthConfig {
+    fn default() -> Self {
+        Self {
+            connection_failure_threshold: default_connection_failure_threshold(),
+            cooldown_seconds: default_passive_health_cooldown_seconds(),
+        }
+    }
+}
 impl Default for RequestLoggingConfig {
     fn default() -> Self {
         Self {
@@ -136,6 +165,12 @@ const fn default_shutdown_grace_period_seconds() -> u64 {
 }
 const fn default_request_log_queue_capacity() -> usize {
     1_024
+}
+const fn default_connection_failure_threshold() -> u32 {
+    3
+}
+const fn default_passive_health_cooldown_seconds() -> u64 {
+    30
 }
 
 pub struct RuntimeConfig {
@@ -176,7 +211,7 @@ pub fn compile_control_plane(
                     group.id,
                     parse_format(&group.api_format)?,
                     group.priority,
-                    Arc::from(group.selection_strategy.as_str()),
+                    parse_strategy(&group.selection_strategy)?,
                 )),
             );
         }
@@ -328,6 +363,11 @@ fn compile_rules(
                     "enabled model rule references a cross-format channel".into(),
                 ));
             }
+            if !groups.contains_key(&channel.group_id()) {
+                return Err(ConfigError::Compile(
+                    "direct channel candidate belongs to a disabled channel group".into(),
+                ));
+            }
             if !channel.supports_model(&record.upstream_model) {
                 return Err(ConfigError::Compile(
                     "eligible channel does not support the model rule upstream model".into(),
@@ -340,18 +380,58 @@ fn compile_rules(
                 ));
             }
         }
-        if candidates.len() != 1 {
+        if candidates.is_empty() {
             return Err(ConfigError::Compile(
-                "each enabled model rule must have exactly one distinct eligible candidate channel"
+                "each enabled model rule must have at least one distinct eligible candidate channel"
                     .into(),
             ));
         }
-        let candidate = *candidates.iter().next().expect("validated non-empty");
-        let group_id = channels[&candidate].group_id();
-        if !groups.contains_key(&group_id) {
-            return Err(ConfigError::Compile(
-                "eligible channel has no enabled group".into(),
-            ));
+        let mut tier_channels: HashMap<i32, Vec<Uuid>> = HashMap::new();
+        for candidate in candidates {
+            let channel = &channels[&candidate];
+            let group = groups.get(&channel.group_id()).ok_or_else(|| {
+                ConfigError::Compile("eligible channel has no enabled group".into())
+            })?;
+            tier_channels
+                .entry(group.priority())
+                .or_default()
+                .push(candidate);
+        }
+        let mut priorities = tier_channels.keys().copied().collect::<Vec<_>>();
+        priorities.sort_unstable();
+        let mut tiers = Vec::with_capacity(priorities.len());
+        for priority in priorities {
+            let mut ids = tier_channels
+                .remove(&priority)
+                .expect("priority was collected");
+            ids.sort_unstable();
+            let first_group = groups
+                .get(&channels[&ids[0]].group_id())
+                .expect("eligible group");
+            let strategy = first_group.selection_strategy();
+            let mut aggregate_weight = 0_i64;
+            for id in &ids {
+                let channel = &channels[id];
+                let group = groups.get(&channel.group_id()).expect("eligible group");
+                if group.selection_strategy() != strategy {
+                    return Err(ConfigError::Compile(
+                        "all channel groups in every route priority tier must use the same selection strategy".into(),
+                    ));
+                }
+                aggregate_weight = aggregate_weight
+                    .checked_add(i64::from(channel.weight()))
+                    .ok_or_else(|| {
+                        ConfigError::Compile(
+                            "route tier aggregate channel weight overflowed".into(),
+                        )
+                    })?;
+            }
+            if aggregate_weight <= 0 {
+                return Err(ConfigError::Compile(
+                    "route tier aggregate channel weight must be positive".into(),
+                ));
+            }
+            tiers.push(CompiledRouteTier::new(priority, strategy, Arc::from(ids)));
         }
         let key = ModelRouteKey::new(format, Arc::<str>::from(record.client_model.as_str()));
         let rule = Arc::new(CompiledModelRule::new(
@@ -360,7 +440,7 @@ fn compile_rules(
             Arc::from(record.client_model),
             format,
             Arc::from(record.upstream_model),
-            Arc::from([candidate]),
+            Arc::from(tiers),
         ));
         if result.insert(key, rule).is_some() {
             return Err(ConfigError::Compile(
@@ -374,17 +454,16 @@ fn compile_rules(
 fn validate_group(record: &ChannelGroupRecord) -> Result<(), ConfigError> {
     require("channel group name", &record.name)?;
     parse_format(&record.api_format)?;
-    if record.priority < 0
-        || !matches!(
-            record.selection_strategy.as_str(),
-            "weighted_random" | "weighted_round_robin"
-        )
-    {
+    if record.priority < 0 || SelectionStrategy::parse(&record.selection_strategy).is_none() {
         return Err(ConfigError::Compile(
             "invalid channel group selection metadata".into(),
         ));
     }
     Ok(())
+}
+fn parse_strategy(value: &str) -> Result<SelectionStrategy, ConfigError> {
+    SelectionStrategy::parse(value)
+        .ok_or_else(|| ConfigError::Compile("unsupported channel group selection strategy".into()))
 }
 fn validate_channel(
     record: &ChannelRecord,
@@ -692,7 +771,78 @@ pub enum ConfigError {
 
 #[cfg(test)]
 mod tests {
+    use crate::persistence::{
+        ChannelGroupRecord, ChannelRecord, ControlPlaneRecords, ModelRuleRecord,
+    };
+
     use super::*;
+
+    fn route_records(
+        first_priority: i32,
+        first_strategy: &str,
+        second_priority: i32,
+        second_strategy: &str,
+        direct_duplicate: bool,
+    ) -> ControlPlaneRecords {
+        let first_group = Uuid::from_u128(1);
+        let second_group = Uuid::from_u128(2);
+        let first_channel = Uuid::from_u128(11);
+        let second_channel = Uuid::from_u128(12);
+        let group = |id, priority, strategy: &str| ChannelGroupRecord {
+            id,
+            name: id.to_string(),
+            api_format: "open_ai_chat_completions".into(),
+            priority,
+            selection_strategy: strategy.into(),
+            enabled: true,
+        };
+        let channel = |id, group_id| ChannelRecord {
+            id,
+            channel_group_id: group_id,
+            api_format: "open_ai_chat_completions".into(),
+            name: id.to_string(),
+            base_url: format!("https://{id}.test"),
+            enabled: true,
+            auto_disabled: false,
+            weight: 1,
+            proxy_id: None,
+            config_template_id: None,
+            override_document: serde_json::json!({}),
+            connect_timeout_ms: None,
+            response_header_timeout_ms: None,
+            stream_idle_timeout_ms: None,
+            upstream_auth_kind: "none".into(),
+            upstream_auth_header_name: None,
+            upstream_api_key: None,
+            available_models: vec!["upstream".into()],
+            health_check: serde_json::json!({}),
+        };
+        ControlPlaneRecords {
+            api_keys: vec![],
+            groups: vec![
+                group(first_group, first_priority, first_strategy),
+                group(second_group, second_priority, second_strategy),
+            ],
+            channels: vec![
+                channel(first_channel, first_group),
+                channel(second_channel, second_group),
+            ],
+            model_rules: vec![ModelRuleRecord {
+                id: Uuid::from_u128(20),
+                client_model: "client".into(),
+                api_format: "open_ai_chat_completions".into(),
+                model_id: Uuid::from_u128(21),
+                model_enabled: true,
+                upstream_model: "upstream".into(),
+                channel_group_ids: vec![first_group, second_group],
+                channel_ids: direct_duplicate
+                    .then_some(first_channel)
+                    .into_iter()
+                    .collect(),
+                enabled: true,
+            }],
+        }
+    }
     #[test]
     fn bootstrap_rejects_dynamic_toml() {
         let value = "[server]\nhost='x'\nport=1\nmax_request_body_bytes=1\nshutdown_grace_period_seconds=1\n[database]\nurl='postgres://x'\nmax_connections=1\nconnect_timeout_seconds=1\n[upstream]\nconnect_timeout_seconds=1\nresponse_header_timeout_seconds=2\nstream_idle_timeout_seconds=1\n[runtime_config]\nreload_interval_seconds=1\n[request_logging]\nqueue_capacity=1\n[observability]\nfilter='info'\n[[api_keys]]\nid='bad'";
@@ -719,6 +869,8 @@ mod tests {
             .unwrap();
         assert_eq!(config.server.shutdown_grace_period_seconds, 30);
         assert_eq!(config.request_logging.queue_capacity, 1_024);
+        assert_eq!(config.passive_health.connection_failure_threshold, 3);
+        assert_eq!(config.passive_health.cooldown_seconds, 30);
     }
 
     #[test]
@@ -729,6 +881,52 @@ mod tests {
                 .unwrap()
                 .validate()
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn compiler_builds_sorted_priority_tiers() {
+        let snapshot = compile_control_plane(route_records(
+            10,
+            "weighted_random",
+            2,
+            "weighted_random",
+            false,
+        ))
+        .unwrap();
+        let rule = snapshot
+            .model_rule(ApiFormat::OpenAiChatCompletions, "client")
+            .unwrap();
+        assert_eq!(rule.tiers().len(), 2);
+        assert_eq!(rule.tiers()[0].priority(), 2);
+        assert_eq!(rule.tiers()[1].priority(), 10);
+    }
+
+    #[test]
+    fn compiler_rejects_strategy_mismatch_in_any_priority_tier() {
+        assert!(
+            compile_control_plane(route_records(
+                0,
+                "weighted_random",
+                0,
+                "weighted_round_robin",
+                false,
+            ))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn compiler_rejects_direct_candidate_already_reached_through_group() {
+        assert!(
+            compile_control_plane(route_records(
+                0,
+                "weighted_random",
+                1,
+                "weighted_random",
+                true,
+            ))
+            .is_err()
         );
     }
 }

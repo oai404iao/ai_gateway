@@ -25,6 +25,12 @@ reload_interval_seconds = 30
 # Accepted logs are persisted asynchronously; a full queue drops the log only.
 queue_capacity = 1_024
 
+[passive_health]
+# Only pre-header connection failures count. After three failures, one probe is
+# admitted after this cooldown; response headers reset the passive breaker.
+connection_failure_threshold = 3
+cooldown_seconds = 30
+
 [observability]
 filter = "ai_gateway=debug,tower_http=info"
 

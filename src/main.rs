@@ -4,6 +4,7 @@ use ai_gateway::{
     application::ProxyService,
     http, observability,
     persistence::{ControlPlaneRepository, MIGRATOR, RequestLogRepository},
+    routing::{PassiveHealthPolicy, RoutingRuntime},
     runtime_config::{AppConfig, RuntimeConfig, compile_control_plane},
     workers::{ControlPlaneReloader, RequestLogWorker},
 };
@@ -50,15 +51,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
         RequestLogRepository::new(pool),
         config.request_logging.queue_capacity,
     );
-    let proxy = ProxyService::with_log_sink(
+    let routing = RoutingRuntime::new(PassiveHealthPolicy {
+        connection_failure_threshold: config.passive_health.connection_failure_threshold,
+        cooldown: Duration::from_secs(config.passive_health.cooldown_seconds),
+    });
+    routing.reconcile(&runtime.snapshot());
+    let proxy = ProxyService::with_log_sink_and_routing(
         Arc::clone(&runtime),
         config.server.max_request_body_bytes,
         &config.upstream,
         Arc::new(request_log_sink),
+        routing.clone(),
     )?;
-    ControlPlaneReloader::new(repository, runtime).spawn(std::time::Duration::from_secs(
-        config.runtime_config.reload_interval_seconds,
-    ));
+    ControlPlaneReloader::new(repository, runtime)
+        .with_routing(routing)
+        .spawn(std::time::Duration::from_secs(
+            config.runtime_config.reload_interval_seconds,
+        ));
     let listener = TcpListener::bind(&address).await?;
     tracing::info!(%address, "AI gateway listening");
 

@@ -9,6 +9,6 @@ pub use api_format::ApiFormat;
 pub use api_key::ApiKeyHash;
 pub use compiled_routing::{
     ApiKeyPermission, CompiledApiKey, CompiledChannel, CompiledChannelGroup, CompiledModelRule,
-    CompiledRuntimeConfig, ModelRouteKey, UpstreamAuth,
+    CompiledRouteTier, CompiledRuntimeConfig, ModelRouteKey, SelectionStrategy, UpstreamAuth,
 };
 pub use request_log::{RequestLogEvent, RequestLogOutcome};
