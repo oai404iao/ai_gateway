@@ -61,6 +61,8 @@ impl AppConfig {
             model_rules,
         } = self;
 
+        validate_server_config(&server)?;
+        validate_upstream_config(&upstream)?;
         let runtime = compile_runtime_config(api_keys, channels, model_rules)?;
         Ok(GatewayConfig {
             server,
@@ -363,6 +365,42 @@ fn require_non_empty(field: &str, value: &str) -> Result<(), ConfigError> {
     Ok(())
 }
 
+fn validate_server_config(server: &ServerConfig) -> Result<(), ConfigError> {
+    if server.max_request_body_bytes == 0 {
+        return Err(ConfigError::Compile(
+            "server max_request_body_bytes must be greater than zero".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_upstream_config(upstream: &UpstreamConfig) -> Result<(), ConfigError> {
+    for (field, value) in [
+        ("connect_timeout_seconds", upstream.connect_timeout_seconds),
+        (
+            "response_header_timeout_seconds",
+            upstream.response_header_timeout_seconds,
+        ),
+        (
+            "stream_idle_timeout_seconds",
+            upstream.stream_idle_timeout_seconds,
+        ),
+    ] {
+        if value == 0 {
+            return Err(ConfigError::Compile(format!(
+                "upstream {field} must be greater than zero"
+            )));
+        }
+    }
+    if upstream.response_header_timeout_seconds <= upstream.connect_timeout_seconds {
+        return Err(ConfigError::Compile(
+            "upstream response_header_timeout_seconds must be greater than connect_timeout_seconds"
+                .to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Error)]
 pub enum ConfigError {
     #[error("failed to read configuration file {path}")]
@@ -509,6 +547,24 @@ channel_id = "responses-upstream"
             Err(error) => error,
         };
         assert!(error.to_string().contains("duplicate enabled model rule"));
+    }
+
+    #[test]
+    fn rejects_response_header_timeout_that_cannot_follow_connect_timeout() {
+        let invalid = BASE_CONFIG.replace(
+            "response_header_timeout_seconds = 30",
+            "response_header_timeout_seconds = 10",
+        );
+
+        let error = match toml::from_str::<AppConfig>(&invalid).unwrap().compile() {
+            Ok(_) => panic!("configuration should be rejected"),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("response_header_timeout_seconds must be greater")
+        );
     }
 
     #[test]

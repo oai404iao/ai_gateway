@@ -28,6 +28,8 @@ version = "0.1.0"
 dependencies = [
  "arc-swap",
  "axum",
+ "futures-util",
+ "http-body-util",
  "reqwest",
  "rust_decimal",
  "secrecy",

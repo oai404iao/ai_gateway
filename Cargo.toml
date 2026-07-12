@@ -9,6 +9,8 @@ license = "UNLICENSED"
 [dependencies]
 arc-swap = "1.7"
 axum = "0.8"
+futures-util = "0.3"
+http-body-util = "0.1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 rust_decimal = { version = "1.36", features = ["serde"] }
 secrecy = "0.10"
@@ -18,7 +20,7 @@ sha2 = "0.10"
 sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio-rustls", "migrate", "chrono", "uuid", "json", "rust_decimal"] }
 subtle = "2.6"
 thiserror = "2.0"
-tokio = { version = "1.43", features = ["macros", "net", "rt-multi-thread"] }
+tokio = { version = "1.43", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
 toml = "0.8"
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace"] }

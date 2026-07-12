@@ -1,7 +1,10 @@
 use std::{
     collections::{BTreeSet, HashSet},
+    error::Error,
+    io,
+    pin::Pin,
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use axum::{
@@ -13,9 +16,11 @@ use axum::{
     },
     response::{IntoResponse, Response as AxumResponse},
 };
+use futures_util::{Stream, StreamExt, stream};
 use reqwest::{Client, redirect::Policy};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use tokio::time::timeout;
 
 use crate::{
     domain::{ApiFormat, ApiKeyPermission, CompiledChannel, CompiledModelRule},
@@ -29,6 +34,8 @@ pub struct ProxyService {
     runtime: Arc<RuntimeConfig>,
     upstream_client: Client,
     max_request_body_bytes: usize,
+    response_header_timeout: Duration,
+    stream_idle_timeout: Duration,
 }
 
 impl ProxyService {
@@ -46,6 +53,8 @@ impl ProxyService {
             runtime,
             upstream_client,
             max_request_body_bytes,
+            response_header_timeout: Duration::from_secs(upstream.response_header_timeout_seconds),
+            stream_idle_timeout: Duration::from_secs(upstream.stream_idle_timeout_seconds),
         })
     }
 
@@ -54,6 +63,7 @@ impl ProxyService {
         api_format: ApiFormat,
         request: Request<Body>,
     ) -> Result<AxumResponse, ProxyError> {
+        let started_at = Instant::now();
         let (parts, body) = request.into_parts();
         let client_key = parse_bearer_token(&parts.headers)?;
         let snapshot = self.runtime.snapshot();
@@ -68,7 +78,7 @@ impl ProxyService {
 
         let original_body = to_bytes(body, self.max_request_body_bytes)
             .await
-            .map_err(|_| ProxyError::payload_too_large())?;
+            .map_err(request_body_error)?;
         let model = parse_model(&original_body)?;
         let rule = snapshot
             .model_rule(api_format, &model)
@@ -78,17 +88,42 @@ impl ProxyService {
         let url = upstream_url(rule.channel(), &parts.uri)?;
         let mut headers = forward_request_headers(&parts.headers);
         inject_upstream_auth(&mut headers, rule.channel())?;
+        let mut completion = CompletionGuard::new(
+            api_key.id(),
+            &model,
+            rule.upstream_model(),
+            rule.channel().id(),
+            api_format,
+            started_at,
+        );
 
-        let upstream_response = self
+        let upstream_request = self
             .upstream_client
             .request(parts.method, url)
             .headers(headers)
-            .body(body)
-            .send()
-            .await
-            .map_err(ProxyError::upstream_unavailable)?;
+            .body(body);
+        let upstream_response =
+            match timeout(self.response_header_timeout, upstream_request.send()).await {
+                Err(_) => {
+                    completion.finish(RequestOutcome::ResponseHeaderTimeout);
+                    return Err(ProxyError::response_header_timeout());
+                }
+                Ok(Err(error)) => {
+                    if error.is_timeout() && error.is_connect() {
+                        completion.finish(RequestOutcome::ConnectTimeout);
+                        return Err(ProxyError::connect_timeout());
+                    }
+                    completion.finish(RequestOutcome::UpstreamUnavailable);
+                    return Err(ProxyError::upstream_unavailable());
+                }
+                Ok(Ok(response)) => response,
+            };
 
-        response_from_upstream(upstream_response)
+        Ok(response_from_upstream(
+            upstream_response,
+            self.stream_idle_timeout,
+            completion,
+        ))
     }
 
     pub fn list_models(&self, headers: &HeaderMap) -> Result<ModelsResponse, ProxyError> {
@@ -201,14 +236,36 @@ impl ProxyError {
         }
     }
 
-    fn upstream_unavailable(error: reqwest::Error) -> Self {
-        tracing::warn!(error = %error, "upstream request failed before response headers");
+    fn upstream_unavailable() -> Self {
         Self {
             status: StatusCode::BAD_GATEWAY,
             message: "The selected upstream channel could not be reached.".to_owned(),
             error_type: "api_error",
             param: None,
             code: "upstream_unavailable".into(),
+            authenticate: false,
+        }
+    }
+
+    fn response_header_timeout() -> Self {
+        Self {
+            status: StatusCode::GATEWAY_TIMEOUT,
+            message: "The selected upstream channel did not return response headers in time."
+                .to_owned(),
+            error_type: "api_error",
+            param: None,
+            code: "response_header_timeout".into(),
+            authenticate: false,
+        }
+    }
+
+    fn connect_timeout() -> Self {
+        Self {
+            status: StatusCode::GATEWAY_TIMEOUT,
+            message: "The selected upstream channel could not be connected in time.".to_owned(),
+            error_type: "api_error",
+            param: None,
+            code: "connect_timeout".into(),
             authenticate: false,
         }
     }
@@ -255,6 +312,14 @@ fn parse_model(body: &[u8]) -> Result<String, ProxyError> {
         ));
     }
     Ok(model)
+}
+
+fn request_body_error(error: axum::Error) -> ProxyError {
+    if error.into_inner().is::<http_body_util::LengthLimitError>() {
+        ProxyError::payload_too_large()
+    } else {
+        ProxyError::invalid_request("Request body could not be read.", "body")
+    }
 }
 
 fn rewrite_model_alias(
@@ -386,37 +451,219 @@ fn is_hop_by_hop(name: &HeaderName, connection_names: &HashSet<HeaderName>) -> b
 
 fn response_from_upstream(
     upstream_response: reqwest::Response,
-) -> Result<AxumResponse, ProxyError> {
-    let status =
-        StatusCode::from_u16(upstream_response.status().as_u16()).map_err(|_| ProxyError {
-            status: StatusCode::BAD_GATEWAY,
-            message: "The selected upstream channel returned an invalid status.".to_owned(),
-            error_type: "api_error",
-            param: None,
-            code: "invalid_upstream_response".into(),
-            authenticate: false,
-        })?;
+    stream_idle_timeout: Duration,
+    mut completion: CompletionGuard,
+) -> AxumResponse {
+    let upstream_status = upstream_response.status();
+    let status = StatusCode::from_u16(upstream_status.as_u16())
+        .expect("reqwest status code is valid for an Axum response");
+    completion.set_upstream_status(upstream_status.as_u16());
     let headers = forward_response_headers(upstream_response.headers());
-    let mut response = Response::builder()
-        .status(status)
-        .body(Body::from_stream(upstream_response.bytes_stream()))
-        .map_err(|_| ProxyError {
-            status: StatusCode::BAD_GATEWAY,
-            message: "The selected upstream channel returned an invalid response.".to_owned(),
-            error_type: "api_error",
-            param: None,
-            code: "invalid_upstream_response".into(),
-            authenticate: false,
-        })?;
+    if response_has_no_body(status) {
+        completion.finish(if upstream_status.is_success() {
+            RequestOutcome::Succeeded
+        } else {
+            RequestOutcome::UpstreamHttpError
+        });
+        let mut response = Response::new(Body::empty());
+        *response.status_mut() = status;
+        *response.headers_mut() = headers;
+        return response;
+    }
+    let stream = timed_upstream_stream(
+        upstream_response.bytes_stream(),
+        stream_idle_timeout,
+        completion,
+        upstream_status.is_success(),
+    );
+    let mut response = Response::new(Body::from_stream(stream));
+    *response.status_mut() = status;
     *response.headers_mut() = headers;
-    Ok(response)
+    response
+}
+
+fn response_has_no_body(status: StatusCode) -> bool {
+    status.is_informational()
+        || status == StatusCode::NO_CONTENT
+        || status == StatusCode::NOT_MODIFIED
+}
+
+type UpstreamByteStream = Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>>;
+type BodyStreamError = Box<dyn Error + Send + Sync>;
+
+struct StreamState {
+    upstream: Option<UpstreamByteStream>,
+    idle_timeout: Duration,
+    completion: CompletionGuard,
+    upstream_succeeded: bool,
+}
+
+fn timed_upstream_stream(
+    upstream: impl Stream<Item = Result<Bytes, reqwest::Error>> + Send + 'static,
+    idle_timeout: Duration,
+    completion: CompletionGuard,
+    upstream_succeeded: bool,
+) -> impl Stream<Item = Result<Bytes, BodyStreamError>> + Send {
+    stream::unfold(
+        StreamState {
+            upstream: Some(Box::pin(upstream)),
+            idle_timeout,
+            completion,
+            upstream_succeeded,
+        },
+        |mut state| async move {
+            let next = match state.upstream.as_mut() {
+                Some(upstream) => timeout(state.idle_timeout, upstream.next()).await,
+                None => return None,
+            };
+
+            match next {
+                Ok(Some(Ok(bytes))) => {
+                    state.completion.record_first_byte();
+                    Some((Ok(bytes), state))
+                }
+                Ok(Some(Err(error))) => {
+                    state.upstream.take();
+                    state.completion.finish(RequestOutcome::UpstreamBodyError);
+                    let error: BodyStreamError = Box::new(error);
+                    Some((Err(error), state))
+                }
+                Ok(None) => {
+                    state.completion.finish(if state.upstream_succeeded {
+                        RequestOutcome::Succeeded
+                    } else {
+                        RequestOutcome::UpstreamHttpError
+                    });
+                    None
+                }
+                Err(_) => {
+                    state.upstream.take();
+                    state.completion.finish(RequestOutcome::StreamIdleTimeout);
+                    let error: BodyStreamError = Box::new(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "upstream response stream was idle for too long",
+                    ));
+                    Some((Err(error), state))
+                }
+            }
+        },
+    )
+}
+
+#[derive(Clone, Copy)]
+enum RequestOutcome {
+    Succeeded,
+    UpstreamHttpError,
+    ConnectTimeout,
+    ResponseHeaderTimeout,
+    UpstreamUnavailable,
+    UpstreamBodyError,
+    StreamIdleTimeout,
+    Cancelled,
+}
+
+impl RequestOutcome {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Succeeded => "succeeded",
+            Self::UpstreamHttpError => "upstream_http_error",
+            Self::ConnectTimeout => "connect_timeout",
+            Self::ResponseHeaderTimeout => "response_header_timeout",
+            Self::UpstreamUnavailable => "upstream_unavailable",
+            Self::UpstreamBodyError => "upstream_body_error",
+            Self::StreamIdleTimeout => "stream_idle_timeout",
+            Self::Cancelled => "cancelled",
+        }
+    }
+}
+
+struct CompletionContext {
+    api_key_id: Arc<str>,
+    client_model: Arc<str>,
+    upstream_model: Arc<str>,
+    channel_id: Arc<str>,
+    api_format: ApiFormat,
+    started_at: Instant,
+    first_byte_at: Option<Duration>,
+    upstream_status: Option<u16>,
+}
+
+/// Emits exactly one event, including when Axum drops an in-flight response
+/// body after a downstream client disconnects.
+struct CompletionGuard {
+    context: Option<CompletionContext>,
+}
+
+impl CompletionGuard {
+    fn new(
+        api_key_id: &str,
+        client_model: &str,
+        upstream_model: &str,
+        channel_id: &str,
+        api_format: ApiFormat,
+        started_at: Instant,
+    ) -> Self {
+        Self {
+            context: Some(CompletionContext {
+                api_key_id: Arc::from(api_key_id),
+                client_model: Arc::from(client_model),
+                upstream_model: Arc::from(upstream_model),
+                channel_id: Arc::from(channel_id),
+                api_format,
+                started_at,
+                first_byte_at: None,
+                upstream_status: None,
+            }),
+        }
+    }
+
+    fn set_upstream_status(&mut self, status: u16) {
+        if let Some(context) = &mut self.context {
+            context.upstream_status = Some(status);
+        }
+    }
+
+    fn record_first_byte(&mut self) {
+        if let Some(context) = &mut self.context {
+            context
+                .first_byte_at
+                .get_or_insert_with(|| context.started_at.elapsed());
+        }
+    }
+
+    fn finish(&mut self, outcome: RequestOutcome) {
+        let Some(context) = self.context.take() else {
+            return;
+        };
+        tracing::info!(
+            event = "proxy_request_completed",
+            api_key_id = %context.api_key_id,
+            client_model = %context.client_model,
+            upstream_model = %context.upstream_model,
+            channel_id = %context.channel_id,
+            api_format = ?context.api_format,
+            upstream_status = ?context.upstream_status,
+            latency_ms = context.started_at.elapsed().as_millis(),
+            ttft_ms = ?context.first_byte_at.map(|duration| duration.as_millis()),
+            outcome = outcome.as_str(),
+            "proxy request completed"
+        );
+    }
+}
+
+impl Drop for CompletionGuard {
+    fn drop(&mut self) {
+        self.finish(RequestOutcome::Cancelled);
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use axum::http::{HeaderMap, HeaderValue, header::CONNECTION};
+    use axum::http::{HeaderMap, HeaderValue, StatusCode, header::CONNECTION};
 
-    use super::{forward_request_headers, parse_bearer_token};
+    use super::{
+        forward_request_headers, forward_response_headers, parse_bearer_token, response_has_no_body,
+    };
 
     #[test]
     fn rejects_malformed_bearer_values() {
@@ -445,5 +692,29 @@ mod tests {
         assert!(forwarded.get("x-internal-hop").is_none());
         assert!(forwarded.get("authorization").is_none());
         assert_eq!(forwarded.get("x-request-id").unwrap(), "keep");
+    }
+
+    #[test]
+    fn removes_static_and_connection_declared_hop_by_hop_response_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert(CONNECTION, HeaderValue::from_static("x-upstream-hop"));
+        headers.insert("x-upstream-hop", HeaderValue::from_static("discard"));
+        headers.insert("transfer-encoding", HeaderValue::from_static("chunked"));
+        headers.append("set-cookie", HeaderValue::from_static("first=value"));
+        headers.append("set-cookie", HeaderValue::from_static("second=value"));
+
+        let forwarded = forward_response_headers(&headers);
+        assert!(forwarded.get(CONNECTION).is_none());
+        assert!(forwarded.get("x-upstream-hop").is_none());
+        assert!(forwarded.get("transfer-encoding").is_none());
+        assert_eq!(forwarded.get_all("set-cookie").iter().count(), 2);
+    }
+
+    #[test]
+    fn identifies_statuses_for_which_axum_will_not_poll_a_body() {
+        assert!(response_has_no_body(StatusCode::NO_CONTENT));
+        assert!(response_has_no_body(StatusCode::NOT_MODIFIED));
+        assert!(response_has_no_body(StatusCode::CONTINUE));
+        assert!(!response_has_no_body(StatusCode::OK));
     }
 }

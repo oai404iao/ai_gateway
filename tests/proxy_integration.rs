@@ -128,7 +128,7 @@ connect_timeout_seconds = 1
 
 [upstream]
 connect_timeout_seconds = 1
-response_header_timeout_seconds = 1
+response_header_timeout_seconds = 2
 stream_idle_timeout_seconds = 1
 
 [runtime_config]
