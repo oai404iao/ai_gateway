@@ -5,7 +5,8 @@
 use std::{env, sync::Arc, time::Duration};
 
 use ai_gateway::{
-    application::ProxyService,
+    application::{ProxyService, RecordingRequestLogSink},
+    domain::{ApiFormat, RequestLogEvent, RequestLogOutcome},
     http,
     persistence::{
         ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ControlPlaneRecords, ModelRuleRecord,
@@ -17,6 +18,7 @@ use axum::{
     http::{Request, header},
 };
 use http_body_util::BodyExt;
+use rust_decimal::Decimal;
 use serde_json::{Value, json};
 use tokio::time::timeout;
 use tower::ServiceExt;
@@ -32,6 +34,13 @@ pub(super) enum SmokeFormat {
 }
 
 impl SmokeFormat {
+    const fn api_format(self) -> ApiFormat {
+        match self {
+            Self::ChatCompletions => ApiFormat::OpenAiChatCompletions,
+            Self::Responses => ApiFormat::OpenAiResponses,
+        }
+    }
+
     const fn api_format_name(self) -> &'static str {
         match self {
             Self::ChatCompletions => "open_ai_chat_completions",
@@ -48,11 +57,18 @@ impl SmokeFormat {
 
     fn request_body(self, streamed: bool) -> Value {
         match self {
+            Self::ChatCompletions if streamed => json!({
+                "model": CLIENT_MODEL,
+                "messages": [{"role": "user", "content": "Reply with OK."}],
+                "max_tokens": 1,
+                "stream": true,
+                "stream_options": {"include_usage": true},
+            }),
             Self::ChatCompletions => json!({
                 "model": CLIENT_MODEL,
                 "messages": [{"role": "user", "content": "Reply with OK."}],
                 "max_tokens": 1,
-                "stream": streamed,
+                "stream": false,
             }),
             Self::Responses => json!({
                 "model": CLIENT_MODEL,
@@ -109,9 +125,15 @@ fn optional_environment(name: &str) -> Option<String> {
     env::var(name).ok().filter(|value| !value.trim().is_empty())
 }
 
-fn gateway(settings: &SmokeSettings, format: SmokeFormat, upstream_model: &str) -> axum::Router {
+struct SmokeGateway {
+    app: axum::Router,
+    logs: RecordingRequestLogSink,
+}
+
+fn gateway(settings: &SmokeSettings, format: SmokeFormat, upstream_model: &str) -> SmokeGateway {
     let group_id = Uuid::new_v4();
     let channel_id = Uuid::new_v4();
+    let logs = RecordingRequestLogSink::default();
     let records = ControlPlaneRecords {
         api_keys: vec![ApiKeyRecord {
             id: Uuid::new_v4(),
@@ -167,10 +189,10 @@ fn gateway(settings: &SmokeSettings, format: SmokeFormat, upstream_model: &str) 
             model_currency: "USD".into(),
             price_unit_tokens: 1_000_000,
             price_effective_at: chrono::Utc::now(),
-            input_unit_price: Default::default(),
-            cached_input_unit_price: Default::default(),
-            cache_write_unit_price: Default::default(),
-            output_unit_price: Default::default(),
+            input_unit_price: Decimal::ONE,
+            cached_input_unit_price: Decimal::new(5, 1),
+            cache_write_unit_price: Decimal::new(25, 2),
+            output_unit_price: Decimal::from(2_i64),
             upstream_model: upstream_model.into(),
             channel_group_ids: vec![],
             channel_ids: vec![channel_id],
@@ -187,9 +209,12 @@ fn gateway(settings: &SmokeSettings, format: SmokeFormat, upstream_model: &str) 
         response_header_timeout_seconds: settings.timeout.as_secs(),
         stream_idle_timeout_seconds: settings.timeout.as_secs(),
     };
-    let proxy = ProxyService::new(runtime, 1_048_576, &upstream)
+    let proxy = ProxyService::with_log_sink(runtime, 1_048_576, &upstream, Arc::new(logs.clone()))
         .expect("the smoke-test upstream client must build");
-    http::router(proxy)
+    SmokeGateway {
+        app: http::router(proxy),
+        logs,
+    }
 }
 
 fn request(format: SmokeFormat, streamed: bool) -> Request<Body> {
@@ -203,19 +228,18 @@ fn request(format: SmokeFormat, streamed: bool) -> Request<Body> {
         .expect("smoke-test request builds")
 }
 
-/// Makes two small, paid requests for one API format: one JSON response and
-/// one SSE response. It deliberately creates no database records and does not
-/// use the process TOML configuration.
-pub(super) async fn smoke_format(
+/// Makes one small, paid JSON request for one API format. It deliberately
+/// creates no database records and does not use the process TOML configuration.
+pub(super) async fn smoke_nonstreaming_format(
     settings: &SmokeSettings,
     format: SmokeFormat,
     upstream_model: &str,
 ) {
-    let app = gateway(settings, format, upstream_model);
+    let gateway = gateway(settings, format, upstream_model);
 
     let response = timeout(
         settings.timeout,
-        app.clone().oneshot(request(format, false)),
+        gateway.app.oneshot(request(format, false)),
     )
     .await
     .expect("non-streaming gateway request timed out")
@@ -236,8 +260,19 @@ pub(super) async fn smoke_format(
         value.is_object(),
         "the real upstream response JSON must be an object"
     );
+    assert_response_has_usage(format, &value);
+    assert_usage_was_logged(&gateway.logs.events(), format, false);
+}
 
-    let response = timeout(settings.timeout, app.oneshot(request(format, true)))
+/// Makes one small, paid SSE request for one API format and fully consumes the
+/// stream so the terminal request log includes the upstream's final usage.
+pub(super) async fn smoke_streaming_format(
+    settings: &SmokeSettings,
+    format: SmokeFormat,
+    upstream_model: &str,
+) {
+    let gateway = gateway(settings, format, upstream_model);
+    let response = timeout(settings.timeout, gateway.app.oneshot(request(format, true)))
         .await
         .expect("streaming gateway request timed out")
         .expect("streaming gateway request completed");
@@ -270,5 +305,78 @@ pub(super) async fn smoke_format(
     assert!(
         !bytes.is_empty(),
         "the real upstream first streaming frame must not be empty"
+    );
+    timeout(settings.timeout, body.collect())
+        .await
+        .expect("the real upstream streaming body did not finish in time")
+        .expect("the real upstream streaming body failed");
+    assert_usage_was_logged(&gateway.logs.events(), format, true);
+}
+
+fn assert_response_has_usage(format: SmokeFormat, value: &Value) {
+    let usage = match format {
+        SmokeFormat::ChatCompletions => value.get("usage"),
+        SmokeFormat::Responses => value.get("usage").or_else(|| {
+            value
+                .get("response")
+                .and_then(|response| response.get("usage"))
+        }),
+    };
+    assert!(
+        usage.is_some_and(Value::is_object),
+        "the real upstream non-streaming response must include a usage object"
+    );
+}
+
+fn assert_usage_was_logged(events: &[RequestLogEvent], format: SmokeFormat, streamed: bool) {
+    assert_eq!(
+        events.len(),
+        1,
+        "the real upstream request must produce exactly one terminal log"
+    );
+    let event = &events[0];
+    assert_eq!(event.api_format, format.api_format());
+    assert_eq!(event.streamed, streamed);
+    assert_eq!(event.outcome, RequestLogOutcome::Succeeded);
+    assert!(
+        event
+            .response_status_code
+            .is_some_and(|status| (200..300).contains(&status)),
+        "the terminal log must retain the successful client-visible status"
+    );
+    assert_eq!(event.error_code, None);
+
+    let billing = event
+        .billing
+        .as_ref()
+        .expect("a selected real-upstream route must retain its price snapshot");
+    let usage = billing
+        .usage
+        .as_ref()
+        .expect("the real upstream usage must be extracted into the terminal log");
+    // Some OpenAI-compatible streaming providers report zero prompt tokens
+    // even when they provide a final usage object. Presence plus a positive
+    // generated-token count still proves the format-specific extraction path.
+    assert!(usage.output_tokens > 0);
+    assert!(usage.cached_input_tokens <= usage.input_tokens);
+    assert!(usage.cache_write_tokens <= usage.input_tokens);
+
+    assert_eq!(billing.price.currency, "USD");
+    assert_eq!(billing.price.price_unit_tokens, 1_000_000);
+    assert_eq!(billing.price.input_unit_price, Decimal::ONE);
+    assert_eq!(billing.price.cached_input_unit_price, Decimal::new(5, 1));
+    assert_eq!(billing.price.cache_write_unit_price, Decimal::new(25, 2));
+    assert_eq!(billing.price.output_unit_price, Decimal::from(2_i64));
+    assert!(
+        billing
+            .cost_amount
+            .is_some_and(|amount| amount > Decimal::ZERO),
+        "usage with the configured nonzero price snapshot must have a positive cost"
+    );
+    assert!(
+        billing
+            .output_tokens_per_second
+            .is_some_and(|tps| tps > Decimal::ZERO),
+        "a nonempty response body with output tokens must have positive output TPS"
     );
 }

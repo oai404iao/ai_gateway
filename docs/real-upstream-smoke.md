@@ -2,13 +2,14 @@
 
 `tests/real_upstream/` verifies the gateway against one real,
 OpenAI-compatible upstream. It is deliberately ignored by normal `cargo test`
-runs: it has separate Chat Completions and Responses tests, each making one
-non-streaming and one streaming request.
+runs: it has separate Chat Completions and Responses tests for non-streaming
+and streaming requests.
 
 The test constructs an in-memory control-plane snapshot and drives the public
 Axum router. It verifies the production forwarding path—model aliasing,
 replacement of the synthetic client Bearer credential with the configured
-upstream Bearer credential, `reqwest` forwarding, and SSE streaming—without
+upstream Bearer credential, `reqwest` forwarding, SSE streaming, usage
+extraction, price-snapshot binding, and terminal request-log costs—without
 requiring PostgreSQL or modifying a shared control plane.
 
 ## Local configuration
@@ -53,7 +54,8 @@ then runs the ignored test with `RUN_REAL_UPSTREAM_SMOKE=1`.
   rate limit. Never use a production credential.
 - The four requests run serially. Each sends a deliberately short prompt and
   asks for one output token; provider-specific minimum-output behavior may
-  still incur a small charge.
+  still incur a small charge. The Chat Completions streaming request includes
+  `stream_options.include_usage=true` so its final SSE usage can be verified.
 - Do not run it in ordinary PR checks. CI automation is intentionally not part
   of this change.
 - Do not add real credentials to `config.toml`, `config.local.toml`, test
