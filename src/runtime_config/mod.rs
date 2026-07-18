@@ -23,7 +23,8 @@ use crate::{
         AdminTokenVerifier, ApiFormat, ApiKeyHash, ApiKeyPermission, ChannelTimeoutPolicy,
         CompiledApiKey, CompiledChannel, CompiledChannelGroup, CompiledChannelUpstreamPolicy,
         CompiledConfigTemplate, CompiledModelRule, CompiledProxy, CompiledRouteTier,
-        CompiledRuntimeConfig, ModelRouteKey, NoProxyHost, SelectionStrategy, UpstreamAuth,
+        CompiledRuntimeConfig, ModelPriceSnapshot, ModelRouteKey, NoProxyHost, SelectionStrategy,
+        UpstreamAuth,
     },
     persistence::{
         ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ConfigTemplateRecord, ControlPlaneRecords,
@@ -748,12 +749,14 @@ fn compile_rules(
             tiers.push(CompiledRouteTier::new(priority, strategy, Arc::from(ids)));
         }
         let key = ModelRouteKey::new(format, Arc::<str>::from(record.client_model.as_str()));
+        let price_snapshot = compile_model_price_snapshot(&record)?;
         let rule = Arc::new(CompiledModelRule::new(
             record.id,
             record.model_id,
             Arc::from(record.client_model),
             format,
             Arc::from(record.upstream_model),
+            price_snapshot,
             Arc::from(tiers),
         ));
         if result.insert(key, rule).is_some() {
@@ -763,6 +766,35 @@ fn compile_rules(
         }
     }
     Ok(result)
+}
+fn compile_model_price_snapshot(
+    record: &ModelRuleRecord,
+) -> Result<ModelPriceSnapshot, ConfigError> {
+    if record.model_currency.len() != 3
+        || !record.model_currency.is_ascii()
+        || record.price_unit_tokens <= 0
+        || [
+            record.input_unit_price,
+            record.cached_input_unit_price,
+            record.cache_write_unit_price,
+            record.output_unit_price,
+        ]
+        .into_iter()
+        .any(|price| price.is_sign_negative())
+    {
+        return Err(ConfigError::Compile(
+            "model rule references invalid model price metadata".into(),
+        ));
+    }
+    Ok(ModelPriceSnapshot::new(
+        Arc::from(record.model_currency.as_str()),
+        record.price_unit_tokens,
+        record.price_effective_at,
+        record.input_unit_price,
+        record.cached_input_unit_price,
+        record.cache_write_unit_price,
+        record.output_unit_price,
+    ))
 }
 fn validate_rule_references(
     record: &ModelRuleRecord,
@@ -1272,6 +1304,13 @@ mod tests {
                 api_format: "open_ai_chat_completions".into(),
                 model_id: Uuid::from_u128(21),
                 model_enabled: true,
+                model_currency: "USD".into(),
+                price_unit_tokens: 1_000_000,
+                price_effective_at: chrono::Utc::now(),
+                input_unit_price: Default::default(),
+                cached_input_unit_price: Default::default(),
+                cache_write_unit_price: Default::default(),
+                output_unit_price: Default::default(),
                 upstream_model: "upstream".into(),
                 channel_group_ids: vec![first_group, second_group],
                 channel_ids: direct_duplicate

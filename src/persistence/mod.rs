@@ -68,6 +68,13 @@ pub struct ModelRuleRecord {
     pub api_format: String,
     pub model_id: Uuid,
     pub model_enabled: bool,
+    pub model_currency: String,
+    pub price_unit_tokens: i64,
+    pub price_effective_at: DateTime<Utc>,
+    pub input_unit_price: rust_decimal::Decimal,
+    pub cached_input_unit_price: rust_decimal::Decimal,
+    pub cache_write_unit_price: rust_decimal::Decimal,
+    pub output_unit_price: rust_decimal::Decimal,
     pub upstream_model: String,
     pub channel_group_ids: Vec<Uuid>,
     pub channel_ids: Vec<Uuid>,
@@ -737,9 +744,12 @@ impl RequestLogRepository {
             .response_status_code
             .map(validate_response_status)
             .transpose()?;
+        let billing = event.billing.as_ref();
+        let usage = billing.and_then(|billing| billing.usage.as_ref());
+        let price = billing.map(|billing| &billing.price);
         let started_at = normalize_timestamp(event.started_at);
         let completed_at = normalize_timestamp(event.completed_at);
-        let inserted = sqlx::query_scalar::<_, Uuid>("INSERT INTO request_logs (id, started_at, completed_at, user_id, api_key_id, api_format, client_model, upstream_model, model_rule_id, channel_group_id, channel_id, outcome, response_status_code, streamed, ttft_ms, total_duration_ms, model_id, error_code) VALUES ($1, $2, $3, $4, $5, $6::api_format, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) ON CONFLICT (id) DO NOTHING RETURNING id")
+        let inserted = sqlx::query_scalar::<_, Uuid>("INSERT INTO request_logs (id, started_at, completed_at, user_id, api_key_id, api_format, client_model, upstream_model, model_rule_id, channel_group_id, channel_id, outcome, response_status_code, streamed, ttft_ms, total_duration_ms, output_tokens_per_second, input_tokens, cached_input_tokens, cache_write_tokens, output_tokens, model_id, currency, price_unit_tokens, price_effective_at, input_unit_price, cached_input_unit_price, cache_write_unit_price, output_unit_price, cost_amount, error_code) VALUES ($1, $2, $3, $4, $5, $6::api_format, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31) ON CONFLICT (id) DO NOTHING RETURNING id")
             .bind(event.id)
             .bind(started_at)
             .bind(completed_at)
@@ -759,7 +769,20 @@ impl RequestLogRepository {
             .bind(event.streamed)
             .bind(event.ttft_ms)
             .bind(event.total_duration_ms)
+            .bind(billing.and_then(|billing| billing.output_tokens_per_second))
+            .bind(usage.map(|usage| usage.input_tokens))
+            .bind(usage.map(|usage| usage.cached_input_tokens))
+            .bind(usage.map(|usage| usage.cache_write_tokens))
+            .bind(usage.map(|usage| usage.output_tokens))
             .bind(event.model_id)
+            .bind(price.map(|price| &price.currency))
+            .bind(price.map(|price| price.price_unit_tokens))
+            .bind(price.map(|price| price.price_effective_at))
+            .bind(price.map(|price| price.input_unit_price))
+            .bind(price.map(|price| price.cached_input_unit_price))
+            .bind(price.map(|price| price.cache_write_unit_price))
+            .bind(price.map(|price| price.output_unit_price))
+            .bind(billing.and_then(|billing| billing.cost_amount))
             .bind(event.error_code)
             .fetch_optional(&self.pool)
             .await?;
@@ -767,7 +790,7 @@ impl RequestLogRepository {
             return Ok(RequestLogInsertOutcome::Inserted);
         }
 
-        let existing = sqlx::query_as::<_, StoredRequestLog>("SELECT started_at, completed_at, user_id, api_key_id, api_format::text AS api_format, client_model, upstream_model, model_rule_id, channel_group_id, channel_id, outcome, response_status_code, streamed, ttft_ms, total_duration_ms, model_id, error_code FROM request_logs WHERE id = $1")
+        let existing = sqlx::query_as::<_, StoredRequestLog>("SELECT started_at, completed_at, user_id, api_key_id, api_format::text AS api_format, client_model, upstream_model, model_rule_id, channel_group_id, channel_id, outcome, response_status_code, streamed, ttft_ms, total_duration_ms, output_tokens_per_second, input_tokens, cached_input_tokens, cache_write_tokens, output_tokens, model_id, currency, price_unit_tokens, price_effective_at, input_unit_price, cached_input_unit_price, cache_write_unit_price, output_unit_price, cost_amount, error_code FROM request_logs WHERE id = $1")
             .bind(event.id)
             .fetch_optional(&self.pool)
             .await?
@@ -803,7 +826,20 @@ struct StoredRequestLog {
     streamed: bool,
     ttft_ms: Option<i32>,
     total_duration_ms: Option<i32>,
+    output_tokens_per_second: Option<rust_decimal::Decimal>,
+    input_tokens: Option<i64>,
+    cached_input_tokens: Option<i64>,
+    cache_write_tokens: Option<i64>,
+    output_tokens: Option<i64>,
     model_id: Option<Uuid>,
+    currency: Option<String>,
+    price_unit_tokens: Option<i64>,
+    price_effective_at: Option<DateTime<Utc>>,
+    input_unit_price: Option<rust_decimal::Decimal>,
+    cached_input_unit_price: Option<rust_decimal::Decimal>,
+    cache_write_unit_price: Option<rust_decimal::Decimal>,
+    output_unit_price: Option<rust_decimal::Decimal>,
+    cost_amount: Option<rust_decimal::Decimal>,
     error_code: Option<String>,
 }
 
@@ -830,7 +866,73 @@ impl StoredRequestLog {
             && self.streamed == event.streamed
             && self.ttft_ms == event.ttft_ms
             && self.total_duration_ms == Some(event.total_duration_ms)
+            && self.output_tokens_per_second
+                == event
+                    .billing
+                    .as_ref()
+                    .and_then(|billing| billing.output_tokens_per_second)
+            && self.input_tokens
+                == event
+                    .billing
+                    .as_ref()
+                    .and_then(|billing| billing.usage.as_ref().map(|usage| usage.input_tokens))
+            && self.cached_input_tokens
+                == event.billing.as_ref().and_then(|billing| {
+                    billing
+                        .usage
+                        .as_ref()
+                        .map(|usage| usage.cached_input_tokens)
+                })
+            && self.cache_write_tokens
+                == event.billing.as_ref().and_then(|billing| {
+                    billing.usage.as_ref().map(|usage| usage.cache_write_tokens)
+                })
+            && self.output_tokens
+                == event
+                    .billing
+                    .as_ref()
+                    .and_then(|billing| billing.usage.as_ref().map(|usage| usage.output_tokens))
             && self.model_id == event.model_id
+            && self.currency
+                == event
+                    .billing
+                    .as_ref()
+                    .map(|billing| billing.price.currency.clone())
+            && self.price_unit_tokens
+                == event
+                    .billing
+                    .as_ref()
+                    .map(|billing| billing.price.price_unit_tokens)
+            && self.price_effective_at
+                == event
+                    .billing
+                    .as_ref()
+                    .map(|billing| normalize_timestamp(billing.price.price_effective_at))
+            && self.input_unit_price
+                == event
+                    .billing
+                    .as_ref()
+                    .map(|billing| billing.price.input_unit_price)
+            && self.cached_input_unit_price
+                == event
+                    .billing
+                    .as_ref()
+                    .map(|billing| billing.price.cached_input_unit_price)
+            && self.cache_write_unit_price
+                == event
+                    .billing
+                    .as_ref()
+                    .map(|billing| billing.price.cache_write_unit_price)
+            && self.output_unit_price
+                == event
+                    .billing
+                    .as_ref()
+                    .map(|billing| billing.price.output_unit_price)
+            && self.cost_amount
+                == event
+                    .billing
+                    .as_ref()
+                    .and_then(|billing| billing.cost_amount)
             && self.error_code.as_deref() == event.error_code
     }
 }
@@ -872,7 +974,7 @@ impl ControlPlaneRepository {
         transaction: &mut Transaction<'_, Postgres>,
     ) -> Result<ControlPlaneRecords, RepositoryError> {
         let api_keys = sqlx::query_as::<_, ApiKeyRecord>("SELECT k.id, k.user_id, u.status AS user_status, k.secret_value, k.status, k.expires_at, k.allowed_api_formats::text[] AS allowed_api_formats, k.permissions, k.allowed_group_ids, k.requests_per_minute, k.tokens_per_minute, k.max_concurrent_requests, k.quota_limit_amount, k.quota_used_amount FROM api_keys k JOIN users u ON u.id = k.user_id ORDER BY k.id").fetch_all(&mut **transaction).await?;
-        let model_rules = sqlx::query_as::<_, ModelRuleRecord>("SELECT r.id, r.client_model, r.api_format::text AS api_format, r.model_id, m.enabled AS model_enabled, r.upstream_model, r.channel_group_ids, r.channel_ids, r.enabled FROM model_rules r JOIN models m ON m.id = r.model_id ORDER BY r.id").fetch_all(&mut **transaction).await?;
+        let model_rules = sqlx::query_as::<_, ModelRuleRecord>("SELECT r.id, r.client_model, r.api_format::text AS api_format, r.model_id, m.enabled AS model_enabled, m.currency AS model_currency, m.price_unit_tokens, m.price_effective_at, m.input_unit_price, m.cached_input_unit_price, m.cache_write_unit_price, m.output_unit_price, r.upstream_model, r.channel_group_ids, r.channel_ids, r.enabled FROM model_rules r JOIN models m ON m.id = r.model_id ORDER BY r.id").fetch_all(&mut **transaction).await?;
         let groups = sqlx::query_as::<_, ChannelGroupRecord>("SELECT id, name, api_format::text AS api_format, priority, selection_strategy, enabled FROM channel_groups ORDER BY id").fetch_all(&mut **transaction).await?;
         let channels = sqlx::query_as::<_, ChannelRecord>("SELECT id, channel_group_id, api_format::text AS api_format, name, base_url, enabled, auto_disabled, weight, proxy_id, config_template_id, override_document, connect_timeout_ms, response_header_timeout_ms, stream_idle_timeout_ms, upstream_auth_kind, upstream_auth_header_name, upstream_api_key, available_models, health_check FROM channels ORDER BY id").fetch_all(&mut **transaction).await?;
         let proxies = sqlx::query_as::<_, ProxyRecord>("SELECT id, name, proxy_url, username, password, no_proxy_hosts, enabled FROM proxies ORDER BY id").fetch_all(&mut **transaction).await?;

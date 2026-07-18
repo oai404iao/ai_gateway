@@ -74,11 +74,15 @@ impl RequestLogSink for RecordingRequestLogSink {
 #[cfg(test)]
 mod tests {
     use chrono::Utc;
+    use rust_decimal::Decimal;
     use tokio::sync::mpsc;
     use uuid::Uuid;
 
     use super::{QueueRequestLogSink, RequestLogSink};
-    use crate::domain::{ApiFormat, RequestLogEvent, RequestLogOutcome};
+    use crate::domain::{
+        ApiFormat, RequestBilling, RequestLogEvent, RequestLogOutcome, RequestPriceSnapshot,
+        RequestUsage,
+    };
 
     fn event() -> RequestLogEvent {
         let now = Utc::now();
@@ -100,6 +104,25 @@ mod tests {
             streamed: false,
             ttft_ms: None,
             total_duration_ms: 0,
+            billing: Some(RequestBilling {
+                usage: Some(RequestUsage {
+                    input_tokens: 3,
+                    cached_input_tokens: 1,
+                    cache_write_tokens: 0,
+                    output_tokens: 2,
+                }),
+                price: RequestPriceSnapshot {
+                    currency: "USD".into(),
+                    price_unit_tokens: 1_000_000,
+                    price_effective_at: now,
+                    input_unit_price: Decimal::ZERO,
+                    cached_input_unit_price: Decimal::ZERO,
+                    cache_write_unit_price: Decimal::ZERO,
+                    output_unit_price: Decimal::ZERO,
+                },
+                cost_amount: Some(Decimal::ZERO),
+                output_tokens_per_second: Some(Decimal::ONE),
+            }),
             error_code: Some("model_not_found"),
         }
     }

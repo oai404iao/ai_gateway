@@ -1,6 +1,7 @@
 //! Safe, terminal request-log data emitted by the data plane.
 
 use chrono::{DateTime, Utc};
+use rust_decimal::Decimal;
 use uuid::Uuid;
 
 use super::ApiFormat;
@@ -26,7 +27,38 @@ pub struct RequestLogEvent {
     pub streamed: bool,
     pub ttft_ms: Option<i32>,
     pub total_duration_ms: i32,
+    pub billing: Option<RequestBilling>,
     pub error_code: Option<&'static str>,
+}
+
+/// Tokens and price facts recorded with one terminal selected-route request.
+/// Price fields are copied from the immutable route snapshot rather than read
+/// from the mutable `models` table after the response has completed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RequestBilling {
+    pub usage: Option<RequestUsage>,
+    pub price: RequestPriceSnapshot,
+    pub cost_amount: Option<Decimal>,
+    pub output_tokens_per_second: Option<Decimal>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RequestUsage {
+    pub input_tokens: i64,
+    pub cached_input_tokens: i64,
+    pub cache_write_tokens: i64,
+    pub output_tokens: i64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RequestPriceSnapshot {
+    pub currency: String,
+    pub price_unit_tokens: i64,
+    pub price_effective_at: DateTime<Utc>,
+    pub input_unit_price: Decimal,
+    pub cached_input_unit_price: Decimal,
+    pub cache_write_unit_price: Decimal,
+    pub output_unit_price: Decimal,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

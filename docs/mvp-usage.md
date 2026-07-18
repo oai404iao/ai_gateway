@@ -1,4 +1,4 @@
-# 运行说明（MVP 4 阶段 1–2）
+# 运行说明（MVP 4 阶段 1–3）
 
 服务以 PostgreSQL 作为控制面，TOML 只包含监听、数据库、默认上游超时、重载、日志和本地管理监听器设置。动态 API Key、用户、模型、路由、渠道、代理和模板均不允许写入 TOML。
 
@@ -59,6 +59,8 @@
 
 请求和响应可应用模板与渠道的受限 Header / JSON / SSE 变换。客户端 `Authorization`、hop-by-hop headers、路由和长度相关 headers 始终受保护；上游认证最后注入。HTTP/SOCKS 出口代理和有效连接超时决定复用的 reqwest 客户端。
 
-每个已选路请求会发出 tracing 终态事件，并尽力异步写入一条 `request_logs` 记录。当前日志不解析 token usage、不计算费用，也不会更新用户余额或 API Key 已用额度；这些属于 MVP 4 后续阶段。
+每个已选路请求会发出 tracing 终态事件，并尽力异步写入一条 `request_logs` 记录。网关以受限增量解析器从 Chat Completions 与 Responses 的非流式 JSON 或 SSE `data:` 事件中提取 usage；普通响应只保留顶层 `usage` 对象，SSE 只保留当前事件帧，不缓冲整条响应。无法识别、缺失或不合法的 usage 保持 `NULL`，不会影响客户端响应。
+
+选路时会绑定 `models` 当前价格快照，并在终态日志中写入 token、价格、成本和可选 output TPS；后续价格同步不会改写已有日志。当前仍不会更新用户余额或 API Key 已用额度；幂等结算属于 MVP 4 阶段 4。
 
 收到 SIGTERM 或 Ctrl-C 后，服务停止接收新连接，并在 `[server] shutdown_grace_period_seconds` 内等待在途连接；超过期限的响应被取消。请求日志 worker 随后进行有界排空。

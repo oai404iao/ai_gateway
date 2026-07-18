@@ -152,6 +152,13 @@ fn proxy_service_with_network_policy(
             api_format: "open_ai_chat_completions".into(),
             model_id: Uuid::new_v4(),
             model_enabled: true,
+            model_currency: "USD".into(),
+            price_unit_tokens: 1_000_000,
+            price_effective_at: chrono::Utc::now(),
+            input_unit_price: Default::default(),
+            cached_input_unit_price: Default::default(),
+            cache_write_unit_price: Default::default(),
+            output_unit_price: Default::default(),
             upstream_model: "stream-model".into(),
             channel_group_ids: vec![],
             channel_ids: vec![channel_id],
@@ -673,6 +680,55 @@ async fn unusual_sse_response() -> Response {
         Body::from(Bytes::from_static(b": note\r\ndata: [DONE]\r\n\r\n")),
         &[("etag", "transparent-etag")],
     )
+}
+
+async fn chat_usage_sse() -> Response {
+    sse_response(Body::from(Bytes::from_static(
+        br#"data: {"object":"chat.completion.chunk","choices":[]}
+
+data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":11,"completion_tokens":4,"prompt_tokens_details":{"cached_tokens":2}}}
+
+data: [DONE]
+
+"#,
+    )))
+}
+
+#[tokio::test]
+async fn chat_sse_usage_is_collected_without_changing_forwarded_bytes() {
+    let upstream =
+        start_server(Router::new().route("/v1/chat/completions", post(chat_usage_sse))).await;
+    let logs = RecordingRequestLogSink::default();
+    let gateway = start_server(http::router(proxy_service_with_documents(
+        &format!("http://{}", upstream.address),
+        5,
+        5,
+        None,
+        serde_json::json!({}),
+        logs.clone(),
+    )))
+    .await;
+
+    let response = request(&client(), gateway.address).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.bytes().await.unwrap();
+    assert!(
+        body.windows(b"\"prompt_tokens\":11".len())
+            .any(|window| { window == b"\"prompt_tokens\":11" })
+    );
+    let events = logs.events();
+    assert_eq!(events.len(), 1);
+    let billing = events[0].billing.as_ref().unwrap();
+    assert_eq!(
+        billing.usage,
+        Some(ai_gateway::domain::RequestUsage {
+            input_tokens: 11,
+            cached_input_tokens: 2,
+            cache_write_tokens: 0,
+            output_tokens: 4,
+        })
+    );
+    assert_eq!(billing.price.currency, "USD");
 }
 
 #[tokio::test]

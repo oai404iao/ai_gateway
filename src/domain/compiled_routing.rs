@@ -737,6 +737,7 @@ pub struct CompiledModelRule {
     client_model: Arc<str>,
     api_format: ApiFormat,
     upstream_model: Arc<str>,
+    price_snapshot: ModelPriceSnapshot,
     tiers: Arc<[CompiledRouteTier]>,
 }
 impl CompiledModelRule {
@@ -761,6 +762,10 @@ impl CompiledModelRule {
         &self.upstream_model
     }
     #[must_use]
+    pub fn price_snapshot(&self) -> &ModelPriceSnapshot {
+        &self.price_snapshot
+    }
+    #[must_use]
     pub fn tiers(&self) -> &[CompiledRouteTier] {
         &self.tiers
     }
@@ -770,6 +775,7 @@ impl CompiledModelRule {
         client_model: Arc<str>,
         api_format: ApiFormat,
         upstream_model: Arc<str>,
+        price_snapshot: ModelPriceSnapshot,
         tiers: Arc<[CompiledRouteTier]>,
     ) -> Self {
         Self {
@@ -778,7 +784,70 @@ impl CompiledModelRule {
             client_model,
             api_format,
             upstream_model,
+            price_snapshot,
             tiers,
+        }
+    }
+}
+
+/// Immutable unit prices selected with a model rule. The request log copies
+/// this value so later catalog refreshes cannot reinterpret historical cost.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ModelPriceSnapshot {
+    currency: Arc<str>,
+    price_unit_tokens: i64,
+    price_effective_at: DateTime<Utc>,
+    input_unit_price: Decimal,
+    cached_input_unit_price: Decimal,
+    cache_write_unit_price: Decimal,
+    output_unit_price: Decimal,
+}
+impl ModelPriceSnapshot {
+    #[must_use]
+    pub fn currency(&self) -> &str {
+        &self.currency
+    }
+    #[must_use]
+    pub fn price_unit_tokens(&self) -> i64 {
+        self.price_unit_tokens
+    }
+    #[must_use]
+    pub fn price_effective_at(&self) -> DateTime<Utc> {
+        self.price_effective_at
+    }
+    #[must_use]
+    pub fn input_unit_price(&self) -> Decimal {
+        self.input_unit_price
+    }
+    #[must_use]
+    pub fn cached_input_unit_price(&self) -> Decimal {
+        self.cached_input_unit_price
+    }
+    #[must_use]
+    pub fn cache_write_unit_price(&self) -> Decimal {
+        self.cache_write_unit_price
+    }
+    #[must_use]
+    pub fn output_unit_price(&self) -> Decimal {
+        self.output_unit_price
+    }
+    pub(crate) fn new(
+        currency: Arc<str>,
+        price_unit_tokens: i64,
+        price_effective_at: DateTime<Utc>,
+        input_unit_price: Decimal,
+        cached_input_unit_price: Decimal,
+        cache_write_unit_price: Decimal,
+        output_unit_price: Decimal,
+    ) -> Self {
+        Self {
+            currency,
+            price_unit_tokens,
+            price_effective_at,
+            input_unit_price,
+            cached_input_unit_price,
+            cache_write_unit_price,
+            output_unit_price,
         }
     }
 }

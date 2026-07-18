@@ -11,7 +11,10 @@ use ai_gateway::{
         ControlPlaneCoordinator, ModelSyncService, ProxyService, QueueRequestLogSink,
         RequestLogSink,
     },
-    domain::{ApiFormat, ApiKeyPermission, RequestLogEvent, RequestLogOutcome},
+    domain::{
+        ApiFormat, ApiKeyPermission, RequestBilling, RequestLogEvent, RequestLogOutcome,
+        RequestPriceSnapshot, RequestUsage,
+    },
     http::admin::{self, AdminState},
     models_dev::ModelsDevClient,
     persistence::{
@@ -154,6 +157,16 @@ struct TerminalLogCount {
     outcome: String,
     error_code: Option<String>,
     count: i64,
+}
+
+#[derive(FromRow)]
+struct PersistedBilling {
+    input_tokens: Option<i64>,
+    cached_input_tokens: Option<i64>,
+    cache_write_tokens: Option<i64>,
+    output_tokens: Option<i64>,
+    cost_amount: Option<rust_decimal::Decimal>,
+    currency: Option<String>,
 }
 
 fn assert_log_timing(log: &PersistedLog) {
@@ -397,6 +410,25 @@ fn request_log_event(seed: &Seed, outcome: RequestLogOutcome) -> RequestLogEvent
         streamed: true,
         ttft_ms: Some(1),
         total_duration_ms: 2,
+        billing: Some(RequestBilling {
+            usage: Some(RequestUsage {
+                input_tokens: 10,
+                cached_input_tokens: 2,
+                cache_write_tokens: 1,
+                output_tokens: 4,
+            }),
+            price: RequestPriceSnapshot {
+                currency: "USD".into(),
+                price_unit_tokens: 1_000_000,
+                price_effective_at: now,
+                input_unit_price: rust_decimal::Decimal::new(100, 2),
+                cached_input_unit_price: rust_decimal::Decimal::new(20, 2),
+                cache_write_unit_price: rust_decimal::Decimal::new(30, 2),
+                output_unit_price: rust_decimal::Decimal::new(200, 2),
+            },
+            cost_amount: Some(rust_decimal::Decimal::new(999, 8)),
+            output_tokens_per_second: Some(rust_decimal::Decimal::new(20, 2)),
+        }),
         error_code: None,
     }
 }
@@ -422,6 +454,22 @@ async fn request_log_insert_is_idempotent_and_worker_continues_after_failure() {
         .await
         .unwrap();
     assert_eq!(count, 1);
+    let persisted_billing: PersistedBilling = sqlx::query_as(
+        "SELECT input_tokens,cached_input_tokens,cache_write_tokens,output_tokens,cost_amount,currency FROM request_logs WHERE id=$1",
+    )
+    .bind(event.id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(persisted_billing.input_tokens, Some(10));
+    assert_eq!(persisted_billing.cached_input_tokens, Some(2));
+    assert_eq!(persisted_billing.cache_write_tokens, Some(1));
+    assert_eq!(persisted_billing.output_tokens, Some(4));
+    assert_eq!(
+        persisted_billing.cost_amount,
+        Some(rust_decimal::Decimal::new(999, 8))
+    );
+    assert_eq!(persisted_billing.currency.as_deref(), Some("USD"));
 
     let mut conflicting = event.clone();
     conflicting.error_code = Some("different_terminal_fact");

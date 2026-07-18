@@ -12,7 +12,9 @@ pub use api_key::ApiKeyHash;
 pub use compiled_routing::{
     ApiKeyPermission, ChannelTimeoutPolicy, CompiledApiKey, CompiledChannel, CompiledChannelGroup,
     CompiledChannelUpstreamPolicy, CompiledConfigTemplate, CompiledModelRule, CompiledProxy,
-    CompiledRouteTier, CompiledRuntimeConfig, ModelRouteKey, NoProxyHost, NoProxyHostError,
-    OutboundNetworkPolicyFingerprint, SelectionStrategy, UpstreamAuth,
+    CompiledRouteTier, CompiledRuntimeConfig, ModelPriceSnapshot, ModelRouteKey, NoProxyHost,
+    NoProxyHostError, OutboundNetworkPolicyFingerprint, SelectionStrategy, UpstreamAuth,
 };
-pub use request_log::{RequestLogEvent, RequestLogOutcome};
+pub use request_log::{
+    RequestBilling, RequestLogEvent, RequestLogOutcome, RequestPriceSnapshot, RequestUsage,
+};

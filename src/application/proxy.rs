@@ -20,6 +20,7 @@ use axum::{
     response::{IntoResponse, Response as AxumResponse},
 };
 use futures_util::{Stream, StreamExt, stream};
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::time::timeout;
@@ -30,7 +31,8 @@ use crate::{
     application::{NoopRequestLogSink, RequestLogSink},
     domain::{
         ApiFormat, ApiKeyPermission, CompiledApiKey, CompiledChannel, CompiledModelRule,
-        RequestLogEvent, RequestLogOutcome, UpstreamAuth,
+        ModelPriceSnapshot, RequestBilling, RequestLogEvent, RequestLogOutcome,
+        RequestPriceSnapshot, RequestUsage, UpstreamAuth,
     },
     routing::{ChannelLease, RoutingRuntime, SelectionResult},
     runtime_config::{RuntimeConfig, UpstreamConfig},
@@ -40,6 +42,8 @@ use crate::{
     },
     upstream::{ResolvedUpstreamPolicy, UpstreamClientRegistry},
 };
+
+use super::usage::UsageCollector;
 
 /// Data-plane use case backed by a single immutable configuration snapshot per
 /// request and a process-shared upstream client registry.
@@ -373,6 +377,7 @@ impl ProxyService {
             streamed,
             ttft_ms: None,
             total_duration_ms: elapsed,
+            billing: None,
             error_code: Some("model_not_found"),
         };
         tracing::info!(event = "proxy_request_completed", api_key_id = %api_key.id(), api_format = ?api_format, outcome = "rejected", "proxy request completed");
@@ -408,6 +413,7 @@ impl ProxyService {
             streamed,
             ttft_ms: None,
             total_duration_ms: clamp_duration_ms(started.elapsed()),
+            billing: None,
             error_code: Some("no_healthy_channel"),
         };
         tracing::info!(event = "proxy_request_completed", api_key_id = %api_key.id(), api_format = ?api_format, outcome = "no_healthy_channel", "proxy request completed");
@@ -874,6 +880,7 @@ fn response_from_upstream(
     let original_upstream_headers = upstream_response.headers();
     let transform_sse =
         sse_event_patches.has_operations() && is_sse_response(original_upstream_headers);
+    completion.configure_usage_collector(is_sse_response(original_upstream_headers));
     let sse_has_identity_encoding = has_identity_content_encoding(original_upstream_headers);
     let mut upstream_headers = original_upstream_headers.clone();
     if apply_response_header_plan(&mut upstream_headers, response_headers).is_err() {
@@ -1068,6 +1075,7 @@ fn timed_upstream_stream(
 fn record_stream_bytes(state: &mut StreamState, bytes: &Bytes) {
     if !bytes.is_empty() {
         state.completion.record_first_byte();
+        state.completion.observe_usage(bytes);
     }
     if let Some(remaining) = &mut state.remaining_bytes {
         *remaining = remaining.saturating_sub(bytes.len() as u64);
@@ -1186,6 +1194,8 @@ struct CompletionContext {
     first_byte_at: Option<Duration>,
     upstream_status: Option<u16>,
     client_visible_status: Option<u16>,
+    usage: UsageCollector,
+    price_snapshot: ModelPriceSnapshot,
     sink: Arc<dyn RequestLogSink>,
 }
 
@@ -1230,6 +1240,8 @@ impl CompletionGuard {
                 first_byte_at: None,
                 upstream_status: None,
                 client_visible_status: None,
+                usage: UsageCollector::new(api_format, false),
+                price_snapshot: rule.price_snapshot().clone(),
                 sink,
             }),
             lease: Some(lease),
@@ -1246,6 +1258,18 @@ impl CompletionGuard {
     fn set_client_visible_status(&mut self, status: u16) {
         if let Some(context) = &mut self.context {
             context.client_visible_status = Some(status);
+        }
+    }
+
+    fn configure_usage_collector(&mut self, sse: bool) {
+        if let Some(context) = &mut self.context {
+            context.usage = UsageCollector::new(context.api_format, sse);
+        }
+    }
+
+    fn observe_usage(&mut self, bytes: &Bytes) {
+        if let Some(context) = &mut self.context {
+            context.usage.observe(bytes);
         }
     }
 
@@ -1279,6 +1303,14 @@ impl CompletionGuard {
         let Some(context) = self.context.take() else {
             return;
         };
+        let usage = context.usage.latest();
+        let total_duration_ms = clamp_duration_ms(context.started_at.elapsed());
+        let billing = request_billing(
+            &context.price_snapshot,
+            usage,
+            total_duration_ms,
+            context.first_byte_at.map(clamp_duration_ms),
+        );
         tracing::info!(
             event = "proxy_request_completed",
             api_key_id = %context.api_key_id,
@@ -1289,10 +1321,11 @@ impl CompletionGuard {
             upstream_status = ?context.upstream_status,
             latency_ms = context.started_at.elapsed().as_millis(),
             ttft_ms = ?context.first_byte_at.map(|duration| duration.as_millis()),
+            input_tokens = ?usage.map(|usage| usage.input_tokens),
+            output_tokens = ?usage.map(|usage| usage.output_tokens),
             outcome = outcome.tracing_outcome(),
             "proxy request completed"
         );
-        let total_duration_ms = clamp_duration_ms(context.started_at.elapsed());
         let event = RequestLogEvent {
             id: context.event_id,
             started_at: context.started_wall_at,
@@ -1314,10 +1347,62 @@ impl CompletionGuard {
             streamed: context.streamed,
             ttft_ms: context.first_byte_at.map(clamp_duration_ms),
             total_duration_ms,
+            billing: Some(billing),
             error_code: outcome.error_code(),
         };
         context.sink.try_record(event);
     }
+}
+
+fn request_billing(
+    snapshot: &ModelPriceSnapshot,
+    usage: Option<super::usage::ResponseUsage>,
+    total_duration_ms: i32,
+    ttft_ms: Option<i32>,
+) -> RequestBilling {
+    let price = RequestPriceSnapshot {
+        currency: snapshot.currency().to_owned(),
+        price_unit_tokens: snapshot.price_unit_tokens(),
+        price_effective_at: snapshot.price_effective_at(),
+        input_unit_price: snapshot.input_unit_price(),
+        cached_input_unit_price: snapshot.cached_input_unit_price(),
+        cache_write_unit_price: snapshot.cache_write_unit_price(),
+        output_unit_price: snapshot.output_unit_price(),
+    };
+    let usage = usage.map(|usage| RequestUsage {
+        input_tokens: usage.input_tokens,
+        cached_input_tokens: usage.cached_input_tokens,
+        cache_write_tokens: usage.cache_write_tokens,
+        output_tokens: usage.output_tokens,
+    });
+    let cost_amount = usage.as_ref().map(|usage| calculate_cost(usage, &price));
+    let output_tokens_per_second = usage.and_then(|usage| {
+        (usage.output_tokens > 0).then(|| {
+            let generation_ms = total_duration_ms
+                .saturating_sub(ttft_ms.unwrap_or(0))
+                .max(1);
+            (Decimal::from(usage.output_tokens) * Decimal::from(1_000_i64)
+                / Decimal::from(generation_ms))
+            .round_dp(4)
+        })
+    });
+    RequestBilling {
+        usage,
+        price,
+        cost_amount,
+        output_tokens_per_second,
+    }
+}
+
+fn calculate_cost(usage: &RequestUsage, price: &RequestPriceSnapshot) -> Decimal {
+    let unit = Decimal::from(price.price_unit_tokens);
+    let non_cached_input = usage.input_tokens.saturating_sub(usage.cached_input_tokens);
+    ((Decimal::from(non_cached_input) * price.input_unit_price
+        + Decimal::from(usage.cached_input_tokens) * price.cached_input_unit_price
+        + Decimal::from(usage.cache_write_tokens) * price.cache_write_unit_price
+        + Decimal::from(usage.output_tokens) * price.output_unit_price)
+        / unit)
+        .round_dp(8)
 }
 
 fn clamp_duration_ms(duration: Duration) -> i32 {
@@ -1345,13 +1430,20 @@ mod tests {
     use std::{collections::HashSet, sync::Arc};
 
     use reqwest::{Url, header::HeaderName};
+    use rust_decimal::Decimal;
     use uuid::Uuid;
 
     use super::{
-        forward_request_headers, forward_response_headers, inject_upstream_auth,
-        parse_bearer_token, response_has_no_body,
+        calculate_cost, forward_request_headers, forward_response_headers, inject_upstream_auth,
+        parse_bearer_token, request_billing, response_has_no_body,
     };
-    use crate::domain::{ApiFormat, CompiledChannel, UpstreamAuth};
+    use crate::{
+        application::usage::ResponseUsage,
+        domain::{
+            ApiFormat, CompiledChannel, ModelPriceSnapshot, RequestPriceSnapshot, RequestUsage,
+            UpstreamAuth,
+        },
+    };
 
     #[test]
     fn rejects_malformed_bearer_values() {
@@ -1427,5 +1519,51 @@ mod tests {
         inject_upstream_auth(&mut headers, &channel).unwrap();
         assert_eq!(headers.get("x-api-key").unwrap(), "upstream-secret");
         assert!(headers.get("authorization").is_none());
+    }
+
+    #[test]
+    fn bills_cached_input_cache_writes_and_output_from_the_selected_snapshot() {
+        let price = RequestPriceSnapshot {
+            currency: "USD".into(),
+            price_unit_tokens: 1,
+            price_effective_at: chrono::Utc::now(),
+            input_unit_price: Decimal::ONE,
+            cached_input_unit_price: Decimal::new(5, 1),
+            cache_write_unit_price: Decimal::new(25, 2),
+            output_unit_price: Decimal::from(2_i64),
+        };
+        let usage = RequestUsage {
+            input_tokens: 10,
+            cached_input_tokens: 2,
+            cache_write_tokens: 1,
+            output_tokens: 4,
+        };
+        assert_eq!(calculate_cost(&usage, &price), Decimal::new(1725, 2));
+
+        let snapshot = ModelPriceSnapshot::new(
+            "USD".into(),
+            1,
+            price.price_effective_at,
+            price.input_unit_price,
+            price.cached_input_unit_price,
+            price.cache_write_unit_price,
+            price.output_unit_price,
+        );
+        let billing = request_billing(
+            &snapshot,
+            Some(ResponseUsage {
+                input_tokens: 10,
+                cached_input_tokens: 2,
+                cache_write_tokens: 1,
+                output_tokens: 4,
+            }),
+            2_000,
+            Some(500),
+        );
+        assert_eq!(billing.cost_amount, Some(Decimal::new(1725, 2)));
+        assert_eq!(
+            billing.output_tokens_per_second,
+            Some(Decimal::new(26667, 4))
+        );
     }
 }

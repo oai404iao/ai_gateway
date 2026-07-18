@@ -613,6 +613,13 @@ fn configured_proxy_with_policy_and_transforms(
         api_format: format.into(),
         model_id: Uuid::new_v4(),
         model_enabled: true,
+        model_currency: "USD".into(),
+        price_unit_tokens: 1_000_000,
+        price_effective_at: chrono::Utc::now(),
+        input_unit_price: Default::default(),
+        cached_input_unit_price: Default::default(),
+        cache_write_unit_price: Default::default(),
+        output_unit_price: Default::default(),
         upstream_model: upstream.into(),
         channel_group_ids: vec![],
         channel_ids: vec![channel_id],
@@ -881,6 +888,36 @@ async fn matching_chat_model_preserves_body_and_forwards_response_safely() {
     assert!(request.headers.get("connection").is_none());
     assert!(request.headers.get("x-internal-hop").is_none());
     assert_eq!(request.headers.get("x-request-id").unwrap(), "forward-me");
+}
+
+#[tokio::test]
+async fn responses_nonstream_usage_is_collected_without_buffering_the_response() {
+    let upstream_body = br#"{"id":"response-id","usage":{"input_tokens":9,"output_tokens":3,"input_tokens_details":{"cached_tokens":2}}}"#.to_vec();
+    let harness = harness(StatusCode::OK, upstream_body.clone()).await;
+
+    let response = authorized_post(
+        &client(),
+        harness.url("/v1/responses"),
+        CLIENT_KEY,
+        br#"{"model":"responses-model"}"#.to_vec(),
+    )
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.bytes().await.unwrap().as_ref(), upstream_body);
+    let logs = harness.logs();
+    assert_eq!(logs.len(), 1);
+    assert_eq!(
+        logs[0].billing.as_ref().unwrap().usage,
+        Some(ai_gateway::domain::RequestUsage {
+            input_tokens: 9,
+            cached_input_tokens: 2,
+            cache_write_tokens: 0,
+            output_tokens: 3,
+        })
+    );
 }
 
 #[tokio::test]

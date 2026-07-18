@@ -4,6 +4,7 @@ mod control_plane;
 mod model_sync;
 mod proxy;
 mod request_log;
+mod usage;
 
 pub use control_plane::{ControlPlaneCoordinator, ControlPlaneError, ModelSyncResult};
 pub use model_sync::{
