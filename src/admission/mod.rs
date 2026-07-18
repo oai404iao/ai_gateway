@@ -6,6 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use rust_decimal::Decimal;
 use uuid::Uuid;
 
 use crate::domain::CompiledApiKey;
@@ -44,6 +45,7 @@ struct KeyState {
 #[derive(Default)]
 struct AdmissionState {
     keys: HashMap<Uuid, KeyState>,
+    settled_quota_used: HashMap<Uuid, Decimal>,
 }
 
 struct AdmissionInner {
@@ -80,7 +82,7 @@ impl AdmissionRuntime {
         }
     }
 
-    /// Applies the Stage 5 soft quota precheck before RPM and concurrency.
+    /// Applies the settled-usage soft quota precheck before RPM and concurrency.
     ///
     /// A quota only rejects when settled usage is already at or above its
     /// configured limit. This runtime never estimates, reserves, releases, or
@@ -99,7 +101,11 @@ impl AdmissionRuntime {
                     .window_started_at
                     .is_some_and(|started| now.saturating_sub(started) <= WINDOW)
         });
-        if key.quota_exhausted() {
+        let settled_quota_used = all.settled_quota_used.get(&key.id()).copied().map_or_else(
+            || key.quota_used_amount(),
+            |used| used.max(key.quota_used_amount()),
+        );
+        if key.quota_exhausted_at(settled_quota_used) {
             return Err(AdmissionError::InsufficientQuota);
         }
         let state = all.keys.entry(key.id()).or_default();
@@ -138,6 +144,22 @@ impl AdmissionRuntime {
             key_id: key.id(),
             released: false,
         })
+    }
+
+    /// Publishes the database's authoritative total after a successful
+    /// settlement. It only moves upward because management APIs do not own
+    /// `quota_used_amount`; a later snapshot reload remains the cross-process
+    /// source of truth.
+    pub fn record_settled_quota_usage(&self, key_id: Uuid, quota_used_amount: Decimal) {
+        let mut all = self
+            .inner
+            .state
+            .lock()
+            .expect("admission state mutex poisoned");
+        all.settled_quota_used
+            .entry(key_id)
+            .and_modify(|current| *current = (*current).max(quota_used_amount))
+            .or_insert(quota_used_amount);
     }
 
     #[cfg(test)]
@@ -299,6 +321,24 @@ mod tests {
             Some(Decimal::new(100, 2)),
             Decimal::new(100, 2),
         );
+        assert!(matches!(
+            runtime.admit(&key),
+            Err(AdmissionError::InsufficientQuota)
+        ));
+    }
+
+    #[test]
+    fn freshly_settled_quota_is_enforced_before_snapshot_reload() {
+        let runtime = AdmissionRuntime::new();
+        let id = Uuid::new_v4();
+        let key = CompiledApiKey::test_with_policy(
+            id,
+            None,
+            None,
+            Some(Decimal::new(100, 2)),
+            Decimal::ZERO,
+        );
+        runtime.record_settled_quota_usage(id, Decimal::new(100, 2));
         assert!(matches!(
             runtime.admit(&key),
             Err(AdmissionError::InsufficientQuota)

@@ -7,6 +7,7 @@ use std::{
 };
 
 use ai_gateway::{
+    admission::AdmissionRuntime,
     application::{
         ControlPlaneCoordinator, ModelSyncService, ProxyService, QueueRequestLogSink,
         RequestLogSink,
@@ -19,6 +20,7 @@ use ai_gateway::{
     models_dev::ModelsDevClient,
     persistence::{
         ControlPlaneRepository, MIGRATOR, RequestLogInsertOutcome, RequestLogRepository,
+        RequestLogSettlementOutcome,
     },
     routing::{self, PassiveHealthPolicy, RoutingRuntime},
     runtime_config::{ModelsSyncConfig, RuntimeConfig, UpstreamConfig, compile_control_plane},
@@ -72,6 +74,7 @@ async fn start_server(app: Router) -> TestServer {
 #[derive(Clone)]
 enum UpstreamMode {
     Immediate(StatusCode),
+    UsageJson,
     HeaderDelay,
     OneChunkThenIdle,
     TwoChunks,
@@ -86,6 +89,13 @@ async fn upstream(State(state): State<UpstreamState>) -> Response {
         UpstreamMode::Immediate(status) => Response::builder()
             .status(status)
             .body(Body::from("upstream"))
+            .unwrap(),
+        UpstreamMode::UsageJson => Response::builder()
+            .status(StatusCode::OK)
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"id":"usage-result","usage":{"prompt_tokens":2,"completion_tokens":3}}"#,
+            ))
             .unwrap(),
         UpstreamMode::HeaderDelay => {
             tokio::time::sleep(Duration::from_secs(2)).await;
@@ -167,6 +177,13 @@ struct PersistedBilling {
     output_tokens: Option<i64>,
     cost_amount: Option<rust_decimal::Decimal>,
     currency: Option<String>,
+}
+
+#[derive(FromRow)]
+struct SettlementFacts {
+    balance_amount: rust_decimal::Decimal,
+    quota_used_amount: rust_decimal::Decimal,
+    billed_at: Option<DateTime<Utc>>,
 }
 
 fn assert_log_timing(log: &PersistedLog) {
@@ -511,6 +528,268 @@ async fn request_log_insert_is_idempotent_and_worker_continues_after_failure() {
     // Keep a producer clone alive: shutdown must close acceptance and drain
     // without waiting for it to be dropped.
     worker.shutdown().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn settlement_claim_is_concurrent_idempotent_and_allows_soft_quota_overdraft() {
+    let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
+    let repository = RequestLogRepository::new(database.pool.clone());
+    let event = request_log_event(&seed, RequestLogOutcome::Succeeded);
+    let cost = event.billing.as_ref().unwrap().cost_amount.unwrap();
+    sqlx::query("UPDATE api_keys SET quota_limit_amount = $1 WHERE id = $2")
+        .bind(rust_decimal::Decimal::new(1, 8))
+        .bind(seed.key)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    repository.insert(&event).await.unwrap();
+
+    let first = repository.clone();
+    let second = repository.clone();
+    let (first, second) = tokio::join!(first.settle(event.id), second.settle(event.id));
+    let outcomes = [first.unwrap(), second.unwrap()];
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|outcome| matches!(outcome, RequestLogSettlementOutcome::Settled { .. }))
+            .count(),
+        1
+    );
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|outcome| matches!(outcome, RequestLogSettlementOutcome::AlreadyBilled))
+            .count(),
+        1
+    );
+
+    let facts: SettlementFacts = sqlx::query_as(
+        "SELECT u.balance_amount, k.quota_used_amount, log.billed_at
+         FROM request_logs AS log
+         JOIN users AS u ON u.id = log.user_id
+         JOIN api_keys AS k ON k.id = log.api_key_id
+         WHERE log.id = $1",
+    )
+    .bind(event.id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(facts.balance_amount, -cost);
+    assert_eq!(facts.quota_used_amount, cost);
+    assert!(facts.quota_used_amount > rust_decimal::Decimal::new(1, 8));
+    assert!(facts.billed_at.is_some());
+
+    assert_eq!(
+        repository.settle(event.id).await.unwrap(),
+        RequestLogSettlementOutcome::AlreadyBilled
+    );
+    let after_retry: SettlementFacts = sqlx::query_as(
+        "SELECT u.balance_amount, k.quota_used_amount, log.billed_at
+         FROM request_logs AS log
+         JOIN users AS u ON u.id = log.user_id
+         JOIN api_keys AS k ON k.id = log.api_key_id
+         WHERE log.id = $1",
+    )
+    .bind(event.id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(after_retry.balance_amount, facts.balance_amount);
+    assert_eq!(after_retry.quota_used_amount, facts.quota_used_amount);
+    assert_eq!(after_retry.billed_at, facts.billed_at);
+
+    let mut zero_cost = request_log_event(&seed, RequestLogOutcome::Failed);
+    zero_cost.billing.as_mut().unwrap().cost_amount = Some(rust_decimal::Decimal::ZERO);
+    repository.insert(&zero_cost).await.unwrap();
+    assert!(matches!(
+        repository.settle(zero_cost.id).await.unwrap(),
+        RequestLogSettlementOutcome::Settled { .. }
+    ));
+    let zero_cost_facts: SettlementFacts = sqlx::query_as(
+        "SELECT u.balance_amount, k.quota_used_amount, log.billed_at
+         FROM request_logs AS log
+         JOIN users AS u ON u.id = log.user_id
+         JOIN api_keys AS k ON k.id = log.api_key_id
+         WHERE log.id = $1",
+    )
+    .bind(zero_cost.id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(zero_cost_facts.balance_amount, facts.balance_amount);
+    assert_eq!(zero_cost_facts.quota_used_amount, facts.quota_used_amount);
+    assert!(zero_cost_facts.billed_at.is_some());
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn settlement_leaves_currency_mismatch_unbilled_and_worker_recovers_durable_logs() {
+    let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
+    let repository = RequestLogRepository::new(database.pool.clone());
+
+    let mismatched = request_log_event(&seed, RequestLogOutcome::Succeeded);
+    repository.insert(&mismatched).await.unwrap();
+    sqlx::query("UPDATE users SET currency = 'EUR' WHERE id = $1")
+        .bind(seed.user)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        repository.settle(mismatched.id).await.unwrap(),
+        RequestLogSettlementOutcome::CurrencyMismatch
+    );
+    let mismatch_billed: Option<DateTime<Utc>> =
+        sqlx::query_scalar("SELECT billed_at FROM request_logs WHERE id = $1")
+            .bind(mismatched.id)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert_eq!(mismatch_billed, None);
+
+    sqlx::query("UPDATE users SET currency = 'USD' WHERE id = $1")
+        .bind(seed.user)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    let recoverable = request_log_event(&seed, RequestLogOutcome::Cancelled);
+    repository.insert(&recoverable).await.unwrap();
+    let (_sink, worker) = RequestLogWorker::start(repository, 4);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        let billed: Option<DateTime<Utc>> =
+            sqlx::query_scalar("SELECT billed_at FROM request_logs WHERE id = $1")
+                .bind(recoverable.id)
+                .fetch_one(&database.pool)
+                .await
+                .unwrap();
+        if billed.is_some() {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "settlement worker did not recover a durable unbilled request log"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    worker.shutdown().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn settled_usage_updates_the_live_soft_quota_before_snapshot_reload() {
+    let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
+    let state = UpstreamState(Arc::new(Mutex::new(UpstreamMode::UsageJson)));
+    let upstream_server = start_server(
+        Router::new()
+            .route("/v1/chat/completions", post(upstream))
+            .with_state(state),
+    )
+    .await;
+    sqlx::query(
+        "UPDATE models
+         SET price_unit_tokens = 1,
+             input_unit_price = 1,
+             cached_input_unit_price = 0,
+             cache_write_unit_price = 0,
+             output_unit_price = 1
+         WHERE id = $1",
+    )
+    .bind(seed.model)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE api_keys
+         SET quota_limit_amount = 1,
+             quota_used_amount = 0
+         WHERE id = $1",
+    )
+    .bind(seed.key)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE channels SET base_url = $1 WHERE id = $2")
+        .bind(format!("http://{}", upstream_server.address))
+        .bind(seed.channel)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+
+    let runtime = Arc::new(RuntimeConfig::new(
+        compile_control_plane(
+            ControlPlaneRepository::new(database.pool.clone())
+                .load()
+                .await
+                .unwrap(),
+        )
+        .unwrap(),
+    ));
+    let admission = AdmissionRuntime::new();
+    let (sink, worker) = RequestLogWorker::start_with_admission(
+        RequestLogRepository::new(database.pool.clone()),
+        32,
+        admission.clone(),
+    );
+    let proxy = ProxyService::with_dependencies(
+        runtime,
+        1_048_576,
+        &upstream_defaults(),
+        Arc::new(sink),
+        RoutingRuntime::new(PassiveHealthPolicy::default()),
+        admission,
+    )
+    .unwrap();
+    let gateway = start_server(ai_gateway::http::router(proxy)).await;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .unwrap();
+    let request = || {
+        client
+            .post(format!("http://{}/v1/chat/completions", gateway.address))
+            .header("authorization", format!("Bearer {}", seed.secret))
+            .header("content-type", "application/json")
+            .body(
+                serde_json::to_vec(
+                    &serde_json::json!({ "model": seed.client_model, "stream": false }),
+                )
+                .unwrap(),
+            )
+    };
+
+    let first = request().send().await.unwrap();
+    assert_eq!(first.status(), StatusCode::OK);
+    assert!(first.bytes().await.unwrap().starts_with(b"{"));
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        let quota_used_amount: rust_decimal::Decimal =
+            sqlx::query_scalar("SELECT quota_used_amount FROM api_keys WHERE id = $1")
+                .bind(seed.key)
+                .fetch_one(&database.pool)
+                .await
+                .unwrap();
+        if quota_used_amount == rust_decimal::Decimal::new(5, 0) {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "usage settlement did not update the API-key quota"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let second = request().send().await.unwrap();
+    assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
+    let error: serde_json::Value = serde_json::from_slice(&second.bytes().await.unwrap()).unwrap();
+    assert_eq!(error["error"]["code"], "insufficient_quota");
+
+    worker.shutdown().await;
+    drop(gateway);
+    drop(upstream_server);
     database.cleanup().await;
 }
 

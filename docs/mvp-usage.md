@@ -1,4 +1,4 @@
-# 运行说明（MVP 4 阶段 1–3）
+# 运行说明（MVP 4 阶段 1–4）
 
 服务以 PostgreSQL 作为控制面，TOML 只包含监听、数据库、默认上游超时、重载、日志和本地管理监听器设置。动态 API Key、用户、模型、路由、渠道、代理和模板均不允许写入 TOML。
 
@@ -43,7 +43,7 @@
 
 `PUT` 需要先通过 `GET` 获取 `ETag`，然后以 `If-Match` 提交当前版本。所有写入都在一个 serializable 事务中校验完整候选快照、写入 allowlist 审计记录，并在提交后立即替换运行时快照；校验或版本冲突不会改变数据库、审计或当前快照。
 
-用户的 `balance_amount` 是只读字段，MVP 4 阶段 1 不提供余额调整或结算。模型创建时可提供 `source_payload` JSON object；常规列表、读取和审计记录均不返回该不透明字段。模型更新时省略 `source_payload` 会保留已存数据，显式提供 `{}` 才会清空它。
+用户的 `balance_amount` 是只读字段，管理接口仍不提供充值、退款或人工余额调整。可结算请求完成后由后台 worker 异步扣减余额；本阶段没有硬余额预留，因此余额可以为负。模型创建时可提供 `source_payload` JSON object；常规列表、读取和审计记录均不返回该不透明字段。模型更新时省略 `source_payload` 会保留已存数据，显式提供 `{}` 才会清空它。
 
 `/admin/v1/models/sync/preview` 从 `[models_sync].api_url` 获取受限的 models.dev 目录；可选请求体为 `{"provider_ids":["provider-id"]}`。预览只返回 input/output 价格完整且非负的条目，缺失 cache read/write 价格按 `0` 处理，并以 `action` 标记为 `price_update`、`import` 或 `already_exists`。
 
@@ -61,6 +61,8 @@
 
 每个已选路请求会发出 tracing 终态事件，并尽力异步写入一条 `request_logs` 记录。网关以受限增量解析器从 Chat Completions 与 Responses 的非流式 JSON 或 SSE `data:` 事件中提取 usage；普通响应只保留顶层 `usage` 对象，SSE 只保留当前事件帧，不缓冲整条响应。无法识别、缺失或不合法的 usage 保持 `NULL`，不会影响客户端响应。
 
-选路时会绑定 `models` 当前价格快照，并在终态日志中写入 token、价格、成本和可选 output TPS；后续价格同步不会改写已有日志。当前仍不会更新用户余额或 API Key 已用额度；幂等结算属于 MVP 4 阶段 4。
+选路时会绑定 `models` 当前价格快照，并在终态日志中写入 token、价格、成本和可选 output TPS；后续价格同步不会改写已有日志。对 `cost_amount` 非空、价格快照完整、请求币种与用户币种一致且 API Key 仍归属该用户的终态日志，worker 以 `billed_at IS NULL` 条件更新取得唯一结算权，并在同一数据库事务中扣减 `users.balance_amount`、增加 `api_keys.quota_used_amount`。有 usage 的失败或取消请求也会按已记录成本结算；零成本请求仍标记为已结算。
+
+额度仍是软预检查：不预留金额，已结算金额达到或超过 `quota_limit_amount` 时才拒绝后续请求，因此结算可使已用额度超过上限。成功结算会立即发布到同进程准入状态，避免等待配置重载；余额不足不会阻止结算，余额可为负。日志插入后立即尝试结算；启动时及每 5 秒的有界扫描会重试已持久化但 `billed_at` 为空的可结算日志。币种或 Key 归属不匹配的日志保持未结算，需先修正控制面数据。异步队列已丢弃或进程在日志落库前崩溃的事件不具备持久化恢复基础。
 
 收到 SIGTERM 或 Ctrl-C 后，服务停止接收新连接，并在 `[server] shutdown_grace_period_seconds` 内等待在途连接；超过期限的响应被取消。请求日志 worker 随后进行有界排空。

@@ -801,12 +801,197 @@ impl RequestLogRepository {
             Err(RepositoryError::DuplicateConflict { id: event.id })
         }
     }
+
+    /// Claims and applies one billable terminal log in a single transaction.
+    ///
+    /// The conditional `billed_at` update is the sole settlement claim. If a
+    /// later account update fails, the transaction rolls back the claim too.
+    /// This lets a durable recovery scan retry safely after worker restarts or
+    /// transient database failures.
+    pub async fn settle(
+        &self,
+        request_log_id: Uuid,
+    ) -> Result<RequestLogSettlementOutcome, RepositoryError> {
+        let mut transaction = self.pool.begin().await?;
+        let claimed = sqlx::query_as::<_, ClaimedRequestLog>(
+            "UPDATE request_logs AS log
+             SET billed_at = now()
+             FROM users AS user_account, api_keys AS key
+             WHERE log.id = $1
+               AND log.billed_at IS NULL
+               AND log.cost_amount IS NOT NULL
+               AND log.currency IS NOT NULL
+               AND user_account.id = log.user_id
+               AND user_account.currency = log.currency
+               AND key.id = log.api_key_id
+               AND key.user_id = log.user_id
+             RETURNING log.id, log.user_id, log.api_key_id, log.cost_amount, log.currency",
+        )
+        .bind(request_log_id)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let Some(claimed) = claimed else {
+            let outcome = settlement_ineligibility(&mut transaction, request_log_id).await?;
+            transaction.commit().await?;
+            return Ok(outcome);
+        };
+
+        let balance_updated: Option<rust_decimal::Decimal> = sqlx::query_scalar(
+            "UPDATE users
+             SET balance_amount = balance_amount - $1
+             WHERE id = $2
+               AND currency = $3
+             RETURNING balance_amount",
+        )
+        .bind(claimed.cost_amount)
+        .bind(claimed.user_id)
+        .bind(&claimed.currency)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        if balance_updated.is_none() {
+            return Err(RepositoryError::SettlementClaimInvalidated { id: request_log_id });
+        }
+        let quota_used_amount: Option<rust_decimal::Decimal> = sqlx::query_scalar(
+            "UPDATE api_keys
+             SET quota_used_amount = quota_used_amount + $1
+             WHERE id = $2
+               AND user_id = $3
+             RETURNING quota_used_amount",
+        )
+        .bind(claimed.cost_amount)
+        .bind(claimed.api_key_id)
+        .bind(claimed.user_id)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let quota_used_amount = quota_used_amount
+            .ok_or(RepositoryError::SettlementClaimInvalidated { id: request_log_id })?;
+        transaction.commit().await?;
+        Ok(RequestLogSettlementOutcome::Settled {
+            request_log_id: claimed.id,
+            api_key_id: claimed.api_key_id,
+            quota_used_amount,
+        })
+    }
+
+    /// Reconciles a bounded oldest-first slice of durable, eligible logs.
+    ///
+    /// It intentionally excludes missing-cost and currency/account-mismatch
+    /// rows. Those rows remain visibly unbilled until their source facts are
+    /// corrected instead of being retried forever as transient failures.
+    pub async fn settle_pending(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<RequestLogSettlementOutcome>, RepositoryError> {
+        let mut transaction = self.pool.begin().await?;
+        // Recovery is best-effort and must not monopolize the sole log worker
+        // behind an administrative table lock. Immediate event persistence
+        // keeps its existing longer timeout and remains the durable path.
+        sqlx::query("SET LOCAL lock_timeout = '100ms'")
+            .execute(&mut *transaction)
+            .await?;
+        let request_log_ids = sqlx::query_scalar::<_, Uuid>(
+            "SELECT log.id
+             FROM request_logs AS log
+             JOIN users AS user_account
+               ON user_account.id = log.user_id
+              AND user_account.currency = log.currency
+             JOIN api_keys AS key
+               ON key.id = log.api_key_id
+              AND key.user_id = log.user_id
+             WHERE log.billed_at IS NULL
+               AND log.cost_amount IS NOT NULL
+               AND log.currency IS NOT NULL
+             ORDER BY log.completed_at, log.id
+             LIMIT $1",
+        )
+        .bind(limit.max(1))
+        .fetch_all(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        let mut outcomes = Vec::with_capacity(request_log_ids.len());
+        for request_log_id in request_log_ids {
+            outcomes.push(self.settle(request_log_id).await?);
+        }
+        Ok(outcomes)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RequestLogInsertOutcome {
     Inserted,
     ExactDuplicate,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RequestLogSettlementOutcome {
+    Settled {
+        request_log_id: Uuid,
+        api_key_id: Uuid,
+        quota_used_amount: rust_decimal::Decimal,
+    },
+    AlreadyBilled,
+    NotBillable,
+    CurrencyMismatch,
+    AccountMismatch,
+    NotFound,
+}
+
+#[derive(FromRow)]
+struct ClaimedRequestLog {
+    id: Uuid,
+    user_id: Uuid,
+    api_key_id: Uuid,
+    cost_amount: rust_decimal::Decimal,
+    currency: String,
+}
+
+#[derive(FromRow)]
+struct SettlementEligibility {
+    billed_at: Option<DateTime<Utc>>,
+    cost_amount: Option<rust_decimal::Decimal>,
+    currency: Option<String>,
+    user_currency: Option<String>,
+    api_key_user_id: Option<Uuid>,
+    user_id: Uuid,
+}
+
+async fn settlement_ineligibility(
+    transaction: &mut Transaction<'_, Postgres>,
+    request_log_id: Uuid,
+) -> Result<RequestLogSettlementOutcome, RepositoryError> {
+    let eligibility = sqlx::query_as::<_, SettlementEligibility>(
+        "SELECT log.billed_at,
+                log.cost_amount,
+                log.currency,
+                user_account.currency AS user_currency,
+                key.user_id AS api_key_user_id,
+                log.user_id
+         FROM request_logs AS log
+         LEFT JOIN users AS user_account ON user_account.id = log.user_id
+         LEFT JOIN api_keys AS key ON key.id = log.api_key_id
+         WHERE log.id = $1",
+    )
+    .bind(request_log_id)
+    .fetch_optional(&mut **transaction)
+    .await?;
+    let Some(eligibility) = eligibility else {
+        return Ok(RequestLogSettlementOutcome::NotFound);
+    };
+    if eligibility.billed_at.is_some() {
+        return Ok(RequestLogSettlementOutcome::AlreadyBilled);
+    }
+    if eligibility.cost_amount.is_none() || eligibility.currency.is_none() {
+        return Ok(RequestLogSettlementOutcome::NotBillable);
+    }
+    if eligibility.api_key_user_id != Some(eligibility.user_id) {
+        return Ok(RequestLogSettlementOutcome::AccountMismatch);
+    }
+    if eligibility.user_currency != eligibility.currency {
+        return Ok(RequestLogSettlementOutcome::CurrencyMismatch);
+    }
+    // A concurrent claimer either commits and is observed as `AlreadyBilled`,
+    // or rolls back and leaves a later recovery pass to claim the row.
+    Ok(RequestLogSettlementOutcome::NotBillable)
 }
 
 #[derive(FromRow)]
@@ -1769,6 +1954,8 @@ pub enum RepositoryError {
     DuplicateConflict { id: Uuid },
     #[error("request log duplicate disappeared before it could be compared")]
     DuplicateDisappeared { id: Uuid },
+    #[error("request log settlement claim became ineligible before account updates")]
+    SettlementClaimInvalidated { id: Uuid },
     #[error("requested record was not found or cannot be changed")]
     NotFound,
     #[error("management record version conflicts with the current version")]

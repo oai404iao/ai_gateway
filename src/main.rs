@@ -52,9 +52,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let runtime = Arc::new(RuntimeConfig::new(initial));
 
     let address = format!("{}:{}", config.server.host, config.server.port);
-    let (request_log_sink, request_log_worker) = RequestLogWorker::start(
+    let admission = AdmissionRuntime::new();
+    let (request_log_sink, request_log_worker) = RequestLogWorker::start_with_admission(
         RequestLogRepository::new(pool.clone()),
         config.request_logging.queue_capacity,
+        admission.clone(),
     );
     let routing = RoutingRuntime::new(PassiveHealthPolicy {
         connection_failure_threshold: config.passive_health.connection_failure_threshold,
@@ -69,7 +71,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         Arc::clone(&upstream_clients),
         Arc::new(request_log_sink),
         routing.clone(),
-        AdmissionRuntime::new(),
+        admission,
     )?;
     let coordinator = ControlPlaneCoordinator::new_with_upstream_registry(
         repository,

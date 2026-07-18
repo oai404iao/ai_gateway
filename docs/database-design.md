@@ -100,7 +100,7 @@ updated_at timestamptz not null
 | `currency` | `char(3)` | 非空；首版系统统一币种。 |
 | `created_at` / `updated_at` | `timestamptz` | 通用时间列。 |
 
-`balance_amount` 是为余额投影保留的 schema 列。当前实现不解析用量、不计算或结算费用，也不会在请求完成时更新该列或 `request_logs.billed_at`。未来启用计费后，若仍不设独立账本，充值、退款和人工修正可直接更新余额并必须写入 `audit_logs`；需要严格财务账本时再新增相应实体。
+`balance_amount` 是余额投影列。可结算终态日志由后台 worker 在同一事务中以 `billed_at` 条件更新取得唯一结算权，并扣减该列；本阶段没有硬余额预留，余额可以为负。管理接口仍不提供充值、退款或人工修正；若未来保留无独立账本的方案，这些操作必须写入 `audit_logs`，需要严格财务账本时再新增相应实体。
 
 ### 4.2 `api_keys`
 
@@ -139,9 +139,9 @@ CHECK (max_concurrent_requests IS NULL OR max_concurrent_requests > 0);
 CHECK (quota_limit_amount IS NULL OR quota_limit_amount >= 0);
 ```
 
-分钟级限流和并发数在单实例内存中维护；每次请求只读取 `ArcSwap` 中的已编译快照，不查询数据库。Stage 5 的额度是**软预检查**：存在 `quota_limit_amount` 时，只有快照中已结算的 `quota_used_amount >= quota_limit_amount` 才拒绝。它不估算本次费用、不预留金额、也不在请求终态结算或释放金额。因此一笔在额度内开始、随后结算到上限之外的请求是允许的；数据库保留两个金额非负检查，但不再限制 `quota_used_amount <= quota_limit_amount`。
+分钟级限流和并发数在单实例内存中维护；每次请求只读取 `ArcSwap` 中的已编译快照，不查询数据库。额度是**软预检查**：存在 `quota_limit_amount` 时，已结算的 `quota_used_amount >= quota_limit_amount` 才拒绝。结算 worker 成功后会立即把数据库返回的已用额度发布到同进程准入状态，同时定期重载仍是持久化快照的恢复路径。它不估算本次费用或预留金额，因此一笔在额度内开始、随后结算到上限之外的请求仍允许；数据库保留两个金额非负检查，但不限制 `quota_used_amount <= quota_limit_amount`。
 
-未来若需要硬额度，须另行设计保留和结算：按 Key 串行化 `used + reserved + upper_bound`，持久化并幂等确认 `billed_at`，仅在确认未结算时释放保留额，并从未结算日志恢复。该未来设计不能被当前软预检查暗示为已实现。
+未来若需要硬额度，须另行设计保留和结算：按 Key 串行化 `used + reserved + upper_bound`，持久化保留金额，确认 `billed_at` 后仅释放未结算保留额，并从未结算日志恢复。当前软预检查不能被误解为硬额度。
 
 ### 4.3 `models`
 
@@ -309,7 +309,7 @@ CHECK (jsonb_typeof(health_check) = 'object');
 - 四个价格字段、币种、计价单位和价格生效时间要么全部为空（未计费），要么全部存在。
 - 费用计算为：`(input - cached_input) * input_price / unit + cached_input * cached_input_price / unit + cache_write * cache_write_price / unit + output * output_price / unit`。
 - 只有在尚未收到上游任何字节时才允许追加下一项 `attempts`。收到响应头或首字节后不得切换渠道或重试。
-- **未来计费设计（当前未实现）：** 完成后，以 `UPDATE ... WHERE id = ? AND billed_at IS NULL RETURNING cost_amount` 取得唯一结算权，再在同一事务更新 `users.balance_amount` 和 `api_keys.quota_used_amount`；这避免异步 worker 重投导致重复扣费。当前日志 worker 只持久化终态日志，Stage 5 仅将已存的 `quota_used_amount` 用于软预检查，不会结算或更新余额/额度。
+- 结算 worker 对 `cost_amount` 非空、币种匹配且 Key 归属一致的日志，以 `UPDATE ... WHERE id = ? AND billed_at IS NULL RETURNING cost_amount` 取得唯一结算权，再在同一事务更新 `users.balance_amount` 和 `api_keys.quota_used_amount`。事务失败会回滚 `billed_at`，因此 worker 重投、启动恢复和并发结算不会重复扣费；余额不足不阻止结算，余额可为负。缺失成本、币种不匹配或归属不一致的日志不会被重试扫描错误地结算。
 
 不保存请求体、响应体、完整 Header、任何密钥、Cookie、原始 IP 或未清洗的上游错误。请求遥测清理前，必须确认它仍是首版唯一的计费审计依据；在引入独立账本前，不应任意缩短其保留期。
 
@@ -372,7 +372,7 @@ Bearer Key
   → 展开数组目标，按组优先级、渠道权重和内存健康状态选择渠道
   → 模板默认值 + 渠道覆盖 + 上游鉴权
   → 原路径流式转发
-  → 异步写入一条 request_logs；Stage 5 不结算或更新额度
+  → 异步写入一条 request_logs；对已持久化的可结算成本幂等更新余额和已用额度
 ```
 
 即使为读取 `model` 而解析过 JSON，只要没有变换或 `client_model != upstream_model` 的别名映射，请求体仍使用原始字节。普通流式响应不缓冲；经过 SSE 变换时按 `data:` 事件边界处理。
@@ -387,7 +387,7 @@ Bearer Key
 | `models` | `UNIQUE(source_model_id)`。 |
 | `model_rules` | `UNIQUE(client_model, api_format)`。 |
 | `channels` | `UNIQUE(channel_group_id, name)`、`(channel_group_id, enabled)`。 |
-| `request_logs` | `(api_key_id, started_at DESC)`、`(user_id, started_at DESC)`、`(channel_id, started_at DESC)` 和失败请求的部分索引。 |
+| `request_logs` | `(api_key_id, started_at DESC)`、`(user_id, started_at DESC)`、`(channel_id, started_at DESC)`、失败请求的部分索引，以及未结算成本的部分恢复索引。 |
 | `audit_logs` | `(object_type, object_id, occurred_at DESC)`、`(actor_user_id, occurred_at DESC)`。 |
 
 `request_logs` 首版是普通表；保留任务按 `system_settings.log_retention_policy` 删除已过期数据。日志量成为实际瓶颈后，再评估按月分区及其迁移方案，不能在“严格 11 张表”的首版中预先引入分区表。
@@ -398,6 +398,6 @@ Bearer Key
 - 不保留模型价格、模板或渠道配置的版本历史；`audit_logs` 只用于查阅变更，不能完整回滚配置。
 - 同一规则不能针对不同目标设置不同上游模型名或不同计价模型。
 - 不存在独立账本；`request_logs` 和 `users.balance_amount` 是首版计费依据，财务对账/退款复杂后再拆分。
-- 渠道运行状态、分钟级限流计数和并发数不跨重启、不跨实例；PRD 当前只考虑单实例，这一限制可接受。额度已用金额会持久化并随控制面快照重载；Stage 5 只作软预检查，不提供硬额度保留或结算。
+- 渠道运行状态、分钟级限流计数和并发数不跨重启、不跨实例；PRD 当前只考虑单实例，这一限制可接受。额度已用金额会持久化并在同进程结算后立即影响软预检查；仍不提供硬额度保留。已持久化但未结算日志可恢复，异步队列丢弃或日志落库前的进程崩溃不具备持久化恢复基础。
 
 这些限制都是有意识地换取更少的表、更少的迁移和更直观的控制面。后续只在业务确实需要某项能力时，再将对应字段拆为独立表。

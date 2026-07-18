@@ -482,8 +482,12 @@ impl CompiledApiKey {
     }
     #[must_use]
     pub fn quota_exhausted(&self) -> bool {
+        self.quota_exhausted_at(self.quota_used_amount)
+    }
+    #[must_use]
+    pub fn quota_exhausted_at(&self, quota_used_amount: Decimal) -> bool {
         self.quota_limit_amount
-            .is_some_and(|limit| self.quota_used_amount >= limit)
+            .is_some_and(|limit| quota_used_amount >= limit)
     }
     #[allow(clippy::too_many_arguments)] // immutable compiled key construction mirrors validated records
     pub(crate) fn new(
