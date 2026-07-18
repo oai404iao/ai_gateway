@@ -1,6 +1,6 @@
 # 数据库设计（首版简化方案）
 
-> 状态：设计基线已由迁移实现，服务通过数据库 repository 编译控制面快照。本版本只保留 [`PRD.md`](PRD.md) 明确列出的 11 张表；不新增授权关联表、价格版本表、路由目标表、账本表、配置版本表或渠道运行状态表。
+> 状态：设计基线已由迁移实现，服务通过数据库 repository 编译控制面快照。当前运行时范围以 [`mvp-usage.md`](mvp-usage.md) 为准；本文件同时保留部分 schema 预留设计。`system_settings` 与 `channels.health_check` 已有表/列，但当前二进制不将其作为可运行配置加载。本版本只保留 [`PRD.md`](PRD.md) 明确列出的 11 张表；不新增授权关联表、价格版本表、路由目标表、账本表、配置版本表或渠道运行状态表。
 
 ## 1. 设计原则
 
@@ -33,15 +33,15 @@ erDiagram
 | --- | --- |
 | `users` | 控制台用户或租户，以及当前余额。 |
 | `api_keys` | 客户端 Key、归属、格式/权限/分组范围、限流与额度。 |
-| `models` | 从 models.dev 选择的标准模型和当前四类单价。 |
+| `models` | 系统维护的模型目录与当前四类单价；可由管理员创建或从 models.dev 导入。 |
 | `model_rules` | `(client_model, api_format)` 到多个渠道组/渠道及一个上游模型名的路由。 |
 | `channel_groups` | 同格式负载均衡池和优先级。 |
-| `channels` | 上游地址、鉴权、权重、超时、变换覆盖、可用模型和健康检查配置。 |
+| `channels` | 上游地址、鉴权、权重、超时、变换覆盖、可用模型和预留健康检查字段。 |
 | `proxies` | HTTP/SOCKS 出口代理。 |
-| `config_templates` | 可复用的请求/响应变换与网络默认配置。 |
-| `request_logs` | 一次逻辑请求的最终结果、重试摘要、用量、费用与价格快照。 |
+| `config_templates` | 可复用的请求/响应变换。 |
+| `request_logs` | 一次逻辑请求的最终结果、用量、费用与价格快照；`attempts` 预留给未来重试审计。 |
 | `audit_logs` | 控制面变更记录。 |
-| `system_settings` | JSONB 系统设置。 |
+| `system_settings` | 预留的 JSONB 系统设置；当前运行时未加载。 |
 
 ## 3. 基础约定
 
@@ -66,7 +66,7 @@ updated_at timestamptz not null
 
 `audit_logs` 是只追加事实表。`request_logs` 不使用 `updated_at`，最终请求结果写入后只允许一次从 `billed_at IS NULL` 到非空的结算状态更新。金额使用 `numeric(24, 8)`，单价使用 `numeric(24, 12)`，Token 使用 `bigint`，所有时间均为 UTC `timestamptz`。
 
-控制面记录通过 `enabled` / `status` 停用，不物理删除；被日志引用的记录使用 `ON DELETE RESTRICT`。`audit_logs` 禁止更新和删除；`request_logs` 只允许一次结算标记更新，删除权限只授予执行 `log_retention_policy` 的保留任务。
+控制面记录通过 `enabled` / `status` 停用，不物理删除；被日志引用的记录使用 `ON DELETE RESTRICT`。`audit_logs` 禁止更新和删除；`request_logs` 只允许一次结算标记更新。当前二进制没有日志保留 worker；未来若增加删除逻辑，只能作为明确的保留任务实现。
 
 ### 3.2 数组与 JSONB 的约定
 
@@ -97,7 +97,7 @@ updated_at timestamptz not null
 | `name` | `varchar(200)` | 非空、唯一的展示/租户名称。 |
 | `status` | `text` | `active`、`suspended` 或 `disabled`，默认 `active`。 |
 | `balance_amount` | `numeric(24,8)` | 非空，默认 `0`；当前余额投影。 |
-| `currency` | `char(3)` | 非空；首版系统统一币种。 |
+| `currency` | `char(3)` | 非空；余额币种。当前结算要求与请求日志价格快照币种一致，不提供兑换。 |
 | `created_at` / `updated_at` | `timestamptz` | 通用时间列。 |
 
 `balance_amount` 是余额投影列。可结算终态日志由后台 worker 在同一事务中以 `billed_at` 条件更新取得唯一结算权，并扣减该列；本阶段没有硬余额预留，余额可以为负。管理接口仍不提供充值、退款或人工修正；若未来保留无独立账本的方案，这些操作必须写入 `audit_logs`，需要严格财务账本时再新增相应实体。
@@ -118,7 +118,7 @@ updated_at timestamptz not null
 | `permissions` | `text[]` | 非空；首版仅允许 `proxy`、`models.read`。 |
 | `allowed_group_ids` | `uuid[]` | 可空；`NULL` 为允许全部，非空为渠道组白名单。 |
 | `requests_per_minute` | `integer` | 可空、正数；分钟请求限流。 |
-| `tokens_per_minute` | `integer` | 可空、正数；分钟 Token 限流。 |
+| `tokens_per_minute` | `integer` | 可空、正数；schema 预留。当前活动 API Key 配置该字段会被控制面编译拒绝。 |
 | `max_concurrent_requests` | `integer` | 可空、正数。 |
 | `quota_limit_amount` | `numeric(24,8)` | 可空、非负；该 Key 生命周期总额度上限。 |
 | `quota_used_amount` | `numeric(24,8)` | 非空，默认 `0`；已结算的累计费用。 |
@@ -145,24 +145,24 @@ CHECK (quota_limit_amount IS NULL OR quota_limit_amount >= 0);
 
 ### 4.3 `models`
 
-一个模型行就是当前目录信息和当前价格，不维护价格版本历史。`price_effective_at` 表示这一组当前价格从何时开始有效。
+一个模型行就是当前目录信息和当前价格，不维护价格版本历史。管理员可直接维护模型，也可显式从 models.dev 导入；`price_effective_at` 表示这一组当前价格从何时开始有效。
 
 | 列 | 类型 | 说明 |
 | --- | --- | --- |
 | `id` | `uuid` | 主键。 |
-| `source_model_id` | `varchar(300)` | 非空、唯一；models.dev 稳定标识。 |
+| `source_model_id` | `varchar(300)` | 非空、唯一；本地模型来源标识。models.dev 导入时使用远端原始 `model_id`。 |
 | `display_name` | `varchar(300)` | 非空。 |
 | `provider_name` | `varchar(200)` | 可空。 |
 | `enabled` | `boolean` | 非空，默认 `true`。 |
-| `currency` | `char(3)` | 非空。 |
+| `currency` | `char(3)` | 非空；当前价格币种。 |
 | `price_unit_tokens` | `bigint` | 非空、正数，例如 `1000000`。 |
 | `input_unit_price` | `numeric(24,12)` | 非空、非负。 |
 | `cached_input_unit_price` | `numeric(24,12)` | 非空、非负；不单独收费时为 `0`。 |
 | `cache_write_unit_price` | `numeric(24,12)` | 非空、非负；不单独收费时为 `0`。 |
 | `output_unit_price` | `numeric(24,12)` | 非空、非负。 |
 | `price_effective_at` | `timestamptz` | 非空；当前价格生效时间。 |
-| `source_payload` | `jsonb` | 非空，默认 `{}`；已限制大小的 models.dev 原始元数据。 |
-| `last_synced_at` | `timestamptz` | 可空。 |
+| `source_payload` | `jsonb` | 非空，默认 `{}`；不透明来源元数据。models.dev 导入时保存已限制大小的远端元数据。 |
+| `last_synced_at` | `timestamptz` | 可空；最近一次 models.dev 同步时间。 |
 | `created_at` / `updated_at` | `timestamptz` | 通用时间列。 |
 
 管理员同步价格时更新同一行。每次可计费请求在 `request_logs` 复制币种、计价单位、四类单价和 `price_effective_at`，所以价格被更新后，已有日志仍可精确解释费用。缓存读/写没有单独价格时存 `0`，不使用 `NULL` 表示“未知”。
@@ -215,7 +215,7 @@ CHECK (cardinality(channel_group_ids) + cardinality(channel_ids) > 0);
 | `name` | `varchar(100)` | 同一渠道组内唯一。 |
 | `base_url` | `text` | 非空；必须为绝对 HTTP(S) URL。 |
 | `enabled` | `boolean` | 非空，默认 `true`；管理启停。 |
-| `auto_disabled` | `boolean` | 非空，默认 `false`；自动测试停用标记。 |
+| `auto_disabled` | `boolean` | 非空，默认 `false`；持久化的不可用标记，运行时会排除该渠道。 |
 | `auto_disabled_reason` | `varchar(500)` | 可空；仅 `auto_disabled = true` 时使用。 |
 | `weight` | `integer` | 非空、正数。 |
 | `proxy_id` | `uuid` | 可空，外键至 `proxies(id)`。 |
@@ -228,7 +228,7 @@ CHECK (cardinality(channel_group_ids) + cardinality(channel_ids) > 0);
 | `upstream_auth_header_name` | `varchar(100)` | `header` 模式必填；不得为受保护或 hop-by-hop Header。 |
 | `upstream_api_key` | `text` | `none` 时为空，其他模式非空；按 PRD 原始保存。 |
 | `available_models` | `text[]` | 非空，默认空数组；已知可用上游模型名。 |
-| `health_check` | `jsonb` | 非空，默认 `{}`；测试模型、测试请求体、是否允许自动停用等。 |
+| `health_check` | `jsonb` | 非空，默认 `{}`；当前必须为空对象，留作未来主动健康检查配置。 |
 | `created_at` / `updated_at` | `timestamptz` | 通用时间列。 |
 
 ```sql
@@ -241,9 +241,9 @@ CHECK (jsonb_typeof(override_document) = 'object');
 CHECK (jsonb_typeof(health_check) = 'object');
 ```
 
-渠道实际可选条件为 `enabled AND NOT auto_disabled`，并在内存中再过滤健康、熔断和冷却状态。自动禁用只修改 `auto_disabled` 相关字段且写审计日志，不覆盖管理员的 `enabled` 决定。重启后运行状态回到未知，由健康检查重新预热。
+渠道实际可选条件为 `enabled AND NOT auto_disabled`，并在内存中再过滤被动连接健康、熔断和冷却状态。当前没有主动健康检查或自动禁用 worker，且非空 `health_check` 文档会在控制面编译时被拒绝。重启后被动健康运行状态回到未知，后续请求重新建立状态。
 
-每类超时按以下优先级取值：渠道显式列 → 模板网络默认值 → `system_settings.timeout_policy` → 启动 TOML `[upstream]`。只允许建连、响应头和流空闲超时，禁止总响应超时。
+每类超时按以下优先级取值：渠道显式列 → 启动 TOML `[upstream]` 默认值。只允许建连、响应头和流空闲超时，禁止总响应超时；模板与 `system_settings` 当前不参与超时解析。
 
 ### 4.7 `proxies`
 
@@ -266,11 +266,11 @@ CHECK (jsonb_typeof(health_check) = 'object');
 | `id` | `uuid` | 主键。 |
 | `name` | `varchar(100)` | 非空、唯一。 |
 | `description` | `text` | 可空。 |
-| `document` | `jsonb` | 非空；模板默认变换与网络配置，必须为对象。 |
+| `document` | `jsonb` | 非空；模板默认变换，必须为对象。 |
 | `enabled` | `boolean` | 非空，默认 `true`。 |
 | `created_at` / `updated_at` | `timestamptz` | 通用时间列。 |
 
-`document` 与 `channels.override_document` 采用同一受限 schema。支持请求 Header 的 `set`/`remove`/`rename`、受限 JSON Pointer/Patch、非流式 JSON 响应 Patch、逐个 SSE `data:` JSON 事件 Patch 与网络默认值；不支持 JavaScript、Shell 或任意模板执行。
+`document` 与 `channels.override_document` 采用同一受限 schema。支持请求 Header 的 `set`/`remove`/`rename`、受限 JSON Pointer/Patch、非流式 JSON 响应 Patch 和逐个 SSE `data:` JSON 事件 Patch；不支持 JavaScript、Shell、任意模板执行或网络超时默认值。
 
 保存模板或渠道时，编译器必须验证 JSON 语法、操作白名单、Pointer、SSE 适配性以及最终合并结果。配置不得改写 `Host`、`Content-Length`、`Connection`、`Transfer-Encoding`、客户端 `Authorization`、`Proxy-Authorization` 或 `Connection` 动态声明的 Header。模板更新会立即影响引用它的渠道；系统没有版本回滚能力，依赖 `audit_logs` 查看变更。
 
@@ -278,7 +278,7 @@ CHECK (jsonb_typeof(health_check) = 'object');
 
 ### 4.9 `request_logs`
 
-一行表示一个逻辑客户端请求；重试不另建尝试表，而是以 `attempts` JSONB 保存已脱敏摘要。首版不对该表分区，严格保持 PRD 的 11 张表边界；日志量成为实际瓶颈后，再以独立设计决策引入分区。
+一行表示一个逻辑客户端请求。当前网关只进行一次上游尝试，`attempts` 保持默认空数组；若未来引入首字节前重试，才以该 JSONB 保存已脱敏尝试摘要。首版不对该表分区，严格保持 PRD 的 11 张表边界；日志量成为实际瓶颈后，再以独立设计决策引入分区。
 
 | 列 | 类型 | 说明 |
 | --- | --- | --- |
@@ -299,7 +299,7 @@ CHECK (jsonb_typeof(health_check) = 'object');
 | `currency` / `price_unit_tokens` / `price_effective_at` | 币种、整数、时间 | 本次价格快照上下文。 |
 | `input_unit_price` / `cached_input_unit_price` / `cache_write_unit_price` / `output_unit_price` | `numeric(24,12)` | 本次价格快照。 |
 | `cost_amount` | `numeric(24,8)` | 可空、非负；本次最终费用。 |
-| `attempts` | `jsonb` | 非空，默认 `[]`；重试渠道 ID、阶段、耗时、状态码与脱敏错误摘要。 |
+| `attempts` | `jsonb` | 非空，默认 `[]`；为未来首字节前重试审计预留。当前网关只进行一次上游尝试，始终保留空数组。 |
 | `error_code` / `error_summary` | `varchar(100)` / `varchar(1000)` | 可空、已清洗。 |
 | `billed_at` | `timestamptz` | 可空；余额/额度已成功应用的唯一标志。 |
 
@@ -308,7 +308,7 @@ CHECK (jsonb_typeof(health_check) = 'object');
 - `cached_input_tokens` 和 `cache_write_tokens` 非空时都不得大于 `input_tokens`。
 - 四个价格字段、币种、计价单位和价格生效时间要么全部为空（未计费），要么全部存在。
 - 费用计算为：`(input - cached_input) * input_price / unit + cached_input * cached_input_price / unit + cache_write * cache_write_price / unit + output * output_price / unit`。
-- 只有在尚未收到上游任何字节时才允许追加下一项 `attempts`。收到响应头或首字节后不得切换渠道或重试。
+- 当前不写入 `attempts`，因为网关只进行一次上游尝试。若未来引入重试，只能在尚未收到上游任何字节时追加下一项；收到响应头或首字节后不得切换渠道或重试。
 - 结算 worker 对 `cost_amount` 非空、币种匹配且 Key 归属一致的日志，以 `UPDATE ... WHERE id = ? AND billed_at IS NULL RETURNING cost_amount` 取得唯一结算权，再在同一事务更新 `users.balance_amount` 和 `api_keys.quota_used_amount`。事务失败会回滚 `billed_at`，因此 worker 重投、启动恢复和并发结算不会重复扣费；余额不足不阻止结算，余额可为负。缺失成本、币种不匹配或归属不一致的日志不会被重试扫描错误地结算。
 
 不保存请求体、响应体、完整 Header、任何密钥、Cookie、原始 IP 或未清洗的上游错误。请求遥测清理前，必须确认它仍是首版唯一的计费审计依据；在引入独立账本前，不应任意缩短其保留期。
@@ -335,10 +335,10 @@ CHECK (jsonb_typeof(health_check) = 'object');
 | 列 | 类型 | 说明 |
 | --- | --- | --- |
 | `setting_key` | `varchar(100)` | 主键。 |
-| `value` | `jsonb` | 非空、对象；固定 schema 的配置。 |
+| `value` | `jsonb` | 非空、对象；当前只有数据库对象约束，尚无运行时固定键 schema。 |
 | `updated_at` | `timestamptz` | 非空。 |
 
-首版键包括 `retry_policy`、`timeout_policy`、`quota_policy`、`health_check_policy`、`registration_policy` 和 `log_retention_policy`。它们分别覆盖重试次数/自动禁用阈值、默认超时、未来硬额度策略、定时测试、是否允许注册和日志保留期。每个 key 都有 Rust 结构体，保存时拒绝未知字段和非法值。
+该表目前只是 schema 预留：二进制没有 `system_settings` 的读取、管理接口、固定键 Rust 类型或运行时生效逻辑。超时使用 TOML 与渠道字段；重试、主动健康检查、硬额度、注册和日志保留策略仍属于后续设计，不能通过向该表写入 JSON 启用。
 
 ## 5. 约束边界与请求处理
 
@@ -359,9 +359,9 @@ CHECK (jsonb_typeof(health_check) = 'object');
 3. 每个启用规则至少展开为一个可选渠道；同一最低优先级候选组的选路策略一致。
 4. API Key 的 `allowed_group_ids` 存在，且 Key 同时拥有对应 API 格式和 `proxy` 权限；`/v1/models` 还需要 `models.read` 权限。
 5. API Key 的分组范围与模型规则目标存在交集；`/v1/models` 只输出这些可达规则的 `client_model`，不返回全局 `models`。
-6. 模板、渠道覆盖、健康检查和系统设置符合受限 DSL、Header 保护、SSE 逐事件处理、URL 和超时规则。
+6. 模板和渠道覆盖符合受限 DSL、Header 保护、SSE 逐事件处理、URL 和超时规则；`health_check` 当前必须为空，`system_settings` 不参与运行时编译。
 
-控制面在一个事务中保存变更和审计日志，完成上述全量校验并编译 `CompiledRuntimeConfig` 后提交；提交后直接替换内存 `ArcSwap` 快照。这里的数据库快照是后续代理实现新增的能力，当前脚手架的 TOML `RuntimeConfig<AppConfig>` 尚未实现数据库加载。
+控制面在一个事务中保存变更和审计日志，完成上述全量校验并编译 `CompiledRuntimeConfig` 后提交；提交后直接替换内存 `ArcSwap` 快照。启动、定时重载和管理写入均使用 PostgreSQL 控制面；TOML 只保留进程级监听、数据库、默认超时、日志、被动健康和本地管理监听器设置。
 
 ### 5.3 数据面流程
 
@@ -390,7 +390,7 @@ Bearer Key
 | `request_logs` | `(api_key_id, started_at DESC)`、`(user_id, started_at DESC)`、`(channel_id, started_at DESC)`、失败请求的部分索引，以及未结算成本的部分恢复索引。 |
 | `audit_logs` | `(object_type, object_id, occurred_at DESC)`、`(actor_user_id, occurred_at DESC)`。 |
 
-`request_logs` 首版是普通表；保留任务按 `system_settings.log_retention_policy` 删除已过期数据。日志量成为实际瓶颈后，再评估按月分区及其迁移方案，不能在“严格 11 张表”的首版中预先引入分区表。
+`request_logs` 是普通表；当前没有保留任务或 `system_settings.log_retention_policy` 的运行时实现。日志量成为实际瓶颈后，再设计显式保留策略并评估按月分区及其迁移方案，不能在“严格 11 张表”的首版中预先引入分区表。
 
 简化方案明确放弃以下能力：
 
