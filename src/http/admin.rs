@@ -13,7 +13,10 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    application::{ControlPlaneCoordinator, ControlPlaneError},
+    application::{
+        ControlPlaneCoordinator, ControlPlaneError, ModelSyncError, ModelSyncPreviewRequest,
+        ModelSyncRequest, ModelSyncResponse, ModelSyncService,
+    },
     domain::AdminTokenVerifier,
     persistence::{
         AdminMutation, ApiKeyCreate, ApiKeyUpdate, ChannelCreateInput, ChannelGroupInput,
@@ -25,6 +28,7 @@ use crate::{
 #[derive(Clone)]
 pub struct AdminState {
     pub coordinator: ControlPlaneCoordinator,
+    pub model_sync: ModelSyncService,
     pub actor_user_id: Uuid,
     pub verifier: AdminTokenVerifier,
 }
@@ -36,6 +40,8 @@ pub fn router(state: AdminState) -> Router {
         .route("/admin/v1/users", get(list_users).post(create_user))
         .route("/admin/v1/users/{id}", get(get_user).put(update_user))
         .route("/admin/v1/models", get(list_models).post(create_model))
+        .route("/admin/v1/models/sync/preview", post(preview_models_sync))
+        .route("/admin/v1/models/sync", post(sync_models))
         .route("/admin/v1/models/{id}", get(get_model).put(update_model))
         .route(
             "/admin/v1/api-keys",
@@ -251,6 +257,22 @@ async fn create_model(
     Json(input): Json<ModelInput>,
 ) -> Result<(StatusCode, Json<MutationResponse>), AdminError> {
     mutate_created(&state, AdminMutation::CreateModel(input)).await
+}
+async fn preview_models_sync(
+    State(state): State<AdminState>,
+    Json(input): Json<ModelSyncPreviewRequest>,
+) -> Result<Json<crate::models_dev::ModelsDevCatalog>, AdminError> {
+    Ok(Json(state.model_sync.preview(input).await?))
+}
+async fn sync_models(
+    State(state): State<AdminState>,
+    Json(input): Json<ModelSyncRequest>,
+) -> Result<Json<ModelSyncResponse>, AdminError> {
+    let result = state.model_sync.sync(state.actor_user_id, input).await?;
+    Ok(Json(ModelSyncResponse {
+        model_count: result.model_count,
+        correlation_id: result.correlation_id,
+    }))
 }
 async fn get_model(
     State(state): State<AdminState>,
@@ -512,9 +534,11 @@ async fn get_resource(
             .find(|item| item.id == id)
             .map(|item| serde_json::to_value(item).expect("admin DTO serializes")),
     }
-    .ok_or(AdminError(ControlPlaneError::Repository(
-        crate::persistence::RepositoryError::NotFound,
-    )))?;
+    .ok_or_else(|| {
+        AdminError::from(ControlPlaneError::Repository(
+            crate::persistence::RepositoryError::NotFound,
+        ))
+    })?;
     let updated_at: DateTime<Utc> =
         serde_json::from_value(value["updated_at"].clone()).expect("admin DTO timestamp");
     let mut response = Json(value).into_response();
@@ -535,7 +559,7 @@ fn if_match(headers: &HeaderMap) -> Result<DateTime<Utc>, AdminError> {
         .get(header::IF_MATCH)
         .and_then(|value| value.to_str().ok())
         .ok_or_else(|| {
-            AdminError(ControlPlaneError::Repository(
+            AdminError::from(ControlPlaneError::Repository(
                 crate::persistence::RepositoryError::Validation,
             ))
         })?;
@@ -543,19 +567,19 @@ fn if_match(headers: &HeaderMap) -> Result<DateTime<Utc>, AdminError> {
         .strip_prefix('"')
         .and_then(|value| value.strip_suffix('"'))
         .ok_or_else(|| {
-            AdminError(ControlPlaneError::Repository(
+            AdminError::from(ControlPlaneError::Repository(
                 crate::persistence::RepositoryError::Validation,
             ))
         })?;
     if !value.ends_with('Z') {
-        return Err(AdminError(ControlPlaneError::Repository(
+        return Err(AdminError::from(ControlPlaneError::Repository(
             crate::persistence::RepositoryError::Validation,
         )));
     }
     DateTime::parse_from_rfc3339(value)
         .map(|value| value.with_timezone(&Utc))
         .map_err(|_| {
-            AdminError(ControlPlaneError::Repository(
+            AdminError::from(ControlPlaneError::Repository(
                 crate::persistence::RepositoryError::Validation,
             ))
         })
@@ -582,48 +606,30 @@ async fn mutate_created(
     Ok((StatusCode::CREATED, response))
 }
 
-struct AdminError(ControlPlaneError);
+enum AdminError {
+    ControlPlane(ControlPlaneError),
+    ModelSync(ModelSyncError),
+}
 impl From<ControlPlaneError> for AdminError {
     fn from(value: ControlPlaneError) -> Self {
-        Self(value)
+        Self::ControlPlane(value)
+    }
+}
+impl From<ModelSyncError> for AdminError {
+    fn from(value: ModelSyncError) -> Self {
+        Self::ModelSync(value)
     }
 }
 impl IntoResponse for AdminError {
     fn into_response(self) -> Response {
-        let status = match self.0 {
-            ControlPlaneError::Compile(_)
-            | ControlPlaneError::Repository(crate::persistence::RepositoryError::Validation) => {
+        let status = match self {
+            Self::ControlPlane(error) => control_plane_status(&error),
+            Self::ModelSync(ModelSyncError::InvalidSelection)
+            | Self::ModelSync(ModelSyncError::ConflictingSourceModelId) => {
                 StatusCode::UNPROCESSABLE_ENTITY
             }
-            ControlPlaneError::Repository(crate::persistence::RepositoryError::NotFound) => {
-                StatusCode::NOT_FOUND
-            }
-            ControlPlaneError::Repository(crate::persistence::RepositoryError::Conflict) => {
-                StatusCode::CONFLICT
-            }
-            ControlPlaneError::InvalidActor => StatusCode::SERVICE_UNAVAILABLE,
-            ControlPlaneError::Repository(crate::persistence::RepositoryError::Sql(ref error))
-                if error
-                    .as_database_error()
-                    .and_then(|database| database.code())
-                    .is_some_and(|code| code == "40001" || code == "40P01") =>
-            {
-                StatusCode::CONFLICT
-            }
-            ControlPlaneError::Repository(crate::persistence::RepositoryError::Sql(ref error))
-                if error
-                    .as_database_error()
-                    .and_then(|database| database.code())
-                    .is_some_and(|code| {
-                        matches!(
-                            code.as_ref(),
-                            "22001" | "22007" | "22P02" | "23502" | "23503" | "23505" | "23514"
-                        )
-                    }) =>
-            {
-                StatusCode::UNPROCESSABLE_ENTITY
-            }
-            ControlPlaneError::Repository(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::ModelSync(ModelSyncError::Catalog(_)) => StatusCode::BAD_GATEWAY,
+            Self::ModelSync(ModelSyncError::ControlPlane(error)) => control_plane_status(&error),
         };
         let error = if status == StatusCode::INTERNAL_SERVER_ERROR {
             "management operation failed"
@@ -631,6 +637,44 @@ impl IntoResponse for AdminError {
             "management operation rejected"
         };
         (status, Json(serde_json::json!({"error":error}))).into_response()
+    }
+}
+
+fn control_plane_status(error: &ControlPlaneError) -> StatusCode {
+    match error {
+        ControlPlaneError::Compile(_)
+        | ControlPlaneError::Repository(crate::persistence::RepositoryError::Validation) => {
+            StatusCode::UNPROCESSABLE_ENTITY
+        }
+        ControlPlaneError::Repository(crate::persistence::RepositoryError::NotFound) => {
+            StatusCode::NOT_FOUND
+        }
+        ControlPlaneError::Repository(crate::persistence::RepositoryError::Conflict) => {
+            StatusCode::CONFLICT
+        }
+        ControlPlaneError::InvalidActor => StatusCode::SERVICE_UNAVAILABLE,
+        ControlPlaneError::Repository(crate::persistence::RepositoryError::Sql(error))
+            if error
+                .as_database_error()
+                .and_then(|database| database.code())
+                .is_some_and(|code| code == "40001" || code == "40P01") =>
+        {
+            StatusCode::CONFLICT
+        }
+        ControlPlaneError::Repository(crate::persistence::RepositoryError::Sql(error))
+            if error
+                .as_database_error()
+                .and_then(|database| database.code())
+                .is_some_and(|code| {
+                    matches!(
+                        code.as_ref(),
+                        "22001" | "22007" | "22P02" | "23502" | "23503" | "23505" | "23514"
+                    )
+                }) =>
+        {
+            StatusCode::UNPROCESSABLE_ENTITY
+        }
+        ControlPlaneError::Repository(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
 
@@ -644,10 +688,11 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::{
-        application::ControlPlaneCoordinator,
+        application::{ControlPlaneCoordinator, ModelSyncService},
+        models_dev::ModelsDevClient,
         persistence::ControlPlaneRepository,
         routing::{PassiveHealthPolicy, RoutingRuntime},
-        runtime_config::{RuntimeConfig, UpstreamConfig, compile_control_plane},
+        runtime_config::{ModelsSyncConfig, RuntimeConfig, UpstreamConfig, compile_control_plane},
     };
 
     use super::{AdminState, router};
@@ -669,8 +714,14 @@ mod tests {
                 stream_idle_timeout_seconds: 3,
             },
         );
+        let model_sync = ModelSyncService::new(
+            coordinator.clone(),
+            ModelsDevClient::new(&ModelsSyncConfig::default()).unwrap(),
+            1,
+        );
         router(AdminState {
             coordinator,
+            model_sync,
             actor_user_id: uuid::Uuid::nil(),
             verifier: crate::domain::AdminTokenVerifier::from_token(
                 "a-managed-token-that-is-at-least-thirty-two-chars",

@@ -2,8 +2,10 @@ use std::{error::Error, net::SocketAddr, path::PathBuf, sync::Arc, time::Duratio
 
 use ai_gateway::{
     admission::AdmissionRuntime,
-    application::{ControlPlaneCoordinator, ProxyService},
-    http, observability,
+    application::{ControlPlaneCoordinator, ModelSyncService, ProxyService},
+    http,
+    models_dev::ModelsDevClient,
+    observability,
     persistence::{ControlPlaneRepository, MIGRATOR, RequestLogRepository},
     routing::{PassiveHealthPolicy, RoutingRuntime},
     runtime_config::{AppConfig, RuntimeConfig, compile_control_plane},
@@ -83,12 +85,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
     tracing::info!(%address, "AI gateway listening");
     let admin = if let Some(admin) = config.admin {
         coordinator.verify_active_actor(admin.actor_user_id).await?;
+        let model_sync = ModelSyncService::new(
+            coordinator.clone(),
+            ModelsDevClient::new(&config.models_sync)?,
+            config.models_sync.max_selections,
+        );
         let listener = TcpListener::bind(admin.address).await?;
         tracing::info!(address = %admin.address, "AI gateway admin listener enabled");
         Some((
             listener,
             http::admin::router(http::admin::AdminState {
                 coordinator: coordinator.clone(),
+                model_sync,
                 actor_user_id: admin.actor_user_id,
                 verifier: admin.verifier,
             }),

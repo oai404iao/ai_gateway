@@ -9,6 +9,7 @@ use uuid::Uuid;
 use crate::{
     persistence::{
         AdminLists, AdminMutation, ControlPlaneRepository, MutationResult, RepositoryError,
+        SyncedModelInput,
     },
     routing::RoutingRuntime,
     runtime_config::UpstreamConfig,
@@ -156,6 +157,51 @@ impl ControlPlaneCoordinator {
         })
     }
 
+    /// Persists a bounded, already validated external catalog selection and
+    /// publishes it with one audit correlation id. The catalog is fetched
+    /// before entering this method, so a slow external dependency never holds
+    /// the control-plane serialization gate or a database transaction.
+    pub async fn sync_models(
+        &self,
+        actor: Uuid,
+        inputs: Vec<SyncedModelInput>,
+    ) -> Result<ModelSyncResult, ControlPlaneError> {
+        let _guard = self.serial.lock().await;
+        let mut transaction = self.repository.begin_serializable().await?;
+        if !self
+            .repository
+            .active_user_exists(&mut transaction, actor)
+            .await?
+        {
+            return Err(ControlPlaneError::InvalidActor);
+        }
+        let mutations = self
+            .repository
+            .sync_models(&mut transaction, inputs)
+            .await?;
+        let candidate = Arc::new(compile_control_plane(
+            ControlPlaneRepository::load_transaction(&mut transaction).await?,
+        )?);
+        self.validate_candidate(&candidate)?;
+        let correlation_id = Uuid::new_v4();
+        for mutation in &mutations {
+            self.repository
+                .insert_audit(&mut transaction, actor, mutation, correlation_id)
+                .await?;
+        }
+        transaction.commit().await.map_err(RepositoryError::from)?;
+        self.publish(candidate);
+        tracing::info!(
+            %correlation_id,
+            model_count = mutations.len(),
+            "models.dev synchronization committed"
+        );
+        Ok(ModelSyncResult {
+            model_count: mutations.len(),
+            correlation_id,
+        })
+    }
+
     pub async fn verify_active_actor(&self, actor: Uuid) -> Result<(), ControlPlaneError> {
         let mut transaction = self.repository.begin_serializable().await?;
         let active = self
@@ -194,6 +240,12 @@ impl ControlPlaneCoordinator {
             ConfigError::Compile("invalid resolved upstream timeout policy".into()).into()
         })
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ModelSyncResult {
+    pub model_count: usize,
+    pub correlation_id: Uuid,
 }
 
 #[derive(Debug, Error)]

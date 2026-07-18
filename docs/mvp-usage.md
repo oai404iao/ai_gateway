@@ -1,4 +1,4 @@
-# 运行说明（MVP 4 阶段 1）
+# 运行说明（MVP 4 阶段 1–2）
 
 服务以 PostgreSQL 作为控制面，TOML 只包含监听、数据库、默认上游超时、重载、日志和本地管理监听器设置。动态 API Key、用户、模型、路由、渠道、代理和模板均不允许写入 TOML。
 
@@ -29,6 +29,8 @@
 - `GET` / `PUT` `/admin/v1/users/{id}`
 - `GET` / `POST` `/admin/v1/models`
 - `GET` / `PUT` `/admin/v1/models/{id}`
+- `POST` `/admin/v1/models/sync/preview`
+- `POST` `/admin/v1/models/sync`
 - `GET` / `POST` `/admin/v1/api-keys`
 - `GET` / `PUT` `/admin/v1/api-keys/{id}`，`POST /admin/v1/api-keys/{id}/revoke`
 - `GET` / `POST` `/admin/v1/channel-groups`，`GET` / `PUT` `/admin/v1/channel-groups/{id}`
@@ -41,6 +43,10 @@
 `PUT` 需要先通过 `GET` 获取 `ETag`，然后以 `If-Match` 提交当前版本。所有写入都在一个 serializable 事务中校验完整候选快照、写入 allowlist 审计记录，并在提交后立即替换运行时快照；校验或版本冲突不会改变数据库、审计或当前快照。
 
 用户的 `balance_amount` 是只读字段，MVP 4 阶段 1 不提供余额调整或结算。模型创建时可提供 `source_payload` JSON object；常规列表、读取和审计记录均不返回该不透明字段。模型更新时省略 `source_payload` 会保留已存数据，显式提供 `{}` 才会清空它。
+
+`/admin/v1/models/sync/preview` 从 `[models_sync].api_url` 获取受限的 models.dev 目录；可选请求体为 `{"provider_ids":["provider-id"]}`。预览只返回 input/output 价格完整且非负的条目，缺失 cache read/write 价格按 `0` 处理。`/admin/v1/models/sync` 接收 `{"selections":[{"provider_id":"...","model_id":"..."}]}`，重新拉取目录后才在串行化事务中更新选中条目。同步价格统一按 USD、每 1,000,000 tokens 写入；`source_model_id` 使用原始 `model_id`。因此同一个原始 ID 在后续选择不同 provider 时会更新同一模型的 provider 和当前价格；同一次同步不能选择重复的原始 ID。
+
+同步响应、普通模型读取和审计均不输出原始目录元数据。同步只更新 `models` 当前价格和元数据，绝不修改已有 `request_logs`。
 
 停用用户会使其 API Key 在新快照中立即失效。停用仍被启用模型规则引用的模型会使候选快照无效，因此整个写入和审计都会回滚。
 

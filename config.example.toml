@@ -31,6 +31,15 @@ queue_capacity = 1_024
 connection_failure_threshold = 3
 cooldown_seconds = 30
 
+[models_sync]
+# Administrator-triggered models.dev catalog import. Only complete USD
+# input/output prices are eligible for preview and synchronization.
+api_url = "https://models.dev/api.json"
+request_timeout_seconds = 15
+max_response_bytes = 10_485_760
+max_model_metadata_bytes = 65_536
+max_selections = 100
+
 # The management API is a separate loopback-only listener and is disabled by
 # default. When enabling it, set a real active users.id UUID and a unique,
 # high-entropy bearer token (at least 32 characters); never commit that token.

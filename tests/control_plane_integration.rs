@@ -7,14 +7,18 @@ use std::{
 };
 
 use ai_gateway::{
-    application::{ControlPlaneCoordinator, ProxyService, QueueRequestLogSink, RequestLogSink},
+    application::{
+        ControlPlaneCoordinator, ModelSyncService, ProxyService, QueueRequestLogSink,
+        RequestLogSink,
+    },
     domain::{ApiFormat, ApiKeyPermission, RequestLogEvent, RequestLogOutcome},
     http::admin::{self, AdminState},
+    models_dev::ModelsDevClient,
     persistence::{
         ControlPlaneRepository, MIGRATOR, RequestLogInsertOutcome, RequestLogRepository,
     },
     routing::{self, PassiveHealthPolicy, RoutingRuntime},
-    runtime_config::{RuntimeConfig, UpstreamConfig, compile_control_plane},
+    runtime_config::{ModelsSyncConfig, RuntimeConfig, UpstreamConfig, compile_control_plane},
     workers::{ControlPlaneReloader, RequestLogWorker},
 };
 use axum::{
@@ -23,7 +27,7 @@ use axum::{
     extract::State,
     http::StatusCode,
     response::Response,
-    routing::post,
+    routing::{get, post},
 };
 use chrono::{DateTime, Utc};
 use futures_util::{StreamExt, stream};
@@ -93,6 +97,33 @@ async fn upstream(State(state): State<UpstreamState>) -> Response {
             Ok::<Bytes, io::Error>(Bytes::from_static(b"second")),
         ]))),
     }
+}
+
+async fn models_dev_catalog() -> axum::Json<serde_json::Value> {
+    axum::Json(serde_json::json!({
+        "provider-a": {
+            "id": "provider-a",
+            "name": "Provider A",
+            "models": {
+                "catalog-model": {
+                    "id": "catalog-model",
+                    "name": "Catalog Model",
+                    "cost": {
+                        "input": 1.25,
+                        "output": 2.50,
+                        "cache_read": 0.25,
+                        "cache_write": 0.50
+                    },
+                    "metadata": {"safe": true}
+                },
+                "missing-price": {
+                    "id": "missing-price",
+                    "name": "Missing Price",
+                    "cost": {"input": 1.0}
+                }
+            }
+        }
+    }))
 }
 
 #[derive(FromRow)]
@@ -446,6 +477,19 @@ fn upstream_defaults() -> UpstreamConfig {
 }
 
 async fn admin_app(pool: PgPool, actor: Uuid) -> (Router, Arc<RuntimeConfig>) {
+    admin_app_with_models_dev(
+        pool,
+        actor,
+        ModelsDevClient::new(&ModelsSyncConfig::default()).unwrap(),
+    )
+    .await
+}
+
+async fn admin_app_with_models_dev(
+    pool: PgPool,
+    actor: Uuid,
+    models_dev: ModelsDevClient,
+) -> (Router, Arc<RuntimeConfig>) {
     let repository = ControlPlaneRepository::new(pool);
     let runtime = Arc::new(RuntimeConfig::new(
         compile_control_plane(repository.load().await.unwrap()).unwrap(),
@@ -456,9 +500,11 @@ async fn admin_app(pool: PgPool, actor: Uuid) -> (Router, Arc<RuntimeConfig>) {
         RoutingRuntime::new(PassiveHealthPolicy::default()),
         upstream_defaults(),
     );
+    let model_sync = ModelSyncService::new(coordinator.clone(), models_dev, 100);
     (
         admin::router(AdminState {
             coordinator,
+            model_sync,
             actor_user_id: actor,
             verifier: ai_gateway::domain::AdminTokenVerifier::from_token(ADMIN_TOKEN),
         }),
@@ -795,6 +841,134 @@ async fn managed_models_are_versioned_and_invalid_disable_rolls_back() {
             .unwrap();
     assert_eq!(audit_after, audit_before);
     assert!(Arc::ptr_eq(&published, &runtime.snapshot()));
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn models_dev_preview_and_selected_sync_upsert_prices_without_leaking_metadata() {
+    let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
+    let catalog_server =
+        start_server(Router::new().route("/api.json", get(models_dev_catalog))).await;
+    let models_dev = ModelsDevClient::new(&ModelsSyncConfig {
+        api_url: format!("http://{}/api.json", catalog_server.address),
+        request_timeout_seconds: 1,
+        max_response_bytes: 1_024 * 1_024,
+        max_model_metadata_bytes: 1_024,
+        max_selections: 10,
+    })
+    .unwrap();
+    let (app, _) = admin_app_with_models_dev(database.pool.clone(), seed.user, models_dev).await;
+
+    let preview = admin_request(
+        app.clone(),
+        "POST",
+        "/admin/v1/models/sync/preview",
+        serde_json::json!({"provider_ids":["provider-a"]}),
+    )
+    .await;
+    assert_eq!(preview.status(), StatusCode::OK);
+    let preview: serde_json::Value =
+        serde_json::from_slice(&preview.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(preview["models"].as_array().unwrap().len(), 1);
+    assert_eq!(preview["models"][0]["provider_id"], "provider-a");
+    assert_eq!(preview["models"][0]["model_id"], "catalog-model");
+    assert_eq!(preview["excluded_missing_prices"], 1);
+    assert!(preview["models"][0].get("source_payload").is_none());
+
+    let sync = admin_request(
+        app.clone(),
+        "POST",
+        "/admin/v1/models/sync",
+        serde_json::json!({
+            "selections":[{"provider_id":"provider-a","model_id":"catalog-model"}]
+        }),
+    )
+    .await;
+    assert_eq!(sync.status(), StatusCode::OK);
+    let sync: serde_json::Value =
+        serde_json::from_slice(&sync.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(sync["model_count"], 1);
+
+    let persisted: (
+        String,
+        Option<String>,
+        rust_decimal::Decimal,
+        rust_decimal::Decimal,
+        rust_decimal::Decimal,
+        rust_decimal::Decimal,
+        i64,
+    ) = sqlx::query_as(
+        "SELECT source_model_id,provider_name,input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,price_unit_tokens FROM models WHERE source_model_id='catalog-model'",
+    )
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(persisted.0, "catalog-model");
+    assert_eq!(persisted.1.as_deref(), Some("Provider A"));
+    assert_eq!(persisted.2, rust_decimal::Decimal::new(125, 2));
+    assert_eq!(persisted.3, rust_decimal::Decimal::new(25, 2));
+    assert_eq!(persisted.4, rust_decimal::Decimal::new(50, 2));
+    assert_eq!(persisted.5, rust_decimal::Decimal::new(250, 2));
+    assert_eq!(persisted.6, 1_000_000);
+    let source_payload: serde_json::Value = sqlx::query_scalar(
+        "SELECT source_payload FROM models WHERE source_model_id='catalog-model'",
+    )
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(source_payload["source"], "models.dev");
+    assert_eq!(source_payload["provider_id"], "provider-a");
+
+    let model_id: Uuid =
+        sqlx::query_scalar("SELECT id FROM models WHERE source_model_id='catalog-model'")
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    let detail = admin_request(
+        app.clone(),
+        "GET",
+        &format!("/admin/v1/models/{model_id}"),
+        serde_json::json!({}),
+    )
+    .await;
+    let detail = serde_json::from_slice::<serde_json::Value>(
+        &detail.into_body().collect().await.unwrap().to_bytes(),
+    )
+    .unwrap();
+    assert!(detail.get("source_payload").is_none());
+    let audit: serde_json::Value = sqlx::query_scalar(
+        "SELECT after_redacted FROM audit_logs WHERE object_id=$1 AND object_type='model' AND action='sync'",
+    )
+    .bind(model_id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert!(audit.get("source_payload").is_none());
+
+    let audits_before: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_logs WHERE object_type='model' AND action='sync'",
+    )
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    let rejected = admin_request(
+        app,
+        "POST",
+        "/admin/v1/models/sync",
+        serde_json::json!({
+            "selections":[{"provider_id":"provider-a","model_id":"missing-price"}]
+        }),
+    )
+    .await;
+    assert_eq!(rejected.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let audits_after: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_logs WHERE object_type='model' AND action='sync'",
+    )
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(audits_after, audits_before);
     database.cleanup().await;
 }
 

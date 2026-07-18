@@ -44,6 +44,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub passive_health: PassiveHealthConfig,
     #[serde(default)]
+    pub models_sync: ModelsSyncConfig,
+    #[serde(default)]
     pub admin: AdminFileConfig,
     pub observability: ObservabilityConfig,
 }
@@ -73,6 +75,7 @@ impl AppConfig {
         validate_server(&self.server)?;
         validate_database(&self.database)?;
         validate_upstream(&self.upstream)?;
+        validate_models_sync(&self.models_sync)?;
         let admin = validate_admin(self.admin)?;
         if self.runtime_config.reload_interval_seconds == 0 {
             return Err(ConfigError::Compile(
@@ -99,6 +102,7 @@ impl AppConfig {
             runtime_config: self.runtime_config,
             request_logging: self.request_logging,
             passive_health: self.passive_health,
+            models_sync: self.models_sync,
             admin,
             observability: self.observability,
         })
@@ -112,6 +116,7 @@ pub struct BootstrapConfig {
     pub runtime_config: RuntimeConfigSettings,
     pub request_logging: RequestLoggingConfig,
     pub passive_health: PassiveHealthConfig,
+    pub models_sync: ModelsSyncConfig,
     pub admin: Option<AdminListenerConfig>,
     pub observability: ObservabilityConfig,
 }
@@ -157,6 +162,34 @@ pub struct PassiveHealthConfig {
     pub connection_failure_threshold: u32,
     #[serde(default = "default_passive_health_cooldown_seconds")]
     pub cooldown_seconds: u64,
+}
+/// Bounds explicit administrator-triggered catalog fetches. This is process
+/// configuration rather than control-plane state, so changing it requires a
+/// restart just like the database connection settings.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelsSyncConfig {
+    #[serde(default = "default_models_dev_api_url")]
+    pub api_url: String,
+    #[serde(default = "default_models_sync_timeout_seconds")]
+    pub request_timeout_seconds: u64,
+    #[serde(default = "default_models_sync_max_response_bytes")]
+    pub max_response_bytes: usize,
+    #[serde(default = "default_models_sync_max_metadata_bytes")]
+    pub max_model_metadata_bytes: usize,
+    #[serde(default = "default_models_sync_max_selections")]
+    pub max_selections: usize,
+}
+impl Default for ModelsSyncConfig {
+    fn default() -> Self {
+        Self {
+            api_url: default_models_dev_api_url(),
+            request_timeout_seconds: default_models_sync_timeout_seconds(),
+            max_response_bytes: default_models_sync_max_response_bytes(),
+            max_model_metadata_bytes: default_models_sync_max_metadata_bytes(),
+            max_selections: default_models_sync_max_selections(),
+        }
+    }
 }
 impl Default for PassiveHealthConfig {
     fn default() -> Self {
@@ -217,6 +250,21 @@ const fn default_connection_failure_threshold() -> u32 {
 }
 const fn default_passive_health_cooldown_seconds() -> u64 {
     30
+}
+fn default_models_dev_api_url() -> String {
+    "https://models.dev/api.json".into()
+}
+const fn default_models_sync_timeout_seconds() -> u64 {
+    15
+}
+const fn default_models_sync_max_response_bytes() -> usize {
+    10 * 1_024 * 1_024
+}
+const fn default_models_sync_max_metadata_bytes() -> usize {
+    64 * 1_024
+}
+const fn default_models_sync_max_selections() -> usize {
+    100
 }
 
 pub struct RuntimeConfig {
@@ -1075,6 +1123,26 @@ fn validate_upstream(upstream: &UpstreamConfig) -> Result<(), ConfigError> {
     {
         return Err(ConfigError::Compile(
             "invalid upstream timeout settings".into(),
+        ));
+    }
+    Ok(())
+}
+fn validate_models_sync(config: &ModelsSyncConfig) -> Result<(), ConfigError> {
+    let url = Url::parse(&config.api_url).map_err(|_| {
+        ConfigError::Compile("models_sync api_url must be a valid HTTPS URL".into())
+    })?;
+    if url.scheme() != "https"
+        || url.host().is_none()
+        || url.username() != ""
+        || url.password().is_some()
+        || url.fragment().is_some()
+        || config.request_timeout_seconds == 0
+        || config.max_response_bytes == 0
+        || config.max_model_metadata_bytes == 0
+        || config.max_selections == 0
+    {
+        return Err(ConfigError::Compile(
+            "models_sync settings are invalid".into(),
         ));
     }
     Ok(())

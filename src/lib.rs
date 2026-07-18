@@ -4,6 +4,7 @@ pub mod admission;
 pub mod application;
 pub mod domain;
 pub mod http;
+pub mod models_dev;
 pub mod observability;
 pub mod persistence;
 pub mod routing;
