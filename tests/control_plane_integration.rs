@@ -532,6 +532,273 @@ async fn admin_key_create_publishes_immediately_and_audits_redacted() {
 }
 
 #[tokio::test]
+async fn managed_users_are_versioned_audited_and_immediately_revoke_their_keys() {
+    let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
+    let (app, runtime) = admin_app(database.pool.clone(), seed.user).await;
+
+    let created = admin_request(
+        app.clone(),
+        "POST",
+        "/admin/v1/users",
+        serde_json::json!({
+            "name": format!("managed-user-{}", Uuid::new_v4()),
+            "status": "active",
+            "currency": "USD"
+        }),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let created: serde_json::Value =
+        serde_json::from_slice(&created.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let user_id = Uuid::parse_str(created["id"].as_str().unwrap()).unwrap();
+    let users = admin_request(app.clone(), "GET", "/admin/v1/users", serde_json::json!({})).await;
+    assert_eq!(users.status(), StatusCode::OK);
+    let users: serde_json::Value =
+        serde_json::from_slice(&users.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert!(
+        users
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|user| user["id"] == user_id.to_string())
+    );
+
+    let key = admin_request(
+        app.clone(),
+        "POST",
+        "/admin/v1/api-keys",
+        serde_json::json!({
+            "user_id": user_id,
+            "name": format!("managed-key-{}", Uuid::new_v4()),
+            "allowed_api_formats": ["open_ai_chat_completions"],
+            "permissions": ["proxy"],
+            "allowed_group_ids": [seed.group],
+            "expires_at": null
+        }),
+    )
+    .await;
+    assert_eq!(key.status(), StatusCode::CREATED);
+    let key: serde_json::Value =
+        serde_json::from_slice(&key.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let secret = key["secret"].as_str().unwrap().to_owned();
+    let old_snapshot = runtime.snapshot();
+    assert!(old_snapshot.authenticate(&secret).is_some());
+
+    let path = format!("/admin/v1/users/{user_id}");
+    let detail = admin_request(app.clone(), "GET", &path, serde_json::json!({})).await;
+    assert_eq!(detail.status(), StatusCode::OK);
+    let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
+    let mut detail: serde_json::Value =
+        serde_json::from_slice(&detail.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(detail["balance_amount"], "0");
+    detail["status"] = serde_json::json!("suspended");
+    for field in ["id", "balance_amount", "created_at", "updated_at"] {
+        detail.as_object_mut().unwrap().remove(field);
+    }
+
+    assert_eq!(
+        admin_request_with_headers(
+            app.clone(),
+            "PUT",
+            &path,
+            detail.clone(),
+            &[("if-match", &etag)]
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    assert!(old_snapshot.authenticate(&secret).is_some());
+    assert!(runtime.snapshot().authenticate(&secret).is_none());
+
+    let audit: serde_json::Value = sqlx::query_scalar(
+        "SELECT jsonb_build_object('before', before_redacted, 'after', after_redacted) FROM audit_logs WHERE object_id=$1 AND object_type='user' AND action='update' ORDER BY occurred_at DESC LIMIT 1",
+    )
+    .bind(user_id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(audit["before"]["status"], "active");
+    assert_eq!(audit["after"]["status"], "suspended");
+    assert_eq!(audit["after"]["balance_amount"].as_f64(), Some(0.0));
+
+    assert_eq!(
+        admin_request_with_headers(app, "PUT", &path, detail, &[("if-match", &etag)])
+            .await
+            .status(),
+        StatusCode::CONFLICT
+    );
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn managed_models_are_versioned_and_invalid_disable_rolls_back() {
+    let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
+    let (app, runtime) = admin_app(database.pool.clone(), seed.user).await;
+    let source_model_id = format!("managed-model-{}", Uuid::new_v4());
+    let created = admin_request(
+        app.clone(),
+        "POST",
+        "/admin/v1/models",
+        serde_json::json!({
+            "source_model_id": source_model_id,
+            "display_name": "Managed model",
+            "provider_name": "test-provider",
+            "enabled": true,
+            "currency": "USD",
+            "price_unit_tokens": 1000000,
+            "input_unit_price": "1.25",
+            "cached_input_unit_price": "0.25",
+            "cache_write_unit_price": "0.50",
+            "output_unit_price": "2.50",
+            "price_effective_at": "2026-07-18T00:00:00Z",
+            "source_payload": {"source": "test"}
+        }),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let created: serde_json::Value =
+        serde_json::from_slice(&created.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let model_id = Uuid::parse_str(created["id"].as_str().unwrap()).unwrap();
+    let audits_before_invalid: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM audit_logs WHERE object_type='model'")
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        admin_request(
+            app.clone(),
+            "POST",
+            "/admin/v1/models",
+            serde_json::json!({
+                "source_model_id": format!("invalid-model-{}", Uuid::new_v4()),
+                "display_name": "Invalid model",
+                "enabled": true,
+                "currency": "USD",
+                "price_unit_tokens": 1,
+                "input_unit_price": 0,
+                "cached_input_unit_price": 0,
+                "cache_write_unit_price": 0,
+                "output_unit_price": 0,
+                "price_effective_at": "2026-07-18T00:00:00Z",
+                "source_payload": []
+            })
+        )
+        .await
+        .status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let audits_after_invalid: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM audit_logs WHERE object_type='model'")
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert_eq!(audits_after_invalid, audits_before_invalid);
+
+    let list = admin_request(
+        app.clone(),
+        "GET",
+        "/admin/v1/models",
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(list.status(), StatusCode::OK);
+    let list: serde_json::Value =
+        serde_json::from_slice(&list.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert!(
+        list.as_array()
+            .unwrap()
+            .iter()
+            .any(|model| model["id"] == model_id.to_string())
+    );
+
+    let path = format!("/admin/v1/models/{model_id}");
+    let detail = admin_request(app.clone(), "GET", &path, serde_json::json!({})).await;
+    let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
+    let mut update: serde_json::Value =
+        serde_json::from_slice(&detail.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert!(update.get("source_payload").is_none());
+    update["display_name"] = serde_json::json!("Updated managed model");
+    for field in ["id", "last_synced_at", "created_at", "updated_at"] {
+        update.as_object_mut().unwrap().remove(field);
+    }
+    assert_eq!(
+        admin_request_with_headers(
+            app.clone(),
+            "PUT",
+            &path,
+            update.clone(),
+            &[("if-match", &etag)]
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        admin_request_with_headers(app.clone(), "PUT", &path, update, &[("if-match", &etag)])
+            .await
+            .status(),
+        StatusCode::CONFLICT
+    );
+
+    let audit: serde_json::Value = sqlx::query_scalar(
+        "SELECT after_redacted FROM audit_logs WHERE object_id=$1 AND object_type='model' AND action='update' ORDER BY occurred_at DESC LIMIT 1",
+    )
+    .bind(model_id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(audit["display_name"], "Updated managed model");
+    assert!(audit.get("source_payload").is_none());
+    let source_payload: serde_json::Value =
+        sqlx::query_scalar("SELECT source_payload FROM models WHERE id=$1")
+            .bind(model_id)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert_eq!(source_payload, serde_json::json!({"source": "test"}));
+
+    let seed_path = format!("/admin/v1/models/{}", seed.model);
+    let seed_detail = admin_request(app.clone(), "GET", &seed_path, serde_json::json!({})).await;
+    let seed_etag = seed_detail.headers()["etag"].to_str().unwrap().to_owned();
+    let mut disable: serde_json::Value =
+        serde_json::from_slice(&seed_detail.into_body().collect().await.unwrap().to_bytes())
+            .unwrap();
+    disable["enabled"] = serde_json::json!(false);
+    for field in ["id", "last_synced_at", "created_at", "updated_at"] {
+        disable.as_object_mut().unwrap().remove(field);
+    }
+    let published = runtime.snapshot();
+    let audit_before: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM audit_logs WHERE object_type='model'")
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        admin_request_with_headers(app, "PUT", &seed_path, disable, &[("if-match", &seed_etag)])
+            .await
+            .status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let enabled: bool = sqlx::query_scalar("SELECT enabled FROM models WHERE id=$1")
+        .bind(seed.model)
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    assert!(enabled);
+    let audit_after: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM audit_logs WHERE object_type='model'")
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert_eq!(audit_after, audit_before);
+    assert!(Arc::ptr_eq(&published, &runtime.snapshot()));
+    database.cleanup().await;
+}
+
+#[tokio::test]
 async fn admin_api_key_policies_persist_publish_and_are_audited_without_secrets() {
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;

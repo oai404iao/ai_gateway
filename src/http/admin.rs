@@ -17,7 +17,8 @@ use crate::{
     domain::AdminTokenVerifier,
     persistence::{
         AdminMutation, ApiKeyCreate, ApiKeyUpdate, ChannelCreateInput, ChannelGroupInput,
-        ChannelInput, ConfigTemplateInput, ModelRuleInput, ProxyCreateInput, ProxyInput,
+        ChannelInput, ConfigTemplateInput, ModelInput, ModelRuleInput, ProxyCreateInput,
+        ProxyInput, UserInput,
     },
 };
 
@@ -32,6 +33,10 @@ pub struct AdminState {
 /// intentionally never nests this router.
 pub fn router(state: AdminState) -> Router {
     Router::new()
+        .route("/admin/v1/users", get(list_users).post(create_user))
+        .route("/admin/v1/users/{id}", get(get_user).put(update_user))
+        .route("/admin/v1/models", get(list_models).post(create_model))
+        .route("/admin/v1/models/{id}", get(get_model).put(update_model))
         .route(
             "/admin/v1/api-keys",
             get(list_api_keys).post(create_api_key),
@@ -152,6 +157,21 @@ async fn list_api_keys(
             .expect("admin DTO serializes"),
     ))
 }
+async fn list_users(
+    State(state): State<AdminState>,
+) -> Result<Json<serde_json::Value>, AdminError> {
+    Ok(Json(
+        serde_json::to_value(state.coordinator.lists().await?.users).expect("admin DTO serializes"),
+    ))
+}
+async fn list_models(
+    State(state): State<AdminState>,
+) -> Result<Json<serde_json::Value>, AdminError> {
+    Ok(Json(
+        serde_json::to_value(state.coordinator.lists().await?.models)
+            .expect("admin DTO serializes"),
+    ))
+}
 async fn list_groups(
     State(state): State<AdminState>,
 ) -> Result<Json<serde_json::Value>, AdminError> {
@@ -197,6 +217,62 @@ async fn create_api_key(
     Json(input): Json<ApiKeyCreate>,
 ) -> Result<(StatusCode, Json<MutationResponse>), AdminError> {
     mutate_created(&state, AdminMutation::CreateApiKey(input)).await
+}
+async fn create_user(
+    State(state): State<AdminState>,
+    Json(input): Json<UserInput>,
+) -> Result<(StatusCode, Json<MutationResponse>), AdminError> {
+    mutate_created(&state, AdminMutation::CreateUser(input)).await
+}
+async fn get_user(
+    State(state): State<AdminState>,
+    Path(id): Path<Uuid>,
+) -> Result<Response, AdminError> {
+    get_resource(state, id, Resource::User).await
+}
+async fn update_user(
+    State(state): State<AdminState>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(input): Json<UserInput>,
+) -> Result<Json<MutationResponse>, AdminError> {
+    mutate(
+        &state,
+        AdminMutation::UpdateUser {
+            id,
+            input,
+            expected_updated_at: if_match(&headers)?,
+        },
+    )
+    .await
+}
+async fn create_model(
+    State(state): State<AdminState>,
+    Json(input): Json<ModelInput>,
+) -> Result<(StatusCode, Json<MutationResponse>), AdminError> {
+    mutate_created(&state, AdminMutation::CreateModel(input)).await
+}
+async fn get_model(
+    State(state): State<AdminState>,
+    Path(id): Path<Uuid>,
+) -> Result<Response, AdminError> {
+    get_resource(state, id, Resource::Model).await
+}
+async fn update_model(
+    State(state): State<AdminState>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(input): Json<ModelInput>,
+) -> Result<Json<MutationResponse>, AdminError> {
+    mutate(
+        &state,
+        AdminMutation::UpdateModel {
+            id,
+            input,
+            expected_updated_at: if_match(&headers)?,
+        },
+    )
+    .await
 }
 async fn get_api_key(
     State(state): State<AdminState>,
@@ -379,6 +455,8 @@ async fn reload(State(state): State<AdminState>) -> Result<Json<ReloadResponse>,
     Ok(Json(ReloadResponse { correlation_id }))
 }
 enum Resource {
+    User,
+    Model,
     ApiKey,
     Group,
     Channel,
@@ -393,6 +471,16 @@ async fn get_resource(
 ) -> Result<Response, AdminError> {
     let lists = state.coordinator.lists().await?;
     let value = match resource {
+        Resource::User => lists
+            .users
+            .into_iter()
+            .find(|item| item.id == id)
+            .map(|item| serde_json::to_value(item).expect("admin DTO serializes")),
+        Resource::Model => lists
+            .models
+            .into_iter()
+            .find(|item| item.id == id)
+            .map(|item| serde_json::to_value(item).expect("admin DTO serializes")),
         Resource::ApiKey => lists
             .api_keys
             .into_iter()

@@ -215,6 +215,33 @@ pub struct ApiKeyUpdate {
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct UserInput {
+    pub name: String,
+    pub status: String,
+    pub currency: String,
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelInput {
+    pub source_model_id: String,
+    pub display_name: String,
+    #[serde(default)]
+    pub provider_name: Option<String>,
+    pub enabled: bool,
+    pub currency: String,
+    pub price_unit_tokens: i64,
+    pub input_unit_price: rust_decimal::Decimal,
+    pub cached_input_unit_price: rust_decimal::Decimal,
+    pub cache_write_unit_price: rust_decimal::Decimal,
+    pub output_unit_price: rust_decimal::Decimal,
+    pub price_effective_at: DateTime<Utc>,
+    /// Create defaults to `{}`; omission during an update preserves the
+    /// opaque source document which ordinary reads deliberately do not expose.
+    #[serde(default)]
+    pub source_payload: Option<Value>,
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ChannelGroupInput {
     pub name: String,
     pub api_format: String,
@@ -414,6 +441,18 @@ impl From<ChannelInput> for ChannelMutationInput {
 }
 
 pub enum AdminMutation {
+    CreateUser(UserInput),
+    UpdateUser {
+        id: Uuid,
+        input: UserInput,
+        expected_updated_at: DateTime<Utc>,
+    },
+    CreateModel(ModelInput),
+    UpdateModel {
+        id: Uuid,
+        input: ModelInput,
+        expected_updated_at: DateTime<Utc>,
+    },
     CreateApiKey(ApiKeyCreate),
     UpdateApiKey {
         id: Uuid,
@@ -470,12 +509,42 @@ pub struct MutationResult {
 
 #[derive(Serialize)]
 pub struct AdminLists {
+    pub users: Vec<AdminUser>,
+    pub models: Vec<AdminModel>,
     pub api_keys: Vec<AdminApiKey>,
     pub channel_groups: Vec<AdminChannelGroup>,
     pub channels: Vec<AdminChannel>,
     pub model_rules: Vec<AdminModelRule>,
     pub proxies: Vec<AdminProxy>,
     pub config_templates: Vec<AdminConfigTemplate>,
+}
+#[derive(Serialize, FromRow)]
+pub struct AdminUser {
+    pub id: Uuid,
+    pub name: String,
+    pub status: String,
+    pub balance_amount: rust_decimal::Decimal,
+    pub currency: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+#[derive(Serialize, FromRow)]
+pub struct AdminModel {
+    pub id: Uuid,
+    pub source_model_id: String,
+    pub display_name: String,
+    pub provider_name: Option<String>,
+    pub enabled: bool,
+    pub currency: String,
+    pub price_unit_tokens: i64,
+    pub input_unit_price: rust_decimal::Decimal,
+    pub cached_input_unit_price: rust_decimal::Decimal,
+    pub cache_write_unit_price: rust_decimal::Decimal,
+    pub output_unit_price: rust_decimal::Decimal,
+    pub price_effective_at: DateTime<Utc>,
+    pub last_synced_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 #[derive(Serialize, FromRow)]
 pub struct AdminApiKey {
@@ -811,6 +880,12 @@ impl ControlPlaneRepository {
     }
 
     pub async fn admin_lists(&self) -> Result<AdminLists, RepositoryError> {
+        let users = sqlx::query_as::<_, AdminUser>(
+            "SELECT id,name,status,balance_amount,currency,created_at,updated_at FROM users ORDER BY id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        let models = sqlx::query_as::<_, AdminModel>("SELECT id,source_model_id,display_name,provider_name,enabled,currency,price_unit_tokens,input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,price_effective_at,last_synced_at,created_at,updated_at FROM models ORDER BY id").fetch_all(&self.pool).await?;
         let api_keys = sqlx::query_as::<_, AdminApiKey>("SELECT k.id, k.user_id, u.status AS user_status, k.name, k.status, k.expires_at, k.allowed_api_formats::text[] AS allowed_api_formats, k.permissions, k.allowed_group_ids, k.requests_per_minute, k.tokens_per_minute, k.max_concurrent_requests, k.quota_limit_amount, k.quota_used_amount, k.updated_at FROM api_keys k JOIN users u ON u.id=k.user_id ORDER BY k.id").fetch_all(&self.pool).await?;
         let channel_groups = sqlx::query_as::<_, AdminChannelGroup>("SELECT id,name,api_format::text AS api_format,priority,selection_strategy,enabled,updated_at FROM channel_groups ORDER BY id").fetch_all(&self.pool).await?;
         let channels = sqlx::query_as::<_, AdminChannelRow>("SELECT id,channel_group_id,api_format::text AS api_format,name,base_url,enabled,auto_disabled,auto_disabled_reason,weight,proxy_id,config_template_id,connect_timeout_ms,response_header_timeout_ms,stream_idle_timeout_ms,upstream_auth_kind,upstream_auth_header_name,(upstream_api_key IS NOT NULL) AS upstream_credential_configured,available_models,created_at,updated_at FROM channels ORDER BY id").fetch_all(&self.pool).await?;
@@ -818,6 +893,8 @@ impl ControlPlaneRepository {
         let proxies = sqlx::query_as::<_, AdminProxy>("SELECT id,name,regexp_replace(regexp_replace(proxy_url, '^([^:/?#]+://)[^/?#]*@', E'\\1'), '[?#].*$', '') AS proxy_url,no_proxy_hosts,enabled,(username IS NOT NULL OR password IS NOT NULL) AS credential_configured,created_at,updated_at FROM proxies ORDER BY id").fetch_all(&self.pool).await?;
         let config_templates = sqlx::query_as::<_, AdminConfigTemplate>("SELECT id,name,description,enabled,created_at,updated_at FROM config_templates ORDER BY id").fetch_all(&self.pool).await?;
         Ok(AdminLists {
+            users,
+            models,
             api_keys,
             channel_groups,
             channels: channels.into_iter().map(Into::into).collect(),
@@ -833,6 +910,22 @@ impl ControlPlaneRepository {
         mutation: AdminMutation,
     ) -> Result<MutationResult, RepositoryError> {
         match mutation {
+            AdminMutation::CreateUser(input) => {
+                user_insert(transaction, Uuid::new_v4(), input, true, None).await
+            }
+            AdminMutation::UpdateUser {
+                id,
+                input,
+                expected_updated_at,
+            } => user_insert(transaction, id, input, false, Some(expected_updated_at)).await,
+            AdminMutation::CreateModel(input) => {
+                model_insert(transaction, Uuid::new_v4(), input, true, None).await
+            }
+            AdminMutation::UpdateModel {
+                id,
+                input,
+                expected_updated_at,
+            } => model_insert(transaction, id, input, false, Some(expected_updated_at)).await,
             AdminMutation::CreateApiKey(input) => {
                 let id = Uuid::new_v4();
                 // Two independent UUIDv4 values provide 32 random bytes in a transport-safe form.
@@ -979,6 +1072,30 @@ async fn key_audit(
     };
     Ok(value)
 }
+async fn user_audit(
+    transaction: &mut Transaction<'_, Postgres>,
+    id: Uuid,
+) -> Result<Value, RepositoryError> {
+    let value = sqlx::query_scalar::<_, Value>(
+        "SELECT json_build_object('id',id,'name',name,'status',status,'balance_amount',balance_amount,'currency',currency,'created_at',created_at,'updated_at',updated_at) FROM users WHERE id=$1 FOR UPDATE",
+    )
+    .bind(id)
+    .fetch_optional(&mut **transaction)
+    .await?;
+    value.ok_or(RepositoryError::NotFound)
+}
+async fn model_audit(
+    transaction: &mut Transaction<'_, Postgres>,
+    id: Uuid,
+) -> Result<Value, RepositoryError> {
+    let value = sqlx::query_scalar::<_, Value>(
+        "SELECT json_build_object('id',id,'source_model_id',source_model_id,'display_name',display_name,'provider_name',provider_name,'enabled',enabled,'currency',currency,'price_unit_tokens',price_unit_tokens,'input_unit_price',input_unit_price,'cached_input_unit_price',cached_input_unit_price,'cache_write_unit_price',cache_write_unit_price,'output_unit_price',output_unit_price,'price_effective_at',price_effective_at,'last_synced_at',last_synced_at,'created_at',created_at,'updated_at',updated_at) FROM models WHERE id=$1 FOR UPDATE",
+    )
+    .bind(id)
+    .fetch_optional(&mut **transaction)
+    .await?;
+    value.ok_or(RepositoryError::NotFound)
+}
 async fn group_audit(
     transaction: &mut Transaction<'_, Postgres>,
     id: Uuid,
@@ -1080,6 +1197,124 @@ async fn group_insert(
         action: if create { "create" } else { "update" },
         before_redacted: before,
         after_redacted: group_audit(transaction, id).await?,
+        created_secret: None,
+        reason: None,
+        updated_at,
+        correlation_id: None,
+    })
+}
+async fn user_insert(
+    transaction: &mut Transaction<'_, Postgres>,
+    id: Uuid,
+    input: UserInput,
+    create: bool,
+    expected_updated_at: Option<DateTime<Utc>>,
+) -> Result<MutationResult, RepositoryError> {
+    let before = if create {
+        json!({})
+    } else {
+        user_audit(transaction, id).await?
+    };
+    let updated_at = if create {
+        sqlx::query_scalar(
+            "INSERT INTO users (id,name,status,currency) VALUES ($1,$2,$3,$4) RETURNING updated_at",
+        )
+        .bind(id)
+        .bind(&input.name)
+        .bind(&input.status)
+        .bind(&input.currency)
+        .fetch_one(&mut **transaction)
+        .await?
+    } else {
+        sqlx::query_scalar(
+            "UPDATE users SET name=$2,status=$3,currency=$4 WHERE id=$1 AND updated_at=$5 RETURNING updated_at",
+        )
+        .bind(id)
+        .bind(&input.name)
+        .bind(&input.status)
+        .bind(&input.currency)
+        .bind(expected_updated_at.expect("PUT version"))
+        .fetch_optional(&mut **transaction)
+        .await?
+        .ok_or(RepositoryError::Conflict)?
+    };
+    Ok(MutationResult {
+        id,
+        object_type: "user",
+        action: if create { "create" } else { "update" },
+        before_redacted: before,
+        after_redacted: user_audit(transaction, id).await?,
+        created_secret: None,
+        reason: None,
+        updated_at,
+        correlation_id: None,
+    })
+}
+async fn model_insert(
+    transaction: &mut Transaction<'_, Postgres>,
+    id: Uuid,
+    input: ModelInput,
+    create: bool,
+    expected_updated_at: Option<DateTime<Utc>>,
+) -> Result<MutationResult, RepositoryError> {
+    if input
+        .source_payload
+        .as_ref()
+        .is_some_and(|payload| payload.as_object().is_none())
+    {
+        return Err(RepositoryError::Validation);
+    }
+    let source_payload_present = input.source_payload.is_some();
+    let source_payload = input.source_payload.unwrap_or_else(empty_object);
+    let before = if create {
+        json!({})
+    } else {
+        model_audit(transaction, id).await?
+    };
+    let updated_at = if create {
+        sqlx::query_scalar("INSERT INTO models (id,source_model_id,display_name,provider_name,enabled,currency,price_unit_tokens,input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,price_effective_at,source_payload) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING updated_at")
+            .bind(id)
+            .bind(&input.source_model_id)
+            .bind(&input.display_name)
+            .bind(&input.provider_name)
+            .bind(input.enabled)
+            .bind(&input.currency)
+            .bind(input.price_unit_tokens)
+            .bind(input.input_unit_price)
+            .bind(input.cached_input_unit_price)
+            .bind(input.cache_write_unit_price)
+            .bind(input.output_unit_price)
+            .bind(input.price_effective_at)
+            .bind(&source_payload)
+            .fetch_one(&mut **transaction)
+            .await?
+    } else {
+        sqlx::query_scalar("UPDATE models SET source_model_id=$2,display_name=$3,provider_name=$4,enabled=$5,currency=$6,price_unit_tokens=$7,input_unit_price=$8,cached_input_unit_price=$9,cache_write_unit_price=$10,output_unit_price=$11,price_effective_at=$12,source_payload=CASE WHEN $13 THEN $14 ELSE source_payload END WHERE id=$1 AND updated_at=$15 RETURNING updated_at")
+            .bind(id)
+            .bind(&input.source_model_id)
+            .bind(&input.display_name)
+            .bind(&input.provider_name)
+            .bind(input.enabled)
+            .bind(&input.currency)
+            .bind(input.price_unit_tokens)
+            .bind(input.input_unit_price)
+            .bind(input.cached_input_unit_price)
+            .bind(input.cache_write_unit_price)
+            .bind(input.output_unit_price)
+            .bind(input.price_effective_at)
+            .bind(source_payload_present)
+            .bind(&source_payload)
+            .bind(expected_updated_at.expect("PUT version"))
+            .fetch_optional(&mut **transaction)
+            .await?
+            .ok_or(RepositoryError::Conflict)?
+    };
+    Ok(MutationResult {
+        id,
+        object_type: "model",
+        action: if create { "create" } else { "update" },
+        before_redacted: before,
+        after_redacted: model_audit(transaction, id).await?,
         created_secret: None,
         reason: None,
         updated_at,
