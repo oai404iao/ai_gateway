@@ -6,7 +6,12 @@
 
 `ai-gateway` is a single-binary Rust service intended to forward LLM requests in the OpenAI Chat Completions and Responses formats. It uses Axum/Tokio for HTTP, reqwest for upstream requests, PostgreSQL/SQLx for persistence, and `ArcSwap` for immutable runtime configuration snapshots. Rust 2024 with MSRV 1.85 is required (`Cargo.toml`).
 
-This repository is currently a scaffold. The only public route is `GET /health` (204); proxying, persistence, transforms, routing, and workers have module boundaries but no implementation. Treat `docs/PRD.md` as the architectural source of truth for future work, not as a statement of implemented behavior.
+The implemented backend includes OpenAI-compatible Chat Completions and
+Responses proxy routes, PostgreSQL-backed control-plane snapshots, local-only
+management APIs, constrained transforms, streaming/SSE forwarding, passive
+health, admission controls, asynchronous request logs, and reusable upstream
+clients. Treat `docs/PRD.md` as the architectural source of truth for future
+work, but verify current behavior in code and the MVP task documents.
 
 ## Repository Layout
 
@@ -15,17 +20,19 @@ repo/
 |-- src/
 |   |-- main.rs                 # Process entry point: config load, tracing, TCP listener, Axum serve
 |   |-- lib.rs                  # Module declarations for the single binary
-|   |-- http/                   # Axum routes, middleware, and HTTP errors; currently /health only
-|   |-- domain/                 # Domain entities; ApiFormat is the currently implemented type
+|   |-- http/                   # Public proxy routes and separate local-only admin router
+|   |-- admission/              # Process-local RPM, concurrency, and soft quota admission
+|   |-- domain/                 # API formats, compiled routing, credentials, request-log events
 |   |-- runtime_config/         # TOML deserialization and ArcSwap configuration snapshots
 |   |-- observability/          # tracing-subscriber initialization
-|   |-- application/            # Intended use cases (currently placeholder)
-|   |-- routing/                # Intended model/channel selection (currently placeholder)
-|   |-- transforms/             # Intended constrained transform DSL (currently placeholder)
-|   |-- upstream/               # Intended reqwest clients/auth/header handling (currently placeholder)
-|   |-- persistence/            # Intended SQLx repositories (currently placeholder)
-|   `-- workers/                # Intended background jobs (currently placeholder)
-|-- migrations/                 # SQLx migrations; currently empty except .gitkeep
+|   |-- application/            # Proxy use case, control-plane publication, request-log sink
+|   |-- routing/                # Priority/weight selection and passive health state
+|   |-- transforms/             # Compiled constrained JSON/header/SSE transform DSL
+|   |-- upstream/               # Reused reqwest clients, proxy policy, timeout resolution
+|   |-- persistence/            # SQLx repositories, admin mutations, request-log storage
+|   `-- workers/                # Snapshot reload and async request-log persistence
+|-- migrations/                 # PostgreSQL control-plane and log schema migrations
+|-- tests/                      # Local, PostgreSQL, proxy, streaming, and opt-in real-upstream tests
 |-- docs/PRD.md                 # Canonical product and architecture blueprint (Chinese)
 |-- config.example.toml         # Canonical configuration template
 |-- config.toml                 # Default config loaded by the binary
@@ -52,13 +59,21 @@ cargo run -- config.local.toml
 docker compose up -d
 ```
 
-There are no automated tests or CI workflows yet. Add focused tests with new behavior; use `cargo test` as the baseline verification. `docker-compose.yml` provides PostgreSQL only—the application is not containerized.
+The test suite contains unit tests and local/PostgreSQL integration tests.
+`cargo test` is the baseline verification. The ignored
+`tests/real_upstream/` contains paid external calls and must only run via
+`./scripts/run-real-upstream-smoke.sh`; see `docs/real-upstream-smoke.md`.
+**Any change to the forwarding path must also run this real-upstream script
+before completion.** It serially verifies both `/v1/chat/completions` and
+`/v1/responses`, with non-streaming and SSE requests. There is no CI workflow
+yet. `docker-compose.yml` provides PostgreSQL only—the application is not
+containerized.
 
 ## Configuration Rules
 
 - The binary loads the first CLI argument as TOML, defaulting to `config.toml` (`src/main.rs`). There is no dotenv support or automatic local-override merge.
 - Keep `config.example.toml` and the deserialization types in `src/runtime_config/mod.rs` synchronized whenever configuration changes.
-- `config.local.toml` is ignored and can be passed explicitly for local settings. Do not introduce `.env` configuration; `.gitignore` deliberately excludes it.
+- `config.local.toml` is ignored and can be passed explicitly for local settings. The binary never loads `.env` files. The sole exception is the ignored `.env.real-upstream` file, which `scripts/run-real-upstream-smoke.sh` may source for opt-in test credentials.
 - Configuration changes intended for live reload should preserve the immutable-snapshot pattern: construct a complete `AppConfig`, then replace it atomically through `RuntimeConfig`.
 
 ## Architecture and Implementation Constraints
@@ -109,13 +124,20 @@ Axum HTTP
 3. SQLx compile-time query macros require a reachable schema or a prepared `.sqlx/` cache; that cache is intentionally ignored.
 4. Start PostgreSQL with `docker compose up -d` and verify migrations and repository behavior.
 
+### Change request forwarding
+
+1. Add or update deterministic local and PostgreSQL tests as appropriate.
+2. Run `cargo fmt --check`, `cargo clippy --all-targets`, and `cargo test`.
+3. Run `./scripts/run-real-upstream-smoke.sh` before considering the change complete. It requires the ignored `.env.real-upstream` file and makes paid calls to both configured upstream formats.
+4. Do not print, commit, or copy credentials from `.env.real-upstream` into TOML, source, tests, or logs.
+
 ## Gotchas
 
-1. **The PRD is not the runtime.** Most modules named in its architecture section are placeholders. Confirm an API exists before integrating with it.
-2. **`GET /health` is the only current endpoint.** Versioned proxy endpoints mentioned in the PRD are planned, not registered in the Axum router.
-3. **`migrations/` is empty.** There is no schema or SQLx offline cache today; persistence changes must establish both deliberately.
+1. **The PRD is not the runtime.** It includes later roadmap capabilities such as models.dev synchronization, billing, and active health checks. Confirm an API exists before integrating with it.
+2. **Public and management routes are separate.** `src/http/mod.rs` exposes the public API only; `src/http/admin.rs` is bound by `main` only when the loopback-only admin listener is enabled.
+3. **Migrations are authoritative.** Add ordered SQL migrations for schema changes; there is no SQLx offline cache.
 4. **`config.local.toml` is not auto-loaded.** It is merely ignored by Git; invoke `cargo run -- config.local.toml` to use it.
-5. **Configuration is TOML-only.** Avoid `.env` files and loading behavior that conflicts with the checked-in template.
+5. **Runtime configuration is TOML-only.** Do not add dotenv loading to the binary. `.env.real-upstream` is test-script-only and must remain ignored.
 
 ## Code Style
 
@@ -136,3 +158,4 @@ Axum HTTP
 | TOML config schema and snapshot API | `src/runtime_config/mod.rs` |
 | Example configuration | `config.example.toml` |
 | Local PostgreSQL service | `docker-compose.yml` |
+| Opt-in real upstream test | `docs/real-upstream-smoke.md` and `scripts/run-real-upstream-smoke.sh` |

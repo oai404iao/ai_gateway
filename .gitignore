@@ -16,7 +16,9 @@
 *.log
 config.local.toml
 
-# This project uses config.toml, never dotenv files
+# `.env.real-upstream` is permitted only for the opt-in real-upstream smoke
+# script. It is always local; the tracked template contains no credentials.
 .env
 .env.*
 !.env.example
+!.env.real-upstream.example
