@@ -845,7 +845,7 @@ async fn managed_models_are_versioned_and_invalid_disable_rolls_back() {
 }
 
 #[tokio::test]
-async fn models_dev_preview_and_selected_sync_upsert_prices_without_leaking_metadata() {
+async fn models_dev_price_sync_updates_only_existing_models_and_import_is_explicit() {
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
     let catalog_server =
@@ -873,6 +873,7 @@ async fn models_dev_preview_and_selected_sync_upsert_prices_without_leaking_meta
     assert_eq!(preview["models"].as_array().unwrap().len(), 1);
     assert_eq!(preview["models"][0]["provider_id"], "provider-a");
     assert_eq!(preview["models"][0]["model_id"], "catalog-model");
+    assert_eq!(preview["models"][0]["action"], "import");
     assert_eq!(preview["excluded_missing_prices"], 1);
     assert!(preview["models"][0].get("source_payload").is_none());
 
@@ -880,15 +881,36 @@ async fn models_dev_preview_and_selected_sync_upsert_prices_without_leaking_meta
         app.clone(),
         "POST",
         "/admin/v1/models/sync",
-        serde_json::json!({
-            "selections":[{"provider_id":"provider-a","model_id":"catalog-model"}]
-        }),
+        serde_json::json!({}),
     )
     .await;
     assert_eq!(sync.status(), StatusCode::OK);
     let sync: serde_json::Value =
         serde_json::from_slice(&sync.into_body().collect().await.unwrap().to_bytes()).unwrap();
-    assert_eq!(sync["model_count"], 1);
+    assert_eq!(sync["updated_count"], 0);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM models WHERE source_model_id='catalog-model'",
+        )
+        .fetch_one(&database.pool)
+        .await
+        .unwrap(),
+        0
+    );
+
+    let imported = admin_request(
+        app.clone(),
+        "POST",
+        "/admin/v1/models/sync/import",
+        serde_json::json!({
+            "selections":[{"provider_id":"provider-a","model_id":"catalog-model"}]
+        }),
+    )
+    .await;
+    assert_eq!(imported.status(), StatusCode::OK);
+    let imported: serde_json::Value =
+        serde_json::from_slice(&imported.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(imported["model_count"], 1);
 
     let persisted: (
         String,
@@ -938,7 +960,7 @@ async fn models_dev_preview_and_selected_sync_upsert_prices_without_leaking_meta
     .unwrap();
     assert!(detail.get("source_payload").is_none());
     let audit: serde_json::Value = sqlx::query_scalar(
-        "SELECT after_redacted FROM audit_logs WHERE object_id=$1 AND object_type='model' AND action='sync'",
+        "SELECT after_redacted FROM audit_logs WHERE object_id=$1 AND object_type='model' AND action='import'",
     )
     .bind(model_id)
     .fetch_one(&database.pool)
@@ -946,24 +968,98 @@ async fn models_dev_preview_and_selected_sync_upsert_prices_without_leaking_meta
     .unwrap();
     assert!(audit.get("source_payload").is_none());
 
+    let preview = admin_request(
+        app.clone(),
+        "POST",
+        "/admin/v1/models/sync/preview",
+        serde_json::json!({"provider_ids":["provider-a"]}),
+    )
+    .await;
+    let preview: serde_json::Value =
+        serde_json::from_slice(&preview.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(preview["models"][0]["action"], "price_update");
+
+    sqlx::query("UPDATE models SET input_unit_price=99, output_unit_price=99 WHERE id=$1")
+        .bind(model_id)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO models (id,source_model_id,display_name,enabled,currency,price_unit_tokens,input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,price_effective_at,source_payload) VALUES ($1,'missing-price','Missing Price',true,'USD',1000000,7,0,0,8,now(),$2)")
+        .bind(Uuid::new_v4())
+        .bind(serde_json::json!({"source":"models.dev","provider_id":"provider-a"}))
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    let sync = admin_request(
+        app.clone(),
+        "POST",
+        "/admin/v1/models/sync",
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(sync.status(), StatusCode::OK);
+    let sync: serde_json::Value =
+        serde_json::from_slice(&sync.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(sync["updated_count"], 1);
+    assert_eq!(sync["unavailable_count"], 1);
+    let prices: (rust_decimal::Decimal, rust_decimal::Decimal) =
+        sqlx::query_as("SELECT input_unit_price,output_unit_price FROM models WHERE id=$1")
+            .bind(model_id)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        prices,
+        (
+            rust_decimal::Decimal::new(125, 2),
+            rust_decimal::Decimal::new(250, 2)
+        )
+    );
+    let missing_prices: (rust_decimal::Decimal, rust_decimal::Decimal) = sqlx::query_as(
+        "SELECT input_unit_price,output_unit_price FROM models WHERE source_model_id='missing-price'",
+    )
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        missing_prices,
+        (
+            rust_decimal::Decimal::new(7, 0),
+            rust_decimal::Decimal::new(8, 0)
+        )
+    );
+
     let audits_before: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM audit_logs WHERE object_type='model' AND action='sync'",
+        "SELECT count(*) FROM audit_logs WHERE object_type='model' AND action='price_sync'",
     )
     .fetch_one(&database.pool)
     .await
     .unwrap();
     let rejected = admin_request(
+        app.clone(),
+        "POST",
+        "/admin/v1/models/sync/import",
+        serde_json::json!({
+            "selections":[{"provider_id":"provider-a","model_id":"catalog-model"}]
+        }),
+    )
+    .await;
+    assert_eq!(rejected.status(), StatusCode::CONFLICT);
+    let missing_price_import = admin_request(
         app,
         "POST",
-        "/admin/v1/models/sync",
+        "/admin/v1/models/sync/import",
         serde_json::json!({
             "selections":[{"provider_id":"provider-a","model_id":"missing-price"}]
         }),
     )
     .await;
-    assert_eq!(rejected.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        missing_price_import.status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
     let audits_after: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM audit_logs WHERE object_type='model' AND action='sync'",
+        "SELECT count(*) FROM audit_logs WHERE object_type='model' AND action='price_sync'",
     )
     .fetch_one(&database.pool)
     .await

@@ -7,7 +7,8 @@ mod request_log;
 
 pub use control_plane::{ControlPlaneCoordinator, ControlPlaneError, ModelSyncResult};
 pub use model_sync::{
-    ModelSyncError, ModelSyncPreviewRequest, ModelSyncRequest, ModelSyncResponse, ModelSyncService,
+    ModelImportRequest, ModelPriceSyncRequest, ModelPriceSyncResponse, ModelSyncError,
+    ModelSyncPreview, ModelSyncPreviewRequest, ModelSyncResponse, ModelSyncService,
 };
 pub use proxy::{ModelsResponse, ProxyError, ProxyService};
 pub use request_log::{

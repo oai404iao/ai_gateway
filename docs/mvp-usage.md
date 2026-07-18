@@ -31,6 +31,7 @@
 - `GET` / `PUT` `/admin/v1/models/{id}`
 - `POST` `/admin/v1/models/sync/preview`
 - `POST` `/admin/v1/models/sync`
+- `POST` `/admin/v1/models/sync/import`
 - `GET` / `POST` `/admin/v1/api-keys`
 - `GET` / `PUT` `/admin/v1/api-keys/{id}`，`POST /admin/v1/api-keys/{id}/revoke`
 - `GET` / `POST` `/admin/v1/channel-groups`，`GET` / `PUT` `/admin/v1/channel-groups/{id}`
@@ -44,9 +45,11 @@
 
 用户的 `balance_amount` 是只读字段，MVP 4 阶段 1 不提供余额调整或结算。模型创建时可提供 `source_payload` JSON object；常规列表、读取和审计记录均不返回该不透明字段。模型更新时省略 `source_payload` 会保留已存数据，显式提供 `{}` 才会清空它。
 
-`/admin/v1/models/sync/preview` 从 `[models_sync].api_url` 获取受限的 models.dev 目录；可选请求体为 `{"provider_ids":["provider-id"]}`。预览只返回 input/output 价格完整且非负的条目，缺失 cache read/write 价格按 `0` 处理。`/admin/v1/models/sync` 接收 `{"selections":[{"provider_id":"...","model_id":"..."}]}`，重新拉取目录后才在串行化事务中更新选中条目。同步价格统一按 USD、每 1,000,000 tokens 写入；`source_model_id` 使用原始 `model_id`。因此同一个原始 ID 在后续选择不同 provider 时会更新同一模型的 provider 和当前价格；同一次同步不能选择重复的原始 ID。
+`/admin/v1/models/sync/preview` 从 `[models_sync].api_url` 获取受限的 models.dev 目录；可选请求体为 `{"provider_ids":["provider-id"]}`。预览只返回 input/output 价格完整且非负的条目，缺失 cache read/write 价格按 `0` 处理，并以 `action` 标记为 `price_update`、`import` 或 `already_exists`。
 
-同步响应、普通模型读取和审计均不输出原始目录元数据。同步只更新 `models` 当前价格和元数据，绝不修改已有 `request_logs`。
+`POST /admin/v1/models/sync` 不新增模型：它重新拉取目录，只更新此前通过 models.dev 导入、且 provider/model 来源仍匹配的本地 `models` 行的当前价格、价格生效时间和同步元数据。远端条目缺失或价格不完整时，本地已有价格保持不变。`POST /admin/v1/models/sync/import` 接收 `{"selections":[{"provider_id":"...","model_id":"..."}]}`，这是新增模型的唯一同步入口；它只创建新行，已有本地 `source_model_id` 一律拒绝，避免同步覆盖管理员维护的本地模型。同步价格统一按 USD、每 1,000,000 tokens 写入，`source_model_id` 使用原始 `model_id`。
+
+同步响应、普通模型读取和审计均不输出原始目录元数据。价格同步和导入都绝不修改已有 `request_logs`。
 
 停用用户会使其 API Key 在新快照中立即失效。停用仍被启用模型规则引用的模型会使候选快照无效，因此整个写入和审计都会回滚。
 

@@ -240,13 +240,33 @@ pub struct ModelInput {
     #[serde(default)]
     pub source_payload: Option<Value>,
 }
-/// A fully validated, price-bearing model selected from an external catalog.
-/// Unlike `ModelInput`, this is not decoded from an HTTP request.
+/// A fully validated, price-bearing model selected for an explicit catalog
+/// import. Unlike `ModelInput`, this is not decoded from an HTTP request.
 #[derive(Clone)]
 pub struct SyncedModelInput {
     pub source_model_id: String,
     pub display_name: String,
     pub provider_name: String,
+    pub input_unit_price: rust_decimal::Decimal,
+    pub cached_input_unit_price: rust_decimal::Decimal,
+    pub cache_write_unit_price: rust_decimal::Decimal,
+    pub output_unit_price: rust_decimal::Decimal,
+    pub source_payload: Value,
+}
+/// Identifies a local model that was previously imported from models.dev and
+/// is therefore eligible for automatic price refresh.
+#[derive(Clone, Debug, FromRow)]
+pub struct ModelsDevPriceTarget {
+    pub model_id: Uuid,
+    pub source_model_id: String,
+    pub provider_id: String,
+}
+/// The new price facts for one existing models.dev-imported local model.
+#[derive(Clone)]
+pub struct SyncedModelPrice {
+    pub model_id: Uuid,
+    pub source_model_id: String,
+    pub provider_id: String,
     pub input_unit_price: rust_decimal::Decimal,
     pub cached_input_unit_price: rust_decimal::Decimal,
     pub cache_write_unit_price: rust_decimal::Decimal,
@@ -1047,11 +1067,27 @@ impl ControlPlaneRepository {
         }
     }
 
-    /// Upserts selected catalog entries in the caller's serialized
-    /// transaction. Existing enablement is intentionally preserved: catalog
-    /// synchronization refreshes metadata and prices, not an administrator's
-    /// availability decision.
-    pub async fn sync_models(
+    pub async fn models_dev_price_targets(
+        &self,
+    ) -> Result<Vec<ModelsDevPriceTarget>, RepositoryError> {
+        sqlx::query_as::<_, ModelsDevPriceTarget>(
+            "SELECT id AS model_id,source_model_id,source_payload->>'provider_id' AS provider_id FROM models WHERE source_payload->>'source'='models.dev' AND source_payload ? 'provider_id' ORDER BY id",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(RepositoryError::from)
+    }
+
+    pub async fn model_source_ids(&self) -> Result<Vec<String>, RepositoryError> {
+        sqlx::query_scalar("SELECT source_model_id FROM models ORDER BY source_model_id")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(RepositoryError::from)
+    }
+
+    /// Imports explicitly selected catalog entries. Existing local models are
+    /// never overwritten by this path; price refresh is a separate operation.
+    pub async fn import_models(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         inputs: Vec<SyncedModelInput>,
@@ -1059,7 +1095,21 @@ impl ControlPlaneRepository {
         let synced_at = Utc::now();
         let mut results = Vec::with_capacity(inputs.len());
         for input in inputs {
-            results.push(sync_model(transaction, input, synced_at).await?);
+            results.push(import_model(transaction, input, synced_at).await?);
+        }
+        Ok(results)
+    }
+
+    /// Applies fresh catalog prices only to already imported local models.
+    pub async fn sync_model_prices(
+        &self,
+        transaction: &mut Transaction<'_, Postgres>,
+        inputs: Vec<SyncedModelPrice>,
+    ) -> Result<Vec<MutationResult>, RepositoryError> {
+        let synced_at = Utc::now();
+        let mut results = Vec::with_capacity(inputs.len());
+        for input in inputs {
+            results.push(sync_model_price(transaction, input, synced_at).await?);
         }
         Ok(results)
     }
@@ -1351,7 +1401,7 @@ async fn model_insert(
         correlation_id: None,
     })
 }
-async fn sync_model(
+async fn import_model(
     transaction: &mut Transaction<'_, Postgres>,
     input: SyncedModelInput,
     synced_at: DateTime<Utc>,
@@ -1359,51 +1409,71 @@ async fn sync_model(
     if input.source_payload.as_object().is_none() {
         return Err(RepositoryError::Validation);
     }
-    let existing_id =
+    let exists =
         sqlx::query_scalar::<_, Uuid>("SELECT id FROM models WHERE source_model_id=$1 FOR UPDATE")
             .bind(&input.source_model_id)
             .fetch_optional(&mut **transaction)
-            .await?;
-    let (id, before, updated_at) = if let Some(id) = existing_id {
-        let before = model_audit(transaction, id).await?;
-        let updated_at = sqlx::query_scalar("UPDATE models SET display_name=$2,provider_name=$3,currency='USD',price_unit_tokens=1000000,input_unit_price=$4,cached_input_unit_price=$5,cache_write_unit_price=$6,output_unit_price=$7,price_effective_at=$8,source_payload=$9,last_synced_at=$10 WHERE id=$1 RETURNING updated_at")
-            .bind(id)
-            .bind(&input.display_name)
-            .bind(&input.provider_name)
-            .bind(input.input_unit_price)
-            .bind(input.cached_input_unit_price)
-            .bind(input.cache_write_unit_price)
-            .bind(input.output_unit_price)
-            .bind(synced_at)
-            .bind(&input.source_payload)
-            .bind(synced_at)
-            .fetch_one(&mut **transaction)
-            .await?;
-        (id, before, updated_at)
-    } else {
-        let id = Uuid::new_v4();
-        let updated_at = sqlx::query_scalar("INSERT INTO models (id,source_model_id,display_name,provider_name,enabled,currency,price_unit_tokens,input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,price_effective_at,source_payload,last_synced_at) VALUES ($1,$2,$3,$4,true,'USD',1000000,$5,$6,$7,$8,$9,$10,$11) RETURNING updated_at")
-            .bind(id)
-            .bind(&input.source_model_id)
-            .bind(&input.display_name)
-            .bind(&input.provider_name)
-            .bind(input.input_unit_price)
-            .bind(input.cached_input_unit_price)
-            .bind(input.cache_write_unit_price)
-            .bind(input.output_unit_price)
-            .bind(synced_at)
-            .bind(&input.source_payload)
-            .bind(synced_at)
-            .fetch_one(&mut **transaction)
-            .await?;
-        (id, json!({}), updated_at)
-    };
+            .await?
+            .is_some();
+    if exists {
+        return Err(RepositoryError::Conflict);
+    }
+    let id = Uuid::new_v4();
+    let updated_at = sqlx::query_scalar("INSERT INTO models (id,source_model_id,display_name,provider_name,enabled,currency,price_unit_tokens,input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,price_effective_at,source_payload,last_synced_at) VALUES ($1,$2,$3,$4,true,'USD',1000000,$5,$6,$7,$8,$9,$10,$11) RETURNING updated_at")
+        .bind(id)
+        .bind(&input.source_model_id)
+        .bind(&input.display_name)
+        .bind(&input.provider_name)
+        .bind(input.input_unit_price)
+        .bind(input.cached_input_unit_price)
+        .bind(input.cache_write_unit_price)
+        .bind(input.output_unit_price)
+        .bind(synced_at)
+        .bind(&input.source_payload)
+        .bind(synced_at)
+        .fetch_one(&mut **transaction)
+        .await?;
     Ok(MutationResult {
         id,
         object_type: "model",
-        action: "sync",
-        before_redacted: before,
+        action: "import",
+        before_redacted: json!({}),
         after_redacted: model_audit(transaction, id).await?,
+        created_secret: None,
+        reason: None,
+        updated_at,
+        correlation_id: None,
+    })
+}
+async fn sync_model_price(
+    transaction: &mut Transaction<'_, Postgres>,
+    input: SyncedModelPrice,
+    synced_at: DateTime<Utc>,
+) -> Result<MutationResult, RepositoryError> {
+    if input.source_payload.as_object().is_none() {
+        return Err(RepositoryError::Validation);
+    }
+    let before = model_audit(transaction, input.model_id).await?;
+    let updated_at = sqlx::query_scalar("UPDATE models SET currency='USD',price_unit_tokens=1000000,input_unit_price=$4,cached_input_unit_price=$5,cache_write_unit_price=$6,output_unit_price=$7,price_effective_at=$8,source_payload=$9,last_synced_at=$10 WHERE id=$1 AND source_model_id=$2 AND source_payload->>'source'='models.dev' AND source_payload->>'provider_id'=$3 RETURNING updated_at")
+        .bind(input.model_id)
+        .bind(&input.source_model_id)
+        .bind(&input.provider_id)
+        .bind(input.input_unit_price)
+        .bind(input.cached_input_unit_price)
+        .bind(input.cache_write_unit_price)
+        .bind(input.output_unit_price)
+        .bind(synced_at)
+        .bind(&input.source_payload)
+        .bind(synced_at)
+        .fetch_optional(&mut **transaction)
+        .await?
+        .ok_or(RepositoryError::Conflict)?;
+    Ok(MutationResult {
+        id: input.model_id,
+        object_type: "model",
+        action: "price_sync",
+        before_redacted: before,
+        after_redacted: model_audit(transaction, input.model_id).await?,
         created_secret: None,
         reason: None,
         updated_at,

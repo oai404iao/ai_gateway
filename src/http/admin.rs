@@ -14,8 +14,9 @@ use uuid::Uuid;
 
 use crate::{
     application::{
-        ControlPlaneCoordinator, ControlPlaneError, ModelSyncError, ModelSyncPreviewRequest,
-        ModelSyncRequest, ModelSyncResponse, ModelSyncService,
+        ControlPlaneCoordinator, ControlPlaneError, ModelImportRequest, ModelPriceSyncRequest,
+        ModelPriceSyncResponse, ModelSyncError, ModelSyncPreview, ModelSyncPreviewRequest,
+        ModelSyncResponse, ModelSyncService,
     },
     domain::AdminTokenVerifier,
     persistence::{
@@ -42,6 +43,7 @@ pub fn router(state: AdminState) -> Router {
         .route("/admin/v1/models", get(list_models).post(create_model))
         .route("/admin/v1/models/sync/preview", post(preview_models_sync))
         .route("/admin/v1/models/sync", post(sync_models))
+        .route("/admin/v1/models/sync/import", post(import_models))
         .route("/admin/v1/models/{id}", get(get_model).put(update_model))
         .route(
             "/admin/v1/api-keys",
@@ -261,14 +263,24 @@ async fn create_model(
 async fn preview_models_sync(
     State(state): State<AdminState>,
     Json(input): Json<ModelSyncPreviewRequest>,
-) -> Result<Json<crate::models_dev::ModelsDevCatalog>, AdminError> {
+) -> Result<Json<ModelSyncPreview>, AdminError> {
     Ok(Json(state.model_sync.preview(input).await?))
 }
 async fn sync_models(
     State(state): State<AdminState>,
-    Json(input): Json<ModelSyncRequest>,
+    Json(input): Json<ModelPriceSyncRequest>,
+) -> Result<Json<ModelPriceSyncResponse>, AdminError> {
+    let result = state
+        .model_sync
+        .sync_prices(state.actor_user_id, input)
+        .await?;
+    Ok(Json(result))
+}
+async fn import_models(
+    State(state): State<AdminState>,
+    Json(input): Json<ModelImportRequest>,
 ) -> Result<Json<ModelSyncResponse>, AdminError> {
-    let result = state.model_sync.sync(state.actor_user_id, input).await?;
+    let result = state.model_sync.import(state.actor_user_id, input).await?;
     Ok(Json(ModelSyncResponse {
         model_count: result.model_count,
         correlation_id: result.correlation_id,

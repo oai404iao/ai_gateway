@@ -80,6 +80,12 @@ pub struct ModelsDevCatalog {
 }
 
 impl ModelsDevCatalog {
+    pub fn find(&self, provider_id: &str, model_id: &str) -> Option<&ModelsDevModel> {
+        self.models
+            .iter()
+            .find(|model| model.provider_id == provider_id && model.model_id == model_id)
+    }
+
     pub fn select(
         &self,
         selections: &[ModelsDevSelection],
@@ -92,12 +98,7 @@ impl ModelsDevCatalog {
                 return Err(ModelsDevError::InvalidSelection);
             }
             let model = self
-                .models
-                .iter()
-                .find(|model| {
-                    model.provider_id == selection.provider_id
-                        && model.model_id == selection.model_id
-                })
+                .find(&selection.provider_id, &selection.model_id)
                 .ok_or(ModelsDevError::InvalidSelection)?;
             selected.push(model.clone());
         }
