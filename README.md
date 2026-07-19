@@ -260,7 +260,9 @@ tests/               Local and PostgreSQL integration tests
 
 ## Security notes
 
-- Keep JWT private keys outside the repository with restrictive filesystem permissions.
+- Keep JWT private keys in ignored local files (the recommended development
+  location is `./console-jwt-private.pem`) with restrictive filesystem
+  permissions.
 - Treat the database, backups, and Console access as credential-sensitive: control-plane records include client and upstream credentials.
 - Do not place client/upstream credentials or JWT private-key material in TOML, source files, logs, test fixtures, or shell history.
 - Expose the Console API only through HTTPS with a deliberate origin policy. Keep the public data-plane listener appropriately network-restricted as well.
