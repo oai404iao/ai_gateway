@@ -1,0 +1,278 @@
+# ai-gateway
+
+中文 | [English](README.md)
+
+`ai-gateway` 是一个单二进制 Rust 网关，用于转发 OpenAI 兼容的 LLM 请求。它向客户端提供 Chat Completions 与 Responses API，根据 PostgreSQL 控制面完成路由，并将请求转发到已配置的上游提供商。
+
+公共数据面和管理 Console API 是刻意分离的两个监听器：
+
+- **数据面**（`/v1/*`）：面向客户端 API Key 与 OpenAI 兼容请求。
+- **Console API**（`/console/v1/*`）：面向 JWT 认证的用户自助服务与管理员控制面管理。
+
+## 特性
+
+- **仅支持** OpenAI Chat Completions 和 Responses；两种格式绝不相互回退。
+- 按 `(客户端模型名, API 格式)` 路由，支持渠道组优先级和渠道权重选择。
+- 将 PostgreSQL 控制面记录编译为不可变内存快照，因此代理请求不需要逐次查询数据库。
+- 可按配置执行模型别名、受限 JSON/Header/响应/SSE 变换。
+- 转发前会移除客户端凭据和 hop-by-hop Header，再注入渠道专属的上游鉴权。
+- 上游响应以流式方式转发，不缓冲完整响应；一旦发送响应头或任何响应字节，绝不重试或切换渠道。
+- 提供进程内 RPM、并发和软额度准入控制、被动连接健康、异步请求日志、用量提取与结算。
+- 提供独立的 JWT Console API，包括邀请、轮换 refresh session、用户/管理员角色、审计日志，以及大多数可变资源的乐观并发控制。
+
+## 架构
+
+```text
+OpenAI 兼容客户端
+  │ Bearer API Key
+  ▼
+公共监听器（/v1/*）
+  → 鉴权与准入
+  → 不可变路由快照
+  → 渠道选择与可选变换
+  → 可复用 reqwest 上游客户端
+  → 流式上游响应
+  → 异步请求日志 / 用量 / 结算
+
+Console 客户端
+  │ JWT
+  ▼
+独立 Console 监听器（/console/v1/*）
+  → 用户或管理员授权
+  → PostgreSQL 控制面事务 + 审计记录
+  → 立即发布运行时快照
+```
+
+## 环境要求
+
+- Rust **1.85** 或更高版本（Rust 2024 edition）
+- PostgreSQL
+- Docker Compose（可选；仓库提供了本地 PostgreSQL 开发配置）
+- 启用 Console API 并生成本地 Ed25519 密钥时，建议安装 OpenSSL
+
+## 快速开始
+
+> `config.local.toml` 已被 Git 忽略。服务不会加载 `.env` 文件。
+
+### 1. 启动 PostgreSQL 并创建本地配置
+
+```bash
+docker compose up -d
+cp config.example.toml config.local.toml
+```
+
+按需编辑 `config.local.toml`。至少确认 `[database]`、公共 `[server]` 和 `[upstream]` 超时设置。仓库内 Docker Compose 服务与示例数据库连接串相匹配。
+
+二进制会在启动时自动执行数据库 migration。
+
+### 2. 启用 Console API（推荐）
+
+Console API 是管理用户、API Key、模型、路由、渠道和变换的受支持方式。在仓库外的受保护目录生成 Ed25519 密钥对，再在 `config.local.toml` 中填写**绝对路径**：
+
+```bash
+install -d -m 700 "$HOME/.config/ai-gateway"
+openssl genpkey -algorithm Ed25519 \
+  -out "$HOME/.config/ai-gateway/console-jwt-private.pem"
+openssl pkey \
+  -in "$HOME/.config/ai-gateway/console-jwt-private.pem" \
+  -pubout \
+  -out "$HOME/.config/ai-gateway/console-jwt-public.pem"
+chmod 600 "$HOME/.config/ai-gateway/console-jwt-private.pem"
+```
+
+然后按 `config.example.toml` 中的注释模板启用 `[console]` 并填写 `[auth]`。例如，配置专用的 `127.0.0.1:3001` 监听器、明确的浏览器来源白名单，以及刚生成的两个 PEM 文件路径。
+
+服务自身**不终止 TLS**。在向浏览器或互联网暴露 Console 监听器之前，必须将其置于正确配置的 HTTPS 反向代理之后。
+
+### 3. 创建首个管理员
+
+一次性 bootstrap 命令仅会在不存在 active admin 时成功。请从受保护的文件或密钥管理器通过标准输入传入密码：
+
+```bash
+cargo run -- bootstrap-admin \
+  --config config.local.toml \
+  --email admin@example.com \
+  --display-name "Initial Admin" \
+  --password-stdin < /secure/path/admin-password.txt
+```
+
+### 4. 启动网关
+
+```bash
+cargo run -- config.local.toml
+```
+
+验证公共监听器：
+
+```bash
+curl -i http://127.0.0.1:3000/health
+# HTTP/1.1 204 No Content
+```
+
+空控制面可以正常启动，但在创建用户/API Key 和路由配置前不能代理任何请求。
+
+### 5. 配置控制面
+
+使用 bootstrap 管理员登录 Console API，随后使用响应中的 access JWT 调用其他 Console 接口：
+
+```bash
+curl --request POST http://127.0.0.1:3001/console/v1/auth/login \
+  --header 'Content-Type: application/json' \
+  --data '{"email":"admin@example.com","password":"your-password"}'
+```
+
+要让数据面路由可用，请按以下顺序创建格式兼容的记录：
+
+1. 一个带价格的**模型**。
+2. 所需 API 格式的**渠道组**。
+3. 该渠道组内的**渠道**：配置上游 URL、上游凭据和支持的上游模型名。
+4. 一个**模型规则**：将客户端模型名映射到计价模型、上游模型名和路由目标。
+5. 一个客户端 **API Key**：至少授予 `proxy` 权限；如需调用 `/v1/models`，还要授予 `models.read`。
+
+即使使用同一个上游提供商或模型名，Chat Completions 路由与 Responses 路由仍是两套独立配置。请使用 Console API 管理控制面，不要直接编辑控制面数据表。
+
+Console 路由覆盖与运行行为详见[运行与接口说明](docs/mvp-usage.md)。
+
+## 使用数据面
+
+所有公共 API 接口均使用 `Authorization: Bearer <client-api-key>`。
+
+| 接口 | 用途 |
+| --- | --- |
+| `GET /health` | 无需认证的存活检查；返回 `204`。 |
+| `GET /v1/models` | 列出此 API Key 可达的模型；至少一个格式需要同时拥有 `proxy` 与 `models.read`。 |
+| `POST /v1/chat/completions` | 仅代理 Chat Completions 请求。 |
+| `POST /v1/responses` | 仅代理 Responses 请求。 |
+
+在创建匹配的模型规则和 API Key 后：
+
+```bash
+export GATEWAY_URL=http://127.0.0.1:3000
+export AI_GATEWAY_API_KEY='replace-with-client-key'
+
+curl "$GATEWAY_URL/v1/models" \
+  --header "Authorization: Bearer $AI_GATEWAY_API_KEY"
+
+curl --request POST "$GATEWAY_URL/v1/chat/completions" \
+  --header "Authorization: Bearer $AI_GATEWAY_API_KEY" \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "model": "gateway-chat-model",
+    "messages": [{"role": "user", "content": "Say hello."}]
+  }'
+```
+
+对于 Responses，请先配置独立的 `open_ai_responses` 模型规则，再发送正常的 Responses 请求：
+
+```bash
+curl --request POST "$GATEWAY_URL/v1/responses" \
+  --header "Authorization: Bearer $AI_GATEWAY_API_KEY" \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "model": "gateway-responses-model",
+    "input": "Say hello."
+  }'
+```
+
+网关会转发上游状态码和响应体，并保持流式行为；如客户端需要 SSE，请使用对应 OpenAI 请求中的流式字段。
+
+## 配置模型
+
+TOML 仅保存进程级 bootstrap 配置：
+
+| 区域 | 示例 |
+| --- | --- |
+| `[server]` | 公共监听器和优雅关闭期限。 |
+| `[request_limits]` | 代理、Console 和认证接口各自独立的请求体大小限制。 |
+| `[database]` | PostgreSQL URL、连接池大小和连接超时。 |
+| `[upstream]` | 默认建连、响应头和流空闲超时。 |
+| `[runtime_config]` | PostgreSQL 控制面定时重载间隔。 |
+| `[passive_health]` | 连接失败阈值和冷却时间。 |
+| `[request_logging]` | 有界异步日志队列容量。 |
+| `[console]` 与 `[auth]` | 可选的独立 Console 监听器与 JWT 密钥文件设置。 |
+
+用户、API Key、模型、模型规则、渠道组、渠道、代理和变换模板等动态数据面配置保存在 PostgreSQL 中，并被编译为不可变运行时快照。项目刻意不支持 `[[api_keys]]`、`[[channels]]`、`[[model_rules]]` 之类的动态 TOML 表。
+
+通过 Console API 写入配置时，服务会校验完整候选快照，并在提交后立即发布；定时重载器也会从 PostgreSQL 刷新快照。
+
+## Console API
+
+Console 监听器独立于公共监听器，使用短期 JWT access token。登录、刷新和邀请激活成功时还会签发轮换的 `HttpOnly; Secure; SameSite=Lax` refresh Cookie。
+
+- 用户自助接口位于 `/console/v1/me`，资源归属完全从 JWT 主体推导。
+- 仅管理员可调用的控制面接口可管理用户、API Key Policy、API Key、模型、路由、网络代理、变换模板、请求日志、审计日志和手动重载。
+- 大多数可变资源在 `GET` 时返回 `ETag`，并要求 `PUT` 携带 `If-Match` 实现乐观并发控制。
+- `admin` 是用户角色，不是独立的 `/admin` API 命名空间，也不是进程级静态 Token。
+
+完整路由清单见 [docs/mvp-usage.md](docs/mvp-usage.md)；Console 认证设计见 [docs/console-auth-refactor-plan.md](docs/console-auth-refactor-plan.md)。
+
+## 运行行为与边界
+
+- 请求在读取 body 前完成认证与准入。
+- 只有模型别名或变换确有需要时才重新序列化请求；否则转发原始请求字节。
+- 变换顺序固定为：模板默认值 → 渠道覆盖 → 受保护 Header 清理 → 上游鉴权。
+- 客户端 `Authorization`、hop-by-hop Header 及 `Connection` 声明的 Header 永不转发给上游。
+- 被动健康仅响应收到上游响应头之前的连接失败；当前没有主动健康检查 worker。
+- RPM、并发和软额度准入均为进程内状态；没有跨实例协调。
+- 用量和计费采用异步、尽力而为方式。额度是基于已结算用量的软预检查，不会在转发前预留本次成本。
+- 请求日志不保存 prompt、completion、完整 Header、API Key、Cookie 或未经脱敏的上游错误内容。
+
+当前范围不包含 embeddings、images、audio、files、batches、assistants、fine-tuning、通用自动重试、TLS 终止、独立财务账本、充值/退款或多币种兑换。
+
+## 开发与验证
+
+请在仓库根目录运行：
+
+```bash
+cargo check
+cargo fmt --check
+cargo clippy --all-targets
+cargo test
+```
+
+修改请求转发路径后，还必须运行可选的付费真实上游 smoke test。请使用低额度的专用凭据，并只将其保存在已忽略的本地密钥文件中：
+
+```bash
+cp .env.real-upstream.example .env.real-upstream
+# 填写本地变量后运行：
+./scripts/run-real-upstream-smoke.sh
+```
+
+该脚本是仓库中唯一允许使用 `.env` 的例外。运行前请阅读 [docs/real-upstream-smoke.md](docs/real-upstream-smoke.md)。
+
+## 仓库结构
+
+```text
+src/
+  application/       代理、Console 鉴权、控制面、日志、用量
+  admission/         进程内 RPM、并发与软额度控制
+  domain/            API 格式、路由、凭据、请求日志类型
+  http/              公共 Axum 路由与独立 Console 路由
+  persistence/       SQLx 仓储与 migration 集成
+  runtime_config/    TOML bootstrap 配置与 ArcSwap 快照
+  routing/           优先级/权重选择与被动健康
+  transforms/        受限 JSON、Header、响应与 SSE 变换
+  upstream/          可复用 reqwest 客户端与代理/超时策略
+  workers/           快照重载与异步请求日志 worker
+migrations/          PostgreSQL schema migration
+docs/                产品、运行和设计文档
+tests/               本地与 PostgreSQL 集成测试
+```
+
+## 安全注意事项
+
+- 将 JWT 私钥放在仓库外，并严格限制文件系统权限。
+- 请将数据库、备份和 Console 访问视为凭据敏感边界：控制面记录包含客户端和上游凭据。
+- 不要将客户端/上游凭据或 JWT 私钥材料写入 TOML、源代码、日志、测试 fixture 或 shell 历史记录。
+- Console API 仅应通过 HTTPS 和明确的来源策略对外暴露；公共数据面监听器同样应按网络边界限制访问。
+
+## 文档
+
+- [运行与接口说明](docs/mvp-usage.md)
+- [数据库与控制面设计](docs/database-design.md)
+- [真实上游 smoke test 说明](docs/real-upstream-smoke.md)
+- [产品需求文档（中文）](docs/PRD.md)
+
+## 许可证
+
+`Cargo.toml` 将本项目标记为 `UNLICENSED`。在预期环境以外使用或再分发前，请先咨询仓库所有者。
