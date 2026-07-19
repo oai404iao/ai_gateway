@@ -50,37 +50,46 @@ Console 客户端
 - Docker Compose（可选；仓库提供了本地 PostgreSQL 开发配置）
 - 启用 Console API 并生成本地 Ed25519 密钥时，建议安装 OpenSSL
 
-## 快速开始
+## 快速开始 / Quick start
 
-> `config.local.toml` 已被 Git 忽略。服务不会加载 `.env` 文件。
+> 默认配置文件为已被 Git 忽略的 `./config/config.toml`；本地 JWT 文件也统一放在 `./config/`。
+> 服务不会加载 `.env` 文件，也不使用 XDG 配置目录。英文说明见 [README.md](README.md)。
 
 ### 1. 启动 PostgreSQL 并创建本地配置
 
 ```bash
 docker compose up -d
-cp config.example.toml config.local.toml
+mkdir -p ./config
+cp config.example.toml ./config/config.toml
 ```
 
-按需编辑 `config.local.toml`。至少确认 `[database]`、公共 `[server]` 和 `[upstream]` 超时设置。仓库内 Docker Compose 服务与示例数据库连接串相匹配。
+按需编辑 `./config/config.toml`。至少确认 `[database]`、公共 `[server]` 和 `[upstream]` 超时设置。仓库内 Docker Compose 服务与示例数据库连接串相匹配。
+
+如果从旧的根目录文件布局升级，请一次性迁移本地文件：
+
+```bash
+mkdir -p ./config
+mv ./config.toml ./config/config.toml
+mv ./console-jwt-private.pem ./console-jwt-public.pem ./config/
+```
 
 二进制会在启动时自动执行数据库 migration。
 
 ### 2. 启用 Console API（推荐）
 
-Console API 是管理用户、API Key、模型、路由、渠道和变换的受支持方式。在仓库外的受保护目录生成 Ed25519 密钥对，再在 `config.local.toml` 中填写**绝对路径**：
+Console API 是管理用户、API Key、模型、路由、渠道和变换的受支持方式。在当前工作目录的 `./config/` 中生成 Ed25519 密钥对；这些文件已被 Git 忽略：
 
 ```bash
-install -d -m 700 "$HOME/.config/ai-gateway"
 openssl genpkey -algorithm Ed25519 \
-  -out "$HOME/.config/ai-gateway/console-jwt-private.pem"
+  -out ./config/console-jwt-private.pem
 openssl pkey \
-  -in "$HOME/.config/ai-gateway/console-jwt-private.pem" \
+  -in ./config/console-jwt-private.pem \
   -pubout \
-  -out "$HOME/.config/ai-gateway/console-jwt-public.pem"
-chmod 600 "$HOME/.config/ai-gateway/console-jwt-private.pem"
+  -out ./config/console-jwt-public.pem
+chmod 600 ./config/console-jwt-private.pem
 ```
 
-然后按 `config.example.toml` 中的注释模板启用 `[console]` 并填写 `[auth]`。例如，配置专用的 `127.0.0.1:3001` 监听器、明确的浏览器来源白名单，以及刚生成的两个 PEM 文件路径。
+然后按 `config.example.toml` 中的注释模板，在 `./config/config.toml` 里启用 `[console]` 并填写 `[auth]`。例如，配置专用的 `127.0.0.1:3001` 监听器、明确的浏览器来源白名单，以及 `./config/` 下刚生成的两个 PEM 文件路径。
 
 服务自身**不终止 TLS**。在向浏览器或互联网暴露 Console 监听器之前，必须将其置于正确配置的 HTTPS 反向代理之后。
 
@@ -90,7 +99,6 @@ chmod 600 "$HOME/.config/ai-gateway/console-jwt-private.pem"
 
 ```bash
 cargo run -- bootstrap-admin \
-  --config config.local.toml \
   --email admin@example.com \
   --display-name "Initial Admin" \
   --password-stdin < /secure/path/admin-password.txt
@@ -99,7 +107,7 @@ cargo run -- bootstrap-admin \
 ### 4. 启动网关
 
 ```bash
-cargo run -- config.local.toml
+cargo run
 ```
 
 验证公共监听器：
@@ -178,7 +186,8 @@ curl --request POST "$GATEWAY_URL/v1/responses" \
 
 ## 配置模型
 
-TOML 仅保存进程级 bootstrap 配置：
+TOML 仅保存进程级 bootstrap 配置。二进制默认读取
+`./config/config.toml`；已忽略的 `./config/` 目录也保存本地 JWT 密钥文件。
 
 | 区域 | 示例 |
 | --- | --- |
@@ -256,12 +265,14 @@ src/
   workers/           快照重载与异步请求日志 worker
 migrations/          PostgreSQL schema migration
 docs/                产品、运行和设计文档
+config/              已忽略的本地运行配置和 JWT 密钥目录
+config.example.toml  已跟踪的配置模板
 tests/               本地与 PostgreSQL 集成测试
 ```
 
 ## 安全注意事项
 
-- 将 JWT 私钥放在仓库外，并严格限制文件系统权限。
+- 将 JWT 私钥保存在已忽略的 `./config/` 本地文件中，并严格限制文件系统权限。
 - 请将数据库、备份和 Console 访问视为凭据敏感边界：控制面记录包含客户端和上游凭据。
 - 不要将客户端/上游凭据或 JWT 私钥材料写入 TOML、源代码、日志、测试 fixture 或 shell 历史记录。
 - Console API 仅应通过 HTTPS 和明确的来源策略对外暴露；公共数据面监听器同样应按网络边界限制访问。

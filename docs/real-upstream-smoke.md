@@ -58,8 +58,8 @@ then runs the ignored test with `RUN_REAL_UPSTREAM_SMOKE=1`.
   `stream_options.include_usage=true` so its final SSE usage can be verified.
 - Do not run it in ordinary PR checks. CI automation is intentionally not part
   of this change.
-- Do not add real credentials to `config.toml`, `config.local.toml`, test
-  source, shell history, or logs.
+- Do not add real credentials to `./config/*`, test source, shell history, or
+  logs.
 - The existing local and PostgreSQL integration tests remain the coverage for
   control-plane persistence, management APIs, failure injection, and
   deterministic edge cases.

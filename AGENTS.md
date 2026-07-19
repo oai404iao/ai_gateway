@@ -35,8 +35,8 @@ repo/
 |-- migrations/                 # PostgreSQL control-plane and log schema migrations
 |-- tests/                      # Local, PostgreSQL, proxy, streaming, and opt-in real-upstream tests
 |-- docs/PRD.md                 # Canonical product and architecture blueprint (Chinese)
+|-- config/                     # Ignored local runtime config and JWT keys
 |-- config.example.toml         # Canonical configuration template
-|-- config.toml                 # Ignored current-directory runtime config; copy from example
 |-- docker-compose.yml          # Development PostgreSQL service only
 `-- Cargo.toml                  # Package metadata, MSRV, and dependency source of truth
 ```
@@ -52,9 +52,9 @@ cargo fmt --check
 cargo clippy --all-targets
 cargo test
 
-# Run using ignored ./config.toml, or a supplied TOML path
+# Run using ignored ./config/config.toml, or a supplied TOML path
 cargo run
-cargo run -- ./other-config.toml
+cargo run -- ./config/other-config.toml
 
 # One-time first Console administrator; password is read only from stdin
 cargo run -- bootstrap-admin --email admin@example.com --display-name "Initial Admin" --password-stdin < password.txt
@@ -75,9 +75,9 @@ containerized.
 
 ## Configuration Rules
 
-- The normal serve command loads the first CLI argument as TOML, defaulting to ignored `./config.toml` in the current working directory (`src/main.rs`). It does not use an XDG configuration directory. `bootstrap-admin` is a separate one-time CLI subcommand and requires `--password-stdin`. There is no dotenv support or automatic local-override merge.
+- The normal serve command loads the first CLI argument as TOML, defaulting to ignored `./config/config.toml` in the current working directory (`src/main.rs`). It does not use an XDG configuration directory. `bootstrap-admin` is a separate one-time CLI subcommand and requires `--password-stdin`. There is no dotenv support or automatic local-override merge.
 - Keep `config.example.toml` and the deserialization types in `src/runtime_config/mod.rs` synchronized whenever configuration changes.
-- `./config.toml` is ignored and loaded by default. A different current-directory TOML path can be passed explicitly. The binary never loads `.env` files. The sole exception is the ignored `.env.real-upstream` file, which `scripts/run-real-upstream-smoke.sh` may source for opt-in test credentials.
+- `./config/config.toml` and Console JWT key files under `./config/` are ignored. A different current-directory TOML path can be passed explicitly. The binary never loads `.env` files. The sole exception is the ignored `.env.real-upstream` file, which `scripts/run-real-upstream-smoke.sh` may source for opt-in test credentials.
 - Configuration changes intended for live reload should preserve the immutable-snapshot pattern: construct a complete `AppConfig`, then replace it atomically through `RuntimeConfig`.
 
 ## Architecture and Implementation Constraints
@@ -110,7 +110,7 @@ Axum HTTP
 ### Add a configuration setting
 
 1. Add the field to the appropriate TOML-deserialized type in `src/runtime_config/mod.rs`.
-2. Add its documented default to the tracked `config.example.toml`; do not commit local `./config.toml`.
+2. Add its documented default to the tracked `config.example.toml`; do not commit local `./config/config.toml` or JWT files under `./config/`.
 3. Wire the setting at its use site; preserve atomic snapshot replacement for runtime configuration.
 4. Add tests for parsing/default behavior and run the standard Rust checks.
 
@@ -140,7 +140,7 @@ Axum HTTP
 1. **The PRD is not the runtime.** It includes later roadmap capabilities such as active health checks, cross-instance coordination, and generic retries. Confirm an API exists before integrating with it.
 2. **Public and Console routes are separate.** `src/http/mod.rs` exposes the API-key data plane; `src/http/console.rs` is bound by `main` only when `[console].enabled` is set. Console is intended for an HTTPS reverse proxy, and `admin` is a role rather than a route namespace or static bearer token.
 3. **Migrations are authoritative.** Add ordered SQL migrations for schema changes; there is no SQLx offline cache.
-4. **`./config.toml` is auto-loaded.** It is intentionally ignored by Git; invoke `cargo run -- ./other-config.toml` only when using another file.
+4. **`./config/config.toml` is auto-loaded.** It is intentionally ignored by Git; invoke `cargo run -- ./config/other-config.toml` only when using another file.
 5. **Runtime configuration is TOML-only.** Do not add dotenv loading to the binary. Console Ed25519 keys are supplied by protected file paths, not TOML values. `.env.real-upstream` is test-script-only and must remain ignored.
 
 ## Code Style

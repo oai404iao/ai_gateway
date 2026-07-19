@@ -5,7 +5,15 @@
 ## 启动
 
 1. 启动 PostgreSQL：`docker compose up -d`。
-2. 复制 `config.example.toml` 为当前目录下已忽略的 `./config.toml`，填写监听、数据库、上游和可选 Console 设置；服务不使用 XDG 配置目录。
+2. 创建当前目录下已忽略的 `./config/`，并复制 `config.example.toml` 为 `./config/config.toml`；填写监听、数据库、上游和可选 Console 设置。服务不使用 XDG 配置目录：
+
+   ```bash
+   mkdir -p ./config
+   cp config.example.toml ./config/config.toml
+   ```
+
+   从旧根目录布局升级时，将 `./config.toml` 和
+   `./console-jwt-*.pem` 移入 `./config/`。
 3. 首次部署时，使用受控的一次性 CLI 创建首个管理员。密码必须经标准输入传入：
 
    ```bash
@@ -46,8 +54,8 @@ audience = "ai-gateway-console"
 access_token_ttl_seconds = 900
 refresh_token_ttl_seconds = 2_592_000
 key_id = "primary-2026"
-signing_key_path = "./console-jwt-private.pem"
-verification_key_path = "./console-jwt-public.pem"
+signing_key_path = "./config/console-jwt-private.pem"
+verification_key_path = "./config/console-jwt-public.pem"
 ```
 
 - 公共数据面默认监听 `127.0.0.1:3000`。

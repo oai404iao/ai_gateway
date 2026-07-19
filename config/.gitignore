@@ -1,0 +1,4 @@
+# Local runtime configuration and JWT key material belong here.
+# Keep only this ignore rule tracked.
+*
+!.gitignore

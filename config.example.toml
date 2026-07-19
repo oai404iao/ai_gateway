@@ -1,4 +1,5 @@
-# Copy this file to ./config.toml when creating an environment-specific setup.
+# Copy this file to ./config/config.toml when creating an environment-specific
+# setup.
 # Do not use a .env file; the application loads TOML configuration directly.
 
 [server]
@@ -62,8 +63,8 @@ enabled = false
 # access_token_ttl_seconds = 900
 # refresh_token_ttl_seconds = 2_592_000
 # key_id = "primary-2026"
-# signing_key_path = "./console-jwt-private.pem"
-# verification_key_path = "./console-jwt-public.pem"
+# signing_key_path = "./config/console-jwt-private.pem"
+# verification_key_path = "./config/console-jwt-public.pem"
 
 [observability]
 filter = "ai_gateway=debug,tower_http=info"

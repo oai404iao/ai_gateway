@@ -50,37 +50,48 @@ Separate Console listener (/console/v1/*)
 - Docker Compose is optional but provided for local PostgreSQL development
 - OpenSSL is useful when enabling the Console API and generating local Ed25519 keys
 
-## Quick start
+## Quick start / 快速启动
 
-> `./config.toml` is ignored by Git and is the default configuration location.
+> `./config/config.toml` is ignored by Git and is the default configuration
+> location. Local JWT files also belong in `./config/`.
 > The service does not load `.env` files or use an XDG configuration directory.
+> 中文启动说明见下方对应步骤及 [中文文档](README.zh-CN.md)。
 
 ### 1. Start PostgreSQL and create a local configuration
 
 ```bash
 docker compose up -d
-cp config.example.toml config.toml
+mkdir -p ./config
+cp config.example.toml ./config/config.toml
 ```
 
-Edit `./config.toml` as needed. At minimum, verify `[database]`, public `[server]`, and `[upstream]` timeout settings. The supplied Docker Compose service matches the example database URL.
+Edit `./config/config.toml` as needed. At minimum, verify `[database]`, public `[server]`, and `[upstream]` timeout settings. The supplied Docker Compose service matches the example database URL.
+
+If you are upgrading from the former root-level layout, move local files once:
+
+```bash
+mkdir -p ./config
+mv ./config.toml ./config/config.toml
+mv ./console-jwt-private.pem ./console-jwt-public.pem ./config/
+```
 
 The binary applies database migrations automatically at startup.
 
 ### 2. Enable the Console API (recommended)
 
-The Console API is the supported way to manage users, API keys, models, routes, channels, and transforms. Generate an Ed25519 key pair in the current working directory; these files are ignored by Git:
+The Console API is the supported way to manage users, API keys, models, routes, channels, and transforms. Generate an Ed25519 key pair in `./config/`; these files are ignored by Git:
 
 ```bash
 openssl genpkey -algorithm Ed25519 \
-  -out ./console-jwt-private.pem
+  -out ./config/console-jwt-private.pem
 openssl pkey \
-  -in ./console-jwt-private.pem \
+  -in ./config/console-jwt-private.pem \
   -pubout \
-  -out ./console-jwt-public.pem
-chmod 600 ./console-jwt-private.pem
+  -out ./config/console-jwt-public.pem
+chmod 600 ./config/console-jwt-private.pem
 ```
 
-Then enable `[console]` and fill in `[auth]` in `./config.toml` using the commented template in `config.example.toml`. Use `./console-jwt-private.pem` and `./console-jwt-public.pem` for the two generated PEM paths.
+Then enable `[console]` and fill in `[auth]` in `./config/config.toml` using the commented template in `config.example.toml`. Use `./config/console-jwt-private.pem` and `./config/console-jwt-public.pem` for the two generated PEM paths.
 
 The service does **not** terminate TLS. Put the Console listener behind a correctly configured HTTPS reverse proxy before exposing it to browsers or the Internet.
 
@@ -177,7 +188,9 @@ The gateway forwards upstream status codes and response bodies. It preserves str
 
 ## Configuration model
 
-TOML is for process/bootstrap settings only:
+TOML is for process/bootstrap settings only. By default the binary reads
+`./config/config.toml`; the ignored `./config/` directory also holds local JWT
+key files.
 
 | Area | Examples |
 | --- | --- |
@@ -255,13 +268,15 @@ src/
   workers/           Snapshot reload and asynchronous request-log workers
 migrations/          PostgreSQL schema migrations
 docs/                Product, operational, and design documentation
+config/              Ignored local runtime configuration and JWT key directory
+config.example.toml  Tracked configuration template
 tests/               Local and PostgreSQL integration tests
 ```
 
 ## Security notes
 
 - Keep JWT private keys in ignored local files (the recommended development
-  location is `./console-jwt-private.pem`) with restrictive filesystem
+  location is `./config/console-jwt-private.pem`) with restrictive filesystem
   permissions.
 - Treat the database, backups, and Console access as credential-sensitive: control-plane records include client and upstream credentials.
 - Do not place client/upstream credentials or JWT private-key material in TOML, source files, logs, test fixtures, or shell history.

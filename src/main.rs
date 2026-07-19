@@ -38,7 +38,7 @@ use tokio::{
 };
 use tower::ServiceExt;
 
-const DEFAULT_CONFIG_PATH: &str = "./config.toml";
+const DEFAULT_CONFIG_PATH: &str = "./config/config.toml";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -189,7 +189,7 @@ fn parse_command(arguments: Vec<String>) -> Result<Command, io::Error> {
         if arguments.len() != 1 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "usage: ai-gateway [./config.toml] | ai-gateway bootstrap-admin --email EMAIL --display-name NAME --password-stdin [--currency USD] [--config ./config.toml]",
+                "usage: ai-gateway [./config/config.toml] | ai-gateway bootstrap-admin --email EMAIL --display-name NAME --password-stdin [--currency USD] [--config ./config/config.toml]",
             ));
         }
         return Ok(Command::Serve {
@@ -435,12 +435,13 @@ mod tests {
     }
 
     #[test]
-    fn default_config_is_the_current_directory_file() {
+    fn default_config_is_the_current_directory_config_file() {
         let command = parse_command(Vec::new()).expect("default command must parse");
         let Command::Serve { config_path } = command else {
             panic!("expected serve command");
         };
-        assert_eq!(config_path, PathBuf::from(DEFAULT_CONFIG_PATH));
+        assert_eq!(DEFAULT_CONFIG_PATH, "./config/config.toml");
+        assert_eq!(config_path, PathBuf::from("./config/config.toml"));
     }
 
     #[tokio::test]
