@@ -1,6 +1,6 @@
 //! Axum routes, middleware, and HTTP error responses.
 
-pub mod admin;
+pub mod console;
 
 use axum::{
     Json, Router,
@@ -68,7 +68,7 @@ mod tests {
     use super::router;
 
     #[tokio::test]
-    async fn public_router_does_not_expose_admin_paths() {
+    async fn public_router_does_not_expose_console_paths() {
         let runtime = Arc::new(RuntimeConfig::new(
             compile_control_plane(Default::default()).unwrap(),
         ));
@@ -83,11 +83,7 @@ mod tests {
         )
         .unwrap();
         let response = router(proxy)
-            .oneshot(
-                Request::get("/admin/v1/api-keys")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::get("/console/v1/me").body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);

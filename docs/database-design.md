@@ -1,6 +1,8 @@
-# 数据库设计（首版简化方案）
+# 数据库设计
 
-> 状态：设计基线已由迁移实现，服务通过数据库 repository 编译控制面快照。当前运行时范围以 [`mvp-usage.md`](mvp-usage.md) 为准；本文件同时保留部分 schema 预留设计。`system_settings` 与 `channels.health_check` 已有表/列，但当前二进制不将其作为可运行配置加载。本版本只保留 [`PRD.md`](PRD.md) 明确列出的 11 张表；不新增授权关联表、价格版本表、路由目标表、账本表、配置版本表或渠道运行状态表。
+> 状态：数据库控制面与运行时快照设计已由 migration 实现。当前运行时范围以 [`mvp-usage.md`](mvp-usage.md) 为准，Console/JWT 重构的决策和实施清单以 [`console-auth-refactor-plan.md`](console-auth-refactor-plan.md) 为准。
+>
+> **历史说明：** 下文的“首版 11 张表”描述的是 Console 登录重构前的简化基线。migration `0005_console_auth_and_policies.sql` 已新增用户角色、登录凭据、session、邀请和 API Key Policy，并将 `users.name` 迁移为 `users.display_name`。涉及用户认证或 Console 权限时，以新 migration、`src/persistence/auth.rs` 和 `src/http/console.rs` 为准。
 
 ## 1. 设计原则
 
@@ -361,7 +363,7 @@ CHECK (jsonb_typeof(health_check) = 'object');
 5. API Key 的分组范围与模型规则目标存在交集；`/v1/models` 只输出这些可达规则的 `client_model`，不返回全局 `models`。
 6. 模板和渠道覆盖符合受限 DSL、Header 保护、SSE 逐事件处理、URL 和超时规则；`health_check` 当前必须为空，`system_settings` 不参与运行时编译。
 
-控制面在一个事务中保存变更和审计日志，完成上述全量校验并编译 `CompiledRuntimeConfig` 后提交；提交后直接替换内存 `ArcSwap` 快照。启动、定时重载和管理写入均使用 PostgreSQL 控制面；TOML 只保留进程级监听、数据库、默认超时、日志、被动健康和本地管理监听器设置。
+控制面在一个事务中保存变更和审计日志，完成上述全量校验并编译 `CompiledRuntimeConfig` 后提交；提交后直接替换内存 `ArcSwap` 快照。启动、定时重载和 Console 管理写入均使用 PostgreSQL 控制面；TOML 只保留进程级监听、数据库、默认超时、日志、被动健康、Console listener 和 JWT 密钥文件路径设置。
 
 ### 5.3 数据面流程
 

@@ -1,68 +1,132 @@
-# 运行说明（MVP 4 阶段 1–4）
+# 运行与接口说明
 
-服务以 PostgreSQL 作为控制面，TOML 只包含监听、数据库、默认上游超时、重载、日志和本地管理监听器设置。动态 API Key、用户、模型、路由、渠道、代理和模板均不允许写入 TOML。
+服务是一个 OpenAI 兼容的数据面网关，加上独立的 **Console API**。`/v1/*` 面向 SDK 和程序调用，使用用户 API Key；`/console/v1/*` 面向用户登录和控制面管理，使用 JWT。`admin` 是用户角色，不是另一套接口或静态 Bearer 凭据。
 
 ## 启动
 
 1. 启动 PostgreSQL：`docker compose up -d`。
-2. 复制 `config.example.toml` 为已忽略的 `config.local.toml`，并填写进程级设置。
-3. 首次启用管理监听器前，必须由受控的数据库 provisioning 流程创建一个 `users.status = 'active'` 的 bootstrap actor，并将其 UUID 配置为 `[admin].actor_user_id`。这是管理信任根；当前二进制没有创建首个 actor 的 CLI。
-4. 启用 `[admin]` 时必须使用 loopback 地址和至少 32 字符的高熵 Bearer token；管理接口不会与公共监听器共享路由。
-5. 运行 `cargo run -- config.local.toml`。启动时应用迁移、读取一致性控制面快照，并按配置周期重载。空控制面可以启动，但会拒绝客户端鉴权。
+2. 复制 `config.example.toml` 为当前目录下已忽略的 `./config.toml`，填写监听、数据库、上游和可选 Console 设置；服务不使用 XDG 配置目录。
+3. 首次部署时，使用受控的一次性 CLI 创建首个管理员。密码必须经标准输入传入：
 
-启动管理监听器后，先创建普通用户和模型，再创建渠道组、渠道、模型规则和 API Key；除 bootstrap actor 外，无需直接 SQL 创建这些控制面资源。
+   ```bash
+   cargo run -- bootstrap-admin \
+     --email admin@example.com \
+     --display-name "Initial Admin" \
+     --password-stdin < password.txt
+   ```
 
-## 公共接口
+   该命令仅在不存在 `active admin` 时成功，并自动执行数据库迁移。
+4. 启动服务：`cargo run`。
 
-- `GET /health`：返回 `204`。
-- `GET /v1/models`：返回当前 API Key 可达的模型规则，需要 `proxy` 和 `models.read` 权限。
-- `POST /v1/chat/completions`：仅匹配 Chat Completions 规则。
-- `POST /v1/responses`：仅匹配 Responses 规则。
+启动时服务会应用 migration、从 PostgreSQL 编译不可变数据面快照、启动配置重载和请求日志 worker。空控制面可以启动，但没有有效 API Key 和路由规则时无法代理请求。
 
-两个格式绝不互相回退。请求默认保留原始 JSON bytes；只有模型别名或已配置的 JSON 变换才会重新序列化。响应以字节流转发；SSE 变换按事件边界执行，不缓冲整条流。
+服务不读取 dotenv。JWT Ed25519 私钥和公钥通过受限文件路径配置，不写入 TOML。
 
-## 本地管理接口
+## 监听器与请求体限制
 
-管理接口绑定独立的 loopback listener，所有请求需要 bootstrap Bearer token，并返回 `Cache-Control: no-store`。
+```toml
+[server]
+host = "127.0.0.1"
+port = 3000
 
-- `GET` / `POST` `/admin/v1/users`
-- `GET` / `PUT` `/admin/v1/users/{id}`
-- `GET` / `POST` `/admin/v1/models`
-- `GET` / `PUT` `/admin/v1/models/{id}`
-- `POST` `/admin/v1/models/sync/preview`
-- `POST` `/admin/v1/models/sync`
-- `POST` `/admin/v1/models/sync/import`
-- `GET` / `POST` `/admin/v1/api-keys`
-- `GET` / `PUT` `/admin/v1/api-keys/{id}`，`POST /admin/v1/api-keys/{id}/revoke`
-- `GET` / `POST` `/admin/v1/channel-groups`，`GET` / `PUT` `/admin/v1/channel-groups/{id}`
-- `GET` / `POST` `/admin/v1/channels`，`GET` / `PUT` `/admin/v1/channels/{id}`
-- `GET` / `POST` `/admin/v1/model-rules`，`GET` / `PUT` `/admin/v1/model-rules/{id}`
-- `GET` / `POST` `/admin/v1/proxies`，`GET` / `PUT` `/admin/v1/proxies/{id}`
-- `GET` / `POST` `/admin/v1/config-templates`，`GET` / `PUT` `/admin/v1/config-templates/{id}`
-- `POST /admin/v1/reload`
+[request_limits]
+proxy_body_bytes = 1_048_576
+console_body_bytes = 262_144
+auth_body_bytes = 16_384
 
-`PUT` 需要先通过 `GET` 获取 `ETag`，然后以 `If-Match` 提交当前版本。所有写入都在一个 serializable 事务中校验完整候选快照、写入 allowlist 审计记录，并在提交后立即替换运行时快照；校验或版本冲突不会改变数据库、审计或当前快照。
+[console]
+enabled = true
+host = "127.0.0.1"
+port = 3001
+allowed_origins = ["https://console.example.com"]
 
-用户的 `balance_amount` 是只读字段，管理接口仍不提供充值、退款或人工余额调整。可结算请求完成后由后台 worker 异步扣减余额；本阶段没有硬余额预留，因此余额可以为负。模型创建时可提供 `source_payload` JSON object；常规列表、读取和审计记录均不返回该不透明字段。模型更新时省略 `source_payload` 会保留已存数据，显式提供 `{}` 才会清空它。
+[auth]
+issuer = "ai-gateway"
+audience = "ai-gateway-console"
+access_token_ttl_seconds = 900
+refresh_token_ttl_seconds = 2_592_000
+key_id = "primary-2026"
+signing_key_path = "./console-jwt-private.pem"
+verification_key_path = "./console-jwt-public.pem"
+```
 
-`/admin/v1/models/sync/preview` 从 `[models_sync].api_url` 获取受限的 models.dev 目录；可选请求体为 `{"provider_ids":["provider-id"]}`。预览只返回 input/output 价格完整且非负的条目，缺失 cache read/write 价格按 `0` 处理，并以 `action` 标记为 `price_update`、`import` 或 `already_exists`。
+- 公共数据面默认监听 `127.0.0.1:3000`。
+- Console 是独立监听器；应仅通过 HTTPS 反向代理对外暴露。
+- `proxy_body_bytes` 限制 OpenAI 代理请求；`console_body_bytes` 限制已认证 Console 写操作；`auth_body_bytes` 限制登录、刷新和邀请激活请求。
+- 旧的 `[server].max_request_body_bytes` 仍作为 `proxy_body_bytes` 的兼容别名；新配置应使用 `[request_limits]`。
 
-`POST /admin/v1/models/sync` 不新增模型：它重新拉取目录，只更新此前通过 models.dev 导入、且 provider/model 来源仍匹配的本地 `models` 行的当前价格、价格生效时间和同步元数据。远端条目缺失或价格不完整时，本地已有价格保持不变。`POST /admin/v1/models/sync/import` 接收 `{"selections":[{"provider_id":"...","model_id":"..."}]}`，这是新增模型的唯一同步入口；它只创建新行，已有本地 `source_model_id` 一律拒绝，避免同步覆盖管理员维护的本地模型。同步价格统一按 USD、每 1,000,000 tokens 写入，`source_model_id` 使用原始 `model_id`。
+## 公共数据面
 
-同步响应、普通模型读取和审计均不输出原始目录元数据。价格同步和导入都绝不修改已有 `request_logs`。
+- `GET /health`：返回 `204`，无需认证。
+- `GET /v1/models`：列出当前 API Key 可达的模型；需要相应格式的 `proxy` 和 `models.read` 权限。
+- `POST /v1/chat/completions`：仅匹配 Chat Completions 路由规则。
+- `POST /v1/responses`：仅匹配 Responses 路由规则。
 
-停用用户会使其 API Key 在新快照中立即失效。停用仍被启用模型规则引用的模型会使候选快照无效，因此整个写入和审计都会回滚。
+两个 OpenAI 格式绝不互相回退。客户端 `Authorization` 不会转发给上游；网关清理 hop-by-hop headers 后，按渠道配置最后注入上游认证。
 
-## 数据面行为
+数据面在认证后、读取请求体前执行 RPM、并发与已结算软额度预检查。请求体只有在模型别名或 JSON 变换启用时才重新序列化；响应默认逐块流式转发，SSE 变换按事件边界执行且不缓冲整条流。每个请求只选择一次渠道，绝不在响应头或响应字节发送后重试或切换渠道。
 
-每个可用 API Key 需要对应格式的 `proxy` 权限。网关在读取请求体前执行 RPM、并发和已结算软额度预检查；`tokens_per_minute` 仍未支持。路由按最低优先级、同优先级权重和被动健康状态选择一次渠道，绝不自动重试或在响应头后切换渠道。
+## Console 认证
 
-请求和响应可应用模板与渠道的受限 Header / JSON / SSE 变换。客户端 `Authorization`、hop-by-hop headers、路由和长度相关 headers 始终受保护；上游认证最后注入。HTTP/SOCKS 出口代理和有效连接超时决定复用的 reqwest 客户端。
+Console 登录接口：
 
-每个已选路请求会发出 tracing 终态事件，并尽力异步写入一条 `request_logs` 记录。网关以受限增量解析器从 Chat Completions 与 Responses 的非流式 JSON 或 SSE `data:` 事件中提取 usage；普通响应只保留顶层 `usage` 对象，SSE 只保留当前事件帧，不缓冲整条响应。无法识别、缺失或不合法的 usage 保持 `NULL`，不会影响客户端响应。
+- `POST /console/v1/auth/login`
+- `POST /console/v1/auth/refresh`
+- `POST /console/v1/auth/activate-invitation`
+- `POST /console/v1/auth/logout`（需要 access JWT）
 
-选路时会绑定 `models` 当前价格快照，并在终态日志中写入 token、价格、成本和可选 output TPS；后续价格同步不会改写已有日志。对 `cost_amount` 非空、价格快照完整、请求币种与用户币种一致且 API Key 仍归属该用户的终态日志，worker 以 `billed_at IS NULL` 条件更新取得唯一结算权，并在同一数据库事务中扣减 `users.balance_amount`、增加 `api_keys.quota_used_amount`。有 usage 的失败或取消请求也会按已记录成本结算；零成本请求仍标记为已结算。
+登录或邀请激活成功后：
 
-额度仍是软预检查：不预留金额，已结算金额达到或超过 `quota_limit_amount` 时才拒绝后续请求，因此结算可使已用额度超过上限。成功结算会立即发布到同进程准入状态，避免等待配置重载；余额不足不会阻止结算，余额可为负。日志插入后立即尝试结算；启动时及每 5 秒的有界扫描会重试已持久化但 `billed_at` 为空的可结算日志。币种或 Key 归属不匹配的日志保持未结算，需先修正控制面数据。异步队列已丢弃或进程在日志落库前崩溃的事件不具备持久化恢复基础。
+- 响应 JSON 返回短期 Access JWT，客户端以 `Authorization: Bearer <token>` 调用 Console API；
+- 响应设置轮换的 `HttpOnly; Secure; SameSite=Lax` refresh Cookie；
+- refresh token 仅保存 SHA-256 哈希。刷新时会轮换；重放旧 refresh token 会撤销该 session；
+- 每个 Console 请求都会验证 JWT 签名、issuer、audience、用户状态、session 状态和 `auth_version`。禁用用户、改密码、登出和角色变化会立即使旧 token 失效。
 
-收到 SIGTERM 或 Ctrl-C 后，服务停止接收新连接，并在 `[server] shutdown_grace_period_seconds` 内等待在途连接；超过期限的响应被取消。请求日志 worker 随后进行有界排空。
+用户由管理员邀请创建。邀请响应中的 `invitation_token` 只返回一次，外部邮件/通知系统负责投递。激活邀请后用户设置自己的密码；管理员不提交或保存用户明文密码。
+
+## 普通用户接口
+
+所有下列资源均强制从 JWT 主体推导 user ID，不能通过路径或 body 参数访问他人的数据：
+
+- `GET/PATCH /console/v1/me`
+- `POST /console/v1/me/password`
+- `GET /console/v1/me/sessions`
+- `DELETE /console/v1/me/sessions/{id}`
+- `GET/POST /console/v1/me/api-keys`
+- `GET/PUT /console/v1/me/api-keys/{id}`
+- `POST /console/v1/me/api-keys/{id}/revoke`
+- `GET /console/v1/me/request-logs?limit=50`
+- `GET /console/v1/me/request-logs/{id}`
+
+普通用户创建 API Key 时只能设置名称和过期时间。格式、权限、渠道组、RPM、并发和额度由管理员分配的默认 `api_key_policy` 决定；用户不能通过 API body 扩大权限。策略还限制最大活动 Key 数。
+
+## 管理员接口
+
+拥有 `role = admin` 的用户可使用全部普通用户接口，以及以下 Console 控制面接口：
+
+- 用户与邀请：`/console/v1/users`
+- API Key Policy：`/console/v1/api-key-policies`
+- 全局 API Key：`/console/v1/api-keys`
+- 模型：`/console/v1/models`
+- models.dev：`/console/v1/catalog/models/sync/preview`、`/sync`、`/import`
+- 路由：`/console/v1/routing/channel-groups`、`/channels`、`/model-rules`
+- 网络：`/console/v1/network/proxies`
+- 变换模板：`/console/v1/transforms/templates`
+- 观测事实：`GET /console/v1/request-logs`、`GET /console/v1/audit-logs`
+- 手动重载：`POST /console/v1/system/reload`
+
+大多数可更新资源遵循 `GET` 返回 `ETag`、`PUT` 携带 `If-Match` 的乐观并发模型。控制面写入在 serializable 事务中再次确认 actor 仍为 active admin，校验完整候选快照、写入脱敏审计记录，并在提交后立即发布运行时快照。
+
+为迁移旧控制台客户端，`/console/v1/channel-groups`、`/channels`、`/model-rules`、`/proxies`、`/config-templates`、`/models/sync/*` 和 `/reload` 仍有同一 JWT/角色边界下的 Console 别名；`/admin/v1/*` 不再存在。
+
+## 日志、用量与结算
+
+每个已选路请求会产生终态 tracing 事件，并尽力异步写入一条 `request_logs`。worker 从两种格式的普通 JSON 或 SSE 事件增量提取 usage，在选路时绑定价格快照，并在可结算时以 `billed_at` 条件幂等更新用户余额和 API Key 已用额度。
+
+额度是软预检查：不预留金额，已结算额度达到上限后才拒绝后续请求；余额可以为负。队列饱和时请求日志可被丢弃，但不会阻塞或破坏代理响应。
+
+## 已知边界
+
+- 仅支持 Chat Completions 与 Responses，不提供 OpenAI 的 embeddings、images、audio、files、batches、assistants 或 fine-tuning API。
+- 没有主动健康检查、跨实例限流/配置协调、通用自动重试、独立财务账本、充值/退款或多币种兑换。
+- 服务本身不终止 TLS；Console 必须部署在正确配置的 HTTPS 反向代理后。

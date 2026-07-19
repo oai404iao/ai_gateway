@@ -9,21 +9,23 @@ use std::{
 use ai_gateway::{
     admission::AdmissionRuntime,
     application::{
-        ControlPlaneCoordinator, ModelSyncService, ProxyService, QueueRequestLogSink,
-        RequestLogSink,
+        ConsoleAuthService, ControlPlaneCoordinator, ModelSyncService, ProxyService,
+        QueueRequestLogSink, RequestLogSink, hash_console_password,
     },
     domain::{
         ApiFormat, ApiKeyPermission, RequestBilling, RequestLogEvent, RequestLogOutcome,
         RequestPriceSnapshot, RequestUsage,
     },
-    http::admin::{self, AdminState},
+    http::console::{self, ConsoleState},
     models_dev::ModelsDevClient,
     persistence::{
-        ControlPlaneRepository, MIGRATOR, RequestLogInsertOutcome, RequestLogRepository,
-        RequestLogSettlementOutcome,
+        AuthRepository, ControlPlaneRepository, MIGRATOR, RequestLogInsertOutcome,
+        RequestLogRepository, RequestLogSettlementOutcome,
     },
     routing::{self, PassiveHealthPolicy, RoutingRuntime},
-    runtime_config::{ModelsSyncConfig, RuntimeConfig, UpstreamConfig, compile_control_plane},
+    runtime_config::{
+        AuthConfig, ModelsSyncConfig, RuntimeConfig, UpstreamConfig, compile_control_plane,
+    },
     workers::{ControlPlaneReloader, RequestLogWorker},
 };
 use axum::{
@@ -327,12 +329,15 @@ struct Seed {
     key: Uuid,
     rule: Uuid,
     secret: String,
+    email: String,
+    password: String,
     client_model: String,
 }
 
 async fn seed(pool: &PgPool) -> Seed {
+    let user = Uuid::new_v4();
     let seed = Seed {
-        user: Uuid::new_v4(),
+        user,
         model: Uuid::new_v4(),
         group: Uuid::new_v4(),
         other_group: Uuid::new_v4(),
@@ -342,11 +347,16 @@ async fn seed(pool: &PgPool) -> Seed {
         key: Uuid::new_v4(),
         rule: Uuid::new_v4(),
         secret: format!("test-client-{}", Uuid::new_v4()),
+        email: format!("test-user-{user}@example.test"),
+        password: "test-password-with-enough-length".into(),
         client_model: format!("test-model-{}", Uuid::new_v4()),
     };
-    sqlx::query("INSERT INTO users (id, name, status, currency) VALUES ($1, $2, 'active', 'USD')")
+    let password_hash = hash_console_password(seed.password.clone()).await.unwrap();
+    sqlx::query("INSERT INTO users (id, email, display_name, role, status, password_hash, currency) VALUES ($1, $2, $3, 'admin', 'active', $4, 'USD')")
         .bind(seed.user)
+        .bind(&seed.email)
         .bind(format!("test-user-{}", seed.user))
+        .bind(password_hash)
         .execute(pool)
         .await
         .unwrap();
@@ -793,7 +803,33 @@ async fn settled_usage_updates_the_live_soft_quota_before_snapshot_reload() {
     database.cleanup().await;
 }
 
-const ADMIN_TOKEN: &str = "stage-four-admin-token-with-at-least-32-characters";
+const TEST_PASSWORD: &str = "test-password-with-enough-length";
+const TEST_ED25519_PRIVATE_KEY: &[u8] = br#"-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEIMrLMWiLkvZoPg8iIZRZC0qNdQQPyJV5dCAWdo0l6YBu
+-----END PRIVATE KEY-----
+"#;
+const TEST_ED25519_PUBLIC_KEY: &[u8] = br#"-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAQvs1EKtSBUS0aGjOVZhD2kqVMSiXHugcTiZTZyZxWiQ=
+-----END PUBLIC KEY-----
+"#;
+
+#[derive(Clone)]
+struct ConsoleTestApp {
+    router: Router,
+    access_token: String,
+}
+
+fn test_auth_config() -> AuthConfig {
+    AuthConfig {
+        issuer: "test-ai-gateway".into(),
+        audience: "test-console".into(),
+        access_token_ttl_seconds: 900,
+        refresh_token_ttl_seconds: 3_600,
+        key_id: "test-key".into(),
+        signing_key_path: std::path::PathBuf::from("unused-test-private.pem"),
+        verification_key_path: std::path::PathBuf::from("unused-test-public.pem"),
+    }
+}
 
 fn upstream_defaults() -> UpstreamConfig {
     UpstreamConfig {
@@ -803,7 +839,7 @@ fn upstream_defaults() -> UpstreamConfig {
     }
 }
 
-async fn admin_app(pool: PgPool, actor: Uuid) -> (Router, Arc<RuntimeConfig>) {
+async fn admin_app(pool: PgPool, actor: Uuid) -> (ConsoleTestApp, Arc<RuntimeConfig>) {
     admin_app_with_models_dev(
         pool,
         actor,
@@ -816,8 +852,8 @@ async fn admin_app_with_models_dev(
     pool: PgPool,
     actor: Uuid,
     models_dev: ModelsDevClient,
-) -> (Router, Arc<RuntimeConfig>) {
-    let repository = ControlPlaneRepository::new(pool);
+) -> (ConsoleTestApp, Arc<RuntimeConfig>) {
+    let repository = ControlPlaneRepository::new(pool.clone());
     let runtime = Arc::new(RuntimeConfig::new(
         compile_control_plane(repository.load().await.unwrap()).unwrap(),
     ));
@@ -828,19 +864,39 @@ async fn admin_app_with_models_dev(
         upstream_defaults(),
     );
     let model_sync = ModelSyncService::new(coordinator.clone(), models_dev, 100);
+    let auth = ConsoleAuthService::from_pem(
+        AuthRepository::new(pool.clone()),
+        &test_auth_config(),
+        TEST_ED25519_PRIVATE_KEY,
+        TEST_ED25519_PUBLIC_KEY,
+    )
+    .unwrap();
+    let session = auth
+        .login(
+            format!("test-user-{actor}@example.test"),
+            TEST_PASSWORD.into(),
+        )
+        .await
+        .unwrap();
     (
-        admin::router(AdminState {
-            coordinator,
-            model_sync,
-            actor_user_id: actor,
-            verifier: ai_gateway::domain::AdminTokenVerifier::from_token(ADMIN_TOKEN),
-        }),
+        ConsoleTestApp {
+            router: console::router(ConsoleState {
+                coordinator,
+                model_sync,
+                auth,
+                request_logs: RequestLogRepository::new(pool),
+                console_body_bytes: 1_048_576,
+                auth_body_bytes: 16_384,
+                allowed_origins: vec![],
+            }),
+            access_token: session.access_token,
+        },
         runtime,
     )
 }
 
 async fn admin_request(
-    app: Router,
+    app: ConsoleTestApp,
     method: &str,
     path: &str,
     body: serde_json::Value,
@@ -848,8 +904,27 @@ async fn admin_request(
     admin_request_with_headers(app, method, path, body, &[]).await
 }
 
+async fn activate_invitation(
+    app: &ConsoleTestApp,
+    invitation_token: &str,
+) -> axum::response::Response {
+    let request = axum::http::Request::builder()
+        .method("POST")
+        .uri("/console/v1/auth/activate-invitation")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&serde_json::json!({
+                "invitation_token": invitation_token,
+                "password": TEST_PASSWORD,
+            }))
+            .unwrap(),
+        ))
+        .unwrap();
+    app.router.clone().oneshot(request).await.unwrap()
+}
+
 async fn admin_request_with_headers(
-    app: Router,
+    app: ConsoleTestApp,
     method: &str,
     path: &str,
     body: serde_json::Value,
@@ -858,7 +933,7 @@ async fn admin_request_with_headers(
     let mut request = axum::http::Request::builder()
         .method(method)
         .uri(path)
-        .header("authorization", format!("Bearer {ADMIN_TOKEN}"))
+        .header("authorization", format!("Bearer {}", app.access_token))
         .header("content-type", "application/json");
     for (name, value) in headers {
         request = request.header(*name, *value);
@@ -866,7 +941,7 @@ async fn admin_request_with_headers(
     let request = request
         .body(Body::from(serde_json::to_vec(&body).unwrap()))
         .unwrap();
-    app.oneshot(request).await.unwrap()
+    app.router.oneshot(request).await.unwrap()
 }
 
 #[tokio::test]
@@ -877,7 +952,7 @@ async fn admin_key_create_publishes_immediately_and_audits_redacted() {
     let response = admin_request(
         app,
         "POST",
-        "/admin/v1/api-keys",
+        "/console/v1/api-keys",
         serde_json::json!({
             "user_id": seed.user,
             "name": format!("managed-{}", Uuid::new_v4()),
@@ -913,19 +988,32 @@ async fn managed_users_are_versioned_audited_and_immediately_revoke_their_keys()
     let created = admin_request(
         app.clone(),
         "POST",
-        "/admin/v1/users",
+        "/console/v1/users",
         serde_json::json!({
-            "name": format!("managed-user-{}", Uuid::new_v4()),
-            "status": "active",
-            "currency": "USD"
+            "email": format!("managed-user-{}@example.test", Uuid::new_v4()),
+            "display_name": format!("managed-user-{}", Uuid::new_v4()),
+            "role": "user",
+            "currency": "USD",
+            "default_api_key_policy_id": null
         }),
     )
     .await;
     assert_eq!(created.status(), StatusCode::CREATED);
     let created: serde_json::Value =
         serde_json::from_slice(&created.into_body().collect().await.unwrap().to_bytes()).unwrap();
-    let user_id = Uuid::parse_str(created["id"].as_str().unwrap()).unwrap();
-    let users = admin_request(app.clone(), "GET", "/admin/v1/users", serde_json::json!({})).await;
+    let user_id = Uuid::parse_str(created["user_id"].as_str().unwrap()).unwrap();
+    let invitation_token = created["invitation_token"].as_str().unwrap();
+    assert_eq!(
+        activate_invitation(&app, invitation_token).await.status(),
+        StatusCode::OK
+    );
+    let users = admin_request(
+        app.clone(),
+        "GET",
+        "/console/v1/users",
+        serde_json::json!({}),
+    )
+    .await;
     assert_eq!(users.status(), StatusCode::OK);
     let users: serde_json::Value =
         serde_json::from_slice(&users.into_body().collect().await.unwrap().to_bytes()).unwrap();
@@ -940,7 +1028,7 @@ async fn managed_users_are_versioned_audited_and_immediately_revoke_their_keys()
     let key = admin_request(
         app.clone(),
         "POST",
-        "/admin/v1/api-keys",
+        "/console/v1/api-keys",
         serde_json::json!({
             "user_id": user_id,
             "name": format!("managed-key-{}", Uuid::new_v4()),
@@ -958,7 +1046,7 @@ async fn managed_users_are_versioned_audited_and_immediately_revoke_their_keys()
     let old_snapshot = runtime.snapshot();
     assert!(old_snapshot.authenticate(&secret).is_some());
 
-    let path = format!("/admin/v1/users/{user_id}");
+    let path = format!("/console/v1/users/{user_id}");
     let detail = admin_request(app.clone(), "GET", &path, serde_json::json!({})).await;
     assert_eq!(detail.status(), StatusCode::OK);
     let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
@@ -1014,7 +1102,7 @@ async fn managed_models_are_versioned_and_invalid_disable_rolls_back() {
     let created = admin_request(
         app.clone(),
         "POST",
-        "/admin/v1/models",
+        "/console/v1/models",
         serde_json::json!({
             "source_model_id": source_model_id,
             "display_name": "Managed model",
@@ -1044,7 +1132,7 @@ async fn managed_models_are_versioned_and_invalid_disable_rolls_back() {
         admin_request(
             app.clone(),
             "POST",
-            "/admin/v1/models",
+            "/console/v1/models",
             serde_json::json!({
                 "source_model_id": format!("invalid-model-{}", Uuid::new_v4()),
                 "display_name": "Invalid model",
@@ -1073,7 +1161,7 @@ async fn managed_models_are_versioned_and_invalid_disable_rolls_back() {
     let list = admin_request(
         app.clone(),
         "GET",
-        "/admin/v1/models",
+        "/console/v1/models",
         serde_json::json!({}),
     )
     .await;
@@ -1087,7 +1175,7 @@ async fn managed_models_are_versioned_and_invalid_disable_rolls_back() {
             .any(|model| model["id"] == model_id.to_string())
     );
 
-    let path = format!("/admin/v1/models/{model_id}");
+    let path = format!("/console/v1/models/{model_id}");
     let detail = admin_request(app.clone(), "GET", &path, serde_json::json!({})).await;
     let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
     let mut update: serde_json::Value =
@@ -1133,7 +1221,7 @@ async fn managed_models_are_versioned_and_invalid_disable_rolls_back() {
             .unwrap();
     assert_eq!(source_payload, serde_json::json!({"source": "test"}));
 
-    let seed_path = format!("/admin/v1/models/{}", seed.model);
+    let seed_path = format!("/console/v1/models/{}", seed.model);
     let seed_detail = admin_request(app.clone(), "GET", &seed_path, serde_json::json!({})).await;
     let seed_etag = seed_detail.headers()["etag"].to_str().unwrap().to_owned();
     let mut disable: serde_json::Value =
@@ -1190,7 +1278,7 @@ async fn models_dev_price_sync_updates_only_existing_models_and_import_is_explic
     let preview = admin_request(
         app.clone(),
         "POST",
-        "/admin/v1/models/sync/preview",
+        "/console/v1/models/sync/preview",
         serde_json::json!({"provider_ids":["provider-a"]}),
     )
     .await;
@@ -1207,7 +1295,7 @@ async fn models_dev_price_sync_updates_only_existing_models_and_import_is_explic
     let sync = admin_request(
         app.clone(),
         "POST",
-        "/admin/v1/models/sync",
+        "/console/v1/models/sync",
         serde_json::json!({}),
     )
     .await;
@@ -1228,7 +1316,7 @@ async fn models_dev_price_sync_updates_only_existing_models_and_import_is_explic
     let imported = admin_request(
         app.clone(),
         "POST",
-        "/admin/v1/models/sync/import",
+        "/console/v1/models/sync/import",
         serde_json::json!({
             "selections":[{"provider_id":"provider-a","model_id":"catalog-model"}]
         }),
@@ -1277,7 +1365,7 @@ async fn models_dev_price_sync_updates_only_existing_models_and_import_is_explic
     let detail = admin_request(
         app.clone(),
         "GET",
-        &format!("/admin/v1/models/{model_id}"),
+        &format!("/console/v1/models/{model_id}"),
         serde_json::json!({}),
     )
     .await;
@@ -1298,7 +1386,7 @@ async fn models_dev_price_sync_updates_only_existing_models_and_import_is_explic
     let preview = admin_request(
         app.clone(),
         "POST",
-        "/admin/v1/models/sync/preview",
+        "/console/v1/models/sync/preview",
         serde_json::json!({"provider_ids":["provider-a"]}),
     )
     .await;
@@ -1320,7 +1408,7 @@ async fn models_dev_price_sync_updates_only_existing_models_and_import_is_explic
     let sync = admin_request(
         app.clone(),
         "POST",
-        "/admin/v1/models/sync",
+        "/console/v1/models/sync",
         serde_json::json!({}),
     )
     .await;
@@ -1365,7 +1453,7 @@ async fn models_dev_price_sync_updates_only_existing_models_and_import_is_explic
     let rejected = admin_request(
         app.clone(),
         "POST",
-        "/admin/v1/models/sync/import",
+        "/console/v1/models/sync/import",
         serde_json::json!({
             "selections":[{"provider_id":"provider-a","model_id":"catalog-model"}]
         }),
@@ -1375,7 +1463,7 @@ async fn models_dev_price_sync_updates_only_existing_models_and_import_is_explic
     let missing_price_import = admin_request(
         app,
         "POST",
-        "/admin/v1/models/sync/import",
+        "/console/v1/models/sync/import",
         serde_json::json!({
             "selections":[{"provider_id":"provider-a","model_id":"missing-price"}]
         }),
@@ -1403,7 +1491,7 @@ async fn admin_api_key_policies_persist_publish_and_are_audited_without_secrets(
     let created = admin_request(
         app.clone(),
         "POST",
-        "/admin/v1/api-keys",
+        "/console/v1/api-keys",
         serde_json::json!({
             "user_id": seed.user,
             "name": format!("policy-managed-{}", Uuid::new_v4()),
@@ -1450,7 +1538,7 @@ async fn admin_api_key_policies_persist_publish_and_are_audited_without_secrets(
     let list = admin_request(
         app.clone(),
         "GET",
-        "/admin/v1/api-keys",
+        "/console/v1/api-keys",
         serde_json::json!({}),
     )
     .await;
@@ -1469,7 +1557,7 @@ async fn admin_api_key_policies_persist_publish_and_are_audited_without_secrets(
     assert_eq!(listed["quota_used_amount"], "0");
     assert!(listed["tokens_per_minute"].is_null());
 
-    let path = format!("/admin/v1/api-keys/{id}");
+    let path = format!("/console/v1/api-keys/{id}");
     let detail = admin_request(app.clone(), "GET", &path, serde_json::json!({})).await;
     assert_eq!(detail.status(), StatusCode::OK);
     let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
@@ -1543,7 +1631,7 @@ async fn admin_api_key_policies_persist_publish_and_are_audited_without_secrets(
     let token_edit = admin_request(
         app,
         "POST",
-        "/admin/v1/api-keys",
+        "/console/v1/api-keys",
         serde_json::json!({
             "user_id": seed.user,
             "name": format!("token-edit-{}", Uuid::new_v4()),
@@ -1574,7 +1662,7 @@ async fn invalid_admin_mutation_rolls_back_database_audit_and_snapshot() {
     let response = admin_request(
         app,
         "PUT",
-        &format!("/admin/v1/channels/{}", seed.channel),
+        &format!("/console/v1/channels/{}", seed.channel),
         serde_json::json!({
             "channel_group_id": seed.group, "api_format": "open_ai_chat_completions",
             "name": format!("test-channel-{}", seed.channel), "base_url": "https://example.test",
@@ -1613,7 +1701,7 @@ async fn proxy_template_management_is_redacted_and_publishes_or_rolls_back_atomi
     let created_proxy = admin_request(
         app.clone(),
         "POST",
-        "/admin/v1/proxies",
+        "/console/v1/proxies",
         serde_json::json!({
             "name": "managed-proxy",
             "proxy_url": "https://managed-proxy.test:8443",
@@ -1644,7 +1732,7 @@ async fn proxy_template_management_is_redacted_and_publishes_or_rolls_back_atomi
     let created_template = admin_request(
         app.clone(),
         "POST",
-        "/admin/v1/config-templates",
+        "/console/v1/config-templates",
         serde_json::json!({
             "name": "managed-template",
             "description": "managed template",
@@ -1668,7 +1756,7 @@ async fn proxy_template_management_is_redacted_and_publishes_or_rolls_back_atomi
     let proxy_list = admin_request(
         app.clone(),
         "GET",
-        "/admin/v1/proxies",
+        "/console/v1/proxies",
         serde_json::json!({}),
     )
     .await;
@@ -1686,7 +1774,7 @@ async fn proxy_template_management_is_redacted_and_publishes_or_rolls_back_atomi
     assert!(!proxy_list.to_string().contains(proxy_password));
     assert!(!proxy_list.to_string().contains(proxy_username));
 
-    let proxy_path = format!("/admin/v1/proxies/{proxy_id}");
+    let proxy_path = format!("/console/v1/proxies/{proxy_id}");
     let proxy_detail = admin_request(app.clone(), "GET", &proxy_path, serde_json::json!({})).await;
     assert_eq!(proxy_detail.status(), StatusCode::OK);
     let proxy_etag = proxy_detail.headers()["etag"].to_str().unwrap().to_owned();
@@ -1717,7 +1805,7 @@ async fn proxy_template_management_is_redacted_and_publishes_or_rolls_back_atomi
     let template_list = admin_request(
         app.clone(),
         "GET",
-        "/admin/v1/config-templates",
+        "/console/v1/config-templates",
         serde_json::json!({}),
     )
     .await;
@@ -1740,7 +1828,7 @@ async fn proxy_template_management_is_redacted_and_publishes_or_rolls_back_atomi
     );
     assert!(!template_list.to_string().contains(template_value));
 
-    let template_path = format!("/admin/v1/config-templates/{template_id}");
+    let template_path = format!("/console/v1/config-templates/{template_id}");
     let template_detail =
         admin_request(app.clone(), "GET", &template_path, serde_json::json!({})).await;
     assert_eq!(template_detail.status(), StatusCode::OK);
@@ -1777,7 +1865,7 @@ async fn proxy_template_management_is_redacted_and_publishes_or_rolls_back_atomi
         StatusCode::OK
     );
 
-    let channel_path = format!("/admin/v1/channels/{}", seed.channel);
+    let channel_path = format!("/console/v1/channels/{}", seed.channel);
     let channel_detail =
         admin_request(app.clone(), "GET", &channel_path, serde_json::json!({})).await;
     let channel_etag = channel_detail.headers()["etag"]
@@ -1909,12 +1997,12 @@ async fn proxy_template_management_is_redacted_and_publishes_or_rolls_back_atomi
     }
     for (path, body, secret) in [
         (
-            "/admin/v1/proxies",
+            "/console/v1/proxies",
             serde_json::json!({"name":"invalid-proxy", "proxy_url":"ftp://invalid.test", "password":"invalid-proxy-password", "enabled":true}),
             "invalid-proxy-password",
         ),
         (
-            "/admin/v1/config-templates",
+            "/console/v1/config-templates",
             serde_json::json!({"name":"invalid-template", "document":{"version":1,"api_format":"open_ai_chat_completions","unknown":"invalid-document-value"}, "enabled":true}),
             "invalid-document-value",
         ),
@@ -1968,12 +2056,12 @@ async fn revoked_api_key_cannot_be_reactivated() {
     let revoked = admin_request(
         app.clone(),
         "POST",
-        &format!("/admin/v1/api-keys/{}/revoke", seed.key),
+        &format!("/console/v1/api-keys/{}/revoke", seed.key),
         serde_json::json!({"reason":"incident"}),
     )
     .await;
     assert_eq!(revoked.status(), StatusCode::OK);
-    let updated = admin_request(app, "PUT", &format!("/admin/v1/api-keys/{}", seed.key), serde_json::json!({
+    let updated = admin_request(app, "PUT", &format!("/console/v1/api-keys/{}", seed.key), serde_json::json!({
         "name":"test", "status":"active", "allowed_api_formats":["open_ai_chat_completions"],
         "permissions":["proxy","models.read"], "allowed_group_ids":[seed.group], "expires_at":null
     })).await;
@@ -1995,17 +2083,14 @@ async fn overly_long_revoke_reason_is_a_safe_unprocessable_response() {
     let response = admin_request(
         app,
         "POST",
-        &format!("/admin/v1/api-keys/{}/revoke", seed.key),
+        &format!("/console/v1/api-keys/{}/revoke", seed.key),
         serde_json::json!({"reason": "x".repeat(501)}),
     )
     .await;
 
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let body = response.into_body().collect().await.unwrap().to_bytes();
-    assert_eq!(
-        body.as_ref(),
-        br#"{"error":"management operation rejected"}"#
-    );
+    assert_eq!(body.as_ref(), br#"{"error":"Console operation rejected"}"#);
     let status: String = sqlx::query_scalar("SELECT status FROM api_keys WHERE id=$1")
         .bind(seed.key)
         .fetch_one(&database.pool)
@@ -2020,7 +2105,7 @@ async fn management_channel_credentials_are_redacted_kept_replaced_and_cleared_s
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
     let (app, _) = admin_app(database.pool.clone(), seed.user).await;
-    let path = format!("/admin/v1/channels/{}", seed.channel);
+    let path = format!("/console/v1/channels/{}", seed.channel);
     let detail = admin_request(app.clone(), "GET", &path, serde_json::json!({})).await;
     assert_eq!(detail.status(), StatusCode::OK);
     assert_eq!(detail.headers()["cache-control"], "no-store");
@@ -2085,7 +2170,7 @@ async fn channel_documents_are_rejected_and_never_escape_admin_or_audit_allowlis
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
     let (app, _) = admin_app(database.pool.clone(), seed.user).await;
-    let path = format!("/admin/v1/channels/{}", seed.channel);
+    let path = format!("/console/v1/channels/{}", seed.channel);
     let audits_before: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_logs")
         .fetch_one(&database.pool)
         .await
@@ -2093,7 +2178,7 @@ async fn channel_documents_are_rejected_and_never_escape_admin_or_audit_allowlis
     let rejected_create = admin_request(
         app.clone(),
         "POST",
-        "/admin/v1/channels",
+        "/console/v1/channels",
         serde_json::json!({
             "channel_group_id": seed.group, "api_format": "open_ai_chat_completions",
             "name": format!("rejected-channel-{}", Uuid::new_v4()),
@@ -2240,7 +2325,7 @@ async fn full_put_requires_current_etag_and_stale_update_does_not_audit() {
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
     let (app, _) = admin_app(database.pool.clone(), seed.user).await;
-    let path = format!("/admin/v1/api-keys/{}", seed.key);
+    let path = format!("/console/v1/api-keys/{}", seed.key);
     let detail = admin_request(app.clone(), "GET", &path, serde_json::json!({})).await;
     assert_eq!(detail.status(), StatusCode::OK);
     let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
@@ -2300,7 +2385,7 @@ async fn disabled_legacy_key_tpm_is_visible_audited_and_cannot_be_activated() {
     let list = admin_request(
         app.clone(),
         "GET",
-        "/admin/v1/api-keys",
+        "/console/v1/api-keys",
         serde_json::json!({}),
     )
     .await;
@@ -2316,7 +2401,7 @@ async fn disabled_legacy_key_tpm_is_visible_audited_and_cannot_be_activated() {
         42
     );
 
-    let path = format!("/admin/v1/api-keys/{}", seed.key);
+    let path = format!("/console/v1/api-keys/{}", seed.key);
     let detail = admin_request(app.clone(), "GET", &path, serde_json::json!({})).await;
     assert_eq!(detail.status(), StatusCode::OK);
     let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
@@ -3153,5 +3238,203 @@ async fn saturated_request_log_queue_does_not_delay_proxy_responses_and_drains_a
     assert_eq!(accepted, 3);
     drop(gateway);
     drop(upstream_server);
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn console_members_are_limited_to_their_own_keys_and_logs() {
+    let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
+    let (admin_app, _) = admin_app(database.pool.clone(), seed.user).await;
+
+    let invitation = admin_request(
+        admin_app.clone(),
+        "POST",
+        "/console/v1/users",
+        serde_json::json!({
+            "email": format!("member-{}@example.test", Uuid::new_v4()),
+            "display_name": "Member",
+            "role": "user",
+            "currency": "USD",
+            "default_api_key_policy_id": null
+        }),
+    )
+    .await;
+    assert_eq!(invitation.status(), StatusCode::CREATED);
+    let invitation: serde_json::Value =
+        serde_json::from_slice(&invitation.into_body().collect().await.unwrap().to_bytes())
+            .unwrap();
+    let member_id = Uuid::parse_str(invitation["user_id"].as_str().unwrap()).unwrap();
+    let invitation_token = invitation["invitation_token"].as_str().unwrap();
+    let activation = activate_invitation(&admin_app, invitation_token).await;
+    assert_eq!(activation.status(), StatusCode::OK);
+    let activation: serde_json::Value =
+        serde_json::from_slice(&activation.into_body().collect().await.unwrap().to_bytes())
+            .unwrap();
+    let member_app = ConsoleTestApp {
+        router: admin_app.router.clone(),
+        access_token: activation["access_token"].as_str().unwrap().to_owned(),
+    };
+
+    let policy_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO api_key_policies
+         (id,name,allowed_api_formats,permissions,allowed_group_ids,max_active_keys,enabled)
+         VALUES ($1,$2,ARRAY['open_ai_chat_completions']::api_format[],ARRAY['proxy'],ARRAY[$3]::uuid[],1,true)",
+    )
+    .bind(policy_id)
+    .bind(format!("member-policy-{policy_id}"))
+    .bind(seed.group)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE users SET default_api_key_policy_id=$2 WHERE id=$1")
+        .bind(member_id)
+        .bind(policy_id)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        admin_request(
+            member_app.clone(),
+            "GET",
+            "/console/v1/users",
+            serde_json::json!({}),
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+
+    let created = admin_request(
+        member_app.clone(),
+        "POST",
+        "/console/v1/me/api-keys",
+        serde_json::json!({"name":"member-key","expires_at":null}),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let created: serde_json::Value =
+        serde_json::from_slice(&created.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert!(created["secret"].as_str().is_some());
+
+    assert_eq!(
+        admin_request(
+            member_app.clone(),
+            "GET",
+            &format!("/console/v1/me/api-keys/{}", seed.key),
+            serde_json::json!({}),
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        admin_request(
+            member_app.clone(),
+            "GET",
+            "/console/v1/me/request-logs",
+            serde_json::json!({}),
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+
+    sqlx::query("UPDATE users SET status='suspended',auth_version=auth_version+1 WHERE id=$1")
+        .bind(member_id)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        admin_request(member_app, "GET", "/console/v1/me", serde_json::json!({}),)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn console_refresh_tokens_rotate_and_replay_is_rejected() {
+    let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
+    let (app, _) = admin_app(database.pool.clone(), seed.user).await;
+    let login = axum::http::Request::builder()
+        .method("POST")
+        .uri("/console/v1/auth/login")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&serde_json::json!({
+                "email": seed.email,
+                "password": seed.password,
+            }))
+            .unwrap(),
+        ))
+        .unwrap();
+    let login = app.router.clone().oneshot(login).await.unwrap();
+    assert_eq!(login.status(), StatusCode::OK);
+    let refresh_cookie = login
+        .headers()
+        .get("set-cookie")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+
+    let refresh_request = || {
+        axum::http::Request::builder()
+            .method("POST")
+            .uri("/console/v1/auth/refresh")
+            .header("cookie", &refresh_cookie)
+            .body(Body::empty())
+            .unwrap()
+    };
+    assert_eq!(
+        app.router
+            .clone()
+            .oneshot(refresh_request())
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        app.router
+            .clone()
+            .oneshot(refresh_request())
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn console_auth_body_limit_returns_payload_too_large() {
+    let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
+    let (app, _) = admin_app(database.pool.clone(), seed.user).await;
+    let request = axum::http::Request::builder()
+        .method("POST")
+        .uri("/console/v1/auth/login")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&serde_json::json!({
+                "email": seed.email,
+                "password": "x".repeat(20_000),
+            }))
+            .unwrap(),
+        ))
+        .unwrap();
+    assert_eq!(
+        app.router.clone().oneshot(request).await.unwrap().status(),
+        StatusCode::PAYLOAD_TOO_LARGE
+    );
     database.cleanup().await;
 }

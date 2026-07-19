@@ -8,6 +8,7 @@ license = "UNLICENSED"
 
 [dependencies]
 arc-swap = "1.7"
+argon2 = { version = "0.5", features = ["password-hash"] }
 axum = "0.8"
 bytes = "1.10"
 chrono = { version = "0.4", features = ["serde"] }
@@ -15,6 +16,7 @@ futures-util = "0.3"
 hyper = { version = "1", features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["server-auto", "server-graceful", "service", "tokio"] }
 http-body-util = "0.1"
+jsonwebtoken = { version = "9.3", default-features = false, features = ["use_pem"] }
 json-patch = "4.2"
 jsonptr = "0.7"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "socks", "stream"] }
@@ -26,10 +28,11 @@ sha2 = "0.10"
 sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio-rustls", "migrate", "chrono", "uuid", "json", "rust_decimal", "macros"] }
 subtle = "2.6"
 thiserror = "2.0"
+time = "=0.3.45"
 tokio = { version = "1.43", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 toml = "0.8"
 tower = { version = "0.5", features = ["util"] }
-tower-http = { version = "0.6", features = ["trace"] }
+tower-http = { version = "0.6", features = ["cors", "limit", "trace"] }
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }

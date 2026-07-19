@@ -16,12 +16,12 @@ use reqwest::{
 use serde::Deserialize;
 use thiserror::Error;
 use uuid::Uuid;
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroizing;
 
 use crate::{
     domain::{
-        AdminTokenVerifier, ApiFormat, ApiKeyHash, ApiKeyPermission, ChannelTimeoutPolicy,
-        CompiledApiKey, CompiledChannel, CompiledChannelGroup, CompiledChannelUpstreamPolicy,
+        ApiFormat, ApiKeyHash, ApiKeyPermission, ChannelTimeoutPolicy, CompiledApiKey,
+        CompiledChannel, CompiledChannelGroup, CompiledChannelUpstreamPolicy,
         CompiledConfigTemplate, CompiledModelRule, CompiledProxy, CompiledRouteTier,
         CompiledRuntimeConfig, ModelPriceSnapshot, ModelRouteKey, NoProxyHost, SelectionStrategy,
         UpstreamAuth,
@@ -47,7 +47,11 @@ pub struct AppConfig {
     #[serde(default)]
     pub models_sync: ModelsSyncConfig,
     #[serde(default)]
-    pub admin: AdminFileConfig,
+    pub request_limits: RequestLimitsFileConfig,
+    #[serde(default)]
+    pub console: ConsoleFileConfig,
+    #[serde(default)]
+    pub auth: AuthFileConfig,
     pub observability: ObservabilityConfig,
 }
 impl AppConfig {
@@ -77,7 +81,8 @@ impl AppConfig {
         validate_database(&self.database)?;
         validate_upstream(&self.upstream)?;
         validate_models_sync(&self.models_sync)?;
-        let admin = validate_admin(self.admin)?;
+        let request_limits = RequestLimitsConfig::resolve(&self.server, self.request_limits)?;
+        let console = validate_console(self.console, self.auth)?;
         if self.runtime_config.reload_interval_seconds == 0 {
             return Err(ConfigError::Compile(
                 "runtime_config reload_interval_seconds must be greater than zero".into(),
@@ -104,7 +109,8 @@ impl AppConfig {
             request_logging: self.request_logging,
             passive_health: self.passive_health,
             models_sync: self.models_sync,
-            admin,
+            request_limits,
+            console,
             observability: self.observability,
         })
     }
@@ -118,7 +124,8 @@ pub struct BootstrapConfig {
     pub request_logging: RequestLoggingConfig,
     pub passive_health: PassiveHealthConfig,
     pub models_sync: ModelsSyncConfig,
-    pub admin: Option<AdminListenerConfig>,
+    pub request_limits: RequestLimitsConfig,
+    pub console: Option<ConsoleListenerConfig>,
     pub observability: ObservabilityConfig,
 }
 #[derive(Clone, Debug, Deserialize)]
@@ -126,7 +133,11 @@ pub struct BootstrapConfig {
 pub struct ServerConfig {
     pub host: String,
     pub port: u16,
-    pub max_request_body_bytes: usize,
+    /// Legacy proxy body limit. New installations should use
+    /// `[request_limits].proxy_body_bytes`; this field is retained for one
+    /// compatibility cycle so existing TOML files keep starting safely.
+    #[serde(default)]
+    pub max_request_body_bytes: Option<usize>,
     #[serde(default = "default_shutdown_grace_period_seconds")]
     pub shutdown_grace_period_seconds: u64,
 }
@@ -213,35 +224,110 @@ pub struct ObservabilityConfig {
     pub filter: String,
 }
 
-/// File-only representation. It is consumed by `validate` so the raw token
-/// cannot outlive bootstrap construction.
-#[derive(Default, Deserialize)]
+/// File-only request-size settings. The public proxy and authenticated Console
+/// traffic intentionally use independent limits because their payload shapes
+/// and abuse profiles differ.
+#[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AdminFileConfig {
+pub struct RequestLimitsFileConfig {
     #[serde(default)]
-    pub enabled: bool,
-    pub host: Option<String>,
-    pub port: Option<u16>,
-    pub actor_user_id: Option<Uuid>,
-    pub bearer_token: Option<String>,
+    pub proxy_body_bytes: Option<usize>,
+    #[serde(default = "default_console_body_bytes")]
+    pub console_body_bytes: usize,
+    #[serde(default = "default_auth_body_bytes")]
+    pub auth_body_bytes: usize,
 }
-impl Drop for AdminFileConfig {
-    fn drop(&mut self) {
-        if let Some(token) = &mut self.bearer_token {
-            token.zeroize();
+impl Default for RequestLimitsFileConfig {
+    fn default() -> Self {
+        Self {
+            proxy_body_bytes: None,
+            console_body_bytes: default_console_body_bytes(),
+            auth_body_bytes: default_auth_body_bytes(),
         }
     }
 }
 
-#[derive(Clone)]
-pub struct AdminListenerConfig {
+#[derive(Clone, Debug)]
+pub struct RequestLimitsConfig {
+    pub proxy_body_bytes: usize,
+    pub console_body_bytes: usize,
+    pub auth_body_bytes: usize,
+}
+impl RequestLimitsConfig {
+    fn resolve(server: &ServerConfig, file: RequestLimitsFileConfig) -> Result<Self, ConfigError> {
+        let proxy_body_bytes = file
+            .proxy_body_bytes
+            .or(server.max_request_body_bytes)
+            .unwrap_or_else(default_proxy_body_bytes);
+        if proxy_body_bytes == 0 || file.console_body_bytes == 0 || file.auth_body_bytes == 0 {
+            return Err(ConfigError::Compile(
+                "request body limits must be greater than zero".into(),
+            ));
+        }
+        Ok(Self {
+            proxy_body_bytes,
+            console_body_bytes: file.console_body_bytes,
+            auth_body_bytes: file.auth_body_bytes,
+        })
+    }
+}
+
+/// The separate browser/control-plane listener. It is deliberately named
+/// Console rather than Admin: administrator is a user role, not an API type.
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConsoleFileConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    pub host: Option<String>,
+    pub port: Option<u16>,
+    #[serde(default)]
+    pub allowed_origins: Vec<String>,
+}
+
+/// File-only JWT setup. Private key material remains in a separate protected
+/// file, never in TOML.
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuthFileConfig {
+    pub issuer: Option<String>,
+    pub audience: Option<String>,
+    pub access_token_ttl_seconds: Option<u64>,
+    pub refresh_token_ttl_seconds: Option<u64>,
+    pub key_id: Option<String>,
+    pub signing_key_path: Option<PathBuf>,
+    pub verification_key_path: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ConsoleListenerConfig {
     pub address: SocketAddr,
-    pub actor_user_id: Uuid,
-    pub verifier: AdminTokenVerifier,
+    pub allowed_origins: Vec<String>,
+    pub auth: AuthConfig,
+}
+
+#[derive(Clone, Debug)]
+pub struct AuthConfig {
+    pub issuer: String,
+    pub audience: String,
+    pub access_token_ttl_seconds: u64,
+    pub refresh_token_ttl_seconds: u64,
+    pub key_id: String,
+    pub signing_key_path: PathBuf,
+    pub verification_key_path: PathBuf,
 }
 
 const fn default_shutdown_grace_period_seconds() -> u64 {
     30
+}
+const fn default_proxy_body_bytes() -> usize {
+    1_048_576
+}
+const fn default_console_body_bytes() -> usize {
+    262_144
+}
+const fn default_auth_body_bytes() -> usize {
+    16_384
 }
 const fn default_request_log_queue_capacity() -> usize {
     1_024
@@ -1125,9 +1211,13 @@ fn dup(field: &str) -> ConfigError {
 }
 fn validate_server(server: &ServerConfig) -> Result<(), ConfigError> {
     require("server host", &server.host)?;
-    if server.max_request_body_bytes == 0 || server.shutdown_grace_period_seconds == 0 {
+    if server
+        .max_request_body_bytes
+        .is_some_and(|limit| limit == 0)
+        || server.shutdown_grace_period_seconds == 0
+    {
         return Err(ConfigError::Compile(
-            "server max_request_body_bytes and shutdown_grace_period_seconds must be greater than zero"
+            "legacy server max_request_body_bytes and shutdown_grace_period_seconds must be greater than zero"
                 .into(),
         ));
     }
@@ -1179,46 +1269,95 @@ fn validate_models_sync(config: &ModelsSyncConfig) -> Result<(), ConfigError> {
     }
     Ok(())
 }
-fn validate_admin(mut config: AdminFileConfig) -> Result<Option<AdminListenerConfig>, ConfigError> {
+fn validate_console(
+    config: ConsoleFileConfig,
+    auth: AuthFileConfig,
+) -> Result<Option<ConsoleListenerConfig>, ConfigError> {
     if !config.enabled {
         return Ok(None);
     }
     let host = config
         .host
-        .take()
-        .ok_or_else(|| ConfigError::Compile("enabled admin host is required".into()))?;
+        .ok_or_else(|| ConfigError::Compile("enabled console host is required".into()))?;
     let address = host
         .parse::<std::net::IpAddr>()
-        .map_err(|_| ConfigError::Compile("admin host must be a loopback IP address".into()))?;
-    if !address.is_loopback() {
-        return Err(ConfigError::Compile(
-            "admin host must be a loopback IP address".into(),
-        ));
-    }
+        .map_err(|_| ConfigError::Compile("console host must be an IP address".into()))?;
     let port = config
         .port
         .filter(|port| *port != 0)
-        .ok_or_else(|| ConfigError::Compile("enabled admin port is required".into()))?;
-    let actor_user_id = config
-        .actor_user_id
-        .ok_or_else(|| ConfigError::Compile("enabled admin actor_user_id is required".into()))?;
-    let mut token = config
-        .bearer_token
-        .take()
-        .ok_or_else(|| ConfigError::Compile("enabled admin bearer_token is required".into()))?;
-    if token.trim().len() < 32 {
-        token.zeroize();
+        .ok_or_else(|| ConfigError::Compile("enabled console port is required".into()))?;
+    let issuer = required_auth_value(auth.issuer, "auth issuer")?;
+    let audience = required_auth_value(auth.audience, "auth audience")?;
+    let key_id = required_auth_value(auth.key_id, "auth key_id")?;
+    let signing_key_path = auth
+        .signing_key_path
+        .filter(|path| !path.as_os_str().is_empty())
+        .ok_or_else(|| {
+            ConfigError::Compile("enabled console signing_key_path is required".into())
+        })?;
+    let verification_key_path = auth
+        .verification_key_path
+        .filter(|path| !path.as_os_str().is_empty())
+        .ok_or_else(|| {
+            ConfigError::Compile("enabled console verification_key_path is required".into())
+        })?;
+    let access_token_ttl_seconds = auth
+        .access_token_ttl_seconds
+        .filter(|ttl| *ttl > 0)
+        .ok_or_else(|| {
+            ConfigError::Compile("enabled console access token TTL is required".into())
+        })?;
+    let refresh_token_ttl_seconds = auth
+        .refresh_token_ttl_seconds
+        .filter(|ttl| *ttl > access_token_ttl_seconds)
+        .ok_or_else(|| {
+            ConfigError::Compile(
+                "console refresh token TTL must be greater than access token TTL".into(),
+            )
+        })?;
+    for origin in &config.allowed_origins {
+        validate_console_origin(origin)?;
+    }
+    unique(&config.allowed_origins, "console allowed origin")?;
+    Ok(Some(ConsoleListenerConfig {
+        address: SocketAddr::new(address, port),
+        allowed_origins: config.allowed_origins,
+        auth: AuthConfig {
+            issuer,
+            audience,
+            access_token_ttl_seconds,
+            refresh_token_ttl_seconds,
+            key_id,
+            signing_key_path,
+            verification_key_path,
+        },
+    }))
+}
+
+fn required_auth_value(value: Option<String>, field: &str) -> Result<String, ConfigError> {
+    let value = value
+        .ok_or_else(|| ConfigError::Compile(format!("enabled console {field} is required")))?;
+    require(field, &value)?;
+    Ok(value)
+}
+
+fn validate_console_origin(origin: &str) -> Result<(), ConfigError> {
+    let parsed = Url::parse(origin)
+        .map_err(|_| ConfigError::Compile("console allowed origin is invalid".into()))?;
+    if !matches!(parsed.scheme(), "https" | "http")
+        || parsed.host().is_none()
+        || parsed.username() != ""
+        || parsed.password().is_some()
+        || parsed.path() != "/"
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+        || origin == "*"
+    {
         return Err(ConfigError::Compile(
-            "admin bearer_token must contain at least 32 characters".into(),
+            "console allowed origin must be an HTTP(S) origin without path or credentials".into(),
         ));
     }
-    let verifier = AdminTokenVerifier::from_token(&token);
-    token.zeroize();
-    Ok(Some(AdminListenerConfig {
-        address: SocketAddr::new(address, port),
-        actor_user_id,
-        verifier,
-    }))
+    Ok(())
 }
 
 #[derive(Debug, Error)]
@@ -1331,11 +1470,11 @@ mod tests {
 
     #[test]
     fn malformed_toml_error_never_retains_or_formats_raw_config() {
-        let token = "fake-admin-token-must-never-appear-in-an-error";
+        let token = "fake-jwt-key-path-must-never-appear-in-an-error";
         let path = std::env::temp_dir().join(format!("ai-gateway-invalid-{}.toml", Uuid::new_v4()));
         std::fs::write(
             &path,
-            format!("[admin]\nbearer_token = '{token}'\nnot valid toml"),
+            format!("[auth]\nsigning_key_path = '{token}'\nnot valid toml"),
         )
         .unwrap();
         let error = match AppConfig::load(&path) {
@@ -1371,18 +1510,21 @@ mod tests {
         assert_eq!(config.request_logging.queue_capacity, 1_024);
         assert_eq!(config.passive_health.connection_failure_threshold, 3);
         assert_eq!(config.passive_health.cooldown_seconds, 30);
+        assert_eq!(config.request_limits.proxy_body_bytes, 1);
+        assert_eq!(config.request_limits.console_body_bytes, 262_144);
+        assert_eq!(config.request_limits.auth_body_bytes, 16_384);
     }
 
     #[test]
-    fn bootstrap_preserves_ipv6_admin_socket_address() {
-        let value = "[server]\nhost='127.0.0.1'\nport=1\nmax_request_body_bytes=1\nshutdown_grace_period_seconds=1\n[database]\nurl='postgres://x'\nmax_connections=1\nconnect_timeout_seconds=1\n[upstream]\nconnect_timeout_seconds=1\nresponse_header_timeout_seconds=2\nstream_idle_timeout_seconds=1\n[runtime_config]\nreload_interval_seconds=1\n[observability]\nfilter='info'\n[admin]\nenabled=true\nhost='::1'\nport=9443\nactor_user_id='00000000-0000-0000-0000-000000000001'\nbearer_token='at-least-thirty-two-characters-long-token'";
+    fn bootstrap_preserves_ipv6_console_socket_address() {
+        let value = "[server]\nhost='127.0.0.1'\nport=1\nmax_request_body_bytes=1\nshutdown_grace_period_seconds=1\n[database]\nurl='postgres://x'\nmax_connections=1\nconnect_timeout_seconds=1\n[upstream]\nconnect_timeout_seconds=1\nresponse_header_timeout_seconds=2\nstream_idle_timeout_seconds=1\n[runtime_config]\nreload_interval_seconds=1\n[observability]\nfilter='info'\n[console]\nenabled=true\nhost='::1'\nport=9443\nallowed_origins=['https://console.example.test']\n[auth]\nissuer='ai-gateway'\naudience='ai-gateway-console'\naccess_token_ttl_seconds=900\nrefresh_token_ttl_seconds=3600\nkey_id='test'\nsigning_key_path='/tmp/private.pem'\nverification_key_path='/tmp/public.pem'";
         let config = toml::from_str::<AppConfig>(value)
             .unwrap()
             .validate()
             .unwrap();
 
         assert_eq!(
-            config.admin.unwrap().address,
+            config.console.unwrap().address,
             std::net::SocketAddr::new(std::net::Ipv6Addr::LOCALHOST.into(), 9443)
         );
     }

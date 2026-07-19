@@ -12,9 +12,12 @@
 *.swo
 *~
 
-# Runtime logs and local overrides
+# Runtime logs and current-working-directory local configuration
 *.log
-config.local.toml
+/config.toml
+/config.local.toml
+/console-jwt-private.pem
+/console-jwt-public.pem
 
 # `.env.real-upstream` is permitted only for the opt-in real-upstream smoke
 # script. It is always local; the tracked template contains no credentials.

@@ -1,12 +1,22 @@
-use std::{error::Error, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    error::Error,
+    io::{self, Read},
+    net::SocketAddr,
+    path::PathBuf,
+    sync::Arc,
+    time::Duration,
+};
 
 use ai_gateway::{
     admission::AdmissionRuntime,
-    application::{ControlPlaneCoordinator, ModelSyncService, ProxyService},
+    application::{
+        ConsoleAuthService, ControlPlaneCoordinator, ModelSyncService, ProxyService,
+        hash_console_password,
+    },
     http,
     models_dev::ModelsDevClient,
     observability,
-    persistence::{ControlPlaneRepository, MIGRATOR, RequestLogRepository},
+    persistence::{AuthRepository, ControlPlaneRepository, MIGRATOR, RequestLogRepository},
     routing::{PassiveHealthPolicy, RoutingRuntime},
     runtime_config::{AppConfig, RuntimeConfig, compile_control_plane},
     upstream::{UpstreamClientRegistry, validate_snapshot_upstream_policies},
@@ -28,21 +38,28 @@ use tokio::{
 };
 use tower::ServiceExt;
 
+const DEFAULT_CONFIG_PATH: &str = "./config.toml";
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let config_path = std::env::args()
-        .nth(1)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("config.toml"));
-    let config = AppConfig::load(&config_path)?.validate()?;
+    match parse_command(std::env::args().skip(1).collect())? {
+        Command::Serve { config_path } => serve(config_path).await,
+        Command::BootstrapAdmin {
+            config_path,
+            email,
+            display_name,
+            currency,
+        } => bootstrap_admin(config_path, email, display_name, currency).await,
+    }
+}
 
+async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
+    let config = AppConfig::load(&config_path)?.validate()?;
     let _log_guard = observability::init(&config.observability.filter);
 
     let pool = PgPoolOptions::new()
         .max_connections(config.database.max_connections)
-        .acquire_timeout(std::time::Duration::from_secs(
-            config.database.connect_timeout_seconds,
-        ))
+        .acquire_timeout(Duration::from_secs(config.database.connect_timeout_seconds))
         .connect(&config.database.url)
         .await?;
     MIGRATOR.run(&pool).await?;
@@ -66,7 +83,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let upstream_clients = Arc::new(UpstreamClientRegistry::new());
     let proxy = ProxyService::with_dependencies_and_registry(
         Arc::clone(&runtime),
-        config.server.max_request_body_bytes,
+        config.request_limits.proxy_body_bytes,
         &config.upstream,
         Arc::clone(&upstream_clients),
         Arc::new(request_log_sink),
@@ -80,27 +97,32 @@ async fn main() -> Result<(), Box<dyn Error>> {
         upstream_clients,
         config.upstream.clone(),
     )?;
-    ControlPlaneReloader::from_coordinator(coordinator.clone()).spawn(
-        std::time::Duration::from_secs(config.runtime_config.reload_interval_seconds),
-    );
+    ControlPlaneReloader::from_coordinator(coordinator.clone()).spawn(Duration::from_secs(
+        config.runtime_config.reload_interval_seconds,
+    ));
     let listener = TcpListener::bind(&address).await?;
-    tracing::info!(%address, "AI gateway listening");
-    let admin = if let Some(admin) = config.admin {
-        coordinator.verify_active_actor(admin.actor_user_id).await?;
+    tracing::info!(%address, "AI gateway public listener enabled");
+
+    let console = if let Some(console) = config.console.as_ref() {
+        let auth =
+            ConsoleAuthService::from_config(AuthRepository::new(pool.clone()), &console.auth)?;
         let model_sync = ModelSyncService::new(
             coordinator.clone(),
             ModelsDevClient::new(&config.models_sync)?,
             config.models_sync.max_selections,
         );
-        let listener = TcpListener::bind(admin.address).await?;
-        tracing::info!(address = %admin.address, "AI gateway admin listener enabled");
+        let listener = TcpListener::bind(console.address).await?;
+        tracing::info!(address = %console.address, "AI gateway Console listener enabled");
         Some((
             listener,
-            http::admin::router(http::admin::AdminState {
+            http::console::router(http::console::ConsoleState {
                 coordinator: coordinator.clone(),
                 model_sync,
-                actor_user_id: admin.actor_user_id,
-                verifier: admin.verifier,
+                auth,
+                request_logs: RequestLogRepository::new(pool.clone()),
+                console_body_bytes: config.request_limits.console_body_bytes,
+                auth_body_bytes: config.request_limits.auth_body_bytes,
+                allowed_origins: console.allowed_origins.clone(),
             }),
         ))
     } else {
@@ -109,7 +131,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let serve_result = run_servers(
         (listener, http::router(proxy)),
-        admin,
+        console,
         Duration::from_secs(config.server.shutdown_grace_period_seconds),
     )
     .await;
@@ -118,11 +140,117 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Runs both listeners from one shutdown signal. The public and management
-/// routers never share a route tree, only the shutdown lifecycle.
+async fn bootstrap_admin(
+    config_path: PathBuf,
+    email: String,
+    display_name: String,
+    currency: String,
+) -> Result<(), Box<dyn Error>> {
+    let config = AppConfig::load(&config_path)?.validate()?;
+    let _log_guard = observability::init(&config.observability.filter);
+    let mut password = String::new();
+    io::stdin().read_to_string(&mut password)?;
+    while matches!(password.as_bytes().last(), Some(b'\n' | b'\r')) {
+        password.pop();
+    }
+    let password_hash = hash_console_password(password).await?;
+    let pool = PgPoolOptions::new()
+        .max_connections(config.database.max_connections)
+        .acquire_timeout(Duration::from_secs(config.database.connect_timeout_seconds))
+        .connect(&config.database.url)
+        .await?;
+    MIGRATOR.run(&pool).await?;
+    let id = AuthRepository::new(pool)
+        .bootstrap_admin(&email, &display_name, &password_hash, &currency)
+        .await?;
+    println!("bootstrap administrator created: {id}");
+    Ok(())
+}
+
+enum Command {
+    Serve {
+        config_path: PathBuf,
+    },
+    BootstrapAdmin {
+        config_path: PathBuf,
+        email: String,
+        display_name: String,
+        currency: String,
+    },
+}
+
+fn parse_command(arguments: Vec<String>) -> Result<Command, io::Error> {
+    let Some(command) = arguments.first() else {
+        return Ok(Command::Serve {
+            config_path: PathBuf::from(DEFAULT_CONFIG_PATH),
+        });
+    };
+    if command != "bootstrap-admin" {
+        if arguments.len() != 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "usage: ai-gateway [./config.toml] | ai-gateway bootstrap-admin --email EMAIL --display-name NAME --password-stdin [--currency USD] [--config ./config.toml]",
+            ));
+        }
+        return Ok(Command::Serve {
+            config_path: PathBuf::from(command),
+        });
+    }
+    let mut config_path = PathBuf::from(DEFAULT_CONFIG_PATH);
+    let mut email = None;
+    let mut display_name = None;
+    let mut currency = "USD".to_owned();
+    let mut password_stdin = false;
+    let mut index = 1;
+    while index < arguments.len() {
+        let flag = &arguments[index];
+        index += 1;
+        if flag == "--password-stdin" {
+            password_stdin = true;
+            continue;
+        }
+        let value = arguments.get(index).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "missing bootstrap-admin flag value",
+            )
+        })?;
+        index += 1;
+        match flag.as_str() {
+            "--email" => email = Some(value.clone()),
+            "--display-name" => display_name = Some(value.clone()),
+            "--currency" => currency = value.clone(),
+            "--config" => config_path = PathBuf::from(value),
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "unknown bootstrap-admin flag",
+                ));
+            }
+        }
+    }
+    if !password_stdin {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "bootstrap-admin requires --password-stdin",
+        ));
+    }
+    Ok(Command::BootstrapAdmin {
+        config_path,
+        email: email
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "--email is required"))?,
+        display_name: display_name.ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "--display-name is required")
+        })?,
+        currency,
+    })
+}
+
+/// Runs public and Console listeners from one shutdown signal. Their routers
+/// never share a route tree, only the shutdown lifecycle.
 async fn run_servers(
     public: (TcpListener, Router),
-    admin: Option<(TcpListener, Router)>,
+    console: Option<(TcpListener, Router)>,
     shutdown_grace_period: Duration,
 ) -> Result<(), std::io::Error> {
     let (shutdown_sender, shutdown_receiver) = watch::channel(());
@@ -133,7 +261,7 @@ async fn run_servers(
         shutdown_grace_period,
         shutdown_receiver.clone(),
     ));
-    if let Some((listener, router)) = admin {
+    if let Some((listener, router)) = console {
         servers.spawn(run_server_until(
             listener,
             router,
@@ -291,11 +419,11 @@ async fn shutdown_signal() {
 
 #[cfg(test)]
 mod tests {
-    use std::{future::pending, time::Duration};
+    use std::{future::pending, path::PathBuf, time::Duration};
 
     use tokio::{sync::oneshot, task::JoinSet};
 
-    use super::drain_connections;
+    use super::{Command, DEFAULT_CONFIG_PATH, drain_connections, parse_command};
 
     struct DropProbe(Option<oneshot::Sender<()>>);
     impl Drop for DropProbe {
@@ -304,6 +432,15 @@ mod tests {
                 let _ = sender.send(());
             }
         }
+    }
+
+    #[test]
+    fn default_config_is_the_current_directory_file() {
+        let command = parse_command(Vec::new()).expect("default command must parse");
+        let Command::Serve { config_path } = command else {
+            panic!("expected serve command");
+        };
+        assert_eq!(config_path, PathBuf::from(DEFAULT_CONFIG_PATH));
     }
 
     #[tokio::test]

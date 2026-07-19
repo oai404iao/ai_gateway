@@ -52,35 +52,35 @@ Separate Console listener (/console/v1/*)
 
 ## Quick start
 
-> `config.local.toml` is ignored by Git. The service does not load `.env` files.
+> `./config.toml` is ignored by Git and is the default configuration location.
+> The service does not load `.env` files or use an XDG configuration directory.
 
 ### 1. Start PostgreSQL and create a local configuration
 
 ```bash
 docker compose up -d
-cp config.example.toml config.local.toml
+cp config.example.toml config.toml
 ```
 
-Edit `config.local.toml` as needed. At minimum, verify `[database]`, public `[server]`, and `[upstream]` timeout settings. The supplied Docker Compose service matches the example database URL.
+Edit `./config.toml` as needed. At minimum, verify `[database]`, public `[server]`, and `[upstream]` timeout settings. The supplied Docker Compose service matches the example database URL.
 
 The binary applies database migrations automatically at startup.
 
 ### 2. Enable the Console API (recommended)
 
-The Console API is the supported way to manage users, API keys, models, routes, channels, and transforms. Generate an Ed25519 key pair in a protected directory outside the repository, then use **absolute paths** in `config.local.toml`:
+The Console API is the supported way to manage users, API keys, models, routes, channels, and transforms. Generate an Ed25519 key pair in the current working directory; these files are ignored by Git:
 
 ```bash
-install -d -m 700 "$HOME/.config/ai-gateway"
 openssl genpkey -algorithm Ed25519 \
-  -out "$HOME/.config/ai-gateway/console-jwt-private.pem"
+  -out ./console-jwt-private.pem
 openssl pkey \
-  -in "$HOME/.config/ai-gateway/console-jwt-private.pem" \
+  -in ./console-jwt-private.pem \
   -pubout \
-  -out "$HOME/.config/ai-gateway/console-jwt-public.pem"
-chmod 600 "$HOME/.config/ai-gateway/console-jwt-private.pem"
+  -out ./console-jwt-public.pem
+chmod 600 ./console-jwt-private.pem
 ```
 
-Then enable `[console]` and fill in `[auth]` using the commented template in `config.example.toml`. For example, configure a dedicated listener on `127.0.0.1:3001`, an explicit browser-origin allowlist, and the two generated PEM paths.
+Then enable `[console]` and fill in `[auth]` in `./config.toml` using the commented template in `config.example.toml`. Use `./console-jwt-private.pem` and `./console-jwt-public.pem` for the two generated PEM paths.
 
 The service does **not** terminate TLS. Put the Console listener behind a correctly configured HTTPS reverse proxy before exposing it to browsers or the Internet.
 
@@ -90,7 +90,6 @@ The one-time bootstrap command succeeds only when no active administrator exists
 
 ```bash
 cargo run -- bootstrap-admin \
-  --config config.local.toml \
   --email admin@example.com \
   --display-name "Initial Admin" \
   --password-stdin < /secure/path/admin-password.txt
@@ -99,7 +98,7 @@ cargo run -- bootstrap-admin \
 ### 4. Run the gateway
 
 ```bash
-cargo run -- config.local.toml
+cargo run
 ```
 
 Verify the public listener:

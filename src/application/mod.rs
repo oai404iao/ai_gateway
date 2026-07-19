@@ -1,11 +1,16 @@
-//! Application use cases: proxying, model listing, and configuration management.
+//! Application use cases: proxying, model listing, Console authentication, and configuration management.
 
+mod auth;
 mod control_plane;
 mod model_sync;
 mod proxy;
 mod request_log;
 mod usage;
 
+pub use auth::{
+    AuthError, ConsoleAuthService, ConsoleUser, IssuedInvitation, IssuedSession,
+    hash_console_password,
+};
 pub use control_plane::{ControlPlaneCoordinator, ControlPlaneError, ModelSyncResult};
 pub use model_sync::{
     ModelImportRequest, ModelPriceSyncRequest, ModelPriceSyncResponse, ModelSyncError,

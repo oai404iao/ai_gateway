@@ -8,8 +8,9 @@ use uuid::Uuid;
 
 use crate::{
     persistence::{
-        AdminLists, AdminMutation, ControlPlaneRepository, ModelsDevPriceTarget, MutationResult,
-        RepositoryError, SyncedModelInput, SyncedModelPrice,
+        ConsoleApiKey, ConsoleAuditLog, ControlPlaneLists, ControlPlaneMutation,
+        ControlPlaneRepository, ModelsDevPriceTarget, MutationResult, RepositoryError,
+        SelfApiKeyCreate, SelfApiKeyUpdate, SyncedModelInput, SyncedModelPrice,
     },
     routing::RoutingRuntime,
     runtime_config::UpstreamConfig,
@@ -100,7 +101,7 @@ impl ControlPlaneCoordinator {
         let mut transaction = self.repository.begin_serializable().await?;
         if !self
             .repository
-            .active_user_exists(&mut transaction, actor)
+            .active_admin_exists(&mut transaction, actor)
             .await?
         {
             return Err(ControlPlaneError::InvalidActor);
@@ -118,27 +119,27 @@ impl ControlPlaneCoordinator {
         Ok(correlation_id)
     }
 
-    pub async fn lists(&self) -> Result<AdminLists, ControlPlaneError> {
-        Ok(self.repository.admin_lists().await?)
+    pub async fn lists(&self) -> Result<ControlPlaneLists, ControlPlaneError> {
+        Ok(self.repository.control_plane_lists().await?)
     }
 
     pub async fn mutate(
         &self,
         actor: Uuid,
-        mutation: AdminMutation,
+        mutation: ControlPlaneMutation,
     ) -> Result<MutationResult, ControlPlaneError> {
         let _guard = self.serial.lock().await;
         let mut transaction = self.repository.begin_serializable().await?;
         if !self
             .repository
-            .active_user_exists(&mut transaction, actor)
+            .active_admin_exists(&mut transaction, actor)
             .await?
         {
             return Err(ControlPlaneError::InvalidActor);
         }
         let result = self
             .repository
-            .apply_admin_mutation(&mut transaction, mutation)
+            .apply_control_plane_mutation(&mut transaction, mutation)
             .await?;
         let candidate = Arc::new(compile_control_plane(
             ControlPlaneRepository::load_transaction(&mut transaction).await?,
@@ -151,6 +152,127 @@ impl ControlPlaneCoordinator {
         transaction.commit().await.map_err(RepositoryError::from)?;
         self.publish(candidate);
         tracing::info!(%correlation_id, object_type = result.object_type, action = result.action, "management mutation committed");
+        Ok(MutationResult {
+            correlation_id: Some(correlation_id),
+            ..result
+        })
+    }
+
+    pub async fn own_api_keys(&self, actor: Uuid) -> Result<Vec<ConsoleApiKey>, ControlPlaneError> {
+        Ok(self.repository.own_api_keys(actor).await?)
+    }
+
+    pub async fn own_api_key(
+        &self,
+        actor: Uuid,
+        id: Uuid,
+    ) -> Result<Option<ConsoleApiKey>, ControlPlaneError> {
+        Ok(self.repository.own_api_key(actor, id).await?)
+    }
+
+    pub async fn audit_logs(&self, limit: i64) -> Result<Vec<ConsoleAuditLog>, ControlPlaneError> {
+        Ok(self.repository.audit_logs(limit).await?)
+    }
+
+    pub async fn create_own_api_key(
+        &self,
+        actor: Uuid,
+        input: SelfApiKeyCreate,
+    ) -> Result<MutationResult, ControlPlaneError> {
+        let _guard = self.serial.lock().await;
+        let mut transaction = self.repository.begin_serializable().await?;
+        if !self
+            .repository
+            .active_user_exists(&mut transaction, actor)
+            .await?
+        {
+            return Err(ControlPlaneError::InvalidActor);
+        }
+        let result = self
+            .repository
+            .create_own_api_key(&mut transaction, actor, input)
+            .await?;
+        let candidate = Arc::new(compile_control_plane(
+            ControlPlaneRepository::load_transaction(&mut transaction).await?,
+        )?);
+        self.validate_candidate(&candidate)?;
+        let correlation_id = Uuid::new_v4();
+        self.repository
+            .insert_self_audit(&mut transaction, actor, &result, correlation_id)
+            .await?;
+        transaction.commit().await.map_err(RepositoryError::from)?;
+        self.publish(candidate);
+        Ok(MutationResult {
+            correlation_id: Some(correlation_id),
+            ..result
+        })
+    }
+
+    pub async fn update_own_api_key(
+        &self,
+        actor: Uuid,
+        id: Uuid,
+        input: SelfApiKeyUpdate,
+        expected_updated_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<MutationResult, ControlPlaneError> {
+        let _guard = self.serial.lock().await;
+        let mut transaction = self.repository.begin_serializable().await?;
+        if !self
+            .repository
+            .active_user_exists(&mut transaction, actor)
+            .await?
+        {
+            return Err(ControlPlaneError::InvalidActor);
+        }
+        let result = self
+            .repository
+            .update_own_api_key(&mut transaction, actor, id, input, expected_updated_at)
+            .await?;
+        let candidate = Arc::new(compile_control_plane(
+            ControlPlaneRepository::load_transaction(&mut transaction).await?,
+        )?);
+        self.validate_candidate(&candidate)?;
+        let correlation_id = Uuid::new_v4();
+        self.repository
+            .insert_self_audit(&mut transaction, actor, &result, correlation_id)
+            .await?;
+        transaction.commit().await.map_err(RepositoryError::from)?;
+        self.publish(candidate);
+        Ok(MutationResult {
+            correlation_id: Some(correlation_id),
+            ..result
+        })
+    }
+
+    pub async fn revoke_own_api_key(
+        &self,
+        actor: Uuid,
+        id: Uuid,
+        reason: String,
+    ) -> Result<MutationResult, ControlPlaneError> {
+        let _guard = self.serial.lock().await;
+        let mut transaction = self.repository.begin_serializable().await?;
+        if !self
+            .repository
+            .active_user_exists(&mut transaction, actor)
+            .await?
+        {
+            return Err(ControlPlaneError::InvalidActor);
+        }
+        let result = self
+            .repository
+            .revoke_own_api_key(&mut transaction, actor, id, reason)
+            .await?;
+        let candidate = Arc::new(compile_control_plane(
+            ControlPlaneRepository::load_transaction(&mut transaction).await?,
+        )?);
+        self.validate_candidate(&candidate)?;
+        let correlation_id = Uuid::new_v4();
+        self.repository
+            .insert_self_audit(&mut transaction, actor, &result, correlation_id)
+            .await?;
+        transaction.commit().await.map_err(RepositoryError::from)?;
+        self.publish(candidate);
         Ok(MutationResult {
             correlation_id: Some(correlation_id),
             ..result
@@ -180,7 +302,7 @@ impl ControlPlaneCoordinator {
         let mut transaction = self.repository.begin_serializable().await?;
         if !self
             .repository
-            .active_user_exists(&mut transaction, actor)
+            .active_admin_exists(&mut transaction, actor)
             .await?
         {
             return Err(ControlPlaneError::InvalidActor);
@@ -225,7 +347,7 @@ impl ControlPlaneCoordinator {
         let mut transaction = self.repository.begin_serializable().await?;
         if !self
             .repository
-            .active_user_exists(&mut transaction, actor)
+            .active_admin_exists(&mut transaction, actor)
             .await?
         {
             return Err(ControlPlaneError::InvalidActor);
@@ -257,11 +379,11 @@ impl ControlPlaneCoordinator {
         })
     }
 
-    pub async fn verify_active_actor(&self, actor: Uuid) -> Result<(), ControlPlaneError> {
+    pub async fn verify_active_admin(&self, actor: Uuid) -> Result<(), ControlPlaneError> {
         let mut transaction = self.repository.begin_serializable().await?;
         let active = self
             .repository
-            .active_user_exists(&mut transaction, actor)
+            .active_admin_exists(&mut transaction, actor)
             .await?;
         transaction
             .rollback()
@@ -309,6 +431,6 @@ pub enum ControlPlaneError {
     Repository(#[from] RepositoryError),
     #[error("candidate configuration is invalid")]
     Compile(#[from] ConfigError),
-    #[error("configured admin actor is not active")]
+    #[error("Console actor is not an active administrator")]
     InvalidActor,
 }

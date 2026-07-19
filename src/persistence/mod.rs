@@ -1,5 +1,12 @@
 //! SQLx control-plane and append-only request-log repositories.
 
+mod auth;
+
+pub use auth::{
+    AuthRepository, ConsoleProfile, ConsoleSession, InvitationCreated, InviteUserInput,
+    LiveConsoleIdentity, LoginUser, PasswordUser, SessionRotation, SessionUser,
+};
+
 use std::fmt;
 
 use chrono::{DateTime, Timelike, Utc};
@@ -220,12 +227,60 @@ pub struct ApiKeyUpdate {
     pub max_concurrent_requests: Option<i32>,
     pub quota_limit_amount: Option<rust_decimal::Decimal>,
 }
+
+/// Administrator-owned template copied into a user's self-service API Key.
+/// Users never submit the authorization-bearing fields directly.
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApiKeyPolicyInput {
+    pub name: String,
+    pub allowed_api_formats: Vec<String>,
+    pub permissions: Vec<String>,
+    #[serde(default)]
+    pub allowed_group_ids: Option<Vec<Uuid>>,
+    #[serde(default)]
+    pub requests_per_minute: Option<i32>,
+    #[serde(default)]
+    pub max_concurrent_requests: Option<i32>,
+    #[serde(default)]
+    pub quota_limit_amount: Option<rust_decimal::Decimal>,
+    pub max_active_keys: i32,
+    pub enabled: bool,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SelfApiKeyCreate {
+    pub name: String,
+    #[serde(default)]
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SelfApiKeyUpdate {
+    pub name: String,
+    pub status: String,
+    #[serde(default)]
+    pub expires_at: Option<DateTime<Utc>>,
+}
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UserInput {
-    pub name: String,
+    #[serde(alias = "name")]
+    pub display_name: String,
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default = "default_user_role")]
+    pub role: String,
     pub status: String,
     pub currency: String,
+    #[serde(default)]
+    pub default_api_key_policy_id: Option<Uuid>,
+}
+
+fn default_user_role() -> String {
+    "user".into()
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -480,7 +535,7 @@ impl From<ChannelInput> for ChannelMutationInput {
     }
 }
 
-pub enum AdminMutation {
+pub enum ControlPlaneMutation {
     CreateUser(UserInput),
     UpdateUser {
         id: Uuid,
@@ -494,6 +549,12 @@ pub enum AdminMutation {
         expected_updated_at: DateTime<Utc>,
     },
     CreateApiKey(ApiKeyCreate),
+    CreateApiKeyPolicy(ApiKeyPolicyInput),
+    UpdateApiKeyPolicy {
+        id: Uuid,
+        input: ApiKeyPolicyInput,
+        expected_updated_at: DateTime<Utc>,
+    },
     UpdateApiKey {
         id: Uuid,
         input: ApiKeyUpdate,
@@ -548,28 +609,32 @@ pub struct MutationResult {
 }
 
 #[derive(Serialize)]
-pub struct AdminLists {
-    pub users: Vec<AdminUser>,
-    pub models: Vec<AdminModel>,
-    pub api_keys: Vec<AdminApiKey>,
-    pub channel_groups: Vec<AdminChannelGroup>,
-    pub channels: Vec<AdminChannel>,
-    pub model_rules: Vec<AdminModelRule>,
-    pub proxies: Vec<AdminProxy>,
-    pub config_templates: Vec<AdminConfigTemplate>,
+pub struct ControlPlaneLists {
+    pub users: Vec<ControlPlaneUser>,
+    pub models: Vec<ControlPlaneModel>,
+    pub api_keys: Vec<ControlPlaneApiKey>,
+    pub api_key_policies: Vec<ControlPlaneApiKeyPolicy>,
+    pub channel_groups: Vec<ControlPlaneChannelGroup>,
+    pub channels: Vec<ControlPlaneChannel>,
+    pub model_rules: Vec<ControlPlaneModelRule>,
+    pub proxies: Vec<ControlPlaneProxy>,
+    pub config_templates: Vec<ControlPlaneConfigTemplate>,
 }
 #[derive(Serialize, FromRow)]
-pub struct AdminUser {
+pub struct ControlPlaneUser {
     pub id: Uuid,
-    pub name: String,
+    pub email: Option<String>,
+    pub display_name: String,
+    pub role: String,
     pub status: String,
+    pub default_api_key_policy_id: Option<Uuid>,
     pub balance_amount: rust_decimal::Decimal,
     pub currency: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 #[derive(Serialize, FromRow)]
-pub struct AdminModel {
+pub struct ControlPlaneModel {
     pub id: Uuid,
     pub source_model_id: String,
     pub display_name: String,
@@ -587,7 +652,84 @@ pub struct AdminModel {
     pub updated_at: DateTime<Utc>,
 }
 #[derive(Serialize, FromRow)]
-pub struct AdminApiKey {
+pub struct ControlPlaneApiKeyPolicy {
+    pub id: Uuid,
+    pub name: String,
+    pub allowed_api_formats: Vec<String>,
+    pub permissions: Vec<String>,
+    pub allowed_group_ids: Option<Vec<Uuid>>,
+    pub requests_per_minute: Option<i32>,
+    pub max_concurrent_requests: Option<i32>,
+    pub quota_limit_amount: Option<rust_decimal::Decimal>,
+    pub max_active_keys: i32,
+    pub enabled: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Serialize, FromRow)]
+pub struct ConsoleApiKey {
+    pub id: Uuid,
+    pub name: String,
+    pub status: String,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub allowed_api_formats: Vec<String>,
+    pub permissions: Vec<String>,
+    pub allowed_group_ids: Option<Vec<Uuid>>,
+    pub requests_per_minute: Option<i32>,
+    pub max_concurrent_requests: Option<i32>,
+    pub quota_limit_amount: Option<rust_decimal::Decimal>,
+    pub quota_used_amount: rust_decimal::Decimal,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, Serialize, FromRow)]
+pub struct ConsoleRequestLog {
+    pub id: Uuid,
+    pub started_at: DateTime<Utc>,
+    pub completed_at: DateTime<Utc>,
+    pub user_id: Uuid,
+    pub api_key_id: Uuid,
+    pub api_format: String,
+    pub client_model: String,
+    pub upstream_model: Option<String>,
+    pub model_rule_id: Option<Uuid>,
+    pub channel_group_id: Option<Uuid>,
+    pub channel_id: Option<Uuid>,
+    pub outcome: String,
+    pub response_status_code: Option<i16>,
+    pub streamed: bool,
+    pub ttft_ms: Option<i32>,
+    pub total_duration_ms: Option<i32>,
+    pub input_tokens: Option<i64>,
+    pub cached_input_tokens: Option<i64>,
+    pub cache_write_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
+    pub currency: Option<String>,
+    pub cost_amount: Option<rust_decimal::Decimal>,
+    pub error_code: Option<String>,
+    pub billed_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Clone, Debug, Serialize, FromRow)]
+pub struct ConsoleAuditLog {
+    pub id: Uuid,
+    pub occurred_at: DateTime<Utc>,
+    pub actor_user_id: Option<Uuid>,
+    pub actor_type: String,
+    pub actor_role: Option<String>,
+    pub action: String,
+    pub object_type: String,
+    pub object_id: Uuid,
+    pub before_redacted: Option<Value>,
+    pub after_redacted: Option<Value>,
+    pub correlation_id: Option<String>,
+    pub reason: Option<String>,
+}
+
+#[derive(Serialize, FromRow)]
+pub struct ControlPlaneApiKey {
     pub id: Uuid,
     pub user_id: Uuid,
     pub user_status: String,
@@ -605,7 +747,7 @@ pub struct AdminApiKey {
     pub updated_at: DateTime<Utc>,
 }
 #[derive(Serialize, FromRow)]
-pub struct AdminChannelGroup {
+pub struct ControlPlaneChannelGroup {
     pub id: Uuid,
     pub name: String,
     pub api_format: String,
@@ -615,7 +757,7 @@ pub struct AdminChannelGroup {
     pub updated_at: DateTime<Utc>,
 }
 #[derive(Serialize)]
-pub struct AdminChannel {
+pub struct ControlPlaneChannel {
     pub id: Uuid,
     pub channel_group_id: Uuid,
     pub api_format: String,
@@ -638,7 +780,7 @@ pub struct AdminChannel {
     pub updated_at: DateTime<Utc>,
 }
 #[derive(FromRow)]
-struct AdminChannelRow {
+struct ControlPlaneChannelRow {
     id: Uuid,
     channel_group_id: Uuid,
     api_format: String,
@@ -660,8 +802,8 @@ struct AdminChannelRow {
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
-impl From<AdminChannelRow> for AdminChannel {
-    fn from(value: AdminChannelRow) -> Self {
+impl From<ControlPlaneChannelRow> for ControlPlaneChannel {
+    fn from(value: ControlPlaneChannelRow) -> Self {
         Self {
             id: value.id,
             channel_group_id: value.channel_group_id,
@@ -687,7 +829,7 @@ impl From<AdminChannelRow> for AdminChannel {
     }
 }
 #[derive(Serialize, FromRow)]
-pub struct AdminModelRule {
+pub struct ControlPlaneModelRule {
     pub id: Uuid,
     pub client_model: String,
     pub api_format: String,
@@ -701,7 +843,7 @@ pub struct AdminModelRule {
     pub updated_at: DateTime<Utc>,
 }
 #[derive(Serialize, FromRow)]
-pub struct AdminProxy {
+pub struct ControlPlaneProxy {
     pub id: Uuid,
     pub name: String,
     pub proxy_url: String,
@@ -712,7 +854,7 @@ pub struct AdminProxy {
     pub updated_at: DateTime<Utc>,
 }
 #[derive(Serialize, FromRow)]
-pub struct AdminConfigTemplate {
+pub struct ControlPlaneConfigTemplate {
     pub id: Uuid,
     pub name: String,
     pub description: Option<String>,
@@ -730,6 +872,31 @@ impl RequestLogRepository {
     #[must_use]
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
+    }
+
+    pub async fn list_for_user(
+        &self,
+        user_id: Uuid,
+        limit: i64,
+    ) -> Result<Vec<ConsoleRequestLog>, RepositoryError> {
+        query_console_request_logs(&self.pool, Some(user_id), limit).await
+    }
+
+    pub async fn get_for_user(
+        &self,
+        user_id: Uuid,
+        id: Uuid,
+    ) -> Result<Option<ConsoleRequestLog>, RepositoryError> {
+        sqlx::query_as::<_, ConsoleRequestLog>(CONSOLE_REQUEST_LOG_SELECT)
+            .bind(id)
+            .bind(user_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(RepositoryError::from)
+    }
+
+    pub async fn list_all(&self, limit: i64) -> Result<Vec<ConsoleRequestLog>, RepositoryError> {
+        query_console_request_logs(&self.pool, None, limit).await
     }
 
     /// Inserts one terminal event without changing schema-owned defaults.
@@ -913,6 +1080,34 @@ impl RequestLogRepository {
             outcomes.push(self.settle(request_log_id).await?);
         }
         Ok(outcomes)
+    }
+}
+
+const CONSOLE_REQUEST_LOG_COLUMNS: &str = "id,started_at,completed_at,user_id,api_key_id,api_format::text AS api_format,client_model,upstream_model,model_rule_id,channel_group_id,channel_id,outcome,response_status_code,streamed,ttft_ms,total_duration_ms,input_tokens,cached_input_tokens,cache_write_tokens,output_tokens,currency,cost_amount,error_code,billed_at";
+const CONSOLE_REQUEST_LOG_SELECT: &str = "SELECT id,started_at,completed_at,user_id,api_key_id,api_format::text AS api_format,client_model,upstream_model,model_rule_id,channel_group_id,channel_id,outcome,response_status_code,streamed,ttft_ms,total_duration_ms,input_tokens,cached_input_tokens,cache_write_tokens,output_tokens,currency,cost_amount,error_code,billed_at FROM request_logs WHERE id=$1 AND user_id=$2";
+
+async fn query_console_request_logs(
+    pool: &PgPool,
+    user_id: Option<Uuid>,
+    limit: i64,
+) -> Result<Vec<ConsoleRequestLog>, RepositoryError> {
+    let limit = limit.clamp(1, 100);
+    match user_id {
+        Some(user_id) => sqlx::query_as::<_, ConsoleRequestLog>(&format!(
+            "SELECT {CONSOLE_REQUEST_LOG_COLUMNS} FROM request_logs WHERE user_id=$1 ORDER BY started_at DESC,id DESC LIMIT $2"
+        ))
+        .bind(user_id)
+        .bind(limit)
+        .fetch_all(pool)
+        .await
+        .map_err(RepositoryError::from),
+        None => sqlx::query_as::<_, ConsoleRequestLog>(&format!(
+            "SELECT {CONSOLE_REQUEST_LOG_COLUMNS} FROM request_logs ORDER BY started_at DESC,id DESC LIMIT $1"
+        ))
+        .bind(limit)
+        .fetch_all(pool)
+        .await
+        .map_err(RepositoryError::from),
     }
 }
 
@@ -1199,23 +1394,38 @@ impl ControlPlaneRepository {
         .await?)
     }
 
-    pub async fn admin_lists(&self) -> Result<AdminLists, RepositoryError> {
-        let users = sqlx::query_as::<_, AdminUser>(
-            "SELECT id,name,status,balance_amount,currency,created_at,updated_at FROM users ORDER BY id",
+    pub async fn active_admin_exists(
+        &self,
+        transaction: &mut Transaction<'_, Postgres>,
+        id: Uuid,
+    ) -> Result<bool, RepositoryError> {
+        Ok(sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM users WHERE id = $1 AND status = 'active' AND role = 'admin')",
+        )
+        .bind(id)
+        .fetch_one(&mut **transaction)
+        .await?)
+    }
+
+    pub async fn control_plane_lists(&self) -> Result<ControlPlaneLists, RepositoryError> {
+        let users = sqlx::query_as::<_, ControlPlaneUser>(
+            "SELECT id,email,display_name,role,status,default_api_key_policy_id,balance_amount,currency,created_at,updated_at FROM users ORDER BY id",
         )
         .fetch_all(&self.pool)
         .await?;
-        let models = sqlx::query_as::<_, AdminModel>("SELECT id,source_model_id,display_name,provider_name,enabled,currency,price_unit_tokens,input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,price_effective_at,last_synced_at,created_at,updated_at FROM models ORDER BY id").fetch_all(&self.pool).await?;
-        let api_keys = sqlx::query_as::<_, AdminApiKey>("SELECT k.id, k.user_id, u.status AS user_status, k.name, k.status, k.expires_at, k.allowed_api_formats::text[] AS allowed_api_formats, k.permissions, k.allowed_group_ids, k.requests_per_minute, k.tokens_per_minute, k.max_concurrent_requests, k.quota_limit_amount, k.quota_used_amount, k.updated_at FROM api_keys k JOIN users u ON u.id=k.user_id ORDER BY k.id").fetch_all(&self.pool).await?;
-        let channel_groups = sqlx::query_as::<_, AdminChannelGroup>("SELECT id,name,api_format::text AS api_format,priority,selection_strategy,enabled,updated_at FROM channel_groups ORDER BY id").fetch_all(&self.pool).await?;
-        let channels = sqlx::query_as::<_, AdminChannelRow>("SELECT id,channel_group_id,api_format::text AS api_format,name,base_url,enabled,auto_disabled,auto_disabled_reason,weight,proxy_id,config_template_id,connect_timeout_ms,response_header_timeout_ms,stream_idle_timeout_ms,upstream_auth_kind,upstream_auth_header_name,(upstream_api_key IS NOT NULL) AS upstream_credential_configured,available_models,created_at,updated_at FROM channels ORDER BY id").fetch_all(&self.pool).await?;
-        let model_rules = sqlx::query_as::<_, AdminModelRule>("SELECT r.id,r.client_model,r.api_format::text AS api_format,r.model_id,m.enabled AS model_enabled,r.upstream_model,r.description,r.channel_group_ids,r.channel_ids,r.enabled,r.updated_at FROM model_rules r JOIN models m ON m.id=r.model_id ORDER BY r.id").fetch_all(&self.pool).await?;
-        let proxies = sqlx::query_as::<_, AdminProxy>("SELECT id,name,regexp_replace(regexp_replace(proxy_url, '^([^:/?#]+://)[^/?#]*@', E'\\1'), '[?#].*$', '') AS proxy_url,no_proxy_hosts,enabled,(username IS NOT NULL OR password IS NOT NULL) AS credential_configured,created_at,updated_at FROM proxies ORDER BY id").fetch_all(&self.pool).await?;
-        let config_templates = sqlx::query_as::<_, AdminConfigTemplate>("SELECT id,name,description,enabled,created_at,updated_at FROM config_templates ORDER BY id").fetch_all(&self.pool).await?;
-        Ok(AdminLists {
+        let models = sqlx::query_as::<_, ControlPlaneModel>("SELECT id,source_model_id,display_name,provider_name,enabled,currency,price_unit_tokens,input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,price_effective_at,last_synced_at,created_at,updated_at FROM models ORDER BY id").fetch_all(&self.pool).await?;
+        let api_keys = sqlx::query_as::<_, ControlPlaneApiKey>("SELECT k.id, k.user_id, u.status AS user_status, k.name, k.status, k.expires_at, k.allowed_api_formats::text[] AS allowed_api_formats, k.permissions, k.allowed_group_ids, k.requests_per_minute, k.tokens_per_minute, k.max_concurrent_requests, k.quota_limit_amount, k.quota_used_amount, k.updated_at FROM api_keys k JOIN users u ON u.id=k.user_id ORDER BY k.id").fetch_all(&self.pool).await?;
+        let api_key_policies = sqlx::query_as::<_, ControlPlaneApiKeyPolicy>("SELECT id,name,allowed_api_formats::text[] AS allowed_api_formats,permissions,allowed_group_ids,requests_per_minute,max_concurrent_requests,quota_limit_amount,max_active_keys,enabled,created_at,updated_at FROM api_key_policies ORDER BY id").fetch_all(&self.pool).await?;
+        let channel_groups = sqlx::query_as::<_, ControlPlaneChannelGroup>("SELECT id,name,api_format::text AS api_format,priority,selection_strategy,enabled,updated_at FROM channel_groups ORDER BY id").fetch_all(&self.pool).await?;
+        let channels = sqlx::query_as::<_, ControlPlaneChannelRow>("SELECT id,channel_group_id,api_format::text AS api_format,name,base_url,enabled,auto_disabled,auto_disabled_reason,weight,proxy_id,config_template_id,connect_timeout_ms,response_header_timeout_ms,stream_idle_timeout_ms,upstream_auth_kind,upstream_auth_header_name,(upstream_api_key IS NOT NULL) AS upstream_credential_configured,available_models,created_at,updated_at FROM channels ORDER BY id").fetch_all(&self.pool).await?;
+        let model_rules = sqlx::query_as::<_, ControlPlaneModelRule>("SELECT r.id,r.client_model,r.api_format::text AS api_format,r.model_id,m.enabled AS model_enabled,r.upstream_model,r.description,r.channel_group_ids,r.channel_ids,r.enabled,r.updated_at FROM model_rules r JOIN models m ON m.id=r.model_id ORDER BY r.id").fetch_all(&self.pool).await?;
+        let proxies = sqlx::query_as::<_, ControlPlaneProxy>("SELECT id,name,regexp_replace(regexp_replace(proxy_url, '^([^:/?#]+://)[^/?#]*@', E'\\1'), '[?#].*$', '') AS proxy_url,no_proxy_hosts,enabled,(username IS NOT NULL OR password IS NOT NULL) AS credential_configured,created_at,updated_at FROM proxies ORDER BY id").fetch_all(&self.pool).await?;
+        let config_templates = sqlx::query_as::<_, ControlPlaneConfigTemplate>("SELECT id,name,description,enabled,created_at,updated_at FROM config_templates ORDER BY id").fetch_all(&self.pool).await?;
+        Ok(ControlPlaneLists {
             users,
             models,
             api_keys,
+            api_key_policies,
             channel_groups,
             channels: channels.into_iter().map(Into::into).collect(),
             model_rules,
@@ -1224,29 +1434,211 @@ impl ControlPlaneRepository {
         })
     }
 
-    pub async fn apply_admin_mutation(
+    pub async fn audit_logs(&self, limit: i64) -> Result<Vec<ConsoleAuditLog>, RepositoryError> {
+        sqlx::query_as::<_, ConsoleAuditLog>(
+            "SELECT id,occurred_at,actor_user_id,actor_type,actor_role,action,object_type,object_id,before_redacted,after_redacted,correlation_id,reason FROM audit_logs ORDER BY occurred_at DESC,id DESC LIMIT $1",
+        )
+        .bind(limit.clamp(1, 100))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(RepositoryError::from)
+    }
+
+    pub async fn own_api_keys(&self, user_id: Uuid) -> Result<Vec<ConsoleApiKey>, RepositoryError> {
+        sqlx::query_as::<_, ConsoleApiKey>(
+            "SELECT id,name,status,expires_at,allowed_api_formats::text[] AS allowed_api_formats, \
+                    permissions,allowed_group_ids,requests_per_minute,max_concurrent_requests, \
+                    quota_limit_amount,quota_used_amount,created_at,updated_at \
+             FROM api_keys WHERE user_id=$1 ORDER BY created_at DESC,id DESC",
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(RepositoryError::from)
+    }
+
+    pub async fn own_api_key(
+        &self,
+        user_id: Uuid,
+        id: Uuid,
+    ) -> Result<Option<ConsoleApiKey>, RepositoryError> {
+        sqlx::query_as::<_, ConsoleApiKey>(
+            "SELECT id,name,status,expires_at,allowed_api_formats::text[] AS allowed_api_formats, \
+                    permissions,allowed_group_ids,requests_per_minute,max_concurrent_requests, \
+                    quota_limit_amount,quota_used_amount,created_at,updated_at \
+             FROM api_keys WHERE id=$1 AND user_id=$2",
+        )
+        .bind(id)
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(RepositoryError::from)
+    }
+
+    pub async fn create_own_api_key(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
-        mutation: AdminMutation,
+        user_id: Uuid,
+        input: SelfApiKeyCreate,
+    ) -> Result<MutationResult, RepositoryError> {
+        let policy = sqlx::query_as::<_, SelfApiKeyPolicy>(
+            "SELECT p.allowed_api_formats::text[] AS allowed_api_formats,p.permissions, \
+                    p.allowed_group_ids,p.requests_per_minute,p.max_concurrent_requests, \
+                    p.quota_limit_amount,p.max_active_keys,p.enabled \
+             FROM users AS u \
+             JOIN api_key_policies AS p ON p.id=u.default_api_key_policy_id \
+             WHERE u.id=$1 AND u.status='active' FOR UPDATE OF u",
+        )
+        .bind(user_id)
+        .fetch_optional(&mut **transaction)
+        .await?
+        .ok_or(RepositoryError::Validation)?;
+        if !policy.enabled {
+            return Err(RepositoryError::Validation);
+        }
+        let active_key_count = sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM api_keys \
+             WHERE user_id=$1 AND status IN ('active','disabled')",
+        )
+        .bind(user_id)
+        .fetch_one(&mut **transaction)
+        .await?;
+        if active_key_count >= i64::from(policy.max_active_keys) {
+            return Err(RepositoryError::Conflict);
+        }
+        if input.name.trim().is_empty() {
+            return Err(RepositoryError::Validation);
+        }
+        let id = Uuid::new_v4();
+        let secret = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
+        let updated_at = sqlx::query_scalar(
+            "INSERT INTO api_keys \
+             (id,user_id,name,secret_value,status,expires_at,allowed_api_formats,permissions, \
+              allowed_group_ids,requests_per_minute,max_concurrent_requests,quota_limit_amount) \
+             VALUES ($1,$2,$3,$4,'active',$5,$6::api_format[],$7,$8,$9,$10,$11) \
+             RETURNING updated_at",
+        )
+        .bind(id)
+        .bind(user_id)
+        .bind(&input.name)
+        .bind(&secret)
+        .bind(input.expires_at)
+        .bind(&policy.allowed_api_formats)
+        .bind(&policy.permissions)
+        .bind(&policy.allowed_group_ids)
+        .bind(policy.requests_per_minute)
+        .bind(policy.max_concurrent_requests)
+        .bind(policy.quota_limit_amount)
+        .fetch_one(&mut **transaction)
+        .await?;
+        Ok(MutationResult {
+            id,
+            object_type: "api_key",
+            action: "self_create",
+            before_redacted: json!({}),
+            after_redacted: key_audit(transaction, id).await?,
+            created_secret: Some(secret),
+            reason: None,
+            updated_at,
+            correlation_id: None,
+        })
+    }
+
+    pub async fn update_own_api_key(
+        &self,
+        transaction: &mut Transaction<'_, Postgres>,
+        user_id: Uuid,
+        id: Uuid,
+        input: SelfApiKeyUpdate,
+        expected_updated_at: DateTime<Utc>,
+    ) -> Result<MutationResult, RepositoryError> {
+        if input.name.trim().is_empty() || !matches!(input.status.as_str(), "active" | "disabled") {
+            return Err(RepositoryError::Validation);
+        }
+        let before = key_audit_for_user(transaction, id, user_id).await?;
+        let updated_at = sqlx::query_scalar(
+            "UPDATE api_keys SET name=$3,status=$4,expires_at=$5 \
+             WHERE id=$1 AND user_id=$2 AND updated_at=$6 AND status <> 'revoked' \
+             RETURNING updated_at",
+        )
+        .bind(id)
+        .bind(user_id)
+        .bind(&input.name)
+        .bind(&input.status)
+        .bind(input.expires_at)
+        .bind(expected_updated_at)
+        .fetch_optional(&mut **transaction)
+        .await?
+        .ok_or(RepositoryError::Conflict)?;
+        Ok(MutationResult {
+            id,
+            object_type: "api_key",
+            action: "self_update",
+            before_redacted: before,
+            after_redacted: key_audit_for_user(transaction, id, user_id).await?,
+            created_secret: None,
+            reason: None,
+            updated_at,
+            correlation_id: None,
+        })
+    }
+
+    pub async fn revoke_own_api_key(
+        &self,
+        transaction: &mut Transaction<'_, Postgres>,
+        user_id: Uuid,
+        id: Uuid,
+        reason: String,
+    ) -> Result<MutationResult, RepositoryError> {
+        if reason.trim().is_empty() {
+            return Err(RepositoryError::Validation);
+        }
+        let before = key_audit_for_user(transaction, id, user_id).await?;
+        let updated_at = sqlx::query_scalar(
+            "UPDATE api_keys SET status='revoked' \
+             WHERE id=$1 AND user_id=$2 AND status <> 'revoked' RETURNING updated_at",
+        )
+        .bind(id)
+        .bind(user_id)
+        .fetch_optional(&mut **transaction)
+        .await?
+        .ok_or(RepositoryError::Conflict)?;
+        Ok(MutationResult {
+            id,
+            object_type: "api_key",
+            action: "self_revoke",
+            before_redacted: before,
+            after_redacted: key_audit_for_user(transaction, id, user_id).await?,
+            created_secret: None,
+            reason: Some(reason),
+            updated_at,
+            correlation_id: None,
+        })
+    }
+
+    pub async fn apply_control_plane_mutation(
+        &self,
+        transaction: &mut Transaction<'_, Postgres>,
+        mutation: ControlPlaneMutation,
     ) -> Result<MutationResult, RepositoryError> {
         match mutation {
-            AdminMutation::CreateUser(input) => {
+            ControlPlaneMutation::CreateUser(input) => {
                 user_insert(transaction, Uuid::new_v4(), input, true, None).await
             }
-            AdminMutation::UpdateUser {
+            ControlPlaneMutation::UpdateUser {
                 id,
                 input,
                 expected_updated_at,
             } => user_insert(transaction, id, input, false, Some(expected_updated_at)).await,
-            AdminMutation::CreateModel(input) => {
+            ControlPlaneMutation::CreateModel(input) => {
                 model_insert(transaction, Uuid::new_v4(), input, true, None).await
             }
-            AdminMutation::UpdateModel {
+            ControlPlaneMutation::UpdateModel {
                 id,
                 input,
                 expected_updated_at,
             } => model_insert(transaction, id, input, false, Some(expected_updated_at)).await,
-            AdminMutation::CreateApiKey(input) => {
+            ControlPlaneMutation::CreateApiKey(input) => {
                 let id = Uuid::new_v4();
                 // Two independent UUIDv4 values provide 32 random bytes in a transport-safe form.
                 let secret = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
@@ -1264,7 +1656,18 @@ impl ControlPlaneRepository {
                     correlation_id: None,
                 })
             }
-            AdminMutation::UpdateApiKey {
+            ControlPlaneMutation::CreateApiKeyPolicy(input) => {
+                api_key_policy_insert(transaction, Uuid::new_v4(), input, true, None).await
+            }
+            ControlPlaneMutation::UpdateApiKeyPolicy {
+                id,
+                input,
+                expected_updated_at,
+            } => {
+                api_key_policy_insert(transaction, id, input, false, Some(expected_updated_at))
+                    .await
+            }
+            ControlPlaneMutation::UpdateApiKey {
                 id,
                 input,
                 expected_updated_at,
@@ -1284,7 +1687,7 @@ impl ControlPlaneRepository {
                     correlation_id: None,
                 })
             }
-            AdminMutation::RevokeApiKey { id, reason } => {
+            ControlPlaneMutation::RevokeApiKey { id, reason } => {
                 if reason.trim().is_empty() {
                     return Err(RepositoryError::Validation);
                 }
@@ -1308,42 +1711,42 @@ impl ControlPlaneRepository {
                     correlation_id: None,
                 })
             }
-            AdminMutation::CreateGroup(input) => {
+            ControlPlaneMutation::CreateGroup(input) => {
                 group_insert(transaction, Uuid::new_v4(), input, true, None).await
             }
-            AdminMutation::UpdateGroup {
+            ControlPlaneMutation::UpdateGroup {
                 id,
                 input,
                 expected_updated_at,
             } => group_insert(transaction, id, input, false, Some(expected_updated_at)).await,
-            AdminMutation::CreateChannel(input) => {
+            ControlPlaneMutation::CreateChannel(input) => {
                 channel_insert(transaction, Uuid::new_v4(), input, true, None).await
             }
-            AdminMutation::UpdateChannel {
+            ControlPlaneMutation::UpdateChannel {
                 id,
                 input,
                 expected_updated_at,
             } => channel_insert(transaction, id, input, false, Some(expected_updated_at)).await,
-            AdminMutation::CreateRule(input) => {
+            ControlPlaneMutation::CreateRule(input) => {
                 rule_insert(transaction, Uuid::new_v4(), input, true, None).await
             }
-            AdminMutation::UpdateRule {
+            ControlPlaneMutation::UpdateRule {
                 id,
                 input,
                 expected_updated_at,
             } => rule_insert(transaction, id, input, false, Some(expected_updated_at)).await,
-            AdminMutation::CreateProxy(input) => {
+            ControlPlaneMutation::CreateProxy(input) => {
                 proxy_insert(transaction, Uuid::new_v4(), input).await
             }
-            AdminMutation::UpdateProxy {
+            ControlPlaneMutation::UpdateProxy {
                 id,
                 input,
                 expected_updated_at,
             } => proxy_update(transaction, id, input, expected_updated_at).await,
-            AdminMutation::CreateConfigTemplate(input) => {
+            ControlPlaneMutation::CreateConfigTemplate(input) => {
                 config_template_insert(transaction, Uuid::new_v4(), input, true, None).await
             }
-            AdminMutation::UpdateConfigTemplate {
+            ControlPlaneMutation::UpdateConfigTemplate {
                 id,
                 input,
                 expected_updated_at,
@@ -1408,7 +1811,18 @@ impl ControlPlaneRepository {
         mutation: &MutationResult,
         correlation_id: Uuid,
     ) -> Result<(), RepositoryError> {
-        sqlx::query("INSERT INTO audit_logs (id,actor_user_id,actor_type,action,object_type,object_id,before_redacted,after_redacted,correlation_id,reason) VALUES ($1,$2,'user',$3,$4,$5,$6,$7,$8,$9)")
+        sqlx::query("INSERT INTO audit_logs (id,actor_user_id,actor_type,actor_role,action,object_type,object_id,before_redacted,after_redacted,correlation_id,reason) VALUES ($1,$2,'user','admin',$3,$4,$5,$6,$7,$8,$9)")
+            .bind(Uuid::new_v4()).bind(actor).bind(mutation.action).bind(mutation.object_type).bind(mutation.id).bind(&mutation.before_redacted).bind(&mutation.after_redacted).bind(correlation_id.to_string()).bind(&mutation.reason).execute(&mut **transaction).await?;
+        Ok(())
+    }
+    pub async fn insert_self_audit(
+        &self,
+        transaction: &mut Transaction<'_, Postgres>,
+        actor: Uuid,
+        mutation: &MutationResult,
+        correlation_id: Uuid,
+    ) -> Result<(), RepositoryError> {
+        sqlx::query("INSERT INTO audit_logs (id,actor_user_id,actor_type,actor_role,action,object_type,object_id,before_redacted,after_redacted,correlation_id,reason) VALUES ($1,$2,'user','user',$3,$4,$5,$6,$7,$8,$9)")
             .bind(Uuid::new_v4()).bind(actor).bind(mutation.action).bind(mutation.object_type).bind(mutation.id).bind(&mutation.before_redacted).bind(&mutation.after_redacted).bind(correlation_id.to_string()).bind(&mutation.reason).execute(&mut **transaction).await?;
         Ok(())
     }
@@ -1418,10 +1832,37 @@ impl ControlPlaneRepository {
         actor: Uuid,
         correlation_id: Uuid,
     ) -> Result<(), RepositoryError> {
-        sqlx::query("INSERT INTO audit_logs (id,actor_user_id,actor_type,action,object_type,object_id,before_redacted,after_redacted,correlation_id) VALUES ($1,$2,'user','reload','runtime_config',$3,'{}','{}',$4)")
+        sqlx::query("INSERT INTO audit_logs (id,actor_user_id,actor_type,actor_role,action,object_type,object_id,before_redacted,after_redacted,correlation_id) VALUES ($1,$2,'user','admin','reload','runtime_config',$3,'{}','{}',$4)")
             .bind(Uuid::new_v4()).bind(actor).bind(Uuid::nil()).bind(correlation_id.to_string()).execute(&mut **transaction).await?;
         Ok(())
     }
+}
+
+#[derive(FromRow)]
+struct SelfApiKeyPolicy {
+    allowed_api_formats: Vec<String>,
+    permissions: Vec<String>,
+    allowed_group_ids: Option<Vec<Uuid>>,
+    requests_per_minute: Option<i32>,
+    max_concurrent_requests: Option<i32>,
+    quota_limit_amount: Option<rust_decimal::Decimal>,
+    max_active_keys: i32,
+    enabled: bool,
+}
+
+async fn key_audit_for_user(
+    transaction: &mut Transaction<'_, Postgres>,
+    id: Uuid,
+    user_id: Uuid,
+) -> Result<Value, RepositoryError> {
+    let value = sqlx::query_scalar::<_, Value>(
+        "SELECT json_build_object('id',id,'user_id',user_id,'name',name,'status',status,'expires_at',expires_at,'allowed_api_formats',allowed_api_formats,'permissions',permissions,'allowed_group_ids',allowed_group_ids,'requests_per_minute',requests_per_minute,'tokens_per_minute',tokens_per_minute,'max_concurrent_requests',max_concurrent_requests,'quota_limit_amount',quota_limit_amount,'quota_used_amount',quota_used_amount,'created_at',created_at,'updated_at',updated_at) FROM api_keys WHERE id=$1 AND user_id=$2 FOR UPDATE",
+    )
+    .bind(id)
+    .bind(user_id)
+    .fetch_optional(&mut **transaction)
+    .await?;
+    value.ok_or(RepositoryError::NotFound)
 }
 
 async fn key_audit(
@@ -1444,7 +1885,7 @@ async fn user_audit(
     id: Uuid,
 ) -> Result<Value, RepositoryError> {
     let value = sqlx::query_scalar::<_, Value>(
-        "SELECT json_build_object('id',id,'name',name,'status',status,'balance_amount',balance_amount,'currency',currency,'created_at',created_at,'updated_at',updated_at) FROM users WHERE id=$1 FOR UPDATE",
+        "SELECT json_build_object('id',id,'email',email,'display_name',display_name,'role',role,'status',status,'default_api_key_policy_id',default_api_key_policy_id,'balance_amount',balance_amount,'currency',currency,'created_at',created_at,'updated_at',updated_at) FROM users WHERE id=$1 FOR UPDATE",
     )
     .bind(id)
     .fetch_optional(&mut **transaction)
@@ -1482,7 +1923,7 @@ async fn channel_audit(
     transaction: &mut Transaction<'_, Postgres>,
     id: Uuid,
 ) -> Result<Value, RepositoryError> {
-    // Keep this allowlist aligned with `AdminChannel`: channel documents are
+    // Keep this allowlist aligned with `ControlPlaneChannel`: channel documents are
     // intentionally opaque today and must never leave the database through
     // either management responses or audit snapshots.
     let value = sqlx::query_scalar::<_, Value>(
@@ -1541,6 +1982,92 @@ async fn config_template_audit(
     };
     Ok(value)
 }
+async fn api_key_policy_audit(
+    transaction: &mut Transaction<'_, Postgres>,
+    id: Uuid,
+) -> Result<Value, RepositoryError> {
+    let value = sqlx::query_scalar::<_, Value>(
+        "SELECT json_build_object('id',id,'name',name,'allowed_api_formats',allowed_api_formats,'permissions',permissions,'allowed_group_ids',allowed_group_ids,'requests_per_minute',requests_per_minute,'max_concurrent_requests',max_concurrent_requests,'quota_limit_amount',quota_limit_amount,'max_active_keys',max_active_keys,'enabled',enabled,'created_at',created_at,'updated_at',updated_at) FROM api_key_policies WHERE id=$1 FOR UPDATE",
+    )
+    .bind(id)
+    .fetch_optional(&mut **transaction)
+    .await?;
+    value.ok_or(RepositoryError::NotFound)
+}
+
+async fn api_key_policy_insert(
+    transaction: &mut Transaction<'_, Postgres>,
+    id: Uuid,
+    input: ApiKeyPolicyInput,
+    create: bool,
+    expected_updated_at: Option<DateTime<Utc>>,
+) -> Result<MutationResult, RepositoryError> {
+    if input.name.trim().is_empty()
+        || input.max_active_keys <= 0
+        || input.allowed_api_formats.is_empty()
+        || input.permissions.is_empty()
+    {
+        return Err(RepositoryError::Validation);
+    }
+    let before = if create {
+        json!({})
+    } else {
+        api_key_policy_audit(transaction, id).await?
+    };
+    let updated_at = if create {
+        sqlx::query_scalar(
+            "INSERT INTO api_key_policies \
+             (id,name,allowed_api_formats,permissions,allowed_group_ids,requests_per_minute,max_concurrent_requests,quota_limit_amount,max_active_keys,enabled) \
+             VALUES ($1,$2,$3::api_format[],$4,$5,$6,$7,$8,$9,$10) RETURNING updated_at",
+        )
+        .bind(id)
+        .bind(&input.name)
+        .bind(&input.allowed_api_formats)
+        .bind(&input.permissions)
+        .bind(&input.allowed_group_ids)
+        .bind(input.requests_per_minute)
+        .bind(input.max_concurrent_requests)
+        .bind(input.quota_limit_amount)
+        .bind(input.max_active_keys)
+        .bind(input.enabled)
+        .fetch_one(&mut **transaction)
+        .await?
+    } else {
+        sqlx::query_scalar(
+            "UPDATE api_key_policies \
+             SET name=$2,allowed_api_formats=$3::api_format[],permissions=$4,allowed_group_ids=$5, \
+                 requests_per_minute=$6,max_concurrent_requests=$7,quota_limit_amount=$8, \
+                 max_active_keys=$9,enabled=$10 \
+             WHERE id=$1 AND updated_at=$11 RETURNING updated_at",
+        )
+        .bind(id)
+        .bind(&input.name)
+        .bind(&input.allowed_api_formats)
+        .bind(&input.permissions)
+        .bind(&input.allowed_group_ids)
+        .bind(input.requests_per_minute)
+        .bind(input.max_concurrent_requests)
+        .bind(input.quota_limit_amount)
+        .bind(input.max_active_keys)
+        .bind(input.enabled)
+        .bind(expected_updated_at.expect("PUT version"))
+        .fetch_optional(&mut **transaction)
+        .await?
+        .ok_or(RepositoryError::Conflict)?
+    };
+    Ok(MutationResult {
+        id,
+        object_type: "api_key_policy",
+        action: if create { "create" } else { "update" },
+        before_redacted: before,
+        after_redacted: api_key_policy_audit(transaction, id).await?,
+        created_secret: None,
+        reason: None,
+        updated_at,
+        correlation_id: None,
+    })
+}
+
 async fn group_insert(
     transaction: &mut Transaction<'_, Postgres>,
     id: Uuid,
@@ -1584,27 +2111,41 @@ async fn user_insert(
     };
     let updated_at = if create {
         sqlx::query_scalar(
-            "INSERT INTO users (id,name,status,currency) VALUES ($1,$2,$3,$4) RETURNING updated_at",
+            "INSERT INTO users (id,email,display_name,role,status,currency,default_api_key_policy_id) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING updated_at",
         )
         .bind(id)
-        .bind(&input.name)
+        .bind(&input.email)
+        .bind(&input.display_name)
+        .bind(&input.role)
         .bind(&input.status)
         .bind(&input.currency)
+        .bind(input.default_api_key_policy_id)
         .fetch_one(&mut **transaction)
         .await?
     } else {
         sqlx::query_scalar(
-            "UPDATE users SET name=$2,status=$3,currency=$4 WHERE id=$1 AND updated_at=$5 RETURNING updated_at",
+            "UPDATE users SET email=$2,display_name=$3,role=$4,status=$5,currency=$6,default_api_key_policy_id=$7,auth_version=auth_version+1 WHERE id=$1 AND updated_at=$8 RETURNING updated_at",
         )
         .bind(id)
-        .bind(&input.name)
+        .bind(&input.email)
+        .bind(&input.display_name)
+        .bind(&input.role)
         .bind(&input.status)
         .bind(&input.currency)
+        .bind(input.default_api_key_policy_id)
         .bind(expected_updated_at.expect("PUT version"))
         .fetch_optional(&mut **transaction)
         .await?
         .ok_or(RepositoryError::Conflict)?
     };
+    if !create {
+        sqlx::query(
+            "UPDATE user_sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL",
+        )
+        .bind(id)
+        .execute(&mut **transaction)
+        .await?;
+    }
     Ok(MutationResult {
         id,
         object_type: "user",

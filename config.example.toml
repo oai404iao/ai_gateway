@@ -1,12 +1,19 @@
-# Copy this file to config.toml when creating an environment-specific setup.
+# Copy this file to ./config.toml when creating an environment-specific setup.
 # Do not use a .env file; the application loads TOML configuration directly.
 
 [server]
 host = "127.0.0.1"
 port = 3000
-max_request_body_bytes = 1_048_576
 # After this deadline, in-flight responses are cancelled during shutdown.
 shutdown_grace_period_seconds = 30
+
+[request_limits]
+# OpenAI-compatible proxy request bodies.
+proxy_body_bytes = 1_048_576
+# Console management payloads such as model and route updates.
+console_body_bytes = 262_144
+# Login, refresh, password, and invitation payloads.
+auth_body_bytes = 16_384
 
 [database]
 url = "postgres://ai_gateway:ai_gateway@127.0.0.1:5432/ai_gateway"
@@ -40,15 +47,23 @@ max_response_bytes = 10_485_760
 max_model_metadata_bytes = 65_536
 max_selections = 100
 
-# The management API is a separate loopback-only listener and is disabled by
-# default. When enabling it, set a real active users.id UUID and a unique,
-# high-entropy bearer token (at least 32 characters); never commit that token.
-[admin]
+# The Console API is a separate listener. It is intended to sit behind an
+# HTTPS reverse proxy; JWT signing material stays in protected files, never in
+# this TOML. Administrator is a user role, not an alternate static token.
+[console]
 enabled = false
 # host = "127.0.0.1"
 # port = 3001
-# actor_user_id = "00000000-0000-0000-0000-000000000000"
-# bearer_token = "replace-with-a-unique-high-entropy-secret"
+# allowed_origins = ["https://console.example.com"]
+
+# [auth]
+# issuer = "ai-gateway"
+# audience = "ai-gateway-console"
+# access_token_ttl_seconds = 900
+# refresh_token_ttl_seconds = 2_592_000
+# key_id = "primary-2026"
+# signing_key_path = "./console-jwt-private.pem"
+# verification_key_path = "./console-jwt-public.pem"
 
 [observability]
 filter = "ai_gateway=debug,tower_http=info"
