@@ -30,16 +30,7 @@ import { useApiKeyPolicies, useInviteUser, useUsers } from "@/features/admin/api
 import { formatCurrency } from "@/lib/formatters";
 import { formatRelative } from "@/lib/dates";
 import { ROLES, roleLabel } from "@/lib/permissions";
-
-const inviteSchema = z.object({
-  email: z.string().email("Enter a valid email."),
-  display_name: z.string().min(1, "Display name is required.").max(200),
-  role: z.enum(["user", "admin"]),
-  currency: z.string().min(1, "Currency is required.").max(8),
-  default_api_key_policy_id: z.string().optional(),
-});
-
-type InviteValues = z.infer<typeof inviteSchema>;
+import { useI18n } from "@/app/i18n";
 
 export function UsersPage() {
   const { data, isLoading, error } = useUsers();
@@ -48,6 +39,15 @@ export function UsersPage() {
   const [open, setOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [token, setToken] = useState<string | null>(null);
+  const { t } = useI18n();
+  const inviteSchema = z.object({
+    email: z.string().email(t("Enter a valid email.")),
+    display_name: z.string().min(1, t("Display name is required.")).max(200),
+    role: z.enum(["user", "admin"]),
+    currency: z.string().min(1, t("Currency is required.")).max(8),
+    default_api_key_policy_id: z.string().optional(),
+  });
+  type InviteValues = z.infer<typeof inviteSchema>;
 
   const form = useForm<InviteValues>({
     resolver: zodResolver(inviteSchema),
@@ -79,32 +79,32 @@ export function UsersPage() {
         currency: "USD",
         default_api_key_policy_id: "",
       });
-      toast.success("Invitation issued");
+      toast.success(t("Invitation issued"));
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Invite failed");
+      toast.error(error instanceof Error ? error.message : t("Invite failed"));
     } finally {
       setSubmitting(false);
     }
   };
 
   const onInvalid = () => {
-    toast.error("Review the highlighted invitation fields.");
+    toast.error(t("Review the highlighted invitation fields."));
   };
 
   return (
     <>
       <AdminListPage
-        title="Users"
-        description="Console users, roles, and balances. New users join by invitation."
+        title={t("Users")}
+        description={t("Console users, roles, and balances. New users join by invitation.")}
         query={{ data, isLoading, error }}
         rowKey={(user) => user.id}
         detailPath={(user) => `/admin/users/${user.id}`}
-        createLabel="Invite user"
+        createLabel={t("Invite user")}
         onCreate={() => setOpen(true)}
         columns={[
           {
             key: "name",
-            header: "Name",
+            header: t("Name"),
             render: (user) => (
               <span className="flex flex-col">
                 <span className="font-medium">{user.display_name}</span>
@@ -112,23 +112,35 @@ export function UsersPage() {
               </span>
             ),
           },
-          { key: "role", header: "Role", render: (user) => roleLabel(user.role) },
-          { key: "status", header: "Status", render: (user) => <StatusBadge value={user.status} /> },
+          {
+            key: "role",
+            header: t("Role"),
+            render: (user) => <StatusBadge value={user.role} />,
+          },
+          {
+            key: "status",
+            header: t("Status"),
+            render: (user) => <StatusBadge value={user.status} />,
+          },
           {
             key: "balance",
-            header: "Balance",
+            header: t("Balance"),
             render: (user) => formatCurrency(user.balance_amount, user.currency),
           },
-          { key: "updated", header: "Updated", render: (user) => formatRelative(user.updated_at) },
+          {
+            key: "updated",
+            header: t("Updated"),
+            render: (user) => formatRelative(user.updated_at),
+          },
         ]}
       />
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Invite user</DialogTitle>
+            <DialogTitle>{t("Invite user")}</DialogTitle>
             <DialogDescription>
-              The invitation token is shown once and must be delivered out of band.
+              {t("The invitation token is shown once and must be delivered out of band.")}
             </DialogDescription>
           </DialogHeader>
           <form
@@ -137,14 +149,14 @@ export function UsersPage() {
           >
             <FieldGroup>
               <Field>
-                <FieldLabel htmlFor="email">Email</FieldLabel>
+                <FieldLabel htmlFor="email">{t("Email")}</FieldLabel>
                 <Input id="email" type="email" {...form.register("email")} />
                 {form.formState.errors.email ? (
                   <FieldError>{form.formState.errors.email.message}</FieldError>
                 ) : null}
               </Field>
               <Field>
-                <FieldLabel htmlFor="display_name">Display name</FieldLabel>
+                <FieldLabel htmlFor="display_name">{t("Display name")}</FieldLabel>
                 <Input id="display_name" {...form.register("display_name")} />
                 {form.formState.errors.display_name ? (
                   <FieldError>{form.formState.errors.display_name.message}</FieldError>
@@ -156,7 +168,7 @@ export function UsersPage() {
                 defaultValue="user"
                 render={({ field, fieldState }) => (
                   <Field data-invalid={fieldState.invalid}>
-                    <FieldLabel htmlFor="invite_role">Role</FieldLabel>
+                    <FieldLabel htmlFor="invite_role">{t("Role")}</FieldLabel>
                     <Select value={field.value} onValueChange={field.onChange}>
                       <SelectTrigger id="invite_role" aria-invalid={fieldState.invalid}>
                         <SelectValue />
@@ -178,7 +190,7 @@ export function UsersPage() {
                 )}
               />
               <Field>
-                <FieldLabel htmlFor="currency">Currency</FieldLabel>
+                <FieldLabel htmlFor="currency">{t("Currency")}</FieldLabel>
                 <Input id="currency" {...form.register("currency")} />
                 {form.formState.errors.currency ? (
                   <FieldError>{form.formState.errors.currency.message}</FieldError>
@@ -191,7 +203,7 @@ export function UsersPage() {
                 render={({ field, fieldState }) => (
                   <Field data-invalid={fieldState.invalid}>
                     <FieldLabel htmlFor="invite_default_api_key_policy_id">
-                      Default API key policy
+                      {t("Default API key policy")}
                     </FieldLabel>
                     <Select
                       value={field.value || "__none__"}
@@ -207,7 +219,7 @@ export function UsersPage() {
                       </SelectTrigger>
                       <SelectContent>
                         <SelectGroup>
-                          <SelectItem value="__none__">None</SelectItem>
+                          <SelectItem value="__none__">{t("None")}</SelectItem>
                           {policies.data
                             ?.filter((policy) => policy.enabled)
                             .map((policy) => (
@@ -228,7 +240,7 @@ export function UsersPage() {
             <DialogFooter>
               <Button type="submit" disabled={submitting}>
                 {submitting ? <Spinner data-icon="inline-start" /> : null}
-                Send invitation
+                {t("Send invitation")}
               </Button>
             </DialogFooter>
           </form>
@@ -238,8 +250,8 @@ export function UsersPage() {
       <SecretOnceDialog
         open={Boolean(token)}
         onOpenChange={(open) => !open && setToken(null)}
-        title="Invitation token"
-        description="Give this to the new user to activate their account."
+        title={t("Invitation token")}
+        description={t("Give this to the new user to activate their account.")}
         secret={token}
       />
     </>

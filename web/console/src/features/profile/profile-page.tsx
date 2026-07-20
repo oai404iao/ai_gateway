@@ -17,30 +17,28 @@ import { useChangePassword, useProfile, useUpdateProfile } from "@/features/prof
 import { formatCurrency } from "@/lib/formatters";
 import { formatDateTime as formatTs } from "@/lib/dates";
 import { roleLabel } from "@/lib/permissions";
-
-const profileSchema = z.object({
-  display_name: z.string().min(1, "Display name is required.").max(200),
-});
-
-type ProfileValues = z.infer<typeof profileSchema>;
-
-const passwordSchema = z
-  .object({
-    current_password: z.string().min(12, "At least 12 characters."),
-    new_password: z.string().min(12, "At least 12 characters."),
-    confirm_password: z.string().min(12, "At least 12 characters."),
-  })
-  .refine((values) => values.new_password === values.confirm_password, {
-    path: ["confirm_password"],
-    message: "Passwords do not match.",
-  });
-
-type PasswordValues = z.infer<typeof passwordSchema>;
+import { useI18n } from "@/app/i18n";
 
 export function ProfilePage() {
   const { data: profile, isLoading, error } = useProfile();
   const updateProfile = useUpdateProfile();
   const changePassword = useChangePassword();
+  const { t } = useI18n();
+  const profileSchema = z.object({
+    display_name: z.string().min(1, t("Display name is required.")).max(200),
+  });
+  type ProfileValues = z.infer<typeof profileSchema>;
+  const passwordSchema = z
+    .object({
+      current_password: z.string().min(12, t("At least 12 characters.")),
+      new_password: z.string().min(12, t("At least 12 characters.")),
+      confirm_password: z.string().min(12, t("At least 12 characters.")),
+    })
+    .refine((values) => values.new_password === values.confirm_password, {
+      path: ["confirm_password"],
+      message: t("Passwords do not match."),
+    });
+  type PasswordValues = z.infer<typeof passwordSchema>;
 
   const profileForm = useForm<ProfileValues>({
     resolver: zodResolver(profileSchema),
@@ -54,9 +52,9 @@ export function ProfilePage() {
     setSavingProfile(true);
     try {
       await updateProfile.mutateAsync(values);
-      toast.success("Profile updated");
+      toast.success(t("Profile updated"));
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Update failed");
+      toast.error(error instanceof Error ? error.message : t("Update failed"));
     } finally {
       setSavingProfile(false);
     }
@@ -69,10 +67,10 @@ export function ProfilePage() {
         current_password: values.current_password,
         new_password: values.new_password,
       });
-      toast.success("Password changed. All sessions were signed out.");
+      toast.success(t("Password changed. All sessions were signed out."));
       passwordForm.reset();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Password change failed");
+      toast.error(error instanceof Error ? error.message : t("Password change failed"));
     } finally {
       setSavingPassword(false);
     }
@@ -80,25 +78,25 @@ export function ProfilePage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <PageHeader title="Profile" description="Your Console identity and security settings." />
+      <PageHeader title={t("Profile")} description={t("Your Console identity and security settings.")} />
       <AsyncResource isLoading={isLoading} error={error}>
         {profile ? (
           <Card>
             <CardHeader>
-              <CardTitle>Account</CardTitle>
-              <CardDescription>Read-only account facts.</CardDescription>
+              <CardTitle>{t("Account")}</CardTitle>
+              <CardDescription>{t("Read-only account facts.")}</CardDescription>
             </CardHeader>
             <CardContent>
               <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <DetailField label="Email" value={profile.email ?? "—"} />
-                <DetailField label="Role" value={roleLabel(profile.role)} />
-                <DetailField label="Status" value={<StatusBadge value={profile.status} />} />
+                <DetailField label={t("Email")} value={profile.email ?? "—"} />
+                <DetailField label={t("Role")} value={roleLabel(profile.role)} />
+                <DetailField label={t("Status")} value={<StatusBadge value={profile.status} />} />
                 <DetailField
-                  label="Balance"
+                  label={t("Balance")}
                   value={formatCurrency(profile.balance_amount, profile.currency)}
                 />
-                <DetailField label="Created" value={formatTs(profile.created_at)} />
-                <DetailField label="Updated" value={formatTs(profile.updated_at)} />
+                <DetailField label={t("Created")} value={formatTs(profile.created_at)} />
+                <DetailField label={t("Updated")} value={formatTs(profile.updated_at)} />
               </dl>
             </CardContent>
           </Card>
@@ -107,14 +105,14 @@ export function ProfilePage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Display name</CardTitle>
-          <CardDescription>Shown to administrators and in audit records.</CardDescription>
+          <CardTitle>{t("Display name")}</CardTitle>
+          <CardDescription>{t("Shown to administrators and in audit records.")}</CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={profileForm.handleSubmit(onProfile)} className="flex flex-col gap-4">
             <FieldGroup>
               <Field>
-                <FieldLabel htmlFor="display_name">Display name</FieldLabel>
+                <FieldLabel htmlFor="display_name">{t("Display name")}</FieldLabel>
                 <Input id="display_name" {...profileForm.register("display_name")} />
                 {profileForm.formState.errors.display_name ? (
                   <FieldError>{profileForm.formState.errors.display_name.message}</FieldError>
@@ -123,7 +121,7 @@ export function ProfilePage() {
             </FieldGroup>
             <Button type="submit" className="self-start" disabled={savingProfile}>
               {savingProfile ? <Spinner data-icon="inline-start" /> : null}
-              Save display name
+              {t("Save display name")}
             </Button>
           </form>
         </CardContent>
@@ -133,16 +131,16 @@ export function ProfilePage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Change password</CardTitle>
+          <CardTitle>{t("Change password")}</CardTitle>
           <CardDescription>
-            Changing your password immediately signs out every active session.
+            {t("Changing your password immediately signs out every active session.")}
           </CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={passwordForm.handleSubmit(onPassword)} className="flex flex-col gap-4">
             <FieldGroup>
               <Field>
-                <FieldLabel htmlFor="current_password">Current password</FieldLabel>
+                <FieldLabel htmlFor="current_password">{t("Current password")}</FieldLabel>
                 <Input
                   id="current_password"
                   type="password"
@@ -154,7 +152,7 @@ export function ProfilePage() {
                 ) : null}
               </Field>
               <Field>
-                <FieldLabel htmlFor="new_password">New password</FieldLabel>
+                <FieldLabel htmlFor="new_password">{t("New password")}</FieldLabel>
                 <Input
                   id="new_password"
                   type="password"
@@ -166,7 +164,7 @@ export function ProfilePage() {
                 ) : null}
               </Field>
               <Field>
-                <FieldLabel htmlFor="confirm_password">Confirm new password</FieldLabel>
+                <FieldLabel htmlFor="confirm_password">{t("Confirm new password")}</FieldLabel>
                 <Input
                   id="confirm_password"
                   type="password"
@@ -180,7 +178,7 @@ export function ProfilePage() {
             </FieldGroup>
             <Button type="submit" className="self-start" disabled={savingPassword}>
               {savingPassword ? <Spinner data-icon="inline-start" /> : null}
-              Change password
+              {t("Change password")}
             </Button>
           </form>
         </CardContent>

@@ -325,22 +325,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/catalog/models/sync": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["syncModelPrices"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/catalog/models/import": {
         parameters: {
             query?: never;
@@ -350,7 +334,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        post: operations["importModels"];
+        post: operations["applyCatalogModels"];
         delete?: never;
         options?: never;
         head?: never;
@@ -629,7 +613,7 @@ export interface components {
         /** @enum {string} */
         UpstreamAuthKind: "bearer" | "header";
         /** @enum {string} */
-        ModelSyncAction: "price_update" | "import" | "already_exists";
+        ModelSyncAction: "price_update" | "import";
         /** Format: date-time */
         DateTime: string;
         /** @description rust_decimal::Decimal serialized as a string. */
@@ -807,8 +791,8 @@ export interface components {
             client_model: string;
             api_format: components["schemas"]["ApiFormat"];
             /** Format: uuid */
-            model_id: string;
-            model_enabled: boolean;
+            upstream_model_id: string;
+            upstream_model_enabled: boolean;
             upstream_model: string;
             description: string | null;
             channel_group_ids: string[];
@@ -891,7 +875,6 @@ export interface components {
             excluded_missing_prices: number;
             excluded_invalid_models: number;
             excluded_oversized_metadata: number;
-            unavailable_existing_count: number;
         };
         ModelSyncPreviewModel: {
             provider_id: string;
@@ -904,14 +887,10 @@ export interface components {
             output_unit_price: components["schemas"]["Decimal"];
             action: components["schemas"]["ModelSyncAction"];
         };
-        ModelPriceSyncResponse: {
-            updated_count: number;
-            unavailable_count: number;
-            /** Format: uuid */
-            correlation_id: string | null;
-        };
         ModelImportResponse: {
             model_count: number;
+            imported_count: number;
+            updated_count: number;
             /** Format: uuid */
             correlation_id: string;
         };
@@ -955,6 +934,7 @@ export interface components {
             email?: string | null;
             role: components["schemas"]["UserRole"];
             status: string;
+            balance_amount: components["schemas"]["Decimal"];
             currency: string;
             /** Format: uuid */
             default_api_key_policy_id?: string | null;
@@ -1062,8 +1042,7 @@ export interface components {
             client_model: string;
             api_format: components["schemas"]["ApiFormat"];
             /** Format: uuid */
-            model_id: string;
-            upstream_model: string;
+            upstream_model_id: string;
             description?: string | null;
             channel_group_ids?: string[];
             channel_ids?: string[];
@@ -1094,8 +1073,6 @@ export interface components {
         ModelSyncPreviewRequest: {
             provider_ids?: string[];
         };
-        /** @description Empty body; the sync refreshes all models.dev-imported models. */
-        ModelPriceSyncRequest: Record<string, never>;
         ModelImportRequest: {
             selections: components["schemas"]["ModelSyncSelection"][];
         };
@@ -1105,6 +1082,17 @@ export interface components {
         };
         ListQuery: {
             limit?: number;
+            /** Format: uuid */
+            user_id?: string;
+            /** Format: uuid */
+            api_key_id?: string;
+            model?: string;
+            api_format?: components["schemas"]["ApiFormat"];
+            /** @enum {string} */
+            outcome?: "succeeded" | "failed" | "rejected" | "cancelled";
+            started_after?: components["schemas"]["DateTime"];
+            started_before?: components["schemas"]["DateTime"];
+            billed?: boolean;
         };
     };
     responses: {
@@ -1177,6 +1165,16 @@ export interface components {
         /** @description ETag from the preceding GET; stale values yield `409`. */
         IfMatch: string;
         Limit: number;
+        /** @description Administrator-only owner filter. */
+        RequestLogUserId: string;
+        RequestLogApiKeyId: string;
+        /** @description Exact client-model or upstream-model identifier. */
+        RequestLogModel: string;
+        RequestLogApiFormat: components["schemas"]["ApiFormat"];
+        RequestLogOutcome: "succeeded" | "failed" | "rejected" | "cancelled";
+        RequestLogStartedAfter: components["schemas"]["DateTime"];
+        RequestLogStartedBefore: components["schemas"]["DateTime"];
+        RequestLogBilled: boolean;
     };
     requestBodies: never;
     headers: {
@@ -1555,6 +1553,14 @@ export interface operations {
         parameters: {
             query?: {
                 limit?: components["parameters"]["Limit"];
+                api_key_id?: components["parameters"]["RequestLogApiKeyId"];
+                /** @description Exact client-model or upstream-model identifier. */
+                model?: components["parameters"]["RequestLogModel"];
+                api_format?: components["parameters"]["RequestLogApiFormat"];
+                outcome?: components["parameters"]["RequestLogOutcome"];
+                started_after?: components["parameters"]["RequestLogStartedAfter"];
+                started_before?: components["parameters"]["RequestLogStartedBefore"];
+                billed?: components["parameters"]["RequestLogBilled"];
             };
             header?: never;
             path?: never;
@@ -1952,34 +1958,7 @@ export interface operations {
             502: components["responses"]["BadGateway"];
         };
     };
-    syncModelPrices: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ModelPriceSyncRequest"];
-            };
-        };
-        responses: {
-            /** @description Price sync result. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ModelPriceSyncResponse"];
-                };
-            };
-            401: components["responses"]["Unauthorized"];
-            403: components["responses"]["Forbidden"];
-            502: components["responses"]["BadGateway"];
-        };
-    };
-    importModels: {
+    applyCatalogModels: {
         parameters: {
             query?: never;
             header?: never;
@@ -1992,7 +1971,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Import result. */
+            /** @description Selected catalog models imported or price-refreshed. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -2694,6 +2673,16 @@ export interface operations {
         parameters: {
             query?: {
                 limit?: components["parameters"]["Limit"];
+                /** @description Administrator-only owner filter. */
+                user_id?: components["parameters"]["RequestLogUserId"];
+                api_key_id?: components["parameters"]["RequestLogApiKeyId"];
+                /** @description Exact client-model or upstream-model identifier. */
+                model?: components["parameters"]["RequestLogModel"];
+                api_format?: components["parameters"]["RequestLogApiFormat"];
+                outcome?: components["parameters"]["RequestLogOutcome"];
+                started_after?: components["parameters"]["RequestLogStartedAfter"];
+                started_before?: components["parameters"]["RequestLogStartedBefore"];
+                billed?: components["parameters"]["RequestLogBilled"];
             };
             header?: never;
             path?: never;

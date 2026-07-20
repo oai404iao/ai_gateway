@@ -4,6 +4,7 @@ import type {
   UpstreamAuthKind,
   UserRole,
 } from "@/api/types";
+import { translate } from "@/app/i18n";
 
 export const API_FORMATS: readonly ApiFormat[] = [
   "open_ai_chat_completions",
@@ -27,29 +28,35 @@ export const USER_STATUSES = ["active", "invited", "suspended", "disabled"] as c
 export const API_KEY_STATUSES = ["active", "disabled", "revoked"] as const;
 
 export function apiFormatLabel(value: ApiFormat): string {
-  return value === "open_ai_chat_completions" ? "Chat Completions" : "Responses";
+  return value === "open_ai_chat_completions"
+    ? translate("Chat Completions")
+    : translate("Responses");
 }
 
 export function roleLabel(value: UserRole): string {
-  return value === "admin" ? "Administrator" : "User";
+  return value === "admin" ? translate("Administrator") : translate("User");
 }
 
 export function selectionStrategyLabel(value: SelectionStrategy): string {
-  return value === "weighted_random" ? "Weighted random" : "Weighted round-robin";
+  return value === "weighted_random"
+    ? translate("Weighted random")
+    : translate("Weighted round-robin");
 }
 
 export function upstreamAuthKindLabel(value: UpstreamAuthKind): string {
-  return value === "bearer" ? "Bearer token" : "Custom header";
+  return value === "bearer" ? translate("Bearer token") : translate("Custom header");
 }
 
 export function outcomeLabel(value: string): string {
   switch (value) {
-    case "success":
-      return "Success";
+    case "succeeded":
+      return translate("Succeeded");
     case "failed":
-      return "Failed";
+      return translate("Failed");
+    case "rejected":
+      return translate("Rejected");
     case "cancelled":
-      return "Cancelled";
+      return translate("Cancelled");
     default:
       return value;
   }
@@ -57,8 +64,9 @@ export function outcomeLabel(value: string): string {
 
 export function outcomeVariant(
   value: string,
-): "default" | "secondary" | "destructive" {
-  if (value === "success") return "secondary";
+): "default" | "success" | "warning" | "destructive" {
+  if (value === "succeeded") return "success";
   if (value === "failed") return "destructive";
+  if (value === "rejected") return "warning";
   return "default";
 }

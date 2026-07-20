@@ -11,17 +11,17 @@ import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { activateInvitation } from "@/api/session";
 import { useSession } from "@/lib/use-session";
-
-const schema = z.object({
-  invitation_token: z.string().min(1, "Invitation token is required."),
-  password: z.string().min(12, "Password must be at least 12 characters."),
-});
-
-type FormValues = z.infer<typeof schema>;
+import { useI18n } from "@/app/i18n";
 
 export function ActivateInvitationPage() {
   const { isAuthenticated } = useSession();
   const navigate = useNavigate();
+  const { t } = useI18n();
+  const schema = z.object({
+    invitation_token: z.string().min(1, t("Invitation token is required.")),
+    password: z.string().min(12, t("Password must be at least 12 characters.")),
+  });
+  type FormValues = z.infer<typeof schema>;
   const [submitting, setSubmitting] = useState(false);
   const {
     register,
@@ -35,10 +35,10 @@ export function ActivateInvitationPage() {
     setSubmitting(true);
     try {
       await activateInvitation(values);
-      toast.success("Account activated");
+      toast.success(t("Account activated"));
       navigate("/account", { replace: true });
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Activation failed");
+      toast.error(error instanceof Error ? error.message : t("Activation failed"));
     } finally {
       setSubmitting(false);
     }
@@ -47,23 +47,23 @@ export function ActivateInvitationPage() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Activate invitation</CardTitle>
+        <CardTitle>{t("Activate invitation")}</CardTitle>
         <CardDescription>
-          Set your password to activate the Console account you were invited to.
+          {t("Set your password to activate the Console account you were invited to.")}
         </CardDescription>
       </CardHeader>
       <CardContent>
         <form onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-4">
           <FieldGroup>
             <Field>
-              <FieldLabel htmlFor="invitation_token">Invitation token</FieldLabel>
+              <FieldLabel htmlFor="invitation_token">{t("Invitation token")}</FieldLabel>
               <Input id="invitation_token" autoComplete="off" {...register("invitation_token")} />
               {errors.invitation_token ? (
                 <FieldError>{errors.invitation_token.message}</FieldError>
               ) : null}
             </Field>
             <Field>
-              <FieldLabel htmlFor="password">New password</FieldLabel>
+              <FieldLabel htmlFor="password">{t("New password")}</FieldLabel>
               <Input
                 id="password"
                 type="password"
@@ -75,13 +75,13 @@ export function ActivateInvitationPage() {
           </FieldGroup>
           <Button type="submit" disabled={submitting}>
             {submitting ? <Spinner data-icon="inline-start" /> : null}
-            Activate account
+            {t("Activate account")}
           </Button>
         </form>
         <p className="mt-4 text-center text-xs text-muted-foreground">
-          Already have an account?{" "}
+          {t("Already have an account?")}{" "}
           <Link className="font-medium text-foreground underline" to="/login">
-            Sign in
+            {t("Sign in")}
           </Link>
         </p>
       </CardContent>

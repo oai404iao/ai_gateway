@@ -12,7 +12,7 @@ use std::fmt;
 use chrono::{DateTime, Timelike, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sqlx::{FromRow, PgPool, Postgres, Transaction};
+use sqlx::{FromRow, PgPool, Postgres, QueryBuilder, Transaction};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -73,9 +73,9 @@ pub struct ModelRuleRecord {
     pub id: Uuid,
     pub client_model: String,
     pub api_format: String,
-    pub model_id: Uuid,
-    pub model_enabled: bool,
-    pub model_currency: String,
+    pub upstream_model_id: Uuid,
+    pub upstream_model_enabled: bool,
+    pub upstream_model_currency: String,
     pub price_unit_tokens: i64,
     pub price_effective_at: DateTime<Utc>,
     pub input_unit_price: rust_decimal::Decimal,
@@ -274,6 +274,7 @@ pub struct UserInput {
     #[serde(default = "default_user_role")]
     pub role: String,
     pub status: String,
+    pub balance_amount: rust_decimal::Decimal,
     pub currency: String,
     #[serde(default)]
     pub default_api_key_policy_id: Option<Uuid>,
@@ -302,33 +303,13 @@ pub struct ModelInput {
     #[serde(default)]
     pub source_payload: Option<Value>,
 }
-/// A fully validated, price-bearing model selected for an explicit catalog
-/// import. Unlike `ModelInput`, this is not decoded from an HTTP request.
+/// A fully validated, price-bearing models.dev catalog entry selected by an
+/// administrator. Unlike `ModelInput`, this is not decoded from an HTTP request.
 #[derive(Clone)]
 pub struct SyncedModelInput {
     pub source_model_id: String,
     pub display_name: String,
     pub provider_name: String,
-    pub input_unit_price: rust_decimal::Decimal,
-    pub cached_input_unit_price: rust_decimal::Decimal,
-    pub cache_write_unit_price: rust_decimal::Decimal,
-    pub output_unit_price: rust_decimal::Decimal,
-    pub source_payload: Value,
-}
-/// Identifies a local model that was previously imported from models.dev and
-/// is therefore eligible for automatic price refresh.
-#[derive(Clone, Debug, FromRow)]
-pub struct ModelsDevPriceTarget {
-    pub model_id: Uuid,
-    pub source_model_id: String,
-    pub provider_id: String,
-}
-/// The new price facts for one existing models.dev-imported local model.
-#[derive(Clone)]
-pub struct SyncedModelPrice {
-    pub model_id: Uuid,
-    pub source_model_id: String,
-    pub provider_id: String,
     pub input_unit_price: rust_decimal::Decimal,
     pub cached_input_unit_price: rust_decimal::Decimal,
     pub cache_write_unit_price: rust_decimal::Decimal,
@@ -411,8 +392,7 @@ pub struct ChannelInput {
 pub struct ModelRuleInput {
     pub client_model: String,
     pub api_format: String,
-    pub model_id: Uuid,
-    pub upstream_model: String,
+    pub upstream_model_id: Uuid,
     #[serde(default)]
     pub description: Option<String>,
     #[serde(default)]
@@ -712,6 +692,21 @@ pub struct ConsoleRequestLog {
     pub billed_at: Option<DateTime<Utc>>,
 }
 
+/// Server-side request-log filters. The Console API decodes and validates
+/// query strings before constructing this typed repository input.
+#[derive(Clone, Debug, Default)]
+pub struct RequestLogFilter {
+    pub limit: i64,
+    pub user_id: Option<Uuid>,
+    pub api_key_id: Option<Uuid>,
+    pub model: Option<String>,
+    pub api_format: Option<String>,
+    pub outcome: Option<String>,
+    pub started_after: Option<DateTime<Utc>>,
+    pub started_before: Option<DateTime<Utc>>,
+    pub billed: Option<bool>,
+}
+
 #[derive(Clone, Debug, Serialize, FromRow)]
 pub struct ConsoleAuditLog {
     pub id: Uuid,
@@ -833,8 +828,8 @@ pub struct ControlPlaneModelRule {
     pub id: Uuid,
     pub client_model: String,
     pub api_format: String,
-    pub model_id: Uuid,
-    pub model_enabled: bool,
+    pub upstream_model_id: Uuid,
+    pub upstream_model_enabled: bool,
     pub upstream_model: String,
     pub description: Option<String>,
     pub channel_group_ids: Vec<Uuid>,
@@ -877,9 +872,9 @@ impl RequestLogRepository {
     pub async fn list_for_user(
         &self,
         user_id: Uuid,
-        limit: i64,
+        filter: RequestLogFilter,
     ) -> Result<Vec<ConsoleRequestLog>, RepositoryError> {
-        query_console_request_logs(&self.pool, Some(user_id), limit).await
+        query_console_request_logs(&self.pool, Some(user_id), filter).await
     }
 
     pub async fn get_for_user(
@@ -895,8 +890,11 @@ impl RequestLogRepository {
             .map_err(RepositoryError::from)
     }
 
-    pub async fn list_all(&self, limit: i64) -> Result<Vec<ConsoleRequestLog>, RepositoryError> {
-        query_console_request_logs(&self.pool, None, limit).await
+    pub async fn list_all(
+        &self,
+        filter: RequestLogFilter,
+    ) -> Result<Vec<ConsoleRequestLog>, RepositoryError> {
+        query_console_request_logs(&self.pool, None, filter).await
     }
 
     /// Inserts one terminal event without changing schema-owned defaults.
@@ -1088,27 +1086,72 @@ const CONSOLE_REQUEST_LOG_SELECT: &str = "SELECT id,started_at,completed_at,user
 
 async fn query_console_request_logs(
     pool: &PgPool,
-    user_id: Option<Uuid>,
-    limit: i64,
+    owner_user_id: Option<Uuid>,
+    filter: RequestLogFilter,
 ) -> Result<Vec<ConsoleRequestLog>, RepositoryError> {
-    let limit = limit.clamp(1, 100);
-    match user_id {
-        Some(user_id) => sqlx::query_as::<_, ConsoleRequestLog>(&format!(
-            "SELECT {CONSOLE_REQUEST_LOG_COLUMNS} FROM request_logs WHERE user_id=$1 ORDER BY started_at DESC,id DESC LIMIT $2"
-        ))
-        .bind(user_id)
-        .bind(limit)
-        .fetch_all(pool)
-        .await
-        .map_err(RepositoryError::from),
-        None => sqlx::query_as::<_, ConsoleRequestLog>(&format!(
-            "SELECT {CONSOLE_REQUEST_LOG_COLUMNS} FROM request_logs ORDER BY started_at DESC,id DESC LIMIT $1"
-        ))
-        .bind(limit)
-        .fetch_all(pool)
-        .await
-        .map_err(RepositoryError::from),
+    if filter
+        .api_format
+        .as_deref()
+        .is_some_and(|value| !matches!(value, "open_ai_chat_completions" | "open_ai_responses"))
+        || filter.outcome.as_deref().is_some_and(|value| {
+            !matches!(value, "succeeded" | "failed" | "rejected" | "cancelled")
+        })
+        || filter
+            .model
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty() || value.len() > 300)
+        || filter.started_after > filter.started_before
+    {
+        return Err(RepositoryError::Validation);
     }
+
+    let mut query = QueryBuilder::<Postgres>::new(format!(
+        "SELECT {CONSOLE_REQUEST_LOG_COLUMNS} FROM request_logs WHERE TRUE"
+    ));
+    if let Some(user_id) = owner_user_id {
+        query.push(" AND user_id = ").push_bind(user_id);
+    }
+    if let Some(user_id) = filter.user_id {
+        query.push(" AND user_id = ").push_bind(user_id);
+    }
+    if let Some(api_key_id) = filter.api_key_id {
+        query.push(" AND api_key_id = ").push_bind(api_key_id);
+    }
+    if let Some(model) = filter.model {
+        query
+            .push(" AND (client_model = ")
+            .push_bind(model.clone())
+            .push(" OR upstream_model = ")
+            .push_bind(model)
+            .push(")");
+    }
+    if let Some(api_format) = filter.api_format {
+        query.push(" AND api_format::text = ").push_bind(api_format);
+    }
+    if let Some(outcome) = filter.outcome {
+        query.push(" AND outcome = ").push_bind(outcome);
+    }
+    if let Some(started_after) = filter.started_after {
+        query.push(" AND started_at >= ").push_bind(started_after);
+    }
+    if let Some(started_before) = filter.started_before {
+        query.push(" AND started_at <= ").push_bind(started_before);
+    }
+    if let Some(billed) = filter.billed {
+        if billed {
+            query.push(" AND billed_at IS NOT NULL");
+        } else {
+            query.push(" AND billed_at IS NULL");
+        }
+    }
+    query
+        .push(" ORDER BY started_at DESC, id DESC LIMIT ")
+        .push_bind(filter.limit.clamp(1, 100));
+    query
+        .build_query_as::<ConsoleRequestLog>()
+        .fetch_all(pool)
+        .await
+        .map_err(RepositoryError::from)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1354,7 +1397,7 @@ impl ControlPlaneRepository {
         transaction: &mut Transaction<'_, Postgres>,
     ) -> Result<ControlPlaneRecords, RepositoryError> {
         let api_keys = sqlx::query_as::<_, ApiKeyRecord>("SELECT k.id, k.user_id, u.status AS user_status, k.secret_value, k.status, k.expires_at, k.allowed_api_formats::text[] AS allowed_api_formats, k.permissions, k.allowed_group_ids, k.requests_per_minute, k.tokens_per_minute, k.max_concurrent_requests, k.quota_limit_amount, k.quota_used_amount FROM api_keys k JOIN users u ON u.id = k.user_id ORDER BY k.id").fetch_all(&mut **transaction).await?;
-        let model_rules = sqlx::query_as::<_, ModelRuleRecord>("SELECT r.id, r.client_model, r.api_format::text AS api_format, r.model_id, m.enabled AS model_enabled, m.currency AS model_currency, m.price_unit_tokens, m.price_effective_at, m.input_unit_price, m.cached_input_unit_price, m.cache_write_unit_price, m.output_unit_price, r.upstream_model, r.channel_group_ids, r.channel_ids, r.enabled FROM model_rules r JOIN models m ON m.id = r.model_id ORDER BY r.id").fetch_all(&mut **transaction).await?;
+        let model_rules = sqlx::query_as::<_, ModelRuleRecord>("SELECT r.id, r.client_model, r.api_format::text AS api_format, r.upstream_model_id, m.enabled AS upstream_model_enabled, m.currency AS upstream_model_currency, m.price_unit_tokens, m.price_effective_at, m.input_unit_price, m.cached_input_unit_price, m.cache_write_unit_price, m.output_unit_price, m.source_model_id AS upstream_model, r.channel_group_ids, r.channel_ids, r.enabled FROM model_rules r JOIN models m ON m.id = r.upstream_model_id ORDER BY r.id").fetch_all(&mut **transaction).await?;
         let groups = sqlx::query_as::<_, ChannelGroupRecord>("SELECT id, name, api_format::text AS api_format, priority, selection_strategy, enabled FROM channel_groups ORDER BY id").fetch_all(&mut **transaction).await?;
         let channels = sqlx::query_as::<_, ChannelRecord>("SELECT id, channel_group_id, api_format::text AS api_format, name, base_url, enabled, auto_disabled, weight, proxy_id, config_template_id, override_document, connect_timeout_ms, response_header_timeout_ms, stream_idle_timeout_ms, upstream_auth_kind, upstream_auth_header_name, upstream_api_key, available_models, health_check FROM channels ORDER BY id").fetch_all(&mut **transaction).await?;
         let proxies = sqlx::query_as::<_, ProxyRecord>("SELECT id, name, proxy_url, username, password, no_proxy_hosts, enabled FROM proxies ORDER BY id").fetch_all(&mut **transaction).await?;
@@ -1418,7 +1461,7 @@ impl ControlPlaneRepository {
         let api_key_policies = sqlx::query_as::<_, ControlPlaneApiKeyPolicy>("SELECT id,name,allowed_api_formats::text[] AS allowed_api_formats,permissions,allowed_group_ids,requests_per_minute,max_concurrent_requests,quota_limit_amount,max_active_keys,enabled,created_at,updated_at FROM api_key_policies ORDER BY id").fetch_all(&self.pool).await?;
         let channel_groups = sqlx::query_as::<_, ControlPlaneChannelGroup>("SELECT id,name,api_format::text AS api_format,priority,selection_strategy,enabled,updated_at FROM channel_groups ORDER BY id").fetch_all(&self.pool).await?;
         let channels = sqlx::query_as::<_, ControlPlaneChannelRow>("SELECT id,channel_group_id,api_format::text AS api_format,name,base_url,enabled,auto_disabled,auto_disabled_reason,weight,proxy_id,config_template_id,connect_timeout_ms,response_header_timeout_ms,stream_idle_timeout_ms,upstream_auth_kind,upstream_auth_header_name,(upstream_api_key IS NOT NULL) AS upstream_credential_configured,available_models,created_at,updated_at FROM channels ORDER BY id").fetch_all(&self.pool).await?;
-        let model_rules = sqlx::query_as::<_, ControlPlaneModelRule>("SELECT r.id,r.client_model,r.api_format::text AS api_format,r.model_id,m.enabled AS model_enabled,r.upstream_model,r.description,r.channel_group_ids,r.channel_ids,r.enabled,r.updated_at FROM model_rules r JOIN models m ON m.id=r.model_id ORDER BY r.id").fetch_all(&self.pool).await?;
+        let model_rules = sqlx::query_as::<_, ControlPlaneModelRule>("SELECT r.id,r.client_model,r.api_format::text AS api_format,r.upstream_model_id,m.enabled AS upstream_model_enabled,m.source_model_id AS upstream_model,r.description,r.channel_group_ids,r.channel_ids,r.enabled,r.updated_at FROM model_rules r JOIN models m ON m.id=r.upstream_model_id ORDER BY r.id").fetch_all(&self.pool).await?;
         let proxies = sqlx::query_as::<_, ControlPlaneProxy>("SELECT id,name,regexp_replace(regexp_replace(proxy_url, '^([^:/?#]+://)[^/?#]*@', E'\\1'), '[?#].*$', '') AS proxy_url,no_proxy_hosts,enabled,(username IS NOT NULL OR password IS NOT NULL) AS credential_configured,created_at,updated_at FROM proxies ORDER BY id").fetch_all(&self.pool).await?;
         let config_templates = sqlx::query_as::<_, ControlPlaneConfigTemplate>("SELECT id,name,description,enabled,created_at,updated_at FROM config_templates ORDER BY id").fetch_all(&self.pool).await?;
         Ok(ControlPlaneLists {
@@ -1757,17 +1800,6 @@ impl ControlPlaneRepository {
         }
     }
 
-    pub async fn models_dev_price_targets(
-        &self,
-    ) -> Result<Vec<ModelsDevPriceTarget>, RepositoryError> {
-        sqlx::query_as::<_, ModelsDevPriceTarget>(
-            "SELECT id AS model_id,source_model_id,source_payload->>'provider_id' AS provider_id FROM models WHERE source_payload->>'source'='models.dev' AND source_payload ? 'provider_id' ORDER BY id",
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(RepositoryError::from)
-    }
-
     pub async fn model_source_ids(&self) -> Result<Vec<String>, RepositoryError> {
         sqlx::query_scalar("SELECT source_model_id FROM models ORDER BY source_model_id")
             .fetch_all(&self.pool)
@@ -1775,9 +1807,9 @@ impl ControlPlaneRepository {
             .map_err(RepositoryError::from)
     }
 
-    /// Imports explicitly selected catalog entries. Existing local models are
-    /// never overwritten by this path; price refresh is a separate operation.
-    pub async fn import_models(
+    /// Applies explicitly selected catalog entries. Existing source-model IDs
+    /// receive a price refresh; absent IDs are imported as new local models.
+    pub async fn apply_catalog_models(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         inputs: Vec<SyncedModelInput>,
@@ -1785,21 +1817,16 @@ impl ControlPlaneRepository {
         let synced_at = Utc::now();
         let mut results = Vec::with_capacity(inputs.len());
         for input in inputs {
-            results.push(import_model(transaction, input, synced_at).await?);
-        }
-        Ok(results)
-    }
-
-    /// Applies fresh catalog prices only to already imported local models.
-    pub async fn sync_model_prices(
-        &self,
-        transaction: &mut Transaction<'_, Postgres>,
-        inputs: Vec<SyncedModelPrice>,
-    ) -> Result<Vec<MutationResult>, RepositoryError> {
-        let synced_at = Utc::now();
-        let mut results = Vec::with_capacity(inputs.len());
-        for input in inputs {
-            results.push(sync_model_price(transaction, input, synced_at).await?);
+            let existing_id = sqlx::query_scalar::<_, Uuid>(
+                "SELECT id FROM models WHERE source_model_id=$1 FOR UPDATE",
+            )
+            .bind(&input.source_model_id)
+            .fetch_optional(&mut **transaction)
+            .await?;
+            results.push(match existing_id {
+                Some(id) => sync_model_price(transaction, id, input, synced_at).await?,
+                None => import_model(transaction, input, synced_at).await?,
+            });
         }
         Ok(results)
     }
@@ -2115,28 +2142,30 @@ async fn user_insert(
             || before["status"].as_str() != Some(input.status.as_str()));
     let updated_at = if create {
         sqlx::query_scalar(
-            "INSERT INTO users (id,email,display_name,role,status,currency,default_api_key_policy_id) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING updated_at",
+            "INSERT INTO users (id,email,display_name,role,status,balance_amount,currency,default_api_key_policy_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING updated_at",
         )
         .bind(id)
         .bind(&input.email)
         .bind(&input.display_name)
         .bind(&input.role)
         .bind(&input.status)
+        .bind(input.balance_amount)
         .bind(&input.currency)
         .bind(input.default_api_key_policy_id)
         .fetch_one(&mut **transaction)
         .await?
     } else {
         sqlx::query_scalar(
-            "UPDATE users SET email=$2,display_name=$3,role=$4,status=$5,currency=$6,default_api_key_policy_id=$7, \
-             auth_version=auth_version+CASE WHEN $8 THEN 1 ELSE 0 END \
-             WHERE id=$1 AND updated_at=$9 RETURNING updated_at",
+            "UPDATE users SET email=$2,display_name=$3,role=$4,status=$5,balance_amount=$6,currency=$7,default_api_key_policy_id=$8, \
+             auth_version=auth_version+CASE WHEN $9 THEN 1 ELSE 0 END \
+             WHERE id=$1 AND updated_at=$10 RETURNING updated_at",
         )
         .bind(id)
         .bind(&input.email)
         .bind(&input.display_name)
         .bind(&input.role)
         .bind(&input.status)
+        .bind(input.balance_amount)
         .bind(&input.currency)
         .bind(input.default_api_key_policy_id)
         .bind(invalidates_sessions)
@@ -2244,15 +2273,6 @@ async fn import_model(
     if input.source_payload.as_object().is_none() {
         return Err(RepositoryError::Validation);
     }
-    let exists =
-        sqlx::query_scalar::<_, Uuid>("SELECT id FROM models WHERE source_model_id=$1 FOR UPDATE")
-            .bind(&input.source_model_id)
-            .fetch_optional(&mut **transaction)
-            .await?
-            .is_some();
-    if exists {
-        return Err(RepositoryError::Conflict);
-    }
     let id = Uuid::new_v4();
     let updated_at = sqlx::query_scalar("INSERT INTO models (id,source_model_id,display_name,provider_name,enabled,currency,price_unit_tokens,input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,price_effective_at,source_payload,last_synced_at) VALUES ($1,$2,$3,$4,true,'USD',1000000,$5,$6,$7,$8,$9,$10,$11) RETURNING updated_at")
         .bind(id)
@@ -2280,35 +2300,49 @@ async fn import_model(
         correlation_id: None,
     })
 }
+/// Refreshes only catalog-owned price facts for a local source model. Display
+/// name, provider label, and enabled state remain administrator-managed.
 async fn sync_model_price(
     transaction: &mut Transaction<'_, Postgres>,
-    input: SyncedModelPrice,
+    id: Uuid,
+    input: SyncedModelInput,
     synced_at: DateTime<Utc>,
 ) -> Result<MutationResult, RepositoryError> {
     if input.source_payload.as_object().is_none() {
         return Err(RepositoryError::Validation);
     }
-    let before = model_audit(transaction, input.model_id).await?;
-    let updated_at = sqlx::query_scalar("UPDATE models SET currency='USD',price_unit_tokens=1000000,input_unit_price=$4,cached_input_unit_price=$5,cache_write_unit_price=$6,output_unit_price=$7,price_effective_at=$8,source_payload=$9,last_synced_at=$10 WHERE id=$1 AND source_model_id=$2 AND source_payload->>'source'='models.dev' AND source_payload->>'provider_id'=$3 RETURNING updated_at")
-        .bind(input.model_id)
-        .bind(&input.source_model_id)
-        .bind(&input.provider_id)
-        .bind(input.input_unit_price)
-        .bind(input.cached_input_unit_price)
-        .bind(input.cache_write_unit_price)
-        .bind(input.output_unit_price)
-        .bind(synced_at)
-        .bind(&input.source_payload)
-        .bind(synced_at)
-        .fetch_optional(&mut **transaction)
-        .await?
-        .ok_or(RepositoryError::Conflict)?;
+    let before = model_audit(transaction, id).await?;
+    let updated_at = sqlx::query_scalar(
+        "UPDATE models
+         SET currency='USD',
+             price_unit_tokens=1000000,
+             input_unit_price=$3,
+             cached_input_unit_price=$4,
+             cache_write_unit_price=$5,
+             output_unit_price=$6,
+             price_effective_at=$7,
+             source_payload=$8,
+             last_synced_at=$7
+         WHERE id=$1 AND source_model_id=$2
+         RETURNING updated_at",
+    )
+    .bind(id)
+    .bind(&input.source_model_id)
+    .bind(input.input_unit_price)
+    .bind(input.cached_input_unit_price)
+    .bind(input.cache_write_unit_price)
+    .bind(input.output_unit_price)
+    .bind(synced_at)
+    .bind(&input.source_payload)
+    .fetch_optional(&mut **transaction)
+    .await?
+    .ok_or(RepositoryError::Conflict)?;
     Ok(MutationResult {
-        id: input.model_id,
+        id,
         object_type: "model",
         action: "price_sync",
         before_redacted: before,
-        after_redacted: model_audit(transaction, input.model_id).await?,
+        after_redacted: model_audit(transaction, id).await?,
         created_secret: None,
         reason: None,
         updated_at,
@@ -2368,9 +2402,9 @@ async fn rule_insert(
         rule_audit(transaction, id).await?
     };
     let updated_at = if create {
-        sqlx::query_scalar("INSERT INTO model_rules (id,client_model,api_format,model_id,upstream_model,description,channel_group_ids,channel_ids,enabled) VALUES ($1,$2,$3::api_format,$4,$5,$6,$7,$8,$9) RETURNING updated_at").bind(id).bind(&input.client_model).bind(&input.api_format).bind(input.model_id).bind(&input.upstream_model).bind(&input.description).bind(&input.channel_group_ids).bind(&input.channel_ids).bind(input.enabled).fetch_one(&mut **transaction).await?
+        sqlx::query_scalar("INSERT INTO model_rules (id,client_model,api_format,upstream_model_id,description,channel_group_ids,channel_ids,enabled) VALUES ($1,$2,$3::api_format,$4,$5,$6,$7,$8) RETURNING updated_at").bind(id).bind(&input.client_model).bind(&input.api_format).bind(input.upstream_model_id).bind(&input.description).bind(&input.channel_group_ids).bind(&input.channel_ids).bind(input.enabled).fetch_one(&mut **transaction).await?
     } else {
-        sqlx::query_scalar("UPDATE model_rules SET client_model=$2,api_format=$3::api_format,model_id=$4,upstream_model=$5,description=$6,channel_group_ids=$7,channel_ids=$8,enabled=$9 WHERE id=$1 AND updated_at=$10 RETURNING updated_at").bind(id).bind(&input.client_model).bind(&input.api_format).bind(input.model_id).bind(&input.upstream_model).bind(&input.description).bind(&input.channel_group_ids).bind(&input.channel_ids).bind(input.enabled).bind(expected_updated_at.expect("PUT version")).fetch_optional(&mut **transaction).await?.ok_or(RepositoryError::Conflict)?
+        sqlx::query_scalar("UPDATE model_rules SET client_model=$2,api_format=$3::api_format,upstream_model_id=$4,description=$5,channel_group_ids=$6,channel_ids=$7,enabled=$8 WHERE id=$1 AND updated_at=$9 RETURNING updated_at").bind(id).bind(&input.client_model).bind(&input.api_format).bind(input.upstream_model_id).bind(&input.description).bind(&input.channel_group_ids).bind(&input.channel_ids).bind(input.enabled).bind(expected_updated_at.expect("PUT version")).fetch_optional(&mut **transaction).await?.ok_or(RepositoryError::Conflict)?
     };
     Ok(MutationResult {
         id,

@@ -360,9 +360,8 @@ async fn seed(pool: &PgPool) -> Seed {
         .execute(pool)
         .await
         .unwrap();
-    sqlx::query("INSERT INTO models (id, source_model_id, display_name, enabled, currency, price_unit_tokens, input_unit_price, cached_input_unit_price, cache_write_unit_price, output_unit_price, price_effective_at) VALUES ($1, $2, 'test', true, 'USD', 1, 0, 0, 0, 0, now())")
+    sqlx::query("INSERT INTO models (id, source_model_id, display_name, enabled, currency, price_unit_tokens, input_unit_price, cached_input_unit_price, cache_write_unit_price, output_unit_price, price_effective_at) VALUES ($1, 'upstream-v1', 'test', true, 'USD', 1, 0, 0, 0, 0, now())")
         .bind(seed.model)
-        .bind(format!("test-model-{}", seed.model))
         .execute(pool)
         .await
         .unwrap();
@@ -406,7 +405,7 @@ async fn seed(pool: &PgPool) -> Seed {
         .execute(pool)
         .await
         .unwrap();
-    sqlx::query("INSERT INTO model_rules (id, client_model, api_format, model_id, upstream_model, channel_ids, enabled) VALUES ($1, $2, 'open_ai_chat_completions', $3, 'upstream-v1', ARRAY[$4]::uuid[], true)")
+    sqlx::query("INSERT INTO model_rules (id, client_model, api_format, upstream_model_id, channel_ids, enabled) VALUES ($1, $2, 'open_ai_chat_completions', $3, ARRAY[$4]::uuid[], true)")
         .bind(seed.rule)
         .bind(&seed.client_model)
         .bind(seed.model)
@@ -1054,7 +1053,7 @@ async fn managed_users_are_versioned_audited_and_immediately_revoke_their_keys()
         serde_json::from_slice(&detail.into_body().collect().await.unwrap().to_bytes()).unwrap();
     assert_eq!(detail["balance_amount"], "0");
     detail["status"] = serde_json::json!("suspended");
-    for field in ["id", "balance_amount", "created_at", "updated_at"] {
+    for field in ["id", "created_at", "updated_at"] {
         detail.as_object_mut().unwrap().remove(field);
     }
 
@@ -1260,7 +1259,7 @@ async fn managed_models_are_versioned_and_invalid_disable_rolls_back() {
 }
 
 #[tokio::test]
-async fn models_dev_price_sync_updates_only_existing_models_and_import_is_explicit() {
+async fn models_dev_catalog_apply_is_explicit_and_updates_selected_existing_prices() {
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
     let catalog_server =
@@ -1292,17 +1291,14 @@ async fn models_dev_price_sync_updates_only_existing_models_and_import_is_explic
     assert_eq!(preview["excluded_missing_prices"], 1);
     assert!(preview["models"][0].get("source_payload").is_none());
 
-    let sync = admin_request(
+    let removed_sync = admin_request(
         app.clone(),
         "POST",
         "/console/v1/models/sync",
         serde_json::json!({}),
     )
     .await;
-    assert_eq!(sync.status(), StatusCode::OK);
-    let sync: serde_json::Value =
-        serde_json::from_slice(&sync.into_body().collect().await.unwrap().to_bytes()).unwrap();
-    assert_eq!(sync["updated_count"], 0);
+    assert_eq!(removed_sync.status(), StatusCode::METHOD_NOT_ALLOWED);
     assert_eq!(
         sqlx::query_scalar::<_, i64>(
             "SELECT count(*) FROM models WHERE source_model_id='catalog-model'",
@@ -1326,6 +1322,8 @@ async fn models_dev_price_sync_updates_only_existing_models_and_import_is_explic
     let imported: serde_json::Value =
         serde_json::from_slice(&imported.into_body().collect().await.unwrap().to_bytes()).unwrap();
     assert_eq!(imported["model_count"], 1);
+    assert_eq!(imported["imported_count"], 1);
+    assert_eq!(imported["updated_count"], 0);
 
     let persisted: (
         String,
@@ -1394,29 +1392,27 @@ async fn models_dev_price_sync_updates_only_existing_models_and_import_is_explic
         serde_json::from_slice(&preview.into_body().collect().await.unwrap().to_bytes()).unwrap();
     assert_eq!(preview["models"][0]["action"], "price_update");
 
-    sqlx::query("UPDATE models SET input_unit_price=99, output_unit_price=99 WHERE id=$1")
-        .bind(model_id)
-        .execute(&database.pool)
-        .await
-        .unwrap();
-    sqlx::query("INSERT INTO models (id,source_model_id,display_name,enabled,currency,price_unit_tokens,input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,price_effective_at,source_payload) VALUES ($1,'missing-price','Missing Price',true,'USD',1000000,7,0,0,8,now(),$2)")
-        .bind(Uuid::new_v4())
-        .bind(serde_json::json!({"source":"models.dev","provider_id":"provider-a"}))
-        .execute(&database.pool)
-        .await
-        .unwrap();
-    let sync = admin_request(
+    sqlx::query(
+        "UPDATE models
+         SET display_name='locally named',
+             provider_name='Local provider',
+             enabled=false,
+             input_unit_price=99,
+             output_unit_price=99
+         WHERE id=$1",
+    )
+    .bind(model_id)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let removed_sync = admin_request(
         app.clone(),
         "POST",
         "/console/v1/models/sync",
         serde_json::json!({}),
     )
     .await;
-    assert_eq!(sync.status(), StatusCode::OK);
-    let sync: serde_json::Value =
-        serde_json::from_slice(&sync.into_body().collect().await.unwrap().to_bytes()).unwrap();
-    assert_eq!(sync["updated_count"], 1);
-    assert_eq!(sync["unavailable_count"], 1);
+    assert_eq!(removed_sync.status(), StatusCode::METHOD_NOT_ALLOWED);
     let prices: (rust_decimal::Decimal, rust_decimal::Decimal) =
         sqlx::query_as("SELECT input_unit_price,output_unit_price FROM models WHERE id=$1")
             .bind(model_id)
@@ -1426,31 +1422,12 @@ async fn models_dev_price_sync_updates_only_existing_models_and_import_is_explic
     assert_eq!(
         prices,
         (
-            rust_decimal::Decimal::new(125, 2),
-            rust_decimal::Decimal::new(250, 2)
-        )
-    );
-    let missing_prices: (rust_decimal::Decimal, rust_decimal::Decimal) = sqlx::query_as(
-        "SELECT input_unit_price,output_unit_price FROM models WHERE source_model_id='missing-price'",
-    )
-    .fetch_one(&database.pool)
-    .await
-    .unwrap();
-    assert_eq!(
-        missing_prices,
-        (
-            rust_decimal::Decimal::new(7, 0),
-            rust_decimal::Decimal::new(8, 0)
+            rust_decimal::Decimal::new(99, 0),
+            rust_decimal::Decimal::new(99, 0)
         )
     );
 
-    let audits_before: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM audit_logs WHERE object_type='model' AND action='price_sync'",
-    )
-    .fetch_one(&database.pool)
-    .await
-    .unwrap();
-    let rejected = admin_request(
+    let updated = admin_request(
         app.clone(),
         "POST",
         "/console/v1/models/sync/import",
@@ -1459,7 +1436,32 @@ async fn models_dev_price_sync_updates_only_existing_models_and_import_is_explic
         }),
     )
     .await;
-    assert_eq!(rejected.status(), StatusCode::CONFLICT);
+    assert_eq!(updated.status(), StatusCode::OK);
+    let updated: serde_json::Value =
+        serde_json::from_slice(&updated.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(updated["model_count"], 1);
+    assert_eq!(updated["imported_count"], 0);
+    assert_eq!(updated["updated_count"], 1);
+    let updated_model: (
+        String,
+        Option<String>,
+        bool,
+        rust_decimal::Decimal,
+        rust_decimal::Decimal,
+    ) = sqlx::query_as(
+        "SELECT display_name,provider_name,enabled,input_unit_price,output_unit_price
+         FROM models WHERE id=$1",
+    )
+    .bind(model_id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(updated_model.0, "locally named");
+    assert_eq!(updated_model.1.as_deref(), Some("Local provider"));
+    assert!(!updated_model.2);
+    assert_eq!(updated_model.3, rust_decimal::Decimal::new(125, 2));
+    assert_eq!(updated_model.4, rust_decimal::Decimal::new(250, 2));
+
     let missing_price_import = admin_request(
         app,
         "POST",
@@ -1473,13 +1475,13 @@ async fn models_dev_price_sync_updates_only_existing_models_and_import_is_explic
         missing_price_import.status(),
         StatusCode::UNPROCESSABLE_ENTITY
     );
-    let audits_after: i64 = sqlx::query_scalar(
+    let price_sync_audits: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM audit_logs WHERE object_type='model' AND action='price_sync'",
     )
     .fetch_one(&database.pool)
     .await
     .unwrap();
-    assert_eq!(audits_after, audits_before);
+    assert_eq!(price_sync_audits, 1);
     database.cleanup().await;
 }
 
@@ -2618,8 +2620,8 @@ async fn reloader_replaces_atomically_retains_old_arcs_and_rolls_back_failures()
     .execute(&database.pool)
     .await
     .unwrap();
-    sqlx::query("UPDATE model_rules SET upstream_model = 'upstream-v2' WHERE id = $1")
-        .bind(seed.rule)
+    sqlx::query("UPDATE models SET source_model_id = 'upstream-v2' WHERE id = $1")
+        .bind(seed.model)
         .execute(&database.pool)
         .await
         .unwrap();

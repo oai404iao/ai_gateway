@@ -5,6 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Separator } from "@/components/ui/separator";
 import { PageHeader } from "@/components/shared/page-header";
 import { AsyncResource } from "@/components/shared/async-resource";
+import { useI18n } from "@/app/i18n";
 
 interface AdminDetailShellProps {
   title: string;
@@ -26,7 +27,7 @@ export function AdminDetailShell({
   title,
   description,
   backPath,
-  backLabel = "Back",
+  backLabel,
   isLoading,
   error,
   hasData,
@@ -35,14 +36,15 @@ export function AdminDetailShell({
   dangerZone,
 }: AdminDetailShellProps) {
   const navigate = useNavigate();
+  const { t } = useI18n();
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
-        title={title}
-        description={description}
+        title={t(title)}
+        description={description ? t(description) : undefined}
         actions={
           <Button variant="ghost" size="sm" onClick={() => navigate(backPath)}>
-            <ArrowLeft data-icon="inline-start" /> {backLabel}
+            <ArrowLeft data-icon="inline-start" /> {backLabel ?? t("Back")}
           </Button>
         }
       />
@@ -56,8 +58,10 @@ export function AdminDetailShell({
                 <Separator />
                 <Card>
                   <CardHeader>
-                    <CardTitle className="text-destructive">Danger zone</CardTitle>
-                    <CardDescription>These actions are permanent and audited.</CardDescription>
+                    <CardTitle className="text-destructive">{t("Danger zone")}</CardTitle>
+                    <CardDescription>
+                      {t("These actions are permanent and audited.")}
+                    </CardDescription>
                   </CardHeader>
                   <CardContent>{dangerZone}</CardContent>
                 </Card>

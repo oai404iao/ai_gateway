@@ -11,17 +11,17 @@ import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { login } from "@/api/session";
 import { useSession } from "@/lib/use-session";
-
-const schema = z.object({
-  email: z.string().email("Enter a valid email."),
-  password: z.string().min(12, "Password must be at least 12 characters."),
-});
-
-type FormValues = z.infer<typeof schema>;
+import { useI18n } from "@/app/i18n";
 
 export function LoginPage() {
   const { isAuthenticated } = useSession();
   const navigate = useNavigate();
+  const { t } = useI18n();
+  const schema = z.object({
+    email: z.string().email(t("Enter a valid email.")),
+    password: z.string().min(12, t("Password must be at least 12 characters.")),
+  });
+  type FormValues = z.infer<typeof schema>;
   const [submitting, setSubmitting] = useState(false);
   const {
     register,
@@ -39,10 +39,10 @@ export function LoginPage() {
     setSubmitting(true);
     try {
       await login(values);
-      toast.success("Signed in");
+      toast.success(t("Signed in"));
       navigate("/account", { replace: true });
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Sign in failed");
+      toast.error(error instanceof Error ? error.message : t("Sign in failed"));
     } finally {
       setSubmitting(false);
     }
@@ -51,19 +51,19 @@ export function LoginPage() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Sign in</CardTitle>
-        <CardDescription>Use your Console account to continue.</CardDescription>
+        <CardTitle>{t("Sign in")}</CardTitle>
+        <CardDescription>{t("Use your Console account to continue.")}</CardDescription>
       </CardHeader>
       <CardContent>
         <form onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-4">
           <FieldGroup>
             <Field>
-              <FieldLabel htmlFor="email">Email</FieldLabel>
+              <FieldLabel htmlFor="email">{t("Email")}</FieldLabel>
               <Input id="email" type="email" autoComplete="email" {...register("email")} />
               {errors.email ? <FieldError>{errors.email.message}</FieldError> : null}
             </Field>
             <Field>
-              <FieldLabel htmlFor="password">Password</FieldLabel>
+              <FieldLabel htmlFor="password">{t("Password")}</FieldLabel>
               <Input
                 id="password"
                 type="password"
@@ -75,13 +75,13 @@ export function LoginPage() {
           </FieldGroup>
           <Button type="submit" disabled={submitting}>
             {submitting ? <Spinner data-icon="inline-start" /> : null}
-            Sign in
+            {t("Sign in")}
           </Button>
         </form>
         <p className="mt-4 text-center text-xs text-muted-foreground">
-          Received an invitation?{" "}
+          {t("Received an invitation?")}{" "}
           <a className="font-medium text-foreground underline" href="/activate-invitation">
-            Activate it
+            {t("Activate it")}
           </a>
         </p>
       </CardContent>

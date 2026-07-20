@@ -1,10 +1,12 @@
 /** Formatting helpers for Console display values. Decimals arrive as strings. */
 
+import { currentLocale, translate } from "@/app/i18n";
+
 export function formatDecimal(value: string | null | undefined, fractionDigits = 6): string {
   if (value === null || value === undefined || value === "") return "—";
   const number = Number(value);
   if (!Number.isFinite(number)) return value;
-  return number.toLocaleString(undefined, {
+  return number.toLocaleString(currentLocale(), {
     minimumFractionDigits: 0,
     maximumFractionDigits: fractionDigits,
   });
@@ -14,7 +16,7 @@ export function formatCurrency(value: string | null | undefined, currency?: stri
   if (value === null || value === undefined || value === "") return "—";
   const number = Number(value);
   const amount = Number.isFinite(number)
-    ? number.toLocaleString(undefined, {
+    ? number.toLocaleString(currentLocale(), {
         minimumFractionDigits: 2,
         maximumFractionDigits: 6,
       })
@@ -24,18 +26,18 @@ export function formatCurrency(value: string | null | undefined, currency?: stri
 
 export function formatTokens(value: number | null | undefined): string {
   if (value === null || value === undefined) return "—";
-  return value.toLocaleString();
+  return value.toLocaleString(currentLocale());
 }
 
 export function formatDurationMs(value: number | null | undefined): string {
   if (value === null || value === undefined) return "—";
   if (value < 1000) return `${value} ms`;
-  return `${(value / 1000).toLocaleString(undefined, { maximumFractionDigits: 2 })} s`;
+  return `${(value / 1000).toLocaleString(currentLocale(), { maximumFractionDigits: 2 })} s`;
 }
 
 export function formatBoolean(value: boolean | null | undefined): string {
   if (value === null || value === undefined) return "—";
-  return value ? "Yes" : "No";
+  return value ? translate("Yes") : translate("No");
 }
 
 export function formatList(values: string[] | null | undefined, fallback = "—"): string {

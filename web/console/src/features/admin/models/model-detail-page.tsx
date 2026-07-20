@@ -17,6 +17,7 @@ import { ApiError } from "@/api/errors";
 import type { ModelInput } from "@/api/types";
 import { formatDateTime } from "@/lib/dates";
 import { formatDecimal } from "@/lib/formatters";
+import { useI18n } from "@/app/i18n";
 
 const schema = z.object({
   source_model_id: z.string().min(1, "Source model id is required."),
@@ -71,6 +72,7 @@ export function ModelDetailPage() {
   const { data, etag, isLoading, error } = useModel(id);
   const create = useCreateModel();
   const update = useUpdateModel(id);
+  const { t } = useI18n();
   const [state, setState] = useState<FormState>(empty);
   const [submitting, setSubmitting] = useState(false);
   const [validation, setValidation] = useState<z.ZodError | null>(null);
@@ -101,7 +103,7 @@ export function ModelDetailPage() {
     try {
       payload = state.source_payload.trim() ? JSON.parse(state.source_payload) : {};
     } catch {
-      toast.error("Source payload is not valid JSON.");
+      toast.error(t("Source payload is not valid JSON."));
       return;
     }
     const parsed = schema.safeParse(state);
@@ -128,17 +130,17 @@ export function ModelDetailPage() {
     try {
       if (isNew) {
         await create.mutateAsync(input);
-        toast.success("Model created");
+        toast.success(t("Upstream model created"));
         navigate("/admin/models", { replace: true });
       } else {
         await update.mutateAsync({ input, ifMatch: etag });
-        toast.success("Model updated");
+        toast.success(t("Upstream model updated"));
       }
     } catch (error) {
       if (error instanceof ApiError && error.isConflict) {
-        toast.error("This model was changed elsewhere. Reloading.");
+        toast.error(t("This upstream model was changed elsewhere. Reloading."));
       } else {
-        toast.error(error instanceof Error ? error.message : "Save failed");
+        toast.error(error instanceof Error ? error.message : t("Save failed"));
       }
     } finally {
       setSubmitting(false);
@@ -150,10 +152,10 @@ export function ModelDetailPage() {
 
   return (
     <AdminDetailShell
-      title={isNew ? "New model" : state.display_name || "Model"}
-      description="A priced model entry referenced by model rules."
+      title={isNew ? t("New upstream model") : state.display_name || t("Upstream model")}
+      description={t("An upstream model identifier with its billing price.")}
       backPath="/admin/models"
-      backLabel="Back to models"
+      backLabel={t("Back to upstream models")}
       isLoading={isLoading}
       error={error}
       hasData={isNew || Boolean(data)}
@@ -166,17 +168,17 @@ export function ModelDetailPage() {
             </CardHeader>
             <CardContent>
               <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <dt className="text-xs uppercase text-muted-foreground">Enabled</dt>
+                <dt className="text-xs uppercase text-muted-foreground">{t("Enabled")}</dt>
                 <dd>
                   <StatusBadge value={data.data.enabled} />
                 </dd>
-                <dt className="text-xs uppercase text-muted-foreground">Provider</dt>
+                <dt className="text-xs uppercase text-muted-foreground">{t("Provider")}</dt>
                 <dd>{data.data.provider_name ?? "—"}</dd>
-                <dt className="text-xs uppercase text-muted-foreground">Input price</dt>
+                <dt className="text-xs uppercase text-muted-foreground">{t("Input price")}</dt>
                 <dd>{formatDecimal(data.data.input_unit_price)}</dd>
-                <dt className="text-xs uppercase text-muted-foreground">Output price</dt>
+                <dt className="text-xs uppercase text-muted-foreground">{t("Output price")}</dt>
                 <dd>{formatDecimal(data.data.output_unit_price)}</dd>
-                <dt className="text-xs uppercase text-muted-foreground">Effective</dt>
+                <dt className="text-xs uppercase text-muted-foreground">{t("Effective")}</dt>
                 <dd>{formatDateTime(data.data.price_effective_at)}</dd>
               </dl>
             </CardContent>
@@ -186,14 +188,16 @@ export function ModelDetailPage() {
       editCard={
         <Card>
           <CardHeader>
-            <CardTitle>{isNew ? "Create model" : "Edit model"}</CardTitle>
-            <CardDescription>Prices are per the configured price unit tokens.</CardDescription>
+            <CardTitle>
+              {isNew ? t("Create upstream model") : t("Edit upstream model")}
+            </CardTitle>
+            <CardDescription>{t("Prices are per the configured price unit tokens.")}</CardDescription>
           </CardHeader>
           <CardContent>
             <div className="flex flex-col gap-4">
               <FieldGroup>
                 <Field>
-                  <FieldLabel htmlFor="source_model_id">Source model id</FieldLabel>
+                  <FieldLabel htmlFor="source_model_id">{t("Source model id")}</FieldLabel>
                   <Input
                     id="source_model_id"
                     value={state.source_model_id}
@@ -204,7 +208,7 @@ export function ModelDetailPage() {
                   ) : null}
                 </Field>
                 <Field>
-                  <FieldLabel htmlFor="display_name">Display name</FieldLabel>
+                  <FieldLabel htmlFor="display_name">{t("Display name")}</FieldLabel>
                   <Input
                     id="display_name"
                     value={state.display_name}
@@ -215,7 +219,7 @@ export function ModelDetailPage() {
                   ) : null}
                 </Field>
                 <Field>
-                  <FieldLabel htmlFor="provider_name">Provider name</FieldLabel>
+                  <FieldLabel htmlFor="provider_name">{t("Provider name")}</FieldLabel>
                   <Input
                     id="provider_name"
                     value={state.provider_name ?? ""}
@@ -223,7 +227,7 @@ export function ModelDetailPage() {
                   />
                 </Field>
                 <Field>
-                  <FieldLabel htmlFor="currency">Currency</FieldLabel>
+                  <FieldLabel htmlFor="currency">{t("Currency")}</FieldLabel>
                   <Input
                     id="currency"
                     value={state.currency}
@@ -231,7 +235,7 @@ export function ModelDetailPage() {
                   />
                 </Field>
                 <Field>
-                  <FieldLabel htmlFor="price_unit_tokens">Price unit tokens</FieldLabel>
+                  <FieldLabel htmlFor="price_unit_tokens">{t("Price unit tokens")}</FieldLabel>
                   <Input
                     id="price_unit_tokens"
                     type="number"
@@ -243,31 +247,31 @@ export function ModelDetailPage() {
                   />
                 </Field>
                 <DecimalField
-                  label="Input unit price"
+                  label={t("Input unit price")}
                   value={state.input_unit_price}
                   onChange={(value) => patch({ input_unit_price: value })}
                   required
                 />
                 <DecimalField
-                  label="Cached input unit price"
+                  label={t("Cached input unit price")}
                   value={state.cached_input_unit_price}
                   onChange={(value) => patch({ cached_input_unit_price: value })}
                   required
                 />
                 <DecimalField
-                  label="Cache write unit price"
+                  label={t("Cache write unit price")}
                   value={state.cache_write_unit_price}
                   onChange={(value) => patch({ cache_write_unit_price: value })}
                   required
                 />
                 <DecimalField
-                  label="Output unit price"
+                  label={t("Output unit price")}
                   value={state.output_unit_price}
                   onChange={(value) => patch({ output_unit_price: value })}
                   required
                 />
                 <Field>
-                  <FieldLabel htmlFor="price_effective_at">Price effective at</FieldLabel>
+                  <FieldLabel htmlFor="price_effective_at">{t("Price effective at")}</FieldLabel>
                   <Input
                     id="price_effective_at"
                     type="datetime-local"
@@ -276,14 +280,16 @@ export function ModelDetailPage() {
                   />
                 </Field>
                 <Field>
-                  <FieldLabel>Enabled</FieldLabel>
+                  <FieldLabel>{t("Enabled")}</FieldLabel>
                   <Switch
                     checked={state.enabled}
                     onCheckedChange={(checked) => patch({ enabled: Boolean(checked) })}
                   />
                 </Field>
                 <Field>
-                  <FieldLabel htmlFor="source_payload">Source payload (JSON, optional)</FieldLabel>
+                  <FieldLabel htmlFor="source_payload">
+                    {t("Source payload (JSON, optional)")}
+                  </FieldLabel>
                   <Textarea
                     id="source_payload"
                     rows={4}
@@ -295,7 +301,7 @@ export function ModelDetailPage() {
               </FieldGroup>
               <Button className="self-start" onClick={submit} disabled={submitting}>
                 {submitting ? <Spinner data-icon="inline-start" /> : null}
-                {isNew ? "Create model" : "Save model"}
+                {isNew ? t("Create upstream model") : t("Save upstream model")}
               </Button>
             </div>
           </CardContent>

@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { AdminDetailShell } from "@/features/admin/components/admin-detail-shell";
+import { DecimalField } from "@/components/shared/decimal-field";
 import { DetailField } from "@/components/shared/detail-field";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { useApiKeyPolicies, useUpdateUser, useUser } from "@/features/admin/api";
@@ -27,12 +28,14 @@ import { useSession } from "@/lib/use-session";
 import { formatCurrency } from "@/lib/formatters";
 import { formatDateTime } from "@/lib/dates";
 import { ROLES, roleLabel, USER_STATUSES } from "@/lib/permissions";
+import { useI18n } from "@/app/i18n";
 
 const editSchema = z.object({
   display_name: z.string().min(1, "Display name is required.").max(200),
   email: z.string().optional(),
   role: z.enum(["user", "admin"]),
   status: z.enum(["active", "suspended", "disabled"]),
+  balance_amount: z.string().regex(/^-?\d+(?:\.\d+)?$/, "Enter a valid balance."),
   currency: z.string().min(1).max(8),
   default_api_key_policy_id: z.string().optional(),
 });
@@ -44,6 +47,7 @@ const emptyEditValues: EditValues = {
   email: "",
   role: "user",
   status: "active",
+  balance_amount: "0",
   currency: "",
   default_api_key_policy_id: "",
 };
@@ -54,6 +58,7 @@ export function UserDetailPage() {
   const update = useUpdateUser(id);
   const policies = useApiKeyPolicies();
   const { user: currentUser } = useSession();
+  const { t } = useI18n();
   const [submitting, setSubmitting] = useState(false);
   const formValues: EditValues = data
     ? {
@@ -64,6 +69,7 @@ export function UserDetailPage() {
           data.data.status === "active" || data.data.status === "suspended"
             ? data.data.status
             : "disabled",
+        balance_amount: data.data.balance_amount,
         currency: data.data.currency,
         default_api_key_policy_id: data.data.default_api_key_policy_id ?? "",
       }
@@ -89,6 +95,7 @@ export function UserDetailPage() {
           email: values.email || null,
           role: values.role,
           status: values.status,
+          balance_amount: values.balance_amount,
           currency: values.currency,
           default_api_key_policy_id: values.default_api_key_policy_id || null,
         },
@@ -96,7 +103,7 @@ export function UserDetailPage() {
       });
       if (currentUser?.id === id) {
         if (invalidatesCurrentSession) {
-          toast.success("Account updated. Sign in again to continue.");
+          toast.success(t("Account updated. Sign in again to continue."));
           clearSession();
           return;
         }
@@ -107,12 +114,12 @@ export function UserDetailPage() {
           },
         });
       }
-      toast.success("User updated");
+      toast.success(t("User updated"));
     } catch (error) {
       if (error instanceof ApiError && error.isConflict) {
-        toast.error("This user was changed elsewhere. Reloading.");
+        toast.error(t("This user was changed elsewhere. Reloading."));
       } else {
-        toast.error(error instanceof Error ? error.message : "Update failed");
+        toast.error(error instanceof Error ? error.message : t("Update failed"));
       }
     } finally {
       setSubmitting(false);
@@ -120,17 +127,17 @@ export function UserDetailPage() {
   };
 
   const onInvalid = () => {
-    toast.error("Review the highlighted account fields.");
+    toast.error(t("Review the highlighted account fields."));
   };
 
   const user = data?.data;
 
   return (
     <AdminDetailShell
-      title={user?.display_name ?? "User"}
-      description="Manage a Console user's identity, role, and status."
+      title={user?.display_name ?? t("User")}
+      description={t("Manage a Console user's identity, role, and status.")}
       backPath="/admin/users"
-      backLabel="Back to users"
+      backLabel={t("Back to users")}
       isLoading={isLoading}
       error={error}
       hasData={Boolean(user)}
@@ -138,20 +145,20 @@ export function UserDetailPage() {
         user ? (
           <Card>
             <CardHeader>
-              <CardTitle>Account</CardTitle>
-              <CardDescription>Read-only account facts.</CardDescription>
+              <CardTitle>{t("Account")}</CardTitle>
+              <CardDescription>{t("Read-only account facts.")}</CardDescription>
             </CardHeader>
             <CardContent>
               <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <DetailField label="Email" value={user.email ?? "—"} />
-                <DetailField label="Role" value={roleLabel(user.role)} />
-                <DetailField label="Status" value={<StatusBadge value={user.status} />} />
+                <DetailField label={t("Email")} value={user.email ?? "—"} />
+                <DetailField label={t("Role")} value={<StatusBadge value={user.role} />} />
+                <DetailField label={t("Status")} value={<StatusBadge value={user.status} />} />
                 <DetailField
-                  label="Balance"
+                  label={t("Balance")}
                   value={formatCurrency(user.balance_amount, user.currency)}
                 />
-                <DetailField label="Created" value={formatDateTime(user.created_at)} />
-                <DetailField label="Updated" value={formatDateTime(user.updated_at)} />
+                <DetailField label={t("Created")} value={formatDateTime(user.created_at)} />
+                <DetailField label={t("Updated")} value={formatDateTime(user.updated_at)} />
               </dl>
             </CardContent>
           </Card>
@@ -161,8 +168,10 @@ export function UserDetailPage() {
         user ? (
           <Card>
             <CardHeader>
-              <CardTitle>Edit user</CardTitle>
-              <CardDescription>Role and status changes take effect immediately.</CardDescription>
+              <CardTitle>{t("Edit user")}</CardTitle>
+              <CardDescription>
+                {t("Account, access, and balance changes take effect immediately.")}
+              </CardDescription>
             </CardHeader>
             <CardContent>
               <form
@@ -171,7 +180,7 @@ export function UserDetailPage() {
               >
                 <FieldGroup>
                   <Field data-invalid={Boolean(form.formState.errors.display_name)}>
-                    <FieldLabel htmlFor="display_name">Display name</FieldLabel>
+                    <FieldLabel htmlFor="display_name">{t("Display name")}</FieldLabel>
                     <Input
                       id="display_name"
                       aria-invalid={Boolean(form.formState.errors.display_name)}
@@ -182,7 +191,7 @@ export function UserDetailPage() {
                     ) : null}
                   </Field>
                   <Field data-invalid={Boolean(form.formState.errors.email)}>
-                    <FieldLabel htmlFor="email">Email</FieldLabel>
+                    <FieldLabel htmlFor="email">{t("Email")}</FieldLabel>
                     <Input
                       id="email"
                       type="email"
@@ -199,7 +208,7 @@ export function UserDetailPage() {
                     defaultValue={formValues.role}
                     render={({ field, fieldState }) => (
                       <Field data-invalid={fieldState.invalid}>
-                        <FieldLabel htmlFor="role">Role</FieldLabel>
+                        <FieldLabel htmlFor="role">{t("Role")}</FieldLabel>
                         <Select value={field.value} onValueChange={field.onChange}>
                           <SelectTrigger id="role" aria-invalid={fieldState.invalid}>
                             <SelectValue />
@@ -226,7 +235,7 @@ export function UserDetailPage() {
                     defaultValue={formValues.status}
                     render={({ field, fieldState }) => (
                       <Field data-invalid={fieldState.invalid}>
-                        <FieldLabel htmlFor="status">Status</FieldLabel>
+                        <FieldLabel htmlFor="status">{t("Status")}</FieldLabel>
                         <Select value={field.value} onValueChange={field.onChange}>
                           <SelectTrigger id="status" aria-invalid={fieldState.invalid}>
                             <SelectValue />
@@ -249,8 +258,22 @@ export function UserDetailPage() {
                       </Field>
                     )}
                   />
+                  <DecimalField
+                    id="balance_amount"
+                    label={t("Balance")}
+                    value={form.watch("balance_amount")}
+                    onChange={(value) =>
+                      form.setValue("balance_amount", value, {
+                        shouldDirty: true,
+                        shouldValidate: true,
+                      })
+                    }
+                    error={form.formState.errors.balance_amount?.message}
+                    required
+                    description={t("Set the current account balance in the selected currency.")}
+                  />
                   <Field data-invalid={Boolean(form.formState.errors.currency)}>
-                    <FieldLabel htmlFor="currency">Currency</FieldLabel>
+                    <FieldLabel htmlFor="currency">{t("Currency")}</FieldLabel>
                     <Input
                       id="currency"
                       aria-invalid={Boolean(form.formState.errors.currency)}
@@ -267,7 +290,7 @@ export function UserDetailPage() {
                     render={({ field, fieldState }) => (
                       <Field data-invalid={fieldState.invalid}>
                         <FieldLabel htmlFor="default_api_key_policy_id">
-                          Default API key policy
+                          {t("Default API key policy")}
                         </FieldLabel>
                         <Select
                           value={field.value || "__none__"}
@@ -283,7 +306,7 @@ export function UserDetailPage() {
                           </SelectTrigger>
                           <SelectContent>
                             <SelectGroup>
-                              <SelectItem value="__none__">None</SelectItem>
+                              <SelectItem value="__none__">{t("None")}</SelectItem>
                               {policies.data
                                 ?.filter((policy) => policy.enabled)
                                 .map((policy) => (
@@ -303,7 +326,7 @@ export function UserDetailPage() {
                 </FieldGroup>
                 <Button type="submit" className="self-start" disabled={submitting}>
                   {submitting ? <Spinner data-icon="inline-start" /> : null}
-                  Save user
+                  {t("Save user")}
                 </Button>
               </form>
             </CardContent>

@@ -4,23 +4,25 @@ import { StatusBadge } from "@/components/shared/status-badge";
 import { useModels } from "@/features/admin/api";
 import { formatRelative } from "@/lib/dates";
 import { formatDecimal } from "@/lib/formatters";
+import { useI18n } from "@/app/i18n";
 
 export function ModelsPage() {
   const navigate = useNavigate();
   const { data, isLoading, error } = useModels();
+  const { t } = useI18n();
   return (
     <AdminListPage
-      title="Models"
-      description="Priced models referenced by model rules. Prices carry an effective timestamp."
+      title={t("Upstream Models")}
+      description={t("Upstream model identifiers and their prices. Prices carry an effective timestamp.")}
       query={{ data, isLoading, error }}
       rowKey={(model) => model.id}
       detailPath={(model) => `/admin/models/${model.id}`}
-      createLabel="New model"
+      createLabel={t("New upstream model")}
       onCreate={() => navigate("/admin/models/new")}
       columns={[
         {
           key: "name",
-          header: "Model",
+          header: t("Model"),
           render: (model) => (
             <span className="flex flex-col">
               <span className="font-medium">{model.display_name}</span>
@@ -28,15 +30,19 @@ export function ModelsPage() {
             </span>
           ),
         },
-        { key: "provider", header: "Provider", render: (model) => model.provider_name ?? "—" },
-        { key: "currency", header: "Currency", render: (model) => model.currency },
+        { key: "provider", header: t("Provider"), render: (model) => model.provider_name ?? "—" },
+        { key: "currency", header: t("Currency"), render: (model) => model.currency },
         {
           key: "input",
-          header: "Input price",
+          header: t("Input price"),
           render: (model) => formatDecimal(model.input_unit_price),
         },
-        { key: "enabled", header: "Enabled", render: (model) => <StatusBadge value={model.enabled} /> },
-        { key: "updated", header: "Updated", render: (model) => formatRelative(model.updated_at) },
+        {
+          key: "enabled",
+          header: t("Enabled"),
+          render: (model) => <StatusBadge value={model.enabled} />,
+        },
+        { key: "updated", header: t("Updated"), render: (model) => formatRelative(model.updated_at) },
       ]}
     />
   );

@@ -2,25 +2,36 @@ import { useQuery } from "@tanstack/react-query";
 import { apiGet } from "@/api/client";
 import type { ListQuery, RequestLogView } from "@/api/types";
 
-function ownListKey(limit: number) {
-  return ["console", "me", "request-logs", limit] as const;
+function ownListKey(filters: ListQuery) {
+  return ["console", "me", "request-logs", filters] as const;
 }
 
-function allListKey(limit: number) {
-  return ["console", "request-logs", limit] as const;
+function allListKey(filters: ListQuery) {
+  return ["console", "request-logs", filters] as const;
 }
 
-export function useOwnRequestLogs(limit: number) {
+function requestLogQuery(filters: ListQuery): string {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== undefined && value !== null && value !== "") {
+      search.set(key, String(value));
+    }
+  }
+  const query = search.toString();
+  return query ? `?${query}` : "";
+}
+
+export function useOwnRequestLogs(filters: ListQuery) {
   return useQuery({
-    queryKey: ownListKey(limit),
-    queryFn: () => apiGet<RequestLogView[]>(`/me/request-logs?limit=${limit}`),
+    queryKey: ownListKey(filters),
+    queryFn: () => apiGet<RequestLogView[]>(`/me/request-logs${requestLogQuery(filters)}`),
   });
 }
 
-export function useAllRequestLogs(limit: number) {
+export function useAllRequestLogs(filters: ListQuery) {
   return useQuery({
-    queryKey: allListKey(limit),
-    queryFn: () => apiGet<RequestLogView[]>(`/request-logs?limit=${limit}`),
+    queryKey: allListKey(filters),
+    queryFn: () => apiGet<RequestLogView[]>(`/request-logs${requestLogQuery(filters)}`),
   });
 }
 

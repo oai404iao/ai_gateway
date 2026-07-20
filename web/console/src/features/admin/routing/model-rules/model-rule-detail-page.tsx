@@ -30,12 +30,12 @@ import {
 import { ApiError } from "@/api/errors";
 import type { ApiFormat, ModelRuleInput } from "@/api/types";
 import { API_FORMATS, apiFormatLabel } from "@/lib/permissions";
+import { useI18n } from "@/app/i18n";
 
 const schema = z.object({
   client_model: z.string().min(1, "Client model is required."),
   api_format: z.enum(["open_ai_chat_completions", "open_ai_responses"]),
-  model_id: z.string().min(1, "Pick a priced model."),
-  upstream_model: z.string().min(1, "Upstream model is required."),
+  upstream_model_id: z.string().min(1, "Pick an upstream model."),
   description: z.string().nullable(),
   channel_group_ids: z.array(z.string()),
   channel_ids: z.array(z.string()),
@@ -47,8 +47,7 @@ type FormState = z.infer<typeof schema>;
 const empty: FormState = {
   client_model: "",
   api_format: "open_ai_chat_completions",
-  model_id: "",
-  upstream_model: "",
+  upstream_model_id: "",
   description: null,
   channel_group_ids: [],
   channel_ids: [],
@@ -65,6 +64,7 @@ export function ModelRuleDetailPage() {
   const models = useModels();
   const groups = useChannelGroups();
   const channels = useChannels();
+  const { t } = useI18n();
   const [state, setState] = useState<FormState>(empty);
   const [submitting, setSubmitting] = useState(false);
   const [validation, setValidation] = useState<z.ZodError | null>(null);
@@ -74,8 +74,7 @@ export function ModelRuleDetailPage() {
       setState({
         client_model: data.data.client_model,
         api_format: data.data.api_format,
-        model_id: data.data.model_id,
-        upstream_model: data.data.upstream_model,
+        upstream_model_id: data.data.upstream_model_id,
         description: data.data.description,
         channel_group_ids: data.data.channel_group_ids,
         channel_ids: data.data.channel_ids,
@@ -115,8 +114,7 @@ export function ModelRuleDetailPage() {
     const input: ModelRuleInput = {
       client_model: parsed.data.client_model,
       api_format: parsed.data.api_format as ApiFormat,
-      model_id: parsed.data.model_id,
-      upstream_model: parsed.data.upstream_model,
+      upstream_model_id: parsed.data.upstream_model_id,
       description: parsed.data.description,
       channel_group_ids: parsed.data.channel_group_ids,
       channel_ids: parsed.data.channel_ids,
@@ -125,17 +123,17 @@ export function ModelRuleDetailPage() {
     try {
       if (isNew) {
         await create.mutateAsync(input);
-        toast.success("Model rule created");
+        toast.success(t("Model rule created"));
         navigate("/admin/routing/model-rules", { replace: true });
       } else {
         await update.mutateAsync({ input, ifMatch: etag });
-        toast.success("Model rule updated");
+        toast.success(t("Model rule updated"));
       }
     } catch (error) {
       if (error instanceof ApiError && error.isConflict) {
-        toast.error("This rule was changed elsewhere. Reloading.");
+        toast.error(t("This rule was changed elsewhere. Reloading."));
       } else {
-        toast.error(error instanceof Error ? error.message : "Save failed");
+        toast.error(error instanceof Error ? error.message : t("Save failed"));
       }
     } finally {
       setSubmitting(false);
@@ -147,10 +145,10 @@ export function ModelRuleDetailPage() {
 
   return (
     <AdminDetailShell
-      title={isNew ? "New model rule" : state.client_model || "Model rule"}
-      description="Routes a client model and API format to a priced model and channels."
+      title={isNew ? t("New model rule") : state.client_model || t("Model Rules")}
+      description={t("Routes a client model and API format to one priced upstream model and channels.")}
       backPath="/admin/routing/model-rules"
-      backLabel="Back to rules"
+      backLabel={t("Back to rules")}
       isLoading={isLoading}
       error={error}
       hasData={isNew || Boolean(data)}
@@ -163,9 +161,9 @@ export function ModelRuleDetailPage() {
             </CardHeader>
             <CardContent>
               <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <dt className="text-xs uppercase text-muted-foreground">Upstream model</dt>
+                <dt className="text-xs uppercase text-muted-foreground">{t("Upstream model")}</dt>
                 <dd className="font-mono text-xs">{data.data.upstream_model}</dd>
-                <dt className="text-xs uppercase text-muted-foreground">Enabled</dt>
+                <dt className="text-xs uppercase text-muted-foreground">{t("Enabled")}</dt>
                 <dd>
                   <StatusBadge value={data.data.enabled} />
                 </dd>
@@ -177,13 +175,13 @@ export function ModelRuleDetailPage() {
       editCard={
         <Card>
           <CardHeader>
-            <CardTitle>{isNew ? "Create rule" : "Edit rule"}</CardTitle>
+            <CardTitle>{isNew ? t("Create rule") : t("Edit rule")}</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="flex flex-col gap-4">
               <FieldGroup>
                 <Field>
-                  <FieldLabel htmlFor="client_model">Client model</FieldLabel>
+                  <FieldLabel htmlFor="client_model">{t("Client model")}</FieldLabel>
                   <Input
                     id="client_model"
                     value={state.client_model}
@@ -194,7 +192,7 @@ export function ModelRuleDetailPage() {
                   ) : null}
                 </Field>
                 <Field>
-                  <FieldLabel>API format</FieldLabel>
+                  <FieldLabel>{t("API format")}</FieldLabel>
                   <Select
                     value={state.api_format}
                     onValueChange={(value) =>
@@ -216,40 +214,33 @@ export function ModelRuleDetailPage() {
                   </Select>
                 </Field>
                 <Field>
-                  <FieldLabel>Priced model</FieldLabel>
+                  <FieldLabel>{t("Upstream model")}</FieldLabel>
                   <Select
-                    value={state.model_id || "__none__"}
-                    onValueChange={(value) => patch({ model_id: value === "__none__" ? "" : value })}
+                    value={state.upstream_model_id || "__none__"}
+                    onValueChange={(value) =>
+                      patch({ upstream_model_id: value === "__none__" ? "" : value })
+                    }
                   >
                     <SelectTrigger>
-                      <SelectValue placeholder="Pick a model" />
+                      <SelectValue placeholder={t("Pick an upstream model")} />
                     </SelectTrigger>
                     <SelectContent>
                       <SelectGroup>
-                        <SelectItem value="__none__">None</SelectItem>
+                        <SelectItem value="__none__">{t("None")}</SelectItem>
                         {models.data?.map((model) => (
                           <SelectItem key={model.id} value={model.id}>
-                            {model.display_name}
+                            {model.display_name} ({model.source_model_id})
                           </SelectItem>
                         ))}
                       </SelectGroup>
                     </SelectContent>
                   </Select>
-                  {fieldError("model_id") ? <FieldError>{fieldError("model_id")}</FieldError> : null}
-                </Field>
-                <Field>
-                  <FieldLabel htmlFor="upstream_model">Upstream model</FieldLabel>
-                  <Input
-                    id="upstream_model"
-                    value={state.upstream_model}
-                    onChange={(event) => patch({ upstream_model: event.target.value })}
-                  />
-                  {fieldError("upstream_model") ? (
-                    <FieldError>{fieldError("upstream_model")}</FieldError>
+                  {fieldError("upstream_model_id") ? (
+                    <FieldError>{fieldError("upstream_model_id")}</FieldError>
                   ) : null}
                 </Field>
                 <Field>
-                  <FieldLabel htmlFor="description">Description</FieldLabel>
+                  <FieldLabel htmlFor="description">{t("Description")}</FieldLabel>
                   <Input
                     id="description"
                     value={state.description ?? ""}
@@ -257,7 +248,9 @@ export function ModelRuleDetailPage() {
                   />
                 </Field>
                 <Field>
-                  <FieldLabel>Channel groups ({eligibleGroups.length})</FieldLabel>
+                  <FieldLabel>
+                    {t("Channel groups ({count})", { count: eligibleGroups.length })}
+                  </FieldLabel>
                   <div className="flex flex-col gap-2">
                     {eligibleGroups.map((group) => (
                       <label key={group.id} className="flex items-center gap-2 text-sm">
@@ -265,18 +258,20 @@ export function ModelRuleDetailPage() {
                           checked={state.channel_group_ids.includes(group.id)}
                           onCheckedChange={() => toggle("channel_group_ids", group.id)}
                         />
-                        {group.name} (priority {group.priority})
+                        {group.name} ({t("priority {priority}", { priority: group.priority })})
                       </label>
                     ))}
                     {eligibleGroups.length === 0 ? (
                       <span className="text-xs text-muted-foreground">
-                        No groups for this format.
+                        {t("No groups for this format.")}
                       </span>
                     ) : null}
                   </div>
                 </Field>
                 <Field>
-                  <FieldLabel>Channels ({eligibleChannels.length})</FieldLabel>
+                  <FieldLabel>
+                    {t("Channels ({count})", { count: eligibleChannels.length })}
+                  </FieldLabel>
                   <div className="flex flex-col gap-2">
                     {eligibleChannels.map((channel) => (
                       <label key={channel.id} className="flex items-center gap-2 text-sm">
@@ -289,13 +284,13 @@ export function ModelRuleDetailPage() {
                     ))}
                     {eligibleChannels.length === 0 ? (
                       <span className="text-xs text-muted-foreground">
-                        No channels for this format.
+                        {t("No channels for this format.")}
                       </span>
                     ) : null}
                   </div>
                 </Field>
                 <Field>
-                  <FieldLabel>Enabled</FieldLabel>
+                  <FieldLabel>{t("Enabled")}</FieldLabel>
                   <Switch
                     checked={state.enabled}
                     onCheckedChange={(checked) => patch({ enabled: Boolean(checked) })}
@@ -304,7 +299,7 @@ export function ModelRuleDetailPage() {
               </FieldGroup>
               <Button className="self-start" onClick={submit} disabled={submitting}>
                 {submitting ? <Spinner data-icon="inline-start" /> : null}
-                {isNew ? "Create rule" : "Save rule"}
+                {isNew ? t("Create rule") : t("Save rule")}
               </Button>
             </div>
           </CardContent>

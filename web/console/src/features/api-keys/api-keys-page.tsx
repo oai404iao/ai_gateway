@@ -102,7 +102,18 @@ export function ApiKeysPage() {
     {
       key: "formats",
       header: "Formats",
-      render: (key) => formatList(key.allowed_api_formats.map(apiFormatLabel)),
+      render: (key) => (
+        <span className="flex flex-wrap gap-1">
+          {key.allowed_api_formats.map((format) => (
+            <StatusBadge
+              key={format}
+              value={format}
+              label={apiFormatLabel(format)}
+              variant="info"
+            />
+          ))}
+        </span>
+      ),
     },
     {
       key: "permissions",

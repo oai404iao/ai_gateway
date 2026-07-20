@@ -50,7 +50,6 @@ export type RequestLogView = S["RequestLogView"];
 export type AuditLogView = S["AuditLogView"];
 export type ModelSyncPreview = S["ModelSyncPreview"];
 export type ModelSyncPreviewModel = S["ModelSyncPreviewModel"];
-export type ModelPriceSyncResponse = S["ModelPriceSyncResponse"];
 export type ModelImportResponse = S["ModelImportResponse"];
 
 // Request bodies
@@ -77,7 +76,6 @@ export type ConfigTemplateInput = S["ConfigTemplateInput"];
 export type ModelSyncSelection = S["ModelSyncSelection"];
 export type ModelImportRequest = S["ModelImportRequest"];
 export type ModelSyncPreviewRequest = S["ModelSyncPreviewRequest"];
-export type ModelPriceSyncRequest = S["ModelPriceSyncRequest"];
 export type ListQuery = S["ListQuery"];
 
 // Client-side aggregate (not a server response). Assembled by

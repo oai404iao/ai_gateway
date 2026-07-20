@@ -30,4 +30,18 @@ test.describe("Console SPA smoke", () => {
     await page.goto("/admin/users");
     await expect(page).toHaveURL(/\/login/);
   });
+
+  test("the login UI switches to Simplified Chinese and retains the preference", async ({
+    page,
+  }) => {
+    await page.goto("/login");
+
+    await page.getByRole("button", { name: "Language" }).click();
+    await page.getByRole("menuitemradio", { name: "简体中文" }).click();
+    await expect(page.getByRole("button", { name: "登录" })).toBeVisible();
+    await expect(page.getByLabel("邮箱")).toBeVisible();
+
+    await page.reload();
+    await expect(page.getByRole("button", { name: "登录" })).toBeVisible();
+  });
 });

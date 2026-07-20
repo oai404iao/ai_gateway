@@ -49,6 +49,9 @@ describe("UserDetailPage", () => {
     renderAppAt(`/admin/users/${managedUser.id}`);
 
     expect(await screen.findByDisplayValue(managedUser.display_name)).toBeInTheDocument();
+    const balance = screen.getByDisplayValue(managedUser.balance_amount);
+    await user.clear(balance);
+    await user.type(balance, "25.5");
     await user.click(screen.getByRole("button", { name: /save user/i }));
 
     await waitFor(() => {
@@ -57,6 +60,7 @@ describe("UserDetailPage", () => {
         email: managedUser.email,
         role: "admin",
         status: "suspended",
+        balance_amount: "25.5",
         currency: managedUser.currency,
         default_api_key_policy_id: API_KEY_POLICY.id,
       });

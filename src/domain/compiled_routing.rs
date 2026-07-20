@@ -737,7 +737,7 @@ impl CompiledRouteTier {
 #[derive(Clone, Debug)]
 pub struct CompiledModelRule {
     id: Uuid,
-    model_id: Uuid,
+    upstream_model_id: Uuid,
     client_model: Arc<str>,
     api_format: ApiFormat,
     upstream_model: Arc<str>,
@@ -750,8 +750,8 @@ impl CompiledModelRule {
         self.id
     }
     #[must_use]
-    pub fn model_id(&self) -> Uuid {
-        self.model_id
+    pub fn upstream_model_id(&self) -> Uuid {
+        self.upstream_model_id
     }
     #[must_use]
     pub fn client_model(&self) -> &str {
@@ -775,7 +775,7 @@ impl CompiledModelRule {
     }
     pub(crate) fn new(
         id: Uuid,
-        model_id: Uuid,
+        upstream_model_id: Uuid,
         client_model: Arc<str>,
         api_format: ApiFormat,
         upstream_model: Arc<str>,
@@ -784,7 +784,7 @@ impl CompiledModelRule {
     ) -> Self {
         Self {
             id,
-            model_id,
+            upstream_model_id,
             client_model,
             api_format,
             upstream_model,

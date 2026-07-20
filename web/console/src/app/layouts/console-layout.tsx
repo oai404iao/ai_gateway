@@ -31,12 +31,15 @@ import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { useSession } from "@/lib/use-session";
 import { useTheme } from "@/app/theme";
+import { useI18n } from "@/app/i18n";
 import { logout } from "@/api/session";
 import { roleLabel } from "@/lib/permissions";
 import { visibleSections } from "@/app/layouts/nav";
 import { RouteFallback } from "@/components/shared/route-fallback";
+import { LocaleToggle } from "@/components/shared/locale-toggle";
 
 function BrandHeader() {
+  const { t } = useI18n();
   return (
     <SidebarHeader>
       <div className="flex items-center gap-2 px-2 py-3">
@@ -45,7 +48,7 @@ function BrandHeader() {
         </div>
         <div className="flex flex-col">
           <span className="text-sm font-semibold">AI Gateway</span>
-          <span className="text-xs text-muted-foreground">Console</span>
+          <span className="text-xs text-muted-foreground">{t("Console")}</span>
         </div>
       </div>
     </SidebarHeader>
@@ -54,10 +57,11 @@ function BrandHeader() {
 
 function ThemeToggle() {
   const { theme, setTheme } = useTheme();
+  const { t } = useI18n();
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="icon" aria-label="Toggle theme">
+        <Button variant="ghost" size="icon" aria-label={t("Toggle theme")}>
           <Sun className="size-4 dark:hidden" />
           <Moon className="hidden size-4 dark:block" />
         </Button>
@@ -68,13 +72,13 @@ function ThemeToggle() {
           onValueChange={(value) => setTheme(value as "light" | "dark" | "system")}
         >
           <DropdownMenuRadioItem value="light">
-            <Sun className="size-4" /> Light
+            <Sun data-icon="inline-start" /> {t("Light")}
           </DropdownMenuRadioItem>
           <DropdownMenuRadioItem value="dark">
-            <Moon className="size-4" /> Dark
+            <Moon data-icon="inline-start" /> {t("Dark")}
           </DropdownMenuRadioItem>
           <DropdownMenuRadioItem value="system">
-            <Monitor className="size-4" /> System
+            <Monitor data-icon="inline-start" /> {t("System default")}
           </DropdownMenuRadioItem>
         </DropdownMenuRadioGroup>
       </DropdownMenuContent>
@@ -85,6 +89,7 @@ function ThemeToggle() {
 function UserMenu() {
   const { user } = useSession();
   const navigate = useNavigate();
+  const { t } = useI18n();
   const initials = (user?.display_name ?? user?.email ?? "?")
     .split(/\s+/)
     .map((part) => part[0])
@@ -95,7 +100,7 @@ function UserMenu() {
 
   const onLogout = async () => {
     await logout();
-    toast.success("Signed out");
+    toast.success(t("Signed out"));
     navigate("/login", { replace: true });
   };
 
@@ -122,10 +127,10 @@ function UserMenu() {
         </DropdownMenuLabel>
         <DropdownMenuSeparator />
         <DropdownMenuItem onClick={() => navigate("/account")}>
-          Profile
+          {t("Profile")}
         </DropdownMenuItem>
         <DropdownMenuItem onClick={onLogout}>
-          <LogOut className="size-4" /> Sign out
+          <LogOut data-icon="inline-start" /> {t("Sign out")}
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -134,6 +139,7 @@ function UserMenu() {
 
 export function ConsoleLayout() {
   const { user } = useSession();
+  const { t } = useI18n();
   const sections = visibleSections(user?.role ?? null);
 
   return (
@@ -143,7 +149,7 @@ export function ConsoleLayout() {
         <SidebarContent>
           {sections.map((section) => (
             <SidebarGroup key={section.title}>
-              <SidebarGroupLabel>{section.title}</SidebarGroupLabel>
+              <SidebarGroupLabel>{t(section.title)}</SidebarGroupLabel>
               <SidebarGroupContent>
                 <SidebarMenu>
                   {section.items.map((item) => (
@@ -151,8 +157,8 @@ export function ConsoleLayout() {
                       <SidebarMenuButton asChild>
                         <NavLink to={item.path} end={item.end}>
                           <>
-                            <item.icon className="size-4" />
-                            <span>{item.label}</span>
+                            <item.icon />
+                            <span>{t(item.label)}</span>
                           </>
                         </NavLink>
                       </SidebarMenuButton>
@@ -169,6 +175,7 @@ export function ConsoleLayout() {
         <header className="sticky top-0 z-10 flex h-14 items-center gap-2 border-b bg-background/95 px-4 backdrop-blur">
           <SidebarTrigger />
           <div className="ml-auto flex items-center gap-1">
+            <LocaleToggle />
             <ThemeToggle />
             <UserMenu />
           </div>

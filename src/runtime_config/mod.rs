@@ -728,9 +728,9 @@ fn compile_rules(
         if !record.enabled {
             continue;
         }
-        if !record.model_enabled {
+        if !record.upstream_model_enabled {
             return Err(ConfigError::Compile(
-                "enabled model rule references a disabled model".into(),
+                "enabled model rule references a disabled upstream model".into(),
             ));
         }
         let format = parse_format(&record.api_format)?;
@@ -843,7 +843,7 @@ fn compile_rules(
         let price_snapshot = compile_model_price_snapshot(&record)?;
         let rule = Arc::new(CompiledModelRule::new(
             record.id,
-            record.model_id,
+            record.upstream_model_id,
             Arc::from(record.client_model),
             format,
             Arc::from(record.upstream_model),
@@ -861,8 +861,8 @@ fn compile_rules(
 fn compile_model_price_snapshot(
     record: &ModelRuleRecord,
 ) -> Result<ModelPriceSnapshot, ConfigError> {
-    if record.model_currency.len() != 3
-        || !record.model_currency.is_ascii()
+    if record.upstream_model_currency.len() != 3
+        || !record.upstream_model_currency.is_ascii()
         || record.price_unit_tokens <= 0
         || [
             record.input_unit_price,
@@ -874,11 +874,11 @@ fn compile_model_price_snapshot(
         .any(|price| price.is_sign_negative())
     {
         return Err(ConfigError::Compile(
-            "model rule references invalid model price metadata".into(),
+            "model rule references invalid upstream-model price metadata".into(),
         ));
     }
     Ok(ModelPriceSnapshot::new(
-        Arc::from(record.model_currency.as_str()),
+        Arc::from(record.upstream_model_currency.as_str()),
         record.price_unit_tokens,
         record.price_effective_at,
         record.input_unit_price,
@@ -1454,9 +1454,9 @@ mod tests {
                 id: Uuid::from_u128(20),
                 client_model: "client".into(),
                 api_format: "open_ai_chat_completions".into(),
-                model_id: Uuid::from_u128(21),
-                model_enabled: true,
-                model_currency: "USD".into(),
+                upstream_model_id: Uuid::from_u128(21),
+                upstream_model_enabled: true,
+                upstream_model_currency: "USD".into(),
                 price_unit_tokens: 1_000_000,
                 price_effective_at: chrono::Utc::now(),
                 input_unit_price: Default::default(),

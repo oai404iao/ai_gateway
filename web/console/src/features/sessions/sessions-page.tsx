@@ -59,7 +59,7 @@ export function SessionsPage() {
         session.revoked_at ? (
           <Badge variant="destructive">Revoked</Badge>
         ) : (
-          <Badge variant="secondary">Active</Badge>
+          <Badge variant="success">Active</Badge>
         ),
     },
   ];

@@ -23,7 +23,18 @@ export function ApiKeyPoliciesPage() {
         {
           key: "formats",
           header: "Formats",
-          render: (policy) => formatList(policy.allowed_api_formats.map(apiFormatLabel)),
+          render: (policy) => (
+            <span className="flex flex-wrap gap-1">
+              {policy.allowed_api_formats.map((format) => (
+                <StatusBadge
+                  key={format}
+                  value={format}
+                  label={apiFormatLabel(format)}
+                  variant="info"
+                />
+              ))}
+            </span>
+          ),
         },
         {
           key: "permissions",

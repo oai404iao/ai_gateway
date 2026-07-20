@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
 import { ThemeProvider } from "@/app/theme";
+import { I18nProvider } from "@/app/i18n-provider";
 import { refreshAccessToken } from "@/api/client";
 import { useSession } from "@/lib/use-session";
 import { ErrorBoundary } from "@/components/shared/error-boundary";
@@ -48,14 +49,16 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
   );
   return (
     <ErrorBoundary>
-      <ThemeProvider>
-        <QueryClientProvider client={queryClient}>
-          <TooltipProvider>
-            <SessionGate>{children}</SessionGate>
-            <Toaster richColors closeButton />
-          </TooltipProvider>
-        </QueryClientProvider>
-      </ThemeProvider>
+      <I18nProvider>
+        <ThemeProvider>
+          <QueryClientProvider client={queryClient}>
+            <TooltipProvider>
+              <SessionGate>{children}</SessionGate>
+              <Toaster richColors closeButton />
+            </TooltipProvider>
+          </QueryClientProvider>
+        </ThemeProvider>
+      </I18nProvider>
     </ErrorBoundary>
   );
 }

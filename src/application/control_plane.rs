@@ -9,8 +9,8 @@ use uuid::Uuid;
 use crate::{
     persistence::{
         ConsoleApiKey, ConsoleAuditLog, ControlPlaneLists, ControlPlaneMutation,
-        ControlPlaneRepository, ModelsDevPriceTarget, MutationResult, RepositoryError,
-        SelfApiKeyCreate, SelfApiKeyUpdate, SyncedModelInput, SyncedModelPrice,
+        ControlPlaneRepository, MutationResult, RepositoryError, SelfApiKeyCreate,
+        SelfApiKeyUpdate, SyncedModelInput,
     },
     routing::RoutingRuntime,
     runtime_config::UpstreamConfig,
@@ -279,21 +279,17 @@ impl ControlPlaneCoordinator {
         })
     }
 
-    pub async fn models_dev_price_targets(
-        &self,
-    ) -> Result<Vec<ModelsDevPriceTarget>, ControlPlaneError> {
-        Ok(self.repository.models_dev_price_targets().await?)
-    }
-
     pub async fn model_source_ids(&self) -> Result<Vec<String>, ControlPlaneError> {
         Ok(self.repository.model_source_ids().await?)
     }
 
-    /// Persists a bounded, already validated external catalog selection and
-    /// publishes it with one audit correlation id. The catalog is fetched
-    /// before entering this method, so a slow external dependency never holds
-    /// the control-plane serialization gate or a database transaction.
-    pub async fn import_models(
+    /// Applies a bounded, already validated external catalog selection and
+    /// publishes it with one audit correlation id. A selected existing source
+    /// model receives a new models.dev price snapshot; a new source model is
+    /// imported. The catalog is fetched before entering this method, so a slow
+    /// external dependency never holds the control-plane serialization gate or
+    /// a database transaction.
+    pub async fn apply_catalog_models(
         &self,
         actor: Uuid,
         inputs: Vec<SyncedModelInput>,
@@ -309,7 +305,7 @@ impl ControlPlaneCoordinator {
         }
         let mutations = self
             .repository
-            .import_models(&mut transaction, inputs)
+            .apply_catalog_models(&mut transaction, inputs)
             .await?;
         let candidate = Arc::new(compile_control_plane(
             ControlPlaneRepository::load_transaction(&mut transaction).await?,
@@ -326,55 +322,18 @@ impl ControlPlaneCoordinator {
         tracing::info!(
             %correlation_id,
             model_count = mutations.len(),
-            "models.dev model import committed"
+            "models.dev catalog changes committed"
         );
         Ok(ModelSyncResult {
             model_count: mutations.len(),
-            correlation_id,
-        })
-    }
-
-    /// Refreshes prices only for existing models.dev-imported models. The
-    /// source catalog is fetched before this transaction begins, and the
-    /// repository verifies that each target has not changed providers while
-    /// the request was in flight.
-    pub async fn sync_model_prices(
-        &self,
-        actor: Uuid,
-        inputs: Vec<SyncedModelPrice>,
-    ) -> Result<ModelSyncResult, ControlPlaneError> {
-        let _guard = self.serial.lock().await;
-        let mut transaction = self.repository.begin_serializable().await?;
-        if !self
-            .repository
-            .active_admin_exists(&mut transaction, actor)
-            .await?
-        {
-            return Err(ControlPlaneError::InvalidActor);
-        }
-        let mutations = self
-            .repository
-            .sync_model_prices(&mut transaction, inputs)
-            .await?;
-        let candidate = Arc::new(compile_control_plane(
-            ControlPlaneRepository::load_transaction(&mut transaction).await?,
-        )?);
-        self.validate_candidate(&candidate)?;
-        let correlation_id = Uuid::new_v4();
-        for mutation in &mutations {
-            self.repository
-                .insert_audit(&mut transaction, actor, mutation, correlation_id)
-                .await?;
-        }
-        transaction.commit().await.map_err(RepositoryError::from)?;
-        self.publish(candidate);
-        tracing::info!(
-            %correlation_id,
-            model_count = mutations.len(),
-            "models.dev price synchronization committed"
-        );
-        Ok(ModelSyncResult {
-            model_count: mutations.len(),
+            imported_count: mutations
+                .iter()
+                .filter(|mutation| mutation.action == "import")
+                .count(),
+            updated_count: mutations
+                .iter()
+                .filter(|mutation| mutation.action == "price_sync")
+                .count(),
             correlation_id,
         })
     }
@@ -422,6 +381,8 @@ impl ControlPlaneCoordinator {
 #[derive(Clone, Copy, Debug)]
 pub struct ModelSyncResult {
     pub model_count: usize,
+    pub imported_count: usize,
+    pub updated_count: usize,
     pub correlation_id: Uuid,
 }
 

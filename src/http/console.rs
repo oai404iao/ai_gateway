@@ -19,16 +19,15 @@ use uuid::Uuid;
 use crate::{
     application::{
         AuthError, ConsoleAuthService, ControlPlaneCoordinator, ControlPlaneError,
-        IssuedInvitation, IssuedSession, ModelImportRequest, ModelPriceSyncRequest,
-        ModelPriceSyncResponse, ModelSyncError, ModelSyncPreview, ModelSyncPreviewRequest,
-        ModelSyncResponse, ModelSyncService,
+        IssuedInvitation, IssuedSession, ModelImportRequest, ModelSyncError, ModelSyncPreview,
+        ModelSyncPreviewRequest, ModelSyncResponse, ModelSyncService,
     },
     domain::{ConsolePrincipal, UserRole},
     persistence::{
         ApiKeyCreate, ApiKeyPolicyInput, ApiKeyUpdate, ChannelCreateInput, ChannelGroupInput,
         ChannelInput, ConfigTemplateInput, ConsoleApiKey, ControlPlaneMutation, InviteUserInput,
-        ModelInput, ModelRuleInput, ProxyCreateInput, ProxyInput, RequestLogRepository,
-        SelfApiKeyCreate, SelfApiKeyUpdate, UserInput,
+        ModelInput, ModelRuleInput, ProxyCreateInput, ProxyInput, RequestLogFilter,
+        RequestLogRepository, SelfApiKeyCreate, SelfApiKeyUpdate, UserInput,
     },
 };
 
@@ -98,7 +97,6 @@ pub fn router(state: ConsoleState) -> Router {
             "/console/v1/catalog/models/sync/preview",
             post(preview_models_sync),
         )
-        .route("/console/v1/catalog/models/sync", post(sync_models))
         .route("/console/v1/catalog/models/import", post(import_models))
         .route("/console/v1/models/{id}", get(get_model).put(update_model))
         .route(
@@ -156,7 +154,6 @@ pub fn router(state: ConsoleState) -> Router {
         // Console v1 compatibility aliases for the former management resource
         // layout. They remain JWT/role protected and never recreate /admin.
         .route("/console/v1/models/sync/preview", post(preview_models_sync))
-        .route("/console/v1/models/sync", post(sync_models))
         .route("/console/v1/models/sync/import", post(import_models))
         .route(
             "/console/v1/channel-groups",
@@ -415,9 +412,42 @@ struct InviteUserRequest {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct LogQuery {
     #[serde(default)]
     limit: Option<i64>,
+    #[serde(default)]
+    user_id: Option<Uuid>,
+    #[serde(default)]
+    api_key_id: Option<Uuid>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    api_format: Option<String>,
+    #[serde(default)]
+    outcome: Option<String>,
+    #[serde(default)]
+    started_after: Option<DateTime<Utc>>,
+    #[serde(default)]
+    started_before: Option<DateTime<Utc>>,
+    #[serde(default)]
+    billed: Option<bool>,
+}
+
+impl LogQuery {
+    fn into_filter(self) -> RequestLogFilter {
+        RequestLogFilter {
+            limit: self.limit.unwrap_or(50),
+            user_id: self.user_id,
+            api_key_id: self.api_key_id,
+            model: self.model,
+            api_format: self.api_format,
+            outcome: self.outcome,
+            started_after: self.started_after,
+            started_before: self.started_before,
+            billed: self.billed,
+        }
+    }
 }
 
 async fn login(
@@ -629,7 +659,7 @@ async fn list_own_request_logs(
     Ok(Json(
         state
             .request_logs
-            .list_for_user(principal.user_id(), query.limit.unwrap_or(50))
+            .list_for_user(principal.user_id(), query.into_filter())
             .await?,
     ))
 }
@@ -785,27 +815,16 @@ async fn preview_models_sync(
     Ok(Json(state.model_sync.preview(input).await?))
 }
 
-async fn sync_models(
-    State(state): State<ConsoleState>,
-    Extension(principal): Extension<ConsolePrincipal>,
-    Json(input): Json<ModelPriceSyncRequest>,
-) -> Result<Json<ModelPriceSyncResponse>, ConsoleError> {
-    Ok(Json(
-        state
-            .model_sync
-            .sync_prices(principal.user_id(), input)
-            .await?,
-    ))
-}
-
 async fn import_models(
     State(state): State<ConsoleState>,
     Extension(principal): Extension<ConsolePrincipal>,
     Json(input): Json<ModelImportRequest>,
 ) -> Result<Json<ModelSyncResponse>, ConsoleError> {
-    let result = state.model_sync.import(principal.user_id(), input).await?;
+    let result = state.model_sync.apply(principal.user_id(), input).await?;
     Ok(Json(ModelSyncResponse {
         model_count: result.model_count,
+        imported_count: result.imported_count,
+        updated_count: result.updated_count,
         correlation_id: result.correlation_id,
     }))
 }
@@ -1126,10 +1145,7 @@ async fn list_all_request_logs(
     Query(query): Query<LogQuery>,
 ) -> Result<Json<Vec<crate::persistence::ConsoleRequestLog>>, ConsoleError> {
     Ok(Json(
-        state
-            .request_logs
-            .list_all(query.limit.unwrap_or(50))
-            .await?,
+        state.request_logs.list_all(query.into_filter()).await?,
     ))
 }
 

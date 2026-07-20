@@ -350,7 +350,7 @@ async fn user_updates_only_revoke_sessions_for_auth_identity_changes() {
     let etag = detail.headers()[header::ETAG].to_str().unwrap().to_owned();
     let mut update = body_json(detail).await;
     update["display_name"] = serde_json::json!("Updated display name");
-    for field in ["id", "balance_amount", "created_at", "updated_at"] {
+    for field in ["id", "created_at", "updated_at"] {
         update.as_object_mut().unwrap().remove(field);
     }
 
@@ -368,7 +368,7 @@ async fn user_updates_only_revoke_sessions_for_auth_identity_changes() {
     let etag = detail.headers()[header::ETAG].to_str().unwrap().to_owned();
     let mut update = body_json(detail).await;
     update["role"] = serde_json::json!("user");
-    for field in ["id", "balance_amount", "created_at", "updated_at"] {
+    for field in ["id", "created_at", "updated_at"] {
         update.as_object_mut().unwrap().remove(field);
     }
 
@@ -376,6 +376,43 @@ async fn user_updates_only_revoke_sessions_for_auth_identity_changes() {
     assert_eq!(role_update.status(), StatusCode::OK);
     let invalidated = request(&app, "GET", "/console/v1/me", serde_json::json!({}), &[]).await;
     assert_eq!(invalidated.status(), StatusCode::UNAUTHORIZED);
+    database.cleanup().await;
+}
+
+/// Administrators can set an account's balance through the versioned user
+/// resource, and the change is immediately visible in the user's profile.
+#[tokio::test]
+async fn administrator_can_manage_user_balance() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+    let path = format!("/console/v1/users/{}", app.user_id);
+    let detail = request(&app, "GET", &path, serde_json::json!({}), &[]).await;
+    assert_eq!(detail.status(), StatusCode::OK);
+    let etag = detail.headers()[header::ETAG].to_str().unwrap().to_owned();
+    let mut update = body_json(detail).await;
+    update["balance_amount"] = serde_json::json!("42.75");
+    for field in ["id", "created_at", "updated_at"] {
+        update.as_object_mut().unwrap().remove(field);
+    }
+    let response = request(&app, "PUT", &path, update, &[("if-match", &etag)]).await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let balance: rust_decimal::Decimal =
+        sqlx::query_scalar("SELECT balance_amount FROM users WHERE id=$1")
+            .bind(app.user_id)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert_eq!(balance, rust_decimal::Decimal::new(4_275, 2));
+    let audit: serde_json::Value = sqlx::query_scalar(
+        "SELECT after_redacted FROM audit_logs \
+         WHERE object_type='user' AND object_id=$1 ORDER BY occurred_at DESC LIMIT 1",
+    )
+    .bind(app.user_id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(audit["balance_amount"].as_f64(), Some(42.75));
     database.cleanup().await;
 }
 
@@ -437,6 +474,106 @@ async fn etag_if_match_optimistic_concurrency_matches_spec() {
         conflict_body.contains("\"error\""),
         "conflict body is an error body"
     );
+    database.cleanup().await;
+}
+
+/// A model rule chooses exactly one upstream model record. Its forwarded
+/// model identifier and its price snapshot come from that same record; the
+/// API no longer accepts a separate priced-model/upstream-model pair.
+#[tokio::test]
+async fn model_rule_uses_its_upstream_model_as_the_price_source() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+    let effective_at = chrono::Utc::now().to_rfc3339();
+    let model = request(
+        &app,
+        "POST",
+        "/console/v1/models",
+        serde_json::json!({
+            "source_model_id": "spec-upstream-model",
+            "display_name": "Spec upstream model",
+            "enabled": true,
+            "currency": "USD",
+            "price_unit_tokens": 1000000,
+            "input_unit_price": "0.1",
+            "cached_input_unit_price": "0",
+            "cache_write_unit_price": "0",
+            "output_unit_price": "0.2",
+            "price_effective_at": effective_at,
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(model.status(), StatusCode::CREATED);
+    let model_id = body_json(model).await["id"].as_str().unwrap().to_owned();
+
+    let group = request(
+        &app,
+        "POST",
+        "/console/v1/routing/channel-groups",
+        serde_json::json!({
+            "name": "spec-rule-group",
+            "api_format": "open_ai_chat_completions",
+            "priority": 1,
+            "selection_strategy": "weighted_random",
+            "enabled": true,
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(group.status(), StatusCode::CREATED);
+    let group_id = body_json(group).await["id"].as_str().unwrap().to_owned();
+
+    let channel = request(
+        &app,
+        "POST",
+        "/console/v1/routing/channels",
+        serde_json::json!({
+            "channel_group_id": group_id,
+            "api_format": "open_ai_chat_completions",
+            "name": "spec-rule-channel",
+            "base_url": "https://upstream.example.test",
+            "enabled": true,
+            "weight": 1,
+            "upstream_auth_kind": "none",
+            "available_models": ["spec-upstream-model"],
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(channel.status(), StatusCode::CREATED);
+    let channel_id = body_json(channel).await["id"].as_str().unwrap().to_owned();
+
+    let rule = request(
+        &app,
+        "POST",
+        "/console/v1/routing/model-rules",
+        serde_json::json!({
+            "client_model": "spec-client-model",
+            "api_format": "open_ai_chat_completions",
+            "upstream_model_id": model_id,
+            "channel_ids": [channel_id],
+            "enabled": true,
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(rule.status(), StatusCode::CREATED);
+    let rule_id = body_json(rule).await["id"].as_str().unwrap().to_owned();
+
+    let detail = request(
+        &app,
+        "GET",
+        &format!("/console/v1/routing/model-rules/{rule_id}"),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(detail.status(), StatusCode::OK);
+    let detail = body_json(detail).await;
+    assert_eq!(detail["upstream_model_id"], model_id);
+    assert_eq!(detail["upstream_model"], "spec-upstream-model");
+    assert!(detail.get("model_id").is_none());
     database.cleanup().await;
 }
 
@@ -613,5 +750,72 @@ async fn request_logs_limit_is_clamped() {
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response).await;
     assert!(body.is_array());
+    database.cleanup().await;
+}
+
+/// Request-log filters are server-side, composable, and reject unsupported
+/// enum values rather than silently widening an administrator's query.
+#[tokio::test]
+async fn request_log_filters_match_the_console_contract() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+    let api_key_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO api_keys \
+         (id,user_id,name,secret_value,status,allowed_api_formats,permissions) \
+         VALUES ($1,$2,$3,$4,'active',ARRAY['open_ai_chat_completions']::api_format[],ARRAY['proxy'])",
+    )
+    .bind(api_key_id)
+    .bind(app.user_id)
+    .bind("filter-test-key")
+    .bind(format!("filter-secret-{api_key_id}"))
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let now = chrono::Utc::now();
+    let matching_log_id = Uuid::new_v4();
+    for (id, client_model, outcome) in [
+        (matching_log_id, "filter-model", "succeeded"),
+        (Uuid::new_v4(), "other-model", "failed"),
+    ] {
+        sqlx::query(
+            "INSERT INTO request_logs \
+             (id,started_at,completed_at,user_id,api_key_id,api_format,client_model,upstream_model,outcome,streamed,total_duration_ms) \
+             VALUES ($1,$2,$2,$3,$4,'open_ai_chat_completions',$5,$6,$7,false,1)",
+        )
+        .bind(id)
+        .bind(now)
+        .bind(app.user_id)
+        .bind(api_key_id)
+        .bind(client_model)
+        .bind("filter-upstream")
+        .bind(outcome)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    }
+
+    let response = request(
+        &app,
+        "GET",
+        "/console/v1/request-logs?model=filter-model&api_format=open_ai_chat_completions&outcome=succeeded&billed=false&limit=25",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body.as_array().unwrap().len(), 1);
+    assert_eq!(body[0]["id"], matching_log_id.to_string());
+
+    let invalid = request(
+        &app,
+        "GET",
+        "/console/v1/request-logs?api_format=not-a-format",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
     database.cleanup().await;
 }

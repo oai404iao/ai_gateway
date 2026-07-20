@@ -28,7 +28,7 @@ function renderAppAt(path: string) {
 
 const createRoutes = [
   ["/admin/api-key-policies/new", /create policy/i],
-  ["/admin/models/new", /create model/i],
+  ["/admin/models/new", /create upstream model/i],
   ["/admin/routing/channel-groups/new", /create group/i],
   ["/admin/routing/channels/new", /create channel/i],
   ["/admin/routing/model-rules/new", /create rule/i],
@@ -39,7 +39,7 @@ const createRoutes = [
 const editRoutes = [
   [`/admin/users/${CONTROL_PLANE_USER.id}`, /save user/i],
   [`/admin/api-key-policies/${API_KEY_POLICY.id}`, /save policy/i],
-  [`/admin/models/${MODEL.id}`, /save model/i],
+  [`/admin/models/${MODEL.id}`, /save upstream model/i],
   [`/admin/routing/channel-groups/${CHANNEL_GROUP.id}`, /save group/i],
   [`/admin/routing/channels/${CHANNEL.id}`, /save channel/i],
   [`/admin/routing/model-rules/${MODEL_RULE.id}`, /save rule/i],

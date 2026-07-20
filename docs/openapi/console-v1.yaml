@@ -21,9 +21,10 @@ info:
 
     Compatibility aliases (same handlers, same JWT/role boundary, not
     duplicated below): `/console/v1/channel-groups`, `/channels`,
-    `/model-rules`, `/proxies`, `/config-templates`, `/models/sync/*`, and
-    `/reload` mirror their `/routing`, `/network`, `/transforms`,
-    `/catalog`, and `/system` counterparts. `/admin/v1/*` does not exist.
+    `/model-rules`, `/proxies`, `/config-templates`, `/models/sync/preview`,
+    `/models/sync/import`, and `/reload` mirror their `/routing`, `/network`,
+    `/transforms`, `/catalog`, and `/system` counterparts. `/admin/v1/*` does
+    not exist.
 servers:
   - url: /console/v1
     description: Same-origin Console listener.
@@ -298,6 +299,13 @@ paths:
       security: [{ bearerAuth: [] }]
       parameters:
         - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/RequestLogApiKeyId"
+        - $ref: "#/components/parameters/RequestLogModel"
+        - $ref: "#/components/parameters/RequestLogApiFormat"
+        - $ref: "#/components/parameters/RequestLogOutcome"
+        - $ref: "#/components/parameters/RequestLogStartedAfter"
+        - $ref: "#/components/parameters/RequestLogStartedBefore"
+        - $ref: "#/components/parameters/RequestLogBilled"
       responses:
         "200":
           description: Own request logs.
@@ -572,30 +580,10 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "502": { $ref: "#/components/responses/BadGateway" }
 
-  /catalog/models/sync:
-    post:
-      tags: [Catalog]
-      operationId: syncModelPrices
-      security: [{ bearerAuth: [] }]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/ModelPriceSyncRequest" }
-      responses:
-        "200":
-          description: Price sync result.
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/ModelPriceSyncResponse" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "502": { $ref: "#/components/responses/BadGateway" }
-
   /catalog/models/import:
     post:
       tags: [Catalog]
-      operationId: importModels
+      operationId: applyCatalogModels
       security: [{ bearerAuth: [] }]
       requestBody:
         required: true
@@ -604,7 +592,7 @@ paths:
             schema: { $ref: "#/components/schemas/ModelImportRequest" }
       responses:
         "200":
-          description: Import result.
+          description: Selected catalog models imported or price-refreshed.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ModelImportResponse" }
@@ -1098,6 +1086,14 @@ paths:
       security: [{ bearerAuth: [] }]
       parameters:
         - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/RequestLogUserId"
+        - $ref: "#/components/parameters/RequestLogApiKeyId"
+        - $ref: "#/components/parameters/RequestLogModel"
+        - $ref: "#/components/parameters/RequestLogApiFormat"
+        - $ref: "#/components/parameters/RequestLogOutcome"
+        - $ref: "#/components/parameters/RequestLogStartedAfter"
+        - $ref: "#/components/parameters/RequestLogStartedBefore"
+        - $ref: "#/components/parameters/RequestLogBilled"
       responses:
         "200":
           description: All request logs.
@@ -1165,6 +1161,50 @@ components:
       in: query
       required: false
       schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+    RequestLogUserId:
+      name: user_id
+      in: query
+      required: false
+      description: Administrator-only owner filter.
+      schema: { type: string, format: uuid }
+    RequestLogApiKeyId:
+      name: api_key_id
+      in: query
+      required: false
+      schema: { type: string, format: uuid }
+    RequestLogModel:
+      name: model
+      in: query
+      required: false
+      description: Exact client-model or upstream-model identifier.
+      schema: { type: string, maxLength: 300 }
+    RequestLogApiFormat:
+      name: api_format
+      in: query
+      required: false
+      schema: { $ref: "#/components/schemas/ApiFormat" }
+    RequestLogOutcome:
+      name: outcome
+      in: query
+      required: false
+      schema:
+        type: string
+        enum: [succeeded, failed, rejected, cancelled]
+    RequestLogStartedAfter:
+      name: started_after
+      in: query
+      required: false
+      schema: { $ref: "#/components/schemas/DateTime" }
+    RequestLogStartedBefore:
+      name: started_before
+      in: query
+      required: false
+      schema: { $ref: "#/components/schemas/DateTime" }
+    RequestLogBilled:
+      name: billed
+      in: query
+      required: false
+      schema: { type: boolean }
 
   headers:
     ETag:
@@ -1229,7 +1269,7 @@ components:
       enum: [bearer, header]
     ModelSyncAction:
       type: string
-      enum: [price_update, import, already_exists]
+      enum: [price_update, import]
 
     DateTime:
       type: string
@@ -1469,14 +1509,14 @@ components:
     ModelRuleView:
       type: object
       required:
-        [id, client_model, api_format, model_id, model_enabled, upstream_model,
+        [id, client_model, api_format, upstream_model_id, upstream_model_enabled, upstream_model,
          description, channel_group_ids, channel_ids, enabled, updated_at]
       properties:
         id: { type: string, format: uuid }
         client_model: { type: string }
         api_format: { $ref: "#/components/schemas/ApiFormat" }
-        model_id: { type: string, format: uuid }
-        model_enabled: { type: boolean }
+        upstream_model_id: { type: string, format: uuid }
+        upstream_model_enabled: { type: boolean }
         upstream_model: { type: string }
         description: { type: string, nullable: true }
         channel_group_ids:
@@ -1573,7 +1613,7 @@ components:
       type: object
       required:
         [fetched_at, models, excluded_missing_prices, excluded_invalid_models,
-         excluded_oversized_metadata, unavailable_existing_count]
+         excluded_oversized_metadata]
       properties:
         fetched_at: { $ref: "#/components/schemas/DateTime" }
         models:
@@ -1582,7 +1622,6 @@ components:
         excluded_missing_prices: { type: integer }
         excluded_invalid_models: { type: integer }
         excluded_oversized_metadata: { type: integer }
-        unavailable_existing_count: { type: integer }
 
     ModelSyncPreviewModel:
       type: object
@@ -1600,19 +1639,13 @@ components:
         output_unit_price: { $ref: "#/components/schemas/Decimal" }
         action: { $ref: "#/components/schemas/ModelSyncAction" }
 
-    ModelPriceSyncResponse:
-      type: object
-      required: [updated_count, unavailable_count, correlation_id]
-      properties:
-        updated_count: { type: integer }
-        unavailable_count: { type: integer }
-        correlation_id: { type: string, format: uuid, nullable: true }
-
     ModelImportResponse:
       type: object
-      required: [model_count, correlation_id]
+      required: [model_count, imported_count, updated_count, correlation_id]
       properties:
         model_count: { type: integer }
+        imported_count: { type: integer }
+        updated_count: { type: integer }
         correlation_id: { type: string, format: uuid }
 
     # ---- Request bodies ----
@@ -1676,12 +1709,13 @@ components:
 
     UserInput:
       type: object
-      required: [display_name, role, status, currency]
+      required: [display_name, role, status, balance_amount, currency]
       properties:
         display_name: { type: string }
         email: { type: string, nullable: true }
         role: { $ref: "#/components/schemas/UserRole" }
         status: { type: string }
+        balance_amount: { $ref: "#/components/schemas/Decimal" }
         currency: { type: string }
         default_api_key_policy_id: { type: string, format: uuid, nullable: true }
 
@@ -1831,12 +1865,11 @@ components:
 
     ModelRuleInput:
       type: object
-      required: [client_model, api_format, model_id, upstream_model, enabled]
+      required: [client_model, api_format, upstream_model_id, enabled]
       properties:
         client_model: { type: string }
         api_format: { $ref: "#/components/schemas/ApiFormat" }
-        model_id: { type: string, format: uuid }
-        upstream_model: { type: string }
+        upstream_model_id: { type: string, format: uuid }
         description: { type: string, nullable: true }
         channel_group_ids:
           type: array
@@ -1888,11 +1921,6 @@ components:
           type: array
           items: { type: string }
 
-    ModelPriceSyncRequest:
-      type: object
-      description: Empty body; the sync refreshes all models.dev-imported models.
-      additionalProperties: false
-
     ModelImportRequest:
       type: object
       required: [selections]
@@ -1912,3 +1940,13 @@ components:
       type: object
       properties:
         limit: { type: integer, minimum: 1, maximum: 100 }
+        user_id: { type: string, format: uuid }
+        api_key_id: { type: string, format: uuid }
+        model: { type: string, maxLength: 300 }
+        api_format: { $ref: "#/components/schemas/ApiFormat" }
+        outcome:
+          type: string
+          enum: [succeeded, failed, rejected, cancelled]
+        started_after: { $ref: "#/components/schemas/DateTime" }
+        started_before: { $ref: "#/components/schemas/DateTime" }
+        billed: { type: boolean }

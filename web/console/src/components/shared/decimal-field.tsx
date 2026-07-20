@@ -1,7 +1,9 @@
+import { useId } from "react";
 import { Input } from "@/components/ui/input";
 import { Field, FieldError, FieldLabel } from "@/components/ui/field";
 
 interface DecimalFieldProps {
+  id?: string;
   label: string;
   value: string | null;
   onChange: (value: string) => void;
@@ -12,6 +14,7 @@ interface DecimalFieldProps {
 
 /** Edits a rust_decimal string. Keeps the raw text so precision is preserved. */
 export function DecimalField({
+  id,
   label,
   value,
   onChange,
@@ -19,13 +22,16 @@ export function DecimalField({
   required,
   description,
 }: DecimalFieldProps) {
+  const generatedId = useId();
+  const inputId = id ?? generatedId;
   return (
     <Field data-invalid={Boolean(error)}>
-      <FieldLabel>
+      <FieldLabel htmlFor={inputId}>
         {label}
         {required ? <span className="text-destructive"> *</span> : null}
       </FieldLabel>
       <Input
+        id={inputId}
         inputMode="decimal"
         value={value ?? ""}
         placeholder="0"
@@ -41,6 +47,7 @@ export function DecimalField({
 }
 
 interface NullableNumberFieldProps {
+  id?: string;
   label: string;
   value: number | null;
   onChange: (value: number | null) => void;
@@ -50,16 +57,20 @@ interface NullableNumberFieldProps {
 
 /** Edits an optional integer; empty input maps to null (unset). */
 export function NullableNumberField({
+  id,
   label,
   value,
   onChange,
   error,
   description,
 }: NullableNumberFieldProps) {
+  const generatedId = useId();
+  const inputId = id ?? generatedId;
   return (
     <Field data-invalid={Boolean(error)}>
-      <FieldLabel>{label}</FieldLabel>
+      <FieldLabel htmlFor={inputId}>{label}</FieldLabel>
       <Input
+        id={inputId}
         type="number"
         value={value ?? ""}
         placeholder="unset"

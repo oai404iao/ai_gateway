@@ -21,7 +21,6 @@ import type {
   ModelImportRequest,
   ModelImportResponse,
   ModelInput,
-  ModelPriceSyncResponse,
   ModelRuleInput,
   ModelRuleView,
   ModelSyncPreview,
@@ -244,16 +243,7 @@ export function useModelSyncPreview() {
       apiPost<ModelSyncPreview>("/catalog/models/sync/preview", input),
   });
 }
-export function useSyncModelPrices() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: () => apiPost<ModelPriceSyncResponse>("/catalog/models/sync", {}),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: MODELS_KEY });
-    },
-  });
-}
-export function useImportModels() {
+export function useApplyCatalogModels() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (input: ModelImportRequest) =>

@@ -13,8 +13,8 @@ pub use auth::{
 };
 pub use control_plane::{ControlPlaneCoordinator, ControlPlaneError, ModelSyncResult};
 pub use model_sync::{
-    ModelImportRequest, ModelPriceSyncRequest, ModelPriceSyncResponse, ModelSyncError,
-    ModelSyncPreview, ModelSyncPreviewRequest, ModelSyncResponse, ModelSyncService,
+    ModelImportRequest, ModelSyncError, ModelSyncPreview, ModelSyncPreviewRequest,
+    ModelSyncResponse, ModelSyncService,
 };
 pub use proxy::{ModelsResponse, ProxyError, ProxyService};
 pub use request_log::{

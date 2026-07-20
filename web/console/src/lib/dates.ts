@@ -1,5 +1,7 @@
 /** Lightweight timestamp primitives and display helpers (no date library). */
 
+import { currentLocale, translate } from "@/app/i18n";
+
 function parseISO(value: string): Date | null {
   // Accept "Z" or explicit offset; reject anything that isn't a valid Date.
   const date = new Date(value);
@@ -15,7 +17,12 @@ function formatLocal(date: Date, withTime: boolean): string {
   const year = date.getFullYear();
   const month = pad(date.getMonth() + 1);
   const day = pad(date.getDate());
-  if (!withTime) return `${year}-${month}-${day}`;
+  if (!withTime) {
+    return currentLocale() === "zh-CN" ? `${year}年${month}月${day}日` : `${year}-${month}-${day}`;
+  }
+  if (currentLocale() === "zh-CN") {
+    return `${year}年${month}月${day}日 ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  }
   return `${year}-${month}-${day} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
@@ -40,7 +47,11 @@ export function formatDateTimeLocalInput(value: string | null | undefined): stri
   if (!value) return "";
   const date = parseISO(value);
   if (!date) return "";
-  return `${formatLocal(date, false)}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  // `datetime-local` accepts only an ISO-like numeric value, irrespective of
+  // the surrounding UI locale.
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(
+    date.getHours(),
+  )}:${pad(date.getMinutes())}`;
 }
 
 /** Browser-local `datetime-local` value converted to an RFC 3339 UTC timestamp. */
@@ -68,17 +79,17 @@ export function formatRelative(value: string | null | undefined): string {
   if (!date) return value;
   const minutes = differenceInMinutes(new Date(), date);
   if (minutes < 0) return formatDateTime(value);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes}m ago`;
+  if (minutes < 1) return translate("just now");
+  if (minutes < 60) return translate("{minutes}m ago", { minutes });
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
+  if (hours < 24) return translate("{hours}h ago", { hours });
   const days = Math.floor(hours / 24);
-  if (days < 30) return `${days}d ago`;
+  if (days < 30) return translate("{days}d ago", { days });
   return formatDate(value);
 }
 
 /** Expiry display with an explicit "never" when absent. */
 export function formatExpiry(value: string | null | undefined): string {
-  if (!value) return "never";
+  if (!value) return translate("never");
   return formatDateTime(value);
 }
