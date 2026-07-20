@@ -123,7 +123,7 @@ An empty control plane can start successfully, but it cannot proxy requests unti
 
 ### 5. Provision the control plane
 
-Log in to the Console API with the bootstrap administrator, then use its access JWT for subsequent Console requests:
+Log in to the Console API with the bootstrap administrator, then use its access JWT for subsequent Console requests. If you enabled the Console web UI (`[console].ui_enabled = true` with the `embedded-console-ui` feature, or the Vite dev server in development), browse it instead and skip the curl below — the UI drives the same Console API.
 
 ```bash
 curl --request POST http://127.0.0.1:3001/console/v1/auth/login \
@@ -236,7 +236,37 @@ introduce SSR or a long-running Node service. Access tokens stay in memory;
 the rotating refresh cookie keeps its `HttpOnly; Secure; SameSite=Lax`
 attributes.
 
-### Build and serve
+The UI ships in two run modes. Prerequisites for both: PostgreSQL is up,
+`./config/config.toml` has `[console]` enabled with an `[auth]` JWT key pair
+(see Quick start steps 1–2), and the bootstrap administrator exists (step 3).
+
+### Run mode A — development (live reload, no embedding)
+
+Run the gateway (Console API only) and the Vite dev server separately. The dev
+server serves the SPA over HTTPS and proxies `/console/v1/*` to the gateway's
+Console listener, so you edit frontend code with hot reload while the Rust
+binary answers real API calls.
+
+```bash
+# Terminal 1 — gateway on 127.0.0.1:3000 (public) and 127.0.0.1:3001 (Console)
+cargo run
+
+# Terminal 2 — Vite dev server on https://console.localhost:5173
+pnpm --dir web/console install --frozen-lockfile
+pnpm --dir web/console dev
+```
+
+Browse `https://console.localhost:5173`. The `console.localhost` host and
+self-signed HTTPS make the `__Host-` refresh cookie and its `Secure` attribute
+behave like production. `ui_enabled` is irrelevant in this mode (the gateway
+serves only the API); the Vite dev server is a Node process for development,
+not a production runtime.
+
+### Run mode B — production (embedded single binary)
+
+Build the frontend, then build the gateway with the `embedded-console-ui`
+feature so the Vite assets are baked into the binary and served only from the
+Console listener. No Node process runs in production.
 
 ```bash
 # 1. Build the frontend (produces web/console/dist)
@@ -247,15 +277,31 @@ pnpm --dir web/console build
 cargo build --release --features embedded-console-ui
 ```
 
-Enable `[console].ui_enabled = true` in `./config/config.toml` to mount the UI
-on the Console listener. Without the feature, `ui_enabled = true` is rejected
-at startup. For local development, run `pnpm --dir web/console dev` against the
-HTTPS `console.localhost:5173` dev server, which proxies `/console/v1/*` to the
-local Console listener.
+Set `[console].ui_enabled = true` in `./config/config.toml` to mount the SPA on
+the Console listener. With `ui_enabled = true` but the feature compiled out,
+startup is rejected. (In debug builds, `rust-embed` reads `web/console/dist`
+from disk at runtime, so the dist must still exist; release builds embed it.)
 
-See the [Console Web UI design and implementation plan](docs/console-ui-design.md)
-for the repository layout, auth/caching model, shadcn conventions, and phased
-delivery plan.
+```bash
+# Run the single binary behind an HTTPS reverse proxy
+cargo run --release --features embedded-console-ui
+# Browse the Console listener origin, e.g. https://console.example.com/
+```
+
+### Frontend checks and tests
+
+```bash
+pnpm --dir web/console typecheck   # tsc --noEmit (strict)
+pnpm --dir web/console lint         # oxlint
+pnpm --dir web/console test         # vitest component tests (jsdom + MSW)
+pnpm --dir web/console e2e          # Playwright browser tests (installs Chromium)
+pnpm --dir web/console generate:api:check   # OpenAPI spec/type drift gate
+```
+
+See `web/console/README.md` for the full command list, layout, and the
+OpenAPI contract workflow, and the [Console Web UI design and implementation
+plan](docs/console-ui-design.md) for the repository layout, auth/caching model,
+shadcn conventions, and phased delivery plan.
 
 ## Runtime behavior and boundaries
 

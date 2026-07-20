@@ -121,7 +121,7 @@ curl -i http://127.0.0.1:3000/health
 
 ### 5. 配置控制面
 
-使用 bootstrap 管理员登录 Console API，随后使用响应中的 access JWT 调用其他 Console 接口：
+使用 bootstrap 管理员登录 Console API，随后使用响应中的 access JWT 调用其他 Console 接口。如果你已启用 Console Web UI（`[console].ui_enabled = true` 且编译了 `embedded-console-ui` feature，或开发模式下的 Vite 开发服务器），直接浏览器打开 UI 即可，跳过下方 curl —— UI 调用的是同一套 Console API。
 
 ```bash
 curl --request POST http://127.0.0.1:3001/console/v1/auth/login \
@@ -230,7 +230,26 @@ https://console.example.com/console/v1/*      # 既有 Console API
 这不会把 UI 暴露到公共 `/v1/*` listener，也不引入 SSR 或常驻 Node 服务。Access token
 只保存在浏览器内存；轮换 refresh cookie 继续保持 `HttpOnly; Secure; SameSite=Lax`。
 
-### 构建与启用
+UI 有两种运行模式。两者前置条件一致：PostgreSQL 已启动、`./config/config.toml` 已启用 `[console]` 并配好 `[auth]` JWT 密钥对（见快速启动步骤 1–2）、bootstrap 管理员已创建（步骤 3）。
+
+### 运行模式 A — 开发模式（热重载，不嵌入）
+
+分别运行网关（仅提供 Console API）和 Vite 开发服务器。开发服务器通过 HTTPS 提供 SPA，并将 `/console/v1/*` 代理到网关的 Console listener，因此你可以在热重载下编辑前端，同时由 Rust 二进制响应真实 API 调用。
+
+```bash
+# 终端 1 — 网关，公共监听 127.0.0.1:3000，Console 监听 127.0.0.1:3001
+cargo run
+
+# 终端 2 — Vite 开发服务器，https://console.localhost:5173
+pnpm --dir web/console install --frozen-lockfile
+pnpm --dir web/console dev
+```
+
+浏览器打开 `https://console.localhost:5173`。`console.localhost` 主机和自签名 HTTPS 使 `__Host-` refresh cookie 及其 `Secure` 属性表现与生产一致。此模式下 `ui_enabled` 无意义（网关只提供 API）；Vite 开发服务器是开发用的 Node 进程，不是生产运行时。
+
+### 运行模式 B — 生产模式（嵌入单二进制）
+
+先构建前端，再用 `embedded-console-ui` feature 构建网关，Vite 产物会被烤进二进制并只从 Console listener 提供。生产环境没有 Node 进程。
 
 ```bash
 # 1. 构建前端（生成 web/console/dist）
@@ -241,12 +260,25 @@ pnpm --dir web/console build
 cargo build --release --features embedded-console-ui
 ```
 
-在 `./config/config.toml` 中设置 `[console].ui_enabled = true` 即可在 Console listener
-挂载 UI。未启用该 feature 时 `ui_enabled = true` 会在启动被拒绝。本地开发可运行
-`pnpm --dir web/console dev`，使用 HTTPS `console.localhost:5173` 开发服务器，它会将
-`/console/v1/*` 代理到本地 Console listener。
+在 `./config/config.toml` 中设置 `[console].ui_enabled = true` 即可在 Console listener 挂载 SPA。若 `ui_enabled = true` 但未编译该 feature，启动会被拒绝。（debug 构建下 `rust-embed` 运行时从磁盘读取 `web/console/dist`，因此 dist 仍须存在；release 构建会将其嵌入。）
 
-完整的目录、认证、缓存、shadcn 使用规范和分阶段实施计划见
+```bash
+# 在 HTTPS 反向代理后运行单二进制
+cargo run --release --features embedded-console-ui
+# 浏览 Console listener origin，例如 https://console.example.com/
+```
+
+### 前端检查与测试
+
+```bash
+pnpm --dir web/console typecheck   # tsc --noEmit（严格）
+pnpm --dir web/console lint         # oxlint
+pnpm --dir web/console test         # vitest 组件测试（jsdom + MSW）
+pnpm --dir web/console e2e          # Playwright 浏览器测试（会安装 Chromium）
+pnpm --dir web/console generate:api:check   # OpenAPI spec/类型漂移门禁
+```
+
+完整命令列表、目录结构与 OpenAPI 契约流程见 `web/console/README.md`；目录布局、认证/缓存模型、shadcn 使用规范和分阶段实施计划见
 [Console Web UI 设计与实施计划](docs/console-ui-design.md)。
 
 ## 运行行为与边界
