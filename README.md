@@ -218,6 +218,45 @@ The Console listener is separate from the public listener and uses short-lived J
 
 Refer to [docs/mvp-usage.md](docs/mvp-usage.md) for the route inventory and [docs/console-auth-refactor-plan.md](docs/console-auth-refactor-plan.md) for the Console authentication design.
 
+## Console web UI
+
+The Console UI is a React + TypeScript + Vite + Tailwind CSS + shadcn/ui
+(Radix) SPA that lives under `web/console/`. Release builds can embed the
+Vite assets in the Rust binary and serve them only from the dedicated Console
+listener at the same origin as the existing API:
+
+```text
+https://console.example.com/                 # SPA
+https://console.example.com/assets/*          # static assets
+https://console.example.com/console/v1/*      # existing Console API
+```
+
+It never exposes UI resources on the public `/v1/*` listener and does not
+introduce SSR or a long-running Node service. Access tokens stay in memory;
+the rotating refresh cookie keeps its `HttpOnly; Secure; SameSite=Lax`
+attributes.
+
+### Build and serve
+
+```bash
+# 1. Build the frontend (produces web/console/dist)
+pnpm --dir web/console install --frozen-lockfile
+pnpm --dir web/console build
+
+# 2. Build the gateway with the embedded UI feature
+cargo build --release --features embedded-console-ui
+```
+
+Enable `[console].ui_enabled = true` in `./config/config.toml` to mount the UI
+on the Console listener. Without the feature, `ui_enabled = true` is rejected
+at startup. For local development, run `pnpm --dir web/console dev` against the
+HTTPS `console.localhost:5173` dev server, which proxies `/console/v1/*` to the
+local Console listener.
+
+See the [Console Web UI design and implementation plan](docs/console-ui-design.md)
+for the repository layout, auth/caching model, shadcn conventions, and phased
+delivery plan.
+
 ## Runtime behavior and boundaries
 
 - Requests are authenticated and admitted before the body is read.
@@ -285,6 +324,7 @@ tests/               Local and PostgreSQL integration tests
 ## Documentation
 
 - [Operational usage and endpoint guide](docs/mvp-usage.md)
+- [Console Web UI design and implementation plan](docs/console-ui-design.md)
 - [Database and control-plane design](docs/database-design.md)
 - [Real-upstream smoke-test guide](docs/real-upstream-smoke.md)
 - [Product requirements document (Chinese)](docs/PRD.md)

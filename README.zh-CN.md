@@ -215,6 +215,40 @@ Console 监听器独立于公共监听器，使用短期 JWT access token。登�
 
 完整路由清单见 [docs/mvp-usage.md](docs/mvp-usage.md)；Console 认证设计见 [docs/console-auth-refactor-plan.md](docs/console-auth-refactor-plan.md)。
 
+## Console Web UI
+
+Console 管理台是 **React + TypeScript + Vite + Tailwind CSS + shadcn/ui（Radix）**
+单页应用，源码位于 `web/console/`。发布构建可将 Vite 静态产物嵌入 Rust 二进制，并只通过
+独立的 Console listener 同源提供：
+
+```text
+https://console.example.com/                 # SPA
+https://console.example.com/assets/*          # 静态资源
+https://console.example.com/console/v1/*      # 既有 Console API
+```
+
+这不会把 UI 暴露到公共 `/v1/*` listener，也不引入 SSR 或常驻 Node 服务。Access token
+只保存在浏览器内存；轮换 refresh cookie 继续保持 `HttpOnly; Secure; SameSite=Lax`。
+
+### 构建与启用
+
+```bash
+# 1. 构建前端（生成 web/console/dist）
+pnpm --dir web/console install --frozen-lockfile
+pnpm --dir web/console build
+
+# 2. 启用嵌入 feature 构建网关
+cargo build --release --features embedded-console-ui
+```
+
+在 `./config/config.toml` 中设置 `[console].ui_enabled = true` 即可在 Console listener
+挂载 UI。未启用该 feature 时 `ui_enabled = true` 会在启动被拒绝。本地开发可运行
+`pnpm --dir web/console dev`，使用 HTTPS `console.localhost:5173` 开发服务器，它会将
+`/console/v1/*` 代理到本地 Console listener。
+
+完整的目录、认证、缓存、shadcn 使用规范和分阶段实施计划见
+[Console Web UI 设计与实施计划](docs/console-ui-design.md)。
+
 ## 运行行为与边界
 
 - 请求在读取 body 前完成认证与准入。
@@ -280,6 +314,7 @@ tests/               本地与 PostgreSQL 集成测试
 ## 文档
 
 - [运行与接口说明](docs/mvp-usage.md)
+- [Console Web UI 设计与实施计划](docs/console-ui-design.md)
 - [数据库与控制面设计](docs/database-design.md)
 - [真实上游 smoke test 说明](docs/real-upstream-smoke.md)
 - [产品需求文档（中文）](docs/PRD.md)

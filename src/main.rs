@@ -113,18 +113,27 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
         );
         let listener = TcpListener::bind(console.address).await?;
         tracing::info!(address = %console.address, "AI gateway Console listener enabled");
-        Some((
-            listener,
-            http::console::router(http::console::ConsoleState {
-                coordinator: coordinator.clone(),
-                model_sync,
-                auth,
-                request_logs: RequestLogRepository::new(pool.clone()),
-                console_body_bytes: config.request_limits.console_body_bytes,
-                auth_body_bytes: config.request_limits.auth_body_bytes,
-                allowed_origins: console.allowed_origins.clone(),
-            }),
-        ))
+        let api_router = http::console::router(http::console::ConsoleState {
+            coordinator: coordinator.clone(),
+            model_sync,
+            auth,
+            request_logs: RequestLogRepository::new(pool.clone()),
+            console_body_bytes: config.request_limits.console_body_bytes,
+            auth_body_bytes: config.request_limits.auth_body_bytes,
+            allowed_origins: console.allowed_origins.clone(),
+        });
+        // The embedded UI router is merged after the API router so explicit
+        // `/console/v1/*` routes take precedence over the SPA fallback.
+        #[cfg(feature = "embedded-console-ui")]
+        let console_router = if console.ui_enabled {
+            tracing::info!("Console embedded web UI enabled");
+            api_router.merge(http::console_ui::router())
+        } else {
+            api_router
+        };
+        #[cfg(not(feature = "embedded-console-ui"))]
+        let console_router = api_router;
+        Some((listener, console_router))
     } else {
         None
     };

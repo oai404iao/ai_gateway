@@ -6,6 +6,13 @@ rust-version = "1.85"
 description = "High-performance LLM request forwarding gateway"
 license = "UNLICENSED"
 
+[features]
+# Embeds the built `web/console/dist` static assets into the binary and serves
+# them from the Console listener when `[console].ui_enabled` is set. Building
+# with this feature requires `pnpm --dir web/console build` to have produced
+# `web/console/dist` first.
+embedded-console-ui = ["dep:rust-embed", "dep:mime_guess"]
+
 [dependencies]
 arc-swap = "1.7"
 argon2 = { version = "0.5", features = ["password-hash"] }
@@ -38,3 +45,5 @@ tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 zeroize = { version = "1.8", features = ["derive"] }
 uuid = { version = "1.11", features = ["v4", "serde"] }
+rust-embed = { version = "8", optional = true }
+mime_guess = { version = "2", optional = true }

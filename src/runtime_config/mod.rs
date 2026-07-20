@@ -283,6 +283,10 @@ pub struct ConsoleFileConfig {
     pub port: Option<u16>,
     #[serde(default)]
     pub allowed_origins: Vec<String>,
+    /// Serves the embedded Console web UI from this listener. Requires the
+    /// `embedded-console-ui` cargo feature and a populated `web/console/dist`.
+    #[serde(default)]
+    pub ui_enabled: bool,
 }
 
 /// File-only JWT setup. Private key material remains in a separate protected
@@ -304,6 +308,7 @@ pub struct ConsoleListenerConfig {
     pub address: SocketAddr,
     pub allowed_origins: Vec<String>,
     pub auth: AuthConfig,
+    pub ui_enabled: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -1276,6 +1281,13 @@ fn validate_console(
     if !config.enabled {
         return Ok(None);
     }
+    #[cfg(not(feature = "embedded-console-ui"))]
+    if config.ui_enabled {
+        return Err(ConfigError::Compile(
+            "console ui_enabled requires building with the embedded-console-ui cargo feature"
+                .into(),
+        ));
+    }
     let host = config
         .host
         .ok_or_else(|| ConfigError::Compile("enabled console host is required".into()))?;
@@ -1331,6 +1343,7 @@ fn validate_console(
             signing_key_path,
             verification_key_path,
         },
+        ui_enabled: config.ui_enabled,
     }))
 }
 

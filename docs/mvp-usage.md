@@ -2,6 +2,11 @@
 
 服务是一个 OpenAI 兼容的数据面网关，加上独立的 **Console API**。`/v1/*` 面向 SDK 和程序调用，使用用户 API Key；`/console/v1/*` 面向用户登录和控制面管理，使用 JWT。`admin` 是用户角色，不是另一套接口或静态 Bearer 凭据。
 
+当前运行时同时提供 Console API 和可选的浏览器管理界面。Console API 仍是程序化接口；
+浏览器管理界面已实现于 `web/console/`，可通过 `embedded-console-ui` Cargo feature 嵌入并由
+Console listener 提供。无论是否启用 UI，本文件描述的 API 行为与边界保持不变。设计详情见
+[Console Web UI 设计与实施计划](console-ui-design.md)。
+
 ## 启动
 
 1. 启动 PostgreSQL：`docker compose up -d`。

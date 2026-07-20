@@ -1,0 +1,182 @@
+import { NavLink, Outlet, useNavigate } from "react-router";
+import { LogOut, Moon, Sun, Monitor, ChevronDown } from "lucide-react";
+import { toast } from "sonner";
+import {
+  Sidebar,
+  SidebarContent,
+  SidebarFooter,
+  SidebarGroup,
+  SidebarGroupContent,
+  SidebarGroupLabel,
+  SidebarHeader,
+  SidebarInset,
+  SidebarMenu,
+  SidebarMenuItem,
+  SidebarMenuButton,
+  SidebarProvider,
+  SidebarTrigger,
+} from "@/components/ui/sidebar";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Button } from "@/components/ui/button";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { useSession } from "@/lib/use-session";
+import { useTheme } from "@/app/theme";
+import { logout } from "@/api/session";
+import { roleLabel } from "@/lib/permissions";
+import { visibleSections } from "@/app/layouts/nav";
+
+function BrandHeader() {
+  return (
+    <SidebarHeader>
+      <div className="flex items-center gap-2 px-2 py-3">
+        <div className="flex size-7 items-center justify-center rounded-md bg-primary text-primary-foreground">
+          <span className="text-xs font-bold">AG</span>
+        </div>
+        <div className="flex flex-col">
+          <span className="text-sm font-semibold">AI Gateway</span>
+          <span className="text-xs text-muted-foreground">Console</span>
+        </div>
+      </div>
+    </SidebarHeader>
+  );
+}
+
+function ThemeToggle() {
+  const { theme, setTheme } = useTheme();
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="ghost" size="icon" aria-label="Toggle theme">
+          <Sun className="size-4 dark:hidden" />
+          <Moon className="hidden size-4 dark:block" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuRadioGroup
+          value={theme}
+          onValueChange={(value) => setTheme(value as "light" | "dark" | "system")}
+        >
+          <DropdownMenuRadioItem value="light">
+            <Sun className="size-4" /> Light
+          </DropdownMenuRadioItem>
+          <DropdownMenuRadioItem value="dark">
+            <Moon className="size-4" /> Dark
+          </DropdownMenuRadioItem>
+          <DropdownMenuRadioItem value="system">
+            <Monitor className="size-4" /> System
+          </DropdownMenuRadioItem>
+        </DropdownMenuRadioGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+function UserMenu() {
+  const { user } = useSession();
+  const navigate = useNavigate();
+  const initials = (user?.display_name ?? user?.email ?? "?")
+    .split(/\s+/)
+    .map((part) => part[0])
+    .filter(Boolean)
+    .slice(0, 2)
+    .join("")
+    .toUpperCase();
+
+  const onLogout = async () => {
+    await logout();
+    toast.success("Signed out");
+    navigate("/login", { replace: true });
+  };
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="ghost" className="h-9 gap-2 px-2">
+          <Avatar className="size-7">
+            <AvatarFallback>{initials}</AvatarFallback>
+          </Avatar>
+          <span className="hidden text-sm sm:inline-flex">{user?.display_name}</span>
+          <ChevronDown className="size-4 opacity-60" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-56">
+        <DropdownMenuLabel>
+          <div className="flex flex-col">
+            <span className="text-sm font-medium">{user?.display_name}</span>
+            <span className="text-xs text-muted-foreground">{user?.email}</span>
+            <span className="text-xs text-muted-foreground">
+              {user ? roleLabel(user.role) : ""}
+            </span>
+          </div>
+        </DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onClick={() => navigate("/account")}>
+          Profile
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={onLogout}>
+          <LogOut className="size-4" /> Sign out
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+export function ConsoleLayout() {
+  const { user } = useSession();
+  const sections = visibleSections(user?.role ?? null);
+
+  return (
+    <SidebarProvider>
+      <Sidebar collapsible="icon">
+        <BrandHeader />
+        <SidebarContent>
+          {sections.map((section) => (
+            <SidebarGroup key={section.title}>
+              <SidebarGroupLabel>{section.title}</SidebarGroupLabel>
+              <SidebarGroupContent>
+                <SidebarMenu>
+                  {section.items.map((item) => (
+                    <SidebarMenuItem key={item.path}>
+                      <SidebarMenuButton asChild>
+                        <NavLink to={item.path} end={item.end}>
+                          <>
+                            <item.icon className="size-4" />
+                            <span>{item.label}</span>
+                          </>
+                        </NavLink>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  ))}
+                </SidebarMenu>
+              </SidebarGroupContent>
+            </SidebarGroup>
+          ))}
+        </SidebarContent>
+        <SidebarFooter />
+      </Sidebar>
+      <SidebarInset>
+        <header className="sticky top-0 z-10 flex h-14 items-center gap-2 border-b bg-background/95 px-4 backdrop-blur">
+          <SidebarTrigger />
+          <div className="ml-auto flex items-center gap-1">
+            <ThemeToggle />
+            <UserMenu />
+          </div>
+        </header>
+        <main className="flex-1 p-4 md:p-6">
+          <div className="mx-auto flex max-w-6xl flex-col gap-6">
+            <Outlet />
+          </div>
+        </main>
+      </SidebarInset>
+    </SidebarProvider>
+  );
+}

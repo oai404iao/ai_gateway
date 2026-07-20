@@ -1,6 +1,9 @@
 //! Axum routes, middleware, and HTTP error responses.
 
 pub mod console;
+/// Embedded Console web UI; only compiled with `embedded-console-ui`.
+#[cfg(feature = "embedded-console-ui")]
+pub mod console_ui;
 
 use axum::{
     Json, Router,

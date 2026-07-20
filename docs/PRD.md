@@ -13,6 +13,8 @@
 - 日志与指标：tracing、（OpenTelemetry、Prometheus   这俩暂不实现)
 - 密钥：secrecy、zeroize
 - 金额：rust_decimal
+- Console Web UI（计划）：React + TypeScript + Vite；Tailwind CSS + shadcn/ui（Radix）。
+  前端仅在构建期使用 Node.js，生产运行时仍为 Rust 单二进制。
 
 ### 架构
 
@@ -27,6 +29,12 @@ Axum HTTP
   → reqwest 转发
   → 响应直通 / 响应变换
   → 异步日志与用量结算
+
+Console 浏览器（计划）
+  → 同源 HTTPS Console listener
+  → React SPA
+  → /console/v1/* JWT Console API
+  → PostgreSQL 控制面事务 + 审计 + 快照发布
 
 ### 实体
 
@@ -177,6 +185,37 @@ Proxy-Authorization
 
 `/v1/models` 不应返回全局模型目录，而是返回当前 API Key 允许访问的 `model_rules.client_model`，并输出 OpenAI 兼容的列表格式。
 
+## Console Web UI（计划）
+
+Console Web UI 是现有 Console API 的浏览器客户端，而不是第三方聊天 Widget。其源码独立于 Rust
+模块，Vite 构建后的静态产物可通过可选 Cargo feature 编入发布二进制，并且**只能**挂在独立的
+Console listener：
+
+```text
+https://console.example.com/
+  ├─ /                    React SPA
+  ├─ /assets/*            指纹静态资源
+  └─ /console/v1/*        既有 JWT Console API
+
+公共数据面 listener
+  └─ /health、/v1/*       不暴露 UI 或 Console 路由
+```
+
+- 采用 React + TypeScript + Vite、React Router、TanStack Query、React Hook Form + Zod、Tailwind CSS
+  和 shadcn/ui（Radix）。
+- access JWT 只保存在浏览器内存；现有 `HttpOnly; Secure; SameSite=Lax` refresh Cookie 保持不变。
+  前端不得把 token、API Key 或一次性 secret 写入浏览器持久存储。
+- Console API 保持后端授权、ETag/`If-Match` 乐观并发、审计和控制面事务边界；前端 role-aware 导航仅是
+  体验优化，不能替代 `require_admin`。
+- API 路由必须优先于 SPA fallback；fallback 只响应 HTML 的 `GET` / `HEAD` 导航，绝不将 API 错误
+  返回为 `index.html`。
+- API 的 `Cache-Control: no-store` 不得施加到 UI 指纹资源：`index.html` 使用 `no-cache`，
+  `/assets/*` 使用长期 immutable 缓存。
+- 不引入 SSR、Next.js、常驻 Node 服务或生产环境的文件系统静态目录。
+
+详细的目录、接口契约、构建、安全和分阶段实施计划见
+[Console Web UI 设计与实施计划](console-ui-design.md)。
+
 ## 代码组织
 
 保持一个可部署二进制，但按边界分模块:
@@ -184,6 +223,7 @@ Proxy-Authorization
 ```text
 src/
   http/            # Axum 路由、错误响应、中间件
+    console_ui.rs  # 计划：嵌入式 Console UI 静态资源与 SPA fallback
   application/     # ProxyUseCase、模型查询、配置管理
   domain/          # 实体、值对象、规则和接口
   routing/         # 模型规则、渠道选择、健康状态
@@ -194,6 +234,7 @@ src/
   observability/   # tracing、metrics、请求日志
   workers/         # models.dev 同步、日志落库、健康检查
 migrations/
+web/console/        # 计划：React + TypeScript + shadcn/ui 源码
 ```
 
 ---
