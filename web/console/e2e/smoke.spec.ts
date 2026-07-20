@@ -1,0 +1,33 @@
+import { expect, test } from "@playwright/test";
+import { mockConsoleApi } from "./mock-api";
+
+test.describe("Console SPA smoke", () => {
+  test("login page renders and a successful login reaches the account shell", async ({
+    page,
+  }) => {
+    await mockConsoleApi(page);
+    await page.goto("/login");
+
+    // The login form is visible.
+    await expect(page.getByLabel(/email/i)).toBeVisible();
+    await expect(page.getByLabel(/^password$/i)).toBeVisible();
+
+    // Submit credentials; the SPA stores the access token and redirects.
+    await page.getByLabel(/email/i).fill("admin@example.com");
+    await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
+    await page.getByRole("button", { name: /sign in/i }).click();
+
+    // Authenticated shell: the sidebar Profile link is present and we land
+    // on the account page.
+    await expect(page.getByRole("link", { name: "Profile" })).toBeVisible();
+    await expect(page).toHaveURL(/\/account/);
+  });
+
+  test("an unknown deep link behind auth redirects to login when unauthenticated", async ({
+    page,
+  }) => {
+    // No API mock for refresh -> the SPA treats the session as anonymous.
+    await page.goto("/admin/users");
+    await expect(page).toHaveURL(/\/login/);
+  });
+});

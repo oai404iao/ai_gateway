@@ -10,6 +10,8 @@
     "lint": "oxlint",
     "test": "vitest run",
     "test:watch": "vitest",
+    "e2e": "playwright test",
+    "e2e:install": "playwright install --with-deps chromium",
     "generate:api": "openapi-typescript ../../docs/openapi/console-v1.yaml -o src/api/generated/console-v1.d.ts",
     "generate:api:check": "openapi-typescript ../../docs/openapi/console-v1.yaml -o src/api/generated/console-v1.d.ts && git diff --exit-code src/api/generated/console-v1.d.ts",
     "preview": "vite preview"
@@ -33,6 +35,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "@tailwindcss/vite": "^4.3.3",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
