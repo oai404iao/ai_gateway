@@ -1,12 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { BrowserRouter } from "react-router";
 import { AppProviders } from "@/app/providers";
 import { AppRouter } from "@/app/router";
 import { server, seedAuthenticatedSession } from "@/test/msw";
-import { OWN_API_KEY } from "@/test/fixtures";
+import { NEW_API_KEY_SECRET, OWN_API_KEY } from "@/test/fixtures";
+import type { SelfApiKeyCreateInput } from "@/api/types";
 
 function renderAppAt(path: string) {
   window.history.replaceState({}, "", path);
@@ -37,6 +38,63 @@ describe("ApiKeysPage", () => {
     expect(await screen.findByText(/sk-ag-test-secret-only-once/i)).toBeInTheDocument();
   });
 
+  it("serializes a datetime-local expiry as RFC 3339", async () => {
+    seedAuthenticatedSession();
+    let submitted: SelfApiKeyCreateInput | undefined;
+    server.use(
+      http.post("/console/v1/me/api-keys", async ({ request }) => {
+        submitted = (await request.json()) as SelfApiKeyCreateInput;
+        return HttpResponse.json(
+          {
+            id: OWN_API_KEY.id,
+            secret: NEW_API_KEY_SECRET,
+            correlation_id: "11111111-0000-0000-0000-000000000000",
+          },
+          { status: 201 },
+        );
+      }),
+    );
+    const user = userEvent.setup();
+    renderAppAt("/api-keys");
+
+    await user.click(await screen.findByRole("button", { name: /new api key/i }));
+    await user.type(screen.getByLabelText(/^name$/i), "expiring key");
+    const localExpiry = "2099-08-01T12:00";
+    fireEvent.change(screen.getByLabelText(/expires at/i), {
+      target: { value: localExpiry },
+    });
+    await user.click(screen.getByRole("button", { name: /create key/i }));
+
+    await waitFor(() => {
+      expect(submitted).toEqual({
+        name: "expiring key",
+        expires_at: new Date(localExpiry).toISOString(),
+      });
+    });
+  });
+
+  it("explains when a default API key policy is missing", async () => {
+    seedAuthenticatedSession();
+    server.use(
+      http.post("/console/v1/me/api-keys", () =>
+        HttpResponse.json(
+          { error: "default_api_key_policy_required" },
+          { status: 422 },
+        ),
+      ),
+    );
+    const user = userEvent.setup();
+    renderAppAt("/api-keys");
+
+    await user.click(await screen.findByRole("button", { name: /new api key/i }));
+    await user.type(screen.getByLabelText(/^name$/i), "policy-required");
+    await user.click(screen.getByRole("button", { name: /create key/i }));
+
+    expect(
+      await screen.findByText(/create an api key policy, then assign it/i),
+    ).toBeInTheDocument();
+  });
+
   it("navigates to a key detail page on row click", async () => {
     seedAuthenticatedSession();
     const user = userEvent.setup();
@@ -46,6 +104,36 @@ describe("ApiKeysPage", () => {
     // The detail page renders the danger-zone revoke button.
     await waitFor(() => {
       expect(screen.getByRole("button", { name: /revoke api key/i })).toBeInTheDocument();
+    });
+  });
+
+  it("saves a loaded disabled status without requiring reselection", async () => {
+    seedAuthenticatedSession();
+    const disabledKey = { ...OWN_API_KEY, status: "disabled" };
+    let submittedStatus: string | undefined;
+    server.use(
+      http.get("/console/v1/me/api-keys/:id", () =>
+        HttpResponse.json(disabledKey, {
+          headers: { ETag: `"${disabledKey.updated_at}"` },
+        }),
+      ),
+      http.put("/console/v1/me/api-keys/:id", async ({ request }) => {
+        const body = (await request.json()) as { status: string };
+        submittedStatus = body.status;
+        return HttpResponse.json({
+          id: disabledKey.id,
+          correlation_id: "33333333-0000-0000-0000-000000000000",
+        });
+      }),
+    );
+    const user = userEvent.setup();
+    renderAppAt(`/api-keys/${disabledKey.id}`);
+
+    expect(await screen.findByDisplayValue(disabledKey.name)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /save changes/i }));
+
+    await waitFor(() => {
+      expect(submittedStatus).toBe("disabled");
     });
   });
 

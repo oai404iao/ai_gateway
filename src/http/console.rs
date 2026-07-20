@@ -1346,9 +1346,10 @@ impl IntoResponse for ConsoleError {
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Console operation failed",
             ),
-            Self::ControlPlane(error) => {
-                (control_plane_status(&error), "Console operation rejected")
-            }
+            Self::ControlPlane(error) => (
+                control_plane_status(&error),
+                control_plane_error_message(&error),
+            ),
             Self::ModelSync(ModelSyncError::InvalidSelection)
             | Self::ModelSync(ModelSyncError::ConflictingSourceModelId) => (
                 StatusCode::UNPROCESSABLE_ENTITY,
@@ -1357,10 +1358,13 @@ impl IntoResponse for ConsoleError {
             Self::ModelSync(ModelSyncError::Catalog(_)) => {
                 (StatusCode::BAD_GATEWAY, "Console operation rejected")
             }
-            Self::ModelSync(ModelSyncError::ControlPlane(error)) => {
-                (control_plane_status(&error), "Console operation rejected")
+            Self::ModelSync(ModelSyncError::ControlPlane(error)) => (
+                control_plane_status(&error),
+                control_plane_error_message(&error),
+            ),
+            Self::Repository(error) => {
+                (repository_status(&error), repository_error_message(&error))
             }
-            Self::Repository(error) => (repository_status(&error), "Console operation rejected"),
             Self::NotFound => (StatusCode::NOT_FOUND, "not found"),
             Self::Internal => (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1388,11 +1392,36 @@ fn control_plane_status(error: &ControlPlaneError) -> StatusCode {
     }
 }
 
+fn control_plane_error_message(error: &ControlPlaneError) -> &'static str {
+    match error {
+        ControlPlaneError::Repository(error) => repository_error_message(error),
+        _ => "Console operation rejected",
+    }
+}
+
+fn repository_error_message(error: &crate::persistence::RepositoryError) -> &'static str {
+    match error {
+        crate::persistence::RepositoryError::DefaultApiKeyPolicyRequired => {
+            "default_api_key_policy_required"
+        }
+        crate::persistence::RepositoryError::DefaultApiKeyPolicyDisabled => {
+            "default_api_key_policy_disabled"
+        }
+        crate::persistence::RepositoryError::ApiKeyLimitReached => "api_key_limit_reached",
+        _ => "Console operation rejected",
+    }
+}
+
 fn repository_status(error: &crate::persistence::RepositoryError) -> StatusCode {
     match error {
         crate::persistence::RepositoryError::NotFound => StatusCode::NOT_FOUND,
         crate::persistence::RepositoryError::Conflict => StatusCode::CONFLICT,
         crate::persistence::RepositoryError::Validation => StatusCode::UNPROCESSABLE_ENTITY,
+        crate::persistence::RepositoryError::DefaultApiKeyPolicyRequired
+        | crate::persistence::RepositoryError::DefaultApiKeyPolicyDisabled => {
+            StatusCode::UNPROCESSABLE_ENTITY
+        }
+        crate::persistence::RepositoryError::ApiKeyLimitReached => StatusCode::CONFLICT,
         crate::persistence::RepositoryError::Sql(error)
             if error
                 .as_database_error()

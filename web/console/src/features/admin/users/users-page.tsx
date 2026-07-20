@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useForm } from "react-hook-form";
+import { Controller, useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { toast } from "sonner";
@@ -17,6 +17,7 @@ import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -26,7 +27,6 @@ import { AdminListPage } from "@/features/admin/components/admin-list-page";
 import { SecretOnceDialog } from "@/components/shared/secret-once-dialog";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { useApiKeyPolicies, useInviteUser, useUsers } from "@/features/admin/api";
-import type { UserRole } from "@/api/types";
 import { formatCurrency } from "@/lib/formatters";
 import { formatRelative } from "@/lib/dates";
 import { ROLES, roleLabel } from "@/lib/permissions";
@@ -51,7 +51,13 @@ export function UsersPage() {
 
   const form = useForm<InviteValues>({
     resolver: zodResolver(inviteSchema),
-    defaultValues: { role: "user", currency: "USD" },
+    defaultValues: {
+      email: "",
+      display_name: "",
+      role: "user",
+      currency: "USD",
+      default_api_key_policy_id: "",
+    },
   });
 
   const onSubmit = async (values: InviteValues) => {
@@ -66,13 +72,23 @@ export function UsersPage() {
       });
       setToken(result.invitation_token);
       setOpen(false);
-      form.reset({ role: "user", currency: "USD" });
+      form.reset({
+        email: "",
+        display_name: "",
+        role: "user",
+        currency: "USD",
+        default_api_key_policy_id: "",
+      });
       toast.success("Invitation issued");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Invite failed");
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const onInvalid = () => {
+    toast.error("Review the highlighted invitation fields.");
   };
 
   return (
@@ -115,7 +131,10 @@ export function UsersPage() {
               The invitation token is shown once and must be delivered out of band.
             </DialogDescription>
           </DialogHeader>
-          <form onSubmit={form.handleSubmit(onSubmit)} className="flex flex-col gap-4">
+          <form
+            onSubmit={form.handleSubmit(onSubmit, onInvalid)}
+            className="flex flex-col gap-4"
+          >
             <FieldGroup>
               <Field>
                 <FieldLabel htmlFor="email">Email</FieldLabel>
@@ -131,26 +150,33 @@ export function UsersPage() {
                   <FieldError>{form.formState.errors.display_name.message}</FieldError>
                 ) : null}
               </Field>
-              <Field>
-                <FieldLabel>Role</FieldLabel>
-                <Select
-                  value={form.watch("role")}
-                  onValueChange={(value) =>
-                    form.setValue("role", value as UserRole, { shouldValidate: true })
-                  }
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {ROLES.map((role) => (
-                      <SelectItem key={role} value={role}>
-                        {roleLabel(role)}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </Field>
+              <Controller
+                control={form.control}
+                name="role"
+                defaultValue="user"
+                render={({ field, fieldState }) => (
+                  <Field data-invalid={fieldState.invalid}>
+                    <FieldLabel htmlFor="invite_role">Role</FieldLabel>
+                    <Select value={field.value} onValueChange={field.onChange}>
+                      <SelectTrigger id="invite_role" aria-invalid={fieldState.invalid}>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectGroup>
+                          {ROLES.map((role) => (
+                            <SelectItem key={role} value={role}>
+                              {roleLabel(role)}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                    {fieldState.error ? (
+                      <FieldError>{fieldState.error.message}</FieldError>
+                    ) : null}
+                  </Field>
+                )}
+              />
               <Field>
                 <FieldLabel htmlFor="currency">Currency</FieldLabel>
                 <Input id="currency" {...form.register("currency")} />
@@ -158,33 +184,46 @@ export function UsersPage() {
                   <FieldError>{form.formState.errors.currency.message}</FieldError>
                 ) : null}
               </Field>
-              <Field>
-                <FieldLabel>Default API key policy</FieldLabel>
-                <Select
-                  value={form.watch("default_api_key_policy_id") ?? "__none__"}
-                  onValueChange={(value) =>
-                    form.setValue(
-                      "default_api_key_policy_id",
-                      value === "__none__" ? undefined : value,
-                      { shouldValidate: true },
-                    )
-                  }
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__none__">None</SelectItem>
-                    {policies.data
-                      ?.filter((policy) => policy.enabled)
-                      .map((policy) => (
-                        <SelectItem key={policy.id} value={policy.id}>
-                          {policy.name}
-                        </SelectItem>
-                      ))}
-                  </SelectContent>
-                </Select>
-              </Field>
+              <Controller
+                control={form.control}
+                name="default_api_key_policy_id"
+                defaultValue=""
+                render={({ field, fieldState }) => (
+                  <Field data-invalid={fieldState.invalid}>
+                    <FieldLabel htmlFor="invite_default_api_key_policy_id">
+                      Default API key policy
+                    </FieldLabel>
+                    <Select
+                      value={field.value || "__none__"}
+                      onValueChange={(value) =>
+                        field.onChange(value === "__none__" ? "" : value)
+                      }
+                    >
+                      <SelectTrigger
+                        id="invite_default_api_key_policy_id"
+                        aria-invalid={fieldState.invalid}
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectGroup>
+                          <SelectItem value="__none__">None</SelectItem>
+                          {policies.data
+                            ?.filter((policy) => policy.enabled)
+                            .map((policy) => (
+                              <SelectItem key={policy.id} value={policy.id}>
+                                {policy.name}
+                              </SelectItem>
+                            ))}
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                    {fieldState.error ? (
+                      <FieldError>{fieldState.error.message}</FieldError>
+                    ) : null}
+                  </Field>
+                )}
+              />
             </FieldGroup>
             <DialogFooter>
               <Button type="submit" disabled={submitting}>

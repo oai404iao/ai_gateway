@@ -168,35 +168,23 @@ export function AppRouter() {
             <Route path="/admin/users" element={<UsersPage />} />
             <Route path="/admin/users/:id" element={<UserDetailPage />} />
             <Route path="/admin/api-key-policies" element={<ApiKeyPoliciesPage />} />
-            <Route path="/admin/api-key-policies/new" element={<ApiKeyPolicyDetailPage />} />
+            {/* Detail pages use the "new" path segment as their create-mode sentinel. */}
             <Route path="/admin/api-key-policies/:id" element={<ApiKeyPolicyDetailPage />} />
             <Route path="/admin/models" element={<ModelsPage />} />
-            <Route path="/admin/models/new" element={<ModelDetailPage />} />
             <Route path="/admin/models/:id" element={<ModelDetailPage />} />
             <Route path="/admin/catalog" element={<CatalogPage />} />
             <Route path="/admin/routing/channel-groups" element={<ChannelGroupsPage />} />
-            <Route
-              path="/admin/routing/channel-groups/new"
-              element={<ChannelGroupDetailPage />}
-            />
             <Route
               path="/admin/routing/channel-groups/:id"
               element={<ChannelGroupDetailPage />}
             />
             <Route path="/admin/routing/channels" element={<ChannelsPage />} />
-            <Route path="/admin/routing/channels/new" element={<ChannelDetailPage />} />
             <Route path="/admin/routing/channels/:id" element={<ChannelDetailPage />} />
             <Route path="/admin/routing/model-rules" element={<ModelRulesPage />} />
-            <Route path="/admin/routing/model-rules/new" element={<ModelRuleDetailPage />} />
             <Route path="/admin/routing/model-rules/:id" element={<ModelRuleDetailPage />} />
             <Route path="/admin/network/proxies" element={<ProxiesPage />} />
-            <Route path="/admin/network/proxies/new" element={<ProxyDetailPage />} />
             <Route path="/admin/network/proxies/:id" element={<ProxyDetailPage />} />
             <Route path="/admin/transforms/templates" element={<ConfigTemplatesPage />} />
-            <Route
-              path="/admin/transforms/templates/new"
-              element={<ConfigTemplateDetailPage />}
-            />
             <Route
               path="/admin/transforms/templates/:id"
               element={<ConfigTemplateDetailPage />}

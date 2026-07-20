@@ -337,6 +337,48 @@ async fn profile_shape_matches_spec() {
     database.cleanup().await;
 }
 
+/// Non-auth account edits preserve the current session, while role changes
+/// still invalidate it immediately.
+#[tokio::test]
+async fn user_updates_only_revoke_sessions_for_auth_identity_changes() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+    let path = format!("/console/v1/users/{}", app.user_id);
+
+    let detail = request(&app, "GET", &path, serde_json::json!({}), &[]).await;
+    assert_eq!(detail.status(), StatusCode::OK);
+    let etag = detail.headers()[header::ETAG].to_str().unwrap().to_owned();
+    let mut update = body_json(detail).await;
+    update["display_name"] = serde_json::json!("Updated display name");
+    for field in ["id", "balance_amount", "created_at", "updated_at"] {
+        update.as_object_mut().unwrap().remove(field);
+    }
+
+    let display_name_update = request(&app, "PUT", &path, update, &[("if-match", &etag)]).await;
+    assert_eq!(display_name_update.status(), StatusCode::OK);
+    let profile = request(&app, "GET", "/console/v1/me", serde_json::json!({}), &[]).await;
+    assert_eq!(profile.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(profile).await["display_name"],
+        "Updated display name"
+    );
+
+    let detail = request(&app, "GET", &path, serde_json::json!({}), &[]).await;
+    assert_eq!(detail.status(), StatusCode::OK);
+    let etag = detail.headers()[header::ETAG].to_str().unwrap().to_owned();
+    let mut update = body_json(detail).await;
+    update["role"] = serde_json::json!("user");
+    for field in ["id", "balance_amount", "created_at", "updated_at"] {
+        update.as_object_mut().unwrap().remove(field);
+    }
+
+    let role_update = request(&app, "PUT", &path, update, &[("if-match", &etag)]).await;
+    assert_eq!(role_update.status(), StatusCode::OK);
+    let invalidated = request(&app, "GET", "/console/v1/me", serde_json::json!({}), &[]).await;
+    assert_eq!(invalidated.status(), StatusCode::UNAUTHORIZED);
+    database.cleanup().await;
+}
+
 /// A mutable admin resource (`channel-groups`) returns an `ETag` on GET and
 /// requires `If-Match` on PUT; a stale `If-Match` yields `409` with an error
 /// body. Channel groups are chosen because updating them does not change the
@@ -440,6 +482,90 @@ async fn api_key_create_returns_one_time_secret() {
         "secret not retrievable"
     );
     assert!(has_etag, "detail returns an ETag");
+    database.cleanup().await;
+}
+
+/// Self-service key creation reports actionable policy precondition codes.
+#[tokio::test]
+async fn self_api_key_create_reports_policy_preconditions() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+
+    let missing = request(
+        &app,
+        "POST",
+        "/console/v1/me/api-keys",
+        serde_json::json!({"name": "missing-policy"}),
+        &[],
+    )
+    .await;
+    assert_eq!(missing.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        body_json(missing).await,
+        serde_json::json!({"error": "default_api_key_policy_required"})
+    );
+
+    let policy_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO api_key_policies \
+         (id,name,allowed_api_formats,permissions,max_active_keys,enabled) \
+         VALUES ($1,$2,ARRAY['open_ai_chat_completions']::api_format[],ARRAY['proxy'],1,false)",
+    )
+    .bind(policy_id)
+    .bind(format!("spec-policy-{policy_id}"))
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE users SET default_api_key_policy_id=$2 WHERE id=$1")
+        .bind(app.user_id)
+        .bind(policy_id)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+
+    let disabled = request(
+        &app,
+        "POST",
+        "/console/v1/me/api-keys",
+        serde_json::json!({"name": "disabled-policy"}),
+        &[],
+    )
+    .await;
+    assert_eq!(disabled.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        body_json(disabled).await,
+        serde_json::json!({"error": "default_api_key_policy_disabled"})
+    );
+
+    sqlx::query("UPDATE api_key_policies SET enabled=true WHERE id=$1")
+        .bind(policy_id)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    let expiry = (chrono::Utc::now() + chrono::Duration::days(1)).to_rfc3339();
+    let created = request(
+        &app,
+        "POST",
+        "/console/v1/me/api-keys",
+        serde_json::json!({"name": "first-key", "expires_at": expiry}),
+        &[],
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+
+    let limited = request(
+        &app,
+        "POST",
+        "/console/v1/me/api-keys",
+        serde_json::json!({"name": "second-key"}),
+        &[],
+    )
+    .await;
+    assert_eq!(limited.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        body_json(limited).await,
+        serde_json::json!({"error": "api_key_limit_reached"})
+    );
     database.cleanup().await;
 }
 

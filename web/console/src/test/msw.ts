@@ -10,6 +10,7 @@ import {
   API_KEY_POLICY,
   CHANNEL,
   CHANNEL_GROUP,
+  CONFIG_TEMPLATE,
   CONTROL_PLANE_USER,
   MODEL,
   MODEL_RULE,
@@ -67,12 +68,53 @@ export const handlers = [
   ),
 
   http.get("/console/v1/users", () => HttpResponse.json([CONTROL_PLANE_USER])),
+  http.get("/console/v1/users/:id", () =>
+    HttpResponse.json(CONTROL_PLANE_USER, {
+      headers: { ETag: `"${CONTROL_PLANE_USER.updated_at}"` },
+    }),
+  ),
   http.get("/console/v1/api-key-policies", () => HttpResponse.json([API_KEY_POLICY])),
+  http.get("/console/v1/api-key-policies/:id", () =>
+    HttpResponse.json(API_KEY_POLICY, {
+      headers: { ETag: `"${API_KEY_POLICY.updated_at}"` },
+    }),
+  ),
   http.get("/console/v1/models", () => HttpResponse.json([MODEL])),
+  http.get("/console/v1/models/:id", () =>
+    HttpResponse.json(MODEL, {
+      headers: { ETag: `"${MODEL.updated_at}"` },
+    }),
+  ),
   http.get("/console/v1/routing/channel-groups", () => HttpResponse.json([CHANNEL_GROUP])),
+  http.get("/console/v1/routing/channel-groups/:id", () =>
+    HttpResponse.json(CHANNEL_GROUP, {
+      headers: { ETag: `"${CHANNEL_GROUP.updated_at}"` },
+    }),
+  ),
   http.get("/console/v1/routing/channels", () => HttpResponse.json([CHANNEL])),
+  http.get("/console/v1/routing/channels/:id", () =>
+    HttpResponse.json(CHANNEL, {
+      headers: { ETag: `"${CHANNEL.updated_at}"` },
+    }),
+  ),
   http.get("/console/v1/routing/model-rules", () => HttpResponse.json([MODEL_RULE])),
+  http.get("/console/v1/routing/model-rules/:id", () =>
+    HttpResponse.json(MODEL_RULE, {
+      headers: { ETag: `"${MODEL_RULE.updated_at}"` },
+    }),
+  ),
   http.get("/console/v1/network/proxies", () => HttpResponse.json([PROXY])),
+  http.get("/console/v1/network/proxies/:id", () =>
+    HttpResponse.json(PROXY, {
+      headers: { ETag: `"${PROXY.updated_at}"` },
+    }),
+  ),
+  http.get("/console/v1/transforms/templates", () => HttpResponse.json([CONFIG_TEMPLATE])),
+  http.get("/console/v1/transforms/templates/:id", () =>
+    HttpResponse.json(CONFIG_TEMPLATE, {
+      headers: { ETag: `"${CONFIG_TEMPLATE.updated_at}"` },
+    }),
+  ),
   http.get("/console/v1/request-logs", () => HttpResponse.json([])),
   http.get("/console/v1/me/request-logs", () => HttpResponse.json([])),
   http.get("/console/v1/audit-logs", () => HttpResponse.json([])),

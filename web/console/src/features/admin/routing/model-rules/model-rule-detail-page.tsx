@@ -11,6 +11,7 @@ import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -204,11 +205,13 @@ export function ModelRuleDetailPage() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      {API_FORMATS.map((format) => (
-                        <SelectItem key={format} value={format}>
-                          {apiFormatLabel(format)}
-                        </SelectItem>
-                      ))}
+                      <SelectGroup>
+                        {API_FORMATS.map((format) => (
+                          <SelectItem key={format} value={format}>
+                            {apiFormatLabel(format)}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
                     </SelectContent>
                   </Select>
                 </Field>
@@ -222,12 +225,14 @@ export function ModelRuleDetailPage() {
                       <SelectValue placeholder="Pick a model" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="__none__">None</SelectItem>
-                      {models.data?.map((model) => (
-                        <SelectItem key={model.id} value={model.id}>
-                          {model.display_name}
-                        </SelectItem>
-                      ))}
+                      <SelectGroup>
+                        <SelectItem value="__none__">None</SelectItem>
+                        {models.data?.map((model) => (
+                          <SelectItem key={model.id} value={model.id}>
+                            {model.display_name}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
                     </SelectContent>
                   </Select>
                   {fieldError("model_id") ? <FieldError>{fieldError("model_id")}</FieldError> : null}

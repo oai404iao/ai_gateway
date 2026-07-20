@@ -1492,9 +1492,9 @@ impl ControlPlaneRepository {
         .bind(user_id)
         .fetch_optional(&mut **transaction)
         .await?
-        .ok_or(RepositoryError::Validation)?;
+        .ok_or(RepositoryError::DefaultApiKeyPolicyRequired)?;
         if !policy.enabled {
-            return Err(RepositoryError::Validation);
+            return Err(RepositoryError::DefaultApiKeyPolicyDisabled);
         }
         let active_key_count = sqlx::query_scalar::<_, i64>(
             "SELECT count(*) FROM api_keys \
@@ -1504,7 +1504,7 @@ impl ControlPlaneRepository {
         .fetch_one(&mut **transaction)
         .await?;
         if active_key_count >= i64::from(policy.max_active_keys) {
-            return Err(RepositoryError::Conflict);
+            return Err(RepositoryError::ApiKeyLimitReached);
         }
         if input.name.trim().is_empty() {
             return Err(RepositoryError::Validation);
@@ -2109,6 +2109,10 @@ async fn user_insert(
     } else {
         user_audit(transaction, id).await?
     };
+    let invalidates_sessions = !create
+        && (before["email"].as_str() != input.email.as_deref()
+            || before["role"].as_str() != Some(input.role.as_str())
+            || before["status"].as_str() != Some(input.status.as_str()));
     let updated_at = if create {
         sqlx::query_scalar(
             "INSERT INTO users (id,email,display_name,role,status,currency,default_api_key_policy_id) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING updated_at",
@@ -2124,7 +2128,9 @@ async fn user_insert(
         .await?
     } else {
         sqlx::query_scalar(
-            "UPDATE users SET email=$2,display_name=$3,role=$4,status=$5,currency=$6,default_api_key_policy_id=$7,auth_version=auth_version+1 WHERE id=$1 AND updated_at=$8 RETURNING updated_at",
+            "UPDATE users SET email=$2,display_name=$3,role=$4,status=$5,currency=$6,default_api_key_policy_id=$7, \
+             auth_version=auth_version+CASE WHEN $8 THEN 1 ELSE 0 END \
+             WHERE id=$1 AND updated_at=$9 RETURNING updated_at",
         )
         .bind(id)
         .bind(&input.email)
@@ -2133,12 +2139,13 @@ async fn user_insert(
         .bind(&input.status)
         .bind(&input.currency)
         .bind(input.default_api_key_policy_id)
+        .bind(invalidates_sessions)
         .bind(expected_updated_at.expect("PUT version"))
         .fetch_optional(&mut **transaction)
         .await?
         .ok_or(RepositoryError::Conflict)?
     };
-    if !create {
+    if invalidates_sessions {
         sqlx::query(
             "UPDATE user_sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL",
         )
@@ -2503,4 +2510,10 @@ pub enum RepositoryError {
     Conflict,
     #[error("management input is invalid")]
     Validation,
+    #[error("the user has no default API key policy")]
+    DefaultApiKeyPolicyRequired,
+    #[error("the user's default API key policy is disabled")]
+    DefaultApiKeyPolicyDisabled,
+    #[error("the user's active API key limit has been reached")]
+    ApiKeyLimitReached,
 }

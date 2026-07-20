@@ -35,6 +35,28 @@ export function formatDate(value: string | null | undefined): string {
   return formatLocal(date, false);
 }
 
+/** RFC 3339 timestamp formatted for an HTML `datetime-local` input. */
+export function formatDateTimeLocalInput(value: string | null | undefined): string {
+  if (!value) return "";
+  const date = parseISO(value);
+  if (!date) return "";
+  return `${formatLocal(date, false)}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+/** Browser-local `datetime-local` value converted to an RFC 3339 UTC timestamp. */
+export function dateTimeLocalToIso(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+/** Whether an optional browser-local timestamp is valid and still in the future. */
+export function isFutureDateTimeLocal(value: string | null | undefined): boolean {
+  if (!value) return true;
+  const date = new Date(value);
+  return !Number.isNaN(date.getTime()) && date.getTime() > Date.now();
+}
+
 export function differenceInMinutes(from: Date, to: Date): number {
   return Math.floor((from.getTime() - to.getTime()) / 60_000);
 }

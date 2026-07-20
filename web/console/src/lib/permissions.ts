@@ -22,7 +22,7 @@ export const PERMISSIONS = ["proxy", "models.read"] as const;
 
 export const ROLES: readonly UserRole[] = ["user", "admin"];
 
-export const USER_STATUSES = ["active", "invited", "disabled"] as const;
+export const USER_STATUSES = ["active", "invited", "suspended", "disabled"] as const;
 
 export const API_KEY_STATUSES = ["active", "disabled", "revoked"] as const;
 

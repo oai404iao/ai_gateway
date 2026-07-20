@@ -3,6 +3,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -107,11 +108,13 @@ export function RequestLogsView({ title, description, basePath, useLogs }: Reque
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {LIMITS.map((value) => (
-                <SelectItem key={value} value={String(value)}>
-                  Last {value}
-                </SelectItem>
-              ))}
+              <SelectGroup>
+                {LIMITS.map((value) => (
+                  <SelectItem key={value} value={String(value)}>
+                    Last {value}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
             </SelectContent>
           </Select>
         }

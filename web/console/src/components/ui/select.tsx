@@ -7,9 +7,28 @@ import { cn } from "@/lib/utils"
 import { ChevronDownIcon, CheckIcon, ChevronUpIcon } from "lucide-react"
 
 function Select({
+  onValueChange,
   ...props
 }: React.ComponentProps<typeof SelectPrimitive.Root>) {
-  return <SelectPrimitive.Root data-slot="select" {...props} />
+  const handleValueChange = React.useCallback(
+    (value: string) => {
+      // Radix's hidden native select can briefly emit an empty value while
+      // options mount. SelectItem does not allow empty values, so consumers
+      // use explicit sentinels (for example, "__none__") when they need one.
+      if (value !== "") {
+        onValueChange?.(value)
+      }
+    },
+    [onValueChange]
+  )
+
+  return (
+    <SelectPrimitive.Root
+      data-slot="select"
+      onValueChange={onValueChange ? handleValueChange : undefined}
+      {...props}
+    />
+  )
 }
 
 function SelectGroup({

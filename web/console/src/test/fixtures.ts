@@ -7,6 +7,7 @@ import type {
   ApiKeyView,
   ChannelGroupView,
   ChannelView,
+  ConfigTemplateView,
   ConsoleProfile,
   ConsoleSession,
   ConsoleUser,
@@ -168,6 +169,15 @@ export const PROXY: ProxyView = {
   credential_configured: false,
   created_at: "2026-01-01T00:00:00.000Z",
   updated_at: "2026-01-01T00:00:00.000Z",
+};
+
+export const CONFIG_TEMPLATE: ConfigTemplateView = {
+  id: "00000000-0000-0000-0000-000000000027",
+  name: "default-transform",
+  description: "Default constrained transform document",
+  enabled: true,
+  created_at: "2026-01-01T00:00:00.000Z",
+  updated_at: "2026-01-02T00:00:00.000Z",
 };
 
 export const CONTROL_PLANE_USER: ControlPlaneUser = {

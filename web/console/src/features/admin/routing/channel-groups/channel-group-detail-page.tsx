@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -165,11 +166,13 @@ export function ChannelGroupDetailPage() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      {API_FORMATS.map((format) => (
-                        <SelectItem key={format} value={format}>
-                          {apiFormatLabel(format)}
-                        </SelectItem>
-                      ))}
+                      <SelectGroup>
+                        {API_FORMATS.map((format) => (
+                          <SelectItem key={format} value={format}>
+                            {apiFormatLabel(format)}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
                     </SelectContent>
                   </Select>
                 </Field>
@@ -194,11 +197,13 @@ export function ChannelGroupDetailPage() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      {SELECTION_STRATEGIES.map((strategy) => (
-                        <SelectItem key={strategy} value={strategy}>
-                          {selectionStrategyLabel(strategy)}
-                        </SelectItem>
-                      ))}
+                      <SelectGroup>
+                        {SELECTION_STRATEGIES.map((strategy) => (
+                          <SelectItem key={strategy} value={strategy}>
+                            {selectionStrategyLabel(strategy)}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
                     </SelectContent>
                   </Select>
                 </Field>

@@ -127,6 +127,9 @@ Console 登录接口：
 - `GET /console/v1/me/request-logs/{id}`
 
 普通用户创建 API Key 时只能设置名称和过期时间。格式、权限、渠道组、RPM、并发和额度由管理员分配的默认 `api_key_policy` 决定；用户不能通过 API body 扩大权限。策略还限制最大活动 Key 数。
+未分配策略、策略已禁用或活动 Key 数达到上限时，创建接口分别返回
+`default_api_key_policy_required`、`default_api_key_policy_disabled` 或
+`api_key_limit_reached`，Console UI 会提示管理员完成策略配置。
 
 ## 管理员接口
 

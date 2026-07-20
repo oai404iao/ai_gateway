@@ -3,6 +3,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -62,11 +63,13 @@ export function AuditLogsPage() {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {LIMITS.map((value) => (
-                <SelectItem key={value} value={String(value)}>
-                  Last {value}
-                </SelectItem>
-              ))}
+              <SelectGroup>
+                {LIMITS.map((value) => (
+                  <SelectItem key={value} value={String(value)}>
+                    Last {value}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
             </SelectContent>
           </Select>
         }

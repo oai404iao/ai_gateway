@@ -219,7 +219,16 @@ paths:
               schema: { $ref: "#/components/schemas/MutationResponse" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
-        "422": { $ref: "#/components/responses/Unprocessable" }
+        "409":
+          description: Active API key limit reached (`api_key_limit_reached`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorBody" }
+        "422":
+          description: Missing or disabled default API key policy.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorBody" }
 
   /me/api-keys/{id}:
     get:

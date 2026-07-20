@@ -10,6 +10,7 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -270,12 +271,14 @@ export function ChannelDetailPage() {
                       <SelectValue placeholder="Pick a group" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="__none__">None</SelectItem>
-                      {groups.data?.map((group) => (
-                        <SelectItem key={group.id} value={group.id}>
-                          {group.name} ({apiFormatLabel(group.api_format)})
-                        </SelectItem>
-                      ))}
+                      <SelectGroup>
+                        <SelectItem value="__none__">None</SelectItem>
+                        {groups.data?.map((group) => (
+                          <SelectItem key={group.id} value={group.id}>
+                            {group.name} ({apiFormatLabel(group.api_format)})
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
                     </SelectContent>
                   </Select>
                   {fieldError("channel_group_id") ? (
@@ -321,12 +324,14 @@ export function ChannelDetailPage() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="__none__">None</SelectItem>
-                      {proxies.data?.map((proxy) => (
-                        <SelectItem key={proxy.id} value={proxy.id}>
-                          {proxy.name}
-                        </SelectItem>
-                      ))}
+                      <SelectGroup>
+                        <SelectItem value="__none__">None</SelectItem>
+                        {proxies.data?.map((proxy) => (
+                          <SelectItem key={proxy.id} value={proxy.id}>
+                            {proxy.name}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
                     </SelectContent>
                   </Select>
                 </Field>
@@ -342,12 +347,14 @@ export function ChannelDetailPage() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="__none__">None</SelectItem>
-                      {templates.data?.map((template) => (
-                        <SelectItem key={template.id} value={template.id}>
-                          {template.name}
-                        </SelectItem>
-                      ))}
+                      <SelectGroup>
+                        <SelectItem value="__none__">None</SelectItem>
+                        {templates.data?.map((template) => (
+                          <SelectItem key={template.id} value={template.id}>
+                            {template.name}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
                     </SelectContent>
                   </Select>
                 </Field>
@@ -363,11 +370,13 @@ export function ChannelDetailPage() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      {UPSTREAM_AUTH_KINDS.map((kind) => (
-                        <SelectItem key={kind} value={kind}>
-                          {upstreamAuthKindLabel(kind)}
-                        </SelectItem>
-                      ))}
+                      <SelectGroup>
+                        {UPSTREAM_AUTH_KINDS.map((kind) => (
+                          <SelectItem key={kind} value={kind}>
+                            {upstreamAuthKindLabel(kind)}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
                     </SelectContent>
                   </Select>
                 </Field>

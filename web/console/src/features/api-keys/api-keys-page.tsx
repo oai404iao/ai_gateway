@@ -25,16 +25,41 @@ import { SecretOnceDialog } from "@/components/shared/secret-once-dialog";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { useCreateOwnApiKey, useOwnApiKeys } from "@/features/api-keys/api";
 import type { ApiKeyView } from "@/api/types";
-import { formatExpiry, formatRelative } from "@/lib/dates";
+import { ApiError } from "@/api/errors";
+import {
+  dateTimeLocalToIso,
+  formatExpiry,
+  formatRelative,
+  isFutureDateTimeLocal,
+} from "@/lib/dates";
 import { formatList } from "@/lib/formatters";
 import { apiFormatLabel } from "@/lib/permissions";
 
 const createSchema = z.object({
   name: z.string().min(1, "Name is required.").max(100),
-  expires_at: z.string().optional(),
+  expires_at: z
+    .string()
+    .optional()
+    .refine(isFutureDateTimeLocal, "Expiry must be a valid future date and time."),
 });
 
 type CreateValues = z.infer<typeof createSchema>;
+
+function createErrorMessage(error: unknown): string {
+  if (error instanceof ApiError) {
+    switch (error.code) {
+      case "default_api_key_policy_required":
+        return "Create an API key policy, then assign it to this user under Administration → Users.";
+      case "default_api_key_policy_disabled":
+        return "Your default API key policy is disabled. Ask an administrator to enable or replace it.";
+      case "api_key_limit_reached":
+        return "Your policy's active API key limit has been reached. Revoke an existing key or raise the limit.";
+      default:
+        return error.message;
+    }
+  }
+  return error instanceof Error ? error.message : "Create failed";
+}
 
 export function ApiKeysPage() {
   const navigate = useNavigate();
@@ -44,21 +69,24 @@ export function ApiKeysPage() {
   const [secret, setSecret] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  const form = useForm<CreateValues>({ resolver: zodResolver(createSchema) });
+  const form = useForm<CreateValues>({
+    resolver: zodResolver(createSchema),
+    defaultValues: { name: "", expires_at: "" },
+  });
 
   const onSubmit = async (values: CreateValues) => {
     setSubmitting(true);
     try {
       const result = await create.mutateAsync({
         name: values.name,
-        expires_at: values.expires_at ? values.expires_at : null,
+        expires_at: dateTimeLocalToIso(values.expires_at),
       });
       if (result.secret) setSecret(result.secret);
       setCreateOpen(false);
       form.reset();
       toast.success("API key created");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Create failed");
+      toast.error(createErrorMessage(error));
     } finally {
       setSubmitting(false);
     }
@@ -141,20 +169,28 @@ export function ApiKeysPage() {
           </DialogHeader>
           <form onSubmit={form.handleSubmit(onSubmit)} className="flex flex-col gap-4">
             <FieldGroup>
-              <Field>
+              <Field data-invalid={Boolean(form.formState.errors.name)}>
                 <FieldLabel htmlFor="name">Name</FieldLabel>
-                <Input id="name" {...form.register("name")} />
+                <Input
+                  id="name"
+                  aria-invalid={Boolean(form.formState.errors.name)}
+                  {...form.register("name")}
+                />
                 {form.formState.errors.name ? (
                   <FieldError>{form.formState.errors.name.message}</FieldError>
                 ) : null}
               </Field>
-              <Field>
+              <Field data-invalid={Boolean(form.formState.errors.expires_at)}>
                 <FieldLabel htmlFor="expires_at">Expires at (optional)</FieldLabel>
                 <Input
                   id="expires_at"
                   type="datetime-local"
+                  aria-invalid={Boolean(form.formState.errors.expires_at)}
                   {...form.register("expires_at")}
                 />
+                {form.formState.errors.expires_at ? (
+                  <FieldError>{form.formState.errors.expires_at.message}</FieldError>
+                ) : null}
               </Field>
             </FieldGroup>
             <DialogFooter>

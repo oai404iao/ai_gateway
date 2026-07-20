@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useParams } from "react-router";
-import { useForm } from "react-hook-form";
+import { Controller, useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { toast } from "sonner";
@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -21,7 +22,8 @@ import { DetailField } from "@/components/shared/detail-field";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { useApiKeyPolicies, useUpdateUser, useUser } from "@/features/admin/api";
 import { ApiError } from "@/api/errors";
-import type { UserRole } from "@/api/types";
+import { clearSession, setSession } from "@/api/session-store";
+import { useSession } from "@/lib/use-session";
 import { formatCurrency } from "@/lib/formatters";
 import { formatDateTime } from "@/lib/dates";
 import { ROLES, roleLabel, USER_STATUSES } from "@/lib/permissions";
@@ -30,46 +32,55 @@ const editSchema = z.object({
   display_name: z.string().min(1, "Display name is required.").max(200),
   email: z.string().optional(),
   role: z.enum(["user", "admin"]),
-  status: z.enum(["active", "disabled"]),
+  status: z.enum(["active", "suspended", "disabled"]),
   currency: z.string().min(1).max(8),
   default_api_key_policy_id: z.string().optional(),
 });
 
 type EditValues = z.infer<typeof editSchema>;
 
+const emptyEditValues: EditValues = {
+  display_name: "",
+  email: "",
+  role: "user",
+  status: "active",
+  currency: "",
+  default_api_key_policy_id: "",
+};
+
 export function UserDetailPage() {
   const { id = "" } = useParams();
   const { data, etag, isLoading, error } = useUser(id);
   const update = useUpdateUser(id);
   const policies = useApiKeyPolicies();
+  const { user: currentUser } = useSession();
   const [submitting, setSubmitting] = useState(false);
-
-  const form = useForm<EditValues>({
-    resolver: zodResolver(editSchema),
-    defaultValues: {
-      display_name: "",
-      email: "",
-      role: "user",
-      status: "active",
-      currency: "",
-      default_api_key_policy_id: undefined,
-    },
-  });
-
-  useEffect(() => {
-    if (data) {
-      form.reset({
+  const formValues: EditValues = data
+    ? {
         display_name: data.data.display_name,
         email: data.data.email ?? "",
         role: data.data.role,
-        status: (data.data.status === "active" ? "active" : "disabled") as "active" | "disabled",
+        status:
+          data.data.status === "active" || data.data.status === "suspended"
+            ? data.data.status
+            : "disabled",
         currency: data.data.currency,
-        default_api_key_policy_id: data.data.default_api_key_policy_id ?? undefined,
-      });
-    }
-  }, [data, form]);
+        default_api_key_policy_id: data.data.default_api_key_policy_id ?? "",
+      }
+    : emptyEditValues;
+
+  const form = useForm<EditValues>({
+    resolver: zodResolver(editSchema),
+    defaultValues: emptyEditValues,
+    values: formValues,
+  });
 
   const onSubmit = async (values: EditValues) => {
+    const invalidatesCurrentSession =
+      currentUser?.id === id &&
+      (values.email !== (data?.data.email ?? "") ||
+        values.role !== data?.data.role ||
+        values.status !== data?.data.status);
     setSubmitting(true);
     try {
       await update.mutateAsync({
@@ -83,6 +94,19 @@ export function UserDetailPage() {
         },
         ifMatch: etag,
       });
+      if (currentUser?.id === id) {
+        if (invalidatesCurrentSession) {
+          toast.success("Account updated. Sign in again to continue.");
+          clearSession();
+          return;
+        }
+        setSession({
+          user: {
+            ...currentUser,
+            display_name: values.display_name,
+          },
+        });
+      }
       toast.success("User updated");
     } catch (error) {
       if (error instanceof ApiError && error.isConflict) {
@@ -93,6 +117,10 @@ export function UserDetailPage() {
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const onInvalid = () => {
+    toast.error("Review the highlighted account fields.");
   };
 
   const user = data?.data;
@@ -137,92 +165,141 @@ export function UserDetailPage() {
               <CardDescription>Role and status changes take effect immediately.</CardDescription>
             </CardHeader>
             <CardContent>
-              <form onSubmit={form.handleSubmit(onSubmit)} className="flex flex-col gap-4">
+              <form
+                onSubmit={form.handleSubmit(onSubmit, onInvalid)}
+                className="flex flex-col gap-4"
+              >
                 <FieldGroup>
-                  <Field>
+                  <Field data-invalid={Boolean(form.formState.errors.display_name)}>
                     <FieldLabel htmlFor="display_name">Display name</FieldLabel>
-                    <Input id="display_name" {...form.register("display_name")} />
+                    <Input
+                      id="display_name"
+                      aria-invalid={Boolean(form.formState.errors.display_name)}
+                      {...form.register("display_name")}
+                    />
                     {form.formState.errors.display_name ? (
                       <FieldError>{form.formState.errors.display_name.message}</FieldError>
                     ) : null}
                   </Field>
-                  <Field>
+                  <Field data-invalid={Boolean(form.formState.errors.email)}>
                     <FieldLabel htmlFor="email">Email</FieldLabel>
-                    <Input id="email" type="email" {...form.register("email")} />
+                    <Input
+                      id="email"
+                      type="email"
+                      aria-invalid={Boolean(form.formState.errors.email)}
+                      {...form.register("email")}
+                    />
+                    {form.formState.errors.email ? (
+                      <FieldError>{form.formState.errors.email.message}</FieldError>
+                    ) : null}
                   </Field>
-                  <Field>
-                    <FieldLabel>Role</FieldLabel>
-                    <Select
-                      value={form.watch("role")}
-                      onValueChange={(value) =>
-                        form.setValue("role", value as UserRole, { shouldValidate: true })
-                      }
-                    >
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {ROLES.map((role) => (
-                          <SelectItem key={role} value={role}>
-                            {roleLabel(role)}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </Field>
-                  <Field>
-                    <FieldLabel>Status</FieldLabel>
-                    <Select
-                      value={form.watch("status")}
-                      onValueChange={(value) =>
-                        form.setValue("status", value as "active" | "disabled", {
-                          shouldValidate: true,
-                        })
-                      }
-                    >
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {USER_STATUSES.filter((status) => status !== "invited").map((status) => (
-                          <SelectItem key={status} value={status}>
-                            {status}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </Field>
-                  <Field>
+                  <Controller
+                    control={form.control}
+                    name="role"
+                    defaultValue={formValues.role}
+                    render={({ field, fieldState }) => (
+                      <Field data-invalid={fieldState.invalid}>
+                        <FieldLabel htmlFor="role">Role</FieldLabel>
+                        <Select value={field.value} onValueChange={field.onChange}>
+                          <SelectTrigger id="role" aria-invalid={fieldState.invalid}>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectGroup>
+                              {ROLES.map((role) => (
+                                <SelectItem key={role} value={role}>
+                                  {roleLabel(role)}
+                                </SelectItem>
+                              ))}
+                            </SelectGroup>
+                          </SelectContent>
+                        </Select>
+                        {fieldState.error ? (
+                          <FieldError>{fieldState.error.message}</FieldError>
+                        ) : null}
+                      </Field>
+                    )}
+                  />
+                  <Controller
+                    control={form.control}
+                    name="status"
+                    defaultValue={formValues.status}
+                    render={({ field, fieldState }) => (
+                      <Field data-invalid={fieldState.invalid}>
+                        <FieldLabel htmlFor="status">Status</FieldLabel>
+                        <Select value={field.value} onValueChange={field.onChange}>
+                          <SelectTrigger id="status" aria-invalid={fieldState.invalid}>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectGroup>
+                              {USER_STATUSES.filter((status) => status !== "invited").map(
+                                (status) => (
+                                  <SelectItem key={status} value={status}>
+                                    {status}
+                                  </SelectItem>
+                                ),
+                              )}
+                            </SelectGroup>
+                          </SelectContent>
+                        </Select>
+                        {fieldState.error ? (
+                          <FieldError>{fieldState.error.message}</FieldError>
+                        ) : null}
+                      </Field>
+                    )}
+                  />
+                  <Field data-invalid={Boolean(form.formState.errors.currency)}>
                     <FieldLabel htmlFor="currency">Currency</FieldLabel>
-                    <Input id="currency" {...form.register("currency")} />
+                    <Input
+                      id="currency"
+                      aria-invalid={Boolean(form.formState.errors.currency)}
+                      {...form.register("currency")}
+                    />
+                    {form.formState.errors.currency ? (
+                      <FieldError>{form.formState.errors.currency.message}</FieldError>
+                    ) : null}
                   </Field>
-                  <Field>
-                    <FieldLabel>Default API key policy</FieldLabel>
-                    <Select
-                      value={form.watch("default_api_key_policy_id") ?? "__none__"}
-                      onValueChange={(value) =>
-                        form.setValue(
-                          "default_api_key_policy_id",
-                          value === "__none__" ? undefined : value,
-                          { shouldValidate: true },
-                        )
-                      }
-                    >
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="__none__">None</SelectItem>
-                        {policies.data
-                          ?.filter((policy) => policy.enabled)
-                          .map((policy) => (
-                            <SelectItem key={policy.id} value={policy.id}>
-                              {policy.name}
-                            </SelectItem>
-                          ))}
-                      </SelectContent>
-                    </Select>
-                  </Field>
+                  <Controller
+                    control={form.control}
+                    name="default_api_key_policy_id"
+                    defaultValue={formValues.default_api_key_policy_id}
+                    render={({ field, fieldState }) => (
+                      <Field data-invalid={fieldState.invalid}>
+                        <FieldLabel htmlFor="default_api_key_policy_id">
+                          Default API key policy
+                        </FieldLabel>
+                        <Select
+                          value={field.value || "__none__"}
+                          onValueChange={(value) =>
+                            field.onChange(value === "__none__" ? "" : value)
+                          }
+                        >
+                          <SelectTrigger
+                            id="default_api_key_policy_id"
+                            aria-invalid={fieldState.invalid}
+                          >
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectGroup>
+                              <SelectItem value="__none__">None</SelectItem>
+                              {policies.data
+                                ?.filter((policy) => policy.enabled)
+                                .map((policy) => (
+                                  <SelectItem key={policy.id} value={policy.id}>
+                                    {policy.name}
+                                  </SelectItem>
+                                ))}
+                            </SelectGroup>
+                          </SelectContent>
+                        </Select>
+                        {fieldState.error ? (
+                          <FieldError>{fieldState.error.message}</FieldError>
+                        ) : null}
+                      </Field>
+                    )}
+                  />
                 </FieldGroup>
                 <Button type="submit" className="self-start" disabled={submitting}>
                   {submitting ? <Spinner data-icon="inline-start" /> : null}

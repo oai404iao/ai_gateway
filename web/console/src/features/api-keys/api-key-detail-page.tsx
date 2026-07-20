@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useParams, useNavigate } from "react-router";
-import { useForm } from "react-hook-form";
+import { Controller, useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { toast } from "sonner";
@@ -12,6 +12,7 @@ import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -30,7 +31,12 @@ import {
 } from "@/features/api-keys/api";
 import { ApiError } from "@/api/errors";
 import { formatCurrency, formatList } from "@/lib/formatters";
-import { formatDateTime, formatExpiry } from "@/lib/dates";
+import {
+  dateTimeLocalToIso,
+  formatDateTime,
+  formatDateTimeLocalInput,
+  formatExpiry,
+} from "@/lib/dates";
 import { API_KEY_STATUSES, apiFormatLabel } from "@/lib/permissions";
 
 const editSchema = z.object({
@@ -41,21 +47,11 @@ const editSchema = z.object({
 
 type EditValues = z.infer<typeof editSchema>;
 
-function toLocalInput(iso: string | null): string {
-  if (!iso) return "";
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return "";
-  const pad = (n: number) => (n < 10 ? `0${n}` : String(n));
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(
-    date.getHours(),
-  )}:${pad(date.getMinutes())}`;
-}
-
-function fromLocalInput(value: string): string | null {
-  if (!value) return null;
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? null : date.toISOString();
-}
+const emptyEditValues: EditValues = {
+  name: "",
+  status: "active",
+  expires_at: "",
+};
 
 export function ApiKeyDetailPage() {
   const { id = "" } = useParams();
@@ -66,21 +62,19 @@ export function ApiKeyDetailPage() {
   const [submitting, setSubmitting] = useState(false);
   const [revokeOpen, setRevokeOpen] = useState(false);
   const [revokeReason, setRevokeReason] = useState("");
+  const formValues: EditValues = data
+    ? {
+        name: data.data.name,
+        status: data.data.status === "active" ? "active" : "disabled",
+        expires_at: formatDateTimeLocalInput(data.data.expires_at),
+      }
+    : emptyEditValues;
 
   const form = useForm<EditValues>({
     resolver: zodResolver(editSchema),
-    defaultValues: { name: "", status: "active", expires_at: "" },
+    defaultValues: emptyEditValues,
+    values: formValues,
   });
-
-  useEffect(() => {
-    if (data) {
-      form.reset({
-        name: data.data.name,
-        status: (data.data.status === "active" ? "active" : "disabled") as "active" | "disabled",
-        expires_at: toLocalInput(data.data.expires_at),
-      });
-    }
-  }, [data, form]);
 
   const onSubmit = async (values: EditValues) => {
     setSubmitting(true);
@@ -89,7 +83,7 @@ export function ApiKeyDetailPage() {
         input: {
           name: values.name,
           status: values.status,
-          expires_at: fromLocalInput(values.expires_at ?? ""),
+          expires_at: dateTimeLocalToIso(values.expires_at),
         },
         ifMatch: etag,
       });
@@ -103,6 +97,10 @@ export function ApiKeyDetailPage() {
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const onInvalid = () => {
+    toast.error("Review the highlighted API key fields.");
   };
 
   const confirmRevoke = async () => {
@@ -171,39 +169,51 @@ export function ApiKeyDetailPage() {
                 <CardDescription>Renaming or disabling takes effect immediately.</CardDescription>
               </CardHeader>
               <CardContent>
-                <form onSubmit={form.handleSubmit(onSubmit)} className="flex flex-col gap-4">
+                <form
+                  onSubmit={form.handleSubmit(onSubmit, onInvalid)}
+                  className="flex flex-col gap-4"
+                >
                   <FieldGroup>
-                    <Field>
+                    <Field data-invalid={Boolean(form.formState.errors.name)}>
                       <FieldLabel htmlFor="name">Name</FieldLabel>
-                      <Input id="name" {...form.register("name")} />
+                      <Input
+                        id="name"
+                        aria-invalid={Boolean(form.formState.errors.name)}
+                        {...form.register("name")}
+                      />
                       {form.formState.errors.name ? (
                         <FieldError>{form.formState.errors.name.message}</FieldError>
                       ) : null}
                     </Field>
-                    <Field>
-                      <FieldLabel htmlFor="status">Status</FieldLabel>
-                      <Select
-                        value={form.watch("status")}
-                        onValueChange={(value) =>
-                          form.setValue("status", value as "active" | "disabled", {
-                            shouldValidate: true,
-                          })
-                        }
-                      >
-                        <SelectTrigger id="status">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {API_KEY_STATUSES.filter((status) => status !== "revoked").map(
-                            (status) => (
-                              <SelectItem key={status} value={status}>
-                                {status}
-                              </SelectItem>
-                            ),
-                          )}
-                        </SelectContent>
-                      </Select>
-                    </Field>
+                    <Controller
+                      control={form.control}
+                      name="status"
+                      defaultValue={formValues.status}
+                      render={({ field, fieldState }) => (
+                        <Field data-invalid={fieldState.invalid}>
+                          <FieldLabel htmlFor="status">Status</FieldLabel>
+                          <Select value={field.value} onValueChange={field.onChange}>
+                            <SelectTrigger id="status" aria-invalid={fieldState.invalid}>
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectGroup>
+                                {API_KEY_STATUSES.filter((status) => status !== "revoked").map(
+                                  (status) => (
+                                    <SelectItem key={status} value={status}>
+                                      {status}
+                                    </SelectItem>
+                                  ),
+                                )}
+                              </SelectGroup>
+                            </SelectContent>
+                          </Select>
+                          {fieldState.error ? (
+                            <FieldError>{fieldState.error.message}</FieldError>
+                          ) : null}
+                        </Field>
+                      )}
+                    />
                     <Field>
                       <FieldLabel htmlFor="expires_at">Expires at (optional)</FieldLabel>
                       <Input

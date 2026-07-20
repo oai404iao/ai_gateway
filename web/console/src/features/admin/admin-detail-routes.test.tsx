@@ -1,0 +1,64 @@
+import { describe, expect, it } from "vitest";
+import { render, screen } from "@testing-library/react";
+import { BrowserRouter } from "react-router";
+import { AppProviders } from "@/app/providers";
+import { AppRouter } from "@/app/router";
+import { seedAuthenticatedSession } from "@/test/msw";
+import {
+  API_KEY_POLICY,
+  CHANNEL,
+  CHANNEL_GROUP,
+  CONFIG_TEMPLATE,
+  CONTROL_PLANE_USER,
+  MODEL,
+  MODEL_RULE,
+  PROXY,
+} from "@/test/fixtures";
+
+function renderAppAt(path: string) {
+  window.history.replaceState({}, "", path);
+  render(
+    <AppProviders>
+      <BrowserRouter>
+        <AppRouter />
+      </BrowserRouter>
+    </AppProviders>,
+  );
+}
+
+const createRoutes = [
+  ["/admin/api-key-policies/new", /create policy/i],
+  ["/admin/models/new", /create model/i],
+  ["/admin/routing/channel-groups/new", /create group/i],
+  ["/admin/routing/channels/new", /create channel/i],
+  ["/admin/routing/model-rules/new", /create rule/i],
+  ["/admin/network/proxies/new", /create proxy/i],
+  ["/admin/transforms/templates/new", /create template/i],
+] as const;
+
+const editRoutes = [
+  [`/admin/users/${CONTROL_PLANE_USER.id}`, /save user/i],
+  [`/admin/api-key-policies/${API_KEY_POLICY.id}`, /save policy/i],
+  [`/admin/models/${MODEL.id}`, /save model/i],
+  [`/admin/routing/channel-groups/${CHANNEL_GROUP.id}`, /save group/i],
+  [`/admin/routing/channels/${CHANNEL.id}`, /save channel/i],
+  [`/admin/routing/model-rules/${MODEL_RULE.id}`, /save rule/i],
+  [`/admin/network/proxies/${PROXY.id}`, /save proxy/i],
+  [`/admin/transforms/templates/${CONFIG_TEMPLATE.id}`, /save template/i],
+] as const;
+
+describe("Admin detail routes", () => {
+  it.each(createRoutes)("opens create mode at %s", async (path, buttonName) => {
+    seedAuthenticatedSession();
+    renderAppAt(path);
+
+    expect(await screen.findByRole("button", { name: buttonName })).toBeInTheDocument();
+  });
+
+  it.each(editRoutes)("opens edit mode at %s", async (path, buttonName) => {
+    seedAuthenticatedSession();
+    renderAppAt(path);
+
+    expect(await screen.findByRole("button", { name: buttonName })).toBeInTheDocument();
+  });
+});
