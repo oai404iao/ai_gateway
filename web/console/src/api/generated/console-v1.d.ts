@@ -625,7 +625,7 @@ export interface components {
         /** @enum {string} */
         ApiFormat: "open_ai_chat_completions" | "open_ai_responses";
         /** @enum {string} */
-        SelectionStrategy: "priority_weighted" | "weighted";
+        SelectionStrategy: "weighted_random" | "weighted_round_robin";
         /** @enum {string} */
         UpstreamAuthKind: "bearer" | "header";
         /** @enum {string} */

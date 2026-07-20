@@ -11,8 +11,8 @@ export const API_FORMATS: readonly ApiFormat[] = [
 ];
 
 export const SELECTION_STRATEGIES: readonly SelectionStrategy[] = [
-  "priority_weighted",
-  "weighted",
+  "weighted_random",
+  "weighted_round_robin",
 ];
 
 export const UPSTREAM_AUTH_KINDS: readonly UpstreamAuthKind[] = ["bearer", "header"];
@@ -35,7 +35,7 @@ export function roleLabel(value: UserRole): string {
 }
 
 export function selectionStrategyLabel(value: SelectionStrategy): string {
-  return value === "priority_weighted" ? "Priority + Weight" : "Weighted";
+  return value === "weighted_random" ? "Weighted random" : "Weighted round-robin";
 }
 
 export function upstreamAuthKindLabel(value: UpstreamAuthKind): string {

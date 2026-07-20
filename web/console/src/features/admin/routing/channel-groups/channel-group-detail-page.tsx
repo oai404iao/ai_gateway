@@ -30,7 +30,7 @@ const schema = z.object({
   name: z.string().min(1, "Name is required.").max(100),
   api_format: z.enum(["open_ai_chat_completions", "open_ai_responses"]),
   priority: z.number().int(),
-  selection_strategy: z.enum(["priority_weighted", "weighted"]),
+  selection_strategy: z.enum(["weighted_random", "weighted_round_robin"]),
   enabled: z.boolean(),
 });
 
@@ -40,7 +40,7 @@ const empty: FormState = {
   name: "",
   api_format: "open_ai_chat_completions",
   priority: 1,
-  selection_strategy: "priority_weighted",
+  selection_strategy: "weighted_random",
   enabled: true,
 };
 

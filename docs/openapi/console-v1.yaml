@@ -1214,7 +1214,7 @@ components:
       enum: [open_ai_chat_completions, open_ai_responses]
     SelectionStrategy:
       type: string
-      enum: [priority_weighted, weighted]
+      enum: [weighted_random, weighted_round_robin]
     UpstreamAuthKind:
       type: string
       enum: [bearer, header]
