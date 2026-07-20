@@ -35,6 +35,21 @@ Console listener 提供。无论是否启用 UI，本文件描述的 API 行为�
 
 服务不读取 dotenv。JWT Ed25519 私钥和公钥通过受限文件路径配置，不写入 TOML。
 
+### 紧急重置管理员密码
+
+Console 密码最少为 12 个字节；前端和后端都会拒绝更短的密码。若现有
+`active admin` 因短密码或遗失密码无法登录，可在拥有配置文件和数据库访问权限的主机上执行：
+
+```bash
+cargo run -- reset-admin-password \
+  --email admin@example.com \
+  --password-stdin < new-password.txt
+```
+
+也可在命令末尾加 `--config ./config/other-config.toml`。该命令只会重置匹配邮箱的
+`active admin`，新密码经 Argon2 哈希保存，并立即撤销该用户的所有 Console 会话；不会输出
+密码或哈希。请确保标准输入中的新密码至少为 12 个字节，并妥善保护或删除临时密码文件。
+
 ## 监听器与请求体限制
 
 ```toml

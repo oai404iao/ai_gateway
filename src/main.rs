@@ -50,6 +50,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
             display_name,
             currency,
         } => bootstrap_admin(config_path, email, display_name, currency).await,
+        Command::ResetAdminPassword { config_path, email } => {
+            reset_admin_password(config_path, email).await
+        }
     }
 }
 
@@ -157,11 +160,7 @@ async fn bootstrap_admin(
 ) -> Result<(), Box<dyn Error>> {
     let config = AppConfig::load(&config_path)?.validate()?;
     let _log_guard = observability::init(&config.observability.filter);
-    let mut password = String::new();
-    io::stdin().read_to_string(&mut password)?;
-    while matches!(password.as_bytes().last(), Some(b'\n' | b'\r')) {
-        password.pop();
-    }
+    let password = read_password_from_stdin()?;
     let password_hash = hash_console_password(password).await?;
     let pool = PgPoolOptions::new()
         .max_connections(config.database.max_connections)
@@ -176,6 +175,40 @@ async fn bootstrap_admin(
     Ok(())
 }
 
+async fn reset_admin_password(config_path: PathBuf, email: String) -> Result<(), Box<dyn Error>> {
+    let config = AppConfig::load(&config_path)?.validate()?;
+    let _log_guard = observability::init(&config.observability.filter);
+    let password = read_password_from_stdin()?;
+    let password_hash = hash_console_password(password).await?;
+    let pool = PgPoolOptions::new()
+        .max_connections(config.database.max_connections)
+        .acquire_timeout(Duration::from_secs(config.database.connect_timeout_seconds))
+        .connect(&config.database.url)
+        .await?;
+    MIGRATOR.run(&pool).await?;
+    let reset = AuthRepository::new(pool)
+        .reset_active_admin_password(&email, &password_hash)
+        .await?;
+    if !reset {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "no active administrator exists with the supplied email",
+        )
+        .into());
+    }
+    println!("administrator password reset: {email}");
+    Ok(())
+}
+
+fn read_password_from_stdin() -> Result<String, io::Error> {
+    let mut password = String::new();
+    io::stdin().read_to_string(&mut password)?;
+    while matches!(password.as_bytes().last(), Some(b'\n' | b'\r')) {
+        password.pop();
+    }
+    Ok(password)
+}
+
 enum Command {
     Serve {
         config_path: PathBuf,
@@ -186,6 +219,10 @@ enum Command {
         display_name: String,
         currency: String,
     },
+    ResetAdminPassword {
+        config_path: PathBuf,
+        email: String,
+    },
 }
 
 fn parse_command(arguments: Vec<String>) -> Result<Command, io::Error> {
@@ -194,64 +231,110 @@ fn parse_command(arguments: Vec<String>) -> Result<Command, io::Error> {
             config_path: PathBuf::from(DEFAULT_CONFIG_PATH),
         });
     };
-    if command != "bootstrap-admin" {
-        if arguments.len() != 1 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "usage: ai-gateway [./config/config.toml] | ai-gateway bootstrap-admin --email EMAIL --display-name NAME --password-stdin [--currency USD] [--config ./config/config.toml]",
-            ));
-        }
-        return Ok(Command::Serve {
-            config_path: PathBuf::from(command),
-        });
-    }
-    let mut config_path = PathBuf::from(DEFAULT_CONFIG_PATH);
-    let mut email = None;
-    let mut display_name = None;
-    let mut currency = "USD".to_owned();
-    let mut password_stdin = false;
-    let mut index = 1;
-    while index < arguments.len() {
-        let flag = &arguments[index];
-        index += 1;
-        if flag == "--password-stdin" {
-            password_stdin = true;
-            continue;
-        }
-        let value = arguments.get(index).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "missing bootstrap-admin flag value",
-            )
-        })?;
-        index += 1;
-        match flag.as_str() {
-            "--email" => email = Some(value.clone()),
-            "--display-name" => display_name = Some(value.clone()),
-            "--currency" => currency = value.clone(),
-            "--config" => config_path = PathBuf::from(value),
-            _ => {
-                return Err(io::Error::new(
+    if command == "bootstrap-admin" {
+        let mut config_path = PathBuf::from(DEFAULT_CONFIG_PATH);
+        let mut email = None;
+        let mut display_name = None;
+        let mut currency = "USD".to_owned();
+        let mut password_stdin = false;
+        let mut index = 1;
+        while index < arguments.len() {
+            let flag = &arguments[index];
+            index += 1;
+            if flag == "--password-stdin" {
+                password_stdin = true;
+                continue;
+            }
+            let value = arguments.get(index).ok_or_else(|| {
+                io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "unknown bootstrap-admin flag",
-                ));
+                    "missing bootstrap-admin flag value",
+                )
+            })?;
+            index += 1;
+            match flag.as_str() {
+                "--email" => email = Some(value.clone()),
+                "--display-name" => display_name = Some(value.clone()),
+                "--currency" => currency = value.clone(),
+                "--config" => config_path = PathBuf::from(value),
+                _ => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "unknown bootstrap-admin flag",
+                    ));
+                }
             }
         }
+        if !password_stdin {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "bootstrap-admin requires --password-stdin",
+            ));
+        }
+        return Ok(Command::BootstrapAdmin {
+            config_path,
+            email: email.ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "--email is required")
+            })?,
+            display_name: display_name.ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "--display-name is required")
+            })?,
+            currency,
+        });
     }
-    if !password_stdin {
+
+    if command == "reset-admin-password" {
+        let mut config_path = PathBuf::from(DEFAULT_CONFIG_PATH);
+        let mut email = None;
+        let mut password_stdin = false;
+        let mut index = 1;
+        while index < arguments.len() {
+            let flag = &arguments[index];
+            index += 1;
+            if flag == "--password-stdin" {
+                password_stdin = true;
+                continue;
+            }
+            let value = arguments.get(index).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "missing reset-admin-password flag value",
+                )
+            })?;
+            index += 1;
+            match flag.as_str() {
+                "--email" => email = Some(value.clone()),
+                "--config" => config_path = PathBuf::from(value),
+                _ => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "unknown reset-admin-password flag",
+                    ));
+                }
+            }
+        }
+        if !password_stdin {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "reset-admin-password requires --password-stdin",
+            ));
+        }
+        return Ok(Command::ResetAdminPassword {
+            config_path,
+            email: email.ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "--email is required")
+            })?,
+        });
+    }
+
+    if arguments.len() != 1 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "bootstrap-admin requires --password-stdin",
+            "usage: ai-gateway [./config/config.toml] | ai-gateway bootstrap-admin --email EMAIL --display-name NAME --password-stdin [--currency USD] [--config ./config/config.toml] | ai-gateway reset-admin-password --email EMAIL --password-stdin [--config ./config/config.toml]",
         ));
     }
-    Ok(Command::BootstrapAdmin {
-        config_path,
-        email: email
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "--email is required"))?,
-        display_name: display_name.ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "--display-name is required")
-        })?,
-        currency,
+    Ok(Command::Serve {
+        config_path: PathBuf::from(command),
     })
 }
 
@@ -451,6 +534,24 @@ mod tests {
         };
         assert_eq!(DEFAULT_CONFIG_PATH, "./config/config.toml");
         assert_eq!(config_path, PathBuf::from("./config/config.toml"));
+    }
+
+    #[test]
+    fn reset_admin_password_command_parses_its_required_arguments() {
+        let command = parse_command(vec![
+            "reset-admin-password".to_owned(),
+            "--email".to_owned(),
+            "admin@example.com".to_owned(),
+            "--password-stdin".to_owned(),
+            "--config".to_owned(),
+            "./config/test.toml".to_owned(),
+        ])
+        .expect("reset command must parse");
+        let Command::ResetAdminPassword { config_path, email } = command else {
+            panic!("expected reset-admin-password command");
+        };
+        assert_eq!(email, "admin@example.com");
+        assert_eq!(config_path, PathBuf::from("./config/test.toml"));
     }
 
     #[tokio::test]

@@ -15,7 +15,8 @@ use std::sync::Arc;
 
 use ai_gateway::{
     application::{
-        ConsoleAuthService, ControlPlaneCoordinator, ModelSyncService, hash_console_password,
+        AuthError, ConsoleAuthService, ControlPlaneCoordinator, ModelSyncService,
+        hash_console_password,
     },
     http::console::{self, ConsoleState},
     models_dev::ModelsDevClient,
@@ -174,6 +175,74 @@ async fn app(pool: PgPool) -> App {
         access_token: session.access_token,
         user_id,
     }
+}
+
+#[tokio::test]
+async fn emergency_admin_password_reset_revokes_existing_sessions() {
+    let database = TestDatabase::new().await;
+    let user_id = Uuid::new_v4();
+    let email = format!("reset-admin-{user_id}@example.test");
+    let old_password = "old-password-with-enough-length";
+    let new_password = "new-password-with-enough-length";
+    let old_hash = hash_console_password(old_password.to_owned())
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO users (id,email,display_name,role,status,password_hash,currency) \
+         VALUES ($1,$2,$3,'admin','active',$4,'USD')",
+    )
+    .bind(user_id)
+    .bind(&email)
+    .bind("Emergency reset admin")
+    .bind(old_hash)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+
+    let auth = ConsoleAuthService::from_pem(
+        AuthRepository::new(database.pool.clone()),
+        &auth_config(),
+        TEST_ED25519_PRIVATE_KEY,
+        TEST_ED25519_PUBLIC_KEY,
+    )
+    .unwrap();
+    let old_session = auth
+        .login(email.clone(), old_password.to_owned())
+        .await
+        .unwrap();
+    let new_hash = hash_console_password(new_password.to_owned())
+        .await
+        .unwrap();
+    assert!(
+        AuthRepository::new(database.pool.clone())
+            .reset_active_admin_password(&email, &new_hash)
+            .await
+            .unwrap()
+    );
+
+    assert!(matches!(
+        auth.authenticate_access_token(&old_session.access_token)
+            .await,
+        Err(AuthError::InvalidToken)
+    ));
+    assert!(matches!(
+        auth.login(email.clone(), old_password.to_owned()).await,
+        Err(AuthError::InvalidCredentials)
+    ));
+    auth.login(email, new_password.to_owned())
+        .await
+        .expect("the replacement password must work");
+
+    let audit_count = sqlx::query_scalar::<_, i64>(
+        "SELECT count(*) FROM audit_logs \
+         WHERE actor_type='system' AND action='reset_password' AND object_id=$1",
+    )
+    .bind(user_id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(audit_count, 1);
+    database.cleanup().await;
 }
 
 async fn request(

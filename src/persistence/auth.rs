@@ -246,6 +246,62 @@ impl AuthRepository {
         Ok(true)
     }
 
+    /// Emergency operator recovery for an active Console administrator.
+    ///
+    /// The caller supplies an already validated Argon2 password hash. As with
+    /// a self-service password change, every existing session is revoked.
+    pub async fn reset_active_admin_password(
+        &self,
+        email: &str,
+        password_hash: &str,
+    ) -> Result<bool, RepositoryError> {
+        let mut transaction = self.pool.begin().await?;
+        let admin = sqlx::query_as::<_, PasswordResetAdmin>(
+            "UPDATE users \
+             SET password_hash=$2,password_changed_at=now(),auth_version=auth_version+1 \
+             WHERE lower(email)=lower($1) AND role='admin' AND status='active' \
+             RETURNING id,email,auth_version",
+        )
+        .bind(email)
+        .bind(password_hash)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let Some(admin) = admin else {
+            transaction.rollback().await?;
+            return Ok(false);
+        };
+        sqlx::query(
+            "UPDATE user_sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL",
+        )
+        .bind(admin.id)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "INSERT INTO audit_logs \
+             (id,actor_type,action,object_type,object_id,before_redacted,after_redacted,correlation_id) \
+             VALUES ($1,'system','reset_password','user',$2,$3,$4,$5)",
+        )
+        .bind(Uuid::new_v4())
+        .bind(admin.id)
+        .bind(json!({
+            "email": admin.email.clone(),
+            "role": "admin",
+            "status": "active",
+        }))
+        .bind(json!({
+            "email": admin.email,
+            "role": "admin",
+            "status": "active",
+            "auth_version": admin.auth_version,
+            "password_changed": true,
+        }))
+        .bind(Uuid::new_v4().to_string())
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(true)
+    }
+
     pub async fn invite_user(
         &self,
         actor_user_id: Uuid,
@@ -511,6 +567,13 @@ pub struct PasswordUser {
     pub id: Uuid,
     pub password_hash: Option<String>,
     pub status: String,
+}
+
+#[derive(FromRow)]
+struct PasswordResetAdmin {
+    id: Uuid,
+    email: Option<String>,
+    auth_version: i64,
 }
 
 #[derive(Clone)]

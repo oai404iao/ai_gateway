@@ -499,6 +499,7 @@ fn validate_password(value: &str) -> Result<(), AuthError> {
 }
 
 pub async fn hash_console_password(password: String) -> Result<String, AuthError> {
+    validate_password(&password)?;
     tokio::task::spawn_blocking(move || {
         let salt = SaltString::generate(&mut OsRng);
         Argon2::default()
@@ -609,4 +610,17 @@ pub enum AuthError {
     Forbidden,
     #[error("Console authentication storage failed")]
     Repository(#[from] RepositoryError),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AuthError, hash_console_password};
+
+    #[tokio::test]
+    async fn hashing_a_console_password_rejects_a_short_value() {
+        assert!(matches!(
+            hash_console_password("too-short".to_owned()).await,
+            Err(AuthError::InvalidInput)
+        ));
+    }
 }
