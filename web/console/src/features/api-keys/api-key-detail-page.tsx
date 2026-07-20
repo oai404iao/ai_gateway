@@ -67,7 +67,10 @@ export function ApiKeyDetailPage() {
   const [revokeOpen, setRevokeOpen] = useState(false);
   const [revokeReason, setRevokeReason] = useState("");
 
-  const form = useForm<EditValues>({ resolver: zodResolver(editSchema) });
+  const form = useForm<EditValues>({
+    resolver: zodResolver(editSchema),
+    defaultValues: { name: "", status: "active", expires_at: "" },
+  });
 
   useEffect(() => {
     if (data) {
@@ -182,7 +185,9 @@ export function ApiKeyDetailPage() {
                       <Select
                         value={form.watch("status")}
                         onValueChange={(value) =>
-                          form.setValue("status", value as "active" | "disabled")
+                          form.setValue("status", value as "active" | "disabled", {
+                            shouldValidate: true,
+                          })
                         }
                       >
                         <SelectTrigger id="status">

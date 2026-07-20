@@ -135,7 +135,9 @@ export function UsersPage() {
                 <FieldLabel>Role</FieldLabel>
                 <Select
                   value={form.watch("role")}
-                  onValueChange={(value) => form.setValue("role", value as UserRole)}
+                  onValueChange={(value) =>
+                    form.setValue("role", value as UserRole, { shouldValidate: true })
+                  }
                 >
                   <SelectTrigger>
                     <SelectValue />
@@ -164,6 +166,7 @@ export function UsersPage() {
                     form.setValue(
                       "default_api_key_policy_id",
                       value === "__none__" ? undefined : value,
+                      { shouldValidate: true },
                     )
                   }
                 >

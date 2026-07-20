@@ -44,7 +44,17 @@ export function UserDetailPage() {
   const policies = useApiKeyPolicies();
   const [submitting, setSubmitting] = useState(false);
 
-  const form = useForm<EditValues>({ resolver: zodResolver(editSchema) });
+  const form = useForm<EditValues>({
+    resolver: zodResolver(editSchema),
+    defaultValues: {
+      display_name: "",
+      email: "",
+      role: "user",
+      status: "active",
+      currency: "",
+      default_api_key_policy_id: undefined,
+    },
+  });
 
   useEffect(() => {
     if (data) {
@@ -144,7 +154,9 @@ export function UserDetailPage() {
                     <FieldLabel>Role</FieldLabel>
                     <Select
                       value={form.watch("role")}
-                      onValueChange={(value) => form.setValue("role", value as UserRole)}
+                      onValueChange={(value) =>
+                        form.setValue("role", value as UserRole, { shouldValidate: true })
+                      }
                     >
                       <SelectTrigger>
                         <SelectValue />
@@ -163,7 +175,9 @@ export function UserDetailPage() {
                     <Select
                       value={form.watch("status")}
                       onValueChange={(value) =>
-                        form.setValue("status", value as "active" | "disabled")
+                        form.setValue("status", value as "active" | "disabled", {
+                          shouldValidate: true,
+                        })
                       }
                     >
                       <SelectTrigger>
@@ -190,6 +204,7 @@ export function UserDetailPage() {
                         form.setValue(
                           "default_api_key_policy_id",
                           value === "__none__" ? undefined : value,
+                          { shouldValidate: true },
                         )
                       }
                     >
