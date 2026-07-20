@@ -6,7 +6,7 @@ use std::{env, sync::Arc, time::Duration};
 
 use ai_gateway::{
     application::{ProxyService, RecordingRequestLogSink},
-    domain::{ApiFormat, RequestLogEvent, RequestLogOutcome},
+    domain::{ApiFormat, RequestLogEvent, RequestLogOutcome, RequestUsage},
     http,
     persistence::{
         ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ControlPlaneRecords, ModelRuleRecord,
@@ -306,11 +306,16 @@ pub(super) async fn smoke_streaming_format(
         !bytes.is_empty(),
         "the real upstream first streaming frame must not be empty"
     );
-    timeout(settings.timeout, body.collect())
+    let mut raw_sse = bytes.to_vec();
+    let remainder = timeout(settings.timeout, body.collect())
         .await
         .expect("the real upstream streaming body did not finish in time")
-        .expect("the real upstream streaming body failed");
-    assert_usage_was_logged(&gateway.logs.events(), format, true);
+        .expect("the real upstream streaming body failed")
+        .to_bytes();
+    raw_sse.extend_from_slice(&remainder);
+    let events = gateway.logs.events();
+    assert_usage_was_logged(&events, format, true);
+    assert_streaming_usage_matches_terminal_sse_event(&events, format, &raw_sse);
 }
 
 fn assert_response_has_usage(format: SmokeFormat, value: &Value) {
@@ -379,4 +384,144 @@ fn assert_usage_was_logged(events: &[RequestLogEvent], format: SmokeFormat, stre
             .is_some_and(|tps| tps > Decimal::ZERO),
         "a nonempty response body with output tokens must have positive output TPS"
     );
+}
+
+fn assert_streaming_usage_matches_terminal_sse_event(
+    events: &[RequestLogEvent],
+    format: SmokeFormat,
+    bytes: &[u8],
+) {
+    let expected = terminal_sse_usage(format, bytes)
+        .expect("the real upstream SSE stream must contain a compatible usage object");
+    let actual = events[0]
+        .billing
+        .as_ref()
+        .and_then(|billing| billing.usage)
+        .expect("the terminal request log must retain upstream usage");
+    assert_eq!(
+        actual, expected,
+        "the logged usage must match the terminal upstream SSE usage"
+    );
+}
+
+fn terminal_sse_usage(format: SmokeFormat, bytes: &[u8]) -> Option<RequestUsage> {
+    let mut remaining = bytes;
+    let mut latest = None;
+    let mut terminal = None;
+    while !remaining.is_empty() {
+        let (frame, next) = match sse_frame_end(remaining) {
+            Some(end) => (&remaining[..end], &remaining[end..]),
+            None => (remaining, &[][..]),
+        };
+        remaining = next;
+        let Some(value) = sse_frame_json(frame) else {
+            continue;
+        };
+        let Some(usage) = usage_from_sse_value(format, &value) else {
+            continue;
+        };
+        if is_terminal_sse_usage(format, &value) {
+            terminal = Some(usage);
+        }
+        latest = Some(usage);
+    }
+    terminal.or(latest)
+}
+
+fn sse_frame_end(bytes: &[u8]) -> Option<usize> {
+    bytes
+        .windows(2)
+        .position(|window| window == b"\n\n")
+        .map(|end| end + 2)
+        .or_else(|| {
+            bytes
+                .windows(4)
+                .position(|window| window == b"\r\n\r\n")
+                .map(|end| end + 4)
+        })
+}
+
+fn sse_frame_json(frame: &[u8]) -> Option<Value> {
+    let mut data = Vec::new();
+    for line in frame.split(|byte| *byte == b'\n') {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        let Some(value) = line.strip_prefix(b"data:") else {
+            continue;
+        };
+        let value = value.strip_prefix(b" ").unwrap_or(value);
+        if !data.is_empty() {
+            data.push(b'\n');
+        }
+        data.extend_from_slice(value);
+    }
+    (!data.is_empty() && data.as_slice() != b"[DONE]")
+        .then(|| serde_json::from_slice(&data).ok())
+        .flatten()
+}
+
+fn usage_from_sse_value(format: SmokeFormat, value: &Value) -> Option<RequestUsage> {
+    let usage = value
+        .get("usage")
+        .or_else(|| {
+            value
+                .get("response")
+                .and_then(|response| response.get("usage"))
+        })
+        .unwrap_or(value);
+    let (input_field, output_field, details_field) = match format {
+        SmokeFormat::ChatCompletions => (
+            "prompt_tokens",
+            "completion_tokens",
+            "prompt_tokens_details",
+        ),
+        SmokeFormat::Responses => ("input_tokens", "output_tokens", "input_tokens_details"),
+    };
+    let input_tokens = nonnegative_token(usage.get(input_field))?;
+    let output_tokens = nonnegative_token(usage.get(output_field))?;
+    let details = usage.get(details_field);
+    let cached_input_tokens = details
+        .and_then(|details| nonnegative_token(details.get("cached_tokens")))
+        .or_else(|| match format {
+            SmokeFormat::ChatCompletions => nonnegative_token(usage.get("prompt_cache_hit_tokens")),
+            SmokeFormat::Responses => None,
+        })
+        .unwrap_or(0);
+    let cache_write_tokens = details
+        .and_then(|details| {
+            nonnegative_token(details.get("cache_write_tokens"))
+                .or_else(|| nonnegative_token(details.get("cache_creation_tokens")))
+        })
+        .unwrap_or(0);
+    (cached_input_tokens <= input_tokens && cache_write_tokens <= input_tokens).then_some(
+        RequestUsage {
+            input_tokens,
+            cached_input_tokens,
+            cache_write_tokens,
+            output_tokens,
+        },
+    )
+}
+
+fn nonnegative_token(value: Option<&Value>) -> Option<i64> {
+    value?.as_i64().filter(|value| *value >= 0)
+}
+
+fn is_terminal_sse_usage(format: SmokeFormat, value: &Value) -> bool {
+    match format {
+        SmokeFormat::ChatCompletions => {
+            value
+                .get("choices")
+                .and_then(Value::as_array)
+                .is_some_and(|choices| {
+                    choices.iter().any(|choice| {
+                        choice
+                            .get("finish_reason")
+                            .is_some_and(|reason| !reason.is_null())
+                    })
+                })
+        }
+        SmokeFormat::Responses => {
+            value.get("type").and_then(Value::as_str) == Some("response.completed")
+        }
+    }
 }

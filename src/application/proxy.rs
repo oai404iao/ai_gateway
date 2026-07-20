@@ -1039,22 +1039,21 @@ fn timed_upstream_stream(
                     }
                     Ok(None) => {
                         state.upstream.take();
-                        if let Some(transformer) = &mut state.sse_transformer {
-                            if let Some(residual) = transformer.finish() {
-                                record_stream_bytes(&mut state, &residual);
-                                state.completion.finish(if state.upstream_succeeded {
-                                    RequestOutcome::Succeeded
-                                } else {
-                                    RequestOutcome::UpstreamHttpError
-                                });
-                                return Some((Ok(residual), state));
-                            }
-                        }
-                        state.completion.finish(if state.upstream_succeeded {
+                        let outcome = if state.upstream_succeeded {
                             RequestOutcome::Succeeded
                         } else {
                             RequestOutcome::UpstreamHttpError
-                        });
+                        };
+                        if let Some(transformer) = &mut state.sse_transformer {
+                            if let Some(residual) = transformer.finish() {
+                                record_stream_bytes(&mut state, &residual);
+                                state.completion.finalize_usage();
+                                state.completion.finish(outcome);
+                                return Some((Ok(residual), state));
+                            }
+                        }
+                        state.completion.finalize_usage();
+                        state.completion.finish(outcome);
                         return None;
                     }
                     Err(_) => {
@@ -1080,6 +1079,7 @@ fn record_stream_bytes(state: &mut StreamState, bytes: &Bytes) {
     if let Some(remaining) = &mut state.remaining_bytes {
         *remaining = remaining.saturating_sub(bytes.len() as u64);
         if *remaining == 0 {
+            state.completion.finalize_usage();
             state.completion.finish(if state.upstream_succeeded {
                 RequestOutcome::Succeeded
             } else {
@@ -1270,6 +1270,12 @@ impl CompletionGuard {
     fn observe_usage(&mut self, bytes: &Bytes) {
         if let Some(context) = &mut self.context {
             context.usage.observe(bytes);
+        }
+    }
+
+    fn finalize_usage(&mut self) {
+        if let Some(context) = &mut self.context {
+            context.usage.finalize();
         }
     }
 

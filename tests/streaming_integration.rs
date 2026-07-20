@@ -694,6 +694,14 @@ data: [DONE]
     )))
 }
 
+async fn chat_usage_sse_with_unterminated_terminal_frame() -> Response {
+    sse_response(Body::from(Bytes::from_static(
+        br#"data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":0,"completion_tokens":1928}}
+
+data: {"object":"chat.completion.chunk","choices":[{"delta":{"content":""},"finish_reason":"stop","index":0}],"usage":{"prompt_tokens":87,"completion_tokens":1361,"prompt_cache_hit_tokens":0,"prompt_cache_miss_tokens":87}}"#,
+    )))
+}
+
 #[tokio::test]
 async fn chat_sse_usage_is_collected_without_changing_forwarded_bytes() {
     let upstream =
@@ -729,6 +737,48 @@ async fn chat_sse_usage_is_collected_without_changing_forwarded_bytes() {
         })
     );
     assert_eq!(billing.price.currency, "USD");
+}
+
+#[tokio::test]
+async fn chat_sse_usage_in_unterminated_terminal_frame_is_collected() {
+    let upstream = start_server(Router::new().route(
+        "/v1/chat/completions",
+        post(chat_usage_sse_with_unterminated_terminal_frame),
+    ))
+    .await;
+    let logs = RecordingRequestLogSink::default();
+    let gateway = start_server(http::router(proxy_service_with_documents(
+        &format!("http://{}", upstream.address),
+        5,
+        5,
+        None,
+        serde_json::json!({}),
+        logs.clone(),
+    )))
+    .await;
+
+    let response = request(&client(), gateway.address).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        response
+            .bytes()
+            .await
+            .unwrap()
+            .windows(b"\"prompt_tokens\":87".len())
+            .any(|window| window == b"\"prompt_tokens\":87")
+    );
+
+    let events = logs.events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(
+        events[0].billing.as_ref().unwrap().usage,
+        Some(ai_gateway::domain::RequestUsage {
+            input_tokens: 87,
+            cached_input_tokens: 0,
+            cache_write_tokens: 0,
+            output_tokens: 1361,
+        })
+    );
 }
 
 #[tokio::test]

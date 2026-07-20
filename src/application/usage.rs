@@ -43,6 +43,10 @@ impl ResponseUsage {
         let details = usage.get(details_field);
         let cached_input_tokens = details
             .and_then(|details| token(details.get("cached_tokens")))
+            .or_else(|| match api_format {
+                ApiFormat::OpenAiChatCompletions => token(usage.get("prompt_cache_hit_tokens")),
+                ApiFormat::OpenAiResponses => None,
+            })
             .unwrap_or(0);
         let cache_write_tokens = details
             .and_then(|details| {
@@ -69,6 +73,7 @@ pub struct UsageCollector {
     api_format: ApiFormat,
     mode: CollectorMode,
     latest: Option<ResponseUsage>,
+    terminal: Option<ResponseUsage>,
 }
 
 enum CollectorMode {
@@ -87,6 +92,7 @@ impl UsageCollector {
                 CollectorMode::Json(TopLevelUsageScanner::default())
             },
             latest: None,
+            terminal: None,
         }
     }
 
@@ -95,8 +101,26 @@ impl UsageCollector {
             CollectorMode::Json(scanner) => scanner.push(bytes),
             CollectorMode::Sse(scanner) => scanner.push(bytes),
         };
+        self.record(values);
+    }
+
+    /// Processes one terminal SSE frame that ended with the upstream body
+    /// rather than an SSE blank-line delimiter. This must only be called once
+    /// the upstream body completed cleanly.
+    pub fn finalize(&mut self) {
+        let values = match &mut self.mode {
+            CollectorMode::Json(_) => Vec::new(),
+            CollectorMode::Sse(scanner) => scanner.finalize(),
+        };
+        self.record(values);
+    }
+
+    fn record(&mut self, values: Vec<Value>) {
         for value in values {
             if let Some(usage) = ResponseUsage::from_value(self.api_format, &value) {
+                if is_terminal_usage_event(self.api_format, &value) {
+                    self.terminal = Some(usage);
+                }
                 self.latest = Some(usage);
             }
         }
@@ -104,7 +128,25 @@ impl UsageCollector {
 
     #[must_use]
     pub fn latest(&self) -> Option<ResponseUsage> {
-        self.latest
+        self.terminal.or(self.latest)
+    }
+}
+
+fn is_terminal_usage_event(api_format: ApiFormat, value: &Value) -> bool {
+    match api_format {
+        ApiFormat::OpenAiChatCompletions => value
+            .get("choices")
+            .and_then(Value::as_array)
+            .is_some_and(|choices| {
+                choices.iter().any(|choice| {
+                    choice
+                        .get("finish_reason")
+                        .is_some_and(|reason| !reason.is_null())
+                })
+            }),
+        ApiFormat::OpenAiResponses => {
+            value.get("type").and_then(Value::as_str) == Some("response.completed")
+        }
     }
 }
 
@@ -269,6 +311,14 @@ impl SseUsageScanner {
         }
         values
     }
+
+    fn finalize(&mut self) -> Vec<Value> {
+        if self.disabled {
+            return Vec::new();
+        }
+        let frame = std::mem::take(&mut self.bytes);
+        sse_frame_json(&frame).into_iter().collect()
+    }
 }
 
 fn sse_frame_end(bytes: &[u8]) -> Option<usize> {
@@ -341,6 +391,80 @@ mod tests {
                 cached_input_tokens: 1,
                 cache_write_tokens: 0,
                 output_tokens: 2,
+            })
+        );
+    }
+
+    #[test]
+    fn extracts_deepseek_chat_cache_hits_from_top_level_usage() {
+        let value = serde_json::json!({
+            "usage": {
+                "prompt_tokens": 87,
+                "completion_tokens": 4,
+                "prompt_cache_hit_tokens": 43,
+                "prompt_cache_miss_tokens": 44
+            }
+        });
+        assert_eq!(
+            ResponseUsage::from_value(ApiFormat::OpenAiChatCompletions, &value),
+            Some(ResponseUsage {
+                input_tokens: 87,
+                cached_input_tokens: 43,
+                cache_write_tokens: 0,
+                output_tokens: 4,
+            })
+        );
+    }
+
+    #[test]
+    fn finalizes_an_unterminated_terminal_sse_usage_frame() {
+        let mut collector = UsageCollector::new(ApiFormat::OpenAiChatCompletions, true);
+        collector.observe(&Bytes::from_static(
+            br#"data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":0,"completion_tokens":1928}}
+
+data: {"object":"chat.completion.chunk","choices":[{"delta":{"content":""},"finish_reason":"stop","index":0}],"usage":{"prompt_tokens":87,"completion_tokens":1361,"prompt_cache_hit_tokens":0,"prompt_cache_miss_tokens":87}}"#,
+        ));
+        assert_eq!(
+            collector.latest(),
+            Some(ResponseUsage {
+                input_tokens: 0,
+                cached_input_tokens: 0,
+                cache_write_tokens: 0,
+                output_tokens: 1928,
+            })
+        );
+
+        collector.finalize();
+
+        assert_eq!(
+            collector.latest(),
+            Some(ResponseUsage {
+                input_tokens: 87,
+                cached_input_tokens: 0,
+                cache_write_tokens: 0,
+                output_tokens: 1361,
+            })
+        );
+    }
+
+    #[test]
+    fn prefers_usage_attached_to_a_chat_finish_chunk() {
+        let mut collector = UsageCollector::new(ApiFormat::OpenAiChatCompletions, true);
+        collector.observe(&Bytes::from_static(
+            br#"data: {"object":"chat.completion.chunk","choices":[{"delta":{"content":""},"finish_reason":"stop","index":0}],"usage":{"prompt_tokens":84,"completion_tokens":721}}
+
+data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":0,"completion_tokens":834}}
+
+"#,
+        ));
+
+        assert_eq!(
+            collector.latest(),
+            Some(ResponseUsage {
+                input_tokens: 84,
+                cached_input_tokens: 0,
+                cache_write_tokens: 0,
+                output_tokens: 721,
             })
         );
     }
