@@ -1,4 +1,6 @@
+import { Suspense } from "react";
 import { Outlet, Link } from "react-router";
+import { Spinner } from "@/components/ui/spinner";
 
 export function AuthLayout() {
   return (
@@ -13,7 +15,9 @@ export function AuthLayout() {
         </div>
       </Link>
       <div className="w-full max-w-sm">
-        <Outlet />
+        <Suspense fallback={<Spinner className="mx-auto size-6" />}>
+          <Outlet />
+        </Suspense>
       </div>
     </div>
   );

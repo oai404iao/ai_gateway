@@ -1,34 +1,128 @@
+import { lazy } from "react";
 import { Navigate, Outlet, Route, Routes } from "react-router";
 import { useSession } from "@/lib/use-session";
 import { ConsoleLayout } from "@/app/layouts/console-layout";
 import { AuthLayout } from "@/app/layouts/auth-layout";
-import { LoginPage } from "@/features/auth/login-page";
-import { ActivateInvitationPage } from "@/features/auth/activate-invitation-page";
-import { ProfilePage } from "@/features/profile/profile-page";
-import { SessionsPage } from "@/features/sessions/sessions-page";
-import { ApiKeysPage } from "@/features/api-keys/api-keys-page";
-import { ApiKeyDetailPage } from "@/features/api-keys/api-key-detail-page";
-import { OwnRequestLogsPage } from "@/features/request-logs/own-request-logs-page";
-import { AdminRequestLogsPage } from "@/features/request-logs/admin-request-logs-page";
-import { UsersPage } from "@/features/admin/users/users-page";
-import { UserDetailPage } from "@/features/admin/users/user-detail-page";
-import { ApiKeyPoliciesPage } from "@/features/admin/api-key-policies/api-key-policies-page";
-import { ApiKeyPolicyDetailPage } from "@/features/admin/api-key-policies/policy-detail-page";
-import { ModelsPage } from "@/features/admin/models/models-page";
-import { ModelDetailPage } from "@/features/admin/models/model-detail-page";
-import { CatalogPage } from "@/features/admin/catalog/catalog-page";
-import { ChannelGroupsPage } from "@/features/admin/routing/channel-groups/channel-groups-page";
-import { ChannelGroupDetailPage } from "@/features/admin/routing/channel-groups/channel-group-detail-page";
-import { ChannelsPage } from "@/features/admin/routing/channels/channels-page";
-import { ChannelDetailPage } from "@/features/admin/routing/channels/channel-detail-page";
-import { ModelRulesPage } from "@/features/admin/routing/model-rules/model-rules-page";
-import { ModelRuleDetailPage } from "@/features/admin/routing/model-rules/model-rule-detail-page";
-import { ProxiesPage } from "@/features/admin/network/proxies-page";
-import { ProxyDetailPage } from "@/features/admin/network/proxy-detail-page";
-import { ConfigTemplatesPage } from "@/features/admin/transforms/templates-page";
-import { ConfigTemplateDetailPage } from "@/features/admin/transforms/template-detail-page";
-import { AuditLogsPage } from "@/features/admin/audit-logs/audit-logs-page";
-import { SystemPage } from "@/features/admin/system/system-page";
+
+// Page components are lazy-loaded so each route ships in its own chunk.
+// The shell (providers, layouts, sidebar) stays eager for instant first paint.
+const LoginPage = lazy(() =>
+  import("@/features/auth/login-page").then((m) => ({ default: m.LoginPage })),
+);
+const ActivateInvitationPage = lazy(() =>
+  import("@/features/auth/activate-invitation-page").then((m) => ({
+    default: m.ActivateInvitationPage,
+  })),
+);
+const ProfilePage = lazy(() =>
+  import("@/features/profile/profile-page").then((m) => ({ default: m.ProfilePage })),
+);
+const SessionsPage = lazy(() =>
+  import("@/features/sessions/sessions-page").then((m) => ({ default: m.SessionsPage })),
+);
+const ApiKeysPage = lazy(() =>
+  import("@/features/api-keys/api-keys-page").then((m) => ({ default: m.ApiKeysPage })),
+);
+const ApiKeyDetailPage = lazy(() =>
+  import("@/features/api-keys/api-key-detail-page").then((m) => ({
+    default: m.ApiKeyDetailPage,
+  })),
+);
+const OwnRequestLogsPage = lazy(() =>
+  import("@/features/request-logs/own-request-logs-page").then((m) => ({
+    default: m.OwnRequestLogsPage,
+  })),
+);
+const AdminRequestLogsPage = lazy(() =>
+  import("@/features/request-logs/admin-request-logs-page").then((m) => ({
+    default: m.AdminRequestLogsPage,
+  })),
+);
+const UsersPage = lazy(() =>
+  import("@/features/admin/users/users-page").then((m) => ({ default: m.UsersPage })),
+);
+const UserDetailPage = lazy(() =>
+  import("@/features/admin/users/user-detail-page").then((m) => ({
+    default: m.UserDetailPage,
+  })),
+);
+const ApiKeyPoliciesPage = lazy(() =>
+  import("@/features/admin/api-key-policies/api-key-policies-page").then((m) => ({
+    default: m.ApiKeyPoliciesPage,
+  })),
+);
+const ApiKeyPolicyDetailPage = lazy(() =>
+  import("@/features/admin/api-key-policies/policy-detail-page").then((m) => ({
+    default: m.ApiKeyPolicyDetailPage,
+  })),
+);
+const ModelsPage = lazy(() =>
+  import("@/features/admin/models/models-page").then((m) => ({ default: m.ModelsPage })),
+);
+const ModelDetailPage = lazy(() =>
+  import("@/features/admin/models/model-detail-page").then((m) => ({
+    default: m.ModelDetailPage,
+  })),
+);
+const CatalogPage = lazy(() =>
+  import("@/features/admin/catalog/catalog-page").then((m) => ({ default: m.CatalogPage })),
+);
+const ChannelGroupsPage = lazy(() =>
+  import("@/features/admin/routing/channel-groups/channel-groups-page").then((m) => ({
+    default: m.ChannelGroupsPage,
+  })),
+);
+const ChannelGroupDetailPage = lazy(() =>
+  import("@/features/admin/routing/channel-groups/channel-group-detail-page").then((m) => ({
+    default: m.ChannelGroupDetailPage,
+  })),
+);
+const ChannelsPage = lazy(() =>
+  import("@/features/admin/routing/channels/channels-page").then((m) => ({
+    default: m.ChannelsPage,
+  })),
+);
+const ChannelDetailPage = lazy(() =>
+  import("@/features/admin/routing/channels/channel-detail-page").then((m) => ({
+    default: m.ChannelDetailPage,
+  })),
+);
+const ModelRulesPage = lazy(() =>
+  import("@/features/admin/routing/model-rules/model-rules-page").then((m) => ({
+    default: m.ModelRulesPage,
+  })),
+);
+const ModelRuleDetailPage = lazy(() =>
+  import("@/features/admin/routing/model-rules/model-rule-detail-page").then((m) => ({
+    default: m.ModelRuleDetailPage,
+  })),
+);
+const ProxiesPage = lazy(() =>
+  import("@/features/admin/network/proxies-page").then((m) => ({ default: m.ProxiesPage })),
+);
+const ProxyDetailPage = lazy(() =>
+  import("@/features/admin/network/proxy-detail-page").then((m) => ({
+    default: m.ProxyDetailPage,
+  })),
+);
+const ConfigTemplatesPage = lazy(() =>
+  import("@/features/admin/transforms/templates-page").then((m) => ({
+    default: m.ConfigTemplatesPage,
+  })),
+);
+const ConfigTemplateDetailPage = lazy(() =>
+  import("@/features/admin/transforms/template-detail-page").then((m) => ({
+    default: m.ConfigTemplateDetailPage,
+  })),
+);
+const AuditLogsPage = lazy(() =>
+  import("@/features/admin/audit-logs/audit-logs-page").then((m) => ({
+    default: m.AuditLogsPage,
+  })),
+);
+const SystemPage = lazy(() =>
+  import("@/features/admin/system/system-page").then((m) => ({ default: m.SystemPage })),
+);
 
 function RequireAuth() {
   const { isAuthenticated } = useSession();
@@ -81,8 +175,14 @@ export function AppRouter() {
             <Route path="/admin/models/:id" element={<ModelDetailPage />} />
             <Route path="/admin/catalog" element={<CatalogPage />} />
             <Route path="/admin/routing/channel-groups" element={<ChannelGroupsPage />} />
-            <Route path="/admin/routing/channel-groups/new" element={<ChannelGroupDetailPage />} />
-            <Route path="/admin/routing/channel-groups/:id" element={<ChannelGroupDetailPage />} />
+            <Route
+              path="/admin/routing/channel-groups/new"
+              element={<ChannelGroupDetailPage />}
+            />
+            <Route
+              path="/admin/routing/channel-groups/:id"
+              element={<ChannelGroupDetailPage />}
+            />
             <Route path="/admin/routing/channels" element={<ChannelsPage />} />
             <Route path="/admin/routing/channels/new" element={<ChannelDetailPage />} />
             <Route path="/admin/routing/channels/:id" element={<ChannelDetailPage />} />
@@ -93,8 +193,14 @@ export function AppRouter() {
             <Route path="/admin/network/proxies/new" element={<ProxyDetailPage />} />
             <Route path="/admin/network/proxies/:id" element={<ProxyDetailPage />} />
             <Route path="/admin/transforms/templates" element={<ConfigTemplatesPage />} />
-            <Route path="/admin/transforms/templates/new" element={<ConfigTemplateDetailPage />} />
-            <Route path="/admin/transforms/templates/:id" element={<ConfigTemplateDetailPage />} />
+            <Route
+              path="/admin/transforms/templates/new"
+              element={<ConfigTemplateDetailPage />}
+            />
+            <Route
+              path="/admin/transforms/templates/:id"
+              element={<ConfigTemplateDetailPage />}
+            />
             <Route path="/admin/request-logs" element={<AdminRequestLogsPage />} />
             <Route path="/admin/audit-logs" element={<AuditLogsPage />} />
             <Route path="/admin/system" element={<SystemPage />} />

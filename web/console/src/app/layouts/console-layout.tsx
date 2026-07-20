@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router";
 import { LogOut, Moon, Sun, Monitor, ChevronDown } from "lucide-react";
 import { toast } from "sonner";
@@ -33,6 +34,7 @@ import { useTheme } from "@/app/theme";
 import { logout } from "@/api/session";
 import { roleLabel } from "@/lib/permissions";
 import { visibleSections } from "@/app/layouts/nav";
+import { RouteFallback } from "@/components/shared/route-fallback";
 
 function BrandHeader() {
   return (
@@ -173,7 +175,9 @@ export function ConsoleLayout() {
         </header>
         <main className="flex-1 p-4 md:p-6">
           <div className="mx-auto flex max-w-6xl flex-col gap-6">
-            <Outlet />
+            <Suspense fallback={<RouteFallback />}>
+              <Outlet />
+            </Suspense>
           </div>
         </main>
       </SidebarInset>
