@@ -239,17 +239,20 @@ hash 的 `/assets/*` 失去长期缓存，也不能让 UI 静态路由继承不�
 
 ### 7.1 契约生成
 
-前端实施的第一个前置任务是增加受版本控制的 Console API 契约：
+受版本控制的 Console API 契约已落地，作为前端类型的单一事实来源：
 
 ```text
-docs/openapi/console-v1.yaml       # 规范源文件（新增）
-web/console/src/api/generated/     # 生成的 TypeScript 类型（新增，禁止手改）
+docs/openapi/console-v1.yaml       # 权威规范源文件（手写）
+web/console/src/api/generated/console-v1.d.ts  # openapi-typescript 生成，禁止手改
+web/console/src/api/types.ts      # 薄 shim：re-export 生成结果的 schema
 ```
 
-契约至少覆盖登录、刷新、邀请、本人资源、管理员资源、错误响应、`ETag`/`If-Match`、分页/limit 参数、
-一次性 secret 和 role 权限。生成命令须纳入 `pnpm generate:api`；CI 验证重新生成后没有未提交变更。
-在 Rust 自动导出 OpenAPI 成熟前，API 集成测试应同时验证实现与该规范的关键请求/响应示例，避免文档和
-实际 handler 漂移。
+契约覆盖登录、刷新、邀请、本人资源、管理员资源、错误响应、`ETag`/`If-Match`、分页/limit 参数、
+一次性 secret 和 role 权限。生成命令为 `pnpm --dir web/console generate:api`；
+`pnpm --dir web/console generate:api:check` 重新生成并用 `git diff --exit-code` 校验无漂移，供 CI 使用。
+`types.ts` 仅把 `components["schemas"]` 下的 schema 以同名导出，加上客户端聚合体 `ControlPlaneLists`；
+页面继续从 `@/api/types` 导入，不直接依赖生成文件的内部结构。在 Rust 自动导出 OpenAPI 成熟前，
+API 集成测试应同时验证实现与该规范的关键请求/响应示例，避免规范与实际 handler 漂移。
 
 ### 7.2 资源更新
 
@@ -339,12 +342,12 @@ cargo build --release --features embedded-console-ui
 
 ### Phase 0：契约与交付基础
 
-- [ ] 确认 Console API 的请求/响应、错误、ETag 与授权矩阵，新增 `docs/openapi/console-v1.yaml`。
+- [x] 确认 Console API 的请求/响应、错误、ETag 与授权矩阵，新增 `docs/openapi/console-v1.yaml`。
 - [ ] 创建 `web/console/` 的 pnpm + Vite + React + TypeScript 工程，初始化 Tailwind、shadcn/ui
   (Radix)、严格 TypeScript、ESLint、Vitest 和 Playwright。
 - [ ] 设定 `.gitignore`：忽略 `node_modules/`、`dist/`、测试报告和本地浏览器工件；提交 lockfile 和
   `components.json`。
-- [ ] 添加 `generate:api`、`typecheck`、`lint`、`test`、`build` 脚本，并让 CI 验证这些命令。
+- [x] 添加 `generate:api`、`generate:api:check`、`typecheck`、`lint`、`test`、`build` 脚本；`generate:api:check` 供 CI 验证生成无漂移。
 
 验收：前端能够在不连接生产服务时完成类型检查、lint、单元测试和静态构建；契约生成结果无漂移。
 

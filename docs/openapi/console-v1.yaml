@@ -1,0 +1,1905 @@
+openapi: 3.0.3
+info:
+  title: AI Gateway Console API
+  version: "1"
+  description: |
+    JWT-authenticated Console API for the AI Gateway. Served on a dedicated
+    listener under `/console/v1/*`, separate from the OpenAI-compatible
+    `/v1/*` data plane. `admin` is a `users.role` value, not a separate
+    namespace or static bearer token.
+
+    Conventions:
+    - Decimals (`rust_decimal::Decimal`) and timestamps (`chrono::DateTime<Utc>`)
+      serialize as RFC 3339 / decimal strings; all such fields are `string`.
+    - Most mutable resources return an `ETag` on detail `GET` and require
+      `If-Match` on `PUT` for optimistic concurrency. A stale `If-Match`
+      yields `409`.
+    - Create/revoke responses and invitation activation may return a
+      one-time `secret`/`invitation_token` that is never retrievable again.
+    - Every error body is `{"error":"<code>"}`.
+    - `limit` query parameters are clamped to `1..=100` (default `50`).
+
+    Compatibility aliases (same handlers, same JWT/role boundary, not
+    duplicated below): `/console/v1/channel-groups`, `/channels`,
+    `/model-rules`, `/proxies`, `/config-templates`, `/models/sync/*`, and
+    `/reload` mirror their `/routing`, `/network`, `/transforms`,
+    `/catalog`, and `/system` counterparts. `/admin/v1/*` does not exist.
+servers:
+  - url: /console/v1
+    description: Same-origin Console listener.
+tags:
+  - name: Auth
+  - name: Self
+  - name: Users
+  - name: ApiKeyPolicies
+  - name: ApiKeys
+  - name: Models
+  - name: Catalog
+  - name: ChannelGroups
+  - name: Channels
+  - name: ModelRules
+  - name: Proxies
+  - name: Templates
+  - name: RequestLogs
+  - name: AuditLogs
+  - name: System
+
+paths:
+  /auth/login:
+    post:
+      tags: [Auth]
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LoginInput" }
+      responses:
+        "200":
+          description: Session issued.
+          headers:
+            Set-Cookie:
+              description: Rotating `__Host-ai_gateway_refresh` HttpOnly cookie.
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LoginResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      operationId: refresh
+      description: Refreshes the access token using the HttpOnly refresh cookie.
+      responses:
+        "200":
+          description: Session rotated.
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LoginResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /auth/activate-invitation:
+    post:
+      tags: [Auth]
+      operationId: activateInvitation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ActivateInvitationInput" }
+      responses:
+        "200":
+          description: Account activated, session issued.
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LoginResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      operationId: logout
+      security: [{ bearerAuth: [] }]
+      responses:
+        "204": { description: Signed out; refresh cookie cleared. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /me:
+    get:
+      tags: [Self]
+      operationId: getMe
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Profile.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ConsoleProfile" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    patch:
+      tags: [Self]
+      operationId: updateMe
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProfileUpdateInput" }
+      responses:
+        "200":
+          description: Updated profile.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ConsoleProfile" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /me/password:
+    post:
+      tags: [Self]
+      operationId: changePassword
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PasswordChangeInput" }
+      responses:
+        "204": { description: Password changed; all sessions revoked. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /me/sessions:
+    get:
+      tags: [Self]
+      operationId: listSessions
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Sessions.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ConsoleSession" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /me/sessions/{id}:
+    delete:
+      tags: [Self]
+      operationId: revokeSession
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "204": { description: Session revoked. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /me/api-keys:
+    get:
+      tags: [Self]
+      operationId: listOwnApiKeys
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Own API keys.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ApiKeyView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [Self]
+      operationId: createOwnApiKey
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SelfApiKeyCreateInput" }
+      responses:
+        "201":
+          description: Key created; `secret` is shown only once.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /me/api-keys/{id}:
+    get:
+      tags: [Self]
+      operationId: getOwnApiKey
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "200":
+          description: Key detail.
+          headers:
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiKeyView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [Self]
+      operationId: updateOwnApiKey
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SelfApiKeyUpdateInput" }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /me/api-keys/{id}/revoke:
+    post:
+      tags: [Self]
+      operationId: revokeOwnApiKey
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RevokeInput" }
+      responses:
+        "200":
+          description: Revoked.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /me/request-logs:
+    get:
+      tags: [Self, RequestLogs]
+      operationId: listOwnRequestLogs
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Own request logs.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/RequestLogView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /me/request-logs/{id}:
+    get:
+      tags: [Self, RequestLogs]
+      operationId: getOwnRequestLog
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "200":
+          description: Log detail.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RequestLogView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /users:
+    get:
+      tags: [Users]
+      operationId: listUsers
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Users.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ControlPlaneUser" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [Users]
+      operationId: inviteUser
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InviteUserInput" }
+      responses:
+        "201":
+          description: Invitation issued; `invitation_token` is shown only once.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InvitationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /users/{id}:
+    get:
+      tags: [Users]
+      operationId: getUser
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "200":
+          description: User detail.
+          headers:
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ControlPlaneUser" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [Users]
+      operationId: updateUser
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UserInput" }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /api-key-policies:
+    get:
+      tags: [ApiKeyPolicies]
+      operationId: listApiKeyPolicies
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Policies.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ApiKeyPolicyView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [ApiKeyPolicies]
+      operationId: createApiKeyPolicy
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ApiKeyPolicyInput" }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /api-key-policies/{id}:
+    get:
+      tags: [ApiKeyPolicies]
+      operationId: getApiKeyPolicy
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "200":
+          description: Policy detail.
+          headers:
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiKeyPolicyView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [ApiKeyPolicies]
+      operationId: updateApiKeyPolicy
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ApiKeyPolicyInput" }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /models:
+    get:
+      tags: [Models]
+      operationId: listModels
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Models.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ControlPlaneModel" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [Models]
+      operationId: createModel
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ModelInput" }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /models/{id}:
+    get:
+      tags: [Models]
+      operationId: getModel
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "200":
+          description: Model detail.
+          headers:
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ControlPlaneModel" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [Models]
+      operationId: updateModel
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ModelInput" }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /catalog/models/sync/preview:
+    post:
+      tags: [Catalog]
+      operationId: previewModelsSync
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ModelSyncPreviewRequest" }
+      responses:
+        "200":
+          description: Preview.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ModelSyncPreview" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "502": { $ref: "#/components/responses/BadGateway" }
+
+  /catalog/models/sync:
+    post:
+      tags: [Catalog]
+      operationId: syncModelPrices
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ModelPriceSyncRequest" }
+      responses:
+        "200":
+          description: Price sync result.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ModelPriceSyncResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "502": { $ref: "#/components/responses/BadGateway" }
+
+  /catalog/models/import:
+    post:
+      tags: [Catalog]
+      operationId: importModels
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ModelImportRequest" }
+      responses:
+        "200":
+          description: Import result.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ModelImportResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+        "502": { $ref: "#/components/responses/BadGateway" }
+
+  /api-keys:
+    get:
+      tags: [ApiKeys]
+      operationId: listApiKeys
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: All API keys.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/AdminApiKeyView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [ApiKeys]
+      operationId: createApiKey
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ApiKeyCreateInput" }
+      responses:
+        "201":
+          description: Created; `secret` shown only once.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /api-keys/{id}:
+    get:
+      tags: [ApiKeys]
+      operationId: getApiKey
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "200":
+          description: Key detail.
+          headers:
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminApiKeyView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [ApiKeys]
+      operationId: updateApiKey
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ApiKeyUpdateInput" }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /api-keys/{id}/revoke:
+    post:
+      tags: [ApiKeys]
+      operationId: revokeApiKey
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RevokeInput" }
+      responses:
+        "200":
+          description: Revoked.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /routing/channel-groups:
+    get:
+      tags: [ChannelGroups]
+      operationId: listChannelGroups
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Channel groups.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ChannelGroupView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [ChannelGroups]
+      operationId: createChannelGroup
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChannelGroupInput" }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /routing/channel-groups/{id}:
+    get:
+      tags: [ChannelGroups]
+      operationId: getChannelGroup
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "200":
+          description: Group detail.
+          headers:
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChannelGroupView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [ChannelGroups]
+      operationId: updateChannelGroup
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChannelGroupInput" }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /routing/channels:
+    get:
+      tags: [Channels]
+      operationId: listChannels
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Channels.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ChannelView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [Channels]
+      operationId: createChannel
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChannelCreateInput" }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /routing/channels/{id}:
+    get:
+      tags: [Channels]
+      operationId: getChannel
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "200":
+          description: Channel detail.
+          headers:
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChannelView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [Channels]
+      operationId: updateChannel
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChannelInput" }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /routing/model-rules:
+    get:
+      tags: [ModelRules]
+      operationId: listModelRules
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Model rules.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ModelRuleView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [ModelRules]
+      operationId: createModelRule
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ModelRuleInput" }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /routing/model-rules/{id}:
+    get:
+      tags: [ModelRules]
+      operationId: getModelRule
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "200":
+          description: Rule detail.
+          headers:
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ModelRuleView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [ModelRules]
+      operationId: updateModelRule
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ModelRuleInput" }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /network/proxies:
+    get:
+      tags: [Proxies]
+      operationId: listProxies
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Proxies.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ProxyView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [Proxies]
+      operationId: createProxy
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProxyCreateInput" }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /network/proxies/{id}:
+    get:
+      tags: [Proxies]
+      operationId: getProxy
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "200":
+          description: Proxy detail.
+          headers:
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProxyView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [Proxies]
+      operationId: updateProxy
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProxyInput" }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /transforms/templates:
+    get:
+      tags: [Templates]
+      operationId: listConfigTemplates
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Templates.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ConfigTemplateView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [Templates]
+      operationId: createConfigTemplate
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ConfigTemplateInput" }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /transforms/templates/{id}:
+    get:
+      tags: [Templates]
+      operationId: getConfigTemplate
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "200":
+          description: Template detail.
+          headers:
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ConfigTemplateView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [Templates]
+      operationId: updateConfigTemplate
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ConfigTemplateInput" }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /request-logs:
+    get:
+      tags: [RequestLogs]
+      operationId: listAllRequestLogs
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: All request logs.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/RequestLogView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /audit-logs:
+    get:
+      tags: [AuditLogs]
+      operationId: listAuditLogs
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Audit events.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/AuditLogView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /system/reload:
+    post:
+      tags: [System]
+      operationId: reload
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Reload accepted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReloadResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    PathId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    IfMatch:
+      name: If-Match
+      in: header
+      required: true
+      schema: { type: string }
+      description: ETag from the preceding GET; stale values yield `409`.
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+
+  headers:
+    ETag:
+      description: Optimistic-concurrency version tag for `PUT` `If-Match`.
+      schema: { type: string }
+
+  responses:
+    Unauthorized:
+      description: Unauthorized.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorBody" }
+    Forbidden:
+      description: Forbidden.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorBody" }
+    NotFound:
+      description: Not found.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorBody" }
+    Conflict:
+      description: Optimistic-concurrency conflict or serializable retry.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorBody" }
+    Unprocessable:
+      description: Request rejected (validation).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorBody" }
+    RateLimited:
+      description: Too many authentication attempts.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorBody" }
+    BadGateway:
+      description: Upstream catalog operation rejected.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorBody" }
+
+  schemas:
+    ErrorBody:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+
+    UserRole:
+      type: string
+      enum: [user, admin]
+    ApiFormat:
+      type: string
+      enum: [open_ai_chat_completions, open_ai_responses]
+    SelectionStrategy:
+      type: string
+      enum: [priority_weighted, weighted]
+    UpstreamAuthKind:
+      type: string
+      enum: [bearer, header]
+    ModelSyncAction:
+      type: string
+      enum: [price_update, import, already_exists]
+
+    DateTime:
+      type: string
+      format: date-time
+    Decimal:
+      type: string
+      description: rust_decimal::Decimal serialized as a string.
+    DateTimeNullable:
+      type: string
+      format: date-time
+      nullable: true
+    DecimalNullable:
+      type: string
+      nullable: true
+      description: rust_decimal::Decimal serialized as a string, or null.
+    JsonValue:
+      description: Arbitrary JSON; typed as `unknown`.
+      # Empty schema => openapi-typescript emits `unknown`.
+
+    ConsoleUser:
+      type: object
+      required: [id, email, display_name, role]
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string }
+        display_name: { type: string }
+        role: { $ref: "#/components/schemas/UserRole" }
+
+    LoginResponse:
+      type: object
+      required: [access_token, token_type, expires_in, user]
+      properties:
+        access_token: { type: string }
+        token_type: { type: string, enum: [Bearer] }
+        expires_in: { type: integer }
+        user: { $ref: "#/components/schemas/ConsoleUser" }
+
+    ConsoleProfile:
+      type: object
+      required:
+        [id, email, display_name, role, status, balance_amount, currency, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, nullable: true }
+        display_name: { type: string }
+        role: { $ref: "#/components/schemas/UserRole" }
+        status: { type: string }
+        balance_amount: { $ref: "#/components/schemas/Decimal" }
+        currency: { type: string }
+        created_at: { $ref: "#/components/schemas/DateTime" }
+        updated_at: { $ref: "#/components/schemas/DateTime" }
+
+    ConsoleSession:
+      type: object
+      required: [id, created_at, last_seen_at, expires_at, revoked_at]
+      properties:
+        id: { type: string, format: uuid }
+        created_at: { $ref: "#/components/schemas/DateTime" }
+        last_seen_at: { $ref: "#/components/schemas/DateTimeNullable" }
+        expires_at: { $ref: "#/components/schemas/DateTime" }
+        revoked_at: { $ref: "#/components/schemas/DateTimeNullable" }
+
+    InvitationResponse:
+      type: object
+      required: [id, user_id, invitation_token, expires_at, correlation_id]
+      properties:
+        id: { type: string, format: uuid }
+        user_id: { type: string, format: uuid }
+        invitation_token: { type: string }
+        expires_at: { $ref: "#/components/schemas/DateTime" }
+        correlation_id: { type: string, format: uuid }
+
+    MutationResponse:
+      type: object
+      required: [id, correlation_id]
+      properties:
+        id: { type: string, format: uuid }
+        secret: { type: string, description: One-time secret; present only on create. }
+        correlation_id: { type: string, format: uuid }
+
+    ReloadResponse:
+      type: object
+      required: [correlation_id]
+      properties:
+        correlation_id: { type: string, format: uuid }
+
+    ApiKeyView:
+      type: object
+      required:
+        [id, name, status, expires_at, allowed_api_formats, permissions,
+         allowed_group_ids, requests_per_minute, max_concurrent_requests,
+         quota_limit_amount, quota_used_amount, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        status: { type: string }
+        expires_at: { $ref: "#/components/schemas/DateTimeNullable" }
+        allowed_api_formats:
+          type: array
+          items: { $ref: "#/components/schemas/ApiFormat" }
+        permissions:
+          type: array
+          items: { type: string }
+        allowed_group_ids:
+          type: array
+          nullable: true
+          items: { type: string, format: uuid }
+        requests_per_minute: { type: integer, nullable: true }
+        max_concurrent_requests: { type: integer, nullable: true }
+        quota_limit_amount: { $ref: "#/components/schemas/DecimalNullable" }
+        quota_used_amount: { $ref: "#/components/schemas/Decimal" }
+        created_at: { $ref: "#/components/schemas/DateTime" }
+        updated_at: { $ref: "#/components/schemas/DateTime" }
+
+    AdminApiKeyView:
+      allOf:
+        - $ref: "#/components/schemas/ApiKeyView"
+        - type: object
+          required: [user_id, user_status, tokens_per_minute]
+          properties:
+            user_id: { type: string, format: uuid }
+            user_status: { type: string }
+            tokens_per_minute: { type: integer, nullable: true }
+
+    ApiKeyPolicyView:
+      type: object
+      required:
+        [id, name, allowed_api_formats, permissions, allowed_group_ids,
+         requests_per_minute, max_concurrent_requests, quota_limit_amount,
+         max_active_keys, enabled, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        allowed_api_formats:
+          type: array
+          items: { $ref: "#/components/schemas/ApiFormat" }
+        permissions:
+          type: array
+          items: { type: string }
+        allowed_group_ids:
+          type: array
+          nullable: true
+          items: { type: string, format: uuid }
+        requests_per_minute: { type: integer, nullable: true }
+        max_concurrent_requests: { type: integer, nullable: true }
+        quota_limit_amount: { $ref: "#/components/schemas/DecimalNullable" }
+        max_active_keys: { type: integer }
+        enabled: { type: boolean }
+        created_at: { $ref: "#/components/schemas/DateTime" }
+        updated_at: { $ref: "#/components/schemas/DateTime" }
+
+    ControlPlaneUser:
+      type: object
+      required:
+        [id, email, display_name, role, status, default_api_key_policy_id,
+         balance_amount, currency, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, nullable: true }
+        display_name: { type: string }
+        role: { $ref: "#/components/schemas/UserRole" }
+        status: { type: string }
+        default_api_key_policy_id: { type: string, format: uuid, nullable: true }
+        balance_amount: { $ref: "#/components/schemas/Decimal" }
+        currency: { type: string }
+        created_at: { $ref: "#/components/schemas/DateTime" }
+        updated_at: { $ref: "#/components/schemas/DateTime" }
+
+    ControlPlaneModel:
+      type: object
+      required:
+        [id, source_model_id, display_name, provider_name, enabled, currency,
+         price_unit_tokens, input_unit_price, cached_input_unit_price,
+         cache_write_unit_price, output_unit_price, price_effective_at,
+         last_synced_at, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        source_model_id: { type: string }
+        display_name: { type: string }
+        provider_name: { type: string, nullable: true }
+        enabled: { type: boolean }
+        currency: { type: string }
+        price_unit_tokens: { type: integer }
+        input_unit_price: { $ref: "#/components/schemas/Decimal" }
+        cached_input_unit_price: { $ref: "#/components/schemas/Decimal" }
+        cache_write_unit_price: { $ref: "#/components/schemas/Decimal" }
+        output_unit_price: { $ref: "#/components/schemas/Decimal" }
+        price_effective_at: { $ref: "#/components/schemas/DateTime" }
+        last_synced_at: { $ref: "#/components/schemas/DateTimeNullable" }
+        created_at: { $ref: "#/components/schemas/DateTime" }
+        updated_at: { $ref: "#/components/schemas/DateTime" }
+
+    ChannelGroupView:
+      type: object
+      required: [id, name, api_format, priority, selection_strategy, enabled, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        api_format: { $ref: "#/components/schemas/ApiFormat" }
+        priority: { type: integer }
+        selection_strategy: { $ref: "#/components/schemas/SelectionStrategy" }
+        enabled: { type: boolean }
+        updated_at: { $ref: "#/components/schemas/DateTime" }
+
+    ChannelView:
+      type: object
+      required:
+        [id, channel_group_id, api_format, name, base_url, enabled,
+         auto_disabled, auto_disabled_reason, weight, proxy_id,
+         config_template_id, connect_timeout_ms, response_header_timeout_ms,
+         stream_idle_timeout_ms, upstream_auth_kind, upstream_auth_header_name,
+         upstream_credential_configured, available_models, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        channel_group_id: { type: string, format: uuid }
+        api_format: { $ref: "#/components/schemas/ApiFormat" }
+        name: { type: string }
+        base_url: { type: string }
+        enabled: { type: boolean }
+        auto_disabled: { type: boolean }
+        auto_disabled_reason: { type: string, nullable: true }
+        weight: { type: integer }
+        proxy_id: { type: string, format: uuid, nullable: true }
+        config_template_id: { type: string, format: uuid, nullable: true }
+        connect_timeout_ms: { type: integer, nullable: true }
+        response_header_timeout_ms: { type: integer, nullable: true }
+        stream_idle_timeout_ms: { type: integer, nullable: true }
+        upstream_auth_kind: { $ref: "#/components/schemas/UpstreamAuthKind" }
+        upstream_auth_header_name: { type: string, nullable: true }
+        upstream_credential_configured: { type: boolean }
+        available_models:
+          type: array
+          items: { type: string }
+        created_at: { $ref: "#/components/schemas/DateTime" }
+        updated_at: { $ref: "#/components/schemas/DateTime" }
+
+    ModelRuleView:
+      type: object
+      required:
+        [id, client_model, api_format, model_id, model_enabled, upstream_model,
+         description, channel_group_ids, channel_ids, enabled, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        client_model: { type: string }
+        api_format: { $ref: "#/components/schemas/ApiFormat" }
+        model_id: { type: string, format: uuid }
+        model_enabled: { type: boolean }
+        upstream_model: { type: string }
+        description: { type: string, nullable: true }
+        channel_group_ids:
+          type: array
+          items: { type: string, format: uuid }
+        channel_ids:
+          type: array
+          items: { type: string, format: uuid }
+        enabled: { type: boolean }
+        updated_at: { $ref: "#/components/schemas/DateTime" }
+
+    ProxyView:
+      type: object
+      required: [id, name, proxy_url, no_proxy_hosts, enabled, credential_configured, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        proxy_url: { type: string }
+        no_proxy_hosts:
+          type: array
+          items: { type: string }
+        enabled: { type: boolean }
+        credential_configured: { type: boolean }
+        created_at: { $ref: "#/components/schemas/DateTime" }
+        updated_at: { $ref: "#/components/schemas/DateTime" }
+
+    ConfigTemplateView:
+      type: object
+      required: [id, name, description, enabled, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: string, nullable: true }
+        enabled: { type: boolean }
+        created_at: { $ref: "#/components/schemas/DateTime" }
+        updated_at: { $ref: "#/components/schemas/DateTime" }
+
+    RequestLogView:
+      type: object
+      required:
+        [id, started_at, completed_at, user_id, api_key_id, api_format,
+         client_model, upstream_model, model_rule_id, channel_group_id,
+         channel_id, outcome, response_status_code, streamed, ttft_ms,
+         total_duration_ms, input_tokens, cached_input_tokens,
+         cache_write_tokens, output_tokens, currency, cost_amount, error_code,
+         billed_at]
+      properties:
+        id: { type: string, format: uuid }
+        started_at: { $ref: "#/components/schemas/DateTime" }
+        completed_at: { $ref: "#/components/schemas/DateTime" }
+        user_id: { type: string, format: uuid }
+        api_key_id: { type: string, format: uuid }
+        api_format: { $ref: "#/components/schemas/ApiFormat" }
+        client_model: { type: string }
+        upstream_model: { type: string, nullable: true }
+        model_rule_id: { type: string, format: uuid, nullable: true }
+        channel_group_id: { type: string, format: uuid, nullable: true }
+        channel_id: { type: string, format: uuid, nullable: true }
+        outcome: { type: string }
+        response_status_code: { type: integer, nullable: true }
+        streamed: { type: boolean }
+        ttft_ms: { type: integer, nullable: true }
+        total_duration_ms: { type: integer, nullable: true }
+        input_tokens: { type: integer, nullable: true }
+        cached_input_tokens: { type: integer, nullable: true }
+        cache_write_tokens: { type: integer, nullable: true }
+        output_tokens: { type: integer, nullable: true }
+        currency: { type: string, nullable: true }
+        cost_amount: { $ref: "#/components/schemas/DecimalNullable" }
+        error_code: { type: string, nullable: true }
+        billed_at: { $ref: "#/components/schemas/DateTimeNullable" }
+
+    AuditLogView:
+      type: object
+      required:
+        [id, occurred_at, actor_user_id, actor_type, actor_role, action,
+         object_type, object_id, before_redacted, after_redacted,
+         correlation_id, reason]
+      properties:
+        id: { type: string, format: uuid }
+        occurred_at: { $ref: "#/components/schemas/DateTime" }
+        actor_user_id: { type: string, format: uuid, nullable: true }
+        actor_type: { type: string }
+        actor_role: { type: string, nullable: true }
+        action: { type: string }
+        object_type: { type: string }
+        object_id: { type: string, format: uuid }
+        before_redacted: { $ref: "#/components/schemas/JsonValue" }
+        after_redacted: { $ref: "#/components/schemas/JsonValue" }
+        correlation_id: { type: string, nullable: true }
+        reason: { type: string, nullable: true }
+
+    ModelSyncPreview:
+      type: object
+      required:
+        [fetched_at, models, excluded_missing_prices, excluded_invalid_models,
+         excluded_oversized_metadata, unavailable_existing_count]
+      properties:
+        fetched_at: { $ref: "#/components/schemas/DateTime" }
+        models:
+          type: array
+          items: { $ref: "#/components/schemas/ModelSyncPreviewModel" }
+        excluded_missing_prices: { type: integer }
+        excluded_invalid_models: { type: integer }
+        excluded_oversized_metadata: { type: integer }
+        unavailable_existing_count: { type: integer }
+
+    ModelSyncPreviewModel:
+      type: object
+      required:
+        [provider_id, provider_name, model_id, display_name, input_unit_price,
+         cached_input_unit_price, cache_write_unit_price, output_unit_price, action]
+      properties:
+        provider_id: { type: string }
+        provider_name: { type: string }
+        model_id: { type: string }
+        display_name: { type: string }
+        input_unit_price: { $ref: "#/components/schemas/Decimal" }
+        cached_input_unit_price: { $ref: "#/components/schemas/Decimal" }
+        cache_write_unit_price: { $ref: "#/components/schemas/Decimal" }
+        output_unit_price: { $ref: "#/components/schemas/Decimal" }
+        action: { $ref: "#/components/schemas/ModelSyncAction" }
+
+    ModelPriceSyncResponse:
+      type: object
+      required: [updated_count, unavailable_count, correlation_id]
+      properties:
+        updated_count: { type: integer }
+        unavailable_count: { type: integer }
+        correlation_id: { type: string, format: uuid, nullable: true }
+
+    ModelImportResponse:
+      type: object
+      required: [model_count, correlation_id]
+      properties:
+        model_count: { type: integer }
+        correlation_id: { type: string, format: uuid }
+
+    # ---- Request bodies ----
+    LoginInput:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string }
+        password: { type: string }
+
+    ActivateInvitationInput:
+      type: object
+      required: [invitation_token, password]
+      properties:
+        invitation_token: { type: string }
+        password: { type: string }
+
+    ProfileUpdateInput:
+      type: object
+      required: [display_name]
+      properties:
+        display_name: { type: string }
+
+    PasswordChangeInput:
+      type: object
+      required: [current_password, new_password]
+      properties:
+        current_password: { type: string }
+        new_password: { type: string }
+
+    RevokeInput:
+      type: object
+      required: [reason]
+      properties:
+        reason: { type: string }
+
+    SelfApiKeyCreateInput:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        expires_at: { $ref: "#/components/schemas/DateTimeNullable" }
+
+    SelfApiKeyUpdateInput:
+      type: object
+      required: [name, status]
+      properties:
+        name: { type: string }
+        status: { type: string }
+        expires_at: { $ref: "#/components/schemas/DateTimeNullable" }
+
+    InviteUserInput:
+      type: object
+      required: [email, display_name, role, currency]
+      properties:
+        email: { type: string }
+        display_name: { type: string }
+        role: { $ref: "#/components/schemas/UserRole" }
+        currency: { type: string }
+        default_api_key_policy_id: { type: string, format: uuid, nullable: true }
+
+    UserInput:
+      type: object
+      required: [display_name, role, status, currency]
+      properties:
+        display_name: { type: string }
+        email: { type: string, nullable: true }
+        role: { $ref: "#/components/schemas/UserRole" }
+        status: { type: string }
+        currency: { type: string }
+        default_api_key_policy_id: { type: string, format: uuid, nullable: true }
+
+    ApiKeyPolicyInput:
+      type: object
+      required:
+        [name, allowed_api_formats, permissions, max_active_keys, enabled]
+      properties:
+        name: { type: string }
+        allowed_api_formats:
+          type: array
+          items: { $ref: "#/components/schemas/ApiFormat" }
+        permissions:
+          type: array
+          items: { type: string }
+        allowed_group_ids:
+          type: array
+          nullable: true
+          items: { type: string, format: uuid }
+        requests_per_minute: { type: integer, nullable: true }
+        max_concurrent_requests: { type: integer, nullable: true }
+        quota_limit_amount: { $ref: "#/components/schemas/DecimalNullable" }
+        max_active_keys: { type: integer }
+        enabled: { type: boolean }
+
+    ApiKeyCreateInput:
+      type: object
+      required: [user_id, name, allowed_api_formats, permissions]
+      properties:
+        user_id: { type: string, format: uuid }
+        name: { type: string }
+        allowed_api_formats:
+          type: array
+          items: { $ref: "#/components/schemas/ApiFormat" }
+        permissions:
+          type: array
+          items: { type: string }
+        allowed_group_ids:
+          type: array
+          nullable: true
+          items: { type: string, format: uuid }
+        expires_at: { $ref: "#/components/schemas/DateTimeNullable" }
+        requests_per_minute: { type: integer, nullable: true }
+        max_concurrent_requests: { type: integer, nullable: true }
+        quota_limit_amount: { $ref: "#/components/schemas/DecimalNullable" }
+
+    ApiKeyUpdateInput:
+      type: object
+      required: [name, status, allowed_api_formats, permissions]
+      properties:
+        name: { type: string }
+        status: { type: string }
+        allowed_api_formats:
+          type: array
+          items: { $ref: "#/components/schemas/ApiFormat" }
+        permissions:
+          type: array
+          items: { type: string }
+        allowed_group_ids:
+          type: array
+          nullable: true
+          items: { type: string, format: uuid }
+        expires_at: { $ref: "#/components/schemas/DateTimeNullable" }
+        requests_per_minute: { type: integer, nullable: true }
+        max_concurrent_requests: { type: integer, nullable: true }
+        quota_limit_amount: { $ref: "#/components/schemas/DecimalNullable" }
+
+    ModelInput:
+      type: object
+      required:
+        [source_model_id, display_name, enabled, currency, price_unit_tokens,
+         input_unit_price, cached_input_unit_price, cache_write_unit_price,
+         output_unit_price, price_effective_at]
+      properties:
+        source_model_id: { type: string }
+        display_name: { type: string }
+        provider_name: { type: string, nullable: true }
+        enabled: { type: boolean }
+        currency: { type: string }
+        price_unit_tokens: { type: integer }
+        input_unit_price: { $ref: "#/components/schemas/Decimal" }
+        cached_input_unit_price: { $ref: "#/components/schemas/Decimal" }
+        cache_write_unit_price: { $ref: "#/components/schemas/Decimal" }
+        output_unit_price: { $ref: "#/components/schemas/Decimal" }
+        price_effective_at: { $ref: "#/components/schemas/DateTime" }
+        source_payload: { $ref: "#/components/schemas/JsonValue" }
+
+    ChannelGroupInput:
+      type: object
+      required: [name, api_format, priority, selection_strategy, enabled]
+      properties:
+        name: { type: string }
+        api_format: { $ref: "#/components/schemas/ApiFormat" }
+        priority: { type: integer }
+        selection_strategy: { $ref: "#/components/schemas/SelectionStrategy" }
+        enabled: { type: boolean }
+
+    ChannelCreateInput:
+      type: object
+      required:
+        [channel_group_id, api_format, name, base_url, enabled, weight, upstream_auth_kind]
+      properties:
+        channel_group_id: { type: string, format: uuid }
+        api_format: { $ref: "#/components/schemas/ApiFormat" }
+        name: { type: string }
+        base_url: { type: string }
+        enabled: { type: boolean }
+        weight: { type: integer }
+        proxy_id: { type: string, format: uuid, nullable: true }
+        config_template_id: { type: string, format: uuid, nullable: true }
+        override_document: { $ref: "#/components/schemas/JsonValue" }
+        connect_timeout_ms: { type: integer, nullable: true }
+        response_header_timeout_ms: { type: integer, nullable: true }
+        stream_idle_timeout_ms: { type: integer, nullable: true }
+        upstream_auth_kind: { $ref: "#/components/schemas/UpstreamAuthKind" }
+        upstream_auth_header_name: { type: string, nullable: true }
+        upstream_api_key: { type: string, nullable: true }
+        available_models:
+          type: array
+          items: { type: string }
+        health_check: { $ref: "#/components/schemas/JsonValue" }
+
+    ChannelInput:
+      type: object
+      required:
+        [channel_group_id, api_format, name, base_url, enabled, weight, upstream_auth_kind]
+      properties:
+        channel_group_id: { type: string, format: uuid }
+        api_format: { $ref: "#/components/schemas/ApiFormat" }
+        name: { type: string }
+        base_url: { type: string }
+        enabled: { type: boolean }
+        weight: { type: integer }
+        proxy_id: { type: string, format: uuid, nullable: true }
+        config_template_id: { type: string, format: uuid, nullable: true }
+        override_document: { $ref: "#/components/schemas/JsonValue" }
+        connect_timeout_ms: { type: integer, nullable: true }
+        response_header_timeout_ms: { type: integer, nullable: true }
+        stream_idle_timeout_ms: { type: integer, nullable: true }
+        upstream_auth_kind: { $ref: "#/components/schemas/UpstreamAuthKind" }
+        upstream_auth_header_name: { type: string, nullable: true }
+        upstream_api_key: { type: string, nullable: true }
+        available_models:
+          type: array
+          items: { type: string }
+        health_check: { $ref: "#/components/schemas/JsonValue" }
+
+    ModelRuleInput:
+      type: object
+      required: [client_model, api_format, model_id, upstream_model, enabled]
+      properties:
+        client_model: { type: string }
+        api_format: { $ref: "#/components/schemas/ApiFormat" }
+        model_id: { type: string, format: uuid }
+        upstream_model: { type: string }
+        description: { type: string, nullable: true }
+        channel_group_ids:
+          type: array
+          items: { type: string, format: uuid }
+        channel_ids:
+          type: array
+          items: { type: string, format: uuid }
+        enabled: { type: boolean }
+
+    ProxyCreateInput:
+      type: object
+      required: [name, proxy_url, enabled]
+      properties:
+        name: { type: string }
+        proxy_url: { type: string }
+        username: { type: string, nullable: true }
+        password: { type: string, nullable: true }
+        no_proxy_hosts:
+          type: array
+          items: { type: string }
+        enabled: { type: boolean }
+
+    ProxyInput:
+      type: object
+      required: [name, proxy_url, enabled]
+      properties:
+        name: { type: string }
+        proxy_url: { type: string }
+        username: { type: string, nullable: true }
+        password: { type: string, nullable: true }
+        no_proxy_hosts:
+          type: array
+          items: { type: string }
+        enabled: { type: boolean }
+
+    ConfigTemplateInput:
+      type: object
+      required: [name, document, enabled]
+      properties:
+        name: { type: string }
+        description: { type: string, nullable: true }
+        document: { $ref: "#/components/schemas/JsonValue" }
+        enabled: { type: boolean }
+
+    ModelSyncPreviewRequest:
+      type: object
+      properties:
+        provider_ids:
+          type: array
+          items: { type: string }
+
+    ModelPriceSyncRequest:
+      type: object
+      description: Empty body; the sync refreshes all models.dev-imported models.
+      additionalProperties: false
+
+    ModelImportRequest:
+      type: object
+      required: [selections]
+      properties:
+        selections:
+          type: array
+          items: { $ref: "#/components/schemas/ModelSyncSelection" }
+
+    ModelSyncSelection:
+      type: object
+      required: [provider_id, model_id]
+      properties:
+        provider_id: { type: string }
+        model_id: { type: string }
+
+    ListQuery:
+      type: object
+      properties:
+        limit: { type: integer, minimum: 1, maximum: 100 }
