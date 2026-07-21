@@ -7,7 +7,7 @@ pub use auth::{
     LiveConsoleIdentity, LoginUser, PasswordUser, SessionRotation, SessionUser,
 };
 
-use std::fmt;
+use std::{collections::BTreeMap, fmt};
 
 use chrono::{DateTime, Timelike, Utc};
 use serde::{Deserialize, Serialize};
@@ -333,6 +333,8 @@ pub struct ChannelCreateInput {
     pub name: String,
     pub base_url: String,
     pub enabled: bool,
+    #[serde(default)]
+    pub status_statistics_enabled: bool,
     pub weight: i32,
     #[serde(default)]
     pub proxy_id: Option<Uuid>,
@@ -363,6 +365,8 @@ pub struct ChannelInput {
     pub name: String,
     pub base_url: String,
     pub enabled: bool,
+    #[serde(default)]
+    pub status_statistics_enabled: bool,
     pub weight: i32,
     #[serde(default)]
     pub proxy_id: Option<Uuid>,
@@ -476,6 +480,7 @@ struct ChannelMutationInput {
     name: String,
     base_url: String,
     enabled: bool,
+    status_statistics_enabled: bool,
     weight: i32,
     proxy_id: Option<Uuid>,
     config_template_id: Option<Uuid>,
@@ -497,6 +502,7 @@ impl From<ChannelCreateInput> for ChannelMutationInput {
             name: value.name,
             base_url: value.base_url,
             enabled: value.enabled,
+            status_statistics_enabled: value.status_statistics_enabled,
             weight: value.weight,
             proxy_id: value.proxy_id,
             config_template_id: value.config_template_id,
@@ -520,6 +526,7 @@ impl From<ChannelInput> for ChannelMutationInput {
             name: value.name,
             base_url: value.base_url,
             enabled: value.enabled,
+            status_statistics_enabled: value.status_statistics_enabled,
             weight: value.weight,
             proxy_id: value.proxy_id,
             config_template_id: value.config_template_id,
@@ -754,6 +761,200 @@ pub struct RequestLogFilter {
     pub billed: Option<bool>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ChannelStatusWindow {
+    Last24Hours,
+    Last3Days,
+    Last7Days,
+}
+
+impl ChannelStatusWindow {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Last24Hours => "24h",
+            Self::Last3Days => "3d",
+            Self::Last7Days => "7d",
+        }
+    }
+
+    const fn bucket_seconds(self) -> i64 {
+        match self {
+            Self::Last24Hours => 30 * 60,
+            Self::Last3Days => 2 * 60 * 60,
+            Self::Last7Days => 4 * 60 * 60,
+        }
+    }
+
+    const fn bucket_count(self) -> i64 {
+        match self {
+            Self::Last24Hours => 48,
+            Self::Last3Days => 36,
+            Self::Last7Days => 42,
+        }
+    }
+
+    fn range(self, now: DateTime<Utc>) -> (DateTime<Utc>, DateTime<Utc>) {
+        let bucket_seconds = self.bucket_seconds();
+        let current_bucket_started_at = now.timestamp().div_euclid(bucket_seconds) * bucket_seconds;
+        let started_at = current_bucket_started_at
+            .saturating_sub((self.bucket_count() - 1).saturating_mul(bucket_seconds));
+        (DateTime::from_timestamp(started_at, 0).unwrap_or(now), now)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StatisticsGranularity {
+    Hour,
+    Day,
+}
+
+impl StatisticsGranularity {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Hour => "hour",
+            Self::Day => "day",
+        }
+    }
+
+    const fn max_range(self) -> chrono::Duration {
+        match self {
+            Self::Hour => chrono::Duration::days(31),
+            Self::Day => chrono::Duration::days(366),
+        }
+    }
+
+    const fn bucket_seconds(self) -> i64 {
+        match self {
+            Self::Hour => 60 * 60,
+            Self::Day => 24 * 60 * 60,
+        }
+    }
+
+    const fn bucket_expression(self) -> &'static str {
+        match self {
+            Self::Hour => "date_trunc('hour', started_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'",
+            Self::Day => "date_trunc('day', started_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct CostStatisticsFilter {
+    pub started_at: DateTime<Utc>,
+    pub ended_at: DateTime<Utc>,
+    pub granularity: StatisticsGranularity,
+    pub user_id: Option<Uuid>,
+    pub api_key_id: Option<Uuid>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ChannelStatusReport {
+    pub window: String,
+    pub started_at: DateTime<Utc>,
+    pub ended_at: DateTime<Utc>,
+    pub bucket_seconds: i64,
+    pub models: Vec<ChannelStatusModelMetric>,
+    pub channels: Vec<ChannelStatusChannel>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ChannelStatusModelMetric {
+    pub api_format: String,
+    pub model: String,
+    pub request_count: i64,
+    pub success_rate: Option<f64>,
+    pub p90_ttft_ms: Option<f64>,
+    pub p50_tps: Option<f64>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ChannelStatusChannel {
+    pub id: Uuid,
+    pub channel_group_id: Uuid,
+    pub channel_group_name: String,
+    pub api_format: String,
+    pub name: String,
+    pub enabled: bool,
+    pub auto_disabled: bool,
+    pub models: Vec<ChannelStatusChannelModel>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ChannelStatusChannelModel {
+    pub api_format: String,
+    pub model: String,
+    pub request_count: i64,
+    pub success_rate: Option<f64>,
+    pub p90_ttft_ms: Option<f64>,
+    pub p50_tps: Option<f64>,
+    pub history: Vec<ChannelStatusBucket>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ChannelStatusBucket {
+    pub started_at: DateTime<Utc>,
+    pub request_count: i64,
+    pub success_rate: Option<f64>,
+    pub p90_ttft_ms: Option<f64>,
+    pub p50_tps: Option<f64>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct CurrencyAmount {
+    pub currency: String,
+    pub amount: rust_decimal::Decimal,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct CostStatisticsReport {
+    pub started_at: DateTime<Utc>,
+    pub ended_at: DateTime<Utc>,
+    pub granularity: String,
+    pub summary: CostStatisticsSummary,
+    pub buckets: Vec<CostStatisticsBucket>,
+    pub models: Vec<CostStatisticsModel>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct CostStatisticsSummary {
+    pub request_count: i64,
+    pub priced_request_count: i64,
+    pub total_tokens: i64,
+    pub average_rpm: f64,
+    pub average_tpm: f64,
+    pub costs: Vec<CurrencyAmount>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct CostStatisticsBucket {
+    pub started_at: DateTime<Utc>,
+    pub request_count: i64,
+    pub total_tokens: i64,
+    pub costs: Vec<CurrencyAmount>,
+    pub models: Vec<CostStatisticsBucketModel>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct CostStatisticsBucketModel {
+    pub api_format: String,
+    pub model: String,
+    pub request_count: i64,
+    pub total_tokens: i64,
+    pub costs: Vec<CurrencyAmount>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct CostStatisticsModel {
+    pub api_format: String,
+    pub model: String,
+    pub request_count: i64,
+    pub total_tokens: i64,
+    pub success_rate: Option<f64>,
+    pub costs: Vec<CurrencyAmount>,
+}
+
 #[derive(Clone, Debug, Serialize, FromRow)]
 pub struct ConsoleAuditLog {
     pub id: Uuid,
@@ -806,6 +1007,7 @@ pub struct ControlPlaneChannel {
     pub name: String,
     pub base_url: String,
     pub enabled: bool,
+    pub status_statistics_enabled: bool,
     pub auto_disabled: bool,
     pub auto_disabled_reason: Option<String>,
     pub weight: i32,
@@ -829,6 +1031,7 @@ struct ControlPlaneChannelRow {
     name: String,
     base_url: String,
     enabled: bool,
+    status_statistics_enabled: bool,
     auto_disabled: bool,
     auto_disabled_reason: Option<String>,
     weight: i32,
@@ -853,6 +1056,7 @@ impl From<ControlPlaneChannelRow> for ControlPlaneChannel {
             name: value.name,
             base_url: value.base_url,
             enabled: value.enabled,
+            status_statistics_enabled: value.status_statistics_enabled,
             auto_disabled: value.auto_disabled,
             auto_disabled_reason: value.auto_disabled_reason,
             weight: value.weight,
@@ -930,12 +1134,7 @@ impl RequestLogRepository {
         user_id: Uuid,
         id: Uuid,
     ) -> Result<Option<ConsoleRequestLog>, RepositoryError> {
-        sqlx::query_as::<_, ConsoleRequestLog>(CONSOLE_REQUEST_LOG_SELECT)
-            .bind(id)
-            .bind(user_id)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(RepositoryError::from)
+        query_console_request_log(&self.pool, id, Some(user_id)).await
     }
 
     pub async fn list_all(
@@ -943,6 +1142,353 @@ impl RequestLogRepository {
         filter: RequestLogFilter,
     ) -> Result<Vec<ConsoleRequestLog>, RepositoryError> {
         query_console_request_logs(&self.pool, None, filter).await
+    }
+
+    pub async fn get(&self, id: Uuid) -> Result<Option<ConsoleRequestLog>, RepositoryError> {
+        query_console_request_log(&self.pool, id, None).await
+    }
+
+    pub async fn channel_status(
+        &self,
+        window: ChannelStatusWindow,
+    ) -> Result<ChannelStatusReport, RepositoryError> {
+        let ended_at = Utc::now();
+        let (started_at, ended_at) = window.range(ended_at);
+        let tracked_channels = sqlx::query_as::<_, TrackedChannelRow>(
+            "SELECT c.id,
+                    c.channel_group_id,
+                    g.name AS channel_group_name,
+                    c.api_format::text AS api_format,
+                    c.name,
+                    c.enabled,
+                    c.auto_disabled,
+                    c.available_models
+             FROM channels AS c
+             JOIN channel_groups AS g ON g.id = c.channel_group_id
+             WHERE c.status_statistics_enabled
+             ORDER BY g.priority, g.name, c.name, c.id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut overall_models = BTreeMap::<(String, String), ChannelStatusModelMetric>::new();
+        let mut channel_indexes = BTreeMap::<Uuid, usize>::new();
+        let mut channels =
+            Vec::<ChannelStatusChannelBuilder>::with_capacity(tracked_channels.len());
+        for channel in tracked_channels {
+            let mut models = BTreeMap::new();
+            for model in &channel.available_models {
+                let key = (channel.api_format.clone(), model.clone());
+                overall_models
+                    .entry(key.clone())
+                    .or_insert_with(|| empty_channel_status_metric(&key.0, &key.1));
+                models
+                    .entry(key.clone())
+                    .or_insert_with(|| empty_channel_status_channel_model(&key.0, &key.1));
+            }
+            let index = channels.len();
+            channel_indexes.insert(channel.id, index);
+            channels.push(ChannelStatusChannelBuilder {
+                id: channel.id,
+                channel_group_id: channel.channel_group_id,
+                channel_group_name: channel.channel_group_name,
+                api_format: channel.api_format,
+                name: channel.name,
+                enabled: channel.enabled,
+                auto_disabled: channel.auto_disabled,
+                models,
+            });
+        }
+
+        let overall_rows = sqlx::query_as::<_, StatusModelMetricRow>(
+            "SELECT log.api_format::text AS api_format,
+                    COALESCE(log.upstream_model, log.client_model) AS model,
+                    count(*)::bigint AS request_count,
+                    count(*) FILTER (WHERE log.outcome <> 'cancelled')::bigint
+                        AS success_rate_request_count,
+                    count(*) FILTER (WHERE log.outcome = 'succeeded')::bigint AS succeeded_count,
+                    percentile_cont(0.9) WITHIN GROUP (ORDER BY log.ttft_ms::double precision)
+                        FILTER (WHERE log.outcome = 'succeeded' AND log.ttft_ms IS NOT NULL)
+                        AS p90_ttft_ms,
+                    percentile_cont(0.5) WITHIN GROUP (
+                        ORDER BY log.output_tokens_per_second::double precision
+                    ) FILTER (
+                        WHERE log.outcome = 'succeeded'
+                          AND log.output_tokens_per_second IS NOT NULL
+                    ) AS p50_tps
+             FROM request_logs AS log
+             JOIN channels AS channel ON channel.id = log.channel_id
+             WHERE channel.status_statistics_enabled
+               AND log.started_at >= $1
+               AND log.started_at < $2
+             GROUP BY log.api_format, COALESCE(log.upstream_model, log.client_model)
+             ORDER BY log.api_format, COALESCE(log.upstream_model, log.client_model)",
+        )
+        .bind(started_at)
+        .bind(ended_at)
+        .fetch_all(&self.pool)
+        .await?;
+        for row in overall_rows {
+            let key = (row.api_format.clone(), row.model.clone());
+            overall_models.insert(key, row.into_metric());
+        }
+
+        let channel_rows = sqlx::query_as::<_, StatusChannelMetricRow>(
+            "SELECT log.channel_id,
+                    log.api_format::text AS api_format,
+                    COALESCE(log.upstream_model, log.client_model) AS model,
+                    count(*)::bigint AS request_count,
+                    count(*) FILTER (WHERE log.outcome <> 'cancelled')::bigint
+                        AS success_rate_request_count,
+                    count(*) FILTER (WHERE log.outcome = 'succeeded')::bigint AS succeeded_count,
+                    percentile_cont(0.9) WITHIN GROUP (ORDER BY log.ttft_ms::double precision)
+                        FILTER (WHERE log.outcome = 'succeeded' AND log.ttft_ms IS NOT NULL)
+                        AS p90_ttft_ms,
+                    percentile_cont(0.5) WITHIN GROUP (
+                        ORDER BY log.output_tokens_per_second::double precision
+                    ) FILTER (
+                        WHERE log.outcome = 'succeeded'
+                          AND log.output_tokens_per_second IS NOT NULL
+                    ) AS p50_tps
+             FROM request_logs AS log
+             JOIN channels AS channel ON channel.id = log.channel_id
+             WHERE channel.status_statistics_enabled
+               AND log.started_at >= $1
+               AND log.started_at < $2
+             GROUP BY log.channel_id, log.api_format,
+                      COALESCE(log.upstream_model, log.client_model)
+             ORDER BY log.channel_id, log.api_format,
+                      COALESCE(log.upstream_model, log.client_model)",
+        )
+        .bind(started_at)
+        .bind(ended_at)
+        .fetch_all(&self.pool)
+        .await?;
+        for row in channel_rows {
+            let Some(index) = channel_indexes.get(&row.channel_id).copied() else {
+                continue;
+            };
+            let key = (row.api_format.clone(), row.model.clone());
+            let metric = channels[index]
+                .models
+                .entry(key.clone())
+                .or_insert_with(|| empty_channel_status_channel_model(&key.0, &key.1));
+            metric.request_count = row.request_count;
+            metric.success_rate = success_rate(row.success_rate_request_count, row.succeeded_count);
+            metric.p90_ttft_ms = row.p90_ttft_ms;
+            metric.p50_tps = row.p50_tps;
+        }
+
+        let history_rows = sqlx::query_as::<_, StatusBucketMetricRow>(
+            "SELECT log.channel_id,
+                    log.api_format::text AS api_format,
+                    COALESCE(log.upstream_model, log.client_model) AS model,
+                    to_timestamp(
+                        floor(extract(epoch FROM log.started_at) / $3::double precision)
+                        * $3::double precision
+                    ) AS bucket_started_at,
+                    count(*)::bigint AS request_count,
+                    count(*) FILTER (WHERE log.outcome <> 'cancelled')::bigint
+                        AS success_rate_request_count,
+                    count(*) FILTER (WHERE log.outcome = 'succeeded')::bigint AS succeeded_count,
+                    percentile_cont(0.9) WITHIN GROUP (ORDER BY log.ttft_ms::double precision)
+                        FILTER (WHERE log.outcome = 'succeeded' AND log.ttft_ms IS NOT NULL)
+                        AS p90_ttft_ms,
+                    percentile_cont(0.5) WITHIN GROUP (
+                        ORDER BY log.output_tokens_per_second::double precision
+                    ) FILTER (
+                        WHERE log.outcome = 'succeeded'
+                          AND log.output_tokens_per_second IS NOT NULL
+                    ) AS p50_tps
+             FROM request_logs AS log
+             JOIN channels AS channel ON channel.id = log.channel_id
+             WHERE channel.status_statistics_enabled
+               AND log.started_at >= $1
+               AND log.started_at < $2
+             GROUP BY log.channel_id, log.api_format,
+                      COALESCE(log.upstream_model, log.client_model),
+                      bucket_started_at
+             ORDER BY log.channel_id, log.api_format,
+                      COALESCE(log.upstream_model, log.client_model),
+                      bucket_started_at",
+        )
+        .bind(started_at)
+        .bind(ended_at)
+        .bind(window.bucket_seconds())
+        .fetch_all(&self.pool)
+        .await?;
+        for row in history_rows {
+            let Some(index) = channel_indexes.get(&row.channel_id).copied() else {
+                continue;
+            };
+            let key = (row.api_format.clone(), row.model.clone());
+            channels[index]
+                .models
+                .entry(key.clone())
+                .or_insert_with(|| empty_channel_status_channel_model(&key.0, &key.1))
+                .history
+                .push(ChannelStatusBucket {
+                    started_at: row.bucket_started_at,
+                    request_count: row.request_count,
+                    success_rate: success_rate(row.success_rate_request_count, row.succeeded_count),
+                    p90_ttft_ms: row.p90_ttft_ms,
+                    p50_tps: row.p50_tps,
+                });
+        }
+
+        Ok(ChannelStatusReport {
+            window: window.as_str().into(),
+            started_at,
+            ended_at,
+            bucket_seconds: window.bucket_seconds(),
+            models: overall_models.into_values().collect(),
+            channels: channels
+                .into_iter()
+                .map(ChannelStatusChannelBuilder::finish)
+                .collect(),
+        })
+    }
+
+    pub async fn cost_statistics(
+        &self,
+        filter: CostStatisticsFilter,
+    ) -> Result<CostStatisticsReport, RepositoryError> {
+        let duration = filter.ended_at.signed_duration_since(filter.started_at);
+        if duration <= chrono::Duration::zero() || duration > filter.granularity.max_range() {
+            return Err(RepositoryError::Validation);
+        }
+
+        let summary = sqlx::query_as::<_, CostSummaryRow>(
+            "SELECT count(*)::bigint AS request_count,
+                    count(cost_amount)::bigint AS priced_request_count,
+                    COALESCE(
+                        sum(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)),
+                        0
+                    )::bigint AS total_tokens
+             FROM request_logs
+             WHERE started_at >= $1
+               AND started_at < $2
+               AND ($3::uuid IS NULL OR user_id = $3)
+               AND ($4::uuid IS NULL OR api_key_id = $4)",
+        )
+        .bind(filter.started_at)
+        .bind(filter.ended_at)
+        .bind(filter.user_id)
+        .bind(filter.api_key_id)
+        .fetch_one(&self.pool)
+        .await?;
+
+        let cost_rows = sqlx::query_as::<_, CurrencyTotalRow>(
+            "SELECT currency,
+                    sum(cost_amount) AS amount
+             FROM request_logs
+             WHERE started_at >= $1
+               AND started_at < $2
+               AND ($3::uuid IS NULL OR user_id = $3)
+               AND ($4::uuid IS NULL OR api_key_id = $4)
+               AND cost_amount IS NOT NULL
+               AND currency IS NOT NULL
+             GROUP BY currency
+             ORDER BY currency",
+        )
+        .bind(filter.started_at)
+        .bind(filter.ended_at)
+        .bind(filter.user_id)
+        .bind(filter.api_key_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let bucket_sql = format!(
+            "SELECT {} AS bucket_started_at,
+                    COALESCE(upstream_model, client_model) AS model,
+                    api_format::text AS api_format,
+                    currency,
+                    count(*)::bigint AS request_count,
+                    count(cost_amount)::bigint AS priced_request_count,
+                    COALESCE(
+                        sum(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)),
+                        0
+                    )::bigint AS total_tokens,
+                    COALESCE(sum(cost_amount), 0) AS cost_amount
+             FROM request_logs
+             WHERE started_at >= $1
+               AND started_at < $2
+               AND ($3::uuid IS NULL OR user_id = $3)
+               AND ($4::uuid IS NULL OR api_key_id = $4)
+             GROUP BY bucket_started_at,
+                      COALESCE(upstream_model, client_model),
+                      api_format,
+                      currency
+             ORDER BY bucket_started_at,
+                      COALESCE(upstream_model, client_model),
+                      api_format,
+                      currency",
+            filter.granularity.bucket_expression()
+        );
+        let bucket_rows = sqlx::query_as::<_, CostBucketMetricRow>(&bucket_sql)
+            .bind(filter.started_at)
+            .bind(filter.ended_at)
+            .bind(filter.user_id)
+            .bind(filter.api_key_id)
+            .fetch_all(&self.pool)
+            .await?;
+
+        let model_rows = sqlx::query_as::<_, CostModelMetricRow>(
+            "SELECT COALESCE(upstream_model, client_model) AS model,
+                    api_format::text AS api_format,
+                    currency,
+                    count(*)::bigint AS request_count,
+                    count(*) FILTER (WHERE outcome <> 'cancelled')::bigint
+                        AS success_rate_request_count,
+                    count(*) FILTER (WHERE outcome = 'succeeded')::bigint AS succeeded_count,
+                    count(cost_amount)::bigint AS priced_request_count,
+                    COALESCE(
+                        sum(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)),
+                        0
+                    )::bigint AS total_tokens,
+                    COALESCE(sum(cost_amount), 0) AS cost_amount
+             FROM request_logs
+             WHERE started_at >= $1
+               AND started_at < $2
+               AND ($3::uuid IS NULL OR user_id = $3)
+               AND ($4::uuid IS NULL OR api_key_id = $4)
+             GROUP BY COALESCE(upstream_model, client_model), api_format, currency
+             ORDER BY COALESCE(upstream_model, client_model), api_format, currency",
+        )
+        .bind(filter.started_at)
+        .bind(filter.ended_at)
+        .bind(filter.user_id)
+        .bind(filter.api_key_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let duration_minutes = duration.num_milliseconds().max(1) as f64 / 60_000.0;
+        Ok(CostStatisticsReport {
+            started_at: filter.started_at,
+            ended_at: filter.ended_at,
+            granularity: filter.granularity.as_str().into(),
+            summary: CostStatisticsSummary {
+                request_count: summary.request_count,
+                priced_request_count: summary.priced_request_count,
+                total_tokens: summary.total_tokens,
+                average_rpm: summary.request_count as f64 / duration_minutes,
+                average_tpm: summary.total_tokens as f64 / duration_minutes,
+                costs: cost_rows
+                    .into_iter()
+                    .map(|row| CurrencyAmount {
+                        currency: row.currency,
+                        amount: row.amount,
+                    })
+                    .collect(),
+            },
+            buckets: fold_cost_buckets(
+                bucket_rows,
+                filter.started_at,
+                filter.ended_at,
+                filter.granularity,
+            ),
+            models: fold_cost_models(model_rows),
+        })
     }
 
     /// Inserts one terminal event without changing schema-owned defaults.
@@ -1130,7 +1676,25 @@ impl RequestLogRepository {
 }
 
 const CONSOLE_REQUEST_LOG_COLUMNS: &str = "id,started_at,completed_at,user_id,api_key_id,api_format::text AS api_format,client_model,upstream_model,model_rule_id,channel_group_id,channel_id,outcome,response_status_code,streamed,ttft_ms,total_duration_ms,input_tokens,cached_input_tokens,cache_write_tokens,output_tokens,currency,cost_amount,error_code,billed_at";
-const CONSOLE_REQUEST_LOG_SELECT: &str = "SELECT id,started_at,completed_at,user_id,api_key_id,api_format::text AS api_format,client_model,upstream_model,model_rule_id,channel_group_id,channel_id,outcome,response_status_code,streamed,ttft_ms,total_duration_ms,input_tokens,cached_input_tokens,cache_write_tokens,output_tokens,currency,cost_amount,error_code,billed_at FROM request_logs WHERE id=$1 AND user_id=$2";
+
+async fn query_console_request_log(
+    pool: &PgPool,
+    id: Uuid,
+    owner_user_id: Option<Uuid>,
+) -> Result<Option<ConsoleRequestLog>, RepositoryError> {
+    let mut query = QueryBuilder::<Postgres>::new(format!(
+        "SELECT {CONSOLE_REQUEST_LOG_COLUMNS} FROM request_logs WHERE id = "
+    ));
+    query.push_bind(id);
+    if let Some(user_id) = owner_user_id {
+        query.push(" AND user_id = ").push_bind(user_id);
+    }
+    query
+        .build_query_as::<ConsoleRequestLog>()
+        .fetch_optional(pool)
+        .await
+        .map_err(RepositoryError::from)
+}
 
 async fn query_console_request_logs(
     pool: &PgPool,
@@ -1200,6 +1764,310 @@ async fn query_console_request_logs(
         .fetch_all(pool)
         .await
         .map_err(RepositoryError::from)
+}
+
+#[derive(FromRow)]
+struct TrackedChannelRow {
+    id: Uuid,
+    channel_group_id: Uuid,
+    channel_group_name: String,
+    api_format: String,
+    name: String,
+    enabled: bool,
+    auto_disabled: bool,
+    available_models: Vec<String>,
+}
+
+#[derive(FromRow)]
+struct StatusModelMetricRow {
+    api_format: String,
+    model: String,
+    request_count: i64,
+    success_rate_request_count: i64,
+    succeeded_count: i64,
+    p90_ttft_ms: Option<f64>,
+    p50_tps: Option<f64>,
+}
+
+impl StatusModelMetricRow {
+    fn into_metric(self) -> ChannelStatusModelMetric {
+        ChannelStatusModelMetric {
+            api_format: self.api_format,
+            model: self.model,
+            request_count: self.request_count,
+            success_rate: success_rate(self.success_rate_request_count, self.succeeded_count),
+            p90_ttft_ms: self.p90_ttft_ms,
+            p50_tps: self.p50_tps,
+        }
+    }
+}
+
+#[derive(FromRow)]
+struct StatusChannelMetricRow {
+    channel_id: Uuid,
+    api_format: String,
+    model: String,
+    request_count: i64,
+    success_rate_request_count: i64,
+    succeeded_count: i64,
+    p90_ttft_ms: Option<f64>,
+    p50_tps: Option<f64>,
+}
+
+#[derive(FromRow)]
+struct StatusBucketMetricRow {
+    channel_id: Uuid,
+    api_format: String,
+    model: String,
+    bucket_started_at: DateTime<Utc>,
+    request_count: i64,
+    success_rate_request_count: i64,
+    succeeded_count: i64,
+    p90_ttft_ms: Option<f64>,
+    p50_tps: Option<f64>,
+}
+
+struct ChannelStatusChannelBuilder {
+    id: Uuid,
+    channel_group_id: Uuid,
+    channel_group_name: String,
+    api_format: String,
+    name: String,
+    enabled: bool,
+    auto_disabled: bool,
+    models: BTreeMap<(String, String), ChannelStatusChannelModel>,
+}
+
+impl ChannelStatusChannelBuilder {
+    fn finish(self) -> ChannelStatusChannel {
+        ChannelStatusChannel {
+            id: self.id,
+            channel_group_id: self.channel_group_id,
+            channel_group_name: self.channel_group_name,
+            api_format: self.api_format,
+            name: self.name,
+            enabled: self.enabled,
+            auto_disabled: self.auto_disabled,
+            models: self
+                .models
+                .into_values()
+                .map(|mut model| {
+                    model.history.sort_by_key(|bucket| bucket.started_at);
+                    model
+                })
+                .collect(),
+        }
+    }
+}
+
+fn empty_channel_status_metric(api_format: &str, model: &str) -> ChannelStatusModelMetric {
+    ChannelStatusModelMetric {
+        api_format: api_format.into(),
+        model: model.into(),
+        request_count: 0,
+        success_rate: None,
+        p90_ttft_ms: None,
+        p50_tps: None,
+    }
+}
+
+fn empty_channel_status_channel_model(api_format: &str, model: &str) -> ChannelStatusChannelModel {
+    ChannelStatusChannelModel {
+        api_format: api_format.into(),
+        model: model.into(),
+        request_count: 0,
+        success_rate: None,
+        p90_ttft_ms: None,
+        p50_tps: None,
+        history: Vec::new(),
+    }
+}
+
+fn success_rate(eligible_request_count: i64, succeeded_count: i64) -> Option<f64> {
+    (eligible_request_count > 0).then_some(succeeded_count as f64 / eligible_request_count as f64)
+}
+
+#[derive(FromRow)]
+struct CostSummaryRow {
+    request_count: i64,
+    priced_request_count: i64,
+    total_tokens: i64,
+}
+
+#[derive(FromRow)]
+struct CurrencyTotalRow {
+    currency: String,
+    amount: rust_decimal::Decimal,
+}
+
+#[derive(FromRow)]
+struct CostBucketMetricRow {
+    bucket_started_at: DateTime<Utc>,
+    model: String,
+    api_format: String,
+    currency: Option<String>,
+    request_count: i64,
+    priced_request_count: i64,
+    total_tokens: i64,
+    cost_amount: rust_decimal::Decimal,
+}
+
+#[derive(FromRow)]
+struct CostModelMetricRow {
+    model: String,
+    api_format: String,
+    currency: Option<String>,
+    request_count: i64,
+    success_rate_request_count: i64,
+    succeeded_count: i64,
+    priced_request_count: i64,
+    total_tokens: i64,
+    cost_amount: rust_decimal::Decimal,
+}
+
+#[derive(Default)]
+struct CostBucketBuilder {
+    request_count: i64,
+    total_tokens: i64,
+    costs: BTreeMap<String, rust_decimal::Decimal>,
+    models: BTreeMap<(String, String), CostBucketModelBuilder>,
+}
+
+#[derive(Default)]
+struct CostBucketModelBuilder {
+    request_count: i64,
+    total_tokens: i64,
+    costs: BTreeMap<String, rust_decimal::Decimal>,
+}
+
+#[derive(Default)]
+struct CostModelBuilder {
+    request_count: i64,
+    success_rate_request_count: i64,
+    succeeded_count: i64,
+    total_tokens: i64,
+    costs: BTreeMap<String, rust_decimal::Decimal>,
+}
+
+fn fold_cost_buckets(
+    rows: Vec<CostBucketMetricRow>,
+    started_at: DateTime<Utc>,
+    ended_at: DateTime<Utc>,
+    granularity: StatisticsGranularity,
+) -> Vec<CostStatisticsBucket> {
+    let mut buckets = BTreeMap::<DateTime<Utc>, CostBucketBuilder>::new();
+    let bucket_seconds = granularity.bucket_seconds();
+    let aligned_started_at = DateTime::from_timestamp(
+        started_at.timestamp().div_euclid(bucket_seconds) * bucket_seconds,
+        0,
+    )
+    .unwrap_or(started_at);
+    let mut bucket_started_at = aligned_started_at;
+    while bucket_started_at < ended_at {
+        buckets.entry(bucket_started_at).or_default();
+        let Some(next) =
+            bucket_started_at.checked_add_signed(chrono::Duration::seconds(bucket_seconds))
+        else {
+            break;
+        };
+        bucket_started_at = next;
+    }
+    for row in rows {
+        let bucket = buckets.entry(row.bucket_started_at).or_default();
+        bucket.request_count = bucket.request_count.saturating_add(row.request_count);
+        bucket.total_tokens = bucket.total_tokens.saturating_add(row.total_tokens);
+        add_currency_cost(
+            &mut bucket.costs,
+            row.currency.as_deref(),
+            row.priced_request_count,
+            row.cost_amount,
+        );
+        let model = bucket
+            .models
+            .entry((row.api_format, row.model))
+            .or_default();
+        model.request_count = model.request_count.saturating_add(row.request_count);
+        model.total_tokens = model.total_tokens.saturating_add(row.total_tokens);
+        add_currency_cost(
+            &mut model.costs,
+            row.currency.as_deref(),
+            row.priced_request_count,
+            row.cost_amount,
+        );
+    }
+
+    buckets
+        .into_iter()
+        .map(|(started_at, bucket)| CostStatisticsBucket {
+            started_at,
+            request_count: bucket.request_count,
+            total_tokens: bucket.total_tokens,
+            costs: finish_currency_costs(bucket.costs),
+            models: bucket
+                .models
+                .into_iter()
+                .map(|((api_format, model), metric)| CostStatisticsBucketModel {
+                    api_format,
+                    model,
+                    request_count: metric.request_count,
+                    total_tokens: metric.total_tokens,
+                    costs: finish_currency_costs(metric.costs),
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+fn fold_cost_models(rows: Vec<CostModelMetricRow>) -> Vec<CostStatisticsModel> {
+    let mut models = BTreeMap::<(String, String), CostModelBuilder>::new();
+    for row in rows {
+        let model = models.entry((row.api_format, row.model)).or_default();
+        model.request_count = model.request_count.saturating_add(row.request_count);
+        model.success_rate_request_count = model
+            .success_rate_request_count
+            .saturating_add(row.success_rate_request_count);
+        model.succeeded_count = model.succeeded_count.saturating_add(row.succeeded_count);
+        model.total_tokens = model.total_tokens.saturating_add(row.total_tokens);
+        add_currency_cost(
+            &mut model.costs,
+            row.currency.as_deref(),
+            row.priced_request_count,
+            row.cost_amount,
+        );
+    }
+
+    models
+        .into_iter()
+        .map(|((api_format, model), metric)| CostStatisticsModel {
+            api_format,
+            model,
+            request_count: metric.request_count,
+            total_tokens: metric.total_tokens,
+            success_rate: success_rate(metric.success_rate_request_count, metric.succeeded_count),
+            costs: finish_currency_costs(metric.costs),
+        })
+        .collect()
+}
+
+fn add_currency_cost(
+    costs: &mut BTreeMap<String, rust_decimal::Decimal>,
+    currency: Option<&str>,
+    priced_request_count: i64,
+    amount: rust_decimal::Decimal,
+) {
+    if priced_request_count <= 0 {
+        return;
+    }
+    if let Some(currency) = currency {
+        *costs.entry(currency.into()).or_default() += amount;
+    }
+}
+
+fn finish_currency_costs(costs: BTreeMap<String, rust_decimal::Decimal>) -> Vec<CurrencyAmount> {
+    costs
+        .into_iter()
+        .map(|(currency, amount)| CurrencyAmount { currency, amount })
+        .collect()
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1508,7 +2376,7 @@ impl ControlPlaneRepository {
         let api_keys = sqlx::query_as::<_, ControlPlaneApiKey>("SELECT k.id, k.user_id, u.status AS user_status, k.name, k.status, k.expires_at, k.allowed_api_formats::text[] AS allowed_api_formats, k.permissions, k.allowed_group_ids, k.requests_per_minute, k.tokens_per_minute, k.max_concurrent_requests, k.quota_limit_amount, k.quota_used_amount, k.updated_at FROM api_keys k JOIN users u ON u.id=k.user_id ORDER BY k.id").fetch_all(&self.pool).await?;
         let api_key_policies = sqlx::query_as::<_, ControlPlaneApiKeyPolicy>("SELECT id,name,allowed_api_formats::text[] AS allowed_api_formats,permissions,allowed_group_ids,requests_per_minute,max_concurrent_requests,quota_limit_amount,max_active_keys,enabled,created_at,updated_at FROM api_key_policies ORDER BY id").fetch_all(&self.pool).await?;
         let channel_groups = sqlx::query_as::<_, ControlPlaneChannelGroup>("SELECT id,name,api_format::text AS api_format,priority,selection_strategy,enabled,updated_at FROM channel_groups ORDER BY id").fetch_all(&self.pool).await?;
-        let channels = sqlx::query_as::<_, ControlPlaneChannelRow>("SELECT id,channel_group_id,api_format::text AS api_format,name,base_url,enabled,auto_disabled,auto_disabled_reason,weight,proxy_id,config_template_id,connect_timeout_ms,response_header_timeout_ms,stream_idle_timeout_ms,upstream_auth_kind,upstream_auth_header_name,(upstream_api_key IS NOT NULL) AS upstream_credential_configured,available_models,created_at,updated_at FROM channels ORDER BY id").fetch_all(&self.pool).await?;
+        let channels = sqlx::query_as::<_, ControlPlaneChannelRow>("SELECT id,channel_group_id,api_format::text AS api_format,name,base_url,enabled,status_statistics_enabled,auto_disabled,auto_disabled_reason,weight,proxy_id,config_template_id,connect_timeout_ms,response_header_timeout_ms,stream_idle_timeout_ms,upstream_auth_kind,upstream_auth_header_name,(upstream_api_key IS NOT NULL) AS upstream_credential_configured,available_models,created_at,updated_at FROM channels ORDER BY id").fetch_all(&self.pool).await?;
         let model_rules = sqlx::query_as::<_, ControlPlaneModelRule>("SELECT r.id,r.client_model,r.api_format::text AS api_format,r.upstream_model_id,m.enabled AS upstream_model_enabled,m.source_model_id AS upstream_model,r.description,r.channel_group_ids,r.channel_ids,r.enabled,r.updated_at FROM model_rules r JOIN models m ON m.id=r.upstream_model_id ORDER BY r.id").fetch_all(&self.pool).await?;
         let proxies = sqlx::query_as::<_, ControlPlaneProxy>("SELECT id,name,regexp_replace(regexp_replace(proxy_url, '^([^:/?#]+://)[^/?#]*@', E'\\1'), '[?#].*$', '') AS proxy_url,no_proxy_hosts,enabled,(username IS NOT NULL OR password IS NOT NULL) AS credential_configured,created_at,updated_at FROM proxies ORDER BY id").fetch_all(&self.pool).await?;
         let config_templates = sqlx::query_as::<_, ControlPlaneConfigTemplate>("SELECT id,name,description,document->>'api_format' AS api_format,enabled,created_at,updated_at FROM config_templates ORDER BY id").fetch_all(&self.pool).await?;
@@ -2002,7 +2870,7 @@ async fn channel_audit(
     // intentionally opaque today and must never leave the database through
     // either management responses or audit snapshots.
     let value = sqlx::query_scalar::<_, Value>(
-        "SELECT json_build_object('id',id,'channel_group_id',channel_group_id,'api_format',api_format,'name',name,'base_url',base_url,'enabled',enabled,'auto_disabled',auto_disabled,'auto_disabled_reason',auto_disabled_reason,'weight',weight,'proxy_id',proxy_id,'config_template_id',config_template_id,'connect_timeout_ms',connect_timeout_ms,'response_header_timeout_ms',response_header_timeout_ms,'stream_idle_timeout_ms',stream_idle_timeout_ms,'upstream_auth_kind',upstream_auth_kind,'upstream_auth_header_name',upstream_auth_header_name,'upstream_credential_configured',(upstream_api_key IS NOT NULL),'available_models',available_models,'created_at',created_at,'updated_at',updated_at) FROM channels WHERE id=$1 FOR UPDATE",
+        "SELECT json_build_object('id',id,'channel_group_id',channel_group_id,'api_format',api_format,'name',name,'base_url',base_url,'enabled',enabled,'status_statistics_enabled',status_statistics_enabled,'auto_disabled',auto_disabled,'auto_disabled_reason',auto_disabled_reason,'weight',weight,'proxy_id',proxy_id,'config_template_id',config_template_id,'connect_timeout_ms',connect_timeout_ms,'response_header_timeout_ms',response_header_timeout_ms,'stream_idle_timeout_ms',stream_idle_timeout_ms,'upstream_auth_kind',upstream_auth_kind,'upstream_auth_header_name',upstream_auth_header_name,'upstream_credential_configured',(upstream_api_key IS NOT NULL),'available_models',available_models,'created_at',created_at,'updated_at',updated_at) FROM channels WHERE id=$1 FOR UPDATE",
     )
     .bind(id)
     .fetch_optional(&mut **transaction)
@@ -2424,10 +3292,10 @@ async fn channel_insert(
         channel_audit(transaction, id).await?
     };
     let updated_at = if create {
-        sqlx::query_scalar("INSERT INTO channels (id,channel_group_id,api_format,name,base_url,enabled,weight,proxy_id,config_template_id,override_document,connect_timeout_ms,response_header_timeout_ms,stream_idle_timeout_ms,upstream_auth_kind,upstream_auth_header_name,upstream_api_key,available_models,health_check) VALUES ($1,$2,$3::api_format,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING updated_at").bind(id).bind(input.channel_group_id).bind(&input.api_format).bind(&input.name).bind(&input.base_url).bind(input.enabled).bind(input.weight).bind(input.proxy_id).bind(input.config_template_id).bind(&override_document).bind(input.connect_timeout_ms).bind(input.response_header_timeout_ms).bind(input.stream_idle_timeout_ms).bind(&input.upstream_auth_kind).bind(&input.upstream_auth_header_name).bind(input.upstream_api_key.flatten()).bind(&input.available_models).bind(&input.health_check).fetch_one(&mut **transaction).await?
+        sqlx::query_scalar("INSERT INTO channels (id,channel_group_id,api_format,name,base_url,enabled,weight,proxy_id,config_template_id,override_document,connect_timeout_ms,response_header_timeout_ms,stream_idle_timeout_ms,upstream_auth_kind,upstream_auth_header_name,upstream_api_key,available_models,health_check,status_statistics_enabled) VALUES ($1,$2,$3::api_format,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING updated_at").bind(id).bind(input.channel_group_id).bind(&input.api_format).bind(&input.name).bind(&input.base_url).bind(input.enabled).bind(input.weight).bind(input.proxy_id).bind(input.config_template_id).bind(&override_document).bind(input.connect_timeout_ms).bind(input.response_header_timeout_ms).bind(input.stream_idle_timeout_ms).bind(&input.upstream_auth_kind).bind(&input.upstream_auth_header_name).bind(input.upstream_api_key.flatten()).bind(&input.available_models).bind(&input.health_check).bind(input.status_statistics_enabled).fetch_one(&mut **transaction).await?
     } else {
         let credential_present = input.upstream_api_key.is_some();
-        sqlx::query_scalar("UPDATE channels SET channel_group_id=$2,api_format=$3::api_format,name=$4,base_url=$5,enabled=$6,weight=$7,proxy_id=$8,config_template_id=$9,override_document=CASE WHEN $10 THEN $11 ELSE override_document END,connect_timeout_ms=$12,response_header_timeout_ms=$13,stream_idle_timeout_ms=$14,upstream_auth_kind=$15,upstream_auth_header_name=$16,upstream_api_key=CASE WHEN $17 THEN $18 ELSE upstream_api_key END,available_models=$19,health_check=$20 WHERE id=$1 AND updated_at=$21 RETURNING updated_at").bind(id).bind(input.channel_group_id).bind(&input.api_format).bind(&input.name).bind(&input.base_url).bind(input.enabled).bind(input.weight).bind(input.proxy_id).bind(input.config_template_id).bind(override_document_present).bind(&override_document).bind(input.connect_timeout_ms).bind(input.response_header_timeout_ms).bind(input.stream_idle_timeout_ms).bind(&input.upstream_auth_kind).bind(&input.upstream_auth_header_name).bind(credential_present).bind(input.upstream_api_key.flatten()).bind(&input.available_models).bind(&input.health_check).bind(expected_updated_at.expect("PUT version")).fetch_optional(&mut **transaction).await?.ok_or(RepositoryError::Conflict)?
+        sqlx::query_scalar("UPDATE channels SET channel_group_id=$2,api_format=$3::api_format,name=$4,base_url=$5,enabled=$6,weight=$7,proxy_id=$8,config_template_id=$9,override_document=CASE WHEN $10 THEN $11 ELSE override_document END,connect_timeout_ms=$12,response_header_timeout_ms=$13,stream_idle_timeout_ms=$14,upstream_auth_kind=$15,upstream_auth_header_name=$16,upstream_api_key=CASE WHEN $17 THEN $18 ELSE upstream_api_key END,available_models=$19,health_check=$20,status_statistics_enabled=$21 WHERE id=$1 AND updated_at=$22 RETURNING updated_at").bind(id).bind(input.channel_group_id).bind(&input.api_format).bind(&input.name).bind(&input.base_url).bind(input.enabled).bind(input.weight).bind(input.proxy_id).bind(input.config_template_id).bind(override_document_present).bind(&override_document).bind(input.connect_timeout_ms).bind(input.response_header_timeout_ms).bind(input.stream_idle_timeout_ms).bind(&input.upstream_auth_kind).bind(&input.upstream_auth_header_name).bind(credential_present).bind(input.upstream_api_key.flatten()).bind(&input.available_models).bind(&input.health_check).bind(input.status_statistics_enabled).bind(expected_updated_at.expect("PUT version")).fetch_optional(&mut **transaction).await?.ok_or(RepositoryError::Conflict)?
     };
     Ok(MutationResult {
         id,

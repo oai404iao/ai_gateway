@@ -25,10 +25,10 @@ use crate::{
     domain::{ConsolePrincipal, UserRole},
     persistence::{
         ApiKeyCreate, ApiKeyPolicyInput, ApiKeyUpdate, ChannelCreateInput, ChannelGroupInput,
-        ChannelInput, ConfigTemplateCreateInput, ConfigTemplateInput, ConsoleApiKey,
-        ControlPlaneMutation, InviteUserInput, ModelInput, ModelRuleInput, ProxyCreateInput,
-        ProxyInput, RequestLogFilter, RequestLogRepository, SelfApiKeyCreate, SelfApiKeyUpdate,
-        UserInput,
+        ChannelInput, ChannelStatusWindow, ConfigTemplateCreateInput, ConfigTemplateInput,
+        ConsoleApiKey, ControlPlaneMutation, CostStatisticsFilter, InviteUserInput, ModelInput,
+        ModelRuleInput, ProxyCreateInput, ProxyInput, RequestLogFilter, RequestLogRepository,
+        SelfApiKeyCreate, SelfApiKeyUpdate, StatisticsGranularity, UserInput,
     },
     runtime_config::ConfigError,
 };
@@ -151,6 +151,12 @@ pub fn router(state: ConsoleState) -> Router {
             get(get_config_template).put(update_config_template),
         )
         .route("/console/v1/request-logs", get(list_all_request_logs))
+        .route("/console/v1/request-logs/{id}", get(get_request_log))
+        .route(
+            "/console/v1/statistics/channel-status",
+            get(get_channel_status),
+        )
+        .route("/console/v1/statistics/costs", get(get_cost_statistics))
         .route("/console/v1/audit-logs", get(list_audit_logs))
         .route("/console/v1/system/reload", post(reload))
         // Console v1 compatibility aliases for the former management resource
@@ -434,6 +440,28 @@ struct LogQuery {
     started_before: Option<DateTime<Utc>>,
     #[serde(default)]
     billed: Option<bool>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChannelStatusQuery {
+    #[serde(default)]
+    window: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CostStatisticsQuery {
+    #[serde(default)]
+    started_after: Option<DateTime<Utc>>,
+    #[serde(default)]
+    started_before: Option<DateTime<Utc>>,
+    #[serde(default)]
+    granularity: Option<String>,
+    #[serde(default)]
+    user_id: Option<Uuid>,
+    #[serde(default)]
+    api_key_id: Option<Uuid>,
 }
 
 impl LogQuery {
@@ -1148,6 +1176,58 @@ async fn list_all_request_logs(
 ) -> Result<Json<Vec<crate::persistence::ConsoleRequestLog>>, ConsoleError> {
     Ok(Json(
         state.request_logs.list_all(query.into_filter()).await?,
+    ))
+}
+
+async fn get_request_log(
+    State(state): State<ConsoleState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<crate::persistence::ConsoleRequestLog>, ConsoleError> {
+    state
+        .request_logs
+        .get(id)
+        .await?
+        .map(Json)
+        .ok_or(ConsoleError::NotFound)
+}
+
+async fn get_channel_status(
+    State(state): State<ConsoleState>,
+    Query(query): Query<ChannelStatusQuery>,
+) -> Result<Json<crate::persistence::ChannelStatusReport>, ConsoleError> {
+    let window = match query.window.as_deref().unwrap_or("24h") {
+        "24h" => ChannelStatusWindow::Last24Hours,
+        "3d" => ChannelStatusWindow::Last3Days,
+        "7d" => ChannelStatusWindow::Last7Days,
+        _ => return Err(ConsoleError::Validation),
+    };
+    Ok(Json(state.request_logs.channel_status(window).await?))
+}
+
+async fn get_cost_statistics(
+    State(state): State<ConsoleState>,
+    Query(query): Query<CostStatisticsQuery>,
+) -> Result<Json<crate::persistence::CostStatisticsReport>, ConsoleError> {
+    let ended_at = query.started_before.unwrap_or_else(Utc::now);
+    let started_at = query
+        .started_after
+        .unwrap_or_else(|| ended_at - chrono::Duration::days(7));
+    let granularity = match query.granularity.as_deref().unwrap_or("day") {
+        "hour" => StatisticsGranularity::Hour,
+        "day" => StatisticsGranularity::Day,
+        _ => return Err(ConsoleError::Validation),
+    };
+    Ok(Json(
+        state
+            .request_logs
+            .cost_statistics(CostStatisticsFilter {
+                started_at,
+                ended_at,
+                granularity,
+                user_id: query.user_id,
+                api_key_id: query.api_key_id,
+            })
+            .await?,
     ))
 }
 

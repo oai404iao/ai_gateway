@@ -45,6 +45,7 @@ describe("ChannelDetailPage", () => {
     expect(submitted).not.toHaveProperty("override_document");
     expect(submitted).not.toHaveProperty("health_check");
     expect(submitted).not.toHaveProperty("upstream_api_key");
+    expect(submitted?.status_statistics_enabled).toBe(true);
   });
 
   it("explains a routing dependency rejection instead of showing an opaque error", async () => {
@@ -81,7 +82,7 @@ describe("ChannelDetailPage", () => {
     renderAppAt(`/admin/routing/channels/${CHANNEL.id}`);
 
     expect(await screen.findByDisplayValue(CHANNEL.name)).toBeInTheDocument();
-    await user.click(screen.getByRole("switch"));
+    await user.click(screen.getByRole("switch", { name: /^enabled$/i }));
     await user.click(screen.getByRole("button", { name: /save channel/i }));
 
     expect(

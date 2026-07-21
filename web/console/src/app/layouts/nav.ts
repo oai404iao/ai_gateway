@@ -12,6 +12,7 @@ import {
   RefreshCw,
   SlidersHorizontal,
   Layers,
+  ChartNoAxesCombined,
   type LucideIcon,
 } from "lucide-react";
 import type { UserRole } from "@/api/types";
@@ -62,6 +63,7 @@ export const NAV_SECTIONS: NavSection[] = [
     title: "Operations",
     roles: ["admin"],
     items: [
+      { label: "Statistics", path: "/admin/statistics", icon: ChartNoAxesCombined },
       { label: "Proxies", path: "/admin/network/proxies", icon: Network },
       { label: "Templates", path: "/admin/transforms/templates", icon: FileText },
       { label: "Request Logs", path: "/admin/request-logs", icon: ScrollText },

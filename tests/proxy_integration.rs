@@ -16,12 +16,13 @@ use ai_gateway::{
 };
 use axum::{
     Router,
-    body::{Body, to_bytes},
+    body::{Body, Bytes, to_bytes},
     extract::{Request, State},
     http::{HeaderMap, HeaderValue, StatusCode},
     response::Response,
     routing::{any, post},
 };
+use futures_util::StreamExt;
 use serde_json::Value;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -78,6 +79,28 @@ async fn hanging_upstream(State(upstream): State<MockUpstream>, request: Request
             Result<axum::body::Bytes, std::io::Error>,
         >()))
         .unwrap()
+}
+
+fn terminal_sse_then_hangs(bytes: &'static [u8]) -> Response {
+    let first = futures_util::stream::once(async move {
+        Ok::<Bytes, std::io::Error>(Bytes::from_static(bytes))
+    });
+    let pending = futures_util::stream::pending::<Result<Bytes, std::io::Error>>();
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "text/event-stream")
+        .body(Body::from_stream(first.chain(pending)))
+        .unwrap()
+}
+
+async fn chat_done_then_hangs() -> Response {
+    terminal_sse_then_hangs(b"data: [DONE]\n\n")
+}
+
+async fn responses_completed_then_hangs() -> Response {
+    terminal_sse_then_hangs(
+        b"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":9,\"output_tokens\":3,\"input_tokens_details\":{\"cached_tokens\":2}}}}\n\n",
+    )
 }
 
 async fn first_response_header_hangs(
@@ -918,6 +941,82 @@ async fn responses_nonstream_usage_is_collected_without_buffering_the_response()
             output_tokens: 3,
         })
     );
+}
+
+#[tokio::test]
+async fn protocol_terminal_sse_events_complete_logs_before_transport_eof() {
+    let upstream = start_server(
+        Router::new()
+            .route("/v1/chat/completions", post(chat_done_then_hangs))
+            .route("/v1/responses", post(responses_completed_then_hangs)),
+    )
+    .await;
+    let logs = RecordingRequestLogSink::default();
+    let configured = proxy_service_with_policy(
+        &format!("http://{}", upstream.address),
+        logs.clone(),
+        None,
+        None,
+        None,
+        Default::default(),
+    );
+    let gateway = start_server(http::router(configured.proxy)).await;
+    let client = client();
+
+    let mut chat = authorized_post(
+        &client,
+        format!("http://{}/v1/chat/completions", gateway.address),
+        CLIENT_KEY,
+        br#"{"model":"same-model","stream":true}"#.to_vec(),
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(chat.status(), StatusCode::OK);
+    assert_eq!(
+        chat.chunk().await.unwrap().unwrap(),
+        Bytes::from_static(b"data: [DONE]\n\n")
+    );
+    assert_eq!(logs.events().len(), 1);
+    assert_eq!(logs.events()[0].outcome.as_str(), "succeeded");
+    assert_eq!(logs.events()[0].error_code, None);
+    drop(chat);
+    assert_eq!(logs.events().len(), 1);
+
+    let mut responses = authorized_post(
+        &client,
+        format!("http://{}/v1/responses", gateway.address),
+        CLIENT_KEY,
+        br#"{"model":"responses-model","stream":true}"#.to_vec(),
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(responses.status(), StatusCode::OK);
+    assert!(
+        responses
+            .chunk()
+            .await
+            .unwrap()
+            .unwrap()
+            .windows(b"response.completed".len())
+            .any(|window| window == b"response.completed")
+    );
+    let events = logs.events();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[1].outcome.as_str(), "succeeded");
+    assert_eq!(events[1].error_code, None);
+    assert_eq!(
+        events[1].billing.as_ref().unwrap().usage,
+        Some(ai_gateway::domain::RequestUsage {
+            input_tokens: 9,
+            cached_input_tokens: 2,
+            cache_write_tokens: 0,
+            output_tokens: 3,
+        })
+    );
+    drop(responses);
+    assert_eq!(logs.events().len(), 2);
 }
 
 #[tokio::test]

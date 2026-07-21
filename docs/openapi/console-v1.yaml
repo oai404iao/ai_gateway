@@ -46,6 +46,7 @@ tags:
   - name: Proxies
   - name: Templates
   - name: RequestLogs
+  - name: Statistics
   - name: AuditLogs
   - name: System
 
@@ -1109,6 +1110,72 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
+  /request-logs/{id}:
+    get:
+      tags: [RequestLogs]
+      operationId: getRequestLog
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "200":
+          description: Request log detail.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RequestLogView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /statistics/channel-status:
+    get:
+      tags: [Statistics]
+      operationId: getChannelStatusStatistics
+      description: |
+        Aggregates P90 TTFT, P50 output TPS, and terminal success rate for
+        channels whose `status_statistics_enabled` flag is true. Model
+        identifiers prefer the selected upstream model and retain the API
+        format dimension. Client-cancelled requests do not participate in the
+        success-rate denominator.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/StatisticsWindow"
+      responses:
+        "200":
+          description: Channel and model status metrics.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChannelStatusReport" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /statistics/costs:
+    get:
+      tags: [Statistics]
+      operationId: getCostStatistics
+      description: |
+        Aggregates request counts, token totals, RPM/TPM, and cost by UTC hour
+        or day. Costs remain separated by currency, and the response includes
+        continuous zero-valued buckets across the selected range. Client-
+        cancelled requests do not participate in model success rates.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/StatisticsStartedAfter"
+        - $ref: "#/components/parameters/StatisticsStartedBefore"
+        - $ref: "#/components/parameters/StatisticsGranularity"
+        - $ref: "#/components/parameters/RequestLogUserId"
+        - $ref: "#/components/parameters/RequestLogApiKeyId"
+      responses:
+        "200":
+          description: Cost and usage statistics.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CostStatisticsReport" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
   /audit-logs:
     get:
       tags: [AuditLogs]
@@ -1209,6 +1276,33 @@ components:
       in: query
       required: false
       schema: { type: boolean }
+    StatisticsWindow:
+      name: window
+      in: query
+      required: false
+      schema:
+        $ref: "#/components/schemas/ChannelStatusWindow"
+        default: 24h
+    StatisticsStartedAfter:
+      name: started_after
+      in: query
+      required: false
+      description: Inclusive range start; defaults to seven days before the end.
+      schema: { $ref: "#/components/schemas/DateTime" }
+    StatisticsStartedBefore:
+      name: started_before
+      in: query
+      required: false
+      description: Exclusive range end; defaults to the current time.
+      schema: { $ref: "#/components/schemas/DateTime" }
+    StatisticsGranularity:
+      name: granularity
+      in: query
+      required: false
+      description: Hour supports at most 31 days; day supports at most 366 days.
+      schema:
+        $ref: "#/components/schemas/StatisticsGranularity"
+        default: day
 
   headers:
     ETag:
@@ -1274,6 +1368,12 @@ components:
     ModelSyncAction:
       type: string
       enum: [price_update, import]
+    ChannelStatusWindow:
+      type: string
+      enum: [24h, 3d, 7d]
+    StatisticsGranularity:
+      type: string
+      enum: [hour, day]
 
     DateTime:
       type: string
@@ -1482,7 +1582,7 @@ components:
       type: object
       required:
         [id, channel_group_id, api_format, name, base_url, enabled,
-         auto_disabled, auto_disabled_reason, weight, proxy_id,
+         status_statistics_enabled, auto_disabled, auto_disabled_reason, weight, proxy_id,
          config_template_id, connect_timeout_ms, response_header_timeout_ms,
          stream_idle_timeout_ms, upstream_auth_kind, upstream_auth_header_name,
          upstream_credential_configured, available_models, created_at, updated_at]
@@ -1493,6 +1593,9 @@ components:
         name: { type: string }
         base_url: { type: string }
         enabled: { type: boolean }
+        status_statistics_enabled:
+          type: boolean
+          description: Includes this channel in the administrator channel-status report.
         auto_disabled: { type: boolean }
         auto_disabled_reason: { type: string, nullable: true }
         weight: { type: integer }
@@ -1596,6 +1699,182 @@ components:
         cost_amount: { $ref: "#/components/schemas/DecimalNullable" }
         error_code: { type: string, nullable: true }
         billed_at: { $ref: "#/components/schemas/DateTimeNullable" }
+
+    ChannelStatusReport:
+      type: object
+      required: [window, started_at, ended_at, bucket_seconds, models, channels]
+      properties:
+        window: { $ref: "#/components/schemas/ChannelStatusWindow" }
+        started_at: { $ref: "#/components/schemas/DateTime" }
+        ended_at: { $ref: "#/components/schemas/DateTime" }
+        bucket_seconds: { type: integer }
+        models:
+          type: array
+          items: { $ref: "#/components/schemas/ChannelStatusModelMetric" }
+        channels:
+          type: array
+          items: { $ref: "#/components/schemas/ChannelStatusChannel" }
+
+    ChannelStatusModelMetric:
+      type: object
+      required:
+        [api_format, model, request_count, success_rate, p90_ttft_ms, p50_tps]
+      properties:
+        api_format: { $ref: "#/components/schemas/ApiFormat" }
+        model: { type: string }
+        request_count: { type: integer }
+        success_rate:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          nullable: true
+          description: Successful requests divided by non-cancelled terminal requests.
+        p90_ttft_ms:
+          type: number
+          format: double
+          minimum: 0
+          nullable: true
+        p50_tps:
+          type: number
+          format: double
+          minimum: 0
+          nullable: true
+
+    ChannelStatusChannel:
+      type: object
+      required:
+        [id, channel_group_id, channel_group_name, api_format, name, enabled,
+         auto_disabled, models]
+      properties:
+        id: { type: string, format: uuid }
+        channel_group_id: { type: string, format: uuid }
+        channel_group_name: { type: string }
+        api_format: { $ref: "#/components/schemas/ApiFormat" }
+        name: { type: string }
+        enabled: { type: boolean }
+        auto_disabled: { type: boolean }
+        models:
+          type: array
+          items: { $ref: "#/components/schemas/ChannelStatusChannelModel" }
+
+    ChannelStatusChannelModel:
+      allOf:
+        - $ref: "#/components/schemas/ChannelStatusModelMetric"
+        - type: object
+          required: [history]
+          properties:
+            history:
+              type: array
+              items: { $ref: "#/components/schemas/ChannelStatusBucket" }
+
+    ChannelStatusBucket:
+      type: object
+      required: [started_at, request_count, success_rate, p90_ttft_ms, p50_tps]
+      properties:
+        started_at: { $ref: "#/components/schemas/DateTime" }
+        request_count: { type: integer }
+        success_rate:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          nullable: true
+          description: Successful requests divided by non-cancelled terminal requests.
+        p90_ttft_ms:
+          type: number
+          format: double
+          minimum: 0
+          nullable: true
+        p50_tps:
+          type: number
+          format: double
+          minimum: 0
+          nullable: true
+
+    CurrencyAmount:
+      type: object
+      required: [currency, amount]
+      properties:
+        currency: { type: string }
+        amount: { $ref: "#/components/schemas/Decimal" }
+
+    CostStatisticsReport:
+      type: object
+      required: [started_at, ended_at, granularity, summary, buckets, models]
+      properties:
+        started_at: { $ref: "#/components/schemas/DateTime" }
+        ended_at: { $ref: "#/components/schemas/DateTime" }
+        granularity: { $ref: "#/components/schemas/StatisticsGranularity" }
+        summary: { $ref: "#/components/schemas/CostStatisticsSummary" }
+        buckets:
+          type: array
+          description: Continuous UTC buckets covering the selected range, including empty buckets.
+          items: { $ref: "#/components/schemas/CostStatisticsBucket" }
+        models:
+          type: array
+          items: { $ref: "#/components/schemas/CostStatisticsModel" }
+
+    CostStatisticsSummary:
+      type: object
+      required:
+        [request_count, priced_request_count, total_tokens, average_rpm,
+         average_tpm, costs]
+      properties:
+        request_count: { type: integer }
+        priced_request_count: { type: integer }
+        total_tokens: { type: integer }
+        average_rpm: { type: number, format: double, minimum: 0 }
+        average_tpm: { type: number, format: double, minimum: 0 }
+        costs:
+          type: array
+          items: { $ref: "#/components/schemas/CurrencyAmount" }
+
+    CostStatisticsBucket:
+      type: object
+      required: [started_at, request_count, total_tokens, costs, models]
+      properties:
+        started_at: { $ref: "#/components/schemas/DateTime" }
+        request_count: { type: integer }
+        total_tokens: { type: integer }
+        costs:
+          type: array
+          items: { $ref: "#/components/schemas/CurrencyAmount" }
+        models:
+          type: array
+          items: { $ref: "#/components/schemas/CostStatisticsBucketModel" }
+
+    CostStatisticsBucketModel:
+      type: object
+      required: [api_format, model, request_count, total_tokens, costs]
+      properties:
+        api_format: { $ref: "#/components/schemas/ApiFormat" }
+        model: { type: string }
+        request_count: { type: integer }
+        total_tokens: { type: integer }
+        costs:
+          type: array
+          items: { $ref: "#/components/schemas/CurrencyAmount" }
+
+    CostStatisticsModel:
+      type: object
+      required:
+        [api_format, model, request_count, total_tokens, success_rate, costs]
+      properties:
+        api_format: { $ref: "#/components/schemas/ApiFormat" }
+        model: { type: string }
+        request_count: { type: integer }
+        total_tokens: { type: integer }
+        success_rate:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          nullable: true
+          description: Successful requests divided by non-cancelled terminal requests.
+        costs:
+          type: array
+          items: { $ref: "#/components/schemas/CurrencyAmount" }
 
     AuditLogView:
       type: object
@@ -1834,6 +2113,10 @@ components:
           format: uri
           description: HTTP(S) URL without embedded credentials, query, or fragment.
         enabled: { type: boolean }
+        status_statistics_enabled:
+          type: boolean
+          default: false
+          description: Includes this channel in the administrator channel-status report.
         weight: { type: integer, minimum: 1 }
         proxy_id: { type: string, format: uuid, nullable: true }
         config_template_id: { type: string, format: uuid, nullable: true }
@@ -1865,6 +2148,10 @@ components:
           format: uri
           description: HTTP(S) URL without embedded credentials, query, or fragment.
         enabled: { type: boolean }
+        status_statistics_enabled:
+          type: boolean
+          default: false
+          description: Includes this channel in the administrator channel-status report.
         weight: { type: integer, minimum: 1 }
         proxy_id: { type: string, format: uuid, nullable: true }
         config_template_id: { type: string, format: uuid, nullable: true }

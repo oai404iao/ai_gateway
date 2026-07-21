@@ -58,6 +58,11 @@ export function ChannelsPage() {
             </div>
           ),
         },
+        {
+          key: "statistics",
+          header: t("Status statistics"),
+          render: (channel) => <StatusBadge value={channel.status_statistics_enabled} />,
+        },
         { key: "weight", header: t("Weight"), render: (channel) => channel.weight },
         {
           key: "updated",

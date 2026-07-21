@@ -3,6 +3,7 @@ import { setupServer } from "msw/node";
 import { afterAll, afterEach, beforeAll } from "vitest";
 import {
   ADMIN_ACCESS_TOKEN,
+  ADMIN_API_KEY,
   ADMIN_LOGIN_RESPONSE,
   ADMIN_PROFILE,
   ADMIN_USER,
@@ -10,8 +11,10 @@ import {
   API_KEY_POLICY,
   CHANNEL,
   CHANNEL_GROUP,
+  CHANNEL_STATUS_REPORT,
   CONFIG_TEMPLATE,
   CONTROL_PLANE_USER,
+  COST_STATISTICS_REPORT,
   MODEL,
   MODEL_RULE,
   NEW_API_KEY_SECRET,
@@ -79,6 +82,7 @@ export const handlers = [
       headers: { ETag: `"${API_KEY_POLICY.updated_at}"` },
     }),
   ),
+  http.get("/console/v1/api-keys", () => HttpResponse.json([ADMIN_API_KEY])),
   http.get("/console/v1/models", () => HttpResponse.json([MODEL])),
   http.get("/console/v1/models/:id", () =>
     HttpResponse.json(MODEL, {
@@ -117,6 +121,12 @@ export const handlers = [
   ),
   http.get("/console/v1/request-logs", () => HttpResponse.json([])),
   http.get("/console/v1/me/request-logs", () => HttpResponse.json([])),
+  http.get("/console/v1/statistics/channel-status", () =>
+    HttpResponse.json(CHANNEL_STATUS_REPORT),
+  ),
+  http.get("/console/v1/statistics/costs", () =>
+    HttpResponse.json(COST_STATISTICS_REPORT),
+  ),
   http.get("/console/v1/audit-logs", () => HttpResponse.json([])),
 
   // Anything not mocked falls through to the real network (fails loudly),

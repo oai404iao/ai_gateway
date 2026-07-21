@@ -74,6 +74,7 @@ pub struct UsageCollector {
     mode: CollectorMode,
     latest: Option<ResponseUsage>,
     terminal: Option<ResponseUsage>,
+    stream_completed: bool,
 }
 
 enum CollectorMode {
@@ -93,14 +94,17 @@ impl UsageCollector {
             },
             latest: None,
             terminal: None,
+            stream_completed: false,
         }
     }
 
     pub fn observe(&mut self, bytes: &Bytes) {
-        let values = match &mut self.mode {
-            CollectorMode::Json(scanner) => scanner.push(bytes),
-            CollectorMode::Sse(scanner) => scanner.push(bytes),
+        let api_format = self.api_format;
+        let (values, stream_completed) = match &mut self.mode {
+            CollectorMode::Json(scanner) => (scanner.push(bytes), false),
+            CollectorMode::Sse(scanner) => scanner.push(bytes, api_format),
         };
+        self.stream_completed |= stream_completed;
         self.record(values);
     }
 
@@ -108,10 +112,12 @@ impl UsageCollector {
     /// rather than an SSE blank-line delimiter. This must only be called once
     /// the upstream body completed cleanly.
     pub fn finalize(&mut self) {
-        let values = match &mut self.mode {
-            CollectorMode::Json(_) => Vec::new(),
-            CollectorMode::Sse(scanner) => scanner.finalize(),
+        let api_format = self.api_format;
+        let (values, stream_completed) = match &mut self.mode {
+            CollectorMode::Json(_) => (Vec::new(), false),
+            CollectorMode::Sse(scanner) => scanner.finalize(api_format),
         };
+        self.stream_completed |= stream_completed;
         self.record(values);
     }
 
@@ -129,6 +135,14 @@ impl UsageCollector {
     #[must_use]
     pub fn latest(&self) -> Option<ResponseUsage> {
         self.terminal.or(self.latest)
+    }
+
+    /// Returns true once a successful application-level SSE terminator has
+    /// been observed. Clients are allowed to close after this point without
+    /// waiting for the upstream transport to reach EOF.
+    #[must_use]
+    pub fn stream_completed(&self) -> bool {
+        self.stream_completed
     }
 }
 
@@ -292,32 +306,39 @@ struct SseUsageScanner {
 }
 
 impl SseUsageScanner {
-    fn push(&mut self, bytes: &Bytes) -> Vec<Value> {
+    fn push(&mut self, bytes: &Bytes, api_format: ApiFormat) -> (Vec<Value>, bool) {
         if self.disabled {
-            return Vec::new();
+            return (Vec::new(), false);
         }
         if self.bytes.len().saturating_add(bytes.len()) > MAX_SSE_FRAME_BYTES {
             self.bytes.clear();
             self.disabled = true;
-            return Vec::new();
+            return (Vec::new(), false);
         }
         self.bytes.extend_from_slice(bytes);
         let mut values = Vec::new();
+        let mut stream_completed = false;
         while let Some(end) = sse_frame_end(&self.bytes) {
             let frame = self.bytes.drain(..end).collect::<Vec<_>>();
-            if let Some(value) = sse_frame_json(&frame) {
+            let observation = observe_sse_frame(&frame, api_format);
+            stream_completed |= observation.stream_completed;
+            if let Some(value) = observation.value {
                 values.push(value);
             }
         }
-        values
+        (values, stream_completed)
     }
 
-    fn finalize(&mut self) -> Vec<Value> {
+    fn finalize(&mut self, api_format: ApiFormat) -> (Vec<Value>, bool) {
         if self.disabled {
-            return Vec::new();
+            return (Vec::new(), false);
         }
         let frame = std::mem::take(&mut self.bytes);
-        sse_frame_json(&frame).into_iter().collect()
+        let observation = observe_sse_frame(&frame, api_format);
+        (
+            observation.value.into_iter().collect(),
+            observation.stream_completed,
+        )
     }
 }
 
@@ -334,22 +355,46 @@ fn sse_frame_end(bytes: &[u8]) -> Option<usize> {
         })
 }
 
-fn sse_frame_json(frame: &[u8]) -> Option<Value> {
+struct SseFrameObservation {
+    value: Option<Value>,
+    stream_completed: bool,
+}
+
+fn observe_sse_frame(frame: &[u8], api_format: ApiFormat) -> SseFrameObservation {
+    let mut event = None;
     let mut data = Vec::new();
     for line in frame.split(|byte| *byte == b'\n') {
         let line = line.strip_suffix(b"\r").unwrap_or(line);
-        let Some(value) = line.strip_prefix(b"data:") else {
-            continue;
-        };
-        let value = value.strip_prefix(b" ").unwrap_or(value);
-        if !data.is_empty() {
-            data.push(b'\n');
+        if let Some(value) = line.strip_prefix(b"event:") {
+            event = Some(value.strip_prefix(b" ").unwrap_or(value));
+        } else if let Some(value) = line.strip_prefix(b"data:") {
+            let value = value.strip_prefix(b" ").unwrap_or(value);
+            if !data.is_empty() {
+                data.push(b'\n');
+            }
+            data.extend_from_slice(value);
         }
-        data.extend_from_slice(value);
     }
-    (!data.is_empty() && data.as_slice() != b"[DONE]")
+    if data.as_slice() == b"[DONE]" {
+        return SseFrameObservation {
+            value: None,
+            stream_completed: true,
+        };
+    }
+    let value: Option<Value> = (!data.is_empty())
         .then(|| serde_json::from_slice(&data).ok())
-        .flatten()
+        .flatten();
+    let stream_completed = api_format == ApiFormat::OpenAiResponses
+        && (event == Some(b"response.completed".as_slice())
+            || value
+                .as_ref()
+                .and_then(|value| value.get("type"))
+                .and_then(Value::as_str)
+                == Some("response.completed"));
+    SseFrameObservation {
+        value,
+        stream_completed,
+    }
 }
 
 #[cfg(test)]
@@ -384,6 +429,7 @@ mod tests {
         collector.observe(&Bytes::from_static(
             b"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":9,\"output_tokens\":2,\"input_tokens_details\":{\"cached_tokens\":1}}}}\n\n",
         ));
+        assert!(collector.stream_completed());
         assert_eq!(
             collector.latest(),
             Some(ResponseUsage {
@@ -393,6 +439,15 @@ mod tests {
                 output_tokens: 2,
             })
         );
+    }
+
+    #[test]
+    fn recognizes_done_sentinel_split_across_chunks() {
+        let mut collector = UsageCollector::new(ApiFormat::OpenAiChatCompletions, true);
+        collector.observe(&Bytes::from_static(b"data: [DO"));
+        assert!(!collector.stream_completed());
+        collector.observe(&Bytes::from_static(b"NE]\n\n"));
+        assert!(collector.stream_completed());
     }
 
     #[test]

@@ -3,14 +3,17 @@
 // assert on stable ids/timestamps.
 
 import type {
+  AdminApiKeyView,
   ApiKeyPolicyView,
   ApiKeyView,
+  ChannelStatusReport,
   ChannelGroupView,
   ChannelView,
   ConfigTemplateView,
   ConsoleProfile,
   ConsoleSession,
   ConsoleUser,
+  CostStatisticsReport,
   ControlPlaneModel,
   ControlPlaneUser,
   LoginResponse,
@@ -93,6 +96,13 @@ export const OWN_API_KEY: ApiKeyView = {
   updated_at: "2026-01-03T00:00:00.000Z",
 };
 
+export const ADMIN_API_KEY: AdminApiKeyView = {
+  ...OWN_API_KEY,
+  user_id: ADMIN_USER.id,
+  user_status: "active",
+  tokens_per_minute: 10_000,
+};
+
 export const NEW_API_KEY_SECRET = "sk-ag-test-secret-only-once";
 
 export const CHANNEL_GROUP: ChannelGroupView = {
@@ -112,6 +122,7 @@ export const CHANNEL: ChannelView = {
   name: "upstream-a",
   base_url: "https://api.upstream.example",
   enabled: true,
+  status_statistics_enabled: true,
   auto_disabled: false,
   auto_disabled_reason: null,
   weight: 100,
@@ -192,4 +203,107 @@ export const CONTROL_PLANE_USER: ControlPlaneUser = {
   currency: "USD",
   created_at: "2026-01-01T00:00:00.000Z",
   updated_at: "2026-01-02T00:00:00.000Z",
+};
+
+export const CHANNEL_STATUS_REPORT: ChannelStatusReport = {
+  window: "24h",
+  started_at: "2026-07-20T14:00:00.000Z",
+  ended_at: "2026-07-21T13:46:00.000Z",
+  bucket_seconds: 1_800,
+  models: [
+    {
+      api_format: "open_ai_chat_completions",
+      model: MODEL.source_model_id,
+      request_count: 120,
+      success_rate: 0.975,
+      p90_ttft_ms: 540,
+      p50_tps: 31.2,
+    },
+  ],
+  channels: [
+    {
+      id: CHANNEL.id,
+      channel_group_id: CHANNEL.channel_group_id,
+      channel_group_name: CHANNEL_GROUP.name,
+      api_format: CHANNEL.api_format,
+      name: CHANNEL.name,
+      enabled: CHANNEL.enabled,
+      auto_disabled: CHANNEL.auto_disabled,
+      models: [
+        {
+          api_format: CHANNEL.api_format,
+          model: MODEL.source_model_id,
+          request_count: 120,
+          success_rate: 0.975,
+          p90_ttft_ms: 540,
+          p50_tps: 31.2,
+          history: [
+            {
+              started_at: "2026-07-21T13:30:00.000Z",
+              request_count: 4,
+              success_rate: 1,
+              p90_ttft_ms: 510,
+              p50_tps: 32,
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
+export const COST_STATISTICS_REPORT: CostStatisticsReport = {
+  started_at: "2026-07-14T14:00:00.000Z",
+  ended_at: "2026-07-21T14:00:00.000Z",
+  granularity: "day",
+  summary: {
+    request_count: 18_878,
+    priced_request_count: 18_800,
+    total_tokens: 263_000_000,
+    average_rpm: 1.87,
+    average_tpm: 26_100,
+    costs: [{ currency: "USD", amount: "1912.06" }],
+  },
+  buckets: [
+    {
+      started_at: "2026-07-20T00:00:00.000Z",
+      request_count: 1_200,
+      total_tokens: 16_000_000,
+      costs: [{ currency: "USD", amount: "120.5" }],
+      models: [
+        {
+          api_format: "open_ai_chat_completions",
+          model: MODEL.source_model_id,
+          request_count: 1_200,
+          total_tokens: 16_000_000,
+          costs: [{ currency: "USD", amount: "120.5" }],
+        },
+      ],
+    },
+    {
+      started_at: "2026-07-21T00:00:00.000Z",
+      request_count: 1_500,
+      total_tokens: 18_000_000,
+      costs: [{ currency: "USD", amount: "146.75" }],
+      models: [
+        {
+          api_format: "open_ai_chat_completions",
+          model: MODEL.source_model_id,
+          request_count: 1_500,
+          total_tokens: 18_000_000,
+          costs: [{ currency: "USD", amount: "146.75" }],
+        },
+      ],
+    },
+  ],
+  models: [
+    {
+      api_format: "open_ai_chat_completions",
+      model: MODEL.source_model_id,
+      request_count: 18_878,
+      total_tokens: 263_000_000,
+      success_rate: 0.975,
+      costs: [{ currency: "USD", amount: "1912.06" }],
+    },
+  ],
 };

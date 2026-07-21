@@ -38,6 +38,11 @@ const AdminRequestLogsPage = lazy(() =>
     default: m.AdminRequestLogsPage,
   })),
 );
+const StatisticsPage = lazy(() =>
+  import("@/features/statistics/statistics-page").then((m) => ({
+    default: m.StatisticsPage,
+  })),
+);
 const UsersPage = lazy(() =>
   import("@/features/admin/users/users-page").then((m) => ({ default: m.UsersPage })),
 );
@@ -189,6 +194,7 @@ export function AppRouter() {
               path="/admin/transforms/templates/:id"
               element={<ConfigTemplateDetailPage />}
             />
+            <Route path="/admin/statistics" element={<StatisticsPage />} />
             <Route path="/admin/request-logs" element={<AdminRequestLogsPage />} />
             <Route path="/admin/audit-logs" element={<AuditLogsPage />} />
             <Route path="/admin/system" element={<SystemPage />} />

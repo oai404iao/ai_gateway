@@ -70,6 +70,7 @@ const schema = z.object({
       "Enter an HTTP(S) URL without credentials, query parameters, or a fragment.",
     ),
   enabled: z.boolean(),
+  status_statistics_enabled: z.boolean(),
   weight: z.number().int().min(1, "Weight must be at least 1."),
   proxy_id: z.string().nullable(),
   config_template_id: z.string().nullable(),
@@ -106,6 +107,7 @@ const empty: FormState = {
   name: "",
   base_url: "",
   enabled: true,
+  status_statistics_enabled: false,
   weight: 100,
   proxy_id: null,
   config_template_id: null,
@@ -144,6 +146,7 @@ export function ChannelDetailPage() {
         name: data.data.name,
         base_url: data.data.base_url,
         enabled: data.data.enabled,
+        status_statistics_enabled: data.data.status_statistics_enabled,
         weight: data.data.weight,
         proxy_id: data.data.proxy_id,
         config_template_id: data.data.config_template_id,
@@ -236,6 +239,7 @@ export function ChannelDetailPage() {
           name: parsed.data.name,
           base_url: parsed.data.base_url,
           enabled: parsed.data.enabled,
+          status_statistics_enabled: parsed.data.status_statistics_enabled,
           weight: parsed.data.weight,
           proxy_id: parsed.data.proxy_id,
           config_template_id: parsed.data.config_template_id,
@@ -265,6 +269,7 @@ export function ChannelDetailPage() {
           name: parsed.data.name,
           base_url: parsed.data.base_url,
           enabled: parsed.data.enabled,
+          status_statistics_enabled: parsed.data.status_statistics_enabled,
           weight: parsed.data.weight,
           proxy_id: parsed.data.proxy_id,
           config_template_id: parsed.data.config_template_id,
@@ -330,6 +335,12 @@ export function ChannelDetailPage() {
                 <dt className="text-xs uppercase text-muted-foreground">{t("Auto-disabled")}</dt>
                 <dd>
                   <StatusBadge value={data.data.auto_disabled} />
+                </dd>
+                <dt className="text-xs uppercase text-muted-foreground">
+                  {t("Status statistics")}
+                </dt>
+                <dd>
+                  <StatusBadge value={data.data.status_statistics_enabled} />
                 </dd>
                 <dt className="text-xs uppercase text-muted-foreground">
                   {t("Credential configured")}
@@ -588,8 +599,24 @@ export function ChannelDetailPage() {
                   />
                 </Field>
                 <Field>
-                  <FieldLabel>{t("Enabled")}</FieldLabel>
+                  <FieldLabel htmlFor="status_statistics_enabled">
+                    {t("Status statistics")}
+                  </FieldLabel>
+                  <FieldDescription>
+                    {t("Include this channel in the channel status report.")}
+                  </FieldDescription>
                   <Switch
+                    id="status_statistics_enabled"
+                    checked={state.status_statistics_enabled}
+                    onCheckedChange={(checked) =>
+                      patch({ status_statistics_enabled: Boolean(checked) })
+                    }
+                  />
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="channel_enabled">{t("Enabled")}</FieldLabel>
+                  <Switch
+                    id="channel_enabled"
                     checked={state.enabled}
                     onCheckedChange={(checked) => patch({ enabled: Boolean(checked) })}
                   />

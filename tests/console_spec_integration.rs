@@ -808,10 +808,226 @@ async fn request_log_filters_match_the_console_contract() {
     assert_eq!(body.as_array().unwrap().len(), 1);
     assert_eq!(body[0]["id"], matching_log_id.to_string());
 
+    let detail = request(
+        &app,
+        "GET",
+        &format!("/console/v1/request-logs/{matching_log_id}"),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(detail.status(), StatusCode::OK);
+    assert_eq!(body_json(detail).await["id"], matching_log_id.to_string());
+
+    let missing = request(
+        &app,
+        "GET",
+        &format!("/console/v1/request-logs/{}", Uuid::new_v4()),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+
     let invalid = request(
         &app,
         "GET",
         "/console/v1/request-logs?api_format=not-a-format",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn statistics_endpoints_aggregate_channel_health_and_costs() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+    let group_id = Uuid::new_v4();
+    let api_key_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO channel_groups \
+         (id,name,api_format,priority,selection_strategy,enabled) \
+         VALUES ($1,$2,'open_ai_chat_completions',1,'weighted_random',true)",
+    )
+    .bind(group_id)
+    .bind(format!("statistics-group-{group_id}"))
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let channel = request(
+        &app,
+        "POST",
+        "/console/v1/routing/channels",
+        serde_json::json!({
+            "channel_group_id": group_id,
+            "api_format": "open_ai_chat_completions",
+            "name": format!("statistics-channel-{group_id}"),
+            "base_url": "https://statistics.example.test",
+            "enabled": true,
+            "status_statistics_enabled": true,
+            "weight": 1,
+            "upstream_auth_kind": "none",
+            "available_models": ["statistics-model"],
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(channel.status(), StatusCode::CREATED);
+    let channel_id = Uuid::parse_str(body_json(channel).await["id"].as_str().unwrap()).unwrap();
+    sqlx::query(
+        "INSERT INTO api_keys \
+         (id,user_id,name,secret_value,status,allowed_api_formats,permissions) \
+         VALUES ($1,$2,$3,$4,'active', \
+                 ARRAY['open_ai_chat_completions']::api_format[],ARRAY['proxy'])",
+    )
+    .bind(api_key_id)
+    .bind(app.user_id)
+    .bind(format!("statistics-key-{api_key_id}"))
+    .bind(format!("statistics-secret-{api_key_id}"))
+    .execute(&database.pool)
+    .await
+    .unwrap();
+
+    let started_at = chrono::Utc::now() - chrono::Duration::minutes(10);
+    for (outcome, status, ttft_ms, tps, input_tokens, output_tokens, cost) in [
+        (
+            "succeeded",
+            200_i16,
+            Some(500_i32),
+            Some(rust_decimal::Decimal::new(200, 1)),
+            100_i64,
+            50_i64,
+            Some(rust_decimal::Decimal::new(25, 2)),
+        ),
+        (
+            "failed",
+            500_i16,
+            None,
+            None,
+            10_i64,
+            0_i64,
+            Some(rust_decimal::Decimal::new(5, 2)),
+        ),
+        ("cancelled", 200_i16, None, None, 0_i64, 0_i64, None),
+    ] {
+        sqlx::query(
+            "INSERT INTO request_logs \
+             (id,started_at,completed_at,user_id,api_key_id,api_format,client_model, \
+              upstream_model,channel_group_id,channel_id,outcome,response_status_code, \
+              streamed,ttft_ms,total_duration_ms,output_tokens_per_second,input_tokens, \
+              cached_input_tokens,cache_write_tokens,output_tokens,currency,price_unit_tokens, \
+              price_effective_at,input_unit_price,cached_input_unit_price, \
+              cache_write_unit_price,output_unit_price,cost_amount) \
+             VALUES ($1,$2,$2,$3,$4,'open_ai_chat_completions','statistics-client-model', \
+                     'statistics-model',$5,$6,$7,$8,false,$9,1000,$10,$11,0,0,$12, \
+                     'USD',1000000,$2,1,0,0,1,$13)",
+        )
+        .bind(Uuid::new_v4())
+        .bind(started_at)
+        .bind(app.user_id)
+        .bind(api_key_id)
+        .bind(group_id)
+        .bind(channel_id)
+        .bind(outcome)
+        .bind(status)
+        .bind(ttft_ms)
+        .bind(tps)
+        .bind(input_tokens)
+        .bind(output_tokens)
+        .bind(cost)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    }
+
+    let channel_detail = request(
+        &app,
+        "GET",
+        &format!("/console/v1/routing/channels/{channel_id}"),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(channel_detail.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(channel_detail).await["status_statistics_enabled"],
+        true
+    );
+
+    let status = request(
+        &app,
+        "GET",
+        "/console/v1/statistics/channel-status?window=24h",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(status.status(), StatusCode::OK);
+    let status = body_json(status).await;
+    assert_eq!(status["window"], "24h");
+    assert_eq!(status["models"][0]["model"], "statistics-model");
+    assert_eq!(status["models"][0]["request_count"], 3);
+    assert_eq!(status["models"][0]["success_rate"], 0.5);
+    assert_eq!(status["models"][0]["p90_ttft_ms"], 500.0);
+    assert_eq!(status["models"][0]["p50_tps"], 20.0);
+    assert_eq!(status["channels"][0]["id"], channel_id.to_string());
+    assert!(status["channels"][0]["models"][0]["history"].is_array());
+
+    let range_start = (started_at - chrono::Duration::hours(1))
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let range_end = (started_at + chrono::Duration::hours(1))
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let costs = request(
+        &app,
+        "GET",
+        &format!(
+            "/console/v1/statistics/costs?started_after={range_start}&started_before={range_end}&granularity=hour&user_id={}&api_key_id={api_key_id}",
+            app.user_id
+        ),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(costs.status(), StatusCode::OK);
+    let costs = body_json(costs).await;
+    assert_eq!(costs["granularity"], "hour");
+    assert_eq!(costs["summary"]["request_count"], 3);
+    assert_eq!(costs["summary"]["priced_request_count"], 2);
+    assert_eq!(costs["summary"]["total_tokens"], 160);
+    assert_eq!(costs["summary"]["costs"][0]["currency"], "USD");
+    let amount = costs["summary"]["costs"][0]["amount"]
+        .as_str()
+        .unwrap()
+        .parse::<f64>()
+        .unwrap();
+    assert!((amount - 0.30).abs() < f64::EPSILON);
+    assert_eq!(costs["models"][0]["model"], "statistics-model");
+    assert_eq!(costs["models"][0]["success_rate"], 0.5);
+    assert!(
+        costs["buckets"].as_array().unwrap().len() >= 2,
+        "the full selected timeline should include empty UTC buckets"
+    );
+    assert_eq!(
+        costs["buckets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|bucket| bucket["request_count"].as_i64().unwrap() > 0)
+            .count(),
+        1
+    );
+
+    let invalid_start = (started_at - chrono::Duration::days(32))
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let invalid = request(
+        &app,
+        "GET",
+        &format!(
+            "/console/v1/statistics/costs?started_after={invalid_start}&started_before={range_end}&granularity=hour"
+        ),
         serde_json::json!({}),
         &[],
     )

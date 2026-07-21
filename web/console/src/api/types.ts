@@ -22,6 +22,8 @@ export type ApiFormat = S["ApiFormat"];
 export type SelectionStrategy = S["SelectionStrategy"];
 export type UpstreamAuthKind = S["UpstreamAuthKind"];
 export type ModelSyncAction = S["ModelSyncAction"];
+export type ChannelStatusWindow = S["ChannelStatusWindow"];
+export type StatisticsGranularity = S["StatisticsGranularity"];
 
 // Auth + shared responses
 export type ErrorBody = S["ErrorBody"];
@@ -48,6 +50,17 @@ export type ConfigTemplateView = S["ConfigTemplateView"];
 // Observability + catalog
 export type RequestLogView = S["RequestLogView"];
 export type AuditLogView = S["AuditLogView"];
+export type ChannelStatusReport = S["ChannelStatusReport"];
+export type ChannelStatusModelMetric = S["ChannelStatusModelMetric"];
+export type ChannelStatusChannel = S["ChannelStatusChannel"];
+export type ChannelStatusChannelModel = S["ChannelStatusChannelModel"];
+export type ChannelStatusBucket = S["ChannelStatusBucket"];
+export type CurrencyAmount = S["CurrencyAmount"];
+export type CostStatisticsReport = S["CostStatisticsReport"];
+export type CostStatisticsSummary = S["CostStatisticsSummary"];
+export type CostStatisticsBucket = S["CostStatisticsBucket"];
+export type CostStatisticsBucketModel = S["CostStatisticsBucketModel"];
+export type CostStatisticsModel = S["CostStatisticsModel"];
 export type ModelSyncPreview = S["ModelSyncPreview"];
 export type ModelSyncPreviewModel = S["ModelSyncPreviewModel"];
 export type ModelImportResponse = S["ModelImportResponse"];

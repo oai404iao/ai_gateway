@@ -565,6 +565,67 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/request-logs/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getRequestLog"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/statistics/channel-status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * @description Aggregates P90 TTFT, P50 output TPS, and terminal success rate for
+         *     channels whose `status_statistics_enabled` flag is true. Model
+         *     identifiers prefer the selected upstream model and retain the API
+         *     format dimension. Client-cancelled requests do not participate in the
+         *     success-rate denominator.
+         */
+        get: operations["getChannelStatusStatistics"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/statistics/costs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * @description Aggregates request counts, token totals, RPM/TPM, and cost by UTC hour
+         *     or day. Costs remain separated by currency, and the response includes
+         *     continuous zero-valued buckets across the selected range. Client-
+         *     cancelled requests do not participate in model success rates.
+         */
+        get: operations["getCostStatistics"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/audit-logs": {
         parameters: {
             query?: never;
@@ -614,6 +675,10 @@ export interface components {
         UpstreamAuthKind: "none" | "bearer" | "header";
         /** @enum {string} */
         ModelSyncAction: "price_update" | "import";
+        /** @enum {string} */
+        ChannelStatusWindow: "24h" | "3d" | "7d";
+        /** @enum {string} */
+        StatisticsGranularity: "hour" | "day";
         /** Format: date-time */
         DateTime: string;
         /** @description rust_decimal::Decimal serialized as a string. */
@@ -768,6 +833,8 @@ export interface components {
             name: string;
             base_url: string;
             enabled: boolean;
+            /** @description Includes this channel in the administrator channel-status report. */
+            status_statistics_enabled: boolean;
             auto_disabled: boolean;
             auto_disabled_reason: string | null;
             weight: number;
@@ -853,6 +920,105 @@ export interface components {
             cost_amount: components["schemas"]["DecimalNullable"];
             error_code: string | null;
             billed_at: components["schemas"]["DateTimeNullable"];
+        };
+        ChannelStatusReport: {
+            window: components["schemas"]["ChannelStatusWindow"];
+            started_at: components["schemas"]["DateTime"];
+            ended_at: components["schemas"]["DateTime"];
+            bucket_seconds: number;
+            models: components["schemas"]["ChannelStatusModelMetric"][];
+            channels: components["schemas"]["ChannelStatusChannel"][];
+        };
+        ChannelStatusModelMetric: {
+            api_format: components["schemas"]["ApiFormat"];
+            model: string;
+            request_count: number;
+            /**
+             * Format: double
+             * @description Successful requests divided by non-cancelled terminal requests.
+             */
+            success_rate: number | null;
+            /** Format: double */
+            p90_ttft_ms: number | null;
+            /** Format: double */
+            p50_tps: number | null;
+        };
+        ChannelStatusChannel: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            channel_group_id: string;
+            channel_group_name: string;
+            api_format: components["schemas"]["ApiFormat"];
+            name: string;
+            enabled: boolean;
+            auto_disabled: boolean;
+            models: components["schemas"]["ChannelStatusChannelModel"][];
+        };
+        ChannelStatusChannelModel: components["schemas"]["ChannelStatusModelMetric"] & {
+            history: components["schemas"]["ChannelStatusBucket"][];
+        };
+        ChannelStatusBucket: {
+            started_at: components["schemas"]["DateTime"];
+            request_count: number;
+            /**
+             * Format: double
+             * @description Successful requests divided by non-cancelled terminal requests.
+             */
+            success_rate: number | null;
+            /** Format: double */
+            p90_ttft_ms: number | null;
+            /** Format: double */
+            p50_tps: number | null;
+        };
+        CurrencyAmount: {
+            currency: string;
+            amount: components["schemas"]["Decimal"];
+        };
+        CostStatisticsReport: {
+            started_at: components["schemas"]["DateTime"];
+            ended_at: components["schemas"]["DateTime"];
+            granularity: components["schemas"]["StatisticsGranularity"];
+            summary: components["schemas"]["CostStatisticsSummary"];
+            /** @description Continuous UTC buckets covering the selected range, including empty buckets. */
+            buckets: components["schemas"]["CostStatisticsBucket"][];
+            models: components["schemas"]["CostStatisticsModel"][];
+        };
+        CostStatisticsSummary: {
+            request_count: number;
+            priced_request_count: number;
+            total_tokens: number;
+            /** Format: double */
+            average_rpm: number;
+            /** Format: double */
+            average_tpm: number;
+            costs: components["schemas"]["CurrencyAmount"][];
+        };
+        CostStatisticsBucket: {
+            started_at: components["schemas"]["DateTime"];
+            request_count: number;
+            total_tokens: number;
+            costs: components["schemas"]["CurrencyAmount"][];
+            models: components["schemas"]["CostStatisticsBucketModel"][];
+        };
+        CostStatisticsBucketModel: {
+            api_format: components["schemas"]["ApiFormat"];
+            model: string;
+            request_count: number;
+            total_tokens: number;
+            costs: components["schemas"]["CurrencyAmount"][];
+        };
+        CostStatisticsModel: {
+            api_format: components["schemas"]["ApiFormat"];
+            model: string;
+            request_count: number;
+            total_tokens: number;
+            /**
+             * Format: double
+             * @description Successful requests divided by non-cancelled terminal requests.
+             */
+            success_rate: number | null;
+            costs: components["schemas"]["CurrencyAmount"][];
         };
         AuditLogView: {
             /** Format: uuid */
@@ -1007,6 +1173,11 @@ export interface components {
              */
             base_url: string;
             enabled: boolean;
+            /**
+             * @description Includes this channel in the administrator channel-status report.
+             * @default false
+             */
+            status_statistics_enabled: boolean;
             weight: number;
             /** Format: uuid */
             proxy_id?: string | null;
@@ -1034,6 +1205,11 @@ export interface components {
              */
             base_url: string;
             enabled: boolean;
+            /**
+             * @description Includes this channel in the administrator channel-status report.
+             * @default false
+             */
+            status_statistics_enabled: boolean;
             weight: number;
             /** Format: uuid */
             proxy_id?: string | null;
@@ -1195,6 +1371,13 @@ export interface components {
         RequestLogStartedAfter: components["schemas"]["DateTime"];
         RequestLogStartedBefore: components["schemas"]["DateTime"];
         RequestLogBilled: boolean;
+        StatisticsWindow: components["schemas"]["ChannelStatusWindow"];
+        /** @description Inclusive range start; defaults to seven days before the end. */
+        StatisticsStartedAfter: components["schemas"]["DateTime"];
+        /** @description Exclusive range end; defaults to the current time. */
+        StatisticsStartedBefore: components["schemas"]["DateTime"];
+        /** @description Hour supports at most 31 days; day supports at most 366 days. */
+        StatisticsGranularity: components["schemas"]["StatisticsGranularity"];
     };
     requestBodies: never;
     headers: {
@@ -2721,6 +2904,89 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+        };
+    };
+    getRequestLog: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Request log detail. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RequestLogView"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    getChannelStatusStatistics: {
+        parameters: {
+            query?: {
+                window?: components["parameters"]["StatisticsWindow"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Channel and model status metrics. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChannelStatusReport"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            422: components["responses"]["Unprocessable"];
+        };
+    };
+    getCostStatistics: {
+        parameters: {
+            query?: {
+                /** @description Inclusive range start; defaults to seven days before the end. */
+                started_after?: components["parameters"]["StatisticsStartedAfter"];
+                /** @description Exclusive range end; defaults to the current time. */
+                started_before?: components["parameters"]["StatisticsStartedBefore"];
+                /** @description Hour supports at most 31 days; day supports at most 366 days. */
+                granularity?: components["parameters"]["StatisticsGranularity"];
+                /** @description Administrator-only owner filter. */
+                user_id?: components["parameters"]["RequestLogUserId"];
+                api_key_id?: components["parameters"]["RequestLogApiKeyId"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Cost and usage statistics. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CostStatisticsReport"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            422: components["responses"]["Unprocessable"];
         };
     };
     listAuditLogs: {

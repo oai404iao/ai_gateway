@@ -1074,7 +1074,14 @@ fn timed_upstream_stream(
 fn record_stream_bytes(state: &mut StreamState, bytes: &Bytes) {
     if !bytes.is_empty() {
         state.completion.record_first_byte();
-        state.completion.observe_usage(bytes);
+        let stream_completed = state.completion.observe_usage(bytes);
+        if stream_completed {
+            state.completion.finish(if state.upstream_succeeded {
+                RequestOutcome::Succeeded
+            } else {
+                RequestOutcome::UpstreamHttpError
+            });
+        }
     }
     if let Some(remaining) = &mut state.remaining_bytes {
         *remaining = remaining.saturating_sub(bytes.len() as u64);
@@ -1267,9 +1274,12 @@ impl CompletionGuard {
         }
     }
 
-    fn observe_usage(&mut self, bytes: &Bytes) {
+    fn observe_usage(&mut self, bytes: &Bytes) -> bool {
         if let Some(context) = &mut self.context {
             context.usage.observe(bytes);
+            context.usage.stream_completed()
+        } else {
+            false
         }
     }
 
