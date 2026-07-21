@@ -4,7 +4,14 @@ import { z } from "zod";
 import { toast } from "sonner";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
+import {
+  Field,
+  FieldContent,
+  FieldDescription,
+  FieldError,
+  FieldGroup,
+  FieldLabel,
+} from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -18,6 +25,7 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Spinner } from "@/components/ui/spinner";
 import { AdminDetailShell } from "@/features/admin/components/admin-detail-shell";
+import { DetailField } from "@/components/shared/detail-field";
 import { StringListField } from "@/components/shared/string-list-field";
 import { NullableNumberField } from "@/components/shared/decimal-field";
 import { StatusBadge } from "@/components/shared/status-badge";
@@ -328,26 +336,23 @@ export function ChannelDetailPage() {
             </CardHeader>
             <CardContent>
               <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <dt className="text-xs uppercase text-muted-foreground">{t("Enabled")}</dt>
-                <dd>
-                  <StatusBadge value={data.data.enabled} />
-                </dd>
-                <dt className="text-xs uppercase text-muted-foreground">{t("Auto-disabled")}</dt>
-                <dd>
-                  <StatusBadge value={data.data.auto_disabled} />
-                </dd>
-                <dt className="text-xs uppercase text-muted-foreground">
-                  {t("Status statistics")}
-                </dt>
-                <dd>
-                  <StatusBadge value={data.data.status_statistics_enabled} />
-                </dd>
-                <dt className="text-xs uppercase text-muted-foreground">
-                  {t("Credential configured")}
-                </dt>
-                <dd>{data.data.upstream_credential_configured ? t("yes") : t("no")}</dd>
-                <dt className="text-xs uppercase text-muted-foreground">{t("Weight")}</dt>
-                <dd>{data.data.weight}</dd>
+                <DetailField
+                  label={t("Enabled")}
+                  value={<StatusBadge value={data.data.enabled} />}
+                />
+                <DetailField
+                  label={t("Auto-disabled")}
+                  value={<StatusBadge value={data.data.auto_disabled} />}
+                />
+                <DetailField
+                  label={t("Status statistics")}
+                  value={<StatusBadge value={data.data.status_statistics_enabled} />}
+                />
+                <DetailField
+                  label={t("Credential configured")}
+                  value={data.data.upstream_credential_configured ? t("yes") : t("no")}
+                />
+                <DetailField label={t("Weight")} value={data.data.weight} />
               </dl>
             </CardContent>
           </Card>
@@ -364,7 +369,7 @@ export function ChannelDetailPage() {
           <CardContent>
             <div className="flex flex-col gap-4">
               <FieldGroup>
-                <Field>
+                <Field data-invalid={Boolean(fieldError("channel_group_id"))}>
                   <FieldLabel>{t("Channel group")}</FieldLabel>
                   <Select
                     value={state.channel_group_id || "__none__"}
@@ -376,7 +381,7 @@ export function ChannelDetailPage() {
                       });
                     }}
                   >
-                    <SelectTrigger>
+                    <SelectTrigger aria-invalid={Boolean(fieldError("channel_group_id"))}>
                       <SelectValue placeholder={t("Pick a group")} />
                     </SelectTrigger>
                     <SelectContent>
@@ -405,12 +410,13 @@ export function ChannelDetailPage() {
                     disabled
                   />
                 </Field>
-                <Field>
+                <Field data-invalid={Boolean(fieldError("name"))}>
                   <FieldLabel htmlFor="name">{t("Name")}</FieldLabel>
                   <Input
                     id="name"
                     value={state.name}
                     onChange={(event) => patch({ name: event.target.value })}
+                    aria-invalid={Boolean(fieldError("name"))}
                   />
                   {fieldError("name") ? <FieldError>{fieldError("name")}</FieldError> : null}
                 </Field>
@@ -598,13 +604,15 @@ export function ChannelDetailPage() {
                     onChange={(event) => patch({ override_document: event.target.value })}
                   />
                 </Field>
-                <Field>
-                  <FieldLabel htmlFor="status_statistics_enabled">
-                    {t("Status statistics")}
-                  </FieldLabel>
-                  <FieldDescription>
-                    {t("Include this channel in the channel status report.")}
-                  </FieldDescription>
+                <Field orientation="horizontal">
+                  <FieldContent>
+                    <FieldLabel htmlFor="status_statistics_enabled">
+                      {t("Status statistics")}
+                    </FieldLabel>
+                    <FieldDescription>
+                      {t("Include this channel in the channel status report.")}
+                    </FieldDescription>
+                  </FieldContent>
                   <Switch
                     id="status_statistics_enabled"
                     checked={state.status_statistics_enabled}
@@ -613,7 +621,7 @@ export function ChannelDetailPage() {
                     }
                   />
                 </Field>
-                <Field>
+                <Field orientation="horizontal">
                   <FieldLabel htmlFor="channel_enabled">{t("Enabled")}</FieldLabel>
                   <Switch
                     id="channel_enabled"

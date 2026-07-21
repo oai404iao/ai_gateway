@@ -4,7 +4,14 @@ import { z } from "zod";
 import { toast } from "sonner";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
+import {
+  Field,
+  FieldError,
+  FieldGroup,
+  FieldLabel,
+  FieldLegend,
+  FieldSet,
+} from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Switch } from "@/components/ui/switch";
@@ -12,6 +19,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { AdminDetailShell } from "@/features/admin/components/admin-detail-shell";
 import { StringListField } from "@/components/shared/string-list-field";
 import { DecimalField, NullableNumberField } from "@/components/shared/decimal-field";
+import { DetailField } from "@/components/shared/detail-field";
 import { StatusBadge } from "@/components/shared/status-badge";
 import {
   useApiKeyPolicy,
@@ -144,10 +152,10 @@ export function ApiKeyPolicyDetailPage() {
             </CardHeader>
             <CardContent>
               <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <dt className="text-xs uppercase text-muted-foreground">{t("Enabled")}</dt>
-                <dd>
-                  <StatusBadge value={data.data.enabled} />
-                </dd>
+                <DetailField
+                  label={t("Enabled")}
+                  value={<StatusBadge value={data.data.enabled} />}
+                />
               </dl>
             </CardContent>
           </Card>
@@ -164,24 +172,31 @@ export function ApiKeyPolicyDetailPage() {
           <CardContent>
             <div className="flex flex-col gap-4">
               <FieldGroup>
-                <Field>
+                <Field data-invalid={Boolean(fieldError("name"))}>
                   <FieldLabel htmlFor="name">{t("Name")}</FieldLabel>
                   <Input
                     id="name"
                     value={state.name}
                     onChange={(event) => patch({ name: event.target.value })}
+                    aria-invalid={Boolean(fieldError("name"))}
                   />
                   {fieldError("name") ? (
-                    <p className="text-sm text-destructive">{fieldError("name")}</p>
+                    <FieldError>{fieldError("name")}</FieldError>
                   ) : null}
                 </Field>
-                <Field>
-                  <FieldLabel>{t("Allowed API formats")}</FieldLabel>
-                  <div className="flex flex-col gap-2">
+                <FieldSet>
+                  <FieldLegend variant="label">{t("Allowed API formats")}</FieldLegend>
+                  <FieldGroup data-slot="checkbox-group" className="gap-3">
                     {API_FORMATS.map((format) => (
-                      <label key={format} className="flex items-center gap-2 text-sm">
+                      <Field
+                        key={format}
+                        orientation="horizontal"
+                        data-invalid={Boolean(fieldError("allowed_api_formats"))}
+                      >
                         <Checkbox
+                          id={`allowed_api_format_${format}`}
                           checked={state.allowed_api_formats.includes(format)}
+                          aria-invalid={Boolean(fieldError("allowed_api_formats"))}
                           onCheckedChange={(checked) =>
                             patch({
                               allowed_api_formats: checked
@@ -190,16 +205,19 @@ export function ApiKeyPolicyDetailPage() {
                             })
                           }
                         />
-                        {apiFormatLabel(format)}
-                      </label>
+                        <FieldLabel
+                          htmlFor={`allowed_api_format_${format}`}
+                          className="font-normal"
+                        >
+                          {apiFormatLabel(format)}
+                        </FieldLabel>
+                      </Field>
                     ))}
-                  </div>
+                  </FieldGroup>
                   {fieldError("allowed_api_formats") ? (
-                    <p className="text-sm text-destructive">
-                      {fieldError("allowed_api_formats")}
-                    </p>
+                    <FieldError>{fieldError("allowed_api_formats")}</FieldError>
                   ) : null}
-                </Field>
+                </FieldSet>
                 <StringListField
                   label={t("Permissions")}
                   value={state.permissions}
@@ -230,7 +248,7 @@ export function ApiKeyPolicyDetailPage() {
                   value={state.quota_limit_amount}
                   onChange={(value) => patch({ quota_limit_amount: value || null })}
                 />
-                <Field>
+                <Field data-invalid={Boolean(fieldError("max_active_keys"))}>
                   <FieldLabel htmlFor="max_active_keys">{t("Max active keys")}</FieldLabel>
                   <Input
                     id="max_active_keys"
@@ -240,14 +258,16 @@ export function ApiKeyPolicyDetailPage() {
                     onChange={(event) =>
                       patch({ max_active_keys: Math.max(1, Number(event.target.value) || 1) })
                     }
+                    aria-invalid={Boolean(fieldError("max_active_keys"))}
                   />
                   {fieldError("max_active_keys") ? (
-                    <p className="text-sm text-destructive">{fieldError("max_active_keys")}</p>
+                    <FieldError>{fieldError("max_active_keys")}</FieldError>
                   ) : null}
                 </Field>
-                <Field>
-                  <FieldLabel>{t("Enabled")}</FieldLabel>
+                <Field orientation="horizontal">
+                  <FieldLabel htmlFor="policy_enabled">{t("Enabled")}</FieldLabel>
                   <Switch
+                    id="policy_enabled"
                     checked={state.enabled}
                     onCheckedChange={(checked) => patch({ enabled: Boolean(checked) })}
                   />

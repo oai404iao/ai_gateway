@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuLabel,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
@@ -20,14 +21,16 @@ export function LocaleToggle() {
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
-        <DropdownMenuLabel>{t("Language")}</DropdownMenuLabel>
-        <DropdownMenuRadioGroup
-          value={locale}
-          onValueChange={(value) => setLocale(value as ConsoleLocale)}
-        >
-          <DropdownMenuRadioItem value="en-US">{t("English")}</DropdownMenuRadioItem>
-          <DropdownMenuRadioItem value="zh-CN">{t("简体中文")}</DropdownMenuRadioItem>
-        </DropdownMenuRadioGroup>
+        <DropdownMenuGroup>
+          <DropdownMenuLabel>{t("Language")}</DropdownMenuLabel>
+          <DropdownMenuRadioGroup
+            value={locale}
+            onValueChange={(value) => setLocale(value as ConsoleLocale)}
+          >
+            <DropdownMenuRadioItem value="en-US">{t("English")}</DropdownMenuRadioItem>
+            <DropdownMenuRadioItem value="zh-CN">{t("简体中文")}</DropdownMenuRadioItem>
+          </DropdownMenuRadioGroup>
+        </DropdownMenuGroup>
       </DropdownMenuContent>
     </DropdownMenu>
   );

@@ -3,7 +3,12 @@ import { PlusIcon, XIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Field, FieldDescription, FieldError, FieldLabel } from "@/components/ui/field";
-import { Input } from "@/components/ui/input";
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupButton,
+  InputGroupInput,
+} from "@/components/ui/input-group";
 import { Textarea } from "@/components/ui/textarea";
 import { useI18n } from "@/app/i18n";
 
@@ -77,8 +82,8 @@ export function StringListField({
             ))}
           </div>
         ) : null}
-        <div className="flex gap-2">
-          <Input
+        <InputGroup>
+          <InputGroupInput
             id={id}
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
@@ -86,17 +91,16 @@ export function StringListField({
             placeholder={placeholder ?? t("Enter an item")}
             aria-invalid={Boolean(error)}
           />
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={!nextItem || value.includes(nextItem)}
-            onClick={add}
-          >
-            <PlusIcon data-icon="inline-start" />
-            {addLabel ?? t("Add")}
-          </Button>
-        </div>
+          <InputGroupAddon align="inline-end">
+            <InputGroupButton
+              disabled={!nextItem || value.includes(nextItem)}
+              onClick={add}
+            >
+              <PlusIcon data-icon="inline-start" />
+              {addLabel ?? t("Add")}
+            </InputGroupButton>
+          </InputGroupAddon>
+        </InputGroup>
         {description ? <FieldDescription>{description}</FieldDescription> : null}
         {error ? <FieldError>{error}</FieldError> : null}
       </Field>

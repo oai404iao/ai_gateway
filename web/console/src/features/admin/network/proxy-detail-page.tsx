@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Spinner } from "@/components/ui/spinner";
 import { AdminDetailShell } from "@/features/admin/components/admin-detail-shell";
+import { DetailField } from "@/components/shared/detail-field";
 import { StringListField } from "@/components/shared/string-list-field";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { useCreateProxy, useProxy, useUpdateProxy } from "@/features/admin/api";
@@ -154,14 +155,14 @@ export function ProxyDetailPage() {
             </CardHeader>
             <CardContent>
               <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <dt className="text-xs uppercase text-muted-foreground">{t("Enabled")}</dt>
-                <dd>
-                  <StatusBadge value={data.data.enabled} />
-                </dd>
-                <dt className="text-xs uppercase text-muted-foreground">
-                  {t("Credential configured")}
-                </dt>
-                <dd>{data.data.credential_configured ? t("yes") : t("no")}</dd>
+                <DetailField
+                  label={t("Enabled")}
+                  value={<StatusBadge value={data.data.enabled} />}
+                />
+                <DetailField
+                  label={t("Credential configured")}
+                  value={data.data.credential_configured ? t("yes") : t("no")}
+                />
               </dl>
             </CardContent>
           </Card>
@@ -178,12 +179,13 @@ export function ProxyDetailPage() {
           <CardContent>
             <div className="flex flex-col gap-4">
               <FieldGroup>
-                <Field>
+                <Field data-invalid={Boolean(fieldError("name"))}>
                   <FieldLabel htmlFor="name">{t("Name")}</FieldLabel>
                   <Input
                     id="name"
                     value={state.name}
                     onChange={(event) => patch({ name: event.target.value })}
+                    aria-invalid={Boolean(fieldError("name"))}
                   />
                   {fieldError("name") ? <FieldError>{fieldError("name")}</FieldError> : null}
                 </Field>
@@ -224,9 +226,10 @@ export function ProxyDetailPage() {
                   onChange={(value) => patch({ no_proxy_hosts: value })}
                   placeholder="example.com, .internal"
                 />
-                <Field>
-                  <FieldLabel>{t("Enabled")}</FieldLabel>
+                <Field orientation="horizontal">
+                  <FieldLabel htmlFor="proxy_enabled">{t("Enabled")}</FieldLabel>
                   <Switch
+                    id="proxy_enabled"
                     checked={state.enabled}
                     onCheckedChange={(checked) => patch({ enabled: Boolean(checked) })}
                   />

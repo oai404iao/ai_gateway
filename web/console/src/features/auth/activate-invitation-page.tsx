@@ -55,19 +55,25 @@ export function ActivateInvitationPage() {
       <CardContent>
         <form onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-4">
           <FieldGroup>
-            <Field>
+            <Field data-invalid={Boolean(errors.invitation_token)}>
               <FieldLabel htmlFor="invitation_token">{t("Invitation token")}</FieldLabel>
-              <Input id="invitation_token" autoComplete="off" {...register("invitation_token")} />
+              <Input
+                id="invitation_token"
+                autoComplete="off"
+                aria-invalid={Boolean(errors.invitation_token)}
+                {...register("invitation_token")}
+              />
               {errors.invitation_token ? (
                 <FieldError>{errors.invitation_token.message}</FieldError>
               ) : null}
             </Field>
-            <Field>
+            <Field data-invalid={Boolean(errors.password)}>
               <FieldLabel htmlFor="password">{t("New password")}</FieldLabel>
               <Input
                 id="password"
                 type="password"
                 autoComplete="new-password"
+                aria-invalid={Boolean(errors.password)}
                 {...register("password")}
               />
               {errors.password ? <FieldError>{errors.password.message}</FieldError> : null}
@@ -80,9 +86,9 @@ export function ActivateInvitationPage() {
         </form>
         <p className="mt-4 text-center text-xs text-muted-foreground">
           {t("Already have an account?")}{" "}
-          <Link className="font-medium text-foreground underline" to="/login">
-            {t("Sign in")}
-          </Link>
+          <Button variant="link" size="xs" asChild>
+            <Link to="/login">{t("Sign in")}</Link>
+          </Button>
         </p>
       </CardContent>
     </Card>

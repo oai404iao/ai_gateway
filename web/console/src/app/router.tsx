@@ -1,5 +1,8 @@
 import { lazy } from "react";
-import { Navigate, Outlet, Route, Routes } from "react-router";
+import { Link, Navigate, Outlet, Route, Routes } from "react-router";
+import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/shared/empty-state";
+import { useI18n } from "@/app/i18n";
 import { useSession } from "@/lib/use-session";
 import { ConsoleLayout } from "@/app/layouts/console-layout";
 import { AuthLayout } from "@/app/layouts/auth-layout";
@@ -142,13 +145,18 @@ function RequireAdmin() {
 }
 
 function NotFound() {
+  const { t } = useI18n();
   return (
-    <div className="flex flex-col gap-2">
-      <h1 className="text-2xl font-semibold">Not found</h1>
-      <p className="text-sm text-muted-foreground">
-        The page you were looking for does not exist.
-      </p>
-    </div>
+    <EmptyState
+      title={t("Not found")}
+      description={t("The page you were looking for does not exist.")}
+      className="min-h-80 border"
+      actions={
+        <Button asChild>
+          <Link to="/account">{t("Back to account")}</Link>
+        </Button>
+      }
+    />
   );
 }
 

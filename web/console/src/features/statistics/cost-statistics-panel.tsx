@@ -165,14 +165,14 @@ function SummaryCard({
   return (
     <Card size="sm">
       <CardHeader>
-        <CardTitle className="text-sm text-muted-foreground">{title}</CardTitle>
+        <CardDescription>{title}</CardDescription>
         <CardAction>
           <Icon className="size-4 text-muted-foreground" />
         </CardAction>
       </CardHeader>
       <CardContent className="flex flex-col gap-1">
-        <div className="text-2xl font-semibold tabular-nums">{value}</div>
-        <p className="text-xs text-muted-foreground">{description}</p>
+        <CardTitle className="text-2xl tabular-nums">{value}</CardTitle>
+        <CardDescription className="text-xs">{description}</CardDescription>
       </CardContent>
     </Card>
   );
@@ -361,8 +361,19 @@ export function CostStatisticsPanel() {
         <CardContent>
           <FieldGroup className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             <Field className="md:col-span-2 xl:col-span-3">
-              <FieldLabel>{t("Quick range")}</FieldLabel>
-              <div className="flex flex-wrap gap-2">
+              <FieldLabel id="statistics-quick-range-label">
+                {t("Quick range")}
+              </FieldLabel>
+              <ToggleGroup
+                type="single"
+                value={quickRange ?? ""}
+                onValueChange={(value) => {
+                  if (value) applyQuickRange(value as QuickRange);
+                }}
+                variant="outline"
+                spacing={0}
+                aria-labelledby="statistics-quick-range-label"
+              >
                 {(
                   [
                     ["today", "Today"],
@@ -370,18 +381,15 @@ export function CostStatisticsPanel() {
                     ["this_month", "This month"],
                   ] as const
                 ).map(([value, label]) => (
-                  <Button
+                  <ToggleGroupItem
                     key={value}
-                    type="button"
-                    size="sm"
-                    variant={quickRange === value ? "default" : "outline"}
-                    aria-pressed={quickRange === value}
-                    onClick={() => applyQuickRange(value)}
+                    value={value}
+                    aria-label={t(label)}
                   >
                     {t(label)}
-                  </Button>
+                  </ToggleGroupItem>
                 ))}
-              </div>
+              </ToggleGroup>
             </Field>
             <Field>
               <FieldLabel htmlFor="statistics_started_after">{t("From")}</FieldLabel>

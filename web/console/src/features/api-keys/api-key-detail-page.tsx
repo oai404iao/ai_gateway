@@ -267,15 +267,16 @@ export function ApiKeyDetailPage() {
           if (!open) setRevokeReason("");
         }}
         title={t("Revoke API key?")}
-        description={
-          <div className="flex flex-col gap-2">
-            <span>{t("This permanently disables the key and records an audit entry.")}</span>
+        description={t("This permanently disables the key and records an audit entry.")}
+        content={
+          <Field>
+            <FieldLabel htmlFor="revoke_reason">{t("Reason (optional)")}</FieldLabel>
             <Input
-              placeholder={t("Reason (optional)")}
+              id="revoke_reason"
               value={revokeReason}
               onChange={(event) => setRevokeReason(event.target.value)}
             />
-          </div>
+          </Field>
         }
         confirmLabel={t("Revoke")}
         destructive

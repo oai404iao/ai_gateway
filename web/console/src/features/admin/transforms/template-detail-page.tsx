@@ -10,6 +10,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Spinner } from "@/components/ui/spinner";
 import { AdminDetailShell } from "@/features/admin/components/admin-detail-shell";
+import { DetailField } from "@/components/shared/detail-field";
 import { StatusBadge } from "@/components/shared/status-badge";
 import {
   useConfigTemplate,
@@ -144,10 +145,10 @@ export function ConfigTemplateDetailPage() {
             </CardHeader>
             <CardContent>
               <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <dt className="text-xs uppercase text-muted-foreground">{t("Enabled")}</dt>
-                <dd>
-                  <StatusBadge value={data.data.enabled} />
-                </dd>
+                <DetailField
+                  label={t("Enabled")}
+                  value={<StatusBadge value={data.data.enabled} />}
+                />
               </dl>
             </CardContent>
           </Card>
@@ -168,12 +169,13 @@ export function ConfigTemplateDetailPage() {
           <CardContent>
             <div className="flex flex-col gap-4">
               <FieldGroup>
-                <Field>
+                <Field data-invalid={Boolean(fieldError("name"))}>
                   <FieldLabel htmlFor="name">{t("Name")}</FieldLabel>
                   <Input
                     id="name"
                     value={state.name}
                     onChange={(event) => patch({ name: event.target.value })}
+                    aria-invalid={Boolean(fieldError("name"))}
                   />
                   {fieldError("name") ? <FieldError>{fieldError("name")}</FieldError> : null}
                 </Field>
@@ -200,9 +202,10 @@ export function ConfigTemplateDetailPage() {
                     onChange={(event) => patch({ document: event.target.value })}
                   />
                 </Field>
-                <Field>
-                  <FieldLabel>{t("Enabled")}</FieldLabel>
+                <Field orientation="horizontal">
+                  <FieldLabel htmlFor="template_enabled">{t("Enabled")}</FieldLabel>
                   <Switch
+                    id="template_enabled"
                     checked={state.enabled}
                     onCheckedChange={(checked) => patch({ enabled: Boolean(checked) })}
                   />

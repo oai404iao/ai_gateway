@@ -148,16 +148,25 @@ export function UsersPage() {
             className="flex flex-col gap-4"
           >
             <FieldGroup>
-              <Field>
+              <Field data-invalid={Boolean(form.formState.errors.email)}>
                 <FieldLabel htmlFor="email">{t("Email")}</FieldLabel>
-                <Input id="email" type="email" {...form.register("email")} />
+                <Input
+                  id="email"
+                  type="email"
+                  aria-invalid={Boolean(form.formState.errors.email)}
+                  {...form.register("email")}
+                />
                 {form.formState.errors.email ? (
                   <FieldError>{form.formState.errors.email.message}</FieldError>
                 ) : null}
               </Field>
-              <Field>
+              <Field data-invalid={Boolean(form.formState.errors.display_name)}>
                 <FieldLabel htmlFor="display_name">{t("Display name")}</FieldLabel>
-                <Input id="display_name" {...form.register("display_name")} />
+                <Input
+                  id="display_name"
+                  aria-invalid={Boolean(form.formState.errors.display_name)}
+                  {...form.register("display_name")}
+                />
                 {form.formState.errors.display_name ? (
                   <FieldError>{form.formState.errors.display_name.message}</FieldError>
                 ) : null}
@@ -189,9 +198,13 @@ export function UsersPage() {
                   </Field>
                 )}
               />
-              <Field>
+              <Field data-invalid={Boolean(form.formState.errors.currency)}>
                 <FieldLabel htmlFor="currency">{t("Currency")}</FieldLabel>
-                <Input id="currency" {...form.register("currency")} />
+                <Input
+                  id="currency"
+                  aria-invalid={Boolean(form.formState.errors.currency)}
+                  {...form.register("currency")}
+                />
                 {form.formState.errors.currency ? (
                   <FieldError>{form.formState.errors.currency.message}</FieldError>
                 ) : null}

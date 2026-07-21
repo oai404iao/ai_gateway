@@ -11,6 +11,7 @@ import { Switch } from "@/components/ui/switch";
 import { Spinner } from "@/components/ui/spinner";
 import { AdminDetailShell } from "@/features/admin/components/admin-detail-shell";
 import { DecimalField } from "@/components/shared/decimal-field";
+import { DetailField } from "@/components/shared/detail-field";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { useCreateModel, useModel, useUpdateModel } from "@/features/admin/api";
 import { ApiError } from "@/api/errors";
@@ -170,18 +171,23 @@ export function ModelDetailPage() {
             </CardHeader>
             <CardContent>
               <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <dt className="text-xs uppercase text-muted-foreground">{t("Enabled")}</dt>
-                <dd>
-                  <StatusBadge value={data.data.enabled} />
-                </dd>
-                <dt className="text-xs uppercase text-muted-foreground">{t("Provider")}</dt>
-                <dd>{data.data.provider_name ?? "—"}</dd>
-                <dt className="text-xs uppercase text-muted-foreground">{t("Input price")}</dt>
-                <dd>{formatDecimal(data.data.input_unit_price)}</dd>
-                <dt className="text-xs uppercase text-muted-foreground">{t("Output price")}</dt>
-                <dd>{formatDecimal(data.data.output_unit_price)}</dd>
-                <dt className="text-xs uppercase text-muted-foreground">{t("Effective")}</dt>
-                <dd>{formatDateTime(data.data.price_effective_at)}</dd>
+                <DetailField
+                  label={t("Enabled")}
+                  value={<StatusBadge value={data.data.enabled} />}
+                />
+                <DetailField label={t("Provider")} value={data.data.provider_name ?? "—"} />
+                <DetailField
+                  label={t("Input price")}
+                  value={formatDecimal(data.data.input_unit_price)}
+                />
+                <DetailField
+                  label={t("Output price")}
+                  value={formatDecimal(data.data.output_unit_price)}
+                />
+                <DetailField
+                  label={t("Effective")}
+                  value={formatDateTime(data.data.price_effective_at)}
+                />
               </dl>
             </CardContent>
           </Card>
@@ -198,23 +204,25 @@ export function ModelDetailPage() {
           <CardContent>
             <div className="flex flex-col gap-4">
               <FieldGroup>
-                <Field>
+                <Field data-invalid={Boolean(fieldError("source_model_id"))}>
                   <FieldLabel htmlFor="source_model_id">{t("Source model id")}</FieldLabel>
                   <Input
                     id="source_model_id"
                     value={state.source_model_id}
                     onChange={(event) => patch({ source_model_id: event.target.value })}
+                    aria-invalid={Boolean(fieldError("source_model_id"))}
                   />
                   {fieldError("source_model_id") ? (
                     <FieldError>{fieldError("source_model_id")}</FieldError>
                   ) : null}
                 </Field>
-                <Field>
+                <Field data-invalid={Boolean(fieldError("display_name"))}>
                   <FieldLabel htmlFor="display_name">{t("Display name")}</FieldLabel>
                   <Input
                     id="display_name"
                     value={state.display_name}
                     onChange={(event) => patch({ display_name: event.target.value })}
+                    aria-invalid={Boolean(fieldError("display_name"))}
                   />
                   {fieldError("display_name") ? (
                     <FieldError>{fieldError("display_name")}</FieldError>
@@ -252,24 +260,28 @@ export function ModelDetailPage() {
                   label={t("Input unit price")}
                   value={state.input_unit_price}
                   onChange={(value) => patch({ input_unit_price: value })}
+                  error={fieldError("input_unit_price")}
                   required
                 />
                 <DecimalField
                   label={t("Cached input unit price")}
                   value={state.cached_input_unit_price}
                   onChange={(value) => patch({ cached_input_unit_price: value })}
+                  error={fieldError("cached_input_unit_price")}
                   required
                 />
                 <DecimalField
                   label={t("Cache write unit price")}
                   value={state.cache_write_unit_price}
                   onChange={(value) => patch({ cache_write_unit_price: value })}
+                  error={fieldError("cache_write_unit_price")}
                   required
                 />
                 <DecimalField
                   label={t("Output unit price")}
                   value={state.output_unit_price}
                   onChange={(value) => patch({ output_unit_price: value })}
+                  error={fieldError("output_unit_price")}
                   required
                 />
                 <Field>
@@ -281,9 +293,10 @@ export function ModelDetailPage() {
                     onChange={(event) => patch({ price_effective_at: fromLocalInput(event.target.value) })}
                   />
                 </Field>
-                <Field>
-                  <FieldLabel>{t("Enabled")}</FieldLabel>
+                <Field orientation="horizontal">
+                  <FieldLabel htmlFor="model_enabled">{t("Enabled")}</FieldLabel>
                   <Switch
+                    id="model_enabled"
                     checked={state.enabled}
                     onCheckedChange={(checked) => patch({ enabled: Boolean(checked) })}
                   />

@@ -15,6 +15,7 @@ interface ConfirmDialogProps {
   onOpenChange: (open: boolean) => void;
   title: string;
   description: React.ReactNode;
+  content?: React.ReactNode;
   confirmLabel?: string;
   cancelLabel?: string;
   destructive?: boolean;
@@ -26,6 +27,7 @@ export function ConfirmDialog({
   onOpenChange,
   title,
   description,
+  content,
   confirmLabel,
   cancelLabel,
   destructive,
@@ -39,11 +41,12 @@ export function ConfirmDialog({
           <AlertDialogTitle>{title}</AlertDialogTitle>
           <AlertDialogDescription>{description}</AlertDialogDescription>
         </AlertDialogHeader>
+        {content}
         <AlertDialogFooter>
           <AlertDialogCancel>{cancelLabel ?? t("Cancel")}</AlertDialogCancel>
           <AlertDialogAction
             onClick={onConfirm}
-            className={destructive ? "bg-destructive text-destructive-foreground" : undefined}
+            variant={destructive ? "destructive" : "default"}
           >
             {confirmLabel ?? t("Confirm")}
           </AlertDialogAction>

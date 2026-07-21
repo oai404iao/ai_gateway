@@ -32,6 +32,11 @@ const zhCN: Record<string, string> = {
   "Channel performance, reliability, usage, and cost analytics.":
     "渠道性能、可靠性、用量与花费分析。",
   "Console": "控制台",
+  "Expand": "展开",
+  "Collapse": "收起",
+  "Not found": "未找到页面",
+  "The page you were looking for does not exist.": "您访问的页面不存在。",
+  "Back to account": "返回账户",
   "Light": "浅色",
   "Dark": "深色",
   "System default": "跟随系统",

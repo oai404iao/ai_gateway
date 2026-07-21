@@ -20,6 +20,7 @@ import {
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuRadioGroup,
@@ -37,20 +38,12 @@ import { roleLabel } from "@/lib/permissions";
 import { visibleSections } from "@/app/layouts/nav";
 import { RouteFallback } from "@/components/shared/route-fallback";
 import { LocaleToggle } from "@/components/shared/locale-toggle";
+import { Brand } from "@/components/shared/brand";
 
 function BrandHeader() {
-  const { t } = useI18n();
   return (
     <SidebarHeader>
-      <div className="flex items-center gap-2 px-2 py-3">
-        <div className="flex size-7 items-center justify-center rounded-md bg-primary text-primary-foreground">
-          <span className="text-xs font-bold">AG</span>
-        </div>
-        <div className="flex flex-col">
-          <span className="text-sm font-semibold">AI Gateway</span>
-          <span className="text-xs text-muted-foreground">{t("Console")}</span>
-        </div>
-      </div>
+      <Brand compact collapseInSidebar className="px-2 py-3" />
     </SidebarHeader>
   );
 }
@@ -62,25 +55,27 @@ function ThemeToggle() {
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button variant="ghost" size="icon" aria-label={t("Toggle theme")}>
-          <Sun className="size-4 dark:hidden" />
-          <Moon className="hidden size-4 dark:block" />
+          <Sun className="dark:hidden" />
+          <Moon className="hidden dark:block" />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
-        <DropdownMenuRadioGroup
-          value={theme}
-          onValueChange={(value) => setTheme(value as "light" | "dark" | "system")}
-        >
-          <DropdownMenuRadioItem value="light">
-            <Sun data-icon="inline-start" /> {t("Light")}
-          </DropdownMenuRadioItem>
-          <DropdownMenuRadioItem value="dark">
-            <Moon data-icon="inline-start" /> {t("Dark")}
-          </DropdownMenuRadioItem>
-          <DropdownMenuRadioItem value="system">
-            <Monitor data-icon="inline-start" /> {t("System default")}
-          </DropdownMenuRadioItem>
-        </DropdownMenuRadioGroup>
+        <DropdownMenuGroup>
+          <DropdownMenuRadioGroup
+            value={theme}
+            onValueChange={(value) => setTheme(value as "light" | "dark" | "system")}
+          >
+            <DropdownMenuRadioItem value="light">
+              <Sun data-icon="inline-start" /> {t("Light")}
+            </DropdownMenuRadioItem>
+            <DropdownMenuRadioItem value="dark">
+              <Moon data-icon="inline-start" /> {t("Dark")}
+            </DropdownMenuRadioItem>
+            <DropdownMenuRadioItem value="system">
+              <Monitor data-icon="inline-start" /> {t("System default")}
+            </DropdownMenuRadioItem>
+          </DropdownMenuRadioGroup>
+        </DropdownMenuGroup>
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -107,31 +102,35 @@ function UserMenu() {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="ghost" className="h-9 gap-2 px-2">
+        <Button variant="ghost" size="sm">
           <Avatar className="size-7">
             <AvatarFallback>{initials}</AvatarFallback>
           </Avatar>
           <span className="hidden text-sm sm:inline-flex">{user?.display_name}</span>
-          <ChevronDown className="size-4 opacity-60" />
+          <ChevronDown data-icon="inline-end" className="opacity-60" />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-56">
-        <DropdownMenuLabel>
-          <div className="flex flex-col">
-            <span className="text-sm font-medium">{user?.display_name}</span>
-            <span className="text-xs text-muted-foreground">{user?.email}</span>
-            <span className="text-xs text-muted-foreground">
-              {user ? roleLabel(user.role) : ""}
-            </span>
-          </div>
-        </DropdownMenuLabel>
+        <DropdownMenuGroup>
+          <DropdownMenuLabel>
+            <div className="flex flex-col">
+              <span className="text-sm font-medium">{user?.display_name}</span>
+              <span className="text-xs text-muted-foreground">{user?.email}</span>
+              <span className="text-xs text-muted-foreground">
+                {user ? roleLabel(user.role) : ""}
+              </span>
+            </div>
+          </DropdownMenuLabel>
+        </DropdownMenuGroup>
         <DropdownMenuSeparator />
-        <DropdownMenuItem onClick={() => navigate("/account")}>
-          {t("Profile")}
-        </DropdownMenuItem>
-        <DropdownMenuItem onClick={onLogout}>
-          <LogOut data-icon="inline-start" /> {t("Sign out")}
-        </DropdownMenuItem>
+        <DropdownMenuGroup>
+          <DropdownMenuItem onClick={() => navigate("/account")}>
+            {t("Profile")}
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={onLogout}>
+            <LogOut data-icon="inline-start" /> {t("Sign out")}
+          </DropdownMenuItem>
+        </DropdownMenuGroup>
       </DropdownMenuContent>
     </DropdownMenu>
   );

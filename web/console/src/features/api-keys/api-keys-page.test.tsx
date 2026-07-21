@@ -35,7 +35,7 @@ describe("ApiKeysPage", () => {
 
     // The one-time secret dialog appears with the secret and a copy button.
     expect(await screen.findByText(/save it now/i)).toBeInTheDocument();
-    expect(await screen.findByText(/sk-ag-test-secret-only-once/i)).toBeInTheDocument();
+    expect(await screen.findByDisplayValue(NEW_API_KEY_SECRET)).toBeInTheDocument();
   });
 
   it("serializes a datetime-local expiry as RFC 3339", async () => {

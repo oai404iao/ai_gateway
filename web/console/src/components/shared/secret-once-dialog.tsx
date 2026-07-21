@@ -4,11 +4,18 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupButton,
+  InputGroupInput,
+} from "@/components/ui/input-group";
 import { useI18n } from "@/app/i18n";
 
 interface SecretOnceDialogProps {
@@ -63,16 +70,24 @@ export function SecretOnceDialog({
             )}
           </AlertDescription>
         </Alert>
-        <div className="flex items-center gap-2 rounded-md border bg-muted/40 p-3">
-          <code className="flex-1 break-all font-mono text-sm">{secret ?? "—"}</code>
-          <Button size="sm" variant="outline" onClick={copy} disabled={!secret}>
-            {copied ? <Check data-icon="inline-start" /> : <Copy data-icon="inline-start" />}
-            {copied ? t("Copied") : t("Copy")}
-          </Button>
-        </div>
-        <div className="flex justify-end">
+        <InputGroup>
+          <InputGroupInput
+            readOnly
+            value={secret ?? ""}
+            placeholder="—"
+            className="font-mono text-xs"
+            aria-label={t(title)}
+          />
+          <InputGroupAddon align="inline-end">
+            <InputGroupButton onClick={copy} disabled={!secret}>
+              {copied ? <Check data-icon="inline-start" /> : <Copy data-icon="inline-start" />}
+              {copied ? t("Copied") : t("Copy")}
+            </InputGroupButton>
+          </InputGroupAddon>
+        </InputGroup>
+        <DialogFooter>
           <Button onClick={() => onOpenChange(false)}>{t("I have saved it")}</Button>
-        </div>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );

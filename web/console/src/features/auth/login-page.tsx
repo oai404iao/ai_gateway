@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Navigate, useNavigate } from "react-router";
+import { Link, Navigate, useNavigate } from "react-router";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -57,17 +57,24 @@ export function LoginPage() {
       <CardContent>
         <form onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-4">
           <FieldGroup>
-            <Field>
+            <Field data-invalid={Boolean(errors.email)}>
               <FieldLabel htmlFor="email">{t("Email")}</FieldLabel>
-              <Input id="email" type="email" autoComplete="email" {...register("email")} />
+              <Input
+                id="email"
+                type="email"
+                autoComplete="email"
+                aria-invalid={Boolean(errors.email)}
+                {...register("email")}
+              />
               {errors.email ? <FieldError>{errors.email.message}</FieldError> : null}
             </Field>
-            <Field>
+            <Field data-invalid={Boolean(errors.password)}>
               <FieldLabel htmlFor="password">{t("Password")}</FieldLabel>
               <Input
                 id="password"
                 type="password"
                 autoComplete="current-password"
+                aria-invalid={Boolean(errors.password)}
                 {...register("password")}
               />
               {errors.password ? <FieldError>{errors.password.message}</FieldError> : null}
@@ -80,9 +87,9 @@ export function LoginPage() {
         </form>
         <p className="mt-4 text-center text-xs text-muted-foreground">
           {t("Received an invitation?")}{" "}
-          <a className="font-medium text-foreground underline" href="/activate-invitation">
-            {t("Activate it")}
-          </a>
+          <Button variant="link" size="xs" asChild>
+            <Link to="/activate-invitation">{t("Activate it")}</Link>
+          </Button>
         </p>
       </CardContent>
     </Card>

@@ -111,9 +111,13 @@ export function ProfilePage() {
         <CardContent>
           <form onSubmit={profileForm.handleSubmit(onProfile)} className="flex flex-col gap-4">
             <FieldGroup>
-              <Field>
+              <Field data-invalid={Boolean(profileForm.formState.errors.display_name)}>
                 <FieldLabel htmlFor="display_name">{t("Display name")}</FieldLabel>
-                <Input id="display_name" {...profileForm.register("display_name")} />
+                <Input
+                  id="display_name"
+                  aria-invalid={Boolean(profileForm.formState.errors.display_name)}
+                  {...profileForm.register("display_name")}
+                />
                 {profileForm.formState.errors.display_name ? (
                   <FieldError>{profileForm.formState.errors.display_name.message}</FieldError>
                 ) : null}
@@ -139,36 +143,39 @@ export function ProfilePage() {
         <CardContent>
           <form onSubmit={passwordForm.handleSubmit(onPassword)} className="flex flex-col gap-4">
             <FieldGroup>
-              <Field>
+              <Field data-invalid={Boolean(passwordForm.formState.errors.current_password)}>
                 <FieldLabel htmlFor="current_password">{t("Current password")}</FieldLabel>
                 <Input
                   id="current_password"
                   type="password"
                   autoComplete="current-password"
+                  aria-invalid={Boolean(passwordForm.formState.errors.current_password)}
                   {...passwordForm.register("current_password")}
                 />
                 {passwordForm.formState.errors.current_password ? (
                   <FieldError>{passwordForm.formState.errors.current_password.message}</FieldError>
                 ) : null}
               </Field>
-              <Field>
+              <Field data-invalid={Boolean(passwordForm.formState.errors.new_password)}>
                 <FieldLabel htmlFor="new_password">{t("New password")}</FieldLabel>
                 <Input
                   id="new_password"
                   type="password"
                   autoComplete="new-password"
+                  aria-invalid={Boolean(passwordForm.formState.errors.new_password)}
                   {...passwordForm.register("new_password")}
                 />
                 {passwordForm.formState.errors.new_password ? (
                   <FieldError>{passwordForm.formState.errors.new_password.message}</FieldError>
                 ) : null}
               </Field>
-              <Field>
+              <Field data-invalid={Boolean(passwordForm.formState.errors.confirm_password)}>
                 <FieldLabel htmlFor="confirm_password">{t("Confirm new password")}</FieldLabel>
                 <Input
                   id="confirm_password"
                   type="password"
                   autoComplete="new-password"
+                  aria-invalid={Boolean(passwordForm.formState.errors.confirm_password)}
                   {...passwordForm.register("confirm_password")}
                 />
                 {passwordForm.formState.errors.confirm_password ? (

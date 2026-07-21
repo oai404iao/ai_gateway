@@ -1,6 +1,11 @@
 import { useId } from "react";
 import { Input } from "@/components/ui/input";
-import { Field, FieldError, FieldLabel } from "@/components/ui/field";
+import {
+  Field,
+  FieldDescription,
+  FieldError,
+  FieldLabel,
+} from "@/components/ui/field";
 import { useI18n } from "@/app/i18n";
 
 interface DecimalFieldProps {
@@ -39,9 +44,7 @@ export function DecimalField({
         onChange={(event) => onChange(event.target.value)}
         aria-invalid={Boolean(error)}
       />
-      {description ? (
-        <p className="text-xs text-muted-foreground">{description}</p>
-      ) : null}
+      {description ? <FieldDescription>{description}</FieldDescription> : null}
       {error ? <FieldError>{error}</FieldError> : null}
     </Field>
   );
@@ -87,9 +90,7 @@ export function NullableNumberField({
         }}
         aria-invalid={Boolean(error)}
       />
-      {description ? (
-        <p className="text-xs text-muted-foreground">{description}</p>
-      ) : null}
+      {description ? <FieldDescription>{description}</FieldDescription> : null}
       {error ? <FieldError>{error}</FieldError> : null}
     </Field>
   );
