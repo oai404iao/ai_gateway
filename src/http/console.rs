@@ -73,6 +73,10 @@ pub fn router(state: ConsoleState) -> Router {
             get(list_own_api_keys).post(create_own_api_key),
         )
         .route(
+            "/console/v1/me/api-key-options",
+            get(get_own_api_key_options),
+        )
+        .route(
             "/console/v1/me/api-keys/{id}",
             get(get_own_api_key).put(update_own_api_key),
         )
@@ -615,6 +619,18 @@ async fn list_own_api_keys(
 ) -> Result<Json<Vec<ConsoleApiKey>>, ConsoleError> {
     Ok(Json(
         state.coordinator.own_api_keys(principal.user_id()).await?,
+    ))
+}
+
+async fn get_own_api_key_options(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+) -> Result<Json<crate::persistence::SelfApiKeyOptions>, ConsoleError> {
+    Ok(Json(
+        state
+            .coordinator
+            .own_api_key_options(principal.user_id())
+            .await?,
     ))
 }
 
@@ -1530,7 +1546,7 @@ fn repository_error_message(error: &crate::persistence::RepositoryError) -> &'st
         crate::persistence::RepositoryError::DefaultApiKeyPolicyDisabled => {
             "default_api_key_policy_disabled"
         }
-        crate::persistence::RepositoryError::ApiKeyLimitReached => "api_key_limit_reached",
+        crate::persistence::RepositoryError::ApiKeyTargetNotAllowed => "api_key_target_not_allowed",
         _ => "Console operation rejected",
     }
 }
@@ -1541,10 +1557,10 @@ fn repository_status(error: &crate::persistence::RepositoryError) -> StatusCode 
         crate::persistence::RepositoryError::Conflict => StatusCode::CONFLICT,
         crate::persistence::RepositoryError::Validation => StatusCode::UNPROCESSABLE_ENTITY,
         crate::persistence::RepositoryError::DefaultApiKeyPolicyRequired
-        | crate::persistence::RepositoryError::DefaultApiKeyPolicyDisabled => {
+        | crate::persistence::RepositoryError::DefaultApiKeyPolicyDisabled
+        | crate::persistence::RepositoryError::ApiKeyTargetNotAllowed => {
             StatusCode::UNPROCESSABLE_ENTITY
         }
-        crate::persistence::RepositoryError::ApiKeyLimitReached => StatusCode::CONFLICT,
         crate::persistence::RepositoryError::Sql(error)
             if error
                 .as_database_error()

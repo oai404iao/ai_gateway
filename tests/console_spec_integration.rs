@@ -568,7 +568,6 @@ async fn model_rule_uses_its_upstream_model_as_the_price_source() {
     .await;
     assert_eq!(group.status(), StatusCode::CREATED);
     let group_id = body_json(group).await["id"].as_str().unwrap().to_owned();
-
     let channel = request(
         &app,
         "POST",
@@ -628,6 +627,22 @@ async fn model_rule_uses_its_upstream_model_as_the_price_source() {
 async fn api_key_create_returns_retrievable_prefixed_secret() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
+    let group = request(
+        &app,
+        "POST",
+        "/console/v1/routing/channel-groups",
+        serde_json::json!({
+            "name": "spec-key-group",
+            "api_format": "open_ai_chat_completions",
+            "priority": 1,
+            "selection_strategy": "weighted_random",
+            "enabled": true,
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(group.status(), StatusCode::CREATED);
+    let group_id = body_json(group).await["id"].as_str().unwrap().to_owned();
     let create = request(
         &app,
         "POST",
@@ -637,6 +652,8 @@ async fn api_key_create_returns_retrievable_prefixed_secret() {
             "name": "spec-key",
             "allowed_api_formats": ["open_ai_chat_completions"],
             "permissions": ["proxy"],
+            "allowed_group_ids": [group_id],
+            "allowed_channel_ids": [],
         }),
         &[],
     )
@@ -663,17 +680,148 @@ async fn api_key_create_returns_retrievable_prefixed_secret() {
     database.cleanup().await;
 }
 
+#[tokio::test]
+async fn api_key_policy_only_stores_selectable_targets() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+    let group = request(
+        &app,
+        "POST",
+        "/console/v1/routing/channel-groups",
+        serde_json::json!({
+            "name": "policy-target-group",
+            "api_format": "open_ai_chat_completions",
+            "priority": 1,
+            "selection_strategy": "weighted_random",
+            "enabled": true,
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(group.status(), StatusCode::CREATED);
+    let group_id = body_json(group).await["id"].as_str().unwrap().to_owned();
+    let channel = request(
+        &app,
+        "POST",
+        "/console/v1/routing/channels",
+        serde_json::json!({
+            "channel_group_id": group_id,
+            "api_format": "open_ai_chat_completions",
+            "name": "policy-target-channel",
+            "base_url": "https://upstream.example.test",
+            "enabled": true,
+            "weight": 1,
+            "upstream_auth_kind": "none",
+            "available_models": [],
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(channel.status(), StatusCode::CREATED);
+    let channel_id = body_json(channel).await["id"].as_str().unwrap().to_owned();
+
+    let created = request(
+        &app,
+        "POST",
+        "/console/v1/api-key-policies",
+        serde_json::json!({
+            "name": "channel-only-policy",
+            "allowed_group_ids": [],
+            "allowed_channel_ids": [channel_id],
+            "enabled": true
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let id = body_json(created).await["id"].as_str().unwrap().to_owned();
+    let detail = request(
+        &app,
+        "GET",
+        &format!("/console/v1/api-key-policies/{id}"),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(detail.status(), StatusCode::OK);
+    let detail = body_json(detail).await;
+    assert_eq!(detail["allowed_group_ids"], serde_json::json!([]));
+    assert_eq!(
+        detail["allowed_channel_ids"],
+        serde_json::json!([channel_id])
+    );
+    for removed in [
+        "allowed_api_formats",
+        "permissions",
+        "requests_per_minute",
+        "max_concurrent_requests",
+        "quota_limit_amount",
+        "max_active_keys",
+    ] {
+        assert!(
+            detail.get(removed).is_none(),
+            "{removed} is no longer a policy field"
+        );
+    }
+    database.cleanup().await;
+}
+
 /// Self-service key creation reports actionable policy precondition codes.
 #[tokio::test]
 async fn self_api_key_create_reports_policy_preconditions() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
+    let group = request(
+        &app,
+        "POST",
+        "/console/v1/routing/channel-groups",
+        serde_json::json!({
+            "name": "self-key-group",
+            "api_format": "open_ai_chat_completions",
+            "priority": 1,
+            "selection_strategy": "weighted_random",
+            "enabled": true,
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(group.status(), StatusCode::CREATED);
+    let group_id = body_json(group).await["id"].as_str().unwrap().to_owned();
+    let channel = request(
+        &app,
+        "POST",
+        "/console/v1/routing/channels",
+        serde_json::json!({
+            "channel_group_id": group_id,
+            "api_format": "open_ai_chat_completions",
+            "name": "self-key-channel",
+            "base_url": "https://upstream.example.test",
+            "enabled": true,
+            "weight": 1,
+            "upstream_auth_kind": "none",
+            "available_models": [],
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(channel.status(), StatusCode::CREATED);
+    let channel_id = body_json(channel).await["id"].as_str().unwrap().to_owned();
+    let key_input = |name: &str| {
+        serde_json::json!({
+            "name": name,
+            "allowed_group_ids": [group_id],
+            "allowed_channel_ids": [],
+            "requests_per_minute": 30,
+            "max_concurrent_requests": 2,
+            "quota_limit_amount": "5.00"
+        })
+    };
 
     let missing = request(
         &app,
         "POST",
         "/console/v1/me/api-keys",
-        serde_json::json!({"name": "missing-policy"}),
+        key_input("missing-policy"),
         &[],
     )
     .await;
@@ -686,11 +834,12 @@ async fn self_api_key_create_reports_policy_preconditions() {
     let policy_id = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO api_key_policies \
-         (id,name,allowed_api_formats,permissions,max_active_keys,enabled) \
-         VALUES ($1,$2,ARRAY['open_ai_chat_completions']::api_format[],ARRAY['proxy'],1,false)",
+         (id,name,allowed_group_ids,allowed_channel_ids,enabled) \
+         VALUES ($1,$2,ARRAY[$3]::uuid[],'{}',false)",
     )
     .bind(policy_id)
     .bind(format!("spec-policy-{policy_id}"))
+    .bind(Uuid::parse_str(&group_id).unwrap())
     .execute(&database.pool)
     .await
     .unwrap();
@@ -705,7 +854,7 @@ async fn self_api_key_create_reports_policy_preconditions() {
         &app,
         "POST",
         "/console/v1/me/api-keys",
-        serde_json::json!({"name": "disabled-policy"}),
+        key_input("disabled-policy"),
         &[],
     )
     .await;
@@ -720,12 +869,70 @@ async fn self_api_key_create_reports_policy_preconditions() {
         .execute(&database.pool)
         .await
         .unwrap();
+    let options = request(
+        &app,
+        "GET",
+        "/console/v1/me/api-key-options",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(options.status(), StatusCode::OK);
+    let options = body_json(options).await;
+    assert_eq!(options["policy_id"], policy_id.to_string());
+    assert_eq!(options["groups"][0]["id"], group_id);
+    assert_eq!(options["channels"][0]["id"], channel_id);
+
+    let other_group = request(
+        &app,
+        "POST",
+        "/console/v1/routing/channel-groups",
+        serde_json::json!({
+            "name": "self-key-other-group",
+            "api_format": "open_ai_chat_completions",
+            "priority": 2,
+            "selection_strategy": "weighted_random",
+            "enabled": true,
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(other_group.status(), StatusCode::CREATED);
+    let other_group_id = body_json(other_group).await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let denied = request(
+        &app,
+        "POST",
+        "/console/v1/me/api-keys",
+        serde_json::json!({
+            "name": "outside-policy",
+            "allowed_group_ids": [other_group_id],
+            "allowed_channel_ids": [],
+            "requests_per_minute": null,
+            "max_concurrent_requests": null,
+            "quota_limit_amount": null
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(denied.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        body_json(denied).await,
+        serde_json::json!({"error": "api_key_target_not_allowed"})
+    );
+
     let expiry = (chrono::Utc::now() + chrono::Duration::days(1)).to_rfc3339();
     let created = request(
         &app,
         "POST",
         "/console/v1/me/api-keys",
-        serde_json::json!({"name": "first-key", "expires_at": expiry}),
+        {
+            let mut input = key_input("first-key");
+            input["expires_at"] = serde_json::json!(expiry.clone());
+            input
+        },
         &[],
     )
     .await;
@@ -744,21 +951,69 @@ async fn self_api_key_create_reports_policy_preconditions() {
     )
     .await;
     assert_eq!(detail.status(), StatusCode::OK);
-    assert_eq!(body_json(detail).await["secret"], secret);
+    let etag = detail.headers()[header::ETAG].to_str().unwrap().to_owned();
+    let detail = body_json(detail).await;
+    assert_eq!(detail["secret"], secret);
+    assert_eq!(detail["allowed_group_ids"], serde_json::json!([group_id]));
+    assert_eq!(detail["allowed_channel_ids"], serde_json::json!([]));
+    assert_eq!(
+        detail["allowed_api_formats"],
+        serde_json::json!(["open_ai_chat_completions"])
+    );
+    assert_eq!(
+        detail["permissions"],
+        serde_json::json!(["proxy", "models.read"])
+    );
+    assert_eq!(detail["requests_per_minute"], 30);
+    assert_eq!(detail["max_concurrent_requests"], 2);
+    assert_eq!(detail["quota_limit_amount"], "5.00000000");
 
-    let limited = request(
+    let updated = request(
         &app,
-        "POST",
-        "/console/v1/me/api-keys",
-        serde_json::json!({"name": "second-key"}),
+        "PUT",
+        &format!("/console/v1/me/api-keys/{id}"),
+        serde_json::json!({
+            "name": "first-key-updated",
+            "status": "active",
+            "expires_at": expiry,
+            "allowed_group_ids": [],
+            "allowed_channel_ids": [channel_id],
+            "requests_per_minute": 40,
+            "max_concurrent_requests": 3,
+            "quota_limit_amount": "8.50"
+        }),
+        &[("if-match", &etag)],
+    )
+    .await;
+    assert_eq!(updated.status(), StatusCode::OK);
+    let detail = request(
+        &app,
+        "GET",
+        &format!("/console/v1/me/api-keys/{id}"),
+        serde_json::json!({}),
         &[],
     )
     .await;
-    assert_eq!(limited.status(), StatusCode::CONFLICT);
+    assert_eq!(detail.status(), StatusCode::OK);
+    let detail = body_json(detail).await;
+    assert_eq!(detail["allowed_group_ids"], serde_json::json!([]));
     assert_eq!(
-        body_json(limited).await,
-        serde_json::json!({"error": "api_key_limit_reached"})
+        detail["allowed_channel_ids"],
+        serde_json::json!([channel_id])
     );
+    assert_eq!(detail["requests_per_minute"], 40);
+    assert_eq!(detail["max_concurrent_requests"], 3);
+    assert_eq!(detail["quota_limit_amount"], "8.50000000");
+
+    let second = request(
+        &app,
+        "POST",
+        "/console/v1/me/api-keys",
+        key_input("second-key"),
+        &[],
+    )
+    .await;
+    assert_eq!(second.status(), StatusCode::CREATED);
     database.cleanup().await;
 }
 

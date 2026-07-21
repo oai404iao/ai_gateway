@@ -1000,6 +1000,7 @@ async fn admin_key_create_publishes_immediately_and_audits_redacted() {
             "allowed_api_formats": ["open_ai_chat_completions"],
             "permissions": ["proxy"],
             "allowed_group_ids": [seed.group],
+            "allowed_channel_ids": [],
             "expires_at": null
         }),
     )
@@ -1075,6 +1076,7 @@ async fn managed_users_are_versioned_audited_and_immediately_revoke_their_keys()
             "allowed_api_formats": ["open_ai_chat_completions"],
             "permissions": ["proxy"],
             "allowed_group_ids": [seed.group],
+            "allowed_channel_ids": [],
             "expires_at": null
         }),
     )
@@ -1539,6 +1541,7 @@ async fn admin_api_key_policies_persist_publish_and_are_audited_without_secrets(
             "allowed_api_formats": ["open_ai_chat_completions"],
             "permissions": ["proxy"],
             "allowed_group_ids": [seed.group],
+            "allowed_channel_ids": [],
             "expires_at": null,
             "requests_per_minute": 7,
             "max_concurrent_requests": 3,
@@ -1620,6 +1623,7 @@ async fn admin_api_key_policies_persist_publish_and_are_audited_without_secrets(
             "allowed_api_formats": ["open_ai_chat_completions"],
             "permissions": ["proxy"],
             "allowed_group_ids": [seed.group],
+            "allowed_channel_ids": [],
             "expires_at": null,
             "requests_per_minute": 9,
             "max_concurrent_requests": 4,
@@ -1679,6 +1683,7 @@ async fn admin_api_key_policies_persist_publish_and_are_audited_without_secrets(
             "allowed_api_formats": ["open_ai_chat_completions"],
             "permissions": ["proxy"],
             "allowed_group_ids": [seed.group],
+            "allowed_channel_ids": [],
             "expires_at": null,
             "requests_per_minute": 1,
             "max_concurrent_requests": 1,
@@ -2179,10 +2184,17 @@ async fn revoked_api_key_cannot_be_reactivated() {
     )
     .await;
     assert_eq!(revoked.status(), StatusCode::OK);
-    let updated = admin_request(app, "PUT", &format!("/console/v1/api-keys/{}", seed.key), serde_json::json!({
-        "name":"test", "status":"active", "allowed_api_formats":["open_ai_chat_completions"],
-        "permissions":["proxy","models.read"], "allowed_group_ids":[seed.group], "expires_at":null
-    })).await;
+    let updated = admin_request(
+        app,
+        "PUT",
+        &format!("/console/v1/api-keys/{}", seed.key),
+        serde_json::json!({
+            "name":"test", "status":"active", "allowed_api_formats":["open_ai_chat_completions"],
+            "permissions":["proxy","models.read"], "allowed_group_ids":[seed.group],
+            "allowed_channel_ids":[], "expires_at":null
+        }),
+    )
+    .await;
     assert_eq!(updated.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let status: String = sqlx::query_scalar("SELECT status FROM api_keys WHERE id=$1")
         .bind(seed.key)
@@ -2448,7 +2460,7 @@ async fn full_put_requires_current_etag_and_stale_update_does_not_audit() {
     let detail = admin_request(app.clone(), "GET", &path, serde_json::json!({})).await;
     assert_eq!(detail.status(), StatusCode::OK);
     let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
-    let input = serde_json::json!({"name":"updated", "status":"active", "allowed_api_formats":["open_ai_chat_completions"], "permissions":["proxy"], "allowed_group_ids":[seed.group], "expires_at":null});
+    let input = serde_json::json!({"name":"updated", "status":"active", "allowed_api_formats":["open_ai_chat_completions"], "permissions":["proxy"], "allowed_group_ids":[seed.group], "allowed_channel_ids":[], "expires_at":null});
     assert_eq!(
         admin_request(app.clone(), "PUT", &path, input.clone())
             .await
@@ -2530,7 +2542,7 @@ async fn disabled_legacy_key_tpm_is_visible_audited_and_cannot_be_activated() {
     let input = serde_json::json!({
         "name":"test", "status":"disabled",
         "allowed_api_formats":["open_ai_chat_completions"], "permissions":["proxy","models.read"],
-        "allowed_group_ids":[seed.group], "expires_at":null,
+        "allowed_group_ids":[seed.group], "allowed_channel_ids":[], "expires_at":null,
         "requests_per_minute":null, "max_concurrent_requests":null, "quota_limit_amount":null
     });
     assert_eq!(
@@ -2873,6 +2885,37 @@ async fn group_authorization_and_expired_keys_are_not_usable() {
         snapshot
             .models_for(&key, ApiFormat::OpenAiChatCompletions)
             .is_empty()
+    );
+    sqlx::query(
+        "UPDATE api_keys \
+         SET allowed_group_ids = '{}', allowed_channel_ids = ARRAY[$1]::uuid[] \
+         WHERE id = $2",
+    )
+    .bind(seed.channel)
+    .bind(seed.key)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let channel_snapshot = compile_control_plane(
+        ControlPlaneRepository::new(database.pool.clone())
+            .load()
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let channel_key = channel_snapshot.authenticate(&seed.secret).unwrap();
+    assert!(
+        !routing::select(
+            &channel_snapshot,
+            &channel_key,
+            ApiFormat::OpenAiChatCompletions,
+            &seed.client_model,
+        )
+        .is_none()
+    );
+    assert_eq!(
+        channel_snapshot.models_for(&channel_key, ApiFormat::OpenAiChatCompletions),
+        vec![Arc::from(seed.client_model.as_str())]
     );
     sqlx::query("UPDATE api_keys SET created_at = now() - interval '2 minutes', expires_at = now() - interval '1 minute' WHERE id = $1")
         .bind(seed.key)
@@ -3397,8 +3440,8 @@ async fn console_members_are_limited_to_their_own_keys_and_logs() {
     let policy_id = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO api_key_policies
-         (id,name,allowed_api_formats,permissions,allowed_group_ids,max_active_keys,enabled)
-         VALUES ($1,$2,ARRAY['open_ai_chat_completions']::api_format[],ARRAY['proxy'],ARRAY[$3]::uuid[],1,true)",
+         (id,name,allowed_group_ids,allowed_channel_ids,enabled)
+         VALUES ($1,$2,ARRAY[$3]::uuid[],'{}',true)",
     )
     .bind(policy_id)
     .bind(format!("member-policy-{policy_id}"))
@@ -3429,7 +3472,15 @@ async fn console_members_are_limited_to_their_own_keys_and_logs() {
         member_app.clone(),
         "POST",
         "/console/v1/me/api-keys",
-        serde_json::json!({"name":"member-key","expires_at":null}),
+        serde_json::json!({
+            "name":"member-key",
+            "expires_at":null,
+            "allowed_group_ids":[seed.group],
+            "allowed_channel_ids":[],
+            "requests_per_minute":null,
+            "max_concurrent_requests":null,
+            "quota_limit_amount":null
+        }),
     )
     .await;
     assert_eq!(created.status(), StatusCode::CREATED);

@@ -228,11 +228,24 @@ paths:
               schema: { $ref: "#/components/schemas/MutationResponse" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
-        "409":
-          description: Active API key limit reached (`api_key_limit_reached`).
+        "422":
+          description: Missing/disabled policy, invalid limits, or a target outside the policy.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorBody" }
+
+  /me/api-key-options:
+    get:
+      tags: [Self]
+      operationId: getOwnApiKeyOptions
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Channel groups and channels selectable under the user's policy.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SelfApiKeyOptions" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
         "422":
           description: Missing or disabled default API key policy.
           content:
@@ -277,7 +290,11 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
-        "422": { $ref: "#/components/responses/Unprocessable" }
+        "422":
+          description: Invalid limits or a selected target outside the current policy.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorBody" }
 
   /me/api-keys/{id}/revoke:
     post:
@@ -1470,7 +1487,7 @@ components:
       type: object
       required:
         [id, name, secret, status, expires_at, allowed_api_formats, permissions,
-         allowed_group_ids, requests_per_minute, max_concurrent_requests,
+         allowed_group_ids, allowed_channel_ids, requests_per_minute, max_concurrent_requests,
          quota_limit_amount, quota_used_amount, created_at, updated_at]
       properties:
         id: { type: string, format: uuid }
@@ -1488,7 +1505,9 @@ components:
           items: { type: string }
         allowed_group_ids:
           type: array
-          nullable: true
+          items: { type: string, format: uuid }
+        allowed_channel_ids:
+          type: array
           items: { type: string, format: uuid }
         requests_per_minute: { type: integer, nullable: true }
         max_concurrent_requests: { type: integer, nullable: true }
@@ -1510,29 +1529,54 @@ components:
     ApiKeyPolicyView:
       type: object
       required:
-        [id, name, allowed_api_formats, permissions, allowed_group_ids,
-         requests_per_minute, max_concurrent_requests, quota_limit_amount,
-         max_active_keys, enabled, created_at, updated_at]
+        [id, name, allowed_group_ids, allowed_channel_ids, enabled, created_at, updated_at]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
-        allowed_api_formats:
-          type: array
-          items: { $ref: "#/components/schemas/ApiFormat" }
-        permissions:
-          type: array
-          items: { type: string }
         allowed_group_ids:
           type: array
-          nullable: true
           items: { type: string, format: uuid }
-        requests_per_minute: { type: integer, nullable: true }
-        max_concurrent_requests: { type: integer, nullable: true }
-        quota_limit_amount: { $ref: "#/components/schemas/DecimalNullable" }
-        max_active_keys: { type: integer }
+        allowed_channel_ids:
+          type: array
+          items: { type: string, format: uuid }
         enabled: { type: boolean }
         created_at: { $ref: "#/components/schemas/DateTime" }
         updated_at: { $ref: "#/components/schemas/DateTime" }
+
+    SelfApiKeyOptions:
+      type: object
+      required: [policy_id, policy_name, groups, channels]
+      properties:
+        policy_id: { type: string, format: uuid }
+        policy_name: { type: string }
+        groups:
+          type: array
+          items: { $ref: "#/components/schemas/SelfApiKeyGroupOption" }
+        channels:
+          type: array
+          items: { $ref: "#/components/schemas/SelfApiKeyChannelOption" }
+
+    SelfApiKeyGroupOption:
+      type: object
+      required: [id, name, api_format, enabled]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        api_format: { $ref: "#/components/schemas/ApiFormat" }
+        enabled: { type: boolean }
+
+    SelfApiKeyChannelOption:
+      type: object
+      required:
+        [id, channel_group_id, channel_group_name, api_format, name, enabled, auto_disabled]
+      properties:
+        id: { type: string, format: uuid }
+        channel_group_id: { type: string, format: uuid }
+        channel_group_name: { type: string }
+        api_format: { $ref: "#/components/schemas/ApiFormat" }
+        name: { type: string }
+        enabled: { type: boolean }
+        auto_disabled: { type: boolean }
 
     ControlPlaneUser:
       type: object
@@ -1974,18 +2018,36 @@ components:
 
     SelfApiKeyCreateInput:
       type: object
-      required: [name]
+      required: [name, allowed_group_ids, allowed_channel_ids]
       properties:
         name: { type: string }
+        allowed_group_ids:
+          type: array
+          items: { type: string, format: uuid }
+        allowed_channel_ids:
+          type: array
+          items: { type: string, format: uuid }
         expires_at: { $ref: "#/components/schemas/DateTimeNullable" }
+        requests_per_minute: { type: integer, nullable: true }
+        max_concurrent_requests: { type: integer, nullable: true }
+        quota_limit_amount: { $ref: "#/components/schemas/DecimalNullable" }
 
     SelfApiKeyUpdateInput:
       type: object
-      required: [name, status]
+      required: [name, status, allowed_group_ids, allowed_channel_ids]
       properties:
         name: { type: string }
         status: { type: string }
+        allowed_group_ids:
+          type: array
+          items: { type: string, format: uuid }
+        allowed_channel_ids:
+          type: array
+          items: { type: string, format: uuid }
         expires_at: { $ref: "#/components/schemas/DateTimeNullable" }
+        requests_per_minute: { type: integer, nullable: true }
+        max_concurrent_requests: { type: integer, nullable: true }
+        quota_limit_amount: { $ref: "#/components/schemas/DecimalNullable" }
 
     InviteUserInput:
       type: object
@@ -2011,29 +2073,22 @@ components:
 
     ApiKeyPolicyInput:
       type: object
-      required:
-        [name, allowed_api_formats, permissions, max_active_keys, enabled]
+      required: [name, allowed_group_ids, allowed_channel_ids, enabled]
       properties:
         name: { type: string }
-        allowed_api_formats:
-          type: array
-          items: { $ref: "#/components/schemas/ApiFormat" }
-        permissions:
-          type: array
-          items: { type: string }
         allowed_group_ids:
           type: array
-          nullable: true
           items: { type: string, format: uuid }
-        requests_per_minute: { type: integer, nullable: true }
-        max_concurrent_requests: { type: integer, nullable: true }
-        quota_limit_amount: { $ref: "#/components/schemas/DecimalNullable" }
-        max_active_keys: { type: integer }
+        allowed_channel_ids:
+          type: array
+          items: { type: string, format: uuid }
         enabled: { type: boolean }
 
     ApiKeyCreateInput:
       type: object
-      required: [user_id, name, allowed_api_formats, permissions]
+      required:
+        [user_id, name, allowed_api_formats, permissions, allowed_group_ids,
+         allowed_channel_ids]
       properties:
         user_id: { type: string, format: uuid }
         name: { type: string }
@@ -2045,7 +2100,9 @@ components:
           items: { type: string }
         allowed_group_ids:
           type: array
-          nullable: true
+          items: { type: string, format: uuid }
+        allowed_channel_ids:
+          type: array
           items: { type: string, format: uuid }
         expires_at: { $ref: "#/components/schemas/DateTimeNullable" }
         requests_per_minute: { type: integer, nullable: true }
@@ -2054,7 +2111,9 @@ components:
 
     ApiKeyUpdateInput:
       type: object
-      required: [name, status, allowed_api_formats, permissions]
+      required:
+        [name, status, allowed_api_formats, permissions, allowed_group_ids,
+         allowed_channel_ids]
       properties:
         name: { type: string }
         status: { type: string }
@@ -2066,7 +2125,9 @@ components:
           items: { type: string }
         allowed_group_ids:
           type: array
-          nullable: true
+          items: { type: string, format: uuid }
+        allowed_channel_ids:
+          type: array
           items: { type: string, format: uuid }
         expires_at: { $ref: "#/components/schemas/DateTimeNullable" }
         requests_per_minute: { type: integer, nullable: true }

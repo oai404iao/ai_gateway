@@ -6,7 +6,7 @@ import { BrowserRouter } from "react-router";
 import { AppProviders } from "@/app/providers";
 import { AppRouter } from "@/app/router";
 import { server, seedAuthenticatedSession } from "@/test/msw";
-import { NEW_API_KEY_SECRET, OWN_API_KEY } from "@/test/fixtures";
+import { CHANNEL_GROUP, NEW_API_KEY_SECRET, OWN_API_KEY } from "@/test/fixtures";
 import { maskApiKey } from "@/lib/api-keys";
 import type { SelfApiKeyCreateInput } from "@/api/types";
 
@@ -33,6 +33,9 @@ describe("ApiKeysPage", () => {
     await user.click(screen.getByRole("button", { name: /new api key/i }));
     const nameField = await screen.findByLabelText(/name/i);
     await user.type(nameField, "spec key");
+    await user.click(
+      screen.getByRole("checkbox", { name: new RegExp(`^${CHANNEL_GROUP.name}`, "i") }),
+    );
     await user.click(screen.getByRole("button", { name: /create key/i }));
 
     expect(await screen.findByText(/api key created/i)).toBeInTheDocument();
@@ -75,6 +78,9 @@ describe("ApiKeysPage", () => {
 
     await user.click(await screen.findByRole("button", { name: /new api key/i }));
     await user.type(screen.getByLabelText(/^name$/i), "expiring key");
+    await user.click(
+      screen.getByRole("checkbox", { name: new RegExp(`^${CHANNEL_GROUP.name}`, "i") }),
+    );
     const localExpiry = "2099-08-01T12:00";
     fireEvent.change(screen.getByLabelText(/expires at/i), {
       target: { value: localExpiry },
@@ -85,6 +91,11 @@ describe("ApiKeysPage", () => {
       expect(submitted).toEqual({
         name: "expiring key",
         expires_at: new Date(localExpiry).toISOString(),
+        allowed_group_ids: [CHANNEL_GROUP.id],
+        allowed_channel_ids: [],
+        requests_per_minute: null,
+        max_concurrent_requests: null,
+        quota_limit_amount: null,
       });
     });
   });
@@ -104,6 +115,9 @@ describe("ApiKeysPage", () => {
 
     await user.click(await screen.findByRole("button", { name: /new api key/i }));
     await user.type(screen.getByLabelText(/^name$/i), "policy-required");
+    await user.click(
+      screen.getByRole("checkbox", { name: new RegExp(`^${CHANNEL_GROUP.name}`, "i") }),
+    );
     await user.click(screen.getByRole("button", { name: /create key/i }));
 
     expect(
@@ -121,6 +135,17 @@ describe("ApiKeysPage", () => {
     await waitFor(() => {
       expect(screen.getByRole("button", { name: /revoke api key/i })).toBeInTheDocument();
     });
+  });
+
+  it("shows allowed channel group names instead of UUIDs on key details", async () => {
+    seedAuthenticatedSession();
+    renderAppAt(`/api-keys/${OWN_API_KEY.id}`);
+
+    const label = await screen.findByText(/^Allowed groups$/i);
+    const value = label.nextElementSibling;
+
+    expect(value).toHaveTextContent(CHANNEL_GROUP.name);
+    expect(value).not.toHaveTextContent(CHANNEL_GROUP.id);
   });
 
   it("saves a loaded disabled status without requiring reselection", async () => {

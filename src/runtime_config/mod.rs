@@ -466,7 +466,7 @@ pub fn compile_control_plane(
             );
         }
     }
-    let api_keys = compile_keys(records.api_keys, &all_groups)?;
+    let api_keys = compile_keys(records.api_keys, &all_groups, &all_channels)?;
     let model_rules = compile_rules(
         records.model_rules,
         &all_groups,
@@ -656,6 +656,7 @@ fn transform_error(context: &'static str) -> impl FnOnce(TransformCompileError) 
 fn compile_keys(
     records: Vec<ApiKeyRecord>,
     all_groups: &HashMap<Uuid, ChannelGroupRecord>,
+    all_channels: &HashMap<Uuid, ChannelRecord>,
 ) -> Result<HashMap<ApiKeyHash, Arc<CompiledApiKey>>, ConfigError> {
     let mut result = HashMap::new();
     let mut ids = HashSet::new();
@@ -663,7 +664,7 @@ fn compile_keys(
         if !ids.insert(record.id) {
             return Err(dup("API key id"));
         }
-        validate_key(&record, all_groups)?;
+        validate_key(&record, all_groups, all_channels)?;
         let usable = record.status == "active" && record.user_status == "active";
         if !usable {
             continue;
@@ -683,9 +684,8 @@ fn compile_keys(
             .iter()
             .map(|value| parse_permission(value))
             .collect::<Result<HashSet<_>, _>>()?;
-        let groups = record
-            .allowed_group_ids
-            .map(|groups| groups.into_iter().collect());
+        let groups = record.allowed_group_ids.into_iter().collect();
+        let channels = record.allowed_channel_ids.into_iter().collect();
         let secret = Zeroizing::new(record.secret_value);
         let key = Arc::new(CompiledApiKey::new(
             record.id,
@@ -693,6 +693,7 @@ fn compile_keys(
             formats,
             permissions,
             groups,
+            channels,
             record.expires_at,
             positive_policy(record.requests_per_minute, "requests_per_minute")?,
             positive_policy(record.max_concurrent_requests, "max_concurrent_requests")?,
@@ -1006,6 +1007,7 @@ fn is_empty_document(value: &serde_json::Value) -> bool {
 fn validate_key(
     record: &ApiKeyRecord,
     groups: &HashMap<Uuid, ChannelGroupRecord>,
+    channels: &HashMap<Uuid, ChannelRecord>,
 ) -> Result<(), ConfigError> {
     require("API key secret", &record.secret_value)?;
     if !matches!(
@@ -1034,22 +1036,26 @@ fn validate_key(
     for permission in &record.permissions {
         parse_permission(permission)?;
     }
-    if let Some(allowed) = &record.allowed_group_ids {
-        if allowed.is_empty() {
+    unique(&record.allowed_group_ids, "API key allowed_group_ids")?;
+    unique(&record.allowed_channel_ids, "API key allowed_channel_ids")?;
+    for id in &record.allowed_group_ids {
+        let group = groups
+            .get(id)
+            .ok_or_else(|| ConfigError::Compile("API key references a missing group".into()))?;
+        if !formats.contains(&parse_format(&group.api_format)?) {
             return Err(ConfigError::Compile(
-                "API key allowed_group_ids must be null or non-empty".into(),
+                "API key group access references a disallowed format".into(),
             ));
         }
-        unique(allowed, "API key allowed_group_ids")?;
-        for id in allowed {
-            let group = groups
-                .get(id)
-                .ok_or_else(|| ConfigError::Compile("API key references a missing group".into()))?;
-            if !formats.contains(&parse_format(&group.api_format)?) {
-                return Err(ConfigError::Compile(
-                    "API key group access references a disallowed format".into(),
-                ));
-            }
+    }
+    for id in &record.allowed_channel_ids {
+        let channel = channels
+            .get(id)
+            .ok_or_else(|| ConfigError::Compile("API key references a missing channel".into()))?;
+        if !formats.contains(&parse_format(&channel.api_format)?) {
+            return Err(ConfigError::Compile(
+                "API key channel access references a disallowed format".into(),
+            ));
         }
     }
     positive_policy(record.requests_per_minute, "requests_per_minute")?;

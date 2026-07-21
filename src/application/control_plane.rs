@@ -10,7 +10,7 @@ use crate::{
     persistence::{
         ConsoleApiKey, ConsoleAuditLog, ControlPlaneLists, ControlPlaneMutation,
         ControlPlaneRepository, MutationResult, RepositoryError, SelfApiKeyCreate,
-        SelfApiKeyUpdate, SyncedModelInput,
+        SelfApiKeyOptions, SelfApiKeyUpdate, SyncedModelInput,
     },
     routing::RoutingRuntime,
     runtime_config::UpstreamConfig,
@@ -168,6 +168,13 @@ impl ControlPlaneCoordinator {
         id: Uuid,
     ) -> Result<Option<ConsoleApiKey>, ControlPlaneError> {
         Ok(self.repository.own_api_key(actor, id).await?)
+    }
+
+    pub async fn own_api_key_options(
+        &self,
+        actor: Uuid,
+    ) -> Result<SelfApiKeyOptions, ControlPlaneError> {
+        Ok(self.repository.own_api_key_options(actor).await?)
     }
 
     pub async fn audit_logs(&self, limit: i64) -> Result<Vec<ConsoleAuditLog>, ControlPlaneError> {

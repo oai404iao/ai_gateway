@@ -8,6 +8,7 @@ import {
   ADMIN_PROFILE,
   ADMIN_USER,
   ACTIVE_SESSION,
+  API_KEY_OPTIONS,
   API_KEY_POLICY,
   CHANNEL,
   CHANNEL_GROUP,
@@ -54,6 +55,7 @@ export const handlers = [
   http.delete("/console/v1/me/sessions/:id", () => new HttpResponse(null, { status: 204 })),
 
   http.get("/console/v1/me/api-keys", () => HttpResponse.json([OWN_API_KEY])),
+  http.get("/console/v1/me/api-key-options", () => HttpResponse.json(API_KEY_OPTIONS)),
   http.get("/console/v1/me/api-keys/:id", () =>
     HttpResponse.json(OWN_API_KEY, {
       headers: { ETag: `"${OWN_API_KEY.updated_at}"` },

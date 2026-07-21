@@ -20,6 +20,7 @@ import type {
   ModelRuleView,
   ProxyView,
   RequestLogView,
+  SelfApiKeyOptions,
 } from "@/api/types";
 
 export const ADMIN_USER: ConsoleUser = {
@@ -68,13 +69,8 @@ export const REVOKED_SESSION: ConsoleSession = {
 export const API_KEY_POLICY: ApiKeyPolicyView = {
   id: "00000000-0000-0000-0000-000000000031",
   name: "default",
-  allowed_api_formats: ["open_ai_chat_completions", "open_ai_responses"],
-  permissions: ["proxy", "models.read"],
-  allowed_group_ids: null,
-  requests_per_minute: 60,
-  max_concurrent_requests: 4,
-  quota_limit_amount: "10.00",
-  max_active_keys: 2,
+  allowed_group_ids: ["00000000-0000-0000-0000-000000000021"],
+  allowed_channel_ids: [],
   enabled: true,
   created_at: "2026-01-01T00:00:00.000Z",
   updated_at: "2026-01-02T00:00:00.000Z",
@@ -89,8 +85,9 @@ export const OWN_API_KEY: ApiKeyView = {
   status: "active",
   expires_at: "2027-01-01T00:00:00.000Z",
   allowed_api_formats: ["open_ai_chat_completions"],
-  permissions: ["proxy"],
-  allowed_group_ids: null,
+  permissions: ["proxy", "models.read"],
+  allowed_group_ids: ["00000000-0000-0000-0000-000000000021"],
+  allowed_channel_ids: [],
   requests_per_minute: 60,
   max_concurrent_requests: 4,
   quota_limit_amount: "10.00",
@@ -138,6 +135,30 @@ export const CHANNEL: ChannelView = {
   available_models: ["openai/gpt-4o-mini"],
   created_at: "2026-01-02T00:00:00.000Z",
   updated_at: "2026-01-02T00:00:00.000Z",
+};
+
+export const API_KEY_OPTIONS: SelfApiKeyOptions = {
+  policy_id: API_KEY_POLICY.id,
+  policy_name: API_KEY_POLICY.name,
+  groups: [
+    {
+      id: CHANNEL_GROUP.id,
+      name: CHANNEL_GROUP.name,
+      api_format: CHANNEL_GROUP.api_format,
+      enabled: CHANNEL_GROUP.enabled,
+    },
+  ],
+  channels: [
+    {
+      id: CHANNEL.id,
+      channel_group_id: CHANNEL.channel_group_id,
+      channel_group_name: CHANNEL_GROUP.name,
+      api_format: CHANNEL.api_format,
+      name: CHANNEL.name,
+      enabled: CHANNEL.enabled,
+      auto_disabled: CHANNEL.auto_disabled,
+    },
+  ],
 };
 
 export const MODEL: ControlPlaneModel = {

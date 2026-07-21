@@ -84,12 +84,11 @@ fn proxy_fixture(
             expires_at: None,
             allowed_api_formats: vec!["open_ai_chat_completions".into()],
             permissions: vec!["proxy".into()],
-            allowed_group_ids: Some(
-                allowed_indices
-                    .iter()
-                    .map(|index| group_ids[*index])
-                    .collect(),
-            ),
+            allowed_group_ids: allowed_indices
+                .iter()
+                .map(|index| group_ids[*index])
+                .collect(),
+            allowed_channel_ids: vec![],
             requests_per_minute: None,
             tokens_per_minute: None,
             max_concurrent_requests: None,

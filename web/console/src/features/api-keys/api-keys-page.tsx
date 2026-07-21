@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -18,12 +18,22 @@ import {
 import { Field, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
+import {
+  ApiKeyTargetFields,
+  type ApiKeyTargetChannel,
+  type ApiKeyTargetGroup,
+} from "@/components/shared/api-key-target-fields";
 import { PageHeader } from "@/components/shared/page-header";
 import { AsyncResource } from "@/components/shared/async-resource";
 import { ApiKeyValue } from "@/components/shared/api-key-value";
+import { DecimalField, NullableNumberField } from "@/components/shared/decimal-field";
 import { ResourceTable, type Column } from "@/components/shared/resource-table";
 import { StatusBadge } from "@/components/shared/status-badge";
-import { useCreateOwnApiKey, useOwnApiKeys } from "@/features/api-keys/api";
+import {
+  useCreateOwnApiKey,
+  useOwnApiKeyOptions,
+  useOwnApiKeys,
+} from "@/features/api-keys/api";
 import type { ApiKeyView } from "@/api/types";
 import { ApiError } from "@/api/errors";
 import {
@@ -36,13 +46,31 @@ import { formatList } from "@/lib/formatters";
 import { apiFormatLabel } from "@/lib/permissions";
 import { useI18n } from "@/app/i18n";
 
-const createSchema = z.object({
-  name: z.string().min(1, "Name is required.").max(100),
-  expires_at: z
-    .string()
-    .optional()
-    .refine(isFutureDateTimeLocal, "Expiry must be a valid future date and time."),
-});
+const createSchema = z
+  .object({
+    name: z.string().min(1, "Name is required.").max(100),
+    expires_at: z
+      .string()
+      .optional()
+      .refine(isFutureDateTimeLocal, "Expiry must be a valid future date and time."),
+    allowed_group_ids: z.array(z.string()),
+    allowed_channel_ids: z.array(z.string()),
+    requests_per_minute: z.number().int().positive().nullable(),
+    max_concurrent_requests: z.number().int().positive().nullable(),
+    quota_limit_amount: z
+      .string()
+      .regex(/^\d+(?:\.\d+)?$/, "Enter a non-negative amount.")
+      .nullable(),
+  })
+  .superRefine((value, context) => {
+    if (value.allowed_group_ids.length === 0 && value.allowed_channel_ids.length === 0) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["allowed_group_ids"],
+        message: "Pick at least one channel group or channel.",
+      });
+    }
+  });
 
 type CreateValues = z.infer<typeof createSchema>;
 
@@ -53,10 +81,8 @@ function createErrorMessage(error: unknown, t: (key: string) => string): string 
         return t("Create an API key policy, then assign it to this user under Administration → Users.");
       case "default_api_key_policy_disabled":
         return t("Your default API key policy is disabled. Ask an administrator to enable or replace it.");
-      case "api_key_limit_reached":
-        return t(
-          "Your policy's active API key limit has been reached. Revoke an existing key or raise the limit.",
-        );
+      case "api_key_target_not_allowed":
+        return t("One or more selected targets are no longer allowed by your API key policy.");
       default:
         return error.message;
     }
@@ -71,10 +97,19 @@ export function ApiKeysPage() {
   const { t } = useI18n();
   const [createOpen, setCreateOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const options = useOwnApiKeyOptions(createOpen);
 
   const form = useForm<CreateValues>({
     resolver: zodResolver(createSchema),
-    defaultValues: { name: "", expires_at: "" },
+    defaultValues: {
+      name: "",
+      expires_at: "",
+      allowed_group_ids: [],
+      allowed_channel_ids: [],
+      requests_per_minute: null,
+      max_concurrent_requests: null,
+      quota_limit_amount: null,
+    },
   });
 
   const onSubmit = async (values: CreateValues) => {
@@ -83,6 +118,11 @@ export function ApiKeysPage() {
       await create.mutateAsync({
         name: values.name,
         expires_at: dateTimeLocalToIso(values.expires_at),
+        allowed_group_ids: values.allowed_group_ids,
+        allowed_channel_ids: values.allowed_channel_ids,
+        requests_per_minute: values.requests_per_minute,
+        max_concurrent_requests: values.max_concurrent_requests,
+        quota_limit_amount: values.quota_limit_amount,
       });
       setCreateOpen(false);
       form.reset();
@@ -93,6 +133,20 @@ export function ApiKeysPage() {
       setSubmitting(false);
     }
   };
+
+  const targetGroups = useMemo<ApiKeyTargetGroup[]>(
+    () => options.data?.groups ?? [],
+    [options.data?.groups],
+  );
+  const targetChannels = useMemo<ApiKeyTargetChannel[]>(
+    () => options.data?.channels ?? [],
+    [options.data?.channels],
+  );
+  const selectedGroupIds = form.watch("allowed_group_ids");
+  const selectedChannelIds = form.watch("allowed_channel_ids");
+  const targetError =
+    form.formState.errors.allowed_group_ids?.message ??
+    form.formState.errors.allowed_channel_ids?.message;
 
   const columns: Column<ApiKeyView>[] = [
     {
@@ -160,7 +214,7 @@ export function ApiKeysPage() {
           <CardTitle>{t("Keys")}</CardTitle>
           <CardDescription>
             {t(
-              "Permissions, formats, and limits are set by your assigned API key policy and cannot be raised from this page.",
+              "Each key has its own routing targets, rate limits, concurrency limit, and quota.",
             )}
           </CardDescription>
         </CardHeader>
@@ -182,13 +236,19 @@ export function ApiKeysPage() {
         </CardContent>
       </Card>
 
-      <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-        <DialogContent>
+      <Dialog
+        open={createOpen}
+        onOpenChange={(open) => {
+          setCreateOpen(open);
+          if (!open) form.reset();
+        }}
+      >
+        <DialogContent className="max-h-[calc(100svh-2rem)] overflow-y-auto sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>{t("New API key")}</DialogTitle>
             <DialogDescription>
               {t(
-                "Choose a name and optional expiry. Authorization fields are assigned from your default policy.",
+                "Choose targets from your policy and configure this key's own limits.",
               )}
             </DialogDescription>
           </DialogHeader>
@@ -217,10 +277,79 @@ export function ApiKeysPage() {
                   <FieldError>{t(form.formState.errors.expires_at.message ?? "")}</FieldError>
                 ) : null}
               </Field>
+              {options.error ? (
+                <FieldError>{createErrorMessage(options.error, t)}</FieldError>
+              ) : null}
+              <ApiKeyTargetFields
+                groups={targetGroups}
+                channels={targetChannels}
+                selectedGroupIds={selectedGroupIds}
+                selectedChannelIds={selectedChannelIds}
+                onChange={(allowedGroupIds, allowedChannelIds) => {
+                  form.setValue("allowed_group_ids", allowedGroupIds, {
+                    shouldDirty: true,
+                    shouldValidate: true,
+                  });
+                  form.setValue("allowed_channel_ids", allowedChannelIds, {
+                    shouldDirty: true,
+                    shouldValidate: true,
+                  });
+                }}
+                error={targetError ? t(targetError) : undefined}
+              />
+              <NullableNumberField
+                id="requests_per_minute"
+                label={t("Requests / minute")}
+                value={form.watch("requests_per_minute")}
+                onChange={(value) =>
+                  form.setValue("requests_per_minute", value, {
+                    shouldDirty: true,
+                    shouldValidate: true,
+                  })
+                }
+                error={
+                  form.formState.errors.requests_per_minute?.message
+                    ? t(form.formState.errors.requests_per_minute.message)
+                    : undefined
+                }
+              />
+              <NullableNumberField
+                id="max_concurrent_requests"
+                label={t("Max concurrent requests")}
+                value={form.watch("max_concurrent_requests")}
+                onChange={(value) =>
+                  form.setValue("max_concurrent_requests", value, {
+                    shouldDirty: true,
+                    shouldValidate: true,
+                  })
+                }
+                error={
+                  form.formState.errors.max_concurrent_requests?.message
+                    ? t(form.formState.errors.max_concurrent_requests.message)
+                    : undefined
+                }
+              />
+              <DecimalField
+                id="quota_limit_amount"
+                label={t("Quota limit amount")}
+                value={form.watch("quota_limit_amount")}
+                onChange={(value) =>
+                  form.setValue("quota_limit_amount", value || null, {
+                    shouldDirty: true,
+                    shouldValidate: true,
+                  })
+                }
+                error={
+                  form.formState.errors.quota_limit_amount?.message
+                    ? t(form.formState.errors.quota_limit_amount.message)
+                    : undefined
+                }
+                description={t("Leave blank for no per-key quota limit.")}
+              />
             </FieldGroup>
             <DialogFooter>
-              <Button type="submit" disabled={submitting}>
-                {submitting ? <Spinner data-icon="inline-start" /> : null}
+              <Button type="submit" disabled={submitting || options.isLoading || Boolean(options.error)}>
+                {submitting || options.isLoading ? <Spinner data-icon="inline-start" /> : null}
                 {t("Create key")}
               </Button>
             </DialogFooter>

@@ -1,6 +1,9 @@
 # Console API、JWT 与角色授权重构计划
 
 > 状态：已完成。本文记录将静态管理 Bearer 接口重构为用户登录、JWT 鉴权及角色授权 Console API 的设计与实施清单。
+>
+> **后续变更：** migration `0010_api_key_target_selection.sql` 已替换本文最初的 Policy 模板语义。
+> 当前行为以 `docs/mvp-usage.md` 和 Console OpenAPI 为准。
 
 ## 1. 目标
 
@@ -88,7 +91,8 @@ verification_key_path = "/run/secrets/ai-gateway-jwt-public.pem"
 
 ### 5.4 api_key_policies
 
-管理员定义普通用户可自助创建的 API Key 策略：可用格式、权限、允许的渠道组、RPM、并发、额度和最大活动 Key 数。用户创建 API Key 时不接受任何授权字段，只复制其默认策略的约束。
+管理员定义普通用户创建或调整 API Key 时可选择的渠道组和单独渠道。Policy 只表达资源选择上界，
+不再保存格式、权限、RPM、并发、额度或最大活动 Key 数。
 
 ## 6. 认证和授权
 
@@ -156,7 +160,9 @@ GET       /console/v1/me/request-logs/{{id}}
 
 ## 8. API Key 自助服务规则
 
-普通用户只可传入 Key 的名称和过期时间，或对自己的 Key 执行重命名、禁用、启用、撤销。不得接受 `user_id`、格式、权限、组、速率、并发或额度字段。策略由管理员维护，创建时写入 API Key 的快照；最大活动 Key 数防止通过无限新增 Key 绕过策略。
+普通用户不可传入 `user_id`、API 格式或权限。用户从默认 Policy 允许的列表中选择
+`allowed_group_ids` / `allowed_channel_ids`，并可在创建和后续更新时设置该 Key 的 RPM、并发和额度。
+格式由目标自动推导，自助创建权限固定为 `proxy`、`models.read`；Policy 更新不反向改写既有 Key。
 
 ## 9. 迁移与兼容
 

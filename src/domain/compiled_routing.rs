@@ -432,7 +432,8 @@ pub struct CompiledApiKey {
     user_id: Uuid,
     allowed_api_formats: HashSet<ApiFormat>,
     permissions: HashSet<ApiKeyPermission>,
-    allowed_group_ids: Option<HashSet<Uuid>>,
+    allowed_group_ids: HashSet<Uuid>,
+    allowed_channel_ids: HashSet<Uuid>,
     expires_at: Option<DateTime<Utc>>,
     requests_per_minute: Option<u32>,
     max_concurrent_requests: Option<u32>,
@@ -455,10 +456,8 @@ impl CompiledApiKey {
             && !self.is_expired()
     }
     #[must_use]
-    pub fn permits_group(&self, group_id: Uuid) -> bool {
-        self.allowed_group_ids
-            .as_ref()
-            .is_none_or(|groups| groups.contains(&group_id))
+    pub fn permits_channel(&self, group_id: Uuid, channel_id: Uuid) -> bool {
+        self.allowed_group_ids.contains(&group_id) || self.allowed_channel_ids.contains(&channel_id)
     }
     #[must_use]
     pub fn is_expired(&self) -> bool {
@@ -495,7 +494,8 @@ impl CompiledApiKey {
         user_id: Uuid,
         formats: HashSet<ApiFormat>,
         permissions: HashSet<ApiKeyPermission>,
-        groups: Option<HashSet<Uuid>>,
+        groups: HashSet<Uuid>,
+        channels: HashSet<Uuid>,
         expires_at: Option<DateTime<Utc>>,
         requests_per_minute: Option<u32>,
         max_concurrent_requests: Option<u32>,
@@ -508,6 +508,7 @@ impl CompiledApiKey {
             allowed_api_formats: formats,
             permissions,
             allowed_group_ids: groups,
+            allowed_channel_ids: channels,
             expires_at,
             requests_per_minute,
             max_concurrent_requests,
@@ -528,7 +529,8 @@ impl CompiledApiKey {
             Uuid::new_v4(),
             HashSet::new(),
             HashSet::new(),
-            None,
+            HashSet::new(),
+            HashSet::new(),
             None,
             requests_per_minute,
             max_concurrent_requests,
@@ -985,9 +987,9 @@ impl CompiledRuntimeConfig {
                         .iter()
                         .flat_map(CompiledRouteTier::channel_ids)
                         .any(|id| {
-                            self.channels
-                                .get(id)
-                                .is_some_and(|channel| key.permits_group(channel.group_id))
+                            self.channels.get(id).is_some_and(|channel| {
+                                key.permits_channel(channel.group_id(), channel.id())
+                            })
                         })
             })
             .map(|rule| Arc::clone(&rule.client_model))
@@ -1019,7 +1021,8 @@ mod tests {
             Uuid::new_v4(),
             HashSet::from([ApiFormat::OpenAiChatCompletions]),
             HashSet::new(),
-            None,
+            HashSet::new(),
+            HashSet::new(),
             Some(Utc::now() - Duration::seconds(1)),
             None,
             None,

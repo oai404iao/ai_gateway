@@ -225,7 +225,7 @@ impl RoutingRuntime {
                 .iter()
                 .filter_map(|id| {
                     let channel = snapshot.channel(*id)?;
-                    if key.permits_group(channel.group_id()) {
+                    if key.permits_channel(channel.group_id(), channel.id()) {
                         has_authorized_candidate = true;
                         Some(channel)
                     } else {
@@ -559,7 +559,8 @@ mod tests {
                 expires_at: None,
                 allowed_api_formats: vec!["open_ai_chat_completions".into()],
                 permissions: vec!["proxy".into()],
-                allowed_group_ids: None,
+                allowed_group_ids: group_ids.clone(),
+                allowed_channel_ids: vec![],
                 requests_per_minute: None,
                 tokens_per_minute: None,
                 max_concurrent_requests: None,
@@ -663,7 +664,8 @@ mod tests {
                 expires_at: None,
                 allowed_api_formats: vec!["open_ai_chat_completions".into()],
                 permissions: vec!["proxy".into()],
-                allowed_group_ids: None,
+                allowed_group_ids: vec![group_id],
+                allowed_channel_ids: vec![],
                 requests_per_minute: None,
                 tokens_per_minute: None,
                 max_concurrent_requests: None,

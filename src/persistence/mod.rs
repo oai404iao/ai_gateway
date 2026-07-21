@@ -7,7 +7,10 @@ pub use auth::{
     LiveConsoleIdentity, LoginUser, PasswordUser, SessionRotation, SessionUser,
 };
 
-use std::{collections::BTreeMap, fmt};
+use std::{
+    collections::{BTreeMap, BTreeSet, HashSet},
+    fmt,
+};
 
 use chrono::{DateTime, Timelike, Utc};
 use serde::{Deserialize, Serialize};
@@ -40,7 +43,8 @@ pub struct ApiKeyRecord {
     pub expires_at: Option<DateTime<Utc>>,
     pub allowed_api_formats: Vec<String>,
     pub permissions: Vec<String>,
-    pub allowed_group_ids: Option<Vec<Uuid>>,
+    pub allowed_group_ids: Vec<Uuid>,
+    pub allowed_channel_ids: Vec<Uuid>,
     pub requests_per_minute: Option<i32>,
     pub tokens_per_minute: Option<i32>,
     pub max_concurrent_requests: Option<i32>,
@@ -60,6 +64,7 @@ impl fmt::Debug for ApiKeyRecord {
             .field("allowed_api_formats", &self.allowed_api_formats)
             .field("permissions", &self.permissions)
             .field("allowed_group_ids", &self.allowed_group_ids)
+            .field("allowed_channel_ids", &self.allowed_channel_ids)
             .field("requests_per_minute", &self.requests_per_minute)
             .field("tokens_per_minute", &self.tokens_per_minute)
             .field("max_concurrent_requests", &self.max_concurrent_requests)
@@ -208,7 +213,8 @@ pub struct ApiKeyCreate {
     pub name: String,
     pub allowed_api_formats: Vec<String>,
     pub permissions: Vec<String>,
-    pub allowed_group_ids: Option<Vec<Uuid>>,
+    pub allowed_group_ids: Vec<Uuid>,
+    pub allowed_channel_ids: Vec<Uuid>,
     pub expires_at: Option<DateTime<Utc>>,
     pub requests_per_minute: Option<i32>,
     pub max_concurrent_requests: Option<i32>,
@@ -221,30 +227,21 @@ pub struct ApiKeyUpdate {
     pub status: String,
     pub allowed_api_formats: Vec<String>,
     pub permissions: Vec<String>,
-    pub allowed_group_ids: Option<Vec<Uuid>>,
+    pub allowed_group_ids: Vec<Uuid>,
+    pub allowed_channel_ids: Vec<Uuid>,
     pub expires_at: Option<DateTime<Utc>>,
     pub requests_per_minute: Option<i32>,
     pub max_concurrent_requests: Option<i32>,
     pub quota_limit_amount: Option<rust_decimal::Decimal>,
 }
 
-/// Administrator-owned template copied into a user's self-service API Key.
-/// Users never submit the authorization-bearing fields directly.
+/// Administrator-owned bounds for the routing targets a user may choose.
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApiKeyPolicyInput {
     pub name: String,
-    pub allowed_api_formats: Vec<String>,
-    pub permissions: Vec<String>,
-    #[serde(default)]
-    pub allowed_group_ids: Option<Vec<Uuid>>,
-    #[serde(default)]
-    pub requests_per_minute: Option<i32>,
-    #[serde(default)]
-    pub max_concurrent_requests: Option<i32>,
-    #[serde(default)]
-    pub quota_limit_amount: Option<rust_decimal::Decimal>,
-    pub max_active_keys: i32,
+    pub allowed_group_ids: Vec<Uuid>,
+    pub allowed_channel_ids: Vec<Uuid>,
     pub enabled: bool,
 }
 
@@ -252,8 +249,16 @@ pub struct ApiKeyPolicyInput {
 #[serde(deny_unknown_fields)]
 pub struct SelfApiKeyCreate {
     pub name: String,
+    pub allowed_group_ids: Vec<Uuid>,
+    pub allowed_channel_ids: Vec<Uuid>,
     #[serde(default)]
     pub expires_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub requests_per_minute: Option<i32>,
+    #[serde(default)]
+    pub max_concurrent_requests: Option<i32>,
+    #[serde(default)]
+    pub quota_limit_amount: Option<rust_decimal::Decimal>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -261,8 +266,16 @@ pub struct SelfApiKeyCreate {
 pub struct SelfApiKeyUpdate {
     pub name: String,
     pub status: String,
+    pub allowed_group_ids: Vec<Uuid>,
+    pub allowed_channel_ids: Vec<Uuid>,
     #[serde(default)]
     pub expires_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub requests_per_minute: Option<i32>,
+    #[serde(default)]
+    pub max_concurrent_requests: Option<i32>,
+    #[serde(default)]
+    pub quota_limit_amount: Option<rust_decimal::Decimal>,
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -685,13 +698,8 @@ pub struct ControlPlaneModel {
 pub struct ControlPlaneApiKeyPolicy {
     pub id: Uuid,
     pub name: String,
-    pub allowed_api_formats: Vec<String>,
-    pub permissions: Vec<String>,
-    pub allowed_group_ids: Option<Vec<Uuid>>,
-    pub requests_per_minute: Option<i32>,
-    pub max_concurrent_requests: Option<i32>,
-    pub quota_limit_amount: Option<rust_decimal::Decimal>,
-    pub max_active_keys: i32,
+    pub allowed_group_ids: Vec<Uuid>,
+    pub allowed_channel_ids: Vec<Uuid>,
     pub enabled: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -706,13 +714,41 @@ pub struct ConsoleApiKey {
     pub expires_at: Option<DateTime<Utc>>,
     pub allowed_api_formats: Vec<String>,
     pub permissions: Vec<String>,
-    pub allowed_group_ids: Option<Vec<Uuid>>,
+    pub allowed_group_ids: Vec<Uuid>,
+    pub allowed_channel_ids: Vec<Uuid>,
     pub requests_per_minute: Option<i32>,
     pub max_concurrent_requests: Option<i32>,
     pub quota_limit_amount: Option<rust_decimal::Decimal>,
     pub quota_used_amount: rust_decimal::Decimal,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Serialize)]
+pub struct SelfApiKeyOptions {
+    pub policy_id: Uuid,
+    pub policy_name: String,
+    pub groups: Vec<SelfApiKeyGroupOption>,
+    pub channels: Vec<SelfApiKeyChannelOption>,
+}
+
+#[derive(Clone, Serialize, FromRow)]
+pub struct SelfApiKeyGroupOption {
+    pub id: Uuid,
+    pub name: String,
+    pub api_format: String,
+    pub enabled: bool,
+}
+
+#[derive(Clone, Serialize, FromRow)]
+pub struct SelfApiKeyChannelOption {
+    pub id: Uuid,
+    pub channel_group_id: Uuid,
+    pub channel_group_name: String,
+    pub api_format: String,
+    pub name: String,
+    pub enabled: bool,
+    pub auto_disabled: bool,
 }
 
 #[derive(Clone, Debug, Serialize, FromRow)]
@@ -972,7 +1008,8 @@ pub struct ControlPlaneApiKey {
     pub expires_at: Option<DateTime<Utc>>,
     pub allowed_api_formats: Vec<String>,
     pub permissions: Vec<String>,
-    pub allowed_group_ids: Option<Vec<Uuid>>,
+    pub allowed_group_ids: Vec<Uuid>,
+    pub allowed_channel_ids: Vec<Uuid>,
     pub requests_per_minute: Option<i32>,
     pub tokens_per_minute: Option<i32>,
     pub max_concurrent_requests: Option<i32>,
@@ -2214,7 +2251,7 @@ impl ControlPlaneRepository {
     pub async fn load_transaction(
         transaction: &mut Transaction<'_, Postgres>,
     ) -> Result<ControlPlaneRecords, RepositoryError> {
-        let api_keys = sqlx::query_as::<_, ApiKeyRecord>("SELECT k.id, k.user_id, u.status AS user_status, k.secret_value, k.status, k.expires_at, k.allowed_api_formats::text[] AS allowed_api_formats, k.permissions, k.allowed_group_ids, k.requests_per_minute, k.tokens_per_minute, k.max_concurrent_requests, k.quota_limit_amount, k.quota_used_amount FROM api_keys k JOIN users u ON u.id = k.user_id ORDER BY k.id").fetch_all(&mut **transaction).await?;
+        let api_keys = sqlx::query_as::<_, ApiKeyRecord>("SELECT k.id, k.user_id, u.status AS user_status, k.secret_value, k.status, k.expires_at, k.allowed_api_formats::text[] AS allowed_api_formats, k.permissions, k.allowed_group_ids, k.allowed_channel_ids, k.requests_per_minute, k.tokens_per_minute, k.max_concurrent_requests, k.quota_limit_amount, k.quota_used_amount FROM api_keys k JOIN users u ON u.id = k.user_id ORDER BY k.id").fetch_all(&mut **transaction).await?;
         let model_rules = sqlx::query_as::<_, ModelRuleRecord>("SELECT r.id, r.client_model, r.api_format::text AS api_format, r.upstream_model_id, m.enabled AS upstream_model_enabled, m.currency AS upstream_model_currency, m.price_unit_tokens, m.price_effective_at, m.input_unit_price, m.cached_input_unit_price, m.cache_write_unit_price, m.output_unit_price, m.source_model_id AS upstream_model, r.channel_group_ids, r.channel_ids, r.enabled FROM model_rules r JOIN models m ON m.id = r.upstream_model_id ORDER BY r.id").fetch_all(&mut **transaction).await?;
         let groups = sqlx::query_as::<_, ChannelGroupRecord>("SELECT id, name, api_format::text AS api_format, priority, selection_strategy, enabled FROM channel_groups ORDER BY id").fetch_all(&mut **transaction).await?;
         let channels = sqlx::query_as::<_, ChannelRecord>("SELECT id, channel_group_id, api_format::text AS api_format, name, base_url, enabled, auto_disabled, weight, proxy_id, config_template_id, override_document, connect_timeout_ms, response_header_timeout_ms, stream_idle_timeout_ms, upstream_auth_kind, upstream_auth_header_name, upstream_api_key, available_models, health_check FROM channels ORDER BY id").fetch_all(&mut **transaction).await?;
@@ -2275,8 +2312,8 @@ impl ControlPlaneRepository {
         .fetch_all(&self.pool)
         .await?;
         let models = sqlx::query_as::<_, ControlPlaneModel>("SELECT id,source_model_id,display_name,provider_name,enabled,price_unit_tokens,input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,price_effective_at,last_synced_at,created_at,updated_at FROM models ORDER BY id").fetch_all(&self.pool).await?;
-        let api_keys = sqlx::query_as::<_, ControlPlaneApiKey>("SELECT k.id, k.user_id, u.status AS user_status, k.name, k.secret_value AS secret, k.status, k.expires_at, k.allowed_api_formats::text[] AS allowed_api_formats, k.permissions, k.allowed_group_ids, k.requests_per_minute, k.tokens_per_minute, k.max_concurrent_requests, k.quota_limit_amount, k.quota_used_amount, k.updated_at FROM api_keys k JOIN users u ON u.id=k.user_id ORDER BY k.id").fetch_all(&self.pool).await?;
-        let api_key_policies = sqlx::query_as::<_, ControlPlaneApiKeyPolicy>("SELECT id,name,allowed_api_formats::text[] AS allowed_api_formats,permissions,allowed_group_ids,requests_per_minute,max_concurrent_requests,quota_limit_amount,max_active_keys,enabled,created_at,updated_at FROM api_key_policies ORDER BY id").fetch_all(&self.pool).await?;
+        let api_keys = sqlx::query_as::<_, ControlPlaneApiKey>("SELECT k.id, k.user_id, u.status AS user_status, k.name, k.secret_value AS secret, k.status, k.expires_at, k.allowed_api_formats::text[] AS allowed_api_formats, k.permissions, k.allowed_group_ids, k.allowed_channel_ids, k.requests_per_minute, k.tokens_per_minute, k.max_concurrent_requests, k.quota_limit_amount, k.quota_used_amount, k.updated_at FROM api_keys k JOIN users u ON u.id=k.user_id ORDER BY k.id").fetch_all(&self.pool).await?;
+        let api_key_policies = sqlx::query_as::<_, ControlPlaneApiKeyPolicy>("SELECT id,name,allowed_group_ids,allowed_channel_ids,enabled,created_at,updated_at FROM api_key_policies ORDER BY id").fetch_all(&self.pool).await?;
         let channel_groups = sqlx::query_as::<_, ControlPlaneChannelGroup>("SELECT id,name,api_format::text AS api_format,priority,selection_strategy,enabled,updated_at FROM channel_groups ORDER BY id").fetch_all(&self.pool).await?;
         let channels = sqlx::query_as::<_, ControlPlaneChannelRow>("SELECT id,channel_group_id,api_format::text AS api_format,name,base_url,enabled,status_statistics_enabled,auto_disabled,auto_disabled_reason,weight,proxy_id,config_template_id,connect_timeout_ms,response_header_timeout_ms,stream_idle_timeout_ms,upstream_auth_kind,upstream_auth_header_name,(upstream_api_key IS NOT NULL) AS upstream_credential_configured,available_models,created_at,updated_at FROM channels ORDER BY id").fetch_all(&self.pool).await?;
         let model_rules = sqlx::query_as::<_, ControlPlaneModelRule>("SELECT r.id,r.client_model,r.api_format::text AS api_format,r.upstream_model_id,m.enabled AS upstream_model_enabled,m.source_model_id AS upstream_model,r.description,r.channel_group_ids,r.channel_ids,r.enabled,r.updated_at FROM model_rules r JOIN models m ON m.id=r.upstream_model_id ORDER BY r.id").fetch_all(&self.pool).await?;
@@ -2308,7 +2345,7 @@ impl ControlPlaneRepository {
     pub async fn own_api_keys(&self, user_id: Uuid) -> Result<Vec<ConsoleApiKey>, RepositoryError> {
         sqlx::query_as::<_, ConsoleApiKey>(
             "SELECT id,name,secret_value AS secret,status,expires_at,allowed_api_formats::text[] AS allowed_api_formats, \
-                    permissions,allowed_group_ids,requests_per_minute,max_concurrent_requests, \
+                    permissions,allowed_group_ids,allowed_channel_ids,requests_per_minute,max_concurrent_requests, \
                     quota_limit_amount,quota_used_amount,created_at,updated_at \
              FROM api_keys WHERE user_id=$1 ORDER BY created_at DESC,id DESC",
         )
@@ -2325,7 +2362,7 @@ impl ControlPlaneRepository {
     ) -> Result<Option<ConsoleApiKey>, RepositoryError> {
         sqlx::query_as::<_, ConsoleApiKey>(
             "SELECT id,name,secret_value AS secret,status,expires_at,allowed_api_formats::text[] AS allowed_api_formats, \
-                    permissions,allowed_group_ids,requests_per_minute,max_concurrent_requests, \
+                    permissions,allowed_group_ids,allowed_channel_ids,requests_per_minute,max_concurrent_requests, \
                     quota_limit_amount,quota_used_amount,created_at,updated_at \
              FROM api_keys WHERE id=$1 AND user_id=$2",
         )
@@ -2336,47 +2373,83 @@ impl ControlPlaneRepository {
         .map_err(RepositoryError::from)
     }
 
+    pub async fn own_api_key_options(
+        &self,
+        user_id: Uuid,
+    ) -> Result<SelfApiKeyOptions, RepositoryError> {
+        let policy = sqlx::query_as::<_, SelfApiKeyPolicy>(
+            "SELECT p.id,p.name,p.allowed_group_ids,p.allowed_channel_ids,p.enabled \
+             FROM users AS u \
+             JOIN api_key_policies AS p ON p.id=u.default_api_key_policy_id \
+             WHERE u.id=$1 AND u.status='active'",
+        )
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or(RepositoryError::DefaultApiKeyPolicyRequired)?;
+        ensure_policy_enabled(&policy)?;
+
+        let groups = sqlx::query_as::<_, SelfApiKeyGroupOption>(
+            "SELECT id,name,api_format::text AS api_format,enabled \
+             FROM channel_groups \
+             WHERE id = ANY($1) \
+             ORDER BY api_format,name,id",
+        )
+        .bind(&policy.allowed_group_ids)
+        .fetch_all(&self.pool)
+        .await?;
+        let channels = sqlx::query_as::<_, SelfApiKeyChannelOption>(
+            "SELECT c.id,c.channel_group_id,g.name AS channel_group_name, \
+                    c.api_format::text AS api_format,c.name,c.enabled,c.auto_disabled \
+             FROM channels AS c \
+             JOIN channel_groups AS g ON g.id=c.channel_group_id \
+             WHERE c.channel_group_id = ANY($1) OR c.id = ANY($2) \
+             ORDER BY c.api_format,g.name,c.name,c.id",
+        )
+        .bind(&policy.allowed_group_ids)
+        .bind(&policy.allowed_channel_ids)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(SelfApiKeyOptions {
+            policy_id: policy.id,
+            policy_name: policy.name,
+            groups,
+            channels,
+        })
+    }
+
     pub async fn create_own_api_key(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
         user_id: Uuid,
         input: SelfApiKeyCreate,
     ) -> Result<MutationResult, RepositoryError> {
-        let policy = sqlx::query_as::<_, SelfApiKeyPolicy>(
-            "SELECT p.allowed_api_formats::text[] AS allowed_api_formats,p.permissions, \
-                    p.allowed_group_ids,p.requests_per_minute,p.max_concurrent_requests, \
-                    p.quota_limit_amount,p.max_active_keys,p.enabled \
-             FROM users AS u \
-             JOIN api_key_policies AS p ON p.id=u.default_api_key_policy_id \
-             WHERE u.id=$1 AND u.status='active' FOR UPDATE OF u",
+        validate_self_api_key_input(
+            &input.name,
+            &input.allowed_group_ids,
+            &input.allowed_channel_ids,
+            input.requests_per_minute,
+            input.max_concurrent_requests,
+            input.quota_limit_amount,
+            false,
+        )?;
+        let policy = load_self_api_key_policy(transaction, user_id).await?;
+        let allowed_api_formats = resolve_self_api_key_targets(
+            transaction,
+            &input.allowed_group_ids,
+            &input.allowed_channel_ids,
+            &policy,
         )
-        .bind(user_id)
-        .fetch_optional(&mut **transaction)
-        .await?
-        .ok_or(RepositoryError::DefaultApiKeyPolicyRequired)?;
-        if !policy.enabled {
-            return Err(RepositoryError::DefaultApiKeyPolicyDisabled);
-        }
-        let active_key_count = sqlx::query_scalar::<_, i64>(
-            "SELECT count(*) FROM api_keys \
-             WHERE user_id=$1 AND status IN ('active','disabled')",
-        )
-        .bind(user_id)
-        .fetch_one(&mut **transaction)
         .await?;
-        if active_key_count >= i64::from(policy.max_active_keys) {
-            return Err(RepositoryError::ApiKeyLimitReached);
-        }
-        if input.name.trim().is_empty() {
-            return Err(RepositoryError::Validation);
-        }
         let id = Uuid::new_v4();
         let secret = generate_api_key_secret();
+        let permissions = ["proxy", "models.read"];
         let updated_at = sqlx::query_scalar(
             "INSERT INTO api_keys \
              (id,user_id,name,secret_value,status,expires_at,allowed_api_formats,permissions, \
-              allowed_group_ids,requests_per_minute,max_concurrent_requests,quota_limit_amount) \
-             VALUES ($1,$2,$3,$4,'active',$5,$6::api_format[],$7,$8,$9,$10,$11) \
+              allowed_group_ids,allowed_channel_ids,requests_per_minute,max_concurrent_requests, \
+              quota_limit_amount) \
+             VALUES ($1,$2,$3,$4,'active',$5,$6::api_format[],$7,$8,$9,$10,$11,$12) \
              RETURNING updated_at",
         )
         .bind(id)
@@ -2384,12 +2457,13 @@ impl ControlPlaneRepository {
         .bind(&input.name)
         .bind(&secret)
         .bind(input.expires_at)
-        .bind(&policy.allowed_api_formats)
-        .bind(&policy.permissions)
-        .bind(&policy.allowed_group_ids)
-        .bind(policy.requests_per_minute)
-        .bind(policy.max_concurrent_requests)
-        .bind(policy.quota_limit_amount)
+        .bind(&allowed_api_formats)
+        .bind(permissions)
+        .bind(&input.allowed_group_ids)
+        .bind(&input.allowed_channel_ids)
+        .bind(input.requests_per_minute)
+        .bind(input.max_concurrent_requests)
+        .bind(input.quota_limit_amount)
         .fetch_one(&mut **transaction)
         .await?;
         Ok(MutationResult {
@@ -2413,13 +2487,52 @@ impl ControlPlaneRepository {
         input: SelfApiKeyUpdate,
         expected_updated_at: DateTime<Utc>,
     ) -> Result<MutationResult, RepositoryError> {
-        if input.name.trim().is_empty() || !matches!(input.status.as_str(), "active" | "disabled") {
+        if !matches!(input.status.as_str(), "active" | "disabled") {
             return Err(RepositoryError::Validation);
         }
+        let current = sqlx::query_as::<_, SelfApiKeyCurrent>(
+            "SELECT allowed_group_ids,allowed_channel_ids \
+             FROM api_keys \
+             WHERE id=$1 AND user_id=$2 FOR UPDATE",
+        )
+        .bind(id)
+        .bind(user_id)
+        .fetch_optional(&mut **transaction)
+        .await?
+        .ok_or(RepositoryError::NotFound)?;
+        let targets_changed = !same_uuid_set(&current.allowed_group_ids, &input.allowed_group_ids)
+            || !same_uuid_set(&current.allowed_channel_ids, &input.allowed_channel_ids);
+        validate_self_api_key_input(
+            &input.name,
+            &input.allowed_group_ids,
+            &input.allowed_channel_ids,
+            input.requests_per_minute,
+            input.max_concurrent_requests,
+            input.quota_limit_amount,
+            !targets_changed,
+        )?;
+        let allowed_api_formats = if targets_changed {
+            let policy = load_self_api_key_policy(transaction, user_id).await?;
+            Some(
+                resolve_self_api_key_targets(
+                    transaction,
+                    &input.allowed_group_ids,
+                    &input.allowed_channel_ids,
+                    &policy,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
         let before = key_audit_for_user(transaction, id, user_id).await?;
         let updated_at = sqlx::query_scalar(
-            "UPDATE api_keys SET name=$3,status=$4,expires_at=$5 \
-             WHERE id=$1 AND user_id=$2 AND updated_at=$6 AND status <> 'revoked' \
+            "UPDATE api_keys \
+             SET name=$3,status=$4,expires_at=$5, \
+                 allowed_api_formats=CASE WHEN $6 THEN $7::api_format[] ELSE allowed_api_formats END, \
+                 allowed_group_ids=$8,allowed_channel_ids=$9,requests_per_minute=$10, \
+                 max_concurrent_requests=$11,quota_limit_amount=$12 \
+             WHERE id=$1 AND user_id=$2 AND updated_at=$13 AND status <> 'revoked' \
              RETURNING updated_at",
         )
         .bind(id)
@@ -2427,6 +2540,13 @@ impl ControlPlaneRepository {
         .bind(&input.name)
         .bind(&input.status)
         .bind(input.expires_at)
+        .bind(targets_changed)
+        .bind(allowed_api_formats.unwrap_or_default())
+        .bind(&input.allowed_group_ids)
+        .bind(&input.allowed_channel_ids)
+        .bind(input.requests_per_minute)
+        .bind(input.max_concurrent_requests)
+        .bind(input.quota_limit_amount)
         .bind(expected_updated_at)
         .fetch_optional(&mut **transaction)
         .await?
@@ -2500,10 +2620,20 @@ impl ControlPlaneRepository {
                 expected_updated_at,
             } => model_insert(transaction, id, input, false, Some(expected_updated_at)).await,
             ControlPlaneMutation::CreateApiKey(input) => {
+                validate_admin_api_key_input(
+                    &input.name,
+                    &input.allowed_api_formats,
+                    &input.permissions,
+                    &input.allowed_group_ids,
+                    &input.allowed_channel_ids,
+                    input.requests_per_minute,
+                    input.max_concurrent_requests,
+                    input.quota_limit_amount,
+                )?;
                 let id = Uuid::new_v4();
                 let secret = generate_api_key_secret();
-                let updated_at = sqlx::query_scalar("INSERT INTO api_keys (id, user_id, name, secret_value, status, expires_at, allowed_api_formats, permissions, allowed_group_ids, requests_per_minute, max_concurrent_requests, quota_limit_amount) VALUES ($1,$2,$3,$4,'active',$5,$6::api_format[],$7,$8,$9,$10,$11) RETURNING updated_at")
-                    .bind(id).bind(input.user_id).bind(&input.name).bind(&secret).bind(input.expires_at).bind(&input.allowed_api_formats).bind(&input.permissions).bind(&input.allowed_group_ids).bind(input.requests_per_minute).bind(input.max_concurrent_requests).bind(input.quota_limit_amount).fetch_one(&mut **transaction).await?;
+                let updated_at = sqlx::query_scalar("INSERT INTO api_keys (id, user_id, name, secret_value, status, expires_at, allowed_api_formats, permissions, allowed_group_ids, allowed_channel_ids, requests_per_minute, max_concurrent_requests, quota_limit_amount) VALUES ($1,$2,$3,$4,'active',$5,$6::api_format[],$7,$8,$9,$10,$11,$12) RETURNING updated_at")
+                    .bind(id).bind(input.user_id).bind(&input.name).bind(&secret).bind(input.expires_at).bind(&input.allowed_api_formats).bind(&input.permissions).bind(&input.allowed_group_ids).bind(&input.allowed_channel_ids).bind(input.requests_per_minute).bind(input.max_concurrent_requests).bind(input.quota_limit_amount).fetch_one(&mut **transaction).await?;
                 Ok(MutationResult {
                     id,
                     object_type: "api_key",
@@ -2532,9 +2662,19 @@ impl ControlPlaneRepository {
                 input,
                 expected_updated_at,
             } => {
+                validate_admin_api_key_input(
+                    &input.name,
+                    &input.allowed_api_formats,
+                    &input.permissions,
+                    &input.allowed_group_ids,
+                    &input.allowed_channel_ids,
+                    input.requests_per_minute,
+                    input.max_concurrent_requests,
+                    input.quota_limit_amount,
+                )?;
                 let before = key_audit(transaction, id).await?;
-                let updated_at = sqlx::query_scalar("UPDATE api_keys SET name=$2,status=$3,expires_at=$4,allowed_api_formats=$5::api_format[],permissions=$6,allowed_group_ids=$7,requests_per_minute=$8,max_concurrent_requests=$9,quota_limit_amount=$10 WHERE id=$1 AND updated_at=$11 AND NOT (status='revoked' AND $3 <> 'revoked') RETURNING updated_at")
-                    .bind(id).bind(&input.name).bind(&input.status).bind(input.expires_at).bind(&input.allowed_api_formats).bind(&input.permissions).bind(&input.allowed_group_ids).bind(input.requests_per_minute).bind(input.max_concurrent_requests).bind(input.quota_limit_amount).bind(expected_updated_at).fetch_optional(&mut **transaction).await?.ok_or(RepositoryError::Conflict)?;
+                let updated_at = sqlx::query_scalar("UPDATE api_keys SET name=$2,status=$3,expires_at=$4,allowed_api_formats=$5::api_format[],permissions=$6,allowed_group_ids=$7,allowed_channel_ids=$8,requests_per_minute=$9,max_concurrent_requests=$10,quota_limit_amount=$11 WHERE id=$1 AND updated_at=$12 AND NOT (status='revoked' AND $3 <> 'revoked') RETURNING updated_at")
+                    .bind(id).bind(&input.name).bind(&input.status).bind(input.expires_at).bind(&input.allowed_api_formats).bind(&input.permissions).bind(&input.allowed_group_ids).bind(&input.allowed_channel_ids).bind(input.requests_per_minute).bind(input.max_concurrent_requests).bind(input.quota_limit_amount).bind(expected_updated_at).fetch_optional(&mut **transaction).await?.ok_or(RepositoryError::Conflict)?;
                 Ok(MutationResult {
                     id,
                     object_type: "api_key",
@@ -2684,14 +2824,228 @@ impl ControlPlaneRepository {
 
 #[derive(FromRow)]
 struct SelfApiKeyPolicy {
-    allowed_api_formats: Vec<String>,
-    permissions: Vec<String>,
-    allowed_group_ids: Option<Vec<Uuid>>,
+    id: Uuid,
+    name: String,
+    allowed_group_ids: Vec<Uuid>,
+    allowed_channel_ids: Vec<Uuid>,
+    enabled: bool,
+}
+
+#[derive(FromRow)]
+struct SelfApiKeyCurrent {
+    allowed_group_ids: Vec<Uuid>,
+    allowed_channel_ids: Vec<Uuid>,
+}
+
+#[derive(FromRow)]
+struct ApiKeyTargetGroup {
+    id: Uuid,
+    api_format: String,
+}
+
+#[derive(FromRow)]
+struct ApiKeyTargetChannel {
+    id: Uuid,
+    channel_group_id: Uuid,
+    api_format: String,
+}
+
+async fn load_self_api_key_policy(
+    transaction: &mut Transaction<'_, Postgres>,
+    user_id: Uuid,
+) -> Result<SelfApiKeyPolicy, RepositoryError> {
+    let policy = sqlx::query_as::<_, SelfApiKeyPolicy>(
+        "SELECT p.id,p.name,p.allowed_group_ids,p.allowed_channel_ids,p.enabled \
+         FROM users AS u \
+         JOIN api_key_policies AS p ON p.id=u.default_api_key_policy_id \
+         WHERE u.id=$1 AND u.status='active' \
+         FOR UPDATE OF u,p",
+    )
+    .bind(user_id)
+    .fetch_optional(&mut **transaction)
+    .await?
+    .ok_or(RepositoryError::DefaultApiKeyPolicyRequired)?;
+    ensure_policy_enabled(&policy)?;
+    Ok(policy)
+}
+
+fn ensure_policy_enabled(policy: &SelfApiKeyPolicy) -> Result<(), RepositoryError> {
+    if policy.enabled {
+        Ok(())
+    } else {
+        Err(RepositoryError::DefaultApiKeyPolicyDisabled)
+    }
+}
+
+fn same_uuid_set(left: &[Uuid], right: &[Uuid]) -> bool {
+    left.len() == right.len()
+        && left.iter().copied().collect::<HashSet<_>>()
+            == right.iter().copied().collect::<HashSet<_>>()
+}
+
+fn validate_target_lists(
+    allowed_group_ids: &[Uuid],
+    allowed_channel_ids: &[Uuid],
+    allow_empty: bool,
+) -> Result<(), RepositoryError> {
+    if (!allow_empty && allowed_group_ids.is_empty() && allowed_channel_ids.is_empty())
+        || allowed_group_ids
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>()
+            .len()
+            != allowed_group_ids.len()
+        || allowed_channel_ids
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>()
+            .len()
+            != allowed_channel_ids.len()
+    {
+        return Err(RepositoryError::Validation);
+    }
+    Ok(())
+}
+
+fn validate_api_key_limits(
     requests_per_minute: Option<i32>,
     max_concurrent_requests: Option<i32>,
     quota_limit_amount: Option<rust_decimal::Decimal>,
-    max_active_keys: i32,
-    enabled: bool,
+) -> Result<(), RepositoryError> {
+    if requests_per_minute.is_some_and(|value| value <= 0)
+        || max_concurrent_requests.is_some_and(|value| value <= 0)
+        || quota_limit_amount.is_some_and(|value| value.is_sign_negative())
+    {
+        return Err(RepositoryError::Validation);
+    }
+    Ok(())
+}
+
+fn validate_self_api_key_input(
+    name: &str,
+    allowed_group_ids: &[Uuid],
+    allowed_channel_ids: &[Uuid],
+    requests_per_minute: Option<i32>,
+    max_concurrent_requests: Option<i32>,
+    quota_limit_amount: Option<rust_decimal::Decimal>,
+    allow_empty_targets: bool,
+) -> Result<(), RepositoryError> {
+    if name.trim().is_empty() {
+        return Err(RepositoryError::Validation);
+    }
+    validate_target_lists(allowed_group_ids, allowed_channel_ids, allow_empty_targets)?;
+    validate_api_key_limits(
+        requests_per_minute,
+        max_concurrent_requests,
+        quota_limit_amount,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_admin_api_key_input(
+    name: &str,
+    allowed_api_formats: &[String],
+    permissions: &[String],
+    allowed_group_ids: &[Uuid],
+    allowed_channel_ids: &[Uuid],
+    requests_per_minute: Option<i32>,
+    max_concurrent_requests: Option<i32>,
+    quota_limit_amount: Option<rust_decimal::Decimal>,
+) -> Result<(), RepositoryError> {
+    if name.trim().is_empty()
+        || allowed_api_formats.is_empty()
+        || permissions.is_empty()
+        || allowed_api_formats.iter().collect::<HashSet<_>>().len() != allowed_api_formats.len()
+        || permissions.iter().collect::<HashSet<_>>().len() != permissions.len()
+    {
+        return Err(RepositoryError::Validation);
+    }
+    validate_target_lists(allowed_group_ids, allowed_channel_ids, false)?;
+    validate_api_key_limits(
+        requests_per_minute,
+        max_concurrent_requests,
+        quota_limit_amount,
+    )
+}
+
+async fn resolve_self_api_key_targets(
+    transaction: &mut Transaction<'_, Postgres>,
+    selected_group_ids: &[Uuid],
+    selected_channel_ids: &[Uuid],
+    policy: &SelfApiKeyPolicy,
+) -> Result<Vec<String>, RepositoryError> {
+    let groups = sqlx::query_as::<_, ApiKeyTargetGroup>(
+        "SELECT id,api_format::text AS api_format \
+         FROM channel_groups \
+         WHERE id = ANY($1)",
+    )
+    .bind(selected_group_ids)
+    .fetch_all(&mut **transaction)
+    .await?;
+    let channels = sqlx::query_as::<_, ApiKeyTargetChannel>(
+        "SELECT id,channel_group_id,api_format::text AS api_format \
+         FROM channels \
+         WHERE id = ANY($1)",
+    )
+    .bind(selected_channel_ids)
+    .fetch_all(&mut **transaction)
+    .await?;
+    if groups.len() != selected_group_ids.len() || channels.len() != selected_channel_ids.len() {
+        return Err(RepositoryError::ApiKeyTargetNotAllowed);
+    }
+
+    let allowed_groups = policy
+        .allowed_group_ids
+        .iter()
+        .copied()
+        .collect::<HashSet<_>>();
+    let allowed_channels = policy
+        .allowed_channel_ids
+        .iter()
+        .copied()
+        .collect::<HashSet<_>>();
+    if groups
+        .iter()
+        .any(|group| !allowed_groups.contains(&group.id))
+        || channels.iter().any(|channel| {
+            !allowed_groups.contains(&channel.channel_group_id)
+                && !allowed_channels.contains(&channel.id)
+        })
+    {
+        return Err(RepositoryError::ApiKeyTargetNotAllowed);
+    }
+
+    let mut formats = BTreeSet::new();
+    formats.extend(groups.into_iter().map(|group| group.api_format));
+    formats.extend(channels.into_iter().map(|channel| channel.api_format));
+    if formats.is_empty() {
+        return Err(RepositoryError::Validation);
+    }
+    Ok(formats.into_iter().collect())
+}
+
+async fn validate_policy_targets(
+    transaction: &mut Transaction<'_, Postgres>,
+    allowed_group_ids: &[Uuid],
+    allowed_channel_ids: &[Uuid],
+) -> Result<(), RepositoryError> {
+    validate_target_lists(allowed_group_ids, allowed_channel_ids, false)?;
+    let group_count =
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM channel_groups WHERE id = ANY($1)")
+            .bind(allowed_group_ids)
+            .fetch_one(&mut **transaction)
+            .await?;
+    let channel_count =
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM channels WHERE id = ANY($1)")
+            .bind(allowed_channel_ids)
+            .fetch_one(&mut **transaction)
+            .await?;
+    if group_count != allowed_group_ids.len() as i64
+        || channel_count != allowed_channel_ids.len() as i64
+    {
+        return Err(RepositoryError::Validation);
+    }
+    Ok(())
 }
 
 async fn key_audit_for_user(
@@ -2700,7 +3054,7 @@ async fn key_audit_for_user(
     user_id: Uuid,
 ) -> Result<Value, RepositoryError> {
     let value = sqlx::query_scalar::<_, Value>(
-        "SELECT json_build_object('id',id,'user_id',user_id,'name',name,'status',status,'expires_at',expires_at,'allowed_api_formats',allowed_api_formats,'permissions',permissions,'allowed_group_ids',allowed_group_ids,'requests_per_minute',requests_per_minute,'tokens_per_minute',tokens_per_minute,'max_concurrent_requests',max_concurrent_requests,'quota_limit_amount',quota_limit_amount,'quota_used_amount',quota_used_amount,'created_at',created_at,'updated_at',updated_at) FROM api_keys WHERE id=$1 AND user_id=$2 FOR UPDATE",
+        "SELECT json_build_object('id',id,'user_id',user_id,'name',name,'status',status,'expires_at',expires_at,'allowed_api_formats',allowed_api_formats,'permissions',permissions,'allowed_group_ids',allowed_group_ids,'allowed_channel_ids',allowed_channel_ids,'requests_per_minute',requests_per_minute,'tokens_per_minute',tokens_per_minute,'max_concurrent_requests',max_concurrent_requests,'quota_limit_amount',quota_limit_amount,'quota_used_amount',quota_used_amount,'created_at',created_at,'updated_at',updated_at) FROM api_keys WHERE id=$1 AND user_id=$2 FOR UPDATE",
     )
     .bind(id)
     .bind(user_id)
@@ -2714,7 +3068,7 @@ async fn key_audit(
     id: Uuid,
 ) -> Result<Value, RepositoryError> {
     let value = sqlx::query_scalar::<_, Value>(
-        "SELECT json_build_object('id',id,'user_id',user_id,'name',name,'status',status,'expires_at',expires_at,'allowed_api_formats',allowed_api_formats,'permissions',permissions,'allowed_group_ids',allowed_group_ids,'requests_per_minute',requests_per_minute,'tokens_per_minute',tokens_per_minute,'max_concurrent_requests',max_concurrent_requests,'quota_limit_amount',quota_limit_amount,'quota_used_amount',quota_used_amount,'created_at',created_at,'updated_at',updated_at) FROM api_keys WHERE id=$1 FOR UPDATE",
+        "SELECT json_build_object('id',id,'user_id',user_id,'name',name,'status',status,'expires_at',expires_at,'allowed_api_formats',allowed_api_formats,'permissions',permissions,'allowed_group_ids',allowed_group_ids,'allowed_channel_ids',allowed_channel_ids,'requests_per_minute',requests_per_minute,'tokens_per_minute',tokens_per_minute,'max_concurrent_requests',max_concurrent_requests,'quota_limit_amount',quota_limit_amount,'quota_used_amount',quota_used_amount,'created_at',created_at,'updated_at',updated_at) FROM api_keys WHERE id=$1 FOR UPDATE",
     )
     .bind(id)
     .fetch_optional(&mut **transaction)
@@ -2831,7 +3185,7 @@ async fn api_key_policy_audit(
     id: Uuid,
 ) -> Result<Value, RepositoryError> {
     let value = sqlx::query_scalar::<_, Value>(
-        "SELECT json_build_object('id',id,'name',name,'allowed_api_formats',allowed_api_formats,'permissions',permissions,'allowed_group_ids',allowed_group_ids,'requests_per_minute',requests_per_minute,'max_concurrent_requests',max_concurrent_requests,'quota_limit_amount',quota_limit_amount,'max_active_keys',max_active_keys,'enabled',enabled,'created_at',created_at,'updated_at',updated_at) FROM api_key_policies WHERE id=$1 FOR UPDATE",
+        "SELECT json_build_object('id',id,'name',name,'allowed_group_ids',allowed_group_ids,'allowed_channel_ids',allowed_channel_ids,'enabled',enabled,'created_at',created_at,'updated_at',updated_at) FROM api_key_policies WHERE id=$1 FOR UPDATE",
     )
     .bind(id)
     .fetch_optional(&mut **transaction)
@@ -2846,13 +3200,15 @@ async fn api_key_policy_insert(
     create: bool,
     expected_updated_at: Option<DateTime<Utc>>,
 ) -> Result<MutationResult, RepositoryError> {
-    if input.name.trim().is_empty()
-        || input.max_active_keys <= 0
-        || input.allowed_api_formats.is_empty()
-        || input.permissions.is_empty()
-    {
+    if input.name.trim().is_empty() {
         return Err(RepositoryError::Validation);
     }
+    validate_policy_targets(
+        transaction,
+        &input.allowed_group_ids,
+        &input.allowed_channel_ids,
+    )
+    .await?;
     let before = if create {
         json!({})
     } else {
@@ -2861,38 +3217,26 @@ async fn api_key_policy_insert(
     let updated_at = if create {
         sqlx::query_scalar(
             "INSERT INTO api_key_policies \
-             (id,name,allowed_api_formats,permissions,allowed_group_ids,requests_per_minute,max_concurrent_requests,quota_limit_amount,max_active_keys,enabled) \
-             VALUES ($1,$2,$3::api_format[],$4,$5,$6,$7,$8,$9,$10) RETURNING updated_at",
+             (id,name,allowed_group_ids,allowed_channel_ids,enabled) \
+             VALUES ($1,$2,$3,$4,$5) RETURNING updated_at",
         )
         .bind(id)
         .bind(&input.name)
-        .bind(&input.allowed_api_formats)
-        .bind(&input.permissions)
         .bind(&input.allowed_group_ids)
-        .bind(input.requests_per_minute)
-        .bind(input.max_concurrent_requests)
-        .bind(input.quota_limit_amount)
-        .bind(input.max_active_keys)
+        .bind(&input.allowed_channel_ids)
         .bind(input.enabled)
         .fetch_one(&mut **transaction)
         .await?
     } else {
         sqlx::query_scalar(
             "UPDATE api_key_policies \
-             SET name=$2,allowed_api_formats=$3::api_format[],permissions=$4,allowed_group_ids=$5, \
-                 requests_per_minute=$6,max_concurrent_requests=$7,quota_limit_amount=$8, \
-                 max_active_keys=$9,enabled=$10 \
-             WHERE id=$1 AND updated_at=$11 RETURNING updated_at",
+             SET name=$2,allowed_group_ids=$3,allowed_channel_ids=$4,enabled=$5 \
+             WHERE id=$1 AND updated_at=$6 RETURNING updated_at",
         )
         .bind(id)
         .bind(&input.name)
-        .bind(&input.allowed_api_formats)
-        .bind(&input.permissions)
         .bind(&input.allowed_group_ids)
-        .bind(input.requests_per_minute)
-        .bind(input.max_concurrent_requests)
-        .bind(input.quota_limit_amount)
-        .bind(input.max_active_keys)
+        .bind(&input.allowed_channel_ids)
         .bind(input.enabled)
         .bind(expected_updated_at.expect("PUT version"))
         .fetch_optional(&mut **transaction)
@@ -3375,6 +3719,6 @@ pub enum RepositoryError {
     DefaultApiKeyPolicyRequired,
     #[error("the user's default API key policy is disabled")]
     DefaultApiKeyPolicyDisabled,
-    #[error("the user's active API key limit has been reached")]
-    ApiKeyLimitReached,
+    #[error("the selected API key target is not allowed by the user's policy")]
+    ApiKeyTargetNotAllowed,
 }

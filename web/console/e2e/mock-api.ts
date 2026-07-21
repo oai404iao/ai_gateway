@@ -60,8 +60,9 @@ export async function mockConsoleApi(page: Page): Promise<void> {
             status: "active",
             expires_at: null,
             allowed_api_formats: ["open_ai_chat_completions"],
-            permissions: ["proxy"],
-            allowed_group_ids: null,
+            permissions: ["proxy", "models.read"],
+            allowed_group_ids: ["00000000-0000-0000-0000-000000000021"],
+            allowed_channel_ids: [],
             requests_per_minute: 60,
             max_concurrent_requests: 4,
             quota_limit_amount: "10.00",
@@ -70,6 +71,44 @@ export async function mockConsoleApi(page: Page): Promise<void> {
             updated_at: "2026-01-03T00:00:00.000Z",
           },
         ],
+      });
+    }
+    if (path === "/console/v1/me/api-key-options" && method === "GET") {
+      return route.fulfill({
+        status: 200,
+        json: {
+          policy_id: "00000000-0000-0000-0000-000000000031",
+          policy_name: "default",
+          groups: [
+            {
+              id: "00000000-0000-0000-0000-000000000021",
+              name: "chat-primary",
+              api_format: "open_ai_chat_completions",
+              enabled: true,
+            },
+          ],
+          channels: [
+            {
+              id: "00000000-0000-0000-0000-000000000022",
+              channel_group_id: "00000000-0000-0000-0000-000000000021",
+              channel_group_name: "chat-primary",
+              api_format: "open_ai_chat_completions",
+              name: "upstream-a",
+              enabled: true,
+              auto_disabled: false,
+            },
+          ],
+        },
+      });
+    }
+    if (path === "/console/v1/me/api-keys" && method === "POST") {
+      return route.fulfill({
+        status: 201,
+        json: {
+          id: "00000000-0000-0000-0000-000000000012",
+          secret: "sk-e2e-created-api-key",
+          correlation_id: "11111111-0000-0000-0000-000000000000",
+        },
       });
     }
     // Default: empty 200 so unknown reads do not break the shell.

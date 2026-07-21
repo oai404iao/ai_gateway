@@ -2,7 +2,7 @@
 
 > 状态：数据库控制面与运行时快照设计已由 migration 实现。当前运行时范围以 [`mvp-usage.md`](mvp-usage.md) 为准，Console/JWT 重构的决策和实施清单以 [`console-auth-refactor-plan.md`](console-auth-refactor-plan.md) 为准。
 >
-> **历史说明：** 下文的“首版 11 张表”描述的是 Console 登录重构前的简化基线。migration `0005_console_auth_and_policies.sql` 已新增用户角色、登录凭据、session、邀请和 API Key Policy，并将 `users.name` 迁移为 `users.display_name`。涉及用户认证或 Console 权限时，以新 migration、`src/persistence/auth.rs` 和 `src/http/console.rs` 为准。
+> **历史说明：** 下文的“首版 11 张表”描述的是 Console 登录重构前的简化基线。migration `0005_console_auth_and_policies.sql` 已新增用户角色、登录凭据、session、邀请和 API Key Policy，并将 `users.name` 迁移为 `users.display_name`。migration `0010_api_key_target_selection.sql` 又将 Policy 收敛为用户可选渠道组/渠道的授权边界，并把实际目标、RPM、并发和额度保留在具体 API Key 上。涉及用户认证或 Console 权限时，以新 migration、`src/persistence/auth.rs` 和 `src/http/console.rs` 为准。
 
 ## 1. 设计原则
 
@@ -76,7 +76,7 @@ updated_at timestamptz not null
 
 | 字段 | 语义 |
 | --- | --- |
-| `api_keys.allowed_group_ids uuid[]` | `NULL` 表示所有渠道组；非空数组表示白名单，空数组非法。 |
+| `api_keys.allowed_group_ids uuid[]` / `allowed_channel_ids uuid[]` | Key 的实际路由白名单；允许整个渠道组或单独渠道，两数组合计至少一个目标。 |
 | `model_rules.channel_group_ids uuid[]` / `channel_ids uuid[]` | 路由可选目标；两者可同时存在，合计至少一个元素。 |
 | `channels.available_models text[]` | 渠道实际支持的上游模型名。 |
 | `permissions`、变换、健康检查和系统策略 JSONB | 使用固定 schema，由 Rust 反序列化/编译，拒绝未知字段。 |
@@ -117,7 +117,8 @@ updated_at timestamptz not null
 | `expires_at` | `timestamptz` | 可空；非空时必须晚于 `created_at`。 |
 | `allowed_api_formats` | `api_format[]` | 非空且至少一个元素；允许调用的 API 格式。 |
 | `permissions` | `text[]` | 非空；首版仅允许 `proxy`、`models.read`。 |
-| `allowed_group_ids` | `uuid[]` | 可空；`NULL` 为允许全部，非空为渠道组白名单。 |
+| `allowed_group_ids` | `uuid[]` | `NOT NULL` 数组列；选择整个渠道组时，该组当前及后续渠道均可用。 |
+| `allowed_channel_ids` | `uuid[]` | `NOT NULL` 数组列；用于只允许某些具体渠道。管理/自助写入要求两数组合计至少一个目标。 |
 | `requests_per_minute` | `integer` | 可空、正数；分钟请求限流。 |
 | `tokens_per_minute` | `integer` | 可空、正数；schema 预留。当前活动 API Key 配置该字段会被控制面编译拒绝。 |
 | `max_concurrent_requests` | `integer` | 可空、正数。 |
@@ -132,7 +133,8 @@ updated_at timestamptz not null
 UNIQUE (secret_value);
 UNIQUE (user_id, name);
 CHECK (cardinality(allowed_api_formats) > 0);
-CHECK (allowed_group_ids IS NULL OR cardinality(allowed_group_ids) > 0);
+CHECK (array_position(allowed_group_ids, NULL::uuid) IS NULL);
+CHECK (array_position(allowed_channel_ids, NULL::uuid) IS NULL);
 CHECK (permissions <@ ARRAY['proxy', 'models.read']::text[]);
 CHECK (requests_per_minute IS NULL OR requests_per_minute > 0);
 CHECK (tokens_per_minute IS NULL OR tokens_per_minute > 0);
@@ -143,6 +145,10 @@ CHECK (quota_limit_amount IS NULL OR quota_limit_amount >= 0);
 分钟级限流和并发数在单实例内存中维护；每次请求只读取 `ArcSwap` 中的已编译快照，不查询数据库。额度是**软预检查**：存在 `quota_limit_amount` 时，已结算的 `quota_used_amount >= quota_limit_amount` 才拒绝。结算 worker 成功后会立即把数据库返回的已用额度发布到同进程准入状态，同时定期重载仍是持久化快照的恢复路径。它不估算本次费用或预留金额，因此一笔在额度内开始、随后结算到上限之外的请求仍允许；数据库保留两个金额非负检查，但不限制 `quota_used_amount <= quota_limit_amount`。
 
 未来若需要硬额度，须另行设计保留和结算：按 Key 串行化 `used + reserved + upper_bound`，持久化保留金额，确认 `billed_at` 后仅释放未结算保留额，并从未结算日志恢复。当前软预检查不能被误解为硬额度。
+
+`api_key_policies` 不再保存格式、权限、RPM、并发、额度或最大 Key 数。它只保存
+`allowed_group_ids`、`allowed_channel_ids` 和启用状态，表示用户创建或调整 Key 时可选择的资源上界。
+选择整个组也允许用户选择该组内的单独渠道；Policy 更新不会反向改写既有 Key 的实际限制。
 
 ### 4.3 `models`
 
@@ -358,8 +364,8 @@ CHECK (jsonb_typeof(health_check) = 'object');
 1. `model_rules` 中所有渠道组/渠道 ID 存在、无重复、启用，且与规则 `api_format` 相同；禁止跨格式回退。
 2. `channels.available_models` 覆盖规则的 `upstream_model`；直接渠道和渠道组目标不能形成重复候选。
 3. 每个启用规则至少展开为一个可选渠道；同一最低优先级候选组的选路策略一致。
-4. API Key 的 `allowed_group_ids` 存在，且 Key 同时拥有对应 API 格式和 `proxy` 权限；`/v1/models` 还需要 `models.read` 权限。
-5. API Key 的分组范围与模型规则目标存在交集；`/v1/models` 只输出这些可达规则的 `client_model`，不返回全局 `models`。
+4. API Key 的 `allowed_group_ids` / `allowed_channel_ids` 均存在、无重复，并且 Key 的自动推导格式覆盖这些目标；`proxy` 权限用于代理，`/v1/models` 还需要 `models.read`。
+5. API Key 的渠道组/渠道范围与模型规则目标存在交集；`/v1/models` 只输出这些可达规则的 `client_model`，不返回全局 `models`。
 6. 模板和渠道覆盖符合受限 DSL、Header 保护、SSE 逐事件处理、URL 和超时规则；`health_check` 当前必须为空，`system_settings` 不参与运行时编译。
 
 控制面在一个事务中保存变更和审计日志，完成上述全量校验并编译 `CompiledRuntimeConfig` 后提交；提交后直接替换内存 `ArcSwap` 快照。启动、定时重载和 Console 管理写入均使用 PostgreSQL 控制面；TOML 只保留进程级监听、数据库、默认超时、日志、被动健康、Console listener 和 JWT 密钥文件路径设置。

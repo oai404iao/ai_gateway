@@ -5,6 +5,7 @@ import type {
   MutationResponse,
   RevokeInput,
   SelfApiKeyCreateInput,
+  SelfApiKeyOptions,
   SelfApiKeyUpdateInput,
 } from "@/api/types";
 
@@ -18,6 +19,14 @@ export function useOwnApiKeys() {
   return useQuery({
     queryKey: LIST_KEY,
     queryFn: () => apiGet<ApiKeyView[]>("/me/api-keys"),
+  });
+}
+
+export function useOwnApiKeyOptions(enabled = true) {
+  return useQuery({
+    queryKey: ["console", "me", "api-key-options"] as const,
+    queryFn: () => apiGet<SelfApiKeyOptions>("/me/api-key-options"),
+    enabled,
   });
 }
 

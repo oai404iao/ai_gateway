@@ -58,4 +58,40 @@ test.describe("Console SPA smoke", () => {
     await page.getByRole("button", { name: "Show full API key" }).click();
     await expect(keyValue).toHaveValue(E2E_API_KEY_SECRET);
   });
+
+  test("users choose API key targets and per-key limits", async ({ page }) => {
+    await mockConsoleApi(page);
+    await page.goto("/login");
+    await page.getByLabel(/email/i).fill("admin@example.com");
+    await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
+    await page.getByRole("button", { name: /sign in/i }).click();
+    await page.getByRole("link", { name: "API Keys" }).click();
+    await page.getByRole("button", { name: "New API key" }).click();
+
+    await page.getByLabel(/^name$/i).fill("browser key");
+    await page
+      .getByRole("checkbox", { name: "chat-primary (Chat Completions)" })
+      .check();
+    await page.getByLabel("Requests / minute").fill("45");
+    await page.getByLabel("Max concurrent requests").fill("3");
+    await page.getByLabel("Quota limit amount").fill("12.50");
+
+    const requestPromise = page.waitForRequest(
+      (request) =>
+        request.url().endsWith("/console/v1/me/api-keys") &&
+        request.method() === "POST",
+    );
+    await page.getByRole("button", { name: "Create key" }).click();
+    const request = await requestPromise;
+    expect(request.postDataJSON()).toEqual({
+      name: "browser key",
+      expires_at: null,
+      allowed_group_ids: ["00000000-0000-0000-0000-000000000021"],
+      allowed_channel_ids: [],
+      requests_per_minute: 45,
+      max_concurrent_requests: 3,
+      quota_limit_amount: "12.50",
+    });
+    await expect(page.getByText("API key created")).toBeVisible();
+  });
 });

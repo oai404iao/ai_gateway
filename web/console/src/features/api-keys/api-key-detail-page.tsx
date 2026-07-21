@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useParams, useNavigate } from "react-router";
 import { Controller, useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -22,11 +22,18 @@ import { Separator } from "@/components/ui/separator";
 import { PageHeader } from "@/components/shared/page-header";
 import { AsyncResource } from "@/components/shared/async-resource";
 import { ApiKeyValue } from "@/components/shared/api-key-value";
+import {
+  ApiKeyTargetFields,
+  type ApiKeyTargetChannel,
+  type ApiKeyTargetGroup,
+} from "@/components/shared/api-key-target-fields";
+import { DecimalField, NullableNumberField } from "@/components/shared/decimal-field";
 import { DetailField } from "@/components/shared/detail-field";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import {
   useOwnApiKey,
+  useOwnApiKeyOptions,
   useRevokeOwnApiKey,
   useUpdateOwnApiKey,
 } from "@/features/api-keys/api";
@@ -41,11 +48,29 @@ import {
 import { API_KEY_STATUSES, apiFormatLabel } from "@/lib/permissions";
 import { useI18n } from "@/app/i18n";
 
-const editSchema = z.object({
-  name: z.string().min(1, "Name is required.").max(100),
-  status: z.enum(["active", "disabled"]),
-  expires_at: z.string().optional(),
-});
+const editSchema = z
+  .object({
+    name: z.string().min(1, "Name is required.").max(100),
+    status: z.enum(["active", "disabled"]),
+    expires_at: z.string().optional(),
+    allowed_group_ids: z.array(z.string()),
+    allowed_channel_ids: z.array(z.string()),
+    requests_per_minute: z.number().int().positive().nullable(),
+    max_concurrent_requests: z.number().int().positive().nullable(),
+    quota_limit_amount: z
+      .string()
+      .regex(/^\d+(?:\.\d+)?$/, "Enter a non-negative amount.")
+      .nullable(),
+  })
+  .superRefine((value, context) => {
+    if (value.allowed_group_ids.length === 0 && value.allowed_channel_ids.length === 0) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["allowed_group_ids"],
+        message: "Pick at least one channel group or channel.",
+      });
+    }
+  });
 
 type EditValues = z.infer<typeof editSchema>;
 
@@ -53,12 +78,18 @@ const emptyEditValues: EditValues = {
   name: "",
   status: "active",
   expires_at: "",
+  allowed_group_ids: [],
+  allowed_channel_ids: [],
+  requests_per_minute: null,
+  max_concurrent_requests: null,
+  quota_limit_amount: null,
 };
 
 export function ApiKeyDetailPage() {
   const { id = "" } = useParams();
   const navigate = useNavigate();
   const { data, etag, isLoading, error } = useOwnApiKey(id);
+  const options = useOwnApiKeyOptions();
   const update = useUpdateOwnApiKey(id);
   const revoke = useRevokeOwnApiKey();
   const { t } = useI18n();
@@ -70,6 +101,11 @@ export function ApiKeyDetailPage() {
         name: data.data.name,
         status: data.data.status === "active" ? "active" : "disabled",
         expires_at: formatDateTimeLocalInput(data.data.expires_at),
+        allowed_group_ids: data.data.allowed_group_ids,
+        allowed_channel_ids: data.data.allowed_channel_ids,
+        requests_per_minute: data.data.requests_per_minute,
+        max_concurrent_requests: data.data.max_concurrent_requests,
+        quota_limit_amount: data.data.quota_limit_amount,
       }
     : emptyEditValues;
 
@@ -87,6 +123,11 @@ export function ApiKeyDetailPage() {
           name: values.name,
           status: values.status,
           expires_at: dateTimeLocalToIso(values.expires_at),
+          allowed_group_ids: values.allowed_group_ids,
+          allowed_channel_ids: values.allowed_channel_ids,
+          requests_per_minute: values.requests_per_minute,
+          max_concurrent_requests: values.max_concurrent_requests,
+          quota_limit_amount: values.quota_limit_amount,
         },
         ifMatch: etag,
       });
@@ -94,6 +135,8 @@ export function ApiKeyDetailPage() {
     } catch (error) {
       if (error instanceof ApiError && error.isConflict) {
         toast.error(t("This key was changed by another session. Reloading."));
+      } else if (error instanceof ApiError && error.code === "api_key_target_not_allowed") {
+        toast.error(t("One or more selected targets are no longer allowed by your API key policy."));
       } else {
         toast.error(error instanceof Error ? error.message : t("Update failed"));
       }
@@ -118,6 +161,44 @@ export function ApiKeyDetailPage() {
   };
 
   const key = data?.data;
+  const targetGroups = useMemo<ApiKeyTargetGroup[]>(() => {
+    const available = options.data?.groups ?? [];
+    const missing = (key?.allowed_group_ids ?? [])
+      .filter((groupId) => !available.some((group) => group.id === groupId))
+      .map((groupId) => ({
+        id: groupId,
+        name: groupId,
+        api_format: key?.allowed_api_formats[0] ?? "open_ai_chat_completions",
+        enabled: false,
+      }));
+    return [...available, ...missing];
+  }, [key?.allowed_api_formats, key?.allowed_group_ids, options.data?.groups]);
+  const targetChannels = useMemo<ApiKeyTargetChannel[]>(() => {
+    const available = options.data?.channels ?? [];
+    const missing = (key?.allowed_channel_ids ?? [])
+      .filter((channelId) => !available.some((channel) => channel.id === channelId))
+      .map((channelId) => ({
+        id: channelId,
+        channel_group_id: "",
+        channel_group_name: t("No longer allowed"),
+        name: channelId,
+        api_format: key?.allowed_api_formats[0] ?? "open_ai_chat_completions",
+        enabled: false,
+        auto_disabled: false,
+      }));
+    return [...available, ...missing];
+  }, [key?.allowed_api_formats, key?.allowed_channel_ids, options.data?.channels, t]);
+  const selectedGroupIds = form.watch("allowed_group_ids");
+  const selectedChannelIds = form.watch("allowed_channel_ids");
+  const targetError =
+    form.formState.errors.allowed_group_ids?.message ??
+    form.formState.errors.allowed_channel_ids?.message;
+  const allowedGroupNames = (key?.allowed_group_ids ?? []).map(
+    (groupId) => targetGroups.find((group) => group.id === groupId)?.name ?? groupId,
+  );
+  const allowedChannelNames = (key?.allowed_channel_ids ?? []).map(
+    (channelId) => targetChannels.find((channel) => channel.id === channelId)?.name ?? channelId,
+  );
 
   return (
     <div className="flex flex-col gap-6">
@@ -136,7 +217,9 @@ export function ApiKeyDetailPage() {
             <Card>
               <CardHeader>
                 <CardTitle>{t("Details")}</CardTitle>
-                <CardDescription>{t("Authorization fields are managed by your policy.")}</CardDescription>
+                <CardDescription>
+                  {t("Formats are derived from the selected targets; permissions are fixed at creation.")}
+                </CardDescription>
               </CardHeader>
               <CardContent>
                 <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -154,7 +237,11 @@ export function ApiKeyDetailPage() {
                   <DetailField label={t("Permissions")} value={formatList(key.permissions)} />
                   <DetailField
                     label={t("Allowed groups")}
-                    value={formatList(key.allowed_group_ids)}
+                    value={formatList(allowedGroupNames)}
+                  />
+                  <DetailField
+                    label={t("Allowed channels")}
+                    value={formatList(allowedChannelNames)}
                   />
                   <DetailField
                     label={t("Requests / minute")}
@@ -236,6 +323,79 @@ export function ApiKeyDetailPage() {
                         {...form.register("expires_at")}
                       />
                     </Field>
+                    {options.error ? (
+                      <FieldError>
+                        {options.error instanceof Error
+                          ? options.error.message
+                          : t("Unable to load API key target options.")}
+                      </FieldError>
+                    ) : null}
+                    <ApiKeyTargetFields
+                      groups={targetGroups}
+                      channels={targetChannels}
+                      selectedGroupIds={selectedGroupIds}
+                      selectedChannelIds={selectedChannelIds}
+                      onChange={(allowedGroupIds, allowedChannelIds) => {
+                        form.setValue("allowed_group_ids", allowedGroupIds, {
+                          shouldDirty: true,
+                          shouldValidate: true,
+                        });
+                        form.setValue("allowed_channel_ids", allowedChannelIds, {
+                          shouldDirty: true,
+                          shouldValidate: true,
+                        });
+                      }}
+                      error={targetError ? t(targetError) : undefined}
+                    />
+                    <NullableNumberField
+                      id="requests_per_minute"
+                      label={t("Requests / minute")}
+                      value={form.watch("requests_per_minute")}
+                      onChange={(value) =>
+                        form.setValue("requests_per_minute", value, {
+                          shouldDirty: true,
+                          shouldValidate: true,
+                        })
+                      }
+                      error={
+                        form.formState.errors.requests_per_minute?.message
+                          ? t(form.formState.errors.requests_per_minute.message)
+                          : undefined
+                      }
+                    />
+                    <NullableNumberField
+                      id="max_concurrent_requests"
+                      label={t("Max concurrent requests")}
+                      value={form.watch("max_concurrent_requests")}
+                      onChange={(value) =>
+                        form.setValue("max_concurrent_requests", value, {
+                          shouldDirty: true,
+                          shouldValidate: true,
+                        })
+                      }
+                      error={
+                        form.formState.errors.max_concurrent_requests?.message
+                          ? t(form.formState.errors.max_concurrent_requests.message)
+                          : undefined
+                      }
+                    />
+                    <DecimalField
+                      id="quota_limit_amount"
+                      label={t("Quota limit amount")}
+                      value={form.watch("quota_limit_amount")}
+                      onChange={(value) =>
+                        form.setValue("quota_limit_amount", value || null, {
+                          shouldDirty: true,
+                          shouldValidate: true,
+                        })
+                      }
+                      error={
+                        form.formState.errors.quota_limit_amount?.message
+                          ? t(form.formState.errors.quota_limit_amount.message)
+                          : undefined
+                      }
+                      description={t("Leave blank for no per-key quota limit.")}
+                    />
                   </FieldGroup>
                   <Button type="submit" className="self-start" disabled={submitting}>
                     {submitting ? <Spinner data-icon="inline-start" /> : null}

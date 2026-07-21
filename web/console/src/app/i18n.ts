@@ -188,6 +188,7 @@ const zhCN: Record<string, string> = {
   "Description": "说明",
   "Channel groups ({count})": "渠道组（{count}）",
   "Channels ({count})": "渠道（{count}）",
+  "Individual channels ({count})": "单独渠道（{count}）",
   "No groups for this format.": "该格式没有可用渠道组。",
   "No channels for this format.": "该格式没有可用渠道。",
   "priority {priority}": "优先级 {priority}",
@@ -350,6 +351,12 @@ const zhCN: Record<string, string> = {
   "unset": "未设置",
   "New API key policy": "新建 API 密钥策略",
   "Policy": "策略",
+  "Controls which channel groups and channels users may assign to API keys.":
+    "控制用户可为 API 密钥分配哪些渠道组和渠道。",
+  "Users choose each key's targets and limits from these permitted resources.":
+    "用户从这些获准资源中选择每个密钥的目标，并自行配置限制。",
+  "Defines the channel groups and channels users may assign to their keys.":
+    "定义用户可分配给 API 密钥的渠道组和渠道。",
   "Bounds the formats, permissions, rate limits, and quota of self-service keys.":
     "限制自助创建 API 密钥可用的格式、权限、速率和配额。",
   "Back to policies": "返回 API 密钥策略",
@@ -363,6 +370,13 @@ const zhCN: Record<string, string> = {
   "Allowed API formats": "允许的 API 格式",
   "Permissions": "权限",
   "Allowed group IDs": "允许的渠道组 ID",
+  "Individual channels": "单独渠道",
+  "Selecting a group allows the key to use every channel in that group.":
+    "选择渠道组后，密钥可以使用该组内的全部渠道。",
+  "Choose individual channels when the whole group should not be available.":
+    "不希望开放整个渠道组时，可单独选择渠道。",
+  "No selectable channel groups.": "没有可选择的渠道组。",
+  "No selectable individual channels.": "没有可单独选择的渠道。",
   "UUID per line": "每行一个 UUID",
   "Restrict self-service keys to these channel groups. Empty means unrestricted.":
     "将自助创建的密钥限制在这些渠道组中；留空表示不限制。",
@@ -477,8 +491,11 @@ const zhCN: Record<string, string> = {
   "View, rename, enable, disable, or revoke this key.": "查看、重命名、启用、禁用或撤销此密钥。",
   "Details": "详情",
   "Authorization fields are managed by your policy.": "授权字段由您的策略管理。",
+  "Formats are derived from the selected targets; permissions are fixed at creation.":
+    "API 格式根据所选目标自动推导；权限在创建时固定。",
   "Expires": "过期时间",
   "Allowed groups": "允许的渠道组",
+  "Allowed channels": "允许的渠道",
   "Max concurrent": "最大并发数",
   "Quota limit": "配额上限",
   "Quota used": "已用配额",
@@ -499,10 +516,14 @@ const zhCN: Record<string, string> = {
   "Keys": "密钥",
   "Permissions, formats, and limits are set by your assigned API key policy and cannot be raised from this page.":
     "权限、格式和限制由分配给您的 API 密钥策略设定，不能在此页面提高。",
+  "Each key has its own routing targets, rate limits, concurrency limit, and quota.":
+    "每个密钥独立配置路由目标、速率限制、并发限制和配额。",
   "No API keys": "没有 API 密钥",
   "Create your first API key to start using the data plane.": "创建您的第一个 API 密钥以开始使用数据平面。",
   "Choose a name and optional expiry. Authorization fields are assigned from your default policy.":
     "选择名称和可选过期时间。授权字段由您的默认策略分配。",
+  "Choose targets from your policy and configure this key's own limits.":
+    "从策略允许的范围内选择目标，并配置该密钥自身的限制。",
   "Create key": "创建密钥",
   "Expiry must be a valid future date and time.": "过期时间必须是有效的未来日期和时间。",
   "Create an API key policy, then assign it to this user under Administration → Users.":
@@ -511,6 +532,12 @@ const zhCN: Record<string, string> = {
     "您的默认 API 密钥策略已禁用。请管理员启用或替换它。",
   "Your policy's active API key limit has been reached. Revoke an existing key or raise the limit.":
     "已达到策略的活跃 API 密钥上限。请撤销现有密钥或提高上限。",
+  "One or more selected targets are no longer allowed by your API key policy.":
+    "一个或多个所选目标已不在当前 API 密钥策略允许范围内。",
+  "Enter a non-negative amount.": "请输入非负金额。",
+  "Leave blank for no per-key quota limit.": "留空表示不设置该密钥的配额上限。",
+  "No longer allowed": "已不再允许",
+  "Unable to load API key target options.": "无法加载 API 密钥可选目标。",
   "Create failed": "创建失败",
   "Pick at least one channel group or channel.": "请至少选择一个渠道组或渠道。",
   "Save blocked: this change would make the routing configuration invalid. Keep an eligible channel and compatible enabled resources, or update dependent rules first.":

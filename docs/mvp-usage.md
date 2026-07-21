@@ -121,15 +121,21 @@ Console 登录接口：
 - `GET /console/v1/me/sessions`
 - `DELETE /console/v1/me/sessions/{id}`
 - `GET/POST /console/v1/me/api-keys`
+- `GET /console/v1/me/api-key-options`
 - `GET/PUT /console/v1/me/api-keys/{id}`
 - `POST /console/v1/me/api-keys/{id}/revoke`
 - `GET /console/v1/me/request-logs?limit=50`
 - `GET /console/v1/me/request-logs/{id}`
 
-普通用户创建 API Key 时只能设置名称和过期时间。格式、权限、渠道组、RPM、并发和额度由管理员分配的默认 `api_key_policy` 决定；用户不能通过 API body 扩大权限。策略还限制最大活动 Key 数。
-未分配策略、策略已禁用或活动 Key 数达到上限时，创建接口分别返回
+管理员分配的默认 `api_key_policy` 只定义用户可选择的渠道组和单独渠道。用户通过
+`GET /console/v1/me/api-key-options` 获取当前可选列表；创建或更新 API Key 时，从该列表中选择
+`allowed_group_ids` / `allowed_channel_ids`，并为该 Key 独立配置 RPM、最大并发和可选额度上限。
+API 格式由所选目标自动推导，自助创建 Key 的权限固定为 `proxy` 和 `models.read`。
+
+Policy 不再保存额度、RPM、并发、格式、权限或最大活动 Key 数，也不会反向修改既有 Key 的实际限制。
+未分配策略、策略已禁用或提交了策略范围外的目标时，接口分别返回
 `default_api_key_policy_required`、`default_api_key_policy_disabled` 或
-`api_key_limit_reached`，Console UI 会提示管理员完成策略配置。
+`api_key_target_not_allowed`。
 
 ## 管理员接口
 

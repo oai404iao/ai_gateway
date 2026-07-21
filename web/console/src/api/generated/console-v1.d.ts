@@ -149,6 +149,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/me/api-key-options": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getOwnApiKeyOptions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/me/api-keys/{id}": {
         parameters: {
             query?: never;
@@ -755,7 +771,8 @@ export interface components {
             expires_at: components["schemas"]["DateTimeNullable"];
             allowed_api_formats: components["schemas"]["ApiFormat"][];
             permissions: string[];
-            allowed_group_ids: string[] | null;
+            allowed_group_ids: string[];
+            allowed_channel_ids: string[];
             requests_per_minute: number | null;
             max_concurrent_requests: number | null;
             quota_limit_amount: components["schemas"]["DecimalNullable"];
@@ -773,16 +790,36 @@ export interface components {
             /** Format: uuid */
             id: string;
             name: string;
-            allowed_api_formats: components["schemas"]["ApiFormat"][];
-            permissions: string[];
-            allowed_group_ids: string[] | null;
-            requests_per_minute: number | null;
-            max_concurrent_requests: number | null;
-            quota_limit_amount: components["schemas"]["DecimalNullable"];
-            max_active_keys: number;
+            allowed_group_ids: string[];
+            allowed_channel_ids: string[];
             enabled: boolean;
             created_at: components["schemas"]["DateTime"];
             updated_at: components["schemas"]["DateTime"];
+        };
+        SelfApiKeyOptions: {
+            /** Format: uuid */
+            policy_id: string;
+            policy_name: string;
+            groups: components["schemas"]["SelfApiKeyGroupOption"][];
+            channels: components["schemas"]["SelfApiKeyChannelOption"][];
+        };
+        SelfApiKeyGroupOption: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            api_format: components["schemas"]["ApiFormat"];
+            enabled: boolean;
+        };
+        SelfApiKeyChannelOption: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            channel_group_id: string;
+            channel_group_name: string;
+            api_format: components["schemas"]["ApiFormat"];
+            name: string;
+            enabled: boolean;
+            auto_disabled: boolean;
         };
         ControlPlaneUser: {
             /** Format: uuid */
@@ -1083,12 +1120,22 @@ export interface components {
         };
         SelfApiKeyCreateInput: {
             name: string;
+            allowed_group_ids: string[];
+            allowed_channel_ids: string[];
             expires_at?: components["schemas"]["DateTimeNullable"];
+            requests_per_minute?: number | null;
+            max_concurrent_requests?: number | null;
+            quota_limit_amount?: components["schemas"]["DecimalNullable"];
         };
         SelfApiKeyUpdateInput: {
             name: string;
             status: string;
+            allowed_group_ids: string[];
+            allowed_channel_ids: string[];
             expires_at?: components["schemas"]["DateTimeNullable"];
+            requests_per_minute?: number | null;
+            max_concurrent_requests?: number | null;
+            quota_limit_amount?: components["schemas"]["DecimalNullable"];
         };
         InviteUserInput: {
             email: string;
@@ -1109,13 +1156,8 @@ export interface components {
         };
         ApiKeyPolicyInput: {
             name: string;
-            allowed_api_formats: components["schemas"]["ApiFormat"][];
-            permissions: string[];
-            allowed_group_ids?: string[] | null;
-            requests_per_minute?: number | null;
-            max_concurrent_requests?: number | null;
-            quota_limit_amount?: components["schemas"]["DecimalNullable"];
-            max_active_keys: number;
+            allowed_group_ids: string[];
+            allowed_channel_ids: string[];
             enabled: boolean;
         };
         ApiKeyCreateInput: {
@@ -1124,7 +1166,8 @@ export interface components {
             name: string;
             allowed_api_formats: components["schemas"]["ApiFormat"][];
             permissions: string[];
-            allowed_group_ids?: string[] | null;
+            allowed_group_ids: string[];
+            allowed_channel_ids: string[];
             expires_at?: components["schemas"]["DateTimeNullable"];
             requests_per_minute?: number | null;
             max_concurrent_requests?: number | null;
@@ -1135,7 +1178,8 @@ export interface components {
             status: string;
             allowed_api_formats: components["schemas"]["ApiFormat"][];
             permissions: string[];
-            allowed_group_ids?: string[] | null;
+            allowed_group_ids: string[];
+            allowed_channel_ids: string[];
             expires_at?: components["schemas"]["DateTimeNullable"];
             requests_per_minute?: number | null;
             max_concurrent_requests?: number | null;
@@ -1645,8 +1689,8 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
-            /** @description Active API key limit reached (`api_key_limit_reached`). */
-            409: {
+            /** @description Missing/disabled policy, invalid limits, or a target outside the policy. */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1654,6 +1698,27 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+        };
+    };
+    getOwnApiKeyOptions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Channel groups and channels selectable under the user's policy. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SelfApiKeyOptions"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
             /** @description Missing or disabled default API key policy. */
             422: {
                 headers: {
@@ -1720,7 +1785,15 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
-            422: components["responses"]["Unprocessable"];
+            /** @description Invalid limits or a selected target outside the current policy. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
         };
     };
     revokeOwnApiKey: {
