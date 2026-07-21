@@ -11,9 +11,8 @@ use reqwest::{Client, Proxy, Url, redirect::Policy};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::{
-    domain::{CompiledChannelUpstreamPolicy, CompiledRuntimeConfig, NoProxyHost},
-    runtime_config::UpstreamConfig,
+use crate::domain::{
+    CompiledChannelUpstreamPolicy, CompiledRuntimeConfig, NoProxyHost, UpstreamTimeoutDefaults,
 };
 
 /// The only TLS configuration permitted for upstream clients.
@@ -23,7 +22,8 @@ pub enum UpstreamTlsPolicy {
     RustlsWebPkiRoots,
 }
 
-/// Effective upstream timeouts after applying channel overrides to TOML defaults.
+/// Effective upstream timeouts after applying channel overrides to database
+/// system-setting defaults.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ResolvedUpstreamTimeouts {
     connect: Duration,
@@ -32,20 +32,21 @@ pub struct ResolvedUpstreamTimeouts {
 }
 
 impl ResolvedUpstreamTimeouts {
-    /// Merges positive, compiled channel values over the global TOML defaults.
+    /// Merges positive, compiled channel values over global system defaults.
     #[must_use]
-    pub fn resolve(upstream: &UpstreamConfig, channel: &CompiledChannelUpstreamPolicy) -> Self {
+    pub fn resolve(
+        upstream: &UpstreamTimeoutDefaults,
+        channel: &CompiledChannelUpstreamPolicy,
+    ) -> Self {
         let overrides = channel.timeouts();
         Self {
-            connect: overrides
-                .connect()
-                .unwrap_or_else(|| Duration::from_secs(upstream.connect_timeout_seconds)),
+            connect: overrides.connect().unwrap_or_else(|| upstream.connect()),
             response_header: overrides
                 .response_header()
-                .unwrap_or_else(|| Duration::from_secs(upstream.response_header_timeout_seconds)),
+                .unwrap_or_else(|| upstream.response_header()),
             stream_idle: overrides
                 .stream_idle()
-                .unwrap_or_else(|| Duration::from_secs(upstream.stream_idle_timeout_seconds)),
+                .unwrap_or_else(|| upstream.stream_idle()),
         }
     }
 
@@ -76,7 +77,10 @@ pub struct ResolvedUpstreamPolicy {
 
 impl ResolvedUpstreamPolicy {
     #[must_use]
-    pub fn resolve(upstream: &UpstreamConfig, channel: &CompiledChannelUpstreamPolicy) -> Self {
+    pub fn resolve(
+        upstream: &UpstreamTimeoutDefaults,
+        channel: &CompiledChannelUpstreamPolicy,
+    ) -> Self {
         Self {
             timeouts: ResolvedUpstreamTimeouts::resolve(upstream, channel),
             tls: UpstreamTlsPolicy::RustlsWebPkiRoots,
@@ -86,7 +90,7 @@ impl ResolvedUpstreamPolicy {
     /// Resolves and validates the effective policy before it is used for any
     /// outbound request work.
     pub fn try_resolve(
-        upstream: &UpstreamConfig,
+        upstream: &UpstreamTimeoutDefaults,
         channel: &CompiledChannelUpstreamPolicy,
     ) -> Result<Self, ResolvedUpstreamPolicyError> {
         Self::resolve(upstream, channel).validate()
@@ -118,17 +122,17 @@ pub enum ResolvedUpstreamPolicyError {
     InvalidTimeoutOrdering,
 }
 
-/// Validates every compiled channel against immutable process-wide upstream
-/// defaults before a snapshot is made active.
+/// Validates every compiled channel against the system defaults carried by a
+/// candidate snapshot before it is made active.
 ///
 /// The error is deliberately value-free so it is safe to surface at process
 /// and control-plane boundaries.
 pub fn validate_snapshot_upstream_policies(
     snapshot: &CompiledRuntimeConfig,
-    upstream_defaults: &UpstreamConfig,
 ) -> Result<(), ResolvedUpstreamPolicyError> {
+    let upstream_defaults = snapshot.system_settings().upstream_timeouts();
     snapshot.channels().try_for_each(|channel| {
-        ResolvedUpstreamPolicy::try_resolve(upstream_defaults, channel.upstream_policy())
+        ResolvedUpstreamPolicy::try_resolve(&upstream_defaults, channel.upstream_policy())
             .map(|_| ())
     })
 }
@@ -304,19 +308,16 @@ impl UpstreamClientRegistry {
     /// client for an inactive key rather than repopulating this cache. Dropping
     /// a cache entry never invalidates a client already cloned by an in-flight
     /// request.
-    pub fn reconcile(
-        &self,
-        snapshot: &CompiledRuntimeConfig,
-        upstream_defaults: &UpstreamConfig,
-    ) -> Result<(), UpstreamClientError> {
-        validate_snapshot_upstream_policies(snapshot, upstream_defaults)
+    pub fn reconcile(&self, snapshot: &CompiledRuntimeConfig) -> Result<(), UpstreamClientError> {
+        validate_snapshot_upstream_policies(snapshot)
             .map_err(|_| UpstreamClientError::InvalidPolicy)?;
+        let upstream_defaults = snapshot.system_settings().upstream_timeouts();
         let active_keys = snapshot
             .channels()
             .map(|channel| {
                 UpstreamClientKey::resolve(
                     channel.upstream_policy(),
-                    ResolvedUpstreamPolicy::resolve(upstream_defaults, channel.upstream_policy()),
+                    ResolvedUpstreamPolicy::resolve(&upstream_defaults, channel.upstream_policy()),
                 )
             })
             .collect::<HashSet<_>>();
@@ -477,19 +478,22 @@ mod tests {
 
     use super::*;
     use crate::{
-        domain::{ApiFormat, ChannelTimeoutPolicy, CompiledChannelUpstreamPolicy, CompiledProxy},
+        domain::{
+            ApiFormat, ChannelTimeoutPolicy, CompiledChannelUpstreamPolicy, CompiledProxy,
+            PassiveHealthSettings, SystemRuntimeSettings, UpstreamTimeoutDefaults,
+        },
         persistence::{ChannelGroupRecord, ChannelRecord, ControlPlaneRecords, ProxyRecord},
-        runtime_config::compile_control_plane,
+        runtime_config::compile_control_plane_with_system_settings,
         transforms::TransformPlan,
     };
     use uuid::Uuid;
 
-    fn upstream() -> UpstreamConfig {
-        UpstreamConfig {
-            connect_timeout_seconds: 2,
-            response_header_timeout_seconds: 5,
-            stream_idle_timeout_seconds: 7,
-        }
+    fn upstream() -> UpstreamTimeoutDefaults {
+        UpstreamTimeoutDefaults::new(
+            Duration::from_secs(2),
+            Duration::from_secs(5),
+            Duration::from_secs(7),
+        )
     }
 
     fn policy(
@@ -537,49 +541,52 @@ mod tests {
         let group_id = Uuid::from_u128(1);
         let channel_id = Uuid::from_u128(2);
         let proxy_id = Uuid::from_u128(3);
-        compile_control_plane(ControlPlaneRecords {
-            api_keys: vec![],
-            groups: vec![ChannelGroupRecord {
-                id: group_id,
-                name: "group".into(),
-                api_format: "open_ai_chat_completions".into(),
-                priority: 0,
-                selection_strategy: "weighted_random".into(),
-                enabled: true,
-            }],
-            channels: vec![ChannelRecord {
-                id: channel_id,
-                channel_group_id: group_id,
-                api_format: "open_ai_chat_completions".into(),
-                name: "channel".into(),
-                base_url: "https://upstream.test".into(),
-                enabled: true,
-                auto_disabled: false,
-                weight: 1,
-                proxy_id: Some(proxy_id),
-                config_template_id: None,
-                override_document: serde_json::json!({}),
-                connect_timeout_ms,
-                response_header_timeout_ms,
-                stream_idle_timeout_ms: None,
-                upstream_auth_kind: "none".into(),
-                upstream_auth_header_name: None,
-                upstream_api_key: None,
-                available_models: vec!["upstream".into()],
-                health_check: serde_json::json!({}),
-            }],
-            model_rules: vec![],
-            proxies: vec![ProxyRecord {
-                id: proxy_id,
-                name: "egress".into(),
-                proxy_url: proxy_url.into(),
-                username: None,
-                password: None,
-                no_proxy_hosts: vec![],
-                enabled: true,
-            }],
-            templates: vec![],
-        })
+        compile_control_plane_with_system_settings(
+            ControlPlaneRecords {
+                api_keys: vec![],
+                groups: vec![ChannelGroupRecord {
+                    id: group_id,
+                    name: "group".into(),
+                    api_format: "open_ai_chat_completions".into(),
+                    priority: 0,
+                    selection_strategy: "weighted_random".into(),
+                    enabled: true,
+                }],
+                channels: vec![ChannelRecord {
+                    id: channel_id,
+                    channel_group_id: group_id,
+                    api_format: "open_ai_chat_completions".into(),
+                    name: "channel".into(),
+                    base_url: "https://upstream.test".into(),
+                    enabled: true,
+                    auto_disabled: false,
+                    weight: 1,
+                    proxy_id: Some(proxy_id),
+                    config_template_id: None,
+                    override_document: serde_json::json!({}),
+                    connect_timeout_ms,
+                    response_header_timeout_ms,
+                    stream_idle_timeout_ms: None,
+                    upstream_auth_kind: "none".into(),
+                    upstream_auth_header_name: None,
+                    upstream_api_key: None,
+                    available_models: vec!["upstream".into()],
+                    health_check: serde_json::json!({}),
+                }],
+                model_rules: vec![],
+                proxies: vec![ProxyRecord {
+                    id: proxy_id,
+                    name: "egress".into(),
+                    proxy_url: proxy_url.into(),
+                    username: None,
+                    password: None,
+                    no_proxy_hosts: vec![],
+                    enabled: true,
+                }],
+                templates: vec![],
+            },
+            SystemRuntimeSettings::new(upstream(), PassiveHealthSettings::default()),
+        )
         .unwrap()
     }
 
@@ -816,7 +823,7 @@ mod tests {
         );
         assert_ne!(initial_key, replacement_key);
 
-        registry.reconcile(&initial, &upstream()).unwrap();
+        registry.reconcile(&initial).unwrap();
         let old_snapshot_client = registry
             .client_for(
                 initial_policy,
@@ -824,7 +831,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(registry.len().unwrap(), 1);
-        registry.reconcile(&replacement, &upstream()).unwrap();
+        registry.reconcile(&replacement).unwrap();
         assert_eq!(registry.len().unwrap(), 0);
         assert!(
             old_snapshot_client
@@ -868,12 +875,12 @@ mod tests {
         let valid_channel = valid.channel(Uuid::from_u128(2)).unwrap();
         let valid_policy = valid_channel.upstream_policy();
 
-        validate_snapshot_upstream_policies(&valid, &upstream()).unwrap();
+        validate_snapshot_upstream_policies(&valid).unwrap();
         assert_eq!(
-            validate_snapshot_upstream_policies(&invalid, &upstream()),
+            validate_snapshot_upstream_policies(&invalid),
             Err(ResolvedUpstreamPolicyError::InvalidTimeoutOrdering)
         );
-        registry.reconcile(&valid, &upstream()).unwrap();
+        registry.reconcile(&valid).unwrap();
         registry
             .client_for(
                 valid_policy,
@@ -883,7 +890,7 @@ mod tests {
         assert_eq!(registry.len().unwrap(), 1);
 
         assert_eq!(
-            registry.reconcile(&invalid, &upstream()),
+            registry.reconcile(&invalid),
             Err(UpstreamClientError::InvalidPolicy)
         );
         assert_eq!(registry.len().unwrap(), 1);

@@ -23,6 +23,13 @@ use crate::domain::RequestLogEvent;
 
 pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
+/// Singleton row that supplies runtime forwarding defaults.
+pub const FORWARDING_SETTINGS_KEY: &str = "forwarding_policy";
+
+fn forwarding_settings_object_id() -> Uuid {
+    Uuid::from_u128(0x6ed3_d02b_bda1_4d85_85b9_3f9d_7362_5001)
+}
+
 #[derive(Debug, Default)]
 pub struct ControlPlaneRecords {
     pub api_keys: Vec<ApiKeyRecord>,
@@ -31,6 +38,50 @@ pub struct ControlPlaneRecords {
     pub channels: Vec<ChannelRecord>,
     pub proxies: Vec<ProxyRecord>,
     pub templates: Vec<ConfigTemplateRecord>,
+}
+
+/// Coherent database input for one complete runtime snapshot.
+#[derive(Debug)]
+pub struct RuntimeConfigRecords {
+    pub control_plane: ControlPlaneRecords,
+    pub system_settings: SystemSettingsRecord,
+}
+
+#[derive(Debug, FromRow)]
+pub struct SystemSettingsRecord {
+    pub setting_key: String,
+    pub value: Value,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// JSON value persisted under [`FORWARDING_SETTINGS_KEY`].
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SystemSettingsInput {
+    pub upstream: SystemUpstreamSettingsInput,
+    pub passive_health: SystemPassiveHealthSettingsInput,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SystemUpstreamSettingsInput {
+    pub connect_timeout_seconds: u64,
+    pub response_header_timeout_seconds: u64,
+    pub stream_idle_timeout_seconds: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SystemPassiveHealthSettingsInput {
+    pub connection_failure_threshold: u32,
+    pub cooldown_seconds: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct SystemSettingsView {
+    #[serde(flatten)]
+    pub settings: SystemSettingsInput,
+    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(FromRow)]
@@ -637,6 +688,10 @@ pub enum ControlPlaneMutation {
     UpdateConfigTemplate {
         id: Uuid,
         input: ConfigTemplateInput,
+        expected_updated_at: DateTime<Utc>,
+    },
+    UpdateSystemSettings {
+        input: SystemSettingsInput,
         expected_updated_at: DateTime<Utc>,
     },
 }
@@ -2239,6 +2294,42 @@ impl ControlPlaneRepository {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
     }
+
+    /// Inserts the first database-backed forwarding policy from bootstrap TOML.
+    ///
+    /// Existing rows are never overwritten, so all later runtime reads use the
+    /// database as the sole source of truth.
+    pub async fn ensure_system_settings(
+        &self,
+        input: SystemSettingsInput,
+    ) -> Result<(), RepositoryError> {
+        validate_system_settings_input(&input)?;
+        let value = serde_json::to_value(&input).expect("system settings serialize");
+        let mut transaction = self.begin_serializable().await?;
+        let inserted = sqlx::query_scalar::<_, DateTime<Utc>>(
+            "INSERT INTO system_settings (setting_key,value) VALUES ($1,$2) \
+             ON CONFLICT (setting_key) DO NOTHING RETURNING updated_at",
+        )
+        .bind(FORWARDING_SETTINGS_KEY)
+        .bind(&value)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        if inserted.is_some() {
+            sqlx::query(
+                "INSERT INTO audit_logs \
+                 (id,actor_type,action,object_type,object_id,before_redacted,after_redacted) \
+                 VALUES ($1,'system','initialize','system_settings',$2,'{}',$3)",
+            )
+            .bind(Uuid::new_v4())
+            .bind(forwarding_settings_object_id())
+            .bind(system_settings_audit_value(&value))
+            .execute(&mut *transaction)
+            .await?;
+        }
+        transaction.commit().await?;
+        Ok(())
+    }
+
     pub async fn load(&self) -> Result<ControlPlaneRecords, RepositoryError> {
         let mut transaction = self.pool.begin().await?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
@@ -2248,6 +2339,50 @@ impl ControlPlaneRepository {
         transaction.commit().await?;
         Ok(records)
     }
+
+    /// Loads every record needed to build one coherent data-plane snapshot.
+    pub async fn load_runtime(&self) -> Result<RuntimeConfigRecords, RepositoryError> {
+        let mut transaction = self.pool.begin().await?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            .execute(&mut *transaction)
+            .await?;
+        let records = Self::load_runtime_transaction(&mut transaction).await?;
+        transaction.commit().await?;
+        Ok(records)
+    }
+
+    pub async fn load_runtime_transaction(
+        transaction: &mut Transaction<'_, Postgres>,
+    ) -> Result<RuntimeConfigRecords, RepositoryError> {
+        Ok(RuntimeConfigRecords {
+            control_plane: Self::load_transaction(transaction).await?,
+            system_settings: Self::load_system_settings_transaction(transaction).await?,
+        })
+    }
+
+    async fn load_system_settings_transaction(
+        transaction: &mut Transaction<'_, Postgres>,
+    ) -> Result<SystemSettingsRecord, RepositoryError> {
+        sqlx::query_as::<_, SystemSettingsRecord>(
+            "SELECT setting_key,value,updated_at FROM system_settings WHERE setting_key=$1",
+        )
+        .bind(FORWARDING_SETTINGS_KEY)
+        .fetch_optional(&mut **transaction)
+        .await?
+        .ok_or(RepositoryError::NotFound)
+    }
+
+    pub async fn system_settings(&self) -> Result<SystemSettingsView, RepositoryError> {
+        let record = sqlx::query_as::<_, SystemSettingsRecord>(
+            "SELECT setting_key,value,updated_at FROM system_settings WHERE setting_key=$1",
+        )
+        .bind(FORWARDING_SETTINGS_KEY)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or(RepositoryError::NotFound)?;
+        system_settings_view(record)
+    }
+
     pub async fn load_transaction(
         transaction: &mut Transaction<'_, Postgres>,
     ) -> Result<ControlPlaneRecords, RepositoryError> {
@@ -2754,6 +2889,10 @@ impl ControlPlaneRepository {
                 config_template_insert(transaction, id, input, false, Some(expected_updated_at))
                     .await
             }
+            ControlPlaneMutation::UpdateSystemSettings {
+                input,
+                expected_updated_at,
+            } => system_settings_update(transaction, input, expected_updated_at).await,
         }
     }
 
@@ -3695,6 +3834,86 @@ async fn config_template_insert(
         updated_at,
         correlation_id: None,
     })
+}
+
+async fn system_settings_update(
+    transaction: &mut Transaction<'_, Postgres>,
+    input: SystemSettingsInput,
+    expected_updated_at: DateTime<Utc>,
+) -> Result<MutationResult, RepositoryError> {
+    validate_system_settings_input(&input)?;
+    let value = serde_json::to_value(&input).expect("system settings serialize");
+    let before = system_settings_audit(transaction).await?;
+    let updated_at = sqlx::query_scalar(
+        "UPDATE system_settings SET value=$2 \
+         WHERE setting_key=$1 AND updated_at=$3 RETURNING updated_at",
+    )
+    .bind(FORWARDING_SETTINGS_KEY)
+    .bind(&value)
+    .bind(expected_updated_at)
+    .fetch_optional(&mut **transaction)
+    .await?
+    .ok_or(RepositoryError::Conflict)?;
+    Ok(MutationResult {
+        id: forwarding_settings_object_id(),
+        object_type: "system_settings",
+        action: "update",
+        before_redacted: before,
+        after_redacted: system_settings_audit(transaction).await?,
+        created_secret: None,
+        reason: None,
+        updated_at,
+        correlation_id: None,
+    })
+}
+
+async fn system_settings_audit(
+    transaction: &mut Transaction<'_, Postgres>,
+) -> Result<Value, RepositoryError> {
+    let value = sqlx::query_scalar::<_, Value>(
+        "SELECT value FROM system_settings WHERE setting_key=$1 FOR UPDATE",
+    )
+    .bind(FORWARDING_SETTINGS_KEY)
+    .fetch_optional(&mut **transaction)
+    .await?
+    .ok_or(RepositoryError::NotFound)?;
+    Ok(system_settings_audit_value(&value))
+}
+
+fn system_settings_audit_value(value: &Value) -> Value {
+    json!({
+        "setting_key": FORWARDING_SETTINGS_KEY,
+        "value": value,
+    })
+}
+
+fn system_settings_view(
+    record: SystemSettingsRecord,
+) -> Result<SystemSettingsView, RepositoryError> {
+    if record.setting_key != FORWARDING_SETTINGS_KEY {
+        return Err(RepositoryError::Validation);
+    }
+    let settings: SystemSettingsInput =
+        serde_json::from_value(record.value).map_err(|_| RepositoryError::Validation)?;
+    validate_system_settings_input(&settings)?;
+    Ok(SystemSettingsView {
+        settings,
+        updated_at: record.updated_at,
+    })
+}
+
+fn validate_system_settings_input(input: &SystemSettingsInput) -> Result<(), RepositoryError> {
+    let upstream = &input.upstream;
+    let passive_health = &input.passive_health;
+    if upstream.connect_timeout_seconds == 0
+        || upstream.response_header_timeout_seconds <= upstream.connect_timeout_seconds
+        || upstream.stream_idle_timeout_seconds == 0
+        || passive_health.connection_failure_threshold == 0
+        || passive_health.cooldown_seconds == 0
+    {
+        return Err(RepositoryError::Validation);
+    }
+    Ok(())
 }
 
 #[derive(Debug, Error)]

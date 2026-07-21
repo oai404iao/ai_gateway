@@ -22,6 +22,7 @@ import {
   OWN_API_KEY,
   PROXY,
   REVOKED_SESSION,
+  SYSTEM_SETTINGS,
 } from "@/test/fixtures";
 import { clearSession, setSession } from "@/api/session-store";
 
@@ -130,6 +131,17 @@ export const handlers = [
     HttpResponse.json(COST_STATISTICS_REPORT),
   ),
   http.get("/console/v1/audit-logs", () => HttpResponse.json([])),
+  http.get("/console/v1/system/settings", () =>
+    HttpResponse.json(SYSTEM_SETTINGS, {
+      headers: { ETag: `"${SYSTEM_SETTINGS.updated_at}"` },
+    }),
+  ),
+  http.put("/console/v1/system/settings", () =>
+    HttpResponse.json({
+      id: "00000000-0000-0000-0000-0000000000f1",
+      correlation_id: "11111111-0000-0000-0000-000000000000",
+    }),
+  ),
 
   // Anything not mocked falls through to the real network (fails loudly),
   // which keeps tests honest about coverage.

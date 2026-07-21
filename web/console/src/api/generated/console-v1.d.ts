@@ -658,6 +658,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/system/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getSystemSettings"];
+        put: operations["updateSystemSettings"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/system/reload": {
         parameters: {
             query?: never;
@@ -760,6 +776,26 @@ export interface components {
         ReloadResponse: {
             /** Format: uuid */
             correlation_id: string;
+        };
+        SystemUpstreamSettings: {
+            /** Format: int64 */
+            connect_timeout_seconds: number;
+            /** Format: int64 */
+            response_header_timeout_seconds: number;
+            /** Format: int64 */
+            stream_idle_timeout_seconds: number;
+        };
+        SystemPassiveHealthSettings: {
+            connection_failure_threshold: number;
+            /** Format: int64 */
+            cooldown_seconds: number;
+        };
+        SystemSettingsInput: {
+            upstream: components["schemas"]["SystemUpstreamSettings"];
+            passive_health: components["schemas"]["SystemPassiveHealthSettings"];
+        };
+        SystemSettings: components["schemas"]["SystemSettingsInput"] & {
+            updated_at: components["schemas"]["DateTime"];
         };
         ApiKeyView: {
             /** Format: uuid */
@@ -3083,6 +3119,60 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+        };
+    };
+    getSystemSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Database-backed forwarding and passive-health defaults. */
+            200: {
+                headers: {
+                    ETag: components["headers"]["ETag"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SystemSettings"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    updateSystemSettings: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description ETag from the preceding GET; stale values yield `409`. */
+                "If-Match": components["parameters"]["IfMatch"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SystemSettingsInput"];
+            };
+        };
+        responses: {
+            /** @description Saved and published to future requests. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MutationResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
         };
     };
     reload: {

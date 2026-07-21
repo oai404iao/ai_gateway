@@ -30,6 +30,8 @@ import type {
   ProxyInput,
   ProxyView,
   ReloadResponse,
+  SystemSettings,
+  SystemSettingsInput,
   UserInput,
 } from "@/api/types";
 
@@ -265,6 +267,23 @@ export function useAuditLogs(limit: number) {
 export function useReload() {
   return useMutation({
     mutationFn: () => apiPost<ReloadResponse>("/system/reload"),
+  });
+}
+const SYSTEM_SETTINGS_KEY = ["console", "system-settings"] as const;
+export function useSystemSettings() {
+  return useQuery({
+    queryKey: SYSTEM_SETTINGS_KEY,
+    queryFn: () => apiGetDetail<SystemSettings>("/system/settings"),
+  });
+}
+export function useUpdateSystemSettings() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ input, ifMatch }: { input: SystemSettingsInput; ifMatch: string }) =>
+      apiPut<MutationResponse>("/system/settings", input, ifMatch),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: SYSTEM_SETTINGS_KEY });
+    },
   });
 }
 

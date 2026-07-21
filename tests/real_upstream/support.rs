@@ -6,12 +6,15 @@ use std::{env, sync::Arc, time::Duration};
 
 use ai_gateway::{
     application::{ProxyService, RecordingRequestLogSink},
-    domain::{ApiFormat, RequestLogEvent, RequestLogOutcome, RequestUsage},
+    domain::{
+        ApiFormat, PassiveHealthSettings, RequestLogEvent, RequestLogOutcome, RequestUsage,
+        SystemRuntimeSettings, UpstreamTimeoutDefaults,
+    },
     http,
     persistence::{
         ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ControlPlaneRecords, ModelRuleRecord,
     },
-    runtime_config::{RuntimeConfig, UpstreamConfig, compile_control_plane},
+    runtime_config::{RuntimeConfig, compile_control_plane_with_system_settings},
 };
 use axum::{
     body::{Body, Bytes},
@@ -202,15 +205,19 @@ fn gateway(settings: &SmokeSettings, format: SmokeFormat, upstream_model: &str) 
         proxies: vec![],
         templates: vec![],
     };
+    let upstream = UpstreamTimeoutDefaults::new(
+        Duration::from_secs(settings.timeout.as_secs().saturating_sub(1).clamp(1, 10)),
+        settings.timeout,
+        settings.timeout,
+    );
     let runtime = Arc::new(RuntimeConfig::new(
-        compile_control_plane(records).expect("the smoke-test route must compile"),
+        compile_control_plane_with_system_settings(
+            records,
+            SystemRuntimeSettings::new(upstream, PassiveHealthSettings::default()),
+        )
+        .expect("the smoke-test route must compile"),
     ));
-    let upstream = UpstreamConfig {
-        connect_timeout_seconds: settings.timeout.as_secs().saturating_sub(1).clamp(1, 10),
-        response_header_timeout_seconds: settings.timeout.as_secs(),
-        stream_idle_timeout_seconds: settings.timeout.as_secs(),
-    };
-    let proxy = ProxyService::with_log_sink(runtime, 1_048_576, &upstream, Arc::new(logs.clone()))
+    let proxy = ProxyService::with_log_sink(runtime, 1_048_576, Arc::new(logs.clone()))
         .expect("the smoke-test upstream client must build");
     SmokeGateway {
         app: http::router(proxy),

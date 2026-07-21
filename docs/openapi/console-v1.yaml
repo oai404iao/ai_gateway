@@ -1214,6 +1214,43 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
+  /system/settings:
+    get:
+      tags: [System]
+      operationId: getSystemSettings
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Database-backed forwarding and passive-health defaults.
+          headers:
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SystemSettings" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    put:
+      tags: [System]
+      operationId: updateSystemSettings
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SystemSettingsInput" }
+      responses:
+        "200":
+          description: Saved and published to future requests.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
   /system/reload:
     post:
       tags: [System]
@@ -1482,6 +1519,37 @@ components:
       required: [correlation_id]
       properties:
         correlation_id: { type: string, format: uuid }
+
+    SystemUpstreamSettings:
+      type: object
+      required:
+        [connect_timeout_seconds, response_header_timeout_seconds, stream_idle_timeout_seconds]
+      properties:
+        connect_timeout_seconds: { type: integer, format: int64, minimum: 1 }
+        response_header_timeout_seconds: { type: integer, format: int64, minimum: 1 }
+        stream_idle_timeout_seconds: { type: integer, format: int64, minimum: 1 }
+
+    SystemPassiveHealthSettings:
+      type: object
+      required: [connection_failure_threshold, cooldown_seconds]
+      properties:
+        connection_failure_threshold: { type: integer, minimum: 1 }
+        cooldown_seconds: { type: integer, format: int64, minimum: 1 }
+
+    SystemSettingsInput:
+      type: object
+      required: [upstream, passive_health]
+      properties:
+        upstream: { $ref: "#/components/schemas/SystemUpstreamSettings" }
+        passive_health: { $ref: "#/components/schemas/SystemPassiveHealthSettings" }
+
+    SystemSettings:
+      allOf:
+        - $ref: "#/components/schemas/SystemSettingsInput"
+        - type: object
+          required: [updated_at]
+          properties:
+            updated_at: { $ref: "#/components/schemas/DateTime" }
 
     ApiKeyView:
       type: object

@@ -1,0 +1,75 @@
+import { describe, expect, it } from "vitest";
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { http, HttpResponse } from "msw";
+import { BrowserRouter } from "react-router";
+import { AppProviders } from "@/app/providers";
+import { AppRouter } from "@/app/router";
+import { server, seedAuthenticatedSession } from "@/test/msw";
+
+function renderApp() {
+  window.history.replaceState({}, "", "/admin/system");
+  render(
+    <AppProviders>
+      <BrowserRouter>
+        <AppRouter />
+      </BrowserRouter>
+    </AppProviders>,
+  );
+}
+
+describe("SystemPage", () => {
+  it("persists database-backed forwarding settings with its ETag", async () => {
+    seedAuthenticatedSession();
+    let received: unknown;
+    let ifMatch: string | null = null;
+    server.use(
+      http.put("/console/v1/system/settings", async ({ request }) => {
+        received = await request.json();
+        ifMatch = request.headers.get("if-match");
+        return HttpResponse.json({
+          id: "00000000-0000-0000-0000-0000000000f1",
+          correlation_id: "11111111-0000-0000-0000-000000000000",
+        });
+      }),
+    );
+    const user = userEvent.setup();
+    renderApp();
+
+    const connectTimeout = await screen.findByLabelText("Connect timeout (seconds)");
+    await user.clear(connectTimeout);
+    await user.type(connectTimeout, "12");
+    await user.click(screen.getByRole("button", { name: /save system settings/i }));
+
+    expect(received).toEqual({
+      upstream: {
+        connect_timeout_seconds: 12,
+        response_header_timeout_seconds: 30,
+        stream_idle_timeout_seconds: 90,
+      },
+      passive_health: {
+        connection_failure_threshold: 3,
+        cooldown_seconds: 30,
+      },
+    });
+    expect(ifMatch).toBe('"2026-01-02T00:00:00.000Z"');
+    expect(await screen.findByText("System settings saved and applied.")).toBeInTheDocument();
+  });
+
+  it("requires the response-header timeout to exceed the connect timeout", async () => {
+    seedAuthenticatedSession();
+    const user = userEvent.setup();
+    renderApp();
+
+    const responseHeaderTimeout = await screen.findByLabelText(
+      "Response header timeout (seconds)",
+    );
+    await user.clear(responseHeaderTimeout);
+    await user.type(responseHeaderTimeout, "10");
+    await user.click(screen.getByRole("button", { name: /save system settings/i }));
+
+    expect(
+      await screen.findByText("Response header timeout must exceed connect timeout."),
+    ).toBeInTheDocument();
+  });
+});

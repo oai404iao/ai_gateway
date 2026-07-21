@@ -35,7 +35,7 @@ use crate::{
         RequestPriceSnapshot, RequestUsage, UpstreamAuth,
     },
     routing::{ChannelLease, RoutingRuntime, SelectionResult},
-    runtime_config::{RuntimeConfig, UpstreamConfig},
+    runtime_config::RuntimeConfig,
     transforms::{
         SseEventPatchPlan, SseTransformer, apply_header_plan, apply_json_patch_plan,
         apply_response_header_plan, parse_connection_header_names,
@@ -51,7 +51,6 @@ use super::usage::UsageCollector;
 pub struct ProxyService {
     runtime: Arc<RuntimeConfig>,
     upstream_clients: Arc<UpstreamClientRegistry>,
-    upstream_defaults: UpstreamConfig,
     max_request_body_bytes: usize,
     request_log_sink: Arc<dyn RequestLogSink>,
     routing: RoutingRuntime,
@@ -62,12 +61,10 @@ impl ProxyService {
     pub fn new(
         runtime: Arc<RuntimeConfig>,
         max_request_body_bytes: usize,
-        upstream: &UpstreamConfig,
     ) -> Result<Self, reqwest::Error> {
         Self::with_log_sink(
             runtime,
             max_request_body_bytes,
-            upstream,
             Arc::new(NoopRequestLogSink),
         )
     }
@@ -75,13 +72,11 @@ impl ProxyService {
     pub fn with_log_sink(
         runtime: Arc<RuntimeConfig>,
         max_request_body_bytes: usize,
-        upstream: &UpstreamConfig,
         request_log_sink: Arc<dyn RequestLogSink>,
     ) -> Result<Self, reqwest::Error> {
         Self::with_log_sink_and_routing(
             runtime,
             max_request_body_bytes,
-            upstream,
             request_log_sink,
             RoutingRuntime::new(crate::routing::PassiveHealthPolicy::default()),
         )
@@ -90,14 +85,12 @@ impl ProxyService {
     pub fn with_log_sink_and_routing(
         runtime: Arc<RuntimeConfig>,
         max_request_body_bytes: usize,
-        upstream: &UpstreamConfig,
         request_log_sink: Arc<dyn RequestLogSink>,
         routing: RoutingRuntime,
     ) -> Result<Self, reqwest::Error> {
         Self::with_dependencies(
             runtime,
             max_request_body_bytes,
-            upstream,
             request_log_sink,
             routing,
             AdmissionRuntime::new(),
@@ -107,7 +100,6 @@ impl ProxyService {
     pub fn with_dependencies(
         runtime: Arc<RuntimeConfig>,
         max_request_body_bytes: usize,
-        upstream: &UpstreamConfig,
         request_log_sink: Arc<dyn RequestLogSink>,
         routing: RoutingRuntime,
         admission: AdmissionRuntime,
@@ -115,7 +107,6 @@ impl ProxyService {
         Self::with_dependencies_and_registry(
             runtime,
             max_request_body_bytes,
-            upstream,
             Arc::new(UpstreamClientRegistry::new()),
             request_log_sink,
             routing,
@@ -127,7 +118,6 @@ impl ProxyService {
     pub fn with_dependencies_and_registry(
         runtime: Arc<RuntimeConfig>,
         max_request_body_bytes: usize,
-        upstream: &UpstreamConfig,
         upstream_clients: Arc<UpstreamClientRegistry>,
         request_log_sink: Arc<dyn RequestLogSink>,
         routing: RoutingRuntime,
@@ -136,7 +126,6 @@ impl ProxyService {
         Ok(Self {
             runtime,
             upstream_clients,
-            upstream_defaults: upstream.clone(),
             max_request_body_bytes,
             request_log_sink,
             routing,
@@ -287,7 +276,7 @@ impl ProxyService {
             return Err(error);
         }
         let upstream_policy = match ResolvedUpstreamPolicy::try_resolve(
-            &self.upstream_defaults,
+            &snapshot.system_settings().upstream_timeouts(),
             route.channel.upstream_policy(),
         ) {
             Ok(policy) => policy,

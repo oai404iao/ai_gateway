@@ -20,11 +20,12 @@ use ai_gateway::{
     models_dev::ModelsDevClient,
     persistence::{
         AuthRepository, ControlPlaneRepository, MIGRATOR, RequestLogInsertOutcome,
-        RequestLogRepository, RequestLogSettlementOutcome,
+        RequestLogRepository, RequestLogSettlementOutcome, SystemPassiveHealthSettingsInput,
+        SystemSettingsInput, SystemUpstreamSettingsInput,
     },
     routing::{self, PassiveHealthPolicy, RoutingRuntime},
     runtime_config::{
-        AuthConfig, ModelsSyncConfig, RuntimeConfig, UpstreamConfig, compile_control_plane,
+        AuthConfig, ModelsSyncConfig, RuntimeConfig, compile_control_plane, compile_runtime_config,
     },
     workers::{ControlPlaneReloader, RequestLogWorker},
 };
@@ -46,6 +47,20 @@ use tower::ServiceExt;
 use uuid::Uuid;
 
 const DEFAULT_ADMIN_URL: &str = "postgres://ai_gateway:ai_gateway@127.0.0.1:5432/postgres";
+
+fn system_settings() -> SystemSettingsInput {
+    SystemSettingsInput {
+        upstream: SystemUpstreamSettingsInput {
+            connect_timeout_seconds: 1,
+            response_header_timeout_seconds: 2,
+            stream_idle_timeout_seconds: 3,
+        },
+        passive_health: SystemPassiveHealthSettingsInput {
+            connection_failure_threshold: 3,
+            cooldown_seconds: 30,
+        },
+    }
+}
 
 struct TestDatabase {
     pool: PgPool,
@@ -304,6 +319,10 @@ impl TestDatabase {
             .run(&pool)
             .await
             .expect("migrations must apply to the temporary database");
+        ControlPlaneRepository::new(pool.clone())
+            .ensure_system_settings(system_settings())
+            .await
+            .expect("system settings must initialize");
 
         Self { pool, admin, name }
     }
@@ -771,9 +790,9 @@ async fn settled_usage_updates_the_live_soft_quota_before_snapshot_reload() {
         .unwrap();
 
     let runtime = Arc::new(RuntimeConfig::new(
-        compile_control_plane(
+        compile_runtime_config(
             ControlPlaneRepository::new(database.pool.clone())
-                .load()
+                .load_runtime()
                 .await
                 .unwrap(),
         )
@@ -788,7 +807,6 @@ async fn settled_usage_updates_the_live_soft_quota_before_snapshot_reload() {
     let proxy = ProxyService::with_dependencies(
         runtime,
         1_048_576,
-        &upstream_defaults(),
         Arc::new(sink),
         RoutingRuntime::new(PassiveHealthPolicy::default()),
         admission,
@@ -872,14 +890,6 @@ fn test_auth_config() -> AuthConfig {
     }
 }
 
-fn upstream_defaults() -> UpstreamConfig {
-    UpstreamConfig {
-        connect_timeout_seconds: 1,
-        response_header_timeout_seconds: 2,
-        stream_idle_timeout_seconds: 3,
-    }
-}
-
 async fn admin_app(pool: PgPool, actor: Uuid) -> (ConsoleTestApp, Arc<RuntimeConfig>) {
     admin_app_with_models_dev(
         pool,
@@ -896,13 +906,12 @@ async fn admin_app_with_models_dev(
 ) -> (ConsoleTestApp, Arc<RuntimeConfig>) {
     let repository = ControlPlaneRepository::new(pool.clone());
     let runtime = Arc::new(RuntimeConfig::new(
-        compile_control_plane(repository.load().await.unwrap()).unwrap(),
+        compile_runtime_config(repository.load_runtime().await.unwrap()).unwrap(),
     ));
     let coordinator = ControlPlaneCoordinator::new(
         repository,
         Arc::clone(&runtime),
         RoutingRuntime::new(PassiveHealthPolicy::default()),
-        upstream_defaults(),
     );
     let model_sync = ModelSyncService::new(coordinator.clone(), models_dev, 100);
     let auth = ConsoleAuthService::from_pem(
@@ -2632,16 +2641,7 @@ async fn migrated_soft_quota_allows_over_limit_usage_and_rejects_the_seeded_key(
             .unwrap()
             .quota_exhausted()
     );
-    let proxy = ProxyService::new(
-        Arc::new(RuntimeConfig::new(snapshot)),
-        1_048_576,
-        &ai_gateway::runtime_config::UpstreamConfig {
-            connect_timeout_seconds: 1,
-            response_header_timeout_seconds: 2,
-            stream_idle_timeout_seconds: 1,
-        },
-    )
-    .unwrap();
+    let proxy = ProxyService::new(Arc::new(RuntimeConfig::new(snapshot)), 1_048_576).unwrap();
     let response = ai_gateway::http::router(proxy)
         .oneshot(
             axum::http::Request::builder()
@@ -2738,9 +2738,9 @@ async fn reloader_replaces_atomically_retains_old_arcs_and_rolls_back_failures()
     let seed = seed(&database.pool).await;
     let repository = ControlPlaneRepository::new(database.pool.clone());
     let runtime = Arc::new(RuntimeConfig::new(
-        compile_control_plane(repository.load().await.unwrap()).unwrap(),
+        compile_runtime_config(repository.load_runtime().await.unwrap()).unwrap(),
     ));
-    let reloader = ControlPlaneReloader::new(repository, Arc::clone(&runtime), upstream_defaults());
+    let reloader = ControlPlaneReloader::new(repository, Arc::clone(&runtime));
     let old = runtime.snapshot();
     sqlx::query(
         "UPDATE channels SET available_models = ARRAY['upstream-v2']::text[] WHERE id = $1",
@@ -2792,13 +2792,12 @@ async fn invalid_effective_upstream_policy_preserves_reload_manual_reload_and_sn
     let seed = seed(&database.pool).await;
     let repository = ControlPlaneRepository::new(database.pool.clone());
     let runtime = Arc::new(RuntimeConfig::new(
-        compile_control_plane(repository.load().await.unwrap()).unwrap(),
+        compile_runtime_config(repository.load_runtime().await.unwrap()).unwrap(),
     ));
     let coordinator = ControlPlaneCoordinator::new(
         repository,
         Arc::clone(&runtime),
         RoutingRuntime::new(PassiveHealthPolicy::default()),
-        upstream_defaults(),
     );
     let published = runtime.snapshot();
     let audits_before: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_logs")
@@ -2839,9 +2838,9 @@ async fn suspending_a_user_publishes_a_snapshot_that_revokes_their_keys() {
     let seed = seed(&database.pool).await;
     let repository = ControlPlaneRepository::new(database.pool.clone());
     let runtime = Arc::new(RuntimeConfig::new(
-        compile_control_plane(repository.load().await.unwrap()).unwrap(),
+        compile_runtime_config(repository.load_runtime().await.unwrap()).unwrap(),
     ));
-    let reloader = ControlPlaneReloader::new(repository, Arc::clone(&runtime), upstream_defaults());
+    let reloader = ControlPlaneReloader::new(repository, Arc::clone(&runtime));
     let old = runtime.snapshot();
     sqlx::query("UPDATE users SET status = 'suspended' WHERE id = $1")
         .bind(seed.user)
@@ -3015,9 +3014,9 @@ async fn proxy_request_logs_reach_postgres_for_terminal_and_rejected_requests() 
         .unwrap();
 
     let runtime = Arc::new(RuntimeConfig::new(
-        compile_control_plane(
+        compile_runtime_config(
             ControlPlaneRepository::new(database.pool.clone())
-                .load()
+                .load_runtime()
                 .await
                 .unwrap(),
         )
@@ -3025,17 +3024,7 @@ async fn proxy_request_logs_reach_postgres_for_terminal_and_rejected_requests() 
     ));
     let (sink, worker): (QueueRequestLogSink, RequestLogWorker) =
         RequestLogWorker::start(RequestLogRepository::new(database.pool.clone()), 32);
-    let proxy = ProxyService::with_log_sink(
-        runtime,
-        1_048_576,
-        &ai_gateway::runtime_config::UpstreamConfig {
-            connect_timeout_seconds: 1,
-            response_header_timeout_seconds: 2,
-            stream_idle_timeout_seconds: 1,
-        },
-        Arc::new(sink),
-    )
-    .unwrap();
+    let proxy = ProxyService::with_log_sink(runtime, 1_048_576, Arc::new(sink)).unwrap();
     let gateway = start_server(ai_gateway::http::router(proxy)).await;
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(4))
@@ -3321,9 +3310,9 @@ async fn saturated_request_log_queue_does_not_delay_proxy_responses_and_drains_a
         .await
         .unwrap();
     let runtime = Arc::new(RuntimeConfig::new(
-        compile_control_plane(
+        compile_runtime_config(
             ControlPlaneRepository::new(database.pool.clone())
-                .load()
+                .load_runtime()
                 .await
                 .unwrap(),
         )
@@ -3333,17 +3322,7 @@ async fn saturated_request_log_queue_does_not_delay_proxy_responses_and_drains_a
         RequestLogWorker::start(RequestLogRepository::new(database.pool.clone()), 2);
     // Keeping this clone alive verifies shutdown closes acceptance before draining.
     let producer_clone = sink.clone();
-    let proxy = ProxyService::with_log_sink(
-        runtime,
-        1_048_576,
-        &ai_gateway::runtime_config::UpstreamConfig {
-            connect_timeout_seconds: 1,
-            response_header_timeout_seconds: 2,
-            stream_idle_timeout_seconds: 1,
-        },
-        Arc::new(sink),
-    )
-    .unwrap();
+    let proxy = ProxyService::with_log_sink(runtime, 1_048_576, Arc::new(sink)).unwrap();
     let gateway = start_server(ai_gateway::http::router(proxy)).await;
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(3))

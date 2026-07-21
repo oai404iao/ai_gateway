@@ -20,11 +20,12 @@ use ai_gateway::{
     },
     http::console::{self, ConsoleState},
     models_dev::ModelsDevClient,
-    persistence::{AuthRepository, ControlPlaneRepository, MIGRATOR, RequestLogRepository},
-    routing::{PassiveHealthPolicy, RoutingRuntime},
-    runtime_config::{
-        AuthConfig, ModelsSyncConfig, RuntimeConfig, UpstreamConfig, compile_control_plane,
+    persistence::{
+        AuthRepository, ControlPlaneRepository, MIGRATOR, RequestLogRepository,
+        SystemPassiveHealthSettingsInput, SystemSettingsInput, SystemUpstreamSettingsInput,
     },
+    routing::{PassiveHealthPolicy, RoutingRuntime},
+    runtime_config::{AuthConfig, ModelsSyncConfig, RuntimeConfig, compile_runtime_config},
 };
 use axum::{
     body::Body,
@@ -104,10 +105,25 @@ fn auth_config() -> AuthConfig {
     }
 }
 
+fn bootstrap_system_settings() -> SystemSettingsInput {
+    SystemSettingsInput {
+        upstream: SystemUpstreamSettingsInput {
+            connect_timeout_seconds: 1,
+            response_header_timeout_seconds: 2,
+            stream_idle_timeout_seconds: 3,
+        },
+        passive_health: SystemPassiveHealthSettingsInput {
+            connection_failure_threshold: 3,
+            cooldown_seconds: 30,
+        },
+    }
+}
+
 struct App {
     router: axum::Router,
     access_token: String,
     user_id: Uuid,
+    runtime: Arc<RuntimeConfig>,
 }
 
 async fn app(pool: PgPool) -> App {
@@ -128,18 +144,17 @@ async fn app(pool: PgPool) -> App {
     .unwrap();
 
     let repository = ControlPlaneRepository::new(pool.clone());
+    repository
+        .ensure_system_settings(bootstrap_system_settings())
+        .await
+        .unwrap();
     let runtime = Arc::new(RuntimeConfig::new(
-        compile_control_plane(repository.load().await.unwrap()).unwrap(),
+        compile_runtime_config(repository.load_runtime().await.unwrap()).unwrap(),
     ));
     let coordinator = ControlPlaneCoordinator::new(
         repository,
-        runtime,
+        Arc::clone(&runtime),
         RoutingRuntime::new(PassiveHealthPolicy::default()),
-        UpstreamConfig {
-            connect_timeout_seconds: 1,
-            response_header_timeout_seconds: 2,
-            stream_idle_timeout_seconds: 3,
-        },
     );
     let model_sync = ModelSyncService::new(
         coordinator.clone(),
@@ -174,7 +189,51 @@ async fn app(pool: PgPool) -> App {
         router,
         access_token: session.access_token,
         user_id,
+        runtime,
     }
+}
+
+#[tokio::test]
+async fn system_settings_bootstrap_initializes_once_without_overwriting_database_values() {
+    let database = TestDatabase::new().await;
+    let repository = ControlPlaneRepository::new(database.pool.clone());
+    let first = bootstrap_system_settings();
+    let replacement = SystemSettingsInput {
+        upstream: SystemUpstreamSettingsInput {
+            connect_timeout_seconds: 5,
+            response_header_timeout_seconds: 10,
+            stream_idle_timeout_seconds: 15,
+        },
+        passive_health: SystemPassiveHealthSettingsInput {
+            connection_failure_threshold: 6,
+            cooldown_seconds: 60,
+        },
+    };
+
+    repository
+        .ensure_system_settings(first.clone())
+        .await
+        .unwrap();
+    repository
+        .ensure_system_settings(replacement)
+        .await
+        .unwrap();
+
+    let stored = repository.system_settings().await.unwrap();
+    assert_eq!(stored.settings.upstream.connect_timeout_seconds, 1);
+    assert_eq!(
+        stored.settings.passive_health.connection_failure_threshold,
+        3
+    );
+    let initializations: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_logs \
+         WHERE actor_type='system' AND action='initialize' AND object_type='system_settings'",
+    )
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(initializations, 1);
+    database.cleanup().await;
 }
 
 #[tokio::test]
@@ -520,6 +579,82 @@ async fn etag_if_match_optimistic_concurrency_matches_spec() {
         conflict_body.contains("\"error\""),
         "conflict body is an error body"
     );
+    database.cleanup().await;
+}
+
+/// The singleton system-settings resource follows the same ETag convention as
+/// other mutable Console resources and publishes its database-backed policy.
+#[tokio::test]
+async fn system_settings_are_versioned_audited_and_updated_via_console() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+
+    let detail = request(
+        &app,
+        "GET",
+        "/console/v1/system/settings",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(detail.status(), StatusCode::OK);
+    let etag = detail
+        .headers()
+        .get(header::ETAG)
+        .expect("system settings include an ETag")
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let mut input = body_json(detail).await;
+    input["upstream"]["connect_timeout_seconds"] = serde_json::json!(2);
+    input["upstream"]["response_header_timeout_seconds"] = serde_json::json!(5);
+    input["upstream"]["stream_idle_timeout_seconds"] = serde_json::json!(8);
+    input["passive_health"]["connection_failure_threshold"] = serde_json::json!(4);
+    input["passive_health"]["cooldown_seconds"] = serde_json::json!(45);
+    input.as_object_mut().unwrap().remove("updated_at");
+
+    let updated = request(
+        &app,
+        "PUT",
+        "/console/v1/system/settings",
+        input.clone(),
+        &[("if-match", &etag)],
+    )
+    .await;
+    assert_eq!(updated.status(), StatusCode::OK);
+    assert!(body_json(updated).await["correlation_id"].is_string());
+
+    let stored: serde_json::Value = sqlx::query_scalar(
+        "SELECT value FROM system_settings WHERE setting_key='forwarding_policy'",
+    )
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(stored, input);
+    let published = app.runtime.snapshot().system_settings();
+    assert_eq!(
+        published.upstream_timeouts().connect(),
+        std::time::Duration::from_secs(2)
+    );
+    assert_eq!(published.passive_health().connection_failure_threshold(), 4);
+    let audit: serde_json::Value = sqlx::query_scalar(
+        "SELECT after_redacted FROM audit_logs \
+         WHERE object_type='system_settings' ORDER BY occurred_at DESC LIMIT 1",
+    )
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(audit["value"], input);
+
+    let conflict = request(
+        &app,
+        "PUT",
+        "/console/v1/system/settings",
+        input,
+        &[("if-match", &etag)],
+    )
+    .await;
+    assert_eq!(conflict.status(), StatusCode::CONFLICT);
     database.cleanup().await;
 }
 

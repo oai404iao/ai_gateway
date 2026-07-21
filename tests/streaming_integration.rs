@@ -8,12 +8,13 @@ use std::{
 
 use ai_gateway::{
     application::{ProxyService, RecordingRequestLogSink},
+    domain::{PassiveHealthSettings, SystemRuntimeSettings, UpstreamTimeoutDefaults},
     http,
     persistence::{
         ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ConfigTemplateRecord, ControlPlaneRecords,
         ModelRuleRecord,
     },
-    runtime_config::{RuntimeConfig, UpstreamConfig, compile_control_plane},
+    runtime_config::{RuntimeConfig, UpstreamConfig, compile_control_plane_with_system_settings},
 };
 use axum::{
     Router,
@@ -180,9 +181,21 @@ fn proxy_service_with_network_policy(
             .unwrap_or_default(),
     };
     ProxyService::with_log_sink(
-        Arc::new(RuntimeConfig::new(compile_control_plane(records).unwrap())),
+        Arc::new(RuntimeConfig::new(
+            compile_control_plane_with_system_settings(
+                records,
+                SystemRuntimeSettings::new(
+                    UpstreamTimeoutDefaults::new(
+                        Duration::from_secs(upstream_config.connect_timeout_seconds),
+                        Duration::from_secs(upstream_config.response_header_timeout_seconds),
+                        Duration::from_secs(upstream_config.stream_idle_timeout_seconds),
+                    ),
+                    PassiveHealthSettings::default(),
+                ),
+            )
+            .unwrap(),
+        )),
         1_048_576,
-        &upstream_config,
         Arc::new(logs),
     )
     .unwrap()

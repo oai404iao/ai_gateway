@@ -250,7 +250,7 @@ CHECK (jsonb_typeof(health_check) = 'object');
 
 渠道实际可选条件为 `enabled AND NOT auto_disabled`，并在内存中再过滤被动连接健康、熔断和冷却状态。当前没有主动健康检查或自动禁用 worker，且非空 `health_check` 文档会在控制面编译时被拒绝。重启后被动健康运行状态回到未知，后续请求重新建立状态。
 
-每类超时按以下优先级取值：渠道显式列 → 启动 TOML `[upstream]` 默认值。只允许建连、响应头和流空闲超时，禁止总响应超时；模板与 `system_settings` 当前不参与超时解析。
+每类超时按以下优先级取值：渠道显式列 → `system_settings.forwarding_policy.upstream` 默认值。只允许建连、响应头和流空闲超时，禁止总响应超时。首次启动时，若该系统配置行不存在，二进制会用 TOML `[upstream]` 的值一次性初始化；后续 TOML 变更不会覆盖数据库。
 
 ### 4.7 `proxies`
 
@@ -342,10 +342,12 @@ CHECK (jsonb_typeof(health_check) = 'object');
 | 列 | 类型 | 说明 |
 | --- | --- | --- |
 | `setting_key` | `varchar(100)` | 主键。 |
-| `value` | `jsonb` | 非空、对象；当前只有数据库对象约束，尚无运行时固定键 schema。 |
+| `value` | `jsonb` | 非空对象；当前实现使用固定键 `forwarding_policy`。 |
 | `updated_at` | `timestamptz` | 非空。 |
 
-该表目前只是 schema 预留：二进制没有 `system_settings` 的读取、管理接口、固定键 Rust 类型或运行时生效逻辑。超时使用 TOML 与渠道字段；重试、主动健康检查、硬额度、注册和日志保留策略仍属于后续设计，不能通过向该表写入 JSON 启用。
+`forwarding_policy` 的值固定为 `upstream`（建连、响应头、流空闲默认超时，单位秒）和 `passive_health`（响应头前连接失败阈值、冷却秒数）两个对象。Console 管理员通过 `GET`/`PUT /console/v1/system/settings` 读取和更新，使用 `ETag`/`If-Match` 并写入审计日志。保存时会和整个控制面一起编译并立即发布新快照；已在处理中的请求保留取得快照时的超时，新的请求使用新值。首次启动只在此行缺失时从 TOML `[upstream]` / `[passive_health]` 初始化，之后数据库为唯一运行时来源。
+
+重试、主动健康检查、硬额度、注册和日志保留策略仍属于后续设计，不能通过向该表写入未定义 JSON 启用。
 
 ## 5. 约束边界与请求处理
 
@@ -366,9 +368,9 @@ CHECK (jsonb_typeof(health_check) = 'object');
 3. 每个启用规则至少展开为一个可选渠道；同一最低优先级候选组的选路策略一致。
 4. API Key 的 `allowed_group_ids` / `allowed_channel_ids` 均存在、无重复，并且 Key 的自动推导格式覆盖这些目标；`proxy` 权限用于代理，`/v1/models` 还需要 `models.read`。
 5. API Key 的渠道组/渠道范围与模型规则目标存在交集；`/v1/models` 只输出这些可达规则的 `client_model`，不返回全局 `models`。
-6. 模板和渠道覆盖符合受限 DSL、Header 保护、SSE 逐事件处理、URL 和超时规则；`health_check` 当前必须为空，`system_settings` 不参与运行时编译。
+6. 模板和渠道覆盖符合受限 DSL、Header 保护、SSE 逐事件处理、URL 和超时规则；`health_check` 当前必须为空；`forwarding_policy` 的字段必须为正数、响应头超时大于建连超时，且所有渠道覆盖与其合并后的有效超时均有效。
 
-控制面在一个事务中保存变更和审计日志，完成上述全量校验并编译 `CompiledRuntimeConfig` 后提交；提交后直接替换内存 `ArcSwap` 快照。启动、定时重载和 Console 管理写入均使用 PostgreSQL 控制面；TOML 只保留进程级监听、数据库、默认超时、日志、被动健康、Console listener 和 JWT 密钥文件路径设置。
+控制面在一个事务中保存变更和审计日志，完成上述全量校验并编译 `CompiledRuntimeConfig` 后提交；提交后直接替换内存 `ArcSwap` 快照。启动、定时重载和 Console 管理写入均使用 PostgreSQL 控制面；TOML 保留进程级监听、数据库、系统设置首次初始化值、日志、Console listener 和 JWT 密钥文件路径设置。
 
 ### 5.3 数据面流程
 

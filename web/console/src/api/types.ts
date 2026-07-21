@@ -34,6 +34,7 @@ export type ConsoleSession = S["ConsoleSession"];
 export type InvitationResponse = S["InvitationResponse"];
 export type MutationResponse = S["MutationResponse"];
 export type ReloadResponse = S["ReloadResponse"];
+export type SystemSettings = S["SystemSettings"];
 
 // Resources (views)
 export type ApiKeyView = S["ApiKeyView"];
@@ -93,6 +94,7 @@ export type ModelSyncSelection = S["ModelSyncSelection"];
 export type ModelImportRequest = S["ModelImportRequest"];
 export type ModelSyncPreviewRequest = S["ModelSyncPreviewRequest"];
 export type ListQuery = S["ListQuery"];
+export type SystemSettingsInput = S["SystemSettingsInput"];
 
 // Client-side aggregate (not a server response). Assembled by
 // `useControlPlaneLists` from the individual list endpoints above.

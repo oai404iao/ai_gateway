@@ -10,11 +10,10 @@ use crate::{
     persistence::{
         ConsoleApiKey, ConsoleAuditLog, ControlPlaneLists, ControlPlaneMutation,
         ControlPlaneRepository, MutationResult, RepositoryError, SelfApiKeyCreate,
-        SelfApiKeyOptions, SelfApiKeyUpdate, SyncedModelInput,
+        SelfApiKeyOptions, SelfApiKeyUpdate, SyncedModelInput, SystemSettingsView,
     },
-    routing::RoutingRuntime,
-    runtime_config::UpstreamConfig,
-    runtime_config::{ConfigError, RuntimeConfig, compile_control_plane},
+    routing::{PassiveHealthPolicy, RoutingRuntime},
+    runtime_config::{ConfigError, RuntimeConfig, compile_runtime_config},
     upstream::{UpstreamClientError, UpstreamClientRegistry, validate_snapshot_upstream_policies},
 };
 
@@ -26,7 +25,6 @@ pub struct ControlPlaneCoordinator {
     runtime: Arc<RuntimeConfig>,
     routing: RoutingRuntime,
     serial: Arc<Mutex<()>>,
-    upstream_defaults: UpstreamConfig,
     upstream_client_cleanup: Option<UpstreamClientCleanup>,
 }
 
@@ -41,14 +39,12 @@ impl ControlPlaneCoordinator {
         repository: ControlPlaneRepository,
         runtime: Arc<RuntimeConfig>,
         routing: RoutingRuntime,
-        upstream_defaults: UpstreamConfig,
     ) -> Self {
         Self {
             repository,
             runtime,
             routing,
             serial: Arc::new(Mutex::new(())),
-            upstream_defaults,
             upstream_client_cleanup: None,
         }
     }
@@ -59,10 +55,8 @@ impl ControlPlaneCoordinator {
         runtime: Arc<RuntimeConfig>,
         routing: RoutingRuntime,
         upstream_clients: Arc<UpstreamClientRegistry>,
-        upstream_defaults: UpstreamConfig,
     ) -> Result<Self, UpstreamClientError> {
-        Self::new(repository, runtime, routing, upstream_defaults)
-            .with_upstream_registry(upstream_clients)
+        Self::new(repository, runtime, routing).with_upstream_registry(upstream_clients)
     }
     /// Adds a shared upstream client registry and establishes its initial
     /// active-key set from the current runtime snapshot.
@@ -70,7 +64,7 @@ impl ControlPlaneCoordinator {
         mut self,
         upstream_clients: Arc<UpstreamClientRegistry>,
     ) -> Result<Self, UpstreamClientError> {
-        upstream_clients.reconcile(&self.runtime.snapshot(), &self.upstream_defaults)?;
+        upstream_clients.reconcile(&self.runtime.snapshot())?;
         self.upstream_client_cleanup = Some(UpstreamClientCleanup {
             registry: upstream_clients,
         });
@@ -83,14 +77,15 @@ impl ControlPlaneCoordinator {
             runtime: Arc::clone(&self.runtime),
             routing,
             serial: Arc::clone(&self.serial),
-            upstream_defaults: self.upstream_defaults.clone(),
             upstream_client_cleanup: self.upstream_client_cleanup.clone(),
         }
     }
 
     pub async fn reload(&self) -> Result<(), ControlPlaneError> {
         let _guard = self.serial.lock().await;
-        let next = Arc::new(compile_control_plane(self.repository.load().await?)?);
+        let next = Arc::new(compile_runtime_config(
+            self.repository.load_runtime().await?,
+        )?);
         self.validate_candidate(&next)?;
         self.publish(next);
         Ok(())
@@ -106,9 +101,7 @@ impl ControlPlaneCoordinator {
         {
             return Err(ControlPlaneError::InvalidActor);
         }
-        let next = Arc::new(compile_control_plane(
-            ControlPlaneRepository::load_transaction(&mut transaction).await?,
-        )?);
+        let next = self.compile_transaction(&mut transaction).await?;
         self.validate_candidate(&next)?;
         let correlation_id = Uuid::new_v4();
         self.repository
@@ -121,6 +114,10 @@ impl ControlPlaneCoordinator {
 
     pub async fn lists(&self) -> Result<ControlPlaneLists, ControlPlaneError> {
         Ok(self.repository.control_plane_lists().await?)
+    }
+
+    pub async fn system_settings(&self) -> Result<SystemSettingsView, ControlPlaneError> {
+        Ok(self.repository.system_settings().await?)
     }
 
     pub async fn mutate(
@@ -141,9 +138,7 @@ impl ControlPlaneCoordinator {
             .repository
             .apply_control_plane_mutation(&mut transaction, mutation)
             .await?;
-        let candidate = Arc::new(compile_control_plane(
-            ControlPlaneRepository::load_transaction(&mut transaction).await?,
-        )?);
+        let candidate = self.compile_transaction(&mut transaction).await?;
         self.validate_candidate(&candidate)?;
         let correlation_id = Uuid::new_v4();
         self.repository
@@ -199,9 +194,7 @@ impl ControlPlaneCoordinator {
             .repository
             .create_own_api_key(&mut transaction, actor, input)
             .await?;
-        let candidate = Arc::new(compile_control_plane(
-            ControlPlaneRepository::load_transaction(&mut transaction).await?,
-        )?);
+        let candidate = self.compile_transaction(&mut transaction).await?;
         self.validate_candidate(&candidate)?;
         let correlation_id = Uuid::new_v4();
         self.repository
@@ -235,9 +228,7 @@ impl ControlPlaneCoordinator {
             .repository
             .update_own_api_key(&mut transaction, actor, id, input, expected_updated_at)
             .await?;
-        let candidate = Arc::new(compile_control_plane(
-            ControlPlaneRepository::load_transaction(&mut transaction).await?,
-        )?);
+        let candidate = self.compile_transaction(&mut transaction).await?;
         self.validate_candidate(&candidate)?;
         let correlation_id = Uuid::new_v4();
         self.repository
@@ -270,9 +261,7 @@ impl ControlPlaneCoordinator {
             .repository
             .revoke_own_api_key(&mut transaction, actor, id, reason)
             .await?;
-        let candidate = Arc::new(compile_control_plane(
-            ControlPlaneRepository::load_transaction(&mut transaction).await?,
-        )?);
+        let candidate = self.compile_transaction(&mut transaction).await?;
         self.validate_candidate(&candidate)?;
         let correlation_id = Uuid::new_v4();
         self.repository
@@ -314,9 +303,7 @@ impl ControlPlaneCoordinator {
             .repository
             .apply_catalog_models(&mut transaction, inputs)
             .await?;
-        let candidate = Arc::new(compile_control_plane(
-            ControlPlaneRepository::load_transaction(&mut transaction).await?,
-        )?);
+        let candidate = self.compile_transaction(&mut transaction).await?;
         self.validate_candidate(&candidate)?;
         let correlation_id = Uuid::new_v4();
         for mutation in &mutations {
@@ -367,10 +354,15 @@ impl ControlPlaneCoordinator {
             // The candidate was validated before this point, so a failure here
             // cannot be an invalid policy; retain the existing availability
             // handling for a poisoned shared registry.
-            if let Err(error) = cleanup.registry.reconcile(&next, &self.upstream_defaults) {
+            if let Err(error) = cleanup.registry.reconcile(&next) {
                 tracing::warn!(%error, "upstream client registry reconciliation failed before configuration publication");
             }
         }
+        let passive_health = next.system_settings().passive_health();
+        self.routing.update_policy(PassiveHealthPolicy {
+            connection_failure_threshold: passive_health.connection_failure_threshold(),
+            cooldown: passive_health.cooldown(),
+        });
         self.routing.reconcile(&next);
         self.runtime.replace_snapshot(next);
     }
@@ -379,9 +371,18 @@ impl ControlPlaneCoordinator {
         &self,
         candidate: &crate::domain::CompiledRuntimeConfig,
     ) -> Result<(), ControlPlaneError> {
-        validate_snapshot_upstream_policies(candidate, &self.upstream_defaults).map_err(|_| {
+        validate_snapshot_upstream_policies(candidate).map_err(|_| {
             ConfigError::Compile("invalid resolved upstream timeout policy".into()).into()
         })
+    }
+
+    async fn compile_transaction(
+        &self,
+        transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ) -> Result<Arc<crate::domain::CompiledRuntimeConfig>, ControlPlaneError> {
+        Ok(Arc::new(compile_runtime_config(
+            ControlPlaneRepository::load_runtime_transaction(transaction).await?,
+        )?))
     }
 }
 

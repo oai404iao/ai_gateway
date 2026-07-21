@@ -11,12 +11,13 @@ use std::{
 
 use ai_gateway::{
     application::ProxyService,
+    domain::{PassiveHealthSettings, SystemRuntimeSettings, UpstreamTimeoutDefaults},
     http,
     persistence::{
         ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ControlPlaneRecords, ModelRuleRecord,
     },
     routing::{PassiveHealthPolicy, RoutingRuntime},
-    runtime_config::{RuntimeConfig, UpstreamConfig, compile_control_plane},
+    runtime_config::{RuntimeConfig, UpstreamConfig, compile_control_plane_with_system_settings},
 };
 use axum::{
     Router,
@@ -154,11 +155,23 @@ fn proxy_fixture(
         proxies: vec![],
         templates: vec![],
     };
-    let runtime = Arc::new(RuntimeConfig::new(compile_control_plane(records).unwrap()));
+    let runtime = Arc::new(RuntimeConfig::new(
+        compile_control_plane_with_system_settings(
+            records,
+            SystemRuntimeSettings::new(
+                UpstreamTimeoutDefaults::new(
+                    Duration::from_secs(upstream.connect_timeout_seconds),
+                    Duration::from_secs(upstream.response_header_timeout_seconds),
+                    Duration::from_secs(upstream.stream_idle_timeout_seconds),
+                ),
+                PassiveHealthSettings::default(),
+            ),
+        )
+        .unwrap(),
+    ));
     let service = ProxyService::with_log_sink_and_routing(
         Arc::clone(&runtime),
         1_048_576,
-        &upstream,
         Arc::new(ai_gateway::application::NoopRequestLogSink),
         routing,
     )

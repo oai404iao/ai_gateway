@@ -23,12 +23,14 @@ use crate::{
         ApiFormat, ApiKeyHash, ApiKeyPermission, ChannelTimeoutPolicy, CompiledApiKey,
         CompiledChannel, CompiledChannelGroup, CompiledChannelUpstreamPolicy,
         CompiledConfigTemplate, CompiledModelRule, CompiledProxy, CompiledRouteTier,
-        CompiledRuntimeConfig, ModelPriceSnapshot, ModelRouteKey, NoProxyHost, SelectionStrategy,
-        UpstreamAuth,
+        CompiledRuntimeConfig, ModelPriceSnapshot, ModelRouteKey, NoProxyHost,
+        PassiveHealthSettings, SelectionStrategy, SystemRuntimeSettings, UpstreamAuth,
+        UpstreamTimeoutDefaults,
     },
     persistence::{
         ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ConfigTemplateRecord, ControlPlaneRecords,
-        ModelRuleRecord, ProxyRecord,
+        FORWARDING_SETTINGS_KEY, ModelRuleRecord, ProxyRecord, RuntimeConfigRecords,
+        SystemSettingsInput, SystemSettingsRecord,
     },
     transforms::{TransformCompileError, TransformPlan, compile_document, declared_api_format},
 };
@@ -150,6 +152,8 @@ pub struct DatabaseConfig {
 }
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+/// One-time bootstrap source for the database-backed forwarding timeout
+/// policy. It is inserted only while the `system_settings` row is absent.
 pub struct UpstreamConfig {
     pub connect_timeout_seconds: u64,
     pub response_header_timeout_seconds: u64,
@@ -165,8 +169,8 @@ pub struct RuntimeConfigSettings {
 pub struct RequestLoggingConfig {
     pub queue_capacity: usize,
 }
-/// Process-wide passive connectivity policy. Defaults are three connection
-/// failures and a 30 second cooldown, documented in the shipped TOML files.
+/// One-time bootstrap source for database-backed passive connectivity policy.
+/// Defaults are three connection failures and a 30 second cooldown.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PassiveHealthConfig {
@@ -378,10 +382,31 @@ impl RuntimeConfig {
     }
 }
 
-/// Compiles a complete, already transactionally-read database control plane.
-/// It deliberately contains no database access, making each runtime snapshot coherent.
+/// Compiles database control-plane resources with the compatibility defaults
+/// used by direct unit fixtures. Production snapshots use
+/// [`compile_runtime_config`] so persisted system settings are included.
 pub fn compile_control_plane(
     records: ControlPlaneRecords,
+) -> Result<CompiledRuntimeConfig, ConfigError> {
+    compile_control_plane_with_system_settings(records, SystemRuntimeSettings::default())
+}
+
+/// Compiles one complete database runtime snapshot, including the singleton
+/// forwarding policy stored in `system_settings`.
+pub fn compile_runtime_config(
+    records: RuntimeConfigRecords,
+) -> Result<CompiledRuntimeConfig, ConfigError> {
+    let system_settings = compile_system_settings(records.system_settings)?;
+    compile_control_plane_with_system_settings(records.control_plane, system_settings)
+}
+
+/// Compiles control-plane resources with an already validated system policy.
+///
+/// This remains public for deterministic tests that need non-default global
+/// forwarding behavior without a PostgreSQL fixture.
+pub fn compile_control_plane_with_system_settings(
+    records: ControlPlaneRecords,
+    system_settings: SystemRuntimeSettings,
 ) -> Result<CompiledRuntimeConfig, ConfigError> {
     let mut all_groups = HashMap::new();
     let mut groups = HashMap::new();
@@ -440,12 +465,13 @@ pub fn compile_control_plane(
             );
             let effective_transforms = TransformPlan::compose(&defaults, &channel_override)
                 .map_err(transform_error("channel effective transform plan"))?;
-            let upstream_policy = CompiledChannelUpstreamPolicy::new(
+            let upstream_policy = CompiledChannelUpstreamPolicy::new_with_default_connect_timeout(
                 proxy,
                 template,
                 channel_override,
                 effective_transforms,
                 compile_timeouts(&channel)?,
+                system_settings.upstream_timeouts().connect(),
             );
             channels.insert(
                 channel.id,
@@ -474,13 +500,56 @@ pub fn compile_control_plane(
         &groups,
         &channels,
     )?;
-    Ok(CompiledRuntimeConfig::with_resources(
+    Ok(CompiledRuntimeConfig::with_resources_and_system_settings(
         api_keys,
         model_rules,
         channels,
         groups,
         proxies,
         templates,
+        system_settings,
+    ))
+}
+
+fn compile_system_settings(
+    record: SystemSettingsRecord,
+) -> Result<SystemRuntimeSettings, ConfigError> {
+    if record.setting_key != FORWARDING_SETTINGS_KEY {
+        return Err(ConfigError::Compile(
+            "required forwarding system settings are missing".into(),
+        ));
+    }
+    let input = serde_json::from_value::<SystemSettingsInput>(record.value)
+        .map_err(|_| ConfigError::Compile("invalid forwarding system settings".into()))?;
+    compile_system_settings_input(&input)
+}
+
+/// Validates a decoded `system_settings` forwarding-policy document.
+pub fn compile_system_settings_input(
+    input: &SystemSettingsInput,
+) -> Result<SystemRuntimeSettings, ConfigError> {
+    let upstream = &input.upstream;
+    let passive_health = &input.passive_health;
+    if upstream.connect_timeout_seconds == 0
+        || upstream.response_header_timeout_seconds <= upstream.connect_timeout_seconds
+        || upstream.stream_idle_timeout_seconds == 0
+        || passive_health.connection_failure_threshold == 0
+        || passive_health.cooldown_seconds == 0
+    {
+        return Err(ConfigError::Compile(
+            "invalid forwarding system settings".into(),
+        ));
+    }
+    Ok(SystemRuntimeSettings::new(
+        UpstreamTimeoutDefaults::new(
+            std::time::Duration::from_secs(upstream.connect_timeout_seconds),
+            std::time::Duration::from_secs(upstream.response_header_timeout_seconds),
+            std::time::Duration::from_secs(upstream.stream_idle_timeout_seconds),
+        ),
+        PassiveHealthSettings::new(
+            passive_health.connection_failure_threshold,
+            std::time::Duration::from_secs(passive_health.cooldown_seconds),
+        ),
     ))
 }
 
@@ -1400,7 +1469,8 @@ pub enum ConfigError {
 mod tests {
     use crate::persistence::{
         ChannelGroupRecord, ChannelRecord, ConfigTemplateRecord, ControlPlaneRecords,
-        ModelRuleRecord, ProxyRecord,
+        ModelRuleRecord, ProxyRecord, RuntimeConfigRecords, SystemPassiveHealthSettingsInput,
+        SystemSettingsInput, SystemSettingsRecord, SystemUpstreamSettingsInput,
     };
 
     use super::*;
@@ -1492,6 +1562,44 @@ mod tests {
     fn bootstrap_rejects_dynamic_toml() {
         let value = "[server]\nhost='x'\nport=1\nmax_request_body_bytes=1\nshutdown_grace_period_seconds=1\n[database]\nurl='postgres://x'\nmax_connections=1\nconnect_timeout_seconds=1\n[upstream]\nconnect_timeout_seconds=1\nresponse_header_timeout_seconds=2\nstream_idle_timeout_seconds=1\n[runtime_config]\nreload_interval_seconds=1\n[request_logging]\nqueue_capacity=1\n[observability]\nfilter='info'\n[[api_keys]]\nid='bad'";
         assert!(toml::from_str::<AppConfig>(value).is_err());
+    }
+
+    #[test]
+    fn compiler_uses_database_backed_forwarding_settings() {
+        let records = RuntimeConfigRecords {
+            control_plane: route_records(0, "weighted_random", 1, "weighted_random", false),
+            system_settings: SystemSettingsRecord {
+                setting_key: FORWARDING_SETTINGS_KEY.into(),
+                value: serde_json::to_value(SystemSettingsInput {
+                    upstream: SystemUpstreamSettingsInput {
+                        connect_timeout_seconds: 2,
+                        response_header_timeout_seconds: 5,
+                        stream_idle_timeout_seconds: 8,
+                    },
+                    passive_health: SystemPassiveHealthSettingsInput {
+                        connection_failure_threshold: 4,
+                        cooldown_seconds: 45,
+                    },
+                })
+                .unwrap(),
+                updated_at: chrono::Utc::now(),
+            },
+        };
+        let snapshot = compile_runtime_config(records).unwrap();
+        let settings = snapshot.system_settings();
+        assert_eq!(
+            settings.upstream_timeouts().connect(),
+            std::time::Duration::from_secs(2)
+        );
+        assert_eq!(
+            settings.upstream_timeouts().response_header(),
+            std::time::Duration::from_secs(5)
+        );
+        assert_eq!(settings.passive_health().connection_failure_threshold(), 4);
+        assert_eq!(
+            settings.passive_health().cooldown(),
+            std::time::Duration::from_secs(45)
+        );
     }
 
     #[test]

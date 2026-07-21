@@ -15,7 +15,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 use uuid::Uuid;
 
-use super::{ApiFormat, ApiKeyHash};
+use super::{ApiFormat, ApiKeyHash, SystemRuntimeSettings};
 use crate::transforms::TransformPlan;
 
 /// A normalized `no_proxy_hosts` pattern.
@@ -335,8 +335,30 @@ impl CompiledChannelUpstreamPolicy {
         effective_transforms: TransformPlan,
         timeouts: ChannelTimeoutPolicy,
     ) -> Self {
-        let outbound_network_policy_fingerprint =
-            outbound_network_policy_fingerprint(proxy.as_deref(), timeouts.connect());
+        Self::new_with_default_connect_timeout(
+            proxy,
+            template,
+            channel_override,
+            effective_transforms,
+            timeouts,
+            SystemRuntimeSettings::default()
+                .upstream_timeouts()
+                .connect(),
+        )
+    }
+
+    pub(crate) fn new_with_default_connect_timeout(
+        proxy: Option<Arc<CompiledProxy>>,
+        template: Option<Arc<CompiledConfigTemplate>>,
+        channel_override: TransformPlan,
+        effective_transforms: TransformPlan,
+        timeouts: ChannelTimeoutPolicy,
+        default_connect_timeout: Duration,
+    ) -> Self {
+        let outbound_network_policy_fingerprint = outbound_network_policy_fingerprint(
+            proxy.as_deref(),
+            timeouts.connect().unwrap_or(default_connect_timeout),
+        );
         Self {
             proxy,
             template,
@@ -361,7 +383,7 @@ impl CompiledChannelUpstreamPolicy {
 
 fn outbound_network_policy_fingerprint(
     proxy: Option<&CompiledProxy>,
-    connect_timeout: Option<Duration>,
+    connect_timeout: Duration,
 ) -> OutboundNetworkPolicyFingerprint {
     let mut hasher = Sha256::new();
     hasher.update(b"ai-gateway/outbound-network-policy/v1\0");
@@ -384,14 +406,8 @@ fn outbound_network_policy_fingerprint(
             }
         }
     }
-    match connect_timeout {
-        None => hasher.update([0]),
-        Some(timeout) => {
-            hasher.update([1]);
-            hasher.update(timeout.as_secs().to_be_bytes());
-            hasher.update(timeout.subsec_nanos().to_be_bytes());
-        }
-    }
+    hasher.update(connect_timeout.as_secs().to_be_bytes());
+    hasher.update(connect_timeout.subsec_nanos().to_be_bytes());
     OutboundNetworkPolicyFingerprint(hasher.finalize().into())
 }
 
@@ -881,6 +897,7 @@ pub struct CompiledRuntimeConfig {
     groups: HashMap<Uuid, Arc<CompiledChannelGroup>>,
     proxies: HashMap<Uuid, Arc<CompiledProxy>>,
     templates: HashMap<Uuid, Arc<CompiledConfigTemplate>>,
+    system_settings: SystemRuntimeSettings,
 }
 impl CompiledRuntimeConfig {
     #[must_use]
@@ -908,6 +925,27 @@ impl CompiledRuntimeConfig {
         proxies: HashMap<Uuid, Arc<CompiledProxy>>,
         templates: HashMap<Uuid, Arc<CompiledConfigTemplate>>,
     ) -> Self {
+        Self::with_resources_and_system_settings(
+            api_keys,
+            model_rules,
+            channels,
+            groups,
+            proxies,
+            templates,
+            SystemRuntimeSettings::default(),
+        )
+    }
+
+    #[must_use]
+    pub(crate) fn with_resources_and_system_settings(
+        api_keys: HashMap<ApiKeyHash, Arc<CompiledApiKey>>,
+        model_rules: HashMap<ModelRouteKey, Arc<CompiledModelRule>>,
+        channels: HashMap<Uuid, Arc<CompiledChannel>>,
+        groups: HashMap<Uuid, Arc<CompiledChannelGroup>>,
+        proxies: HashMap<Uuid, Arc<CompiledProxy>>,
+        templates: HashMap<Uuid, Arc<CompiledConfigTemplate>>,
+        system_settings: SystemRuntimeSettings,
+    ) -> Self {
         Self {
             api_keys,
             model_rules,
@@ -915,6 +953,7 @@ impl CompiledRuntimeConfig {
             groups,
             proxies,
             templates,
+            system_settings,
         }
     }
     #[must_use]
@@ -954,6 +993,10 @@ impl CompiledRuntimeConfig {
     #[must_use]
     pub fn template(&self, id: Uuid) -> Option<Arc<CompiledConfigTemplate>> {
         self.templates.get(&id).cloned()
+    }
+    #[must_use]
+    pub fn system_settings(&self) -> SystemRuntimeSettings {
+        self.system_settings
     }
     pub fn api_keys(&self) -> impl Iterator<Item = &Arc<CompiledApiKey>> {
         self.api_keys.values()

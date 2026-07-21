@@ -22,6 +22,9 @@ max_connections = 10
 connect_timeout_seconds = 5
 
 [upstream]
+# Bootstrap values for the `forwarding_policy` system-settings row. They are
+# inserted only when that database row is absent; after first startup, edit
+# these defaults through the Console System settings page instead of TOML.
 connect_timeout_seconds = 10
 response_header_timeout_seconds = 30
 stream_idle_timeout_seconds = 90
@@ -34,6 +37,9 @@ reload_interval_seconds = 30
 queue_capacity = 1_024
 
 [passive_health]
+# Bootstrap values for the same database-backed `forwarding_policy`. They are
+# used only for the one-time initial insert when the system-settings row is
+# absent; later changes are made in the Console.
 # Only pre-header connection failures count. After three failures, one probe is
 # admitted after this cooldown; response headers reset the passive breaker.
 connection_failure_threshold = 3

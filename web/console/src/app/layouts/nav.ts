@@ -68,7 +68,7 @@ export const NAV_SECTIONS: NavSection[] = [
       { label: "Templates", path: "/admin/transforms/templates", icon: FileText },
       { label: "Request Logs", path: "/admin/request-logs", icon: ScrollText },
       { label: "Audit Logs", path: "/admin/audit-logs", icon: ShieldCheck },
-      { label: "System", path: "/admin/system", icon: RefreshCw },
+      { label: "System settings", path: "/admin/system", icon: RefreshCw },
     ],
   },
 ];

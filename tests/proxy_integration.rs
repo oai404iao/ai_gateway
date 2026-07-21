@@ -7,12 +7,13 @@ use std::{
 
 use ai_gateway::{
     application::{ProxyService, RecordingRequestLogSink},
+    domain::{PassiveHealthSettings, SystemRuntimeSettings, UpstreamTimeoutDefaults},
     http,
     persistence::{
         ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ConfigTemplateRecord, ControlPlaneRecords,
         ModelRuleRecord, ProxyRecord,
     },
-    runtime_config::{RuntimeConfig, UpstreamConfig, compile_control_plane},
+    runtime_config::{RuntimeConfig, UpstreamConfig, compile_control_plane_with_system_settings},
 };
 use axum::{
     Router,
@@ -746,14 +747,22 @@ fn configured_proxy_with_policy_and_transforms(
     client_key.quota_limit_amount = quota_limit_amount;
     client_key.quota_used_amount = quota_used_amount;
     let client_key_id = client_key.id;
-    let runtime = Arc::new(RuntimeConfig::new(compile_control_plane(records).unwrap()));
-    let proxy = ProxyService::with_log_sink(
-        Arc::clone(&runtime),
-        1_048_576,
-        &upstream_config,
-        Arc::new(logs),
-    )
-    .unwrap();
+    let runtime = Arc::new(RuntimeConfig::new(
+        compile_control_plane_with_system_settings(
+            records,
+            SystemRuntimeSettings::new(
+                UpstreamTimeoutDefaults::new(
+                    Duration::from_secs(upstream_config.connect_timeout_seconds),
+                    Duration::from_secs(upstream_config.response_header_timeout_seconds),
+                    Duration::from_secs(upstream_config.stream_idle_timeout_seconds),
+                ),
+                PassiveHealthSettings::default(),
+            ),
+        )
+        .unwrap(),
+    ));
+    let proxy =
+        ProxyService::with_log_sink(Arc::clone(&runtime), 1_048_576, Arc::new(logs)).unwrap();
     ConfiguredProxy {
         proxy,
         runtime,

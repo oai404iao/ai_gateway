@@ -79,7 +79,7 @@ pub struct RoutingRuntime {
     inner: Arc<RuntimeInner>,
 }
 struct RuntimeInner {
-    policy: PassiveHealthPolicy,
+    policy: Mutex<PassiveHealthPolicy>,
     clock: Arc<dyn Clock>,
     entropy: Arc<dyn Entropy>,
     state: Mutex<RuntimeState>,
@@ -154,7 +154,7 @@ impl RoutingRuntime {
         );
         Self {
             inner: Arc::new(RuntimeInner {
-                policy,
+                policy: Mutex::new(policy),
                 clock,
                 entropy,
                 state: Mutex::new(RuntimeState::default()),
@@ -179,6 +179,25 @@ impl RoutingRuntime {
                 .is_some_and(|until| until > now),
             half_open_probe: entry.is_some_and(|value| value.half_open_probe),
         }
+    }
+
+    /// Replaces the process-wide passive-health policy for future connection
+    /// failures and half-open probe failures. Existing cooldown deadlines are
+    /// intentionally retained; new failure transitions use the new cooldown.
+    pub fn update_policy(&self, policy: PassiveHealthPolicy) {
+        assert!(
+            policy.connection_failure_threshold > 0,
+            "connection failure threshold must be positive"
+        );
+        assert!(
+            !policy.cooldown.is_zero(),
+            "passive health cooldown must be positive"
+        );
+        *self
+            .inner
+            .policy
+            .lock()
+            .expect("routing policy mutex poisoned") = policy;
     }
     /// Retains runtime health only for channels in the next snapshot, except old
     /// identities which still have an active lease from an earlier snapshot.
@@ -414,6 +433,11 @@ impl ChannelLease {
     }
     pub fn connection_failed(&mut self) {
         let now = self.inner.clock.now();
+        let policy = *self
+            .inner
+            .policy
+            .lock()
+            .expect("routing policy mutex poisoned");
         let mut state = self
             .inner
             .state
@@ -422,8 +446,8 @@ impl ChannelLease {
         let entry = state.channels.entry(self.identity.clone()).or_default();
         entry.consecutive_connection_failures =
             entry.consecutive_connection_failures.saturating_add(1);
-        if entry.consecutive_connection_failures >= self.inner.policy.connection_failure_threshold {
-            entry.cooldown_until = Some(now + self.inner.policy.cooldown);
+        if entry.consecutive_connection_failures >= policy.connection_failure_threshold {
+            entry.cooldown_until = Some(now + policy.cooldown);
             entry.half_open_probe = false;
         }
     }
@@ -435,6 +459,11 @@ impl ChannelLease {
             return;
         }
         let now = self.inner.clock.now();
+        let policy = *self
+            .inner
+            .policy
+            .lock()
+            .expect("routing policy mutex poisoned");
         let mut state = self
             .inner
             .state
@@ -442,7 +471,7 @@ impl ChannelLease {
             .expect("routing state mutex poisoned");
         let entry = state.channels.entry(self.identity.clone()).or_default();
         if entry.half_open_probe {
-            entry.cooldown_until = Some(now + self.inner.policy.cooldown);
+            entry.cooldown_until = Some(now + policy.cooldown);
             entry.half_open_probe = false;
         }
     }

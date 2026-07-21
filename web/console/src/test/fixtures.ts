@@ -21,6 +21,7 @@ import type {
   ProxyView,
   RequestLogView,
   SelfApiKeyOptions,
+  SystemSettings,
 } from "@/api/types";
 
 export const ADMIN_USER: ConsoleUser = {
@@ -236,6 +237,19 @@ export const CONFIG_TEMPLATE: ConfigTemplateView = {
   api_format: "open_ai_chat_completions",
   enabled: true,
   created_at: "2026-01-01T00:00:00.000Z",
+  updated_at: "2026-01-02T00:00:00.000Z",
+};
+
+export const SYSTEM_SETTINGS: SystemSettings = {
+  upstream: {
+    connect_timeout_seconds: 10,
+    response_header_timeout_seconds: 30,
+    stream_idle_timeout_seconds: 90,
+  },
+  passive_health: {
+    connection_failure_threshold: 3,
+    cooldown_seconds: 30,
+  },
   updated_at: "2026-01-02T00:00:00.000Z",
 };
 

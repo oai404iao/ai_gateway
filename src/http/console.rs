@@ -28,7 +28,7 @@ use crate::{
         ChannelInput, ChannelStatusWindow, ConfigTemplateCreateInput, ConfigTemplateInput,
         ConsoleApiKey, ControlPlaneMutation, CostStatisticsFilter, InviteUserInput, ModelInput,
         ModelRuleInput, ProxyCreateInput, ProxyInput, RequestLogFilter, RequestLogRepository,
-        SelfApiKeyCreate, SelfApiKeyUpdate, StatisticsGranularity, UserInput,
+        SelfApiKeyCreate, SelfApiKeyUpdate, StatisticsGranularity, SystemSettingsInput, UserInput,
     },
     runtime_config::ConfigError,
 };
@@ -162,6 +162,10 @@ pub fn router(state: ConsoleState) -> Router {
         )
         .route("/console/v1/statistics/costs", get(get_cost_statistics))
         .route("/console/v1/audit-logs", get(list_audit_logs))
+        .route(
+            "/console/v1/system/settings",
+            get(get_system_settings).put(update_system_settings),
+        )
         .route("/console/v1/system/reload", post(reload))
         // Console v1 compatibility aliases for the former management resource
         // layout. They remain JWT/role protected and never recreate /admin.
@@ -1255,6 +1259,34 @@ async fn list_audit_logs(
             .audit_logs(query.limit.unwrap_or(50))
             .await?,
     ))
+}
+
+async fn get_system_settings(State(state): State<ConsoleState>) -> Result<Response, ConsoleError> {
+    let settings = state.coordinator.system_settings().await?;
+    let updated_at = settings.updated_at;
+    let mut response = Json(settings).into_response();
+    response.headers_mut().insert(
+        header::ETAG,
+        HeaderValue::from_str(&etag(updated_at)).expect("ETag is valid"),
+    );
+    Ok(response)
+}
+
+async fn update_system_settings(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    headers: HeaderMap,
+    Json(input): Json<SystemSettingsInput>,
+) -> Result<Json<MutationResponse>, ConsoleError> {
+    mutate(
+        &state,
+        principal,
+        ControlPlaneMutation::UpdateSystemSettings {
+            input,
+            expected_updated_at: if_match(&headers)?,
+        },
+    )
+    .await
 }
 
 async fn reload(

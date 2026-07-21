@@ -16,10 +16,13 @@ use ai_gateway::{
     http,
     models_dev::ModelsDevClient,
     observability,
-    persistence::{AuthRepository, ControlPlaneRepository, MIGRATOR, RequestLogRepository},
+    persistence::{
+        AuthRepository, ControlPlaneRepository, MIGRATOR, RequestLogRepository,
+        SystemPassiveHealthSettingsInput, SystemSettingsInput, SystemUpstreamSettingsInput,
+    },
     routing::{PassiveHealthPolicy, RoutingRuntime},
-    runtime_config::{AppConfig, RuntimeConfig, compile_control_plane},
-    upstream::{UpstreamClientRegistry, validate_snapshot_upstream_policies},
+    runtime_config::{AppConfig, RuntimeConfig, compile_runtime_config},
+    upstream::UpstreamClientRegistry,
     workers::{ControlPlaneReloader, RequestLogWorker},
 };
 use axum::{Router, body::Body};
@@ -66,8 +69,21 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
         .await?;
     MIGRATOR.run(&pool).await?;
     let repository = ControlPlaneRepository::new(pool.clone());
-    let initial = compile_control_plane(repository.load().await?)?;
-    validate_snapshot_upstream_policies(&initial, &config.upstream)?;
+    repository
+        .ensure_system_settings(SystemSettingsInput {
+            upstream: SystemUpstreamSettingsInput {
+                connect_timeout_seconds: config.upstream.connect_timeout_seconds,
+                response_header_timeout_seconds: config.upstream.response_header_timeout_seconds,
+                stream_idle_timeout_seconds: config.upstream.stream_idle_timeout_seconds,
+            },
+            passive_health: SystemPassiveHealthSettingsInput {
+                connection_failure_threshold: config.passive_health.connection_failure_threshold,
+                cooldown_seconds: config.passive_health.cooldown_seconds,
+            },
+        })
+        .await?;
+    let initial = compile_runtime_config(repository.load_runtime().await?)?;
+    let initial_passive_health = initial.system_settings().passive_health();
     let runtime = Arc::new(RuntimeConfig::new(initial));
 
     let address = format!("{}:{}", config.server.host, config.server.port);
@@ -78,15 +94,14 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
         admission.clone(),
     );
     let routing = RoutingRuntime::new(PassiveHealthPolicy {
-        connection_failure_threshold: config.passive_health.connection_failure_threshold,
-        cooldown: Duration::from_secs(config.passive_health.cooldown_seconds),
+        connection_failure_threshold: initial_passive_health.connection_failure_threshold(),
+        cooldown: initial_passive_health.cooldown(),
     });
     routing.reconcile(&runtime.snapshot());
     let upstream_clients = Arc::new(UpstreamClientRegistry::new());
     let proxy = ProxyService::with_dependencies_and_registry(
         Arc::clone(&runtime),
         config.request_limits.proxy_body_bytes,
-        &config.upstream,
         Arc::clone(&upstream_clients),
         Arc::new(request_log_sink),
         routing.clone(),
@@ -97,7 +112,6 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
         Arc::clone(&runtime),
         routing.clone(),
         upstream_clients,
-        config.upstream.clone(),
     )?;
     ControlPlaneReloader::from_coordinator(coordinator.clone()).spawn(Duration::from_secs(
         config.runtime_config.reload_interval_seconds,

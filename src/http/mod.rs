@@ -65,7 +65,7 @@ mod tests {
 
     use crate::{
         application::ProxyService,
-        runtime_config::{RuntimeConfig, UpstreamConfig, compile_control_plane},
+        runtime_config::{RuntimeConfig, compile_control_plane},
     };
 
     use super::router;
@@ -75,16 +75,7 @@ mod tests {
         let runtime = Arc::new(RuntimeConfig::new(
             compile_control_plane(Default::default()).unwrap(),
         ));
-        let proxy = ProxyService::new(
-            runtime,
-            1_024,
-            &UpstreamConfig {
-                connect_timeout_seconds: 1,
-                response_header_timeout_seconds: 2,
-                stream_idle_timeout_seconds: 1,
-            },
-        )
-        .unwrap();
+        let proxy = ProxyService::new(runtime, 1_024).unwrap();
         let response = router(proxy)
             .oneshot(Request::get("/console/v1/me").body(Body::empty()).unwrap())
             .await
