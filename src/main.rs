@@ -470,6 +470,9 @@ async fn serve_connection(
     router: Router,
     mut shutdown: watch::Receiver<()>,
 ) {
+    if let Err(error) = enable_tcp_nodelay(&stream) {
+        tracing::warn!(%peer_address, %error, "failed to enable TCP_NODELAY");
+    }
     let builder = AutoBuilder::new(TokioExecutor::new());
     let service = TowerToHyperService::new(
         router.map_request(|request: hyper::Request<Incoming>| request.map(Body::new)),
@@ -484,6 +487,10 @@ async fn serve_connection(
             log_connection_result(peer_address, connection.await);
         }
     }
+}
+
+fn enable_tcp_nodelay(stream: &TcpStream) -> Result<(), std::io::Error> {
+    stream.set_nodelay(true)
 }
 
 fn log_connection_result<E: std::fmt::Display>(peer_address: SocketAddr, result: Result<(), E>) {
@@ -546,11 +553,17 @@ async fn shutdown_signal() {
 
 #[cfg(test)]
 mod tests {
-    use std::{future::pending, path::PathBuf, time::Duration};
+    use std::{future::pending, net::Ipv4Addr, path::PathBuf, time::Duration};
 
-    use tokio::{sync::oneshot, task::JoinSet};
+    use tokio::{
+        net::{TcpListener, TcpStream},
+        sync::oneshot,
+        task::JoinSet,
+    };
 
-    use super::{Command, DEFAULT_CONFIG_PATH, drain_connections, parse_command};
+    use super::{
+        Command, DEFAULT_CONFIG_PATH, drain_connections, enable_tcp_nodelay, parse_command,
+    };
 
     struct DropProbe(Option<oneshot::Sender<()>>);
     impl Drop for DropProbe {
@@ -604,6 +617,20 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn accepted_connections_enable_tcp_nodelay() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let client = tokio::spawn(TcpStream::connect(address));
+        let (server, _) = listener.accept().await.unwrap();
+        let client = client.await.unwrap().unwrap();
+
+        enable_tcp_nodelay(&server).unwrap();
+
+        assert!(server.nodelay().unwrap());
+        drop(client);
     }
 
     #[tokio::test]
