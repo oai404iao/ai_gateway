@@ -90,8 +90,10 @@ OpenAI 客户端
 - 前端菜单可按 JWT 返回的 role 隐藏管理员入口，但这只是 UX；后端 `require_admin` 仍是唯一授权边界。
 - 在 UI 上线前，评估并实现 cookie 驱动 refresh 端点的同源 `Origin` 校验或等价 CSRF 防护；不能仅因
   SPA 同源而删除现有 Cookie 安全属性。
-- 所有一次性 secret（新建 API Key、邀请 token）必须使用专用“仅展示一次”对话框。关闭后不从查询缓存、
-  路由 state 或日志恢复。
+- API Key 可由其所有者和管理员重新读取，但前端必须默认打码，并仅在用户主动点击后显示完整值；复制动作
+  始终复制完整值。API Key 不得写入浏览器持久化存储、URL 或日志。
+- 邀请 token 等真正的一次性 secret 必须使用专用“仅展示一次”对话框。关闭后不从查询缓存、路由 state
+  或日志恢复。
 - UI 静态响应至少添加 CSP、`X-Content-Type-Options: nosniff`、`Referrer-Policy` 与
   `frame-ancestors 'none'`。生产 CSP 仅允许本 origin 的脚本、样式、连接和图片，除非新增功能有明确
   安全评审。
@@ -248,7 +250,7 @@ web/console/src/api/types.ts      # 薄 shim：re-export 生成结果的 schema
 ```
 
 契约覆盖登录、刷新、邀请、本人资源、管理员资源、错误响应、`ETag`/`If-Match`、分页/limit 参数、
-一次性 secret 和 role 权限。生成命令为 `pnpm --dir web/console generate:api`；
+可重新读取的 API Key、一次性邀请 token 和 role 权限。生成命令为 `pnpm --dir web/console generate:api`；
 `pnpm --dir web/console generate:api:check` 重新生成并用 `git diff --exit-code` 校验无漂移，供 CI 使用。
 `types.ts` 仅把 `components["schemas"]` 下的 schema 以同名导出，加上客户端聚合体 `ControlPlaneLists`；
 页面继续从 `@/api/types` 导入，不直接依赖生成文件的内部结构。在 Rust 自动导出 OpenAPI 成熟前，
@@ -366,7 +368,7 @@ cargo build --release --features embedded-console-ui
 ### Phase 2：普通用户闭环
 
 - [ ] 实现个人资料、密码、session 管理、本人 API Key 和本人请求日志页面。
-- [ ] 实现一次性 API Key secret 展示、复制后确认、撤销确认和 ETag 冲突处理。
+- [ ] 实现 API Key 默认打码、主动显示、复制、撤销确认和 ETag 冲突处理。
 - [ ] 为用户表单、会话撤销、API Key 创建/更新/撤销和日志详情补充组件/浏览器测试。
 
 验收：普通用户无法通过 UI 或篡改 URL/请求读取或修改他人资源；所有 API Key 授权字段继续由后端策略
@@ -376,6 +378,8 @@ cargo build --release --features embedded-console-ui
 
 - [ ] 逐项实现 users、API Key policy、models、catalog import/sync、channel groups、channels、
   model rules、proxies、config templates、全局日志、审计和手动 reload。
+- [ ] 统一复用分页表格处理可能增长的渠道、日志、模型、规则、代理、模板和密钥列表；上游模型按
+  provider 分组，并在模型选择器中保持相同分组。
 - [ ] 对复杂 JSON 配置实施 schema 校验、可读预览和危险操作确认；不把未验证 JSON 直接提交。
 - [ ] 为所有 `PUT` 编辑页实现 ETag 重新加载/冲突恢复体验。
 
@@ -387,7 +391,7 @@ PostgreSQL。
 - [ ] 添加 Rust 静态 UI 集成测试、前端 MSW 组件测试和连接真实 Console/数据库的 Playwright 测试。
 - [ ] 在 CI 中验证前端 lockfile、类型检查、lint、测试、构建，以及 `pnpm build` 后的嵌入式 release
   构建。
-- [ ] 审查 CSP、Cookie、Origin/CSRF、一次性 secret、错误脱敏、依赖许可证和前端供应链。
+- [ ] 审查 CSP、Cookie、Origin/CSRF、API Key 显示与复制、一次性邀请 token、错误脱敏、依赖许可证和前端供应链。
 - [ ] 更新 `README*`、`config.example.toml`、运维指南和发布说明，明确 API-only 与 UI-enabled 二进制
   的构建/部署方式。
 

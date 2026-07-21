@@ -22,6 +22,7 @@ interface AdminListPageProps<T> {
   detailPath: (row: T) => string;
   createLabel?: string;
   onCreate?: () => void;
+  groupBy?: (row: T) => string;
 }
 
 export function AdminListPage<T>({
@@ -33,6 +34,7 @@ export function AdminListPage<T>({
   detailPath,
   createLabel,
   onCreate,
+  groupBy,
 }: AdminListPageProps<T>) {
   const navigate = useNavigate();
   const { t } = useI18n();
@@ -67,6 +69,7 @@ export function AdminListPage<T>({
               rows={query.data ?? []}
               rowKey={rowKey}
               onRowClick={(row) => navigate(detailPath(row))}
+              groupBy={groupBy}
             />
           </AsyncResource>
         </CardContent>

@@ -2,7 +2,8 @@ import "@testing-library/jest-dom/vitest";
 import "@/test/msw";
 
 // jsdom does not implement matchMedia (used by the theme provider and the
-// sidebar use-mobile hook) or IntersectionObserver. Stub them minimally.
+// sidebar use-mobile hook), IntersectionObserver, or ResizeObserver. Stub
+// them minimally.
 if (!window.matchMedia) {
   window.matchMedia = (query: string) => ({
     matches: false,
@@ -28,6 +29,14 @@ if (!window.IntersectionObserver) {
       return [];
     }
   } as unknown as typeof IntersectionObserver;
+}
+
+if (!window.ResizeObserver) {
+  window.ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  } as unknown as typeof ResizeObserver;
 }
 
 // Radix Select checks this pointer-capture API while opening its menu.

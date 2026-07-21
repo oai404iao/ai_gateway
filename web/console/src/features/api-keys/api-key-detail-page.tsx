@@ -21,6 +21,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Separator } from "@/components/ui/separator";
 import { PageHeader } from "@/components/shared/page-header";
 import { AsyncResource } from "@/components/shared/async-resource";
+import { ApiKeyValue } from "@/components/shared/api-key-value";
 import { DetailField } from "@/components/shared/detail-field";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
@@ -139,6 +140,11 @@ export function ApiKeyDetailPage() {
               </CardHeader>
               <CardContent>
                 <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <DetailField
+                    label={t("API key")}
+                    value={<ApiKeyValue value={key.secret} className="max-w-xl" />}
+                    className="sm:col-span-2"
+                  />
                   <DetailField label={t("Status")} value={<StatusBadge value={key.status} />} />
                   <DetailField label={t("Expires")} value={formatExpiry(key.expires_at)} />
                   <DetailField

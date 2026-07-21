@@ -21,6 +21,8 @@ const ADMIN_PROFILE = {
   access_token: "e2e-mock-access-token",
 };
 
+export const E2E_API_KEY_SECRET = "sk-e2e-retrievable-api-key";
+
 export async function mockConsoleApi(page: Page): Promise<void> {
   await page.route("**/console/v1/**", (route: Route) => {
     const url = new URL(route.request().url());
@@ -48,7 +50,27 @@ export async function mockConsoleApi(page: Page): Promise<void> {
       return route.fulfill({ status: 200, json: [] });
     }
     if (path === "/console/v1/me/api-keys" && method === "GET") {
-      return route.fulfill({ status: 200, json: { data: [], etag: '""' } });
+      return route.fulfill({
+        status: 200,
+        json: [
+          {
+            id: "00000000-0000-0000-0000-000000000011",
+            name: "e2e key",
+            secret: E2E_API_KEY_SECRET,
+            status: "active",
+            expires_at: null,
+            allowed_api_formats: ["open_ai_chat_completions"],
+            permissions: ["proxy"],
+            allowed_group_ids: null,
+            requests_per_minute: 60,
+            max_concurrent_requests: 4,
+            quota_limit_amount: "10.00",
+            quota_used_amount: "1.25",
+            created_at: "2026-01-03T00:00:00.000Z",
+            updated_at: "2026-01-03T00:00:00.000Z",
+          },
+        ],
+      });
     }
     // Default: empty 200 so unknown reads do not break the shell.
     return route.fulfill({ status: 200, json: {} });

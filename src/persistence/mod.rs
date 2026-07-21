@@ -701,6 +701,7 @@ pub struct ControlPlaneApiKeyPolicy {
 pub struct ConsoleApiKey {
     pub id: Uuid,
     pub name: String,
+    pub secret: String,
     pub status: String,
     pub expires_at: Option<DateTime<Utc>>,
     pub allowed_api_formats: Vec<String>,
@@ -966,6 +967,7 @@ pub struct ControlPlaneApiKey {
     pub user_id: Uuid,
     pub user_status: String,
     pub name: String,
+    pub secret: String,
     pub status: String,
     pub expires_at: Option<DateTime<Utc>>,
     pub allowed_api_formats: Vec<String>,
@@ -2189,6 +2191,12 @@ fn normalize_timestamp(value: DateTime<Utc>) -> DateTime<Utc> {
         .with_nanosecond((value.nanosecond() / 1_000) * 1_000)
         .unwrap_or(value)
 }
+
+fn generate_api_key_secret() -> String {
+    // Two UUIDv4 values provide 32 random bytes in a transport-safe form.
+    format!("sk-{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
+}
+
 impl ControlPlaneRepository {
     #[must_use]
     pub fn new(pool: PgPool) -> Self {
@@ -2267,7 +2275,7 @@ impl ControlPlaneRepository {
         .fetch_all(&self.pool)
         .await?;
         let models = sqlx::query_as::<_, ControlPlaneModel>("SELECT id,source_model_id,display_name,provider_name,enabled,price_unit_tokens,input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,price_effective_at,last_synced_at,created_at,updated_at FROM models ORDER BY id").fetch_all(&self.pool).await?;
-        let api_keys = sqlx::query_as::<_, ControlPlaneApiKey>("SELECT k.id, k.user_id, u.status AS user_status, k.name, k.status, k.expires_at, k.allowed_api_formats::text[] AS allowed_api_formats, k.permissions, k.allowed_group_ids, k.requests_per_minute, k.tokens_per_minute, k.max_concurrent_requests, k.quota_limit_amount, k.quota_used_amount, k.updated_at FROM api_keys k JOIN users u ON u.id=k.user_id ORDER BY k.id").fetch_all(&self.pool).await?;
+        let api_keys = sqlx::query_as::<_, ControlPlaneApiKey>("SELECT k.id, k.user_id, u.status AS user_status, k.name, k.secret_value AS secret, k.status, k.expires_at, k.allowed_api_formats::text[] AS allowed_api_formats, k.permissions, k.allowed_group_ids, k.requests_per_minute, k.tokens_per_minute, k.max_concurrent_requests, k.quota_limit_amount, k.quota_used_amount, k.updated_at FROM api_keys k JOIN users u ON u.id=k.user_id ORDER BY k.id").fetch_all(&self.pool).await?;
         let api_key_policies = sqlx::query_as::<_, ControlPlaneApiKeyPolicy>("SELECT id,name,allowed_api_formats::text[] AS allowed_api_formats,permissions,allowed_group_ids,requests_per_minute,max_concurrent_requests,quota_limit_amount,max_active_keys,enabled,created_at,updated_at FROM api_key_policies ORDER BY id").fetch_all(&self.pool).await?;
         let channel_groups = sqlx::query_as::<_, ControlPlaneChannelGroup>("SELECT id,name,api_format::text AS api_format,priority,selection_strategy,enabled,updated_at FROM channel_groups ORDER BY id").fetch_all(&self.pool).await?;
         let channels = sqlx::query_as::<_, ControlPlaneChannelRow>("SELECT id,channel_group_id,api_format::text AS api_format,name,base_url,enabled,status_statistics_enabled,auto_disabled,auto_disabled_reason,weight,proxy_id,config_template_id,connect_timeout_ms,response_header_timeout_ms,stream_idle_timeout_ms,upstream_auth_kind,upstream_auth_header_name,(upstream_api_key IS NOT NULL) AS upstream_credential_configured,available_models,created_at,updated_at FROM channels ORDER BY id").fetch_all(&self.pool).await?;
@@ -2299,7 +2307,7 @@ impl ControlPlaneRepository {
 
     pub async fn own_api_keys(&self, user_id: Uuid) -> Result<Vec<ConsoleApiKey>, RepositoryError> {
         sqlx::query_as::<_, ConsoleApiKey>(
-            "SELECT id,name,status,expires_at,allowed_api_formats::text[] AS allowed_api_formats, \
+            "SELECT id,name,secret_value AS secret,status,expires_at,allowed_api_formats::text[] AS allowed_api_formats, \
                     permissions,allowed_group_ids,requests_per_minute,max_concurrent_requests, \
                     quota_limit_amount,quota_used_amount,created_at,updated_at \
              FROM api_keys WHERE user_id=$1 ORDER BY created_at DESC,id DESC",
@@ -2316,7 +2324,7 @@ impl ControlPlaneRepository {
         id: Uuid,
     ) -> Result<Option<ConsoleApiKey>, RepositoryError> {
         sqlx::query_as::<_, ConsoleApiKey>(
-            "SELECT id,name,status,expires_at,allowed_api_formats::text[] AS allowed_api_formats, \
+            "SELECT id,name,secret_value AS secret,status,expires_at,allowed_api_formats::text[] AS allowed_api_formats, \
                     permissions,allowed_group_ids,requests_per_minute,max_concurrent_requests, \
                     quota_limit_amount,quota_used_amount,created_at,updated_at \
              FROM api_keys WHERE id=$1 AND user_id=$2",
@@ -2363,7 +2371,7 @@ impl ControlPlaneRepository {
             return Err(RepositoryError::Validation);
         }
         let id = Uuid::new_v4();
-        let secret = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
+        let secret = generate_api_key_secret();
         let updated_at = sqlx::query_scalar(
             "INSERT INTO api_keys \
              (id,user_id,name,secret_value,status,expires_at,allowed_api_formats,permissions, \
@@ -2493,8 +2501,7 @@ impl ControlPlaneRepository {
             } => model_insert(transaction, id, input, false, Some(expected_updated_at)).await,
             ControlPlaneMutation::CreateApiKey(input) => {
                 let id = Uuid::new_v4();
-                // Two independent UUIDv4 values provide 32 random bytes in a transport-safe form.
-                let secret = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
+                let secret = generate_api_key_secret();
                 let updated_at = sqlx::query_scalar("INSERT INTO api_keys (id, user_id, name, secret_value, status, expires_at, allowed_api_formats, permissions, allowed_group_ids, requests_per_minute, max_concurrent_requests, quota_limit_amount) VALUES ($1,$2,$3,$4,'active',$5,$6::api_format[],$7,$8,$9,$10,$11) RETURNING updated_at")
                     .bind(id).bind(input.user_id).bind(&input.name).bind(&secret).bind(input.expires_at).bind(&input.allowed_api_formats).bind(&input.permissions).bind(&input.allowed_group_ids).bind(input.requests_per_minute).bind(input.max_concurrent_requests).bind(input.quota_limit_amount).fetch_one(&mut **transaction).await?;
                 Ok(MutationResult {

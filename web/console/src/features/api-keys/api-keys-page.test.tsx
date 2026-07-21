@@ -7,6 +7,7 @@ import { AppProviders } from "@/app/providers";
 import { AppRouter } from "@/app/router";
 import { server, seedAuthenticatedSession } from "@/test/msw";
 import { NEW_API_KEY_SECRET, OWN_API_KEY } from "@/test/fixtures";
+import { maskApiKey } from "@/lib/api-keys";
 import type { SelfApiKeyCreateInput } from "@/api/types";
 
 function renderAppAt(path: string) {
@@ -21,21 +22,36 @@ function renderAppAt(path: string) {
 }
 
 describe("ApiKeysPage", () => {
-  it("creates a key and shows the one-time secret dialog", async () => {
+  it("creates a key without a one-time secret dialog", async () => {
     seedAuthenticatedSession();
     const user = userEvent.setup();
     renderAppAt("/api-keys");
 
     expect(await screen.findByText(OWN_API_KEY.name)).toBeInTheDocument();
+    expect(screen.getByDisplayValue(maskApiKey(NEW_API_KEY_SECRET))).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /new api key/i }));
     const nameField = await screen.findByLabelText(/name/i);
     await user.type(nameField, "spec key");
     await user.click(screen.getByRole("button", { name: /create key/i }));
 
-    // The one-time secret dialog appears with the secret and a copy button.
-    expect(await screen.findByText(/save it now/i)).toBeInTheDocument();
-    expect(await screen.findByDisplayValue(NEW_API_KEY_SECRET)).toBeInTheDocument();
+    expect(await screen.findByText(/api key created/i)).toBeInTheDocument();
+    expect(screen.queryByText(/save it now/i)).not.toBeInTheDocument();
+  });
+
+  it("masks, reveals, and copies the complete API key", async () => {
+    seedAuthenticatedSession();
+    const user = userEvent.setup();
+    renderAppAt("/api-keys");
+
+    const value = await screen.findByLabelText(/api key value/i);
+    expect(value).toHaveValue(maskApiKey(NEW_API_KEY_SECRET));
+
+    await user.click(screen.getByRole("button", { name: /show full api key/i }));
+    expect(value).toHaveValue(NEW_API_KEY_SECRET);
+
+    await user.click(screen.getByRole("button", { name: /copy api key/i }));
+    expect(await navigator.clipboard.readText()).toBe(NEW_API_KEY_SECRET);
   });
 
   it("serializes a datetime-local expiry as RFC 3339", async () => {

@@ -38,6 +38,7 @@ describe("ModelRuleDetailPage", () => {
 
     const clientModelSelect = await screen.findByRole("combobox", { name: "Client model" });
     await user.click(clientModelSelect);
+    expect(await screen.findByText(MODEL.provider_name ?? "")).toBeInTheDocument();
     await user.click(
       await screen.findByRole("option", {
         name: `${MODEL.display_name} (${MODEL.source_model_id})`,

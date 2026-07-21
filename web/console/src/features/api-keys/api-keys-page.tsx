@@ -20,8 +20,8 @@ import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { PageHeader } from "@/components/shared/page-header";
 import { AsyncResource } from "@/components/shared/async-resource";
+import { ApiKeyValue } from "@/components/shared/api-key-value";
 import { ResourceTable, type Column } from "@/components/shared/resource-table";
-import { SecretOnceDialog } from "@/components/shared/secret-once-dialog";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { useCreateOwnApiKey, useOwnApiKeys } from "@/features/api-keys/api";
 import type { ApiKeyView } from "@/api/types";
@@ -70,7 +70,6 @@ export function ApiKeysPage() {
   const create = useCreateOwnApiKey();
   const { t } = useI18n();
   const [createOpen, setCreateOpen] = useState(false);
-  const [secret, setSecret] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   const form = useForm<CreateValues>({
@@ -81,11 +80,10 @@ export function ApiKeysPage() {
   const onSubmit = async (values: CreateValues) => {
     setSubmitting(true);
     try {
-      const result = await create.mutateAsync({
+      await create.mutateAsync({
         name: values.name,
         expires_at: dateTimeLocalToIso(values.expires_at),
       });
-      if (result.secret) setSecret(result.secret);
       setCreateOpen(false);
       form.reset();
       toast.success(t("API key created"));
@@ -106,6 +104,12 @@ export function ApiKeysPage() {
       key: "status",
       header: t("Status"),
       render: (key) => <StatusBadge value={key.status} />,
+    },
+    {
+      key: "secret",
+      header: t("API key"),
+      render: (key) => <ApiKeyValue value={key.secret} />,
+      className: "min-w-80",
     },
     {
       key: "formats",
@@ -223,14 +227,6 @@ export function ApiKeysPage() {
           </form>
         </DialogContent>
       </Dialog>
-
-      <SecretOnceDialog
-        open={Boolean(secret)}
-        onOpenChange={(open) => !open && setSecret(null)}
-        title={t("Your new API key")}
-        description={t("Use this as the Bearer token for /v1/* requests.")}
-        secret={secret}
-      />
     </div>
   );
 }

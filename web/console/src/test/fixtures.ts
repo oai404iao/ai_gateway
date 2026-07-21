@@ -80,9 +80,12 @@ export const API_KEY_POLICY: ApiKeyPolicyView = {
   updated_at: "2026-01-02T00:00:00.000Z",
 };
 
+export const NEW_API_KEY_SECRET = "sk-ag-test-secret-retrievable";
+
 export const OWN_API_KEY: ApiKeyView = {
   id: "00000000-0000-0000-0000-000000000011",
   name: "dev key",
+  secret: NEW_API_KEY_SECRET,
   status: "active",
   expires_at: "2027-01-01T00:00:00.000Z",
   allowed_api_formats: ["open_ai_chat_completions"],
@@ -102,8 +105,6 @@ export const ADMIN_API_KEY: AdminApiKeyView = {
   user_status: "active",
   tokens_per_minute: 10_000,
 };
-
-export const NEW_API_KEY_SECRET = "sk-ag-test-secret-only-once";
 
 export const CHANNEL_GROUP: ChannelGroupView = {
   id: "00000000-0000-0000-0000-000000000021",

@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { mockConsoleApi } from "./mock-api";
+import { E2E_API_KEY_SECRET, mockConsoleApi } from "./mock-api";
 
 test.describe("Console SPA smoke", () => {
   test("login page renders and a successful login reaches the account shell", async ({
@@ -43,5 +43,19 @@ test.describe("Console SPA smoke", () => {
 
     await page.reload();
     await expect(page.getByRole("button", { name: "登录" })).toBeVisible();
+  });
+
+  test("API keys stay masked until explicitly revealed", async ({ page }) => {
+    await mockConsoleApi(page);
+    await page.goto("/login");
+    await page.getByLabel(/email/i).fill("admin@example.com");
+    await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
+    await page.getByRole("button", { name: /sign in/i }).click();
+    await page.getByRole("link", { name: "API Keys" }).click();
+
+    const keyValue = page.getByLabel("API key value");
+    await expect(keyValue).toHaveValue(`sk-${"•".repeat(24)}`);
+    await page.getByRole("button", { name: "Show full API key" }).click();
+    await expect(keyValue).toHaveValue(E2E_API_KEY_SECRET);
   });
 });

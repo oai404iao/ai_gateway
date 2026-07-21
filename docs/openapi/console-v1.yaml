@@ -16,8 +16,9 @@ info:
     - Most mutable resources return an `ETag` on detail `GET` and require
       `If-Match` on `PUT` for optimistic concurrency. A stale `If-Match`
       yields `409`.
-    - Create/revoke responses and invitation activation may return a
-      one-time `secret`/`invitation_token` that is never retrievable again.
+    - API key values are retrievable by their owner and administrators; the
+      Console masks them by default. Invitation tokens remain one-time values
+      that are never retrievable again.
     - Every error body is `{"error":"<code>"}`.
     - `routing_dependency_invalid` means a mutation would make the routing
       graph invalid (for example, by leaving an enabled model rule without an
@@ -221,7 +222,7 @@ paths:
             schema: { $ref: "#/components/schemas/SelfApiKeyCreateInput" }
       responses:
         "201":
-          description: Key created; `secret` is shown only once.
+          description: Key created; `secret` is also available from list/detail responses.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/MutationResponse" }
@@ -634,7 +635,7 @@ paths:
             schema: { $ref: "#/components/schemas/ApiKeyCreateInput" }
       responses:
         "201":
-          description: Created; `secret` shown only once.
+          description: Created; `secret` is also available from list/detail responses.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/MutationResponse" }
@@ -1454,7 +1455,9 @@ components:
       required: [id, correlation_id]
       properties:
         id: { type: string, format: uuid }
-        secret: { type: string, description: One-time secret; present only on create. }
+        secret:
+          type: string
+          description: Created API key value; present only on API key create responses.
         correlation_id: { type: string, format: uuid }
 
     ReloadResponse:
@@ -1466,12 +1469,15 @@ components:
     ApiKeyView:
       type: object
       required:
-        [id, name, status, expires_at, allowed_api_formats, permissions,
+        [id, name, secret, status, expires_at, allowed_api_formats, permissions,
          allowed_group_ids, requests_per_minute, max_concurrent_requests,
          quota_limit_amount, quota_used_amount, created_at, updated_at]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
+        secret:
+          type: string
+          description: Full API key value. Console clients must mask it by default.
         status: { type: string }
         expires_at: { $ref: "#/components/schemas/DateTimeNullable" }
         allowed_api_formats:

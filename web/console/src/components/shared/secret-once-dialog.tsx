@@ -27,9 +27,9 @@ interface SecretOnceDialogProps {
 }
 
 /**
- * Displays a one-time secret (new API key, invitation token) with copy
- * support and an explicit warning that it will not be shown again. The secret
- * is never persisted by the SPA; closing clears the local copy.
+ * Displays a one-time secret such as an invitation token with copy support
+ * and an explicit warning that it will not be shown again. The secret is
+ * never persisted by the SPA; closing clears the local copy.
  */
 export function SecretOnceDialog({
   open,

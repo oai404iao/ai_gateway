@@ -21,6 +21,7 @@ import {
   SelectContent,
   SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -36,6 +37,7 @@ import {
   useModels,
   useUpdateModelRule,
 } from "@/features/admin/api";
+import { groupModelsByProvider } from "@/features/admin/models/model-groups";
 import { ApiError, controlPlaneMutationErrorMessage } from "@/api/errors";
 import type { ApiFormat, ModelRuleInput } from "@/api/types";
 import { API_FORMATS, apiFormatLabel } from "@/lib/permissions";
@@ -87,6 +89,10 @@ export function ModelRuleDetailPage() {
   const [state, setState] = useState<FormState>(empty);
   const [submitting, setSubmitting] = useState(false);
   const [validation, setValidation] = useState<z.ZodError | null>(null);
+  const modelProviderGroups = useMemo(
+    () => groupModelsByProvider(models.data ?? [], t("Unspecified provider")),
+    [models.data, t],
+  );
 
   useEffect(() => {
     if (data) {
@@ -245,12 +251,17 @@ export function ModelRuleDetailPage() {
                         <SelectItem value={CUSTOM_CLIENT_MODEL}>
                           {t("Custom client model")}
                         </SelectItem>
-                        {models.data?.map((model) => (
-                          <SelectItem key={model.id} value={model.source_model_id}>
-                            {model.display_name} ({model.source_model_id})
-                          </SelectItem>
-                        ))}
                       </SelectGroup>
+                      {modelProviderGroups.map((providerGroup) => (
+                        <SelectGroup key={providerGroup.provider}>
+                          <SelectLabel>{providerGroup.provider}</SelectLabel>
+                          {providerGroup.models.map((model) => (
+                            <SelectItem key={model.id} value={model.source_model_id}>
+                              {model.display_name} ({model.source_model_id})
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      ))}
                     </SelectContent>
                   </Select>
                   {clientModelSelection === CUSTOM_CLIENT_MODEL ? (
@@ -306,12 +317,17 @@ export function ModelRuleDetailPage() {
                     <SelectContent>
                       <SelectGroup>
                         <SelectItem value="__none__">{t("None")}</SelectItem>
-                        {models.data?.map((model) => (
-                          <SelectItem key={model.id} value={model.id}>
-                            {model.display_name} ({model.source_model_id})
-                          </SelectItem>
-                        ))}
                       </SelectGroup>
+                      {modelProviderGroups.map((providerGroup) => (
+                        <SelectGroup key={providerGroup.provider}>
+                          <SelectLabel>{providerGroup.provider}</SelectLabel>
+                          {providerGroup.models.map((model) => (
+                            <SelectItem key={model.id} value={model.id}>
+                              {model.display_name} ({model.source_model_id})
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      ))}
                     </SelectContent>
                   </Select>
                   {fieldError("upstream_model_id") ? (

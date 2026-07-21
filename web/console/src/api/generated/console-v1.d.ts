@@ -736,7 +736,7 @@ export interface components {
         MutationResponse: {
             /** Format: uuid */
             id: string;
-            /** @description One-time secret; present only on create. */
+            /** @description Created API key value; present only on API key create responses. */
             secret?: string;
             /** Format: uuid */
             correlation_id: string;
@@ -749,6 +749,8 @@ export interface components {
             /** Format: uuid */
             id: string;
             name: string;
+            /** @description Full API key value. Console clients must mask it by default. */
+            secret: string;
             status: string;
             expires_at: components["schemas"]["DateTimeNullable"];
             allowed_api_formats: components["schemas"]["ApiFormat"][];
@@ -1632,7 +1634,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Key created; `secret` is shown only once. */
+            /** @description Key created; `secret` is also available from list/detail responses. */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -2221,7 +2223,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Created; `secret` shown only once. */
+            /** @description Created; `secret` is also available from list/detail responses. */
             201: {
                 headers: {
                     [name: string]: unknown;

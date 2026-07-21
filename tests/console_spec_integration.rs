@@ -4,8 +4,8 @@
 //! authoritative spec in `docs/openapi/console-v1.yaml` for the request and
 //! response shapes the SPA depends on: the auth/session flow, error body
 //! shape `{"error": ...}`, ETag/`If-Match` optimistic concurrency (success
-//! then `409` on a stale tag), one-time secret presence on create, and
-//! `limit` clamping on log endpoints.
+//! then `409` on a stale tag), retrievable masked-by-default API key values,
+//! and `limit` clamping on log endpoints.
 //!
 //! They follow the same PostgreSQL integration-test convention as
 //! `tests/control_plane_integration.rs`: `TestDatabase::new()` creates a
@@ -622,10 +622,10 @@ async fn model_rule_uses_its_upstream_model_as_the_price_source() {
     database.cleanup().await;
 }
 
-/// Creating a resource returns a `MutationResponse` whose `secret` is present
-/// exactly once and never retrievable again, per spec.
+/// API key creation uses the `sk-` prefix and the same value remains
+/// retrievable from authorized list/detail endpoints.
 #[tokio::test]
-async fn api_key_create_returns_one_time_secret() {
+async fn api_key_create_returns_retrievable_prefixed_secret() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
     let create = request(
@@ -644,10 +644,9 @@ async fn api_key_create_returns_one_time_secret() {
     assert_eq!(create.status(), StatusCode::CREATED);
     let body = body_json(create).await;
     let secret = body["secret"].as_str().expect("secret present on create");
-    assert!(!secret.is_empty());
+    assert!(secret.starts_with("sk-"));
     let id = body["id"].as_str().expect("id present").to_owned();
 
-    // The secret is never returned again by the detail endpoint.
     let detail = request(
         &app,
         "GET",
@@ -659,10 +658,7 @@ async fn api_key_create_returns_one_time_secret() {
     assert_eq!(detail.status(), StatusCode::OK);
     let has_etag = detail.headers().get(header::ETAG).is_some();
     let detail_body = body_json(detail).await;
-    assert!(
-        detail_body.get("secret").is_none(),
-        "secret not retrievable"
-    );
+    assert_eq!(detail_body["secret"], secret);
     assert!(has_etag, "detail returns an ETag");
     database.cleanup().await;
 }
@@ -734,6 +730,21 @@ async fn self_api_key_create_reports_policy_preconditions() {
     )
     .await;
     assert_eq!(created.status(), StatusCode::CREATED);
+    let created = body_json(created).await;
+    let id = created["id"].as_str().expect("created key id");
+    let secret = created["secret"].as_str().expect("created key secret");
+    assert!(secret.starts_with("sk-"));
+
+    let detail = request(
+        &app,
+        "GET",
+        &format!("/console/v1/me/api-keys/{id}"),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(detail.status(), StatusCode::OK);
+    assert_eq!(body_json(detail).await["secret"], secret);
 
     let limited = request(
         &app,
