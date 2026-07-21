@@ -14,7 +14,7 @@ import { AsyncResource } from "@/components/shared/async-resource";
 import { DetailField } from "@/components/shared/detail-field";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { useChangePassword, useProfile, useUpdateProfile } from "@/features/profile/api";
-import { formatCurrency } from "@/lib/formatters";
+import { formatUsd } from "@/lib/formatters";
 import { formatDateTime as formatTs } from "@/lib/dates";
 import { roleLabel } from "@/lib/permissions";
 import { useI18n } from "@/app/i18n";
@@ -93,7 +93,7 @@ export function ProfilePage() {
                 <DetailField label={t("Status")} value={<StatusBadge value={profile.status} />} />
                 <DetailField
                   label={t("Balance")}
-                  value={formatCurrency(profile.balance_amount, profile.currency)}
+                  value={formatUsd(profile.balance_amount)}
                 />
                 <DetailField label={t("Created")} value={formatTs(profile.created_at)} />
                 <DetailField label={t("Updated")} value={formatTs(profile.updated_at)} />

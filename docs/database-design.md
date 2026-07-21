@@ -98,8 +98,7 @@ updated_at timestamptz not null
 | `id` | `uuid` | 主键，由应用生成。 |
 | `name` | `varchar(200)` | 非空、唯一的展示/租户名称。 |
 | `status` | `text` | `active`、`suspended` 或 `disabled`，默认 `active`。 |
-| `balance_amount` | `numeric(24,8)` | 非空，默认 `0`；当前余额投影。 |
-| `currency` | `char(3)` | 非空；余额币种。当前结算要求与请求日志价格快照币种一致，不提供兑换。 |
+| `balance_amount` | `numeric(24,8)` | 非空，默认 `0`；当前 USD 余额投影。 |
 | `created_at` / `updated_at` | `timestamptz` | 通用时间列。 |
 
 `balance_amount` 是余额投影列。可结算终态日志由后台 worker 在同一事务中以 `billed_at` 条件更新取得唯一结算权，并扣减该列；本阶段没有硬余额预留，余额可以为负。管理接口仍不提供充值、退款或人工修正；若未来保留无独立账本的方案，这些操作必须写入 `audit_logs`，需要严格财务账本时再新增相应实体。
@@ -156,7 +155,7 @@ CHECK (quota_limit_amount IS NULL OR quota_limit_amount >= 0);
 | `display_name` | `varchar(300)` | 非空。 |
 | `provider_name` | `varchar(200)` | 可空。 |
 | `enabled` | `boolean` | 非空，默认 `true`。 |
-| `currency` | `char(3)` | 非空；当前价格币种。 |
+| `currency` | `char(3)` | 非空且固定为 `USD`；仅作为价格快照元数据，不是可配置项。 |
 | `price_unit_tokens` | `bigint` | 非空、正数，例如 `1000000`。 |
 | `input_unit_price` | `numeric(24,12)` | 非空、非负。 |
 | `cached_input_unit_price` | `numeric(24,12)` | 非空、非负；不单独收费时为 `0`。 |
@@ -298,7 +297,7 @@ CHECK (jsonb_typeof(health_check) = 'object');
 | `output_tokens_per_second` | `numeric(14,4)` | 可空、非负。 |
 | `input_tokens` / `cached_input_tokens` / `cache_write_tokens` / `output_tokens` | `bigint` | 可空、非负；未知保持 `NULL`。 |
 | `model_id` | `uuid` | 实际计价模型。 |
-| `currency` / `price_unit_tokens` / `price_effective_at` | 币种、整数、时间 | 本次价格快照上下文。 |
+| `currency` / `price_unit_tokens` / `price_effective_at` | 币种、整数、时间 | 本次价格快照上下文；币种固定为 `USD`。 |
 | `input_unit_price` / `cached_input_unit_price` / `cache_write_unit_price` / `output_unit_price` | `numeric(24,12)` | 本次价格快照。 |
 | `cost_amount` | `numeric(24,8)` | 可空、非负；本次最终费用。 |
 | `attempts` | `jsonb` | 非空，默认 `[]`；为未来首字节前重试审计预留。当前网关只进行一次上游尝试，始终保留空数组。 |
@@ -311,7 +310,7 @@ CHECK (jsonb_typeof(health_check) = 'object');
 - 四个价格字段、币种、计价单位和价格生效时间要么全部为空（未计费），要么全部存在。
 - 费用计算为：`(input - cached_input) * input_price / unit + cached_input * cached_input_price / unit + cache_write * cache_write_price / unit + output * output_price / unit`。
 - 当前不写入 `attempts`，因为网关只进行一次上游尝试。若未来引入重试，只能在尚未收到上游任何字节时追加下一项；收到响应头或首字节后不得切换渠道或重试。
-- 结算 worker 对 `cost_amount` 非空、币种匹配且 Key 归属一致的日志，以 `UPDATE ... WHERE id = ? AND billed_at IS NULL RETURNING cost_amount` 取得唯一结算权，再在同一事务更新 `users.balance_amount` 和 `api_keys.quota_used_amount`。事务失败会回滚 `billed_at`，因此 worker 重投、启动恢复和并发结算不会重复扣费；余额不足不阻止结算，余额可为负。缺失成本、币种不匹配或归属不一致的日志不会被重试扫描错误地结算。
+- 结算 worker 对 `cost_amount` 非空且 Key 归属一致的日志，以 `UPDATE ... WHERE id = ? AND billed_at IS NULL RETURNING cost_amount` 取得唯一结算权，再在同一事务更新 `users.balance_amount` 和 `api_keys.quota_used_amount`。事务失败会回滚 `billed_at`，因此 worker 重投、启动恢复和并发结算不会重复扣费；余额不足不阻止结算，余额可为负。缺失成本或归属不一致的日志不会被重试扫描错误地结算。系统只接受 USD 价格和费用，不在内部进行货币转换。
 
 不保存请求体、响应体、完整 Header、任何密钥、Cookie、原始 IP 或未清洗的上游错误。请求遥测清理前，必须确认它仍是首版唯一的计费审计依据；在引入独立账本前，不应任意缩短其保留期。
 

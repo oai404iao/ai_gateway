@@ -116,8 +116,8 @@ async fn app(pool: PgPool) -> App {
         .await
         .unwrap();
     sqlx::query(
-        "INSERT INTO users (id, email, display_name, role, status, password_hash, currency) \
-         VALUES ($1, $2, $3, 'admin', 'active', $4, 'USD')",
+        "INSERT INTO users (id, email, display_name, role, status, password_hash) \
+         VALUES ($1, $2, $3, 'admin', 'active', $4)",
     )
     .bind(user_id)
     .bind(format!("spec-user-{user_id}@example.test"))
@@ -188,8 +188,8 @@ async fn emergency_admin_password_reset_revokes_existing_sessions() {
         .await
         .unwrap();
     sqlx::query(
-        "INSERT INTO users (id,email,display_name,role,status,password_hash,currency) \
-         VALUES ($1,$2,$3,'admin','active',$4,'USD')",
+        "INSERT INTO users (id,email,display_name,role,status,password_hash) \
+         VALUES ($1,$2,$3,'admin','active',$4)",
     )
     .bind(user_id)
     .bind(&email)
@@ -321,8 +321,8 @@ async fn unauthorized_error_body_matches_spec() {
     database.cleanup().await;
 }
 
-/// `GET /me` returns the `ConsoleProfile` shape, including decimal/currency
-/// string fields.
+/// `GET /me` returns the `ConsoleProfile` shape with its USD balance encoded
+/// as a decimal string and no per-user currency setting.
 #[tokio::test]
 async fn profile_shape_matches_spec() {
     let database = TestDatabase::new().await;
@@ -332,8 +332,54 @@ async fn profile_shape_matches_spec() {
     let body = body_json(response).await;
     assert_eq!(body["id"], app.user_id.to_string());
     assert!(body["balance_amount"].is_string(), "decimal is a string");
-    assert!(body["currency"].is_string());
+    assert!(body.get("currency").is_none());
     assert_eq!(body["role"], "admin");
+    database.cleanup().await;
+}
+
+/// Currency is a system-wide USD invariant rather than a mutable Console
+/// field, so legacy currency properties are rejected by request decoding.
+#[tokio::test]
+async fn currency_fields_are_not_console_settings() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+
+    let invite = request(
+        &app,
+        "POST",
+        "/console/v1/users",
+        serde_json::json!({
+            "email": format!("currency-field-{}@example.test", Uuid::new_v4()),
+            "display_name": "Currency field",
+            "role": "user",
+            "currency": "USD"
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(invite.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let model = request(
+        &app,
+        "POST",
+        "/console/v1/models",
+        serde_json::json!({
+            "source_model_id": format!("currency-field-{}", Uuid::new_v4()),
+            "display_name": "Currency field",
+            "enabled": true,
+            "currency": "USD",
+            "price_unit_tokens": 1000000,
+            "input_unit_price": "0",
+            "cached_input_unit_price": "0",
+            "cache_write_unit_price": "0",
+            "output_unit_price": "0",
+            "price_effective_at": chrono::Utc::now().to_rfc3339()
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(model.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
     database.cleanup().await;
 }
 
@@ -493,7 +539,6 @@ async fn model_rule_uses_its_upstream_model_as_the_price_source() {
             "source_model_id": "spec-upstream-model",
             "display_name": "Spec upstream model",
             "enabled": true,
-            "currency": "USD",
             "price_unit_tokens": 1000000,
             "input_unit_price": "0.1",
             "cached_input_unit_price": "0",
@@ -997,8 +1042,7 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
     assert_eq!(costs["summary"]["request_count"], 3);
     assert_eq!(costs["summary"]["priced_request_count"], 2);
     assert_eq!(costs["summary"]["total_tokens"], 160);
-    assert_eq!(costs["summary"]["costs"][0]["currency"], "USD");
-    let amount = costs["summary"]["costs"][0]["amount"]
+    let amount = costs["summary"]["cost_amount"]
         .as_str()
         .unwrap()
         .parse::<f64>()

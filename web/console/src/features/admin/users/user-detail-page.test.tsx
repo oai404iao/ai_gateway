@@ -61,7 +61,6 @@ describe("UserDetailPage", () => {
         role: "admin",
         status: "suspended",
         balance_amount: "25.5",
-        currency: managedUser.currency,
         default_api_key_policy_id: API_KEY_POLICY.id,
       });
     });

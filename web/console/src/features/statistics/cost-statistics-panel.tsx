@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Coins,
   Gauge,
@@ -47,7 +47,6 @@ import {
 } from "@/features/statistics/api";
 import type {
   CostStatisticsModel,
-  CurrencyAmount,
   StatisticsGranularity,
 } from "@/api/types";
 import {
@@ -55,7 +54,7 @@ import {
   formatDateTime,
   formatDateTimeLocalInput,
 } from "@/lib/dates";
-import { formatCurrency, formatTokens } from "@/lib/formatters";
+import { formatTokens, formatUsd } from "@/lib/formatters";
 import { apiFormatLabel } from "@/lib/permissions";
 import { useI18n } from "@/app/i18n";
 
@@ -130,9 +129,8 @@ function toFilters(draft: CostFilterDraft): CostStatisticsFilters | null {
   };
 }
 
-function amountFor(costs: CurrencyAmount[], currency: string): number {
-  const value = costs.find((cost) => cost.currency === currency)?.amount;
-  const amount = value === undefined ? 0 : Number(value);
+function numericAmount(value: string): number {
+  const amount = Number(value);
   return Number.isFinite(amount) ? amount : 0;
 }
 
@@ -186,23 +184,10 @@ export function CostStatisticsPanel() {
     () => toFilters(initialDraft) as CostStatisticsFilters,
   );
   const [quickRange, setQuickRange] = useState<QuickRange | null>("today");
-  const [currency, setCurrency] = useState("");
   const { data, isLoading, error } = useCostStatistics(filters);
   const users = useUsers();
   const apiKeys = useAdminApiKeys();
   const { t } = useI18n();
-
-  const currencies = useMemo(
-    () => data?.summary.costs.map((cost) => cost.currency) ?? [],
-    [data],
-  );
-  useEffect(() => {
-    if (currencies.length === 0) {
-      setCurrency("");
-    } else if (!currencies.includes(currency)) {
-      setCurrency(currencies[0]);
-    }
-  }, [currencies, currency]);
 
   const filteredKeys =
     apiKeys.data?.filter((key) => !draft.user_id || key.user_id === draft.user_id) ?? [];
@@ -247,11 +232,11 @@ export function CostStatisticsPanel() {
   };
 
   const chart = useMemo(() => {
-    if (!data || !currency) {
+    if (!data) {
       return { config: {} satisfies ChartConfig, data: [], series: [] };
     }
     const ranked = data.models
-      .map((model) => ({ model, amount: amountFor(model.costs, currency) }))
+      .map((model) => ({ model, amount: numericAmount(model.cost_amount) }))
       .filter((item) => item.amount > 0)
       .sort((left, right) => right.amount - left.amount);
     const topModels = ranked.slice(0, 7);
@@ -288,25 +273,25 @@ export function CostStatisticsPanel() {
           item.identity === null
             ? bucket.models
                 .filter((model) => !topIdentities.has(modelIdentity(model)))
-                .reduce((sum, model) => sum + amountFor(model.costs, currency), 0)
-            : amountFor(
+                .reduce((sum, model) => sum + numericAmount(model.cost_amount), 0)
+            : numericAmount(
                 bucket.models.find((model) => modelIdentity(model) === item.identity)
-                  ?.costs ?? [],
-                currency,
+                  ?.cost_amount ?? "0",
               );
       }
       return point;
     });
     return { config, data: points, series };
-  }, [currency, data, t]);
+  }, [data, t]);
 
   const modelRows = useMemo(() => {
     if (!data) return [];
     return [...data.models].sort((left, right) => {
-      const costDelta = amountFor(right.costs, currency) - amountFor(left.costs, currency);
+      const costDelta =
+        numericAmount(right.cost_amount) - numericAmount(left.cost_amount);
       return costDelta || right.request_count - left.request_count;
     });
-  }, [currency, data]);
+  }, [data]);
 
   const columns: Column<CostStatisticsModel>[] = [
     {
@@ -343,10 +328,7 @@ export function CostStatisticsPanel() {
     {
       key: "cost",
       header: t("Cost"),
-      render: (model) =>
-        currency
-          ? formatCurrency(String(amountFor(model.costs, currency)), currency)
-          : "—",
+      render: (model) => formatUsd(model.cost_amount),
     },
   ];
 
@@ -539,19 +521,13 @@ export function CostStatisticsPanel() {
               <SummaryCard
                 title={t("Total cost")}
                 value={
-                  data.summary.costs.length > 0 ? (
-                    <span className="flex flex-col gap-0.5 text-lg">
-                      {data.summary.costs.map((cost) => (
-                        <span key={cost.currency}>
-                          {formatCurrency(cost.amount, cost.currency)}
-                        </span>
-                      ))}
-                    </span>
+                  data.summary.priced_request_count > 0 ? (
+                    formatUsd(data.summary.cost_amount)
                   ) : (
                     "—"
                   )
                 }
-                description={t("Costs remain separated by currency.")}
+                description={t("All costs are settled in USD.")}
                 icon={Coins}
               />
               <SummaryCard
@@ -582,24 +558,6 @@ export function CostStatisticsPanel() {
                 <CardDescription>
                   {t("UTC buckets displayed in your browser's local time.")}
                 </CardDescription>
-                {currencies.length > 0 ? (
-                  <CardAction>
-                    <Select value={currency} onValueChange={setCurrency}>
-                      <SelectTrigger className="w-28" aria-label={t("Currency")}>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectGroup>
-                          {currencies.map((item) => (
-                            <SelectItem key={item} value={item}>
-                              {item}
-                            </SelectItem>
-                          ))}
-                        </SelectGroup>
-                      </SelectContent>
-                    </Select>
-                  </CardAction>
-                ) : null}
               </CardHeader>
               <CardContent>
                 {chart.series.length === 0 ? (

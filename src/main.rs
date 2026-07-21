@@ -48,8 +48,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             config_path,
             email,
             display_name,
-            currency,
-        } => bootstrap_admin(config_path, email, display_name, currency).await,
+        } => bootstrap_admin(config_path, email, display_name).await,
         Command::ResetAdminPassword { config_path, email } => {
             reset_admin_password(config_path, email).await
         }
@@ -156,7 +155,6 @@ async fn bootstrap_admin(
     config_path: PathBuf,
     email: String,
     display_name: String,
-    currency: String,
 ) -> Result<(), Box<dyn Error>> {
     let config = AppConfig::load(&config_path)?.validate()?;
     let _log_guard = observability::init(&config.observability.filter);
@@ -169,7 +167,7 @@ async fn bootstrap_admin(
         .await?;
     MIGRATOR.run(&pool).await?;
     let id = AuthRepository::new(pool)
-        .bootstrap_admin(&email, &display_name, &password_hash, &currency)
+        .bootstrap_admin(&email, &display_name, &password_hash)
         .await?;
     println!("bootstrap administrator created: {id}");
     Ok(())
@@ -217,7 +215,6 @@ enum Command {
         config_path: PathBuf,
         email: String,
         display_name: String,
-        currency: String,
     },
     ResetAdminPassword {
         config_path: PathBuf,
@@ -235,7 +232,6 @@ fn parse_command(arguments: Vec<String>) -> Result<Command, io::Error> {
         let mut config_path = PathBuf::from(DEFAULT_CONFIG_PATH);
         let mut email = None;
         let mut display_name = None;
-        let mut currency = "USD".to_owned();
         let mut password_stdin = false;
         let mut index = 1;
         while index < arguments.len() {
@@ -255,7 +251,6 @@ fn parse_command(arguments: Vec<String>) -> Result<Command, io::Error> {
             match flag.as_str() {
                 "--email" => email = Some(value.clone()),
                 "--display-name" => display_name = Some(value.clone()),
-                "--currency" => currency = value.clone(),
                 "--config" => config_path = PathBuf::from(value),
                 _ => {
                     return Err(io::Error::new(
@@ -279,7 +274,6 @@ fn parse_command(arguments: Vec<String>) -> Result<Command, io::Error> {
             display_name: display_name.ok_or_else(|| {
                 io::Error::new(io::ErrorKind::InvalidInput, "--display-name is required")
             })?,
-            currency,
         });
     }
 
@@ -330,7 +324,7 @@ fn parse_command(arguments: Vec<String>) -> Result<Command, io::Error> {
     if arguments.len() != 1 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "usage: ai-gateway [./config/config.toml] | ai-gateway bootstrap-admin --email EMAIL --display-name NAME --password-stdin [--currency USD] [--config ./config/config.toml] | ai-gateway reset-admin-password --email EMAIL --password-stdin [--config ./config/config.toml]",
+            "usage: ai-gateway [./config/config.toml] | ai-gateway bootstrap-admin --email EMAIL --display-name NAME --password-stdin [--config ./config/config.toml] | ai-gateway reset-admin-password --email EMAIL --password-stdin [--config ./config/config.toml]",
         ));
     }
     Ok(Command::Serve {
@@ -552,6 +546,23 @@ mod tests {
         };
         assert_eq!(email, "admin@example.com");
         assert_eq!(config_path, PathBuf::from("./config/test.toml"));
+    }
+
+    #[test]
+    fn bootstrap_admin_rejects_the_removed_currency_option() {
+        assert!(
+            parse_command(vec![
+                "bootstrap-admin".to_owned(),
+                "--email".to_owned(),
+                "admin@example.com".to_owned(),
+                "--display-name".to_owned(),
+                "Initial Admin".to_owned(),
+                "--password-stdin".to_owned(),
+                "--currency".to_owned(),
+                "USD".to_owned(),
+            ])
+            .is_err()
+        );
     }
 
     #[tokio::test]

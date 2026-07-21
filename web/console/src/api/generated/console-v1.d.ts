@@ -613,9 +613,9 @@ export interface paths {
         };
         /**
          * @description Aggregates request counts, token totals, RPM/TPM, and cost by UTC hour
-         *     or day. Costs remain separated by currency, and the response includes
-         *     continuous zero-valued buckets across the selected range. Client-
-         *     cancelled requests do not participate in model success rates.
+         *     or day. All monetary amounts are settled in USD, and the response
+         *     includes continuous zero-valued buckets across the selected range.
+         *     Client-cancelled requests do not participate in model success rates.
          */
         get: operations["getCostStatistics"];
         put?: never;
@@ -710,8 +710,8 @@ export interface components {
             display_name: string;
             role: components["schemas"]["UserRole"];
             status: string;
+            /** @description Current account balance in USD. */
             balance_amount: components["schemas"]["Decimal"];
-            currency: string;
             created_at: components["schemas"]["DateTime"];
             updated_at: components["schemas"]["DateTime"];
         };
@@ -791,8 +791,8 @@ export interface components {
             status: string;
             /** Format: uuid */
             default_api_key_policy_id: string | null;
+            /** @description Current account balance in USD. */
             balance_amount: components["schemas"]["Decimal"];
-            currency: string;
             created_at: components["schemas"]["DateTime"];
             updated_at: components["schemas"]["DateTime"];
         };
@@ -803,7 +803,6 @@ export interface components {
             display_name: string;
             provider_name: string | null;
             enabled: boolean;
-            currency: string;
             price_unit_tokens: number;
             input_unit_price: components["schemas"]["Decimal"];
             cached_input_unit_price: components["schemas"]["Decimal"];
@@ -916,7 +915,7 @@ export interface components {
             cached_input_tokens: number | null;
             cache_write_tokens: number | null;
             output_tokens: number | null;
-            currency: string | null;
+            /** @description Final request cost in USD, or null when not priced. */
             cost_amount: components["schemas"]["DecimalNullable"];
             error_code: string | null;
             billed_at: components["schemas"]["DateTimeNullable"];
@@ -971,10 +970,6 @@ export interface components {
             /** Format: double */
             p50_tps: number | null;
         };
-        CurrencyAmount: {
-            currency: string;
-            amount: components["schemas"]["Decimal"];
-        };
         CostStatisticsReport: {
             started_at: components["schemas"]["DateTime"];
             ended_at: components["schemas"]["DateTime"];
@@ -992,13 +987,15 @@ export interface components {
             average_rpm: number;
             /** Format: double */
             average_tpm: number;
-            costs: components["schemas"]["CurrencyAmount"][];
+            /** @description Total cost in USD. */
+            cost_amount: components["schemas"]["Decimal"];
         };
         CostStatisticsBucket: {
             started_at: components["schemas"]["DateTime"];
             request_count: number;
             total_tokens: number;
-            costs: components["schemas"]["CurrencyAmount"][];
+            /** @description Bucket cost in USD. */
+            cost_amount: components["schemas"]["Decimal"];
             models: components["schemas"]["CostStatisticsBucketModel"][];
         };
         CostStatisticsBucketModel: {
@@ -1006,7 +1003,8 @@ export interface components {
             model: string;
             request_count: number;
             total_tokens: number;
-            costs: components["schemas"]["CurrencyAmount"][];
+            /** @description Model cost in USD for this bucket. */
+            cost_amount: components["schemas"]["Decimal"];
         };
         CostStatisticsModel: {
             api_format: components["schemas"]["ApiFormat"];
@@ -1018,7 +1016,8 @@ export interface components {
              * @description Successful requests divided by non-cancelled terminal requests.
              */
             success_rate: number | null;
-            costs: components["schemas"]["CurrencyAmount"][];
+            /** @description Total model cost in USD. */
+            cost_amount: components["schemas"]["Decimal"];
         };
         AuditLogView: {
             /** Format: uuid */
@@ -1093,7 +1092,6 @@ export interface components {
             email: string;
             display_name: string;
             role: components["schemas"]["UserRole"];
-            currency: string;
             /** Format: uuid */
             default_api_key_policy_id?: string | null;
         };
@@ -1102,8 +1100,8 @@ export interface components {
             email?: string | null;
             role: components["schemas"]["UserRole"];
             status: string;
+            /** @description Current account balance in USD. */
             balance_amount: components["schemas"]["Decimal"];
-            currency: string;
             /** Format: uuid */
             default_api_key_policy_id?: string | null;
         };
@@ -1146,7 +1144,6 @@ export interface components {
             display_name: string;
             provider_name?: string | null;
             enabled: boolean;
-            currency: string;
             price_unit_tokens: number;
             input_unit_price: components["schemas"]["Decimal"];
             cached_input_unit_price: components["schemas"]["Decimal"];

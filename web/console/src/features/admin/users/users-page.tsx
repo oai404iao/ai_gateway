@@ -27,7 +27,7 @@ import { AdminListPage } from "@/features/admin/components/admin-list-page";
 import { SecretOnceDialog } from "@/components/shared/secret-once-dialog";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { useApiKeyPolicies, useInviteUser, useUsers } from "@/features/admin/api";
-import { formatCurrency } from "@/lib/formatters";
+import { formatUsd } from "@/lib/formatters";
 import { formatRelative } from "@/lib/dates";
 import { ROLES, roleLabel } from "@/lib/permissions";
 import { useI18n } from "@/app/i18n";
@@ -44,7 +44,6 @@ export function UsersPage() {
     email: z.string().email(t("Enter a valid email.")),
     display_name: z.string().min(1, t("Display name is required.")).max(200),
     role: z.enum(["user", "admin"]),
-    currency: z.string().min(1, t("Currency is required.")).max(8),
     default_api_key_policy_id: z.string().optional(),
   });
   type InviteValues = z.infer<typeof inviteSchema>;
@@ -55,7 +54,6 @@ export function UsersPage() {
       email: "",
       display_name: "",
       role: "user",
-      currency: "USD",
       default_api_key_policy_id: "",
     },
   });
@@ -67,7 +65,6 @@ export function UsersPage() {
         email: values.email,
         display_name: values.display_name,
         role: values.role,
-        currency: values.currency,
         default_api_key_policy_id: values.default_api_key_policy_id || null,
       });
       setToken(result.invitation_token);
@@ -76,7 +73,6 @@ export function UsersPage() {
         email: "",
         display_name: "",
         role: "user",
-        currency: "USD",
         default_api_key_policy_id: "",
       });
       toast.success(t("Invitation issued"));
@@ -125,7 +121,7 @@ export function UsersPage() {
           {
             key: "balance",
             header: t("Balance"),
-            render: (user) => formatCurrency(user.balance_amount, user.currency),
+            render: (user) => formatUsd(user.balance_amount),
           },
           {
             key: "updated",
@@ -198,17 +194,6 @@ export function UsersPage() {
                   </Field>
                 )}
               />
-              <Field data-invalid={Boolean(form.formState.errors.currency)}>
-                <FieldLabel htmlFor="currency">{t("Currency")}</FieldLabel>
-                <Input
-                  id="currency"
-                  aria-invalid={Boolean(form.formState.errors.currency)}
-                  {...form.register("currency")}
-                />
-                {form.formState.errors.currency ? (
-                  <FieldError>{form.formState.errors.currency.message}</FieldError>
-                ) : null}
-              </Field>
               <Controller
                 control={form.control}
                 name="default_api_key_policy_id"

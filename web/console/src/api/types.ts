@@ -55,7 +55,6 @@ export type ChannelStatusModelMetric = S["ChannelStatusModelMetric"];
 export type ChannelStatusChannel = S["ChannelStatusChannel"];
 export type ChannelStatusChannelModel = S["ChannelStatusChannelModel"];
 export type ChannelStatusBucket = S["ChannelStatusBucket"];
-export type CurrencyAmount = S["CurrencyAmount"];
 export type CostStatisticsReport = S["CostStatisticsReport"];
 export type CostStatisticsSummary = S["CostStatisticsSummary"];
 export type CostStatisticsBucket = S["CostStatisticsBucket"];

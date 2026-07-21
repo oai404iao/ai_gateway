@@ -25,7 +25,7 @@ import { useApiKeyPolicies, useUpdateUser, useUser } from "@/features/admin/api"
 import { ApiError } from "@/api/errors";
 import { clearSession, setSession } from "@/api/session-store";
 import { useSession } from "@/lib/use-session";
-import { formatCurrency } from "@/lib/formatters";
+import { formatUsd } from "@/lib/formatters";
 import { formatDateTime } from "@/lib/dates";
 import { ROLES, roleLabel, USER_STATUSES } from "@/lib/permissions";
 import { useI18n } from "@/app/i18n";
@@ -36,7 +36,6 @@ const editSchema = z.object({
   role: z.enum(["user", "admin"]),
   status: z.enum(["active", "suspended", "disabled"]),
   balance_amount: z.string().regex(/^-?\d+(?:\.\d+)?$/, "Enter a valid balance."),
-  currency: z.string().min(1).max(8),
   default_api_key_policy_id: z.string().optional(),
 });
 
@@ -48,7 +47,6 @@ const emptyEditValues: EditValues = {
   role: "user",
   status: "active",
   balance_amount: "0",
-  currency: "",
   default_api_key_policy_id: "",
 };
 
@@ -70,7 +68,6 @@ export function UserDetailPage() {
             ? data.data.status
             : "disabled",
         balance_amount: data.data.balance_amount,
-        currency: data.data.currency,
         default_api_key_policy_id: data.data.default_api_key_policy_id ?? "",
       }
     : emptyEditValues;
@@ -96,7 +93,6 @@ export function UserDetailPage() {
           role: values.role,
           status: values.status,
           balance_amount: values.balance_amount,
-          currency: values.currency,
           default_api_key_policy_id: values.default_api_key_policy_id || null,
         },
         ifMatch: etag,
@@ -155,7 +151,7 @@ export function UserDetailPage() {
                 <DetailField label={t("Status")} value={<StatusBadge value={user.status} />} />
                 <DetailField
                   label={t("Balance")}
-                  value={formatCurrency(user.balance_amount, user.currency)}
+                  value={formatUsd(user.balance_amount)}
                 />
                 <DetailField label={t("Created")} value={formatDateTime(user.created_at)} />
                 <DetailField label={t("Updated")} value={formatDateTime(user.updated_at)} />
@@ -270,19 +266,8 @@ export function UserDetailPage() {
                     }
                     error={form.formState.errors.balance_amount?.message}
                     required
-                    description={t("Set the current account balance in the selected currency.")}
+                    description={t("Set the current account balance in USD.")}
                   />
-                  <Field data-invalid={Boolean(form.formState.errors.currency)}>
-                    <FieldLabel htmlFor="currency">{t("Currency")}</FieldLabel>
-                    <Input
-                      id="currency"
-                      aria-invalid={Boolean(form.formState.errors.currency)}
-                      {...form.register("currency")}
-                    />
-                    {form.formState.errors.currency ? (
-                      <FieldError>{form.formState.errors.currency.message}</FieldError>
-                    ) : null}
-                  </Field>
                   <Controller
                     control={form.control}
                     name="default_api_key_policy_id"

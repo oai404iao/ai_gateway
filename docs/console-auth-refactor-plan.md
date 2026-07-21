@@ -66,7 +66,7 @@ verification_key_path = "/run/secrets/ai-gateway-jwt-public.pem"
 
 ### 5.1 users
 
-保留余额、币种和状态，新增或调整：
+保留余额和状态；用户不再拥有币种设置，所有金额统一按 USD 结算。新增或调整：
 
 - `email`：大小写无关唯一；已有部署允许暂时为 NULL，未设置凭据的遗留用户不能登录。
 - `display_name`：原 `name` 列迁移而来。

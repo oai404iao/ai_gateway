@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   formatBoolean,
-  formatCurrency,
+  formatUsd,
   formatDurationMs,
   formatList,
   formatTokens,
@@ -9,9 +9,9 @@ import {
 } from "@/lib/formatters";
 
 describe("formatters", () => {
-  it("formats decimals with currency", () => {
-    expect(formatCurrency("1.5", "USD")).toBe("1.50 USD");
-    expect(formatCurrency(null)).toBe("—");
+  it("formats USD amounts", () => {
+    expect(formatUsd("1.5")).toBe("1.50 USD");
+    expect(formatUsd(null)).toBe("—");
   });
 
   it("formats durations", () => {

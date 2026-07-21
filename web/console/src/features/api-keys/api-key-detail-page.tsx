@@ -30,7 +30,7 @@ import {
   useUpdateOwnApiKey,
 } from "@/features/api-keys/api";
 import { ApiError } from "@/api/errors";
-import { formatCurrency, formatList } from "@/lib/formatters";
+import { formatList, formatUsd } from "@/lib/formatters";
 import {
   dateTimeLocalToIso,
   formatDateTime,
@@ -160,11 +160,11 @@ export function ApiKeyDetailPage() {
                   />
                   <DetailField
                     label={t("Quota limit")}
-                    value={formatCurrency(key.quota_limit_amount)}
+                    value={formatUsd(key.quota_limit_amount)}
                   />
                   <DetailField
                     label={t("Quota used")}
-                    value={formatCurrency(key.quota_used_amount)}
+                    value={formatUsd(key.quota_used_amount)}
                   />
                   <DetailField label={t("Created")} value={formatDateTime(key.created_at)} />
                 </dl>

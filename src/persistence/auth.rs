@@ -192,7 +192,7 @@ impl AuthRepository {
 
     pub async fn profile(&self, user_id: Uuid) -> Result<Option<ConsoleProfile>, RepositoryError> {
         sqlx::query_as::<_, ConsoleProfile>(
-            "SELECT id,email,display_name,role,status,balance_amount,currency,created_at,updated_at \
+            "SELECT id,email,display_name,role,status,balance_amount,created_at,updated_at \
              FROM users WHERE id=$1",
         )
         .bind(user_id)
@@ -208,7 +208,7 @@ impl AuthRepository {
     ) -> Result<Option<ConsoleProfile>, RepositoryError> {
         sqlx::query_as::<_, ConsoleProfile>(
             "UPDATE users SET display_name=$2 WHERE id=$1 AND status='active' \
-             RETURNING id,email,display_name,role,status,balance_amount,currency,created_at,updated_at",
+             RETURNING id,email,display_name,role,status,balance_amount,created_at,updated_at",
         )
         .bind(user_id)
         .bind(display_name)
@@ -312,10 +312,7 @@ impl AuthRepository {
     ) -> Result<InvitationCreated, RepositoryError> {
         let mut transaction = begin_serializable(&self.pool).await?;
         ensure_active_admin(&mut transaction, actor_user_id).await?;
-        if input.email.trim().is_empty()
-            || input.display_name.trim().is_empty()
-            || input.currency.trim().is_empty()
-        {
+        if input.email.trim().is_empty() || input.display_name.trim().is_empty() {
             transaction.rollback().await?;
             return Err(RepositoryError::Validation);
         }
@@ -335,14 +332,13 @@ impl AuthRepository {
         let user_id = Uuid::new_v4();
         let updated_at = sqlx::query_scalar::<_, DateTime<Utc>>(
             "INSERT INTO users \
-             (id,email,display_name,role,status,currency,default_api_key_policy_id) \
-             VALUES ($1,$2,$3,$4,'invited',$5,$6) RETURNING updated_at",
+             (id,email,display_name,role,status,default_api_key_policy_id) \
+             VALUES ($1,$2,$3,$4,'invited',$5) RETURNING updated_at",
         )
         .bind(user_id)
         .bind(&input.email)
         .bind(&input.display_name)
         .bind(input.role.as_str())
-        .bind(&input.currency)
         .bind(input.default_api_key_policy_id)
         .fetch_one(&mut *transaction)
         .await?;
@@ -375,7 +371,6 @@ impl AuthRepository {
             "display_name": input.display_name,
             "role": input.role.as_str(),
             "status": "invited",
-            "currency": input.currency,
             "default_api_key_policy_id": input.default_api_key_policy_id,
             "updated_at": updated_at,
         }))
@@ -460,7 +455,6 @@ impl AuthRepository {
         email: &str,
         display_name: &str,
         password_hash: &str,
-        currency: &str,
     ) -> Result<Uuid, RepositoryError> {
         let mut transaction = begin_serializable(&self.pool).await?;
         let exists = sqlx::query_scalar::<_, bool>(
@@ -472,24 +466,19 @@ impl AuthRepository {
             transaction.rollback().await?;
             return Err(RepositoryError::Conflict);
         }
-        if email.trim().is_empty()
-            || display_name.trim().is_empty()
-            || password_hash.is_empty()
-            || currency.trim().is_empty()
-        {
+        if email.trim().is_empty() || display_name.trim().is_empty() || password_hash.is_empty() {
             transaction.rollback().await?;
             return Err(RepositoryError::Validation);
         }
         let id = Uuid::new_v4();
         sqlx::query(
-            "INSERT INTO users (id,email,display_name,role,status,password_hash,password_changed_at,currency) \
-             VALUES ($1,$2,$3,'admin','active',$4,now(),$5)",
+            "INSERT INTO users (id,email,display_name,role,status,password_hash,password_changed_at) \
+             VALUES ($1,$2,$3,'admin','active',$4,now())",
         )
         .bind(id)
         .bind(email)
         .bind(display_name)
         .bind(password_hash)
-        .bind(currency)
         .execute(&mut *transaction)
         .await?;
         sqlx::query(
@@ -499,7 +488,7 @@ impl AuthRepository {
         )
         .bind(Uuid::new_v4())
         .bind(id)
-        .bind(json!({"id":id,"email":email,"display_name":display_name,"role":"admin","status":"active","currency":currency}))
+        .bind(json!({"id":id,"email":email,"display_name":display_name,"role":"admin","status":"active"}))
         .bind(Uuid::new_v4().to_string())
         .execute(&mut *transaction)
         .await?;
@@ -621,7 +610,6 @@ pub struct ConsoleProfile {
     pub role: String,
     pub status: String,
     pub balance_amount: rust_decimal::Decimal,
-    pub currency: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -631,7 +619,6 @@ pub struct InviteUserInput {
     pub email: String,
     pub display_name: String,
     pub role: UserRole,
-    pub currency: String,
     pub default_api_key_policy_id: Option<Uuid>,
 }
 

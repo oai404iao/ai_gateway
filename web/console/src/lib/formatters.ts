@@ -12,7 +12,7 @@ export function formatDecimal(value: string | null | undefined, fractionDigits =
   });
 }
 
-export function formatCurrency(value: string | null | undefined, currency?: string | null): string {
+export function formatUsd(value: string | null | undefined): string {
   if (value === null || value === undefined || value === "") return "—";
   const number = Number(value);
   const amount = Number.isFinite(number)
@@ -21,7 +21,7 @@ export function formatCurrency(value: string | null | undefined, currency?: stri
         maximumFractionDigits: 6,
       })
     : value;
-  return currency ? `${amount} ${currency}` : amount;
+  return `${amount} USD`;
 }
 
 export function formatTokens(value: number | null | undefined): string {

@@ -25,7 +25,6 @@ const schema = z.object({
   display_name: z.string().min(1, "Display name is required."),
   provider_name: z.string().nullable(),
   enabled: z.boolean(),
-  currency: z.string().min(1).max(8),
   price_unit_tokens: z.number().int().positive(),
   input_unit_price: z.string().min(1),
   cached_input_unit_price: z.string().min(1),
@@ -42,7 +41,6 @@ const empty: FormState = {
   display_name: "",
   provider_name: null,
   enabled: true,
-  currency: "USD",
   price_unit_tokens: 1_000_000,
   input_unit_price: "0",
   cached_input_unit_price: "0",
@@ -85,7 +83,6 @@ export function ModelDetailPage() {
         display_name: data.data.display_name,
         provider_name: data.data.provider_name,
         enabled: data.data.enabled,
-        currency: data.data.currency,
         price_unit_tokens: data.data.price_unit_tokens,
         input_unit_price: data.data.input_unit_price,
         cached_input_unit_price: data.data.cached_input_unit_price,
@@ -119,7 +116,6 @@ export function ModelDetailPage() {
       display_name: parsed.data.display_name,
       provider_name: parsed.data.provider_name,
       enabled: parsed.data.enabled,
-      currency: parsed.data.currency,
       price_unit_tokens: parsed.data.price_unit_tokens,
       input_unit_price: parsed.data.input_unit_price,
       cached_input_unit_price: parsed.data.cached_input_unit_price,
@@ -156,7 +152,7 @@ export function ModelDetailPage() {
   return (
     <AdminDetailShell
       title={isNew ? t("New upstream model") : state.display_name || t("Upstream model")}
-      description={t("An upstream model identifier with its billing price.")}
+      description={t("An upstream model identifier with its USD billing price.")}
       backPath="/admin/models"
       backLabel={t("Back to upstream models")}
       isLoading={isLoading}
@@ -199,7 +195,9 @@ export function ModelDetailPage() {
             <CardTitle>
               {isNew ? t("Create upstream model") : t("Edit upstream model")}
             </CardTitle>
-            <CardDescription>{t("Prices are per the configured price unit tokens.")}</CardDescription>
+            <CardDescription>
+              {t("USD prices are per the configured price unit tokens.")}
+            </CardDescription>
           </CardHeader>
           <CardContent>
             <div className="flex flex-col gap-4">
@@ -234,14 +232,6 @@ export function ModelDetailPage() {
                     id="provider_name"
                     value={state.provider_name ?? ""}
                     onChange={(event) => patch({ provider_name: event.target.value || null })}
-                  />
-                </Field>
-                <Field>
-                  <FieldLabel htmlFor="currency">{t("Currency")}</FieldLabel>
-                  <Input
-                    id="currency"
-                    value={state.currency}
-                    onChange={(event) => patch({ currency: event.target.value })}
                   />
                 </Field>
                 <Field>

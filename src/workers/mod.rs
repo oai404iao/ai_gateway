@@ -258,9 +258,6 @@ fn handle_settlement_outcome(
         RequestLogSettlementOutcome::NotBillable => {
             tracing::debug!(request_log_id = ?request_log_id, reason = "not_billable", "request log has no settled cost");
         }
-        RequestLogSettlementOutcome::CurrencyMismatch => {
-            tracing::error!(request_log_id = ?request_log_id, reason = "currency_mismatch", "request-log settlement requires matching user and request currencies");
-        }
         RequestLogSettlementOutcome::AccountMismatch => {
             tracing::error!(request_log_id = ?request_log_id, reason = "account_mismatch", "request-log settlement found inconsistent API-key ownership");
         }

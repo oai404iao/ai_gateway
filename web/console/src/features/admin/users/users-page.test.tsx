@@ -52,7 +52,6 @@ describe("UsersPage", () => {
         email: "new-user@example.test",
         display_name: "New User",
         role: "user",
-        currency: "USD",
         default_api_key_policy_id: null,
       })
     })

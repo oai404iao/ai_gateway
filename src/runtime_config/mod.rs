@@ -861,8 +861,7 @@ fn compile_rules(
 fn compile_model_price_snapshot(
     record: &ModelRuleRecord,
 ) -> Result<ModelPriceSnapshot, ConfigError> {
-    if record.upstream_model_currency.len() != 3
-        || !record.upstream_model_currency.is_ascii()
+    if record.upstream_model_currency != "USD"
         || record.price_unit_tokens <= 0
         || [
             record.input_unit_price,
@@ -1475,6 +1474,14 @@ mod tests {
             templates: vec![],
         }
     }
+
+    #[test]
+    fn compiler_rejects_non_usd_model_prices() {
+        let mut records = route_records(0, "weighted_random", 1, "weighted_random", false);
+        records.model_rules[0].upstream_model_currency = "EUR".into();
+        assert!(compile_control_plane(records).is_err());
+    }
+
     #[test]
     fn bootstrap_rejects_dynamic_toml() {
         let value = "[server]\nhost='x'\nport=1\nmax_request_body_bytes=1\nshutdown_grace_period_seconds=1\n[database]\nurl='postgres://x'\nmax_connections=1\nconnect_timeout_seconds=1\n[upstream]\nconnect_timeout_seconds=1\nresponse_header_timeout_seconds=2\nstream_idle_timeout_seconds=1\n[runtime_config]\nreload_interval_seconds=1\n[request_logging]\nqueue_capacity=1\n[observability]\nfilter='info'\n[[api_keys]]\nid='bad'";

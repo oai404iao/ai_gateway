@@ -265,7 +265,6 @@ impl ConsoleAuthService {
         email: String,
         display_name: String,
         password: String,
-        currency: String,
     ) -> Result<Uuid, AuthError> {
         validate_email(&email)?;
         validate_display_name(&display_name)?;
@@ -273,7 +272,7 @@ impl ConsoleAuthService {
         let password_hash = hash_console_password(password).await?;
         Ok(self
             .repository
-            .bootstrap_admin(&email, &display_name, &password_hash, &currency)
+            .bootstrap_admin(&email, &display_name, &password_hash)
             .await?)
     }
 

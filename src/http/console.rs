@@ -414,7 +414,6 @@ struct InviteUserRequest {
     email: String,
     display_name: String,
     role: UserRole,
-    currency: String,
     #[serde(default)]
     default_api_key_policy_id: Option<Uuid>,
 }
@@ -729,7 +728,6 @@ async fn invite_user(
                 email: input.email,
                 display_name: input.display_name,
                 role: input.role,
-                currency: input.currency,
                 default_api_key_policy_id: input.default_api_key_policy_id,
             },
         )

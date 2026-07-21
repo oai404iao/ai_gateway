@@ -275,7 +275,6 @@ pub struct UserInput {
     pub role: String,
     pub status: String,
     pub balance_amount: rust_decimal::Decimal,
-    pub currency: String,
     #[serde(default)]
     pub default_api_key_policy_id: Option<Uuid>,
 }
@@ -291,7 +290,6 @@ pub struct ModelInput {
     #[serde(default)]
     pub provider_name: Option<String>,
     pub enabled: bool,
-    pub currency: String,
     pub price_unit_tokens: i64,
     pub input_unit_price: rust_decimal::Decimal,
     pub cached_input_unit_price: rust_decimal::Decimal,
@@ -663,7 +661,6 @@ pub struct ControlPlaneUser {
     pub status: String,
     pub default_api_key_policy_id: Option<Uuid>,
     pub balance_amount: rust_decimal::Decimal,
-    pub currency: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -674,7 +671,6 @@ pub struct ControlPlaneModel {
     pub display_name: String,
     pub provider_name: Option<String>,
     pub enabled: bool,
-    pub currency: String,
     pub price_unit_tokens: i64,
     pub input_unit_price: rust_decimal::Decimal,
     pub cached_input_unit_price: rust_decimal::Decimal,
@@ -740,7 +736,6 @@ pub struct ConsoleRequestLog {
     pub cached_input_tokens: Option<i64>,
     pub cache_write_tokens: Option<i64>,
     pub output_tokens: Option<i64>,
-    pub currency: Option<String>,
     pub cost_amount: Option<rust_decimal::Decimal>,
     pub error_code: Option<String>,
     pub billed_at: Option<DateTime<Utc>>,
@@ -902,12 +897,6 @@ pub struct ChannelStatusBucket {
 }
 
 #[derive(Clone, Debug, Serialize)]
-pub struct CurrencyAmount {
-    pub currency: String,
-    pub amount: rust_decimal::Decimal,
-}
-
-#[derive(Clone, Debug, Serialize)]
 pub struct CostStatisticsReport {
     pub started_at: DateTime<Utc>,
     pub ended_at: DateTime<Utc>,
@@ -924,7 +913,7 @@ pub struct CostStatisticsSummary {
     pub total_tokens: i64,
     pub average_rpm: f64,
     pub average_tpm: f64,
-    pub costs: Vec<CurrencyAmount>,
+    pub cost_amount: rust_decimal::Decimal,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -932,7 +921,7 @@ pub struct CostStatisticsBucket {
     pub started_at: DateTime<Utc>,
     pub request_count: i64,
     pub total_tokens: i64,
-    pub costs: Vec<CurrencyAmount>,
+    pub cost_amount: rust_decimal::Decimal,
     pub models: Vec<CostStatisticsBucketModel>,
 }
 
@@ -942,7 +931,7 @@ pub struct CostStatisticsBucketModel {
     pub model: String,
     pub request_count: i64,
     pub total_tokens: i64,
-    pub costs: Vec<CurrencyAmount>,
+    pub cost_amount: rust_decimal::Decimal,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -952,7 +941,7 @@ pub struct CostStatisticsModel {
     pub request_count: i64,
     pub total_tokens: i64,
     pub success_rate: Option<f64>,
-    pub costs: Vec<CurrencyAmount>,
+    pub cost_amount: rust_decimal::Decimal,
 }
 
 #[derive(Clone, Debug, Serialize, FromRow)]
@@ -1364,7 +1353,8 @@ impl RequestLogRepository {
                     COALESCE(
                         sum(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)),
                         0
-                    )::bigint AS total_tokens
+                    )::bigint AS total_tokens,
+                    COALESCE(sum(cost_amount), 0) AS cost_amount
              FROM request_logs
              WHERE started_at >= $1
                AND started_at < $2
@@ -1378,33 +1368,11 @@ impl RequestLogRepository {
         .fetch_one(&self.pool)
         .await?;
 
-        let cost_rows = sqlx::query_as::<_, CurrencyTotalRow>(
-            "SELECT currency,
-                    sum(cost_amount) AS amount
-             FROM request_logs
-             WHERE started_at >= $1
-               AND started_at < $2
-               AND ($3::uuid IS NULL OR user_id = $3)
-               AND ($4::uuid IS NULL OR api_key_id = $4)
-               AND cost_amount IS NOT NULL
-               AND currency IS NOT NULL
-             GROUP BY currency
-             ORDER BY currency",
-        )
-        .bind(filter.started_at)
-        .bind(filter.ended_at)
-        .bind(filter.user_id)
-        .bind(filter.api_key_id)
-        .fetch_all(&self.pool)
-        .await?;
-
         let bucket_sql = format!(
             "SELECT {} AS bucket_started_at,
                     COALESCE(upstream_model, client_model) AS model,
                     api_format::text AS api_format,
-                    currency,
                     count(*)::bigint AS request_count,
-                    count(cost_amount)::bigint AS priced_request_count,
                     COALESCE(
                         sum(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)),
                         0
@@ -1417,12 +1385,10 @@ impl RequestLogRepository {
                AND ($4::uuid IS NULL OR api_key_id = $4)
              GROUP BY bucket_started_at,
                       COALESCE(upstream_model, client_model),
-                      api_format,
-                      currency
+                      api_format
              ORDER BY bucket_started_at,
                       COALESCE(upstream_model, client_model),
-                      api_format,
-                      currency",
+                      api_format",
             filter.granularity.bucket_expression()
         );
         let bucket_rows = sqlx::query_as::<_, CostBucketMetricRow>(&bucket_sql)
@@ -1436,12 +1402,10 @@ impl RequestLogRepository {
         let model_rows = sqlx::query_as::<_, CostModelMetricRow>(
             "SELECT COALESCE(upstream_model, client_model) AS model,
                     api_format::text AS api_format,
-                    currency,
                     count(*)::bigint AS request_count,
                     count(*) FILTER (WHERE outcome <> 'cancelled')::bigint
                         AS success_rate_request_count,
                     count(*) FILTER (WHERE outcome = 'succeeded')::bigint AS succeeded_count,
-                    count(cost_amount)::bigint AS priced_request_count,
                     COALESCE(
                         sum(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)),
                         0
@@ -1452,8 +1416,8 @@ impl RequestLogRepository {
                AND started_at < $2
                AND ($3::uuid IS NULL OR user_id = $3)
                AND ($4::uuid IS NULL OR api_key_id = $4)
-             GROUP BY COALESCE(upstream_model, client_model), api_format, currency
-             ORDER BY COALESCE(upstream_model, client_model), api_format, currency",
+             GROUP BY COALESCE(upstream_model, client_model), api_format
+             ORDER BY COALESCE(upstream_model, client_model), api_format",
         )
         .bind(filter.started_at)
         .bind(filter.ended_at)
@@ -1473,13 +1437,7 @@ impl RequestLogRepository {
                 total_tokens: summary.total_tokens,
                 average_rpm: summary.request_count as f64 / duration_minutes,
                 average_tpm: summary.total_tokens as f64 / duration_minutes,
-                costs: cost_rows
-                    .into_iter()
-                    .map(|row| CurrencyAmount {
-                        currency: row.currency,
-                        amount: row.amount,
-                    })
-                    .collect(),
+                cost_amount: summary.cost_amount,
             },
             buckets: fold_cost_buckets(
                 bucket_rows,
@@ -1575,16 +1533,13 @@ impl RequestLogRepository {
         let claimed = sqlx::query_as::<_, ClaimedRequestLog>(
             "UPDATE request_logs AS log
              SET billed_at = now()
-             FROM users AS user_account, api_keys AS key
+             FROM api_keys AS key
              WHERE log.id = $1
                AND log.billed_at IS NULL
                AND log.cost_amount IS NOT NULL
-               AND log.currency IS NOT NULL
-               AND user_account.id = log.user_id
-               AND user_account.currency = log.currency
                AND key.id = log.api_key_id
                AND key.user_id = log.user_id
-             RETURNING log.id, log.user_id, log.api_key_id, log.cost_amount, log.currency",
+             RETURNING log.id, log.user_id, log.api_key_id, log.cost_amount",
         )
         .bind(request_log_id)
         .fetch_optional(&mut *transaction)
@@ -1599,12 +1554,10 @@ impl RequestLogRepository {
             "UPDATE users
              SET balance_amount = balance_amount - $1
              WHERE id = $2
-               AND currency = $3
              RETURNING balance_amount",
         )
         .bind(claimed.cost_amount)
         .bind(claimed.user_id)
-        .bind(&claimed.currency)
         .fetch_optional(&mut *transaction)
         .await?;
         if balance_updated.is_none() {
@@ -1634,9 +1587,9 @@ impl RequestLogRepository {
 
     /// Reconciles a bounded oldest-first slice of durable, eligible logs.
     ///
-    /// It intentionally excludes missing-cost and currency/account-mismatch
-    /// rows. Those rows remain visibly unbilled until their source facts are
-    /// corrected instead of being retried forever as transient failures.
+    /// It intentionally excludes missing-cost and account-mismatch rows. Those
+    /// rows remain visibly unbilled until their source facts are corrected
+    /// instead of being retried forever as transient failures.
     pub async fn settle_pending(
         &self,
         limit: i64,
@@ -1651,15 +1604,11 @@ impl RequestLogRepository {
         let request_log_ids = sqlx::query_scalar::<_, Uuid>(
             "SELECT log.id
              FROM request_logs AS log
-             JOIN users AS user_account
-               ON user_account.id = log.user_id
-              AND user_account.currency = log.currency
              JOIN api_keys AS key
                ON key.id = log.api_key_id
               AND key.user_id = log.user_id
              WHERE log.billed_at IS NULL
                AND log.cost_amount IS NOT NULL
-               AND log.currency IS NOT NULL
              ORDER BY log.completed_at, log.id
              LIMIT $1",
         )
@@ -1675,7 +1624,7 @@ impl RequestLogRepository {
     }
 }
 
-const CONSOLE_REQUEST_LOG_COLUMNS: &str = "id,started_at,completed_at,user_id,api_key_id,api_format::text AS api_format,client_model,upstream_model,model_rule_id,channel_group_id,channel_id,outcome,response_status_code,streamed,ttft_ms,total_duration_ms,input_tokens,cached_input_tokens,cache_write_tokens,output_tokens,currency,cost_amount,error_code,billed_at";
+const CONSOLE_REQUEST_LOG_COLUMNS: &str = "id,started_at,completed_at,user_id,api_key_id,api_format::text AS api_format,client_model,upstream_model,model_rule_id,channel_group_id,channel_id,outcome,response_status_code,streamed,ttft_ms,total_duration_ms,input_tokens,cached_input_tokens,cache_write_tokens,output_tokens,cost_amount,error_code,billed_at";
 
 async fn query_console_request_log(
     pool: &PgPool,
@@ -1892,12 +1841,7 @@ struct CostSummaryRow {
     request_count: i64,
     priced_request_count: i64,
     total_tokens: i64,
-}
-
-#[derive(FromRow)]
-struct CurrencyTotalRow {
-    currency: String,
-    amount: rust_decimal::Decimal,
+    cost_amount: rust_decimal::Decimal,
 }
 
 #[derive(FromRow)]
@@ -1905,9 +1849,7 @@ struct CostBucketMetricRow {
     bucket_started_at: DateTime<Utc>,
     model: String,
     api_format: String,
-    currency: Option<String>,
     request_count: i64,
-    priced_request_count: i64,
     total_tokens: i64,
     cost_amount: rust_decimal::Decimal,
 }
@@ -1916,11 +1858,9 @@ struct CostBucketMetricRow {
 struct CostModelMetricRow {
     model: String,
     api_format: String,
-    currency: Option<String>,
     request_count: i64,
     success_rate_request_count: i64,
     succeeded_count: i64,
-    priced_request_count: i64,
     total_tokens: i64,
     cost_amount: rust_decimal::Decimal,
 }
@@ -1929,7 +1869,7 @@ struct CostModelMetricRow {
 struct CostBucketBuilder {
     request_count: i64,
     total_tokens: i64,
-    costs: BTreeMap<String, rust_decimal::Decimal>,
+    cost_amount: rust_decimal::Decimal,
     models: BTreeMap<(String, String), CostBucketModelBuilder>,
 }
 
@@ -1937,7 +1877,7 @@ struct CostBucketBuilder {
 struct CostBucketModelBuilder {
     request_count: i64,
     total_tokens: i64,
-    costs: BTreeMap<String, rust_decimal::Decimal>,
+    cost_amount: rust_decimal::Decimal,
 }
 
 #[derive(Default)]
@@ -1946,7 +1886,7 @@ struct CostModelBuilder {
     success_rate_request_count: i64,
     succeeded_count: i64,
     total_tokens: i64,
-    costs: BTreeMap<String, rust_decimal::Decimal>,
+    cost_amount: rust_decimal::Decimal,
 }
 
 fn fold_cost_buckets(
@@ -1976,24 +1916,14 @@ fn fold_cost_buckets(
         let bucket = buckets.entry(row.bucket_started_at).or_default();
         bucket.request_count = bucket.request_count.saturating_add(row.request_count);
         bucket.total_tokens = bucket.total_tokens.saturating_add(row.total_tokens);
-        add_currency_cost(
-            &mut bucket.costs,
-            row.currency.as_deref(),
-            row.priced_request_count,
-            row.cost_amount,
-        );
+        bucket.cost_amount += row.cost_amount;
         let model = bucket
             .models
             .entry((row.api_format, row.model))
             .or_default();
         model.request_count = model.request_count.saturating_add(row.request_count);
         model.total_tokens = model.total_tokens.saturating_add(row.total_tokens);
-        add_currency_cost(
-            &mut model.costs,
-            row.currency.as_deref(),
-            row.priced_request_count,
-            row.cost_amount,
-        );
+        model.cost_amount += row.cost_amount;
     }
 
     buckets
@@ -2002,7 +1932,7 @@ fn fold_cost_buckets(
             started_at,
             request_count: bucket.request_count,
             total_tokens: bucket.total_tokens,
-            costs: finish_currency_costs(bucket.costs),
+            cost_amount: bucket.cost_amount,
             models: bucket
                 .models
                 .into_iter()
@@ -2011,7 +1941,7 @@ fn fold_cost_buckets(
                     model,
                     request_count: metric.request_count,
                     total_tokens: metric.total_tokens,
-                    costs: finish_currency_costs(metric.costs),
+                    cost_amount: metric.cost_amount,
                 })
                 .collect(),
         })
@@ -2028,12 +1958,7 @@ fn fold_cost_models(rows: Vec<CostModelMetricRow>) -> Vec<CostStatisticsModel> {
             .saturating_add(row.success_rate_request_count);
         model.succeeded_count = model.succeeded_count.saturating_add(row.succeeded_count);
         model.total_tokens = model.total_tokens.saturating_add(row.total_tokens);
-        add_currency_cost(
-            &mut model.costs,
-            row.currency.as_deref(),
-            row.priced_request_count,
-            row.cost_amount,
-        );
+        model.cost_amount += row.cost_amount;
     }
 
     models
@@ -2044,29 +1969,8 @@ fn fold_cost_models(rows: Vec<CostModelMetricRow>) -> Vec<CostStatisticsModel> {
             request_count: metric.request_count,
             total_tokens: metric.total_tokens,
             success_rate: success_rate(metric.success_rate_request_count, metric.succeeded_count),
-            costs: finish_currency_costs(metric.costs),
+            cost_amount: metric.cost_amount,
         })
-        .collect()
-}
-
-fn add_currency_cost(
-    costs: &mut BTreeMap<String, rust_decimal::Decimal>,
-    currency: Option<&str>,
-    priced_request_count: i64,
-    amount: rust_decimal::Decimal,
-) {
-    if priced_request_count <= 0 {
-        return;
-    }
-    if let Some(currency) = currency {
-        *costs.entry(currency.into()).or_default() += amount;
-    }
-}
-
-fn finish_currency_costs(costs: BTreeMap<String, rust_decimal::Decimal>) -> Vec<CurrencyAmount> {
-    costs
-        .into_iter()
-        .map(|(currency, amount)| CurrencyAmount { currency, amount })
         .collect()
 }
 
@@ -2085,7 +1989,6 @@ pub enum RequestLogSettlementOutcome {
     },
     AlreadyBilled,
     NotBillable,
-    CurrencyMismatch,
     AccountMismatch,
     NotFound,
 }
@@ -2096,15 +1999,12 @@ struct ClaimedRequestLog {
     user_id: Uuid,
     api_key_id: Uuid,
     cost_amount: rust_decimal::Decimal,
-    currency: String,
 }
 
 #[derive(FromRow)]
 struct SettlementEligibility {
     billed_at: Option<DateTime<Utc>>,
     cost_amount: Option<rust_decimal::Decimal>,
-    currency: Option<String>,
-    user_currency: Option<String>,
     api_key_user_id: Option<Uuid>,
     user_id: Uuid,
 }
@@ -2116,12 +2016,9 @@ async fn settlement_ineligibility(
     let eligibility = sqlx::query_as::<_, SettlementEligibility>(
         "SELECT log.billed_at,
                 log.cost_amount,
-                log.currency,
-                user_account.currency AS user_currency,
                 key.user_id AS api_key_user_id,
                 log.user_id
          FROM request_logs AS log
-         LEFT JOIN users AS user_account ON user_account.id = log.user_id
          LEFT JOIN api_keys AS key ON key.id = log.api_key_id
          WHERE log.id = $1",
     )
@@ -2134,14 +2031,11 @@ async fn settlement_ineligibility(
     if eligibility.billed_at.is_some() {
         return Ok(RequestLogSettlementOutcome::AlreadyBilled);
     }
-    if eligibility.cost_amount.is_none() || eligibility.currency.is_none() {
+    if eligibility.cost_amount.is_none() {
         return Ok(RequestLogSettlementOutcome::NotBillable);
     }
     if eligibility.api_key_user_id != Some(eligibility.user_id) {
         return Ok(RequestLogSettlementOutcome::AccountMismatch);
-    }
-    if eligibility.user_currency != eligibility.currency {
-        return Ok(RequestLogSettlementOutcome::CurrencyMismatch);
     }
     // A concurrent claimer either commits and is observed as `AlreadyBilled`,
     // or rolls back and leaves a later recovery pass to claim the row.
@@ -2368,11 +2262,11 @@ impl ControlPlaneRepository {
 
     pub async fn control_plane_lists(&self) -> Result<ControlPlaneLists, RepositoryError> {
         let users = sqlx::query_as::<_, ControlPlaneUser>(
-            "SELECT id,email,display_name,role,status,default_api_key_policy_id,balance_amount,currency,created_at,updated_at FROM users ORDER BY id",
+            "SELECT id,email,display_name,role,status,default_api_key_policy_id,balance_amount,created_at,updated_at FROM users ORDER BY id",
         )
         .fetch_all(&self.pool)
         .await?;
-        let models = sqlx::query_as::<_, ControlPlaneModel>("SELECT id,source_model_id,display_name,provider_name,enabled,currency,price_unit_tokens,input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,price_effective_at,last_synced_at,created_at,updated_at FROM models ORDER BY id").fetch_all(&self.pool).await?;
+        let models = sqlx::query_as::<_, ControlPlaneModel>("SELECT id,source_model_id,display_name,provider_name,enabled,price_unit_tokens,input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,price_effective_at,last_synced_at,created_at,updated_at FROM models ORDER BY id").fetch_all(&self.pool).await?;
         let api_keys = sqlx::query_as::<_, ControlPlaneApiKey>("SELECT k.id, k.user_id, u.status AS user_status, k.name, k.status, k.expires_at, k.allowed_api_formats::text[] AS allowed_api_formats, k.permissions, k.allowed_group_ids, k.requests_per_minute, k.tokens_per_minute, k.max_concurrent_requests, k.quota_limit_amount, k.quota_used_amount, k.updated_at FROM api_keys k JOIN users u ON u.id=k.user_id ORDER BY k.id").fetch_all(&self.pool).await?;
         let api_key_policies = sqlx::query_as::<_, ControlPlaneApiKeyPolicy>("SELECT id,name,allowed_api_formats::text[] AS allowed_api_formats,permissions,allowed_group_ids,requests_per_minute,max_concurrent_requests,quota_limit_amount,max_active_keys,enabled,created_at,updated_at FROM api_key_policies ORDER BY id").fetch_all(&self.pool).await?;
         let channel_groups = sqlx::query_as::<_, ControlPlaneChannelGroup>("SELECT id,name,api_format::text AS api_format,priority,selection_strategy,enabled,updated_at FROM channel_groups ORDER BY id").fetch_all(&self.pool).await?;
@@ -2828,7 +2722,7 @@ async fn user_audit(
     id: Uuid,
 ) -> Result<Value, RepositoryError> {
     let value = sqlx::query_scalar::<_, Value>(
-        "SELECT json_build_object('id',id,'email',email,'display_name',display_name,'role',role,'status',status,'default_api_key_policy_id',default_api_key_policy_id,'balance_amount',balance_amount,'currency',currency,'created_at',created_at,'updated_at',updated_at) FROM users WHERE id=$1 FOR UPDATE",
+        "SELECT json_build_object('id',id,'email',email,'display_name',display_name,'role',role,'status',status,'default_api_key_policy_id',default_api_key_policy_id,'balance_amount',balance_amount,'created_at',created_at,'updated_at',updated_at) FROM users WHERE id=$1 FOR UPDATE",
     )
     .bind(id)
     .fetch_optional(&mut **transaction)
@@ -2840,7 +2734,7 @@ async fn model_audit(
     id: Uuid,
 ) -> Result<Value, RepositoryError> {
     let value = sqlx::query_scalar::<_, Value>(
-        "SELECT json_build_object('id',id,'source_model_id',source_model_id,'display_name',display_name,'provider_name',provider_name,'enabled',enabled,'currency',currency,'price_unit_tokens',price_unit_tokens,'input_unit_price',input_unit_price,'cached_input_unit_price',cached_input_unit_price,'cache_write_unit_price',cache_write_unit_price,'output_unit_price',output_unit_price,'price_effective_at',price_effective_at,'last_synced_at',last_synced_at,'created_at',created_at,'updated_at',updated_at) FROM models WHERE id=$1 FOR UPDATE",
+        "SELECT json_build_object('id',id,'source_model_id',source_model_id,'display_name',display_name,'provider_name',provider_name,'enabled',enabled,'price_unit_tokens',price_unit_tokens,'input_unit_price',input_unit_price,'cached_input_unit_price',cached_input_unit_price,'cache_write_unit_price',cache_write_unit_price,'output_unit_price',output_unit_price,'price_effective_at',price_effective_at,'last_synced_at',last_synced_at,'created_at',created_at,'updated_at',updated_at) FROM models WHERE id=$1 FOR UPDATE",
     )
     .bind(id)
     .fetch_optional(&mut **transaction)
@@ -3058,7 +2952,7 @@ async fn user_insert(
             || before["status"].as_str() != Some(input.status.as_str()));
     let updated_at = if create {
         sqlx::query_scalar(
-            "INSERT INTO users (id,email,display_name,role,status,balance_amount,currency,default_api_key_policy_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING updated_at",
+            "INSERT INTO users (id,email,display_name,role,status,balance_amount,default_api_key_policy_id) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING updated_at",
         )
         .bind(id)
         .bind(&input.email)
@@ -3066,15 +2960,14 @@ async fn user_insert(
         .bind(&input.role)
         .bind(&input.status)
         .bind(input.balance_amount)
-        .bind(&input.currency)
         .bind(input.default_api_key_policy_id)
         .fetch_one(&mut **transaction)
         .await?
     } else {
         sqlx::query_scalar(
-            "UPDATE users SET email=$2,display_name=$3,role=$4,status=$5,balance_amount=$6,currency=$7,default_api_key_policy_id=$8, \
-             auth_version=auth_version+CASE WHEN $9 THEN 1 ELSE 0 END \
-             WHERE id=$1 AND updated_at=$10 RETURNING updated_at",
+            "UPDATE users SET email=$2,display_name=$3,role=$4,status=$5,balance_amount=$6,default_api_key_policy_id=$7, \
+             auth_version=auth_version+CASE WHEN $8 THEN 1 ELSE 0 END \
+             WHERE id=$1 AND updated_at=$9 RETURNING updated_at",
         )
         .bind(id)
         .bind(&input.email)
@@ -3082,7 +2975,6 @@ async fn user_insert(
         .bind(&input.role)
         .bind(&input.status)
         .bind(input.balance_amount)
-        .bind(&input.currency)
         .bind(input.default_api_key_policy_id)
         .bind(invalidates_sessions)
         .bind(expected_updated_at.expect("PUT version"))
@@ -3132,13 +3024,12 @@ async fn model_insert(
         model_audit(transaction, id).await?
     };
     let updated_at = if create {
-        sqlx::query_scalar("INSERT INTO models (id,source_model_id,display_name,provider_name,enabled,currency,price_unit_tokens,input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,price_effective_at,source_payload) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING updated_at")
+        sqlx::query_scalar("INSERT INTO models (id,source_model_id,display_name,provider_name,enabled,currency,price_unit_tokens,input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,price_effective_at,source_payload) VALUES ($1,$2,$3,$4,$5,'USD',$6,$7,$8,$9,$10,$11,$12) RETURNING updated_at")
             .bind(id)
             .bind(&input.source_model_id)
             .bind(&input.display_name)
             .bind(&input.provider_name)
             .bind(input.enabled)
-            .bind(&input.currency)
             .bind(input.price_unit_tokens)
             .bind(input.input_unit_price)
             .bind(input.cached_input_unit_price)
@@ -3149,13 +3040,12 @@ async fn model_insert(
             .fetch_one(&mut **transaction)
             .await?
     } else {
-        sqlx::query_scalar("UPDATE models SET source_model_id=$2,display_name=$3,provider_name=$4,enabled=$5,currency=$6,price_unit_tokens=$7,input_unit_price=$8,cached_input_unit_price=$9,cache_write_unit_price=$10,output_unit_price=$11,price_effective_at=$12,source_payload=CASE WHEN $13 THEN $14 ELSE source_payload END WHERE id=$1 AND updated_at=$15 RETURNING updated_at")
+        sqlx::query_scalar("UPDATE models SET source_model_id=$2,display_name=$3,provider_name=$4,enabled=$5,currency='USD',price_unit_tokens=$6,input_unit_price=$7,cached_input_unit_price=$8,cache_write_unit_price=$9,output_unit_price=$10,price_effective_at=$11,source_payload=CASE WHEN $12 THEN $13 ELSE source_payload END WHERE id=$1 AND updated_at=$14 RETURNING updated_at")
             .bind(id)
             .bind(&input.source_model_id)
             .bind(&input.display_name)
             .bind(&input.provider_name)
             .bind(input.enabled)
-            .bind(&input.currency)
             .bind(input.price_unit_tokens)
             .bind(input.input_unit_price)
             .bind(input.cached_input_unit_price)

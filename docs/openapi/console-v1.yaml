@@ -11,6 +11,8 @@ info:
     Conventions:
     - Decimals (`rust_decimal::Decimal`) and timestamps (`chrono::DateTime<Utc>`)
       serialize as RFC 3339 / decimal strings; all such fields are `string`.
+    - All monetary balances, quotas, prices, request costs, and statistics are
+      denominated and settled in USD. Currency is not a configurable field.
     - Most mutable resources return an `ETag` on detail `GET` and require
       `If-Match` on `PUT` for optimistic concurrency. A stale `If-Match`
       yields `409`.
@@ -1156,9 +1158,9 @@ paths:
       operationId: getCostStatistics
       description: |
         Aggregates request counts, token totals, RPM/TPM, and cost by UTC hour
-        or day. Costs remain separated by currency, and the response includes
-        continuous zero-valued buckets across the selected range. Client-
-        cancelled requests do not participate in model success rates.
+        or day. All monetary amounts are settled in USD, and the response
+        includes continuous zero-valued buckets across the selected range.
+        Client-cancelled requests do not participate in model success rates.
       security: [{ bearerAuth: [] }]
       parameters:
         - $ref: "#/components/parameters/StatisticsStartedAfter"
@@ -1414,15 +1416,16 @@ components:
     ConsoleProfile:
       type: object
       required:
-        [id, email, display_name, role, status, balance_amount, currency, created_at, updated_at]
+        [id, email, display_name, role, status, balance_amount, created_at, updated_at]
       properties:
         id: { type: string, format: uuid }
         email: { type: string, nullable: true }
         display_name: { type: string }
         role: { $ref: "#/components/schemas/UserRole" }
         status: { type: string }
-        balance_amount: { $ref: "#/components/schemas/Decimal" }
-        currency: { type: string }
+        balance_amount:
+          allOf: [{ $ref: "#/components/schemas/Decimal" }]
+          description: Current account balance in USD.
         created_at: { $ref: "#/components/schemas/DateTime" }
         updated_at: { $ref: "#/components/schemas/DateTime" }
 
@@ -1529,7 +1532,7 @@ components:
       type: object
       required:
         [id, email, display_name, role, status, default_api_key_policy_id,
-         balance_amount, currency, created_at, updated_at]
+         balance_amount, created_at, updated_at]
       properties:
         id: { type: string, format: uuid }
         email: { type: string, nullable: true }
@@ -1537,15 +1540,16 @@ components:
         role: { $ref: "#/components/schemas/UserRole" }
         status: { type: string }
         default_api_key_policy_id: { type: string, format: uuid, nullable: true }
-        balance_amount: { $ref: "#/components/schemas/Decimal" }
-        currency: { type: string }
+        balance_amount:
+          allOf: [{ $ref: "#/components/schemas/Decimal" }]
+          description: Current account balance in USD.
         created_at: { $ref: "#/components/schemas/DateTime" }
         updated_at: { $ref: "#/components/schemas/DateTime" }
 
     ControlPlaneModel:
       type: object
       required:
-        [id, source_model_id, display_name, provider_name, enabled, currency,
+        [id, source_model_id, display_name, provider_name, enabled,
          price_unit_tokens, input_unit_price, cached_input_unit_price,
          cache_write_unit_price, output_unit_price, price_effective_at,
          last_synced_at, created_at, updated_at]
@@ -1555,7 +1559,6 @@ components:
         display_name: { type: string }
         provider_name: { type: string, nullable: true }
         enabled: { type: boolean }
-        currency: { type: string }
         price_unit_tokens: { type: integer }
         input_unit_price: { $ref: "#/components/schemas/Decimal" }
         cached_input_unit_price: { $ref: "#/components/schemas/Decimal" }
@@ -1672,7 +1675,7 @@ components:
          client_model, upstream_model, model_rule_id, channel_group_id,
          channel_id, outcome, response_status_code, streamed, ttft_ms,
          total_duration_ms, input_tokens, cached_input_tokens,
-         cache_write_tokens, output_tokens, currency, cost_amount, error_code,
+         cache_write_tokens, output_tokens, cost_amount, error_code,
          billed_at]
       properties:
         id: { type: string, format: uuid }
@@ -1695,8 +1698,9 @@ components:
         cached_input_tokens: { type: integer, nullable: true }
         cache_write_tokens: { type: integer, nullable: true }
         output_tokens: { type: integer, nullable: true }
-        currency: { type: string, nullable: true }
-        cost_amount: { $ref: "#/components/schemas/DecimalNullable" }
+        cost_amount:
+          allOf: [{ $ref: "#/components/schemas/DecimalNullable" }]
+          description: Final request cost in USD, or null when not priced.
         error_code: { type: string, nullable: true }
         billed_at: { $ref: "#/components/schemas/DateTimeNullable" }
 
@@ -1792,13 +1796,6 @@ components:
           minimum: 0
           nullable: true
 
-    CurrencyAmount:
-      type: object
-      required: [currency, amount]
-      properties:
-        currency: { type: string }
-        amount: { $ref: "#/components/schemas/Decimal" }
-
     CostStatisticsReport:
       type: object
       required: [started_at, ended_at, granularity, summary, buckets, models]
@@ -1819,47 +1816,47 @@ components:
       type: object
       required:
         [request_count, priced_request_count, total_tokens, average_rpm,
-         average_tpm, costs]
+         average_tpm, cost_amount]
       properties:
         request_count: { type: integer }
         priced_request_count: { type: integer }
         total_tokens: { type: integer }
         average_rpm: { type: number, format: double, minimum: 0 }
         average_tpm: { type: number, format: double, minimum: 0 }
-        costs:
-          type: array
-          items: { $ref: "#/components/schemas/CurrencyAmount" }
+        cost_amount:
+          allOf: [{ $ref: "#/components/schemas/Decimal" }]
+          description: Total cost in USD.
 
     CostStatisticsBucket:
       type: object
-      required: [started_at, request_count, total_tokens, costs, models]
+      required: [started_at, request_count, total_tokens, cost_amount, models]
       properties:
         started_at: { $ref: "#/components/schemas/DateTime" }
         request_count: { type: integer }
         total_tokens: { type: integer }
-        costs:
-          type: array
-          items: { $ref: "#/components/schemas/CurrencyAmount" }
+        cost_amount:
+          allOf: [{ $ref: "#/components/schemas/Decimal" }]
+          description: Bucket cost in USD.
         models:
           type: array
           items: { $ref: "#/components/schemas/CostStatisticsBucketModel" }
 
     CostStatisticsBucketModel:
       type: object
-      required: [api_format, model, request_count, total_tokens, costs]
+      required: [api_format, model, request_count, total_tokens, cost_amount]
       properties:
         api_format: { $ref: "#/components/schemas/ApiFormat" }
         model: { type: string }
         request_count: { type: integer }
         total_tokens: { type: integer }
-        costs:
-          type: array
-          items: { $ref: "#/components/schemas/CurrencyAmount" }
+        cost_amount:
+          allOf: [{ $ref: "#/components/schemas/Decimal" }]
+          description: Model cost in USD for this bucket.
 
     CostStatisticsModel:
       type: object
       required:
-        [api_format, model, request_count, total_tokens, success_rate, costs]
+        [api_format, model, request_count, total_tokens, success_rate, cost_amount]
       properties:
         api_format: { $ref: "#/components/schemas/ApiFormat" }
         model: { type: string }
@@ -1872,9 +1869,9 @@ components:
           maximum: 1
           nullable: true
           description: Successful requests divided by non-cancelled terminal requests.
-        costs:
-          type: array
-          items: { $ref: "#/components/schemas/CurrencyAmount" }
+        cost_amount:
+          allOf: [{ $ref: "#/components/schemas/Decimal" }]
+          description: Total model cost in USD.
 
     AuditLogView:
       type: object
@@ -1986,24 +1983,24 @@ components:
 
     InviteUserInput:
       type: object
-      required: [email, display_name, role, currency]
+      required: [email, display_name, role]
       properties:
         email: { type: string }
         display_name: { type: string }
         role: { $ref: "#/components/schemas/UserRole" }
-        currency: { type: string }
         default_api_key_policy_id: { type: string, format: uuid, nullable: true }
 
     UserInput:
       type: object
-      required: [display_name, role, status, balance_amount, currency]
+      required: [display_name, role, status, balance_amount]
       properties:
         display_name: { type: string }
         email: { type: string, nullable: true }
         role: { $ref: "#/components/schemas/UserRole" }
         status: { type: string }
-        balance_amount: { $ref: "#/components/schemas/Decimal" }
-        currency: { type: string }
+        balance_amount:
+          allOf: [{ $ref: "#/components/schemas/Decimal" }]
+          description: Current account balance in USD.
         default_api_key_policy_id: { type: string, format: uuid, nullable: true }
 
     ApiKeyPolicyInput:
@@ -2073,7 +2070,7 @@ components:
     ModelInput:
       type: object
       required:
-        [source_model_id, display_name, enabled, currency, price_unit_tokens,
+        [source_model_id, display_name, enabled, price_unit_tokens,
          input_unit_price, cached_input_unit_price, cache_write_unit_price,
          output_unit_price, price_effective_at]
       properties:
@@ -2081,7 +2078,6 @@ components:
         display_name: { type: string }
         provider_name: { type: string, nullable: true }
         enabled: { type: boolean }
-        currency: { type: string }
         price_unit_tokens: { type: integer }
         input_unit_price: { $ref: "#/components/schemas/Decimal" }
         cached_input_unit_price: { $ref: "#/components/schemas/Decimal" }

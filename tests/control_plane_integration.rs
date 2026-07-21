@@ -352,7 +352,7 @@ async fn seed(pool: &PgPool) -> Seed {
         client_model: format!("test-model-{}", Uuid::new_v4()),
     };
     let password_hash = hash_console_password(seed.password.clone()).await.unwrap();
-    sqlx::query("INSERT INTO users (id, email, display_name, role, status, password_hash, currency) VALUES ($1, $2, $3, 'admin', 'active', $4, 'USD')")
+    sqlx::query("INSERT INTO users (id, email, display_name, role, status, password_hash) VALUES ($1, $2, $3, 'admin', 'active', $4)")
         .bind(seed.user)
         .bind(&seed.email)
         .bind(format!("test-user-{}", seed.user))
@@ -457,6 +457,47 @@ fn request_log_event(seed: &Seed, outcome: RequestLogOutcome) -> RequestLogEvent
         }),
         error_code: None,
     }
+}
+
+#[tokio::test]
+async fn usd_is_the_only_persisted_billing_currency() {
+    let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
+
+    let user_currency_column_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+             SELECT 1
+             FROM information_schema.columns
+             WHERE table_schema = current_schema()
+               AND table_name = 'users'
+               AND column_name = 'currency'
+         )",
+    )
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert!(!user_currency_column_exists);
+
+    assert!(
+        sqlx::query("UPDATE models SET currency='EUR' WHERE id=$1")
+            .bind(seed.model)
+            .execute(&database.pool)
+            .await
+            .is_err(),
+        "model prices must remain USD"
+    );
+
+    let mut non_usd_log = request_log_event(&seed, RequestLogOutcome::Succeeded);
+    non_usd_log.billing.as_mut().unwrap().price.currency = "EUR".into();
+    assert!(
+        RequestLogRepository::new(database.pool.clone())
+            .insert(&non_usd_log)
+            .await
+            .is_err(),
+        "request price snapshots must remain USD"
+    );
+
+    database.cleanup().await;
 }
 
 #[tokio::test]
@@ -634,21 +675,27 @@ async fn settlement_claim_is_concurrent_idempotent_and_allows_soft_quota_overdra
 }
 
 #[tokio::test]
-async fn settlement_leaves_currency_mismatch_unbilled_and_worker_recovers_durable_logs() {
+async fn settlement_leaves_account_mismatch_unbilled_and_worker_recovers_durable_logs() {
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
     let repository = RequestLogRepository::new(database.pool.clone());
 
-    let mismatched = request_log_event(&seed, RequestLogOutcome::Succeeded);
+    let other_user = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO users (id,display_name,role,status) \
+         VALUES ($1,$2,'user','active')",
+    )
+    .bind(other_user)
+    .bind(format!("settlement-other-user-{other_user}"))
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let mut mismatched = request_log_event(&seed, RequestLogOutcome::Succeeded);
+    mismatched.user_id = other_user;
     repository.insert(&mismatched).await.unwrap();
-    sqlx::query("UPDATE users SET currency = 'EUR' WHERE id = $1")
-        .bind(seed.user)
-        .execute(&database.pool)
-        .await
-        .unwrap();
     assert_eq!(
         repository.settle(mismatched.id).await.unwrap(),
-        RequestLogSettlementOutcome::CurrencyMismatch
+        RequestLogSettlementOutcome::AccountMismatch
     );
     let mismatch_billed: Option<DateTime<Utc>> =
         sqlx::query_scalar("SELECT billed_at FROM request_logs WHERE id = $1")
@@ -658,11 +705,6 @@ async fn settlement_leaves_currency_mismatch_unbilled_and_worker_recovers_durabl
             .unwrap();
     assert_eq!(mismatch_billed, None);
 
-    sqlx::query("UPDATE users SET currency = 'USD' WHERE id = $1")
-        .bind(seed.user)
-        .execute(&database.pool)
-        .await
-        .unwrap();
     let recoverable = request_log_event(&seed, RequestLogOutcome::Cancelled);
     repository.insert(&recoverable).await.unwrap();
     let (_sink, worker) = RequestLogWorker::start(repository, 4);
@@ -992,7 +1034,6 @@ async fn managed_users_are_versioned_audited_and_immediately_revoke_their_keys()
             "email": format!("managed-user-{}@example.test", Uuid::new_v4()),
             "display_name": format!("managed-user-{}", Uuid::new_v4()),
             "role": "user",
-            "currency": "USD",
             "default_api_key_policy_id": null
         }),
     )
@@ -1107,7 +1148,6 @@ async fn managed_models_are_versioned_and_invalid_disable_rolls_back() {
             "display_name": "Managed model",
             "provider_name": "test-provider",
             "enabled": true,
-            "currency": "USD",
             "price_unit_tokens": 1000000,
             "input_unit_price": "1.25",
             "cached_input_unit_price": "0.25",
@@ -1136,7 +1176,6 @@ async fn managed_models_are_versioned_and_invalid_disable_rolls_back() {
                 "source_model_id": format!("invalid-model-{}", Uuid::new_v4()),
                 "display_name": "Invalid model",
                 "enabled": true,
-                "currency": "USD",
                 "price_unit_tokens": 1,
                 "input_unit_price": 0,
                 "cached_input_unit_price": 0,
@@ -3335,7 +3374,6 @@ async fn console_members_are_limited_to_their_own_keys_and_logs() {
             "email": format!("member-{}@example.test", Uuid::new_v4()),
             "display_name": "Member",
             "role": "user",
-            "currency": "USD",
             "default_api_key_policy_id": null
         }),
     )

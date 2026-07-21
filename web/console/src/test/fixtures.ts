@@ -36,7 +36,6 @@ export const ADMIN_PROFILE: ConsoleProfile = {
   role: "admin",
   status: "active",
   balance_amount: "12.50",
-  currency: "USD",
   created_at: "2026-01-01T00:00:00.000Z",
   updated_at: "2026-01-02T00:00:00.000Z",
 };
@@ -146,7 +145,6 @@ export const MODEL: ControlPlaneModel = {
   display_name: "GPT-4o mini",
   provider_name: "OpenAI",
   enabled: true,
-  currency: "USD",
   price_unit_tokens: 1_000_000,
   input_unit_price: "0.15",
   cached_input_unit_price: "0.075",
@@ -193,7 +191,6 @@ export const REQUEST_LOG: RequestLogView = {
   cached_input_tokens: 2,
   cache_write_tokens: 0,
   output_tokens: 4,
-  currency: "USD",
   cost_amount: "0.0001",
   error_code: null,
   billed_at: "2026-07-21T06:00:02Z",
@@ -228,7 +225,6 @@ export const CONTROL_PLANE_USER: ControlPlaneUser = {
   status: "active",
   default_api_key_policy_id: API_KEY_POLICY.id,
   balance_amount: "12.50",
-  currency: "USD",
   created_at: "2026-01-01T00:00:00.000Z",
   updated_at: "2026-01-02T00:00:00.000Z",
 };
@@ -290,21 +286,21 @@ export const COST_STATISTICS_REPORT: CostStatisticsReport = {
     total_tokens: 263_000_000,
     average_rpm: 1.87,
     average_tpm: 26_100,
-    costs: [{ currency: "USD", amount: "1912.06" }],
+    cost_amount: "1912.06",
   },
   buckets: [
     {
       started_at: "2026-07-20T00:00:00.000Z",
       request_count: 1_200,
       total_tokens: 16_000_000,
-      costs: [{ currency: "USD", amount: "120.5" }],
+      cost_amount: "120.5",
       models: [
         {
           api_format: "open_ai_chat_completions",
           model: MODEL.source_model_id,
           request_count: 1_200,
           total_tokens: 16_000_000,
-          costs: [{ currency: "USD", amount: "120.5" }],
+          cost_amount: "120.5",
         },
       ],
     },
@@ -312,14 +308,14 @@ export const COST_STATISTICS_REPORT: CostStatisticsReport = {
       started_at: "2026-07-21T00:00:00.000Z",
       request_count: 1_500,
       total_tokens: 18_000_000,
-      costs: [{ currency: "USD", amount: "146.75" }],
+      cost_amount: "146.75",
       models: [
         {
           api_format: "open_ai_chat_completions",
           model: MODEL.source_model_id,
           request_count: 1_500,
           total_tokens: 18_000_000,
-          costs: [{ currency: "USD", amount: "146.75" }],
+          cost_amount: "146.75",
         },
       ],
     },
@@ -331,7 +327,7 @@ export const COST_STATISTICS_REPORT: CostStatisticsReport = {
       request_count: 18_878,
       total_tokens: 263_000_000,
       success_rate: 0.975,
-      costs: [{ currency: "USD", amount: "1912.06" }],
+      cost_amount: "1912.06",
     },
   ],
 };

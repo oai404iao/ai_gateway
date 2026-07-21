@@ -159,5 +159,5 @@ Console 登录接口：
 ## 已知边界
 
 - 仅支持 Chat Completions 与 Responses，不提供 OpenAI 的 embeddings、images、audio、files、batches、assistants 或 fine-tuning API。
-- 没有主动健康检查、跨实例限流/配置协调、通用自动重试、独立财务账本、充值/退款或多币种兑换。
+- 所有余额、额度、模型价格和请求费用统一使用 USD；没有主动健康检查、跨实例限流/配置协调、通用自动重试、独立财务账本、充值/退款或货币兑换。
 - 服务本身不终止 TLS；Console 必须部署在正确配置的 HTTPS 反向代理后。

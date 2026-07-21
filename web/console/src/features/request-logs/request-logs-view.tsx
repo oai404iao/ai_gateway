@@ -33,7 +33,7 @@ import type {
   RequestLogView,
 } from "@/api/types";
 import { dateTimeLocalToIso, formatDateTime, formatRelative } from "@/lib/dates";
-import { formatCurrency, formatDurationMs, formatTokens } from "@/lib/formatters";
+import { formatDurationMs, formatTokens, formatUsd } from "@/lib/formatters";
 import { API_FORMATS, apiFormatLabel, outcomeLabel, outcomeVariant } from "@/lib/permissions";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/app/i18n";
@@ -212,7 +212,7 @@ export function RequestLogsView({
     {
       key: "cost",
       header: t("Cost"),
-      render: (log) => formatCurrency(log.cost_amount, log.currency),
+      render: (log) => formatUsd(log.cost_amount),
     },
     {
       key: "duration",
@@ -537,7 +537,7 @@ export function RequestLogsView({
               <DetailField label={t("Output tokens")} value={formatTokens(detail.data.output_tokens)} />
               <DetailField
                 label={t("Cost")}
-                value={formatCurrency(detail.data.cost_amount, detail.data.currency)}
+                value={formatUsd(detail.data.cost_amount)}
               />
               <DetailField label={t("Billed at")} value={formatDateTime(detail.data.billed_at)} />
               <DetailField label={t("Error code")} value={detail.data.error_code ?? "—"} mono />

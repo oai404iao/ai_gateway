@@ -132,7 +132,6 @@ describe("RequestLogsView", () => {
       cached_input_tokens: 2,
       cache_write_tokens: 0,
       output_tokens: 4,
-      currency: "USD",
       cost_amount: "0.0001",
       error_code: null,
       billed_at: "2026-07-21T06:00:02Z",

@@ -13,7 +13,7 @@ export function ModelsPage() {
   return (
     <AdminListPage
       title={t("Upstream Models")}
-      description={t("Upstream model identifiers and their prices. Prices carry an effective timestamp.")}
+      description={t("Upstream model identifiers and their USD prices. Prices carry an effective timestamp.")}
       query={{ data, isLoading, error }}
       rowKey={(model) => model.id}
       detailPath={(model) => `/admin/models/${model.id}`}
@@ -31,7 +31,6 @@ export function ModelsPage() {
           ),
         },
         { key: "provider", header: t("Provider"), render: (model) => model.provider_name ?? "—" },
-        { key: "currency", header: t("Currency"), render: (model) => model.currency },
         {
           key: "input",
           header: t("Input price"),

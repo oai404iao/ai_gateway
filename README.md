@@ -17,7 +17,7 @@ The public data plane and the management Console API are intentionally separate 
 - Rewrites model aliases and applies constrained JSON, header, response, and SSE transforms when configured.
 - Removes client credentials and hop-by-hop headers before injecting channel-specific upstream authentication.
 - Streams upstream responses without buffering the whole response; it never retries or changes channels after response headers or bytes are sent.
-- Provides process-local RPM, concurrency, and soft quota admission controls, passive connection health, asynchronous request logs, usage extraction, and settlement.
+- Provides process-local RPM, concurrency, and soft quota admission controls, passive connection health, asynchronous request logs, usage extraction, and USD-only settlement.
 - Includes a separate JWT Console API with invitations, rotating refresh sessions, user/admin roles, audit logs, and optimistic concurrency for most mutable resources.
 
 ## Architecture
@@ -314,7 +314,7 @@ shadcn conventions, and phased delivery plan.
 - Usage and billing are asynchronous and best effort. Quotas are soft prechecks based on settled usage; they do not reserve a cost before forwarding.
 - Request logging does not persist prompts, completions, full headers, API keys, cookies, or unredacted upstream error content.
 
-Current scope does not include embeddings, images, audio, files, batches, assistants, fine-tuning, generic automatic retries, TLS termination, a financial ledger, refunds/top-ups, or multi-currency conversion.
+All balances, quotas, model prices, request costs, and statistics use USD. Current scope does not include embeddings, images, audio, files, batches, assistants, fine-tuning, generic automatic retries, TLS termination, a financial ledger, refunds/top-ups, or currency conversion.
 
 ## Development and verification
 
