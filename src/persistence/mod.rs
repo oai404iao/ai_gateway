@@ -15,11 +15,14 @@ use std::{
 use chrono::{DateTime, Timelike, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sqlx::{FromRow, PgPool, Postgres, QueryBuilder, Transaction};
+use sqlx::{FromRow, PgPool, Postgres, QueryBuilder, Transaction, postgres::PgPoolCopyExt};
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::domain::{AutomaticDisableTrigger, RequestLogEvent};
+use crate::{
+    domain::{AutomaticDisableTrigger, RequestLogEvent},
+    request_log_journal::EncodedRequestLog,
+};
 
 pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
@@ -1295,6 +1298,128 @@ impl RequestLogRepository {
         Self { pool }
     }
 
+    /// Appends encoded terminal events to the low-index durable ingress table.
+    ///
+    /// Duplicates are intentionally allowed here. A checkpoint replay can
+    /// therefore use PostgreSQL COPY directly, while the final request_logs
+    /// primary key remains the idempotency boundary.
+    pub(crate) async fn copy_ingest_batch(
+        &self,
+        records: &[EncodedRequestLog],
+    ) -> Result<u64, RepositoryError> {
+        if records.is_empty() {
+            return Ok(0);
+        }
+        let mut data =
+            Vec::with_capacity(records.iter().map(|record| record.payload.len() + 64).sum());
+        for record in records {
+            data.extend_from_slice(record.request_log_id.to_string().as_bytes());
+            data.push(b'\t');
+            data.extend_from_slice(record.schema_version.to_string().as_bytes());
+            data.push(b'\t');
+            append_copy_bytea(&mut data, &record.payload);
+            data.push(b'\n');
+        }
+        let mut copy = self
+            .pool
+            .copy_in_raw(
+                "COPY request_log_ingest (request_log_id,schema_version,payload) \
+                 FROM STDIN WITH (FORMAT text)",
+            )
+            .await?;
+        if let Err(error) = copy.send(data.as_slice()).await {
+            let _ = copy.abort("request-log ingress copy failed").await;
+            return Err(error.into());
+        }
+        copy.finish().await.map_err(RepositoryError::from)
+    }
+
+    pub(crate) async fn load_ingest_batch(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<RequestLogIngestRecord>, RepositoryError> {
+        sqlx::query_as::<_, RequestLogIngestRecord>(
+            "SELECT sequence,request_log_id,schema_version,payload,attempt_count
+             FROM request_log_ingest
+             WHERE next_attempt_at <= now()
+             ORDER BY sequence
+             LIMIT $1",
+        )
+        .bind(limit.max(1))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(RepositoryError::from)
+    }
+
+    pub(crate) async fn acknowledge_ingest(
+        &self,
+        sequences: &[i64],
+    ) -> Result<u64, RepositoryError> {
+        if sequences.is_empty() {
+            return Ok(0);
+        }
+        sqlx::query("DELETE FROM request_log_ingest WHERE sequence = ANY($1)")
+            .bind(sequences)
+            .execute(&self.pool)
+            .await
+            .map(|result| result.rows_affected())
+            .map_err(RepositoryError::from)
+    }
+
+    pub(crate) async fn defer_ingest(
+        &self,
+        sequences: &[i64],
+        error_code: &str,
+        retry_after_seconds: i64,
+    ) -> Result<u64, RepositoryError> {
+        if sequences.is_empty() {
+            return Ok(0);
+        }
+        sqlx::query(
+            "UPDATE request_log_ingest
+             SET attempt_count = attempt_count + 1,
+                 next_attempt_at = now() + make_interval(secs => $2),
+                 last_error_code = $3
+             WHERE sequence = ANY($1)",
+        )
+        .bind(sequences)
+        .bind(retry_after_seconds.max(1))
+        .bind(error_code)
+        .execute(&self.pool)
+        .await
+        .map(|result| result.rows_affected())
+        .map_err(RepositoryError::from)
+    }
+
+    pub(crate) async fn ingest_backlog(&self) -> Result<RequestLogIngestBacklog, RepositoryError> {
+        sqlx::query_as::<_, RequestLogIngestBacklog>(
+            "SELECT
+                 COALESCE(
+                     (SELECT sequence FROM request_log_ingest ORDER BY sequence DESC LIMIT 1)
+                     - (SELECT sequence FROM request_log_ingest ORDER BY sequence LIMIT 1)
+                     + 1,
+                     0
+                 ) AS row_count,
+                 (
+                     SELECT staged_at
+                     FROM request_log_ingest
+                     ORDER BY sequence
+                     LIMIT 1
+                 ) AS oldest_staged_at",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(RepositoryError::from)
+    }
+
+    #[must_use]
+    pub(crate) fn pool_status(&self) -> RequestLogPoolStatus {
+        RequestLogPoolStatus {
+            size: self.pool.size(),
+            idle: self.pool.num_idle(),
+        }
+    }
+
     pub async fn list_for_user(
         &self,
         user_id: Uuid,
@@ -2447,6 +2572,37 @@ pub enum RequestLogSettlementOutcome {
 }
 
 #[derive(FromRow)]
+pub(crate) struct RequestLogIngestRecord {
+    pub sequence: i64,
+    pub request_log_id: Uuid,
+    pub schema_version: i16,
+    pub payload: Vec<u8>,
+    pub attempt_count: i32,
+}
+
+impl RequestLogIngestRecord {
+    pub(crate) fn encoded(&self) -> EncodedRequestLog {
+        EncodedRequestLog {
+            request_log_id: self.request_log_id,
+            schema_version: self.schema_version,
+            payload: self.payload.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, FromRow)]
+pub(crate) struct RequestLogIngestBacklog {
+    pub row_count: i64,
+    pub oldest_staged_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RequestLogPoolStatus {
+    pub size: u32,
+    pub idle: usize,
+}
+
+#[derive(FromRow)]
 struct ClaimedRequestLog {
     id: Uuid,
     user_id: Uuid,
@@ -2609,7 +2765,16 @@ impl RequestLogInsertBatch {
             .push(price.map(|price| price.output_unit_price));
         self.cost_amount
             .push(billing.and_then(|billing| billing.cost_amount));
-        self.error_codes.push(event.error_code.map(str::to_owned));
+        self.error_codes.push(event.error_code.clone());
+    }
+}
+
+fn append_copy_bytea(output: &mut Vec<u8>, value: &[u8]) {
+    output.extend_from_slice(b"\\\\x");
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for byte in value {
+        output.push(HEX[(byte >> 4) as usize]);
+        output.push(HEX[(byte & 0x0f) as usize]);
     }
 }
 
@@ -2740,7 +2905,7 @@ impl StoredRequestLog {
                     .billing
                     .as_ref()
                     .and_then(|billing| billing.cost_amount)
-            && self.error_code.as_deref() == event.error_code
+            && self.error_code == event.error_code
     }
 }
 

@@ -118,13 +118,13 @@ fn markdown(report: &RunReport) -> String {
         report.database_name
     ));
     output.push_str(&format!(
-        "- Request-log queue capacity: `{}`\n\n",
+        "- Request-log wake queue capacity: `{}`\n\n",
         report.request_log_queue_capacity
     ));
     output.push_str(
         "Percentiles use a fixed-memory histogram with approximately 1.6% relative bucket precision above 127 microseconds.\n\n",
     );
-    output.push_str("| Scenario | API | Stream | C | Direct RPS | Gateway RPS | Ratio | Direct p50 | Gateway p50 | Gateway p99 | Errors | Request logs |\n");
+    output.push_str("| Scenario | API | Stream | C | Direct RPS | Gateway RPS | Ratio | Direct p50 | Gateway p50 | Gateway p99 | Errors | Durable request logs |\n");
     output.push_str(
         "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n",
     );
@@ -201,7 +201,7 @@ fn markdown(report: &RunReport) -> String {
             scenario.gateway_mock.cancelled_requests,
         ));
         output.push_str(&format!(
-            "- Persisted outcomes: succeeded `{}`, failed `{}`, rejected `{}`, cancelled `{}`\n",
+            "- Durable outcomes: succeeded `{}`, failed `{}`, rejected `{}`, cancelled `{}`\n",
             scenario.persisted_logs.succeeded,
             scenario.persisted_logs.failed,
             scenario.persisted_logs.rejected,

@@ -1030,7 +1030,10 @@ async fn event_patch_failure_after_headers_terminates_the_body_releases_upstream
     let events = logs.events();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].outcome.as_str(), "failed");
-    assert_eq!(events[0].error_code, Some("response_transform_failed"));
+    assert_eq!(
+        events[0].error_code.as_deref(),
+        Some("response_transform_failed")
+    );
     assert_eq!(
         events[0].response_status_code,
         Some(StatusCode::OK.as_u16())

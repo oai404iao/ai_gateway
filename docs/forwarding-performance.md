@@ -195,24 +195,26 @@ Mock 不保存每个完整请求，只使用原子计数器记录：
 
 ## 请求日志完整性
 
-Gateway 当前使用有界异步队列持久化请求日志：
+Gateway 当前使用可恢复的多阶段流水线持久化请求日志：
 
-- 请求路径调用 `try_send`，不会等待 PostgreSQL。
-- 队列满时日志被丢弃。
-- 后台使用固定大小的批量插入，并允许两个插入批次并行执行。
-- 插入与结算是独立阶段；结算会按用户和 API Key 聚合费用后批量更新。
-- 结算通知队列满时只丢弃内存提示，已持久化的未结算行仍由定时恢复扫描处理。
+- 请求路径先把终态事件追加到本地 spool，不等待 PostgreSQL。
+- 有界队列只负责唤醒后台 Worker；队列满时合并通知，不丢弃 spool 事件。
+- spool 通过 `COPY FROM` 写入低索引 `request_log_ingest`。
+- 单个低优先级投影 Worker 批量写入最终 `request_logs` 宽表。
+- 结算独立扫描最终表，并按用户和 API Key 聚合费用后批量更新。
+- 关闭超时后未完成事件保留在 spool 或入口表，供下次启动恢复。
 
 因此只报告 RPS 会掩盖日志丢失。性能工具为每个场景使用独立 `client_model`，
-在 Gateway 优雅关闭、日志队列完成排空后统计：
+在 Gateway 优雅关闭后统计最终表和入口表中按 UUID 去重的耐久日志：
 
 ```text
 expected_request_logs = warmup requests + measured requests
 request_log_persistence_ratio = persisted request_logs / expected_request_logs
 ```
 
-报告还会列出 succeeded/failed/rejected/cancelled 各类持久化结果。默认生成配置
-使用与 `config.example.toml` 相同的 `1024` 请求日志队列容量。
+报告还会列出 succeeded/failed/rejected/cancelled 各类耐久结果。默认生成配置
+使用 `1024` 个唤醒通知槽位，并将独立 spool 放在本次报告目录中。入口表中的
+记录虽然可能尚未出现在 Console 查询里，但已经不依赖进程内存。
 
 ## 手动执行
 
@@ -290,6 +292,7 @@ report.md
 scenario.toml
 gateway.log
 mock.log
+request-log-spool/
 <scenario>-direct.json
 <scenario>-direct.log
 <scenario>-gateway.json

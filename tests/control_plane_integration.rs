@@ -27,10 +27,11 @@ use ai_gateway::{
     },
     routing::{self, PassiveHealthPolicy, RoutingRuntime},
     runtime_config::{
-        AuthConfig, ModelsSyncConfig, RuntimeConfig, compile_control_plane, compile_runtime_config,
+        AuthConfig, ModelsSyncConfig, RequestLoggingConfig, RuntimeConfig, compile_control_plane,
+        compile_runtime_config,
     },
     upstream::UpstreamClientRegistry,
-    workers::{ControlPlaneReloader, RequestLogWorker},
+    workers::{ControlPlaneReloader, DurableRequestLogWorker, RequestLogWorker},
 };
 use axum::{
     Router,
@@ -473,6 +474,14 @@ struct SettlementFacts {
     billed_at: Option<DateTime<Utc>>,
 }
 
+#[derive(FromRow)]
+struct DurablePersistedLog {
+    id: Uuid,
+    client_model: String,
+    upstream_model: Option<String>,
+    billed_at: Option<DateTime<Utc>>,
+}
+
 fn assert_log_timing(log: &PersistedLog) {
     assert!(log.completed_at >= log.started_at);
     let total_duration_ms = log
@@ -829,7 +838,7 @@ async fn request_log_insert_is_idempotent_and_worker_continues_after_failure() {
     assert_eq!(persisted_billing.currency.as_deref(), Some("USD"));
 
     let mut conflicting = event.clone();
-    conflicting.error_code = Some("different_terminal_fact");
+    conflicting.error_code = Some("different_terminal_fact".into());
     assert!(matches!(
         repository.insert(&conflicting).await,
         Err(ai_gateway::persistence::RepositoryError::DuplicateConflict { .. })
@@ -879,7 +888,7 @@ async fn request_log_batch_insert_isolates_duplicates_and_invalid_statuses() {
     let first = request_log_event(&seed, RequestLogOutcome::Succeeded);
     let exact_duplicate = first.clone();
     let mut conflicting_duplicate = first.clone();
-    conflicting_duplicate.error_code = Some("conflicting_batch_fact");
+    conflicting_duplicate.error_code = Some("conflicting_batch_fact".into());
     let second = request_log_event(&seed, RequestLogOutcome::Failed);
     let mut invalid_status = request_log_event(&seed, RequestLogOutcome::Failed);
     invalid_status.response_status_code = Some(99);
@@ -919,6 +928,93 @@ async fn request_log_batch_insert_isolates_duplicates_and_invalid_statuses() {
         std::collections::HashSet::from([first.id, second.id])
     );
 
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn durable_request_log_pipeline_replays_spool_after_an_ingress_outage() {
+    let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
+    let spool_directory =
+        env::temp_dir().join(format!("ai-gateway-durable-log-test-{}", Uuid::new_v4()));
+    let mut config = RequestLoggingConfig {
+        queue_capacity: 1,
+        spool_directory: spool_directory.clone(),
+        spool_compaction_threshold_bytes: 1,
+        metrics_interval_seconds: 3_600,
+        shutdown_drain_seconds: 1,
+        settlement_interval_milliseconds: 10,
+        ..RequestLoggingConfig::default()
+    };
+
+    let mut ingress_lock = database.pool.begin().await.unwrap();
+    sqlx::query("LOCK TABLE request_log_ingest IN ACCESS EXCLUSIVE MODE")
+        .execute(&mut *ingress_lock)
+        .await
+        .unwrap();
+    let (sink, worker) =
+        DurableRequestLogWorker::start(RequestLogRepository::new(database.pool.clone()), &config)
+            .await
+            .unwrap();
+    let mut events = Vec::new();
+    for _ in 0..5 {
+        let mut event = request_log_event(&seed, RequestLogOutcome::Succeeded);
+        event.client_model = "copy\tbackslash\\雪".into();
+        event.upstream_model = Some("upstream\tbackslash\\雪".into());
+        sink.try_record(event.clone());
+        events.push(event);
+    }
+    drop(sink);
+    worker.shutdown().await;
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*)::bigint FROM request_logs")
+            .fetch_one(&mut *ingress_lock)
+            .await
+            .unwrap(),
+        0
+    );
+    ingress_lock.rollback().await.unwrap();
+
+    config.shutdown_drain_seconds = 5;
+    let (sink, worker) =
+        DurableRequestLogWorker::start(RequestLogRepository::new(database.pool.clone()), &config)
+            .await
+            .unwrap();
+    drop(sink);
+    worker.shutdown().await;
+
+    let ids = events.iter().map(|event| event.id).collect::<Vec<_>>();
+    let persisted: Vec<DurablePersistedLog> = sqlx::query_as(
+        "SELECT id,client_model,upstream_model,billed_at
+         FROM request_logs
+         WHERE id = ANY($1)
+         ORDER BY id",
+    )
+    .bind(&ids)
+    .fetch_all(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(persisted.len(), events.len());
+    assert!(
+        persisted
+            .iter()
+            .all(|row| ids.contains(&row.id) && row.client_model == "copy\tbackslash\\雪")
+    );
+    assert!(
+        persisted
+            .iter()
+            .all(|row| row.upstream_model.as_deref() == Some("upstream\tbackslash\\雪"))
+    );
+    assert!(persisted.iter().all(|row| row.billed_at.is_some()));
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*)::bigint FROM request_log_ingest")
+            .fetch_one(&database.pool)
+            .await
+            .unwrap(),
+        0
+    );
+
+    std::fs::remove_dir_all(&spool_directory).unwrap();
     database.cleanup().await;
 }
 

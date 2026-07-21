@@ -24,7 +24,7 @@ use ai_gateway::{
     routing::{PassiveHealthPolicy, RoutingRuntime},
     runtime_config::{AppConfig, RuntimeConfig, compile_runtime_config},
     upstream::UpstreamClientRegistry,
-    workers::{ChannelProbeWorker, ControlPlaneReloader, RequestLogWorker},
+    workers::{ChannelProbeWorker, ControlPlaneReloader, DurableRequestLogWorker},
 };
 use axum::{Router, body::Body};
 use hyper::body::Incoming;
@@ -33,7 +33,7 @@ use hyper_util::{
     server::{conn::auto::Builder as AutoBuilder, graceful::GracefulConnection},
     service::TowerToHyperService,
 };
-use sqlx::postgres::PgPoolOptions;
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::watch,
@@ -101,11 +101,22 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
 
     let address = format!("{}:{}", config.server.host, config.server.port);
     let admission = AdmissionRuntime::new();
-    let (request_log_sink, request_log_worker) = RequestLogWorker::start_with_admission(
-        RequestLogRepository::new(pool.clone()),
-        config.request_logging.queue_capacity,
+    let request_log_connect_options = config
+        .database
+        .url
+        .parse::<PgConnectOptions>()?
+        .application_name("ai-gateway-request-log");
+    let request_log_pool = PgPoolOptions::new()
+        .max_connections(config.request_logging.database_max_connections)
+        .acquire_timeout(Duration::from_secs(config.database.connect_timeout_seconds))
+        .connect_with(request_log_connect_options)
+        .await?;
+    let (request_log_sink, request_log_worker) = DurableRequestLogWorker::start_with_admission(
+        RequestLogRepository::new(request_log_pool),
+        &config.request_logging,
         admission.clone(),
-    );
+    )
+    .await?;
     let request_log_sink: Arc<dyn RequestLogSink> = Arc::new(request_log_sink);
     let routing = RoutingRuntime::new(PassiveHealthPolicy {
         connection_failure_threshold: initial_passive_health.connection_failure_threshold(),

@@ -22,5 +22,6 @@ pub use model_sync::{
 };
 pub use proxy::{ModelsResponse, ProxyError, ProxyService};
 pub use request_log::{
-    NoopRequestLogSink, QueueRequestLogSink, RecordingRequestLogSink, RequestLogSink,
+    DurableRequestLogSink, NoopRequestLogSink, QueueRequestLogSink, RecordingRequestLogSink,
+    RequestLogSink,
 };

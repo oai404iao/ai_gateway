@@ -19,6 +19,8 @@ argon2 = { version = "0.5", features = ["password-hash"] }
 axum = "0.8"
 bytes = "1.10"
 chrono = { version = "0.4", features = ["serde"] }
+crc32fast = "1.4"
+fs2 = "0.4"
 futures-util = "0.3"
 hyper = { version = "1", features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["server-auto", "server-graceful", "service", "tokio"] }
@@ -36,7 +38,7 @@ sqlx = { version = "0.8", default-features = false, features = ["postgres", "run
 subtle = "2.6"
 thiserror = "2.0"
 time = "=0.3.45"
-tokio = { version = "1.43", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio = { version = "1.43", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 toml = "0.8"
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["cors", "limit", "trace"] }

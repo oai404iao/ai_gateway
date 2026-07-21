@@ -213,12 +213,16 @@ TOML 仅保存进程级 bootstrap 配置。二进制默认读取
 | `[upstream]` | 默认建连、响应头和流空闲超时。 |
 | `[runtime_config]` | PostgreSQL 控制面定时重载间隔。 |
 | `[passive_health]` | 连接失败阈值和冷却时间。 |
-| `[request_logging]` | 有界异步日志队列容量。 |
+| `[request_logging]` | 本地耐久 spool、独立数据库池、COPY 入口、投影、结算与观测参数。 |
 | `[console]` 与 `[auth]` | 可选的独立 Console 监听器与 JWT 密钥文件设置。 |
 
 用户、API Key、模型、模型规则、渠道组、渠道、代理和变换模板等动态数据面配置保存在 PostgreSQL 中，并被编译为不可变运行时快照。项目刻意不支持 `[[api_keys]]`、`[[channels]]`、`[[model_rules]]` 之类的动态 TOML 表。
 
 通过 Console API 写入配置时，服务会校验完整候选快照，并在提交后立即发布；定时重载器也会从 PostgreSQL 刷新快照。
+
+终态请求日志会先跨过本地可恢复 spool，再通过 `COPY FROM` 进入低索引
+PostgreSQL 入口表，随后异步投影和结算。耐久保证、故障边界与运维指标见
+[docs/request-log-durability.md](docs/request-log-durability.md)。
 
 ## Console API
 

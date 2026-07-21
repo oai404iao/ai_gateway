@@ -1,6 +1,7 @@
 //! Background control-plane snapshot reloading and request-log persistence.
 
 mod channel_probe;
+mod durable_request_log;
 
 use std::{future::pending, sync::Arc, time::Duration};
 
@@ -25,6 +26,7 @@ use crate::{
 };
 
 pub use channel_probe::ChannelProbeWorker;
+pub use durable_request_log::{DurableRequestLogWorker, DurableRequestLogWorkerStartError};
 
 /// Bounds one batch database operation so a stalled connection cannot retain
 /// an insert or settlement task indefinitely.

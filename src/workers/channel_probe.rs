@@ -457,7 +457,7 @@ fn finished_probe(
             ttft_ms,
             total_duration_ms: clamp_duration_ms(started.elapsed()),
             billing: None,
-            error_code,
+            error_code: error_code.map(str::to_owned),
         },
         succeeded,
     }
@@ -650,7 +650,10 @@ mod tests {
         assert_eq!(result.event.request_source, RequestLogSource::ScheduledTest);
         assert_eq!(result.event.outcome, RequestLogOutcome::Failed);
         assert_eq!(result.event.response_status_code, Some(429));
-        assert_eq!(result.event.error_code, Some("scheduled_test_http_error"));
+        assert_eq!(
+            result.event.error_code.as_deref(),
+            Some("scheduled_test_http_error")
+        );
         assert_eq!(
             timeout(Duration::from_secs(1), receiver.recv())
                 .await

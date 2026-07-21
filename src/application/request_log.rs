@@ -4,10 +4,13 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
 
-use crate::domain::RequestLogEvent;
+use crate::{
+    domain::RequestLogEvent, observability::RequestLogPipelineMetrics,
+    request_log_spool::RequestLogSpool,
+};
 
-/// Request paths use this synchronous port so persistence can never delay a
-/// response or stream.
+/// Request paths use this synchronous port without waiting for PostgreSQL.
+/// Durable implementations may perform a bounded local append before return.
 pub trait RequestLogSink: Send + Sync {
     fn try_record(&self, event: RequestLogEvent);
 }
@@ -41,6 +44,62 @@ impl RequestLogSink for QueueRequestLogSink {
             }
             Err(mpsc::error::TrySendError::Closed(_)) => {
                 tracing::error!(request_log_id = %id, reason = "queue_closed", "request log dropped");
+            }
+        }
+    }
+}
+
+/// Appends every accepted terminal event to a recoverable local spool before
+/// notifying the asynchronous database pipeline. A full notification queue
+/// only coalesces wakeups; it never discards the durable event.
+#[derive(Clone)]
+pub struct DurableRequestLogSink {
+    spool: Arc<RequestLogSpool>,
+    wake: mpsc::Sender<()>,
+    metrics: Arc<RequestLogPipelineMetrics>,
+}
+
+impl DurableRequestLogSink {
+    #[must_use]
+    pub(crate) fn new(
+        spool: Arc<RequestLogSpool>,
+        wake: mpsc::Sender<()>,
+        metrics: Arc<RequestLogPipelineMetrics>,
+    ) -> Self {
+        Self {
+            spool,
+            wake,
+            metrics,
+        }
+    }
+}
+
+impl RequestLogSink for DurableRequestLogSink {
+    fn try_record(&self, event: RequestLogEvent) {
+        let id = event.id;
+        self.metrics.record_attempt();
+        match self.spool.append(&event) {
+            Ok(bytes) => {
+                self.metrics.record_spooled(bytes);
+                match self.wake.try_send(()) {
+                    Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => {}
+                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                        tracing::warn!(
+                            request_log_id = %id,
+                            reason = "spool_worker_closed",
+                            "request log remains durable in the local spool for restart recovery"
+                        );
+                    }
+                }
+            }
+            Err(error) => {
+                self.metrics.record_spool_append_failure();
+                tracing::error!(
+                    request_log_id = %id,
+                    %error,
+                    reason = "spool_append_failed",
+                    "request log could not cross the configured durability boundary"
+                );
             }
         }
     }
@@ -124,7 +183,7 @@ mod tests {
                 cost_amount: Some(Decimal::ZERO),
                 output_tokens_per_second: Some(Decimal::ONE),
             }),
-            error_code: Some("model_not_found"),
+            error_code: Some("model_not_found".into()),
         }
     }
 

@@ -64,7 +64,7 @@ struct Resources {
 impl Resources {
     async fn stop_gateway(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
         if let Some(gateway) = self.gateway.take() {
-            gateway.terminate(Duration::from_secs(25)).await?;
+            gateway.terminate(Duration::from_secs(90)).await?;
         }
         Ok(())
     }
@@ -72,7 +72,7 @@ impl Resources {
     async fn cleanup(&mut self, keep_database: bool) -> Result<(), Box<dyn Error + Send + Sync>> {
         let mut first_error: Option<Box<dyn Error + Send + Sync>> = None;
         if let Some(gateway) = self.gateway.take() {
-            if let Err(error) = gateway.terminate(Duration::from_secs(25)).await {
+            if let Err(error) = gateway.terminate(Duration::from_secs(90)).await {
                 first_error = Some(error);
             }
         }
@@ -173,7 +173,13 @@ async fn execute(
     let gateway_address = localhost(free_port().await?);
     let gateway_url = format!("http://{gateway_address}");
     let runtime_config = report_directory.join("gateway.runtime.toml");
-    write_gateway_config(&runtime_config, gateway_address, &database_url).await?;
+    write_gateway_config(
+        &runtime_config,
+        gateway_address,
+        &database_url,
+        &report_directory.join("request-log-spool"),
+    )
+    .await?;
     resources.runtime_config = Some(runtime_config.clone());
     let mut gateway_command = Command::new(&options.gateway_bin);
     gateway_command.arg(&runtime_config);
@@ -479,6 +485,7 @@ async fn write_gateway_config(
     path: &Path,
     address: SocketAddr,
     database_url: &str,
+    spool_directory: &Path,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let config = GatewayConfig {
         server: GatewayServer {
@@ -506,6 +513,16 @@ async fn write_gateway_config(
         },
         request_logging: GatewayRequestLogging {
             queue_capacity: REQUEST_LOG_QUEUE_CAPACITY,
+            database_max_connections: 4,
+            ingest_batch_size: 2_048,
+            projection_batch_size: 1_024,
+            settlement_batch_size: 1_024,
+            settlement_interval_milliseconds: 250,
+            spool_directory: spool_directory.to_path_buf(),
+            spool_sync_interval_milliseconds: 10,
+            spool_compaction_threshold_bytes: 64 * 1_024 * 1_024,
+            metrics_interval_seconds: 3_600,
+            shutdown_drain_seconds: 60,
         },
         passive_health: GatewayPassiveHealth {
             connection_failure_threshold: 3,
@@ -627,6 +644,16 @@ struct GatewayReload {
 #[derive(Serialize)]
 struct GatewayRequestLogging {
     queue_capacity: usize,
+    database_max_connections: u32,
+    ingest_batch_size: usize,
+    projection_batch_size: usize,
+    settlement_batch_size: i64,
+    settlement_interval_milliseconds: u64,
+    spool_directory: PathBuf,
+    spool_sync_interval_milliseconds: u64,
+    spool_compaction_threshold_bytes: u64,
+    metrics_interval_seconds: u64,
+    shutdown_drain_seconds: u64,
 }
 
 #[derive(Serialize)]
@@ -674,6 +701,8 @@ mod tests {
             &path,
             SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 30_000),
             "postgres://user:password@127.0.0.1:5432/ai_gateway_perf_test",
+            &std::env::temp_dir()
+                .join(format!("ai-gateway-perf-spool-{}", Uuid::new_v4().simple())),
         )
         .await
         .unwrap();

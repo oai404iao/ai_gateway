@@ -94,9 +94,23 @@ impl AppConfig {
                 "runtime_config reload_interval_seconds must be greater than zero".into(),
             ));
         }
-        if self.request_logging.queue_capacity == 0 {
+        if self.request_logging.queue_capacity == 0
+            || self.request_logging.database_max_connections == 0
+            || self.request_logging.ingest_batch_size == 0
+            || self.request_logging.ingest_batch_size > 10_000
+            || self.request_logging.projection_batch_size == 0
+            || self.request_logging.projection_batch_size > 10_000
+            || self.request_logging.settlement_batch_size <= 0
+            || self.request_logging.settlement_batch_size > 10_000
+            || self.request_logging.settlement_interval_milliseconds == 0
+            || self.request_logging.spool_sync_interval_milliseconds == 0
+            || self.request_logging.spool_compaction_threshold_bytes == 0
+            || self.request_logging.metrics_interval_seconds == 0
+            || self.request_logging.shutdown_drain_seconds == 0
+            || self.request_logging.spool_directory.as_os_str().is_empty()
+        {
             return Err(ConfigError::Compile(
-                "request_logging queue_capacity must be greater than zero".into(),
+                "request_logging limits and spool_directory must be nonzero and nonempty".into(),
             ));
         }
         if self.passive_health.connection_failure_threshold == 0
@@ -177,7 +191,28 @@ pub struct RuntimeConfigSettings {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RequestLoggingConfig {
+    #[serde(default = "default_request_log_queue_capacity")]
     pub queue_capacity: usize,
+    #[serde(default = "default_request_log_database_max_connections")]
+    pub database_max_connections: u32,
+    #[serde(default = "default_request_log_ingest_batch_size")]
+    pub ingest_batch_size: usize,
+    #[serde(default = "default_request_log_projection_batch_size")]
+    pub projection_batch_size: usize,
+    #[serde(default = "default_request_log_settlement_batch_size")]
+    pub settlement_batch_size: i64,
+    #[serde(default = "default_request_log_settlement_interval_milliseconds")]
+    pub settlement_interval_milliseconds: u64,
+    #[serde(default = "default_request_log_spool_directory")]
+    pub spool_directory: PathBuf,
+    #[serde(default = "default_request_log_spool_sync_interval_milliseconds")]
+    pub spool_sync_interval_milliseconds: u64,
+    #[serde(default = "default_request_log_spool_compaction_threshold_bytes")]
+    pub spool_compaction_threshold_bytes: u64,
+    #[serde(default = "default_request_log_metrics_interval_seconds")]
+    pub metrics_interval_seconds: u64,
+    #[serde(default = "default_request_log_shutdown_drain_seconds")]
+    pub shutdown_drain_seconds: u64,
 }
 /// One-time bootstrap source for database-backed passive connectivity policy.
 /// Defaults are three connection failures and a 30 second cooldown.
@@ -266,6 +301,19 @@ impl Default for RequestLoggingConfig {
     fn default() -> Self {
         Self {
             queue_capacity: default_request_log_queue_capacity(),
+            database_max_connections: default_request_log_database_max_connections(),
+            ingest_batch_size: default_request_log_ingest_batch_size(),
+            projection_batch_size: default_request_log_projection_batch_size(),
+            settlement_batch_size: default_request_log_settlement_batch_size(),
+            settlement_interval_milliseconds: default_request_log_settlement_interval_milliseconds(
+            ),
+            spool_directory: default_request_log_spool_directory(),
+            spool_sync_interval_milliseconds: default_request_log_spool_sync_interval_milliseconds(
+            ),
+            spool_compaction_threshold_bytes: default_request_log_spool_compaction_threshold_bytes(
+            ),
+            metrics_interval_seconds: default_request_log_metrics_interval_seconds(),
+            shutdown_drain_seconds: default_request_log_shutdown_drain_seconds(),
         }
     }
 }
@@ -387,6 +435,36 @@ const fn default_auth_body_bytes() -> usize {
 }
 const fn default_request_log_queue_capacity() -> usize {
     1_024
+}
+const fn default_request_log_database_max_connections() -> u32 {
+    4
+}
+const fn default_request_log_ingest_batch_size() -> usize {
+    2_048
+}
+const fn default_request_log_projection_batch_size() -> usize {
+    1_024
+}
+const fn default_request_log_settlement_batch_size() -> i64 {
+    1_024
+}
+const fn default_request_log_settlement_interval_milliseconds() -> u64 {
+    250
+}
+fn default_request_log_spool_directory() -> PathBuf {
+    PathBuf::from("./data/request-log-spool")
+}
+const fn default_request_log_spool_sync_interval_milliseconds() -> u64 {
+    10
+}
+const fn default_request_log_spool_compaction_threshold_bytes() -> u64 {
+    64 * 1_024 * 1_024
+}
+const fn default_request_log_metrics_interval_seconds() -> u64 {
+    10
+}
+const fn default_request_log_shutdown_drain_seconds() -> u64 {
+    60
 }
 const fn default_connection_failure_threshold() -> u32 {
     3
@@ -1839,6 +1917,14 @@ mod tests {
             .unwrap();
         assert_eq!(config.server.shutdown_grace_period_seconds, 30);
         assert_eq!(config.request_logging.queue_capacity, 1_024);
+        assert_eq!(config.request_logging.database_max_connections, 4);
+        assert_eq!(config.request_logging.ingest_batch_size, 2_048);
+        assert_eq!(config.request_logging.projection_batch_size, 1_024);
+        assert_eq!(config.request_logging.settlement_batch_size, 1_024);
+        assert_eq!(
+            config.request_logging.spool_directory,
+            PathBuf::from("./data/request-log-spool")
+        );
         assert_eq!(config.passive_health.connection_failure_threshold, 3);
         assert_eq!(config.passive_health.cooldown_seconds, 30);
         assert!(!config.automatic_disable.enabled);

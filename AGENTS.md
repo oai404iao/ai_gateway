@@ -10,7 +10,7 @@ The implemented backend includes OpenAI-compatible Chat Completions and
 Responses proxy routes, PostgreSQL-backed control-plane snapshots, a separate
 JWT-authenticated Console API with `user`/`admin` roles, constrained
 transforms, streaming/SSE forwarding, passive health, admission controls,
-asynchronous request logs, and reusable upstream clients. A React + TypeScript
+durable spooled request logs, and reusable upstream clients. A React + TypeScript
 Console web UI lives under `web/console/` and can be embedded into the binary
 as static assets via the optional `embedded-console-ui` cargo feature, served
 only from the Console listener. Treat `docs/PRD.md` as the architectural
@@ -38,11 +38,13 @@ repo/
 |   |-- runtime_config/         # TOML deserialization and ArcSwap configuration snapshots; [console].ui_enabled validation
 |   |-- observability/          # tracing-subscriber initialization
 |   |-- application/            # Proxy, Console auth, control-plane publication, request-log sink
+|   |-- request_log_journal.rs  # Versioned safe request-log payload encoding
+|   |-- request_log_spool.rs    # CRC-protected local append log and checkpoints
 |   |-- routing/                # Priority/weight selection and passive health state
 |   |-- transforms/             # Compiled constrained JSON/header/SSE transform DSL
 |   |-- upstream/               # Reused reqwest clients, proxy policy, timeout resolution
 |   |-- persistence/            # SQLx repositories, Console auth/session state, control-plane mutations, logs
-|   `-- workers/                # Snapshot reload and async request-log persistence
+|   `-- workers/                # Snapshot reload plus spool ingestion, DB projection, and settlement
 |-- migrations/                 # PostgreSQL control-plane and log schema migrations
 |-- tests/                      # Local, PostgreSQL, proxy, streaming, real-upstream, and console-spec integration tests
 |-- tools/forwarding-perf/      # Manual isolated forwarding benchmark orchestrator, Mock LLM, load client, and report generator
@@ -229,6 +231,7 @@ Axum HTTP
 9. **Frontend TS is strict and `erasableSyntaxOnly`.** `verbatimModuleSyntax`, `noUnusedLocals`, `noUnusedParameters`, and `erasableSyntaxOnly` are on: use `import type`, no TypeScript enums, no unused locals/params, and no runtime-only TS syntax. oxlint (not ESLint) is the linter; the 5 shadcn fast-refresh warnings are expected and acceptable.
 10. **Component tests vs. e2e are scoped.** vitest `include` is `src/**/*.{test,spec}.{ts,tsx}` and `exclude`s `e2e`, so Playwright specs (`e2e/*.spec.ts`) are not collected by vitest. e2e uses `vite.e2e.config.ts` (plain HTTP on `127.0.0.1:5174`) because Playwright's webServer readiness probe cannot ignore the dev server's self-signed HTTPS.
 11. **Performance runs are always opt-in.** `tools/forwarding-perf/` is a separate workspace package and its unit tests are lightweight, but `scripts/run-forwarding-perf.sh` starts release processes and generates sustained concurrent traffic. Do not invoke either the `quick` or `standard` profile without an explicit user request. The harness must keep using random `ai_gateway_perf_*` databases and must never point its admin URL at the normal `ai_gateway` database.
+12. **Request-log durability has two backlogs.** Production uses a process-unique local spool, then `request_log_ingest`, then the indexed `request_logs` table and settlement. Notification-queue fullness is harmless, but spool append errors are not. Never checkpoint before COPY commit or delete ingress rows before final-table persistence succeeds; both replay paths rely on UUID idempotency.
 
 ## Code Style
 
@@ -271,3 +274,4 @@ Axum HTTP
 | Local PostgreSQL service | `docker-compose.yml` |
 | Opt-in real upstream test | `docs/real-upstream-smoke.md` and `scripts/run-real-upstream-smoke.sh` |
 | Opt-in forwarding performance harness | `docs/forwarding-performance.md`, `tools/forwarding-perf/`, and `scripts/run-forwarding-perf.sh` |
+| Request-log durability pipeline | `docs/request-log-durability.md`, `src/request_log_spool.rs`, and `src/workers/durable_request_log.rs` |

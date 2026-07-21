@@ -7,6 +7,8 @@ pub mod http;
 pub mod models_dev;
 pub mod observability;
 pub mod persistence;
+mod request_log_journal;
+mod request_log_spool;
 pub mod routing;
 pub mod runtime_config;
 pub mod transforms;

@@ -397,7 +397,7 @@ impl ProxyService {
             ttft_ms: None,
             total_duration_ms: elapsed,
             billing: None,
-            error_code: Some("model_not_found"),
+            error_code: Some("model_not_found".into()),
         };
         tracing::info!(event = "proxy_request_completed", api_key_id = %api_key.id(), api_format = ?api_format, outcome = "rejected", "proxy request completed");
         self.request_log_sink.try_record(event);
@@ -434,7 +434,7 @@ impl ProxyService {
             ttft_ms: None,
             total_duration_ms: clamp_duration_ms(started.elapsed()),
             billing: None,
-            error_code: Some("no_healthy_channel"),
+            error_code: Some("no_healthy_channel".into()),
         };
         tracing::info!(event = "proxy_request_completed", api_key_id = %api_key.id(), api_format = ?api_format, outcome = "no_healthy_channel", "proxy request completed");
         self.request_log_sink.try_record(event);
@@ -1433,7 +1433,7 @@ impl CompletionGuard {
             ttft_ms: context.first_byte_at.map(clamp_duration_ms),
             total_duration_ms,
             billing: Some(billing),
-            error_code: outcome.error_code(),
+            error_code: outcome.error_code().map(str::to_owned),
         };
         context.sink.try_record(event);
     }

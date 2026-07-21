@@ -218,12 +218,18 @@ key files.
 | `[upstream]` | Default connect, response-header, and stream-idle timeouts. |
 | `[runtime_config]` | Periodic PostgreSQL control-plane reload interval. |
 | `[passive_health]` | Connection-failure threshold and cooldown. |
-| `[request_logging]` | Bounded asynchronous log queue capacity. |
+| `[request_logging]` | Durable local spool, isolated DB pool, COPY ingress, projection, settlement, and telemetry limits. |
 | `[console]` and `[auth]` | Optional dedicated Console listener and JWT key-file settings. |
 
 Dynamic data-plane configuration—users, API keys, models, model rules, channel groups, channels, proxies, and transform templates—lives in PostgreSQL and is compiled into an immutable runtime snapshot. Dynamic `[[api_keys]]`, `[[channels]]`, and `[[model_rules]]` TOML tables are deliberately unsupported.
 
 Configuration writes through the Console API validate the complete candidate snapshot and publish it immediately after commit. A periodic reloader also refreshes the snapshot from PostgreSQL.
+
+Terminal request logs first cross a local recoverable spool, then enter a
+low-index PostgreSQL staging table through `COPY FROM`, and are projected and
+settled asynchronously. See
+[docs/request-log-durability.md](docs/request-log-durability.md) for guarantees,
+failure boundaries, and operational metrics.
 
 ## Console API
 

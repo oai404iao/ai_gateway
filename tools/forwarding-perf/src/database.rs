@@ -97,11 +97,29 @@ impl TemporaryDatabase {
         scenario: &Scenario,
     ) -> Result<PersistedLogStats, sqlx::Error> {
         let rows = sqlx::query_as::<_, (String, i64)>(
-            "SELECT outcome, count(*)::bigint
-             FROM request_logs
-             WHERE request_source='client'
-               AND api_format=$1::api_format
-               AND client_model=$2
+            "WITH durable_logs AS (
+                 SELECT id,outcome,0 AS source_order
+                 FROM request_logs
+                 WHERE request_source='client'
+                   AND api_format=$1::api_format
+                   AND client_model=$2
+                 UNION ALL
+                 SELECT request_log_id,document->>'outcome',1 AS source_order
+                 FROM request_log_ingest
+                 CROSS JOIN LATERAL (
+                     SELECT convert_from(payload,'UTF8')::jsonb AS document
+                 ) AS decoded
+                 WHERE document->>'request_source'='client'
+                   AND document->>'api_format'=$1
+                   AND document->>'client_model'=$2
+             ),
+             deduplicated AS (
+                 SELECT DISTINCT ON (id) id,outcome
+                 FROM durable_logs
+                 ORDER BY id,source_order
+             )
+             SELECT outcome,count(*)::bigint
+             FROM deduplicated
              GROUP BY outcome",
         )
         .bind(scenario.api_kind.database_name())
@@ -317,6 +335,8 @@ async fn seed(
 
 #[cfg(test)]
 mod tests {
+    use uuid::Uuid;
+
     use super::{DEFAULT_DATABASE_ADMIN_URL, TemporaryDatabase};
     use crate::scenario::{ProfileName, profile};
 
@@ -333,6 +353,28 @@ mod tests {
         for scenario in &profile.scenarios {
             assert_eq!(database.request_log_stats(scenario).await.unwrap().total, 0);
         }
+        let scenario = &profile.scenarios[0];
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "id": Uuid::new_v4(),
+            "request_source": "client",
+            "api_format": scenario.api_kind.database_name(),
+            "client_model": scenario.model,
+            "outcome": "succeeded"
+        }))
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO request_log_ingest
+             (request_log_id,schema_version,payload)
+             VALUES ($1,1,$2)",
+        )
+        .bind(Uuid::new_v4())
+        .bind(payload)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+        let stats = database.request_log_stats(scenario).await.unwrap();
+        assert_eq!(stats.total, 1);
+        assert_eq!(stats.succeeded, 1);
         database.cleanup(false).await.unwrap();
     }
 }
