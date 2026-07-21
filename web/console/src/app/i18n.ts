@@ -42,6 +42,7 @@ const zhCN: Record<string, string> = {
   "Responses": "响应",
   "Weighted random": "加权随机",
   "Weighted round-robin": "加权轮询",
+  "No upstream auth": "不使用上游鉴权",
   "Bearer token": "Bearer 令牌",
   "Custom header": "自定义请求头",
   "Succeeded": "成功",

@@ -611,7 +611,7 @@ export interface components {
         /** @enum {string} */
         SelectionStrategy: "weighted_random" | "weighted_round_robin";
         /** @enum {string} */
-        UpstreamAuthKind: "bearer" | "header";
+        UpstreamAuthKind: "none" | "bearer" | "header";
         /** @enum {string} */
         ModelSyncAction: "price_update" | "import";
         /** Format: date-time */
@@ -816,6 +816,8 @@ export interface components {
             id: string;
             name: string;
             description: string | null;
+            /** @enum {string|null} */
+            api_format: "open_ai_chat_completions" | "open_ai_responses" | null;
             enabled: boolean;
             created_at: components["schemas"]["DateTime"];
             updated_at: components["schemas"]["DateTime"];
@@ -999,6 +1001,10 @@ export interface components {
             channel_group_id: string;
             api_format: components["schemas"]["ApiFormat"];
             name: string;
+            /**
+             * Format: uri
+             * @description HTTP(S) URL without embedded credentials, query, or fragment.
+             */
             base_url: string;
             enabled: boolean;
             weight: number;
@@ -1014,13 +1020,18 @@ export interface components {
             upstream_auth_header_name?: string | null;
             upstream_api_key?: string | null;
             available_models?: string[];
-            health_check?: components["schemas"]["JsonValue"];
+            /** @description Reserved for a future active-health feature; must be `{}`. */
+            health_check?: Record<string, never>;
         };
         ChannelInput: {
             /** Format: uuid */
             channel_group_id: string;
             api_format: components["schemas"]["ApiFormat"];
             name: string;
+            /**
+             * Format: uri
+             * @description HTTP(S) URL without embedded credentials, query, or fragment.
+             */
             base_url: string;
             enabled: boolean;
             weight: number;
@@ -1028,6 +1039,7 @@ export interface components {
             proxy_id?: string | null;
             /** Format: uuid */
             config_template_id?: string | null;
+            /** @description Omit to preserve the redacted stored document; send `{}` to clear it. */
             override_document?: components["schemas"]["JsonValue"];
             connect_timeout_ms?: number | null;
             response_header_timeout_ms?: number | null;
@@ -1036,7 +1048,8 @@ export interface components {
             upstream_auth_header_name?: string | null;
             upstream_api_key?: string | null;
             available_models?: string[];
-            health_check?: components["schemas"]["JsonValue"];
+            /** @description Reserved for a future active-health feature; must be `{}`. */
+            health_check?: Record<string, never>;
         };
         ModelRuleInput: {
             client_model: string;
@@ -1064,10 +1077,17 @@ export interface components {
             no_proxy_hosts?: string[];
             enabled: boolean;
         };
-        ConfigTemplateInput: {
+        ConfigTemplateCreateInput: {
             name: string;
             description?: string | null;
             document: components["schemas"]["JsonValue"];
+            enabled: boolean;
+        };
+        ConfigTemplateInput: {
+            name: string;
+            description?: string | null;
+            /** @description Omit to preserve the redacted stored document; send `{}` to clear it. */
+            document?: components["schemas"]["JsonValue"];
             enabled: boolean;
         };
         ModelSyncPreviewRequest: {
@@ -2591,7 +2611,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ConfigTemplateInput"];
+                "application/json": components["schemas"]["ConfigTemplateCreateInput"];
             };
         };
         responses: {

@@ -12,12 +12,35 @@ import { AdminDetailShell } from "@/features/admin/components/admin-detail-shell
 import { StringListField } from "@/components/shared/string-list-field";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { useCreateProxy, useProxy, useUpdateProxy } from "@/features/admin/api";
-import { ApiError } from "@/api/errors";
+import { ApiError, controlPlaneMutationErrorMessage } from "@/api/errors";
 import type { ProxyCreateInput, ProxyInput } from "@/api/types";
+
+function isAllowedProxyUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (
+      ["http:", "https:", "socks4:", "socks4a:", "socks5:", "socks5h:"].includes(url.protocol) &&
+      Boolean(url.hostname) &&
+      !url.username &&
+      !url.password &&
+      (url.pathname === "" || url.pathname === "/") &&
+      !url.search &&
+      !url.hash
+    );
+  } catch {
+    return false;
+  }
+}
 
 const schema = z.object({
   name: z.string().min(1, "Name is required.").max(100),
-  proxy_url: z.string().min(1, "Proxy URL is required."),
+  proxy_url: z
+    .string()
+    .trim()
+    .refine(
+      isAllowedProxyUrl,
+      "Enter an HTTP(S) or SOCKS proxy URL without embedded credentials, path, query, or fragment.",
+    ),
   username: z.string().nullable(),
   password: z.string().nullable(),
   no_proxy_hosts: z.array(z.string()),
@@ -99,7 +122,7 @@ export function ProxyDetailPage() {
       if (error instanceof ApiError && error.isConflict) {
         toast.error("This proxy was changed elsewhere. Reloading.");
       } else {
-        toast.error(error instanceof Error ? error.message : "Save failed");
+        toast.error(controlPlaneMutationErrorMessage(error));
       }
     } finally {
       setSubmitting(false);
@@ -154,13 +177,14 @@ export function ProxyDetailPage() {
                   <Input id="name" value={state.name} onChange={(event) => patch({ name: event.target.value })} />
                   {fieldError("name") ? <FieldError>{fieldError("name")}</FieldError> : null}
                 </Field>
-                <Field>
+                <Field data-invalid={Boolean(fieldError("proxy_url"))}>
                   <FieldLabel htmlFor="proxy_url">Proxy URL</FieldLabel>
                   <Input
                     id="proxy_url"
                     value={state.proxy_url}
                     onChange={(event) => patch({ proxy_url: event.target.value })}
-                    placeholder="https://user:pass@host:1080"
+                    placeholder="https://proxy.example:1080"
+                    aria-invalid={Boolean(fieldError("proxy_url"))}
                   />
                   {fieldError("proxy_url") ? <FieldError>{fieldError("proxy_url")}</FieldError> : null}
                 </Field>

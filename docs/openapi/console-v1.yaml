@@ -17,6 +17,10 @@ info:
     - Create/revoke responses and invitation activation may return a
       one-time `secret`/`invitation_token` that is never retrievable again.
     - Every error body is `{"error":"<code>"}`.
+    - `routing_dependency_invalid` means a mutation would make the routing
+      graph invalid (for example, by leaving an enabled model rule without an
+      eligible channel). Add or retain compatible enabled resources, or update
+      the affected rule first.
     - `limit` query parameters are clamped to `1..=100` (default `50`).
 
     Compatibility aliases (same handlers, same JWT/role boundary, not
@@ -1026,7 +1030,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/ConfigTemplateInput" }
+            schema: { $ref: "#/components/schemas/ConfigTemplateCreateInput" }
       responses:
         "201":
           description: Created.
@@ -1266,7 +1270,7 @@ components:
       enum: [weighted_random, weighted_round_robin]
     UpstreamAuthKind:
       type: string
-      enum: [bearer, header]
+      enum: [none, bearer, header]
     ModelSyncAction:
       type: string
       enum: [price_update, import]
@@ -1545,11 +1549,15 @@ components:
 
     ConfigTemplateView:
       type: object
-      required: [id, name, description, enabled, created_at, updated_at]
+      required: [id, name, description, api_format, enabled, created_at, updated_at]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
         description: { type: string, nullable: true }
+        api_format:
+          type: string
+          enum: [open_ai_chat_completions, open_ai_responses]
+          nullable: true
         enabled: { type: boolean }
         created_at: { $ref: "#/components/schemas/DateTime" }
         updated_at: { $ref: "#/components/schemas/DateTime" }
@@ -1809,7 +1817,7 @@ components:
       properties:
         name: { type: string }
         api_format: { $ref: "#/components/schemas/ApiFormat" }
-        priority: { type: integer }
+        priority: { type: integer, minimum: 0 }
         selection_strategy: { $ref: "#/components/schemas/SelectionStrategy" }
         enabled: { type: boolean }
 
@@ -1821,22 +1829,28 @@ components:
         channel_group_id: { type: string, format: uuid }
         api_format: { $ref: "#/components/schemas/ApiFormat" }
         name: { type: string }
-        base_url: { type: string }
+        base_url:
+          type: string
+          format: uri
+          description: HTTP(S) URL without embedded credentials, query, or fragment.
         enabled: { type: boolean }
-        weight: { type: integer }
+        weight: { type: integer, minimum: 1 }
         proxy_id: { type: string, format: uuid, nullable: true }
         config_template_id: { type: string, format: uuid, nullable: true }
         override_document: { $ref: "#/components/schemas/JsonValue" }
-        connect_timeout_ms: { type: integer, nullable: true }
-        response_header_timeout_ms: { type: integer, nullable: true }
-        stream_idle_timeout_ms: { type: integer, nullable: true }
+        connect_timeout_ms: { type: integer, minimum: 1, nullable: true }
+        response_header_timeout_ms: { type: integer, minimum: 1, nullable: true }
+        stream_idle_timeout_ms: { type: integer, minimum: 1, nullable: true }
         upstream_auth_kind: { $ref: "#/components/schemas/UpstreamAuthKind" }
         upstream_auth_header_name: { type: string, nullable: true }
         upstream_api_key: { type: string, nullable: true }
         available_models:
           type: array
           items: { type: string }
-        health_check: { $ref: "#/components/schemas/JsonValue" }
+        health_check:
+          type: object
+          maxProperties: 0
+          description: Reserved for a future active-health feature; must be `{}`.
 
     ChannelInput:
       type: object
@@ -1846,22 +1860,30 @@ components:
         channel_group_id: { type: string, format: uuid }
         api_format: { $ref: "#/components/schemas/ApiFormat" }
         name: { type: string }
-        base_url: { type: string }
+        base_url:
+          type: string
+          format: uri
+          description: HTTP(S) URL without embedded credentials, query, or fragment.
         enabled: { type: boolean }
-        weight: { type: integer }
+        weight: { type: integer, minimum: 1 }
         proxy_id: { type: string, format: uuid, nullable: true }
         config_template_id: { type: string, format: uuid, nullable: true }
-        override_document: { $ref: "#/components/schemas/JsonValue" }
-        connect_timeout_ms: { type: integer, nullable: true }
-        response_header_timeout_ms: { type: integer, nullable: true }
-        stream_idle_timeout_ms: { type: integer, nullable: true }
+        override_document:
+          allOf: [{ $ref: "#/components/schemas/JsonValue" }]
+          description: Omit to preserve the redacted stored document; send `{}` to clear it.
+        connect_timeout_ms: { type: integer, minimum: 1, nullable: true }
+        response_header_timeout_ms: { type: integer, minimum: 1, nullable: true }
+        stream_idle_timeout_ms: { type: integer, minimum: 1, nullable: true }
         upstream_auth_kind: { $ref: "#/components/schemas/UpstreamAuthKind" }
         upstream_auth_header_name: { type: string, nullable: true }
         upstream_api_key: { type: string, nullable: true }
         available_models:
           type: array
           items: { type: string }
-        health_check: { $ref: "#/components/schemas/JsonValue" }
+        health_check:
+          type: object
+          maxProperties: 0
+          description: Reserved for a future active-health feature; must be `{}`.
 
     ModelRuleInput:
       type: object
@@ -1905,13 +1927,24 @@ components:
           items: { type: string }
         enabled: { type: boolean }
 
-    ConfigTemplateInput:
+    ConfigTemplateCreateInput:
       type: object
       required: [name, document, enabled]
       properties:
         name: { type: string }
         description: { type: string, nullable: true }
         document: { $ref: "#/components/schemas/JsonValue" }
+        enabled: { type: boolean }
+
+    ConfigTemplateInput:
+      type: object
+      required: [name, enabled]
+      properties:
+        name: { type: string }
+        description: { type: string, nullable: true }
+        document:
+          allOf: [{ $ref: "#/components/schemas/JsonValue" }]
+          description: Omit to preserve the redacted stored document; send `{}` to clear it.
         enabled: { type: boolean }
 
     ModelSyncPreviewRequest:

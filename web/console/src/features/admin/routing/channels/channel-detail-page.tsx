@@ -4,7 +4,7 @@ import { z } from "zod";
 import { toast } from "sonner";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Field, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
+import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -24,12 +24,14 @@ import { StatusBadge } from "@/components/shared/status-badge";
 import {
   useChannel,
   useChannelGroups,
+  useChannels,
   useConfigTemplates,
   useCreateChannel,
+  useModelRules,
   useProxies,
   useUpdateChannel,
 } from "@/features/admin/api";
-import { ApiError } from "@/api/errors";
+import { ApiError, controlPlaneMutationErrorMessage } from "@/api/errors";
 import type {
   ApiFormat,
   ChannelCreateInput,
@@ -37,25 +39,62 @@ import type {
   UpstreamAuthKind,
 } from "@/api/types";
 import { UPSTREAM_AUTH_KINDS, apiFormatLabel, upstreamAuthKindLabel } from "@/lib/permissions";
+import { channelUpdateInvalidatesRouting } from "@/features/admin/routing/routing-validation";
+
+function isAllowedBaseUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (
+      (url.protocol === "http:" || url.protocol === "https:") &&
+      Boolean(url.hostname) &&
+      !url.username &&
+      !url.password &&
+      !url.search &&
+      !url.hash
+    );
+  } catch {
+    return false;
+  }
+}
 
 const schema = z.object({
   channel_group_id: z.string().min(1, "Pick a channel group."),
   api_format: z.enum(["open_ai_chat_completions", "open_ai_responses"]),
-  name: z.string().min(1, "Name is required.").max(100),
-  base_url: z.string().min(1, "Base URL is required."),
+  name: z.string().trim().min(1, "Name is required.").max(100),
+  base_url: z
+    .string()
+    .trim()
+    .refine(
+      isAllowedBaseUrl,
+      "Enter an HTTP(S) URL without credentials, query parameters, or a fragment.",
+    ),
   enabled: z.boolean(),
-  weight: z.number().int().min(0),
+  weight: z.number().int().min(1, "Weight must be at least 1."),
   proxy_id: z.string().nullable(),
   config_template_id: z.string().nullable(),
   override_document: z.string(),
   connect_timeout_ms: z.number().int().positive().nullable(),
   response_header_timeout_ms: z.number().int().positive().nullable(),
   stream_idle_timeout_ms: z.number().int().positive().nullable(),
-  upstream_auth_kind: z.enum(["bearer", "header"]),
-  upstream_auth_header_name: z.string().nullable(),
+  upstream_auth_kind: z.enum(["none", "bearer", "header"]),
+  upstream_auth_header_name: z.string().trim().nullable(),
   upstream_api_key: z.string(),
-  available_models: z.array(z.string()),
-  health_check: z.string(),
+  available_models: z.array(z.string().trim().min(1, "Model ID is required.")),
+}).superRefine((value, context) => {
+  if (value.upstream_auth_kind === "header" && !value.upstream_auth_header_name) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["upstream_auth_header_name"],
+      message: "A custom header name is required.",
+    });
+  }
+  if (new Set(value.available_models).size !== value.available_models.length) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["available_models"],
+      message: "Available model IDs must be unique.",
+    });
+  }
 });
 
 type FormState = z.infer<typeof schema>;
@@ -77,7 +116,6 @@ const empty: FormState = {
   upstream_auth_header_name: null,
   upstream_api_key: "",
   available_models: [],
-  health_check: "{}",
 };
 
 export function ChannelDetailPage() {
@@ -88,6 +126,8 @@ export function ChannelDetailPage() {
   const create = useCreateChannel();
   const update = useUpdateChannel(id);
   const groups = useChannelGroups();
+  const channels = useChannels();
+  const rules = useModelRules();
   const proxies = useProxies();
   const templates = useConfigTemplates();
   const [state, setState] = useState<FormState>(empty);
@@ -105,7 +145,7 @@ export function ChannelDetailPage() {
         weight: data.data.weight,
         proxy_id: data.data.proxy_id,
         config_template_id: data.data.config_template_id,
-        override_document: "{}",
+        override_document: "",
         connect_timeout_ms: data.data.connect_timeout_ms,
         response_header_timeout_ms: data.data.response_header_timeout_ms,
         stream_idle_timeout_ms: data.data.stream_idle_timeout_ms,
@@ -113,7 +153,6 @@ export function ChannelDetailPage() {
         upstream_auth_header_name: data.data.upstream_auth_header_name,
         upstream_api_key: "",
         available_models: data.data.available_models,
-        health_check: "{}",
       });
     }
   }, [data]);
@@ -127,20 +166,60 @@ export function ChannelDetailPage() {
   );
 
   const submit = async () => {
-    let overrideDocument: unknown = {};
-    let healthCheck: unknown = {};
+    let overrideDocument: unknown;
     try {
-      overrideDocument = state.override_document.trim()
-        ? JSON.parse(state.override_document)
-        : {};
-      healthCheck = state.health_check.trim() ? JSON.parse(state.health_check) : {};
+      if (state.override_document.trim()) {
+        overrideDocument = JSON.parse(state.override_document);
+      } else if (isNew) {
+        overrideDocument = {};
+      }
     } catch {
-      toast.error("Override document or health check is not valid JSON.");
+      toast.error("Override document is not valid JSON.");
+      return;
+    }
+    if (
+      overrideDocument !== undefined &&
+      (typeof overrideDocument !== "object" ||
+        overrideDocument === null ||
+        Array.isArray(overrideDocument))
+    ) {
+      toast.error("Override document must be a JSON object.");
       return;
     }
     const parsed = schema.safeParse(state);
     if (!parsed.success) {
       setValidation(parsed.error);
+      return;
+    }
+    if (parsed.data.enabled && !selectedGroup?.enabled) {
+      toast.error("Choose an enabled channel group before enabling this channel.");
+      return;
+    }
+    if (
+      !isNew &&
+      data &&
+      channels.data &&
+      groups.data &&
+      rules.data &&
+      channelUpdateInvalidatesRouting(
+        data.data.id,
+        parsed.data,
+        channels.data,
+        groups.data,
+        rules.data,
+      )
+    ) {
+      toast.error(
+        "Save blocked: this change would make the routing configuration invalid. Keep an eligible channel or update dependent rules first.",
+      );
+      return;
+    }
+    if (
+      isNew &&
+      parsed.data.upstream_auth_kind !== "none" &&
+      parsed.data.upstream_api_key.trim() === ""
+    ) {
+      toast.error("An upstream API key is required when upstream auth is enabled.");
       return;
     }
     setValidation(null);
@@ -156,15 +235,20 @@ export function ChannelDetailPage() {
           weight: parsed.data.weight,
           proxy_id: parsed.data.proxy_id,
           config_template_id: parsed.data.config_template_id,
-          override_document: overrideDocument,
+          override_document: overrideDocument ?? {},
           connect_timeout_ms: parsed.data.connect_timeout_ms,
           response_header_timeout_ms: parsed.data.response_header_timeout_ms,
           stream_idle_timeout_ms: parsed.data.stream_idle_timeout_ms,
           upstream_auth_kind: parsed.data.upstream_auth_kind as UpstreamAuthKind,
-          upstream_auth_header_name: parsed.data.upstream_auth_header_name,
-          upstream_api_key: parsed.data.upstream_api_key || null,
+          upstream_auth_header_name:
+            parsed.data.upstream_auth_kind === "header"
+              ? parsed.data.upstream_auth_header_name
+              : null,
+          upstream_api_key:
+            parsed.data.upstream_auth_kind === "none"
+              ? null
+              : parsed.data.upstream_api_key || null,
           available_models: parsed.data.available_models,
-          health_check: healthCheck,
         };
         await create.mutateAsync(input);
         toast.success("Channel created");
@@ -180,16 +264,22 @@ export function ChannelDetailPage() {
           weight: parsed.data.weight,
           proxy_id: parsed.data.proxy_id,
           config_template_id: parsed.data.config_template_id,
-          override_document: overrideDocument,
           connect_timeout_ms: parsed.data.connect_timeout_ms,
           response_header_timeout_ms: parsed.data.response_header_timeout_ms,
           stream_idle_timeout_ms: parsed.data.stream_idle_timeout_ms,
           upstream_auth_kind: parsed.data.upstream_auth_kind as UpstreamAuthKind,
-          upstream_auth_header_name: parsed.data.upstream_auth_header_name,
+          upstream_auth_header_name:
+            parsed.data.upstream_auth_kind === "header"
+              ? parsed.data.upstream_auth_header_name
+              : null,
           available_models: parsed.data.available_models,
-          health_check: healthCheck,
         };
-        if (parsed.data.upstream_api_key !== "") {
+        if (overrideDocument !== undefined) {
+          input.override_document = overrideDocument;
+        }
+        if (parsed.data.upstream_auth_kind === "none") {
+          input.upstream_api_key = null;
+        } else if (parsed.data.upstream_api_key !== "") {
           input.upstream_api_key = parsed.data.upstream_api_key;
         }
         await update.mutateAsync({ input, ifMatch: etag });
@@ -199,7 +289,7 @@ export function ChannelDetailPage() {
       if (error instanceof ApiError && error.isConflict) {
         toast.error("This channel was changed elsewhere. Reloading.");
       } else {
-        toast.error(error instanceof Error ? error.message : "Save failed");
+        toast.error(controlPlaneMutationErrorMessage(error));
       }
     } finally {
       setSubmitting(false);
@@ -274,7 +364,11 @@ export function ChannelDetailPage() {
                       <SelectGroup>
                         <SelectItem value="__none__">None</SelectItem>
                         {groups.data?.map((group) => (
-                          <SelectItem key={group.id} value={group.id}>
+                          <SelectItem
+                            key={group.id}
+                            value={group.id}
+                            disabled={state.enabled && !group.enabled}
+                          >
                             {group.name} ({apiFormatLabel(group.api_format)})
                           </SelectItem>
                         ))}
@@ -294,25 +388,30 @@ export function ChannelDetailPage() {
                   <Input id="name" value={state.name} onChange={(event) => patch({ name: event.target.value })} />
                   {fieldError("name") ? <FieldError>{fieldError("name")}</FieldError> : null}
                 </Field>
-                <Field>
+                <Field data-invalid={Boolean(fieldError("base_url"))}>
                   <FieldLabel htmlFor="base_url">Base URL</FieldLabel>
                   <Input
                     id="base_url"
                     value={state.base_url}
                     onChange={(event) => patch({ base_url: event.target.value })}
                     placeholder="https://api.upstream.com"
+                    aria-invalid={Boolean(fieldError("base_url"))}
                   />
                   {fieldError("base_url") ? <FieldError>{fieldError("base_url")}</FieldError> : null}
                 </Field>
-                <Field>
+                <Field data-invalid={Boolean(fieldError("weight"))}>
                   <FieldLabel htmlFor="weight">Weight</FieldLabel>
                   <Input
                     id="weight"
                     type="number"
-                    min={0}
+                    min={1}
                     value={state.weight}
-                    onChange={(event) => patch({ weight: Number(event.target.value) || 0 })}
+                    onChange={(event) =>
+                      patch({ weight: Math.max(1, Number(event.target.value) || 1) })
+                    }
+                    aria-invalid={Boolean(fieldError("weight"))}
                   />
+                  {fieldError("weight") ? <FieldError>{fieldError("weight")}</FieldError> : null}
                 </Field>
                 <Field>
                   <FieldLabel>Proxy</FieldLabel>
@@ -326,7 +425,7 @@ export function ChannelDetailPage() {
                     <SelectContent>
                       <SelectGroup>
                         <SelectItem value="__none__">None</SelectItem>
-                        {proxies.data?.map((proxy) => (
+                        {proxies.data?.filter((proxy) => proxy.enabled).map((proxy) => (
                           <SelectItem key={proxy.id} value={proxy.id}>
                             {proxy.name}
                           </SelectItem>
@@ -349,11 +448,18 @@ export function ChannelDetailPage() {
                     <SelectContent>
                       <SelectGroup>
                         <SelectItem value="__none__">None</SelectItem>
-                        {templates.data?.map((template) => (
-                          <SelectItem key={template.id} value={template.id}>
-                            {template.name}
-                          </SelectItem>
-                        ))}
+                        {templates.data
+                          ?.filter(
+                            (template) =>
+                              template.enabled &&
+                              (template.api_format === null ||
+                                template.api_format === state.api_format),
+                          )
+                          .map((template) => (
+                            <SelectItem key={template.id} value={template.id}>
+                              {template.name}
+                            </SelectItem>
+                          ))}
                       </SelectGroup>
                     </SelectContent>
                   </Select>
@@ -362,9 +468,16 @@ export function ChannelDetailPage() {
                   <FieldLabel>Upstream auth kind</FieldLabel>
                   <Select
                     value={state.upstream_auth_kind}
-                    onValueChange={(value) =>
-                      patch({ upstream_auth_kind: value as UpstreamAuthKind })
-                    }
+                    onValueChange={(value) => {
+                      const upstreamAuthKind = value as UpstreamAuthKind;
+                      patch({
+                        upstream_auth_kind: upstreamAuthKind,
+                        upstream_auth_header_name:
+                          upstreamAuthKind === "header"
+                            ? state.upstream_auth_header_name
+                            : null,
+                      });
+                    }}
                   >
                     <SelectTrigger>
                       <SelectValue />
@@ -381,7 +494,7 @@ export function ChannelDetailPage() {
                   </Select>
                 </Field>
                 {state.upstream_auth_kind === "header" ? (
-                  <Field>
+                  <Field data-invalid={Boolean(fieldError("upstream_auth_header_name"))}>
                     <FieldLabel htmlFor="header_name">Header name</FieldLabel>
                     <Input
                       id="header_name"
@@ -390,30 +503,37 @@ export function ChannelDetailPage() {
                         patch({ upstream_auth_header_name: event.target.value || null })
                       }
                       placeholder="x-api-key"
+                      aria-invalid={Boolean(fieldError("upstream_auth_header_name"))}
+                    />
+                    {fieldError("upstream_auth_header_name") ? (
+                      <FieldError>{fieldError("upstream_auth_header_name")}</FieldError>
+                    ) : null}
+                  </Field>
+                ) : null}
+                {state.upstream_auth_kind !== "none" ? (
+                  <Field>
+                    <FieldLabel htmlFor="upstream_api_key">
+                      Upstream API key{" "}
+                      {!isNew ? (
+                        <span className="text-xs text-muted-foreground">
+                          (leave blank to keep current)
+                        </span>
+                      ) : null}
+                    </FieldLabel>
+                    <Input
+                      id="upstream_api_key"
+                      value={state.upstream_api_key}
+                      onChange={(event) => patch({ upstream_api_key: event.target.value })}
+                      autoComplete="off"
                     />
                   </Field>
                 ) : null}
-                <Field>
-                  <FieldLabel htmlFor="upstream_api_key">
-                    Upstream API key{" "}
-                    {!isNew ? (
-                      <span className="text-xs text-muted-foreground">
-                        (leave blank to keep current)
-                      </span>
-                    ) : null}
-                  </FieldLabel>
-                  <Input
-                    id="upstream_api_key"
-                    value={state.upstream_api_key}
-                    onChange={(event) => patch({ upstream_api_key: event.target.value })}
-                    autoComplete="off"
-                  />
-                </Field>
                 <StringListField
                   label="Available upstream models"
                   value={state.available_models}
                   onChange={(value) => patch({ available_models: value })}
                   placeholder="One upstream model id per line"
+                  error={fieldError("available_models")}
                 />
                 <NullableNumberField
                   label="Connect timeout (ms)"
@@ -432,22 +552,17 @@ export function ChannelDetailPage() {
                 />
                 <Field>
                   <FieldLabel htmlFor="override_document">Override document (JSON)</FieldLabel>
+                  <FieldDescription>
+                    {isNew
+                      ? "Optional constrained transform document."
+                      : "The current document is redacted. Leave this blank to preserve it; enter {} to clear it."}
+                  </FieldDescription>
                   <Textarea
                     id="override_document"
                     rows={5}
                     className="font-mono text-xs"
                     value={state.override_document}
                     onChange={(event) => patch({ override_document: event.target.value })}
-                  />
-                </Field>
-                <Field>
-                  <FieldLabel htmlFor="health_check">Health check (JSON)</FieldLabel>
-                  <Textarea
-                    id="health_check"
-                    rows={3}
-                    className="font-mono text-xs"
-                    value={state.health_check}
-                    onChange={(event) => patch({ health_check: event.target.value })}
                   />
                 </Field>
                 <Field>

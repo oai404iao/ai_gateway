@@ -72,6 +72,7 @@ export type ChannelInput = S["ChannelInput"];
 export type ModelRuleInput = S["ModelRuleInput"];
 export type ProxyCreateInput = S["ProxyCreateInput"];
 export type ProxyInput = S["ProxyInput"];
+export type ConfigTemplateCreateInput = S["ConfigTemplateCreateInput"];
 export type ConfigTemplateInput = S["ConfigTemplateInput"];
 export type ModelSyncSelection = S["ModelSyncSelection"];
 export type ModelImportRequest = S["ModelImportRequest"];

@@ -123,7 +123,7 @@ export const CHANNEL: ChannelView = {
   upstream_auth_kind: "bearer",
   upstream_auth_header_name: null,
   upstream_credential_configured: true,
-  available_models: ["gpt-4o-mini"],
+  available_models: ["openai/gpt-4o-mini"],
   created_at: "2026-01-02T00:00:00.000Z",
   updated_at: "2026-01-02T00:00:00.000Z",
 };
@@ -155,7 +155,7 @@ export const MODEL_RULE: ModelRuleView = {
   upstream_model: MODEL.source_model_id,
   description: null,
   channel_group_ids: [CHANNEL_GROUP.id],
-  channel_ids: [CHANNEL.id],
+  channel_ids: [],
   enabled: true,
   updated_at: "2026-01-02T00:00:00.000Z",
 };
@@ -175,6 +175,7 @@ export const CONFIG_TEMPLATE: ConfigTemplateView = {
   id: "00000000-0000-0000-0000-000000000027",
   name: "default-transform",
   description: "Default constrained transform document",
+  api_format: "open_ai_chat_completions",
   enabled: true,
   created_at: "2026-01-01T00:00:00.000Z",
   updated_at: "2026-01-02T00:00:00.000Z",

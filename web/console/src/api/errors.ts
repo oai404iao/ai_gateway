@@ -45,6 +45,14 @@ export async function readApiError(response: Response): Promise<ApiError> {
   return new ApiError(response.status, code, code);
 }
 
+/** Safe, actionable copy for control-plane mutations with known error codes. */
+export function controlPlaneMutationErrorMessage(error: unknown, fallback = "Save failed"): string {
+  if (error instanceof ApiError && error.code === "routing_dependency_invalid") {
+    return "Save blocked: this change would make the routing configuration invalid. Keep an eligible channel and compatible enabled resources, or update dependent rules first.";
+  }
+  return error instanceof Error ? error.message : fallback;
+}
+
 /** A network-level failure (DNS, CORS, offline) with no HTTP status. */
 export class NetworkError extends Error {
   readonly cause?: unknown;

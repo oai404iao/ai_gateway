@@ -25,10 +25,12 @@ use crate::{
     domain::{ConsolePrincipal, UserRole},
     persistence::{
         ApiKeyCreate, ApiKeyPolicyInput, ApiKeyUpdate, ChannelCreateInput, ChannelGroupInput,
-        ChannelInput, ConfigTemplateInput, ConsoleApiKey, ControlPlaneMutation, InviteUserInput,
-        ModelInput, ModelRuleInput, ProxyCreateInput, ProxyInput, RequestLogFilter,
-        RequestLogRepository, SelfApiKeyCreate, SelfApiKeyUpdate, UserInput,
+        ChannelInput, ConfigTemplateCreateInput, ConfigTemplateInput, ConsoleApiKey,
+        ControlPlaneMutation, InviteUserInput, ModelInput, ModelRuleInput, ProxyCreateInput,
+        ProxyInput, RequestLogFilter, RequestLogRepository, SelfApiKeyCreate, SelfApiKeyUpdate,
+        UserInput,
     },
+    runtime_config::ConfigError,
 };
 
 const REFRESH_COOKIE_NAME: &str = "__Host-ai_gateway_refresh";
@@ -1104,7 +1106,7 @@ async fn list_config_templates(
 async fn create_config_template(
     State(state): State<ConsoleState>,
     Extension(principal): Extension<ConsolePrincipal>,
-    Json(input): Json<ConfigTemplateInput>,
+    Json(input): Json<ConfigTemplateCreateInput>,
 ) -> Result<(StatusCode, Json<MutationResponse>), ConsoleError> {
     mutate_created(
         &state,
@@ -1410,9 +1412,36 @@ fn control_plane_status(error: &ControlPlaneError) -> StatusCode {
 
 fn control_plane_error_message(error: &ControlPlaneError) -> &'static str {
     match error {
+        ControlPlaneError::Compile(ConfigError::Compile(reason))
+            if routing_dependency_invalid(reason) =>
+        {
+            "routing_dependency_invalid"
+        }
         ControlPlaneError::Repository(error) => repository_error_message(error),
         _ => "Console operation rejected",
     }
+}
+
+/// Returns a stable, non-sensitive code for a rejected graph mutation. The
+/// compiler's full diagnostic remains server-only because it may be derived
+/// from opaque transform or credential-bearing configuration.
+fn routing_dependency_invalid(reason: &str) -> bool {
+    matches!(
+        reason,
+        "enabled model rule references a disabled upstream model"
+            | "enabled model rule references an unavailable or cross-format channel group"
+            | "eligible channel does not support the model rule upstream model"
+            | "enabled model rule references a missing, disabled, or auto-disabled channel"
+            | "enabled model rule references a cross-format channel"
+            | "direct channel candidate belongs to a disabled channel group"
+            | "each enabled model rule must have at least one distinct eligible candidate channel"
+            | "all channel groups in every route priority tier must use the same selection strategy"
+            | "channel references a missing group"
+            | "channel and group use different API formats"
+            | "channel references a missing or disabled proxy"
+            | "channel references a missing or disabled template"
+            | "channel references a cross-format template"
+    )
 }
 
 fn repository_error_message(error: &crate::persistence::RepositoryError) -> &'static str {

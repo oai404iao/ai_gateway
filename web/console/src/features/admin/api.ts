@@ -11,6 +11,7 @@ import type {
   ChannelGroupView,
   ChannelInput,
   ChannelView,
+  ConfigTemplateCreateInput,
   ConfigTemplateInput,
   ConfigTemplateView,
   ControlPlaneLists,
@@ -226,7 +227,7 @@ export const useConfigTemplate = makeDetail<ConfigTemplateView>(
   "/transforms/templates",
   templateDetailKey,
 );
-export const useCreateConfigTemplate = makeCreate<ConfigTemplateInput, MutationResponse>(
+export const useCreateConfigTemplate = makeCreate<ConfigTemplateCreateInput, MutationResponse>(
   "/transforms/templates",
   TEMPLATES_KEY,
 );

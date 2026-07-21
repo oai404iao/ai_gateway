@@ -23,14 +23,14 @@ import {
   useCreateChannelGroup,
   useUpdateChannelGroup,
 } from "@/features/admin/api";
-import { ApiError } from "@/api/errors";
+import { ApiError, controlPlaneMutationErrorMessage } from "@/api/errors";
 import type { ApiFormat, ChannelGroupInput, SelectionStrategy } from "@/api/types";
 import { API_FORMATS, SELECTION_STRATEGIES, apiFormatLabel, selectionStrategyLabel } from "@/lib/permissions";
 
 const schema = z.object({
   name: z.string().min(1, "Name is required.").max(100),
   api_format: z.enum(["open_ai_chat_completions", "open_ai_responses"]),
-  priority: z.number().int(),
+  priority: z.number().int().min(0, "Priority must be zero or greater."),
   selection_strategy: z.enum(["weighted_random", "weighted_round_robin"]),
   enabled: z.boolean(),
 });
@@ -98,7 +98,7 @@ export function ChannelGroupDetailPage() {
       if (error instanceof ApiError && error.isConflict) {
         toast.error("This group was changed elsewhere. Reloading.");
       } else {
-        toast.error(error instanceof Error ? error.message : "Save failed");
+        toast.error(controlPlaneMutationErrorMessage(error));
       }
     } finally {
       setSubmitting(false);
@@ -176,14 +176,21 @@ export function ChannelGroupDetailPage() {
                     </SelectContent>
                   </Select>
                 </Field>
-                <Field>
+                <Field data-invalid={Boolean(fieldError("priority"))}>
                   <FieldLabel htmlFor="priority">Priority</FieldLabel>
                   <Input
                     id="priority"
                     type="number"
+                    min={0}
                     value={state.priority}
-                    onChange={(event) => patch({ priority: Number(event.target.value) || 0 })}
+                    onChange={(event) =>
+                      patch({ priority: Math.max(0, Number(event.target.value) || 0) })
+                    }
+                    aria-invalid={Boolean(fieldError("priority"))}
                   />
+                  {fieldError("priority") ? (
+                    <FieldError>{fieldError("priority")}</FieldError>
+                  ) : null}
                 </Field>
                 <Field>
                   <FieldLabel>Selection strategy</FieldLabel>

@@ -16,7 +16,7 @@ export const SELECTION_STRATEGIES: readonly SelectionStrategy[] = [
   "weighted_round_robin",
 ];
 
-export const UPSTREAM_AUTH_KINDS: readonly UpstreamAuthKind[] = ["bearer", "header"];
+export const UPSTREAM_AUTH_KINDS: readonly UpstreamAuthKind[] = ["none", "bearer", "header"];
 
 /** Permissions recognized by the data plane. */
 export const PERMISSIONS = ["proxy", "models.read"] as const;
@@ -44,6 +44,7 @@ export function selectionStrategyLabel(value: SelectionStrategy): string {
 }
 
 export function upstreamAuthKindLabel(value: UpstreamAuthKind): string {
+  if (value === "none") return translate("No upstream auth");
   return value === "bearer" ? translate("Bearer token") : translate("Custom header");
 }
 

@@ -368,8 +368,10 @@ pub struct ChannelInput {
     pub proxy_id: Option<Uuid>,
     #[serde(default)]
     pub config_template_id: Option<Uuid>,
-    #[serde(default = "empty_object")]
-    pub override_document: Value,
+    /// Omission preserves the current opaque transform document; a present
+    /// value replaces it (including `{}` to clear it).
+    #[serde(default, deserialize_with = "deserialize_optional_document")]
+    pub override_document: Option<Value>,
     #[serde(default)]
     pub connect_timeout_ms: Option<i32>,
     #[serde(default)]
@@ -431,11 +433,24 @@ pub struct ProxyInput {
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ConfigTemplateInput {
+pub struct ConfigTemplateCreateInput {
     pub name: String,
     #[serde(default)]
     pub description: Option<String>,
     pub document: Value,
+    pub enabled: bool,
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigTemplateInput {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Template documents are deliberately redacted from reads. Omission on
+    /// update therefore preserves the stored document; a present value
+    /// replaces it.
+    #[serde(default, deserialize_with = "deserialize_optional_document")]
+    pub document: Option<Value>,
     pub enabled: bool,
 }
 fn empty_object() -> Value {
@@ -449,6 +464,12 @@ where
 {
     Option::<String>::deserialize(deserializer).map(Some)
 }
+fn deserialize_optional_document<'de, D>(deserializer: D) -> Result<Option<Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Value::deserialize(deserializer).map(Some)
+}
 struct ChannelMutationInput {
     channel_group_id: Uuid,
     api_format: String,
@@ -458,7 +479,7 @@ struct ChannelMutationInput {
     weight: i32,
     proxy_id: Option<Uuid>,
     config_template_id: Option<Uuid>,
-    override_document: Value,
+    override_document: Option<Value>,
     connect_timeout_ms: Option<i32>,
     response_header_timeout_ms: Option<i32>,
     stream_idle_timeout_ms: Option<i32>,
@@ -479,7 +500,7 @@ impl From<ChannelCreateInput> for ChannelMutationInput {
             weight: value.weight,
             proxy_id: value.proxy_id,
             config_template_id: value.config_template_id,
-            override_document: value.override_document,
+            override_document: Some(value.override_document),
             connect_timeout_ms: value.connect_timeout_ms,
             response_header_timeout_ms: value.response_header_timeout_ms,
             stream_idle_timeout_ms: value.stream_idle_timeout_ms,
@@ -511,6 +532,32 @@ impl From<ChannelInput> for ChannelMutationInput {
             upstream_api_key: value.upstream_api_key,
             available_models: value.available_models,
             health_check: value.health_check,
+        }
+    }
+}
+struct ConfigTemplateMutationInput {
+    name: String,
+    description: Option<String>,
+    document: Option<Value>,
+    enabled: bool,
+}
+impl From<ConfigTemplateCreateInput> for ConfigTemplateMutationInput {
+    fn from(value: ConfigTemplateCreateInput) -> Self {
+        Self {
+            name: value.name,
+            description: value.description,
+            document: Some(value.document),
+            enabled: value.enabled,
+        }
+    }
+}
+impl From<ConfigTemplateInput> for ConfigTemplateMutationInput {
+    fn from(value: ConfigTemplateInput) -> Self {
+        Self {
+            name: value.name,
+            description: value.description,
+            document: value.document,
+            enabled: value.enabled,
         }
     }
 }
@@ -568,7 +615,7 @@ pub enum ControlPlaneMutation {
         input: ProxyInput,
         expected_updated_at: DateTime<Utc>,
     },
-    CreateConfigTemplate(ConfigTemplateInput),
+    CreateConfigTemplate(ConfigTemplateCreateInput),
     UpdateConfigTemplate {
         id: Uuid,
         input: ConfigTemplateInput,
@@ -853,6 +900,7 @@ pub struct ControlPlaneConfigTemplate {
     pub id: Uuid,
     pub name: String,
     pub description: Option<String>,
+    pub api_format: Option<String>,
     pub enabled: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -1463,7 +1511,7 @@ impl ControlPlaneRepository {
         let channels = sqlx::query_as::<_, ControlPlaneChannelRow>("SELECT id,channel_group_id,api_format::text AS api_format,name,base_url,enabled,auto_disabled,auto_disabled_reason,weight,proxy_id,config_template_id,connect_timeout_ms,response_header_timeout_ms,stream_idle_timeout_ms,upstream_auth_kind,upstream_auth_header_name,(upstream_api_key IS NOT NULL) AS upstream_credential_configured,available_models,created_at,updated_at FROM channels ORDER BY id").fetch_all(&self.pool).await?;
         let model_rules = sqlx::query_as::<_, ControlPlaneModelRule>("SELECT r.id,r.client_model,r.api_format::text AS api_format,r.upstream_model_id,m.enabled AS upstream_model_enabled,m.source_model_id AS upstream_model,r.description,r.channel_group_ids,r.channel_ids,r.enabled,r.updated_at FROM model_rules r JOIN models m ON m.id=r.upstream_model_id ORDER BY r.id").fetch_all(&self.pool).await?;
         let proxies = sqlx::query_as::<_, ControlPlaneProxy>("SELECT id,name,regexp_replace(regexp_replace(proxy_url, '^([^:/?#]+://)[^/?#]*@', E'\\1'), '[?#].*$', '') AS proxy_url,no_proxy_hosts,enabled,(username IS NOT NULL OR password IS NOT NULL) AS credential_configured,created_at,updated_at FROM proxies ORDER BY id").fetch_all(&self.pool).await?;
-        let config_templates = sqlx::query_as::<_, ControlPlaneConfigTemplate>("SELECT id,name,description,enabled,created_at,updated_at FROM config_templates ORDER BY id").fetch_all(&self.pool).await?;
+        let config_templates = sqlx::query_as::<_, ControlPlaneConfigTemplate>("SELECT id,name,description,document->>'api_format' AS api_format,enabled,created_at,updated_at FROM config_templates ORDER BY id").fetch_all(&self.pool).await?;
         Ok(ControlPlaneLists {
             users,
             models,
@@ -2357,22 +2405,29 @@ async fn channel_insert(
     expected_updated_at: Option<DateTime<Utc>>,
 ) -> Result<MutationResult, RepositoryError> {
     let input = input.into();
-    if input.override_document.as_object().is_none() || !is_empty_document(&input.health_check) {
+    if input
+        .override_document
+        .as_ref()
+        .is_some_and(|document| document.as_object().is_none())
+        || !is_empty_document(&input.health_check)
+    {
         return Err(RepositoryError::Validation);
     }
     if matches!(input.upstream_api_key, Some(None)) && input.upstream_auth_kind != "none" {
         return Err(RepositoryError::Validation);
     }
+    let override_document_present = input.override_document.is_some();
+    let override_document = input.override_document.unwrap_or_else(empty_object);
     let before = if create {
         json!({})
     } else {
         channel_audit(transaction, id).await?
     };
     let updated_at = if create {
-        sqlx::query_scalar("INSERT INTO channels (id,channel_group_id,api_format,name,base_url,enabled,weight,proxy_id,config_template_id,override_document,connect_timeout_ms,response_header_timeout_ms,stream_idle_timeout_ms,upstream_auth_kind,upstream_auth_header_name,upstream_api_key,available_models,health_check) VALUES ($1,$2,$3::api_format,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING updated_at").bind(id).bind(input.channel_group_id).bind(&input.api_format).bind(&input.name).bind(&input.base_url).bind(input.enabled).bind(input.weight).bind(input.proxy_id).bind(input.config_template_id).bind(&input.override_document).bind(input.connect_timeout_ms).bind(input.response_header_timeout_ms).bind(input.stream_idle_timeout_ms).bind(&input.upstream_auth_kind).bind(&input.upstream_auth_header_name).bind(input.upstream_api_key.flatten()).bind(&input.available_models).bind(&input.health_check).fetch_one(&mut **transaction).await?
+        sqlx::query_scalar("INSERT INTO channels (id,channel_group_id,api_format,name,base_url,enabled,weight,proxy_id,config_template_id,override_document,connect_timeout_ms,response_header_timeout_ms,stream_idle_timeout_ms,upstream_auth_kind,upstream_auth_header_name,upstream_api_key,available_models,health_check) VALUES ($1,$2,$3::api_format,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING updated_at").bind(id).bind(input.channel_group_id).bind(&input.api_format).bind(&input.name).bind(&input.base_url).bind(input.enabled).bind(input.weight).bind(input.proxy_id).bind(input.config_template_id).bind(&override_document).bind(input.connect_timeout_ms).bind(input.response_header_timeout_ms).bind(input.stream_idle_timeout_ms).bind(&input.upstream_auth_kind).bind(&input.upstream_auth_header_name).bind(input.upstream_api_key.flatten()).bind(&input.available_models).bind(&input.health_check).fetch_one(&mut **transaction).await?
     } else {
         let credential_present = input.upstream_api_key.is_some();
-        sqlx::query_scalar("UPDATE channels SET channel_group_id=$2,api_format=$3::api_format,name=$4,base_url=$5,enabled=$6,weight=$7,proxy_id=$8,config_template_id=$9,override_document=$10,connect_timeout_ms=$11,response_header_timeout_ms=$12,stream_idle_timeout_ms=$13,upstream_auth_kind=$14,upstream_auth_header_name=$15,upstream_api_key=CASE WHEN $16 THEN $17 ELSE upstream_api_key END,available_models=$18,health_check=$19 WHERE id=$1 AND updated_at=$20 RETURNING updated_at").bind(id).bind(input.channel_group_id).bind(&input.api_format).bind(&input.name).bind(&input.base_url).bind(input.enabled).bind(input.weight).bind(input.proxy_id).bind(input.config_template_id).bind(&input.override_document).bind(input.connect_timeout_ms).bind(input.response_header_timeout_ms).bind(input.stream_idle_timeout_ms).bind(&input.upstream_auth_kind).bind(&input.upstream_auth_header_name).bind(credential_present).bind(input.upstream_api_key.flatten()).bind(&input.available_models).bind(&input.health_check).bind(expected_updated_at.expect("PUT version")).fetch_optional(&mut **transaction).await?.ok_or(RepositoryError::Conflict)?
+        sqlx::query_scalar("UPDATE channels SET channel_group_id=$2,api_format=$3::api_format,name=$4,base_url=$5,enabled=$6,weight=$7,proxy_id=$8,config_template_id=$9,override_document=CASE WHEN $10 THEN $11 ELSE override_document END,connect_timeout_ms=$12,response_header_timeout_ms=$13,stream_idle_timeout_ms=$14,upstream_auth_kind=$15,upstream_auth_header_name=$16,upstream_api_key=CASE WHEN $17 THEN $18 ELSE upstream_api_key END,available_models=$19,health_check=$20 WHERE id=$1 AND updated_at=$21 RETURNING updated_at").bind(id).bind(input.channel_group_id).bind(&input.api_format).bind(&input.name).bind(&input.base_url).bind(input.enabled).bind(input.weight).bind(input.proxy_id).bind(input.config_template_id).bind(override_document_present).bind(&override_document).bind(input.connect_timeout_ms).bind(input.response_header_timeout_ms).bind(input.stream_idle_timeout_ms).bind(&input.upstream_auth_kind).bind(&input.upstream_auth_header_name).bind(credential_present).bind(input.upstream_api_key.flatten()).bind(&input.available_models).bind(&input.health_check).bind(expected_updated_at.expect("PUT version")).fetch_optional(&mut **transaction).await?.ok_or(RepositoryError::Conflict)?
     };
     Ok(MutationResult {
         id,
@@ -2483,10 +2538,16 @@ async fn proxy_update(
 async fn config_template_insert(
     transaction: &mut Transaction<'_, Postgres>,
     id: Uuid,
-    input: ConfigTemplateInput,
+    input: impl Into<ConfigTemplateMutationInput>,
     create: bool,
     expected_updated_at: Option<DateTime<Utc>>,
 ) -> Result<MutationResult, RepositoryError> {
+    let input = input.into();
+    if create && input.document.is_none() {
+        return Err(RepositoryError::Validation);
+    }
+    let document_present = input.document.is_some();
+    let document = input.document.unwrap_or_else(empty_object);
     let before = if create {
         json!({})
     } else {
@@ -2497,16 +2558,17 @@ async fn config_template_insert(
             .bind(id)
             .bind(&input.name)
             .bind(&input.description)
-            .bind(&input.document)
+            .bind(&document)
             .bind(input.enabled)
             .fetch_one(&mut **transaction)
             .await?
     } else {
-        sqlx::query_scalar("UPDATE config_templates SET name=$2,description=$3,document=$4,enabled=$5 WHERE id=$1 AND updated_at=$6 RETURNING updated_at")
+        sqlx::query_scalar("UPDATE config_templates SET name=$2,description=$3,document=CASE WHEN $4 THEN $5 ELSE document END,enabled=$6 WHERE id=$1 AND updated_at=$7 RETURNING updated_at")
             .bind(id)
             .bind(&input.name)
             .bind(&input.description)
-            .bind(&input.document)
+            .bind(document_present)
+            .bind(&document)
             .bind(input.enabled)
             .bind(expected_updated_at.expect("PUT version"))
             .fetch_optional(&mut **transaction)

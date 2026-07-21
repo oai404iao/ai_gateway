@@ -1653,7 +1653,7 @@ async fn admin_api_key_policies_persist_publish_and_are_audited_without_secrets(
 }
 
 #[tokio::test]
-async fn invalid_admin_mutation_rolls_back_database_audit_and_snapshot() {
+async fn invalid_routing_dependency_rolls_back_database_audit_and_snapshot() {
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
     let (app, runtime) = admin_app(database.pool.clone(), seed.user).await;
@@ -1661,20 +1661,27 @@ async fn invalid_admin_mutation_rolls_back_database_audit_and_snapshot() {
         .fetch_one(&database.pool)
         .await
         .unwrap();
-    let response = admin_request(
+    let path = format!("/console/v1/channels/{}", seed.channel);
+    let detail = admin_request(app.clone(), "GET", &path, serde_json::json!({})).await;
+    assert_eq!(detail.status(), StatusCode::OK);
+    let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
+    let response = admin_request_with_headers(
         app,
         "PUT",
-        &format!("/console/v1/channels/{}", seed.channel),
+        &path,
         serde_json::json!({
             "channel_group_id": seed.group, "api_format": "open_ai_chat_completions",
             "name": format!("test-channel-{}", seed.channel), "base_url": "https://example.test",
-            "enabled": false, "auto_disabled": false, "weight": 1,
-            "upstream_auth_kind": "bearer", "upstream_api_key": "upstream-secret",
+            "enabled": false, "weight": 1,
+            "upstream_auth_kind": "bearer",
             "available_models": ["upstream-v1"]
         }),
+        &[("if-match", &etag)],
     )
     .await;
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(body.as_ref(), br#"{"error":"routing_dependency_invalid"}"#);
     let enabled: bool = sqlx::query_scalar("SELECT enabled FROM channels WHERE id=$1")
         .bind(seed.channel)
         .fetch_one(&database.pool)
@@ -1738,7 +1745,7 @@ async fn proxy_template_management_is_redacted_and_publishes_or_rolls_back_atomi
         serde_json::json!({
             "name": "managed-template",
             "description": "managed template",
-            "document": template_document,
+            "document": template_document.clone(),
             "enabled": true
         }),
     )
@@ -1857,7 +1864,7 @@ async fn proxy_template_management_is_redacted_and_publishes_or_rolls_back_atomi
             serde_json::json!({
                 "name": "managed-template-updated",
                 "description": "updated template",
-                "document": template_document,
+                "document": template_document.clone(),
                 "enabled": true
             }),
             &[("if-match", &template_etag)],
@@ -1866,6 +1873,35 @@ async fn proxy_template_management_is_redacted_and_publishes_or_rolls_back_atomi
         .status(),
         StatusCode::OK
     );
+    let template_detail =
+        admin_request(app.clone(), "GET", &template_path, serde_json::json!({})).await;
+    let template_etag = template_detail.headers()["etag"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(
+        admin_request_with_headers(
+            app.clone(),
+            "PUT",
+            &template_path,
+            serde_json::json!({
+                "name": "managed-template-metadata-only",
+                "description": "metadata-only update",
+                "enabled": true
+            }),
+            &[("if-match", &template_etag)],
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    let persisted_template_document: serde_json::Value =
+        sqlx::query_scalar("SELECT document FROM config_templates WHERE id=$1")
+            .bind(template_id)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert_eq!(persisted_template_document, template_document);
 
     let channel_path = format!("/console/v1/channels/{}", seed.channel);
     let channel_detail =
@@ -1931,11 +1967,52 @@ async fn proxy_template_management_is_redacted_and_publishes_or_rolls_back_atomi
     let channel_read =
         admin_request(app.clone(), "GET", &channel_path, serde_json::json!({})).await;
     assert_eq!(channel_read.status(), StatusCode::OK);
+    let channel_etag = channel_read.headers()["etag"].to_str().unwrap().to_owned();
     let channel_read: serde_json::Value =
         serde_json::from_slice(&channel_read.into_body().collect().await.unwrap().to_bytes())
             .unwrap();
     assert!(channel_read.get("override_document").is_none());
     assert!(!channel_read.to_string().contains(channel_value));
+    let mut metadata_only_channel = valid_channel.clone();
+    metadata_only_channel
+        .as_object_mut()
+        .unwrap()
+        .remove("override_document");
+    metadata_only_channel["name"] = serde_json::json!("managed-channel-metadata-only");
+    assert_eq!(
+        admin_request_with_headers(
+            app.clone(),
+            "PUT",
+            &channel_path,
+            metadata_only_channel,
+            &[("if-match", &channel_etag)],
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    let persisted_channel_document: serde_json::Value =
+        sqlx::query_scalar("SELECT override_document FROM channels WHERE id=$1")
+            .bind(seed.channel)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        persisted_channel_document,
+        valid_channel["override_document"]
+    );
+    let published = runtime.snapshot();
+    assert_eq!(
+        published
+            .channel(seed.channel)
+            .unwrap()
+            .upstream_policy()
+            .effective_transforms()
+            .request_headers()
+            .operations()
+            .len(),
+        2
+    );
 
     let audit: serde_json::Value = sqlx::query_scalar(
         "SELECT jsonb_agg(jsonb_build_object('before', before_redacted, 'after', after_redacted)) FROM audit_logs WHERE object_id = ANY($1)",
@@ -2253,7 +2330,8 @@ async fn channel_documents_are_rejected_and_never_escape_admin_or_audit_allowlis
         "channel_group_id": seed.group, "api_format": "open_ai_chat_completions",
         "name": format!("test-channel-{}", seed.channel), "base_url": "https://example.test",
         "enabled": true, "weight": 1, "upstream_auth_kind": "bearer",
-        "available_models": ["upstream-v1"], "upstream_api_key": "upstream-secret"
+        "available_models": ["upstream-v1"], "upstream_api_key": "upstream-secret",
+        "override_document": {}
     });
     assert_eq!(
         admin_request_with_headers(

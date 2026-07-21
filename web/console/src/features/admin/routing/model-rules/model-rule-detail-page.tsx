@@ -27,7 +27,7 @@ import {
   useModels,
   useUpdateModelRule,
 } from "@/features/admin/api";
-import { ApiError } from "@/api/errors";
+import { ApiError, controlPlaneMutationErrorMessage } from "@/api/errors";
 import type { ApiFormat, ModelRuleInput } from "@/api/types";
 import { API_FORMATS, apiFormatLabel } from "@/lib/permissions";
 import { useI18n } from "@/app/i18n";
@@ -40,6 +40,14 @@ const schema = z.object({
   channel_group_ids: z.array(z.string()),
   channel_ids: z.array(z.string()),
   enabled: z.boolean(),
+}).superRefine((value, context) => {
+  if (value.channel_group_ids.length === 0 && value.channel_ids.length === 0) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["channel_group_ids"],
+      message: "Pick at least one channel group or channel.",
+    });
+  }
 });
 
 type FormState = z.infer<typeof schema>;
@@ -85,13 +93,28 @@ export function ModelRuleDetailPage() {
 
   const patch = (partial: Partial<FormState>) => setState((prev) => ({ ...prev, ...partial }));
 
+  const selectedUpstreamModel = useMemo(
+    () => models.data?.find((model) => model.id === state.upstream_model_id),
+    [models.data, state.upstream_model_id],
+  );
   const eligibleGroups = useMemo(
-    () => groups.data?.filter((group) => group.api_format === state.api_format) ?? [],
+    () =>
+      groups.data?.filter(
+        (group) => group.api_format === state.api_format && group.enabled,
+      ) ?? [],
     [groups.data, state.api_format],
   );
   const eligibleChannels = useMemo(
-    () => channels.data?.filter((channel) => channel.api_format === state.api_format) ?? [],
-    [channels.data, state.api_format],
+    () =>
+      channels.data?.filter(
+        (channel) =>
+          channel.api_format === state.api_format &&
+          channel.enabled &&
+          !channel.auto_disabled &&
+          (!selectedUpstreamModel ||
+            channel.available_models.includes(selectedUpstreamModel.source_model_id)),
+      ) ?? [],
+    [channels.data, selectedUpstreamModel, state.api_format],
   );
 
   const toggle = (key: "channel_group_ids" | "channel_ids", value: string) => {
@@ -133,7 +156,7 @@ export function ModelRuleDetailPage() {
       if (error instanceof ApiError && error.isConflict) {
         toast.error(t("This rule was changed elsewhere. Reloading."));
       } else {
-        toast.error(error instanceof Error ? error.message : t("Save failed"));
+        toast.error(controlPlaneMutationErrorMessage(error, t("Save failed")));
       }
     } finally {
       setSubmitting(false);
@@ -267,6 +290,9 @@ export function ModelRuleDetailPage() {
                       </span>
                     ) : null}
                   </div>
+                  {fieldError("channel_group_ids") ? (
+                    <FieldError>{fieldError("channel_group_ids")}</FieldError>
+                  ) : null}
                 </Field>
                 <Field>
                   <FieldLabel>
