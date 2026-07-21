@@ -169,6 +169,11 @@ const zhCN: Record<string, string> = {
   "Routes a client model and API format to one priced upstream model and channels.":
     "将客户端模型和 API 格式路由到一个带价格的上游模型和渠道。",
   "Client model": "客户端模型",
+  "Pick a client model": "选择客户端模型",
+  "Custom client model": "自定义客户端模型",
+  "Enter a custom client model": "输入自定义客户端模型",
+  "Choose an upstream model or use Custom client model to enter an alias.":
+    "选择上游模型，或使用“自定义客户端模型”输入别名。",
   "API format": "API 格式",
   "Pick an upstream model.": "请选择上游模型。",
   "Pick an upstream model": "选择上游模型",

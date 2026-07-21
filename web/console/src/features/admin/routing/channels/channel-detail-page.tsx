@@ -529,10 +529,13 @@ export function ChannelDetailPage() {
                   </Field>
                 ) : null}
                 <StringListField
+                  id="available_models"
+                  variant="tokens"
                   label="Available upstream models"
                   value={state.available_models}
                   onChange={(value) => patch({ available_models: value })}
-                  placeholder="One upstream model id per line"
+                  placeholder="Enter an upstream model ID"
+                  description="Press Enter or Add to include a model."
                   error={fieldError("available_models")}
                 />
                 <NullableNumberField

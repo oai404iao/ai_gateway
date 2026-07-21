@@ -4,7 +4,13 @@ import { z } from "zod";
 import { toast } from "sonner";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Field, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
+import {
+  Field,
+  FieldDescription,
+  FieldError,
+  FieldGroup,
+  FieldLabel,
+} from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Switch } from "@/components/ui/switch";
@@ -62,6 +68,8 @@ const empty: FormState = {
   enabled: true,
 };
 
+const CUSTOM_CLIENT_MODEL = "__custom_client_model__";
+
 export function ModelRuleDetailPage() {
   const { id = "" } = useParams();
   const isNew = id === "new";
@@ -96,6 +104,13 @@ export function ModelRuleDetailPage() {
   const selectedUpstreamModel = useMemo(
     () => models.data?.find((model) => model.id === state.upstream_model_id),
     [models.data, state.upstream_model_id],
+  );
+  const clientModelSelection = useMemo(
+    () =>
+      models.data?.some((model) => model.source_model_id === state.client_model)
+        ? state.client_model
+        : CUSTOM_CLIENT_MODEL,
+    [models.data, state.client_model],
   );
   const eligibleGroups = useMemo(
     () =>
@@ -203,13 +218,46 @@ export function ModelRuleDetailPage() {
           <CardContent>
             <div className="flex flex-col gap-4">
               <FieldGroup>
-                <Field>
-                  <FieldLabel htmlFor="client_model">{t("Client model")}</FieldLabel>
-                  <Input
-                    id="client_model"
-                    value={state.client_model}
-                    onChange={(event) => patch({ client_model: event.target.value })}
-                  />
+                <Field data-invalid={Boolean(fieldError("client_model"))}>
+                  <FieldLabel>{t("Client model")}</FieldLabel>
+                  <Select
+                    value={clientModelSelection}
+                    onValueChange={(value) =>
+                      patch({ client_model: value === CUSTOM_CLIENT_MODEL ? "" : value })
+                    }
+                  >
+                    <SelectTrigger
+                      aria-label={t("Client model")}
+                      aria-invalid={Boolean(fieldError("client_model"))}
+                    >
+                      <SelectValue placeholder={t("Pick a client model")} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectGroup>
+                        <SelectItem value={CUSTOM_CLIENT_MODEL}>
+                          {t("Custom client model")}
+                        </SelectItem>
+                        {models.data?.map((model) => (
+                          <SelectItem key={model.id} value={model.source_model_id}>
+                            {model.display_name} ({model.source_model_id})
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                  {clientModelSelection === CUSTOM_CLIENT_MODEL ? (
+                    <Input
+                      id="client_model"
+                      value={state.client_model}
+                      onChange={(event) => patch({ client_model: event.target.value })}
+                      placeholder={t("Enter a custom client model")}
+                      aria-label={t("Custom client model")}
+                      aria-invalid={Boolean(fieldError("client_model"))}
+                    />
+                  ) : null}
+                  <FieldDescription>
+                    {t("Choose an upstream model or use Custom client model to enter an alias.")}
+                  </FieldDescription>
                   {fieldError("client_model") ? (
                     <FieldError>{fieldError("client_model")}</FieldError>
                   ) : null}

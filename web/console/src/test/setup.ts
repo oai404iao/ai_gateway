@@ -29,3 +29,18 @@ if (!window.IntersectionObserver) {
     }
   } as unknown as typeof IntersectionObserver;
 }
+
+// Radix Select checks this pointer-capture API while opening its menu.
+if (!HTMLElement.prototype.hasPointerCapture) {
+  Object.defineProperty(HTMLElement.prototype, "hasPointerCapture", {
+    configurable: true,
+    value: () => false,
+  });
+}
+
+if (!HTMLElement.prototype.scrollIntoView) {
+  Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+    configurable: true,
+    value: () => {},
+  });
+}

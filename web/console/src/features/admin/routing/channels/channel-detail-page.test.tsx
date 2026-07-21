@@ -89,4 +89,42 @@ describe("ChannelDetailPage", () => {
     ).toBeInTheDocument();
     expect(putHit).toBe(false);
   });
+
+  it("adds and removes available upstream models as a token list", async () => {
+    seedAuthenticatedSession();
+    let submitted: ChannelInput | undefined;
+    server.use(
+      http.put("/console/v1/routing/channels/:id", async ({ request }) => {
+        submitted = (await request.json()) as ChannelInput;
+        return HttpResponse.json({
+          id: CHANNEL.id,
+          correlation_id: "55555555-0000-0000-0000-000000000000",
+        });
+      }),
+    );
+    const user = userEvent.setup();
+    renderAppAt(`/admin/routing/channels/${CHANNEL.id}`);
+
+    const models = await screen.findByLabelText(/available upstream models/i);
+    await user.type(models, "anthropic/claude-sonnet-4");
+    await user.keyboard("{Enter}");
+    expect(screen.getByText("anthropic/claude-sonnet-4")).toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("button", { name: "Remove anthropic/claude-sonnet-4" }),
+    );
+    expect(screen.queryByText("anthropic/claude-sonnet-4")).not.toBeInTheDocument();
+
+    await user.type(models, "openai/gpt-4.1");
+    await user.keyboard("{Enter}");
+    await user.click(screen.getByRole("button", { name: /save channel/i }));
+
+    await waitFor(() => {
+      expect(submitted).toBeDefined();
+    });
+    expect(submitted?.available_models).toEqual([
+      ...CHANNEL.available_models,
+      "openai/gpt-4.1",
+    ]);
+  });
 });
