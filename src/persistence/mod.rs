@@ -8,7 +8,7 @@ pub use auth::{
 };
 
 use std::{
-    collections::{BTreeMap, BTreeSet, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fmt,
 };
 
@@ -1642,67 +1642,205 @@ impl RequestLogRepository {
         &self,
         event: &RequestLogEvent,
     ) -> Result<RequestLogInsertOutcome, RepositoryError> {
-        let status = event
-            .response_status_code
-            .map(validate_response_status)
-            .transpose()?;
-        let billing = event.billing.as_ref();
-        let usage = billing.and_then(|billing| billing.usage.as_ref());
-        let price = billing.map(|billing| &billing.price);
-        let started_at = normalize_timestamp(event.started_at);
-        let completed_at = normalize_timestamp(event.completed_at);
-        let inserted = sqlx::query_scalar::<_, Uuid>("INSERT INTO request_logs (id, started_at, completed_at, user_id, api_key_id, request_source, api_format, client_model, upstream_model, model_rule_id, channel_group_id, channel_id, outcome, response_status_code, streamed, ttft_ms, total_duration_ms, output_tokens_per_second, input_tokens, cached_input_tokens, cache_write_tokens, output_tokens, model_id, currency, price_unit_tokens, price_effective_at, input_unit_price, cached_input_unit_price, cache_write_unit_price, output_unit_price, cost_amount, error_code) VALUES ($1, $2, $3, $4, $5, $6, $7::api_format, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32) ON CONFLICT (id) DO NOTHING RETURNING id")
-            .bind(event.id)
-            .bind(started_at)
-            .bind(completed_at)
-            .bind(event.user_id)
-            .bind(event.api_key_id)
-            .bind(event.request_source.as_str())
-            .bind(match event.api_format {
-                crate::domain::ApiFormat::OpenAiChatCompletions => "open_ai_chat_completions",
-                crate::domain::ApiFormat::OpenAiResponses => "open_ai_responses",
-            })
-            .bind(&event.client_model)
-            .bind(&event.upstream_model)
-            .bind(event.model_rule_id)
-            .bind(event.channel_group_id)
-            .bind(event.channel_id)
-            .bind(event.outcome.as_str())
-            .bind(status)
-            .bind(event.streamed)
-            .bind(event.ttft_ms)
-            .bind(event.total_duration_ms)
-            .bind(billing.and_then(|billing| billing.output_tokens_per_second))
-            .bind(usage.map(|usage| usage.input_tokens))
-            .bind(usage.map(|usage| usage.cached_input_tokens))
-            .bind(usage.map(|usage| usage.cache_write_tokens))
-            .bind(usage.map(|usage| usage.output_tokens))
-            .bind(event.model_id)
-            .bind(price.map(|price| &price.currency))
-            .bind(price.map(|price| price.price_unit_tokens))
-            .bind(price.map(|price| price.price_effective_at))
-            .bind(price.map(|price| price.input_unit_price))
-            .bind(price.map(|price| price.cached_input_unit_price))
-            .bind(price.map(|price| price.cache_write_unit_price))
-            .bind(price.map(|price| price.output_unit_price))
-            .bind(billing.and_then(|billing| billing.cost_amount))
-            .bind(event.error_code)
-            .fetch_optional(&self.pool)
-            .await?;
-        if inserted.is_some() {
-            return Ok(RequestLogInsertOutcome::Inserted);
+        let result = self
+            .insert_batch(std::slice::from_ref(event))
+            .await?
+            .into_iter()
+            .next()
+            .expect("one input event produces one batch result");
+        match result.outcome {
+            RequestLogBatchInsertOutcome::Inserted => Ok(RequestLogInsertOutcome::Inserted),
+            RequestLogBatchInsertOutcome::ExactDuplicate => {
+                Ok(RequestLogInsertOutcome::ExactDuplicate)
+            }
+            RequestLogBatchInsertOutcome::DuplicateConflict => {
+                Err(RepositoryError::DuplicateConflict { id: event.id })
+            }
+            RequestLogBatchInsertOutcome::InvalidResponseStatus { status } => {
+                Err(RepositoryError::InvalidResponseStatus { status })
+            }
+        }
+    }
+
+    /// Inserts a bounded set of terminal events with one multi-row statement.
+    ///
+    /// Per-event validation and duplicate classification remain isolated so one
+    /// malformed status or conflicting duplicate does not hide valid peers.
+    /// Database-level failures still fail the whole statement transactionally;
+    /// the worker falls back to single-event insertion on that exceptional path.
+    pub async fn insert_batch(
+        &self,
+        events: &[RequestLogEvent],
+    ) -> Result<Vec<RequestLogBatchInsertResult>, RepositoryError> {
+        if events.is_empty() {
+            return Ok(Vec::new());
         }
 
-        let existing = sqlx::query_as::<_, StoredRequestLog>("SELECT started_at, completed_at, user_id, api_key_id, request_source, api_format::text AS api_format, client_model, upstream_model, model_rule_id, channel_group_id, channel_id, outcome, response_status_code, streamed, ttft_ms, total_duration_ms, output_tokens_per_second, input_tokens, cached_input_tokens, cache_write_tokens, output_tokens, model_id, currency, price_unit_tokens, price_effective_at, input_unit_price, cached_input_unit_price, cache_write_unit_price, output_unit_price, cost_amount, error_code FROM request_logs WHERE id = $1")
-            .bind(event.id)
-            .fetch_optional(&self.pool)
-            .await?
-            .ok_or(RepositoryError::DuplicateDisappeared { id: event.id })?;
-        if existing.matches(event, started_at, completed_at, status) {
-            Ok(RequestLogInsertOutcome::ExactDuplicate)
-        } else {
-            Err(RepositoryError::DuplicateConflict { id: event.id })
+        let mut outcomes = vec![None; events.len()];
+        let mut valid = Vec::with_capacity(events.len());
+        let mut first_valid_index = HashMap::<Uuid, usize>::with_capacity(events.len());
+        for (index, event) in events.iter().enumerate() {
+            let status = match event
+                .response_status_code
+                .map(validate_response_status)
+                .transpose()
+            {
+                Ok(status) => status,
+                Err(RepositoryError::InvalidResponseStatus { status }) => {
+                    outcomes[index] =
+                        Some(RequestLogBatchInsertOutcome::InvalidResponseStatus { status });
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            first_valid_index.entry(event.id).or_insert(index);
+            valid.push((index, status));
         }
+
+        if !valid.is_empty() {
+            let mut batch = RequestLogInsertBatch::with_capacity(valid.len());
+            for (index, status) in &valid {
+                batch.push(&events[*index], *status);
+            }
+            let inserted_ids = sqlx::query_scalar::<_, Uuid>(
+                "INSERT INTO request_logs \
+                 (id,started_at,completed_at,user_id,api_key_id,request_source,api_format,\
+                  client_model,upstream_model,model_rule_id,channel_group_id,channel_id,outcome,\
+                  response_status_code,streamed,ttft_ms,total_duration_ms,\
+                  output_tokens_per_second,input_tokens,cached_input_tokens,cache_write_tokens,\
+                  output_tokens,model_id,currency,price_unit_tokens,price_effective_at,\
+                  input_unit_price,cached_input_unit_price,cache_write_unit_price,\
+                  output_unit_price,cost_amount,error_code) \
+                 SELECT input.id,input.started_at,input.completed_at,input.user_id,input.api_key_id,\
+                        input.request_source,input.api_format::api_format,input.client_model,\
+                        input.upstream_model,input.model_rule_id,input.channel_group_id,\
+                        input.channel_id,input.outcome,input.response_status_code,input.streamed,\
+                        input.ttft_ms,input.total_duration_ms,input.output_tokens_per_second,\
+                        input.input_tokens,input.cached_input_tokens,input.cache_write_tokens,\
+                        input.output_tokens,input.model_id,input.currency::char(3),\
+                        input.price_unit_tokens,input.price_effective_at,input.input_unit_price,\
+                        input.cached_input_unit_price,input.cache_write_unit_price,\
+                        input.output_unit_price,input.cost_amount,input.error_code \
+                 FROM UNNEST(\
+                    $1::uuid[],$2::timestamptz[],$3::timestamptz[],$4::uuid[],$5::uuid[],\
+                    $6::text[],$7::text[],$8::text[],$9::text[],$10::uuid[],$11::uuid[],\
+                    $12::uuid[],$13::text[],$14::int2[],$15::bool[],$16::int4[],$17::int4[],\
+                    $18::numeric[],$19::int8[],$20::int8[],$21::int8[],$22::int8[],$23::uuid[],\
+                    $24::text[],$25::int8[],$26::timestamptz[],$27::numeric[],$28::numeric[],\
+                    $29::numeric[],$30::numeric[],$31::numeric[],$32::text[]\
+                 ) AS input(\
+                    id,started_at,completed_at,user_id,api_key_id,request_source,api_format,\
+                    client_model,upstream_model,model_rule_id,channel_group_id,channel_id,outcome,\
+                    response_status_code,streamed,ttft_ms,total_duration_ms,\
+                    output_tokens_per_second,input_tokens,cached_input_tokens,cache_write_tokens,\
+                    output_tokens,model_id,currency,price_unit_tokens,price_effective_at,\
+                    input_unit_price,cached_input_unit_price,cache_write_unit_price,\
+                    output_unit_price,cost_amount,error_code\
+                 ) \
+                 ON CONFLICT (id) DO NOTHING \
+                 RETURNING id",
+            )
+                .bind(&batch.ids)
+                .bind(&batch.started_at)
+                .bind(&batch.completed_at)
+                .bind(&batch.user_ids)
+                .bind(&batch.api_key_ids)
+                .bind(&batch.request_sources)
+                .bind(&batch.api_formats)
+                .bind(&batch.client_models)
+                .bind(&batch.upstream_models)
+                .bind(&batch.model_rule_ids)
+                .bind(&batch.channel_group_ids)
+                .bind(&batch.channel_ids)
+                .bind(&batch.outcomes)
+                .bind(&batch.response_status_codes)
+                .bind(&batch.streamed)
+                .bind(&batch.ttft_ms)
+                .bind(&batch.total_duration_ms)
+                .bind(&batch.output_tokens_per_second)
+                .bind(&batch.input_tokens)
+                .bind(&batch.cached_input_tokens)
+                .bind(&batch.cache_write_tokens)
+                .bind(&batch.output_tokens)
+                .bind(&batch.model_ids)
+                .bind(&batch.currencies)
+                .bind(&batch.price_unit_tokens)
+                .bind(&batch.price_effective_at)
+                .bind(&batch.input_unit_price)
+                .bind(&batch.cached_input_unit_price)
+                .bind(&batch.cache_write_unit_price)
+                .bind(&batch.output_unit_price)
+                .bind(&batch.cost_amount)
+                .bind(&batch.error_codes)
+                .fetch_all(&self.pool)
+                .await?
+                .into_iter()
+                .collect::<HashSet<_>>();
+
+            let mut needs_existing = HashSet::new();
+            for (index, _) in &valid {
+                let event = &events[*index];
+                if inserted_ids.contains(&event.id)
+                    && first_valid_index.get(&event.id) == Some(index)
+                {
+                    outcomes[*index] = Some(RequestLogBatchInsertOutcome::Inserted);
+                } else {
+                    needs_existing.insert(event.id);
+                }
+            }
+
+            if !needs_existing.is_empty() {
+                let ids = needs_existing.iter().copied().collect::<Vec<_>>();
+                let existing = sqlx::query_as::<_, StoredRequestLog>(
+                    "SELECT id,started_at,completed_at,user_id,api_key_id,request_source,\
+                            api_format::text AS api_format,client_model,upstream_model,\
+                            model_rule_id,channel_group_id,channel_id,outcome,response_status_code,\
+                            streamed,ttft_ms,total_duration_ms,output_tokens_per_second,input_tokens,\
+                            cached_input_tokens,cache_write_tokens,output_tokens,model_id,currency,\
+                            price_unit_tokens,price_effective_at,input_unit_price,\
+                            cached_input_unit_price,cache_write_unit_price,output_unit_price,\
+                            cost_amount,error_code \
+                     FROM request_logs WHERE id = ANY($1)",
+                )
+                .bind(&ids)
+                .fetch_all(&self.pool)
+                .await?
+                .into_iter()
+                .map(|row| (row.id, row))
+                .collect::<HashMap<_, _>>();
+
+                for (index, status) in &valid {
+                    if outcomes[*index].is_some() {
+                        continue;
+                    }
+                    let event = &events[*index];
+                    let stored = existing
+                        .get(&event.id)
+                        .ok_or(RepositoryError::DuplicateDisappeared { id: event.id })?;
+                    outcomes[*index] = Some(
+                        if stored.matches(
+                            event,
+                            normalize_timestamp(event.started_at),
+                            normalize_timestamp(event.completed_at),
+                            *status,
+                        ) {
+                            RequestLogBatchInsertOutcome::ExactDuplicate
+                        } else {
+                            RequestLogBatchInsertOutcome::DuplicateConflict
+                        },
+                    );
+                }
+            }
+        }
+
+        Ok(events
+            .iter()
+            .zip(outcomes)
+            .map(|(event, outcome)| RequestLogBatchInsertResult {
+                request_log_id: event.id,
+                outcome: outcome.expect("every batch input receives an outcome"),
+            })
+            .collect())
     }
 
     /// Claims and applies one billable terminal log in a single transaction.
@@ -1715,60 +1853,174 @@ impl RequestLogRepository {
         &self,
         request_log_id: Uuid,
     ) -> Result<RequestLogSettlementOutcome, RepositoryError> {
+        Ok(self
+            .settle_batch(&[request_log_id])
+            .await?
+            .into_iter()
+            .next()
+            .expect("one request-log id produces one settlement outcome")
+            .1)
+    }
+
+    /// Claims and applies a set of billable terminal logs with batched account
+    /// updates in one transaction.
+    ///
+    /// Costs are aggregated per user and API key before those account rows are
+    /// updated. The returned vector is deduplicated by request-log id while
+    /// preserving first-seen input order.
+    pub async fn settle_batch(
+        &self,
+        request_log_ids: &[Uuid],
+    ) -> Result<Vec<(Uuid, RequestLogSettlementOutcome)>, RepositoryError> {
+        let mut seen = HashSet::with_capacity(request_log_ids.len());
+        let request_log_ids = request_log_ids
+            .iter()
+            .copied()
+            .filter(|id| seen.insert(*id))
+            .collect::<Vec<_>>();
+        if request_log_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
         let mut transaction = self.pool.begin().await?;
         let claimed = sqlx::query_as::<_, ClaimedRequestLog>(
             "UPDATE request_logs AS log
              SET billed_at = now()
              FROM api_keys AS key
-             WHERE log.id = $1
+             WHERE log.id = ANY($1)
                AND log.billed_at IS NULL
                AND log.cost_amount IS NOT NULL
                AND key.id = log.api_key_id
                AND key.user_id = log.user_id
              RETURNING log.id, log.user_id, log.api_key_id, log.cost_amount",
         )
-        .bind(request_log_id)
-        .fetch_optional(&mut *transaction)
+        .bind(&request_log_ids)
+        .fetch_all(&mut *transaction)
         .await?;
-        let Some(claimed) = claimed else {
-            let outcome = settlement_ineligibility(&mut transaction, request_log_id).await?;
-            transaction.commit().await?;
-            return Ok(outcome);
+
+        let claimed_ids = claimed.iter().map(|row| row.id).collect::<HashSet<_>>();
+        let unclaimed_ids = request_log_ids
+            .iter()
+            .copied()
+            .filter(|id| !claimed_ids.contains(id))
+            .collect::<Vec<_>>();
+        let eligibility = if unclaimed_ids.is_empty() {
+            HashMap::new()
+        } else {
+            sqlx::query_as::<_, SettlementEligibility>(
+                "SELECT log.id,
+                        log.billed_at,
+                        log.cost_amount,
+                        key.user_id AS api_key_user_id,
+                        log.user_id
+                 FROM request_logs AS log
+                 LEFT JOIN api_keys AS key ON key.id = log.api_key_id
+                 WHERE log.id = ANY($1)",
+            )
+            .bind(&unclaimed_ids)
+            .fetch_all(&mut *transaction)
+            .await?
+            .into_iter()
+            .map(|row| (row.id, row))
+            .collect::<HashMap<_, _>>()
         };
 
-        let balance_updated: Option<rust_decimal::Decimal> = sqlx::query_scalar(
-            "UPDATE users
-             SET balance_amount = balance_amount - $1
-             WHERE id = $2
-             RETURNING balance_amount",
-        )
-        .bind(claimed.cost_amount)
-        .bind(claimed.user_id)
-        .fetch_optional(&mut *transaction)
-        .await?;
-        if balance_updated.is_none() {
-            return Err(RepositoryError::SettlementClaimInvalidated { id: request_log_id });
+        let mut quota_by_api_key = HashMap::new();
+        if !claimed.is_empty() {
+            let mut user_costs = BTreeMap::<Uuid, rust_decimal::Decimal>::new();
+            let mut api_key_costs = BTreeMap::<(Uuid, Uuid), rust_decimal::Decimal>::new();
+            for row in &claimed {
+                *user_costs.entry(row.user_id).or_default() += row.cost_amount;
+                *api_key_costs
+                    .entry((row.api_key_id, row.user_id))
+                    .or_default() += row.cost_amount;
+            }
+
+            let mut users = QueryBuilder::<Postgres>::new(
+                "UPDATE users AS account \
+                 SET balance_amount = account.balance_amount - batch.cost_amount \
+                 FROM (",
+            );
+            users.push_values(user_costs.iter(), |mut row, (user_id, cost_amount)| {
+                row.push_bind(*user_id).push_bind(*cost_amount);
+            });
+            users.push(
+                ") AS batch(user_id,cost_amount) \
+                 WHERE account.id = batch.user_id \
+                 RETURNING account.id",
+            );
+            let updated_users = users
+                .build_query_scalar::<Uuid>()
+                .fetch_all(&mut *transaction)
+                .await?
+                .into_iter()
+                .collect::<HashSet<_>>();
+            if updated_users.len() != user_costs.len() {
+                return Err(RepositoryError::SettlementClaimInvalidated { id: claimed[0].id });
+            }
+
+            let mut api_keys = QueryBuilder::<Postgres>::new(
+                "UPDATE api_keys AS key \
+                 SET quota_used_amount = key.quota_used_amount + batch.cost_amount \
+                 FROM (",
+            );
+            api_keys.push_values(
+                api_key_costs.iter(),
+                |mut row, ((api_key_id, user_id), cost_amount)| {
+                    row.push_bind(*api_key_id)
+                        .push_bind(*user_id)
+                        .push_bind(*cost_amount);
+                },
+            );
+            api_keys.push(
+                ") AS batch(api_key_id,user_id,cost_amount) \
+                 WHERE key.id = batch.api_key_id \
+                   AND key.user_id = batch.user_id \
+                 RETURNING key.id,key.quota_used_amount",
+            );
+            quota_by_api_key = api_keys
+                .build_query_as::<UpdatedApiKey>()
+                .fetch_all(&mut *transaction)
+                .await?
+                .into_iter()
+                .map(|row| (row.id, row.quota_used_amount))
+                .collect();
+            if quota_by_api_key.len() != api_key_costs.len() {
+                return Err(RepositoryError::SettlementClaimInvalidated { id: claimed[0].id });
+            }
         }
-        let quota_used_amount: Option<rust_decimal::Decimal> = sqlx::query_scalar(
-            "UPDATE api_keys
-             SET quota_used_amount = quota_used_amount + $1
-             WHERE id = $2
-               AND user_id = $3
-             RETURNING quota_used_amount",
-        )
-        .bind(claimed.cost_amount)
-        .bind(claimed.api_key_id)
-        .bind(claimed.user_id)
-        .fetch_optional(&mut *transaction)
-        .await?;
-        let quota_used_amount = quota_used_amount
-            .ok_or(RepositoryError::SettlementClaimInvalidated { id: request_log_id })?;
+
+        let claimed = claimed
+            .into_iter()
+            .map(|row| {
+                let quota_used_amount = quota_by_api_key
+                    .get(&row.api_key_id)
+                    .copied()
+                    .ok_or(RepositoryError::SettlementClaimInvalidated { id: row.id })?;
+                Ok((
+                    row.id,
+                    RequestLogSettlementOutcome::Settled {
+                        request_log_id: row.id,
+                        api_key_id: row.api_key_id,
+                        quota_used_amount,
+                    },
+                ))
+            })
+            .collect::<Result<HashMap<_, _>, RepositoryError>>()?;
+        let outcomes = request_log_ids
+            .iter()
+            .map(|id| {
+                let outcome = claimed.get(id).cloned().unwrap_or_else(|| {
+                    eligibility.get(id).map_or(
+                        RequestLogSettlementOutcome::NotFound,
+                        settlement_outcome_from_eligibility,
+                    )
+                });
+                (*id, outcome)
+            })
+            .collect();
         transaction.commit().await?;
-        Ok(RequestLogSettlementOutcome::Settled {
-            request_log_id: claimed.id,
-            api_key_id: claimed.api_key_id,
-            quota_used_amount,
-        })
+        Ok(outcomes)
     }
 
     /// Reconciles a bounded oldest-first slice of durable, eligible logs.
@@ -1781,7 +2033,7 @@ impl RequestLogRepository {
         limit: i64,
     ) -> Result<Vec<RequestLogSettlementOutcome>, RepositoryError> {
         let mut transaction = self.pool.begin().await?;
-        // Recovery is best-effort and must not monopolize the sole log worker
+        // Recovery is best-effort and must not monopolize the settlement stage
         // behind an administrative table lock. Immediate event persistence
         // keeps its existing longer timeout and remains the durable path.
         sqlx::query("SET LOCAL lock_timeout = '100ms'")
@@ -1802,11 +2054,12 @@ impl RequestLogRepository {
         .fetch_all(&mut *transaction)
         .await?;
         transaction.commit().await?;
-        let mut outcomes = Vec::with_capacity(request_log_ids.len());
-        for request_log_id in request_log_ids {
-            outcomes.push(self.settle(request_log_id).await?);
-        }
-        Ok(outcomes)
+        Ok(self
+            .settle_batch(&request_log_ids)
+            .await?
+            .into_iter()
+            .map(|(_, outcome)| outcome)
+            .collect())
     }
 }
 
@@ -2166,6 +2419,20 @@ pub enum RequestLogInsertOutcome {
     ExactDuplicate,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RequestLogBatchInsertResult {
+    pub request_log_id: Uuid,
+    pub outcome: RequestLogBatchInsertOutcome,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RequestLogBatchInsertOutcome {
+    Inserted,
+    ExactDuplicate,
+    DuplicateConflict,
+    InvalidResponseStatus { status: u16 },
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RequestLogSettlementOutcome {
     Settled {
@@ -2188,48 +2455,167 @@ struct ClaimedRequestLog {
 }
 
 #[derive(FromRow)]
+struct UpdatedApiKey {
+    id: Uuid,
+    quota_used_amount: rust_decimal::Decimal,
+}
+
+#[derive(FromRow)]
 struct SettlementEligibility {
+    id: Uuid,
     billed_at: Option<DateTime<Utc>>,
     cost_amount: Option<rust_decimal::Decimal>,
     api_key_user_id: Option<Uuid>,
     user_id: Uuid,
 }
 
-async fn settlement_ineligibility(
-    transaction: &mut Transaction<'_, Postgres>,
-    request_log_id: Uuid,
-) -> Result<RequestLogSettlementOutcome, RepositoryError> {
-    let eligibility = sqlx::query_as::<_, SettlementEligibility>(
-        "SELECT log.billed_at,
-                log.cost_amount,
-                key.user_id AS api_key_user_id,
-                log.user_id
-         FROM request_logs AS log
-         LEFT JOIN api_keys AS key ON key.id = log.api_key_id
-         WHERE log.id = $1",
-    )
-    .bind(request_log_id)
-    .fetch_optional(&mut **transaction)
-    .await?;
-    let Some(eligibility) = eligibility else {
-        return Ok(RequestLogSettlementOutcome::NotFound);
-    };
+fn settlement_outcome_from_eligibility(
+    eligibility: &SettlementEligibility,
+) -> RequestLogSettlementOutcome {
     if eligibility.billed_at.is_some() {
-        return Ok(RequestLogSettlementOutcome::AlreadyBilled);
+        return RequestLogSettlementOutcome::AlreadyBilled;
     }
     if eligibility.cost_amount.is_none() {
-        return Ok(RequestLogSettlementOutcome::NotBillable);
+        return RequestLogSettlementOutcome::NotBillable;
     }
     if eligibility.api_key_user_id != Some(eligibility.user_id) {
-        return Ok(RequestLogSettlementOutcome::AccountMismatch);
+        return RequestLogSettlementOutcome::AccountMismatch;
     }
     // A concurrent claimer either commits and is observed as `AlreadyBilled`,
     // or rolls back and leaves a later recovery pass to claim the row.
-    Ok(RequestLogSettlementOutcome::NotBillable)
+    RequestLogSettlementOutcome::NotBillable
+}
+
+struct RequestLogInsertBatch {
+    ids: Vec<Uuid>,
+    started_at: Vec<DateTime<Utc>>,
+    completed_at: Vec<DateTime<Utc>>,
+    user_ids: Vec<Uuid>,
+    api_key_ids: Vec<Uuid>,
+    request_sources: Vec<String>,
+    api_formats: Vec<String>,
+    client_models: Vec<String>,
+    upstream_models: Vec<Option<String>>,
+    model_rule_ids: Vec<Option<Uuid>>,
+    channel_group_ids: Vec<Option<Uuid>>,
+    channel_ids: Vec<Option<Uuid>>,
+    outcomes: Vec<String>,
+    response_status_codes: Vec<Option<i16>>,
+    streamed: Vec<bool>,
+    ttft_ms: Vec<Option<i32>>,
+    total_duration_ms: Vec<i32>,
+    output_tokens_per_second: Vec<Option<rust_decimal::Decimal>>,
+    input_tokens: Vec<Option<i64>>,
+    cached_input_tokens: Vec<Option<i64>>,
+    cache_write_tokens: Vec<Option<i64>>,
+    output_tokens: Vec<Option<i64>>,
+    model_ids: Vec<Option<Uuid>>,
+    currencies: Vec<Option<String>>,
+    price_unit_tokens: Vec<Option<i64>>,
+    price_effective_at: Vec<Option<DateTime<Utc>>>,
+    input_unit_price: Vec<Option<rust_decimal::Decimal>>,
+    cached_input_unit_price: Vec<Option<rust_decimal::Decimal>>,
+    cache_write_unit_price: Vec<Option<rust_decimal::Decimal>>,
+    output_unit_price: Vec<Option<rust_decimal::Decimal>>,
+    cost_amount: Vec<Option<rust_decimal::Decimal>>,
+    error_codes: Vec<Option<String>>,
+}
+
+impl RequestLogInsertBatch {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            ids: Vec::with_capacity(capacity),
+            started_at: Vec::with_capacity(capacity),
+            completed_at: Vec::with_capacity(capacity),
+            user_ids: Vec::with_capacity(capacity),
+            api_key_ids: Vec::with_capacity(capacity),
+            request_sources: Vec::with_capacity(capacity),
+            api_formats: Vec::with_capacity(capacity),
+            client_models: Vec::with_capacity(capacity),
+            upstream_models: Vec::with_capacity(capacity),
+            model_rule_ids: Vec::with_capacity(capacity),
+            channel_group_ids: Vec::with_capacity(capacity),
+            channel_ids: Vec::with_capacity(capacity),
+            outcomes: Vec::with_capacity(capacity),
+            response_status_codes: Vec::with_capacity(capacity),
+            streamed: Vec::with_capacity(capacity),
+            ttft_ms: Vec::with_capacity(capacity),
+            total_duration_ms: Vec::with_capacity(capacity),
+            output_tokens_per_second: Vec::with_capacity(capacity),
+            input_tokens: Vec::with_capacity(capacity),
+            cached_input_tokens: Vec::with_capacity(capacity),
+            cache_write_tokens: Vec::with_capacity(capacity),
+            output_tokens: Vec::with_capacity(capacity),
+            model_ids: Vec::with_capacity(capacity),
+            currencies: Vec::with_capacity(capacity),
+            price_unit_tokens: Vec::with_capacity(capacity),
+            price_effective_at: Vec::with_capacity(capacity),
+            input_unit_price: Vec::with_capacity(capacity),
+            cached_input_unit_price: Vec::with_capacity(capacity),
+            cache_write_unit_price: Vec::with_capacity(capacity),
+            output_unit_price: Vec::with_capacity(capacity),
+            cost_amount: Vec::with_capacity(capacity),
+            error_codes: Vec::with_capacity(capacity),
+        }
+    }
+
+    fn push(&mut self, event: &RequestLogEvent, response_status_code: Option<i16>) {
+        let billing = event.billing.as_ref();
+        let usage = billing.and_then(|billing| billing.usage.as_ref());
+        let price = billing.map(|billing| &billing.price);
+        self.ids.push(event.id);
+        self.started_at.push(normalize_timestamp(event.started_at));
+        self.completed_at
+            .push(normalize_timestamp(event.completed_at));
+        self.user_ids.push(event.user_id);
+        self.api_key_ids.push(event.api_key_id);
+        self.request_sources
+            .push(event.request_source.as_str().into());
+        self.api_formats.push(api_format_name(event).into());
+        self.client_models.push(event.client_model.clone());
+        self.upstream_models.push(event.upstream_model.clone());
+        self.model_rule_ids.push(event.model_rule_id);
+        self.channel_group_ids.push(event.channel_group_id);
+        self.channel_ids.push(event.channel_id);
+        self.outcomes.push(event.outcome.as_str().into());
+        self.response_status_codes.push(response_status_code);
+        self.streamed.push(event.streamed);
+        self.ttft_ms.push(event.ttft_ms);
+        self.total_duration_ms.push(event.total_duration_ms);
+        self.output_tokens_per_second
+            .push(billing.and_then(|billing| billing.output_tokens_per_second));
+        self.input_tokens
+            .push(usage.map(|usage| usage.input_tokens));
+        self.cached_input_tokens
+            .push(usage.map(|usage| usage.cached_input_tokens));
+        self.cache_write_tokens
+            .push(usage.map(|usage| usage.cache_write_tokens));
+        self.output_tokens
+            .push(usage.map(|usage| usage.output_tokens));
+        self.model_ids.push(event.model_id);
+        self.currencies
+            .push(price.map(|price| price.currency.clone()));
+        self.price_unit_tokens
+            .push(price.map(|price| price.price_unit_tokens));
+        self.price_effective_at
+            .push(price.map(|price| normalize_timestamp(price.price_effective_at)));
+        self.input_unit_price
+            .push(price.map(|price| price.input_unit_price));
+        self.cached_input_unit_price
+            .push(price.map(|price| price.cached_input_unit_price));
+        self.cache_write_unit_price
+            .push(price.map(|price| price.cache_write_unit_price));
+        self.output_unit_price
+            .push(price.map(|price| price.output_unit_price));
+        self.cost_amount
+            .push(billing.and_then(|billing| billing.cost_amount));
+        self.error_codes.push(event.error_code.map(str::to_owned));
+    }
 }
 
 #[derive(FromRow)]
 struct StoredRequestLog {
+    id: Uuid,
     started_at: DateTime<Utc>,
     completed_at: DateTime<Utc>,
     user_id: Uuid,

@@ -20,9 +20,10 @@ use ai_gateway::{
     http::console::{self, ConsoleState},
     models_dev::ModelsDevClient,
     persistence::{
-        AuthRepository, ControlPlaneRepository, MIGRATOR, RequestLogInsertOutcome,
-        RequestLogRepository, RequestLogSettlementOutcome, SystemAutomaticDisableSettingsInput,
-        SystemPassiveHealthSettingsInput, SystemSettingsInput, SystemUpstreamSettingsInput,
+        AuthRepository, ControlPlaneRepository, MIGRATOR, RequestLogBatchInsertOutcome,
+        RequestLogInsertOutcome, RequestLogRepository, RequestLogSettlementOutcome,
+        SystemAutomaticDisableSettingsInput, SystemPassiveHealthSettingsInput, SystemSettingsInput,
+        SystemUpstreamSettingsInput,
     },
     routing::{self, PassiveHealthPolicy, RoutingRuntime},
     runtime_config::{
@@ -871,6 +872,57 @@ async fn request_log_insert_is_idempotent_and_worker_continues_after_failure() {
 }
 
 #[tokio::test]
+async fn request_log_batch_insert_isolates_duplicates_and_invalid_statuses() {
+    let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
+    let repository = RequestLogRepository::new(database.pool.clone());
+    let first = request_log_event(&seed, RequestLogOutcome::Succeeded);
+    let exact_duplicate = first.clone();
+    let mut conflicting_duplicate = first.clone();
+    conflicting_duplicate.error_code = Some("conflicting_batch_fact");
+    let second = request_log_event(&seed, RequestLogOutcome::Failed);
+    let mut invalid_status = request_log_event(&seed, RequestLogOutcome::Failed);
+    invalid_status.response_status_code = Some(99);
+
+    let outcomes = repository
+        .insert_batch(&[
+            first.clone(),
+            exact_duplicate,
+            conflicting_duplicate,
+            second.clone(),
+            invalid_status,
+        ])
+        .await
+        .unwrap();
+    assert_eq!(outcomes[0].outcome, RequestLogBatchInsertOutcome::Inserted);
+    assert_eq!(
+        outcomes[1].outcome,
+        RequestLogBatchInsertOutcome::ExactDuplicate
+    );
+    assert_eq!(
+        outcomes[2].outcome,
+        RequestLogBatchInsertOutcome::DuplicateConflict
+    );
+    assert_eq!(outcomes[3].outcome, RequestLogBatchInsertOutcome::Inserted);
+    assert_eq!(
+        outcomes[4].outcome,
+        RequestLogBatchInsertOutcome::InvalidResponseStatus { status: 99 }
+    );
+    let persisted: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM request_logs ORDER BY id")
+        .fetch_all(&database.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        persisted
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>(),
+        std::collections::HashSet::from([first.id, second.id])
+    );
+
+    database.cleanup().await;
+}
+
+#[tokio::test]
 async fn settlement_claim_is_concurrent_idempotent_and_allows_soft_quota_overdraft() {
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
@@ -960,6 +1012,137 @@ async fn settlement_claim_is_concurrent_idempotent_and_allows_soft_quota_overdra
     assert_eq!(zero_cost_facts.balance_amount, facts.balance_amount);
     assert_eq!(zero_cost_facts.quota_used_amount, facts.quota_used_amount);
     assert!(zero_cost_facts.billed_at.is_some());
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn batch_settlement_aggregates_account_updates_and_deduplicates_ids() {
+    let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
+    let repository = RequestLogRepository::new(database.pool.clone());
+    let first = request_log_event(&seed, RequestLogOutcome::Succeeded);
+    let second = request_log_event(&seed, RequestLogOutcome::Failed);
+    let cost = first.billing.as_ref().unwrap().cost_amount.unwrap();
+    repository
+        .insert_batch(&[first.clone(), second.clone()])
+        .await
+        .unwrap();
+
+    let outcomes = repository
+        .settle_batch(&[first.id, second.id, first.id])
+        .await
+        .unwrap();
+    assert_eq!(outcomes.len(), 2);
+    assert!(
+        outcomes
+            .iter()
+            .all(|(_, outcome)| matches!(outcome, RequestLogSettlementOutcome::Settled { .. }))
+    );
+    let facts: (rust_decimal::Decimal, rust_decimal::Decimal, i64) = sqlx::query_as(
+        "SELECT user_account.balance_amount,
+                key.quota_used_amount,
+                count(log.billed_at)::bigint
+         FROM users AS user_account
+         JOIN api_keys AS key ON key.user_id = user_account.id
+         JOIN request_logs AS log ON log.api_key_id = key.id
+         WHERE user_account.id = $1 AND key.id = $2
+         GROUP BY user_account.balance_amount,key.quota_used_amount",
+    )
+    .bind(seed.user)
+    .bind(seed.key)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(facts.0, -(cost + cost));
+    assert_eq!(facts.1, cost + cost);
+    assert_eq!(facts.2, 2);
+
+    let retried = repository
+        .settle_batch(&[first.id, second.id])
+        .await
+        .unwrap();
+    assert!(
+        retried
+            .iter()
+            .all(|(_, outcome)| matches!(outcome, RequestLogSettlementOutcome::AlreadyBilled))
+    );
+    let unchanged: (rust_decimal::Decimal, rust_decimal::Decimal) = sqlx::query_as(
+        "SELECT user_account.balance_amount,key.quota_used_amount
+         FROM users AS user_account
+         JOIN api_keys AS key ON key.user_id = user_account.id
+         WHERE user_account.id = $1 AND key.id = $2",
+    )
+    .bind(seed.user)
+    .bind(seed.key)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(unchanged, (facts.0, facts.1));
+
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn batch_settlement_classifies_ineligible_rows_independently() {
+    let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
+    let repository = RequestLogRepository::new(database.pool.clone());
+    let billable = request_log_event(&seed, RequestLogOutcome::Succeeded);
+    let mut not_billable = request_log_event(&seed, RequestLogOutcome::Failed);
+    not_billable.billing = None;
+
+    let other_user = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO users (id,display_name,role,status)
+         VALUES ($1,$2,'user','active')",
+    )
+    .bind(other_user)
+    .bind(format!("batch-mismatch-user-{other_user}"))
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let mut mismatched = request_log_event(&seed, RequestLogOutcome::Failed);
+    mismatched.user_id = other_user;
+    repository
+        .insert_batch(&[billable.clone(), not_billable.clone(), mismatched.clone()])
+        .await
+        .unwrap();
+    let missing = Uuid::new_v4();
+
+    let outcomes = repository
+        .settle_batch(&[billable.id, not_billable.id, mismatched.id, missing])
+        .await
+        .unwrap()
+        .into_iter()
+        .collect::<BTreeMap<_, _>>();
+    assert!(matches!(
+        outcomes.get(&billable.id),
+        Some(RequestLogSettlementOutcome::Settled { .. })
+    ));
+    assert_eq!(
+        outcomes.get(&not_billable.id),
+        Some(&RequestLogSettlementOutcome::NotBillable)
+    );
+    assert_eq!(
+        outcomes.get(&mismatched.id),
+        Some(&RequestLogSettlementOutcome::AccountMismatch)
+    );
+    assert_eq!(
+        outcomes.get(&missing),
+        Some(&RequestLogSettlementOutcome::NotFound)
+    );
+
+    let unbilled: i64 = sqlx::query_scalar(
+        "SELECT count(*)::bigint
+         FROM request_logs
+         WHERE id = ANY($1) AND billed_at IS NULL",
+    )
+    .bind(vec![not_billable.id, mismatched.id])
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(unbilled, 2);
+
     database.cleanup().await;
 }
 
@@ -3621,7 +3804,8 @@ async fn saturated_request_log_queue_does_not_delay_proxy_responses_and_drains_a
         .expect("first proxy response should not wait for request-log persistence");
     wait_for_blocked_request_log_insert(&database.pool).await;
 
-    for _ in 0..3 {
+    const TOTAL_REQUESTS: i64 = 33;
+    for _ in 1..TOTAL_REQUESTS {
         tokio::time::timeout(Duration::from_secs(2), send_request())
             .await
             .expect("proxy response should not wait for a saturated request-log queue");
@@ -3634,9 +3818,9 @@ async fn saturated_request_log_queue_does_not_delay_proxy_responses_and_drains_a
         .fetch_one(&database.pool)
         .await
         .unwrap();
-    assert_eq!(
-        total, 3,
-        "three accepted events must drain; the overflow event drops"
+    assert!(
+        (3..TOTAL_REQUESTS).contains(&total),
+        "accepted and in-flight batches must drain while overflow events drop; persisted {total}"
     );
     let accepted: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM request_logs WHERE api_key_id = $1 AND client_model = $2 AND outcome = 'succeeded'",
@@ -3646,7 +3830,7 @@ async fn saturated_request_log_queue_does_not_delay_proxy_responses_and_drains_a
     .fetch_one(&database.pool)
     .await
     .unwrap();
-    assert_eq!(accepted, 3);
+    assert_eq!(accepted, total);
     drop(gateway);
     drop(upstream_server);
     database.cleanup().await;
