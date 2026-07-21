@@ -4,7 +4,7 @@
 
 ## What is ai-gateway?
 
-`ai-gateway` is a single-binary Rust service intended to forward LLM requests in the OpenAI Chat Completions and Responses formats. It uses Axum/Tokio for HTTP, reqwest for upstream requests, PostgreSQL/SQLx for persistence, and `ArcSwap` for immutable runtime configuration snapshots. Rust 2024 with MSRV 1.85 is required (`Cargo.toml`).
+`ai-gateway` is a single-binary Rust production service intended to forward LLM requests in the OpenAI Chat Completions and Responses formats. It uses Axum/Tokio for HTTP, reqwest for upstream requests, PostgreSQL/SQLx for persistence, and `ArcSwap` for immutable runtime configuration snapshots. Rust 2024 with MSRV 1.85 is required (`Cargo.toml`). The Cargo workspace also contains the development-only `ai-gateway-perf` package under `tools/forwarding-perf/`; it is never linked into the production binary.
 
 The implemented backend includes OpenAI-compatible Chat Completions and
 Responses proxy routes, PostgreSQL-backed control-plane snapshots, a separate
@@ -45,6 +45,7 @@ repo/
 |   `-- workers/                # Snapshot reload and async request-log persistence
 |-- migrations/                 # PostgreSQL control-plane and log schema migrations
 |-- tests/                      # Local, PostgreSQL, proxy, streaming, real-upstream, and console-spec integration tests
+|-- tools/forwarding-perf/      # Manual isolated forwarding benchmark orchestrator, Mock LLM, load client, and report generator
 |-- web/console/                # React 19 + TypeScript + Vite + Tailwind v4 + shadcn/ui (Radix) SPA, the Console web UI
 |   |-- src/api/                # Typed Console client, session store, MSW/test helpers, generated OpenAPI types (generated/console-v1.d.ts)
 |   |-- src/app/                # Providers, router, layouts, theme
@@ -56,10 +57,11 @@ repo/
 |-- docs/PRD.md                 # Canonical product and architecture blueprint (Chinese)
 |-- docs/openapi/console-v1.yaml # Authoritative OpenAPI spec for the Console API (TS types are generated from it)
 |-- docs/console-ui-design.md    # Console Web UI architecture and implementation plan
+|-- docs/forwarding-performance.md # Manual performance-harness design, profiles, metrics, and safety model
 |-- config/                     # Ignored local runtime config and JWT keys
 |-- config.example.toml         # Canonical configuration template
 |-- docker-compose.yml          # Development PostgreSQL service only
-`-- Cargo.toml                  # Package metadata, MSRV, optional embedded-console-ui feature, dependency source of truth
+`-- Cargo.toml                  # Workspace plus production package metadata, MSRV, features, and dependency source of truth
 ```
 
 ## Build, Test, and Development
@@ -76,6 +78,8 @@ cargo clippy --all-targets               # also run with --features embedded-con
 cargo test                                # unit + local/PostgreSQL integration (needs `docker compose up -d`)
 cargo test --lib console_ui               # embedded-UI serving tests (needs --features embedded-console-ui + built web/console/dist)
 cargo test --test console_spec_integration # OpenAPI spec/Console-API drift tests (needs PostgreSQL)
+cargo test --package ai-gateway-perf       # Fast unit tests for the manual performance tooling; does not run a benchmark
+cargo clippy --package ai-gateway-perf --all-targets # Lint the separate performance-tool package
 
 # --- Rust: run ---
 cargo run                                 # loads ignored ./config/config.toml
@@ -87,6 +91,10 @@ cargo run -- bootstrap-admin --email admin@example.com --display-name "Initial A
 
 # Start the development PostgreSQL service when persistence work needs it
 docker compose up -d
+
+# --- Manual performance harness: run only when the user explicitly requests it ---
+./scripts/run-forwarding-perf.sh --profile quick
+./scripts/run-forwarding-perf.sh --profile standard
 
 # --- Frontend (web/console): checks, tests, build ---
 pnpm --dir web/console typecheck          # tsc --noEmit (strict)
@@ -112,6 +120,14 @@ before completion.** It serially verifies both `/v1/chat/completions` and
 `/v1/responses`, with non-streaming and SSE requests. There is no CI workflow
 yet. `docker-compose.yml` provides PostgreSQL only—the application is not
 containerized.
+
+The separate forwarding performance harness is documented in
+`docs/forwarding-performance.md`. It creates a random throwaway database,
+starts a Mock LLM and a fresh release gateway process, runs direct and proxied
+loads, and writes reports under ignored `target/perf/`. **Never run
+`scripts/run-forwarding-perf.sh` unless the user explicitly asks for a
+performance run.** Building the tool or running
+`cargo test --package ai-gateway-perf` is safe and does not execute load.
 
 ## Configuration Rules
 
@@ -212,6 +228,7 @@ Axum HTTP
 8. **react-hook-form `Select` fields must be seeded.** Radix `Select` components driven by `form.watch`/`form.setValue` are not registered with react-hook-form unless their values appear in `useForm({ defaultValues })`. Without `defaultValues`, `form.reset()` values are missing from validation and submitting without re-selecting the dropdown silently fails (and there is no `FieldError` render). Always seed every `Select`-backed enum/optional field.
 9. **Frontend TS is strict and `erasableSyntaxOnly`.** `verbatimModuleSyntax`, `noUnusedLocals`, `noUnusedParameters`, and `erasableSyntaxOnly` are on: use `import type`, no TypeScript enums, no unused locals/params, and no runtime-only TS syntax. oxlint (not ESLint) is the linter; the 5 shadcn fast-refresh warnings are expected and acceptable.
 10. **Component tests vs. e2e are scoped.** vitest `include` is `src/**/*.{test,spec}.{ts,tsx}` and `exclude`s `e2e`, so Playwright specs (`e2e/*.spec.ts`) are not collected by vitest. e2e uses `vite.e2e.config.ts` (plain HTTP on `127.0.0.1:5174`) because Playwright's webServer readiness probe cannot ignore the dev server's self-signed HTTPS.
+11. **Performance runs are always opt-in.** `tools/forwarding-perf/` is a separate workspace package and its unit tests are lightweight, but `scripts/run-forwarding-perf.sh` starts release processes and generates sustained concurrent traffic. Do not invoke either the `quick` or `standard` profile without an explicit user request. The harness must keep using random `ai_gateway_perf_*` databases and must never point its admin URL at the normal `ai_gateway` database.
 
 ## Code Style
 
@@ -253,3 +270,4 @@ Axum HTTP
 | Frontend license attribution | `web/console/NOTICES.md` |
 | Local PostgreSQL service | `docker-compose.yml` |
 | Opt-in real upstream test | `docs/real-upstream-smoke.md` and `scripts/run-real-upstream-smoke.sh` |
+| Opt-in forwarding performance harness | `docs/forwarding-performance.md`, `tools/forwarding-perf/`, and `scripts/run-forwarding-perf.sh` |

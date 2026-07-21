@@ -141,6 +141,22 @@ curl --request POST http://127.0.0.1:3001/console/v1/auth/login \
 
 Console 路由覆盖与运行行为详见[运行与接口说明](docs/mvp-usage.md)。
 
+## 手动转发性能测试
+
+仓库提供一套必须显式启动、完全隔离的端到端转发性能 Harness。它会创建临时
+PostgreSQL 数据库，启动 Mock LLM 上游和全新的 release Gateway 进程，执行直连与
+Gateway JSON/SSE 负载，校验异步请求日志持久化率，并输出 Markdown/JSON 报告。
+
+普通 `cargo test` 和 CI 不会执行该测试：
+
+```bash
+docker compose up -d
+./scripts/run-forwarding-perf.sh --profile quick
+```
+
+完整设计、场景、安全边界和 `standard` 配置见
+[转发性能测试设计与使用说明](docs/forwarding-performance.md)。
+
 ## 使用数据面
 
 所有公共 API 接口均使用 `Authorization: Bearer <client-api-key>`。

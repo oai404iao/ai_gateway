@@ -143,6 +143,24 @@ A Chat Completions route and a Responses route are separate configurations, even
 
 See [the operational API guide](docs/mvp-usage.md) for Console route coverage and behavior.
 
+## Manual forwarding performance harness
+
+The repository includes an explicitly invoked, isolated end-to-end forwarding
+performance harness. It creates a throwaway PostgreSQL database, starts a Mock
+LLM upstream and a fresh release gateway process, runs direct and proxied JSON
+and SSE loads, verifies asynchronous request-log persistence, and writes
+Markdown/JSON reports.
+
+It is never run by ordinary `cargo test` or CI commands:
+
+```bash
+docker compose up -d
+./scripts/run-forwarding-perf.sh --profile quick
+```
+
+See [docs/forwarding-performance.md](docs/forwarding-performance.md) for the
+design, scenarios, safety model, and `standard` profile.
+
 ## Using the data plane
 
 All public API endpoints use `Authorization: Bearer <client-api-key>`.

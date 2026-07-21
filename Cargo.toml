@@ -47,3 +47,8 @@ zeroize = { version = "1.8", features = ["derive"] }
 uuid = { version = "1.11", features = ["v4", "serde"] }
 rust-embed = { version = "8", optional = true }
 mime_guess = { version = "2", optional = true }
+
+[workspace]
+members = [".", "tools/forwarding-perf"]
+default-members = ["."]
+resolver = "3"
