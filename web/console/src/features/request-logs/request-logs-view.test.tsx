@@ -5,7 +5,13 @@ import { BrowserRouter } from "react-router";
 import { http, HttpResponse } from "msw";
 import { AppProviders } from "@/app/providers";
 import { AppRouter } from "@/app/router";
-import type { RequestLogView } from "@/api/types";
+import {
+  ADMIN_API_KEY,
+  CONTROL_PLANE_USER,
+  MODEL_RULE,
+  OWN_API_KEY,
+  REQUEST_LOG,
+} from "@/test/fixtures";
 import { server, seedAuthenticatedSession } from "@/test/msw";
 
 function renderAppAt(path: string) {
@@ -26,30 +32,91 @@ describe("RequestLogsView", () => {
     server.use(
       http.get("/console/v1/me/request-logs", ({ request }) => {
         queries.push(new URL(request.url).searchParams);
-        return HttpResponse.json([]);
+        return HttpResponse.json([REQUEST_LOG]);
       }),
     );
 
     const user = userEvent.setup();
     renderAppAt("/usage/request-logs");
 
-    const model = await screen.findByLabelText("Model");
-    await user.type(model, "gpt-4o-mini");
+    const apiKey = await screen.findByRole("combobox", { name: "API key" });
+    await user.click(apiKey);
+    await user.click(
+      await screen.findByRole("option", {
+        name: `${OWN_API_KEY.name} · ${OWN_API_KEY.id.slice(0, 8)}`,
+      }),
+    );
+
+    const model = screen.getByRole("combobox", { name: "Model" });
+    await user.click(model);
+    await user.click(
+      await screen.findByRole("option", { name: REQUEST_LOG.client_model }),
+    );
     await user.click(screen.getByRole("button", { name: "Apply" }));
 
     await waitFor(() => {
-      expect(queries.some((query) => query.get("model") === "gpt-4o-mini")).toBe(true);
+      expect(
+        queries.some(
+          (query) =>
+            query.get("api_key_id") === OWN_API_KEY.id &&
+            query.get("model") === REQUEST_LOG.client_model,
+        ),
+      ).toBe(true);
+    });
+  });
+
+  it("offers administrator user, API key, and configured model dropdowns", async () => {
+    seedAuthenticatedSession();
+    const queries: URLSearchParams[] = [];
+    server.use(
+      http.get("/console/v1/request-logs", ({ request }) => {
+        queries.push(new URL(request.url).searchParams);
+        return HttpResponse.json([]);
+      }),
+    );
+
+    const user = userEvent.setup();
+    renderAppAt("/admin/request-logs");
+
+    const userSelect = await screen.findByRole("combobox", { name: "User" });
+    await user.click(userSelect);
+    await user.click(
+      await screen.findByRole("option", {
+        name: `${CONTROL_PLANE_USER.display_name} · ${CONTROL_PLANE_USER.email}`,
+      }),
+    );
+
+    const apiKeySelect = screen.getByRole("combobox", { name: "API key" });
+    await user.click(apiKeySelect);
+    await user.click(
+      await screen.findByRole("option", {
+        name: `${ADMIN_API_KEY.name} · ${ADMIN_API_KEY.id.slice(0, 8)}`,
+      }),
+    );
+
+    const modelSelect = screen.getByRole("combobox", { name: "Model" });
+    await user.click(modelSelect);
+    await user.click(
+      await screen.findByRole("option", { name: MODEL_RULE.client_model }),
+    );
+    await user.click(screen.getByRole("button", { name: "Apply" }));
+
+    await waitFor(() => {
+      expect(
+        queries.some(
+          (query) =>
+            query.get("user_id") === CONTROL_PLANE_USER.id &&
+            query.get("api_key_id") === ADMIN_API_KEY.id &&
+            query.get("model") === MODEL_RULE.client_model,
+        ),
+      ).toBe(true);
     });
   });
 
   it("loads administrator request-log details from the admin detail endpoint", async () => {
     seedAuthenticatedSession();
-    const log: RequestLogView = {
-      id: "11111111-2222-4333-8444-555555555555",
-      started_at: "2026-07-21T06:00:00Z",
-      completed_at: "2026-07-21T06:00:01Z",
-      user_id: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
-      api_key_id: "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff",
+    const log = {
+      ...REQUEST_LOG,
       api_format: "open_ai_responses",
       client_model: "detail-model",
       upstream_model: "upstream-detail-model",
@@ -69,7 +136,7 @@ describe("RequestLogsView", () => {
       cost_amount: "0.0001",
       error_code: null,
       billed_at: "2026-07-21T06:00:02Z",
-    };
+    } as const;
     let detailRequests = 0;
     server.use(
       http.get("/console/v1/request-logs", () => HttpResponse.json([log])),
@@ -84,7 +151,9 @@ describe("RequestLogsView", () => {
     renderAppAt("/admin/request-logs");
 
     await user.click(await screen.findByText("detail-model"));
-    expect(await screen.findByText("upstream-detail-model")).toBeInTheDocument();
+    expect(
+      await screen.findByText("upstream-detail-model", { selector: "dd" }),
+    ).toBeInTheDocument();
     expect(detailRequests).toBe(1);
   });
 });

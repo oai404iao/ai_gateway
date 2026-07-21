@@ -43,7 +43,7 @@ describe("StatisticsPage", () => {
     expect(screen.getByText("Model cost breakdown")).toBeInTheDocument();
   });
 
-  it("applies today, week, and month ranges with useful granularities", async () => {
+  it("defaults to today and applies week and month ranges with useful granularities", async () => {
     seedAuthenticatedSession();
     const queries: URLSearchParams[] = [];
     server.use(
@@ -56,10 +56,11 @@ describe("StatisticsPage", () => {
     renderApp();
 
     await user.click(await screen.findByRole("tab", { name: "Cost statistics" }));
-    await user.click(screen.getByRole("radio", { name: "Today" }));
     await waitFor(() => {
+      expect(queries.length).toBeGreaterThan(0);
       expect(queries.at(-1)?.get("granularity")).toBe("hour");
     });
+    expect(screen.getByRole("radio", { name: "Today" })).toBeChecked();
     const todayStart = new Date(queries.at(-1)?.get("started_after") ?? "");
     const todayEnd = new Date(queries.at(-1)?.get("started_before") ?? "");
     expect(todayStart.getHours()).toBe(0);

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Search, X } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -26,10 +26,16 @@ import { DetailField } from "@/components/shared/detail-field";
 import { ResourceTable, type Column } from "@/components/shared/resource-table";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { useRequestLog } from "@/features/request-logs/api";
-import type { ListQuery, RequestLogView } from "@/api/types";
+import type {
+  ApiKeyView,
+  ControlPlaneUser,
+  ListQuery,
+  RequestLogView,
+} from "@/api/types";
 import { dateTimeLocalToIso, formatDateTime, formatRelative } from "@/lib/dates";
 import { formatCurrency, formatDurationMs, formatTokens } from "@/lib/formatters";
 import { API_FORMATS, apiFormatLabel, outcomeLabel, outcomeVariant } from "@/lib/permissions";
+import { cn } from "@/lib/utils";
 import { useI18n } from "@/app/i18n";
 
 const LIMITS = [25, 50, 100] as const;
@@ -45,6 +51,10 @@ interface RequestLogListResult {
 }
 
 type UseRequestLogs = (filters: ListQuery) => RequestLogListResult;
+
+interface RequestLogApiKeyOption extends Pick<ApiKeyView, "id" | "name"> {
+  user_id?: string;
+}
 
 interface RequestLogFilterDraft {
   limit: (typeof LIMITS)[number];
@@ -76,6 +86,9 @@ interface RequestLogsViewProps {
   basePath: string;
   useLogs: UseRequestLogs;
   allowOwnerFilter?: boolean;
+  users?: ControlPlaneUser[];
+  apiKeys?: RequestLogApiKeyOption[];
+  modelOptions?: string[];
 }
 
 function optionalText(value: string): string | undefined {
@@ -103,13 +116,46 @@ export function RequestLogsView({
   basePath,
   useLogs,
   allowOwnerFilter = false,
+  users = [],
+  apiKeys = [],
+  modelOptions = [],
 }: RequestLogsViewProps) {
   const { t } = useI18n();
   const [draft, setDraft] = useState<RequestLogFilterDraft>(emptyFilters);
   const [filters, setFilters] = useState<ListQuery>(() => toQuery(emptyFilters));
   const query = useLogs(filters);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [discoveredModels, setDiscoveredModels] = useState<string[]>([]);
   const detail = useRequestLog(basePath, selectedId);
+
+  useEffect(() => {
+    const loggedModels =
+      query.data?.flatMap((log) => [log.client_model, log.upstream_model ?? ""]) ?? [];
+    const nextModels = loggedModels.filter(Boolean);
+    if (nextModels.length === 0) return;
+
+    setDiscoveredModels((current) => {
+      const merged = [...new Set([...current, ...nextModels])].sort((left, right) =>
+        left.localeCompare(right),
+      );
+      return merged.length === current.length &&
+        merged.every((model, index) => model === current[index])
+        ? current
+        : merged;
+    });
+  }, [query.data]);
+
+  const availableApiKeys = useMemo(
+    () => apiKeys.filter((key) => !draft.user_id || key.user_id === draft.user_id),
+    [apiKeys, draft.user_id],
+  );
+  const availableModels = useMemo(
+    () =>
+      [...new Set([...modelOptions, ...discoveredModels, draft.model])]
+        .filter(Boolean)
+        .sort((left, right) => left.localeCompare(right)),
+    [discoveredModels, draft.model, modelOptions],
+  );
 
   const updateDraft = (partial: Partial<RequestLogFilterDraft>) => {
     setDraft((previous) => ({ ...previous, ...partial }));
@@ -178,10 +224,10 @@ export function RequestLogsView({
   return (
     <div className="flex flex-col gap-6">
       <PageHeader title={title} description={description} />
-      <Card>
-        <CardHeader>
-        <CardTitle>{t("Filters")}</CardTitle>
-        <CardDescription>
+      <Card size="sm">
+        <CardHeader className="border-b">
+          <CardTitle>{t("Filters")}</CardTitle>
+          <CardDescription>
             {t("Filter by exact model, request outcome, format, time range, and settlement state.")}
           </CardDescription>
         </CardHeader>
@@ -193,37 +239,93 @@ export function RequestLogsView({
               applyFilters();
             }}
           >
-            <FieldGroup className="flex-row flex-wrap items-end gap-3">
+            <FieldGroup className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
               {allowOwnerFilter ? (
-                <Field className="min-w-48 flex-1">
-                  <FieldLabel htmlFor="request-log-user-id">{t("User ID")}</FieldLabel>
-                  <Input
-                    id="request-log-user-id"
-                    value={draft.user_id}
-                    onChange={(event) => updateDraft({ user_id: event.target.value })}
-                    placeholder="UUID"
-                  />
+                <Field>
+                  <FieldLabel htmlFor="request-log-user">{t("User")}</FieldLabel>
+                  <Select
+                    value={draft.user_id || "__all__"}
+                    onValueChange={(value) => {
+                      const userId = value === "__all__" ? "" : value;
+                      const selectedKey = apiKeys.find(
+                        (key) => key.id === draft.api_key_id,
+                      );
+                      updateDraft({
+                        user_id: userId,
+                        api_key_id:
+                          draft.api_key_id &&
+                          (!userId || selectedKey?.user_id === userId)
+                            ? draft.api_key_id
+                            : "",
+                      });
+                    }}
+                  >
+                    <SelectTrigger id="request-log-user" className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectGroup>
+                        <SelectItem value="__all__">{t("All users")}</SelectItem>
+                        {users.map((user) => (
+                          <SelectItem key={user.id} value={user.id}>
+                            {user.display_name}
+                            {user.email ? ` · ${user.email}` : ""}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
                 </Field>
               ) : null}
-              <Field className="min-w-48 flex-1">
-                <FieldLabel htmlFor="request-log-api-key-id">{t("API key ID")}</FieldLabel>
-                <Input
-                  id="request-log-api-key-id"
-                  value={draft.api_key_id}
-                  onChange={(event) => updateDraft({ api_key_id: event.target.value })}
-                  placeholder="UUID"
-                />
+              <Field>
+                <FieldLabel htmlFor="request-log-api-key">{t("API key")}</FieldLabel>
+                <Select
+                  value={draft.api_key_id || "__all__"}
+                  onValueChange={(value) =>
+                    updateDraft({
+                      api_key_id: value === "__all__" ? "" : value,
+                    })
+                  }
+                >
+                  <SelectTrigger id="request-log-api-key" className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      <SelectItem value="__all__">{t("All API keys")}</SelectItem>
+                      {availableApiKeys.map((key) => (
+                        <SelectItem key={key.id} value={key.id}>
+                          {key.name} · {key.id.slice(0, 8)}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
               </Field>
-              <Field className="min-w-44 flex-1">
+              <Field className={cn(!allowOwnerFilter && "xl:col-span-2")}>
                 <FieldLabel htmlFor="request-log-model">{t("Model")}</FieldLabel>
-                <Input
-                  id="request-log-model"
-                  value={draft.model}
-                  onChange={(event) => updateDraft({ model: event.target.value })}
-                  placeholder={t("Exact client or upstream model")}
-                />
+                <Select
+                  value={draft.model || "__all__"}
+                  onValueChange={(value) =>
+                    updateDraft({ model: value === "__all__" ? "" : value })
+                  }
+                >
+                  <SelectTrigger id="request-log-model" className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      <SelectItem value="__all__">{t("All models")}</SelectItem>
+                      {availableModels.map((model) => (
+                        <SelectItem key={model} value={model}>
+                          {model}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
               </Field>
-              <Field className="min-w-36">
+              <Field>
                 <FieldLabel htmlFor="request-log-format">{t("API format")}</FieldLabel>
                 <Select
                   value={draft.api_format || "__all__"}
@@ -234,7 +336,7 @@ export function RequestLogsView({
                     })
                   }
                 >
-                  <SelectTrigger id="request-log-format">
+                  <SelectTrigger id="request-log-format" className="w-full">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -249,7 +351,7 @@ export function RequestLogsView({
                   </SelectContent>
                 </Select>
               </Field>
-              <Field className="min-w-32">
+              <Field>
                 <FieldLabel htmlFor="request-log-outcome">{t("Outcome")}</FieldLabel>
                 <Select
                   value={draft.outcome || "__all__"}
@@ -259,7 +361,7 @@ export function RequestLogsView({
                     })
                   }
                 >
-                  <SelectTrigger id="request-log-outcome">
+                  <SelectTrigger id="request-log-outcome" className="w-full">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -274,7 +376,7 @@ export function RequestLogsView({
                   </SelectContent>
                 </Select>
               </Field>
-              <Field className="min-w-32">
+              <Field>
                 <FieldLabel htmlFor="request-log-billing">{t("Billing")}</FieldLabel>
                 <Select
                   value={draft.billed || "__all__"}
@@ -285,7 +387,7 @@ export function RequestLogsView({
                     })
                   }
                 >
-                  <SelectTrigger id="request-log-billing">
+                  <SelectTrigger id="request-log-billing" className="w-full">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -297,7 +399,7 @@ export function RequestLogsView({
                   </SelectContent>
                 </Select>
               </Field>
-              <Field className="min-w-44">
+              <Field className="xl:col-span-2">
                 <FieldLabel htmlFor="request-log-started-after">{t("From")}</FieldLabel>
                 <Input
                   id="request-log-started-after"
@@ -306,7 +408,7 @@ export function RequestLogsView({
                   onChange={(event) => updateDraft({ started_after: event.target.value })}
                 />
               </Field>
-              <Field className="min-w-44">
+              <Field className="xl:col-span-2">
                 <FieldLabel htmlFor="request-log-started-before">{t("To")}</FieldLabel>
                 <Input
                   id="request-log-started-before"
@@ -315,7 +417,7 @@ export function RequestLogsView({
                   onChange={(event) => updateDraft({ started_before: event.target.value })}
                 />
               </Field>
-              <Field className="min-w-28">
+              <Field>
                 <FieldLabel htmlFor="request-log-limit">{t("Results")}</FieldLabel>
                 <Select
                   value={String(draft.limit)}
@@ -323,7 +425,7 @@ export function RequestLogsView({
                     updateDraft({ limit: Number(value) as RequestLogFilterDraft["limit"] })
                   }
                 >
-                  <SelectTrigger id="request-log-limit">
+                  <SelectTrigger id="request-log-limit" className="w-full">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -337,14 +439,19 @@ export function RequestLogsView({
                   </SelectContent>
                 </Select>
               </Field>
-              <Field className="w-auto">
+              <Field className="justify-end">
                 <FieldLabel className="sr-only">{t("Filter actions")}</FieldLabel>
                 <div className="flex gap-2">
-                  <Button type="submit">
+                  <Button type="submit" className="flex-1">
                     <Search data-icon="inline-start" />
                     {t("Apply")}
                   </Button>
-                  <Button type="button" variant="outline" onClick={clearFilters}>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="flex-1"
+                    onClick={clearFilters}
+                  >
                     <X data-icon="inline-start" />
                     {t("Clear")}
                   </Button>

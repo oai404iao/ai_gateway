@@ -242,6 +242,7 @@ const zhCN: Record<string, string> = {
   "User ID": "用户 ID",
   "API key ID": "API 密钥 ID",
   "Exact client or upstream model": "精确客户端模型或上游模型",
+  "All models": "所有模型",
   "All formats": "所有格式",
   "Outcome": "结果",
   "All outcomes": "所有结果",

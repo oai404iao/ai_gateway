@@ -80,11 +80,12 @@ const CHART_COLORS = [
 function defaultDraft(): CostFilterDraft {
   const endedAt = new Date();
   endedAt.setSeconds(0, 0);
-  const startedAt = new Date(endedAt.getTime() - 7 * 24 * 60 * 60 * 1000);
+  const startedAt = new Date(endedAt);
+  startedAt.setHours(0, 0, 0, 0);
   return {
     started_after: formatDateTimeLocalInput(startedAt.toISOString()),
     started_before: formatDateTimeLocalInput(endedAt.toISOString()),
-    granularity: "day",
+    granularity: "hour",
     user_id: "",
     api_key_id: "",
   };
@@ -184,7 +185,7 @@ export function CostStatisticsPanel() {
   const [filters, setFilters] = useState<CostStatisticsFilters>(
     () => toFilters(initialDraft) as CostStatisticsFilters,
   );
-  const [quickRange, setQuickRange] = useState<QuickRange | null>(null);
+  const [quickRange, setQuickRange] = useState<QuickRange | null>("today");
   const [currency, setCurrency] = useState("");
   const { data, isLoading, error } = useCostStatistics(filters);
   const users = useUsers();
@@ -235,7 +236,7 @@ export function CostStatisticsPanel() {
     const next = defaultDraft();
     setDraft(next);
     setFilters(toFilters(next) as CostStatisticsFilters);
-    setQuickRange(null);
+    setQuickRange("today");
   };
 
   const applyQuickRange = (range: QuickRange) => {

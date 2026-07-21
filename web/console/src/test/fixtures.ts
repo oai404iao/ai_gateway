@@ -19,6 +19,7 @@ import type {
   LoginResponse,
   ModelRuleView,
   ProxyView,
+  RequestLogView,
 } from "@/api/types";
 
 export const ADMIN_USER: ConsoleUser = {
@@ -169,6 +170,33 @@ export const MODEL_RULE: ModelRuleView = {
   channel_ids: [],
   enabled: true,
   updated_at: "2026-01-02T00:00:00.000Z",
+};
+
+export const REQUEST_LOG: RequestLogView = {
+  id: "11111111-2222-4333-8444-555555555555",
+  started_at: "2026-07-21T06:00:00Z",
+  completed_at: "2026-07-21T06:00:01Z",
+  user_id: ADMIN_USER.id,
+  api_key_id: OWN_API_KEY.id,
+  api_format: "open_ai_chat_completions",
+  client_model: MODEL_RULE.client_model,
+  upstream_model: MODEL.source_model_id,
+  model_rule_id: MODEL_RULE.id,
+  channel_group_id: CHANNEL_GROUP.id,
+  channel_id: CHANNEL.id,
+  outcome: "succeeded",
+  response_status_code: 200,
+  streamed: true,
+  ttft_ms: 100,
+  total_duration_ms: 1_000,
+  input_tokens: 12,
+  cached_input_tokens: 2,
+  cache_write_tokens: 0,
+  output_tokens: 4,
+  currency: "USD",
+  cost_amount: "0.0001",
+  error_code: null,
+  billed_at: "2026-07-21T06:00:02Z",
 };
 
 export const PROXY: ProxyView = {
