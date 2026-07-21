@@ -178,8 +178,10 @@ export function ModelRuleDetailPage() {
     }
   };
 
-  const fieldError = (path: string) =>
-    validation?.issues.find((issue) => issue.path.join(".") === path)?.message;
+  const fieldError = (path: string) => {
+    const message = validation?.issues.find((issue) => issue.path.join(".") === path)?.message;
+    return message ? t(message) : undefined;
+  };
 
   return (
     <AdminDetailShell

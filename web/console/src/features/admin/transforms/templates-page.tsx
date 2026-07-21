@@ -3,24 +3,42 @@ import { AdminListPage } from "@/features/admin/components/admin-list-page";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { useConfigTemplates } from "@/features/admin/api";
 import { formatRelative } from "@/lib/dates";
+import { useI18n } from "@/app/i18n";
 
 export function ConfigTemplatesPage() {
   const navigate = useNavigate();
   const { data, isLoading, error } = useConfigTemplates();
+  const { t } = useI18n();
   return (
     <AdminListPage
-      title="Transform Templates"
-      description="Reusable constrained transform and network configuration documents."
+      title={t("Transform Templates")}
+      description={t("Reusable constrained transform and network configuration documents.")}
       query={{ data, isLoading, error }}
       rowKey={(template) => template.id}
       detailPath={(template) => `/admin/transforms/templates/${template.id}`}
-      createLabel="New template"
+      createLabel={t("New template")}
       onCreate={() => navigate("/admin/transforms/templates/new")}
       columns={[
-        { key: "name", header: "Name", render: (template) => <span className="font-medium">{template.name}</span> },
-        { key: "description", header: "Description", render: (template) => template.description ?? "—" },
-        { key: "enabled", header: "Enabled", render: (template) => <StatusBadge value={template.enabled} /> },
-        { key: "updated", header: "Updated", render: (template) => formatRelative(template.updated_at) },
+        {
+          key: "name",
+          header: t("Name"),
+          render: (template) => <span className="font-medium">{template.name}</span>,
+        },
+        {
+          key: "description",
+          header: t("Description"),
+          render: (template) => template.description ?? "—",
+        },
+        {
+          key: "enabled",
+          header: t("Enabled"),
+          render: (template) => <StatusBadge value={template.enabled} />,
+        },
+        {
+          key: "updated",
+          header: t("Updated"),
+          render: (template) => formatRelative(template.updated_at),
+        },
       ]}
     />
   );

@@ -38,6 +38,7 @@ import {
   formatExpiry,
 } from "@/lib/dates";
 import { API_KEY_STATUSES, apiFormatLabel } from "@/lib/permissions";
+import { useI18n } from "@/app/i18n";
 
 const editSchema = z.object({
   name: z.string().min(1, "Name is required.").max(100),
@@ -59,6 +60,7 @@ export function ApiKeyDetailPage() {
   const { data, etag, isLoading, error } = useOwnApiKey(id);
   const update = useUpdateOwnApiKey(id);
   const revoke = useRevokeOwnApiKey();
+  const { t } = useI18n();
   const [submitting, setSubmitting] = useState(false);
   const [revokeOpen, setRevokeOpen] = useState(false);
   const [revokeReason, setRevokeReason] = useState("");
@@ -87,12 +89,12 @@ export function ApiKeyDetailPage() {
         },
         ifMatch: etag,
       });
-      toast.success("API key updated");
+      toast.success(t("API key updated"));
     } catch (error) {
       if (error instanceof ApiError && error.isConflict) {
-        toast.error("This key was changed by another session. Reloading.");
+        toast.error(t("This key was changed by another session. Reloading."));
       } else {
-        toast.error(error instanceof Error ? error.message : "Update failed");
+        toast.error(error instanceof Error ? error.message : t("Update failed"));
       }
     } finally {
       setSubmitting(false);
@@ -100,17 +102,17 @@ export function ApiKeyDetailPage() {
   };
 
   const onInvalid = () => {
-    toast.error("Review the highlighted API key fields.");
+    toast.error(t("Review the highlighted API key fields."));
   };
 
   const confirmRevoke = async () => {
     setRevokeOpen(false);
     try {
       await revoke.mutateAsync({ id, reason: { reason: revokeReason || "revoked by owner" } });
-      toast.success("API key revoked");
+      toast.success(t("API key revoked"));
       navigate("/api-keys", { replace: true });
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Revoke failed");
+      toast.error(error instanceof Error ? error.message : t("Revoke failed"));
     }
   };
 
@@ -119,11 +121,11 @@ export function ApiKeyDetailPage() {
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
-        title={key ? key.name : "API key"}
-        description="View, rename, enable, disable, or revoke this key."
+        title={key ? key.name : t("API key")}
+        description={t("View, rename, enable, disable, or revoke this key.")}
         actions={
           <Button variant="ghost" size="sm" onClick={() => navigate("/api-keys")}>
-            <ArrowLeft data-icon="inline-start" /> Back
+            <ArrowLeft data-icon="inline-start" /> {t("Back")}
           </Button>
         }
       />
@@ -132,41 +134,47 @@ export function ApiKeyDetailPage() {
           <>
             <Card>
               <CardHeader>
-                <CardTitle>Details</CardTitle>
-                <CardDescription>Authorization fields are managed by your policy.</CardDescription>
+                <CardTitle>{t("Details")}</CardTitle>
+                <CardDescription>{t("Authorization fields are managed by your policy.")}</CardDescription>
               </CardHeader>
               <CardContent>
                 <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                  <DetailField label="Status" value={<StatusBadge value={key.status} />} />
-                  <DetailField label="Expires" value={formatExpiry(key.expires_at)} />
+                  <DetailField label={t("Status")} value={<StatusBadge value={key.status} />} />
+                  <DetailField label={t("Expires")} value={formatExpiry(key.expires_at)} />
                   <DetailField
-                    label="Formats"
+                    label={t("Formats")}
                     value={formatList(key.allowed_api_formats.map(apiFormatLabel))}
                   />
-                  <DetailField label="Permissions" value={formatList(key.permissions)} />
-                  <DetailField label="Allowed groups" value={formatList(key.allowed_group_ids)} />
-                  <DetailField label="Requests / minute" value={key.requests_per_minute ?? "—"} />
+                  <DetailField label={t("Permissions")} value={formatList(key.permissions)} />
                   <DetailField
-                    label="Max concurrent"
+                    label={t("Allowed groups")}
+                    value={formatList(key.allowed_group_ids)}
+                  />
+                  <DetailField
+                    label={t("Requests / minute")}
+                    value={key.requests_per_minute ?? "—"}
+                  />
+                  <DetailField
+                    label={t("Max concurrent")}
                     value={key.max_concurrent_requests ?? "—"}
                   />
                   <DetailField
-                    label="Quota limit"
+                    label={t("Quota limit")}
                     value={formatCurrency(key.quota_limit_amount)}
                   />
                   <DetailField
-                    label="Quota used"
+                    label={t("Quota used")}
                     value={formatCurrency(key.quota_used_amount)}
                   />
-                  <DetailField label="Created" value={formatDateTime(key.created_at)} />
+                  <DetailField label={t("Created")} value={formatDateTime(key.created_at)} />
                 </dl>
               </CardContent>
             </Card>
 
             <Card>
               <CardHeader>
-                <CardTitle>Edit</CardTitle>
-                <CardDescription>Renaming or disabling takes effect immediately.</CardDescription>
+                <CardTitle>{t("Edit")}</CardTitle>
+                <CardDescription>{t("Renaming or disabling takes effect immediately.")}</CardDescription>
               </CardHeader>
               <CardContent>
                 <form
@@ -175,14 +183,14 @@ export function ApiKeyDetailPage() {
                 >
                   <FieldGroup>
                     <Field data-invalid={Boolean(form.formState.errors.name)}>
-                      <FieldLabel htmlFor="name">Name</FieldLabel>
+                      <FieldLabel htmlFor="name">{t("Name")}</FieldLabel>
                       <Input
                         id="name"
                         aria-invalid={Boolean(form.formState.errors.name)}
                         {...form.register("name")}
                       />
                       {form.formState.errors.name ? (
-                        <FieldError>{form.formState.errors.name.message}</FieldError>
+                        <FieldError>{t(form.formState.errors.name.message ?? "")}</FieldError>
                       ) : null}
                     </Field>
                     <Controller
@@ -191,7 +199,7 @@ export function ApiKeyDetailPage() {
                       defaultValue={formValues.status}
                       render={({ field, fieldState }) => (
                         <Field data-invalid={fieldState.invalid}>
-                          <FieldLabel htmlFor="status">Status</FieldLabel>
+                          <FieldLabel htmlFor="status">{t("Status")}</FieldLabel>
                           <Select value={field.value} onValueChange={field.onChange}>
                             <SelectTrigger id="status" aria-invalid={fieldState.invalid}>
                               <SelectValue />
@@ -201,7 +209,7 @@ export function ApiKeyDetailPage() {
                                 {API_KEY_STATUSES.filter((status) => status !== "revoked").map(
                                   (status) => (
                                     <SelectItem key={status} value={status}>
-                                      {status}
+                                      {status === "active" ? t("Active") : t("Disabled")}
                                     </SelectItem>
                                   ),
                                 )}
@@ -209,13 +217,13 @@ export function ApiKeyDetailPage() {
                             </SelectContent>
                           </Select>
                           {fieldState.error ? (
-                            <FieldError>{fieldState.error.message}</FieldError>
+                            <FieldError>{t(fieldState.error.message ?? "")}</FieldError>
                           ) : null}
                         </Field>
                       )}
                     />
                     <Field>
-                      <FieldLabel htmlFor="expires_at">Expires at (optional)</FieldLabel>
+                      <FieldLabel htmlFor="expires_at">{t("Expires at (optional)")}</FieldLabel>
                       <Input
                         id="expires_at"
                         type="datetime-local"
@@ -225,7 +233,7 @@ export function ApiKeyDetailPage() {
                   </FieldGroup>
                   <Button type="submit" className="self-start" disabled={submitting}>
                     {submitting ? <Spinner data-icon="inline-start" /> : null}
-                    Save changes
+                    {t("Save changes")}
                   </Button>
                 </form>
               </CardContent>
@@ -235,8 +243,8 @@ export function ApiKeyDetailPage() {
 
             <Card>
               <CardHeader>
-                <CardTitle className="text-destructive">Danger zone</CardTitle>
-                <CardDescription>Revocation is permanent and audited.</CardDescription>
+                <CardTitle className="text-destructive">{t("Danger zone")}</CardTitle>
+                <CardDescription>{t("Revocation is permanent and audited.")}</CardDescription>
               </CardHeader>
               <CardContent>
                 <Button
@@ -244,7 +252,7 @@ export function ApiKeyDetailPage() {
                   onClick={() => setRevokeOpen(true)}
                   disabled={key.status === "revoked"}
                 >
-                  Revoke API key
+                  {t("Revoke API key")}
                 </Button>
               </CardContent>
             </Card>
@@ -258,18 +266,18 @@ export function ApiKeyDetailPage() {
           setRevokeOpen(open);
           if (!open) setRevokeReason("");
         }}
-        title="Revoke API key?"
+        title={t("Revoke API key?")}
         description={
           <div className="flex flex-col gap-2">
-            <span>This permanently disables the key and records an audit entry.</span>
+            <span>{t("This permanently disables the key and records an audit entry.")}</span>
             <Input
-              placeholder="Reason (optional)"
+              placeholder={t("Reason (optional)")}
               value={revokeReason}
               onChange={(event) => setRevokeReason(event.target.value)}
             />
           </div>
         }
-        confirmLabel="Revoke"
+        confirmLabel={t("Revoke")}
         destructive
         onConfirm={confirmRevoke}
       />

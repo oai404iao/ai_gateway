@@ -18,6 +18,7 @@ import {
 } from "@/features/admin/api";
 import { ApiError, controlPlaneMutationErrorMessage } from "@/api/errors";
 import type { ConfigTemplateCreateInput, ConfigTemplateInput } from "@/api/types";
+import { useI18n } from "@/app/i18n";
 
 const schema = z.object({
   name: z.string().min(1, "Name is required.").max(100),
@@ -42,6 +43,7 @@ export function ConfigTemplateDetailPage() {
   const { data, etag, isLoading, error } = useConfigTemplate(id);
   const create = useCreateConfigTemplate();
   const update = useUpdateConfigTemplate(id);
+  const { t } = useI18n();
   const [state, setState] = useState<FormState>(empty);
   const [submitting, setSubmitting] = useState(false);
   const [validation, setValidation] = useState<z.ZodError | null>(null);
@@ -68,14 +70,14 @@ export function ConfigTemplateDetailPage() {
         document = {};
       }
     } catch {
-      toast.error("Template document is not valid JSON.");
+      toast.error(t("Template document is not valid JSON."));
       return;
     }
     if (
       document !== undefined &&
       (typeof document !== "object" || document === null || Array.isArray(document))
     ) {
-      toast.error("Template document must be a JSON object.");
+      toast.error(t("Template document must be a JSON object."));
       return;
     }
     const parsed = schema.safeParse(state);
@@ -94,7 +96,7 @@ export function ConfigTemplateDetailPage() {
           enabled: parsed.data.enabled,
         };
         await create.mutateAsync(input);
-        toast.success("Template created");
+        toast.success(t("Template created"));
         navigate("/admin/transforms/templates", { replace: true });
       } else {
         const input: ConfigTemplateInput = {
@@ -106,28 +108,30 @@ export function ConfigTemplateDetailPage() {
           input.document = document;
         }
         await update.mutateAsync({ input, ifMatch: etag });
-        toast.success("Template updated");
+        toast.success(t("Template updated"));
       }
     } catch (error) {
       if (error instanceof ApiError && error.isConflict) {
-        toast.error("This template was changed elsewhere. Reloading.");
+        toast.error(t("This template was changed elsewhere. Reloading."));
       } else {
-        toast.error(controlPlaneMutationErrorMessage(error));
+        toast.error(controlPlaneMutationErrorMessage(error, t("Save failed")));
       }
     } finally {
       setSubmitting(false);
     }
   };
 
-  const fieldError = (path: string) =>
-    validation?.issues.find((issue) => issue.path.join(".") === path)?.message;
+  const fieldError = (path: string) => {
+    const message = validation?.issues.find((issue) => issue.path.join(".") === path)?.message;
+    return message ? t(message) : undefined;
+  };
 
   return (
     <AdminDetailShell
-      title={isNew ? "New template" : state.name || "Template"}
-      description="A reusable constrained transform document."
+      title={isNew ? t("New template") : state.name || t("Template")}
+      description={t("A reusable constrained transform document.")}
       backPath="/admin/transforms/templates"
-      backLabel="Back to templates"
+      backLabel={t("Back to templates")}
       isLoading={isLoading}
       error={error}
       hasData={isNew || Boolean(data)}
@@ -140,7 +144,7 @@ export function ConfigTemplateDetailPage() {
             </CardHeader>
             <CardContent>
               <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <dt className="text-xs uppercase text-muted-foreground">Enabled</dt>
+                <dt className="text-xs uppercase text-muted-foreground">{t("Enabled")}</dt>
                 <dd>
                   <StatusBadge value={data.data.enabled} />
                 </dd>
@@ -152,11 +156,12 @@ export function ConfigTemplateDetailPage() {
       editCard={
         <Card>
           <CardHeader>
-            <CardTitle>{isNew ? "Create template" : "Edit template"}</CardTitle>
+            <CardTitle>{isNew ? t("Create template") : t("Edit template")}</CardTitle>
             {!isNew ? (
               <CardDescription>
-                The current document is redacted. Leave the JSON blank to preserve it; enter {"{}"} to
-                clear it.
+                {t(
+                  "The current document is redacted. Leave the JSON blank to preserve it; enter {} to clear it.",
+                )}
               </CardDescription>
             ) : null}
           </CardHeader>
@@ -164,12 +169,16 @@ export function ConfigTemplateDetailPage() {
             <div className="flex flex-col gap-4">
               <FieldGroup>
                 <Field>
-                  <FieldLabel htmlFor="name">Name</FieldLabel>
-                  <Input id="name" value={state.name} onChange={(event) => patch({ name: event.target.value })} />
+                  <FieldLabel htmlFor="name">{t("Name")}</FieldLabel>
+                  <Input
+                    id="name"
+                    value={state.name}
+                    onChange={(event) => patch({ name: event.target.value })}
+                  />
                   {fieldError("name") ? <FieldError>{fieldError("name")}</FieldError> : null}
                 </Field>
                 <Field>
-                  <FieldLabel htmlFor="description">Description</FieldLabel>
+                  <FieldLabel htmlFor="description">{t("Description")}</FieldLabel>
                   <Input
                     id="description"
                     value={state.description ?? ""}
@@ -177,9 +186,11 @@ export function ConfigTemplateDetailPage() {
                   />
                 </Field>
                 <Field>
-                  <FieldLabel htmlFor="document">Document (JSON)</FieldLabel>
+                  <FieldLabel htmlFor="document">{t("Document (JSON)")}</FieldLabel>
                   <FieldDescription>
-                    {isNew ? "Constrained transform document." : "Optional replacement document."}
+                    {isNew
+                      ? t("Constrained transform document.")
+                      : t("Optional replacement document.")}
                   </FieldDescription>
                   <Textarea
                     id="document"
@@ -190,7 +201,7 @@ export function ConfigTemplateDetailPage() {
                   />
                 </Field>
                 <Field>
-                  <FieldLabel>Enabled</FieldLabel>
+                  <FieldLabel>{t("Enabled")}</FieldLabel>
                   <Switch
                     checked={state.enabled}
                     onCheckedChange={(checked) => patch({ enabled: Boolean(checked) })}
@@ -199,7 +210,7 @@ export function ConfigTemplateDetailPage() {
               </FieldGroup>
               <Button className="self-start" onClick={submit} disabled={submitting}>
                 {submitting ? <Spinner data-icon="inline-start" /> : null}
-                {isNew ? "Create template" : "Save template"}
+                {isNew ? t("Create template") : t("Save template")}
               </Button>
             </div>
           </CardContent>

@@ -40,6 +40,7 @@ import type {
 } from "@/api/types";
 import { UPSTREAM_AUTH_KINDS, apiFormatLabel, upstreamAuthKindLabel } from "@/lib/permissions";
 import { channelUpdateInvalidatesRouting } from "@/features/admin/routing/routing-validation";
+import { useI18n } from "@/app/i18n";
 
 function isAllowedBaseUrl(value: string): boolean {
   try {
@@ -130,6 +131,7 @@ export function ChannelDetailPage() {
   const rules = useModelRules();
   const proxies = useProxies();
   const templates = useConfigTemplates();
+  const { t } = useI18n();
   const [state, setState] = useState<FormState>(empty);
   const [submitting, setSubmitting] = useState(false);
   const [validation, setValidation] = useState<z.ZodError | null>(null);
@@ -174,7 +176,7 @@ export function ChannelDetailPage() {
         overrideDocument = {};
       }
     } catch {
-      toast.error("Override document is not valid JSON.");
+      toast.error(t("Override document is not valid JSON."));
       return;
     }
     if (
@@ -183,7 +185,7 @@ export function ChannelDetailPage() {
         overrideDocument === null ||
         Array.isArray(overrideDocument))
     ) {
-      toast.error("Override document must be a JSON object.");
+      toast.error(t("Override document must be a JSON object."));
       return;
     }
     const parsed = schema.safeParse(state);
@@ -192,7 +194,7 @@ export function ChannelDetailPage() {
       return;
     }
     if (parsed.data.enabled && !selectedGroup?.enabled) {
-      toast.error("Choose an enabled channel group before enabling this channel.");
+      toast.error(t("Choose an enabled channel group before enabling this channel."));
       return;
     }
     if (
@@ -210,7 +212,9 @@ export function ChannelDetailPage() {
       )
     ) {
       toast.error(
-        "Save blocked: this change would make the routing configuration invalid. Keep an eligible channel or update dependent rules first.",
+        t(
+          "Save blocked: this change would make the routing configuration invalid. Keep an eligible channel or update dependent rules first.",
+        ),
       );
       return;
     }
@@ -219,7 +223,7 @@ export function ChannelDetailPage() {
       parsed.data.upstream_auth_kind !== "none" &&
       parsed.data.upstream_api_key.trim() === ""
     ) {
-      toast.error("An upstream API key is required when upstream auth is enabled.");
+      toast.error(t("An upstream API key is required when upstream auth is enabled."));
       return;
     }
     setValidation(null);
@@ -251,7 +255,7 @@ export function ChannelDetailPage() {
           available_models: parsed.data.available_models,
         };
         await create.mutateAsync(input);
-        toast.success("Channel created");
+        toast.success(t("Channel created"));
         navigate("/admin/routing/channels", { replace: true });
       } else {
         // On edit, omit upstream_api_key when blank to keep the current secret.
@@ -283,28 +287,30 @@ export function ChannelDetailPage() {
           input.upstream_api_key = parsed.data.upstream_api_key;
         }
         await update.mutateAsync({ input, ifMatch: etag });
-        toast.success("Channel updated");
+        toast.success(t("Channel updated"));
       }
     } catch (error) {
       if (error instanceof ApiError && error.isConflict) {
-        toast.error("This channel was changed elsewhere. Reloading.");
+        toast.error(t("This channel was changed elsewhere. Reloading."));
       } else {
-        toast.error(controlPlaneMutationErrorMessage(error));
+        toast.error(controlPlaneMutationErrorMessage(error, t("Save failed")));
       }
     } finally {
       setSubmitting(false);
     }
   };
 
-  const fieldError = (path: string) =>
-    validation?.issues.find((issue) => issue.path.join(".") === path)?.message;
+  const fieldError = (path: string) => {
+    const message = validation?.issues.find((issue) => issue.path.join(".") === path)?.message;
+    return message ? t(message) : undefined;
+  };
 
   return (
     <AdminDetailShell
-      title={isNew ? "New channel" : state.name || "Channel"}
-      description="An upstream endpoint with weight, timeouts, and credential injection."
+      title={isNew ? t("New channel") : state.name || t("Channel")}
+      description={t("An upstream endpoint with weight, timeouts, and credential injection.")}
       backPath="/admin/routing/channels"
-      backLabel="Back to channels"
+      backLabel={t("Back to channels")}
       isLoading={isLoading}
       error={error}
       hasData={isNew || Boolean(data)}
@@ -317,17 +323,19 @@ export function ChannelDetailPage() {
             </CardHeader>
             <CardContent>
               <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <dt className="text-xs uppercase text-muted-foreground">Enabled</dt>
+                <dt className="text-xs uppercase text-muted-foreground">{t("Enabled")}</dt>
                 <dd>
                   <StatusBadge value={data.data.enabled} />
                 </dd>
-                <dt className="text-xs uppercase text-muted-foreground">Auto-disabled</dt>
+                <dt className="text-xs uppercase text-muted-foreground">{t("Auto-disabled")}</dt>
                 <dd>
                   <StatusBadge value={data.data.auto_disabled} />
                 </dd>
-                <dt className="text-xs uppercase text-muted-foreground">Credential configured</dt>
-                <dd>{data.data.upstream_credential_configured ? "yes" : "no"}</dd>
-                <dt className="text-xs uppercase text-muted-foreground">Weight</dt>
+                <dt className="text-xs uppercase text-muted-foreground">
+                  {t("Credential configured")}
+                </dt>
+                <dd>{data.data.upstream_credential_configured ? t("yes") : t("no")}</dd>
+                <dt className="text-xs uppercase text-muted-foreground">{t("Weight")}</dt>
                 <dd>{data.data.weight}</dd>
               </dl>
             </CardContent>
@@ -337,16 +345,16 @@ export function ChannelDetailPage() {
       editCard={
         <Card>
           <CardHeader>
-            <CardTitle>{isNew ? "Create channel" : "Edit channel"}</CardTitle>
+            <CardTitle>{isNew ? t("Create channel") : t("Edit channel")}</CardTitle>
             <CardDescription>
-              The channel format must match its group's format.
+              {t("The channel format must match its group's format.")}
             </CardDescription>
           </CardHeader>
           <CardContent>
             <div className="flex flex-col gap-4">
               <FieldGroup>
                 <Field>
-                  <FieldLabel>Channel group</FieldLabel>
+                  <FieldLabel>{t("Channel group")}</FieldLabel>
                   <Select
                     value={state.channel_group_id || "__none__"}
                     onValueChange={(value) => {
@@ -358,11 +366,11 @@ export function ChannelDetailPage() {
                     }}
                   >
                     <SelectTrigger>
-                      <SelectValue placeholder="Pick a group" />
+                      <SelectValue placeholder={t("Pick a group")} />
                     </SelectTrigger>
                     <SelectContent>
                       <SelectGroup>
-                        <SelectItem value="__none__">None</SelectItem>
+                        <SelectItem value="__none__">{t("None")}</SelectItem>
                         {groups.data?.map((group) => (
                           <SelectItem
                             key={group.id}
@@ -380,16 +388,23 @@ export function ChannelDetailPage() {
                   ) : null}
                 </Field>
                 <Field>
-                  <FieldLabel>API format</FieldLabel>
-                  <Input value={apiFormatLabel(selectedGroup?.api_format ?? state.api_format)} disabled />
+                  <FieldLabel>{t("API format")}</FieldLabel>
+                  <Input
+                    value={apiFormatLabel(selectedGroup?.api_format ?? state.api_format)}
+                    disabled
+                  />
                 </Field>
                 <Field>
-                  <FieldLabel htmlFor="name">Name</FieldLabel>
-                  <Input id="name" value={state.name} onChange={(event) => patch({ name: event.target.value })} />
+                  <FieldLabel htmlFor="name">{t("Name")}</FieldLabel>
+                  <Input
+                    id="name"
+                    value={state.name}
+                    onChange={(event) => patch({ name: event.target.value })}
+                  />
                   {fieldError("name") ? <FieldError>{fieldError("name")}</FieldError> : null}
                 </Field>
                 <Field data-invalid={Boolean(fieldError("base_url"))}>
-                  <FieldLabel htmlFor="base_url">Base URL</FieldLabel>
+                  <FieldLabel htmlFor="base_url">{t("Base URL")}</FieldLabel>
                   <Input
                     id="base_url"
                     value={state.base_url}
@@ -400,7 +415,7 @@ export function ChannelDetailPage() {
                   {fieldError("base_url") ? <FieldError>{fieldError("base_url")}</FieldError> : null}
                 </Field>
                 <Field data-invalid={Boolean(fieldError("weight"))}>
-                  <FieldLabel htmlFor="weight">Weight</FieldLabel>
+                  <FieldLabel htmlFor="weight">{t("Weight")}</FieldLabel>
                   <Input
                     id="weight"
                     type="number"
@@ -414,7 +429,7 @@ export function ChannelDetailPage() {
                   {fieldError("weight") ? <FieldError>{fieldError("weight")}</FieldError> : null}
                 </Field>
                 <Field>
-                  <FieldLabel>Proxy</FieldLabel>
+                  <FieldLabel>{t("Proxy")}</FieldLabel>
                   <Select
                     value={state.proxy_id ?? "__none__"}
                     onValueChange={(value) => patch({ proxy_id: value === "__none__" ? null : value })}
@@ -424,7 +439,7 @@ export function ChannelDetailPage() {
                     </SelectTrigger>
                     <SelectContent>
                       <SelectGroup>
-                        <SelectItem value="__none__">None</SelectItem>
+                        <SelectItem value="__none__">{t("None")}</SelectItem>
                         {proxies.data?.filter((proxy) => proxy.enabled).map((proxy) => (
                           <SelectItem key={proxy.id} value={proxy.id}>
                             {proxy.name}
@@ -435,7 +450,7 @@ export function ChannelDetailPage() {
                   </Select>
                 </Field>
                 <Field>
-                  <FieldLabel>Config template</FieldLabel>
+                  <FieldLabel>{t("Config template")}</FieldLabel>
                   <Select
                     value={state.config_template_id ?? "__none__"}
                     onValueChange={(value) =>
@@ -447,7 +462,7 @@ export function ChannelDetailPage() {
                     </SelectTrigger>
                     <SelectContent>
                       <SelectGroup>
-                        <SelectItem value="__none__">None</SelectItem>
+                        <SelectItem value="__none__">{t("None")}</SelectItem>
                         {templates.data
                           ?.filter(
                             (template) =>
@@ -465,7 +480,7 @@ export function ChannelDetailPage() {
                   </Select>
                 </Field>
                 <Field>
-                  <FieldLabel>Upstream auth kind</FieldLabel>
+                  <FieldLabel>{t("Upstream auth kind")}</FieldLabel>
                   <Select
                     value={state.upstream_auth_kind}
                     onValueChange={(value) => {
@@ -495,7 +510,7 @@ export function ChannelDetailPage() {
                 </Field>
                 {state.upstream_auth_kind === "header" ? (
                   <Field data-invalid={Boolean(fieldError("upstream_auth_header_name"))}>
-                    <FieldLabel htmlFor="header_name">Header name</FieldLabel>
+                    <FieldLabel htmlFor="header_name">{t("Header name")}</FieldLabel>
                     <Input
                       id="header_name"
                       value={state.upstream_auth_header_name ?? ""}
@@ -513,10 +528,10 @@ export function ChannelDetailPage() {
                 {state.upstream_auth_kind !== "none" ? (
                   <Field>
                     <FieldLabel htmlFor="upstream_api_key">
-                      Upstream API key{" "}
+                      {t("Upstream API key")}{" "}
                       {!isNew ? (
                         <span className="text-xs text-muted-foreground">
-                          (leave blank to keep current)
+                          {t("(leave blank to keep current)")}
                         </span>
                       ) : null}
                     </FieldLabel>
@@ -531,34 +546,38 @@ export function ChannelDetailPage() {
                 <StringListField
                   id="available_models"
                   variant="tokens"
-                  label="Available upstream models"
+                  label={t("Available upstream models")}
                   value={state.available_models}
                   onChange={(value) => patch({ available_models: value })}
-                  placeholder="Enter an upstream model ID"
-                  description="Press Enter or Add to include a model."
+                  placeholder={t("Enter an upstream model ID")}
+                  description={t("Press Enter or Add to include a model.")}
                   error={fieldError("available_models")}
                 />
                 <NullableNumberField
-                  label="Connect timeout (ms)"
+                  label={t("Connect timeout (ms)")}
                   value={state.connect_timeout_ms}
                   onChange={(value) => patch({ connect_timeout_ms: value })}
                 />
                 <NullableNumberField
-                  label="Response header timeout (ms)"
+                  label={t("Response header timeout (ms)")}
                   value={state.response_header_timeout_ms}
                   onChange={(value) => patch({ response_header_timeout_ms: value })}
                 />
                 <NullableNumberField
-                  label="Stream idle timeout (ms)"
+                  label={t("Stream idle timeout (ms)")}
                   value={state.stream_idle_timeout_ms}
                   onChange={(value) => patch({ stream_idle_timeout_ms: value })}
                 />
                 <Field>
-                  <FieldLabel htmlFor="override_document">Override document (JSON)</FieldLabel>
+                  <FieldLabel htmlFor="override_document">
+                    {t("Override document (JSON)")}
+                  </FieldLabel>
                   <FieldDescription>
                     {isNew
-                      ? "Optional constrained transform document."
-                      : "The current document is redacted. Leave this blank to preserve it; enter {} to clear it."}
+                      ? t("Optional constrained transform document.")
+                      : t(
+                          "The current document is redacted. Leave this blank to preserve it; enter {} to clear it.",
+                        )}
                   </FieldDescription>
                   <Textarea
                     id="override_document"
@@ -569,7 +588,7 @@ export function ChannelDetailPage() {
                   />
                 </Field>
                 <Field>
-                  <FieldLabel>Enabled</FieldLabel>
+                  <FieldLabel>{t("Enabled")}</FieldLabel>
                   <Switch
                     checked={state.enabled}
                     onCheckedChange={(checked) => patch({ enabled: Boolean(checked) })}
@@ -578,7 +597,7 @@ export function ChannelDetailPage() {
               </FieldGroup>
               <Button className="self-start" onClick={submit} disabled={submitting}>
                 {submitting ? <Spinner data-icon="inline-start" /> : null}
-                {isNew ? "Create channel" : "Save channel"}
+                {isNew ? t("Create channel") : t("Save channel")}
               </Button>
             </div>
           </CardContent>

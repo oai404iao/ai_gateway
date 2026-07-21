@@ -26,6 +26,7 @@ import {
 import { ApiError, controlPlaneMutationErrorMessage } from "@/api/errors";
 import type { ApiFormat, ChannelGroupInput, SelectionStrategy } from "@/api/types";
 import { API_FORMATS, SELECTION_STRATEGIES, apiFormatLabel, selectionStrategyLabel } from "@/lib/permissions";
+import { useI18n } from "@/app/i18n";
 
 const schema = z.object({
   name: z.string().min(1, "Name is required.").max(100),
@@ -52,6 +53,7 @@ export function ChannelGroupDetailPage() {
   const { data, etag, isLoading, error } = useChannelGroup(id);
   const create = useCreateChannelGroup();
   const update = useUpdateChannelGroup(id);
+  const { t } = useI18n();
   const [state, setState] = useState<FormState>(empty);
   const [submitting, setSubmitting] = useState(false);
   const [validation, setValidation] = useState<z.ZodError | null>(null);
@@ -88,32 +90,34 @@ export function ChannelGroupDetailPage() {
     try {
       if (isNew) {
         await create.mutateAsync(input);
-        toast.success("Channel group created");
+        toast.success(t("Channel group created"));
         navigate("/admin/routing/channel-groups", { replace: true });
       } else {
         await update.mutateAsync({ input, ifMatch: etag });
-        toast.success("Channel group updated");
+        toast.success(t("Channel group updated"));
       }
     } catch (error) {
       if (error instanceof ApiError && error.isConflict) {
-        toast.error("This group was changed elsewhere. Reloading.");
+        toast.error(t("This group was changed elsewhere. Reloading."));
       } else {
-        toast.error(controlPlaneMutationErrorMessage(error));
+        toast.error(controlPlaneMutationErrorMessage(error, t("Save failed")));
       }
     } finally {
       setSubmitting(false);
     }
   };
 
-  const fieldError = (path: string) =>
-    validation?.issues.find((issue) => issue.path.join(".") === path)?.message;
+  const fieldError = (path: string) => {
+    const message = validation?.issues.find((issue) => issue.path.join(".") === path)?.message;
+    return message ? t(message) : undefined;
+  };
 
   return (
     <AdminDetailShell
-      title={isNew ? "New channel group" : state.name || "Channel group"}
-      description="A same-format pool of channels selected by priority and weight."
+      title={isNew ? t("New channel group") : state.name || t("Channel group")}
+      description={t("A same-format pool of channels selected by priority and weight.")}
       backPath="/admin/routing/channel-groups"
-      backLabel="Back to groups"
+      backLabel={t("Back to groups")}
       isLoading={isLoading}
       error={error}
       hasData={isNew || Boolean(data)}
@@ -126,11 +130,11 @@ export function ChannelGroupDetailPage() {
             </CardHeader>
             <CardContent>
               <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <dt className="text-xs uppercase text-muted-foreground">Priority</dt>
+                <dt className="text-xs uppercase text-muted-foreground">{t("Priority")}</dt>
                 <dd>{data.data.priority}</dd>
-                <dt className="text-xs uppercase text-muted-foreground">Strategy</dt>
+                <dt className="text-xs uppercase text-muted-foreground">{t("Strategy")}</dt>
                 <dd>{selectionStrategyLabel(data.data.selection_strategy)}</dd>
-                <dt className="text-xs uppercase text-muted-foreground">Enabled</dt>
+                <dt className="text-xs uppercase text-muted-foreground">{t("Enabled")}</dt>
                 <dd>
                   <StatusBadge value={data.data.enabled} />
                 </dd>
@@ -142,13 +146,13 @@ export function ChannelGroupDetailPage() {
       editCard={
         <Card>
           <CardHeader>
-            <CardTitle>{isNew ? "Create group" : "Edit group"}</CardTitle>
+            <CardTitle>{isNew ? t("Create group") : t("Edit group")}</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="flex flex-col gap-4">
               <FieldGroup>
                 <Field>
-                  <FieldLabel htmlFor="name">Name</FieldLabel>
+                  <FieldLabel htmlFor="name">{t("Name")}</FieldLabel>
                   <Input
                     id="name"
                     value={state.name}
@@ -157,7 +161,7 @@ export function ChannelGroupDetailPage() {
                   {fieldError("name") ? <FieldError>{fieldError("name")}</FieldError> : null}
                 </Field>
                 <Field>
-                  <FieldLabel>API format</FieldLabel>
+                  <FieldLabel>{t("API format")}</FieldLabel>
                   <Select
                     value={state.api_format}
                     onValueChange={(value) => patch({ api_format: value as ApiFormat })}
@@ -177,7 +181,7 @@ export function ChannelGroupDetailPage() {
                   </Select>
                 </Field>
                 <Field data-invalid={Boolean(fieldError("priority"))}>
-                  <FieldLabel htmlFor="priority">Priority</FieldLabel>
+                  <FieldLabel htmlFor="priority">{t("Priority")}</FieldLabel>
                   <Input
                     id="priority"
                     type="number"
@@ -193,7 +197,7 @@ export function ChannelGroupDetailPage() {
                   ) : null}
                 </Field>
                 <Field>
-                  <FieldLabel>Selection strategy</FieldLabel>
+                  <FieldLabel>{t("Selection strategy")}</FieldLabel>
                   <Select
                     value={state.selection_strategy}
                     onValueChange={(value) =>
@@ -215,7 +219,7 @@ export function ChannelGroupDetailPage() {
                   </Select>
                 </Field>
                 <Field>
-                  <FieldLabel>Enabled</FieldLabel>
+                  <FieldLabel>{t("Enabled")}</FieldLabel>
                   <Switch
                     checked={state.enabled}
                     onCheckedChange={(checked) => patch({ enabled: Boolean(checked) })}
@@ -224,7 +228,7 @@ export function ChannelGroupDetailPage() {
               </FieldGroup>
               <Button className="self-start" onClick={submit} disabled={submitting}>
                 {submitting ? <Spinner data-icon="inline-start" /> : null}
-                {isNew ? "Create group" : "Save group"}
+                {isNew ? t("Create group") : t("Save group")}
               </Button>
             </div>
           </CardContent>

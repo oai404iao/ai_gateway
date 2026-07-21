@@ -27,10 +27,9 @@ export const USER_STATUSES = ["active", "invited", "suspended", "disabled"] as c
 
 export const API_KEY_STATUSES = ["active", "disabled", "revoked"] as const;
 
+/** OpenAI API-format product terms intentionally remain in English. */
 export function apiFormatLabel(value: ApiFormat): string {
-  return value === "open_ai_chat_completions"
-    ? translate("Chat Completions")
-    : translate("Responses");
+  return value === "open_ai_chat_completions" ? "Chat Completions" : "Responses";
 }
 
 export function roleLabel(value: UserRole): string {

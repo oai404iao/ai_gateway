@@ -1,6 +1,7 @@
 import { useId } from "react";
 import { Input } from "@/components/ui/input";
 import { Field, FieldError, FieldLabel } from "@/components/ui/field";
+import { useI18n } from "@/app/i18n";
 
 interface DecimalFieldProps {
   id?: string;
@@ -64,6 +65,7 @@ export function NullableNumberField({
   error,
   description,
 }: NullableNumberFieldProps) {
+  const { t } = useI18n();
   const generatedId = useId();
   const inputId = id ?? generatedId;
   return (
@@ -73,7 +75,7 @@ export function NullableNumberField({
         id={inputId}
         type="number"
         value={value ?? ""}
-        placeholder="unset"
+        placeholder={t("unset")}
         onChange={(event) => {
           const text = event.target.value.trim();
           if (text === "") {

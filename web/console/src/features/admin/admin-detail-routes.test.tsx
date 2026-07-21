@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { BrowserRouter } from "react-router";
 import { AppProviders } from "@/app/providers";
@@ -14,6 +14,7 @@ import {
   MODEL_RULE,
   PROXY,
 } from "@/test/fixtures";
+import { STORAGE_KEY, setCurrentLocale } from "@/app/i18n";
 
 function renderAppAt(path: string) {
   window.history.replaceState({}, "", path);
@@ -25,6 +26,11 @@ function renderAppAt(path: string) {
     </AppProviders>,
   );
 }
+
+afterEach(() => {
+  window.localStorage.removeItem(STORAGE_KEY);
+  setCurrentLocale("en-US");
+});
 
 const createRoutes = [
   ["/admin/api-key-policies/new", /create policy/i],
@@ -60,5 +66,15 @@ describe("Admin detail routes", () => {
     renderAppAt(path);
 
     expect(await screen.findByRole("button", { name: buttonName })).toBeInTheDocument();
+  });
+
+  it("localizes channel editing while retaining API format product names", async () => {
+    window.localStorage.setItem(STORAGE_KEY, "zh-CN");
+    seedAuthenticatedSession();
+    renderAppAt("/admin/routing/channels/new");
+
+    expect(await screen.findByRole("button", { name: "创建渠道" })).toBeInTheDocument();
+    expect(screen.getByText("API 格式")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("Chat Completions")).toBeInTheDocument();
   });
 });

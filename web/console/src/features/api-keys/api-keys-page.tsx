@@ -34,6 +34,7 @@ import {
 } from "@/lib/dates";
 import { formatList } from "@/lib/formatters";
 import { apiFormatLabel } from "@/lib/permissions";
+import { useI18n } from "@/app/i18n";
 
 const createSchema = z.object({
   name: z.string().min(1, "Name is required.").max(100),
@@ -45,26 +46,29 @@ const createSchema = z.object({
 
 type CreateValues = z.infer<typeof createSchema>;
 
-function createErrorMessage(error: unknown): string {
+function createErrorMessage(error: unknown, t: (key: string) => string): string {
   if (error instanceof ApiError) {
     switch (error.code) {
       case "default_api_key_policy_required":
-        return "Create an API key policy, then assign it to this user under Administration → Users.";
+        return t("Create an API key policy, then assign it to this user under Administration → Users.");
       case "default_api_key_policy_disabled":
-        return "Your default API key policy is disabled. Ask an administrator to enable or replace it.";
+        return t("Your default API key policy is disabled. Ask an administrator to enable or replace it.");
       case "api_key_limit_reached":
-        return "Your policy's active API key limit has been reached. Revoke an existing key or raise the limit.";
+        return t(
+          "Your policy's active API key limit has been reached. Revoke an existing key or raise the limit.",
+        );
       default:
         return error.message;
     }
   }
-  return error instanceof Error ? error.message : "Create failed";
+  return error instanceof Error ? error.message : t("Create failed");
 }
 
 export function ApiKeysPage() {
   const navigate = useNavigate();
   const { data: keys, isLoading, error } = useOwnApiKeys();
   const create = useCreateOwnApiKey();
+  const { t } = useI18n();
   const [createOpen, setCreateOpen] = useState(false);
   const [secret, setSecret] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -84,24 +88,28 @@ export function ApiKeysPage() {
       if (result.secret) setSecret(result.secret);
       setCreateOpen(false);
       form.reset();
-      toast.success("API key created");
+      toast.success(t("API key created"));
     } catch (error) {
-      toast.error(createErrorMessage(error));
+      toast.error(createErrorMessage(error, t));
     } finally {
       setSubmitting(false);
     }
   };
 
   const columns: Column<ApiKeyView>[] = [
-    { key: "name", header: "Name", render: (key) => <span className="font-medium">{key.name}</span> },
+    {
+      key: "name",
+      header: t("Name"),
+      render: (key) => <span className="font-medium">{key.name}</span>,
+    },
     {
       key: "status",
-      header: "Status",
+      header: t("Status"),
       render: (key) => <StatusBadge value={key.status} />,
     },
     {
       key: "formats",
-      header: "Formats",
+      header: t("Formats"),
       render: (key) => (
         <span className="flex flex-wrap gap-1">
           {key.allowed_api_formats.map((format) => (
@@ -117,17 +125,17 @@ export function ApiKeysPage() {
     },
     {
       key: "permissions",
-      header: "Permissions",
+      header: t("Permissions"),
       render: (key) => formatList(key.permissions),
     },
     {
       key: "expiry",
-      header: "Expires",
+      header: t("Expires"),
       render: (key) => formatExpiry(key.expires_at),
     },
     {
       key: "updated",
-      header: "Updated",
+      header: t("Updated"),
       render: (key) => formatRelative(key.updated_at),
     },
   ];
@@ -135,20 +143,21 @@ export function ApiKeysPage() {
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
-        title="API Keys"
-        description="Your personal client keys for the OpenAI-compatible data plane."
+        title={t("API Keys")}
+        description={t("Your personal client keys for the OpenAI-compatible data plane.")}
         actions={
           <Button onClick={() => setCreateOpen(true)}>
-            <Plus data-icon="inline-start" /> New API key
+            <Plus data-icon="inline-start" /> {t("New API key")}
           </Button>
         }
       />
       <Card>
         <CardHeader>
-          <CardTitle>Keys</CardTitle>
+          <CardTitle>{t("Keys")}</CardTitle>
           <CardDescription>
-            Permissions, formats, and limits are set by your assigned API key
-            policy and cannot be raised from this page.
+            {t(
+              "Permissions, formats, and limits are set by your assigned API key policy and cannot be raised from this page.",
+            )}
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -156,8 +165,8 @@ export function ApiKeysPage() {
             isLoading={isLoading}
             error={error}
             isEmpty={keys?.length === 0}
-            emptyTitle="No API keys"
-            emptyDescription="Create your first API key to start using the data plane."
+            emptyTitle={t("No API keys")}
+            emptyDescription={t("Create your first API key to start using the data plane.")}
           >
             <ResourceTable
               columns={columns}
@@ -172,27 +181,28 @@ export function ApiKeysPage() {
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>New API key</DialogTitle>
+            <DialogTitle>{t("New API key")}</DialogTitle>
             <DialogDescription>
-              Choose a name and optional expiry. Authorization fields are
-              assigned from your default policy.
+              {t(
+                "Choose a name and optional expiry. Authorization fields are assigned from your default policy.",
+              )}
             </DialogDescription>
           </DialogHeader>
           <form onSubmit={form.handleSubmit(onSubmit)} className="flex flex-col gap-4">
             <FieldGroup>
               <Field data-invalid={Boolean(form.formState.errors.name)}>
-                <FieldLabel htmlFor="name">Name</FieldLabel>
+                <FieldLabel htmlFor="name">{t("Name")}</FieldLabel>
                 <Input
                   id="name"
                   aria-invalid={Boolean(form.formState.errors.name)}
                   {...form.register("name")}
                 />
                 {form.formState.errors.name ? (
-                  <FieldError>{form.formState.errors.name.message}</FieldError>
+                  <FieldError>{t(form.formState.errors.name.message ?? "")}</FieldError>
                 ) : null}
               </Field>
               <Field data-invalid={Boolean(form.formState.errors.expires_at)}>
-                <FieldLabel htmlFor="expires_at">Expires at (optional)</FieldLabel>
+                <FieldLabel htmlFor="expires_at">{t("Expires at (optional)")}</FieldLabel>
                 <Input
                   id="expires_at"
                   type="datetime-local"
@@ -200,14 +210,14 @@ export function ApiKeysPage() {
                   {...form.register("expires_at")}
                 />
                 {form.formState.errors.expires_at ? (
-                  <FieldError>{form.formState.errors.expires_at.message}</FieldError>
+                  <FieldError>{t(form.formState.errors.expires_at.message ?? "")}</FieldError>
                 ) : null}
               </Field>
             </FieldGroup>
             <DialogFooter>
               <Button type="submit" disabled={submitting}>
                 {submitting ? <Spinner data-icon="inline-start" /> : null}
-                Create key
+                {t("Create key")}
               </Button>
             </DialogFooter>
           </form>
@@ -217,8 +227,8 @@ export function ApiKeysPage() {
       <SecretOnceDialog
         open={Boolean(secret)}
         onOpenChange={(open) => !open && setSecret(null)}
-        title="Your new API key"
-        description="Use this as the Bearer token for /v1/* requests."
+        title={t("Your new API key")}
+        description={t("Use this as the Bearer token for /v1/* requests.")}
         secret={secret}
       />
     </div>

@@ -22,6 +22,7 @@ import { ApiError } from "@/api/errors";
 import type { ApiFormat, ApiKeyPolicyInput } from "@/api/types";
 import { API_FORMATS, apiFormatLabel } from "@/lib/permissions";
 import { formatRelative } from "@/lib/dates";
+import { useI18n } from "@/app/i18n";
 
 const schema = z.object({
   name: z.string().min(1, "Name is required.").max(100),
@@ -56,6 +57,7 @@ export function ApiKeyPolicyDetailPage() {
   const { data, etag, isLoading, error } = useApiKeyPolicy(id);
   const create = useCreateApiKeyPolicy();
   const update = useUpdateApiKeyPolicy(id);
+  const { t } = useI18n();
   const [state, setState] = useState<FormState>(empty);
   const [submitting, setSubmitting] = useState(false);
   const [validation, setValidation] = useState<z.ZodError | null>(null);
@@ -100,32 +102,34 @@ export function ApiKeyPolicyDetailPage() {
     try {
       if (isNew) {
         await create.mutateAsync(input);
-        toast.success("Policy created");
+        toast.success(t("Policy created"));
         navigate("/admin/api-key-policies", { replace: true });
       } else {
         await update.mutateAsync({ input, ifMatch: etag });
-        toast.success("Policy updated");
+        toast.success(t("Policy updated"));
       }
     } catch (error) {
       if (error instanceof ApiError && error.isConflict) {
-        toast.error("This policy was changed elsewhere. Reloading.");
+        toast.error(t("This policy was changed elsewhere. Reloading."));
       } else {
-        toast.error(error instanceof Error ? error.message : "Save failed");
+        toast.error(error instanceof Error ? error.message : t("Save failed"));
       }
     } finally {
       setSubmitting(false);
     }
   };
 
-  const fieldError = (path: string) =>
-    validation?.issues.find((issue) => issue.path.join(".") === path)?.message;
+  const fieldError = (path: string) => {
+    const message = validation?.issues.find((issue) => issue.path.join(".") === path)?.message;
+    return message ? t(message) : undefined;
+  };
 
   return (
     <AdminDetailShell
-      title={isNew ? "New API key policy" : state.name || "Policy"}
-      description="Bounds the formats, permissions, rate limits, and quota of self-service keys."
+      title={isNew ? t("New API key policy") : state.name || t("Policy")}
+      description={t("Bounds the formats, permissions, rate limits, and quota of self-service keys.")}
       backPath="/admin/api-key-policies"
-      backLabel="Back to policies"
+      backLabel={t("Back to policies")}
       isLoading={isLoading}
       error={error}
       hasData={isNew || Boolean(data)}
@@ -133,12 +137,14 @@ export function ApiKeyPolicyDetailPage() {
         !isNew && data ? (
           <Card>
             <CardHeader>
-              <CardTitle>Policy</CardTitle>
-              <CardDescription>Updated {formatRelative(data.data.updated_at)}.</CardDescription>
+              <CardTitle>{t("Policy")}</CardTitle>
+              <CardDescription>
+                {t("Updated")} {formatRelative(data.data.updated_at)}.
+              </CardDescription>
             </CardHeader>
             <CardContent>
               <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <dt className="text-xs uppercase text-muted-foreground">Enabled</dt>
+                <dt className="text-xs uppercase text-muted-foreground">{t("Enabled")}</dt>
                 <dd>
                   <StatusBadge value={data.data.enabled} />
                 </dd>
@@ -150,14 +156,16 @@ export function ApiKeyPolicyDetailPage() {
       editCard={
         <Card>
           <CardHeader>
-            <CardTitle>{isNew ? "Create policy" : "Edit policy"}</CardTitle>
-            <CardDescription>Users cannot raise these values when creating keys.</CardDescription>
+            <CardTitle>{isNew ? t("Create policy") : t("Edit policy")}</CardTitle>
+            <CardDescription>
+              {t("Users cannot raise these values when creating keys.")}
+            </CardDescription>
           </CardHeader>
           <CardContent>
             <div className="flex flex-col gap-4">
               <FieldGroup>
                 <Field>
-                  <FieldLabel htmlFor="name">Name</FieldLabel>
+                  <FieldLabel htmlFor="name">{t("Name")}</FieldLabel>
                   <Input
                     id="name"
                     value={state.name}
@@ -168,7 +176,7 @@ export function ApiKeyPolicyDetailPage() {
                   ) : null}
                 </Field>
                 <Field>
-                  <FieldLabel>Allowed API formats</FieldLabel>
+                  <FieldLabel>{t("Allowed API formats")}</FieldLabel>
                   <div className="flex flex-col gap-2">
                     {API_FORMATS.map((format) => (
                       <label key={format} className="flex items-center gap-2 text-sm">
@@ -193,35 +201,37 @@ export function ApiKeyPolicyDetailPage() {
                   ) : null}
                 </Field>
                 <StringListField
-                  label="Permissions"
+                  label={t("Permissions")}
                   value={state.permissions}
                   onChange={(value) => patch({ permissions: value })}
                   placeholder="proxy, models.read"
                 />
                 <StringListField
-                  label="Allowed group IDs"
-                  description="Restrict self-service keys to these channel groups. Empty means unrestricted."
+                  label={t("Allowed group IDs")}
+                  description={t(
+                    "Restrict self-service keys to these channel groups. Empty means unrestricted.",
+                  )}
                   value={state.allowed_group_ids ?? []}
                   onChange={(value) => patch({ allowed_group_ids: value.length ? value : null })}
-                  placeholder="UUID per line"
+                  placeholder={t("UUID per line")}
                 />
                 <NullableNumberField
-                  label="Requests / minute"
+                  label={t("Requests / minute")}
                   value={state.requests_per_minute}
                   onChange={(value) => patch({ requests_per_minute: value })}
                 />
                 <NullableNumberField
-                  label="Max concurrent requests"
+                  label={t("Max concurrent requests")}
                   value={state.max_concurrent_requests}
                   onChange={(value) => patch({ max_concurrent_requests: value })}
                 />
                 <DecimalField
-                  label="Quota limit amount"
+                  label={t("Quota limit amount")}
                   value={state.quota_limit_amount}
                   onChange={(value) => patch({ quota_limit_amount: value || null })}
                 />
                 <Field>
-                  <FieldLabel htmlFor="max_active_keys">Max active keys</FieldLabel>
+                  <FieldLabel htmlFor="max_active_keys">{t("Max active keys")}</FieldLabel>
                   <Input
                     id="max_active_keys"
                     type="number"
@@ -236,7 +246,7 @@ export function ApiKeyPolicyDetailPage() {
                   ) : null}
                 </Field>
                 <Field>
-                  <FieldLabel>Enabled</FieldLabel>
+                  <FieldLabel>{t("Enabled")}</FieldLabel>
                   <Switch
                     checked={state.enabled}
                     onCheckedChange={(checked) => patch({ enabled: Boolean(checked) })}
@@ -245,7 +255,7 @@ export function ApiKeyPolicyDetailPage() {
               </FieldGroup>
               <Button className="self-start" onClick={submit} disabled={submitting}>
                 {submitting ? <Spinner data-icon="inline-start" /> : null}
-                {isNew ? "Create policy" : "Save policy"}
+                {isNew ? t("Create policy") : t("Save policy")}
               </Button>
             </div>
           </CardContent>

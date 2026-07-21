@@ -1,4 +1,5 @@
 import type { ErrorBody } from "@/api/types";
+import { translate } from "@/app/i18n";
 
 /** A typed Console API failure carrying the HTTP status and server message. */
 export class ApiError extends Error {
@@ -48,7 +49,9 @@ export async function readApiError(response: Response): Promise<ApiError> {
 /** Safe, actionable copy for control-plane mutations with known error codes. */
 export function controlPlaneMutationErrorMessage(error: unknown, fallback = "Save failed"): string {
   if (error instanceof ApiError && error.code === "routing_dependency_invalid") {
-    return "Save blocked: this change would make the routing configuration invalid. Keep an eligible channel and compatible enabled resources, or update dependent rules first.";
+    return translate(
+      "Save blocked: this change would make the routing configuration invalid. Keep an eligible channel and compatible enabled resources, or update dependent rules first.",
+    );
   }
   return error instanceof Error ? error.message : fallback;
 }

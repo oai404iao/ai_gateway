@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Field, FieldDescription, FieldError, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { useI18n } from "@/app/i18n";
 
 interface StringListFieldProps {
   id?: string;
@@ -33,8 +34,9 @@ export function StringListField({
   error,
   required,
   variant = "lines",
-  addLabel = "Add",
+  addLabel,
 }: StringListFieldProps) {
+  const { t } = useI18n();
   const [draft, setDraft] = useState("");
   const nextItem = draft.trim();
 
@@ -66,7 +68,7 @@ export function StringListField({
                   type="button"
                   variant="ghost"
                   size="icon-xs"
-                  aria-label={`Remove ${item}`}
+                  aria-label={t("Remove {item}", { item })}
                   onClick={() => onChange(value.filter((_, itemIndex) => itemIndex !== index))}
                 >
                   <XIcon data-icon="inline-start" />
@@ -81,7 +83,7 @@ export function StringListField({
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={placeholder ?? "Enter an item"}
+            placeholder={placeholder ?? t("Enter an item")}
             aria-invalid={Boolean(error)}
           />
           <Button
@@ -92,7 +94,7 @@ export function StringListField({
             onClick={add}
           >
             <PlusIcon data-icon="inline-start" />
-            {addLabel}
+            {addLabel ?? t("Add")}
           </Button>
         </div>
         {description ? <FieldDescription>{description}</FieldDescription> : null}
@@ -111,7 +113,7 @@ export function StringListField({
         id={id}
         rows={3}
         value={value.join("\n")}
-        placeholder={placeholder ?? "One item per line"}
+        placeholder={placeholder ?? t("One item per line")}
         onChange={(event) => onChange(event.target.value.split("\n"))}
         onBlur={() => onChange(value.map((item) => item.trim()).filter(Boolean))}
         aria-invalid={Boolean(error)}

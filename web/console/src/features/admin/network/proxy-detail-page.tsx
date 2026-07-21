@@ -14,6 +14,7 @@ import { StatusBadge } from "@/components/shared/status-badge";
 import { useCreateProxy, useProxy, useUpdateProxy } from "@/features/admin/api";
 import { ApiError, controlPlaneMutationErrorMessage } from "@/api/errors";
 import type { ProxyCreateInput, ProxyInput } from "@/api/types";
+import { useI18n } from "@/app/i18n";
 
 function isAllowedProxyUrl(value: string): boolean {
   try {
@@ -65,6 +66,7 @@ export function ProxyDetailPage() {
   const { data, etag, isLoading, error } = useProxy(id);
   const create = useCreateProxy();
   const update = useUpdateProxy(id);
+  const { t } = useI18n();
   const [state, setState] = useState<FormState>(empty);
   const [submitting, setSubmitting] = useState(false);
   const [validation, setValidation] = useState<z.ZodError | null>(null);
@@ -103,7 +105,7 @@ export function ProxyDetailPage() {
           enabled: parsed.data.enabled,
         };
         await create.mutateAsync(input);
-        toast.success("Proxy created");
+        toast.success(t("Proxy created"));
         navigate("/admin/network/proxies", { replace: true });
       } else {
         // On edit, omit blank credentials to keep current values.
@@ -116,28 +118,30 @@ export function ProxyDetailPage() {
         if (parsed.data.username !== null) input.username = parsed.data.username;
         if (parsed.data.password !== null) input.password = parsed.data.password;
         await update.mutateAsync({ input, ifMatch: etag });
-        toast.success("Proxy updated");
+        toast.success(t("Proxy updated"));
       }
     } catch (error) {
       if (error instanceof ApiError && error.isConflict) {
-        toast.error("This proxy was changed elsewhere. Reloading.");
+        toast.error(t("This proxy was changed elsewhere. Reloading."));
       } else {
-        toast.error(controlPlaneMutationErrorMessage(error));
+        toast.error(controlPlaneMutationErrorMessage(error, t("Save failed")));
       }
     } finally {
       setSubmitting(false);
     }
   };
 
-  const fieldError = (path: string) =>
-    validation?.issues.find((issue) => issue.path.join(".") === path)?.message;
+  const fieldError = (path: string) => {
+    const message = validation?.issues.find((issue) => issue.path.join(".") === path)?.message;
+    return message ? t(message) : undefined;
+  };
 
   return (
     <AdminDetailShell
-      title={isNew ? "New proxy" : state.name || "Proxy"}
-      description="An egress proxy shared by upstream clients."
+      title={isNew ? t("New proxy") : state.name || t("Proxy")}
+      description={t("An egress proxy shared by upstream clients.")}
       backPath="/admin/network/proxies"
-      backLabel="Back to proxies"
+      backLabel={t("Back to proxies")}
       isLoading={isLoading}
       error={error}
       hasData={isNew || Boolean(data)}
@@ -150,12 +154,14 @@ export function ProxyDetailPage() {
             </CardHeader>
             <CardContent>
               <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <dt className="text-xs uppercase text-muted-foreground">Enabled</dt>
+                <dt className="text-xs uppercase text-muted-foreground">{t("Enabled")}</dt>
                 <dd>
                   <StatusBadge value={data.data.enabled} />
                 </dd>
-                <dt className="text-xs uppercase text-muted-foreground">Credential configured</dt>
-                <dd>{data.data.credential_configured ? "yes" : "no"}</dd>
+                <dt className="text-xs uppercase text-muted-foreground">
+                  {t("Credential configured")}
+                </dt>
+                <dd>{data.data.credential_configured ? t("yes") : t("no")}</dd>
               </dl>
             </CardContent>
           </Card>
@@ -164,21 +170,25 @@ export function ProxyDetailPage() {
       editCard={
         <Card>
           <CardHeader>
-            <CardTitle>{isNew ? "Create proxy" : "Edit proxy"}</CardTitle>
+            <CardTitle>{isNew ? t("Create proxy") : t("Edit proxy")}</CardTitle>
             <CardDescription>
-              {!isNew ? "Leave credential fields blank to keep current values." : null}
+              {!isNew ? t("Leave credential fields blank to keep current values.") : null}
             </CardDescription>
           </CardHeader>
           <CardContent>
             <div className="flex flex-col gap-4">
               <FieldGroup>
                 <Field>
-                  <FieldLabel htmlFor="name">Name</FieldLabel>
-                  <Input id="name" value={state.name} onChange={(event) => patch({ name: event.target.value })} />
+                  <FieldLabel htmlFor="name">{t("Name")}</FieldLabel>
+                  <Input
+                    id="name"
+                    value={state.name}
+                    onChange={(event) => patch({ name: event.target.value })}
+                  />
                   {fieldError("name") ? <FieldError>{fieldError("name")}</FieldError> : null}
                 </Field>
                 <Field data-invalid={Boolean(fieldError("proxy_url"))}>
-                  <FieldLabel htmlFor="proxy_url">Proxy URL</FieldLabel>
+                  <FieldLabel htmlFor="proxy_url">{t("Proxy URL")}</FieldLabel>
                   <Input
                     id="proxy_url"
                     value={state.proxy_url}
@@ -189,7 +199,7 @@ export function ProxyDetailPage() {
                   {fieldError("proxy_url") ? <FieldError>{fieldError("proxy_url")}</FieldError> : null}
                 </Field>
                 <Field>
-                  <FieldLabel htmlFor="username">Username</FieldLabel>
+                  <FieldLabel htmlFor="username">{t("Username")}</FieldLabel>
                   <Input
                     id="username"
                     value={state.username ?? ""}
@@ -198,7 +208,7 @@ export function ProxyDetailPage() {
                   />
                 </Field>
                 <Field>
-                  <FieldLabel htmlFor="password">Password</FieldLabel>
+                  <FieldLabel htmlFor="password">{t("Password")}</FieldLabel>
                   <Input
                     id="password"
                     type="password"
@@ -208,14 +218,14 @@ export function ProxyDetailPage() {
                   />
                 </Field>
                 <StringListField
-                  label="No-proxy hosts"
-                  description="Hosts that bypass the proxy."
+                  label={t("No-proxy hosts")}
+                  description={t("Hosts that bypass the proxy.")}
                   value={state.no_proxy_hosts}
                   onChange={(value) => patch({ no_proxy_hosts: value })}
                   placeholder="example.com, .internal"
                 />
                 <Field>
-                  <FieldLabel>Enabled</FieldLabel>
+                  <FieldLabel>{t("Enabled")}</FieldLabel>
                   <Switch
                     checked={state.enabled}
                     onCheckedChange={(checked) => patch({ enabled: Boolean(checked) })}
@@ -224,7 +234,7 @@ export function ProxyDetailPage() {
               </FieldGroup>
               <Button className="self-start" onClick={submit} disabled={submitting}>
                 {submitting ? <Spinner data-icon="inline-start" /> : null}
-                {isNew ? "Create proxy" : "Save proxy"}
+                {isNew ? t("Create proxy") : t("Save proxy")}
               </Button>
             </div>
           </CardContent>
