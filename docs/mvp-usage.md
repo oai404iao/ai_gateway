@@ -157,6 +157,26 @@ Policy 不再保存额度、RPM、并发、格式、权限或最大活动 Key �
 
 为迁移旧控制台客户端，`/console/v1/channel-groups`、`/channels`、`/model-rules`、`/proxies`、`/config-templates`、`/models/sync/*` 和 `/reload` 仍有同一 JWT/角色边界下的 Console 别名；`/admin/v1/*` 不再存在。
 
+## 自动禁用与定时测试
+
+`/console/v1/system/settings` 的完整配置还包含：
+
+- `automatic_disable.enabled`：自动禁用总开关。关闭时，即使渠道允许自动禁用也不会执行状态变更。
+- `automatic_disable.error_status_codes`：触发临时禁用的上游 HTTP 状态码列表。
+- `automatic_disable.error_message_keywords`：触发临时禁用的上游错误消息关键字；匹配大小写不敏感，错误响应只在内存中按流扫描，不写入日志或审计详情。
+- `scheduled_testing.mode`：`global` 测试全部启用渠道；`failure_only` 只测试临时自动禁用的渠道。
+- `scheduled_testing.auto_recover`：测试成功后是否自动清除临时禁用。
+- `scheduled_testing.interval_minutes`：测试间隔，默认 `5`。
+- `scheduled_testing.prompt`：测试 prompt，默认 `reply '1'`。
+
+渠道的 `auto_disable_allowed` 必须为 true 才会被自动禁用；`test_model` 必须从该渠道的
+`available_models` 中选择。定时测试按渠道 API 格式发出非流式 Chat Completions 或 Responses 请求，
+并复用该渠道的代理、超时、变换和上游鉴权配置。手工禁用的渠道与禁用渠道组不会被测试。
+
+定时测试日志写入 `request_logs`，`request_source` 为 `scheduled_test`。它们使用系统内置、
+管理员角色的内部 API Key，不计入任何普通用户的费用或额度；系统内部身份不会出现在用户和 API Key
+管理列表中。自动禁用和自动恢复都会写入系统审计日志并立即发布新的路由快照。
+
 ## 日志、用量与结算
 
 每个已选路请求会产生终态 tracing 事件，并尽力异步写入一条 `request_logs`。worker 从两种格式的普通 JSON 或 SSE 事件增量提取 usage，在选路时绑定价格快照，并在可结算时以 `billed_at` 条件幂等更新用户余额和 API Key 已用额度。
@@ -166,5 +186,5 @@ Policy 不再保存额度、RPM、并发、格式、权限或最大活动 Key �
 ## 已知边界
 
 - 仅支持 Chat Completions 与 Responses，不提供 OpenAI 的 embeddings、images、audio、files、batches、assistants 或 fine-tuning API。
-- 所有余额、额度、模型价格和请求费用统一使用 USD；没有主动健康检查、跨实例限流/配置协调、通用自动重试、独立财务账本、充值/退款或货币兑换。
+- 所有余额、额度、模型价格和请求费用统一使用 USD；没有跨实例限流/配置协调、通用自动重试、独立财务账本、充值/退款或货币兑换。
 - 服务本身不终止 TLS；Console 必须部署在正确配置的 HTTPS 反向代理后。

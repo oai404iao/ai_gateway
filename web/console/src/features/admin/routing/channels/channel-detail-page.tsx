@@ -79,6 +79,7 @@ const schema = z.object({
     ),
   enabled: z.boolean(),
   status_statistics_enabled: z.boolean(),
+  auto_disable_allowed: z.boolean(),
   weight: z.number().int().min(1, "Weight must be at least 1."),
   proxy_id: z.string().nullable(),
   config_template_id: z.string().nullable(),
@@ -90,6 +91,7 @@ const schema = z.object({
   upstream_auth_header_name: z.string().trim().nullable(),
   upstream_api_key: z.string(),
   available_models: z.array(z.string().trim().min(1, "Model ID is required.")),
+  test_model: z.string().nullable(),
 }).superRefine((value, context) => {
   if (value.upstream_auth_kind === "header" && !value.upstream_auth_header_name) {
     context.addIssue({
@@ -105,6 +107,13 @@ const schema = z.object({
       message: "Available model IDs must be unique.",
     });
   }
+  if (value.test_model && !value.available_models.includes(value.test_model)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["test_model"],
+      message: "Choose a test model from the available upstream models.",
+    });
+  }
 });
 
 type FormState = z.infer<typeof schema>;
@@ -116,6 +125,7 @@ const empty: FormState = {
   base_url: "",
   enabled: true,
   status_statistics_enabled: false,
+  auto_disable_allowed: false,
   weight: 100,
   proxy_id: null,
   config_template_id: null,
@@ -127,6 +137,7 @@ const empty: FormState = {
   upstream_auth_header_name: null,
   upstream_api_key: "",
   available_models: [],
+  test_model: null,
 };
 
 export function ChannelDetailPage() {
@@ -155,6 +166,7 @@ export function ChannelDetailPage() {
         base_url: data.data.base_url,
         enabled: data.data.enabled,
         status_statistics_enabled: data.data.status_statistics_enabled,
+        auto_disable_allowed: data.data.auto_disable_allowed,
         weight: data.data.weight,
         proxy_id: data.data.proxy_id,
         config_template_id: data.data.config_template_id,
@@ -166,6 +178,7 @@ export function ChannelDetailPage() {
         upstream_auth_header_name: data.data.upstream_auth_header_name,
         upstream_api_key: "",
         available_models: data.data.available_models,
+        test_model: data.data.test_model,
       });
     }
   }, [data]);
@@ -248,6 +261,7 @@ export function ChannelDetailPage() {
           base_url: parsed.data.base_url,
           enabled: parsed.data.enabled,
           status_statistics_enabled: parsed.data.status_statistics_enabled,
+          auto_disable_allowed: parsed.data.auto_disable_allowed,
           weight: parsed.data.weight,
           proxy_id: parsed.data.proxy_id,
           config_template_id: parsed.data.config_template_id,
@@ -265,6 +279,7 @@ export function ChannelDetailPage() {
               ? null
               : parsed.data.upstream_api_key || null,
           available_models: parsed.data.available_models,
+          test_model: parsed.data.test_model,
         };
         await create.mutateAsync(input);
         toast.success(t("Channel created"));
@@ -278,6 +293,7 @@ export function ChannelDetailPage() {
           base_url: parsed.data.base_url,
           enabled: parsed.data.enabled,
           status_statistics_enabled: parsed.data.status_statistics_enabled,
+          auto_disable_allowed: parsed.data.auto_disable_allowed,
           weight: parsed.data.weight,
           proxy_id: parsed.data.proxy_id,
           config_template_id: parsed.data.config_template_id,
@@ -290,6 +306,7 @@ export function ChannelDetailPage() {
               ? parsed.data.upstream_auth_header_name
               : null,
           available_models: parsed.data.available_models,
+          test_model: parsed.data.test_model,
         };
         if (overrideDocument !== undefined) {
           input.override_document = overrideDocument;
@@ -343,6 +360,19 @@ export function ChannelDetailPage() {
                 <DetailField
                   label={t("Auto-disabled")}
                   value={<StatusBadge value={data.data.auto_disabled} />}
+                />
+                <DetailField
+                  label={t("Auto-disable reason")}
+                  value={data.data.auto_disabled_reason ?? "—"}
+                />
+                <DetailField
+                  label={t("Allow automatic disable")}
+                  value={<StatusBadge value={data.data.auto_disable_allowed} />}
+                />
+                <DetailField
+                  label={t("Scheduled test model")}
+                  value={data.data.test_model ?? "—"}
+                  mono={Boolean(data.data.test_model)}
                 />
                 <DetailField
                   label={t("Status statistics")}
@@ -565,11 +595,47 @@ export function ChannelDetailPage() {
                   variant="tokens"
                   label={t("Available upstream models")}
                   value={state.available_models}
-                  onChange={(value) => patch({ available_models: value })}
+                  onChange={(value) =>
+                    patch({
+                      available_models: value,
+                      test_model: state.test_model && !value.includes(state.test_model)
+                        ? null
+                        : state.test_model,
+                    })
+                  }
                   placeholder={t("Enter an upstream model ID")}
                   description={t("Press Enter or Add to include a model.")}
                   error={fieldError("available_models")}
                 />
+                <Field data-invalid={Boolean(fieldError("test_model"))}>
+                  <FieldLabel>{t("Scheduled test model")}</FieldLabel>
+                  <Select
+                    value={state.test_model ?? "__none__"}
+                    onValueChange={(value) =>
+                      patch({ test_model: value === "__none__" ? null : value })
+                    }
+                  >
+                    <SelectTrigger aria-invalid={Boolean(fieldError("test_model"))}>
+                      <SelectValue placeholder={t("Select a test model")} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectGroup>
+                        <SelectItem value="__none__">{t("None")}</SelectItem>
+                        {state.available_models.map((model) => (
+                          <SelectItem key={model} value={model}>
+                            {model}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                  <FieldDescription>
+                    {t(
+                      "Periodic scheduled tests use this model. It must be one of the available upstream models.",
+                    )}
+                  </FieldDescription>
+                  {fieldError("test_model") ? <FieldError>{fieldError("test_model")}</FieldError> : null}
+                </Field>
                 <NullableNumberField
                   label={t("Connect timeout (ms)")}
                   value={state.connect_timeout_ms}
@@ -618,6 +684,25 @@ export function ChannelDetailPage() {
                     checked={state.status_statistics_enabled}
                     onCheckedChange={(checked) =>
                       patch({ status_statistics_enabled: Boolean(checked) })
+                    }
+                  />
+                </Field>
+                <Field orientation="horizontal">
+                  <FieldContent>
+                    <FieldLabel htmlFor="auto_disable_allowed">
+                      {t("Allow automatic disable")}
+                    </FieldLabel>
+                    <FieldDescription>
+                      {t(
+                        "Allow matching system automatic-disable rules to temporarily remove this channel from routing.",
+                      )}
+                    </FieldDescription>
+                  </FieldContent>
+                  <Switch
+                    id="auto_disable_allowed"
+                    checked={state.auto_disable_allowed}
+                    onCheckedChange={(checked) =>
+                      patch({ auto_disable_allowed: Boolean(checked) })
                     }
                   />
                 </Field>

@@ -19,15 +19,26 @@ use sqlx::{FromRow, PgPool, Postgres, QueryBuilder, Transaction};
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::domain::RequestLogEvent;
+use crate::domain::{AutomaticDisableTrigger, RequestLogEvent};
 
 pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
 /// Singleton row that supplies runtime forwarding defaults.
 pub const FORWARDING_SETTINGS_KEY: &str = "forwarding_policy";
+pub const SYSTEM_PROBE_USER_ID: Uuid = Uuid::from_u128(0x2c2e_3fd5_07e6_4c44_b5c7_cfe4_7bda_2b10);
+pub const SYSTEM_PROBE_API_KEY_ID: Uuid =
+    Uuid::from_u128(0x729d_37d8_2ad3_44ef_9e65_bf7e_410b_0f2f);
+const SYSTEM_PROBE_DISPLAY_NAME: &str = "ai-gateway-system-scheduled-tests-2c2e3fd5";
+const SYSTEM_PROBE_API_KEY_NAME: &str = "system-scheduled-tests";
 
 fn forwarding_settings_object_id() -> Uuid {
     Uuid::from_u128(0x6ed3_d02b_bda1_4d85_85b9_3f9d_7362_5001)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SystemProbeIdentity {
+    pub user_id: Uuid,
+    pub api_key_id: Uuid,
 }
 
 #[derive(Debug, Default)]
@@ -60,6 +71,10 @@ pub struct SystemSettingsRecord {
 pub struct SystemSettingsInput {
     pub upstream: SystemUpstreamSettingsInput,
     pub passive_health: SystemPassiveHealthSettingsInput,
+    #[serde(default)]
+    pub automatic_disable: SystemAutomaticDisableSettingsInput,
+    #[serde(default)]
+    pub scheduled_testing: SystemScheduledTestingSettingsInput,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -75,6 +90,57 @@ pub struct SystemUpstreamSettingsInput {
 pub struct SystemPassiveHealthSettingsInput {
     pub connection_failure_threshold: u32,
     pub cooldown_seconds: u64,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SystemAutomaticDisableSettingsInput {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub error_status_codes: Vec<u16>,
+    #[serde(default)]
+    pub error_message_keywords: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SystemScheduledTestingSettingsInput {
+    #[serde(default = "default_scheduled_testing_mode")]
+    pub mode: String,
+    #[serde(default = "default_scheduled_testing_auto_recover")]
+    pub auto_recover: bool,
+    #[serde(default = "default_scheduled_testing_interval_minutes")]
+    pub interval_minutes: u64,
+    #[serde(default = "default_scheduled_testing_prompt")]
+    pub prompt: String,
+}
+
+impl Default for SystemScheduledTestingSettingsInput {
+    fn default() -> Self {
+        Self {
+            mode: default_scheduled_testing_mode(),
+            auto_recover: default_scheduled_testing_auto_recover(),
+            interval_minutes: default_scheduled_testing_interval_minutes(),
+            prompt: default_scheduled_testing_prompt(),
+        }
+    }
+}
+
+fn default_scheduled_testing_mode() -> String {
+    "global".into()
+}
+
+const fn default_scheduled_testing_auto_recover() -> bool {
+    true
+}
+
+const fn default_scheduled_testing_interval_minutes() -> u64 {
+    5
+}
+
+fn default_scheduled_testing_prompt() -> String {
+    "reply '1'".into()
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -161,6 +227,7 @@ pub struct ChannelRecord {
     pub base_url: String,
     pub enabled: bool,
     pub auto_disabled: bool,
+    pub auto_disable_allowed: bool,
     pub weight: i32,
     pub proxy_id: Option<Uuid>,
     pub config_template_id: Option<Uuid>,
@@ -172,6 +239,7 @@ pub struct ChannelRecord {
     pub upstream_auth_header_name: Option<String>,
     pub upstream_api_key: Option<String>,
     pub available_models: Vec<String>,
+    pub test_model: Option<String>,
     pub health_check: Value,
 }
 impl fmt::Debug for ChannelRecord {
@@ -185,6 +253,7 @@ impl fmt::Debug for ChannelRecord {
             .field("base_url", &self.base_url)
             .field("enabled", &self.enabled)
             .field("auto_disabled", &self.auto_disabled)
+            .field("auto_disable_allowed", &self.auto_disable_allowed)
             .field("weight", &self.weight)
             .field("proxy_id", &self.proxy_id)
             .field("config_template_id", &self.config_template_id)
@@ -199,6 +268,7 @@ impl fmt::Debug for ChannelRecord {
             .field("upstream_auth_header_name", &self.upstream_auth_header_name)
             .field("upstream_api_key", &"REDACTED")
             .field("available_models", &self.available_models)
+            .field("test_model", &self.test_model)
             .field("health_check", &self.health_check)
             .finish()
     }
@@ -397,6 +467,8 @@ pub struct ChannelCreateInput {
     pub enabled: bool,
     #[serde(default)]
     pub status_statistics_enabled: bool,
+    #[serde(default)]
+    pub auto_disable_allowed: bool,
     pub weight: i32,
     #[serde(default)]
     pub proxy_id: Option<Uuid>,
@@ -416,6 +488,8 @@ pub struct ChannelCreateInput {
     pub upstream_api_key: Option<String>,
     #[serde(default)]
     pub available_models: Vec<String>,
+    #[serde(default)]
+    pub test_model: Option<String>,
     #[serde(default = "empty_object")]
     pub health_check: Value,
 }
@@ -429,6 +503,8 @@ pub struct ChannelInput {
     pub enabled: bool,
     #[serde(default)]
     pub status_statistics_enabled: bool,
+    #[serde(default)]
+    pub auto_disable_allowed: bool,
     pub weight: i32,
     #[serde(default)]
     pub proxy_id: Option<Uuid>,
@@ -452,6 +528,8 @@ pub struct ChannelInput {
     pub upstream_api_key: Option<Option<String>>,
     #[serde(default)]
     pub available_models: Vec<String>,
+    #[serde(default)]
+    pub test_model: Option<String>,
     #[serde(default = "empty_object")]
     pub health_check: Value,
 }
@@ -543,6 +621,7 @@ struct ChannelMutationInput {
     base_url: String,
     enabled: bool,
     status_statistics_enabled: bool,
+    auto_disable_allowed: bool,
     weight: i32,
     proxy_id: Option<Uuid>,
     config_template_id: Option<Uuid>,
@@ -554,6 +633,7 @@ struct ChannelMutationInput {
     upstream_auth_header_name: Option<String>,
     upstream_api_key: Option<Option<String>>,
     available_models: Vec<String>,
+    test_model: Option<String>,
     health_check: Value,
 }
 impl From<ChannelCreateInput> for ChannelMutationInput {
@@ -565,6 +645,7 @@ impl From<ChannelCreateInput> for ChannelMutationInput {
             base_url: value.base_url,
             enabled: value.enabled,
             status_statistics_enabled: value.status_statistics_enabled,
+            auto_disable_allowed: value.auto_disable_allowed,
             weight: value.weight,
             proxy_id: value.proxy_id,
             config_template_id: value.config_template_id,
@@ -576,6 +657,7 @@ impl From<ChannelCreateInput> for ChannelMutationInput {
             upstream_auth_header_name: value.upstream_auth_header_name,
             upstream_api_key: Some(value.upstream_api_key),
             available_models: value.available_models,
+            test_model: value.test_model,
             health_check: value.health_check,
         }
     }
@@ -589,6 +671,7 @@ impl From<ChannelInput> for ChannelMutationInput {
             base_url: value.base_url,
             enabled: value.enabled,
             status_statistics_enabled: value.status_statistics_enabled,
+            auto_disable_allowed: value.auto_disable_allowed,
             weight: value.weight,
             proxy_id: value.proxy_id,
             config_template_id: value.config_template_id,
@@ -600,6 +683,7 @@ impl From<ChannelInput> for ChannelMutationInput {
             upstream_auth_header_name: value.upstream_auth_header_name,
             upstream_api_key: value.upstream_api_key,
             available_models: value.available_models,
+            test_model: value.test_model,
             health_check: value.health_check,
         }
     }
@@ -813,6 +897,7 @@ pub struct ConsoleRequestLog {
     pub completed_at: DateTime<Utc>,
     pub user_id: Uuid,
     pub api_key_id: Uuid,
+    pub request_source: String,
     pub api_format: String,
     pub client_model: String,
     pub upstream_model: Option<String>,
@@ -1093,6 +1178,7 @@ pub struct ControlPlaneChannel {
     pub status_statistics_enabled: bool,
     pub auto_disabled: bool,
     pub auto_disabled_reason: Option<String>,
+    pub auto_disable_allowed: bool,
     pub weight: i32,
     pub proxy_id: Option<Uuid>,
     pub config_template_id: Option<Uuid>,
@@ -1103,6 +1189,7 @@ pub struct ControlPlaneChannel {
     pub upstream_auth_header_name: Option<String>,
     pub upstream_credential_configured: bool,
     pub available_models: Vec<String>,
+    pub test_model: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -1117,6 +1204,7 @@ struct ControlPlaneChannelRow {
     status_statistics_enabled: bool,
     auto_disabled: bool,
     auto_disabled_reason: Option<String>,
+    auto_disable_allowed: bool,
     weight: i32,
     proxy_id: Option<Uuid>,
     config_template_id: Option<Uuid>,
@@ -1127,6 +1215,7 @@ struct ControlPlaneChannelRow {
     upstream_auth_header_name: Option<String>,
     upstream_credential_configured: bool,
     available_models: Vec<String>,
+    test_model: Option<String>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -1142,6 +1231,7 @@ impl From<ControlPlaneChannelRow> for ControlPlaneChannel {
             status_statistics_enabled: value.status_statistics_enabled,
             auto_disabled: value.auto_disabled,
             auto_disabled_reason: value.auto_disabled_reason,
+            auto_disable_allowed: value.auto_disable_allowed,
             weight: value.weight,
             proxy_id: value.proxy_id,
             config_template_id: value.config_template_id,
@@ -1152,6 +1242,7 @@ impl From<ControlPlaneChannelRow> for ControlPlaneChannel {
             upstream_auth_header_name: value.upstream_auth_header_name,
             upstream_credential_configured: value.upstream_credential_configured,
             available_models: value.available_models,
+            test_model: value.test_model,
             created_at: value.created_at,
             updated_at: value.updated_at,
         }
@@ -1560,12 +1651,13 @@ impl RequestLogRepository {
         let price = billing.map(|billing| &billing.price);
         let started_at = normalize_timestamp(event.started_at);
         let completed_at = normalize_timestamp(event.completed_at);
-        let inserted = sqlx::query_scalar::<_, Uuid>("INSERT INTO request_logs (id, started_at, completed_at, user_id, api_key_id, api_format, client_model, upstream_model, model_rule_id, channel_group_id, channel_id, outcome, response_status_code, streamed, ttft_ms, total_duration_ms, output_tokens_per_second, input_tokens, cached_input_tokens, cache_write_tokens, output_tokens, model_id, currency, price_unit_tokens, price_effective_at, input_unit_price, cached_input_unit_price, cache_write_unit_price, output_unit_price, cost_amount, error_code) VALUES ($1, $2, $3, $4, $5, $6::api_format, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31) ON CONFLICT (id) DO NOTHING RETURNING id")
+        let inserted = sqlx::query_scalar::<_, Uuid>("INSERT INTO request_logs (id, started_at, completed_at, user_id, api_key_id, request_source, api_format, client_model, upstream_model, model_rule_id, channel_group_id, channel_id, outcome, response_status_code, streamed, ttft_ms, total_duration_ms, output_tokens_per_second, input_tokens, cached_input_tokens, cache_write_tokens, output_tokens, model_id, currency, price_unit_tokens, price_effective_at, input_unit_price, cached_input_unit_price, cache_write_unit_price, output_unit_price, cost_amount, error_code) VALUES ($1, $2, $3, $4, $5, $6, $7::api_format, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32) ON CONFLICT (id) DO NOTHING RETURNING id")
             .bind(event.id)
             .bind(started_at)
             .bind(completed_at)
             .bind(event.user_id)
             .bind(event.api_key_id)
+            .bind(event.request_source.as_str())
             .bind(match event.api_format {
                 crate::domain::ApiFormat::OpenAiChatCompletions => "open_ai_chat_completions",
                 crate::domain::ApiFormat::OpenAiResponses => "open_ai_responses",
@@ -1601,7 +1693,7 @@ impl RequestLogRepository {
             return Ok(RequestLogInsertOutcome::Inserted);
         }
 
-        let existing = sqlx::query_as::<_, StoredRequestLog>("SELECT started_at, completed_at, user_id, api_key_id, api_format::text AS api_format, client_model, upstream_model, model_rule_id, channel_group_id, channel_id, outcome, response_status_code, streamed, ttft_ms, total_duration_ms, output_tokens_per_second, input_tokens, cached_input_tokens, cache_write_tokens, output_tokens, model_id, currency, price_unit_tokens, price_effective_at, input_unit_price, cached_input_unit_price, cache_write_unit_price, output_unit_price, cost_amount, error_code FROM request_logs WHERE id = $1")
+        let existing = sqlx::query_as::<_, StoredRequestLog>("SELECT started_at, completed_at, user_id, api_key_id, request_source, api_format::text AS api_format, client_model, upstream_model, model_rule_id, channel_group_id, channel_id, outcome, response_status_code, streamed, ttft_ms, total_duration_ms, output_tokens_per_second, input_tokens, cached_input_tokens, cache_write_tokens, output_tokens, model_id, currency, price_unit_tokens, price_effective_at, input_unit_price, cached_input_unit_price, cache_write_unit_price, output_unit_price, cost_amount, error_code FROM request_logs WHERE id = $1")
             .bind(event.id)
             .fetch_optional(&self.pool)
             .await?
@@ -1718,7 +1810,7 @@ impl RequestLogRepository {
     }
 }
 
-const CONSOLE_REQUEST_LOG_COLUMNS: &str = "id,started_at,completed_at,user_id,api_key_id,api_format::text AS api_format,client_model,upstream_model,model_rule_id,channel_group_id,channel_id,outcome,response_status_code,streamed,ttft_ms,total_duration_ms,input_tokens,cached_input_tokens,cache_write_tokens,output_tokens,cost_amount,error_code,billed_at";
+const CONSOLE_REQUEST_LOG_COLUMNS: &str = "id,started_at,completed_at,user_id,api_key_id,request_source,api_format::text AS api_format,client_model,upstream_model,model_rule_id,channel_group_id,channel_id,outcome,response_status_code,streamed,ttft_ms,total_duration_ms,input_tokens,cached_input_tokens,cache_write_tokens,output_tokens,cost_amount,error_code,billed_at";
 
 async fn query_console_request_log(
     pool: &PgPool,
@@ -2142,6 +2234,7 @@ struct StoredRequestLog {
     completed_at: DateTime<Utc>,
     user_id: Uuid,
     api_key_id: Uuid,
+    request_source: String,
     api_format: String,
     client_model: String,
     upstream_model: Option<String>,
@@ -2182,6 +2275,7 @@ impl StoredRequestLog {
             && self.completed_at == completed_at
             && self.user_id == event.user_id
             && self.api_key_id == event.api_key_id
+            && self.request_source == event.request_source.as_str()
             && self.api_format == api_format_name(event)
             && self.client_model == event.client_model
             && self.upstream_model == event.upstream_model
@@ -2295,6 +2389,88 @@ impl ControlPlaneRepository {
         Self { pool }
     }
 
+    /// Ensures the hidden, administrator-owned identity used solely by
+    /// periodic upstream test request logs. Its API key secret is generated at
+    /// first startup and never returned through a management API.
+    pub async fn ensure_system_probe_identity(
+        &self,
+    ) -> Result<SystemProbeIdentity, RepositoryError> {
+        let mut transaction = self.begin_serializable().await?;
+        let user_created = sqlx::query_scalar::<_, bool>(
+            "INSERT INTO users
+             (id,email,display_name,role,status,balance_amount,is_system)
+             VALUES ($1,NULL,$2,'admin','active',0,true)
+             ON CONFLICT DO NOTHING
+             RETURNING true",
+        )
+        .bind(SYSTEM_PROBE_USER_ID)
+        .bind(SYSTEM_PROBE_DISPLAY_NAME)
+        .fetch_optional(&mut *transaction)
+        .await?
+        .unwrap_or(false);
+        let key_created = sqlx::query_scalar::<_, bool>(
+            "INSERT INTO api_keys
+             (id,user_id,name,secret_value,status,allowed_api_formats,permissions,
+              allowed_group_ids,allowed_channel_ids,is_system)
+             VALUES (
+                 $1,$2,$3,$4,'active',
+                 ARRAY['open_ai_chat_completions','open_ai_responses']::api_format[],
+                 ARRAY['proxy','models.read']::text[],
+                 ARRAY[]::uuid[],ARRAY[]::uuid[],true
+             )
+             ON CONFLICT DO NOTHING
+             RETURNING true",
+        )
+        .bind(SYSTEM_PROBE_API_KEY_ID)
+        .bind(SYSTEM_PROBE_USER_ID)
+        .bind(SYSTEM_PROBE_API_KEY_NAME)
+        .bind(generate_api_key_secret())
+        .fetch_optional(&mut *transaction)
+        .await?
+        .unwrap_or(false);
+
+        let valid = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(
+                 SELECT 1
+                 FROM api_keys AS key
+                 JOIN users AS user_account ON user_account.id=key.user_id
+                 WHERE key.id=$1
+                   AND key.user_id=$2
+                   AND key.is_system
+                   AND user_account.is_system
+                   AND user_account.status='active'
+                   AND user_account.role='admin'
+             )",
+        )
+        .bind(SYSTEM_PROBE_API_KEY_ID)
+        .bind(SYSTEM_PROBE_USER_ID)
+        .fetch_one(&mut *transaction)
+        .await?;
+        if !valid {
+            return Err(RepositoryError::Validation);
+        }
+        if user_created || key_created {
+            sqlx::query(
+                "INSERT INTO audit_logs
+                 (id,actor_type,action,object_type,object_id,before_redacted,after_redacted)
+                 VALUES ($1,'system','initialize','system_probe_identity',$2,'{}',$3)",
+            )
+            .bind(Uuid::new_v4())
+            .bind(SYSTEM_PROBE_API_KEY_ID)
+            .bind(json!({
+                "user_id": SYSTEM_PROBE_USER_ID,
+                "api_key_id": SYSTEM_PROBE_API_KEY_ID,
+            }))
+            .execute(&mut *transaction)
+            .await?;
+        }
+        transaction.commit().await?;
+        Ok(SystemProbeIdentity {
+            user_id: SYSTEM_PROBE_USER_ID,
+            api_key_id: SYSTEM_PROBE_API_KEY_ID,
+        })
+    }
+
     /// Inserts the first database-backed forwarding policy from bootstrap TOML.
     ///
     /// Existing rows are never overwritten, so all later runtime reads use the
@@ -2386,10 +2562,10 @@ impl ControlPlaneRepository {
     pub async fn load_transaction(
         transaction: &mut Transaction<'_, Postgres>,
     ) -> Result<ControlPlaneRecords, RepositoryError> {
-        let api_keys = sqlx::query_as::<_, ApiKeyRecord>("SELECT k.id, k.user_id, u.status AS user_status, k.secret_value, k.status, k.expires_at, k.allowed_api_formats::text[] AS allowed_api_formats, k.permissions, k.allowed_group_ids, k.allowed_channel_ids, k.requests_per_minute, k.tokens_per_minute, k.max_concurrent_requests, k.quota_limit_amount, k.quota_used_amount FROM api_keys k JOIN users u ON u.id = k.user_id ORDER BY k.id").fetch_all(&mut **transaction).await?;
+        let api_keys = sqlx::query_as::<_, ApiKeyRecord>("SELECT k.id, k.user_id, u.status AS user_status, k.secret_value, k.status, k.expires_at, k.allowed_api_formats::text[] AS allowed_api_formats, k.permissions, k.allowed_group_ids, k.allowed_channel_ids, k.requests_per_minute, k.tokens_per_minute, k.max_concurrent_requests, k.quota_limit_amount, k.quota_used_amount FROM api_keys k JOIN users u ON u.id = k.user_id WHERE NOT k.is_system ORDER BY k.id").fetch_all(&mut **transaction).await?;
         let model_rules = sqlx::query_as::<_, ModelRuleRecord>("SELECT r.id, r.client_model, r.api_format::text AS api_format, r.upstream_model_id, m.enabled AS upstream_model_enabled, m.currency AS upstream_model_currency, m.price_unit_tokens, m.price_effective_at, m.input_unit_price, m.cached_input_unit_price, m.cache_write_unit_price, m.output_unit_price, m.source_model_id AS upstream_model, r.channel_group_ids, r.channel_ids, r.enabled FROM model_rules r JOIN models m ON m.id = r.upstream_model_id ORDER BY r.id").fetch_all(&mut **transaction).await?;
         let groups = sqlx::query_as::<_, ChannelGroupRecord>("SELECT id, name, api_format::text AS api_format, priority, selection_strategy, enabled FROM channel_groups ORDER BY id").fetch_all(&mut **transaction).await?;
-        let channels = sqlx::query_as::<_, ChannelRecord>("SELECT id, channel_group_id, api_format::text AS api_format, name, base_url, enabled, auto_disabled, weight, proxy_id, config_template_id, override_document, connect_timeout_ms, response_header_timeout_ms, stream_idle_timeout_ms, upstream_auth_kind, upstream_auth_header_name, upstream_api_key, available_models, health_check FROM channels ORDER BY id").fetch_all(&mut **transaction).await?;
+        let channels = sqlx::query_as::<_, ChannelRecord>("SELECT id, channel_group_id, api_format::text AS api_format, name, base_url, enabled, auto_disabled, auto_disable_allowed, weight, proxy_id, config_template_id, override_document, connect_timeout_ms, response_header_timeout_ms, stream_idle_timeout_ms, upstream_auth_kind, upstream_auth_header_name, upstream_api_key, available_models, test_model, health_check FROM channels ORDER BY id").fetch_all(&mut **transaction).await?;
         let proxies = sqlx::query_as::<_, ProxyRecord>("SELECT id, name, proxy_url, username, password, no_proxy_hosts, enabled FROM proxies ORDER BY id").fetch_all(&mut **transaction).await?;
         let templates = sqlx::query_as::<_, ConfigTemplateRecord>(
             "SELECT id, name, description, document, enabled FROM config_templates ORDER BY id",
@@ -2440,17 +2616,107 @@ impl ControlPlaneRepository {
         .await?)
     }
 
+    /// Applies an idempotent system-owned temporary disable only when the
+    /// current persisted policy still matches the supplied sanitized failure
+    /// trigger. The caller owns snapshot publication after a returned change.
+    pub async fn automatically_disable_channel(
+        &self,
+        transaction: &mut Transaction<'_, Postgres>,
+        id: Uuid,
+        trigger: &AutomaticDisableTrigger,
+    ) -> Result<Option<MutationResult>, RepositoryError> {
+        let settings = system_settings_input_for_update(transaction).await?;
+        if !automatic_disable_matches(&settings, trigger) {
+            return Ok(None);
+        }
+
+        let before = channel_audit(transaction, id).await?;
+        if before["enabled"].as_bool() != Some(true)
+            || before["auto_disable_allowed"].as_bool() != Some(true)
+            || before["auto_disabled"].as_bool() == Some(true)
+        {
+            return Ok(None);
+        }
+        let reason = automatic_disable_reason(trigger);
+        let updated_at = sqlx::query_scalar(
+            "UPDATE channels
+             SET auto_disabled=true, auto_disabled_reason=$2
+             WHERE id=$1
+             RETURNING updated_at",
+        )
+        .bind(id)
+        .bind(&reason)
+        .fetch_optional(&mut **transaction)
+        .await?
+        .ok_or(RepositoryError::NotFound)?;
+        Ok(Some(MutationResult {
+            id,
+            object_type: "channel",
+            action: "auto_disable",
+            before_redacted: before,
+            after_redacted: channel_audit(transaction, id).await?,
+            created_secret: None,
+            reason: Some(reason),
+            updated_at,
+            correlation_id: None,
+        }))
+    }
+
+    /// Clears a temporary automatic disable after a successful scheduled
+    /// upstream test when automatic recovery remains enabled in the current
+    /// persisted settings. The caller owns snapshot publication after a
+    /// returned change.
+    pub async fn automatically_recover_channel(
+        &self,
+        transaction: &mut Transaction<'_, Postgres>,
+        id: Uuid,
+    ) -> Result<Option<MutationResult>, RepositoryError> {
+        let settings = system_settings_input_for_update(transaction).await?;
+        if !settings.scheduled_testing.auto_recover {
+            return Ok(None);
+        }
+
+        let before = channel_audit(transaction, id).await?;
+        if before["enabled"].as_bool() != Some(true)
+            || before["auto_disabled"].as_bool() != Some(true)
+        {
+            return Ok(None);
+        }
+        let reason = "scheduled test succeeded".to_owned();
+        let updated_at = sqlx::query_scalar(
+            "UPDATE channels
+             SET auto_disabled=false, auto_disabled_reason=NULL
+             WHERE id=$1
+             RETURNING updated_at",
+        )
+        .bind(id)
+        .fetch_optional(&mut **transaction)
+        .await?
+        .ok_or(RepositoryError::NotFound)?;
+        Ok(Some(MutationResult {
+            id,
+            object_type: "channel",
+            action: "auto_recover",
+            before_redacted: before,
+            after_redacted: channel_audit(transaction, id).await?,
+            created_secret: None,
+            reason: Some(reason),
+            updated_at,
+            correlation_id: None,
+        }))
+    }
+
     pub async fn control_plane_lists(&self) -> Result<ControlPlaneLists, RepositoryError> {
         let users = sqlx::query_as::<_, ControlPlaneUser>(
-            "SELECT id,email,display_name,role,status,default_api_key_policy_id,balance_amount,created_at,updated_at FROM users ORDER BY id",
+            "SELECT id,email,display_name,role,status,default_api_key_policy_id,balance_amount,created_at,updated_at FROM users WHERE NOT is_system ORDER BY id",
         )
         .fetch_all(&self.pool)
         .await?;
         let models = sqlx::query_as::<_, ControlPlaneModel>("SELECT id,source_model_id,display_name,provider_name,enabled,price_unit_tokens,input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,price_effective_at,last_synced_at,created_at,updated_at FROM models ORDER BY id").fetch_all(&self.pool).await?;
-        let api_keys = sqlx::query_as::<_, ControlPlaneApiKey>("SELECT k.id, k.user_id, u.status AS user_status, k.name, k.secret_value AS secret, k.status, k.expires_at, k.allowed_api_formats::text[] AS allowed_api_formats, k.permissions, k.allowed_group_ids, k.allowed_channel_ids, k.requests_per_minute, k.tokens_per_minute, k.max_concurrent_requests, k.quota_limit_amount, k.quota_used_amount, k.updated_at FROM api_keys k JOIN users u ON u.id=k.user_id ORDER BY k.id").fetch_all(&self.pool).await?;
+        let api_keys = sqlx::query_as::<_, ControlPlaneApiKey>("SELECT k.id, k.user_id, u.status AS user_status, k.name, k.secret_value AS secret, k.status, k.expires_at, k.allowed_api_formats::text[] AS allowed_api_formats, k.permissions, k.allowed_group_ids, k.allowed_channel_ids, k.requests_per_minute, k.tokens_per_minute, k.max_concurrent_requests, k.quota_limit_amount, k.quota_used_amount, k.updated_at FROM api_keys k JOIN users u ON u.id=k.user_id WHERE NOT k.is_system ORDER BY k.id").fetch_all(&self.pool).await?;
         let api_key_policies = sqlx::query_as::<_, ControlPlaneApiKeyPolicy>("SELECT id,name,allowed_group_ids,allowed_channel_ids,enabled,created_at,updated_at FROM api_key_policies ORDER BY id").fetch_all(&self.pool).await?;
         let channel_groups = sqlx::query_as::<_, ControlPlaneChannelGroup>("SELECT id,name,api_format::text AS api_format,priority,selection_strategy,enabled,updated_at FROM channel_groups ORDER BY id").fetch_all(&self.pool).await?;
-        let channels = sqlx::query_as::<_, ControlPlaneChannelRow>("SELECT id,channel_group_id,api_format::text AS api_format,name,base_url,enabled,status_statistics_enabled,auto_disabled,auto_disabled_reason,weight,proxy_id,config_template_id,connect_timeout_ms,response_header_timeout_ms,stream_idle_timeout_ms,upstream_auth_kind,upstream_auth_header_name,(upstream_api_key IS NOT NULL) AS upstream_credential_configured,available_models,created_at,updated_at FROM channels ORDER BY id").fetch_all(&self.pool).await?;
+        let channels = sqlx::query_as::<_, ControlPlaneChannelRow>("SELECT id,channel_group_id,api_format::text AS api_format,name,base_url,enabled,status_statistics_enabled,auto_disabled,auto_disabled_reason,auto_disable_allowed,weight,proxy_id,config_template_id,connect_timeout_ms,response_header_timeout_ms,stream_idle_timeout_ms,upstream_auth_kind,upstream_auth_header_name,(upstream_api_key IS NOT NULL) AS upstream_credential_configured,available_models,test_model,created_at,updated_at FROM channels ORDER BY id").fetch_all(&self.pool).await?;
         let model_rules = sqlx::query_as::<_, ControlPlaneModelRule>("SELECT r.id,r.client_model,r.api_format::text AS api_format,r.upstream_model_id,m.enabled AS upstream_model_enabled,m.source_model_id AS upstream_model,r.description,r.channel_group_ids,r.channel_ids,r.enabled,r.updated_at FROM model_rules r JOIN models m ON m.id=r.upstream_model_id ORDER BY r.id").fetch_all(&self.pool).await?;
         let proxies = sqlx::query_as::<_, ControlPlaneProxy>("SELECT id,name,regexp_replace(regexp_replace(proxy_url, '^([^:/?#]+://)[^/?#]*@', E'\\1'), '[?#].*$', '') AS proxy_url,no_proxy_hosts,enabled,(username IS NOT NULL OR password IS NOT NULL) AS credential_configured,created_at,updated_at FROM proxies ORDER BY id").fetch_all(&self.pool).await?;
         let config_templates = sqlx::query_as::<_, ControlPlaneConfigTemplate>("SELECT id,name,description,document->>'api_format' AS api_format,enabled,created_at,updated_at FROM config_templates ORDER BY id").fetch_all(&self.pool).await?;
@@ -2482,7 +2748,7 @@ impl ControlPlaneRepository {
             "SELECT id,name,secret_value AS secret,status,expires_at,allowed_api_formats::text[] AS allowed_api_formats, \
                     permissions,allowed_group_ids,allowed_channel_ids,requests_per_minute,max_concurrent_requests, \
                     quota_limit_amount,quota_used_amount,created_at,updated_at \
-             FROM api_keys WHERE user_id=$1 ORDER BY created_at DESC,id DESC",
+             FROM api_keys WHERE user_id=$1 AND NOT is_system ORDER BY created_at DESC,id DESC",
         )
         .bind(user_id)
         .fetch_all(&self.pool)
@@ -2499,7 +2765,7 @@ impl ControlPlaneRepository {
             "SELECT id,name,secret_value AS secret,status,expires_at,allowed_api_formats::text[] AS allowed_api_formats, \
                     permissions,allowed_group_ids,allowed_channel_ids,requests_per_minute,max_concurrent_requests, \
                     quota_limit_amount,quota_used_amount,created_at,updated_at \
-             FROM api_keys WHERE id=$1 AND user_id=$2",
+             FROM api_keys WHERE id=$1 AND user_id=$2 AND NOT is_system",
         )
         .bind(id)
         .bind(user_id)
@@ -2949,6 +3215,29 @@ impl ControlPlaneRepository {
             .bind(Uuid::new_v4()).bind(actor).bind(mutation.action).bind(mutation.object_type).bind(mutation.id).bind(&mutation.before_redacted).bind(&mutation.after_redacted).bind(correlation_id.to_string()).bind(&mutation.reason).execute(&mut **transaction).await?;
         Ok(())
     }
+    pub async fn insert_system_audit(
+        &self,
+        transaction: &mut Transaction<'_, Postgres>,
+        mutation: &MutationResult,
+        correlation_id: Uuid,
+    ) -> Result<(), RepositoryError> {
+        sqlx::query(
+            "INSERT INTO audit_logs
+             (id,actor_type,action,object_type,object_id,before_redacted,after_redacted,correlation_id,reason)
+             VALUES ($1,'system',$2,$3,$4,$5,$6,$7,$8)",
+        )
+        .bind(Uuid::new_v4())
+        .bind(mutation.action)
+        .bind(mutation.object_type)
+        .bind(mutation.id)
+        .bind(&mutation.before_redacted)
+        .bind(&mutation.after_redacted)
+        .bind(correlation_id.to_string())
+        .bind(&mutation.reason)
+        .execute(&mut **transaction)
+        .await?;
+        Ok(())
+    }
     pub async fn insert_manual_reload_audit(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
@@ -3193,7 +3482,7 @@ async fn key_audit_for_user(
     user_id: Uuid,
 ) -> Result<Value, RepositoryError> {
     let value = sqlx::query_scalar::<_, Value>(
-        "SELECT json_build_object('id',id,'user_id',user_id,'name',name,'status',status,'expires_at',expires_at,'allowed_api_formats',allowed_api_formats,'permissions',permissions,'allowed_group_ids',allowed_group_ids,'allowed_channel_ids',allowed_channel_ids,'requests_per_minute',requests_per_minute,'tokens_per_minute',tokens_per_minute,'max_concurrent_requests',max_concurrent_requests,'quota_limit_amount',quota_limit_amount,'quota_used_amount',quota_used_amount,'created_at',created_at,'updated_at',updated_at) FROM api_keys WHERE id=$1 AND user_id=$2 FOR UPDATE",
+        "SELECT json_build_object('id',id,'user_id',user_id,'name',name,'status',status,'expires_at',expires_at,'allowed_api_formats',allowed_api_formats,'permissions',permissions,'allowed_group_ids',allowed_group_ids,'allowed_channel_ids',allowed_channel_ids,'requests_per_minute',requests_per_minute,'tokens_per_minute',tokens_per_minute,'max_concurrent_requests',max_concurrent_requests,'quota_limit_amount',quota_limit_amount,'quota_used_amount',quota_used_amount,'created_at',created_at,'updated_at',updated_at) FROM api_keys WHERE id=$1 AND user_id=$2 AND NOT is_system FOR UPDATE",
     )
     .bind(id)
     .bind(user_id)
@@ -3207,7 +3496,7 @@ async fn key_audit(
     id: Uuid,
 ) -> Result<Value, RepositoryError> {
     let value = sqlx::query_scalar::<_, Value>(
-        "SELECT json_build_object('id',id,'user_id',user_id,'name',name,'status',status,'expires_at',expires_at,'allowed_api_formats',allowed_api_formats,'permissions',permissions,'allowed_group_ids',allowed_group_ids,'allowed_channel_ids',allowed_channel_ids,'requests_per_minute',requests_per_minute,'tokens_per_minute',tokens_per_minute,'max_concurrent_requests',max_concurrent_requests,'quota_limit_amount',quota_limit_amount,'quota_used_amount',quota_used_amount,'created_at',created_at,'updated_at',updated_at) FROM api_keys WHERE id=$1 FOR UPDATE",
+        "SELECT json_build_object('id',id,'user_id',user_id,'name',name,'status',status,'expires_at',expires_at,'allowed_api_formats',allowed_api_formats,'permissions',permissions,'allowed_group_ids',allowed_group_ids,'allowed_channel_ids',allowed_channel_ids,'requests_per_minute',requests_per_minute,'tokens_per_minute',tokens_per_minute,'max_concurrent_requests',max_concurrent_requests,'quota_limit_amount',quota_limit_amount,'quota_used_amount',quota_used_amount,'created_at',created_at,'updated_at',updated_at) FROM api_keys WHERE id=$1 AND NOT is_system FOR UPDATE",
     )
     .bind(id)
     .fetch_optional(&mut **transaction)
@@ -3222,7 +3511,7 @@ async fn user_audit(
     id: Uuid,
 ) -> Result<Value, RepositoryError> {
     let value = sqlx::query_scalar::<_, Value>(
-        "SELECT json_build_object('id',id,'email',email,'display_name',display_name,'role',role,'status',status,'default_api_key_policy_id',default_api_key_policy_id,'balance_amount',balance_amount,'created_at',created_at,'updated_at',updated_at) FROM users WHERE id=$1 FOR UPDATE",
+        "SELECT json_build_object('id',id,'email',email,'display_name',display_name,'role',role,'status',status,'default_api_key_policy_id',default_api_key_policy_id,'balance_amount',balance_amount,'created_at',created_at,'updated_at',updated_at) FROM users WHERE id=$1 AND NOT is_system FOR UPDATE",
     )
     .bind(id)
     .fetch_optional(&mut **transaction)
@@ -3264,7 +3553,7 @@ async fn channel_audit(
     // intentionally opaque today and must never leave the database through
     // either management responses or audit snapshots.
     let value = sqlx::query_scalar::<_, Value>(
-        "SELECT json_build_object('id',id,'channel_group_id',channel_group_id,'api_format',api_format,'name',name,'base_url',base_url,'enabled',enabled,'status_statistics_enabled',status_statistics_enabled,'auto_disabled',auto_disabled,'auto_disabled_reason',auto_disabled_reason,'weight',weight,'proxy_id',proxy_id,'config_template_id',config_template_id,'connect_timeout_ms',connect_timeout_ms,'response_header_timeout_ms',response_header_timeout_ms,'stream_idle_timeout_ms',stream_idle_timeout_ms,'upstream_auth_kind',upstream_auth_kind,'upstream_auth_header_name',upstream_auth_header_name,'upstream_credential_configured',(upstream_api_key IS NOT NULL),'available_models',available_models,'created_at',created_at,'updated_at',updated_at) FROM channels WHERE id=$1 FOR UPDATE",
+        "SELECT json_build_object('id',id,'channel_group_id',channel_group_id,'api_format',api_format,'name',name,'base_url',base_url,'enabled',enabled,'status_statistics_enabled',status_statistics_enabled,'auto_disabled',auto_disabled,'auto_disabled_reason',auto_disabled_reason,'auto_disable_allowed',auto_disable_allowed,'weight',weight,'proxy_id',proxy_id,'config_template_id',config_template_id,'connect_timeout_ms',connect_timeout_ms,'response_header_timeout_ms',response_header_timeout_ms,'stream_idle_timeout_ms',stream_idle_timeout_ms,'upstream_auth_kind',upstream_auth_kind,'upstream_auth_header_name',upstream_auth_header_name,'upstream_credential_configured',(upstream_api_key IS NOT NULL),'available_models',available_models,'test_model',test_model,'created_at',created_at,'updated_at',updated_at) FROM channels WHERE id=$1 FOR UPDATE",
     )
     .bind(id)
     .fetch_optional(&mut **transaction)
@@ -3664,6 +3953,14 @@ async fn channel_insert(
     if matches!(input.upstream_api_key, Some(None)) && input.upstream_auth_kind != "none" {
         return Err(RepositoryError::Validation);
     }
+    if input.test_model.as_ref().is_some_and(|model| {
+        !input
+            .available_models
+            .iter()
+            .any(|available| available == model)
+    }) {
+        return Err(RepositoryError::Validation);
+    }
     let override_document_present = input.override_document.is_some();
     let override_document = input.override_document.unwrap_or_else(empty_object);
     let before = if create {
@@ -3672,10 +3969,10 @@ async fn channel_insert(
         channel_audit(transaction, id).await?
     };
     let updated_at = if create {
-        sqlx::query_scalar("INSERT INTO channels (id,channel_group_id,api_format,name,base_url,enabled,weight,proxy_id,config_template_id,override_document,connect_timeout_ms,response_header_timeout_ms,stream_idle_timeout_ms,upstream_auth_kind,upstream_auth_header_name,upstream_api_key,available_models,health_check,status_statistics_enabled) VALUES ($1,$2,$3::api_format,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING updated_at").bind(id).bind(input.channel_group_id).bind(&input.api_format).bind(&input.name).bind(&input.base_url).bind(input.enabled).bind(input.weight).bind(input.proxy_id).bind(input.config_template_id).bind(&override_document).bind(input.connect_timeout_ms).bind(input.response_header_timeout_ms).bind(input.stream_idle_timeout_ms).bind(&input.upstream_auth_kind).bind(&input.upstream_auth_header_name).bind(input.upstream_api_key.flatten()).bind(&input.available_models).bind(&input.health_check).bind(input.status_statistics_enabled).fetch_one(&mut **transaction).await?
+        sqlx::query_scalar("INSERT INTO channels (id,channel_group_id,api_format,name,base_url,enabled,weight,proxy_id,config_template_id,override_document,connect_timeout_ms,response_header_timeout_ms,stream_idle_timeout_ms,upstream_auth_kind,upstream_auth_header_name,upstream_api_key,available_models,test_model,health_check,status_statistics_enabled,auto_disable_allowed) VALUES ($1,$2,$3::api_format,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) RETURNING updated_at").bind(id).bind(input.channel_group_id).bind(&input.api_format).bind(&input.name).bind(&input.base_url).bind(input.enabled).bind(input.weight).bind(input.proxy_id).bind(input.config_template_id).bind(&override_document).bind(input.connect_timeout_ms).bind(input.response_header_timeout_ms).bind(input.stream_idle_timeout_ms).bind(&input.upstream_auth_kind).bind(&input.upstream_auth_header_name).bind(input.upstream_api_key.flatten()).bind(&input.available_models).bind(&input.test_model).bind(&input.health_check).bind(input.status_statistics_enabled).bind(input.auto_disable_allowed).fetch_one(&mut **transaction).await?
     } else {
         let credential_present = input.upstream_api_key.is_some();
-        sqlx::query_scalar("UPDATE channels SET channel_group_id=$2,api_format=$3::api_format,name=$4,base_url=$5,enabled=$6,weight=$7,proxy_id=$8,config_template_id=$9,override_document=CASE WHEN $10 THEN $11 ELSE override_document END,connect_timeout_ms=$12,response_header_timeout_ms=$13,stream_idle_timeout_ms=$14,upstream_auth_kind=$15,upstream_auth_header_name=$16,upstream_api_key=CASE WHEN $17 THEN $18 ELSE upstream_api_key END,available_models=$19,health_check=$20,status_statistics_enabled=$21 WHERE id=$1 AND updated_at=$22 RETURNING updated_at").bind(id).bind(input.channel_group_id).bind(&input.api_format).bind(&input.name).bind(&input.base_url).bind(input.enabled).bind(input.weight).bind(input.proxy_id).bind(input.config_template_id).bind(override_document_present).bind(&override_document).bind(input.connect_timeout_ms).bind(input.response_header_timeout_ms).bind(input.stream_idle_timeout_ms).bind(&input.upstream_auth_kind).bind(&input.upstream_auth_header_name).bind(credential_present).bind(input.upstream_api_key.flatten()).bind(&input.available_models).bind(&input.health_check).bind(input.status_statistics_enabled).bind(expected_updated_at.expect("PUT version")).fetch_optional(&mut **transaction).await?.ok_or(RepositoryError::Conflict)?
+        sqlx::query_scalar("UPDATE channels SET channel_group_id=$2,api_format=$3::api_format,name=$4,base_url=$5,enabled=$6,weight=$7,proxy_id=$8,config_template_id=$9,override_document=CASE WHEN $10 THEN $11 ELSE override_document END,connect_timeout_ms=$12,response_header_timeout_ms=$13,stream_idle_timeout_ms=$14,upstream_auth_kind=$15,upstream_auth_header_name=$16,upstream_api_key=CASE WHEN $17 THEN $18 ELSE upstream_api_key END,available_models=$19,test_model=$20,health_check=$21,status_statistics_enabled=$22,auto_disable_allowed=$23 WHERE id=$1 AND updated_at=$24 RETURNING updated_at").bind(id).bind(input.channel_group_id).bind(&input.api_format).bind(&input.name).bind(&input.base_url).bind(input.enabled).bind(input.weight).bind(input.proxy_id).bind(input.config_template_id).bind(override_document_present).bind(&override_document).bind(input.connect_timeout_ms).bind(input.response_header_timeout_ms).bind(input.stream_idle_timeout_ms).bind(&input.upstream_auth_kind).bind(&input.upstream_auth_header_name).bind(credential_present).bind(input.upstream_api_key.flatten()).bind(&input.available_models).bind(&input.test_model).bind(&input.health_check).bind(input.status_statistics_enabled).bind(input.auto_disable_allowed).bind(expected_updated_at.expect("PUT version")).fetch_optional(&mut **transaction).await?.ok_or(RepositoryError::Conflict)?
     };
     Ok(MutationResult {
         id,
@@ -3880,6 +4177,52 @@ async fn system_settings_audit(
     Ok(system_settings_audit_value(&value))
 }
 
+async fn system_settings_input_for_update(
+    transaction: &mut Transaction<'_, Postgres>,
+) -> Result<SystemSettingsInput, RepositoryError> {
+    let value = sqlx::query_scalar::<_, Value>(
+        "SELECT value FROM system_settings WHERE setting_key=$1 FOR UPDATE",
+    )
+    .bind(FORWARDING_SETTINGS_KEY)
+    .fetch_optional(&mut **transaction)
+    .await?
+    .ok_or(RepositoryError::NotFound)?;
+    let settings = serde_json::from_value(value).map_err(|_| RepositoryError::Validation)?;
+    validate_system_settings_input(&settings)?;
+    Ok(settings)
+}
+
+fn automatic_disable_matches(
+    settings: &SystemSettingsInput,
+    trigger: &AutomaticDisableTrigger,
+) -> bool {
+    if !settings.automatic_disable.enabled {
+        return false;
+    }
+    match trigger {
+        AutomaticDisableTrigger::HttpStatus(status) => settings
+            .automatic_disable
+            .error_status_codes
+            .contains(status),
+        AutomaticDisableTrigger::ErrorMessageKeyword(keyword) => settings
+            .automatic_disable
+            .error_message_keywords
+            .iter()
+            .any(|candidate| candidate.trim().to_lowercase() == keyword.to_lowercase()),
+    }
+}
+
+fn automatic_disable_reason(trigger: &AutomaticDisableTrigger) -> String {
+    match trigger {
+        AutomaticDisableTrigger::HttpStatus(status) => {
+            format!("automatic disable: upstream HTTP status {status}")
+        }
+        AutomaticDisableTrigger::ErrorMessageKeyword(keyword) => {
+            format!("automatic disable: configured error keyword `{keyword}`")
+        }
+    }
+}
+
 fn system_settings_audit_value(value: &Value) -> Value {
     json!({
         "setting_key": FORWARDING_SETTINGS_KEY,
@@ -3905,11 +4248,25 @@ fn system_settings_view(
 fn validate_system_settings_input(input: &SystemSettingsInput) -> Result<(), RepositoryError> {
     let upstream = &input.upstream;
     let passive_health = &input.passive_health;
+    let automatic_disable = &input.automatic_disable;
+    let scheduled_testing = &input.scheduled_testing;
     if upstream.connect_timeout_seconds == 0
         || upstream.response_header_timeout_seconds <= upstream.connect_timeout_seconds
         || upstream.stream_idle_timeout_seconds == 0
         || passive_health.connection_failure_threshold == 0
         || passive_health.cooldown_seconds == 0
+        || automatic_disable
+            .error_status_codes
+            .iter()
+            .any(|status| !(100..=599).contains(status))
+        || automatic_disable
+            .error_message_keywords
+            .iter()
+            .any(|keyword| keyword.trim().is_empty() || keyword.chars().count() > 200)
+        || scheduled_testing.interval_minutes == 0
+        || scheduled_testing.prompt.trim().is_empty()
+        || scheduled_testing.prompt.chars().count() > 4_000
+        || !matches!(scheduled_testing.mode.as_str(), "global" | "failure_only")
     {
         return Err(RepositoryError::Validation);
     }

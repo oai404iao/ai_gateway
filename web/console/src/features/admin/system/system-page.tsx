@@ -7,15 +7,54 @@ import { RefreshCw, Save } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
+import {
+  Field,
+  FieldContent,
+  FieldDescription,
+  FieldError,
+  FieldGroup,
+  FieldLabel,
+} from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
+import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
 import { AsyncResource } from "@/components/shared/async-resource";
 import { PageHeader } from "@/components/shared/page-header";
 import { DetailField } from "@/components/shared/detail-field";
+import { StringListField } from "@/components/shared/string-list-field";
 import { ApiError } from "@/api/errors";
 import { useReload, useSystemSettings, useUpdateSystemSettings } from "@/features/admin/api";
 import { useI18n } from "@/app/i18n";
+import type { ScheduledTestingMode, SystemSettingsInput } from "@/api/types";
+
+function statusCodesAreValid(value: string): boolean {
+  const codes = value
+    .split(/[\s,]+/)
+    .map((code) => code.trim())
+    .filter(Boolean);
+  const parsed = codes.map(Number);
+  return (
+    parsed.every((code) => Number.isInteger(code) && code >= 100 && code <= 599) &&
+    new Set(parsed).size === parsed.length
+  );
+}
+
+function parseStatusCodes(value: string): number[] {
+  return value
+    .split(/[\s,]+/)
+    .map((code) => code.trim())
+    .filter(Boolean)
+    .map(Number);
+}
 
 const systemSettingsSchema = z
   .object({
@@ -33,6 +72,27 @@ const systemSettingsSchema = z
         .int()
         .min(1, "Enter a positive failure threshold."),
       cooldown_seconds: z.number().int().min(1, "Enter a positive number of seconds."),
+    }),
+    automatic_disable: z.object({
+      enabled: z.boolean(),
+      error_status_codes: z
+        .string()
+        .refine(
+          statusCodesAreValid,
+          "Enter unique HTTP status codes from 100 through 599, separated by commas.",
+        ),
+      error_message_keywords: z
+        .array(z.string().trim().min(1, "Keyword cannot be blank.").max(200))
+        .refine(
+          (keywords) => new Set(keywords.map((keyword) => keyword.toLocaleLowerCase())).size === keywords.length,
+          "Error keywords must be unique.",
+        ),
+    }),
+    scheduled_testing: z.object({
+      mode: z.enum(["global", "failure_only"]),
+      auto_recover: z.boolean(),
+      interval_minutes: z.number().int().min(1, "Enter a positive number of minutes."),
+      prompt: z.string().trim().min(1, "Test prompt is required.").max(4000),
     }),
   })
   .superRefine((value, context) => {
@@ -57,6 +117,17 @@ const defaultValues: SystemSettingsValues = {
     connection_failure_threshold: 3,
     cooldown_seconds: 30,
   },
+  automatic_disable: {
+    enabled: false,
+    error_status_codes: "",
+    error_message_keywords: [],
+  },
+  scheduled_testing: {
+    mode: "global",
+    auto_recover: true,
+    interval_minutes: 5,
+    prompt: "reply '1'",
+  },
 };
 
 export function SystemPage() {
@@ -75,15 +146,33 @@ export function SystemPage() {
       form.reset({
         upstream: settings.data.data.upstream,
         passive_health: settings.data.data.passive_health,
+        automatic_disable: {
+          enabled: settings.data.data.automatic_disable.enabled,
+          error_status_codes: settings.data.data.automatic_disable.error_status_codes.join(", "),
+          error_message_keywords: settings.data.data.automatic_disable.error_message_keywords,
+        },
+        scheduled_testing: settings.data.data.scheduled_testing,
       });
     }
   }, [form, settings.data]);
 
+  const errorMessage = (message: string | undefined) => (message ? t(message) : undefined);
+
   const save = async (values: SystemSettingsValues) => {
     if (!settings.data) return;
     try {
+      const input: SystemSettingsInput = {
+        upstream: values.upstream,
+        passive_health: values.passive_health,
+        automatic_disable: {
+          enabled: values.automatic_disable.enabled,
+          error_status_codes: parseStatusCodes(values.automatic_disable.error_status_codes),
+          error_message_keywords: values.automatic_disable.error_message_keywords,
+        },
+        scheduled_testing: values.scheduled_testing,
+      };
       const result = await updateSettings.mutateAsync({
-        input: values,
+        input,
         ifMatch: settings.data.etag,
       });
       setCorrelation(result.correlation_id);
@@ -148,7 +237,7 @@ export function SystemPage() {
                     />
                     {form.formState.errors.upstream?.connect_timeout_seconds ? (
                       <FieldError>
-                        {form.formState.errors.upstream.connect_timeout_seconds.message}
+                        {errorMessage(form.formState.errors.upstream.connect_timeout_seconds.message)}
                       </FieldError>
                     ) : null}
                   </Field>
@@ -173,7 +262,9 @@ export function SystemPage() {
                     />
                     {form.formState.errors.upstream?.response_header_timeout_seconds ? (
                       <FieldError>
-                        {form.formState.errors.upstream.response_header_timeout_seconds.message}
+                        {errorMessage(
+                          form.formState.errors.upstream.response_header_timeout_seconds.message,
+                        )}
                       </FieldError>
                     ) : null}
                   </Field>
@@ -194,7 +285,7 @@ export function SystemPage() {
                     />
                     {form.formState.errors.upstream?.stream_idle_timeout_seconds ? (
                       <FieldError>
-                        {form.formState.errors.upstream.stream_idle_timeout_seconds.message}
+                        {errorMessage(form.formState.errors.upstream.stream_idle_timeout_seconds.message)}
                       </FieldError>
                     ) : null}
                   </Field>
@@ -237,7 +328,9 @@ export function SystemPage() {
                     </FieldDescription>
                     {form.formState.errors.passive_health?.connection_failure_threshold ? (
                       <FieldError>
-                        {form.formState.errors.passive_health.connection_failure_threshold.message}
+                        {errorMessage(
+                          form.formState.errors.passive_health.connection_failure_threshold.message,
+                        )}
                       </FieldError>
                     ) : null}
                   </Field>
@@ -254,9 +347,199 @@ export function SystemPage() {
                     />
                     {form.formState.errors.passive_health?.cooldown_seconds ? (
                       <FieldError>
-                        {form.formState.errors.passive_health.cooldown_seconds.message}
+                        {errorMessage(form.formState.errors.passive_health.cooldown_seconds.message)}
                       </FieldError>
                     ) : null}
+                  </Field>
+                </FieldGroup>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>{t("Automatic channel disable")}</CardTitle>
+                <CardDescription>
+                  {t(
+                    "Matching upstream HTTP errors can temporarily remove opted-in channels from routing.",
+                  )}
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <FieldGroup>
+                  <Field orientation="horizontal">
+                    <FieldContent>
+                      <FieldLabel htmlFor="automatic_disable_enabled">
+                        {t("Enable automatic disable")}
+                      </FieldLabel>
+                      <FieldDescription>
+                        {t(
+                          "When disabled, channel-level automatic-disable permission has no effect.",
+                        )}
+                      </FieldDescription>
+                    </FieldContent>
+                    <Switch
+                      id="automatic_disable_enabled"
+                      checked={form.watch("automatic_disable.enabled")}
+                      onCheckedChange={(checked) =>
+                        form.setValue("automatic_disable.enabled", Boolean(checked), {
+                          shouldValidate: true,
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field
+                    data-invalid={Boolean(
+                      form.formState.errors.automatic_disable?.error_status_codes,
+                    )}
+                  >
+                    <FieldLabel htmlFor="automatic_disable_error_status_codes">
+                      {t("HTTP error status codes")}
+                    </FieldLabel>
+                    <Input
+                      id="automatic_disable_error_status_codes"
+                      placeholder="401, 429, 500"
+                      aria-invalid={Boolean(
+                        form.formState.errors.automatic_disable?.error_status_codes,
+                      )}
+                      {...form.register("automatic_disable.error_status_codes")}
+                    />
+                    <FieldDescription>
+                      {t(
+                        "Comma-separated upstream HTTP statuses. Matching a configured status disables an opted-in channel.",
+                      )}
+                    </FieldDescription>
+                    {form.formState.errors.automatic_disable?.error_status_codes ? (
+                      <FieldError>
+                        {errorMessage(
+                          form.formState.errors.automatic_disable.error_status_codes.message,
+                        )}
+                      </FieldError>
+                    ) : null}
+                  </Field>
+                  <StringListField
+                    id="automatic_disable_error_message_keywords"
+                    variant="tokens"
+                    label={t("Error message keywords")}
+                    value={form.watch("automatic_disable.error_message_keywords")}
+                    onChange={(value) =>
+                      form.setValue("automatic_disable.error_message_keywords", value, {
+                        shouldValidate: true,
+                      })
+                    }
+                    placeholder={t("Enter an error keyword")}
+                    description={t(
+                      "Case-insensitive upstream error-message substrings. Response bodies are inspected only in memory.",
+                    )}
+                    error={errorMessage(
+                      form.formState.errors.automatic_disable?.error_message_keywords?.message,
+                    )}
+                  />
+                </FieldGroup>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>{t("Scheduled channel tests")}</CardTitle>
+                <CardDescription>
+                  {t(
+                    "Direct non-streaming test requests use each channel's selected test model and are logged under a system-owned API key.",
+                  )}
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <FieldGroup>
+                  <Field>
+                    <FieldLabel>{t("Test mode")}</FieldLabel>
+                    <Select
+                      value={form.watch("scheduled_testing.mode")}
+                      onValueChange={(value) =>
+                        form.setValue(
+                          "scheduled_testing.mode",
+                          value as ScheduledTestingMode,
+                          { shouldValidate: true },
+                        )
+                      }
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectGroup>
+                          <SelectItem value="global">{t("Global")}</SelectItem>
+                          <SelectItem value="failure_only">{t("Failures only")}</SelectItem>
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                    <FieldDescription>
+                      {t(
+                        "Global tests all enabled channels; failures only tests temporarily auto-disabled channels.",
+                      )}
+                    </FieldDescription>
+                  </Field>
+                  <Field
+                    data-invalid={Boolean(
+                      form.formState.errors.scheduled_testing?.interval_minutes,
+                    )}
+                  >
+                    <FieldLabel htmlFor="scheduled_testing_interval_minutes">
+                      {t("Test interval (minutes)")}
+                    </FieldLabel>
+                    <Input
+                      id="scheduled_testing_interval_minutes"
+                      type="number"
+                      min={1}
+                      aria-invalid={Boolean(
+                        form.formState.errors.scheduled_testing?.interval_minutes,
+                      )}
+                      {...form.register("scheduled_testing.interval_minutes", {
+                        valueAsNumber: true,
+                      })}
+                    />
+                    {form.formState.errors.scheduled_testing?.interval_minutes ? (
+                      <FieldError>
+                        {errorMessage(
+                          form.formState.errors.scheduled_testing.interval_minutes.message,
+                        )}
+                      </FieldError>
+                    ) : null}
+                  </Field>
+                  <Field
+                    data-invalid={Boolean(form.formState.errors.scheduled_testing?.prompt)}
+                  >
+                    <FieldLabel htmlFor="scheduled_testing_prompt">{t("Test prompt")}</FieldLabel>
+                    <Textarea
+                      id="scheduled_testing_prompt"
+                      rows={3}
+                      aria-invalid={Boolean(form.formState.errors.scheduled_testing?.prompt)}
+                      {...form.register("scheduled_testing.prompt")}
+                    />
+                    {form.formState.errors.scheduled_testing?.prompt ? (
+                      <FieldError>
+                        {errorMessage(form.formState.errors.scheduled_testing.prompt.message)}
+                      </FieldError>
+                    ) : null}
+                  </Field>
+                  <Field orientation="horizontal">
+                    <FieldContent>
+                      <FieldLabel htmlFor="scheduled_testing_auto_recover">
+                        {t("Automatically recover")}
+                      </FieldLabel>
+                      <FieldDescription>
+                        {t(
+                          "Restore a temporarily disabled channel after its scheduled test succeeds.",
+                        )}
+                      </FieldDescription>
+                    </FieldContent>
+                    <Switch
+                      id="scheduled_testing_auto_recover"
+                      checked={form.watch("scheduled_testing.auto_recover")}
+                      onCheckedChange={(checked) =>
+                        form.setValue("scheduled_testing.auto_recover", Boolean(checked), {
+                          shouldValidate: true,
+                        })
+                      }
+                    />
                   </Field>
                 </FieldGroup>
               </CardContent>

@@ -9,24 +9,26 @@ use std::{
 use ai_gateway::{
     admission::AdmissionRuntime,
     application::{
-        ConsoleAuthService, ControlPlaneCoordinator, ModelSyncService, ProxyService,
-        QueueRequestLogSink, RequestLogSink, hash_console_password,
+        AutomaticDisableWorker, ConsoleAuthService, ControlPlaneCoordinator, ModelSyncService,
+        NoopRequestLogSink, ProxyService, QueueRequestLogSink, RequestLogSink,
+        hash_console_password,
     },
     domain::{
-        ApiFormat, ApiKeyPermission, RequestBilling, RequestLogEvent, RequestLogOutcome,
-        RequestPriceSnapshot, RequestUsage,
+        ApiFormat, ApiKeyPermission, AutomaticDisableTrigger, RequestBilling, RequestLogEvent,
+        RequestLogOutcome, RequestLogSource, RequestPriceSnapshot, RequestUsage,
     },
     http::console::{self, ConsoleState},
     models_dev::ModelsDevClient,
     persistence::{
         AuthRepository, ControlPlaneRepository, MIGRATOR, RequestLogInsertOutcome,
-        RequestLogRepository, RequestLogSettlementOutcome, SystemPassiveHealthSettingsInput,
-        SystemSettingsInput, SystemUpstreamSettingsInput,
+        RequestLogRepository, RequestLogSettlementOutcome, SystemAutomaticDisableSettingsInput,
+        SystemPassiveHealthSettingsInput, SystemSettingsInput, SystemUpstreamSettingsInput,
     },
     routing::{self, PassiveHealthPolicy, RoutingRuntime},
     runtime_config::{
         AuthConfig, ModelsSyncConfig, RuntimeConfig, compile_control_plane, compile_runtime_config,
     },
+    upstream::UpstreamClientRegistry,
     workers::{ControlPlaneReloader, RequestLogWorker},
 };
 use axum::{
@@ -59,7 +61,274 @@ fn system_settings() -> SystemSettingsInput {
             connection_failure_threshold: 3,
             cooldown_seconds: 30,
         },
+        automatic_disable: Default::default(),
+        scheduled_testing: Default::default(),
     }
+}
+
+#[tokio::test]
+async fn automatic_disable_and_scheduled_recovery_publish_channel_availability() {
+    let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
+    sqlx::query(
+        "UPDATE channels
+         SET auto_disable_allowed=true, test_model='upstream-v1'
+         WHERE id=$1",
+    )
+    .bind(seed.channel)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let mut settings = system_settings();
+    settings.automatic_disable = SystemAutomaticDisableSettingsInput {
+        enabled: true,
+        error_status_codes: vec![429],
+        error_message_keywords: vec!["quota exceeded".into()],
+    };
+    let repository = ControlPlaneRepository::new(database.pool.clone());
+    sqlx::query("UPDATE system_settings SET value=$2 WHERE setting_key=$1")
+        .bind("forwarding_policy")
+        .bind(serde_json::to_value(settings).unwrap())
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    let runtime = Arc::new(RuntimeConfig::new(
+        compile_runtime_config(repository.load_runtime().await.unwrap()).unwrap(),
+    ));
+    let coordinator = ControlPlaneCoordinator::new(
+        repository,
+        Arc::clone(&runtime),
+        RoutingRuntime::new(PassiveHealthPolicy::default()),
+    );
+
+    assert!(
+        coordinator
+            .automatically_disable_channel(seed.channel, AutomaticDisableTrigger::HttpStatus(429))
+            .await
+            .unwrap()
+    );
+    let disabled: (bool, Option<String>) =
+        sqlx::query_as("SELECT auto_disabled,auto_disabled_reason FROM channels WHERE id=$1")
+            .bind(seed.channel)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert!(disabled.0);
+    assert!(
+        disabled
+            .1
+            .as_deref()
+            .is_some_and(|reason| reason.contains("429"))
+    );
+    let disabled_snapshot = runtime.snapshot();
+    assert!(disabled_snapshot.channel(seed.channel).is_none());
+    assert!(
+        disabled_snapshot
+            .probe_channels()
+            .any(|channel| channel.id() == seed.channel)
+    );
+
+    assert!(
+        coordinator
+            .automatically_recover_channel(seed.channel)
+            .await
+            .unwrap()
+    );
+    let recovered: (bool, Option<String>) =
+        sqlx::query_as("SELECT auto_disabled,auto_disabled_reason FROM channels WHERE id=$1")
+            .bind(seed.channel)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert!(!recovered.0);
+    assert!(recovered.1.is_none());
+    assert!(runtime.snapshot().channel(seed.channel).is_some());
+    let actions = sqlx::query_scalar::<_, String>(
+        "SELECT string_agg(action, ',' ORDER BY occurred_at)
+         FROM audit_logs
+         WHERE object_type='channel' AND object_id=$1",
+    )
+    .bind(seed.channel)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert!(actions.contains("auto_disable"));
+    assert!(actions.contains("auto_recover"));
+
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn matching_proxy_status_asynchronously_auto_disables_an_opted_in_channel() {
+    let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
+    let upstream = start_server(
+        Router::new()
+            .route("/v1/chat/completions", post(upstream))
+            .with_state(UpstreamState(Arc::new(Mutex::new(
+                UpstreamMode::Immediate(StatusCode::TOO_MANY_REQUESTS),
+            )))),
+    )
+    .await;
+    sqlx::query(
+        "UPDATE channels
+         SET base_url=$2, auto_disable_allowed=true
+         WHERE id=$1",
+    )
+    .bind(seed.channel)
+    .bind(format!("http://{}", upstream.address))
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let mut settings = system_settings();
+    settings.automatic_disable = SystemAutomaticDisableSettingsInput {
+        enabled: true,
+        error_status_codes: vec![429],
+        error_message_keywords: vec![],
+    };
+    sqlx::query("UPDATE system_settings SET value=$2 WHERE setting_key=$1")
+        .bind("forwarding_policy")
+        .bind(serde_json::to_value(settings).unwrap())
+        .execute(&database.pool)
+        .await
+        .unwrap();
+
+    let repository = ControlPlaneRepository::new(database.pool.clone());
+    let runtime = Arc::new(RuntimeConfig::new(
+        compile_runtime_config(repository.load_runtime().await.unwrap()).unwrap(),
+    ));
+    let routing = RoutingRuntime::new(PassiveHealthPolicy::default());
+    let upstream_clients = Arc::new(UpstreamClientRegistry::new());
+    let coordinator = ControlPlaneCoordinator::new_with_upstream_registry(
+        repository,
+        Arc::clone(&runtime),
+        routing.clone(),
+        Arc::clone(&upstream_clients),
+    )
+    .unwrap();
+    let (automatic_disable, worker) = AutomaticDisableWorker::start(coordinator);
+    let proxy = ProxyService::with_dependencies_and_registry_and_automation(
+        Arc::clone(&runtime),
+        1_048_576,
+        upstream_clients,
+        Arc::new(NoopRequestLogSink),
+        routing,
+        AdmissionRuntime::new(),
+        Some(automatic_disable),
+    )
+    .unwrap();
+    let app = ai_gateway::http::router(proxy);
+    let request = || {
+        axum::http::Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("authorization", format!("Bearer {}", seed.secret))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(
+                    &serde_json::json!({"model": seed.client_model, "stream": false}),
+                )
+                .unwrap(),
+            ))
+            .unwrap()
+    };
+    let response = app.clone().oneshot(request()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        let disabled: bool = sqlx::query_scalar("SELECT auto_disabled FROM channels WHERE id=$1")
+            .bind(seed.channel)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+        if disabled {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "matching upstream status did not auto-disable the channel"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(runtime.snapshot().channel(seed.channel).is_none());
+    let unavailable = app.oneshot(request()).await.unwrap();
+    assert_eq!(unavailable.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    worker.shutdown().await;
+    drop(upstream);
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn system_probe_identity_is_an_internal_active_administrator() {
+    let database = TestDatabase::new().await;
+    let repository = ControlPlaneRepository::new(database.pool.clone());
+    let first = repository.ensure_system_probe_identity().await.unwrap();
+    let second = repository.ensure_system_probe_identity().await.unwrap();
+    assert_eq!(first, second);
+
+    let identity: (String, bool, bool, bool) = sqlx::query_as(
+        "SELECT user_account.role,
+                user_account.is_system,
+                key.is_system,
+                key.status='active' AS key_active
+         FROM users AS user_account
+         JOIN api_keys AS key ON key.user_id=user_account.id
+         WHERE user_account.id=$1 AND key.id=$2",
+    )
+    .bind(first.user_id)
+    .bind(first.api_key_id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(identity.0, "admin");
+    assert!(identity.1);
+    assert!(identity.2);
+    assert!(identity.3);
+
+    let lists = repository.control_plane_lists().await.unwrap();
+    assert!(lists.users.iter().all(|user| user.id != first.user_id));
+    assert!(lists.api_keys.iter().all(|key| key.id != first.api_key_id));
+
+    let now = Utc::now();
+    let event = RequestLogEvent {
+        id: Uuid::new_v4(),
+        started_at: now,
+        completed_at: now,
+        user_id: first.user_id,
+        api_key_id: first.api_key_id,
+        request_source: RequestLogSource::ScheduledTest,
+        api_format: ApiFormat::OpenAiChatCompletions,
+        client_model: "scheduled-test-model".into(),
+        upstream_model: Some("scheduled-test-model".into()),
+        model_rule_id: None,
+        channel_group_id: None,
+        channel_id: None,
+        model_id: None,
+        outcome: RequestLogOutcome::Succeeded,
+        response_status_code: Some(200),
+        streamed: false,
+        ttft_ms: Some(1),
+        total_duration_ms: 1,
+        billing: None,
+        error_code: None,
+    };
+    assert_eq!(
+        RequestLogRepository::new(database.pool.clone())
+            .insert(&event)
+            .await
+            .unwrap(),
+        RequestLogInsertOutcome::Inserted
+    );
+    let request_source: String =
+        sqlx::query_scalar("SELECT request_source FROM request_logs WHERE id=$1")
+            .bind(event.id)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert_eq!(request_source, "scheduled_test");
+    database.cleanup().await;
 }
 
 struct TestDatabase {
@@ -443,6 +712,7 @@ fn request_log_event(seed: &Seed, outcome: RequestLogOutcome) -> RequestLogEvent
         completed_at: now,
         user_id: seed.user,
         api_key_id: seed.key,
+        request_source: ai_gateway::domain::RequestLogSource::Client,
         api_format: ApiFormat::OpenAiChatCompletions,
         client_model: seed.client_model.clone(),
         upstream_model: Some("upstream-v1".into()),

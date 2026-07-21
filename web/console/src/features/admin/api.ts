@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiGetDetail, apiPost, apiPut } from "@/api/client";
 import type {
   AdminApiKeyView,
+  ChannelCreateInput,
   ApiKeyCreateInput,
   ApiKeyPolicyInput,
   ApiKeyPolicyView,
@@ -181,7 +182,7 @@ const CHANNELS_KEY = ["console", "channels"] as const;
 const channelDetailKey = (id: string) => ["console", "channels", id] as const;
 export const useChannels = makeList<ChannelView>("/routing/channels", CHANNELS_KEY);
 export const useChannel = makeDetail<ChannelView>("/routing/channels", channelDetailKey);
-export const useCreateChannel = makeCreate<ChannelInput, MutationResponse>(
+export const useCreateChannel = makeCreate<ChannelCreateInput, MutationResponse>(
   "/routing/channels",
   CHANNELS_KEY,
 );

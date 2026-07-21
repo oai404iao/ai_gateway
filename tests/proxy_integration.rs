@@ -586,6 +586,7 @@ fn configured_proxy_with_policy_and_transforms(
         base_url: upstream_url.into(),
         enabled: true,
         auto_disabled: false,
+        auto_disable_allowed: false,
         weight: 1,
         proxy_id: None,
         config_template_id: (api_format == "open_ai_chat_completions")
@@ -611,6 +612,7 @@ fn configured_proxy_with_policy_and_transforms(
             "open_ai_responses" => vec!["responses-model".into()],
             _ => vec![],
         },
+        test_model: None,
         health_check: serde_json::json!({}),
     };
     let key = |secret: &str, formats: Vec<&str>, groups: Vec<Uuid>, permissions: Vec<&str>| {

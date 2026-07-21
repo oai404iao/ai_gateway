@@ -46,6 +46,8 @@ describe("ChannelDetailPage", () => {
     expect(submitted).not.toHaveProperty("health_check");
     expect(submitted).not.toHaveProperty("upstream_api_key");
     expect(submitted?.status_statistics_enabled).toBe(true);
+    expect(submitted?.auto_disable_allowed).toBe(true);
+    expect(submitted?.test_model).toBe(CHANNEL.test_model);
   });
 
   it("explains a routing dependency rejection instead of showing an opaque error", async () => {

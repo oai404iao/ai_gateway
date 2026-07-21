@@ -124,6 +124,7 @@ export const CHANNEL: ChannelView = {
   status_statistics_enabled: true,
   auto_disabled: false,
   auto_disabled_reason: null,
+  auto_disable_allowed: true,
   weight: 100,
   proxy_id: null,
   config_template_id: null,
@@ -134,6 +135,7 @@ export const CHANNEL: ChannelView = {
   upstream_auth_header_name: null,
   upstream_credential_configured: true,
   available_models: ["openai/gpt-4o-mini"],
+  test_model: "openai/gpt-4o-mini",
   created_at: "2026-01-02T00:00:00.000Z",
   updated_at: "2026-01-02T00:00:00.000Z",
 };
@@ -199,6 +201,7 @@ export const REQUEST_LOG: RequestLogView = {
   completed_at: "2026-07-21T06:00:01Z",
   user_id: ADMIN_USER.id,
   api_key_id: OWN_API_KEY.id,
+  request_source: "client",
   api_format: "open_ai_chat_completions",
   client_model: MODEL_RULE.client_model,
   upstream_model: MODEL.source_model_id,
@@ -249,6 +252,17 @@ export const SYSTEM_SETTINGS: SystemSettings = {
   passive_health: {
     connection_failure_threshold: 3,
     cooldown_seconds: 30,
+  },
+  automatic_disable: {
+    enabled: true,
+    error_status_codes: [429, 500],
+    error_message_keywords: ["quota exceeded"],
+  },
+  scheduled_testing: {
+    mode: "global",
+    auto_recover: true,
+    interval_minutes: 5,
+    prompt: "reply '1'",
   },
   updated_at: "2026-01-02T00:00:00.000Z",
 };

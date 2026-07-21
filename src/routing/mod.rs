@@ -317,7 +317,12 @@ impl RoutingRuntime {
                 },
             });
         }
-        if has_authorized_candidate {
+        if has_authorized_candidate
+            || rule
+                .unavailable_candidates()
+                .iter()
+                .any(|candidate| key.permits_channel(candidate.group_id(), candidate.channel_id()))
+        {
             SelectionResult::NoHealthyChannel { rule }
         } else {
             SelectionResult::UnknownOrInaccessibleModel
@@ -622,6 +627,7 @@ mod tests {
                         .unwrap_or_else(|| format!("https://{id}.test")),
                     enabled: true,
                     auto_disabled: false,
+                    auto_disable_allowed: false,
                     weight: *weight,
                     proxy_id: None,
                     config_template_id: None,
@@ -633,6 +639,7 @@ mod tests {
                     upstream_auth_header_name: None,
                     upstream_api_key: None,
                     available_models: vec!["upstream".into()],
+                    test_model: None,
                     health_check: serde_json::json!({}),
                 })
                 .collect(),
@@ -717,6 +724,7 @@ mod tests {
                 base_url: "https://upstream.test".into(),
                 enabled: true,
                 auto_disabled: false,
+                auto_disable_allowed: false,
                 weight: 1,
                 proxy_id: Some(proxy_id),
                 config_template_id: None,
@@ -728,6 +736,7 @@ mod tests {
                 upstream_auth_header_name: None,
                 upstream_api_key: None,
                 available_models: vec!["upstream".into()],
+                test_model: None,
                 health_check: serde_json::json!({}),
             }],
             model_rules: vec![ModelRuleRecord {

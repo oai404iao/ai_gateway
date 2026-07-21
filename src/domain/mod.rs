@@ -12,11 +12,16 @@ pub use api_key::ApiKeyHash;
 pub use compiled_routing::{
     ApiKeyPermission, ChannelTimeoutPolicy, CompiledApiKey, CompiledChannel, CompiledChannelGroup,
     CompiledChannelUpstreamPolicy, CompiledConfigTemplate, CompiledModelRule, CompiledProxy,
-    CompiledRouteTier, CompiledRuntimeConfig, ModelPriceSnapshot, ModelRouteKey, NoProxyHost,
-    NoProxyHostError, OutboundNetworkPolicyFingerprint, SelectionStrategy, UpstreamAuth,
+    CompiledRouteTier, CompiledRuntimeConfig, CompiledUnavailableRouteCandidate,
+    ModelPriceSnapshot, ModelRouteKey, NoProxyHost, NoProxyHostError,
+    OutboundNetworkPolicyFingerprint, SelectionStrategy, UpstreamAuth,
 };
 pub use console_auth::{ConsolePrincipal, UserRole};
 pub use request_log::{
-    RequestBilling, RequestLogEvent, RequestLogOutcome, RequestPriceSnapshot, RequestUsage,
+    RequestBilling, RequestLogEvent, RequestLogOutcome, RequestLogSource, RequestPriceSnapshot,
+    RequestUsage,
 };
-pub use system_settings::{PassiveHealthSettings, SystemRuntimeSettings, UpstreamTimeoutDefaults};
+pub use system_settings::{
+    AutomaticDisableSettings, AutomaticDisableTrigger, PassiveHealthSettings, ScheduledTestingMode,
+    ScheduledTestingSettings, SystemRuntimeSettings, UpstreamTimeoutDefaults,
+};

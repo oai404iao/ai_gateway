@@ -96,6 +96,10 @@ function optionalText(value: string): string | undefined {
   return trimmed || undefined;
 }
 
+function requestSourceLabel(source: RequestLogView["request_source"], t: (value: string) => string) {
+  return source === "scheduled_test" ? t("Scheduled test") : t("Client request");
+}
+
 function toQuery(draft: RequestLogFilterDraft): ListQuery {
   return {
     limit: draft.limit,
@@ -198,6 +202,11 @@ export function RequestLogsView({
       render: (log) => (
         <Badge variant={outcomeVariant(log.outcome)}>{outcomeLabel(log.outcome)}</Badge>
       ),
+    },
+    {
+      key: "source",
+      header: t("Source"),
+      render: (log) => <Badge variant="secondary">{requestSourceLabel(log.request_source, t)}</Badge>,
     },
     {
       key: "status",
@@ -501,6 +510,10 @@ export function RequestLogsView({
                     {outcomeLabel(detail.data.outcome)}
                   </Badge>
                 }
+              />
+              <DetailField
+                label={t("Source")}
+                value={requestSourceLabel(detail.data.request_source, t)}
               />
               <DetailField label={t("HTTP status")} value={detail.data.response_status_code ?? "—"} />
               <DetailField label={t("Streamed")} value={detail.data.streamed ? t("yes") : t("no")} />

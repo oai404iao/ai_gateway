@@ -120,6 +120,7 @@ fn proxy_fixture(
                 base_url: base_url.clone(),
                 enabled: true,
                 auto_disabled: false,
+                auto_disable_allowed: false,
                 weight: 1,
                 proxy_id: None,
                 config_template_id: None,
@@ -131,6 +132,7 @@ fn proxy_fixture(
                 upstream_auth_header_name: None,
                 upstream_api_key: None,
                 available_models: vec!["model".into()],
+                test_model: None,
                 health_check: serde_json::json!({}),
             })
             .collect(),

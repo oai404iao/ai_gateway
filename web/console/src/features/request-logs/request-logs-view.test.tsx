@@ -117,6 +117,7 @@ describe("RequestLogsView", () => {
     seedAuthenticatedSession();
     const log = {
       ...REQUEST_LOG,
+      request_source: "scheduled_test",
       api_format: "open_ai_responses",
       client_model: "detail-model",
       upstream_model: "upstream-detail-model",
@@ -150,6 +151,7 @@ describe("RequestLogsView", () => {
     renderAppAt("/admin/request-logs");
 
     await user.click(await screen.findByText("detail-model"));
+    expect(await screen.findByText("Scheduled test", { selector: "dd" })).toBeInTheDocument();
     expect(
       await screen.findByText("upstream-detail-model", { selector: "dd" }),
     ).toBeInTheDocument();

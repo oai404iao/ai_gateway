@@ -10,20 +10,21 @@ use std::{
 use ai_gateway::{
     admission::AdmissionRuntime,
     application::{
-        ConsoleAuthService, ControlPlaneCoordinator, ModelSyncService, ProxyService,
-        hash_console_password,
+        AutomaticDisableWorker, ConsoleAuthService, ControlPlaneCoordinator, ModelSyncService,
+        ProxyService, RequestLogSink, hash_console_password,
     },
     http,
     models_dev::ModelsDevClient,
     observability,
     persistence::{
         AuthRepository, ControlPlaneRepository, MIGRATOR, RequestLogRepository,
-        SystemPassiveHealthSettingsInput, SystemSettingsInput, SystemUpstreamSettingsInput,
+        SystemAutomaticDisableSettingsInput, SystemPassiveHealthSettingsInput,
+        SystemScheduledTestingSettingsInput, SystemSettingsInput, SystemUpstreamSettingsInput,
     },
     routing::{PassiveHealthPolicy, RoutingRuntime},
     runtime_config::{AppConfig, RuntimeConfig, compile_runtime_config},
     upstream::UpstreamClientRegistry,
-    workers::{ControlPlaneReloader, RequestLogWorker},
+    workers::{ChannelProbeWorker, ControlPlaneReloader, RequestLogWorker},
 };
 use axum::{Router, body::Body};
 use hyper::body::Incoming;
@@ -80,8 +81,20 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
                 connection_failure_threshold: config.passive_health.connection_failure_threshold,
                 cooldown_seconds: config.passive_health.cooldown_seconds,
             },
+            automatic_disable: SystemAutomaticDisableSettingsInput {
+                enabled: config.automatic_disable.enabled,
+                error_status_codes: config.automatic_disable.error_status_codes,
+                error_message_keywords: config.automatic_disable.error_message_keywords,
+            },
+            scheduled_testing: SystemScheduledTestingSettingsInput {
+                mode: config.scheduled_testing.mode,
+                auto_recover: config.scheduled_testing.auto_recover,
+                interval_minutes: config.scheduled_testing.interval_minutes,
+                prompt: config.scheduled_testing.prompt,
+            },
         })
         .await?;
+    let system_probe_identity = repository.ensure_system_probe_identity().await?;
     let initial = compile_runtime_config(repository.load_runtime().await?)?;
     let initial_passive_health = initial.system_settings().passive_health();
     let runtime = Arc::new(RuntimeConfig::new(initial));
@@ -93,26 +106,38 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
         config.request_logging.queue_capacity,
         admission.clone(),
     );
+    let request_log_sink: Arc<dyn RequestLogSink> = Arc::new(request_log_sink);
     let routing = RoutingRuntime::new(PassiveHealthPolicy {
         connection_failure_threshold: initial_passive_health.connection_failure_threshold(),
         cooldown: initial_passive_health.cooldown(),
     });
     routing.reconcile(&runtime.snapshot());
     let upstream_clients = Arc::new(UpstreamClientRegistry::new());
-    let proxy = ProxyService::with_dependencies_and_registry(
-        Arc::clone(&runtime),
-        config.request_limits.proxy_body_bytes,
-        Arc::clone(&upstream_clients),
-        Arc::new(request_log_sink),
-        routing.clone(),
-        admission,
-    )?;
     let coordinator = ControlPlaneCoordinator::new_with_upstream_registry(
         repository,
         Arc::clone(&runtime),
         routing.clone(),
-        upstream_clients,
+        Arc::clone(&upstream_clients),
     )?;
+    let (automatic_disable_service, automatic_disable_worker) =
+        AutomaticDisableWorker::start(coordinator.clone());
+    let proxy = ProxyService::with_dependencies_and_registry_and_automation(
+        Arc::clone(&runtime),
+        config.request_limits.proxy_body_bytes,
+        Arc::clone(&upstream_clients),
+        Arc::clone(&request_log_sink),
+        routing.clone(),
+        admission,
+        Some(automatic_disable_service.clone()),
+    )?;
+    let channel_probe_worker = ChannelProbeWorker::start(
+        Arc::clone(&runtime),
+        coordinator.clone(),
+        Arc::clone(&upstream_clients),
+        Arc::clone(&request_log_sink),
+        automatic_disable_service,
+        system_probe_identity,
+    );
     ControlPlaneReloader::from_coordinator(coordinator.clone()).spawn(Duration::from_secs(
         config.runtime_config.reload_interval_seconds,
     ));
@@ -160,6 +185,8 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
         Duration::from_secs(config.server.shutdown_grace_period_seconds),
     )
     .await;
+    channel_probe_worker.shutdown().await;
+    automatic_disable_worker.shutdown().await;
     request_log_worker.shutdown().await;
     serve_result?;
     Ok(())

@@ -28,11 +28,14 @@ use uuid::Uuid;
 
 use crate::{
     admission::{AdmissionError, AdmissionLease, AdmissionRuntime},
-    application::{NoopRequestLogSink, RequestLogSink},
+    application::{
+        AutomaticDisableService, ErrorKeywordMatcher, NoopRequestLogSink, RequestLogSink,
+    },
     domain::{
-        ApiFormat, ApiKeyPermission, CompiledApiKey, CompiledChannel, CompiledModelRule,
-        ModelPriceSnapshot, RequestBilling, RequestLogEvent, RequestLogOutcome,
-        RequestPriceSnapshot, RequestUsage, UpstreamAuth,
+        ApiFormat, ApiKeyPermission, AutomaticDisableSettings, AutomaticDisableTrigger,
+        CompiledApiKey, CompiledChannel, CompiledModelRule, ModelPriceSnapshot, RequestBilling,
+        RequestLogEvent, RequestLogOutcome, RequestLogSource, RequestPriceSnapshot, RequestUsage,
+        UpstreamAuth,
     },
     routing::{ChannelLease, RoutingRuntime, SelectionResult},
     runtime_config::RuntimeConfig,
@@ -55,6 +58,7 @@ pub struct ProxyService {
     request_log_sink: Arc<dyn RequestLogSink>,
     routing: RoutingRuntime,
     admission: AdmissionRuntime,
+    automatic_disable: Option<AutomaticDisableService>,
 }
 
 impl ProxyService {
@@ -123,6 +127,28 @@ impl ProxyService {
         routing: RoutingRuntime,
         admission: AdmissionRuntime,
     ) -> Result<Self, reqwest::Error> {
+        Self::with_dependencies_and_registry_and_automation(
+            runtime,
+            max_request_body_bytes,
+            upstream_clients,
+            request_log_sink,
+            routing,
+            admission,
+            None,
+        )
+    }
+
+    /// Adds asynchronous automatic-disable reporting to the proxy without
+    /// allowing persistence to delay client-visible forwarding.
+    pub fn with_dependencies_and_registry_and_automation(
+        runtime: Arc<RuntimeConfig>,
+        max_request_body_bytes: usize,
+        upstream_clients: Arc<UpstreamClientRegistry>,
+        request_log_sink: Arc<dyn RequestLogSink>,
+        routing: RoutingRuntime,
+        admission: AdmissionRuntime,
+        automatic_disable: Option<AutomaticDisableService>,
+    ) -> Result<Self, reqwest::Error> {
         Ok(Self {
             runtime,
             upstream_clients,
@@ -130,6 +156,7 @@ impl ProxyService {
             request_log_sink,
             routing,
             admission,
+            automatic_disable,
         })
     }
 
@@ -233,6 +260,8 @@ impl ProxyService {
             admission,
             started_wall_at,
             started_at,
+            self.automatic_disable.clone(),
+            snapshot.system_settings().automatic_disable().clone(),
         );
         let transforms = route.channel.upstream_policy().effective_transforms();
         let body = match rewrite_model_alias(original_body, &parsed.model, &route.rule) {
@@ -354,6 +383,7 @@ impl ProxyService {
             completed_at: completed_at(started_at, started.elapsed()),
             user_id: api_key.user_id(),
             api_key_id: api_key.id(),
+            request_source: RequestLogSource::Client,
             api_format,
             client_model: client_model.to_owned(),
             upstream_model: None,
@@ -390,6 +420,7 @@ impl ProxyService {
             completed_at: completed_at(started_at, started.elapsed()),
             user_id: api_key.user_id(),
             api_key_id: api_key.id(),
+            request_source: RequestLogSource::Client,
             api_format,
             client_model: client_model.to_owned(),
             upstream_model: Some(rule.upstream_model().to_owned()),
@@ -1062,6 +1093,7 @@ fn timed_upstream_stream(
 
 fn record_stream_bytes(state: &mut StreamState, bytes: &Bytes) {
     if !bytes.is_empty() {
+        state.completion.observe_upstream_error_body(bytes);
         state.completion.record_first_byte();
         let stream_completed = state.completion.observe_usage(bytes);
         if stream_completed {
@@ -1201,6 +1233,14 @@ struct CompletionGuard {
     context: Option<CompletionContext>,
     lease: Option<ChannelLease>,
     _admission: Option<AdmissionLease>,
+    automatic_disable: Option<AutomaticDisableContext>,
+}
+
+struct AutomaticDisableContext {
+    channel_id: Uuid,
+    settings: AutomaticDisableSettings,
+    service: AutomaticDisableService,
+    keyword_matcher: Option<ErrorKeywordMatcher>,
 }
 
 impl CompletionGuard {
@@ -1217,7 +1257,17 @@ impl CompletionGuard {
         admission: AdmissionLease,
         started_wall_at: chrono::DateTime<chrono::Utc>,
         started_at: Instant,
+        automatic_disable_service: Option<AutomaticDisableService>,
+        automatic_disable_settings: AutomaticDisableSettings,
     ) -> Self {
+        let automatic_disable = channel.auto_disable_allowed().then(|| {
+            automatic_disable_service.map(|service| AutomaticDisableContext {
+                channel_id: channel.id(),
+                settings: automatic_disable_settings,
+                service,
+                keyword_matcher: None,
+            })
+        });
         Self {
             context: Some(CompletionContext {
                 event_id: Uuid::new_v4(),
@@ -1242,6 +1292,7 @@ impl CompletionGuard {
             }),
             lease: Some(lease),
             _admission: Some(admission),
+            automatic_disable: automatic_disable.flatten(),
         }
     }
 
@@ -1249,6 +1300,19 @@ impl CompletionGuard {
         if let Some(context) = &mut self.context {
             context.upstream_status = Some(status);
         }
+        if (StatusCode::OK.as_u16()..StatusCode::MULTIPLE_CHOICES.as_u16()).contains(&status) {
+            return;
+        }
+        let Some(automatic_disable) = &mut self.automatic_disable else {
+            return;
+        };
+        if automatic_disable.settings.matches_status(status) {
+            automatic_disable.service.try_report(
+                automatic_disable.channel_id,
+                AutomaticDisableTrigger::HttpStatus(status),
+            );
+        }
+        automatic_disable.keyword_matcher = ErrorKeywordMatcher::new(&automatic_disable.settings);
     }
 
     fn set_client_visible_status(&mut self, status: u16) {
@@ -1269,6 +1333,21 @@ impl CompletionGuard {
             context.usage.stream_completed()
         } else {
             false
+        }
+    }
+
+    fn observe_upstream_error_body(&mut self, bytes: &Bytes) {
+        let Some(automatic_disable) = &mut self.automatic_disable else {
+            return;
+        };
+        let Some(matcher) = &mut automatic_disable.keyword_matcher else {
+            return;
+        };
+        if let Some(trigger) = matcher.observe(bytes) {
+            automatic_disable
+                .service
+                .try_report(automatic_disable.channel_id, trigger);
+            automatic_disable.keyword_matcher = None;
         }
     }
 
@@ -1337,6 +1416,7 @@ impl CompletionGuard {
             completed_at: completed_at(context.started_wall_at, context.started_at.elapsed()),
             user_id: context.user_id,
             api_key_id: context.api_key_id,
+            request_source: RequestLogSource::Client,
             api_format: context.api_format,
             client_model: context.client_model,
             upstream_model: Some(context.upstream_model),

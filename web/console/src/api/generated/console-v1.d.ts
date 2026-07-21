@@ -790,9 +790,34 @@ export interface components {
             /** Format: int64 */
             cooldown_seconds: number;
         };
+        SystemAutomaticDisableSettings: {
+            /** @description Enables automatic temporary channel disablement for matching upstream errors. */
+            enabled: boolean;
+            /** @description Upstream HTTP statuses that trigger temporary disablement. */
+            error_status_codes: number[];
+            /** @description Case-insensitive upstream error-message substrings that trigger temporary disablement. */
+            error_message_keywords: string[];
+        };
+        /** @enum {string} */
+        ScheduledTestingMode: "global" | "failure_only";
+        SystemScheduledTestingSettings: {
+            /** @description Global tests all enabled channels; failure_only tests only temporarily disabled channels. */
+            mode: components["schemas"]["ScheduledTestingMode"];
+            /** @description Clears a temporary automatic disable after a successful scheduled test. */
+            auto_recover: boolean;
+            /**
+             * Format: int64
+             * @default 5
+             */
+            interval_minutes: number;
+            /** @default reply '1' */
+            prompt: string;
+        };
         SystemSettingsInput: {
             upstream: components["schemas"]["SystemUpstreamSettings"];
             passive_health: components["schemas"]["SystemPassiveHealthSettings"];
+            automatic_disable: components["schemas"]["SystemAutomaticDisableSettings"];
+            scheduled_testing: components["schemas"]["SystemScheduledTestingSettings"];
         };
         SystemSettings: components["schemas"]["SystemSettingsInput"] & {
             updated_at: components["schemas"]["DateTime"];
@@ -911,6 +936,8 @@ export interface components {
             status_statistics_enabled: boolean;
             auto_disabled: boolean;
             auto_disabled_reason: string | null;
+            /** @description Allows system automatic-disable rules to temporarily remove this channel from routing. */
+            auto_disable_allowed: boolean;
             weight: number;
             /** Format: uuid */
             proxy_id: string | null;
@@ -923,6 +950,8 @@ export interface components {
             upstream_auth_header_name: string | null;
             upstream_credential_configured: boolean;
             available_models: string[];
+            /** @description Available upstream model used by periodic scheduled tests. */
+            test_model: string | null;
             created_at: components["schemas"]["DateTime"];
             updated_at: components["schemas"]["DateTime"];
         };
@@ -972,6 +1001,7 @@ export interface components {
             user_id: string;
             /** Format: uuid */
             api_key_id: string;
+            request_source: components["schemas"]["RequestLogSource"];
             api_format: components["schemas"]["ApiFormat"];
             client_model: string;
             upstream_model: string | null;
@@ -995,6 +1025,8 @@ export interface components {
             error_code: string | null;
             billed_at: components["schemas"]["DateTimeNullable"];
         };
+        /** @enum {string} */
+        RequestLogSource: "client" | "scheduled_test";
         ChannelStatusReport: {
             window: components["schemas"]["ChannelStatusWindow"];
             started_at: components["schemas"]["DateTime"];
@@ -1257,6 +1289,11 @@ export interface components {
              * @default false
              */
             status_statistics_enabled: boolean;
+            /**
+             * @description Allows configured automatic-disable rules to temporarily remove this channel from routing.
+             * @default false
+             */
+            auto_disable_allowed: boolean;
             weight: number;
             /** Format: uuid */
             proxy_id?: string | null;
@@ -1270,7 +1307,9 @@ export interface components {
             upstream_auth_header_name?: string | null;
             upstream_api_key?: string | null;
             available_models?: string[];
-            /** @description Reserved for a future active-health feature; must be `{}`. */
+            /** @description Must be one of available_models when set. */
+            test_model?: string | null;
+            /** @description Legacy reserved field; must be `{}`. */
             health_check?: Record<string, never>;
         };
         ChannelInput: {
@@ -1289,6 +1328,11 @@ export interface components {
              * @default false
              */
             status_statistics_enabled: boolean;
+            /**
+             * @description Allows configured automatic-disable rules to temporarily remove this channel from routing.
+             * @default false
+             */
+            auto_disable_allowed: boolean;
             weight: number;
             /** Format: uuid */
             proxy_id?: string | null;
@@ -1303,7 +1347,9 @@ export interface components {
             upstream_auth_header_name?: string | null;
             upstream_api_key?: string | null;
             available_models?: string[];
-            /** @description Reserved for a future active-health feature; must be `{}`. */
+            /** @description Must be one of available_models when set. */
+            test_model?: string | null;
+            /** @description Legacy reserved field; must be `{}`. */
             health_check?: Record<string, never>;
         };
         ModelRuleInput: {
@@ -3130,7 +3176,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Database-backed forwarding and passive-health defaults. */
+            /** @description Database-backed forwarding, passive-health, automatic-disable, and scheduled-test defaults. */
             200: {
                 headers: {
                     ETag: components["headers"]["ETag"];

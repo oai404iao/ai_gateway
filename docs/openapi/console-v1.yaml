@@ -1221,7 +1221,7 @@ paths:
       security: [{ bearerAuth: [] }]
       responses:
         "200":
-          description: Database-backed forwarding and passive-health defaults.
+          description: Database-backed forwarding, passive-health, automatic-disable, and scheduled-test defaults.
           headers:
             ETag: { $ref: "#/components/headers/ETag" }
           content:
@@ -1536,12 +1536,51 @@ components:
         connection_failure_threshold: { type: integer, minimum: 1 }
         cooldown_seconds: { type: integer, format: int64, minimum: 1 }
 
+    SystemAutomaticDisableSettings:
+      type: object
+      required: [enabled, error_status_codes, error_message_keywords]
+      properties:
+        enabled:
+          type: boolean
+          description: Enables automatic temporary channel disablement for matching upstream errors.
+        error_status_codes:
+          type: array
+          items: { type: integer, minimum: 100, maximum: 599 }
+          description: Upstream HTTP statuses that trigger temporary disablement.
+        error_message_keywords:
+          type: array
+          items: { type: string, minLength: 1, maxLength: 200 }
+          description: Case-insensitive upstream error-message substrings that trigger temporary disablement.
+
+    ScheduledTestingMode:
+      type: string
+      enum: [global, failure_only]
+
+    SystemScheduledTestingSettings:
+      type: object
+      required: [mode, auto_recover, interval_minutes, prompt]
+      properties:
+        mode:
+          allOf: [{ $ref: "#/components/schemas/ScheduledTestingMode" }]
+          description: Global tests all enabled channels; failure_only tests only temporarily disabled channels.
+        auto_recover:
+          type: boolean
+          description: Clears a temporary automatic disable after a successful scheduled test.
+        interval_minutes: { type: integer, format: int64, minimum: 1, default: 5 }
+        prompt:
+          type: string
+          minLength: 1
+          maxLength: 4000
+          default: "reply '1'"
+
     SystemSettingsInput:
       type: object
-      required: [upstream, passive_health]
+      required: [upstream, passive_health, automatic_disable, scheduled_testing]
       properties:
         upstream: { $ref: "#/components/schemas/SystemUpstreamSettings" }
         passive_health: { $ref: "#/components/schemas/SystemPassiveHealthSettings" }
+        automatic_disable: { $ref: "#/components/schemas/SystemAutomaticDisableSettings" }
+        scheduled_testing: { $ref: "#/components/schemas/SystemScheduledTestingSettings" }
 
     SystemSettings:
       allOf:
@@ -1703,10 +1742,11 @@ components:
       type: object
       required:
         [id, channel_group_id, api_format, name, base_url, enabled,
-         status_statistics_enabled, auto_disabled, auto_disabled_reason, weight, proxy_id,
+         status_statistics_enabled, auto_disabled, auto_disabled_reason, auto_disable_allowed,
+         weight, proxy_id,
          config_template_id, connect_timeout_ms, response_header_timeout_ms,
          stream_idle_timeout_ms, upstream_auth_kind, upstream_auth_header_name,
-         upstream_credential_configured, available_models, created_at, updated_at]
+         upstream_credential_configured, available_models, test_model, created_at, updated_at]
       properties:
         id: { type: string, format: uuid }
         channel_group_id: { type: string, format: uuid }
@@ -1719,6 +1759,9 @@ components:
           description: Includes this channel in the administrator channel-status report.
         auto_disabled: { type: boolean }
         auto_disabled_reason: { type: string, nullable: true }
+        auto_disable_allowed:
+          type: boolean
+          description: Allows system automatic-disable rules to temporarily remove this channel from routing.
         weight: { type: integer }
         proxy_id: { type: string, format: uuid, nullable: true }
         config_template_id: { type: string, format: uuid, nullable: true }
@@ -1731,6 +1774,10 @@ components:
         available_models:
           type: array
           items: { type: string }
+        test_model:
+          type: string
+          nullable: true
+          description: Available upstream model used by periodic scheduled tests.
         created_at: { $ref: "#/components/schemas/DateTime" }
         updated_at: { $ref: "#/components/schemas/DateTime" }
 
@@ -1790,7 +1837,7 @@ components:
       type: object
       required:
         [id, started_at, completed_at, user_id, api_key_id, api_format,
-         client_model, upstream_model, model_rule_id, channel_group_id,
+         request_source, client_model, upstream_model, model_rule_id, channel_group_id,
          channel_id, outcome, response_status_code, streamed, ttft_ms,
          total_duration_ms, input_tokens, cached_input_tokens,
          cache_write_tokens, output_tokens, cost_amount, error_code,
@@ -1801,6 +1848,7 @@ components:
         completed_at: { $ref: "#/components/schemas/DateTime" }
         user_id: { type: string, format: uuid }
         api_key_id: { type: string, format: uuid }
+        request_source: { $ref: "#/components/schemas/RequestLogSource" }
         api_format: { $ref: "#/components/schemas/ApiFormat" }
         client_model: { type: string }
         upstream_model: { type: string, nullable: true }
@@ -1821,6 +1869,10 @@ components:
           description: Final request cost in USD, or null when not priced.
         error_code: { type: string, nullable: true }
         billed_at: { $ref: "#/components/schemas/DateTimeNullable" }
+
+    RequestLogSource:
+      type: string
+      enum: [client, scheduled_test]
 
     ChannelStatusReport:
       type: object
@@ -2248,6 +2300,10 @@ components:
           type: boolean
           default: false
           description: Includes this channel in the administrator channel-status report.
+        auto_disable_allowed:
+          type: boolean
+          default: false
+          description: Allows configured automatic-disable rules to temporarily remove this channel from routing.
         weight: { type: integer, minimum: 1 }
         proxy_id: { type: string, format: uuid, nullable: true }
         config_template_id: { type: string, format: uuid, nullable: true }
@@ -2261,10 +2317,14 @@ components:
         available_models:
           type: array
           items: { type: string }
+        test_model:
+          type: string
+          nullable: true
+          description: Must be one of available_models when set.
         health_check:
           type: object
           maxProperties: 0
-          description: Reserved for a future active-health feature; must be `{}`.
+          description: Legacy reserved field; must be `{}`.
 
     ChannelInput:
       type: object
@@ -2283,6 +2343,10 @@ components:
           type: boolean
           default: false
           description: Includes this channel in the administrator channel-status report.
+        auto_disable_allowed:
+          type: boolean
+          default: false
+          description: Allows configured automatic-disable rules to temporarily remove this channel from routing.
         weight: { type: integer, minimum: 1 }
         proxy_id: { type: string, format: uuid, nullable: true }
         config_template_id: { type: string, format: uuid, nullable: true }
@@ -2298,10 +2362,14 @@ components:
         available_models:
           type: array
           items: { type: string }
+        test_model:
+          type: string
+          nullable: true
+          description: Must be one of available_models when set.
         health_check:
           type: object
           maxProperties: 0
-          description: Reserved for a future active-health feature; must be `{}`.
+          description: Legacy reserved field; must be `{}`.
 
     ModelRuleInput:
       type: object

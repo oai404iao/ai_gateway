@@ -171,6 +171,7 @@ fn gateway(settings: &SmokeSettings, format: SmokeFormat, upstream_model: &str) 
             base_url: settings.base_url.clone(),
             enabled: true,
             auto_disabled: false,
+            auto_disable_allowed: false,
             weight: 1,
             proxy_id: None,
             config_template_id: None,
@@ -182,6 +183,7 @@ fn gateway(settings: &SmokeSettings, format: SmokeFormat, upstream_model: &str) 
             upstream_auth_header_name: None,
             upstream_api_key: Some(settings.upstream_api_key.clone()),
             available_models: vec![upstream_model.into()],
+            test_model: None,
             health_check: json!({}),
         }],
         model_rules: vec![ModelRuleRecord {

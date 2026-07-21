@@ -20,12 +20,12 @@ use zeroize::Zeroizing;
 
 use crate::{
     domain::{
-        ApiFormat, ApiKeyHash, ApiKeyPermission, ChannelTimeoutPolicy, CompiledApiKey,
-        CompiledChannel, CompiledChannelGroup, CompiledChannelUpstreamPolicy,
+        ApiFormat, ApiKeyHash, ApiKeyPermission, AutomaticDisableSettings, ChannelTimeoutPolicy,
+        CompiledApiKey, CompiledChannel, CompiledChannelGroup, CompiledChannelUpstreamPolicy,
         CompiledConfigTemplate, CompiledModelRule, CompiledProxy, CompiledRouteTier,
         CompiledRuntimeConfig, ModelPriceSnapshot, ModelRouteKey, NoProxyHost,
-        PassiveHealthSettings, SelectionStrategy, SystemRuntimeSettings, UpstreamAuth,
-        UpstreamTimeoutDefaults,
+        PassiveHealthSettings, ScheduledTestingMode, ScheduledTestingSettings, SelectionStrategy,
+        SystemRuntimeSettings, UpstreamAuth, UpstreamTimeoutDefaults,
     },
     persistence::{
         ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ConfigTemplateRecord, ControlPlaneRecords,
@@ -46,6 +46,10 @@ pub struct AppConfig {
     pub request_logging: RequestLoggingConfig,
     #[serde(default)]
     pub passive_health: PassiveHealthConfig,
+    #[serde(default)]
+    pub automatic_disable: AutomaticDisableConfig,
+    #[serde(default)]
+    pub scheduled_testing: ScheduledTestingConfig,
     #[serde(default)]
     pub models_sync: ModelsSyncConfig,
     #[serde(default)]
@@ -102,6 +106,8 @@ impl AppConfig {
                 "passive_health threshold and cooldown must be greater than zero".into(),
             ));
         }
+        validate_automatic_disable_config(&self.automatic_disable)?;
+        validate_scheduled_testing_config(&self.scheduled_testing)?;
         require("observability filter", &self.observability.filter)?;
         Ok(BootstrapConfig {
             server: self.server,
@@ -110,6 +116,8 @@ impl AppConfig {
             runtime_config: self.runtime_config,
             request_logging: self.request_logging,
             passive_health: self.passive_health,
+            automatic_disable: self.automatic_disable,
+            scheduled_testing: self.scheduled_testing,
             models_sync: self.models_sync,
             request_limits,
             console,
@@ -125,12 +133,14 @@ pub struct BootstrapConfig {
     pub runtime_config: RuntimeConfigSettings,
     pub request_logging: RequestLoggingConfig,
     pub passive_health: PassiveHealthConfig,
+    pub automatic_disable: AutomaticDisableConfig,
+    pub scheduled_testing: ScheduledTestingConfig,
     pub models_sync: ModelsSyncConfig,
     pub request_limits: RequestLimitsConfig,
     pub console: Option<ConsoleListenerConfig>,
     pub observability: ObservabilityConfig,
 }
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServerConfig {
     pub host: String,
@@ -212,6 +222,43 @@ impl Default for PassiveHealthConfig {
         Self {
             connection_failure_threshold: default_connection_failure_threshold(),
             cooldown_seconds: default_passive_health_cooldown_seconds(),
+        }
+    }
+}
+
+/// One-time bootstrap source for database-backed automatic-disable policy.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AutomaticDisableConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub error_status_codes: Vec<u16>,
+    #[serde(default)]
+    pub error_message_keywords: Vec<String>,
+}
+
+/// One-time bootstrap source for database-backed periodic channel tests.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScheduledTestingConfig {
+    #[serde(default = "default_scheduled_testing_mode")]
+    pub mode: String,
+    #[serde(default = "default_scheduled_testing_auto_recover")]
+    pub auto_recover: bool,
+    #[serde(default = "default_scheduled_testing_interval_minutes")]
+    pub interval_minutes: u64,
+    #[serde(default = "default_scheduled_testing_prompt")]
+    pub prompt: String,
+}
+
+impl Default for ScheduledTestingConfig {
+    fn default() -> Self {
+        Self {
+            mode: default_scheduled_testing_mode(),
+            auto_recover: default_scheduled_testing_auto_recover(),
+            interval_minutes: default_scheduled_testing_interval_minutes(),
+            prompt: default_scheduled_testing_prompt(),
         }
     }
 }
@@ -347,6 +394,18 @@ const fn default_connection_failure_threshold() -> u32 {
 const fn default_passive_health_cooldown_seconds() -> u64 {
     30
 }
+fn default_scheduled_testing_mode() -> String {
+    "global".into()
+}
+const fn default_scheduled_testing_auto_recover() -> bool {
+    true
+}
+const fn default_scheduled_testing_interval_minutes() -> u64 {
+    5
+}
+fn default_scheduled_testing_prompt() -> String {
+    "reply '1'".into()
+}
 fn default_models_dev_api_url() -> String {
     "https://models.dev/api.json".into()
 }
@@ -430,6 +489,7 @@ pub fn compile_control_plane_with_system_settings(
     let proxies = compile_proxies(records.proxies)?;
     let templates = compile_templates(records.templates)?;
     let mut channels = HashMap::new();
+    let mut probe_channels = HashMap::new();
     let mut all_channels = HashMap::new();
     let mut validated_channels = Vec::new();
     let mut channel_ids = HashSet::new();
@@ -443,7 +503,7 @@ pub fn compile_control_plane_with_system_settings(
         validated_channels.push(channel);
     }
     for channel in validated_channels {
-        if channel.enabled && !channel.auto_disabled {
+        if channel.enabled {
             let auth = compile_auth(&channel)?;
             let api_format = parse_format(&channel.api_format)?;
             let proxy = channel.proxy_id.map(|id| {
@@ -473,23 +533,27 @@ pub fn compile_control_plane_with_system_settings(
                 compile_timeouts(&channel)?,
                 system_settings.upstream_timeouts().connect(),
             );
-            channels.insert(
+            let compiled = Arc::new(CompiledChannel::new_with_policy_and_automation(
                 channel.id,
-                Arc::new(CompiledChannel::new_with_policy(
-                    channel.id,
-                    channel.channel_group_id,
-                    api_format,
-                    parse_url(channel.id, &channel.base_url)?,
-                    channel.weight,
-                    auth,
-                    channel
-                        .available_models
-                        .iter()
-                        .map(|model| Arc::<str>::from(model.as_str()))
-                        .collect(),
-                    upstream_policy,
-                )),
-            );
+                channel.channel_group_id,
+                api_format,
+                parse_url(channel.id, &channel.base_url)?,
+                channel.weight,
+                auth,
+                channel
+                    .available_models
+                    .iter()
+                    .map(|model| Arc::<str>::from(model.as_str()))
+                    .collect(),
+                channel.auto_disable_allowed,
+                channel.auto_disabled,
+                channel.test_model.as_deref().map(Arc::<str>::from),
+                upstream_policy,
+            ));
+            probe_channels.insert(channel.id, Arc::clone(&compiled));
+            if !channel.auto_disabled {
+                channels.insert(channel.id, compiled);
+            }
         }
     }
     let api_keys = compile_keys(records.api_keys, &all_groups, &all_channels)?;
@@ -499,16 +563,20 @@ pub fn compile_control_plane_with_system_settings(
         &all_channels,
         &groups,
         &channels,
+        &probe_channels,
     )?;
-    Ok(CompiledRuntimeConfig::with_resources_and_system_settings(
-        api_keys,
-        model_rules,
-        channels,
-        groups,
-        proxies,
-        templates,
-        system_settings,
-    ))
+    Ok(
+        CompiledRuntimeConfig::with_resources_system_settings_and_probe_channels(
+            api_keys,
+            model_rules,
+            channels,
+            probe_channels,
+            groups,
+            proxies,
+            templates,
+            system_settings,
+        ),
+    )
 }
 
 fn compile_system_settings(
@@ -530,17 +598,46 @@ pub fn compile_system_settings_input(
 ) -> Result<SystemRuntimeSettings, ConfigError> {
     let upstream = &input.upstream;
     let passive_health = &input.passive_health;
+    let automatic_disable = &input.automatic_disable;
+    let scheduled_testing = &input.scheduled_testing;
     if upstream.connect_timeout_seconds == 0
         || upstream.response_header_timeout_seconds <= upstream.connect_timeout_seconds
         || upstream.stream_idle_timeout_seconds == 0
         || passive_health.connection_failure_threshold == 0
         || passive_health.cooldown_seconds == 0
+        || automatic_disable
+            .error_status_codes
+            .iter()
+            .any(|status| !(100..=599).contains(status))
+        || automatic_disable
+            .error_message_keywords
+            .iter()
+            .any(|keyword| keyword.trim().is_empty() || keyword.chars().count() > 200)
+        || scheduled_testing.interval_minutes == 0
+        || scheduled_testing.prompt.trim().is_empty()
+        || scheduled_testing.prompt.chars().count() > 4_000
+        || !matches!(scheduled_testing.mode.as_str(), "global" | "failure_only")
     {
         return Err(ConfigError::Compile(
             "invalid forwarding system settings".into(),
         ));
     }
-    Ok(SystemRuntimeSettings::new(
+    let mut status_codes = automatic_disable.error_status_codes.clone();
+    status_codes.sort_unstable();
+    status_codes.dedup();
+    let mut keywords = automatic_disable
+        .error_message_keywords
+        .iter()
+        .map(|keyword| keyword.trim().to_owned())
+        .collect::<Vec<_>>();
+    keywords.sort_unstable_by_key(|keyword| keyword.to_lowercase());
+    keywords.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
+    let scheduled_mode = match scheduled_testing.mode.as_str() {
+        "global" => ScheduledTestingMode::Global,
+        "failure_only" => ScheduledTestingMode::FailureOnly,
+        _ => unreachable!("validated scheduled testing mode"),
+    };
+    Ok(SystemRuntimeSettings::new_with_channel_automation(
         UpstreamTimeoutDefaults::new(
             std::time::Duration::from_secs(upstream.connect_timeout_seconds),
             std::time::Duration::from_secs(upstream.response_header_timeout_seconds),
@@ -549,6 +646,21 @@ pub fn compile_system_settings_input(
         PassiveHealthSettings::new(
             passive_health.connection_failure_threshold,
             std::time::Duration::from_secs(passive_health.cooldown_seconds),
+        ),
+        AutomaticDisableSettings::new(
+            automatic_disable.enabled,
+            status_codes.into(),
+            keywords
+                .into_iter()
+                .map(Arc::<str>::from)
+                .collect::<Vec<_>>()
+                .into(),
+        ),
+        ScheduledTestingSettings::new(
+            scheduled_mode,
+            scheduled_testing.auto_recover,
+            std::time::Duration::from_secs(scheduled_testing.interval_minutes.saturating_mul(60)),
+            Arc::from(scheduled_testing.prompt.trim()),
         ),
     ))
 }
@@ -786,6 +898,7 @@ fn compile_rules(
     all_channels: &HashMap<Uuid, ChannelRecord>,
     groups: &HashMap<Uuid, Arc<CompiledChannelGroup>>,
     channels: &HashMap<Uuid, Arc<CompiledChannel>>,
+    probe_channels: &HashMap<Uuid, Arc<CompiledChannel>>,
 ) -> Result<HashMap<ModelRouteKey, Arc<CompiledModelRule>>, ConfigError> {
     let mut result = HashMap::new();
     let mut ids = HashSet::new();
@@ -805,6 +918,8 @@ fn compile_rules(
         }
         let format = parse_format(&record.api_format)?;
         let mut candidates = HashSet::new();
+        let mut unavailable_candidates = HashMap::new();
+        let mut selected_candidates = HashSet::new();
         for group_id in &record.channel_group_ids {
             let group = all_groups.get(group_id).ok_or_else(|| {
                 ConfigError::Compile("enabled model rule references a missing channel group".into())
@@ -815,7 +930,7 @@ fn compile_rules(
                         .into(),
                 ));
             }
-            for channel in channels
+            for channel in probe_channels
                 .values()
                 .filter(|channel| channel.group_id() == *group_id)
             {
@@ -824,11 +939,16 @@ fn compile_rules(
                         "eligible channel does not support the model rule upstream model".into(),
                     ));
                 }
-                candidates.insert(channel.id());
+                selected_candidates.insert(channel.id());
+                if channel.auto_disabled() {
+                    unavailable_candidates.insert(channel.id(), channel.group_id());
+                } else {
+                    candidates.insert(channel.id());
+                }
             }
         }
         for channel_id in &record.channel_ids {
-            let channel = channels.get(channel_id).ok_or_else(|| {
+            let channel = probe_channels.get(channel_id).ok_or_else(|| {
                 ConfigError::Compile(
                     "enabled model rule references a missing, disabled, or auto-disabled channel"
                         .into(),
@@ -849,14 +969,19 @@ fn compile_rules(
                     "eligible channel does not support the model rule upstream model".into(),
                 ));
             }
-            if !candidates.insert(*channel_id) {
+            if !selected_candidates.insert(*channel_id) {
                 return Err(ConfigError::Compile(
                     "model rule selects the same channel directly and through a channel group"
                         .into(),
                 ));
             }
+            if channel.auto_disabled() {
+                unavailable_candidates.insert(channel.id(), channel.group_id());
+            } else {
+                candidates.insert(*channel_id);
+            }
         }
-        if candidates.is_empty() {
+        if candidates.is_empty() && unavailable_candidates.is_empty() {
             return Err(ConfigError::Compile(
                 "each enabled model rule must have at least one distinct eligible candidate channel"
                     .into(),
@@ -909,9 +1034,17 @@ fn compile_rules(
             }
             tiers.push(CompiledRouteTier::new(priority, strategy, Arc::from(ids)));
         }
+        let mut unavailable_candidates = unavailable_candidates
+            .into_iter()
+            .map(|(channel_id, group_id)| {
+                crate::domain::CompiledUnavailableRouteCandidate::new(channel_id, group_id)
+            })
+            .collect::<Vec<_>>();
+        unavailable_candidates
+            .sort_unstable_by_key(crate::domain::CompiledUnavailableRouteCandidate::channel_id);
         let key = ModelRouteKey::new(format, Arc::<str>::from(record.client_model.as_str()));
         let price_snapshot = compile_model_price_snapshot(&record)?;
-        let rule = Arc::new(CompiledModelRule::new(
+        let rule = Arc::new(CompiledModelRule::new_with_unavailable_candidates(
             record.id,
             record.upstream_model_id,
             Arc::from(record.client_model),
@@ -919,6 +1052,7 @@ fn compile_rules(
             Arc::from(record.upstream_model),
             price_snapshot,
             Arc::from(tiers),
+            Arc::from(unavailable_candidates),
         ));
         if result.insert(key, rule).is_some() {
             return Err(ConfigError::Compile(
@@ -1021,6 +1155,18 @@ fn validate_channel(
     unique(&record.available_models, "channel available_models")?;
     for model in &record.available_models {
         require("channel available model", model)?;
+    }
+    if let Some(test_model) = &record.test_model {
+        require("channel test model", test_model)?;
+        if !record
+            .available_models
+            .iter()
+            .any(|model| model == test_model)
+        {
+            return Err(ConfigError::Compile(
+                "channel test model must be one of its available models".into(),
+            ));
+        }
     }
     if !matches!(
         record.upstream_auth_kind.as_str(),
@@ -1328,6 +1474,34 @@ fn validate_upstream(upstream: &UpstreamConfig) -> Result<(), ConfigError> {
     }
     Ok(())
 }
+fn validate_automatic_disable_config(config: &AutomaticDisableConfig) -> Result<(), ConfigError> {
+    if config
+        .error_status_codes
+        .iter()
+        .any(|status| !(100..=599).contains(status))
+        || config
+            .error_message_keywords
+            .iter()
+            .any(|keyword| keyword.trim().is_empty() || keyword.chars().count() > 200)
+    {
+        return Err(ConfigError::Compile(
+            "automatic_disable settings are invalid".into(),
+        ));
+    }
+    Ok(())
+}
+fn validate_scheduled_testing_config(config: &ScheduledTestingConfig) -> Result<(), ConfigError> {
+    if config.interval_minutes == 0
+        || config.prompt.trim().is_empty()
+        || config.prompt.chars().count() > 4_000
+        || !matches!(config.mode.as_str(), "global" | "failure_only")
+    {
+        return Err(ConfigError::Compile(
+            "scheduled_testing settings are invalid".into(),
+        ));
+    }
+    Ok(())
+}
 fn validate_models_sync(config: &ModelsSyncConfig) -> Result<(), ConfigError> {
     let url = Url::parse(&config.api_url).map_err(|_| {
         ConfigError::Compile("models_sync api_url must be a valid HTTPS URL".into())
@@ -1502,6 +1676,7 @@ mod tests {
             base_url: format!("https://{id}.test"),
             enabled: true,
             auto_disabled: false,
+            auto_disable_allowed: false,
             weight: 1,
             proxy_id: None,
             config_template_id: None,
@@ -1513,6 +1688,7 @@ mod tests {
             upstream_auth_header_name: None,
             upstream_api_key: None,
             available_models: vec!["upstream".into()],
+            test_model: None,
             health_check: serde_json::json!({}),
         };
         ControlPlaneRecords {
@@ -1580,6 +1756,17 @@ mod tests {
                         connection_failure_threshold: 4,
                         cooldown_seconds: 45,
                     },
+                    automatic_disable: crate::persistence::SystemAutomaticDisableSettingsInput {
+                        enabled: true,
+                        error_status_codes: vec![429],
+                        error_message_keywords: vec!["quota exceeded".into()],
+                    },
+                    scheduled_testing: crate::persistence::SystemScheduledTestingSettingsInput {
+                        mode: "failure_only".into(),
+                        auto_recover: false,
+                        interval_minutes: 7,
+                        prompt: "reply '1'".into(),
+                    },
                 })
                 .unwrap(),
                 updated_at: chrono::Utc::now(),
@@ -1599,6 +1786,16 @@ mod tests {
         assert_eq!(
             settings.passive_health().cooldown(),
             std::time::Duration::from_secs(45)
+        );
+        assert!(settings.automatic_disable().matches_status(429));
+        assert_eq!(
+            settings.scheduled_testing().mode(),
+            ScheduledTestingMode::FailureOnly
+        );
+        assert!(!settings.scheduled_testing().auto_recover());
+        assert_eq!(
+            settings.scheduled_testing().interval(),
+            std::time::Duration::from_secs(7 * 60)
         );
     }
 
@@ -1644,6 +1841,13 @@ mod tests {
         assert_eq!(config.request_logging.queue_capacity, 1_024);
         assert_eq!(config.passive_health.connection_failure_threshold, 3);
         assert_eq!(config.passive_health.cooldown_seconds, 30);
+        assert!(!config.automatic_disable.enabled);
+        assert!(config.automatic_disable.error_status_codes.is_empty());
+        assert!(config.automatic_disable.error_message_keywords.is_empty());
+        assert_eq!(config.scheduled_testing.mode, "global");
+        assert!(config.scheduled_testing.auto_recover);
+        assert_eq!(config.scheduled_testing.interval_minutes, 5);
+        assert_eq!(config.scheduled_testing.prompt, "reply '1'");
         assert_eq!(config.request_limits.proxy_body_bytes, 1);
         assert_eq!(config.request_limits.console_body_bytes, 262_144);
         assert_eq!(config.request_limits.auth_body_bytes, 16_384);

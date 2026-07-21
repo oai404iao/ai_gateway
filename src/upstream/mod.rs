@@ -131,7 +131,7 @@ pub fn validate_snapshot_upstream_policies(
     snapshot: &CompiledRuntimeConfig,
 ) -> Result<(), ResolvedUpstreamPolicyError> {
     let upstream_defaults = snapshot.system_settings().upstream_timeouts();
-    snapshot.channels().try_for_each(|channel| {
+    snapshot.probe_channels().try_for_each(|channel| {
         ResolvedUpstreamPolicy::try_resolve(&upstream_defaults, channel.upstream_policy())
             .map(|_| ())
     })
@@ -303,17 +303,18 @@ impl UpstreamClientRegistry {
         Ok(client)
     }
 
-    /// Establishes the active client keys for `snapshot` and removes retired
-    /// cached clients. A request using an old snapshot receives an ephemeral
-    /// client for an inactive key rather than repopulating this cache. Dropping
-    /// a cache entry never invalidates a client already cloned by an in-flight
+    /// Establishes reusable client keys for forwarding channels and enabled
+    /// periodic-test channels in `snapshot`, then removes retired cached
+    /// clients. A request using an old snapshot receives an ephemeral client
+    /// for an inactive key rather than repopulating this cache. Dropping a
+    /// cache entry never invalidates a client already cloned by an in-flight
     /// request.
     pub fn reconcile(&self, snapshot: &CompiledRuntimeConfig) -> Result<(), UpstreamClientError> {
         validate_snapshot_upstream_policies(snapshot)
             .map_err(|_| UpstreamClientError::InvalidPolicy)?;
         let upstream_defaults = snapshot.system_settings().upstream_timeouts();
         let active_keys = snapshot
-            .channels()
+            .probe_channels()
             .map(|channel| {
                 UpstreamClientKey::resolve(
                     channel.upstream_policy(),
@@ -560,6 +561,7 @@ mod tests {
                     base_url: "https://upstream.test".into(),
                     enabled: true,
                     auto_disabled: false,
+                    auto_disable_allowed: false,
                     weight: 1,
                     proxy_id: Some(proxy_id),
                     config_template_id: None,
@@ -571,6 +573,7 @@ mod tests {
                     upstream_auth_header_name: None,
                     upstream_api_key: None,
                     available_models: vec!["upstream".into()],
+                    test_model: None,
                     health_check: serde_json::json!({}),
                 }],
                 model_rules: vec![],

@@ -45,6 +45,24 @@ queue_capacity = 1_024
 connection_failure_threshold = 3
 cooldown_seconds = 30
 
+[automatic_disable]
+# Bootstrap values for the database-backed automatic-disable system setting.
+# They are used only on the first startup that creates `forwarding_policy`;
+# later edits are made in the Console.
+enabled = false
+# Upstream HTTP status codes that disable opted-in channels.
+error_status_codes = []
+# Case-insensitive upstream error-message substrings.
+error_message_keywords = []
+
+[scheduled_testing]
+# Bootstrap values for periodic direct upstream tests. A channel needs a
+# selected `test_model` before it receives a test request.
+mode = "global" # "global" or "failure_only"
+auto_recover = true
+interval_minutes = 5
+prompt = "reply '1'"
+
 [models_sync]
 # Administrator-triggered models.dev catalog import. Only complete USD
 # input/output prices are eligible for preview and synchronization.

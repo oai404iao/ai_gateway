@@ -15,6 +15,7 @@ pub struct RequestLogEvent {
     pub completed_at: DateTime<Utc>,
     pub user_id: Uuid,
     pub api_key_id: Uuid,
+    pub request_source: RequestLogSource,
     pub api_format: ApiFormat,
     pub client_model: String,
     pub upstream_model: Option<String>,
@@ -29,6 +30,24 @@ pub struct RequestLogEvent {
     pub total_duration_ms: i32,
     pub billing: Option<RequestBilling>,
     pub error_code: Option<&'static str>,
+}
+
+/// Identifies whether a row came from an external client request or the
+/// system's periodic direct upstream test worker.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RequestLogSource {
+    Client,
+    ScheduledTest,
+}
+
+impl RequestLogSource {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Client => "client",
+            Self::ScheduledTest => "scheduled_test",
+        }
+    }
 }
 
 /// Tokens and price facts recorded with one terminal selected-route request.

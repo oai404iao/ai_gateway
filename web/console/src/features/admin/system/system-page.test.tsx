@@ -51,6 +51,17 @@ describe("SystemPage", () => {
         connection_failure_threshold: 3,
         cooldown_seconds: 30,
       },
+      automatic_disable: {
+        enabled: true,
+        error_status_codes: [429, 500],
+        error_message_keywords: ["quota exceeded"],
+      },
+      scheduled_testing: {
+        mode: "global",
+        auto_recover: true,
+        interval_minutes: 5,
+        prompt: "reply '1'",
+      },
     });
     expect(ifMatch).toBe('"2026-01-02T00:00:00.000Z"');
     expect(await screen.findByText("System settings saved and applied.")).toBeInTheDocument();

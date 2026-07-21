@@ -135,6 +135,7 @@ fn proxy_service_with_network_policy(
             base_url: upstream_url.into(),
             enabled: true,
             auto_disabled: false,
+            auto_disable_allowed: false,
             weight: 1,
             proxy_id: None,
             config_template_id: template_id,
@@ -146,6 +147,7 @@ fn proxy_service_with_network_policy(
             upstream_auth_header_name: None,
             upstream_api_key: Some("upstream-key".into()),
             available_models: vec!["stream-model".into()],
+            test_model: None,
             health_check: serde_json::json!({}),
         }],
         model_rules: vec![ModelRuleRecord {

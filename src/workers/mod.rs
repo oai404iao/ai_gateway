@@ -1,5 +1,7 @@
 //! Background control-plane snapshot reloading and request-log persistence.
 
+mod channel_probe;
+
 use std::{sync::Arc, time::Duration};
 
 use thiserror::Error;
@@ -21,6 +23,8 @@ use crate::{
     routing::{PassiveHealthPolicy, RoutingRuntime},
     runtime_config::{ConfigError, RuntimeConfig},
 };
+
+pub use channel_probe::ChannelProbeWorker;
 
 /// Bounds an individual database write so a stalled connection cannot stop the
 /// single consumer from handling later events.

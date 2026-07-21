@@ -44,6 +44,38 @@ const zhCN: Record<string, string> = {
   "Connection failure threshold": "连接失败阈值",
   "Only connection failures before upstream response headers count.": "仅统计上游响应头返回前的连接失败。",
   "Cooldown (seconds)": "冷却时间（秒）",
+  "Automatic channel disable": "渠道自动禁用",
+  "Matching upstream HTTP errors can temporarily remove opted-in channels from routing.":
+    "匹配的上游 HTTP 错误可暂时将已授权渠道移出路由。",
+  "Enable automatic disable": "启用自动禁用",
+  "When disabled, channel-level automatic-disable permission has no effect.":
+    "关闭后，渠道级自动禁用授权不会生效。",
+  "HTTP error status codes": "HTTP 错误状态码",
+  "Comma-separated upstream HTTP statuses. Matching a configured status disables an opted-in channel.":
+    "以逗号分隔的上游 HTTP 状态码。匹配到配置状态码时，会禁用已授权渠道。",
+  "Error message keywords": "错误消息关键词",
+  "Enter an error keyword": "输入错误关键词",
+  "Case-insensitive upstream error-message substrings. Response bodies are inspected only in memory.":
+    "不区分大小写匹配上游错误消息的子字符串。响应正文仅在内存中检查。",
+  "Scheduled channel tests": "渠道定时测活",
+  "Direct non-streaming test requests use each channel's selected test model and are logged under a system-owned API key.":
+    "直接发起的非流式测试请求会使用各渠道选择的测试模型，并以系统内置 API 密钥的身份记录日志。",
+  "Test mode": "测试模式",
+  "Global": "全局",
+  "Failures only": "仅失败渠道",
+  "Global tests all enabled channels; failures only tests temporarily auto-disabled channels.":
+    "全局模式测试所有已启用渠道；仅失败模式只测试暂时自动禁用的渠道。",
+  "Test interval (minutes)": "测试间隔（分钟）",
+  "Test prompt": "测试提示词",
+  "Automatically recover": "自动恢复",
+  "Restore a temporarily disabled channel after its scheduled test succeeds.":
+    "定时测试成功后恢复暂时自动禁用的渠道。",
+  "Enter unique HTTP status codes from 100 through 599, separated by commas.":
+    "请输入以逗号分隔且唯一的 100 至 599 HTTP 状态码。",
+  "Keyword cannot be blank.": "关键词不能为空。",
+  "Error keywords must be unique.": "错误关键词必须唯一。",
+  "Enter a positive number of minutes.": "请输入正整数分钟数。",
+  "Test prompt is required.": "测试提示词不能为空。",
   "Save system settings": "保存系统设置",
   "System settings saved and applied.": "系统设置已保存并生效。",
   "System settings changed elsewhere. Reloading.": "系统设置已在其他位置修改，正在重新加载。",
@@ -275,6 +307,9 @@ const zhCN: Record<string, string> = {
   "All models": "所有模型",
   "All formats": "所有格式",
   "Outcome": "结果",
+  "Source": "来源",
+  "Client request": "客户端请求",
+  "Scheduled test": "定时测试",
   "All outcomes": "所有结果",
   "Billing": "计费",
   "All billing": "所有计费状态",
@@ -443,6 +478,16 @@ const zhCN: Record<string, string> = {
   "Status statistics": "状态统计",
   "Include this channel in the channel status report.": "在渠道状态报告中包含此渠道。",
   "Auto-disabled": "自动禁用",
+  "Auto-disable reason": "自动禁用原因",
+  "Allow automatic disable": "允许自动禁用",
+  "Scheduled test model": "定时测试模型",
+  "Select a test model": "选择测试模型",
+  "Periodic scheduled tests use this model. It must be one of the available upstream models.":
+    "定时测试会使用此模型。它必须是可用上游模型之一。",
+  "Allow matching system automatic-disable rules to temporarily remove this channel from routing.":
+    "允许匹配的系统自动禁用规则暂时将此渠道移出路由。",
+  "Choose a test model from the available upstream models.":
+    "请从可用上游模型中选择测试模型。",
   "Credential configured": "已配置凭据",
   "The channel format must match its group's format.": "渠道格式必须与所属渠道组的格式一致。",
   "Pick a group": "选择渠道组",

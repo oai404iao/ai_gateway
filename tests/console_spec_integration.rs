@@ -116,6 +116,8 @@ fn bootstrap_system_settings() -> SystemSettingsInput {
             connection_failure_threshold: 3,
             cooldown_seconds: 30,
         },
+        automatic_disable: Default::default(),
+        scheduled_testing: Default::default(),
     }
 }
 
@@ -208,6 +210,8 @@ async fn system_settings_bootstrap_initializes_once_without_overwriting_database
             connection_failure_threshold: 6,
             cooldown_seconds: 60,
         },
+        automatic_disable: Default::default(),
+        scheduled_testing: Default::default(),
     };
 
     repository
@@ -611,6 +615,17 @@ async fn system_settings_are_versioned_audited_and_updated_via_console() {
     input["upstream"]["stream_idle_timeout_seconds"] = serde_json::json!(8);
     input["passive_health"]["connection_failure_threshold"] = serde_json::json!(4);
     input["passive_health"]["cooldown_seconds"] = serde_json::json!(45);
+    input["automatic_disable"] = serde_json::json!({
+        "enabled": true,
+        "error_status_codes": [429, 503],
+        "error_message_keywords": ["quota exceeded", "insufficient balance"],
+    });
+    input["scheduled_testing"] = serde_json::json!({
+        "mode": "failure_only",
+        "auto_recover": false,
+        "interval_minutes": 7,
+        "prompt": "reply '1'",
+    });
     input.as_object_mut().unwrap().remove("updated_at");
 
     let updated = request(
@@ -631,12 +646,24 @@ async fn system_settings_are_versioned_audited_and_updated_via_console() {
     .await
     .unwrap();
     assert_eq!(stored, input);
-    let published = app.runtime.snapshot().system_settings();
+    let snapshot = app.runtime.snapshot();
+    let published = snapshot.system_settings();
     assert_eq!(
         published.upstream_timeouts().connect(),
         std::time::Duration::from_secs(2)
     );
     assert_eq!(published.passive_health().connection_failure_threshold(), 4);
+    assert!(published.automatic_disable().enabled());
+    assert!(published.automatic_disable().matches_status(429));
+    assert_eq!(
+        published.scheduled_testing().mode(),
+        ai_gateway::domain::ScheduledTestingMode::FailureOnly
+    );
+    assert!(!published.scheduled_testing().auto_recover());
+    assert_eq!(
+        published.scheduled_testing().interval(),
+        std::time::Duration::from_secs(7 * 60)
+    );
     let audit: serde_json::Value = sqlx::query_scalar(
         "SELECT after_redacted FROM audit_logs \
          WHERE object_type='system_settings' ORDER BY occurred_at DESC LIMIT 1",

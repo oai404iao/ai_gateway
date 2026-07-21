@@ -585,6 +585,9 @@ pub struct CompiledChannel {
     weight: i32,
     upstream_auth: UpstreamAuth,
     available_models: HashSet<Arc<str>>,
+    auto_disable_allowed: bool,
+    auto_disabled: bool,
+    test_model: Option<Arc<str>>,
     upstream_policy: CompiledChannelUpstreamPolicy,
 }
 impl CompiledChannel {
@@ -620,6 +623,18 @@ impl CompiledChannel {
     pub fn supports_model(&self, model: &str) -> bool {
         self.available_models.contains(model)
     }
+    #[must_use]
+    pub const fn auto_disable_allowed(&self) -> bool {
+        self.auto_disable_allowed
+    }
+    #[must_use]
+    pub const fn auto_disabled(&self) -> bool {
+        self.auto_disabled
+    }
+    #[must_use]
+    pub fn test_model(&self) -> Option<&str> {
+        self.test_model.as_deref()
+    }
     #[allow(dead_code)] // compatibility constructor for callers without a policy
     pub(crate) fn new(
         id: Uuid,
@@ -653,6 +668,34 @@ impl CompiledChannel {
         available_models: HashSet<Arc<str>>,
         upstream_policy: CompiledChannelUpstreamPolicy,
     ) -> Self {
+        Self::new_with_policy_and_automation(
+            id,
+            group_id,
+            api_format,
+            base_url,
+            weight,
+            upstream_auth,
+            available_models,
+            false,
+            false,
+            None,
+            upstream_policy,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_with_policy_and_automation(
+        id: Uuid,
+        group_id: Uuid,
+        api_format: ApiFormat,
+        base_url: Url,
+        weight: i32,
+        upstream_auth: UpstreamAuth,
+        available_models: HashSet<Arc<str>>,
+        auto_disable_allowed: bool,
+        auto_disabled: bool,
+        test_model: Option<Arc<str>>,
+        upstream_policy: CompiledChannelUpstreamPolicy,
+    ) -> Self {
         Self {
             id,
             group_id,
@@ -661,6 +704,9 @@ impl CompiledChannel {
             weight,
             upstream_auth,
             available_models,
+            auto_disable_allowed,
+            auto_disabled,
+            test_model,
             upstream_policy,
         }
     }
@@ -761,7 +807,38 @@ pub struct CompiledModelRule {
     upstream_model: Arc<str>,
     price_snapshot: ModelPriceSnapshot,
     tiers: Arc<[CompiledRouteTier]>,
+    unavailable_candidates: Arc<[CompiledUnavailableRouteCandidate]>,
 }
+
+/// A route target that is structurally valid but temporarily excluded because
+/// its channel is auto-disabled. It lets routing distinguish "no healthy
+/// channel" from an unknown or unauthorized model without returning the
+/// channel to the active snapshot.
+#[derive(Clone, Debug)]
+pub struct CompiledUnavailableRouteCandidate {
+    channel_id: Uuid,
+    group_id: Uuid,
+}
+
+impl CompiledUnavailableRouteCandidate {
+    #[must_use]
+    pub const fn channel_id(&self) -> Uuid {
+        self.channel_id
+    }
+
+    #[must_use]
+    pub const fn group_id(&self) -> Uuid {
+        self.group_id
+    }
+
+    pub(crate) fn new(channel_id: Uuid, group_id: Uuid) -> Self {
+        Self {
+            channel_id,
+            group_id,
+        }
+    }
+}
+
 impl CompiledModelRule {
     #[must_use]
     pub fn id(&self) -> Uuid {
@@ -791,7 +868,12 @@ impl CompiledModelRule {
     pub fn tiers(&self) -> &[CompiledRouteTier] {
         &self.tiers
     }
-    pub(crate) fn new(
+    #[must_use]
+    pub fn unavailable_candidates(&self) -> &[CompiledUnavailableRouteCandidate] {
+        &self.unavailable_candidates
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_with_unavailable_candidates(
         id: Uuid,
         upstream_model_id: Uuid,
         client_model: Arc<str>,
@@ -799,6 +881,7 @@ impl CompiledModelRule {
         upstream_model: Arc<str>,
         price_snapshot: ModelPriceSnapshot,
         tiers: Arc<[CompiledRouteTier]>,
+        unavailable_candidates: Arc<[CompiledUnavailableRouteCandidate]>,
     ) -> Self {
         Self {
             id,
@@ -808,6 +891,7 @@ impl CompiledModelRule {
             upstream_model,
             price_snapshot,
             tiers,
+            unavailable_candidates,
         }
     }
 }
@@ -894,6 +978,7 @@ pub struct CompiledRuntimeConfig {
     api_keys: HashMap<ApiKeyHash, Arc<CompiledApiKey>>,
     model_rules: HashMap<ModelRouteKey, Arc<CompiledModelRule>>,
     channels: HashMap<Uuid, Arc<CompiledChannel>>,
+    probe_channels: HashMap<Uuid, Arc<CompiledChannel>>,
     groups: HashMap<Uuid, Arc<CompiledChannelGroup>>,
     proxies: HashMap<Uuid, Arc<CompiledProxy>>,
     templates: HashMap<Uuid, Arc<CompiledConfigTemplate>>,
@@ -946,10 +1031,35 @@ impl CompiledRuntimeConfig {
         templates: HashMap<Uuid, Arc<CompiledConfigTemplate>>,
         system_settings: SystemRuntimeSettings,
     ) -> Self {
+        let probe_channels = channels.clone();
+        Self::with_resources_system_settings_and_probe_channels(
+            api_keys,
+            model_rules,
+            channels,
+            probe_channels,
+            groups,
+            proxies,
+            templates,
+            system_settings,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn with_resources_system_settings_and_probe_channels(
+        api_keys: HashMap<ApiKeyHash, Arc<CompiledApiKey>>,
+        model_rules: HashMap<ModelRouteKey, Arc<CompiledModelRule>>,
+        channels: HashMap<Uuid, Arc<CompiledChannel>>,
+        probe_channels: HashMap<Uuid, Arc<CompiledChannel>>,
+        groups: HashMap<Uuid, Arc<CompiledChannelGroup>>,
+        proxies: HashMap<Uuid, Arc<CompiledProxy>>,
+        templates: HashMap<Uuid, Arc<CompiledConfigTemplate>>,
+        system_settings: SystemRuntimeSettings,
+    ) -> Self {
         Self {
             api_keys,
             model_rules,
             channels,
+            probe_channels,
             groups,
             proxies,
             templates,
@@ -995,8 +1105,8 @@ impl CompiledRuntimeConfig {
         self.templates.get(&id).cloned()
     }
     #[must_use]
-    pub fn system_settings(&self) -> SystemRuntimeSettings {
-        self.system_settings
+    pub fn system_settings(&self) -> &SystemRuntimeSettings {
+        &self.system_settings
     }
     pub fn api_keys(&self) -> impl Iterator<Item = &Arc<CompiledApiKey>> {
         self.api_keys.values()
@@ -1006,6 +1116,9 @@ impl CompiledRuntimeConfig {
     }
     pub fn channels(&self) -> impl Iterator<Item = &Arc<CompiledChannel>> {
         self.channels.values()
+    }
+    pub fn probe_channels(&self) -> impl Iterator<Item = &Arc<CompiledChannel>> {
+        self.probe_channels.values()
     }
     pub fn proxies(&self) -> impl Iterator<Item = &Arc<CompiledProxy>> {
         self.proxies.values()

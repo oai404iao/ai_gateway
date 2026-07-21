@@ -7,6 +7,7 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::{
+    domain::AutomaticDisableTrigger,
     persistence::{
         ConsoleApiKey, ConsoleAuditLog, ControlPlaneLists, ControlPlaneMutation,
         ControlPlaneRepository, MutationResult, RepositoryError, SelfApiKeyCreate,
@@ -347,6 +348,76 @@ impl ControlPlaneCoordinator {
         } else {
             Err(ControlPlaneError::InvalidActor)
         }
+    }
+
+    /// Transitions one eligible channel into durable temporary disablement.
+    /// Both the persisted global policy and the channel opt-in flag are
+    /// rechecked transactionally, so a stale background event cannot override
+    /// a just-saved administrator setting.
+    pub async fn automatically_disable_channel(
+        &self,
+        channel_id: Uuid,
+        trigger: AutomaticDisableTrigger,
+    ) -> Result<bool, ControlPlaneError> {
+        let _guard = self.serial.lock().await;
+        let mut transaction = self.repository.begin_serializable().await?;
+        let Some(result) = self
+            .repository
+            .automatically_disable_channel(&mut transaction, channel_id, &trigger)
+            .await?
+        else {
+            transaction.commit().await.map_err(RepositoryError::from)?;
+            return Ok(false);
+        };
+        let candidate = self.compile_transaction(&mut transaction).await?;
+        self.validate_candidate(&candidate)?;
+        let correlation_id = Uuid::new_v4();
+        self.repository
+            .insert_system_audit(&mut transaction, &result, correlation_id)
+            .await?;
+        transaction.commit().await.map_err(RepositoryError::from)?;
+        self.publish(candidate);
+        tracing::info!(
+            %correlation_id,
+            channel_id = %channel_id,
+            action = result.action,
+            "channel automation transition committed"
+        );
+        Ok(true)
+    }
+
+    /// Clears a temporary disable after a successful periodic test. Automatic
+    /// recovery is rechecked from the persisted system policy in the same
+    /// transaction as the state transition.
+    pub async fn automatically_recover_channel(
+        &self,
+        channel_id: Uuid,
+    ) -> Result<bool, ControlPlaneError> {
+        let _guard = self.serial.lock().await;
+        let mut transaction = self.repository.begin_serializable().await?;
+        let Some(result) = self
+            .repository
+            .automatically_recover_channel(&mut transaction, channel_id)
+            .await?
+        else {
+            transaction.commit().await.map_err(RepositoryError::from)?;
+            return Ok(false);
+        };
+        let candidate = self.compile_transaction(&mut transaction).await?;
+        self.validate_candidate(&candidate)?;
+        let correlation_id = Uuid::new_v4();
+        self.repository
+            .insert_system_audit(&mut transaction, &result, correlation_id)
+            .await?;
+        transaction.commit().await.map_err(RepositoryError::from)?;
+        self.publish(candidate);
+        tracing::info!(
+            %correlation_id,
+            channel_id = %channel_id,
+            action = result.action,
+            "channel automation transition committed"
+        );
+        Ok(true)
     }
 
     fn publish(&self, next: Arc<crate::domain::CompiledRuntimeConfig>) {
