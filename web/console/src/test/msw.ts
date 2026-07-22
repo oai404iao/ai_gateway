@@ -23,6 +23,7 @@ import {
   PROXY,
   REVOKED_SESSION,
   SYSTEM_SETTINGS,
+  SYSTEM_LOAD_REPORT,
 } from "@/test/fixtures";
 import { clearSession, setSession } from "@/api/session-store";
 
@@ -130,6 +131,7 @@ export const handlers = [
   http.get("/console/v1/statistics/costs", () =>
     HttpResponse.json(COST_STATISTICS_REPORT),
   ),
+  http.get("/console/v1/system/load", () => HttpResponse.json(SYSTEM_LOAD_REPORT)),
   http.get("/console/v1/audit-logs", () => HttpResponse.json([])),
   http.get("/console/v1/system/settings", () =>
     HttpResponse.json(SYSTEM_SETTINGS, {

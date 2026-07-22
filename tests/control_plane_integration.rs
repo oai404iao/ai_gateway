@@ -11,7 +11,7 @@ use ai_gateway::{
     application::{
         AutomaticDisableWorker, ConsoleAuthService, ControlPlaneCoordinator, ModelSyncService,
         NoopRequestLogSink, ProxyService, QueueRequestLogSink, RequestLogSink,
-        hash_console_password,
+        SystemMetricsService, hash_console_password,
     },
     domain::{
         ApiFormat, ApiKeyPermission, AutomaticDisableTrigger, RequestBilling, RequestLogEvent,
@@ -1545,7 +1545,8 @@ async fn admin_app_with_models_dev(
                 coordinator,
                 model_sync,
                 auth,
-                request_logs: RequestLogRepository::new(pool),
+                request_logs: RequestLogRepository::new(pool.clone()),
+                system_metrics: SystemMetricsService::new(pool, 5),
                 console_body_bytes: 1_048_576,
                 auth_body_bytes: 16_384,
                 allowed_origins: vec![],

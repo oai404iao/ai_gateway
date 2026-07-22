@@ -157,12 +157,20 @@ Policy 不再保存额度、RPM、并发、格式、权限或最大活动 Key �
 - 网络：`/console/v1/network/proxies`
 - 变换模板：`/console/v1/transforms/templates`
 - 观测事实：`GET /console/v1/request-logs`、`GET /console/v1/audit-logs`
+- 系统负载：`GET /console/v1/system/load`（当前实例的 CPU、内存、运行时、队列、日志积压和数据库连接池压力）
 - 系统转发设置：`GET` / `PUT /console/v1/system/settings`（管理员；`PUT` 使用 `If-Match`，保存后立即发布快照）
 - 手动重载：`POST /console/v1/system/reload`
 
 大多数可更新资源遵循 `GET` 返回 `ETag`、`PUT` 携带 `If-Match` 的乐观并发模型。控制面写入在 serializable 事务中再次确认 actor 仍为 active admin，校验完整候选快照、写入脱敏审计记录，并在提交后立即发布运行时快照。
 
 为迁移旧控制台客户端，`/console/v1/channel-groups`、`/channels`、`/model-rules`、`/proxies`、`/config-templates`、`/models/sync/*` 和 `/reload` 仍有同一 JWT/角色边界下的 Console 别名；`/admin/v1/*` 不再存在。
+
+`GET /console/v1/system/load` 是只读、管理员权限的当前实例快照。Linux 上从 procfs
+采样主机与网关进程 CPU、内存、load average、RSS、文件描述符和线程数；不支持的平台将对应字段
+返回 `null`。它还返回进程内准入与路由 in-flight 状态、请求日志通知/投影队列、自动禁用队列、
+本地 spool pending bytes、PostgreSQL ingress/settlement backlog 以及控制面和请求日志连接池占用。
+CPU 百分比依赖相邻采样差值，因此进程启动后的首次采样可能为 `null`。这些数据不是多实例集群聚合；
+Console 的“系统负载”页默认每 5 秒重新获取一次。
 
 ## 自动禁用与定时测试
 

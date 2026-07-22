@@ -5,6 +5,7 @@ import type {
   ChannelStatusWindow,
   CostStatisticsReport,
   StatisticsGranularity,
+  SystemLoadReport,
 } from "@/api/types";
 
 export interface CostStatisticsFilters {
@@ -46,5 +47,13 @@ export function useCostStatistics(filters: CostStatisticsFilters) {
           api_key_id: filters.api_key_id,
         })}`,
       ),
+  });
+}
+
+export function useSystemLoad() {
+  return useQuery({
+    queryKey: ["console", "system", "load"] as const,
+    queryFn: () => apiGet<SystemLoadReport>("/system/load"),
+    refetchInterval: 5_000,
   });
 }

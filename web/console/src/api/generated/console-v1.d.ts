@@ -658,6 +658,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/system/load": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * @description Returns a current-instance operational snapshot for the gateway
+         *     process and its host. Linux resource values are sampled from procfs;
+         *     unsupported values and temporarily unavailable backlog queries are
+         *     null. CPU percentages are deltas between samples, so the first sample
+         *     after process start may be null. Queue depth, durable request-log
+         *     backlog, runtime in-flight state, and database pool pressure are
+         *     process-local except for PostgreSQL-backed backlog counts.
+         */
+        get: operations["getSystemLoad"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/system/settings": {
         parameters: {
             query?: never;
@@ -874,6 +899,128 @@ export interface components {
         };
         SystemSettings: components["schemas"]["SystemSettingsInput"] & {
             updated_at: components["schemas"]["DateTime"];
+        };
+        SystemLoadReport: {
+            sampled_at: components["schemas"]["DateTime"];
+            started_at: components["schemas"]["DateTime"];
+            /** Format: int64 */
+            uptime_seconds: number;
+            host: components["schemas"]["SystemHostLoad"];
+            process: components["schemas"]["SystemProcessLoad"];
+            runtime: components["schemas"]["SystemRuntimeLoad"];
+            queues: components["schemas"]["SystemQueuesLoad"];
+            request_log: components["schemas"]["SystemRequestLogLoad"];
+            database: components["schemas"]["SystemDatabaseLoad"];
+        };
+        SystemHostLoad: {
+            /** Format: int64 */
+            logical_cpu_count: number;
+            /** Format: double */
+            cpu_usage_percent: number | null;
+            /** Format: double */
+            load_average_1m: number | null;
+            /** Format: double */
+            load_average_5m: number | null;
+            /** Format: double */
+            load_average_15m: number | null;
+            /** Format: int64 */
+            memory_total_bytes: number | null;
+            /** Format: int64 */
+            memory_used_bytes: number | null;
+            /** Format: double */
+            memory_usage_percent: number | null;
+        };
+        SystemProcessLoad: {
+            /**
+             * Format: double
+             * @description Gateway process share of total host CPU capacity.
+             */
+            cpu_usage_percent: number | null;
+            /** Format: int64 */
+            resident_memory_bytes: number | null;
+            /** Format: double */
+            resident_memory_percent: number | null;
+            /** Format: int64 */
+            open_file_descriptors: number | null;
+            /** Format: int64 */
+            threads: number | null;
+        };
+        SystemRuntimeLoad: {
+            /** Format: int64 */
+            tracked_api_keys: number;
+            /** Format: int64 */
+            requests_in_current_windows: number;
+            /** Format: int64 */
+            in_flight_requests: number;
+            /** Format: int64 */
+            routing_in_flight_requests: number;
+            /** Format: int64 */
+            tracked_channels: number;
+            /** Format: int64 */
+            cooling_down_channels: number;
+            /** Format: int64 */
+            half_open_channels: number;
+            /** Format: int64 */
+            session_affinity_entries: number;
+        };
+        SystemQueuesLoad: {
+            request_log_notifications: components["schemas"]["SystemQueueLoad"];
+            request_log_projection: components["schemas"]["SystemQueueLoad"];
+            automatic_disable: components["schemas"]["SystemQueueLoad"];
+        };
+        SystemQueueLoad: {
+            /** Format: int64 */
+            depth: number;
+            /** Format: int64 */
+            capacity: number;
+            /** Format: double */
+            utilization_percent: number | null;
+        };
+        SystemRequestLogLoad: {
+            /** Format: int64 */
+            spool_pending_bytes: number;
+            /** Format: int64 */
+            ingress_backlog_rows_estimate: number | null;
+            /** Format: int64 */
+            ingress_oldest_age_seconds: number | null;
+            /** Format: int64 */
+            settlement_backlog_rows: number | null;
+            /** Format: int64 */
+            settlement_oldest_age_seconds: number | null;
+            /** Format: int64 */
+            recorded_total: number;
+            /** Format: int64 */
+            spooled_total: number;
+            /** Format: int64 */
+            projected_rows_total: number;
+            /** Format: int64 */
+            projection_deferred_total: number;
+            /** Format: int64 */
+            settled_rows_total: number;
+            /** Format: int64 */
+            spool_append_failures_total: number;
+            /** Format: int64 */
+            ingress_failures_total: number;
+            /** Format: int64 */
+            projection_failures_total: number;
+            /** Format: int64 */
+            settlement_failures_total: number;
+        };
+        SystemDatabaseLoad: {
+            control_plane: components["schemas"]["SystemDatabasePoolLoad"];
+            request_log: components["schemas"]["SystemDatabasePoolLoad"];
+        };
+        SystemDatabasePoolLoad: {
+            /** Format: int64 */
+            size: number;
+            /** Format: int64 */
+            idle: number;
+            /** Format: int64 */
+            in_use: number;
+            /** Format: int64 */
+            capacity: number;
+            /** Format: double */
+            utilization_percent: number | null;
         };
         ApiKeyView: {
             /** Format: uuid */
@@ -3216,6 +3363,28 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AuditLogView"][];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    getSystemLoad: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current system load and pressure snapshot. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SystemLoadReport"];
                 };
             };
             401: components["responses"]["Unauthorized"];

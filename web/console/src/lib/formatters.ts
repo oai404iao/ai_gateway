@@ -29,6 +29,20 @@ export function formatTokens(value: number | null | undefined): string {
   return value.toLocaleString(currentLocale());
 }
 
+export function formatBytes(value: number | null | undefined): string {
+  if (value === null || value === undefined) return "—";
+  const units = ["B", "KiB", "MiB", "GiB", "TiB"] as const;
+  let amount = Math.max(0, value);
+  let unit = 0;
+  while (amount >= 1_024 && unit < units.length - 1) {
+    amount /= 1_024;
+    unit += 1;
+  }
+  return `${amount.toLocaleString(currentLocale(), {
+    maximumFractionDigits: amount >= 100 || unit === 0 ? 0 : 1,
+  })} ${units[unit]}`;
+}
+
 export function formatDurationMs(value: number | null | undefined): string {
   if (value === null || value === undefined) return "—";
   if (value < 1000) return `${value} ms`;

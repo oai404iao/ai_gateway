@@ -4,14 +4,14 @@ use std::{
     net::SocketAddr,
     path::PathBuf,
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use ai_gateway::{
     admission::AdmissionRuntime,
     application::{
         AutomaticDisableWorker, ConsoleAuthService, ControlPlaneCoordinator, ModelSyncService,
-        ProxyService, RequestLogSink, hash_console_password,
+        ProxyService, RequestLogSink, SystemMetricsService, hash_console_password,
     },
     http,
     models_dev::ModelsDevClient,
@@ -28,6 +28,7 @@ use ai_gateway::{
     workers::{ChannelProbeWorker, ControlPlaneReloader, DurableRequestLogWorker},
 };
 use axum::{Router, body::Body};
+use chrono::Utc;
 use hyper::body::Incoming;
 use hyper_util::{
     rt::{TokioExecutor, TokioIo},
@@ -61,6 +62,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
 }
 
 async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
+    let gateway_started_at = Utc::now();
+    let gateway_started = Instant::now();
     let config = AppConfig::load(&config_path)?.validate()?;
     let _log_guard = observability::init(&config.observability.filter);
     let database_connect_options = config.database.connect_options()?;
@@ -130,6 +133,7 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
         admission.clone(),
     )
     .await?;
+    let request_log_monitor = request_log_worker.monitor();
     let request_log_sink: Arc<dyn RequestLogSink> = Arc::new(request_log_sink);
     let routing = RoutingRuntime::new(PassiveHealthPolicy {
         connection_failure_threshold: initial_passive_health.connection_failure_threshold(),
@@ -145,6 +149,18 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
     )?;
     let (automatic_disable_service, automatic_disable_worker) =
         AutomaticDisableWorker::start(coordinator.clone());
+    let system_metrics = SystemMetricsService::new_at(
+        pool.clone(),
+        config.database.max_connections,
+        gateway_started_at,
+        gateway_started,
+    )
+    .with_runtime(
+        admission.clone(),
+        routing.clone(),
+        request_log_monitor,
+        automatic_disable_service.clone(),
+    );
     let proxy = ProxyService::with_dependencies_and_registry_and_automation(
         Arc::clone(&runtime),
         config.request_limits.proxy_body_bytes,
@@ -183,6 +199,7 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
             model_sync,
             auth,
             request_logs: RequestLogRepository::new(pool.clone()),
+            system_metrics,
             console_body_bytes: config.request_limits.console_body_bytes,
             auth_body_bytes: config.request_limits.auth_body_bytes,
             allowed_origins: console.allowed_origins.clone(),

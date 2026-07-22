@@ -60,6 +60,13 @@ pub struct AdmissionRuntime {
     inner: Arc<AdmissionInner>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct AdmissionPressureSnapshot {
+    pub tracked_api_keys: u64,
+    pub requests_in_current_windows: u64,
+    pub in_flight_requests: u64,
+}
+
 impl Default for AdmissionRuntime {
     fn default() -> Self {
         Self::new()
@@ -160,6 +167,24 @@ impl AdmissionRuntime {
             .entry(key_id)
             .and_modify(|current| *current = (*current).max(quota_used_amount))
             .or_insert(quota_used_amount);
+    }
+
+    #[must_use]
+    pub fn pressure_snapshot(&self) -> AdmissionPressureSnapshot {
+        let all = self
+            .inner
+            .state
+            .lock()
+            .expect("admission state mutex poisoned");
+        AdmissionPressureSnapshot {
+            tracked_api_keys: u64::try_from(all.keys.len()).unwrap_or(u64::MAX),
+            requests_in_current_windows: all.keys.values().fold(0_u64, |total, state| {
+                total.saturating_add(u64::from(state.requests_in_window))
+            }),
+            in_flight_requests: all.keys.values().fold(0_u64, |total, state| {
+                total.saturating_add(u64::from(state.in_flight))
+            }),
+        }
     }
 
     #[cfg(test)]

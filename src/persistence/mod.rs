@@ -1483,6 +1483,25 @@ impl RequestLogRepository {
         .map_err(RepositoryError::from)
     }
 
+    pub(crate) async fn settlement_backlog(
+        &self,
+    ) -> Result<RequestLogSettlementBacklog, RepositoryError> {
+        sqlx::query_as::<_, RequestLogSettlementBacklog>(
+            "SELECT
+                 count(*)::bigint AS row_count,
+                 min(log.completed_at) AS oldest_completed_at
+             FROM request_logs AS log
+             JOIN api_keys AS key
+               ON key.id = log.api_key_id
+              AND key.user_id = log.user_id
+             WHERE log.billed_at IS NULL
+               AND log.cost_amount IS NOT NULL",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(RepositoryError::from)
+    }
+
     #[must_use]
     pub(crate) fn pool_status(&self) -> RequestLogPoolStatus {
         RequestLogPoolStatus {
@@ -2667,6 +2686,12 @@ impl RequestLogIngestRecord {
 pub(crate) struct RequestLogIngestBacklog {
     pub row_count: i64,
     pub oldest_staged_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Clone, Copy, Debug, FromRow)]
+pub(crate) struct RequestLogSettlementBacklog {
+    pub row_count: i64,
+    pub oldest_completed_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Clone, Copy, Debug)]

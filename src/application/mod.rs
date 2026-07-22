@@ -6,6 +6,7 @@ mod control_plane;
 mod model_sync;
 mod proxy;
 mod request_log;
+mod system_metrics;
 mod usage;
 
 pub use auth::{
@@ -23,5 +24,6 @@ pub use model_sync::{
 pub use proxy::{ModelsResponse, ProxyError, ProxyService};
 pub use request_log::{
     DurableRequestLogSink, NoopRequestLogSink, QueueRequestLogSink, RecordingRequestLogSink,
-    RequestLogSink,
+    RequestLogPipelineMonitor, RequestLogSink,
 };
+pub use system_metrics::{SystemLoadReport, SystemMetricsService};

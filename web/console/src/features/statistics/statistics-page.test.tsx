@@ -24,7 +24,7 @@ function renderApp() {
 }
 
 describe("StatisticsPage", () => {
-  it("shows channel health and cost analytics", async () => {
+  it("shows channel, cost, and system load analytics", async () => {
     seedAuthenticatedSession();
     const user = userEvent.setup();
     renderApp();
@@ -41,6 +41,14 @@ describe("StatisticsPage", () => {
     expect(await screen.findByText("Total cost")).toBeInTheDocument();
     expect(screen.getAllByText("1,912.06 USD").length).toBeGreaterThan(0);
     expect(screen.getByText("Model cost breakdown")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "System load" }));
+
+    expect(await screen.findByText("Host CPU")).toBeInTheDocument();
+    expect(screen.getByText("42.5%")).toBeInTheDocument();
+    expect(screen.getByText("Bounded queues")).toBeInTheDocument();
+    expect(screen.getByText("Request-log notifications")).toBeInTheDocument();
+    expect(screen.getByText("2 MiB")).toBeInTheDocument();
   });
 
   it("defaults to today and applies week and month ranges with useful granularities", async () => {

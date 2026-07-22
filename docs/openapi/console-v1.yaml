@@ -1214,6 +1214,28 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
+  /system/load:
+    get:
+      tags: [System]
+      operationId: getSystemLoad
+      description: |
+        Returns a current-instance operational snapshot for the gateway
+        process and its host. Linux resource values are sampled from procfs;
+        unsupported values and temporarily unavailable backlog queries are
+        null. CPU percentages are deltas between samples, so the first sample
+        after process start may be null. Queue depth, durable request-log
+        backlog, runtime in-flight state, and database pool pressure are
+        process-local except for PostgreSQL-backed backlog counts.
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Current system load and pressure snapshot.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SystemLoadReport" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
   /system/settings:
     get:
       tags: [System]
@@ -1692,6 +1714,171 @@ components:
           required: [updated_at]
           properties:
             updated_at: { $ref: "#/components/schemas/DateTime" }
+
+    SystemLoadReport:
+      type: object
+      required:
+        [sampled_at, started_at, uptime_seconds, host, process, runtime,
+         queues, request_log, database]
+      properties:
+        sampled_at: { $ref: "#/components/schemas/DateTime" }
+        started_at: { $ref: "#/components/schemas/DateTime" }
+        uptime_seconds: { type: integer, format: int64, minimum: 0 }
+        host: { $ref: "#/components/schemas/SystemHostLoad" }
+        process: { $ref: "#/components/schemas/SystemProcessLoad" }
+        runtime: { $ref: "#/components/schemas/SystemRuntimeLoad" }
+        queues: { $ref: "#/components/schemas/SystemQueuesLoad" }
+        request_log: { $ref: "#/components/schemas/SystemRequestLogLoad" }
+        database: { $ref: "#/components/schemas/SystemDatabaseLoad" }
+
+    SystemHostLoad:
+      type: object
+      required:
+        [logical_cpu_count, cpu_usage_percent, load_average_1m,
+         load_average_5m, load_average_15m, memory_total_bytes,
+         memory_used_bytes, memory_usage_percent]
+      properties:
+        logical_cpu_count: { type: integer, format: int64, minimum: 1 }
+        cpu_usage_percent:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 100
+          nullable: true
+        load_average_1m: { type: number, format: double, minimum: 0, nullable: true }
+        load_average_5m: { type: number, format: double, minimum: 0, nullable: true }
+        load_average_15m: { type: number, format: double, minimum: 0, nullable: true }
+        memory_total_bytes: { type: integer, format: int64, minimum: 0, nullable: true }
+        memory_used_bytes: { type: integer, format: int64, minimum: 0, nullable: true }
+        memory_usage_percent:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 100
+          nullable: true
+
+    SystemProcessLoad:
+      type: object
+      required:
+        [cpu_usage_percent, resident_memory_bytes, resident_memory_percent,
+         open_file_descriptors, threads]
+      properties:
+        cpu_usage_percent:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 100
+          nullable: true
+          description: Gateway process share of total host CPU capacity.
+        resident_memory_bytes: { type: integer, format: int64, minimum: 0, nullable: true }
+        resident_memory_percent:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 100
+          nullable: true
+        open_file_descriptors: { type: integer, format: int64, minimum: 0, nullable: true }
+        threads: { type: integer, format: int64, minimum: 0, nullable: true }
+
+    SystemRuntimeLoad:
+      type: object
+      required:
+        [tracked_api_keys, requests_in_current_windows, in_flight_requests,
+         routing_in_flight_requests, tracked_channels, cooling_down_channels,
+         half_open_channels, session_affinity_entries]
+      properties:
+        tracked_api_keys: { type: integer, format: int64, minimum: 0 }
+        requests_in_current_windows: { type: integer, format: int64, minimum: 0 }
+        in_flight_requests: { type: integer, format: int64, minimum: 0 }
+        routing_in_flight_requests: { type: integer, format: int64, minimum: 0 }
+        tracked_channels: { type: integer, format: int64, minimum: 0 }
+        cooling_down_channels: { type: integer, format: int64, minimum: 0 }
+        half_open_channels: { type: integer, format: int64, minimum: 0 }
+        session_affinity_entries: { type: integer, format: int64, minimum: 0 }
+
+    SystemQueuesLoad:
+      type: object
+      required: [request_log_notifications, request_log_projection, automatic_disable]
+      properties:
+        request_log_notifications: { $ref: "#/components/schemas/SystemQueueLoad" }
+        request_log_projection: { $ref: "#/components/schemas/SystemQueueLoad" }
+        automatic_disable: { $ref: "#/components/schemas/SystemQueueLoad" }
+
+    SystemQueueLoad:
+      type: object
+      required: [depth, capacity, utilization_percent]
+      properties:
+        depth: { type: integer, format: int64, minimum: 0 }
+        capacity: { type: integer, format: int64, minimum: 0 }
+        utilization_percent:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 100
+          nullable: true
+
+    SystemRequestLogLoad:
+      type: object
+      required:
+        [spool_pending_bytes, ingress_backlog_rows_estimate,
+         ingress_oldest_age_seconds, settlement_backlog_rows,
+         settlement_oldest_age_seconds, recorded_total, spooled_total,
+         projected_rows_total, projection_deferred_total, settled_rows_total,
+         spool_append_failures_total, ingress_failures_total,
+         projection_failures_total, settlement_failures_total]
+      properties:
+        spool_pending_bytes: { type: integer, format: int64, minimum: 0 }
+        ingress_backlog_rows_estimate:
+          type: integer
+          format: int64
+          minimum: 0
+          nullable: true
+        ingress_oldest_age_seconds:
+          type: integer
+          format: int64
+          minimum: 0
+          nullable: true
+        settlement_backlog_rows:
+          type: integer
+          format: int64
+          minimum: 0
+          nullable: true
+        settlement_oldest_age_seconds:
+          type: integer
+          format: int64
+          minimum: 0
+          nullable: true
+        recorded_total: { type: integer, format: int64, minimum: 0 }
+        spooled_total: { type: integer, format: int64, minimum: 0 }
+        projected_rows_total: { type: integer, format: int64, minimum: 0 }
+        projection_deferred_total: { type: integer, format: int64, minimum: 0 }
+        settled_rows_total: { type: integer, format: int64, minimum: 0 }
+        spool_append_failures_total: { type: integer, format: int64, minimum: 0 }
+        ingress_failures_total: { type: integer, format: int64, minimum: 0 }
+        projection_failures_total: { type: integer, format: int64, minimum: 0 }
+        settlement_failures_total: { type: integer, format: int64, minimum: 0 }
+
+    SystemDatabaseLoad:
+      type: object
+      required: [control_plane, request_log]
+      properties:
+        control_plane: { $ref: "#/components/schemas/SystemDatabasePoolLoad" }
+        request_log: { $ref: "#/components/schemas/SystemDatabasePoolLoad" }
+
+    SystemDatabasePoolLoad:
+      type: object
+      required: [size, idle, in_use, capacity, utilization_percent]
+      properties:
+        size: { type: integer, format: int64, minimum: 0 }
+        idle: { type: integer, format: int64, minimum: 0 }
+        in_use: { type: integer, format: int64, minimum: 0 }
+        capacity: { type: integer, format: int64, minimum: 0 }
+        utilization_percent:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 100
+          nullable: true
 
     ApiKeyView:
       type: object

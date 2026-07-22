@@ -11,7 +11,7 @@ use tokio::{
 
 use crate::{
     admission::AdmissionRuntime,
-    application::DurableRequestLogSink,
+    application::{DurableRequestLogSink, RequestLogPipelineMonitor},
     observability::RequestLogPipelineMetrics,
     persistence::{
         RequestLogBatchInsertOutcome, RequestLogIngestRecord, RequestLogRepository,
@@ -38,6 +38,7 @@ pub struct DurableRequestLogWorker {
     metrics_shutdown: oneshot::Sender<()>,
     metrics_task: JoinHandle<()>,
     spool: Arc<RequestLogSpool>,
+    monitor: RequestLogPipelineMonitor,
     shutdown_drain: Duration,
 }
 
@@ -88,6 +89,15 @@ impl DurableRequestLogWorker {
         let (spool_sync_shutdown, spool_sync_shutdown_requested) = oneshot::channel();
         let (settlement_shutdown, settlement_shutdown_requested) = oneshot::channel();
         let (metrics_shutdown, metrics_shutdown_requested) = oneshot::channel();
+        let monitor = RequestLogPipelineMonitor::new(
+            repository.clone(),
+            Arc::clone(&spool),
+            wake_sender.clone(),
+            config.queue_capacity,
+            stage_sender.clone(),
+            config.database_max_connections,
+            Arc::clone(&metrics),
+        );
 
         let spool_task = tokio::spawn(run_spool_ingest_worker(
             SpoolIngestContext {
@@ -147,9 +157,15 @@ impl DurableRequestLogWorker {
                 metrics_shutdown,
                 metrics_task,
                 spool,
+                monitor,
                 shutdown_drain: settings.shutdown_drain,
             },
         ))
+    }
+
+    #[must_use]
+    pub fn monitor(&self) -> RequestLogPipelineMonitor {
+        self.monitor.clone()
     }
 
     pub async fn shutdown(self) {
@@ -164,8 +180,10 @@ impl DurableRequestLogWorker {
             metrics_shutdown,
             mut metrics_task,
             spool,
+            monitor,
             shutdown_drain,
         } = self;
+        monitor.disconnect_projection_queue();
         let drain_deadline = Instant::now() + shutdown_drain + DATABASE_OPERATION_TIMEOUT;
         let _ = spool_shutdown.send(());
         await_or_abort(

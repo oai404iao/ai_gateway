@@ -54,6 +54,15 @@ impl AutomaticDisableService {
             }
         }
     }
+
+    pub(super) fn queue_depth_and_capacity(&self) -> (u64, u64) {
+        let capacity = AUTOMATIC_DISABLE_QUEUE_CAPACITY;
+        let depth = capacity.saturating_sub(self.sender.capacity());
+        (
+            u64::try_from(depth).unwrap_or(u64::MAX),
+            u64::try_from(capacity).unwrap_or(u64::MAX),
+        )
+    }
 }
 
 pub(crate) struct AutomaticDisableRequest {

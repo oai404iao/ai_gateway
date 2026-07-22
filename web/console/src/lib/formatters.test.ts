@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   formatBoolean,
+  formatBytes,
   formatUsd,
   formatDurationMs,
   formatList,
@@ -18,6 +19,11 @@ describe("formatters", () => {
     expect(formatDurationMs(42)).toBe("42 ms");
     expect(formatDurationMs(1500)).toBe("1.5 s");
     expect(formatDurationMs(null)).toBe("—");
+  });
+
+  it("formats byte counts", () => {
+    expect(formatBytes(2_097_152)).toBe("2 MiB");
+    expect(formatBytes(null)).toBe("—");
   });
 
   it("formats tokens and lists", () => {

@@ -16,7 +16,7 @@ use std::sync::Arc;
 use ai_gateway::{
     application::{
         AuthError, ConsoleAuthService, ControlPlaneCoordinator, ModelSyncService,
-        hash_console_password,
+        SystemMetricsService, hash_console_password,
     },
     http::console::{self, ConsoleState},
     models_dev::ModelsDevClient,
@@ -202,7 +202,8 @@ async fn app(pool: PgPool) -> App {
         coordinator,
         model_sync,
         auth,
-        request_logs: RequestLogRepository::new(pool),
+        request_logs: RequestLogRepository::new(pool.clone()),
+        system_metrics: SystemMetricsService::new(pool, 5),
         console_body_bytes: 1_048_576,
         auth_body_bytes: 16_384,
         allowed_origins: vec![],
@@ -607,6 +608,38 @@ async fn etag_if_match_optimistic_concurrency_matches_spec() {
         conflict_body.contains("\"error\""),
         "conflict body is an error body"
     );
+    database.cleanup().await;
+}
+
+/// The admin-only load endpoint exposes the current instance's resource,
+/// runtime, queue, backlog, and database-pool pressure shape.
+#[tokio::test]
+async fn system_load_reports_current_instance_pressure_shape() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+
+    let response = request(
+        &app,
+        "GET",
+        "/console/v1/system/load",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert!(body["sampled_at"].is_string());
+    assert!(body["started_at"].is_string());
+    assert!(body["uptime_seconds"].is_number());
+    assert!(body["host"]["logical_cpu_count"].is_number());
+    assert!(
+        body["process"]["cpu_usage_percent"].is_number()
+            || body["process"]["cpu_usage_percent"].is_null()
+    );
+    assert!(body["runtime"]["in_flight_requests"].is_number());
+    assert!(body["queues"]["request_log_notifications"]["depth"].is_number());
+    assert!(body["request_log"]["spool_pending_bytes"].is_number());
+    assert!(body["database"]["control_plane"]["capacity"].is_number());
     database.cleanup().await;
 }
 

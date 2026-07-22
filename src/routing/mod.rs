@@ -215,6 +215,15 @@ pub struct ChannelHealthSnapshot {
     pub half_open_probe: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RoutingPressureSnapshot {
+    pub tracked_channels: u64,
+    pub in_flight_requests: u64,
+    pub cooling_down_channels: u64,
+    pub half_open_channels: u64,
+    pub session_affinity_entries: u64,
+}
+
 impl RoutingRuntime {
     #[must_use]
     pub fn new(policy: PassiveHealthPolicy) -> Self {
@@ -265,6 +274,57 @@ impl RoutingRuntime {
                 .and_then(|value| value.cooldown_until)
                 .is_some_and(|until| until > now),
             half_open_probe: entry.is_some_and(|value| value.half_open_probe),
+        }
+    }
+
+    #[must_use]
+    pub fn pressure_snapshot(&self) -> RoutingPressureSnapshot {
+        let now = self.inner.clock.now();
+        let (tracked_channels, in_flight_requests, cooling_down_channels, half_open_channels) = {
+            let state = self
+                .inner
+                .state
+                .lock()
+                .expect("routing state mutex poisoned");
+            let mut in_flight_requests = 0_u64;
+            let mut cooling_down_channels = 0_u64;
+            let mut half_open_channels = 0_u64;
+            for channel in state.channels.values() {
+                in_flight_requests = in_flight_requests.saturating_add(channel.in_flight);
+                if channel.cooldown_until.is_some_and(|until| until > now) {
+                    cooling_down_channels = cooling_down_channels.saturating_add(1);
+                }
+                if channel.half_open_probe {
+                    half_open_channels = half_open_channels.saturating_add(1);
+                }
+            }
+            (
+                u64::try_from(
+                    state
+                        .active_channels
+                        .as_ref()
+                        .map_or(state.channels.len(), HashSet::len),
+                )
+                .unwrap_or(u64::MAX),
+                in_flight_requests,
+                cooling_down_channels,
+                half_open_channels,
+            )
+        };
+        let session_affinity_entries = {
+            let affinity = self
+                .inner
+                .affinity
+                .lock()
+                .expect("routing affinity mutex poisoned");
+            u64::try_from(affinity.entries.len()).unwrap_or(u64::MAX)
+        };
+        RoutingPressureSnapshot {
+            tracked_channels,
+            in_flight_requests,
+            cooling_down_channels,
+            half_open_channels,
+            session_affinity_entries,
         }
     }
 

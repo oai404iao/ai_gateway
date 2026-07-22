@@ -20,7 +20,8 @@ use crate::{
     application::{
         AuthError, ConsoleAuthService, ControlPlaneCoordinator, ControlPlaneError,
         IssuedInvitation, IssuedSession, ModelImportRequest, ModelSyncError, ModelSyncPreview,
-        ModelSyncPreviewRequest, ModelSyncResponse, ModelSyncService,
+        ModelSyncPreviewRequest, ModelSyncResponse, ModelSyncService, SystemLoadReport,
+        SystemMetricsService,
     },
     domain::{ConsolePrincipal, UserRole},
     persistence::{
@@ -41,6 +42,7 @@ pub struct ConsoleState {
     pub model_sync: ModelSyncService,
     pub auth: ConsoleAuthService,
     pub request_logs: RequestLogRepository,
+    pub system_metrics: SystemMetricsService,
     pub console_body_bytes: usize,
     pub auth_body_bytes: usize,
     pub allowed_origins: Vec<String>,
@@ -166,6 +168,7 @@ pub fn router(state: ConsoleState) -> Router {
             "/console/v1/system/settings",
             get(get_system_settings).put(update_system_settings),
         )
+        .route("/console/v1/system/load", get(get_system_load))
         .route("/console/v1/system/reload", post(reload))
         // Console v1 compatibility aliases for the former management resource
         // layout. They remain JWT/role protected and never recreate /admin.
@@ -1270,6 +1273,10 @@ async fn get_system_settings(State(state): State<ConsoleState>) -> Result<Respon
         HeaderValue::from_str(&etag(updated_at)).expect("ETag is valid"),
     );
     Ok(response)
+}
+
+async fn get_system_load(State(state): State<ConsoleState>) -> Json<SystemLoadReport> {
+    Json(state.system_metrics.snapshot().await)
 }
 
 async fn update_system_settings(
