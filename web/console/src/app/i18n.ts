@@ -70,6 +70,80 @@ const zhCN: Record<string, string> = {
   "Automatically recover": "自动恢复",
   "Restore a temporarily disabled channel after its scheduled test succeeds.":
     "定时测试成功后恢复暂时自动禁用的渠道。",
+  "Session affinity": "Session 粘性",
+  "Reuse the last successful channel for matching session keys without adding retries.":
+    "为匹配的 Session Key 复用最后一次成功渠道，且不增加重试。",
+  "Enable session affinity": "启用 Session 粘性",
+  "The cache is process-local, bounded, and stores only hashed keys with channel IDs.":
+    "缓存仅存在于当前进程、容量有界，并且只保存 Key 哈希和渠道 ID。",
+  "Maximum cache entries": "最大缓存条目数",
+  "Bounds memory use when clients continuously generate new session keys.":
+    "限制客户端持续生成新 Session Key 时的内存占用。",
+  "Default affinity TTL (seconds)": "默认粘性 TTL（秒）",
+  "Successful requests refresh the matched rule's TTL.": "成功请求会刷新命中规则的 TTL。",
+  "Affinity rules": "粘性规则",
+  "Rules are evaluated from top to bottom; the first extracted key wins.":
+    "规则按从上到下的顺序执行，首个成功提取的 Key 生效。",
+  "Add Codex template": "添加 Codex 模板",
+  "Add rule": "添加规则",
+  "No affinity rules": "暂无粘性规则",
+  "Add a rule or start from the Codex Responses template.":
+    "添加规则，或从 Codex Responses 模板开始。",
+  "Rule": "规则",
+  "Key sources": "Key 来源",
+  "TTL": "TTL",
+  "Actions": "操作",
+  "Default": "默认",
+  "Move rule up": "上移规则",
+  "Move rule down": "下移规则",
+  "Delete rule": "删除规则",
+  "Add affinity rule": "添加粘性规则",
+  "Edit affinity rule": "编辑粘性规则",
+  "A rule extracts one bounded scalar key and scopes it automatically by API key and model rule.":
+    "规则提取一个长度受限的标量 Key，并自动按 API Key 和模型规则隔离。",
+  "Review the rule": "请检查规则",
+  "Rule name": "规则名称",
+  "Enable rule": "启用规则",
+  "Disabled rules remain saved but are not compiled into the data plane.":
+    "禁用规则仍会保存，但不会编译到数据面。",
+  "API formats": "API 格式",
+  "Model regular expressions": "模型正则表达式",
+  "Leave empty to match every model in the selected formats.":
+    "留空表示匹配所选 API 格式中的所有模型。",
+  "Value regular expression": "值正则表达式",
+  "Optional": "可选",
+  "Optional filter applied after a key source extracts a value.":
+    "Key 来源提取值后应用的可选过滤条件。",
+  "Rule TTL (seconds)": "规则 TTL（秒）",
+  "Use default": "使用默认值",
+  "Sources are tried in order until one yields a non-empty scalar value.":
+    "按顺序尝试各来源，直到获得非空标量值。",
+  "Request header": "请求头",
+  "JSON pointer": "JSON Pointer",
+  "Key source value": "Key 来源值",
+  "Move source up": "上移来源",
+  "Move source down": "下移来源",
+  "Delete source": "删除来源",
+  "Add key source": "添加 Key 来源",
+  "Rule name is required.": "规则名称不能为空。",
+  "Rule name must be at most 64 characters.": "规则名称最多 64 个字符。",
+  "Rule names must be unique.": "规则名称必须唯一。",
+  "Add at least one key source.": "请至少添加一个 Key 来源。",
+  "A rule can contain at most 8 key sources.": "每条规则最多包含 8 个 Key 来源。",
+  "A rule can contain at most 8 model expressions.": "每条规则最多包含 8 个模型表达式。",
+  "Model regular expressions must contain 1 through 256 characters.":
+    "模型正则表达式长度必须为 1 至 256 个字符。",
+  "Value regular expression must contain 1 through 256 characters.":
+    "值正则表达式长度必须为 1 至 256 个字符。",
+  "Rule TTL must be between 1 and 604800 seconds.": "规则 TTL 必须为 1 至 604800 秒。",
+  "Every key source must contain a value.": "每个 Key 来源都必须填写值。",
+  "Enter a valid RFC 6901 JSON pointer.": "请输入有效的 RFC 6901 JSON Pointer。",
+  "Enter a valid request header name.": "请输入有效的请求头名称。",
+  "Sensitive request headers cannot be affinity sources.":
+    "敏感请求头不能作为粘性 Key 来源。",
+  "Enter a positive cache capacity.": "请输入正整数缓存容量。",
+  "Cache capacity cannot exceed 1000000 entries.": "缓存容量不能超过 1000000 条。",
+  "Affinity TTL cannot exceed 604800 seconds.": "粘性 TTL 不能超过 604800 秒。",
   "Enter unique HTTP status codes from 100 through 599, separated by commas.":
     "请输入以逗号分隔且唯一的 100 至 599 HTTP 状态码。",
   "Keyword cannot be blank.": "关键词不能为空。",

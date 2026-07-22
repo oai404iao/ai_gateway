@@ -23,6 +23,7 @@ use futures_util::{Stream, StreamExt, stream};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use tokio::time::timeout;
 use uuid::Uuid;
 
@@ -35,9 +36,12 @@ use crate::{
         ApiFormat, ApiKeyPermission, AutomaticDisableSettings, AutomaticDisableTrigger,
         CompiledApiKey, CompiledChannel, CompiledModelRule, ModelPriceSnapshot, RequestBilling,
         RequestLogEvent, RequestLogOutcome, RequestLogSource, RequestPriceSnapshot, RequestUsage,
-        UpstreamAuth,
+        SessionAffinityKeySource, SessionAffinitySettings, UpstreamAuth,
     },
-    routing::{ChannelLease, RoutingRuntime, SelectionResult},
+    routing::{
+        ChannelLease, RoutingRuntime, SelectionResult, SessionAffinityMatch,
+        SessionAffinitySelection,
+    },
     runtime_config::RuntimeConfig,
     transforms::{
         SseEventPatchPlan, SseTransformer, apply_header_plan, apply_json_patch_plan,
@@ -149,6 +153,7 @@ impl ProxyService {
         admission: AdmissionRuntime,
         automatic_disable: Option<AutomaticDisableService>,
     ) -> Result<Self, reqwest::Error> {
+        routing.reconcile(&runtime.snapshot());
         Ok(Self {
             runtime,
             upstream_clients,
@@ -219,10 +224,20 @@ impl ProxyService {
                 return Err(error);
             }
         };
-        let route = match self
-            .routing
-            .select(&snapshot, &api_key, api_format, &parsed.model)
-        {
+        let session_affinity = match_session_affinity(
+            snapshot.system_settings().session_affinity(),
+            api_format,
+            &parsed.model,
+            &parts.headers,
+            &original_body,
+        );
+        let route = match self.routing.select_with_affinity(
+            &snapshot,
+            &api_key,
+            api_format,
+            &parsed.model,
+            session_affinity,
+        ) {
             SelectionResult::Selected(route) => route,
             SelectionResult::UnknownOrInaccessibleModel => {
                 self.record_rejected(
@@ -262,6 +277,7 @@ impl ProxyService {
             started_at,
             self.automatic_disable.clone(),
             snapshot.system_settings().automatic_disable().clone(),
+            route.session_affinity.as_ref(),
         );
         let transforms = route.channel.upstream_policy().effective_transforms();
         let body = match rewrite_model_alias(original_body, &parsed.model, &route.rule) {
@@ -724,6 +740,72 @@ fn parse_request(body: &[u8]) -> Result<ParsedRequest, ProxyError> {
         model: probe.model,
         streamed: probe.stream,
     })
+}
+
+const MAX_SESSION_AFFINITY_VALUE_BYTES: usize = 512;
+
+fn match_session_affinity(
+    settings: &SessionAffinitySettings,
+    api_format: ApiFormat,
+    model: &str,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> Option<SessionAffinityMatch> {
+    if !settings.enabled() {
+        return None;
+    }
+    let mut parsed_json: Option<Option<Value>> = None;
+    for rule in settings.rules() {
+        if !rule.matches_request(api_format, model) {
+            continue;
+        }
+        for source in rule.key_sources() {
+            let value = match source {
+                SessionAffinityKeySource::RequestHeader(name) => headers
+                    .get(name)
+                    .and_then(|value| value.to_str().ok())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_owned),
+                SessionAffinityKeySource::JsonPointer(pointer) => {
+                    let parsed = parsed_json
+                        .get_or_insert_with(|| serde_json::from_slice::<Value>(body).ok());
+                    parsed
+                        .as_ref()
+                        .and_then(|value| value.pointer(pointer))
+                        .and_then(session_affinity_scalar)
+                }
+            };
+            let Some(value) = value.filter(|value| {
+                !value.is_empty() && value.len() <= MAX_SESSION_AFFINITY_VALUE_BYTES
+            }) else {
+                continue;
+            };
+            if !rule.matches_value(&value) {
+                continue;
+            }
+            let session_hash = Sha256::digest(value.as_bytes()).into();
+            return Some(SessionAffinityMatch::new(
+                Arc::from(rule.name()),
+                rule.fingerprint(),
+                session_hash,
+                rule.ttl(),
+            ));
+        }
+    }
+    None
+}
+
+fn session_affinity_scalar(value: &Value) -> Option<String> {
+    match value {
+        Value::String(value) => {
+            let value = value.trim();
+            (!value.is_empty()).then(|| value.to_owned())
+        }
+        Value::Number(value) => Some(value.to_string()),
+        Value::Bool(value) => Some(value.to_string()),
+        Value::Null | Value::Array(_) | Value::Object(_) => None,
+    }
 }
 
 /// Documents the deliberate no-row policy for requests that cannot be safely
@@ -1203,6 +1285,18 @@ impl RequestOutcome {
             | Self::Cancelled => None,
         }
     }
+
+    const fn evicts_session_affinity(self) -> bool {
+        matches!(
+            self,
+            Self::UpstreamHttpError
+                | Self::ConnectTimeout
+                | Self::ResponseHeaderTimeout
+                | Self::UpstreamUnavailable
+                | Self::UpstreamBodyError
+                | Self::StreamIdleTimeout
+        )
+    }
 }
 
 struct CompletionContext {
@@ -1225,6 +1319,8 @@ struct CompletionContext {
     usage: UsageCollector,
     price_snapshot: ModelPriceSnapshot,
     sink: Arc<dyn RequestLogSink>,
+    session_affinity_rule: Option<Arc<str>>,
+    session_affinity_hit: Option<bool>,
 }
 
 /// Emits exactly one event, including when Axum drops an in-flight response
@@ -1259,6 +1355,7 @@ impl CompletionGuard {
         started_at: Instant,
         automatic_disable_service: Option<AutomaticDisableService>,
         automatic_disable_settings: AutomaticDisableSettings,
+        session_affinity: Option<&SessionAffinitySelection>,
     ) -> Self {
         let automatic_disable = channel.auto_disable_allowed().then(|| {
             automatic_disable_service.map(|service| AutomaticDisableContext {
@@ -1289,6 +1386,9 @@ impl CompletionGuard {
                 usage: UsageCollector::new(api_format, false),
                 price_snapshot: rule.price_snapshot().clone(),
                 sink,
+                session_affinity_rule: session_affinity
+                    .map(|selection| Arc::from(selection.rule_name())),
+                session_affinity_hit: session_affinity.map(SessionAffinitySelection::cache_hit),
             }),
             lease: Some(lease),
             _admission: Some(admission),
@@ -1387,6 +1487,13 @@ impl CompletionGuard {
         let Some(context) = self.context.take() else {
             return;
         };
+        if let Some(lease) = &mut self.lease {
+            if matches!(outcome, RequestOutcome::Succeeded) {
+                lease.request_succeeded();
+            } else if outcome.evicts_session_affinity() {
+                lease.request_failed();
+            }
+        }
         let usage = context.usage.latest();
         let total_duration_ms = clamp_duration_ms(context.started_at.elapsed());
         let billing = request_billing(
@@ -1407,6 +1514,8 @@ impl CompletionGuard {
             ttft_ms = ?context.first_byte_at.map(|duration| duration.as_millis()),
             input_tokens = ?usage.map(|usage| usage.input_tokens),
             output_tokens = ?usage.map(|usage| usage.output_tokens),
+            session_affinity_rule = ?context.session_affinity_rule,
+            session_affinity_hit = ?context.session_affinity_hit,
             outcome = outcome.tracing_outcome(),
             "proxy request completed"
         );
@@ -1512,23 +1621,42 @@ impl Drop for CompletionGuard {
 #[cfg(test)]
 mod tests {
     use axum::http::{HeaderMap, HeaderValue, StatusCode, header::CONNECTION};
-    use std::{collections::HashSet, sync::Arc};
+    use std::{collections::HashSet, sync::Arc, time::Duration};
 
+    use regex::Regex;
     use reqwest::{Url, header::HeaderName};
     use rust_decimal::Decimal;
     use uuid::Uuid;
 
     use super::{
         calculate_cost, forward_request_headers, forward_response_headers, inject_upstream_auth,
-        parse_bearer_token, request_billing, response_has_no_body,
+        match_session_affinity, parse_bearer_token, request_billing, response_has_no_body,
     };
     use crate::{
         application::usage::ResponseUsage,
         domain::{
             ApiFormat, CompiledChannel, ModelPriceSnapshot, RequestPriceSnapshot, RequestUsage,
-            UpstreamAuth,
+            SessionAffinityKeySource, SessionAffinityRule, SessionAffinitySettings, UpstreamAuth,
         },
     };
+
+    fn affinity_settings(sources: Vec<SessionAffinityKeySource>) -> SessionAffinitySettings {
+        SessionAffinitySettings::new(
+            true,
+            100,
+            Duration::from_secs(60),
+            vec![SessionAffinityRule::new(
+                Arc::from("test"),
+                [1; 32],
+                vec![ApiFormat::OpenAiResponses].into(),
+                vec![Regex::new("^gpt-.*$").unwrap()].into(),
+                sources.into(),
+                Some(Regex::new("^session-").unwrap()),
+                Duration::from_secs(60),
+            )]
+            .into(),
+        )
+    }
 
     #[test]
     fn rejects_malformed_bearer_values() {
@@ -1539,6 +1667,60 @@ mod tests {
         );
 
         assert!(parse_bearer_token(&headers).is_err());
+    }
+
+    #[test]
+    fn extracts_session_affinity_from_ordered_header_and_json_sources() {
+        let settings = affinity_settings(vec![
+            SessionAffinityKeySource::RequestHeader(HeaderName::from_static("x-session-id")),
+            SessionAffinityKeySource::JsonPointer(Arc::from("/prompt_cache_key")),
+        ]);
+        let headers = HeaderMap::new();
+        let matched = match_session_affinity(
+            &settings,
+            ApiFormat::OpenAiResponses,
+            "gpt-5",
+            &headers,
+            br#"{"model":"gpt-5","prompt_cache_key":"session-body"}"#,
+        );
+        assert!(matched.is_some());
+    }
+
+    #[test]
+    fn ignores_non_scalar_or_overlong_session_affinity_values() {
+        let settings = affinity_settings(vec![SessionAffinityKeySource::JsonPointer(Arc::from(
+            "/metadata",
+        ))]);
+        let headers = HeaderMap::new();
+        assert!(
+            match_session_affinity(
+                &settings,
+                ApiFormat::OpenAiResponses,
+                "gpt-5",
+                &headers,
+                br#"{"model":"gpt-5","metadata":{"session":"session-object"}}"#,
+            )
+            .is_none()
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-session-id",
+            HeaderValue::from_str(&format!("session-{}", "x".repeat(600))).unwrap(),
+        );
+        let header_settings = affinity_settings(vec![SessionAffinityKeySource::RequestHeader(
+            HeaderName::from_static("x-session-id"),
+        )]);
+        assert!(
+            match_session_affinity(
+                &header_settings,
+                ApiFormat::OpenAiResponses,
+                "gpt-5",
+                &headers,
+                br#"{"model":"gpt-5"}"#,
+            )
+            .is_none()
+        );
     }
 
     #[test]

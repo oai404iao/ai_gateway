@@ -37,6 +37,9 @@ export type InvitationResponse = S["InvitationResponse"];
 export type MutationResponse = S["MutationResponse"];
 export type ReloadResponse = S["ReloadResponse"];
 export type SystemSettings = S["SystemSettings"];
+export type SystemSessionAffinityKeySource = S["SystemSessionAffinityKeySource"];
+export type SystemSessionAffinityRule = S["SystemSessionAffinityRule"];
+export type SystemSessionAffinitySettings = S["SystemSessionAffinitySettings"];
 
 // Resources (views)
 export type ApiKeyView = S["ApiKeyView"];

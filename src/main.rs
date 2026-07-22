@@ -19,7 +19,8 @@ use ai_gateway::{
     persistence::{
         AuthRepository, ControlPlaneRepository, MIGRATOR, RequestLogRepository,
         SystemAutomaticDisableSettingsInput, SystemPassiveHealthSettingsInput,
-        SystemScheduledTestingSettingsInput, SystemSettingsInput, SystemUpstreamSettingsInput,
+        SystemScheduledTestingSettingsInput, SystemSessionAffinitySettingsInput,
+        SystemSettingsInput, SystemUpstreamSettingsInput,
     },
     routing::{PassiveHealthPolicy, RoutingRuntime},
     runtime_config::{AppConfig, RuntimeConfig, compile_runtime_config},
@@ -96,6 +97,12 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
                 auto_recover: config.scheduled_testing.auto_recover,
                 interval_minutes: config.scheduled_testing.interval_minutes,
                 prompt: config.scheduled_testing.prompt,
+            },
+            session_affinity: SystemSessionAffinitySettingsInput {
+                enabled: config.session_affinity.enabled,
+                max_entries: config.session_affinity.max_entries,
+                default_ttl_seconds: config.session_affinity.default_ttl_seconds,
+                rules: config.session_affinity.rules,
             },
         })
         .await?;

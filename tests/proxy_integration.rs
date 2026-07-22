@@ -7,7 +7,11 @@ use std::{
 
 use ai_gateway::{
     application::{ProxyService, RecordingRequestLogSink},
-    domain::{PassiveHealthSettings, SystemRuntimeSettings, UpstreamTimeoutDefaults},
+    domain::{
+        ApiFormat, AutomaticDisableSettings, PassiveHealthSettings, ScheduledTestingSettings,
+        SessionAffinityKeySource, SessionAffinityRule, SessionAffinitySettings,
+        SystemRuntimeSettings, UpstreamTimeoutDefaults,
+    },
     http,
     persistence::{
         ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ConfigTemplateRecord, ControlPlaneRecords,
@@ -24,6 +28,8 @@ use axum::{
     routing::{any, post},
 };
 use futures_util::StreamExt;
+use regex::Regex;
+use reqwest::header::HeaderName;
 use serde_json::Value;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -802,6 +808,123 @@ fn proxy_request(model: &str) -> axum::http::Request<Body> {
         .unwrap()
 }
 
+fn session_affinity_proxy(first_upstream_url: &str, second_upstream_url: &str) -> ProxyService {
+    let group_id = Uuid::new_v4();
+    let first_channel_id = Uuid::new_v4();
+    let second_channel_id = Uuid::new_v4();
+    let model_rule_id = Uuid::new_v4();
+    let channel = |id: Uuid, name: &str, base_url: &str| ChannelRecord {
+        id,
+        channel_group_id: group_id,
+        api_format: "open_ai_chat_completions".into(),
+        name: name.into(),
+        base_url: base_url.into(),
+        enabled: true,
+        auto_disabled: false,
+        auto_disable_allowed: false,
+        weight: 1,
+        proxy_id: None,
+        config_template_id: None,
+        override_document: serde_json::json!({}),
+        connect_timeout_ms: None,
+        response_header_timeout_ms: None,
+        stream_idle_timeout_ms: None,
+        upstream_auth_kind: "bearer".into(),
+        upstream_auth_header_name: None,
+        upstream_api_key: Some(UPSTREAM_KEY.into()),
+        available_models: vec!["affinity-model".into()],
+        test_model: None,
+        health_check: serde_json::json!({}),
+    };
+    let records = ControlPlaneRecords {
+        api_keys: vec![ApiKeyRecord {
+            id: Uuid::new_v4(),
+            user_id: Uuid::new_v4(),
+            user_status: "active".into(),
+            secret_value: CLIENT_KEY.into(),
+            status: "active".into(),
+            expires_at: None,
+            allowed_api_formats: vec!["open_ai_chat_completions".into()],
+            permissions: vec!["proxy".into()],
+            allowed_group_ids: vec![group_id],
+            allowed_channel_ids: vec![],
+            requests_per_minute: None,
+            tokens_per_minute: None,
+            max_concurrent_requests: None,
+            quota_limit_amount: None,
+            quota_used_amount: Default::default(),
+        }],
+        groups: vec![ChannelGroupRecord {
+            id: group_id,
+            name: "affinity".into(),
+            api_format: "open_ai_chat_completions".into(),
+            priority: 0,
+            selection_strategy: "weighted_round_robin".into(),
+            enabled: true,
+        }],
+        channels: vec![
+            channel(first_channel_id, "first", first_upstream_url),
+            channel(second_channel_id, "second", second_upstream_url),
+        ],
+        model_rules: vec![ModelRuleRecord {
+            id: model_rule_id,
+            client_model: "affinity-model".into(),
+            api_format: "open_ai_chat_completions".into(),
+            upstream_model_id: Uuid::new_v4(),
+            upstream_model_enabled: true,
+            upstream_model_currency: "USD".into(),
+            price_unit_tokens: 1_000_000,
+            price_effective_at: chrono::Utc::now(),
+            input_unit_price: Default::default(),
+            cached_input_unit_price: Default::default(),
+            cache_write_unit_price: Default::default(),
+            output_unit_price: Default::default(),
+            upstream_model: "affinity-model".into(),
+            channel_group_ids: vec![group_id],
+            channel_ids: vec![],
+            enabled: true,
+        }],
+        proxies: vec![],
+        templates: vec![],
+    };
+    let system_settings = SystemRuntimeSettings::new_with_all(
+        UpstreamTimeoutDefaults::new(
+            Duration::from_secs(1),
+            Duration::from_secs(2),
+            Duration::from_secs(2),
+        ),
+        PassiveHealthSettings::default(),
+        AutomaticDisableSettings::default(),
+        ScheduledTestingSettings::default(),
+        SessionAffinitySettings::new(
+            true,
+            100,
+            Duration::from_secs(60),
+            vec![SessionAffinityRule::new(
+                Arc::from("header-session"),
+                [42; 32],
+                vec![ApiFormat::OpenAiChatCompletions].into(),
+                vec![Regex::new("^affinity-model$").unwrap()].into(),
+                vec![SessionAffinityKeySource::RequestHeader(
+                    HeaderName::from_static("x-session-id"),
+                )]
+                .into(),
+                None,
+                Duration::from_secs(60),
+            )]
+            .into(),
+        ),
+    );
+    ProxyService::with_log_sink(
+        Arc::new(RuntimeConfig::new(
+            compile_control_plane_with_system_settings(records, system_settings).unwrap(),
+        )),
+        1_048_576,
+        Arc::new(RecordingRequestLogSink::default()),
+    )
+    .unwrap()
+}
+
 #[tokio::test]
 async fn health_is_available_without_authentication() {
     let harness = harness(StatusCode::OK, Vec::new()).await;
@@ -811,6 +934,77 @@ async fn health_is_available_without_authentication() {
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
     assert!(harness.upstream_requests().is_empty());
     assert!(harness.logs().is_empty());
+}
+
+#[tokio::test]
+async fn successful_session_requests_reuse_the_same_upstream_channel() {
+    let first_requests = Arc::new(Mutex::new(Vec::new()));
+    let second_requests = Arc::new(Mutex::new(Vec::new()));
+    let first = start_server(
+        Router::new()
+            .route("/v1/chat/completions", post(capture_upstream))
+            .with_state(MockUpstream {
+                requests: Arc::clone(&first_requests),
+                status: StatusCode::OK,
+                body: b"first".to_vec(),
+            }),
+    )
+    .await;
+    let second = start_server(
+        Router::new()
+            .route("/v1/chat/completions", post(capture_upstream))
+            .with_state(MockUpstream {
+                requests: Arc::clone(&second_requests),
+                status: StatusCode::OK,
+                body: b"second".to_vec(),
+            }),
+    )
+    .await;
+    let proxy = session_affinity_proxy(
+        &format!("http://{}", first.address),
+        &format!("http://{}", second.address),
+    );
+    let gateway = start_server(http::router(proxy)).await;
+    let client = client();
+    let body = br#"{"model":"affinity-model","messages":[{"role":"user","content":"hello"}]}"#;
+
+    for _ in 0..2 {
+        let response = authorized_post(
+            &client,
+            format!("http://{}/v1/chat/completions", gateway.address),
+            CLIENT_KEY,
+            body.to_vec(),
+        )
+        .header("x-session-id", "session-1")
+        .send()
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        response.bytes().await.unwrap();
+    }
+
+    let counts = [
+        first_requests.lock().unwrap().len(),
+        second_requests.lock().unwrap().len(),
+    ];
+    assert!(
+        counts == [2, 0] || counts == [0, 2],
+        "both requests should use one affinity channel, got {counts:?}"
+    );
+    let mut captured = first_requests
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|request| request.body.clone())
+        .collect::<Vec<_>>();
+    captured.extend(
+        second_requests
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|request| request.body.clone()),
+    );
+    assert_eq!(captured, vec![body.to_vec(), body.to_vec()]);
 }
 
 #[tokio::test]

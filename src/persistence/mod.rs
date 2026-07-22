@@ -13,6 +13,8 @@ use std::{
 };
 
 use chrono::{DateTime, Timelike, Utc};
+use regex::Regex;
+use reqwest::header::HeaderName;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{FromRow, PgPool, Postgres, QueryBuilder, Transaction, postgres::PgPoolCopyExt};
@@ -78,6 +80,7 @@ pub struct SystemSettingsInput {
     pub automatic_disable: SystemAutomaticDisableSettingsInput,
     #[serde(default)]
     pub scheduled_testing: SystemScheduledTestingSettingsInput,
+    pub session_affinity: SystemSessionAffinitySettingsInput,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -128,6 +131,45 @@ impl Default for SystemScheduledTestingSettingsInput {
             prompt: default_scheduled_testing_prompt(),
         }
     }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SystemSessionAffinitySettingsInput {
+    pub enabled: bool,
+    pub max_entries: usize,
+    pub default_ttl_seconds: u64,
+    pub rules: Vec<SystemSessionAffinityRuleInput>,
+}
+
+impl Default for SystemSessionAffinitySettingsInput {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_entries: 100_000,
+            default_ttl_seconds: 3_600,
+            rules: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SystemSessionAffinityRuleInput {
+    pub name: String,
+    pub enabled: bool,
+    pub api_formats: Vec<String>,
+    pub model_regex: Vec<String>,
+    pub key_sources: Vec<SystemSessionAffinityKeySourceInput>,
+    pub value_regex: Option<String>,
+    pub ttl_seconds: Option<u64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SystemSessionAffinityKeySourceInput {
+    RequestHeader { name: String },
+    JsonPointer { pointer: String },
 }
 
 fn default_scheduled_testing_mode() -> String {
@@ -4801,6 +4843,7 @@ fn validate_system_settings_input(input: &SystemSettingsInput) -> Result<(), Rep
     let passive_health = &input.passive_health;
     let automatic_disable = &input.automatic_disable;
     let scheduled_testing = &input.scheduled_testing;
+    let session_affinity = &input.session_affinity;
     if upstream.connect_timeout_seconds == 0
         || upstream.response_header_timeout_seconds <= upstream.connect_timeout_seconds
         || upstream.stream_idle_timeout_seconds == 0
@@ -4818,10 +4861,108 @@ fn validate_system_settings_input(input: &SystemSettingsInput) -> Result<(), Rep
         || scheduled_testing.prompt.trim().is_empty()
         || scheduled_testing.prompt.chars().count() > 4_000
         || !matches!(scheduled_testing.mode.as_str(), "global" | "failure_only")
+        || !valid_session_affinity_input(session_affinity)
     {
         return Err(RepositoryError::Validation);
     }
     Ok(())
+}
+
+fn valid_session_affinity_input(input: &SystemSessionAffinitySettingsInput) -> bool {
+    if input.max_entries == 0
+        || input.max_entries > 1_000_000
+        || input.default_ttl_seconds == 0
+        || input.default_ttl_seconds > 7 * 24 * 60 * 60
+        || input.rules.len() > 64
+    {
+        return false;
+    }
+    let mut names = HashSet::new();
+    input.rules.iter().all(|rule| {
+        let name = rule.name.trim();
+        name.chars().count() <= 64
+            && !name.is_empty()
+            && names.insert(name.to_lowercase())
+            && !rule.api_formats.is_empty()
+            && rule.api_formats.iter().collect::<HashSet<_>>().len() == rule.api_formats.len()
+            && rule.api_formats.iter().all(|format| {
+                matches!(
+                    format.as_str(),
+                    "open_ai_chat_completions" | "open_ai_responses"
+                )
+            })
+            && rule.model_regex.len() <= 8
+            && rule.model_regex.iter().collect::<HashSet<_>>().len() == rule.model_regex.len()
+            && rule
+                .model_regex
+                .iter()
+                .all(|pattern| valid_session_affinity_regex(pattern))
+            && rule
+                .value_regex
+                .as_deref()
+                .is_none_or(valid_session_affinity_regex)
+            && !rule.key_sources.is_empty()
+            && rule.key_sources.len() <= 8
+            && rule
+                .key_sources
+                .iter()
+                .all(valid_session_affinity_key_source)
+            && rule
+                .ttl_seconds
+                .is_none_or(|ttl| ttl > 0 && ttl <= 7 * 24 * 60 * 60)
+    })
+}
+
+fn valid_session_affinity_regex(pattern: &str) -> bool {
+    !pattern.is_empty() && pattern.chars().count() <= 256 && Regex::new(pattern).is_ok()
+}
+
+fn valid_session_affinity_key_source(source: &SystemSessionAffinityKeySourceInput) -> bool {
+    match source {
+        SystemSessionAffinityKeySourceInput::RequestHeader { name } => {
+            HeaderName::from_bytes(name.trim().as_bytes()).is_ok_and(|name| {
+                !matches!(
+                    name.as_str(),
+                    "authorization"
+                        | "proxy-authorization"
+                        | "proxy-authenticate"
+                        | "cookie"
+                        | "set-cookie"
+                        | "host"
+                        | "content-length"
+                        | "connection"
+                        | "transfer-encoding"
+                        | "keep-alive"
+                        | "te"
+                        | "trailer"
+                        | "upgrade"
+                        | "proxy-connection"
+                )
+            })
+        }
+        SystemSessionAffinityKeySourceInput::JsonPointer { pointer } => {
+            let pointer = pointer.trim();
+            pointer.chars().count() <= 256 && valid_session_affinity_json_pointer(pointer)
+        }
+    }
+}
+
+fn valid_session_affinity_json_pointer(pointer: &str) -> bool {
+    if pointer.is_empty() || !pointer.starts_with('/') {
+        return false;
+    }
+    let bytes = pointer.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'~' {
+            index += 1;
+            if index >= bytes.len() || !matches!(bytes[index], b'0' | b'1') {
+                return false;
+            }
+        }
+        index += 1;
+    }
+    true
 }
 
 #[derive(Debug, Error)]

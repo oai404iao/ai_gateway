@@ -184,6 +184,22 @@ Policy 不再保存额度、RPM、并发、格式、权限或最大活动 Key �
 管理员角色的内部 API Key，不计入任何普通用户的费用或额度；系统内部身份不会出现在用户和 API Key
 管理列表中。自动禁用和自动恢复都会写入系统审计日志并立即发布新的路由快照。
 
+## Session 粘性
+
+`/console/v1/system/settings` 的 `session_affinity` 可以按请求 Header 或 JSON Pointer
+提取 Session Key，并优先复用该 Session 最后一次成功请求所使用的渠道。规则按配置顺序执行，
+第一个成功提取非空标量值的规则生效。
+
+- 缓存 Key 自动按规则、API Key 和模型规则隔离，原始 Session Key 只用于计算 SHA-256，
+  不写入数据库、请求日志或审计详情。
+- 缓存有 TTL 和最大条目数，只存在于当前 Gateway 进程。
+- 命中的渠道仍须满足当前授权、模型候选、最低可用优先级和被动健康状态，否则删除旧映射并执行普通选路。
+- 只有完整成功的 2xx 请求才写入或刷新映射；上游失败会删除本次命中的旧映射。
+- Session 粘性不增加重试。每个请求仍然只尝试一个渠道。
+- JSON 来源使用 RFC 6901 Pointer，例如 Responses 请求的 `/prompt_cache_key`。
+
+多实例部署没有共享粘性缓存；若同一 Session 被负载均衡到不同 Gateway 进程，各实例会独立学习渠道。
+
 ## 日志、用量与结算
 
 每个已选路请求会产生终态 tracing 事件，并尽力异步写入一条 `request_logs`。worker 从两种格式的普通 JSON 或 SSE 事件增量提取 usage，在选路时绑定价格快照，并在可结算时以 `billed_at` 条件幂等更新用户余额和 API Key 已用额度。
@@ -193,5 +209,5 @@ Policy 不再保存额度、RPM、并发、格式、权限或最大活动 Key �
 ## 已知边界
 
 - 仅支持 Chat Completions 与 Responses，不提供 OpenAI 的 embeddings、images、audio、files、batches、assistants 或 fine-tuning API。
-- 所有余额、额度、模型价格和请求费用统一使用 USD；没有跨实例限流/配置协调、通用自动重试、独立财务账本、充值/退款或货币兑换。
+- 所有余额、额度、模型价格和请求费用统一使用 USD；没有跨实例限流、健康状态或 Session 粘性协调，也没有通用自动重试、独立财务账本、充值/退款或货币兑换。
 - 服务本身不终止 TLS；Console 必须部署在正确配置的 HTTPS 反向代理后。

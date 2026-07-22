@@ -29,6 +29,7 @@ jsonwebtoken = { version = "9.3", default-features = false, features = ["use_pem
 json-patch = "4.2"
 jsonptr = "0.7"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "socks", "stream"] }
+regex = "1.11"
 rust_decimal = { version = "1.36", features = ["serde"] }
 secrecy = "0.10"
 serde = { version = "1.0", features = ["derive"] }

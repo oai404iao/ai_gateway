@@ -1221,7 +1221,7 @@ paths:
       security: [{ bearerAuth: [] }]
       responses:
         "200":
-          description: Database-backed forwarding, passive-health, automatic-disable, and scheduled-test defaults.
+          description: Database-backed forwarding, health, automation, scheduled-test, and session-affinity defaults.
           headers:
             ETag: { $ref: "#/components/headers/ETag" }
           content:
@@ -1573,14 +1573,101 @@ components:
           maxLength: 4000
           default: "reply '1'"
 
+    SystemSessionAffinityKeySource:
+      oneOf:
+        - $ref: "#/components/schemas/SystemSessionAffinityHeaderSource"
+        - $ref: "#/components/schemas/SystemSessionAffinityJsonPointerSource"
+
+    SystemSessionAffinityHeaderSource:
+      type: object
+      required: [type, name]
+      properties:
+        type: { type: string, enum: [request_header] }
+        name:
+          type: string
+          minLength: 1
+          maxLength: 256
+          description: Non-sensitive request header used as an ordered affinity-key source.
+
+    SystemSessionAffinityJsonPointerSource:
+      type: object
+      required: [type, pointer]
+      properties:
+        type: { type: string, enum: [json_pointer] }
+        pointer:
+          type: string
+          minLength: 1
+          maxLength: 256
+          pattern: "^/"
+          description: RFC 6901 pointer to a scalar request-body value.
+
+    SystemSessionAffinityRule:
+      type: object
+      required:
+        [name, enabled, api_formats, model_regex, key_sources, value_regex, ttl_seconds]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 64 }
+        enabled: { type: boolean }
+        api_formats:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: { $ref: "#/components/schemas/ApiFormat" }
+        model_regex:
+          type: array
+          maxItems: 8
+          uniqueItems: true
+          description: Empty means every model in the selected API formats.
+          items: { type: string, minLength: 1, maxLength: 256 }
+        key_sources:
+          type: array
+          minItems: 1
+          maxItems: 8
+          items: { $ref: "#/components/schemas/SystemSessionAffinityKeySource" }
+        value_regex:
+          type: string
+          nullable: true
+          minLength: 1
+          maxLength: 256
+        ttl_seconds:
+          type: integer
+          format: int64
+          nullable: true
+          minimum: 1
+          maximum: 604800
+          description: Null uses the system default.
+
+    SystemSessionAffinitySettings:
+      type: object
+      required: [enabled, max_entries, default_ttl_seconds, rules]
+      properties:
+        enabled: { type: boolean, default: false }
+        max_entries:
+          type: integer
+          minimum: 1
+          maximum: 1000000
+          default: 100000
+        default_ttl_seconds:
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 604800
+          default: 3600
+        rules:
+          type: array
+          maxItems: 64
+          items: { $ref: "#/components/schemas/SystemSessionAffinityRule" }
+
     SystemSettingsInput:
       type: object
-      required: [upstream, passive_health, automatic_disable, scheduled_testing]
+      required:
+        [upstream, passive_health, automatic_disable, scheduled_testing, session_affinity]
       properties:
         upstream: { $ref: "#/components/schemas/SystemUpstreamSettings" }
         passive_health: { $ref: "#/components/schemas/SystemPassiveHealthSettings" }
         automatic_disable: { $ref: "#/components/schemas/SystemAutomaticDisableSettings" }
         scheduled_testing: { $ref: "#/components/schemas/SystemScheduledTestingSettings" }
+        session_affinity: { $ref: "#/components/schemas/SystemSessionAffinitySettings" }
 
     SystemSettings:
       allOf:

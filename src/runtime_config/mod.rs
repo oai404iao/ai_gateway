@@ -9,11 +9,13 @@ use std::{
 };
 
 use arc_swap::ArcSwap;
+use regex::Regex;
 use reqwest::{
     Url,
     header::{HeaderName, HeaderValue},
 };
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use sqlx::postgres::PgConnectOptions;
 use thiserror::Error;
 use uuid::Uuid;
@@ -26,12 +28,14 @@ use crate::{
         CompiledConfigTemplate, CompiledModelRule, CompiledProxy, CompiledRouteTier,
         CompiledRuntimeConfig, ModelPriceSnapshot, ModelRouteKey, NoProxyHost,
         PassiveHealthSettings, ScheduledTestingMode, ScheduledTestingSettings, SelectionStrategy,
+        SessionAffinityKeySource, SessionAffinityRule, SessionAffinitySettings,
         SystemRuntimeSettings, UpstreamAuth, UpstreamTimeoutDefaults,
     },
     persistence::{
         ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ConfigTemplateRecord, ControlPlaneRecords,
         FORWARDING_SETTINGS_KEY, ModelRuleRecord, ProxyRecord, RuntimeConfigRecords,
-        SystemSettingsInput, SystemSettingsRecord,
+        SystemSessionAffinityKeySourceInput, SystemSessionAffinityRuleInput,
+        SystemSessionAffinitySettingsInput, SystemSettingsInput, SystemSettingsRecord,
     },
     transforms::{TransformCompileError, TransformPlan, compile_document, declared_api_format},
 };
@@ -51,6 +55,8 @@ pub struct AppConfig {
     pub automatic_disable: AutomaticDisableConfig,
     #[serde(default)]
     pub scheduled_testing: ScheduledTestingConfig,
+    #[serde(default)]
+    pub session_affinity: SessionAffinityConfig,
     #[serde(default)]
     pub models_sync: ModelsSyncConfig,
     #[serde(default)]
@@ -123,6 +129,7 @@ impl AppConfig {
         }
         validate_automatic_disable_config(&self.automatic_disable)?;
         validate_scheduled_testing_config(&self.scheduled_testing)?;
+        validate_session_affinity_config(&self.session_affinity)?;
         require("observability filter", &self.observability.filter)?;
         Ok(BootstrapConfig {
             server: self.server,
@@ -133,6 +140,7 @@ impl AppConfig {
             passive_health: self.passive_health,
             automatic_disable: self.automatic_disable,
             scheduled_testing: self.scheduled_testing,
+            session_affinity: self.session_affinity,
             models_sync: self.models_sync,
             request_limits,
             console,
@@ -150,6 +158,7 @@ pub struct BootstrapConfig {
     pub passive_health: PassiveHealthConfig,
     pub automatic_disable: AutomaticDisableConfig,
     pub scheduled_testing: ScheduledTestingConfig,
+    pub session_affinity: SessionAffinityConfig,
     pub models_sync: ModelsSyncConfig,
     pub request_limits: RequestLimitsConfig,
     pub console: Option<ConsoleListenerConfig>,
@@ -317,6 +326,31 @@ pub struct ScheduledTestingConfig {
     pub interval_minutes: u64,
     #[serde(default = "default_scheduled_testing_prompt")]
     pub prompt: String,
+}
+
+/// One-time bootstrap source for database-backed session-affinity rules.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionAffinityConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_session_affinity_max_entries")]
+    pub max_entries: usize,
+    #[serde(default = "default_session_affinity_ttl_seconds")]
+    pub default_ttl_seconds: u64,
+    #[serde(default)]
+    pub rules: Vec<SystemSessionAffinityRuleInput>,
+}
+
+impl Default for SessionAffinityConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_entries: default_session_affinity_max_entries(),
+            default_ttl_seconds: default_session_affinity_ttl_seconds(),
+            rules: Vec::new(),
+        }
+    }
 }
 
 impl Default for ScheduledTestingConfig {
@@ -516,6 +550,12 @@ const fn default_scheduled_testing_interval_minutes() -> u64 {
 fn default_scheduled_testing_prompt() -> String {
     "reply '1'".into()
 }
+const fn default_session_affinity_max_entries() -> usize {
+    100_000
+}
+const fn default_session_affinity_ttl_seconds() -> u64 {
+    3_600
+}
 fn default_models_dev_api_url() -> String {
     "https://models.dev/api.json".into()
 }
@@ -710,6 +750,7 @@ pub fn compile_system_settings_input(
     let passive_health = &input.passive_health;
     let automatic_disable = &input.automatic_disable;
     let scheduled_testing = &input.scheduled_testing;
+    let session_affinity = compile_session_affinity_settings(&input.session_affinity)?;
     if upstream.connect_timeout_seconds == 0
         || upstream.response_header_timeout_seconds <= upstream.connect_timeout_seconds
         || upstream.stream_idle_timeout_seconds == 0
@@ -747,7 +788,7 @@ pub fn compile_system_settings_input(
         "failure_only" => ScheduledTestingMode::FailureOnly,
         _ => unreachable!("validated scheduled testing mode"),
     };
-    Ok(SystemRuntimeSettings::new_with_channel_automation(
+    Ok(SystemRuntimeSettings::new_with_all(
         UpstreamTimeoutDefaults::new(
             std::time::Duration::from_secs(upstream.connect_timeout_seconds),
             std::time::Duration::from_secs(upstream.response_header_timeout_seconds),
@@ -772,7 +813,200 @@ pub fn compile_system_settings_input(
             std::time::Duration::from_secs(scheduled_testing.interval_minutes.saturating_mul(60)),
             Arc::from(scheduled_testing.prompt.trim()),
         ),
+        session_affinity,
     ))
+}
+
+const MAX_SESSION_AFFINITY_ENTRIES: usize = 1_000_000;
+const MAX_SESSION_AFFINITY_TTL_SECONDS: u64 = 7 * 24 * 60 * 60;
+const MAX_SESSION_AFFINITY_RULES: usize = 64;
+const MAX_SESSION_AFFINITY_REGEXES: usize = 8;
+const MAX_SESSION_AFFINITY_KEY_SOURCES: usize = 8;
+const MAX_SESSION_AFFINITY_NAME_CHARS: usize = 64;
+const MAX_SESSION_AFFINITY_PATTERN_CHARS: usize = 256;
+
+fn compile_session_affinity_settings(
+    input: &SystemSessionAffinitySettingsInput,
+) -> Result<SessionAffinitySettings, ConfigError> {
+    if input.max_entries == 0
+        || input.max_entries > MAX_SESSION_AFFINITY_ENTRIES
+        || input.default_ttl_seconds == 0
+        || input.default_ttl_seconds > MAX_SESSION_AFFINITY_TTL_SECONDS
+        || input.rules.len() > MAX_SESSION_AFFINITY_RULES
+    {
+        return Err(ConfigError::Compile(
+            "session affinity settings are invalid".into(),
+        ));
+    }
+
+    let mut names = HashSet::new();
+    let mut compiled = Vec::new();
+    for rule in &input.rules {
+        let name = rule.name.trim();
+        let normalized_name = name.to_lowercase();
+        if name.is_empty()
+            || name.chars().count() > MAX_SESSION_AFFINITY_NAME_CHARS
+            || !names.insert(normalized_name)
+            || rule.api_formats.is_empty()
+            || rule.model_regex.len() > MAX_SESSION_AFFINITY_REGEXES
+            || rule.key_sources.is_empty()
+            || rule.key_sources.len() > MAX_SESSION_AFFINITY_KEY_SOURCES
+        {
+            return Err(ConfigError::Compile(
+                "session affinity rule is invalid".into(),
+            ));
+        }
+
+        unique(&rule.api_formats, "session affinity api_formats")?;
+        unique(&rule.model_regex, "session affinity model_regex")?;
+        let api_formats = rule
+            .api_formats
+            .iter()
+            .map(|value| parse_format(value))
+            .collect::<Result<Vec<_>, _>>()?;
+        let model_regex = rule
+            .model_regex
+            .iter()
+            .map(|pattern| compile_session_affinity_regex(pattern))
+            .collect::<Result<Vec<_>, _>>()?;
+        let value_regex = rule
+            .value_regex
+            .as_deref()
+            .map(compile_session_affinity_regex)
+            .transpose()?;
+        let key_sources = rule
+            .key_sources
+            .iter()
+            .map(compile_session_affinity_key_source)
+            .collect::<Result<Vec<_>, _>>()?;
+        let ttl_seconds = rule.ttl_seconds.unwrap_or(input.default_ttl_seconds);
+        if ttl_seconds == 0 || ttl_seconds > MAX_SESSION_AFFINITY_TTL_SECONDS {
+            return Err(ConfigError::Compile(
+                "session affinity rule TTL is invalid".into(),
+            ));
+        }
+        if !rule.enabled {
+            continue;
+        }
+
+        compiled.push(SessionAffinityRule::new(
+            Arc::from(name),
+            session_affinity_rule_fingerprint(rule, ttl_seconds),
+            api_formats.into(),
+            model_regex.into(),
+            key_sources.into(),
+            value_regex,
+            std::time::Duration::from_secs(ttl_seconds),
+        ));
+    }
+
+    Ok(SessionAffinitySettings::new(
+        input.enabled,
+        input.max_entries,
+        std::time::Duration::from_secs(input.default_ttl_seconds),
+        compiled.into(),
+    ))
+}
+
+fn compile_session_affinity_regex(pattern: &str) -> Result<Regex, ConfigError> {
+    if pattern.is_empty() || pattern.chars().count() > MAX_SESSION_AFFINITY_PATTERN_CHARS {
+        return Err(ConfigError::Compile(
+            "session affinity regex is invalid".into(),
+        ));
+    }
+    Regex::new(pattern)
+        .map_err(|_| ConfigError::Compile("session affinity regex is invalid".into()))
+}
+
+fn compile_session_affinity_key_source(
+    source: &SystemSessionAffinityKeySourceInput,
+) -> Result<SessionAffinityKeySource, ConfigError> {
+    match source {
+        SystemSessionAffinityKeySourceInput::RequestHeader { name } => {
+            let name = HeaderName::from_bytes(name.trim().as_bytes()).map_err(|_| {
+                ConfigError::Compile("session affinity request header is invalid".into())
+            })?;
+            if matches!(
+                name.as_str(),
+                "authorization"
+                    | "proxy-authorization"
+                    | "proxy-authenticate"
+                    | "cookie"
+                    | "set-cookie"
+                    | "host"
+                    | "content-length"
+                    | "connection"
+                    | "transfer-encoding"
+                    | "keep-alive"
+                    | "te"
+                    | "trailer"
+                    | "upgrade"
+                    | "proxy-connection"
+            ) {
+                return Err(ConfigError::Compile(
+                    "session affinity request header is unsafe".into(),
+                ));
+            }
+            Ok(SessionAffinityKeySource::RequestHeader(name))
+        }
+        SystemSessionAffinityKeySourceInput::JsonPointer { pointer } => {
+            let pointer = pointer.trim();
+            if pointer.chars().count() > MAX_SESSION_AFFINITY_PATTERN_CHARS
+                || !valid_json_pointer(pointer)
+            {
+                return Err(ConfigError::Compile(
+                    "session affinity JSON pointer is invalid".into(),
+                ));
+            }
+            Ok(SessionAffinityKeySource::JsonPointer(Arc::from(pointer)))
+        }
+    }
+}
+
+fn valid_json_pointer(pointer: &str) -> bool {
+    if pointer.is_empty() || !pointer.starts_with('/') {
+        return false;
+    }
+    let bytes = pointer.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'~' {
+            index += 1;
+            if index >= bytes.len() || !matches!(bytes[index], b'0' | b'1') {
+                return false;
+            }
+        }
+        index += 1;
+    }
+    true
+}
+
+fn session_affinity_rule_fingerprint(
+    rule: &SystemSessionAffinityRuleInput,
+    ttl_seconds: u64,
+) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"ai-gateway:session-affinity:v1\0");
+    hasher.update(rule.name.trim().as_bytes());
+    hasher.update([0]);
+    for format in &rule.api_formats {
+        hasher.update(format.as_bytes());
+        hasher.update([0]);
+    }
+    for pattern in &rule.model_regex {
+        hasher.update(pattern.as_bytes());
+        hasher.update([0]);
+    }
+    hasher.update(
+        serde_json::to_vec(&rule.key_sources).expect("session affinity key sources serialize"),
+    );
+    hasher.update([0]);
+    if let Some(pattern) = &rule.value_regex {
+        hasher.update(pattern.as_bytes());
+    }
+    hasher.update([0]);
+    hasher.update(ttl_seconds.to_le_bytes());
+    hasher.finalize().into()
 }
 
 fn compile_proxies(
@@ -1630,6 +1864,15 @@ fn validate_scheduled_testing_config(config: &ScheduledTestingConfig) -> Result<
     }
     Ok(())
 }
+fn validate_session_affinity_config(config: &SessionAffinityConfig) -> Result<(), ConfigError> {
+    compile_session_affinity_settings(&SystemSessionAffinitySettingsInput {
+        enabled: config.enabled,
+        max_entries: config.max_entries,
+        default_ttl_seconds: config.default_ttl_seconds,
+        rules: config.rules.clone(),
+    })
+    .map(|_| ())
+}
 fn validate_models_sync(config: &ModelsSyncConfig) -> Result<(), ConfigError> {
     let url = Url::parse(&config.api_url).map_err(|_| {
         ConfigError::Compile("models_sync api_url must be a valid HTTPS URL".into())
@@ -1778,7 +2021,9 @@ mod tests {
     use crate::persistence::{
         ChannelGroupRecord, ChannelRecord, ConfigTemplateRecord, ControlPlaneRecords,
         ModelRuleRecord, ProxyRecord, RuntimeConfigRecords, SystemPassiveHealthSettingsInput,
-        SystemSettingsInput, SystemSettingsRecord, SystemUpstreamSettingsInput,
+        SystemSessionAffinityKeySourceInput, SystemSessionAffinityRuleInput,
+        SystemSessionAffinitySettingsInput, SystemSettingsInput, SystemSettingsRecord,
+        SystemUpstreamSettingsInput,
     };
 
     use super::*;
@@ -1909,6 +2154,7 @@ mod tests {
                         interval_minutes: 7,
                         prompt: "reply '1'".into(),
                     },
+                    session_affinity: Default::default(),
                 })
                 .unwrap(),
                 updated_at: chrono::Utc::now(),
@@ -1939,6 +2185,71 @@ mod tests {
             settings.scheduled_testing().interval(),
             std::time::Duration::from_secs(7 * 60)
         );
+    }
+
+    #[test]
+    fn compiler_prevalidates_session_affinity_rules() {
+        let compiled = compile_system_settings_input(&SystemSettingsInput {
+            upstream: SystemUpstreamSettingsInput {
+                connect_timeout_seconds: 1,
+                response_header_timeout_seconds: 2,
+                stream_idle_timeout_seconds: 3,
+            },
+            passive_health: SystemPassiveHealthSettingsInput {
+                connection_failure_threshold: 3,
+                cooldown_seconds: 30,
+            },
+            automatic_disable: Default::default(),
+            scheduled_testing: Default::default(),
+            session_affinity: SystemSessionAffinitySettingsInput {
+                enabled: true,
+                max_entries: 100,
+                default_ttl_seconds: 60,
+                rules: vec![SystemSessionAffinityRuleInput {
+                    name: "codex".into(),
+                    enabled: true,
+                    api_formats: vec!["open_ai_responses".into()],
+                    model_regex: vec!["^gpt-.*$".into()],
+                    key_sources: vec![SystemSessionAffinityKeySourceInput::JsonPointer {
+                        pointer: "/prompt_cache_key".into(),
+                    }],
+                    value_regex: None,
+                    ttl_seconds: None,
+                }],
+            },
+        })
+        .unwrap();
+
+        assert!(compiled.session_affinity().enabled());
+        assert_eq!(compiled.session_affinity().max_entries(), 100);
+        assert_eq!(compiled.session_affinity().rules().len(), 1);
+        assert_eq!(compiled.session_affinity().rules()[0].name(), "codex");
+        assert_eq!(
+            compiled.session_affinity().rules()[0].ttl(),
+            std::time::Duration::from_secs(60)
+        );
+    }
+
+    #[test]
+    fn compiler_rejects_unsafe_session_affinity_sources() {
+        let input = SystemSessionAffinitySettingsInput {
+            enabled: true,
+            max_entries: 100,
+            default_ttl_seconds: 60,
+            rules: vec![SystemSessionAffinityRuleInput {
+                name: "unsafe".into(),
+                enabled: true,
+                api_formats: vec!["open_ai_responses".into()],
+                model_regex: vec![],
+                key_sources: vec![SystemSessionAffinityKeySourceInput::RequestHeader {
+                    name: "Authorization".into(),
+                }],
+                value_regex: None,
+                ttl_seconds: None,
+            }],
+        };
+
+        assert!(compile_session_affinity_settings(&input).is_err());
     }
 
     #[test]
@@ -2003,6 +2314,10 @@ mod tests {
         assert!(config.scheduled_testing.auto_recover);
         assert_eq!(config.scheduled_testing.interval_minutes, 5);
         assert_eq!(config.scheduled_testing.prompt, "reply '1'");
+        assert!(!config.session_affinity.enabled);
+        assert_eq!(config.session_affinity.max_entries, 100_000);
+        assert_eq!(config.session_affinity.default_ttl_seconds, 3_600);
+        assert!(config.session_affinity.rules.is_empty());
         assert_eq!(config.request_limits.proxy_body_bytes, 1);
         assert_eq!(config.request_limits.console_body_bytes, 262_144);
         assert_eq!(config.request_limits.auth_body_bytes, 16_384);

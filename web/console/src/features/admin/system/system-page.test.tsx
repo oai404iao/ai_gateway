@@ -39,6 +39,7 @@ describe("SystemPage", () => {
     const connectTimeout = await screen.findByLabelText("Connect timeout (seconds)");
     await user.clear(connectTimeout);
     await user.type(connectTimeout, "12");
+    await user.click(screen.getByRole("button", { name: "Add Codex template" }));
     await user.click(screen.getByRole("button", { name: /save system settings/i }));
 
     expect(received).toEqual({
@@ -61,6 +62,26 @@ describe("SystemPage", () => {
         auto_recover: true,
         interval_minutes: 5,
         prompt: "reply '1'",
+      },
+      session_affinity: {
+        enabled: false,
+        max_entries: 100000,
+        default_ttl_seconds: 3600,
+        rules: [
+          {
+            name: "codex-responses",
+            enabled: true,
+            api_formats: ["open_ai_responses"],
+            model_regex: ["^gpt-.*$"],
+            key_sources: [
+              { type: "json_pointer", pointer: "/prompt_cache_key" },
+              { type: "request_header", name: "session_id" },
+              { type: "request_header", name: "thread_id" },
+            ],
+            value_regex: null,
+            ttl_seconds: null,
+          },
+        ],
       },
     });
     expect(ifMatch).toBe('"2026-01-02T00:00:00.000Z"');

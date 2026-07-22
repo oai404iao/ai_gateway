@@ -116,6 +116,32 @@ auto_recover = true
 interval_minutes = 5
 prompt = "reply '1'"
 
+[session_affinity]
+# Bootstrap values for process-local successful-channel session affinity.
+# They are inserted only when the forwarding_policy row is first created;
+# later edits are made in the Console. Affinity is disabled by default.
+enabled = false
+# Bound untrusted, authenticated clients that send a new session key on every
+# request. Cache entries store only hashes and channel IDs in this process.
+max_entries = 100_000
+# Successful requests refresh the matched rule's TTL. A rule may override it.
+default_ttl_seconds = 3_600
+# Remove this empty list before adding one or more [[session_affinity.rules]]
+# array-of-table entries.
+rules = []
+#
+# Example Codex Responses rule:
+# [[session_affinity.rules]]
+# name = "codex-responses"
+# enabled = true
+# api_formats = ["open_ai_responses"]
+# model_regex = ["^gpt-.*$"]
+# key_sources = [
+#   { type = "json_pointer", pointer = "/prompt_cache_key" },
+#   { type = "request_header", name = "session_id" },
+#   { type = "request_header", name = "thread_id" },
+# ]
+
 [models_sync]
 # Administrator-triggered models.dev catalog import. Only complete USD
 # input/output prices are eligible for preview and synchronization.

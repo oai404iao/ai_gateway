@@ -264,6 +264,12 @@ export const SYSTEM_SETTINGS: SystemSettings = {
     interval_minutes: 5,
     prompt: "reply '1'",
   },
+  session_affinity: {
+    enabled: false,
+    max_entries: 100_000,
+    default_ttl_seconds: 3_600,
+    rules: [],
+  },
   updated_at: "2026-01-02T00:00:00.000Z",
 };
 

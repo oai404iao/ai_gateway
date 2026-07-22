@@ -813,11 +813,51 @@ export interface components {
             /** @default reply '1' */
             prompt: string;
         };
+        SystemSessionAffinityKeySource: components["schemas"]["SystemSessionAffinityHeaderSource"] | components["schemas"]["SystemSessionAffinityJsonPointerSource"];
+        SystemSessionAffinityHeaderSource: {
+            /** @enum {string} */
+            type: "request_header";
+            /** @description Non-sensitive request header used as an ordered affinity-key source. */
+            name: string;
+        };
+        SystemSessionAffinityJsonPointerSource: {
+            /** @enum {string} */
+            type: "json_pointer";
+            /** @description RFC 6901 pointer to a scalar request-body value. */
+            pointer: string;
+        };
+        SystemSessionAffinityRule: {
+            name: string;
+            enabled: boolean;
+            api_formats: components["schemas"]["ApiFormat"][];
+            /** @description Empty means every model in the selected API formats. */
+            model_regex: string[];
+            key_sources: components["schemas"]["SystemSessionAffinityKeySource"][];
+            value_regex: string | null;
+            /**
+             * Format: int64
+             * @description Null uses the system default.
+             */
+            ttl_seconds: number | null;
+        };
+        SystemSessionAffinitySettings: {
+            /** @default false */
+            enabled: boolean;
+            /** @default 100000 */
+            max_entries: number;
+            /**
+             * Format: int64
+             * @default 3600
+             */
+            default_ttl_seconds: number;
+            rules: components["schemas"]["SystemSessionAffinityRule"][];
+        };
         SystemSettingsInput: {
             upstream: components["schemas"]["SystemUpstreamSettings"];
             passive_health: components["schemas"]["SystemPassiveHealthSettings"];
             automatic_disable: components["schemas"]["SystemAutomaticDisableSettings"];
             scheduled_testing: components["schemas"]["SystemScheduledTestingSettings"];
+            session_affinity: components["schemas"]["SystemSessionAffinitySettings"];
         };
         SystemSettings: components["schemas"]["SystemSettingsInput"] & {
             updated_at: components["schemas"]["DateTime"];
@@ -3176,7 +3216,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Database-backed forwarding, passive-health, automatic-disable, and scheduled-test defaults. */
+            /** @description Database-backed forwarding, health, automation, scheduled-test, and session-affinity defaults. */
             200: {
                 headers: {
                     ETag: components["headers"]["ETag"];

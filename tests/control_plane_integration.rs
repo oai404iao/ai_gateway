@@ -82,6 +82,7 @@ fn system_settings() -> SystemSettingsInput {
         },
         automatic_disable: Default::default(),
         scheduled_testing: Default::default(),
+        session_affinity: Default::default(),
     }
 }
 

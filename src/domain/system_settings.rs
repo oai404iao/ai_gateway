@@ -3,6 +3,11 @@
 
 use std::{sync::Arc, time::Duration};
 
+use regex::Regex;
+use reqwest::header::HeaderName;
+
+use super::ApiFormat;
+
 /// Global timeout defaults used when a channel has no explicit override.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct UpstreamTimeoutDefaults {
@@ -215,13 +220,147 @@ impl Default for ScheduledTestingSettings {
     }
 }
 
+/// A compiled source used to extract a bounded session-affinity value from an
+/// authenticated proxy request.
+#[derive(Clone, Debug)]
+pub enum SessionAffinityKeySource {
+    RequestHeader(HeaderName),
+    JsonPointer(Arc<str>),
+}
+
+/// One immutable, prevalidated session-affinity rule.
+#[derive(Clone, Debug)]
+pub struct SessionAffinityRule {
+    name: Arc<str>,
+    fingerprint: [u8; 32],
+    api_formats: Arc<[ApiFormat]>,
+    model_regex: Arc<[Regex]>,
+    key_sources: Arc<[SessionAffinityKeySource]>,
+    value_regex: Option<Regex>,
+    ttl: Duration,
+}
+
+impl SessionAffinityRule {
+    #[must_use]
+    pub fn new(
+        name: Arc<str>,
+        fingerprint: [u8; 32],
+        api_formats: Arc<[ApiFormat]>,
+        model_regex: Arc<[Regex]>,
+        key_sources: Arc<[SessionAffinityKeySource]>,
+        value_regex: Option<Regex>,
+        ttl: Duration,
+    ) -> Self {
+        Self {
+            name,
+            fingerprint,
+            api_formats,
+            model_regex,
+            key_sources,
+            value_regex,
+            ttl,
+        }
+    }
+
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    #[must_use]
+    pub const fn fingerprint(&self) -> [u8; 32] {
+        self.fingerprint
+    }
+
+    #[must_use]
+    pub fn key_sources(&self) -> &[SessionAffinityKeySource] {
+        &self.key_sources
+    }
+
+    #[must_use]
+    pub const fn ttl(&self) -> Duration {
+        self.ttl
+    }
+
+    #[must_use]
+    pub fn matches_request(&self, api_format: ApiFormat, model: &str) -> bool {
+        self.api_formats.contains(&api_format)
+            && (self.model_regex.is_empty()
+                || self
+                    .model_regex
+                    .iter()
+                    .any(|pattern| pattern.is_match(model)))
+    }
+
+    #[must_use]
+    pub fn matches_value(&self, value: &str) -> bool {
+        self.value_regex
+            .as_ref()
+            .is_none_or(|pattern| pattern.is_match(value))
+    }
+}
+
+/// Immutable global policy for process-local, successful-channel session
+/// affinity.
+#[derive(Clone, Debug)]
+pub struct SessionAffinitySettings {
+    enabled: bool,
+    max_entries: usize,
+    default_ttl: Duration,
+    rules: Arc<[SessionAffinityRule]>,
+}
+
+impl SessionAffinitySettings {
+    #[must_use]
+    pub fn new(
+        enabled: bool,
+        max_entries: usize,
+        default_ttl: Duration,
+        rules: Arc<[SessionAffinityRule]>,
+    ) -> Self {
+        Self {
+            enabled,
+            max_entries,
+            default_ttl,
+            rules,
+        }
+    }
+
+    #[must_use]
+    pub const fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    #[must_use]
+    pub const fn max_entries(&self) -> usize {
+        self.max_entries
+    }
+
+    #[must_use]
+    pub const fn default_ttl(&self) -> Duration {
+        self.default_ttl
+    }
+
+    #[must_use]
+    pub fn rules(&self) -> &[SessionAffinityRule] {
+        &self.rules
+    }
+}
+
+impl Default for SessionAffinitySettings {
+    fn default() -> Self {
+        Self::new(false, 100_000, Duration::from_secs(3_600), Arc::from([]))
+    }
+}
+
 /// Immutable global forwarding policy published with each runtime snapshot.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct SystemRuntimeSettings {
     upstream_timeouts: UpstreamTimeoutDefaults,
     passive_health: PassiveHealthSettings,
     automatic_disable: AutomaticDisableSettings,
     scheduled_testing: ScheduledTestingSettings,
+    session_affinity: SessionAffinitySettings,
 }
 
 impl SystemRuntimeSettings {
@@ -235,6 +374,7 @@ impl SystemRuntimeSettings {
             passive_health,
             automatic_disable: AutomaticDisableSettings::default(),
             scheduled_testing: ScheduledTestingSettings::default(),
+            session_affinity: SessionAffinitySettings::default(),
         }
     }
 
@@ -250,6 +390,24 @@ impl SystemRuntimeSettings {
             passive_health,
             automatic_disable,
             scheduled_testing,
+            session_affinity: SessionAffinitySettings::default(),
+        }
+    }
+
+    #[must_use]
+    pub fn new_with_all(
+        upstream_timeouts: UpstreamTimeoutDefaults,
+        passive_health: PassiveHealthSettings,
+        automatic_disable: AutomaticDisableSettings,
+        scheduled_testing: ScheduledTestingSettings,
+        session_affinity: SessionAffinitySettings,
+    ) -> Self {
+        Self {
+            upstream_timeouts,
+            passive_health,
+            automatic_disable,
+            scheduled_testing,
+            session_affinity,
         }
     }
 
@@ -271,6 +429,11 @@ impl SystemRuntimeSettings {
     #[must_use]
     pub fn scheduled_testing(&self) -> &ScheduledTestingSettings {
         &self.scheduled_testing
+    }
+
+    #[must_use]
+    pub fn session_affinity(&self) -> &SessionAffinitySettings {
+        &self.session_affinity
     }
 }
 

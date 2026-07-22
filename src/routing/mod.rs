@@ -1,7 +1,8 @@
-//! Priority-aware channel selection and snapshot-independent passive health.
+//! Priority-aware channel selection, process-local session affinity, and
+//! snapshot-independent passive health.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -83,6 +84,7 @@ struct RuntimeInner {
     clock: Arc<dyn Clock>,
     entropy: Arc<dyn Entropy>,
     state: Mutex<RuntimeState>,
+    affinity: Mutex<AffinityState>,
 }
 #[derive(Default)]
 struct RuntimeState {
@@ -119,6 +121,90 @@ struct RoundRobinKey {
     rule_id: Uuid,
     priority: i32,
     authorized_candidates: Arc<[Uuid]>,
+}
+
+/// A matched and hashed request-side session-affinity rule. Raw extracted
+/// values never leave the proxy request stack.
+#[derive(Clone, Debug)]
+pub struct SessionAffinityMatch {
+    rule_name: Arc<str>,
+    rule_fingerprint: [u8; 32],
+    session_hash: [u8; 32],
+    ttl: Duration,
+}
+
+impl SessionAffinityMatch {
+    #[must_use]
+    pub fn new(
+        rule_name: Arc<str>,
+        rule_fingerprint: [u8; 32],
+        session_hash: [u8; 32],
+        ttl: Duration,
+    ) -> Self {
+        Self {
+            rule_name,
+            rule_fingerprint,
+            session_hash,
+            ttl,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct SessionAffinitySelection {
+    rule_name: Arc<str>,
+    cache_hit: bool,
+}
+
+impl SessionAffinitySelection {
+    #[must_use]
+    pub fn rule_name(&self) -> &str {
+        &self.rule_name
+    }
+
+    #[must_use]
+    pub const fn cache_hit(&self) -> bool {
+        self.cache_hit
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct AffinityCacheKey {
+    rule_fingerprint: [u8; 32],
+    api_key_id: Uuid,
+    model_rule_id: Uuid,
+    session_hash: [u8; 32],
+}
+
+#[derive(Clone, Copy, Debug)]
+struct AffinityEntry {
+    channel_id: Uuid,
+    expires_at: Duration,
+    generation: u64,
+}
+
+#[derive(Default)]
+struct AffinityState {
+    enabled: bool,
+    max_entries: usize,
+    active_rules: HashSet<[u8; 32]>,
+    entries: HashMap<AffinityCacheKey, AffinityEntry>,
+    recency: VecDeque<(AffinityCacheKey, u64)>,
+    next_generation: u64,
+}
+
+struct PreparedAffinity {
+    key: AffinityCacheKey,
+    rule_name: Arc<str>,
+    ttl: Duration,
+    preferred_channel_id: Option<Uuid>,
+}
+
+struct AffinityBinding {
+    key: AffinityCacheKey,
+    ttl: Duration,
+    channel_id: Uuid,
+    cache_hit: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -158,6 +244,7 @@ impl RoutingRuntime {
                 clock,
                 entropy,
                 state: Mutex::new(RuntimeState::default()),
+                affinity: Mutex::new(AffinityState::default()),
             }),
         }
     }
@@ -219,6 +306,8 @@ impl RoutingRuntime {
         // successful reload work proportional to active channels and bounds it to
         // selections made in the current generation.
         state.round_robin.clear();
+        drop(state);
+        reconcile_affinity(&self.inner, snapshot);
     }
     #[must_use]
     pub fn select(
@@ -228,9 +317,35 @@ impl RoutingRuntime {
         format: ApiFormat,
         model: &str,
     ) -> SelectionResult {
+        self.select_with_affinity(snapshot, key, format, model, None)
+    }
+
+    #[must_use]
+    pub fn select_with_affinity(
+        &self,
+        snapshot: &CompiledRuntimeConfig,
+        key: &CompiledApiKey,
+        format: ApiFormat,
+        model: &str,
+        affinity: Option<SessionAffinityMatch>,
+    ) -> SelectionResult {
         let Some(rule) = snapshot.model_rule(format, model) else {
             return SelectionResult::UnknownOrInaccessibleModel;
         };
+        let affinity = affinity.map(|affinity| {
+            let cache_key = AffinityCacheKey {
+                rule_fingerprint: affinity.rule_fingerprint,
+                api_key_id: key.id(),
+                model_rule_id: rule.id(),
+                session_hash: affinity.session_hash,
+            };
+            PreparedAffinity {
+                preferred_channel_id: affinity_lookup(&self.inner, cache_key),
+                key: cache_key,
+                rule_name: affinity.rule_name,
+                ttl: affinity.ttl,
+            }
+        });
         let now = self.inner.clock.now();
         let mut state = self
             .inner
@@ -263,41 +378,54 @@ impl RoutingRuntime {
             if candidates.is_empty() {
                 continue;
             }
-            let selected_index = match tier.strategy() {
-                SelectionStrategy::WeightedRandom => {
-                    weighted_ticket(&candidates, &*self.inner.entropy)
-                }
-                SelectionStrategy::WeightedRoundRobin => {
-                    let key = RoundRobinKey {
-                        rule_id: rule.id(),
-                        priority: tier.priority(),
-                        authorized_candidates: Arc::from(
-                            authorized_candidates
-                                .iter()
-                                .map(|channel| channel.id())
-                                .collect::<Vec<_>>(),
-                        ),
-                    };
-                    let candidates_are_active =
-                        state
-                            .active_channels
-                            .as_ref()
-                            .is_none_or(|active_channels| {
-                                authorized_candidates.iter().all(|channel| {
-                                    active_channels
-                                        .contains(&ChannelIdentity::from_channel(channel))
-                                })
-                            });
-                    if candidates_are_active {
-                        smooth_round_robin(state.round_robin.entry(key).or_default(), &candidates)
-                    } else {
-                        // A request may still hold an old snapshot after reload.
-                        // It can route and hold a lease, but cannot grow state for
-                        // a retired connectivity identity.
-                        smooth_round_robin(&mut HashMap::new(), &candidates)
+            let affinity_hit_index = affinity
+                .as_ref()
+                .and_then(|affinity| affinity.preferred_channel_id)
+                .and_then(|preferred| {
+                    candidates
+                        .iter()
+                        .position(|channel| channel.id() == preferred)
+                });
+            let selected_index = affinity_hit_index.unwrap_or_else(|| {
+                match tier.strategy() {
+                    SelectionStrategy::WeightedRandom => {
+                        weighted_ticket(&candidates, &*self.inner.entropy)
+                    }
+                    SelectionStrategy::WeightedRoundRobin => {
+                        let key = RoundRobinKey {
+                            rule_id: rule.id(),
+                            priority: tier.priority(),
+                            authorized_candidates: Arc::from(
+                                authorized_candidates
+                                    .iter()
+                                    .map(|channel| channel.id())
+                                    .collect::<Vec<_>>(),
+                            ),
+                        };
+                        let candidates_are_active =
+                            state
+                                .active_channels
+                                .as_ref()
+                                .is_none_or(|active_channels| {
+                                    authorized_candidates.iter().all(|channel| {
+                                        active_channels
+                                            .contains(&ChannelIdentity::from_channel(channel))
+                                    })
+                                });
+                        if candidates_are_active {
+                            smooth_round_robin(
+                                state.round_robin.entry(key).or_default(),
+                                &candidates,
+                            )
+                        } else {
+                            // A request may still hold an old snapshot after reload.
+                            // It can route and hold a lease, but cannot grow state for
+                            // a retired connectivity identity.
+                            smooth_round_robin(&mut HashMap::new(), &candidates)
+                        }
                     }
                 }
-            };
+            });
             let channel = Arc::clone(&candidates[selected_index]);
             let identity = ChannelIdentity::from_channel(&channel);
             let entry = state.channels.entry(identity.clone()).or_default();
@@ -306,16 +434,46 @@ impl RoutingRuntime {
                 entry.half_open_probe = true;
             }
             entry.in_flight += 1;
-            return SelectionResult::Selected(SelectedRoute {
+            let cache_hit = affinity_hit_index.is_some();
+            let affinity_binding = affinity.as_ref().map(|affinity| {
+                Box::new(AffinityBinding {
+                    key: affinity.key,
+                    ttl: affinity.ttl,
+                    channel_id: channel.id(),
+                    cache_hit,
+                })
+            });
+            let affinity_selection = affinity.as_ref().map(|affinity| SessionAffinitySelection {
+                rule_name: Arc::clone(&affinity.rule_name),
+                cache_hit,
+            });
+            let stale_affinity = affinity
+                .as_ref()
+                .and_then(|affinity| affinity.preferred_channel_id)
+                .filter(|_| !cache_hit);
+            let selected = SelectedRoute {
                 rule,
                 channel,
+                session_affinity: affinity_selection,
                 lease: ChannelLease {
                     inner: Arc::clone(&self.inner),
                     identity,
                     half_open_probe,
+                    affinity: affinity_binding,
                     released: false,
                 },
-            });
+            };
+            drop(state);
+            if let (Some(affinity), Some(channel_id)) = (&affinity, stale_affinity) {
+                affinity_remove_if_channel(&self.inner, affinity.key, channel_id);
+            }
+            return SelectionResult::Selected(selected);
+        }
+        drop(state);
+        if let Some(affinity) = &affinity
+            && let Some(channel_id) = affinity.preferred_channel_id
+        {
+            affinity_remove_if_channel(&self.inner, affinity.key, channel_id);
         }
         if has_authorized_candidate
             || rule
@@ -328,6 +486,136 @@ impl RoutingRuntime {
             SelectionResult::UnknownOrInaccessibleModel
         }
     }
+}
+
+fn reconcile_affinity(inner: &RuntimeInner, snapshot: &CompiledRuntimeConfig) {
+    let settings = snapshot.system_settings().session_affinity();
+    let active_rules = settings
+        .rules()
+        .iter()
+        .map(crate::domain::SessionAffinityRule::fingerprint)
+        .collect::<HashSet<_>>();
+    let now = inner.clock.now();
+    let mut state = inner
+        .affinity
+        .lock()
+        .expect("session affinity mutex poisoned");
+    state.enabled = settings.enabled();
+    state.max_entries = settings.max_entries();
+    if !state.enabled {
+        state.active_rules = active_rules;
+        state.entries.clear();
+        state.recency.clear();
+        return;
+    }
+    if state.active_rules != active_rules {
+        state.active_rules = active_rules;
+        let active_rules = state.active_rules.clone();
+        state.entries.retain(|key, entry| {
+            active_rules.contains(&key.rule_fingerprint) && entry.expires_at > now
+        });
+        rebuild_affinity_recency(&mut state);
+    }
+    trim_affinity_state(&mut state);
+}
+
+fn affinity_lookup(inner: &RuntimeInner, key: AffinityCacheKey) -> Option<Uuid> {
+    let now = inner.clock.now();
+    let mut state = inner
+        .affinity
+        .lock()
+        .expect("session affinity mutex poisoned");
+    if !state.enabled || !state.active_rules.contains(&key.rule_fingerprint) {
+        return None;
+    }
+    let entry = state.entries.get(&key).copied()?;
+    if entry.expires_at <= now {
+        state.entries.remove(&key);
+        return None;
+    }
+    Some(entry.channel_id)
+}
+
+fn affinity_store(inner: &RuntimeInner, binding: &AffinityBinding) {
+    let now = inner.clock.now();
+    let mut state = inner
+        .affinity
+        .lock()
+        .expect("session affinity mutex poisoned");
+    if !state.enabled
+        || state.max_entries == 0
+        || !state.active_rules.contains(&binding.key.rule_fingerprint)
+    {
+        return;
+    }
+    state.next_generation = state.next_generation.wrapping_add(1).max(1);
+    let generation = state.next_generation;
+    state.entries.insert(
+        binding.key,
+        AffinityEntry {
+            channel_id: binding.channel_id,
+            expires_at: now + binding.ttl,
+            generation,
+        },
+    );
+    state.recency.push_back((binding.key, generation));
+    trim_affinity_state(&mut state);
+    compact_affinity_recency(&mut state);
+}
+
+fn affinity_remove_if_channel(
+    inner: &RuntimeInner,
+    key: AffinityCacheKey,
+    expected_channel_id: Uuid,
+) {
+    let mut state = inner
+        .affinity
+        .lock()
+        .expect("session affinity mutex poisoned");
+    if state
+        .entries
+        .get(&key)
+        .is_some_and(|entry| entry.channel_id == expected_channel_id)
+    {
+        state.entries.remove(&key);
+    }
+}
+
+fn trim_affinity_state(state: &mut AffinityState) {
+    while state.entries.len() > state.max_entries {
+        let Some((key, generation)) = state.recency.pop_front() else {
+            if let Some(key) = state.entries.keys().next().copied() {
+                state.entries.remove(&key);
+                continue;
+            }
+            break;
+        };
+        if state
+            .entries
+            .get(&key)
+            .is_some_and(|entry| entry.generation == generation)
+        {
+            state.entries.remove(&key);
+        }
+    }
+}
+
+fn compact_affinity_recency(state: &mut AffinityState) {
+    let threshold = state.entries.len().saturating_mul(4).saturating_add(1_024);
+    if state.recency.len() <= threshold {
+        return;
+    }
+    rebuild_affinity_recency(state);
+}
+
+fn rebuild_affinity_recency(state: &mut AffinityState) {
+    let mut entries = state
+        .entries
+        .iter()
+        .map(|(key, entry)| (*key, entry.generation))
+        .collect::<Vec<_>>();
+    entries.sort_unstable_by_key(|(_, generation)| *generation);
+    state.recency = entries.into();
 }
 
 fn usable(state: &mut RuntimeState, identity: &ChannelIdentity, now: Duration) -> bool {
@@ -413,6 +701,7 @@ impl SelectionResult {
 pub struct SelectedRoute {
     pub rule: Arc<CompiledModelRule>,
     pub channel: Arc<CompiledChannel>,
+    pub session_affinity: Option<SessionAffinitySelection>,
     pub lease: ChannelLease,
 }
 
@@ -422,9 +711,24 @@ pub struct ChannelLease {
     inner: Arc<RuntimeInner>,
     identity: ChannelIdentity,
     half_open_probe: bool,
+    affinity: Option<Box<AffinityBinding>>,
     released: bool,
 }
 impl ChannelLease {
+    pub fn request_succeeded(&mut self) {
+        if let Some(affinity) = self.affinity.as_deref() {
+            affinity_store(&self.inner, affinity);
+        }
+    }
+
+    pub fn request_failed(&mut self) {
+        if let Some(affinity) = self.affinity.as_deref()
+            && affinity.cache_hit
+        {
+            affinity_remove_if_channel(&self.inner, affinity.key, affinity.channel_id);
+        }
+    }
+
     pub fn response_headers_received(&mut self) {
         let mut state = self
             .inner
@@ -536,16 +840,23 @@ mod tests {
     };
 
     use crate::{
-        domain::{ApiFormat, CompiledRuntimeConfig},
+        domain::{
+            ApiFormat, AutomaticDisableSettings, CompiledRuntimeConfig, PassiveHealthSettings,
+            ScheduledTestingSettings, SessionAffinityRule, SessionAffinitySettings,
+            SystemRuntimeSettings, UpstreamTimeoutDefaults,
+        },
         persistence::{
             ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ControlPlaneRecords, ModelRuleRecord,
             ProxyRecord,
         },
-        runtime_config::compile_control_plane,
+        runtime_config::{compile_control_plane, compile_control_plane_with_system_settings},
     };
+    use regex::Regex;
     use uuid::Uuid;
 
-    use super::{Clock, Entropy, PassiveHealthPolicy, RoutingRuntime, SelectionResult};
+    use super::{
+        Clock, Entropy, PassiveHealthPolicy, RoutingRuntime, SelectionResult, SessionAffinityMatch,
+    };
 
     struct TestClock(AtomicU64);
     impl TestClock {
@@ -574,6 +885,15 @@ mod tests {
         groups: &[(i32, &str)],
         weights: &[i32],
         base_url: Option<&str>,
+    ) -> (CompiledRuntimeConfig, String) {
+        snapshot_with_base_and_settings(groups, weights, base_url, SystemRuntimeSettings::default())
+    }
+
+    fn snapshot_with_base_and_settings(
+        groups: &[(i32, &str)],
+        weights: &[i32],
+        base_url: Option<&str>,
+        system_settings: SystemRuntimeSettings,
     ) -> (CompiledRuntimeConfig, String) {
         assert_eq!(groups.len(), weights.len());
         let group_ids = (0..groups.len())
@@ -664,7 +984,34 @@ mod tests {
             proxies: vec![],
             templates: vec![],
         };
-        (compile_control_plane(records).unwrap(), secret)
+        (
+            compile_control_plane_with_system_settings(records, system_settings).unwrap(),
+            secret,
+        )
+    }
+
+    fn affinity_system_settings(fingerprint: [u8; 32], ttl: Duration) -> SystemRuntimeSettings {
+        SystemRuntimeSettings::new_with_all(
+            UpstreamTimeoutDefaults::default(),
+            PassiveHealthSettings::default(),
+            AutomaticDisableSettings::default(),
+            ScheduledTestingSettings::default(),
+            SessionAffinitySettings::new(
+                true,
+                100,
+                ttl,
+                vec![SessionAffinityRule::new(
+                    Arc::from("test-affinity"),
+                    fingerprint,
+                    vec![ApiFormat::OpenAiChatCompletions].into(),
+                    vec![Regex::new("^model$").unwrap()].into(),
+                    Vec::new().into(),
+                    None,
+                    ttl,
+                )]
+                .into(),
+            ),
+        )
     }
 
     fn select(
@@ -814,6 +1161,167 @@ mod tests {
                 expected[1]
             ]
         );
+    }
+
+    #[test]
+    fn successful_session_affinity_reuses_the_selected_channel() {
+        let fingerprint = [7; 32];
+        let ttl = Duration::from_secs(60);
+        let (snapshot, secret) = snapshot_with_base_and_settings(
+            &[(0, "weighted_random"), (0, "weighted_random")],
+            &[1, 1],
+            None,
+            affinity_system_settings(fingerprint, ttl),
+        );
+        let runtime = RoutingRuntime::with_seams(
+            PassiveHealthPolicy::default(),
+            Arc::new(TestClock(AtomicU64::new(0))),
+            Arc::new(Tickets(Mutex::new(VecDeque::from([0, 1])))),
+        );
+        runtime.reconcile(&snapshot);
+        let key = snapshot.authenticate(&secret).unwrap();
+        let affinity =
+            || SessionAffinityMatch::new(Arc::from("test-affinity"), fingerprint, [9; 32], ttl);
+
+        let mut first = match runtime.select_with_affinity(
+            &snapshot,
+            &key,
+            ApiFormat::OpenAiChatCompletions,
+            "model",
+            Some(affinity()),
+        ) {
+            SelectionResult::Selected(route) => route,
+            _ => panic!("first affinity request must select"),
+        };
+        assert!(!first.session_affinity.as_ref().unwrap().cache_hit());
+        let first_channel = first.channel.id();
+        first.lease.request_succeeded();
+        drop(first);
+
+        let second = match runtime.select_with_affinity(
+            &snapshot,
+            &key,
+            ApiFormat::OpenAiChatCompletions,
+            "model",
+            Some(affinity()),
+        ) {
+            SelectionResult::Selected(route) => route,
+            _ => panic!("second affinity request must select"),
+        };
+        assert!(second.session_affinity.as_ref().unwrap().cache_hit());
+        assert_eq!(second.channel.id(), first_channel);
+    }
+
+    #[test]
+    fn failed_affinity_hit_is_removed_before_the_next_selection() {
+        let fingerprint = [8; 32];
+        let ttl = Duration::from_secs(60);
+        let (snapshot, secret) = snapshot_with_base_and_settings(
+            &[(0, "weighted_random"), (0, "weighted_random")],
+            &[1, 1],
+            None,
+            affinity_system_settings(fingerprint, ttl),
+        );
+        let runtime = RoutingRuntime::with_seams(
+            PassiveHealthPolicy::default(),
+            Arc::new(TestClock(AtomicU64::new(0))),
+            Arc::new(Tickets(Mutex::new(VecDeque::from([0, 1])))),
+        );
+        runtime.reconcile(&snapshot);
+        let key = snapshot.authenticate(&secret).unwrap();
+        let affinity =
+            || SessionAffinityMatch::new(Arc::from("test-affinity"), fingerprint, [10; 32], ttl);
+
+        let mut first = match runtime.select_with_affinity(
+            &snapshot,
+            &key,
+            ApiFormat::OpenAiChatCompletions,
+            "model",
+            Some(affinity()),
+        ) {
+            SelectionResult::Selected(route) => route,
+            _ => panic!("first affinity request must select"),
+        };
+        let first_channel = first.channel.id();
+        first.lease.request_succeeded();
+        drop(first);
+
+        let mut hit = match runtime.select_with_affinity(
+            &snapshot,
+            &key,
+            ApiFormat::OpenAiChatCompletions,
+            "model",
+            Some(affinity()),
+        ) {
+            SelectionResult::Selected(route) => route,
+            _ => panic!("affinity hit must select"),
+        };
+        assert!(hit.session_affinity.as_ref().unwrap().cache_hit());
+        hit.lease.request_failed();
+        drop(hit);
+
+        let next = match runtime.select_with_affinity(
+            &snapshot,
+            &key,
+            ApiFormat::OpenAiChatCompletions,
+            "model",
+            Some(affinity()),
+        ) {
+            SelectionResult::Selected(route) => route,
+            _ => panic!("post-failure request must select"),
+        };
+        assert!(!next.session_affinity.as_ref().unwrap().cache_hit());
+        assert_ne!(next.channel.id(), first_channel);
+    }
+
+    #[test]
+    fn expired_session_affinity_returns_to_weighted_selection() {
+        let fingerprint = [11; 32];
+        let ttl = Duration::from_secs(60);
+        let (snapshot, secret) = snapshot_with_base_and_settings(
+            &[(0, "weighted_random"), (0, "weighted_random")],
+            &[1, 1],
+            None,
+            affinity_system_settings(fingerprint, ttl),
+        );
+        let clock = Arc::new(TestClock(AtomicU64::new(0)));
+        let runtime = RoutingRuntime::with_seams(
+            PassiveHealthPolicy::default(),
+            clock.clone(),
+            Arc::new(Tickets(Mutex::new(VecDeque::from([0, 1])))),
+        );
+        runtime.reconcile(&snapshot);
+        let key = snapshot.authenticate(&secret).unwrap();
+        let affinity =
+            || SessionAffinityMatch::new(Arc::from("test-affinity"), fingerprint, [12; 32], ttl);
+
+        let mut first = match runtime.select_with_affinity(
+            &snapshot,
+            &key,
+            ApiFormat::OpenAiChatCompletions,
+            "model",
+            Some(affinity()),
+        ) {
+            SelectionResult::Selected(route) => route,
+            _ => panic!("first affinity request must select"),
+        };
+        let first_channel = first.channel.id();
+        first.lease.request_succeeded();
+        drop(first);
+
+        clock.advance(Duration::from_secs(61));
+        let after_expiry = match runtime.select_with_affinity(
+            &snapshot,
+            &key,
+            ApiFormat::OpenAiChatCompletions,
+            "model",
+            Some(affinity()),
+        ) {
+            SelectionResult::Selected(route) => route,
+            _ => panic!("expired affinity request must select"),
+        };
+        assert!(!after_expiry.session_affinity.as_ref().unwrap().cache_hit());
+        assert_ne!(after_expiry.channel.id(), first_channel);
     }
 
     #[test]

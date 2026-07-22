@@ -136,6 +136,7 @@ fn bootstrap_system_settings() -> SystemSettingsInput {
         },
         automatic_disable: Default::default(),
         scheduled_testing: Default::default(),
+        session_affinity: Default::default(),
     }
 }
 
@@ -230,6 +231,7 @@ async fn system_settings_bootstrap_initializes_once_without_overwriting_database
         },
         automatic_disable: Default::default(),
         scheduled_testing: Default::default(),
+        session_affinity: Default::default(),
     };
 
     repository
@@ -644,6 +646,20 @@ async fn system_settings_are_versioned_audited_and_updated_via_console() {
         "interval_minutes": 7,
         "prompt": "reply '1'",
     });
+    input["session_affinity"] = serde_json::json!({
+        "enabled": true,
+        "max_entries": 1000,
+        "default_ttl_seconds": 3600,
+        "rules": [{
+            "name": "codex",
+            "enabled": true,
+            "api_formats": ["open_ai_responses"],
+            "model_regex": ["^gpt-.*$"],
+            "key_sources": [{"type": "json_pointer", "pointer": "/prompt_cache_key"}],
+            "value_regex": null,
+            "ttl_seconds": null,
+        }],
+    });
     input.as_object_mut().unwrap().remove("updated_at");
 
     let updated = request(
@@ -682,6 +698,9 @@ async fn system_settings_are_versioned_audited_and_updated_via_console() {
         published.scheduled_testing().interval(),
         std::time::Duration::from_secs(7 * 60)
     );
+    assert!(published.session_affinity().enabled());
+    assert_eq!(published.session_affinity().max_entries(), 1_000);
+    assert_eq!(published.session_affinity().rules()[0].name(), "codex");
     let audit: serde_json::Value = sqlx::query_scalar(
         "SELECT after_redacted FROM audit_logs \
          WHERE object_type='system_settings' ORDER BY occurred_at DESC LIMIT 1",

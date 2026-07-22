@@ -33,6 +33,7 @@ import { DetailField } from "@/components/shared/detail-field";
 import { StringListField } from "@/components/shared/string-list-field";
 import { ApiError } from "@/api/errors";
 import { useReload, useSystemSettings, useUpdateSystemSettings } from "@/features/admin/api";
+import { SessionAffinityCard } from "@/features/admin/system/session-affinity-card";
 import { useI18n } from "@/app/i18n";
 import type { ScheduledTestingMode, SystemSettingsInput } from "@/api/types";
 
@@ -94,6 +95,54 @@ const systemSettingsSchema = z
       interval_minutes: z.number().int().min(1, "Enter a positive number of minutes."),
       prompt: z.string().trim().min(1, "Test prompt is required.").max(4000),
     }),
+    session_affinity: z.object({
+      enabled: z.boolean(),
+      max_entries: z
+        .number()
+        .int()
+        .min(1, "Enter a positive cache capacity.")
+        .max(1_000_000, "Cache capacity cannot exceed 1000000 entries."),
+      default_ttl_seconds: z
+        .number()
+        .int()
+        .min(1, "Enter a positive number of seconds.")
+        .max(604_800, "Affinity TTL cannot exceed 604800 seconds."),
+      rules: z
+        .array(
+          z.object({
+            name: z.string().trim().min(1).max(64),
+            enabled: z.boolean(),
+            api_formats: z
+              .array(z.enum(["open_ai_chat_completions", "open_ai_responses"]))
+              .min(1),
+            model_regex: z.array(z.string().min(1).max(256)).max(8),
+            key_sources: z
+              .array(
+                z.discriminatedUnion("type", [
+                  z.object({
+                    type: z.literal("request_header"),
+                    name: z.string().trim().min(1).max(256),
+                  }),
+                  z.object({
+                    type: z.literal("json_pointer"),
+                    pointer: z.string().trim().startsWith("/").max(256),
+                  }),
+                ]),
+              )
+              .min(1)
+              .max(8),
+            value_regex: z.string().min(1).max(256).nullable(),
+            ttl_seconds: z.number().int().min(1).max(604_800).nullable(),
+          }),
+        )
+        .max(64)
+        .refine(
+          (rules) =>
+            new Set(rules.map((rule) => rule.name.trim().toLocaleLowerCase())).size ===
+            rules.length,
+          "Rule names must be unique.",
+        ),
+    }),
   })
   .superRefine((value, context) => {
     if (value.upstream.response_header_timeout_seconds <= value.upstream.connect_timeout_seconds) {
@@ -128,6 +177,12 @@ const defaultValues: SystemSettingsValues = {
     interval_minutes: 5,
     prompt: "reply '1'",
   },
+  session_affinity: {
+    enabled: false,
+    max_entries: 100_000,
+    default_ttl_seconds: 3_600,
+    rules: [],
+  },
 };
 
 export function SystemPage() {
@@ -152,6 +207,7 @@ export function SystemPage() {
           error_message_keywords: settings.data.data.automatic_disable.error_message_keywords,
         },
         scheduled_testing: settings.data.data.scheduled_testing,
+        session_affinity: settings.data.data.session_affinity,
       });
     }
   }, [form, settings.data]);
@@ -170,6 +226,7 @@ export function SystemPage() {
           error_message_keywords: values.automatic_disable.error_message_keywords,
         },
         scheduled_testing: values.scheduled_testing,
+        session_affinity: values.session_affinity,
       };
       const result = await updateSettings.mutateAsync({
         input,
@@ -292,6 +349,25 @@ export function SystemPage() {
                 </FieldGroup>
               </CardContent>
             </Card>
+
+            <SessionAffinityCard
+              value={form.watch("session_affinity")}
+              onChange={(session_affinity) =>
+                form.setValue("session_affinity", session_affinity, {
+                  shouldDirty: true,
+                  shouldValidate: true,
+                })
+              }
+              errors={{
+                maxEntries: errorMessage(
+                  form.formState.errors.session_affinity?.max_entries?.message,
+                ),
+                defaultTtl: errorMessage(
+                  form.formState.errors.session_affinity?.default_ttl_seconds?.message,
+                ),
+                rules: errorMessage(form.formState.errors.session_affinity?.rules?.message),
+              }}
+            />
 
             <Card>
               <CardHeader>

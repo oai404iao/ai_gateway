@@ -201,6 +201,7 @@ fn system_settings() -> SystemSettingsInput {
             interval_minutes: 60,
             prompt: "reply '1'".into(),
         },
+        session_affinity: Default::default(),
     }
 }
 
