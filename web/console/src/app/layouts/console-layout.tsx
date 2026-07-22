@@ -1,6 +1,6 @@
 import { Suspense } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router";
-import { LogOut, Moon, Sun, Monitor, ChevronDown } from "lucide-react";
+import { LogOut, Moon, Sun, Monitor, ChevronDown, User } from "lucide-react";
 import { toast } from "sonner";
 import {
   Sidebar,
@@ -125,7 +125,7 @@ function UserMenu() {
         <DropdownMenuSeparator />
         <DropdownMenuGroup>
           <DropdownMenuItem onClick={() => navigate("/account")}>
-            {t("Profile")}
+            <User data-icon="inline-start" /> {t("Profile")}
           </DropdownMenuItem>
           <DropdownMenuItem onClick={onLogout}>
             <LogOut data-icon="inline-start" /> {t("Sign out")}

@@ -75,11 +75,6 @@ const ModelDetailPage = lazy(() =>
 const CatalogPage = lazy(() =>
   import("@/features/admin/catalog/catalog-page").then((m) => ({ default: m.CatalogPage })),
 );
-const ChannelGroupsPage = lazy(() =>
-  import("@/features/admin/routing/channel-groups/channel-groups-page").then((m) => ({
-    default: m.ChannelGroupsPage,
-  })),
-);
 const ChannelGroupDetailPage = lazy(() =>
   import("@/features/admin/routing/channel-groups/channel-group-detail-page").then((m) => ({
     default: m.ChannelGroupDetailPage,
@@ -186,7 +181,10 @@ export function AppRouter() {
             <Route path="/admin/models" element={<ModelsPage />} />
             <Route path="/admin/models/:id" element={<ModelDetailPage />} />
             <Route path="/admin/catalog" element={<CatalogPage />} />
-            <Route path="/admin/routing/channel-groups" element={<ChannelGroupsPage />} />
+            <Route
+              path="/admin/routing/channel-groups"
+              element={<Navigate to="/admin/routing/channels" replace />}
+            />
             <Route
               path="/admin/routing/channel-groups/:id"
               element={<ChannelGroupDetailPage />}

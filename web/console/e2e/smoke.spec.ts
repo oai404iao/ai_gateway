@@ -17,9 +17,11 @@ test.describe("Console SPA smoke", () => {
     await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
     await page.getByRole("button", { name: /sign in/i }).click();
 
-    // Authenticated shell: the sidebar Profile link is present and we land
-    // on the account page.
-    await expect(page.getByRole("link", { name: "Profile" })).toBeVisible();
+    // Profile is no longer duplicated in the sidebar. It remains available
+    // from the user menu in the top-right corner.
+    await expect(page.getByRole("link", { name: "Profile" })).toHaveCount(0);
+    await page.getByRole("button", { name: /Initial Admin/ }).click();
+    await expect(page.getByRole("menuitem", { name: "Profile" })).toBeVisible();
     await expect(page).toHaveURL(/\/account/);
   });
 

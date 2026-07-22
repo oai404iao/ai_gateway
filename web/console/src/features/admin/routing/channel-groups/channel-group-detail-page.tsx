@@ -92,7 +92,7 @@ export function ChannelGroupDetailPage() {
       if (isNew) {
         await create.mutateAsync(input);
         toast.success(t("Channel group created"));
-        navigate("/admin/routing/channel-groups", { replace: true });
+        navigate("/admin/routing/channels", { replace: true });
       } else {
         await update.mutateAsync({ input, ifMatch: etag });
         toast.success(t("Channel group updated"));
@@ -117,8 +117,8 @@ export function ChannelGroupDetailPage() {
     <AdminDetailShell
       title={isNew ? t("New channel group") : state.name || t("Channel group")}
       description={t("A same-format pool of channels selected by priority and weight.")}
-      backPath="/admin/routing/channel-groups"
-      backLabel={t("Back to groups")}
+      backPath="/admin/routing/channels"
+      backLabel={t("Back to channels")}
       isLoading={isLoading}
       error={error}
       hasData={isNew || Boolean(data)}

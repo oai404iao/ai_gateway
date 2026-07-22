@@ -525,6 +525,13 @@ const zhCN: Record<string, string> = {
   "New group": "新建渠道组",
   "Upstream endpoints inside a channel group with weight, timeouts, and auth.":
     "渠道组内具有权重、超时和认证配置的上游端点。",
+  "Manage channel groups and their upstream channels in one grouped view.":
+    "在一个分组视图中管理渠道组及其上游渠道。",
+  "No channels in this group": "该渠道组中没有渠道",
+  "Create a channel and assign it to this group.": "创建渠道并将其分配到该渠道组。",
+  "Unavailable channel groups": "不可用的渠道组",
+  "These channels reference a group that is not available in the current response.":
+    "这些渠道引用了当前响应中不可用的渠道组。",
   "New channel": "新建渠道",
   "yes": "是",
   "no": "否",

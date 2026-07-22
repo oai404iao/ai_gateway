@@ -1,5 +1,4 @@
 import {
-  User,
   KeyRound,
   ScrollText,
   Users,
@@ -11,7 +10,6 @@ import {
   FileText,
   RefreshCw,
   SlidersHorizontal,
-  Layers,
   ChartNoAxesCombined,
   type LucideIcon,
 } from "lucide-react";
@@ -34,7 +32,6 @@ export const NAV_SECTIONS: NavSection[] = [
   {
     title: "Personal",
     items: [
-      { label: "Profile", path: "/account", icon: User, end: true },
       { label: "Sessions", path: "/account/sessions", icon: ShieldCheck },
       { label: "API Keys", path: "/api-keys", icon: KeyRound },
       { label: "Request Logs", path: "/usage/request-logs", icon: ScrollText },
@@ -54,7 +51,6 @@ export const NAV_SECTIONS: NavSection[] = [
     title: "Routing",
     roles: ["admin"],
     items: [
-      { label: "Channel Groups", path: "/admin/routing/channel-groups", icon: Layers },
       { label: "Channels", path: "/admin/routing/channels", icon: Network },
       { label: "Model Rules", path: "/admin/routing/model-rules", icon: Route },
     ],
