@@ -19,8 +19,8 @@ use ai_gateway::{
     persistence::{
         AuthRepository, ControlPlaneRepository, MIGRATOR, RequestLogRepository,
         SystemAutomaticDisableSettingsInput, SystemPassiveHealthSettingsInput,
-        SystemScheduledTestingSettingsInput, SystemSessionAffinitySettingsInput,
-        SystemSettingsInput, SystemUpstreamSettingsInput,
+        SystemRequestRetrySettingsInput, SystemScheduledTestingSettingsInput,
+        SystemSessionAffinitySettingsInput, SystemSettingsInput, SystemUpstreamSettingsInput,
     },
     routing::{PassiveHealthPolicy, RoutingRuntime},
     runtime_config::{AppConfig, RuntimeConfig, compile_runtime_config},
@@ -82,6 +82,10 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
                 connect_timeout_seconds: config.upstream.connect_timeout_seconds,
                 response_header_timeout_seconds: config.upstream.response_header_timeout_seconds,
                 stream_idle_timeout_seconds: config.upstream.stream_idle_timeout_seconds,
+            },
+            request_retry: SystemRequestRetrySettingsInput {
+                enabled: config.request_retry.enabled,
+                max_attempts: config.request_retry.max_attempts,
             },
             passive_health: SystemPassiveHealthSettingsInput {
                 connection_failure_threshold: config.passive_health.connection_failure_threshold,

@@ -905,6 +905,7 @@ fn session_affinity_proxy(first_upstream_url: &str, second_upstream_url: &str) -
             Duration::from_secs(2),
             Duration::from_secs(2),
         ),
+        ai_gateway::domain::RequestRetrySettings::default(),
         PassiveHealthSettings::default(),
         AutomaticDisableSettings::default(),
         ScheduledTestingSettings::default(),

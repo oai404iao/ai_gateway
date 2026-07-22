@@ -250,6 +250,10 @@ export const SYSTEM_SETTINGS: SystemSettings = {
     response_header_timeout_seconds: 30,
     stream_idle_timeout_seconds: 90,
   },
+  request_retry: {
+    enabled: true,
+    max_attempts: 2,
+  },
   passive_health: {
     connection_failure_threshold: 3,
     cooldown_seconds: 30,

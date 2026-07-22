@@ -22,7 +22,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::{
-    domain::{AutomaticDisableTrigger, RequestLogEvent},
+    domain::{AutomaticDisableTrigger, MAX_REQUEST_ATTEMPTS, RequestLogEvent},
     request_log_journal::EncodedRequestLog,
 };
 
@@ -75,6 +75,8 @@ pub struct SystemSettingsRecord {
 #[serde(deny_unknown_fields)]
 pub struct SystemSettingsInput {
     pub upstream: SystemUpstreamSettingsInput,
+    #[serde(default)]
+    pub request_retry: SystemRequestRetrySettingsInput,
     pub passive_health: SystemPassiveHealthSettingsInput,
     #[serde(default)]
     pub automatic_disable: SystemAutomaticDisableSettingsInput,
@@ -89,6 +91,24 @@ pub struct SystemUpstreamSettingsInput {
     pub connect_timeout_seconds: u64,
     pub response_header_timeout_seconds: u64,
     pub stream_idle_timeout_seconds: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SystemRequestRetrySettingsInput {
+    #[serde(default = "default_request_retry_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_request_retry_max_attempts")]
+    pub max_attempts: u32,
+}
+
+impl Default for SystemRequestRetrySettingsInput {
+    fn default() -> Self {
+        Self {
+            enabled: default_request_retry_enabled(),
+            max_attempts: default_request_retry_max_attempts(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -174,6 +194,14 @@ pub enum SystemSessionAffinityKeySourceInput {
 
 fn default_scheduled_testing_mode() -> String {
     "global".into()
+}
+
+const fn default_request_retry_enabled() -> bool {
+    true
+}
+
+const fn default_request_retry_max_attempts() -> u32 {
+    2
 }
 
 const fn default_scheduled_testing_auto_recover() -> bool {
@@ -4848,6 +4876,7 @@ fn system_settings_view(
 
 fn validate_system_settings_input(input: &SystemSettingsInput) -> Result<(), RepositoryError> {
     let upstream = &input.upstream;
+    let request_retry = &input.request_retry;
     let passive_health = &input.passive_health;
     let automatic_disable = &input.automatic_disable;
     let scheduled_testing = &input.scheduled_testing;
@@ -4855,6 +4884,8 @@ fn validate_system_settings_input(input: &SystemSettingsInput) -> Result<(), Rep
     if upstream.connect_timeout_seconds == 0
         || upstream.response_header_timeout_seconds <= upstream.connect_timeout_seconds
         || upstream.stream_idle_timeout_seconds == 0
+        || request_retry.max_attempts == 0
+        || request_retry.max_attempts > MAX_REQUEST_ATTEMPTS
         || passive_health.connection_failure_threshold == 0
         || passive_health.cooldown_seconds == 0
         || automatic_disable

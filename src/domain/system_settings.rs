@@ -8,6 +8,9 @@ use reqwest::header::HeaderName;
 
 use super::ApiFormat;
 
+/// Hard ceiling for one client request's distinct upstream channel attempts.
+pub const MAX_REQUEST_ATTEMPTS: u32 = 10;
+
 /// Global timeout defaults used when a channel has no explicit override.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct UpstreamTimeoutDefaults {
@@ -82,6 +85,41 @@ impl PassiveHealthSettings {
 impl Default for PassiveHealthSettings {
     fn default() -> Self {
         Self::new(3, Duration::from_secs(30))
+    }
+}
+
+/// Immutable policy for retrying one client request on distinct channels
+/// before any upstream response headers are received.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RequestRetrySettings {
+    enabled: bool,
+    max_attempts: u32,
+}
+
+impl RequestRetrySettings {
+    #[must_use]
+    pub const fn new(enabled: bool, max_attempts: u32) -> Self {
+        Self {
+            enabled,
+            max_attempts,
+        }
+    }
+
+    #[must_use]
+    pub const fn enabled(self) -> bool {
+        self.enabled
+    }
+
+    /// Total upstream attempts, including the initial attempt.
+    #[must_use]
+    pub const fn max_attempts(self) -> u32 {
+        self.max_attempts
+    }
+}
+
+impl Default for RequestRetrySettings {
+    fn default() -> Self {
+        Self::new(true, 2)
     }
 }
 
@@ -357,6 +395,7 @@ impl Default for SessionAffinitySettings {
 #[derive(Clone, Debug)]
 pub struct SystemRuntimeSettings {
     upstream_timeouts: UpstreamTimeoutDefaults,
+    request_retry: RequestRetrySettings,
     passive_health: PassiveHealthSettings,
     automatic_disable: AutomaticDisableSettings,
     scheduled_testing: ScheduledTestingSettings,
@@ -371,6 +410,7 @@ impl SystemRuntimeSettings {
     ) -> Self {
         Self {
             upstream_timeouts,
+            request_retry: RequestRetrySettings::default(),
             passive_health,
             automatic_disable: AutomaticDisableSettings::default(),
             scheduled_testing: ScheduledTestingSettings::default(),
@@ -387,6 +427,7 @@ impl SystemRuntimeSettings {
     ) -> Self {
         Self {
             upstream_timeouts,
+            request_retry: RequestRetrySettings::default(),
             passive_health,
             automatic_disable,
             scheduled_testing,
@@ -397,6 +438,7 @@ impl SystemRuntimeSettings {
     #[must_use]
     pub fn new_with_all(
         upstream_timeouts: UpstreamTimeoutDefaults,
+        request_retry: RequestRetrySettings,
         passive_health: PassiveHealthSettings,
         automatic_disable: AutomaticDisableSettings,
         scheduled_testing: ScheduledTestingSettings,
@@ -404,6 +446,7 @@ impl SystemRuntimeSettings {
     ) -> Self {
         Self {
             upstream_timeouts,
+            request_retry,
             passive_health,
             automatic_disable,
             scheduled_testing,
@@ -414,6 +457,11 @@ impl SystemRuntimeSettings {
     #[must_use]
     pub const fn upstream_timeouts(&self) -> UpstreamTimeoutDefaults {
         self.upstream_timeouts
+    }
+
+    #[must_use]
+    pub const fn request_retry(&self) -> RequestRetrySettings {
+        self.request_retry
     }
 
     #[must_use]

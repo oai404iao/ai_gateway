@@ -785,6 +785,18 @@ export interface components {
             /** Format: int64 */
             stream_idle_timeout_seconds: number;
         };
+        SystemRequestRetrySettings: {
+            /**
+             * @description Enables failover for connection failures, connect timeouts, and response-header timeouts.
+             * @default true
+             */
+            enabled: boolean;
+            /**
+             * @description Total distinct-channel attempts, including the initial attempt.
+             * @default 2
+             */
+            max_attempts: number;
+        };
         SystemPassiveHealthSettings: {
             connection_failure_threshold: number;
             /** Format: int64 */
@@ -854,6 +866,7 @@ export interface components {
         };
         SystemSettingsInput: {
             upstream: components["schemas"]["SystemUpstreamSettings"];
+            request_retry: components["schemas"]["SystemRequestRetrySettings"];
             passive_health: components["schemas"]["SystemPassiveHealthSettings"];
             automatic_disable: components["schemas"]["SystemAutomaticDisableSettings"];
             scheduled_testing: components["schemas"]["SystemScheduledTestingSettings"];
@@ -3218,7 +3231,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Database-backed forwarding, health, automation, scheduled-test, and session-affinity defaults. */
+            /** @description Database-backed forwarding, retry, health, automation, scheduled-test, and session-affinity defaults. */
             200: {
                 headers: {
                     ETag: components["headers"]["ETag"];

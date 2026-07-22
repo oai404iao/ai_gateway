@@ -22,7 +22,7 @@ pub use request_log::{
     RequestUsage,
 };
 pub use system_settings::{
-    AutomaticDisableSettings, AutomaticDisableTrigger, PassiveHealthSettings, ScheduledTestingMode,
-    ScheduledTestingSettings, SessionAffinityKeySource, SessionAffinityRule,
-    SessionAffinitySettings, SystemRuntimeSettings, UpstreamTimeoutDefaults,
+    AutomaticDisableSettings, AutomaticDisableTrigger, MAX_REQUEST_ATTEMPTS, PassiveHealthSettings,
+    RequestRetrySettings, ScheduledTestingMode, ScheduledTestingSettings, SessionAffinityKeySource,
+    SessionAffinityRule, SessionAffinitySettings, SystemRuntimeSettings, UpstreamTimeoutDefaults,
 };

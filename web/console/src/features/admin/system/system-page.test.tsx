@@ -48,6 +48,10 @@ describe("SystemPage", () => {
         response_header_timeout_seconds: 30,
         stream_idle_timeout_seconds: 90,
       },
+      request_retry: {
+        enabled: true,
+        max_attempts: 2,
+      },
       passive_health: {
         connection_failure_threshold: 3,
         cooldown_seconds: 30,
@@ -102,6 +106,21 @@ describe("SystemPage", () => {
 
     expect(
       await screen.findByText("Response header timeout must exceed connect timeout."),
+    ).toBeInTheDocument();
+  });
+
+  it("bounds the total automatic retry attempts", async () => {
+    seedAuthenticatedSession();
+    const user = userEvent.setup();
+    renderApp();
+
+    const maximumAttempts = await screen.findByLabelText("Maximum attempts");
+    await user.clear(maximumAttempts);
+    await user.type(maximumAttempts, "11");
+    await user.click(screen.getByRole("button", { name: /save system settings/i }));
+
+    expect(
+      await screen.findByText("Maximum attempts must be between 1 and 10."),
     ).toBeInTheDocument();
   });
 });

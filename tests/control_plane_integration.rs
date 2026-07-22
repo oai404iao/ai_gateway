@@ -76,6 +76,7 @@ fn system_settings() -> SystemSettingsInput {
             response_header_timeout_seconds: 2,
             stream_idle_timeout_seconds: 3,
         },
+        request_retry: Default::default(),
         passive_health: SystemPassiveHealthSettingsInput {
             connection_failure_threshold: 3,
             cooldown_seconds: 30,

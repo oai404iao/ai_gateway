@@ -38,6 +38,16 @@ const zhCN: Record<string, string> = {
   "Connect timeout (seconds)": "连接超时（秒）",
   "Response header timeout (seconds)": "响应头超时（秒）",
   "Stream idle timeout (seconds)": "流空闲超时（秒）",
+  "Request failover": "请求故障转移",
+  "Before response headers arrive, connection failures, connect timeouts, and response-header timeouts can retry on distinct healthy channels. A timed-out upstream may still process the original request.":
+    "在响应头返回前，连接失败、连接超时和响应头超时可切换到其他健康渠道重试。发生超时的上游仍可能继续处理原请求。",
+  "Enable automatic retry": "启用自动重试",
+  "Retries never reuse a channel already attempted by the same client request.":
+    "重试不会再次使用同一客户端请求已经尝试过的渠道。",
+  "Maximum attempts": "最大尝试次数",
+  "Includes the initial request. A value of 2 allows one automatic failover.":
+    "包含首次请求。设置为 2 表示允许一次自动故障转移。",
+  "Maximum attempts must be between 1 and 10.": "最大尝试次数必须在 1 至 10 之间。",
   "Passive health": "被动健康检查",
   "After the configured number of pre-header connection failures, a channel enters cooldown before one half-open probe is allowed.":
     "达到配置的响应头前连接失败次数后，渠道会进入冷却期，随后只允许一次半开探测。",

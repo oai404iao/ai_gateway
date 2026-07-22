@@ -1221,7 +1221,7 @@ paths:
       security: [{ bearerAuth: [] }]
       responses:
         "200":
-          description: Database-backed forwarding, health, automation, scheduled-test, and session-affinity defaults.
+          description: Database-backed forwarding, retry, health, automation, scheduled-test, and session-affinity defaults.
           headers:
             ETag: { $ref: "#/components/headers/ETag" }
           content:
@@ -1529,6 +1529,21 @@ components:
         response_header_timeout_seconds: { type: integer, format: int64, minimum: 1 }
         stream_idle_timeout_seconds: { type: integer, format: int64, minimum: 1 }
 
+    SystemRequestRetrySettings:
+      type: object
+      required: [enabled, max_attempts]
+      properties:
+        enabled:
+          type: boolean
+          default: true
+          description: Enables failover for connection failures, connect timeouts, and response-header timeouts.
+        max_attempts:
+          type: integer
+          minimum: 1
+          maximum: 10
+          default: 2
+          description: Total distinct-channel attempts, including the initial attempt.
+
     SystemPassiveHealthSettings:
       type: object
       required: [connection_failure_threshold, cooldown_seconds]
@@ -1661,9 +1676,10 @@ components:
     SystemSettingsInput:
       type: object
       required:
-        [upstream, passive_health, automatic_disable, scheduled_testing, session_affinity]
+        [upstream, request_retry, passive_health, automatic_disable, scheduled_testing, session_affinity]
       properties:
         upstream: { $ref: "#/components/schemas/SystemUpstreamSettings" }
+        request_retry: { $ref: "#/components/schemas/SystemRequestRetrySettings" }
         passive_health: { $ref: "#/components/schemas/SystemPassiveHealthSettings" }
         automatic_disable: { $ref: "#/components/schemas/SystemAutomaticDisableSettings" }
         scheduled_testing: { $ref: "#/components/schemas/SystemScheduledTestingSettings" }

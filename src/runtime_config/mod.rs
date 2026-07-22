@@ -26,10 +26,10 @@ use crate::{
         ApiFormat, ApiKeyHash, ApiKeyPermission, AutomaticDisableSettings, ChannelTimeoutPolicy,
         CompiledApiKey, CompiledChannel, CompiledChannelGroup, CompiledChannelUpstreamPolicy,
         CompiledConfigTemplate, CompiledModelRule, CompiledProxy, CompiledRouteTier,
-        CompiledRuntimeConfig, ModelPriceSnapshot, ModelRouteKey, NoProxyHost,
-        PassiveHealthSettings, ScheduledTestingMode, ScheduledTestingSettings, SelectionStrategy,
-        SessionAffinityKeySource, SessionAffinityRule, SessionAffinitySettings,
-        SystemRuntimeSettings, UpstreamAuth, UpstreamTimeoutDefaults,
+        CompiledRuntimeConfig, MAX_REQUEST_ATTEMPTS, ModelPriceSnapshot, ModelRouteKey,
+        NoProxyHost, PassiveHealthSettings, RequestRetrySettings, ScheduledTestingMode,
+        ScheduledTestingSettings, SelectionStrategy, SessionAffinityKeySource, SessionAffinityRule,
+        SessionAffinitySettings, SystemRuntimeSettings, UpstreamAuth, UpstreamTimeoutDefaults,
     },
     persistence::{
         ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ConfigTemplateRecord, ControlPlaneRecords,
@@ -46,6 +46,8 @@ pub struct AppConfig {
     pub server: ServerConfig,
     pub database: DatabaseConfig,
     pub upstream: UpstreamConfig,
+    #[serde(default)]
+    pub request_retry: RequestRetryConfig,
     pub runtime_config: RuntimeConfigSettings,
     #[serde(default)]
     pub request_logging: RequestLoggingConfig,
@@ -93,6 +95,7 @@ impl AppConfig {
         validate_server(&self.server)?;
         validate_database(&self.database)?;
         validate_upstream(&self.upstream)?;
+        validate_request_retry_config(&self.request_retry)?;
         validate_models_sync(&self.models_sync)?;
         let request_limits = RequestLimitsConfig::resolve(&self.server, self.request_limits)?;
         let console = validate_console(self.console, self.auth)?;
@@ -135,6 +138,7 @@ impl AppConfig {
             server: self.server,
             database: self.database,
             upstream: self.upstream,
+            request_retry: self.request_retry,
             runtime_config: self.runtime_config,
             request_logging: self.request_logging,
             passive_health: self.passive_health,
@@ -153,6 +157,7 @@ pub struct BootstrapConfig {
     pub server: ServerConfig,
     pub database: DatabaseConfig,
     pub upstream: UpstreamConfig,
+    pub request_retry: RequestRetryConfig,
     pub runtime_config: RuntimeConfigSettings,
     pub request_logging: RequestLoggingConfig,
     pub passive_health: PassiveHealthConfig,
@@ -223,6 +228,15 @@ pub struct UpstreamConfig {
     pub connect_timeout_seconds: u64,
     pub response_header_timeout_seconds: u64,
     pub stream_idle_timeout_seconds: u64,
+}
+/// One-time bootstrap source for pre-header request failover.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequestRetryConfig {
+    #[serde(default = "default_request_retry_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_request_retry_max_attempts")]
+    pub max_attempts: u32,
 }
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -298,6 +312,15 @@ impl Default for PassiveHealthConfig {
         Self {
             connection_failure_threshold: default_connection_failure_threshold(),
             cooldown_seconds: default_passive_health_cooldown_seconds(),
+        }
+    }
+}
+
+impl Default for RequestRetryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_request_retry_enabled(),
+            max_attempts: default_request_retry_max_attempts(),
         }
     }
 }
@@ -535,6 +558,12 @@ const fn default_request_log_shutdown_drain_seconds() -> u64 {
 const fn default_connection_failure_threshold() -> u32 {
     3
 }
+const fn default_request_retry_enabled() -> bool {
+    true
+}
+const fn default_request_retry_max_attempts() -> u32 {
+    2
+}
 const fn default_passive_health_cooldown_seconds() -> u64 {
     30
 }
@@ -747,6 +776,7 @@ pub fn compile_system_settings_input(
     input: &SystemSettingsInput,
 ) -> Result<SystemRuntimeSettings, ConfigError> {
     let upstream = &input.upstream;
+    let request_retry = &input.request_retry;
     let passive_health = &input.passive_health;
     let automatic_disable = &input.automatic_disable;
     let scheduled_testing = &input.scheduled_testing;
@@ -754,6 +784,8 @@ pub fn compile_system_settings_input(
     if upstream.connect_timeout_seconds == 0
         || upstream.response_header_timeout_seconds <= upstream.connect_timeout_seconds
         || upstream.stream_idle_timeout_seconds == 0
+        || request_retry.max_attempts == 0
+        || request_retry.max_attempts > MAX_REQUEST_ATTEMPTS
         || passive_health.connection_failure_threshold == 0
         || passive_health.cooldown_seconds == 0
         || automatic_disable
@@ -794,6 +826,7 @@ pub fn compile_system_settings_input(
             std::time::Duration::from_secs(upstream.response_header_timeout_seconds),
             std::time::Duration::from_secs(upstream.stream_idle_timeout_seconds),
         ),
+        RequestRetrySettings::new(request_retry.enabled, request_retry.max_attempts),
         PassiveHealthSettings::new(
             passive_health.connection_failure_threshold,
             std::time::Duration::from_secs(passive_health.cooldown_seconds),
@@ -1852,6 +1885,15 @@ fn validate_automatic_disable_config(config: &AutomaticDisableConfig) -> Result<
     }
     Ok(())
 }
+
+fn validate_request_retry_config(config: &RequestRetryConfig) -> Result<(), ConfigError> {
+    if config.max_attempts == 0 || config.max_attempts > MAX_REQUEST_ATTEMPTS {
+        return Err(ConfigError::Compile(
+            "request_retry max_attempts must be between 1 and 10".into(),
+        ));
+    }
+    Ok(())
+}
 fn validate_scheduled_testing_config(config: &ScheduledTestingConfig) -> Result<(), ConfigError> {
     if config.interval_minutes == 0
         || config.prompt.trim().is_empty()
@@ -2021,9 +2063,9 @@ mod tests {
     use crate::persistence::{
         ChannelGroupRecord, ChannelRecord, ConfigTemplateRecord, ControlPlaneRecords,
         ModelRuleRecord, ProxyRecord, RuntimeConfigRecords, SystemPassiveHealthSettingsInput,
-        SystemSessionAffinityKeySourceInput, SystemSessionAffinityRuleInput,
-        SystemSessionAffinitySettingsInput, SystemSettingsInput, SystemSettingsRecord,
-        SystemUpstreamSettingsInput,
+        SystemRequestRetrySettingsInput, SystemSessionAffinityKeySourceInput,
+        SystemSessionAffinityRuleInput, SystemSessionAffinitySettingsInput, SystemSettingsInput,
+        SystemSettingsRecord, SystemUpstreamSettingsInput,
     };
 
     use super::*;
@@ -2139,6 +2181,10 @@ mod tests {
                         response_header_timeout_seconds: 5,
                         stream_idle_timeout_seconds: 8,
                     },
+                    request_retry: SystemRequestRetrySettingsInput {
+                        enabled: true,
+                        max_attempts: 3,
+                    },
                     passive_health: SystemPassiveHealthSettingsInput {
                         connection_failure_threshold: 4,
                         cooldown_seconds: 45,
@@ -2170,6 +2216,8 @@ mod tests {
             settings.upstream_timeouts().response_header(),
             std::time::Duration::from_secs(5)
         );
+        assert!(settings.request_retry().enabled());
+        assert_eq!(settings.request_retry().max_attempts(), 3);
         assert_eq!(settings.passive_health().connection_failure_threshold(), 4);
         assert_eq!(
             settings.passive_health().cooldown(),
@@ -2195,6 +2243,7 @@ mod tests {
                 response_header_timeout_seconds: 2,
                 stream_idle_timeout_seconds: 3,
             },
+            request_retry: Default::default(),
             passive_health: SystemPassiveHealthSettingsInput {
                 connection_failure_threshold: 3,
                 cooldown_seconds: 30,
@@ -2305,6 +2354,8 @@ mod tests {
             config.request_logging.spool_compaction_threshold_bytes,
             256 * 1_024 * 1_024
         );
+        assert!(config.request_retry.enabled);
+        assert_eq!(config.request_retry.max_attempts, 2);
         assert_eq!(config.passive_health.connection_failure_threshold, 3);
         assert_eq!(config.passive_health.cooldown_seconds, 30);
         assert!(!config.automatic_disable.enabled);

@@ -50,6 +50,15 @@ connect_timeout_seconds = 10
 response_header_timeout_seconds = 30
 stream_idle_timeout_seconds = 90
 
+[request_retry]
+# Bootstrap values for pre-header request failover. They are inserted only
+# when the forwarding_policy row is first created; later edits are made in the
+# Console. Retries always select a distinct, not-yet-attempted healthy channel.
+enabled = true
+# Total attempts including the initial request. A value of 2 permits one
+# automatic failover. The supported range is 1 through 10.
+max_attempts = 2
+
 [runtime_config]
 # Console mutations publish immediately in the local process. This periodic
 # reload is the cross-process/manual-database-change convergence fallback.

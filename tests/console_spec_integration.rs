@@ -130,6 +130,7 @@ fn bootstrap_system_settings() -> SystemSettingsInput {
             response_header_timeout_seconds: 2,
             stream_idle_timeout_seconds: 3,
         },
+        request_retry: Default::default(),
         passive_health: SystemPassiveHealthSettingsInput {
             connection_failure_threshold: 3,
             cooldown_seconds: 30,
@@ -225,6 +226,7 @@ async fn system_settings_bootstrap_initializes_once_without_overwriting_database
             response_header_timeout_seconds: 10,
             stream_idle_timeout_seconds: 15,
         },
+        request_retry: Default::default(),
         passive_health: SystemPassiveHealthSettingsInput {
             connection_failure_threshold: 6,
             cooldown_seconds: 60,
@@ -245,6 +247,8 @@ async fn system_settings_bootstrap_initializes_once_without_overwriting_database
 
     let stored = repository.system_settings().await.unwrap();
     assert_eq!(stored.settings.upstream.connect_timeout_seconds, 1);
+    assert!(stored.settings.request_retry.enabled);
+    assert_eq!(stored.settings.request_retry.max_attempts, 2);
     assert_eq!(
         stored.settings.passive_health.connection_failure_threshold,
         3
@@ -633,6 +637,10 @@ async fn system_settings_are_versioned_audited_and_updated_via_console() {
     input["upstream"]["connect_timeout_seconds"] = serde_json::json!(2);
     input["upstream"]["response_header_timeout_seconds"] = serde_json::json!(5);
     input["upstream"]["stream_idle_timeout_seconds"] = serde_json::json!(8);
+    input["request_retry"] = serde_json::json!({
+        "enabled": false,
+        "max_attempts": 4,
+    });
     input["passive_health"]["connection_failure_threshold"] = serde_json::json!(4);
     input["passive_health"]["cooldown_seconds"] = serde_json::json!(45);
     input["automatic_disable"] = serde_json::json!({
@@ -662,6 +670,18 @@ async fn system_settings_are_versioned_audited_and_updated_via_console() {
     });
     input.as_object_mut().unwrap().remove("updated_at");
 
+    let mut invalid_retry = input.clone();
+    invalid_retry["request_retry"]["max_attempts"] = serde_json::json!(11);
+    let invalid = request(
+        &app,
+        "PUT",
+        "/console/v1/system/settings",
+        invalid_retry,
+        &[("if-match", &etag)],
+    )
+    .await;
+    assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
     let updated = request(
         &app,
         "PUT",
@@ -686,6 +706,8 @@ async fn system_settings_are_versioned_audited_and_updated_via_console() {
         published.upstream_timeouts().connect(),
         std::time::Duration::from_secs(2)
     );
+    assert!(!published.request_retry().enabled());
+    assert_eq!(published.request_retry().max_attempts(), 4);
     assert_eq!(published.passive_health().connection_failure_threshold(), 4);
     assert!(published.automatic_disable().enabled());
     assert!(published.automatic_disable().matches_status(429));

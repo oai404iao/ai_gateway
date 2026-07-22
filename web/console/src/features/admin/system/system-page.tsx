@@ -67,6 +67,14 @@ const systemSettingsSchema = z
         .min(1, "Enter a positive number of seconds."),
       stream_idle_timeout_seconds: z.number().int().min(1, "Enter a positive number of seconds."),
     }),
+    request_retry: z.object({
+      enabled: z.boolean(),
+      max_attempts: z
+        .number()
+        .int()
+        .min(1, "Maximum attempts must be between 1 and 10.")
+        .max(10, "Maximum attempts must be between 1 and 10."),
+    }),
     passive_health: z.object({
       connection_failure_threshold: z
         .number()
@@ -162,6 +170,10 @@ const defaultValues: SystemSettingsValues = {
     response_header_timeout_seconds: 30,
     stream_idle_timeout_seconds: 90,
   },
+  request_retry: {
+    enabled: true,
+    max_attempts: 2,
+  },
   passive_health: {
     connection_failure_threshold: 3,
     cooldown_seconds: 30,
@@ -200,6 +212,7 @@ export function SystemPage() {
     if (settings.data) {
       form.reset({
         upstream: settings.data.data.upstream,
+        request_retry: settings.data.data.request_retry,
         passive_health: settings.data.data.passive_health,
         automatic_disable: {
           enabled: settings.data.data.automatic_disable.enabled,
@@ -219,6 +232,7 @@ export function SystemPage() {
     try {
       const input: SystemSettingsInput = {
         upstream: values.upstream,
+        request_retry: values.request_retry,
         passive_health: values.passive_health,
         automatic_disable: {
           enabled: values.automatic_disable.enabled,
@@ -343,6 +357,73 @@ export function SystemPage() {
                     {form.formState.errors.upstream?.stream_idle_timeout_seconds ? (
                       <FieldError>
                         {errorMessage(form.formState.errors.upstream.stream_idle_timeout_seconds.message)}
+                      </FieldError>
+                    ) : null}
+                  </Field>
+                </FieldGroup>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>{t("Request failover")}</CardTitle>
+                <CardDescription>
+                  {t(
+                    "Before response headers arrive, connection failures, connect timeouts, and response-header timeouts can retry on distinct healthy channels. A timed-out upstream may still process the original request.",
+                  )}
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <FieldGroup>
+                  <Field orientation="horizontal">
+                    <FieldContent>
+                      <FieldLabel htmlFor="request_retry_enabled">
+                        {t("Enable automatic retry")}
+                      </FieldLabel>
+                      <FieldDescription>
+                        {t(
+                          "Retries never reuse a channel already attempted by the same client request.",
+                        )}
+                      </FieldDescription>
+                    </FieldContent>
+                    <Switch
+                      id="request_retry_enabled"
+                      checked={form.watch("request_retry.enabled")}
+                      onCheckedChange={(checked) =>
+                        form.setValue("request_retry.enabled", Boolean(checked), {
+                          shouldDirty: true,
+                          shouldValidate: true,
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field
+                    data-invalid={Boolean(form.formState.errors.request_retry?.max_attempts)}
+                  >
+                    <FieldLabel htmlFor="request_retry_max_attempts">
+                      {t("Maximum attempts")}
+                    </FieldLabel>
+                    <Input
+                      id="request_retry_max_attempts"
+                      type="number"
+                      min={1}
+                      aria-invalid={Boolean(
+                        form.formState.errors.request_retry?.max_attempts,
+                      )}
+                      {...form.register("request_retry.max_attempts", {
+                        valueAsNumber: true,
+                      })}
+                    />
+                    <FieldDescription>
+                      {t(
+                        "Includes the initial request. A value of 2 allows one automatic failover.",
+                      )}
+                    </FieldDescription>
+                    {form.formState.errors.request_retry?.max_attempts ? (
+                      <FieldError>
+                        {errorMessage(
+                          form.formState.errors.request_retry.max_attempts.message,
+                        )}
                       </FieldError>
                     ) : null}
                   </Field>

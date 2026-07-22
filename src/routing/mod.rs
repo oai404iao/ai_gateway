@@ -317,7 +317,7 @@ impl RoutingRuntime {
         format: ApiFormat,
         model: &str,
     ) -> SelectionResult {
-        self.select_with_affinity(snapshot, key, format, model, None)
+        self.select_with_affinity_excluding(snapshot, key, format, model, None, &HashSet::new())
     }
 
     #[must_use]
@@ -328,6 +328,23 @@ impl RoutingRuntime {
         format: ApiFormat,
         model: &str,
         affinity: Option<SessionAffinityMatch>,
+    ) -> SelectionResult {
+        self.select_with_affinity_excluding(snapshot, key, format, model, affinity, &HashSet::new())
+    }
+
+    /// Selects a route while excluding channels already attempted by the same
+    /// client request. Exclusions are applied after authorization and before
+    /// priority/weight selection, so failover exhausts each priority tier
+    /// without retrying a channel twice.
+    #[must_use]
+    pub fn select_with_affinity_excluding(
+        &self,
+        snapshot: &CompiledRuntimeConfig,
+        key: &CompiledApiKey,
+        format: ApiFormat,
+        model: &str,
+        affinity: Option<SessionAffinityMatch>,
+        excluded_channel_ids: &HashSet<Uuid>,
     ) -> SelectionResult {
         let Some(rule) = snapshot.model_rule(format, model) else {
             return SelectionResult::UnknownOrInaccessibleModel;
@@ -372,7 +389,10 @@ impl RoutingRuntime {
             }
             let candidates = authorized_candidates
                 .iter()
-                .filter(|channel| usable(&mut state, &ChannelIdentity::from_channel(channel), now))
+                .filter(|channel| {
+                    !excluded_channel_ids.contains(&channel.id())
+                        && usable(&mut state, &ChannelIdentity::from_channel(channel), now)
+                })
                 .cloned()
                 .collect::<Vec<_>>();
             if candidates.is_empty() {
@@ -993,6 +1013,7 @@ mod tests {
     fn affinity_system_settings(fingerprint: [u8; 32], ttl: Duration) -> SystemRuntimeSettings {
         SystemRuntimeSettings::new_with_all(
             UpstreamTimeoutDefaults::default(),
+            crate::domain::RequestRetrySettings::default(),
             PassiveHealthSettings::default(),
             AutomaticDisableSettings::default(),
             ScheduledTestingSettings::default(),

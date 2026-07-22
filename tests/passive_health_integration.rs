@@ -10,8 +10,12 @@ use std::{
 };
 
 use ai_gateway::{
-    application::ProxyService,
-    domain::{PassiveHealthSettings, SystemRuntimeSettings, UpstreamTimeoutDefaults},
+    application::{ProxyService, RecordingRequestLogSink},
+    domain::{
+        AutomaticDisableSettings, PassiveHealthSettings, RequestRetrySettings,
+        ScheduledTestingSettings, SessionAffinitySettings, SystemRuntimeSettings,
+        UpstreamTimeoutDefaults,
+    },
     http,
     persistence::{
         ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ControlPlaneRecords, ModelRuleRecord,
@@ -59,6 +63,7 @@ struct ProxyFixture {
     runtime: Arc<RuntimeConfig>,
     channel_ids: Vec<Uuid>,
     group_ids: Vec<Uuid>,
+    logs: RecordingRequestLogSink,
 }
 
 fn proxy_fixture(
@@ -67,6 +72,24 @@ fn proxy_fixture(
     allowed_indices: &[usize],
     upstream: UpstreamConfig,
     routing: RoutingRuntime,
+) -> ProxyFixture {
+    proxy_fixture_with_retry(
+        upstream_urls,
+        priorities,
+        allowed_indices,
+        upstream,
+        routing,
+        RequestRetrySettings::default(),
+    )
+}
+
+fn proxy_fixture_with_retry(
+    upstream_urls: &[String],
+    priorities: &[i32],
+    allowed_indices: &[usize],
+    upstream: UpstreamConfig,
+    routing: RoutingRuntime,
+    request_retry: RequestRetrySettings,
 ) -> ProxyFixture {
     assert_eq!(upstream_urls.len(), priorities.len());
     let group_ids = (0..upstream_urls.len())
@@ -160,21 +183,26 @@ fn proxy_fixture(
     let runtime = Arc::new(RuntimeConfig::new(
         compile_control_plane_with_system_settings(
             records,
-            SystemRuntimeSettings::new(
+            SystemRuntimeSettings::new_with_all(
                 UpstreamTimeoutDefaults::new(
                     Duration::from_secs(upstream.connect_timeout_seconds),
                     Duration::from_secs(upstream.response_header_timeout_seconds),
                     Duration::from_secs(upstream.stream_idle_timeout_seconds),
                 ),
+                request_retry,
                 PassiveHealthSettings::default(),
+                AutomaticDisableSettings::default(),
+                ScheduledTestingSettings::default(),
+                SessionAffinitySettings::default(),
             ),
         )
         .unwrap(),
     ));
+    let logs = RecordingRequestLogSink::default();
     let service = ProxyService::with_log_sink_and_routing(
         Arc::clone(&runtime),
         1_048_576,
-        Arc::new(ai_gateway::application::NoopRequestLogSink),
+        Arc::new(logs.clone()),
         routing,
     )
     .unwrap();
@@ -183,6 +211,7 @@ fn proxy_fixture(
         runtime,
         channel_ids,
         group_ids,
+        logs,
     }
 }
 
@@ -262,7 +291,7 @@ async fn header_timeout_makes_one_attempt_and_remains_neutral_for_ordinary_chann
 }
 
 #[tokio::test]
-async fn header_timeout_does_not_retry_the_lower_priority_channel() {
+async fn header_timeout_retries_the_lower_priority_channel() {
     let (accepted_tx, accepted_rx) = oneshot::channel();
     let preferred_attempts = Arc::new(AtomicUsize::new(0));
     let fallback_attempts = Arc::new(AtomicUsize::new(0));
@@ -297,9 +326,201 @@ async fn header_timeout_does_not_retry_the_lower_priority_channel() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+    assert_eq!(response.status(), StatusCode::OK);
     timeout(WAIT, accepted_rx).await.unwrap().unwrap();
     assert_eq!(preferred_attempts.load(Ordering::SeqCst), 1);
+    assert_eq!(fallback_attempts.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn disabled_retry_returns_the_first_header_timeout() {
+    let preferred_attempts = Arc::new(AtomicUsize::new(0));
+    let fallback_attempts = Arc::new(AtomicUsize::new(0));
+    let preferred = start_server(
+        Router::new()
+            .route("/v1/chat/completions", post(hang_before_headers))
+            .with_state(HeaderHangState {
+                attempts: Arc::clone(&preferred_attempts),
+                accepted: Arc::new(Mutex::new(None)),
+            }),
+    )
+    .await;
+    let fallback = start_server(
+        Router::new()
+            .route("/v1/chat/completions", post(count_ok))
+            .with_state(Arc::clone(&fallback_attempts)),
+    )
+    .await;
+    let fixture = proxy_fixture_with_retry(
+        &[
+            format!("http://{}", preferred.address),
+            format!("http://{}", fallback.address),
+        ],
+        &[0, 1],
+        &[0, 1],
+        upstream_config(2, 2),
+        RoutingRuntime::new(PassiveHealthPolicy::default()),
+        RequestRetrySettings::new(false, 2),
+    );
+    let gateway = start_server(http::router(fixture.service)).await;
+
+    let response = timeout(WAIT, request(&client(), gateway.address).send())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+    assert_eq!(preferred_attempts.load(Ordering::SeqCst), 1);
+    assert_eq!(fallback_attempts.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn connection_failure_retries_the_lower_priority_channel() {
+    let unused = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let unavailable_address = unused.local_addr().unwrap();
+    drop(unused);
+    let fallback_attempts = Arc::new(AtomicUsize::new(0));
+    let fallback = start_server(
+        Router::new()
+            .route("/v1/chat/completions", post(count_ok))
+            .with_state(Arc::clone(&fallback_attempts)),
+    )
+    .await;
+    let fixture = proxy_fixture(
+        &[
+            format!("http://{unavailable_address}"),
+            format!("http://{}", fallback.address),
+        ],
+        &[0, 1],
+        &[0, 1],
+        upstream_config(2, 2),
+        RoutingRuntime::new(PassiveHealthPolicy::default()),
+    );
+    let gateway = start_server(http::router(fixture.service)).await;
+
+    let response = timeout(WAIT, request(&client(), gateway.address).send())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(fallback_attempts.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn successful_failover_logs_one_terminal_event_for_the_final_channel() {
+    let unused = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let unavailable_address = unused.local_addr().unwrap();
+    drop(unused);
+    let fallback_attempts = Arc::new(AtomicUsize::new(0));
+    let fallback = start_server(
+        Router::new()
+            .route("/v1/chat/completions", post(count_ok))
+            .with_state(fallback_attempts),
+    )
+    .await;
+    let fixture = proxy_fixture(
+        &[
+            format!("http://{unavailable_address}"),
+            format!("http://{}", fallback.address),
+        ],
+        &[0, 1],
+        &[0, 1],
+        upstream_config(2, 2),
+        RoutingRuntime::new(PassiveHealthPolicy::default()),
+    );
+    let final_channel_id = fixture.channel_ids[1];
+    let logs = fixture.logs.clone();
+    let gateway = start_server(http::router(fixture.service)).await;
+
+    let response = timeout(WAIT, request(&client(), gateway.address).send())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    response.bytes().await.unwrap();
+
+    let events = logs.events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].channel_id, Some(final_channel_id));
+    assert_eq!(
+        events[0].outcome,
+        ai_gateway::domain::RequestLogOutcome::Succeeded
+    );
+}
+
+#[tokio::test]
+async fn connect_timeout_retries_the_lower_priority_channel() {
+    let hanging_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let hanging_address = hanging_listener.local_addr().unwrap();
+    let (accepted_tx, accepted_rx) = oneshot::channel();
+    let hanging_task = tokio::spawn(async move {
+        let (socket, _) = hanging_listener.accept().await.unwrap();
+        let _ = accepted_tx.send(());
+        let _socket = socket;
+        pending::<()>().await;
+    });
+    let fallback_attempts = Arc::new(AtomicUsize::new(0));
+    let fallback = start_server(
+        Router::new()
+            .route("/v1/chat/completions", post(count_ok))
+            .with_state(Arc::clone(&fallback_attempts)),
+    )
+    .await;
+    let fixture = proxy_fixture(
+        &[
+            format!("https://{hanging_address}"),
+            format!("http://{}", fallback.address),
+        ],
+        &[0, 1],
+        &[0, 1],
+        upstream_config(2, 2),
+        RoutingRuntime::new(PassiveHealthPolicy::default()),
+    );
+    let gateway = start_server(http::router(fixture.service)).await;
+
+    let response = timeout(WAIT, request(&client(), gateway.address).send())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    timeout(WAIT, accepted_rx).await.unwrap().unwrap();
+    assert_eq!(fallback_attempts.load(Ordering::SeqCst), 1);
+    hanging_task.abort();
+}
+
+#[tokio::test]
+async fn max_attempts_includes_the_initial_channel() {
+    let first = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let first_address = first.local_addr().unwrap();
+    drop(first);
+    let second = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let second_address = second.local_addr().unwrap();
+    drop(second);
+    let fallback_attempts = Arc::new(AtomicUsize::new(0));
+    let fallback = start_server(
+        Router::new()
+            .route("/v1/chat/completions", post(count_ok))
+            .with_state(Arc::clone(&fallback_attempts)),
+    )
+    .await;
+    let fixture = proxy_fixture_with_retry(
+        &[
+            format!("http://{first_address}"),
+            format!("http://{second_address}"),
+            format!("http://{}", fallback.address),
+        ],
+        &[0, 1, 2],
+        &[0, 1, 2],
+        upstream_config(2, 2),
+        RoutingRuntime::new(PassiveHealthPolicy::default()),
+        RequestRetrySettings::new(true, 2),
+    );
+    let gateway = start_server(http::router(fixture.service)).await;
+
+    let response = timeout(WAIT, request(&client(), gateway.address).send())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
     assert_eq!(fallback_attempts.load(Ordering::SeqCst), 0);
 }
 

@@ -99,7 +99,7 @@ verification_key_path = "./config/console-jwt-public.pem"
 
 两个 OpenAI 格式绝不互相回退。客户端 `Authorization` 不会转发给上游；网关清理 hop-by-hop headers 后，按渠道配置最后注入上游认证。
 
-数据面在认证后、读取请求体前执行 RPM、并发与已结算软额度预检查。请求体只有在模型别名或 JSON 变换启用时才重新序列化；响应默认逐块流式转发，SSE 变换按事件边界执行且不缓冲整条流。每个请求只选择一次渠道，绝不在响应头或响应字节发送后重试或切换渠道。
+数据面在认证后、读取请求体前执行 RPM、并发与已结算软额度预检查。请求体只有在模型别名或 JSON 变换启用时才重新序列化；响应默认逐块流式转发，SSE 变换按事件边界执行且不缓冲整条流。连接失败、连接超时或等待响应头超时时，可以按系统设置在尚未尝试过的其他健康渠道上故障转移；一旦收到上游响应头或向客户端发送任何响应字节，绝不重试或切换渠道。
 
 ## Console 认证
 
@@ -168,6 +168,8 @@ Policy 不再保存额度、RPM、并发、格式、权限或最大活动 Key �
 
 `/console/v1/system/settings` 的完整配置还包含：
 
+- `request_retry.enabled`：是否启用响应头前故障转移，默认启用。
+- `request_retry.max_attempts`：包含首次请求在内的最大渠道尝试次数，范围 `1..=10`，默认 `2`。同一客户端请求不会重复尝试同一渠道。
 - `automatic_disable.enabled`：自动禁用总开关。关闭时，即使渠道允许自动禁用也不会执行状态变更。
 - `automatic_disable.error_status_codes`：触发临时禁用的上游 HTTP 状态码列表。
 - `automatic_disable.error_message_keywords`：触发临时禁用的上游错误消息关键字；匹配大小写不敏感。自动禁用扫描器不会保存被扫描的响应正文；仅当 SSE 协议解析器识别出结构化错误事件时，请求日志才保存受限、已清洗的错误代码与消息摘要。
@@ -195,19 +197,22 @@ Policy 不再保存额度、RPM、并发、格式、权限或最大活动 Key �
 - 缓存有 TTL 和最大条目数，只存在于当前 Gateway 进程。
 - 命中的渠道仍须满足当前授权、模型候选、最低可用优先级和被动健康状态，否则删除旧映射并执行普通选路。
 - 只有完整成功的 2xx 请求才写入或刷新映射；上游失败会删除本次命中的旧映射。
-- Session 粘性不增加重试。每个请求仍然只尝试一个渠道。
+- Session 粘性本身不增加尝试次数；如果全局请求故障转移已启用，失败的粘性渠道会从本次请求的候选中排除，并清除命中的旧映射。
 - JSON 来源使用 RFC 6901 Pointer，例如 Responses 请求的 `/prompt_cache_key`。
 
 多实例部署没有共享粘性缓存；若同一 Session 被负载均衡到不同 Gateway 进程，各实例会独立学习渠道。
 
 ## 日志、用量与结算
 
-每个已选路请求会产生终态 tracing 事件，并尽力异步写入一条 `request_logs`。worker 从两种格式的普通 JSON 或 SSE 事件增量提取 usage，在选路时绑定价格快照，并在可结算时以 `billed_at` 条件幂等更新用户余额和 API Key 已用额度。
+每次故障转移会产生 `proxy_request_retry` tracing 事件；每个客户端请求仍只产生一个终态 tracing
+事件和一条 `request_logs`，其中渠道、结果和计费快照对应最终尝试。worker 从两种格式的普通 JSON
+或 SSE 事件增量提取 usage，在选路时绑定价格快照，并在可结算时以 `billed_at` 条件幂等更新用户余额
+和 API Key 已用额度。
 
 额度是软预检查：不预留金额，已结算额度达到上限后才拒绝后续请求；余额可以为负。队列饱和时请求日志可被丢弃，但不会阻塞或破坏代理响应。
 
 ## 已知边界
 
 - 仅支持 Chat Completions 与 Responses，不提供 OpenAI 的 embeddings、images、audio、files、batches、assistants 或 fine-tuning API。
-- 所有余额、额度、模型价格和请求费用统一使用 USD；没有跨实例限流、健康状态或 Session 粘性协调，也没有通用自动重试、独立财务账本、充值/退款或货币兑换。
+- 所有余额、额度、模型价格和请求费用统一使用 USD；没有跨实例限流、健康状态或 Session 粘性协调。自动重试仅覆盖收到响应头前的连接失败、连接超时和响应头超时，不覆盖 HTTP 错误、SSE 流中断或流空闲超时；也没有独立财务账本、充值/退款或货币兑换。
 - 服务本身不终止 TLS；Console 必须部署在正确配置的 HTTPS 反向代理后。
