@@ -32,8 +32,15 @@ pub struct RequestLogEvent {
     pub total_duration_ms: i32,
     pub billing: Option<RequestBilling>,
     pub error_code: Option<String>,
-    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_required_error_summary")]
     pub error_summary: Option<String>,
+}
+
+fn deserialize_required_error_summary<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer)
 }
 
 /// Identifies whether a row came from an external client request or the

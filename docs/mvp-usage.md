@@ -88,7 +88,6 @@ verification_key_path = "./config/console-jwt-public.pem"
 - 公共数据面默认监听 `127.0.0.1:3000`。
 - Console 是独立监听器；应仅通过 HTTPS 反向代理对外暴露。
 - `proxy_body_bytes` 限制 OpenAI 代理请求；`console_body_bytes` 限制已认证 Console 写操作；`auth_body_bytes` 限制登录、刷新和邀请激活请求。
-- 旧的 `[server].max_request_body_bytes` 仍作为 `proxy_body_bytes` 的兼容别名；新配置应使用 `[request_limits]`。
 
 ## 公共数据面
 
@@ -162,8 +161,6 @@ Policy 不再保存额度、RPM、并发、格式、权限或最大活动 Key �
 - 手动重载：`POST /console/v1/system/reload`
 
 大多数可更新资源遵循 `GET` 返回 `ETag`、`PUT` 携带 `If-Match` 的乐观并发模型。控制面写入在 serializable 事务中再次确认 actor 仍为 active admin，校验完整候选快照、写入脱敏审计记录，并在提交后立即发布运行时快照。
-
-为迁移旧控制台客户端，`/console/v1/channel-groups`、`/channels`、`/model-rules`、`/proxies`、`/config-templates`、`/models/sync/*` 和 `/reload` 仍有同一 JWT/角色边界下的 Console 别名；`/admin/v1/*` 不再存在。
 
 `GET /console/v1/system/load` 是只读、管理员权限的当前实例快照。Linux 上从 procfs
 采样主机与网关进程 CPU、内存、load average、RSS、文件描述符和线程数；不支持的平台将对应字段

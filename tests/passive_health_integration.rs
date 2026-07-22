@@ -114,7 +114,6 @@ fn proxy_fixture_with_retry(
                 .collect(),
             allowed_channel_ids: vec![],
             requests_per_minute: None,
-            tokens_per_minute: None,
             max_concurrent_requests: None,
             quota_limit_amount: None,
             quota_used_amount: Default::default(),
@@ -156,7 +155,6 @@ fn proxy_fixture_with_retry(
                 upstream_api_key: None,
                 available_models: vec!["model".into()],
                 test_model: None,
-                health_check: serde_json::json!({}),
             })
             .collect(),
         model_rules: vec![ModelRuleRecord {

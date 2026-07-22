@@ -1939,7 +1939,7 @@ async fn models_dev_catalog_apply_is_explicit_and_updates_selected_existing_pric
     let preview = admin_request(
         app.clone(),
         "POST",
-        "/console/v1/models/sync/preview",
+        "/console/v1/catalog/models/sync/preview",
         serde_json::json!({"provider_ids":["provider-a"]}),
     )
     .await;
@@ -1974,7 +1974,7 @@ async fn models_dev_catalog_apply_is_explicit_and_updates_selected_existing_pric
     let imported = admin_request(
         app.clone(),
         "POST",
-        "/console/v1/models/sync/import",
+        "/console/v1/catalog/models/import",
         serde_json::json!({
             "selections":[{"provider_id":"provider-a","model_id":"catalog-model"}]
         }),
@@ -2046,7 +2046,7 @@ async fn models_dev_catalog_apply_is_explicit_and_updates_selected_existing_pric
     let preview = admin_request(
         app.clone(),
         "POST",
-        "/console/v1/models/sync/preview",
+        "/console/v1/catalog/models/sync/preview",
         serde_json::json!({"provider_ids":["provider-a"]}),
     )
     .await;
@@ -2092,7 +2092,7 @@ async fn models_dev_catalog_apply_is_explicit_and_updates_selected_existing_pric
     let updated = admin_request(
         app.clone(),
         "POST",
-        "/console/v1/models/sync/import",
+        "/console/v1/catalog/models/import",
         serde_json::json!({
             "selections":[{"provider_id":"provider-a","model_id":"catalog-model"}]
         }),
@@ -2127,7 +2127,7 @@ async fn models_dev_catalog_apply_is_explicit_and_updates_selected_existing_pric
     let missing_price_import = admin_request(
         app,
         "POST",
-        "/console/v1/models/sync/import",
+        "/console/v1/catalog/models/import",
         serde_json::json!({
             "selections":[{"provider_id":"provider-a","model_id":"missing-price"}]
         }),
@@ -2220,7 +2220,6 @@ async fn admin_api_key_policies_persist_publish_and_are_audited_without_secrets(
     assert_eq!(listed["max_concurrent_requests"], 3);
     assert_eq!(listed["quota_limit_amount"], "125.50000000");
     assert_eq!(listed["quota_used_amount"], "0");
-    assert!(listed["tokens_per_minute"].is_null());
 
     let path = format!("/console/v1/api-keys/{id}");
     let detail = admin_request(app.clone(), "GET", &path, serde_json::json!({})).await;
@@ -2232,7 +2231,6 @@ async fn admin_api_key_policies_persist_publish_and_are_audited_without_secrets(
     assert_eq!(detail["max_concurrent_requests"], 3);
     assert_eq!(detail["quota_limit_amount"], "125.50000000");
     assert_eq!(detail["quota_used_amount"], "0");
-    assert!(detail["tokens_per_minute"].is_null());
 
     let updated = admin_request_with_headers(
         app.clone(),
@@ -2294,26 +2292,6 @@ async fn admin_api_key_policies_persist_publish_and_are_audited_without_secrets(
     assert!(audit["after"].get("secret_value").is_none());
     assert!(!audit.to_string().contains(&secret));
 
-    let token_edit = admin_request(
-        app,
-        "POST",
-        "/console/v1/api-keys",
-        serde_json::json!({
-            "user_id": seed.user,
-            "name": format!("token-edit-{}", Uuid::new_v4()),
-            "allowed_api_formats": ["open_ai_chat_completions"],
-            "permissions": ["proxy"],
-            "allowed_group_ids": [seed.group],
-            "allowed_channel_ids": [],
-            "expires_at": null,
-            "requests_per_minute": 1,
-            "max_concurrent_requests": 1,
-            "quota_limit_amount": 1,
-            "tokens_per_minute": 1
-        }),
-    )
-    .await;
-    assert_eq!(token_edit.status(), StatusCode::UNPROCESSABLE_ENTITY);
     database.cleanup().await;
 }
 
@@ -2326,7 +2304,7 @@ async fn invalid_routing_dependency_rolls_back_database_audit_and_snapshot() {
         .fetch_one(&database.pool)
         .await
         .unwrap();
-    let path = format!("/console/v1/channels/{}", seed.channel);
+    let path = format!("/console/v1/routing/channels/{}", seed.channel);
     let detail = admin_request(app.clone(), "GET", &path, serde_json::json!({})).await;
     assert_eq!(detail.status(), StatusCode::OK);
     let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
@@ -2375,7 +2353,7 @@ async fn proxy_template_management_is_redacted_and_publishes_or_rolls_back_atomi
     let created_proxy = admin_request(
         app.clone(),
         "POST",
-        "/console/v1/proxies",
+        "/console/v1/network/proxies",
         serde_json::json!({
             "name": "managed-proxy",
             "proxy_url": "https://managed-proxy.test:8443",
@@ -2406,7 +2384,7 @@ async fn proxy_template_management_is_redacted_and_publishes_or_rolls_back_atomi
     let created_template = admin_request(
         app.clone(),
         "POST",
-        "/console/v1/config-templates",
+        "/console/v1/transforms/templates",
         serde_json::json!({
             "name": "managed-template",
             "description": "managed template",
@@ -2430,7 +2408,7 @@ async fn proxy_template_management_is_redacted_and_publishes_or_rolls_back_atomi
     let proxy_list = admin_request(
         app.clone(),
         "GET",
-        "/console/v1/proxies",
+        "/console/v1/network/proxies",
         serde_json::json!({}),
     )
     .await;
@@ -2448,7 +2426,7 @@ async fn proxy_template_management_is_redacted_and_publishes_or_rolls_back_atomi
     assert!(!proxy_list.to_string().contains(proxy_password));
     assert!(!proxy_list.to_string().contains(proxy_username));
 
-    let proxy_path = format!("/console/v1/proxies/{proxy_id}");
+    let proxy_path = format!("/console/v1/network/proxies/{proxy_id}");
     let proxy_detail = admin_request(app.clone(), "GET", &proxy_path, serde_json::json!({})).await;
     assert_eq!(proxy_detail.status(), StatusCode::OK);
     let proxy_etag = proxy_detail.headers()["etag"].to_str().unwrap().to_owned();
@@ -2479,7 +2457,7 @@ async fn proxy_template_management_is_redacted_and_publishes_or_rolls_back_atomi
     let template_list = admin_request(
         app.clone(),
         "GET",
-        "/console/v1/config-templates",
+        "/console/v1/transforms/templates",
         serde_json::json!({}),
     )
     .await;
@@ -2502,7 +2480,7 @@ async fn proxy_template_management_is_redacted_and_publishes_or_rolls_back_atomi
     );
     assert!(!template_list.to_string().contains(template_value));
 
-    let template_path = format!("/console/v1/config-templates/{template_id}");
+    let template_path = format!("/console/v1/transforms/templates/{template_id}");
     let template_detail =
         admin_request(app.clone(), "GET", &template_path, serde_json::json!({})).await;
     assert_eq!(template_detail.status(), StatusCode::OK);
@@ -2568,7 +2546,7 @@ async fn proxy_template_management_is_redacted_and_publishes_or_rolls_back_atomi
             .unwrap();
     assert_eq!(persisted_template_document, template_document);
 
-    let channel_path = format!("/console/v1/channels/{}", seed.channel);
+    let channel_path = format!("/console/v1/routing/channels/{}", seed.channel);
     let channel_detail =
         admin_request(app.clone(), "GET", &channel_path, serde_json::json!({})).await;
     let channel_etag = channel_detail.headers()["etag"]
@@ -2741,12 +2719,12 @@ async fn proxy_template_management_is_redacted_and_publishes_or_rolls_back_atomi
     }
     for (path, body, secret) in [
         (
-            "/console/v1/proxies",
+            "/console/v1/network/proxies",
             serde_json::json!({"name":"invalid-proxy", "proxy_url":"ftp://invalid.test", "password":"invalid-proxy-password", "enabled":true}),
             "invalid-proxy-password",
         ),
         (
-            "/console/v1/config-templates",
+            "/console/v1/transforms/templates",
             serde_json::json!({"name":"invalid-template", "document":{"version":1,"api_format":"open_ai_chat_completions","unknown":"invalid-document-value"}, "enabled":true}),
             "invalid-document-value",
         ),
@@ -2856,7 +2834,7 @@ async fn management_channel_credentials_are_redacted_kept_replaced_and_cleared_s
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
     let (app, _) = admin_app(database.pool.clone(), seed.user).await;
-    let path = format!("/console/v1/channels/{}", seed.channel);
+    let path = format!("/console/v1/routing/channels/{}", seed.channel);
     let detail = admin_request(app.clone(), "GET", &path, serde_json::json!({})).await;
     assert_eq!(detail.status(), StatusCode::OK);
     assert_eq!(detail.headers()["cache-control"], "no-store");
@@ -2921,7 +2899,7 @@ async fn channel_documents_are_rejected_and_never_escape_admin_or_audit_allowlis
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
     let (app, _) = admin_app(database.pool.clone(), seed.user).await;
-    let path = format!("/console/v1/channels/{}", seed.channel);
+    let path = format!("/console/v1/routing/channels/{}", seed.channel);
     let audits_before: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_logs")
         .fetch_one(&database.pool)
         .await
@@ -2929,15 +2907,14 @@ async fn channel_documents_are_rejected_and_never_escape_admin_or_audit_allowlis
     let rejected_create = admin_request(
         app.clone(),
         "POST",
-        "/console/v1/channels",
+        "/console/v1/routing/channels",
         serde_json::json!({
             "channel_group_id": seed.group, "api_format": "open_ai_chat_completions",
             "name": format!("rejected-channel-{}", Uuid::new_v4()),
             "base_url": "https://example.test", "enabled": true, "weight": 1,
             "upstream_auth_kind": "bearer", "upstream_api_key": "upstream-secret",
             "available_models": ["upstream-v1"],
-            "override_document": {"headers": {"Authorization": "rejected-create-secret"}},
-            "health_check": {"body": {"cookie": "rejected-create-cookie"}}
+            "override_document": {"headers": {"Authorization": "rejected-create-secret"}}
         }),
     )
     .await;
@@ -2961,13 +2938,8 @@ async fn channel_documents_are_rejected_and_never_escape_admin_or_audit_allowlis
         "headers": {"Authorization": "nested-authorization-secret", "cookie": "nested-cookie-secret"},
         "body": {"token": "nested-body-secret"}
     });
-    let persisted_health = serde_json::json!({
-        "request": {"Authorization": "health-authorization-secret", "cookie": "health-cookie-secret"},
-        "body": {"token": "health-body-secret"}
-    });
-    sqlx::query("UPDATE channels SET override_document=$1, health_check=$2 WHERE id=$3")
+    sqlx::query("UPDATE channels SET override_document=$1 WHERE id=$2")
         .bind(&persisted_override)
-        .bind(&persisted_health)
         .bind(seed.channel)
         .execute(&database.pool)
         .await
@@ -2980,7 +2952,6 @@ async fn channel_documents_are_rejected_and_never_escape_admin_or_audit_allowlis
         serde_json::from_slice(&detail.into_body().collect().await.unwrap().to_bytes()).unwrap();
     let rendered = detail.to_string();
     assert!(detail.get("override_document").is_none());
-    assert!(detail.get("health_check").is_none());
     for forbidden in [
         "Authorization",
         "cookie",
@@ -2988,9 +2959,6 @@ async fn channel_documents_are_rejected_and_never_escape_admin_or_audit_allowlis
         "nested-authorization-secret",
         "nested-cookie-secret",
         "nested-body-secret",
-        "health-authorization-secret",
-        "health-cookie-secret",
-        "health-body-secret",
     ] {
         assert!(
             !rendered.contains(forbidden),
@@ -3027,16 +2995,12 @@ async fn channel_documents_are_rejected_and_never_escape_admin_or_audit_allowlis
     let audit = audit.to_string();
     for forbidden in [
         "override_document",
-        "health_check",
         "Authorization",
         "cookie",
         "body",
         "nested-authorization-secret",
         "nested-cookie-secret",
         "nested-body-secret",
-        "health-authorization-secret",
-        "health-cookie-secret",
-        "health-body-secret",
     ] {
         assert!(
             !audit.contains(forbidden),
@@ -3051,8 +3015,7 @@ async fn channel_documents_are_rejected_and_never_escape_admin_or_audit_allowlis
         "name": format!("test-channel-{}", seed.channel), "base_url": "https://example.test",
         "enabled": true, "weight": 1, "upstream_auth_kind": "bearer",
         "available_models": ["upstream-v1"], "upstream_api_key": "upstream-secret",
-        "override_document": {"headers": {"Authorization": "rejected-secret"}},
-        "health_check": {"body": {"cookie": "rejected-cookie"}}
+        "override_document": {"headers": {"Authorization": "rejected-secret"}}
     });
     let audits_before_update: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_logs")
         .fetch_one(&database.pool)
@@ -3121,88 +3084,6 @@ async fn full_put_requires_current_etag_and_stale_update_does_not_audit() {
     .await
     .unwrap();
     assert_eq!(after, audits);
-    database.cleanup().await;
-}
-
-#[tokio::test]
-async fn disabled_legacy_key_tpm_is_visible_audited_and_cannot_be_activated() {
-    let database = TestDatabase::new().await;
-    let seed = seed(&database.pool).await;
-    sqlx::query("UPDATE api_keys SET status='disabled', tokens_per_minute=42 WHERE id=$1")
-        .bind(seed.key)
-        .execute(&database.pool)
-        .await
-        .unwrap();
-    let (app, _) = admin_app(database.pool.clone(), seed.user).await;
-    let list = admin_request(
-        app.clone(),
-        "GET",
-        "/console/v1/api-keys",
-        serde_json::json!({}),
-    )
-    .await;
-    assert_eq!(list.status(), StatusCode::OK);
-    let list: serde_json::Value =
-        serde_json::from_slice(&list.into_body().collect().await.unwrap().to_bytes()).unwrap();
-    assert_eq!(
-        list.as_array()
-            .unwrap()
-            .iter()
-            .find(|item| item["id"] == seed.key.to_string())
-            .unwrap()["tokens_per_minute"],
-        42
-    );
-
-    let path = format!("/console/v1/api-keys/{}", seed.key);
-    let detail = admin_request(app.clone(), "GET", &path, serde_json::json!({})).await;
-    assert_eq!(detail.status(), StatusCode::OK);
-    let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
-    let detail: serde_json::Value =
-        serde_json::from_slice(&detail.into_body().collect().await.unwrap().to_bytes()).unwrap();
-    assert_eq!(detail["tokens_per_minute"], 42);
-    let input = serde_json::json!({
-        "name":"test", "status":"disabled",
-        "allowed_api_formats":["open_ai_chat_completions"], "permissions":["proxy","models.read"],
-        "allowed_group_ids":[seed.group], "allowed_channel_ids":[], "expires_at":null,
-        "requests_per_minute":null, "max_concurrent_requests":null, "quota_limit_amount":null
-    });
-    assert_eq!(
-        admin_request_with_headers(
-            app.clone(),
-            "PUT",
-            &path,
-            input.clone(),
-            &[("if-match", &etag)]
-        )
-        .await
-        .status(),
-        StatusCode::OK
-    );
-    let audit: serde_json::Value = sqlx::query_scalar(
-        "SELECT after_redacted FROM audit_logs WHERE object_id=$1 AND action='update' ORDER BY occurred_at DESC LIMIT 1",
-    )
-    .bind(seed.key)
-    .fetch_one(&database.pool)
-    .await
-    .unwrap();
-    assert_eq!(audit["tokens_per_minute"], 42);
-
-    let detail = admin_request(app.clone(), "GET", &path, serde_json::json!({})).await;
-    let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
-    let mut activation = input;
-    activation["status"] = serde_json::json!("active");
-    assert_eq!(
-        admin_request_with_headers(app, "PUT", &path, activation, &[("if-match", &etag)])
-            .await
-            .status(),
-        StatusCode::UNPROCESSABLE_ENTITY
-    );
-    let status: String = sqlx::query_scalar("SELECT status FROM api_keys WHERE id=$1")
-        .bind(seed.key)
-        .fetch_one(&database.pool)
-        .await
-        .unwrap();
-    assert_eq!(status, "disabled");
     database.cleanup().await;
 }
 

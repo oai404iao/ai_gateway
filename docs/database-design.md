@@ -120,7 +120,6 @@ updated_at timestamptz not null
 | `allowed_group_ids` | `uuid[]` | `NOT NULL` 数组列；选择整个渠道组时，该组当前及后续渠道均可用。 |
 | `allowed_channel_ids` | `uuid[]` | `NOT NULL` 数组列；用于只允许某些具体渠道。管理/自助写入要求两数组合计至少一个目标。 |
 | `requests_per_minute` | `integer` | 可空、正数；分钟请求限流。 |
-| `tokens_per_minute` | `integer` | 可空、正数；schema 预留。当前活动 API Key 配置该字段会被控制面编译拒绝。 |
 | `max_concurrent_requests` | `integer` | 可空、正数。 |
 | `quota_limit_amount` | `numeric(24,8)` | 可空、非负；该 Key 生命周期总额度上限。 |
 | `quota_used_amount` | `numeric(24,8)` | 非空，默认 `0`；已结算的累计费用。 |
@@ -137,7 +136,6 @@ CHECK (array_position(allowed_group_ids, NULL::uuid) IS NULL);
 CHECK (array_position(allowed_channel_ids, NULL::uuid) IS NULL);
 CHECK (permissions <@ ARRAY['proxy', 'models.read']::text[]);
 CHECK (requests_per_minute IS NULL OR requests_per_minute > 0);
-CHECK (tokens_per_minute IS NULL OR tokens_per_minute > 0);
 CHECK (max_concurrent_requests IS NULL OR max_concurrent_requests > 0);
 CHECK (quota_limit_amount IS NULL OR quota_limit_amount >= 0);
 ```
@@ -235,7 +233,6 @@ CHECK (cardinality(channel_group_ids) + cardinality(channel_ids) > 0);
 | `upstream_auth_header_name` | `varchar(100)` | `header` 模式必填；不得为受保护或 hop-by-hop Header。 |
 | `upstream_api_key` | `text` | `none` 时为空，其他模式非空；按 PRD 原始保存。 |
 | `available_models` | `text[]` | 非空，默认空数组；已知可用上游模型名。 |
-| `health_check` | `jsonb` | 非空，默认 `{}`；当前必须为空对象，留作未来主动健康检查配置。 |
 | `created_at` / `updated_at` | `timestamptz` | 通用时间列。 |
 
 ```sql
@@ -245,10 +242,9 @@ FOREIGN KEY (channel_group_id, api_format)
   REFERENCES channel_groups (id, api_format);
 CHECK (weight > 0);
 CHECK (jsonb_typeof(override_document) = 'object');
-CHECK (jsonb_typeof(health_check) = 'object');
 ```
 
-渠道实际可选条件为 `enabled AND NOT auto_disabled`，并在内存中再过滤被动连接健康、熔断和冷却状态。当前没有主动健康检查或自动禁用 worker，且非空 `health_check` 文档会在控制面编译时被拒绝。重启后被动健康运行状态回到未知，后续请求重新建立状态。
+渠道实际可选条件为 `enabled AND NOT auto_disabled`，并在内存中再过滤被动连接健康、熔断和冷却状态。重启后被动健康运行状态回到未知，后续请求重新建立状态。
 
 每类超时按以下优先级取值：渠道显式列 → `system_settings.forwarding_policy.upstream` 默认值。只允许建连、响应头和流空闲超时，禁止总响应超时。首次启动时，若该系统配置行不存在，二进制会用 TOML `[upstream]` 的值一次性初始化；后续 TOML 变更不会覆盖数据库。
 
@@ -369,7 +365,7 @@ CHECK (jsonb_typeof(health_check) = 'object');
 3. 每个启用规则至少展开为一个可选渠道；同一最低优先级候选组的选路策略一致。
 4. API Key 的 `allowed_group_ids` / `allowed_channel_ids` 均存在、无重复，并且 Key 的自动推导格式覆盖这些目标；`proxy` 权限用于代理，`/v1/models` 还需要 `models.read`。
 5. API Key 的渠道组/渠道范围与模型规则目标存在交集；`/v1/models` 只输出这些可达规则的 `client_model`，不返回全局 `models`。
-6. 模板和渠道覆盖符合受限 DSL、Header 保护、SSE 逐事件处理、URL 和超时规则；`health_check` 当前必须为空；`forwarding_policy` 的字段必须为正数、响应头超时大于建连超时，且所有渠道覆盖与其合并后的有效超时均有效。
+6. 模板和渠道覆盖符合受限 DSL、Header 保护、SSE 逐事件处理、URL 和超时规则；`forwarding_policy` 的字段必须为正数、响应头超时大于建连超时，且所有渠道覆盖与其合并后的有效超时均有效。
 
 控制面在一个事务中保存变更和审计日志，完成上述全量校验并编译 `CompiledRuntimeConfig` 后提交；提交后直接替换内存 `ArcSwap` 快照。启动、定时重载和 Console 管理写入均使用 PostgreSQL 控制面；TOML 保留进程级监听、数据库、系统设置首次初始化值、日志、Console listener 和 JWT 密钥文件路径设置。
 

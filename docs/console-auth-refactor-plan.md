@@ -63,8 +63,6 @@ signing_key_path = "/run/secrets/ai-gateway-jwt-private.pem"
 verification_key_path = "/run/secrets/ai-gateway-jwt-public.pem"
 ```
 
-现有 `[server].max_request_body_bytes` 在一个兼容周期内作为 `proxy_body_bytes` 的别名；新配置优先。
-
 ## 5. 数据模型
 
 ### 5.1 users

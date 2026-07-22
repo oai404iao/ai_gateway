@@ -574,7 +574,6 @@ mod tests {
                     upstream_api_key: None,
                     available_models: vec!["upstream".into()],
                     test_model: None,
-                    health_check: serde_json::json!({}),
                 }],
                 model_rules: vec![],
                 proxies: vec![ProxyRecord {

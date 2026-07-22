@@ -1045,7 +1045,6 @@ export interface components {
             /** Format: uuid */
             user_id: string;
             user_status: string;
-            tokens_per_minute: number | null;
         };
         ApiKeyPolicyView: {
             /** Format: uuid */
@@ -1511,8 +1510,6 @@ export interface components {
             available_models?: string[];
             /** @description Must be one of available_models when set. */
             test_model?: string | null;
-            /** @description Legacy reserved field; must be `{}`. */
-            health_check?: Record<string, never>;
         };
         ChannelInput: {
             /** Format: uuid */
@@ -1551,8 +1548,6 @@ export interface components {
             available_models?: string[];
             /** @description Must be one of available_models when set. */
             test_model?: string | null;
-            /** @description Legacy reserved field; must be `{}`. */
-            health_check?: Record<string, never>;
         };
         ModelRuleInput: {
             client_model: string;

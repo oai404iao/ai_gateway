@@ -170,42 +170,6 @@ pub fn router(state: ConsoleState) -> Router {
         )
         .route("/console/v1/system/load", get(get_system_load))
         .route("/console/v1/system/reload", post(reload))
-        // Console v1 compatibility aliases for the former management resource
-        // layout. They remain JWT/role protected and never recreate /admin.
-        .route("/console/v1/models/sync/preview", post(preview_models_sync))
-        .route("/console/v1/models/sync/import", post(import_models))
-        .route(
-            "/console/v1/channel-groups",
-            get(list_groups).post(create_group),
-        )
-        .route(
-            "/console/v1/channel-groups/{id}",
-            get(get_group).put(update_group),
-        )
-        .route(
-            "/console/v1/channels",
-            get(list_channels).post(create_channel),
-        )
-        .route(
-            "/console/v1/channels/{id}",
-            get(get_channel).put(update_channel),
-        )
-        .route("/console/v1/model-rules", get(list_rules).post(create_rule))
-        .route(
-            "/console/v1/model-rules/{id}",
-            get(get_rule).put(update_rule),
-        )
-        .route("/console/v1/proxies", get(list_proxies).post(create_proxy))
-        .route("/console/v1/proxies/{id}", get(get_proxy).put(update_proxy))
-        .route(
-            "/console/v1/config-templates",
-            get(list_config_templates).post(create_config_template),
-        )
-        .route(
-            "/console/v1/config-templates/{id}",
-            get(get_config_template).put(update_config_template),
-        )
-        .route("/console/v1/reload", post(reload))
         .route_layer(middleware::from_fn(require_admin));
 
     let authenticated = self_routes

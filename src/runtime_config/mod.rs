@@ -97,7 +97,7 @@ impl AppConfig {
         validate_upstream(&self.upstream)?;
         validate_request_retry_config(&self.request_retry)?;
         validate_models_sync(&self.models_sync)?;
-        let request_limits = RequestLimitsConfig::resolve(&self.server, self.request_limits)?;
+        let request_limits = RequestLimitsConfig::resolve(self.request_limits)?;
         let console = validate_console(self.console, self.auth)?;
         if self.runtime_config.reload_interval_seconds == 0 {
             return Err(ConfigError::Compile(
@@ -174,11 +174,6 @@ pub struct BootstrapConfig {
 pub struct ServerConfig {
     pub host: String,
     pub port: u16,
-    /// Legacy proxy body limit. New installations should use
-    /// `[request_limits].proxy_body_bytes`; this field is retained for one
-    /// compatibility cycle so existing TOML files keep starting safely.
-    #[serde(default)]
-    pub max_request_body_bytes: Option<usize>,
     #[serde(default = "default_shutdown_grace_period_seconds")]
     pub shutdown_grace_period_seconds: u64,
 }
@@ -442,10 +437,9 @@ pub struct RequestLimitsConfig {
     pub auth_body_bytes: usize,
 }
 impl RequestLimitsConfig {
-    fn resolve(server: &ServerConfig, file: RequestLimitsFileConfig) -> Result<Self, ConfigError> {
+    fn resolve(file: RequestLimitsFileConfig) -> Result<Self, ConfigError> {
         let proxy_body_bytes = file
             .proxy_body_bytes
-            .or(server.max_request_body_bytes)
             .unwrap_or_else(default_proxy_body_bytes);
         if proxy_body_bytes == 0 || file.console_body_bytes == 0 || file.auth_body_bytes == 0 {
             return Err(ConfigError::Compile(
@@ -1227,11 +1221,6 @@ fn compile_keys(
         if !usable {
             continue;
         }
-        if record.tokens_per_minute.is_some() {
-            return Err(ConfigError::Compile(
-                "active API key uses unsupported tokens_per_minute admission control".into(),
-            ));
-        }
         let formats = record
             .allowed_api_formats
             .iter()
@@ -1516,11 +1505,6 @@ fn validate_channel(
 ) -> Result<(), ConfigError> {
     require("channel name", &record.name)?;
     let format = parse_format(&record.api_format)?;
-    if !is_empty_document(&record.health_check) {
-        return Err(ConfigError::Compile(
-            "channel health check document must be an empty object".into(),
-        ));
-    }
     compile_document(&record.override_document, format)
         .map_err(transform_error("channel override document"))?;
     compile_timeouts(record)?;
@@ -1592,9 +1576,6 @@ fn validate_channel_resources(
         }
     }
     Ok(())
-}
-fn is_empty_document(value: &serde_json::Value) -> bool {
-    value.as_object().is_some_and(serde_json::Map::is_empty)
 }
 fn validate_key(
     record: &ApiKeyRecord,
@@ -1813,14 +1794,9 @@ fn dup(field: &str) -> ConfigError {
 }
 fn validate_server(server: &ServerConfig) -> Result<(), ConfigError> {
     require("server host", &server.host)?;
-    if server
-        .max_request_body_bytes
-        .is_some_and(|limit| limit == 0)
-        || server.shutdown_grace_period_seconds == 0
-    {
+    if server.shutdown_grace_period_seconds == 0 {
         return Err(ConfigError::Compile(
-            "legacy server max_request_body_bytes and shutdown_grace_period_seconds must be greater than zero"
-                .into(),
+            "server shutdown_grace_period_seconds must be greater than zero".into(),
         ));
     }
     Ok(())
@@ -2110,7 +2086,6 @@ mod tests {
             upstream_api_key: None,
             available_models: vec!["upstream".into()],
             test_model: None,
-            health_check: serde_json::json!({}),
         };
         ControlPlaneRecords {
             api_keys: vec![],
@@ -2157,7 +2132,13 @@ mod tests {
 
     #[test]
     fn bootstrap_rejects_dynamic_toml() {
-        let value = "[server]\nhost='x'\nport=1\nmax_request_body_bytes=1\nshutdown_grace_period_seconds=1\n[database]\nurl='postgres://x'\nmax_connections=1\nconnect_timeout_seconds=1\n[upstream]\nconnect_timeout_seconds=1\nresponse_header_timeout_seconds=2\nstream_idle_timeout_seconds=1\n[runtime_config]\nreload_interval_seconds=1\n[request_logging]\nqueue_capacity=1\n[observability]\nfilter='info'\n[[api_keys]]\nid='bad'";
+        let value = "[server]\nhost='x'\nport=1\nshutdown_grace_period_seconds=1\n[database]\nurl='postgres://x'\nmax_connections=1\nconnect_timeout_seconds=1\n[upstream]\nconnect_timeout_seconds=1\nresponse_header_timeout_seconds=2\nstream_idle_timeout_seconds=1\n[runtime_config]\nreload_interval_seconds=1\n[request_logging]\nqueue_capacity=1\n[observability]\nfilter='info'\n[[api_keys]]\nid='bad'";
+        assert!(toml::from_str::<AppConfig>(value).is_err());
+    }
+
+    #[test]
+    fn bootstrap_rejects_removed_server_body_limit() {
+        let value = "[server]\nhost='x'\nport=1\nmax_request_body_bytes=1\n[database]\nurl='postgres://x'\nmax_connections=1\nconnect_timeout_seconds=1\n[upstream]\nconnect_timeout_seconds=1\nresponse_header_timeout_seconds=2\nstream_idle_timeout_seconds=1\n[runtime_config]\nreload_interval_seconds=1\n[observability]\nfilter='info'";
         assert!(toml::from_str::<AppConfig>(value).is_err());
     }
 
@@ -2348,7 +2329,7 @@ mod tests {
 
     #[test]
     fn bootstrap_rejects_zero_shutdown_grace_period() {
-        let value = "[server]\nhost='x'\nport=1\nmax_request_body_bytes=1\nshutdown_grace_period_seconds=0\n[database]\nurl='postgres://x'\nmax_connections=1\nconnect_timeout_seconds=1\n[upstream]\nconnect_timeout_seconds=1\nresponse_header_timeout_seconds=2\nstream_idle_timeout_seconds=1\n[runtime_config]\nreload_interval_seconds=1\n[request_logging]\nqueue_capacity=1\n[observability]\nfilter='info'";
+        let value = "[server]\nhost='x'\nport=1\nshutdown_grace_period_seconds=0\n[database]\nurl='postgres://x'\nmax_connections=1\nconnect_timeout_seconds=1\n[upstream]\nconnect_timeout_seconds=1\nresponse_header_timeout_seconds=2\nstream_idle_timeout_seconds=1\n[runtime_config]\nreload_interval_seconds=1\n[request_logging]\nqueue_capacity=1\n[observability]\nfilter='info'";
         assert!(
             toml::from_str::<AppConfig>(value)
                 .unwrap()
@@ -2359,7 +2340,7 @@ mod tests {
 
     #[test]
     fn bootstrap_defaults_stage_two_settings_when_absent() {
-        let value = "[server]\nhost='x'\nport=1\nmax_request_body_bytes=1\n[database]\nurl='postgres://x'\nmax_connections=1\nconnect_timeout_seconds=1\n[upstream]\nconnect_timeout_seconds=1\nresponse_header_timeout_seconds=2\nstream_idle_timeout_seconds=1\n[runtime_config]\nreload_interval_seconds=1\n[observability]\nfilter='info'";
+        let value = "[server]\nhost='x'\nport=1\n[database]\nurl='postgres://x'\nmax_connections=1\nconnect_timeout_seconds=1\n[upstream]\nconnect_timeout_seconds=1\nresponse_header_timeout_seconds=2\nstream_idle_timeout_seconds=1\n[runtime_config]\nreload_interval_seconds=1\n[observability]\nfilter='info'";
         let config = toml::from_str::<AppConfig>(value)
             .unwrap()
             .validate()
@@ -2394,14 +2375,14 @@ mod tests {
         assert_eq!(config.session_affinity.max_entries, 100_000);
         assert_eq!(config.session_affinity.default_ttl_seconds, 3_600);
         assert!(config.session_affinity.rules.is_empty());
-        assert_eq!(config.request_limits.proxy_body_bytes, 1);
+        assert_eq!(config.request_limits.proxy_body_bytes, 1_048_576);
         assert_eq!(config.request_limits.console_body_bytes, 262_144);
         assert_eq!(config.request_limits.auth_body_bytes, 16_384);
     }
 
     #[test]
     fn bootstrap_preserves_ipv6_console_socket_address() {
-        let value = "[server]\nhost='127.0.0.1'\nport=1\nmax_request_body_bytes=1\nshutdown_grace_period_seconds=1\n[database]\nurl='postgres://x'\nmax_connections=1\nconnect_timeout_seconds=1\n[upstream]\nconnect_timeout_seconds=1\nresponse_header_timeout_seconds=2\nstream_idle_timeout_seconds=1\n[runtime_config]\nreload_interval_seconds=1\n[observability]\nfilter='info'\n[console]\nenabled=true\nhost='::1'\nport=9443\nallowed_origins=['https://console.example.test']\n[auth]\nissuer='ai-gateway'\naudience='ai-gateway-console'\naccess_token_ttl_seconds=900\nrefresh_token_ttl_seconds=3600\nkey_id='test'\nsigning_key_path='/tmp/private.pem'\nverification_key_path='/tmp/public.pem'";
+        let value = "[server]\nhost='127.0.0.1'\nport=1\nshutdown_grace_period_seconds=1\n[database]\nurl='postgres://x'\nmax_connections=1\nconnect_timeout_seconds=1\n[upstream]\nconnect_timeout_seconds=1\nresponse_header_timeout_seconds=2\nstream_idle_timeout_seconds=1\n[runtime_config]\nreload_interval_seconds=1\n[observability]\nfilter='info'\n[console]\nenabled=true\nhost='::1'\nport=9443\nallowed_origins=['https://console.example.test']\n[auth]\nissuer='ai-gateway'\naudience='ai-gateway-console'\naccess_token_ttl_seconds=900\nrefresh_token_ttl_seconds=3600\nkey_id='test'\nsigning_key_path='/tmp/private.pem'\nverification_key_path='/tmp/public.pem'";
         let config = toml::from_str::<AppConfig>(value)
             .unwrap()
             .validate()
@@ -2415,7 +2396,7 @@ mod tests {
 
     #[test]
     fn bootstrap_rejects_zero_request_log_queue_capacity() {
-        let value = "[server]\nhost='x'\nport=1\nmax_request_body_bytes=1\nshutdown_grace_period_seconds=1\n[database]\nurl='postgres://x'\nmax_connections=1\nconnect_timeout_seconds=1\n[upstream]\nconnect_timeout_seconds=1\nresponse_header_timeout_seconds=2\nstream_idle_timeout_seconds=1\n[runtime_config]\nreload_interval_seconds=1\n[request_logging]\nqueue_capacity=0\n[observability]\nfilter='info'";
+        let value = "[server]\nhost='x'\nport=1\nshutdown_grace_period_seconds=1\n[database]\nurl='postgres://x'\nmax_connections=1\nconnect_timeout_seconds=1\n[upstream]\nconnect_timeout_seconds=1\nresponse_header_timeout_seconds=2\nstream_idle_timeout_seconds=1\n[runtime_config]\nreload_interval_seconds=1\n[request_logging]\nqueue_capacity=0\n[observability]\nfilter='info'";
         assert!(
             toml::from_str::<AppConfig>(value)
                 .unwrap()

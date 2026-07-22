@@ -150,7 +150,6 @@ fn gateway(settings: &SmokeSettings, format: SmokeFormat, upstream_model: &str) 
             allowed_group_ids: vec![group_id],
             allowed_channel_ids: vec![],
             requests_per_minute: None,
-            tokens_per_minute: None,
             max_concurrent_requests: None,
             quota_limit_amount: None,
             quota_used_amount: Default::default(),
@@ -184,7 +183,6 @@ fn gateway(settings: &SmokeSettings, format: SmokeFormat, upstream_model: &str) 
             upstream_api_key: Some(settings.upstream_api_key.clone()),
             available_models: vec![upstream_model.into()],
             test_model: None,
-            health_check: json!({}),
         }],
         model_rules: vec![ModelRuleRecord {
             id: Uuid::new_v4(),

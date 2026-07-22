@@ -182,10 +182,6 @@ export function AppRouter() {
             <Route path="/admin/models/:id" element={<ModelDetailPage />} />
             <Route path="/admin/catalog" element={<CatalogPage />} />
             <Route
-              path="/admin/routing/channel-groups"
-              element={<Navigate to="/admin/routing/channels" replace />}
-            />
-            <Route
               path="/admin/routing/channel-groups/:id"
               element={<ChannelGroupDetailPage />}
             />

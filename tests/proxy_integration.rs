@@ -631,7 +631,6 @@ fn configured_proxy_with_policy_and_transforms(
             _ => vec![],
         },
         test_model: None,
-        health_check: serde_json::json!({}),
     };
     let key = |secret: &str, formats: Vec<&str>, groups: Vec<Uuid>, permissions: Vec<&str>| {
         ApiKeyRecord {
@@ -646,7 +645,6 @@ fn configured_proxy_with_policy_and_transforms(
             allowed_group_ids: groups,
             allowed_channel_ids: vec![],
             requests_per_minute: None,
-            tokens_per_minute: None,
             max_concurrent_requests: None,
             quota_limit_amount: None,
             quota_used_amount: Default::default(),
@@ -846,7 +844,6 @@ fn session_affinity_proxy(first_upstream_url: &str, second_upstream_url: &str) -
         upstream_api_key: Some(UPSTREAM_KEY.into()),
         available_models: vec!["affinity-model".into()],
         test_model: None,
-        health_check: serde_json::json!({}),
     };
     let records = ControlPlaneRecords {
         api_keys: vec![ApiKeyRecord {
@@ -861,7 +858,6 @@ fn session_affinity_proxy(first_upstream_url: &str, second_upstream_url: &str) -
             allowed_group_ids: vec![group_id],
             allowed_channel_ids: vec![],
             requests_per_minute: None,
-            tokens_per_minute: None,
             max_concurrent_requests: None,
             quota_limit_amount: None,
             quota_used_amount: Default::default(),

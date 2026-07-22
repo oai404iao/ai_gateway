@@ -102,7 +102,6 @@ export const ADMIN_API_KEY: AdminApiKeyView = {
   ...OWN_API_KEY,
   user_id: ADMIN_USER.id,
   user_status: "active",
-  tokens_per_minute: 10_000,
 };
 
 export const CHANNEL_GROUP: ChannelGroupView = {

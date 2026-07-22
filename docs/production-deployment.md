@@ -112,11 +112,14 @@ docker compose \
 
 ## 5. 升级
 
-1. 备份 PostgreSQL，并确认本地 spool 无异常积压。
+1. 备份 PostgreSQL，并确认本地 spool 与 `request_log_ingest` 已排空；包含 journal payload 破坏性变更的升级不能保留旧二进制写入的积压记录。
 2. 将 `config/compose.prd.env` 中的 `AI_GATEWAY_VERSION` 改为目标版本。
 3. 拉取镜像或在对应 tag 的 checkout 上重新构建。
 4. 执行 `up -d --no-build`；Gateway 启动时自动运行 migration。
 5. 检查 `/health`、容器日志、spool/ingress/settlement backlog 和 Console。
+
+Migration `0017_remove_legacy_compatibility.sql` 会永久删除
+`api_keys.tokens_per_minute` 与 `channels.health_check` 的值；升级前备份必须可用。
 
 不要删除 `postgres-data` 或 `gateway-spool` volume 来完成升级。回滚应用版本前，
 先确认新 migration 是否向后兼容；数据库回滚必须依赖经过演练的备份恢复方案。

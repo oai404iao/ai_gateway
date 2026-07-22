@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use crate::domain::RequestLogEvent;
 
-pub(crate) const REQUEST_LOG_SCHEMA_VERSION: i16 = 1;
+pub(crate) const REQUEST_LOG_SCHEMA_VERSION: i16 = 2;
 
 #[derive(Clone, Debug)]
 pub(crate) struct EncodedRequestLog {
@@ -54,10 +54,26 @@ pub(crate) enum JournalCodecError {
 mod tests {
     use uuid::Uuid;
 
-    use super::EncodedRequestLog;
+    use super::{EncodedRequestLog, JournalCodecError};
 
     #[test]
-    fn decodes_older_payloads_without_an_error_summary() {
+    fn rejects_prior_schema_versions() {
+        let error = EncodedRequestLog {
+            request_log_id: Uuid::new_v4(),
+            schema_version: 1,
+            payload: Vec::new(),
+        }
+        .decode()
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            JournalCodecError::UnsupportedVersion { version: 1 }
+        ));
+    }
+
+    #[test]
+    fn rejects_current_schema_payloads_without_an_error_summary() {
         let id = Uuid::new_v4();
         let payload = serde_json::to_vec(&serde_json::json!({
             "id": id,
@@ -82,14 +98,14 @@ mod tests {
             "error_code": "client_cancelled"
         }))
         .unwrap();
-        let decoded = EncodedRequestLog {
+        let error = EncodedRequestLog {
             request_log_id: id,
-            schema_version: 1,
+            schema_version: super::REQUEST_LOG_SCHEMA_VERSION,
             payload,
         }
         .decode()
-        .unwrap();
+        .unwrap_err();
 
-        assert_eq!(decoded.error_summary, None);
+        assert!(matches!(error, JournalCodecError::Deserialize(_)));
     }
 }

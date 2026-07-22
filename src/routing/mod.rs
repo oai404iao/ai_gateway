@@ -14,8 +14,7 @@ use crate::domain::{
 use uuid::Uuid;
 
 /// Process-wide policy for passive connection health. These values apply to all
-/// channels and intentionally do not reuse the currently unsupported per-channel
-/// `health_check` control-plane field.
+/// channels.
 #[derive(Clone, Copy, Debug)]
 pub struct PassiveHealthPolicy {
     pub connection_failure_threshold: u32,
@@ -996,7 +995,6 @@ mod tests {
                 allowed_group_ids: group_ids.clone(),
                 allowed_channel_ids: vec![],
                 requests_per_minute: None,
-                tokens_per_minute: None,
                 max_concurrent_requests: None,
                 quota_limit_amount: None,
                 quota_used_amount: Default::default(),
@@ -1040,7 +1038,6 @@ mod tests {
                     upstream_api_key: None,
                     available_models: vec!["upstream".into()],
                     test_model: None,
-                    health_check: serde_json::json!({}),
                 })
                 .collect(),
             model_rules: vec![ModelRuleRecord {
@@ -1131,7 +1128,6 @@ mod tests {
                 allowed_group_ids: vec![group_id],
                 allowed_channel_ids: vec![],
                 requests_per_minute: None,
-                tokens_per_minute: None,
                 max_concurrent_requests: None,
                 quota_limit_amount: None,
                 quota_used_amount: Default::default(),
@@ -1165,7 +1161,6 @@ mod tests {
                 upstream_api_key: None,
                 available_models: vec!["upstream".into()],
                 test_model: None,
-                health_check: serde_json::json!({}),
             }],
             model_rules: vec![ModelRuleRecord {
                 id: Uuid::from_u128(400),

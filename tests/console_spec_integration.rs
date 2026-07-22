@@ -471,6 +471,73 @@ async fn currency_fields_are_not_console_settings() {
     database.cleanup().await;
 }
 
+#[tokio::test]
+async fn removed_console_compatibility_paths_are_not_routed() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+
+    for (method, path) in [
+        ("GET", "/console/v1/channel-groups"),
+        ("GET", "/console/v1/channels"),
+        ("GET", "/console/v1/model-rules"),
+        ("GET", "/console/v1/proxies"),
+        ("GET", "/console/v1/config-templates"),
+        ("POST", "/console/v1/models/sync/preview"),
+        ("POST", "/console/v1/models/sync/import"),
+        ("POST", "/console/v1/reload"),
+    ] {
+        let response = request(&app, method, path, serde_json::json!({}), &[]).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{method} {path}");
+    }
+
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn legacy_user_name_field_is_rejected() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+    let path = format!("/console/v1/users/{}", app.user_id);
+    let detail = request(&app, "GET", &path, serde_json::json!({}), &[]).await;
+    assert_eq!(detail.status(), StatusCode::OK);
+    let etag = detail.headers()[header::ETAG].to_str().unwrap().to_owned();
+    let mut update = body_json(detail).await;
+    let display_name = update["display_name"].clone();
+    for field in ["id", "created_at", "updated_at", "display_name"] {
+        update.as_object_mut().unwrap().remove(field);
+    }
+    update["name"] = display_name;
+
+    let response = request(&app, "PUT", &path, update, &[("if-match", &etag)]).await;
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn obsolete_control_plane_columns_are_absent() {
+    let database = TestDatabase::new().await;
+
+    for (table, column) in [
+        ("api_keys", "tokens_per_minute"),
+        ("channels", "health_check"),
+    ] {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS (\
+             SELECT 1 FROM information_schema.columns \
+             WHERE table_schema='public' AND table_name=$1 AND column_name=$2\
+             )",
+        )
+        .bind(table)
+        .bind(column)
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+        assert!(!exists, "{table}.{column} must be removed");
+    }
+
+    database.cleanup().await;
+}
+
 /// Non-auth account edits preserve the current session, while role changes
 /// still invalidate it immediately.
 #[tokio::test]

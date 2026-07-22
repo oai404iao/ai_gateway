@@ -60,12 +60,4 @@ describe("ChannelsPage", () => {
     expect(screen.getByRole("button", { name: "New group" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "New channel" })).toBeInTheDocument();
   });
-
-  it("redirects the legacy channel-group list route to the unified page", async () => {
-    seedAuthenticatedSession();
-    renderAppAt("/admin/routing/channel-groups");
-
-    expect(await screen.findByRole("heading", { name: "Channels" })).toBeInTheDocument();
-    expect(window.location.pathname).toBe("/admin/routing/channels");
-  });
 });

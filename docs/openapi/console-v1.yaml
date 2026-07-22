@@ -26,12 +26,6 @@ info:
       the affected rule first.
     - `limit` query parameters are clamped to `1..=100` (default `50`).
 
-    Compatibility aliases (same handlers, same JWT/role boundary, not
-    duplicated below): `/console/v1/channel-groups`, `/channels`,
-    `/model-rules`, `/proxies`, `/config-templates`, `/models/sync/preview`,
-    `/models/sync/import`, and `/reload` mirror their `/routing`, `/network`,
-    `/transforms`, `/catalog`, and `/system` counterparts. `/admin/v1/*` does
-    not exist.
 servers:
   - url: /console/v1
     description: Same-origin Console listener.
@@ -1917,11 +1911,10 @@ components:
       allOf:
         - $ref: "#/components/schemas/ApiKeyView"
         - type: object
-          required: [user_id, user_status, tokens_per_minute]
+          required: [user_id, user_status]
           properties:
             user_id: { type: string, format: uuid }
             user_status: { type: string }
-            tokens_per_minute: { type: integer, nullable: true }
 
     ApiKeyPolicyView:
       type: object
@@ -2616,10 +2609,6 @@ components:
           type: string
           nullable: true
           description: Must be one of available_models when set.
-        health_check:
-          type: object
-          maxProperties: 0
-          description: Legacy reserved field; must be `{}`.
 
     ChannelInput:
       type: object
@@ -2661,10 +2650,6 @@ components:
           type: string
           nullable: true
           description: Must be one of available_models when set.
-        health_check:
-          type: object
-          maxProperties: 0
-          description: Legacy reserved field; must be `{}`.
 
     ModelRuleInput:
       type: object

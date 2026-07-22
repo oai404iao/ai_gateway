@@ -114,7 +114,6 @@ fn proxy_service_with_network_policy(
             allowed_group_ids: vec![group_id],
             allowed_channel_ids: vec![],
             requests_per_minute: None,
-            tokens_per_minute: None,
             max_concurrent_requests: None,
             quota_limit_amount: None,
             quota_used_amount: Default::default(),
@@ -148,7 +147,6 @@ fn proxy_service_with_network_policy(
             upstream_api_key: Some("upstream-key".into()),
             available_models: vec!["stream-model".into()],
             test_model: None,
-            health_check: serde_json::json!({}),
         }],
         model_rules: vec![ModelRuleRecord {
             id: Uuid::new_v4(),
