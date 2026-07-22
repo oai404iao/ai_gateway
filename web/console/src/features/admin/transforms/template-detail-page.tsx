@@ -6,10 +6,10 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Spinner } from "@/components/ui/spinner";
 import { AdminDetailShell } from "@/features/admin/components/admin-detail-shell";
+import { TransformDocumentEditor } from "@/features/admin/transforms/transform-document-editor";
 import { DetailField } from "@/components/shared/detail-field";
 import { StatusBadge } from "@/components/shared/status-badge";
 import {
@@ -48,6 +48,7 @@ export function ConfigTemplateDetailPage() {
   const [state, setState] = useState<FormState>(empty);
   const [submitting, setSubmitting] = useState(false);
   const [validation, setValidation] = useState<z.ZodError | null>(null);
+  const [documentValidation, setDocumentValidation] = useState<string | null>(null);
 
   useEffect(() => {
     if (data) {
@@ -57,12 +58,17 @@ export function ConfigTemplateDetailPage() {
         document: "",
         enabled: data.data.enabled,
       });
+      setDocumentValidation(null);
     }
   }, [data]);
 
   const patch = (partial: Partial<FormState>) => setState((prev) => ({ ...prev, ...partial }));
 
   const submit = async () => {
+    if (documentValidation) {
+      toast.error(t(documentValidation));
+      return;
+    }
     let document: unknown | undefined;
     try {
       if (state.document.trim()) {
@@ -188,18 +194,18 @@ export function ConfigTemplateDetailPage() {
                   />
                 </Field>
                 <Field>
-                  <FieldLabel htmlFor="document">{t("Document (JSON)")}</FieldLabel>
+                  <FieldLabel>{t("Document (JSON)")}</FieldLabel>
                   <FieldDescription>
                     {isNew
                       ? t("Constrained transform document.")
                       : t("Optional replacement document.")}
                   </FieldDescription>
-                  <Textarea
-                    id="document"
-                    rows={10}
-                    className="font-mono text-xs"
+                  <TransformDocumentEditor
                     value={state.document}
-                    onChange={(event) => patch({ document: event.target.value })}
+                    onChange={(document) => patch({ document })}
+                    defaultApiFormat={data?.data.api_format ?? undefined}
+                    preserveWhenBlank={!isNew}
+                    onVisualValidationChange={setDocumentValidation}
                   />
                 </Field>
                 <Field orientation="horizontal">

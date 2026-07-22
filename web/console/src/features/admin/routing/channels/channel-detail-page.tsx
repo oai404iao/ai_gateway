@@ -13,7 +13,6 @@ import {
   FieldLabel,
 } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
   SelectContent,
@@ -25,6 +24,7 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Spinner } from "@/components/ui/spinner";
 import { AdminDetailShell } from "@/features/admin/components/admin-detail-shell";
+import { TransformDocumentEditor } from "@/features/admin/transforms/transform-document-editor";
 import { DetailField } from "@/components/shared/detail-field";
 import { StringListField } from "@/components/shared/string-list-field";
 import { NullableNumberField } from "@/components/shared/decimal-field";
@@ -156,6 +156,9 @@ export function ChannelDetailPage() {
   const [state, setState] = useState<FormState>(empty);
   const [submitting, setSubmitting] = useState(false);
   const [validation, setValidation] = useState<z.ZodError | null>(null);
+  const [overrideDocumentValidation, setOverrideDocumentValidation] = useState<string | null>(
+    null,
+  );
 
   useEffect(() => {
     if (data) {
@@ -180,6 +183,7 @@ export function ChannelDetailPage() {
         available_models: data.data.available_models,
         test_model: data.data.test_model,
       });
+      setOverrideDocumentValidation(null);
     }
   }, [data]);
 
@@ -192,6 +196,10 @@ export function ChannelDetailPage() {
   );
 
   const submit = async () => {
+    if (overrideDocumentValidation) {
+      toast.error(t(overrideDocumentValidation));
+      return;
+    }
     let overrideDocument: unknown;
     try {
       if (state.override_document.trim()) {
@@ -652,7 +660,7 @@ export function ChannelDetailPage() {
                   onChange={(value) => patch({ stream_idle_timeout_ms: value })}
                 />
                 <Field>
-                  <FieldLabel htmlFor="override_document">
+                  <FieldLabel>
                     {t("Override document (JSON)")}
                   </FieldLabel>
                   <FieldDescription>
@@ -662,12 +670,12 @@ export function ChannelDetailPage() {
                           "The current document is redacted. Leave this blank to preserve it; enter {} to clear it.",
                         )}
                   </FieldDescription>
-                  <Textarea
-                    id="override_document"
-                    rows={5}
-                    className="font-mono text-xs"
+                  <TransformDocumentEditor
                     value={state.override_document}
-                    onChange={(event) => patch({ override_document: event.target.value })}
+                    onChange={(override_document) => patch({ override_document })}
+                    fixedApiFormat={state.api_format}
+                    preserveWhenBlank={!isNew}
+                    onVisualValidationChange={setOverrideDocumentValidation}
                   />
                 </Field>
                 <Field orientation="horizontal">

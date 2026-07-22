@@ -812,6 +812,112 @@ const zhCN: Record<string, string> = {
     "各上游模型的请求数、可靠性、Token 与花费。",
   "No statistics": "没有统计数据",
   "No requests matched the selected filter.": "没有请求符合当前筛选条件。",
+  "Visual editor": "可视化编辑",
+  "JSON configuration": "JSON 配置",
+  "Reference": "参考说明",
+  "Transform editor views": "转换编辑器视图",
+  "Stored transform is redacted": "已存储的转换规则已脱敏",
+  "The existing document is not returned by the API. Adding or applying a visual rule replaces it; leave this editor untouched to preserve it.":
+    "API 不会返回现有文档。新增或应用可视化规则会替换它；不作修改即可保留现有规则。",
+  "Review the transform rules": "请检查转换规则",
+  "Transform scope": "转换作用范围",
+  "Templates run first, then channel overrides. Upstream authentication is applied last and cannot be changed by transform rules.":
+    "模板规则先执行，随后执行渠道覆写规则。上游认证最后注入，不能通过转换规则修改。",
+  "The channel group fixes this transform's API format.": "此转换规则的 API 格式由渠道组固定。",
+  "Rule format": "规则格式",
+  "Choose the API format before adding streaming response rules.":
+    "添加流式响应规则前，请先选择 API 格式。",
+  "Remove streaming response rules before changing the API format.":
+    "请先移除流式响应规则，再更改 API 格式。",
+  "Request headers": "请求头",
+  "Response headers": "响应头",
+  "Set, remove, or rename safe headers before the request reaches the upstream.":
+    "请求到达上游前，可设置、移除或重命名安全的请求头。",
+  "Set, remove, or rename safe headers before the response is sent to the client.":
+    "响应发送给客户端前，可设置、移除或重命名安全的响应头。",
+  "Add request header rule": "添加请求头规则",
+  "Add response header rule": "添加响应头规则",
+  "No request-header rules": "暂无请求头规则",
+  "No response-header rules": "暂无响应头规则",
+  "Start with a header that identifies or adapts the upstream request.":
+    "从用于标识或适配上游请求的请求头开始。",
+  "Add a safe response header for the client.": "添加一个面向客户端的安全响应头。",
+  "Header operation": "请求头操作",
+  "Set header": "设置请求头",
+  "Remove header": "移除请求头",
+  "Rename header": "重命名请求头",
+  "New header name": "新的请求头名称",
+  "Header value": "请求头值",
+  "Request body (JSON Patch)": "请求体（JSON Patch）",
+  "Response body (streaming SSE)": "响应体（流式 SSE）",
+  "Apply add, replace, or remove operations to the upstream JSON request. Model and stream remain protected.":
+    "对上游 JSON 请求应用 add、replace 或 remove 操作；model 和 stream 字段始终受保护。",
+  "Add request body rule": "添加请求体规则",
+  "No request-body rules": "暂无请求体规则",
+  "Add a JSON Patch to adjust an upstream request.": "添加 JSON Patch 以调整上游请求。",
+  "JSON Patch operation": "JSON Patch 操作",
+  "Add value": "添加值",
+  "Replace value": "替换值",
+  "Remove value": "移除值",
+  "Value (JSON)": "值（JSON）",
+  "Use valid JSON, including quotes around strings.": "请输入有效 JSON；字符串必须包含引号。",
+  "JSON Patch note": "JSON Patch 说明",
+  "Replace and remove require a path that already exists. Add also requires its parent path to exist.":
+    "replace 和 remove 要求目标路径已存在；add 也要求其父路径已存在。",
+  "Patch supported JSON Server-Sent Events. Non-streaming JSON response bodies always pass through unchanged.":
+    "对受支持的 JSON Server-Sent Events 应用 Patch。非流式 JSON 响应体始终原样透传。",
+  "Add streaming response rule": "添加流式响应规则",
+  "No response-body rules": "暂无响应体规则",
+  "Add a supported streaming event and JSON Patch operations.":
+    "添加受支持的流式事件及其 JSON Patch 操作。",
+  "Streaming event rule": "流式事件规则",
+  "Each event can have one rule with one or more JSON Patch operations.":
+    "每个事件只能有一条规则，其中可包含一个或多个 JSON Patch 操作。",
+  "Streaming response event": "流式响应事件",
+  "Add event patch": "添加事件 Patch",
+  "Transform document JSON": "转换文档 JSON",
+  "Use this mode for direct editing. Visual editor supports the version 1 transform schema and keeps its generated JSON synchronized.":
+    "此模式用于直接编辑。可视化编辑器支持版本 1 的转换架构，并会同步生成 JSON。",
+  "Transform rule limits": "转换规则限制",
+  "Request rules cannot change authorization, cookies, host, content length, model, or stream. Response rules cannot change content type, content length, encoding, or cookies. Hop-by-hop headers are always protected.":
+    "请求规则不能修改 authorization、cookie、host、content-length、model 或 stream；响应规则不能修改 content-type、content-length、content-encoding 或 set-cookie。逐跳请求头始终受保护。",
+  "Response-body scope": "响应体作用范围",
+  "Response-body patches run only for the listed streaming SSE events. They do not buffer or rewrite ordinary non-streaming JSON responses.":
+    "响应体 Patch 仅作用于列出的流式 SSE 事件，不会缓冲或改写普通的非流式 JSON 响应。",
+  "Request header example": "请求头示例",
+  "Request body example": "请求体示例",
+  "Response header example": "响应头示例",
+  "Streaming response example": "流式响应示例",
+  "Add an upstream marker without touching protected credentials.":
+    "添加上游标记，而不触碰受保护的凭据。",
+  "Replace a value that the client request already contains.": "替换客户端请求中已存在的值。",
+  "Expose a safe marker to clients in the upstream response.": "在上游响应中向客户端暴露一个安全标记。",
+  "Add a non-envelope field to a supported streaming event.":
+    "向受支持的流式事件添加一个非信封字段。",
+  "Apply example": "应用示例",
+  "Transform JSON is not valid. Open JSON configuration to repair it.":
+    "转换 JSON 无效。请打开 JSON 配置进行修复。",
+  "Transform document must be a JSON object.": "转换文档必须是 JSON 对象。",
+  "This JSON cannot be represented in the visual editor. Use JSON configuration to edit it.":
+    "此 JSON 无法在可视化编辑器中表示。请使用 JSON 配置进行编辑。",
+  "Header names must be valid and cannot be protected headers.":
+    "请求头名称必须有效，且不能是受保护的请求头。",
+  "A header can only appear in one operation.": "同一个请求头只能出现在一项操作中。",
+  "Each JSON Patch needs a non-root RFC 6901 JSON Pointer.":
+    "每个 JSON Patch 都需要一个非根 RFC 6901 JSON Pointer。",
+  "Request-body rules cannot change model or stream.": "请求体规则不能修改 model 或 stream。",
+  "Streaming response rules cannot change immutable event envelope fields.":
+    "流式响应规则不能修改不可变的事件信封字段。",
+  "Every add or replace rule needs a valid JSON value.":
+    "每条 add 或 replace 规则都需要有效的 JSON 值。",
+  "JSON Patch paths cannot overlap in the same rule list.":
+    "同一规则列表中的 JSON Patch 路径不能重叠。",
+  "Choose a response event supported by the selected API format.":
+    "请选择当前 API 格式支持的响应事件。",
+  "Each streaming response event can have only one rule.":
+    "每个流式响应事件只能有一条规则。",
+  "Each streaming response event rule needs at least one JSON Patch.":
+    "每条流式响应事件规则至少需要一个 JSON Patch。",
 };
 
 let activeLocale: ConsoleLocale = "en-US";
