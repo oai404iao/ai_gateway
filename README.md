@@ -47,8 +47,10 @@ Separate Console listener (/console/v1/*)
 
 - Rust **1.85** or newer (Rust 2024 edition)
 - PostgreSQL
-- Docker Compose is optional but provided for local PostgreSQL development
-- OpenSSL is useful when enabling the Console API and generating local Ed25519 keys
+- Docker Compose is optional and provides a tuned single-node PostgreSQL
+  baseline; it is not an HA or backup solution
+- OpenSSL is useful for generating the local database password and Console
+  Ed25519 keys
 
 ## Quick start / 快速启动
 
@@ -57,15 +59,21 @@ Separate Console listener (/console/v1/*)
 > The service does not load `.env` files or use an XDG configuration directory.
 > 中文启动说明见下方对应步骤及 [中文文档](README.zh-CN.md)。
 
-### 1. Start PostgreSQL and create a local configuration
+### 1. Create local secrets/configuration and start PostgreSQL
 
 ```bash
-docker compose up -d
 mkdir -p ./config
+openssl rand -hex 32 > ./config/postgres-password
+chmod 600 ./config/postgres-password
 cp config.example.toml ./config/config.toml
+docker compose up -d
 ```
 
 Edit `./config/config.toml` as needed. At minimum, verify `[database]`, public `[server]`, and `[upstream]` timeout settings. The supplied Docker Compose service matches the example database URL.
+The example reads the database password from
+`./config/postgres-password`; it does not embed a default password in TOML or
+Compose. The Compose defaults target a 4–8 GiB single-node host and can be
+overridden with documented `AI_GATEWAY_POSTGRES_*` variables.
 
 If you are upgrading from the former root-level layout, move local files once:
 
@@ -231,6 +239,10 @@ settled asynchronously. See
 [docs/request-log-durability.md](docs/request-log-durability.md) for guarantees,
 failure boundaries, and operational metrics.
 
+The production sizing assumptions, PostgreSQL settings, password-file setup,
+storage guidance, and small/large machine profiles are documented in
+[docs/production-configuration.md](docs/production-configuration.md).
+
 ## Console API
 
 The Console listener is separate from the public listener and uses short-lived JWT access tokens. Successful login, refresh, and invitation activation also issue a rotating `HttpOnly; Secure; SameSite=Lax` refresh cookie.
@@ -376,8 +388,9 @@ src/
   upstream/          Reusable reqwest clients and proxy/timeout policies
   workers/           Snapshot reload and asynchronous request-log workers
 migrations/          PostgreSQL schema migrations
+deploy/postgres/     Compose initialization helpers
 docs/                Product, operational, and design documentation
-config/              Ignored local runtime configuration and JWT key directory
+config/              Ignored runtime configuration, DB password, and JWT keys
 config.example.toml  Tracked configuration template
 tests/               Local and PostgreSQL integration tests
 ```
@@ -387,6 +400,8 @@ tests/               Local and PostgreSQL integration tests
 - Keep JWT private keys in ignored local files (the recommended development
   location is `./config/console-jwt-private.pem`) with restrictive filesystem
   permissions.
+- Keep `./config/postgres-password` mode `0600`; prefer
+  `[database].password_file` over embedding a database password in TOML.
 - Treat the database, backups, and Console access as credential-sensitive: control-plane records include client and upstream credentials.
 - Do not place client/upstream credentials or JWT private-key material in TOML, source files, logs, test fixtures, or shell history.
 - Expose the Console API only through HTTPS with a deliberate origin policy. Keep the public data-plane listener appropriately network-restricted as well.
@@ -394,6 +409,7 @@ tests/               Local and PostgreSQL integration tests
 ## Documentation
 
 - [Operational usage and endpoint guide](docs/mvp-usage.md)
+- [Production configuration and capacity tuning](docs/production-configuration.md)
 - [Console Web UI design and implementation plan](docs/console-ui-design.md)
 - [Database and control-plane design](docs/database-design.md)
 - [Real-upstream smoke-test guide](docs/real-upstream-smoke.md)

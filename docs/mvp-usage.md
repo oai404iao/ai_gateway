@@ -9,13 +9,20 @@ Console listener 提供。无论是否启用 UI，本文件描述的 API 行为�
 
 ## 启动
 
-1. 启动 PostgreSQL：`docker compose up -d`。
-2. 创建当前目录下已忽略的 `./config/`，并复制 `config.example.toml` 为 `./config/config.toml`；填写监听、数据库、上游和可选 Console 设置。服务不使用 XDG 配置目录：
+1. 创建本地数据库密码和运行配置。服务不使用 XDG 配置目录：
 
    ```bash
    mkdir -p ./config
+   openssl rand -hex 32 > ./config/postgres-password
+   chmod 600 ./config/postgres-password
    cp config.example.toml ./config/config.toml
    ```
+
+   默认配置通过 `[database].password_file` 读取该密码，不在 TOML 或
+   Compose 中内置弱密码。
+2. 启动经过单节点生产基线调优的 PostgreSQL：`docker compose up -d`。
+   它不提供 HA、PITR 或自动备份；机器规格分档和参数覆盖方式见
+   [生产配置与容量调优](production-configuration.md)。
 
    从旧根目录布局升级时，将 `./config.toml` 和
    `./console-jwt-*.pem` 移入 `./config/`。

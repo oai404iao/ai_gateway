@@ -51,6 +51,23 @@ use tower::ServiceExt;
 use uuid::Uuid;
 
 const DEFAULT_ADMIN_URL: &str = "postgres://ai_gateway:ai_gateway@127.0.0.1:5432/postgres";
+const PASSWORD_FILE_ADMIN_URL: &str = "postgres://ai_gateway@127.0.0.1:5432/postgres";
+
+fn default_admin_url() -> String {
+    let Ok(mut password) = std::fs::read_to_string("./config/postgres-password") else {
+        return DEFAULT_ADMIN_URL.into();
+    };
+    while matches!(password.as_bytes().last(), Some(b'\n' | b'\r')) {
+        password.pop();
+    }
+    if password.is_empty() {
+        return DEFAULT_ADMIN_URL.into();
+    }
+    let mut url = Url::parse(PASSWORD_FILE_ADMIN_URL).expect("default admin URL must be valid");
+    url.set_password(Some(&password))
+        .expect("PostgreSQL URL must accept a password");
+    url.to_string()
+}
 
 fn system_settings() -> SystemSettingsInput {
     SystemSettingsInput {
@@ -66,6 +83,33 @@ fn system_settings() -> SystemSettingsInput {
         automatic_disable: Default::default(),
         scheduled_testing: Default::default(),
     }
+}
+
+#[tokio::test]
+async fn request_log_tables_use_production_autovacuum_settings() {
+    let database = TestDatabase::new().await;
+    let rows = sqlx::query_as::<_, (String, Option<Vec<String>>)>(
+        "SELECT relname,reloptions
+         FROM pg_class
+         WHERE relname IN ('request_logs','request_log_ingest')
+         ORDER BY relname",
+    )
+    .fetch_all(&database.pool)
+    .await
+    .unwrap();
+    let options = rows
+        .into_iter()
+        .map(|(table, options)| (table, options.unwrap_or_default()))
+        .collect::<BTreeMap<_, _>>();
+
+    assert!(options["request_logs"].contains(&"autovacuum_vacuum_scale_factor=0.02".into()));
+    assert!(options["request_logs"].contains(&"autovacuum_analyze_scale_factor=0.02".into()));
+    assert!(options["request_log_ingest"].contains(&"autovacuum_vacuum_scale_factor=0.01".into()));
+    assert!(
+        options["request_log_ingest"]
+            .contains(&"autovacuum_vacuum_insert_scale_factor=0.01".into())
+    );
+    database.cleanup().await;
 }
 
 #[tokio::test]
@@ -568,8 +612,7 @@ async fn wait_for_blocked_request_log_insert(pool: &PgPool) {
 
 impl TestDatabase {
     async fn new() -> Self {
-        let admin_url =
-            env::var("TEST_DATABASE_ADMIN_URL").unwrap_or_else(|_| DEFAULT_ADMIN_URL.to_owned());
+        let admin_url = env::var("TEST_DATABASE_ADMIN_URL").unwrap_or_else(|_| default_admin_url());
         let mut database_url =
             Url::parse(&admin_url).expect("TEST_DATABASE_ADMIN_URL must be a valid PostgreSQL URL");
         assert_ne!(

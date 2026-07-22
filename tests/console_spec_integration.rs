@@ -37,6 +37,7 @@ use tower::ServiceExt;
 use uuid::Uuid;
 
 const DEFAULT_ADMIN_URL: &str = "postgres://ai_gateway:ai_gateway@127.0.0.1:5432/postgres";
+const PASSWORD_FILE_ADMIN_URL: &str = "postgres://ai_gateway@127.0.0.1:5432/postgres";
 const TEST_PASSWORD: &str = "test-password-with-enough-length";
 const TEST_ED25519_PRIVATE_KEY: &[u8] = br#"-----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEIMrLMWiLkvZoPg8iIZRZC0qNdQQPyJV5dCAWdo0l6YBu
@@ -55,8 +56,8 @@ struct TestDatabase {
 
 impl TestDatabase {
     async fn new() -> Self {
-        let admin_url = std::env::var("TEST_DATABASE_ADMIN_URL")
-            .unwrap_or_else(|_| DEFAULT_ADMIN_URL.to_owned());
+        let admin_url =
+            std::env::var("TEST_DATABASE_ADMIN_URL").unwrap_or_else(|_| default_admin_url());
         let mut database_url = reqwest::Url::parse(&admin_url).expect("admin URL valid");
         assert_ne!(
             database_url.path().trim_matches('/'),
@@ -91,6 +92,23 @@ impl TestDatabase {
             .expect("temp database removable");
         self.admin.close().await;
     }
+}
+
+fn default_admin_url() -> String {
+    let Ok(mut password) = std::fs::read_to_string("./config/postgres-password") else {
+        return DEFAULT_ADMIN_URL.into();
+    };
+    while matches!(password.as_bytes().last(), Some(b'\n' | b'\r')) {
+        password.pop();
+    }
+    if password.is_empty() {
+        return DEFAULT_ADMIN_URL.into();
+    }
+    let mut url =
+        reqwest::Url::parse(PASSWORD_FILE_ADMIN_URL).expect("default admin URL must be valid");
+    url.set_password(Some(&password))
+        .expect("PostgreSQL URL must accept a password");
+    url.to_string()
 }
 
 fn auth_config() -> AuthConfig {

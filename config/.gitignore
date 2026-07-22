@@ -1,4 +1,4 @@
-# Local runtime configuration and JWT key material belong here.
+# Local runtime configuration, database passwords, and JWT key material belong here.
 # Keep only this ignore rule tracked.
 *
 !.gitignore

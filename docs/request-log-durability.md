@@ -36,6 +36,10 @@ spool 目录必须可写，并且同一台主机上的每个 Gateway 进程必�
 
 默认日志池为四个连接，分别覆盖 COPY ingestion、低并发投影、结算和周期指标。最终表投影保持单 Worker，避免重新出现多个写 Worker 抢占转发资源的问题。
 
+生产模板默认使用 4096 条 COPY、2048 条投影、4096 条结算批次与
+500ms 结算间隔。较小机器可以将三种批次减半；较大机器应先扩大批次并验证
+事务时长，而不是直接增加数据库 Worker。
+
 ## 低索引入口与最终投影
 
 Migration `0012_request_log_ingest.sql` 创建 `request_log_ingest`：
@@ -87,3 +91,7 @@ Migration `0012_request_log_ingest.sql` 创建 `request_log_ingest`：
 5. 最后同步 spool 文件。
 
 整个日志流水线达到 `shutdown_drain_seconds` 后，未完成数据保留在 spool 或入口表供重启恢复，而不是被丢弃。磁盘空间仍是硬容量边界；生产环境必须监控 spool 目录和 PostgreSQL 存储，并为持续流量提供足够容量。
+
+生产模板将已排空 spool 的压缩阈值设为 256MiB，以减少高请求率下频繁
+truncate/sync 对尾延迟的影响。完整机器分档和 PostgreSQL 参数见
+[生产配置与容量调优](production-configuration.md)。

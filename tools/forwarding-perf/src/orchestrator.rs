@@ -19,7 +19,7 @@ use tokio::{
 use uuid::Uuid;
 
 use crate::{
-    database::{DEFAULT_DATABASE_ADMIN_URL, TemporaryDatabase},
+    database::{TemporaryDatabase, default_database_admin_url},
     metrics::LoadResult,
     mock_upstream::MockStats,
     process::ManagedChild,
@@ -44,7 +44,7 @@ impl RunOptions {
         Self {
             profile: ProfileName::Quick,
             database_admin_url: std::env::var("TEST_DATABASE_ADMIN_URL")
-                .unwrap_or_else(|_| DEFAULT_DATABASE_ADMIN_URL.into()),
+                .unwrap_or_else(|_| default_database_admin_url()),
             gateway_bin: repo_root.join("target/release/ai-gateway"),
             report_root: repo_root.join("target/perf/reports"),
             keep_database: false,
@@ -514,13 +514,13 @@ async fn write_gateway_config(
         request_logging: GatewayRequestLogging {
             queue_capacity: REQUEST_LOG_QUEUE_CAPACITY,
             database_max_connections: 4,
-            ingest_batch_size: 2_048,
-            projection_batch_size: 1_024,
-            settlement_batch_size: 1_024,
-            settlement_interval_milliseconds: 250,
+            ingest_batch_size: 4_096,
+            projection_batch_size: 2_048,
+            settlement_batch_size: 4_096,
+            settlement_interval_milliseconds: 500,
             spool_directory: spool_directory.to_path_buf(),
             spool_sync_interval_milliseconds: 10,
-            spool_compaction_threshold_bytes: 64 * 1_024 * 1_024,
+            spool_compaction_threshold_bytes: 256 * 1_024 * 1_024,
             metrics_interval_seconds: 3_600,
             shutdown_drain_seconds: 60,
         },

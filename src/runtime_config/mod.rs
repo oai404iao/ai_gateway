@@ -14,6 +14,7 @@ use reqwest::{
     header::{HeaderName, HeaderValue},
 };
 use serde::Deserialize;
+use sqlx::postgres::PgConnectOptions;
 use thiserror::Error;
 use uuid::Uuid;
 use zeroize::Zeroizing;
@@ -171,8 +172,39 @@ pub struct ServerConfig {
 #[serde(deny_unknown_fields)]
 pub struct DatabaseConfig {
     pub url: String,
+    /// Preferred production password source. When set, the URL must not also
+    /// contain a password.
+    #[serde(default)]
+    pub password_file: Option<PathBuf>,
     pub max_connections: u32,
     pub connect_timeout_seconds: u64,
+}
+impl DatabaseConfig {
+    pub fn connect_options(&self) -> Result<PgConnectOptions, ConfigError> {
+        let mut options = self
+            .url
+            .parse::<PgConnectOptions>()
+            .map_err(|_| ConfigError::Compile("database URL is invalid".into()))?;
+        let Some(path) = self.password_file.as_ref() else {
+            return Ok(options);
+        };
+        let mut password = Zeroizing::new(fs::read_to_string(path).map_err(|source| {
+            ConfigError::DatabasePasswordRead {
+                path: path.clone(),
+                source,
+            }
+        })?);
+        while matches!(password.as_bytes().last(), Some(b'\n' | b'\r')) {
+            password.pop();
+        }
+        if password.is_empty() {
+            return Err(ConfigError::Compile(
+                "database password_file must not be empty".into(),
+            ));
+        }
+        options = options.password(password.as_str());
+        Ok(options)
+    }
 }
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -422,7 +454,7 @@ pub struct AuthConfig {
 }
 
 const fn default_shutdown_grace_period_seconds() -> u64 {
-    30
+    60
 }
 const fn default_proxy_body_bytes() -> usize {
     1_048_576
@@ -440,16 +472,16 @@ const fn default_request_log_database_max_connections() -> u32 {
     4
 }
 const fn default_request_log_ingest_batch_size() -> usize {
-    2_048
+    4_096
 }
 const fn default_request_log_projection_batch_size() -> usize {
-    1_024
+    2_048
 }
 const fn default_request_log_settlement_batch_size() -> i64 {
-    1_024
+    4_096
 }
 const fn default_request_log_settlement_interval_milliseconds() -> u64 {
-    250
+    500
 }
 fn default_request_log_spool_directory() -> PathBuf {
     PathBuf::from("./data/request-log-spool")
@@ -458,7 +490,7 @@ const fn default_request_log_spool_sync_interval_milliseconds() -> u64 {
     10
 }
 const fn default_request_log_spool_compaction_threshold_bytes() -> u64 {
-    64 * 1_024 * 1_024
+    256 * 1_024 * 1_024
 }
 const fn default_request_log_metrics_interval_seconds() -> u64 {
     10
@@ -1539,6 +1571,24 @@ fn validate_database(database: &DatabaseConfig) -> Result<(), ConfigError> {
             "database URL must use postgres".into(),
         ));
     }
+    if database
+        .password_file
+        .as_ref()
+        .is_some_and(|path| path.as_os_str().is_empty())
+    {
+        return Err(ConfigError::Compile(
+            "database password_file must not be empty".into(),
+        ));
+    }
+    let url_contains_password = url.password().is_some()
+        || url
+            .query_pairs()
+            .any(|(name, _)| name.eq_ignore_ascii_case("password"));
+    if database.password_file.is_some() && url_contains_password {
+        return Err(ConfigError::Compile(
+            "database password must be configured in either url or password_file, not both".into(),
+        ));
+    }
     Ok(())
 }
 fn validate_upstream(upstream: &UpstreamConfig) -> Result<(), ConfigError> {
@@ -1713,6 +1763,12 @@ pub enum ConfigError {
         line: Option<usize>,
         column: Option<usize>,
     },
+    #[error("failed to read database password file {path}")]
+    DatabasePasswordRead {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
     #[error("invalid runtime configuration: {0}")]
     Compile(String),
 }
@@ -1819,6 +1875,14 @@ mod tests {
     }
 
     #[test]
+    fn production_example_configuration_parses_and_validates() {
+        toml::from_str::<AppConfig>(include_str!("../../config.example.toml"))
+            .unwrap()
+            .validate()
+            .unwrap();
+    }
+
+    #[test]
     fn compiler_uses_database_backed_forwarding_settings() {
         let records = RuntimeConfigRecords {
             control_plane: route_records(0, "weighted_random", 1, "weighted_random", false),
@@ -1915,15 +1979,20 @@ mod tests {
             .unwrap()
             .validate()
             .unwrap();
-        assert_eq!(config.server.shutdown_grace_period_seconds, 30);
+        assert_eq!(config.server.shutdown_grace_period_seconds, 60);
         assert_eq!(config.request_logging.queue_capacity, 1_024);
         assert_eq!(config.request_logging.database_max_connections, 4);
-        assert_eq!(config.request_logging.ingest_batch_size, 2_048);
-        assert_eq!(config.request_logging.projection_batch_size, 1_024);
-        assert_eq!(config.request_logging.settlement_batch_size, 1_024);
+        assert_eq!(config.request_logging.ingest_batch_size, 4_096);
+        assert_eq!(config.request_logging.projection_batch_size, 2_048);
+        assert_eq!(config.request_logging.settlement_batch_size, 4_096);
+        assert_eq!(config.request_logging.settlement_interval_milliseconds, 500);
         assert_eq!(
             config.request_logging.spool_directory,
             PathBuf::from("./data/request-log-spool")
+        );
+        assert_eq!(
+            config.request_logging.spool_compaction_threshold_bytes,
+            256 * 1_024 * 1_024
         );
         assert_eq!(config.passive_health.connection_failure_threshold, 3);
         assert_eq!(config.passive_health.cooldown_seconds, 30);
@@ -1962,6 +2031,47 @@ mod tests {
                 .validate()
                 .is_err()
         );
+    }
+
+    #[test]
+    fn database_password_file_is_applied_without_exposing_it_in_toml() {
+        let path =
+            std::env::temp_dir().join(format!("ai-gateway-database-password-{}", Uuid::new_v4()));
+        std::fs::write(&path, "production-secret\r\n").unwrap();
+        let config = DatabaseConfig {
+            url: "postgres://user@127.0.0.1/database".into(),
+            password_file: Some(path.clone()),
+            max_connections: 1,
+            connect_timeout_seconds: 1,
+        };
+
+        validate_database(&config).unwrap();
+        config.connect_options().unwrap();
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn database_password_file_cannot_compete_with_url_password() {
+        let config = DatabaseConfig {
+            url: "postgres://user:inline-secret@127.0.0.1/database".into(),
+            password_file: Some(PathBuf::from("/run/secrets/database-password")),
+            max_connections: 1,
+            connect_timeout_seconds: 1,
+        };
+
+        assert!(validate_database(&config).is_err());
+    }
+
+    #[test]
+    fn database_password_file_cannot_compete_with_query_password() {
+        let config = DatabaseConfig {
+            url: "postgres://user@127.0.0.1/database?password=inline-secret".into(),
+            password_file: Some(PathBuf::from("/run/secrets/database-password")),
+            max_connections: 1,
+            connect_timeout_seconds: 1,
+        };
+
+        assert!(validate_database(&config).is_err());
     }
 
     #[test]

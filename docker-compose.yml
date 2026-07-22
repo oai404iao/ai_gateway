@@ -1,21 +1,167 @@
+# Single-node production-oriented PostgreSQL baseline for ai-gateway.
+#
+# Defaults target a 4-8 GiB host with 4-8 CPU cores and durable local storage.
+# Size- and workload-sensitive PostgreSQL settings can be overridden with the
+# environment variables shown below. See docs/production-configuration.md
+# before using a smaller machine, multiple Gateway instances, or CoW storage.
+#
+# Before first startup:
+#   mkdir -p ./config
+#   openssl rand -hex 32 > ./config/postgres-password
+#   chmod 600 ./config/postgres-password
+#
+# This stack is deliberately single-node. Production HA, PITR backups and
+# cross-host replication require a managed PostgreSQL service or an external
+# backup/replication design.
+
 services:
   postgres:
     image: postgres:18.4-alpine
     container_name: ai-gateway-postgres
+    restart: unless-stopped
+    stop_grace_period: 2m
     environment:
-      POSTGRES_DB: ai_gateway
-      POSTGRES_USER: ai_gateway
-      POSTGRES_PASSWORD: ai_gateway
+      POSTGRES_DB: ${AI_GATEWAY_POSTGRES_DB:-ai_gateway}
+      POSTGRES_USER: ${AI_GATEWAY_POSTGRES_USER:-ai_gateway}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      # Applied only when initializing a new volume. SCRAM protects host
+      # password authentication; checksums detect storage corruption.
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256 --data-checksums"
+    secrets:
+      - postgres_password
+    command:
+      - postgres
+      # 50 server sessions support three default Gateway instances
+      # (3 * (10 control + 4 logging)) with administrative headroom.
+      - -c
+      - "max_connections=${AI_GATEWAY_POSTGRES_MAX_CONNECTIONS:-50}"
+      # 1 GiB is a conservative baseline when PostgreSQL shares a 4-8 GiB
+      # machine with the Gateway. Use roughly 20-25% of host memory on a
+      # dedicated database host, but leave memory for the OS page cache.
+      - -c
+      - "shared_buffers=${AI_GATEWAY_POSTGRES_SHARED_BUFFERS:-1GB}"
+      - -c
+      - "effective_cache_size=${AI_GATEWAY_POSTGRES_EFFECTIVE_CACHE_SIZE:-4GB}"
+      # work_mem can be allocated multiple times per query and connection.
+      - -c
+      - "work_mem=${AI_GATEWAY_POSTGRES_WORK_MEM:-8MB}"
+      - -c
+      - "maintenance_work_mem=${AI_GATEWAY_POSTGRES_MAINTENANCE_WORK_MEM:-256MB}"
+      - -c
+      - "autovacuum_work_mem=${AI_GATEWAY_POSTGRES_AUTOVACUUM_WORK_MEM:-128MB}"
+      # Bulk COPY and the indexed request-log table generate sustained WAL.
+      # Larger WAL buffers and checkpoint spacing reduce forced WAL flushes
+      # and requested checkpoints without weakening commit durability.
+      - -c
+      - "wal_buffers=${AI_GATEWAY_POSTGRES_WAL_BUFFERS:-16MB}"
+      - -c
+      - "min_wal_size=${AI_GATEWAY_POSTGRES_MIN_WAL_SIZE:-1GB}"
+      - -c
+      - "max_wal_size=${AI_GATEWAY_POSTGRES_MAX_WAL_SIZE:-4GB}"
+      - -c
+      - "checkpoint_timeout=${AI_GATEWAY_POSTGRES_CHECKPOINT_TIMEOUT:-15min}"
+      - -c
+      - "checkpoint_completion_target=0.9"
+      - -c
+      - "wal_compression=${AI_GATEWAY_POSTGRES_WAL_COMPRESSION:-lz4}"
+      # These settings are part of the request-log durability boundary.
+      - -c
+      - "fsync=on"
+      - -c
+      - "synchronous_commit=on"
+      - -c
+      - "full_page_writes=on"
+      # Request-log tables also carry table-specific policies in migration
+      # 0013; these cluster defaults provide enough workers to service them.
+      - -c
+      - "autovacuum=on"
+      - -c
+      - "autovacuum_max_workers=${AI_GATEWAY_POSTGRES_AUTOVACUUM_MAX_WORKERS:-4}"
+      - -c
+      - "autovacuum_naptime=${AI_GATEWAY_POSTGRES_AUTOVACUUM_NAPTIME:-30s}"
+      # Short OLTP and batched logging queries do not benefit from JIT startup
+      # cost. PostgreSQL 18's worker-based async I/O remains the safe default.
+      - -c
+      - "jit=off"
+      - -c
+      - "io_method=worker"
+      - -c
+      - "io_workers=${AI_GATEWAY_POSTGRES_IO_WORKERS:-3}"
+      # Keep conservative planner costs for unknown/virtual disks. On verified
+      # SSD/NVMe, benchmark random_page_cost 1.1-1.5 and higher I/O concurrency.
+      - -c
+      - "random_page_cost=${AI_GATEWAY_POSTGRES_RANDOM_PAGE_COST:-4.0}"
+      - -c
+      - "effective_io_concurrency=${AI_GATEWAY_POSTGRES_EFFECTIVE_IO_CONCURRENCY:-16}"
+      - -c
+      - "maintenance_io_concurrency=${AI_GATEWAY_POSTGRES_MAINTENANCE_IO_CONCURRENCY:-16}"
+      - -c
+      - "max_worker_processes=${AI_GATEWAY_POSTGRES_MAX_WORKER_PROCESSES:-16}"
+      - -c
+      - "max_parallel_workers=${AI_GATEWAY_POSTGRES_MAX_PARALLEL_WORKERS:-4}"
+      - -c
+      - "max_parallel_workers_per_gather=2"
+      # Enable query/WAL I/O evidence and bounded slow-query logging. Measure
+      # timing overhead on unusual virtualized platforms before very large
+      # deployments.
+      - -c
+      - "shared_preload_libraries=pg_stat_statements"
+      - -c
+      - "compute_query_id=auto"
+      - -c
+      - "pg_stat_statements.track=top"
+      - -c
+      - "pg_stat_statements.max=${AI_GATEWAY_POSTGRES_STATEMENTS_MAX:-10000}"
+      - -c
+      - "track_io_timing=on"
+      - -c
+      - "track_wal_io_timing=on"
+      - -c
+      - "log_min_duration_statement=${AI_GATEWAY_POSTGRES_SLOW_QUERY_MS:-1000}"
+      - -c
+      - "log_checkpoints=on"
+      - -c
+      - "log_lock_waits=on"
+      - -c
+      - "deadlock_timeout=1s"
+      - -c
+      - "idle_in_transaction_session_timeout=60s"
+      - -c
+      - "timezone=UTC"
     ports:
-      - "5432:5432"
+      # PostgreSQL is host-local by default. Change the bind address only when
+      # a deliberate private-network firewall boundary exists.
+      - "${AI_GATEWAY_POSTGRES_BIND_ADDRESS:-127.0.0.1}:${AI_GATEWAY_POSTGRES_PORT:-5432}:5432"
     volumes:
+      # PostgreSQL 18's official image expects the versioned data directory
+      # below /var/lib/postgresql, so mount the parent rather than /data.
       - postgres-data:/var/lib/postgresql
+      # Runs only while initializing a brand-new volume.
+      - ./deploy/postgres/init:/docker-entrypoint-initdb.d:ro
+    shm_size: "${AI_GATEWAY_POSTGRES_SHM_SIZE:-512mb}"
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ai_gateway -d ai_gateway"]
-      interval: 5s
-      timeout: 3s
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\"",
+        ]
+      interval: 10s
+      timeout: 5s
       retries: 10
-      start_period: 5s
+      start_period: 30s
+    logging:
+      driver: local
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+secrets:
+  postgres_password:
+    file: ${AI_GATEWAY_POSTGRES_PASSWORD_FILE:-./config/postgres-password}
 
 volumes:
   postgres-data:

@@ -60,9 +60,10 @@ repo/
 |-- docs/openapi/console-v1.yaml # Authoritative OpenAPI spec for the Console API (TS types are generated from it)
 |-- docs/console-ui-design.md    # Console Web UI architecture and implementation plan
 |-- docs/forwarding-performance.md # Manual performance-harness design, profiles, metrics, and safety model
-|-- config/                     # Ignored local runtime config and JWT keys
+|-- config/                     # Ignored runtime config, DB password, JWT keys
 |-- config.example.toml         # Canonical configuration template
-|-- docker-compose.yml          # Development PostgreSQL service only
+|-- deploy/postgres/            # Compose-only PostgreSQL initialization helpers
+|-- docker-compose.yml          # Tuned single-node PostgreSQL baseline (not HA)
 `-- Cargo.toml                  # Workspace plus production package metadata, MSRV, features, and dependency source of truth
 ```
 
@@ -91,7 +92,10 @@ cargo run --release --features embedded-console-ui   # production binary with em
 # One-time first Console administrator; password is read only from stdin
 cargo run -- bootstrap-admin --email admin@example.com --display-name "Initial Admin" --password-stdin < password.txt
 
-# Start the development PostgreSQL service when persistence work needs it
+# First use: generate the ignored database password file, then start PostgreSQL
+mkdir -p ./config
+openssl rand -hex 32 > ./config/postgres-password
+chmod 600 ./config/postgres-password
 docker compose up -d
 
 # --- Manual performance harness: run only when the user explicitly requests it ---
@@ -120,8 +124,9 @@ tests. `cargo test` is the baseline Rust verification. The ignored
 **Any change to the forwarding path must also run this real-upstream script
 before completion.** It serially verifies both `/v1/chat/completions` and
 `/v1/responses`, with non-streaming and SSE requests. There is no CI workflow
-yet. `docker-compose.yml` provides PostgreSQL only—the application is not
-containerized.
+yet. `docker-compose.yml` provides a production-oriented single-node
+PostgreSQL baseline only—the application is not containerized, and the Compose
+stack does not provide HA, PITR, or backups.
 
 The separate forwarding performance harness is documented in
 `docs/forwarding-performance.md`. It creates a random throwaway database,
@@ -135,6 +140,8 @@ performance run.** Building the tool or running
 
 - The normal serve command loads the first CLI argument as TOML, defaulting to ignored `./config/config.toml` in the current working directory (`src/main.rs`). It does not use an XDG configuration directory. `bootstrap-admin` is a separate one-time CLI subcommand and requires `--password-stdin`. There is no dotenv support or automatic local-override merge.
 - Keep `config.example.toml` and the deserialization types in `src/runtime_config/mod.rs` synchronized whenever configuration changes.
+- The canonical Compose setup reads its password from ignored
+  `./config/postgres-password`; do not reintroduce an inline default password.
 - `./config/config.toml` and Console JWT key files under `./config/` are ignored. A different current-directory TOML path can be passed explicitly. The binary never loads `.env` files. The sole exception is the ignored `.env.real-upstream` file, which `scripts/run-real-upstream-smoke.sh` may source for opt-in test credentials.
 - Configuration changes intended for live reload should preserve the immutable-snapshot pattern: construct a complete `AppConfig`, then replace it atomically through `RuntimeConfig`.
 - `[console].ui_enabled = true` mounts the embedded Console UI on the Console listener, but requires building with the `embedded-console-ui` cargo feature (and a built `web/console/dist`). Setting `ui_enabled = true` without the feature compiled in is rejected at startup with a `ConfigError` (`src/runtime_config/mod.rs`). The UI is served only from the Console listener, never from the public `/v1/*` data-plane listener.
@@ -193,7 +200,7 @@ Axum HTTP
 1. Add ordered SQL migration files in `migrations/`; do not edit database state manually as a substitute.
 2. Keep database access behind `src/persistence/` repositories and domain/application boundaries.
 3. SQLx compile-time query macros require a reachable schema or a prepared `.sqlx/` cache; that cache is intentionally ignored.
-4. Start PostgreSQL with `docker compose up -d` and verify migrations and repository behavior.
+4. After creating ignored `./config/postgres-password` as shown above, start PostgreSQL with `docker compose up -d` and verify migrations and repository behavior.
 
 ### Add or change a Console API endpoint or contract
 

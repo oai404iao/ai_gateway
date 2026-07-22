@@ -74,11 +74,16 @@ scripts/run-forwarding-perf.sh
 TEST_DATABASE_ADMIN_URL
 ```
 
-未设置时使用：
+未设置时，工具会优先读取生产 Compose 使用的
+`./config/postgres-password`，并构造指向 `postgres` 管理数据库的 URL。
+密码文件不存在时，为兼容旧开发环境才回退到：
 
 ```text
 postgres://ai_gateway:ai_gateway@127.0.0.1:5432/postgres
 ```
+
+生产 Compose 的新安装不使用该旧密码。也可以始终显式设置
+`TEST_DATABASE_ADMIN_URL`；URL 必须对密码中的特殊字符进行编码。
 
 该 URL 必须指向 `postgres` 等管理数据库，不能指向正常的 `ai_gateway`
 应用数据库。每次运行会创建：
@@ -94,6 +99,9 @@ ai_gateway_perf_<random uuid>
 3. 为每个性能场景创建独立模型和模型规则。
 4. 创建只用于本次测试的客户端 API Key。
 5. 编译一次完整运行时快照，提前发现种子数据与当前 schema 的漂移。
+
+Gateway 子进程显式使用 `config.example.toml` 对应的生产日志批次和 spool
+压缩阈值；仅将日志过滤器、控制面重载和指标周期调成适合隔离压测的值。
 
 默认在测试结束后执行：
 

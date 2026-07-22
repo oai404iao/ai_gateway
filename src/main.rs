@@ -33,7 +33,7 @@ use hyper_util::{
     server::{conn::auto::Builder as AutoBuilder, graceful::GracefulConnection},
     service::TowerToHyperService,
 };
-use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+use sqlx::postgres::PgPoolOptions;
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::watch,
@@ -62,11 +62,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
 async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
     let config = AppConfig::load(&config_path)?.validate()?;
     let _log_guard = observability::init(&config.observability.filter);
+    let database_connect_options = config.database.connect_options()?;
 
     let pool = PgPoolOptions::new()
         .max_connections(config.database.max_connections)
         .acquire_timeout(Duration::from_secs(config.database.connect_timeout_seconds))
-        .connect(&config.database.url)
+        .connect_with(
+            database_connect_options
+                .clone()
+                .application_name("ai-gateway-control-plane"),
+        )
         .await?;
     MIGRATOR.run(&pool).await?;
     let repository = ControlPlaneRepository::new(pool.clone());
@@ -101,11 +106,8 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
 
     let address = format!("{}:{}", config.server.host, config.server.port);
     let admission = AdmissionRuntime::new();
-    let request_log_connect_options = config
-        .database
-        .url
-        .parse::<PgConnectOptions>()?
-        .application_name("ai-gateway-request-log");
+    let request_log_connect_options =
+        database_connect_options.application_name("ai-gateway-request-log");
     let request_log_pool = PgPoolOptions::new()
         .max_connections(config.request_logging.database_max_connections)
         .acquire_timeout(Duration::from_secs(config.database.connect_timeout_seconds))
@@ -212,10 +214,11 @@ async fn bootstrap_admin(
     let _log_guard = observability::init(&config.observability.filter);
     let password = read_password_from_stdin()?;
     let password_hash = hash_console_password(password).await?;
+    let database_connect_options = config.database.connect_options()?;
     let pool = PgPoolOptions::new()
         .max_connections(config.database.max_connections)
         .acquire_timeout(Duration::from_secs(config.database.connect_timeout_seconds))
-        .connect(&config.database.url)
+        .connect_with(database_connect_options.application_name("ai-gateway-bootstrap"))
         .await?;
     MIGRATOR.run(&pool).await?;
     let id = AuthRepository::new(pool)
@@ -230,10 +233,11 @@ async fn reset_admin_password(config_path: PathBuf, email: String) -> Result<(),
     let _log_guard = observability::init(&config.observability.filter);
     let password = read_password_from_stdin()?;
     let password_hash = hash_console_password(password).await?;
+    let database_connect_options = config.database.connect_options()?;
     let pool = PgPoolOptions::new()
         .max_connections(config.database.max_connections)
         .acquire_timeout(Duration::from_secs(config.database.connect_timeout_seconds))
-        .connect(&config.database.url)
+        .connect_with(database_connect_options.application_name("ai-gateway-password-reset"))
         .await?;
     MIGRATOR.run(&pool).await?;
     let reset = AuthRepository::new(pool)

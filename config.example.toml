@@ -1,12 +1,22 @@
-# Copy this file to ./config/config.toml when creating an environment-specific
-# setup.
-# Do not use a .env file; the application loads TOML configuration directly.
+# Production-oriented baseline for one Gateway process on a 4-8 GiB host.
+# Copy this file to ./config/config.toml and review every security/network
+# boundary before deployment. The binary loads TOML directly and does not load
+# .env files.
+#
+# Generate the database password file used by the default Docker Compose stack:
+#   mkdir -p ./config
+#   openssl rand -hex 32 > ./config/postgres-password
+#   chmod 600 ./config/postgres-password
 
 [server]
+# Secure default for a same-host reverse proxy. Change to "0.0.0.0" only when
+# the data-plane listener is protected by the intended firewall/load balancer.
 host = "127.0.0.1"
 port = 3000
 # After this deadline, in-flight responses are cancelled during shutdown.
-shutdown_grace_period_seconds = 30
+# Keep the service-manager/container stop timeout longer than this value plus
+# request_logging.shutdown_drain_seconds.
+shutdown_grace_period_seconds = 60
 
 [request_limits]
 # OpenAI-compatible proxy request bodies.
@@ -17,7 +27,18 @@ console_body_bytes = 262_144
 auth_body_bytes = 16_384
 
 [database]
-url = "postgres://ai_gateway:ai_gateway@127.0.0.1:5432/ai_gateway"
+# Prefer a password file over embedding credentials in TOML. Relative paths
+# are resolved from the process working directory. Inline URL passwords remain
+# supported for managed databases, but url and password_file are mutually
+# exclusive. URL-encode any inline password.
+url = "postgres://ai_gateway@127.0.0.1:5432/ai_gateway"
+password_file = "./config/postgres-password"
+# The data plane does not query PostgreSQL per request. Ten connections are
+# normally sufficient for migrations, Console/control-plane operations and
+# reloads. Total server demand is approximately:
+#   gateway_instances * (database.max_connections
+#                        + request_logging.database_max_connections)
+# plus administration/monitoring headroom.
 max_connections = 10
 connect_timeout_seconds = 5
 
@@ -30,6 +51,8 @@ response_header_timeout_seconds = 30
 stream_idle_timeout_seconds = 90
 
 [runtime_config]
+# Console mutations publish immediately in the local process. This periodic
+# reload is the cross-process/manual-database-change convergence fallback.
 reload_interval_seconds = 30
 
 [request_logging]
@@ -38,15 +61,19 @@ reload_interval_seconds = 30
 # coalesces wakeups and does not discard the spooled event.
 queue_capacity = 1_024
 # Separate pool used only by spool ingestion, final-table projection, metrics,
-# and settlement. It never consumes control-plane/Console pool connections.
+# and settlement. Four connections cover the four roles; adding connections
+# without adding worker concurrency usually increases database contention.
 database_max_connections = 4
-# Local spool -> low-index PostgreSQL ingress uses COPY FROM in these batches.
-ingest_batch_size = 2_048
-# One low-priority projector writes this many rows at a time into request_logs.
-projection_batch_size = 1_024
-# Billing is intentionally independent from ingestion and projection.
-settlement_batch_size = 1_024
-settlement_interval_milliseconds = 250
+# Production baseline for the COPY ingress and single final-table projector.
+# On machines below 4 GiB, halve these values; on 16+ GiB database hosts,
+# benchmark 8_192/4_096 before increasing worker concurrency.
+ingest_batch_size = 4_096
+projection_batch_size = 2_048
+# Billing is intentionally independent from ingestion and projection. This
+# combination scans less often while allowing up to 8K rows/s before database
+# execution time; use 250ms when sub-500ms soft-quota freshness is required.
+settlement_batch_size = 4_096
+settlement_interval_milliseconds = 500
 # Each gateway process sharing a host must use a unique spool directory.
 spool_directory = "./data/request-log-spool"
 # File data is group-synced on this interval and always synced at shutdown.
@@ -54,7 +81,9 @@ spool_directory = "./data/request-log-spool"
 # durability would require synchronous storage or an external durable broker.
 spool_sync_interval_milliseconds = 10
 # A fully drained append file is truncated only after crossing this threshold.
-spool_compaction_threshold_bytes = 67_108_864
+# 256 MiB avoids frequent truncate/sync pauses at high request rates. Lower it
+# when disk capacity is tight; raise it when p99 latency shows compaction spikes.
+spool_compaction_threshold_bytes = 268_435_456
 # Structured `request_log_metrics` events are emitted at this interval.
 metrics_interval_seconds = 10
 # Remaining spool/ingress/settlement work stays durable when this expires.
@@ -119,7 +148,10 @@ enabled = false
 # verification_key_path = "./config/console-jwt-public.pem"
 
 [observability]
-filter = "ai_gateway=debug,tower_http=info"
+# Keep lifecycle/control-plane/metrics INFO records while suppressing the
+# per-request proxy completion event in production. Temporarily use
+# ai_gateway=debug only while diagnosing a bounded incident.
+filter = "ai_gateway=info,ai_gateway::application::proxy=warn,ai_gateway::request_log_metrics=info,tower_http=warn"
 
 # API keys, models, routing rules, groups, channels, and upstream credentials
 # are loaded only from PostgreSQL into immutable runtime snapshots. TOML is

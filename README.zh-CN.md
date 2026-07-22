@@ -47,23 +47,28 @@ Console 客户端
 
 - Rust **1.85** 或更高版本（Rust 2024 edition）
 - PostgreSQL
-- Docker Compose（可选；仓库提供了本地 PostgreSQL 开发配置）
-- 启用 Console API 并生成本地 Ed25519 密钥时，建议安装 OpenSSL
+- Docker Compose（可选；仓库提供经过调优的单节点 PostgreSQL 基线，但不替代 HA 与备份）
+- 建议安装 OpenSSL，用于生成本地数据库密码与 Console Ed25519 密钥
 
 ## 快速开始 / Quick start
 
 > 默认配置文件为已被 Git 忽略的 `./config/config.toml`；本地 JWT 文件也统一放在 `./config/`。
 > 服务不会加载 `.env` 文件，也不使用 XDG 配置目录。英文说明见 [README.md](README.md)。
 
-### 1. 启动 PostgreSQL 并创建本地配置
+### 1. 创建本地密钥与配置并启动 PostgreSQL
 
 ```bash
-docker compose up -d
 mkdir -p ./config
+openssl rand -hex 32 > ./config/postgres-password
+chmod 600 ./config/postgres-password
 cp config.example.toml ./config/config.toml
+docker compose up -d
 ```
 
 按需编辑 `./config/config.toml`。至少确认 `[database]`、公共 `[server]` 和 `[upstream]` 超时设置。仓库内 Docker Compose 服务与示例数据库连接串相匹配。
+示例通过 `./config/postgres-password` 读取数据库密码，不再在 TOML 或
+Compose 中内置默认弱密码。Compose 默认值面向 4–8GiB 单节点主机，可通过带注释的
+`AI_GATEWAY_POSTGRES_*` 环境变量覆盖。
 
 如果从旧的根目录文件布局升级，请一次性迁移本地文件：
 
@@ -224,6 +229,9 @@ TOML 仅保存进程级 bootstrap 配置。二进制默认读取
 PostgreSQL 入口表，随后异步投影和结算。耐久保证、故障边界与运维指标见
 [docs/request-log-durability.md](docs/request-log-durability.md)。
 
+生产机器规格分档、PostgreSQL 参数、密码文件、存储和容量验证方式见
+[生产配置与容量调优](docs/production-configuration.md)。
+
 ## Console API
 
 Console 监听器独立于公共监听器，使用短期 JWT access token。登录、刷新和邀请激活成功时还会签发轮换的 `HttpOnly; Secure; SameSite=Lax` refresh Cookie。
@@ -350,8 +358,9 @@ src/
   upstream/          可复用 reqwest 客户端与代理/超时策略
   workers/           快照重载与异步请求日志 worker
 migrations/          PostgreSQL schema migration
+deploy/postgres/     Compose 初始化辅助文件
 docs/                产品、运行和设计文档
-config/              已忽略的本地运行配置和 JWT 密钥目录
+config/              已忽略的运行配置、数据库密码和 JWT 密钥目录
 config.example.toml  已跟踪的配置模板
 tests/               本地与 PostgreSQL 集成测试
 ```
@@ -359,6 +368,8 @@ tests/               本地与 PostgreSQL 集成测试
 ## 安全注意事项
 
 - 将 JWT 私钥保存在已忽略的 `./config/` 本地文件中，并严格限制文件系统权限。
+- 将 `./config/postgres-password` 权限保持为 `0600`，优先使用
+  `[database].password_file`，不要把数据库密码直接写进 TOML。
 - 请将数据库、备份和 Console 访问视为凭据敏感边界：控制面记录包含客户端和上游凭据。
 - 不要将客户端/上游凭据或 JWT 私钥材料写入 TOML、源代码、日志、测试 fixture 或 shell 历史记录。
 - Console API 仅应通过 HTTPS 和明确的来源策略对外暴露；公共数据面监听器同样应按网络边界限制访问。
@@ -366,6 +377,7 @@ tests/               本地与 PostgreSQL 集成测试
 ## 文档
 
 - [运行与接口说明](docs/mvp-usage.md)
+- [生产配置与容量调优](docs/production-configuration.md)
 - [Console Web UI 设计与实施计划](docs/console-ui-design.md)
 - [数据库与控制面设计](docs/database-design.md)
 - [真实上游 smoke test 说明](docs/real-upstream-smoke.md)

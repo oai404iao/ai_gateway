@@ -1,6 +1,6 @@
 //! Throwaway PostgreSQL lifecycle, migrations, control-plane seeding, and log summaries.
 
-use std::{collections::HashMap, error::Error, time::Duration};
+use std::{collections::HashMap, error::Error, fs, path::Path, time::Duration};
 
 use ai_gateway::{
     persistence::{
@@ -16,8 +16,26 @@ use uuid::Uuid;
 
 use crate::scenario::{ApiKind, CLIENT_API_KEY, Scenario, UPSTREAM_API_KEY};
 
-pub const DEFAULT_DATABASE_ADMIN_URL: &str =
-    "postgres://ai_gateway:ai_gateway@127.0.0.1:5432/postgres";
+const LEGACY_DATABASE_ADMIN_URL: &str = "postgres://ai_gateway:ai_gateway@127.0.0.1:5432/postgres";
+const PASSWORD_FILE_DATABASE_ADMIN_URL: &str = "postgres://ai_gateway@127.0.0.1:5432/postgres";
+
+pub fn default_database_admin_url() -> String {
+    database_admin_url_from_password_file(Path::new("./config/postgres-password"))
+        .unwrap_or_else(|| LEGACY_DATABASE_ADMIN_URL.into())
+}
+
+fn database_admin_url_from_password_file(path: &Path) -> Option<String> {
+    let mut password = fs::read_to_string(path).ok()?;
+    while matches!(password.as_bytes().last(), Some(b'\n' | b'\r')) {
+        password.pop();
+    }
+    if password.is_empty() {
+        return None;
+    }
+    let mut url = Url::parse(PASSWORD_FILE_DATABASE_ADMIN_URL).ok()?;
+    url.set_password(Some(&password)).ok()?;
+    Some(url.to_string())
+}
 
 pub struct TemporaryDatabase {
     admin: PgPool,
@@ -337,14 +355,14 @@ async fn seed(
 mod tests {
     use uuid::Uuid;
 
-    use super::{DEFAULT_DATABASE_ADMIN_URL, TemporaryDatabase};
+    use super::{TemporaryDatabase, default_database_admin_url};
     use crate::scenario::{ProfileName, profile};
 
     #[tokio::test]
     #[ignore = "requires PostgreSQL; validates migrations and performance control-plane seeding"]
     async fn temporary_database_seeds_a_compilable_snapshot() {
         let admin_url = std::env::var("TEST_DATABASE_ADMIN_URL")
-            .unwrap_or_else(|_| DEFAULT_DATABASE_ADMIN_URL.into());
+            .unwrap_or_else(|_| default_database_admin_url());
         let profile = profile(ProfileName::Quick);
         let database =
             TemporaryDatabase::create(&admin_url, &profile.scenarios, "http://127.0.0.1:9")
