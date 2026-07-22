@@ -20,7 +20,9 @@ MVP task documents.
 The Console API contract is an authoritative OpenAPI spec at
 `docs/openapi/console-v1.yaml`; the frontend's TypeScript types are generated
 from it (never hand-edited). There is no SSR or long-running Node service in
-production — Node is build/test/dev tooling only.
+production — Node is build/test/dev tooling only. `Dockerfile` builds the UI
+and embeds it into the release binary; `docker-compose.prd.yaml` can deploy the
+Gateway and PostgreSQL from either a registry image or a local build.
 
 ## Repository Layout
 
@@ -60,10 +62,18 @@ repo/
 |-- docs/openapi/console-v1.yaml # Authoritative OpenAPI spec for the Console API (TS types are generated from it)
 |-- docs/console-ui-design.md    # Console Web UI architecture and implementation plan
 |-- docs/forwarding-performance.md # Manual performance-harness design, profiles, metrics, and safety model
+|-- docs/production-deployment.md # Full-stack Docker Compose deployment, secrets, upgrades, and rollback boundaries
+|-- docs/releasing.md           # SemVer, release gates, tags, Gitea Release assets, and image publication
+|-- .gitea/workflows/           # Gitea Actions CI plus v* tag release workflow
 |-- config/                     # Ignored runtime config, DB password, JWT keys
 |-- config.example.toml         # Canonical configuration template
+|-- deploy/compose/             # Container-specific TOML and Compose environment templates
+|-- deploy/docker/              # Runtime container entrypoint and privilege drop
 |-- deploy/postgres/            # Compose-only PostgreSQL initialization helpers
+|-- Dockerfile                  # Multi-stage UI + Rust production image
 |-- docker-compose.yml          # Tuned single-node PostgreSQL baseline (not HA)
+|-- docker-compose.prd.yaml     # Full Gateway + PostgreSQL single-host production stack
+|-- CHANGELOG.md                # Dated Keep-a-Changelog release notes
 `-- Cargo.toml                  # Workspace plus production package metadata, MSRV, features, and dependency source of truth
 ```
 
@@ -98,6 +108,13 @@ openssl rand -hex 32 > ./config/postgres-password
 chmod 600 ./config/postgres-password
 docker compose up -d
 
+# --- Container/release validation ---
+docker compose -f docker-compose.prd.yaml config --quiet
+docker build -t ai-gateway:local .
+docker run --rm ai-gateway:local --version
+./scripts/check-release-version.sh 0.1.0
+./scripts/verify-release.sh 0.1.0
+
 # --- Manual performance harness: run only when the user explicitly requests it ---
 ./scripts/run-forwarding-perf.sh --profile quick
 ./scripts/run-forwarding-perf.sh --profile standard
@@ -123,10 +140,11 @@ tests. `cargo test` is the baseline Rust verification. The ignored
 `./scripts/run-real-upstream-smoke.sh`; see `docs/real-upstream-smoke.md`.
 **Any change to the forwarding path must also run this real-upstream script
 before completion.** It serially verifies both `/v1/chat/completions` and
-`/v1/responses`, with non-streaming and SSE requests. There is no CI workflow
-yet. `docker-compose.yml` provides a production-oriented single-node
-PostgreSQL baseline only—the application is not containerized, and the Compose
-stack does not provide HA, PITR, or backups.
+`/v1/responses`, with non-streaming and SSE requests. Gitea Actions workflows
+under `.gitea/workflows/` run the ordinary CI and tag release paths.
+`docker-compose.yml` remains the PostgreSQL-only development/baseline stack;
+`docker-compose.prd.yaml` adds the containerized Gateway. Neither stack
+provides HA, PITR, or backups.
 
 The separate forwarding performance harness is documented in
 `docs/forwarding-performance.md`. It creates a random throwaway database,
@@ -139,7 +157,7 @@ performance run.** Building the tool or running
 ## Configuration Rules
 
 - The normal serve command loads the first CLI argument as TOML, defaulting to ignored `./config/config.toml` in the current working directory (`src/main.rs`). It does not use an XDG configuration directory. `bootstrap-admin` is a separate one-time CLI subcommand and requires `--password-stdin`. There is no dotenv support or automatic local-override merge.
-- Keep `config.example.toml` and the deserialization types in `src/runtime_config/mod.rs` synchronized whenever configuration changes.
+- Keep `config.example.toml`, `deploy/compose/config.example.toml`, and the deserialization types in `src/runtime_config/mod.rs` synchronized whenever configuration changes. The container template deliberately differs only in listener/database/spool/secret paths and enabled embedded Console settings.
 - The canonical Compose setup reads its password from ignored
   `./config/postgres-password`; do not reintroduce an inline default password.
 - `./config/config.toml` and Console JWT key files under `./config/` are ignored. A different current-directory TOML path can be passed explicitly. The binary never loads `.env` files. The sole exception is the ignored `.env.real-upstream` file, which `scripts/run-real-upstream-smoke.sh` may source for opt-in test credentials.
@@ -225,6 +243,17 @@ Axum HTTP
 3. Run `./scripts/run-real-upstream-smoke.sh` before considering the change complete. It requires the ignored `.env.real-upstream` file and makes paid calls to both configured upstream formats.
 4. Do not print, commit, or copy credentials from `.env.real-upstream` into TOML, source, tests, or logs.
 
+### Prepare a release
+
+1. Follow `docs/releasing.md`; keep the versions in Cargo, the Console package,
+   production Compose defaults, and `CHANGELOG.md` synchronized.
+2. Run `./scripts/check-release-version.sh <version>`, then
+   `./scripts/verify-release.sh <version>`.
+3. Commit the release changes on `main`, then use
+   `./scripts/release.sh <version> --push` for an annotated `v<version>` tag and
+   atomic main/tag push.
+4. Never move or reuse a published tag. Publish a new patch release instead.
+
 ## Gotchas
 
 1. **The PRD is not the runtime.** It includes later roadmap capabilities such as active health checks, cross-instance coordination, and generic retries. Confirm an API exists before integrating with it.
@@ -239,6 +268,8 @@ Axum HTTP
 10. **Component tests vs. e2e are scoped.** vitest `include` is `src/**/*.{test,spec}.{ts,tsx}` and `exclude`s `e2e`, so Playwright specs (`e2e/*.spec.ts`) are not collected by vitest. e2e uses `vite.e2e.config.ts` (plain HTTP on `127.0.0.1:5174`) because Playwright's webServer readiness probe cannot ignore the dev server's self-signed HTTPS.
 11. **Performance runs are always opt-in.** `tools/forwarding-perf/` is a separate workspace package and its unit tests are lightweight, but `scripts/run-forwarding-perf.sh` starts release processes and generates sustained concurrent traffic. Do not invoke either the `quick` or `standard` profile without an explicit user request. The harness must keep using random `ai_gateway_perf_*` databases and must never point its admin URL at the normal `ai_gateway` database.
 12. **Request-log durability has two backlogs.** Production uses a process-unique local spool, then `request_log_ingest`, then the indexed `request_logs` table and settlement. Notification-queue fullness is harmless, but spool append errors are not. Never checkpoint before COPY commit or delete ingress rows before final-table persistence succeeds; both replay paths rely on UUID idempotency.
+13. **Container secrets are copied before privilege drop.** Local Compose file-backed secrets may retain host ownership/mode. `deploy/docker/entrypoint.sh` starts as root, copies config and secrets into a private tmpfs, fixes the persistent spool ownership, then executes the Gateway as UID/GID 10001. Do not bypass that entrypoint in production.
+14. **Release tags are deployment inputs.** `.gitea/workflows/release.yml` is tag-triggered. Version drift or a missing dated Changelog entry fails the release; registry credentials are optional for binary Releases but required to push OCI images.
 
 ## Code Style
 
@@ -269,6 +300,10 @@ Axum HTTP
 | Startup, config-path, UI merge behavior | `src/main.rs` |
 | TOML config schema and snapshot API | `src/runtime_config/mod.rs` |
 | Example configuration | `config.example.toml` |
+| Container configuration template | `deploy/compose/config.example.toml` |
+| Full production Compose | `docker-compose.prd.yaml` and `docs/production-deployment.md` |
+| Release process/version checks | `docs/releasing.md`, `scripts/release.sh`, and `scripts/check-release-version.sh` |
+| CI/release automation | `.gitea/workflows/ci.yml` and `.gitea/workflows/release.yml` |
 | Console API contract (request/response shapes) | `docs/openapi/console-v1.yaml` |
 | Console UI generated TypeScript types | `web/console/src/api/generated/console-v1.d.ts` (regenerate via `pnpm --dir web/console generate:api`) |
 | Console UI architecture and implementation plan | `docs/console-ui-design.md` |

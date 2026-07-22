@@ -550,10 +550,10 @@ impl RoutingRuntime {
             return SelectionResult::Selected(selected);
         }
         drop(state);
-        if let Some(affinity) = &affinity
-            && let Some(channel_id) = affinity.preferred_channel_id
-        {
-            affinity_remove_if_channel(&self.inner, affinity.key, channel_id);
+        if let Some(affinity) = &affinity {
+            if let Some(channel_id) = affinity.preferred_channel_id {
+                affinity_remove_if_channel(&self.inner, affinity.key, channel_id);
+            }
         }
         if has_authorized_candidate
             || rule
@@ -802,10 +802,10 @@ impl ChannelLease {
     }
 
     pub fn request_failed(&mut self) {
-        if let Some(affinity) = self.affinity.as_deref()
-            && affinity.cache_hit
-        {
-            affinity_remove_if_channel(&self.inner, affinity.key, affinity.channel_id);
+        if let Some(affinity) = self.affinity.as_deref() {
+            if affinity.cache_hit {
+                affinity_remove_if_channel(&self.inner, affinity.key, affinity.channel_id);
+            }
         }
     }
 

@@ -1,0 +1,16 @@
+.git
+.gitea
+.github
+.sqlx
+target
+**/target
+web/console/node_modules
+web/console/dist
+config/*
+!config/.gitignore
+data
+tmp_content
+.env
+.env.*
+*.log
+*.auth-state.json

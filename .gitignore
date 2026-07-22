@@ -19,6 +19,8 @@
 /console-jwt-private.pem
 /console-jwt-public.pem
 /data/request-log-spool/
+/tmp_content/
+*.auth-state.json
 
 # `.env.real-upstream` is permitted only for the opt-in real-upstream smoke
 # script. It is always local; the tracked template contains no credentials.

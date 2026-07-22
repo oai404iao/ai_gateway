@@ -47,7 +47,8 @@ Console 客户端
 
 - Rust **1.85** 或更高版本（Rust 2024 edition）
 - PostgreSQL
-- Docker Compose（可选；仓库提供经过调优的单节点 PostgreSQL 基线，但不替代 HA 与备份）
+- Docker Compose（可选；`docker-compose.yml` 提供开发用 PostgreSQL，
+  `docker-compose.prd.yaml` 可通过拉取或本地构建 Gateway 镜像运行完整生产栈）
 - 建议安装 OpenSSL，用于生成本地数据库密码与 Console Ed25519 密钥
 
 ## 快速开始 / Quick start
@@ -145,6 +146,36 @@ curl --request POST http://127.0.0.1:3001/console/v1/auth/login \
 即使使用同一个上游提供商或模型名，Chat Completions 路由与 Responses 路由仍是两套独立配置。请使用 Console API 管理控制面，不要直接编辑控制面数据表。
 
 Console 路由覆盖与运行行为详见[运行与接口说明](docs/mvp-usage.md)。
+
+## Docker 生产部署
+
+发布镜像包含 Rust 二进制与嵌入式 Console UI。完整生产 Compose 默认不向宿主机
+暴露 PostgreSQL，数据面与 Console 只绑定宿主机 loopback，并使用独立持久卷保存
+request-log spool。
+
+先准备已被 Git 忽略的配置与密钥：
+
+```bash
+mkdir -p ./config
+cp deploy/compose/config.example.toml ./config/config.prd.toml
+cp deploy/compose/env.example ./config/compose.prd.env
+# 生成 ./config/postgres-password 和两个 Console JWT PEM 文件。
+```
+
+然后拉取固定版本镜像，或从当前 checkout 本地构建：
+
+```bash
+docker compose --env-file ./config/compose.prd.env \
+  -f docker-compose.prd.yaml pull gateway
+# 或：docker compose --env-file ./config/compose.prd.env \
+#       -f docker-compose.prd.yaml build gateway
+
+docker compose --env-file ./config/compose.prd.env \
+  -f docker-compose.prd.yaml up -d --no-build
+```
+
+密钥生成、bootstrap-admin、反向代理/TLS、升级和备份边界详见
+[Docker 生产部署说明](docs/production-deployment.md)。
 
 ## 手动转发性能测试
 
@@ -333,6 +364,12 @@ cargo clippy --all-targets
 cargo test
 ```
 
+发布准备与 tag 发布流程见 [`docs/releasing.md`](docs/releasing.md)。本地发布门禁：
+
+```bash
+./scripts/verify-release.sh 0.1.0
+```
+
 修改请求转发路径后，还必须运行可选的付费真实上游 smoke test。请使用低额度的专用凭据，并只将其保存在已忽略的本地密钥文件中：
 
 ```bash
@@ -378,6 +415,8 @@ tests/               本地与 PostgreSQL 集成测试
 
 - [运行与接口说明](docs/mvp-usage.md)
 - [生产配置与容量调优](docs/production-configuration.md)
+- [Docker 生产部署](docs/production-deployment.md)
+- [版本发布流程](docs/releasing.md)
 - [Console Web UI 设计与实施计划](docs/console-ui-design.md)
 - [数据库与控制面设计](docs/database-design.md)
 - [真实上游 smoke test 说明](docs/real-upstream-smoke.md)

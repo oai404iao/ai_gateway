@@ -9,6 +9,10 @@
 
 默认值的目标是保持请求日志耐久性、限制数据库竞争并提供足够的诊断数据，而不是在某一台开发机上追求最高基准分数。任何生产发布仍需按实际流量、日志保留周期、机器规格和存储类型做容量验证。
 
+本文件说明参数与容量基线。若要把 Gateway 本身也运行在容器中，请使用
+`docker-compose.prd.yaml`，并先阅读
+[`docs/production-deployment.md`](production-deployment.md)。
+
 ## 首次启动
 
 默认 Compose 使用文件型数据库密码，不在仓库、Compose 环境变量或进程参数中内置弱密码：

@@ -1,0 +1,195 @@
+# Container-oriented production baseline for docker-compose.prd.yaml.
+# Copy this file to ./config/config.prd.toml and review every security/network
+# boundary before deployment. The container entrypoint copies this file and
+# mounted secrets into a private runtime directory before dropping privileges.
+# The binary still loads TOML directly and does not load .env files.
+#
+# Generate the database password file used by the default Docker Compose stack:
+#   mkdir -p ./config
+#   openssl rand -hex 32 > ./config/postgres-password
+#   chmod 600 ./config/postgres-password
+
+[server]
+# The container must listen on all container interfaces. Host exposure remains
+# loopback-only by default in docker-compose.prd.yaml.
+host = "0.0.0.0"
+port = 3000
+# After this deadline, in-flight responses are cancelled during shutdown.
+# Keep the service-manager/container stop timeout longer than this value plus
+# request_logging.shutdown_drain_seconds.
+shutdown_grace_period_seconds = 60
+
+[request_limits]
+# OpenAI-compatible proxy request bodies.
+proxy_body_bytes = 1_048_576
+# Console management payloads such as model and route updates.
+console_body_bytes = 262_144
+# Login, refresh, password, and invitation payloads.
+auth_body_bytes = 16_384
+
+[database]
+# Prefer a password file over embedding credentials in TOML. Relative paths
+# are resolved from the process working directory. Inline URL passwords remain
+# supported for managed databases, but url and password_file are mutually
+# exclusive. URL-encode any inline password.
+url = "postgres://ai_gateway@postgres:5432/ai_gateway"
+password_file = "/run/ai-gateway/secrets/postgres_password"
+# The data plane does not query PostgreSQL per request. Ten connections are
+# normally sufficient for migrations, Console/control-plane operations and
+# reloads. Total server demand is approximately:
+#   gateway_instances * (database.max_connections
+#                        + request_logging.database_max_connections)
+# plus administration/monitoring headroom.
+max_connections = 10
+connect_timeout_seconds = 5
+
+[upstream]
+# Bootstrap values for the `forwarding_policy` system-settings row. They are
+# inserted only when that database row is absent; after first startup, edit
+# these defaults through the Console System settings page instead of TOML.
+connect_timeout_seconds = 10
+response_header_timeout_seconds = 30
+stream_idle_timeout_seconds = 90
+
+[request_retry]
+# Bootstrap values for pre-header request failover. They are inserted only
+# when the forwarding_policy row is first created; later edits are made in the
+# Console. Retries always select a distinct, not-yet-attempted healthy channel.
+enabled = true
+# Automatic retries after the initial request. A value of 1 permits one
+# automatic failover. The supported range is 1 through 10.
+max_retries = 1
+
+[runtime_config]
+# Console mutations publish immediately in the local process. This periodic
+# reload is the cross-process/manual-database-change convergence fallback.
+reload_interval_seconds = 30
+
+[request_logging]
+# Request paths append terminal events to this local durable spool before
+# notifying the asynchronous database pipeline. A full notification queue only
+# coalesces wakeups and does not discard the spooled event.
+queue_capacity = 1_024
+# Separate pool used only by spool ingestion, final-table projection, metrics,
+# and settlement. Four connections cover the four roles; adding connections
+# without adding worker concurrency usually increases database contention.
+database_max_connections = 4
+# Production baseline for the COPY ingress and single final-table projector.
+# On machines below 4 GiB, halve these values; on 16+ GiB database hosts,
+# benchmark 8_192/4_096 before increasing worker concurrency.
+ingest_batch_size = 4_096
+projection_batch_size = 2_048
+# Billing is intentionally independent from ingestion and projection. This
+# combination scans less often while allowing up to 8K rows/s before database
+# execution time; use 250ms when sub-500ms soft-quota freshness is required.
+settlement_batch_size = 4_096
+settlement_interval_milliseconds = 500
+# Each gateway process sharing a host must use a unique spool directory.
+spool_directory = "/var/lib/ai-gateway/request-log-spool"
+# File data is group-synced on this interval and always synced at shutdown.
+# A process crash is recoverable after write(); strict host-power-loss
+# durability would require synchronous storage or an external durable broker.
+spool_sync_interval_milliseconds = 10
+# A fully drained append file is truncated only after crossing this threshold.
+# 256 MiB avoids frequent truncate/sync pauses at high request rates. Lower it
+# when disk capacity is tight; raise it when p99 latency shows compaction spikes.
+spool_compaction_threshold_bytes = 268_435_456
+# Structured `request_log_metrics` events are emitted at this interval.
+metrics_interval_seconds = 10
+# Remaining spool/ingress/settlement work stays durable when this expires.
+shutdown_drain_seconds = 60
+
+[passive_health]
+# Bootstrap values for the same database-backed `forwarding_policy`. They are
+# used only for the one-time initial insert when the system-settings row is
+# absent; later changes are made in the Console.
+# Only pre-header connection failures count. After three failures, one probe is
+# admitted after this cooldown; response headers reset the passive breaker.
+connection_failure_threshold = 3
+cooldown_seconds = 30
+
+[automatic_disable]
+# Bootstrap values for the database-backed automatic-disable system setting.
+# They are used only on the first startup that creates `forwarding_policy`;
+# later edits are made in the Console.
+enabled = false
+# Upstream HTTP status codes that disable opted-in channels.
+error_status_codes = []
+# Case-insensitive upstream error-message substrings.
+error_message_keywords = []
+
+[scheduled_testing]
+# Bootstrap values for periodic direct upstream tests. A channel needs a
+# selected `test_model` before it receives a test request.
+mode = "global" # "global" or "failure_only"
+auto_recover = true
+interval_minutes = 5
+prompt = "reply '1'"
+
+[session_affinity]
+# Bootstrap values for process-local successful-channel session affinity.
+# They are inserted only when the forwarding_policy row is first created;
+# later edits are made in the Console. Affinity is disabled by default.
+enabled = false
+# Bound untrusted, authenticated clients that send a new session key on every
+# request. Cache entries store only hashes and channel IDs in this process.
+max_entries = 100_000
+# Successful requests refresh the matched rule's TTL. A rule may override it.
+default_ttl_seconds = 3_600
+# Remove this empty list before adding one or more [[session_affinity.rules]]
+# array-of-table entries.
+rules = []
+#
+# Example Codex Responses rule:
+# [[session_affinity.rules]]
+# name = "codex-responses"
+# enabled = true
+# api_formats = ["open_ai_responses"]
+# model_regex = ["^gpt-.*$"]
+# key_sources = [
+#   { type = "json_pointer", pointer = "/prompt_cache_key" },
+#   { type = "request_header", name = "session_id" },
+#   { type = "request_header", name = "thread_id" },
+# ]
+
+[models_sync]
+# Administrator-triggered models.dev catalog import. Only complete USD
+# input/output prices are eligible for preview and synchronization.
+api_url = "https://models.dev/api.json"
+request_timeout_seconds = 15
+max_response_bytes = 10_485_760
+max_model_metadata_bytes = 65_536
+max_selections = 100
+
+# The Console API is a separate listener. It is intended to sit behind an
+# HTTPS reverse proxy; JWT signing material stays in protected files, never in
+# this TOML. Administrator is a user role, not an alternate static token.
+[console]
+enabled = true
+host = "0.0.0.0"
+port = 3001
+# allowed_origins = ["https://console.example.com"]
+# Serve the embedded browser management UI from this listener. Requires
+# building with `--features embedded-console-ui` after
+# `pnpm --dir web/console build` produces web/console/dist.
+ui_enabled = true
+
+[auth]
+issuer = "ai-gateway"
+audience = "ai-gateway-console"
+access_token_ttl_seconds = 900
+refresh_token_ttl_seconds = 2_592_000
+key_id = "primary-2026"
+signing_key_path = "/run/ai-gateway/secrets/console_jwt_private"
+verification_key_path = "/run/ai-gateway/secrets/console_jwt_public"
+
+[observability]
+# Keep lifecycle/control-plane/metrics INFO records while suppressing the
+# per-request proxy completion event in production. Temporarily use
+# ai_gateway=debug only while diagnosing a bounded incident.
+filter = "ai_gateway=info,ai_gateway::application::proxy=warn,ai_gateway::request_log_metrics=info,tower_http=warn"
+
+# API keys, models, routing rules, groups, channels, and upstream credentials
+# are loaded only from PostgreSQL into immutable runtime snapshots. TOML is
+# bootstrap configuration only; dynamic [[api_keys]], [[channels]], and
+# [[model_rules]] tables are intentionally rejected.

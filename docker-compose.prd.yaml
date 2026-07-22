@@ -1,0 +1,199 @@
+# Full single-host production stack for ai-gateway.
+#
+# The Gateway image may be pulled from a registry or built from this checkout:
+#   docker compose -f docker-compose.prd.yaml pull gateway
+#   docker compose -f docker-compose.prd.yaml build gateway
+#
+# Before first startup, follow docs/production-deployment.md to create:
+#   ./config/config.prd.toml
+#   ./config/postgres-password
+#   ./config/console-jwt-private.pem
+#   ./config/console-jwt-public.pem
+
+name: ${COMPOSE_PROJECT_NAME:-ai-gateway-prd}
+
+services:
+  postgres:
+    image: postgres:18.4-alpine
+    restart: unless-stopped
+    stop_grace_period: 2m
+    environment:
+      POSTGRES_DB: ${AI_GATEWAY_POSTGRES_DB:-ai_gateway}
+      POSTGRES_USER: ${AI_GATEWAY_POSTGRES_USER:-ai_gateway}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256 --data-checksums"
+    secrets:
+      - postgres_password
+    command:
+      - postgres
+      - -c
+      - "max_connections=${AI_GATEWAY_POSTGRES_MAX_CONNECTIONS:-50}"
+      - -c
+      - "shared_buffers=${AI_GATEWAY_POSTGRES_SHARED_BUFFERS:-1GB}"
+      - -c
+      - "effective_cache_size=${AI_GATEWAY_POSTGRES_EFFECTIVE_CACHE_SIZE:-4GB}"
+      - -c
+      - "work_mem=${AI_GATEWAY_POSTGRES_WORK_MEM:-8MB}"
+      - -c
+      - "maintenance_work_mem=${AI_GATEWAY_POSTGRES_MAINTENANCE_WORK_MEM:-256MB}"
+      - -c
+      - "autovacuum_work_mem=${AI_GATEWAY_POSTGRES_AUTOVACUUM_WORK_MEM:-128MB}"
+      - -c
+      - "wal_buffers=${AI_GATEWAY_POSTGRES_WAL_BUFFERS:-16MB}"
+      - -c
+      - "min_wal_size=${AI_GATEWAY_POSTGRES_MIN_WAL_SIZE:-1GB}"
+      - -c
+      - "max_wal_size=${AI_GATEWAY_POSTGRES_MAX_WAL_SIZE:-4GB}"
+      - -c
+      - "checkpoint_timeout=${AI_GATEWAY_POSTGRES_CHECKPOINT_TIMEOUT:-15min}"
+      - -c
+      - "checkpoint_completion_target=0.9"
+      - -c
+      - "wal_compression=${AI_GATEWAY_POSTGRES_WAL_COMPRESSION:-lz4}"
+      - -c
+      - "fsync=on"
+      - -c
+      - "synchronous_commit=on"
+      - -c
+      - "full_page_writes=on"
+      - -c
+      - "autovacuum=on"
+      - -c
+      - "autovacuum_max_workers=${AI_GATEWAY_POSTGRES_AUTOVACUUM_MAX_WORKERS:-4}"
+      - -c
+      - "autovacuum_naptime=${AI_GATEWAY_POSTGRES_AUTOVACUUM_NAPTIME:-30s}"
+      - -c
+      - "jit=off"
+      - -c
+      - "io_method=worker"
+      - -c
+      - "io_workers=${AI_GATEWAY_POSTGRES_IO_WORKERS:-3}"
+      - -c
+      - "random_page_cost=${AI_GATEWAY_POSTGRES_RANDOM_PAGE_COST:-4.0}"
+      - -c
+      - "effective_io_concurrency=${AI_GATEWAY_POSTGRES_EFFECTIVE_IO_CONCURRENCY:-16}"
+      - -c
+      - "maintenance_io_concurrency=${AI_GATEWAY_POSTGRES_MAINTENANCE_IO_CONCURRENCY:-16}"
+      - -c
+      - "max_worker_processes=${AI_GATEWAY_POSTGRES_MAX_WORKER_PROCESSES:-16}"
+      - -c
+      - "max_parallel_workers=${AI_GATEWAY_POSTGRES_MAX_PARALLEL_WORKERS:-4}"
+      - -c
+      - "max_parallel_workers_per_gather=2"
+      - -c
+      - "shared_preload_libraries=pg_stat_statements"
+      - -c
+      - "compute_query_id=auto"
+      - -c
+      - "pg_stat_statements.track=top"
+      - -c
+      - "pg_stat_statements.max=${AI_GATEWAY_POSTGRES_STATEMENTS_MAX:-10000}"
+      - -c
+      - "track_io_timing=on"
+      - -c
+      - "track_wal_io_timing=on"
+      - -c
+      - "log_min_duration_statement=${AI_GATEWAY_POSTGRES_SLOW_QUERY_MS:-1000}"
+      - -c
+      - "log_checkpoints=on"
+      - -c
+      - "log_lock_waits=on"
+      - -c
+      - "deadlock_timeout=1s"
+      - -c
+      - "idle_in_transaction_session_timeout=60s"
+      - -c
+      - "timezone=UTC"
+    volumes:
+      - postgres-data:/var/lib/postgresql
+      - ./deploy/postgres/init:/docker-entrypoint-initdb.d:ro
+    shm_size: "${AI_GATEWAY_POSTGRES_SHM_SIZE:-512mb}"
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\"",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    logging:
+      driver: local
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  gateway:
+    image: "${AI_GATEWAY_IMAGE:-git.local.hisir.top/local/ai_gateway}:${AI_GATEWAY_VERSION:-0.1.0}"
+    pull_policy: ${AI_GATEWAY_PULL_POLICY:-missing}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: ${AI_GATEWAY_VERSION:-0.1.0}
+        REVISION: ${AI_GATEWAY_REVISION:-local}
+        SOURCE_URL: ${AI_GATEWAY_SOURCE_URL:-https://git.local.hisir.top/local/ai_gateway}
+    restart: unless-stopped
+    stop_grace_period: 3m
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${AI_GATEWAY_BIND_ADDRESS:-127.0.0.1}:${AI_GATEWAY_PORT:-3000}:3000"
+      - "${AI_GATEWAY_CONSOLE_BIND_ADDRESS:-127.0.0.1}:${AI_GATEWAY_CONSOLE_PORT:-3001}:3001"
+    volumes:
+      - type: bind
+        source: ${AI_GATEWAY_CONFIG_FILE:-./config/config.prd.toml}
+        target: /run/config/ai-gateway.toml
+        read_only: true
+      - gateway-spool:/var/lib/ai-gateway/request-log-spool
+    secrets:
+      - postgres_password
+      - console_jwt_private
+      - console_jwt_public
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+      - /run/ai-gateway:size=2m,mode=0700
+    security_opt:
+      - no-new-privileges:true
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "curl",
+          "--fail",
+          "--silent",
+          "--show-error",
+          "http://127.0.0.1:3000/health",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    logging:
+      driver: local
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+secrets:
+  postgres_password:
+    file: ${AI_GATEWAY_POSTGRES_PASSWORD_FILE:-./config/postgres-password}
+  console_jwt_private:
+    file: ${AI_GATEWAY_CONSOLE_JWT_PRIVATE_FILE:-./config/console-jwt-private.pem}
+  console_jwt_public:
+    file: ${AI_GATEWAY_CONSOLE_JWT_PUBLIC_FILE:-./config/console-jwt-public.pem}
+
+volumes:
+  postgres-data:
+  gateway-spool:

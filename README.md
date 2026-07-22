@@ -47,8 +47,9 @@ Separate Console listener (/console/v1/*)
 
 - Rust **1.85** or newer (Rust 2024 edition)
 - PostgreSQL
-- Docker Compose is optional and provides a tuned single-node PostgreSQL
-  baseline; it is not an HA or backup solution
+- Docker Compose is optional: `docker-compose.yml` provides PostgreSQL for
+  development, while `docker-compose.prd.yaml` can run the complete production
+  stack from a pulled or locally built Gateway image
 - OpenSSL is useful for generating the local database password and Console
   Ed25519 keys
 
@@ -150,6 +151,39 @@ For a working data-plane route, create compatible records in this order:
 A Chat Completions route and a Responses route are separate configurations, even when they use the same upstream provider or model name. Use the Console API rather than editing control-plane tables directly.
 
 See [the operational API guide](docs/mvp-usage.md) for Console route coverage and behavior.
+
+## Production Docker deployment
+
+The release image contains the Rust binary and embedded Console UI. The
+full-stack production Compose keeps PostgreSQL private to the Compose network,
+binds the public and Console listeners to host loopback by default, and stores
+the request-log spool in a dedicated persistent volume.
+
+Prepare the ignored configuration and secrets:
+
+```bash
+mkdir -p ./config
+cp deploy/compose/config.example.toml ./config/config.prd.toml
+cp deploy/compose/env.example ./config/compose.prd.env
+# Generate ./config/postgres-password and the two Console JWT PEM files.
+```
+
+Then either pull the pinned release image or build it from the current
+checkout:
+
+```bash
+docker compose --env-file ./config/compose.prd.env \
+  -f docker-compose.prd.yaml pull gateway
+# Or: docker compose --env-file ./config/compose.prd.env \
+#       -f docker-compose.prd.yaml build gateway
+
+docker compose --env-file ./config/compose.prd.env \
+  -f docker-compose.prd.yaml up -d --no-build
+```
+
+See [the production Docker deployment guide](docs/production-deployment.md)
+for key generation, bootstrap-admin, reverse-proxy/TLS requirements, upgrades,
+and backup boundaries.
 
 ## Manual forwarding performance harness
 
@@ -363,6 +397,13 @@ cargo clippy --all-targets
 cargo test
 ```
 
+Release preparation and tag publication are documented in
+[`docs/releasing.md`](docs/releasing.md). The local release gate is:
+
+```bash
+./scripts/verify-release.sh 0.1.0
+```
+
 Changes to the request-forwarding path also require the opt-in paid real-upstream smoke test. Use a dedicated low-spend credential and keep it only in the ignored local secrets file:
 
 ```bash
@@ -410,6 +451,8 @@ tests/               Local and PostgreSQL integration tests
 
 - [Operational usage and endpoint guide](docs/mvp-usage.md)
 - [Production configuration and capacity tuning](docs/production-configuration.md)
+- [Production Docker deployment](docs/production-deployment.md)
+- [Version release process](docs/releasing.md)
 - [Console Web UI design and implementation plan](docs/console-ui-design.md)
 - [Database and control-plane design](docs/database-design.md)
 - [Real-upstream smoke-test guide](docs/real-upstream-smoke.md)

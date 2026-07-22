@@ -50,6 +50,10 @@ const DEFAULT_CONFIG_PATH: &str = "./config/config.toml";
 async fn main() -> Result<(), Box<dyn Error>> {
     match parse_command(std::env::args().skip(1).collect())? {
         Command::Serve { config_path } => serve(config_path).await,
+        Command::Version => {
+            println!("ai-gateway {}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
         Command::BootstrapAdmin {
             config_path,
             email,
@@ -295,6 +299,7 @@ enum Command {
     Serve {
         config_path: PathBuf,
     },
+    Version,
     BootstrapAdmin {
         config_path: PathBuf,
         email: String,
@@ -312,6 +317,15 @@ fn parse_command(arguments: Vec<String>) -> Result<Command, io::Error> {
             config_path: PathBuf::from(DEFAULT_CONFIG_PATH),
         });
     };
+    if matches!(command.as_str(), "--version" | "-V") {
+        if arguments.len() != 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "--version does not accept additional arguments",
+            ));
+        }
+        return Ok(Command::Version);
+    }
     if command == "bootstrap-admin" {
         let mut config_path = PathBuf::from(DEFAULT_CONFIG_PATH);
         let mut email = None;
@@ -408,7 +422,7 @@ fn parse_command(arguments: Vec<String>) -> Result<Command, io::Error> {
     if arguments.len() != 1 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "usage: ai-gateway [./config/config.toml] | ai-gateway bootstrap-admin --email EMAIL --display-name NAME --password-stdin [--config ./config/config.toml] | ai-gateway reset-admin-password --email EMAIL --password-stdin [--config ./config/config.toml]",
+            "usage: ai-gateway [--version] | ai-gateway [./config/config.toml] | ai-gateway bootstrap-admin --email EMAIL --display-name NAME --password-stdin [--config ./config/config.toml] | ai-gateway reset-admin-password --email EMAIL --password-stdin [--config ./config/config.toml]",
         ));
     }
     Ok(Command::Serve {
@@ -625,6 +639,15 @@ mod tests {
         };
         assert_eq!(DEFAULT_CONFIG_PATH, "./config/config.toml");
         assert_eq!(config_path, PathBuf::from("./config/config.toml"));
+    }
+
+    #[test]
+    fn version_command_parses_without_configuration() {
+        assert!(matches!(
+            parse_command(vec!["--version".to_owned()]).unwrap(),
+            Command::Version
+        ));
+        assert!(parse_command(vec!["--version".to_owned(), "extra".to_owned()]).is_err());
     }
 
     #[test]

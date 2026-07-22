@@ -2170,6 +2170,31 @@ mod tests {
     }
 
     #[test]
+    fn container_example_configuration_matches_the_embedded_image_contract() {
+        let file =
+            toml::from_str::<AppConfig>(include_str!("../../deploy/compose/config.example.toml"))
+                .unwrap();
+
+        #[cfg(not(feature = "embedded-console-ui"))]
+        assert!(file.validate().is_err());
+
+        #[cfg(feature = "embedded-console-ui")]
+        {
+            let config = file.validate().unwrap();
+            assert_eq!(config.server.host, "0.0.0.0");
+            assert_eq!(
+                config.database.url,
+                "postgres://ai_gateway@postgres:5432/ai_gateway"
+            );
+            assert_eq!(
+                config.request_logging.spool_directory,
+                PathBuf::from("/var/lib/ai-gateway/request-log-spool")
+            );
+            assert!(config.console.unwrap().ui_enabled);
+        }
+    }
+
+    #[test]
     fn compiler_uses_database_backed_forwarding_settings() {
         let records = RuntimeConfigRecords {
             control_plane: route_records(0, "weighted_random", 1, "weighted_random", false),
