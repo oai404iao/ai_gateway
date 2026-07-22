@@ -169,7 +169,7 @@ Policy 不再保存额度、RPM、并发、格式、权限或最大活动 Key �
 `/console/v1/system/settings` 的完整配置还包含：
 
 - `request_retry.enabled`：是否启用响应头前故障转移，默认启用。
-- `request_retry.max_attempts`：包含首次请求在内的最大渠道尝试次数，范围 `1..=10`，默认 `2`。同一客户端请求不会重复尝试同一渠道。
+- `request_retry.max_retries`：首次请求失败后的最大自动重试次数，范围 `1..=10`，默认 `1`。同一客户端请求不会重复尝试同一渠道。
 - `automatic_disable.enabled`：自动禁用总开关。关闭时，即使渠道允许自动禁用也不会执行状态变更。
 - `automatic_disable.error_status_codes`：触发临时禁用的上游 HTTP 状态码列表。
 - `automatic_disable.error_message_keywords`：触发临时禁用的上游错误消息关键字；匹配大小写不敏感。自动禁用扫描器不会保存被扫描的响应正文；仅当 SSE 协议解析器识别出结构化错误事件时，请求日志才保存受限、已清洗的错误代码与消息摘要。

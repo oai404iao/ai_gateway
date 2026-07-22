@@ -248,7 +248,7 @@ async fn system_settings_bootstrap_initializes_once_without_overwriting_database
     let stored = repository.system_settings().await.unwrap();
     assert_eq!(stored.settings.upstream.connect_timeout_seconds, 1);
     assert!(stored.settings.request_retry.enabled);
-    assert_eq!(stored.settings.request_retry.max_attempts, 2);
+    assert_eq!(stored.settings.request_retry.max_retries, 1);
     assert_eq!(
         stored.settings.passive_health.connection_failure_threshold,
         3
@@ -639,7 +639,7 @@ async fn system_settings_are_versioned_audited_and_updated_via_console() {
     input["upstream"]["stream_idle_timeout_seconds"] = serde_json::json!(8);
     input["request_retry"] = serde_json::json!({
         "enabled": false,
-        "max_attempts": 4,
+        "max_retries": 4,
     });
     input["passive_health"]["connection_failure_threshold"] = serde_json::json!(4);
     input["passive_health"]["cooldown_seconds"] = serde_json::json!(45);
@@ -671,7 +671,7 @@ async fn system_settings_are_versioned_audited_and_updated_via_console() {
     input.as_object_mut().unwrap().remove("updated_at");
 
     let mut invalid_retry = input.clone();
-    invalid_retry["request_retry"]["max_attempts"] = serde_json::json!(11);
+    invalid_retry["request_retry"]["max_retries"] = serde_json::json!(11);
     let invalid = request(
         &app,
         "PUT",
@@ -707,7 +707,7 @@ async fn system_settings_are_versioned_audited_and_updated_via_console() {
         std::time::Duration::from_secs(2)
     );
     assert!(!published.request_retry().enabled());
-    assert_eq!(published.request_retry().max_attempts(), 4);
+    assert_eq!(published.request_retry().max_retries(), 4);
     assert_eq!(published.passive_health().connection_failure_threshold(), 4);
     assert!(published.automatic_disable().enabled());
     assert!(published.automatic_disable().matches_status(429));

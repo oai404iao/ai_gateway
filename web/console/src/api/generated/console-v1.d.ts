@@ -792,10 +792,10 @@ export interface components {
              */
             enabled: boolean;
             /**
-             * @description Total distinct-channel attempts, including the initial attempt.
-             * @default 2
+             * @description Automatic retries after the initial distinct-channel attempt.
+             * @default 1
              */
-            max_attempts: number;
+            max_retries: number;
         };
         SystemPassiveHealthSettings: {
             connection_failure_threshold: number;

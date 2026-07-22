@@ -8,8 +8,8 @@ use reqwest::header::HeaderName;
 
 use super::ApiFormat;
 
-/// Hard ceiling for one client request's distinct upstream channel attempts.
-pub const MAX_REQUEST_ATTEMPTS: u32 = 10;
+/// Hard ceiling for one client request's automatic failover retries.
+pub const MAX_REQUEST_RETRIES: u32 = 10;
 
 /// Global timeout defaults used when a channel has no explicit override.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -93,15 +93,15 @@ impl Default for PassiveHealthSettings {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RequestRetrySettings {
     enabled: bool,
-    max_attempts: u32,
+    max_retries: u32,
 }
 
 impl RequestRetrySettings {
     #[must_use]
-    pub const fn new(enabled: bool, max_attempts: u32) -> Self {
+    pub const fn new(enabled: bool, max_retries: u32) -> Self {
         Self {
             enabled,
-            max_attempts,
+            max_retries,
         }
     }
 
@@ -110,16 +110,16 @@ impl RequestRetrySettings {
         self.enabled
     }
 
-    /// Total upstream attempts, including the initial attempt.
+    /// Automatic retries after the initial upstream attempt.
     #[must_use]
-    pub const fn max_attempts(self) -> u32 {
-        self.max_attempts
+    pub const fn max_retries(self) -> u32 {
+        self.max_retries
     }
 }
 
 impl Default for RequestRetrySettings {
     fn default() -> Self {
-        Self::new(true, 2)
+        Self::new(true, 1)
     }
 }
 

@@ -26,8 +26,8 @@ use crate::{
         ApiFormat, ApiKeyHash, ApiKeyPermission, AutomaticDisableSettings, ChannelTimeoutPolicy,
         CompiledApiKey, CompiledChannel, CompiledChannelGroup, CompiledChannelUpstreamPolicy,
         CompiledConfigTemplate, CompiledModelRule, CompiledProxy, CompiledRouteTier,
-        CompiledRuntimeConfig, MAX_REQUEST_ATTEMPTS, ModelPriceSnapshot, ModelRouteKey,
-        NoProxyHost, PassiveHealthSettings, RequestRetrySettings, ScheduledTestingMode,
+        CompiledRuntimeConfig, MAX_REQUEST_RETRIES, ModelPriceSnapshot, ModelRouteKey, NoProxyHost,
+        PassiveHealthSettings, RequestRetrySettings, ScheduledTestingMode,
         ScheduledTestingSettings, SelectionStrategy, SessionAffinityKeySource, SessionAffinityRule,
         SessionAffinitySettings, SystemRuntimeSettings, UpstreamAuth, UpstreamTimeoutDefaults,
     },
@@ -235,8 +235,8 @@ pub struct UpstreamConfig {
 pub struct RequestRetryConfig {
     #[serde(default = "default_request_retry_enabled")]
     pub enabled: bool,
-    #[serde(default = "default_request_retry_max_attempts")]
-    pub max_attempts: u32,
+    #[serde(default = "default_request_retry_max_retries")]
+    pub max_retries: u32,
 }
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -320,7 +320,7 @@ impl Default for RequestRetryConfig {
     fn default() -> Self {
         Self {
             enabled: default_request_retry_enabled(),
-            max_attempts: default_request_retry_max_attempts(),
+            max_retries: default_request_retry_max_retries(),
         }
     }
 }
@@ -561,8 +561,8 @@ const fn default_connection_failure_threshold() -> u32 {
 const fn default_request_retry_enabled() -> bool {
     true
 }
-const fn default_request_retry_max_attempts() -> u32 {
-    2
+const fn default_request_retry_max_retries() -> u32 {
+    1
 }
 const fn default_passive_health_cooldown_seconds() -> u64 {
     30
@@ -784,8 +784,8 @@ pub fn compile_system_settings_input(
     if upstream.connect_timeout_seconds == 0
         || upstream.response_header_timeout_seconds <= upstream.connect_timeout_seconds
         || upstream.stream_idle_timeout_seconds == 0
-        || request_retry.max_attempts == 0
-        || request_retry.max_attempts > MAX_REQUEST_ATTEMPTS
+        || request_retry.max_retries == 0
+        || request_retry.max_retries > MAX_REQUEST_RETRIES
         || passive_health.connection_failure_threshold == 0
         || passive_health.cooldown_seconds == 0
         || automatic_disable
@@ -826,7 +826,7 @@ pub fn compile_system_settings_input(
             std::time::Duration::from_secs(upstream.response_header_timeout_seconds),
             std::time::Duration::from_secs(upstream.stream_idle_timeout_seconds),
         ),
-        RequestRetrySettings::new(request_retry.enabled, request_retry.max_attempts),
+        RequestRetrySettings::new(request_retry.enabled, request_retry.max_retries),
         PassiveHealthSettings::new(
             passive_health.connection_failure_threshold,
             std::time::Duration::from_secs(passive_health.cooldown_seconds),
@@ -1887,9 +1887,9 @@ fn validate_automatic_disable_config(config: &AutomaticDisableConfig) -> Result<
 }
 
 fn validate_request_retry_config(config: &RequestRetryConfig) -> Result<(), ConfigError> {
-    if config.max_attempts == 0 || config.max_attempts > MAX_REQUEST_ATTEMPTS {
+    if config.max_retries == 0 || config.max_retries > MAX_REQUEST_RETRIES {
         return Err(ConfigError::Compile(
-            "request_retry max_attempts must be between 1 and 10".into(),
+            "request_retry max_retries must be between 1 and 10".into(),
         ));
     }
     Ok(())
@@ -2183,7 +2183,7 @@ mod tests {
                     },
                     request_retry: SystemRequestRetrySettingsInput {
                         enabled: true,
-                        max_attempts: 3,
+                        max_retries: 3,
                     },
                     passive_health: SystemPassiveHealthSettingsInput {
                         connection_failure_threshold: 4,
@@ -2217,7 +2217,7 @@ mod tests {
             std::time::Duration::from_secs(5)
         );
         assert!(settings.request_retry().enabled());
-        assert_eq!(settings.request_retry().max_attempts(), 3);
+        assert_eq!(settings.request_retry().max_retries(), 3);
         assert_eq!(settings.passive_health().connection_failure_threshold(), 4);
         assert_eq!(
             settings.passive_health().cooldown(),
@@ -2355,7 +2355,7 @@ mod tests {
             256 * 1_024 * 1_024
         );
         assert!(config.request_retry.enabled);
-        assert_eq!(config.request_retry.max_attempts, 2);
+        assert_eq!(config.request_retry.max_retries, 1);
         assert_eq!(config.passive_health.connection_failure_threshold, 3);
         assert_eq!(config.passive_health.cooldown_seconds, 30);
         assert!(!config.automatic_disable.enabled);

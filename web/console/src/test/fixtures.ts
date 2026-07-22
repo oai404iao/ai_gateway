@@ -252,7 +252,7 @@ export const SYSTEM_SETTINGS: SystemSettings = {
   },
   request_retry: {
     enabled: true,
-    max_attempts: 2,
+    max_retries: 1,
   },
   passive_health: {
     connection_failure_threshold: 3,

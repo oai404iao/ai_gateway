@@ -55,9 +55,9 @@ stream_idle_timeout_seconds = 90
 # when the forwarding_policy row is first created; later edits are made in the
 # Console. Retries always select a distinct, not-yet-attempted healthy channel.
 enabled = true
-# Total attempts including the initial request. A value of 2 permits one
+# Automatic retries after the initial request. A value of 1 permits one
 # automatic failover. The supported range is 1 through 10.
-max_attempts = 2
+max_retries = 1
 
 [runtime_config]
 # Console mutations publish immediately in the local process. This periodic

@@ -289,11 +289,12 @@ impl ProxyService {
             current_session_affinity.as_ref(),
         );
         let retry_settings = snapshot.system_settings().request_retry();
-        let max_attempts = if retry_settings.enabled() {
-            retry_settings.max_attempts()
+        let max_retries = if retry_settings.enabled() {
+            retry_settings.max_retries()
         } else {
-            1
+            0
         };
+        let max_attempts = max_retries.saturating_add(1);
         let mut attempt = 1_u32;
         let mut attempted_channel_ids = HashSet::with_capacity(max_attempts as usize);
 
@@ -431,7 +432,7 @@ impl ProxyService {
                         failed_channel_id = %failed_channel_id,
                         next_channel_id = %next_channel_id,
                         attempt,
-                        max_attempts,
+                        max_retries,
                         reason = failure.error_code(),
                         "retrying proxy request on another channel"
                     );

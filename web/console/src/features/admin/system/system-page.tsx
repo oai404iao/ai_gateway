@@ -69,11 +69,11 @@ const systemSettingsSchema = z
     }),
     request_retry: z.object({
       enabled: z.boolean(),
-      max_attempts: z
+      max_retries: z
         .number()
         .int()
-        .min(1, "Maximum attempts must be between 1 and 10.")
-        .max(10, "Maximum attempts must be between 1 and 10."),
+        .min(1, "Maximum retries must be between 1 and 10.")
+        .max(10, "Maximum retries must be between 1 and 10."),
     }),
     passive_health: z.object({
       connection_failure_threshold: z
@@ -172,7 +172,7 @@ const defaultValues: SystemSettingsValues = {
   },
   request_retry: {
     enabled: true,
-    max_attempts: 2,
+    max_retries: 1,
   },
   passive_health: {
     connection_failure_threshold: 3,
@@ -398,31 +398,31 @@ export function SystemPage() {
                     />
                   </Field>
                   <Field
-                    data-invalid={Boolean(form.formState.errors.request_retry?.max_attempts)}
+                    data-invalid={Boolean(form.formState.errors.request_retry?.max_retries)}
                   >
-                    <FieldLabel htmlFor="request_retry_max_attempts">
-                      {t("Maximum attempts")}
+                    <FieldLabel htmlFor="request_retry_max_retries">
+                      {t("Maximum retries")}
                     </FieldLabel>
                     <Input
-                      id="request_retry_max_attempts"
+                      id="request_retry_max_retries"
                       type="number"
                       min={1}
                       aria-invalid={Boolean(
-                        form.formState.errors.request_retry?.max_attempts,
+                        form.formState.errors.request_retry?.max_retries,
                       )}
-                      {...form.register("request_retry.max_attempts", {
+                      {...form.register("request_retry.max_retries", {
                         valueAsNumber: true,
                       })}
                     />
                     <FieldDescription>
                       {t(
-                        "Includes the initial request. A value of 2 allows one automatic failover.",
+                        "Does not include the initial request. A value of 1 allows one automatic failover.",
                       )}
                     </FieldDescription>
-                    {form.formState.errors.request_retry?.max_attempts ? (
+                    {form.formState.errors.request_retry?.max_retries ? (
                       <FieldError>
                         {errorMessage(
-                          form.formState.errors.request_retry.max_attempts.message,
+                          form.formState.errors.request_retry.max_retries.message,
                         )}
                       </FieldError>
                     ) : null}

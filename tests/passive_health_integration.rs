@@ -360,7 +360,7 @@ async fn disabled_retry_returns_the_first_header_timeout() {
         &[0, 1],
         upstream_config(2, 2),
         RoutingRuntime::new(PassiveHealthPolicy::default()),
-        RequestRetrySettings::new(false, 2),
+        RequestRetrySettings::new(false, 1),
     );
     let gateway = start_server(http::router(fixture.service)).await;
 
@@ -488,7 +488,7 @@ async fn connect_timeout_retries_the_lower_priority_channel() {
 }
 
 #[tokio::test]
-async fn max_attempts_includes_the_initial_channel() {
+async fn max_retries_excludes_the_initial_channel() {
     let first = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let first_address = first.local_addr().unwrap();
     drop(first);
@@ -512,7 +512,7 @@ async fn max_attempts_includes_the_initial_channel() {
         &[0, 1, 2],
         upstream_config(2, 2),
         RoutingRuntime::new(PassiveHealthPolicy::default()),
-        RequestRetrySettings::new(true, 2),
+        RequestRetrySettings::new(true, 1),
     );
     let gateway = start_server(http::router(fixture.service)).await;
 

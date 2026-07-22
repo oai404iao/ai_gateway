@@ -44,10 +44,10 @@ const zhCN: Record<string, string> = {
   "Enable automatic retry": "启用自动重试",
   "Retries never reuse a channel already attempted by the same client request.":
     "重试不会再次使用同一客户端请求已经尝试过的渠道。",
-  "Maximum attempts": "最大尝试次数",
-  "Includes the initial request. A value of 2 allows one automatic failover.":
-    "包含首次请求。设置为 2 表示允许一次自动故障转移。",
-  "Maximum attempts must be between 1 and 10.": "最大尝试次数必须在 1 至 10 之间。",
+  "Maximum retries": "最大重试次数",
+  "Does not include the initial request. A value of 1 allows one automatic failover.":
+    "不包含首次请求。设置为 1 表示允许一次自动故障转移。",
+  "Maximum retries must be between 1 and 10.": "最大重试次数必须在 1 至 10 之间。",
   "Passive health": "被动健康检查",
   "After the configured number of pre-header connection failures, a channel enters cooldown before one half-open probe is allowed.":
     "达到配置的响应头前连接失败次数后，渠道会进入冷却期，随后只允许一次半开探测。",

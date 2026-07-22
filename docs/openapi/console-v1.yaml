@@ -1531,18 +1531,18 @@ components:
 
     SystemRequestRetrySettings:
       type: object
-      required: [enabled, max_attempts]
+      required: [enabled, max_retries]
       properties:
         enabled:
           type: boolean
           default: true
           description: Enables failover for connection failures, connect timeouts, and response-header timeouts.
-        max_attempts:
+        max_retries:
           type: integer
           minimum: 1
           maximum: 10
-          default: 2
-          description: Total distinct-channel attempts, including the initial attempt.
+          default: 1
+          description: Automatic retries after the initial distinct-channel attempt.
 
     SystemPassiveHealthSettings:
       type: object

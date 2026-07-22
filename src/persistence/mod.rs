@@ -22,7 +22,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::{
-    domain::{AutomaticDisableTrigger, MAX_REQUEST_ATTEMPTS, RequestLogEvent},
+    domain::{AutomaticDisableTrigger, MAX_REQUEST_RETRIES, RequestLogEvent},
     request_log_journal::EncodedRequestLog,
 };
 
@@ -98,15 +98,15 @@ pub struct SystemUpstreamSettingsInput {
 pub struct SystemRequestRetrySettingsInput {
     #[serde(default = "default_request_retry_enabled")]
     pub enabled: bool,
-    #[serde(default = "default_request_retry_max_attempts")]
-    pub max_attempts: u32,
+    #[serde(default = "default_request_retry_max_retries")]
+    pub max_retries: u32,
 }
 
 impl Default for SystemRequestRetrySettingsInput {
     fn default() -> Self {
         Self {
             enabled: default_request_retry_enabled(),
-            max_attempts: default_request_retry_max_attempts(),
+            max_retries: default_request_retry_max_retries(),
         }
     }
 }
@@ -200,8 +200,8 @@ const fn default_request_retry_enabled() -> bool {
     true
 }
 
-const fn default_request_retry_max_attempts() -> u32 {
-    2
+const fn default_request_retry_max_retries() -> u32 {
+    1
 }
 
 const fn default_scheduled_testing_auto_recover() -> bool {
@@ -4884,8 +4884,8 @@ fn validate_system_settings_input(input: &SystemSettingsInput) -> Result<(), Rep
     if upstream.connect_timeout_seconds == 0
         || upstream.response_header_timeout_seconds <= upstream.connect_timeout_seconds
         || upstream.stream_idle_timeout_seconds == 0
-        || request_retry.max_attempts == 0
-        || request_retry.max_attempts > MAX_REQUEST_ATTEMPTS
+        || request_retry.max_retries == 0
+        || request_retry.max_retries > MAX_REQUEST_RETRIES
         || passive_health.connection_failure_threshold == 0
         || passive_health.cooldown_seconds == 0
         || automatic_disable

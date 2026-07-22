@@ -50,7 +50,7 @@ describe("SystemPage", () => {
       },
       request_retry: {
         enabled: true,
-        max_attempts: 2,
+        max_retries: 1,
       },
       passive_health: {
         connection_failure_threshold: 3,
@@ -109,18 +109,18 @@ describe("SystemPage", () => {
     ).toBeInTheDocument();
   });
 
-  it("bounds the total automatic retry attempts", async () => {
+  it("bounds automatic retries after the initial attempt", async () => {
     seedAuthenticatedSession();
     const user = userEvent.setup();
     renderApp();
 
-    const maximumAttempts = await screen.findByLabelText("Maximum attempts");
-    await user.clear(maximumAttempts);
-    await user.type(maximumAttempts, "11");
+    const maximumRetries = await screen.findByLabelText("Maximum retries");
+    await user.clear(maximumRetries);
+    await user.type(maximumRetries, "11");
     await user.click(screen.getByRole("button", { name: /save system settings/i }));
 
     expect(
-      await screen.findByText("Maximum attempts must be between 1 and 10."),
+      await screen.findByText("Maximum retries must be between 1 and 10."),
     ).toBeInTheDocument();
   });
 });
