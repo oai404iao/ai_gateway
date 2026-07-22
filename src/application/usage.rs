@@ -1,8 +1,8 @@
-//! Bounded, format-specific response usage extraction.
+//! Bounded, format-specific response usage and SSE terminal-state extraction.
 //!
 //! The collector never buffers an ordinary response body. For JSON it retains
 //! only the top-level `usage` object; for SSE it retains one event frame at a
-//! time and inspects its `data:` JSON payload.
+//! time and inspects its event name and `data:` JSON payload.
 
 use axum::body::Bytes;
 use serde_json::Value;
@@ -11,6 +11,8 @@ use crate::domain::ApiFormat;
 
 const MAX_USAGE_OBJECT_BYTES: usize = 64 * 1_024;
 const MAX_SSE_FRAME_BYTES: usize = 8 * 1_024 * 1_024;
+const MAX_ERROR_CODE_BYTES: usize = 100;
+const MAX_ERROR_SUMMARY_BYTES: usize = 1_000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ResponseUsage {
@@ -74,12 +76,25 @@ pub struct UsageCollector {
     mode: CollectorMode,
     latest: Option<ResponseUsage>,
     terminal: Option<ResponseUsage>,
-    stream_completed: bool,
+    sse_terminal_outcome: Option<SseTerminalOutcome>,
+    sse_error: Option<SseErrorDetails>,
 }
 
 enum CollectorMode {
     Json(TopLevelUsageScanner),
     Sse(SseUsageScanner),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum SseTerminalOutcome {
+    Completed,
+    Failed,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(super) struct SseErrorDetails {
+    pub code: Option<String>,
+    pub summary: Option<String>,
 }
 
 impl UsageCollector {
@@ -94,17 +109,21 @@ impl UsageCollector {
             },
             latest: None,
             terminal: None,
-            stream_completed: false,
+            sse_terminal_outcome: None,
+            sse_error: None,
         }
     }
 
     pub fn observe(&mut self, bytes: &Bytes) {
         let api_format = self.api_format;
-        let (values, stream_completed) = match &mut self.mode {
-            CollectorMode::Json(scanner) => (scanner.push(bytes), false),
+        let (values, terminal_outcome, error) = match &mut self.mode {
+            CollectorMode::Json(scanner) => (scanner.push(bytes), None, None),
             CollectorMode::Sse(scanner) => scanner.push(bytes, api_format),
         };
-        self.stream_completed |= stream_completed;
+        if self.sse_terminal_outcome.is_none() {
+            self.sse_terminal_outcome = terminal_outcome;
+            self.sse_error = error;
+        }
         self.record(values);
     }
 
@@ -113,11 +132,14 @@ impl UsageCollector {
     /// the upstream body completed cleanly.
     pub fn finalize(&mut self) {
         let api_format = self.api_format;
-        let (values, stream_completed) = match &mut self.mode {
-            CollectorMode::Json(_) => (Vec::new(), false),
+        let (values, terminal_outcome, error) = match &mut self.mode {
+            CollectorMode::Json(_) => (Vec::new(), None, None),
             CollectorMode::Sse(scanner) => scanner.finalize(api_format),
         };
-        self.stream_completed |= stream_completed;
+        if self.sse_terminal_outcome.is_none() {
+            self.sse_terminal_outcome = terminal_outcome;
+            self.sse_error = error;
+        }
         self.record(values);
     }
 
@@ -137,12 +159,22 @@ impl UsageCollector {
         self.terminal.or(self.latest)
     }
 
-    /// Returns true once a successful application-level SSE terminator has
-    /// been observed. Clients are allowed to close after this point without
-    /// waiting for the upstream transport to reach EOF.
+    /// Returns the first application-level SSE terminal event observed.
+    ///
+    /// Clients commonly close immediately after either a successful terminator
+    /// or an error event, without waiting for the upstream transport to reach
+    /// EOF. Remembering the protocol outcome prevents that disconnect from
+    /// overwriting the real upstream result.
     #[must_use]
-    pub fn stream_completed(&self) -> bool {
-        self.stream_completed
+    pub fn sse_terminal_outcome(&self) -> Option<SseTerminalOutcome> {
+        self.sse_terminal_outcome
+    }
+
+    /// Returns the bounded, control-character-cleaned upstream error fields
+    /// extracted from the first failing SSE terminal event.
+    #[must_use]
+    pub fn sse_error(&self) -> Option<&SseErrorDetails> {
+        self.sse_error.as_ref()
     }
 }
 
@@ -159,7 +191,10 @@ fn is_terminal_usage_event(api_format: ApiFormat, value: &Value) -> bool {
                 })
             }),
         ApiFormat::OpenAiResponses => {
-            value.get("type").and_then(Value::as_str) == Some("response.completed")
+            matches!(
+                value.get("type").and_then(Value::as_str),
+                Some("response.completed" | "response.failed")
+            )
         }
     }
 }
@@ -306,102 +341,286 @@ struct SseUsageScanner {
 }
 
 impl SseUsageScanner {
-    fn push(&mut self, bytes: &Bytes, api_format: ApiFormat) -> (Vec<Value>, bool) {
+    fn push(
+        &mut self,
+        bytes: &Bytes,
+        api_format: ApiFormat,
+    ) -> (
+        Vec<Value>,
+        Option<SseTerminalOutcome>,
+        Option<SseErrorDetails>,
+    ) {
         if self.disabled {
-            return (Vec::new(), false);
+            return (Vec::new(), None, None);
         }
         if self.bytes.len().saturating_add(bytes.len()) > MAX_SSE_FRAME_BYTES {
             self.bytes.clear();
             self.disabled = true;
-            return (Vec::new(), false);
+            return (Vec::new(), None, None);
         }
         self.bytes.extend_from_slice(bytes);
         let mut values = Vec::new();
-        let mut stream_completed = false;
+        let mut terminal_outcome = None;
+        let mut error = None;
         while let Some(end) = sse_frame_end(&self.bytes) {
             let frame = self.bytes.drain(..end).collect::<Vec<_>>();
             let observation = observe_sse_frame(&frame, api_format);
-            stream_completed |= observation.stream_completed;
             if let Some(value) = observation.value {
                 values.push(value);
             }
+            if observation.terminal_outcome.is_some() {
+                terminal_outcome = observation.terminal_outcome;
+                error = observation.error;
+                break;
+            }
         }
-        (values, stream_completed)
+        (values, terminal_outcome, error)
     }
 
-    fn finalize(&mut self, api_format: ApiFormat) -> (Vec<Value>, bool) {
+    fn finalize(
+        &mut self,
+        api_format: ApiFormat,
+    ) -> (
+        Vec<Value>,
+        Option<SseTerminalOutcome>,
+        Option<SseErrorDetails>,
+    ) {
         if self.disabled {
-            return (Vec::new(), false);
+            return (Vec::new(), None, None);
         }
         let frame = std::mem::take(&mut self.bytes);
         let observation = observe_sse_frame(&frame, api_format);
         (
             observation.value.into_iter().collect(),
-            observation.stream_completed,
+            observation.terminal_outcome,
+            observation.error,
         )
     }
 }
 
 fn sse_frame_end(bytes: &[u8]) -> Option<usize> {
-    bytes
-        .windows(2)
-        .position(|window| window == b"\n\n")
-        .map(|end| end + 2)
-        .or_else(|| {
-            bytes
-                .windows(4)
-                .position(|window| window == b"\r\n\r\n")
-                .map(|end| end + 4)
-        })
+    let mut line_start = 0;
+    let mut index = 0;
+    while index < bytes.len() {
+        let line_end = match bytes[index] {
+            b'\r' if bytes.get(index + 1) == Some(&b'\n') => index + 2,
+            b'\r' | b'\n' => index + 1,
+            _ => {
+                index += 1;
+                continue;
+            }
+        };
+        if index == line_start {
+            return Some(line_end);
+        }
+        line_start = line_end;
+        index = line_end;
+    }
+    None
 }
 
 struct SseFrameObservation {
     value: Option<Value>,
-    stream_completed: bool,
+    terminal_outcome: Option<SseTerminalOutcome>,
+    error: Option<SseErrorDetails>,
 }
 
 fn observe_sse_frame(frame: &[u8], api_format: ApiFormat) -> SseFrameObservation {
     let mut event = None;
     let mut data = Vec::new();
-    for line in frame.split(|byte| *byte == b'\n') {
-        let line = line.strip_suffix(b"\r").unwrap_or(line);
-        if let Some(value) = line.strip_prefix(b"event:") {
-            event = Some(value.strip_prefix(b" ").unwrap_or(value));
-        } else if let Some(value) = line.strip_prefix(b"data:") {
-            let value = value.strip_prefix(b" ").unwrap_or(value);
-            if !data.is_empty() {
-                data.push(b'\n');
+    let mut has_data = false;
+    let mut cursor = 0;
+    while let Some(line) = next_sse_line(frame, &mut cursor) {
+        if line.is_empty() {
+            break;
+        }
+        let Some((field, value)) = sse_field(line) else {
+            continue;
+        };
+        match field {
+            b"event" => event = Some(value),
+            b"data" => {
+                if has_data {
+                    data.push(b'\n');
+                }
+                data.extend_from_slice(value);
+                has_data = true;
             }
-            data.extend_from_slice(value);
+            _ => {}
         }
     }
-    if data.as_slice() == b"[DONE]" {
-        return SseFrameObservation {
-            value: None,
-            stream_completed: true,
-        };
-    }
-    let value: Option<Value> = (!data.is_empty())
+    let value: Option<Value> = has_data
         .then(|| serde_json::from_slice(&data).ok())
         .flatten();
-    let stream_completed = api_format == ApiFormat::OpenAiResponses
-        && (event == Some(b"response.completed".as_slice())
-            || value
-                .as_ref()
-                .and_then(|value| value.get("type"))
-                .and_then(Value::as_str)
-                == Some("response.completed"));
+    let event_type = value
+        .as_ref()
+        .and_then(|value| value.get("type"))
+        .and_then(Value::as_str);
+    let error_envelope = value
+        .as_ref()
+        .and_then(|value| value.get("error"))
+        .is_some_and(|error| !error.is_null());
+    let failed = event == Some(b"error".as_slice())
+        || event_type == Some("error")
+        || error_envelope
+        || (api_format == ApiFormat::OpenAiResponses
+            && (event == Some(b"response.failed".as_slice())
+                || event_type == Some("response.failed")));
+    let completed = data.as_slice() == b"[DONE]"
+        || (api_format == ApiFormat::OpenAiResponses
+            && (event == Some(b"response.completed".as_slice())
+                || event_type == Some("response.completed")));
+    let terminal_outcome = if failed {
+        Some(SseTerminalOutcome::Failed)
+    } else if completed {
+        Some(SseTerminalOutcome::Completed)
+    } else {
+        None
+    };
+    let error = failed.then(|| extract_sse_error(value.as_ref()));
     SseFrameObservation {
         value,
-        stream_completed,
+        terminal_outcome,
+        error,
     }
+}
+
+fn extract_sse_error(value: Option<&Value>) -> SseErrorDetails {
+    let Some(value) = value else {
+        return SseErrorDetails::default();
+    };
+    let nested_error = value
+        .get("error")
+        .filter(|error| !error.is_null())
+        .or_else(|| {
+            value
+                .get("response")
+                .and_then(|response| response.get("error"))
+                .filter(|error| !error.is_null())
+        });
+    let code = nested_error
+        .and_then(|error| {
+            error
+                .get("code")
+                .and_then(error_scalar)
+                .or_else(|| error.get("type").and_then(error_scalar))
+        })
+        .or_else(|| value.get("code").and_then(error_scalar))
+        .and_then(|code| sanitize_error_text(&code, MAX_ERROR_CODE_BYTES, false));
+    let summary = nested_error
+        .and_then(|error| match error {
+            Value::String(message) => Some(message.as_str()),
+            Value::Object(_) => error.get("message").and_then(Value::as_str),
+            _ => None,
+        })
+        .or_else(|| value.get("message").and_then(Value::as_str))
+        .and_then(|message| sanitize_error_text(message, MAX_ERROR_SUMMARY_BYTES, true));
+    SseErrorDetails { code, summary }
+}
+
+fn error_scalar(value: &Value) -> Option<String> {
+    match value {
+        Value::String(value) => Some(value.clone()),
+        Value::Number(value) => Some(value.to_string()),
+        Value::Bool(value) => Some(value.to_string()),
+        Value::Null | Value::Array(_) | Value::Object(_) => None,
+    }
+}
+
+fn sanitize_error_text(value: &str, maximum_bytes: usize, multiline: bool) -> Option<String> {
+    let mut sanitized = String::new();
+    let mut previous_was_cr = false;
+    let mut truncated = false;
+    for character in value.chars() {
+        let character = match character {
+            '\r' if multiline => {
+                previous_was_cr = true;
+                '\n'
+            }
+            '\n' if multiline && previous_was_cr => {
+                previous_was_cr = false;
+                continue;
+            }
+            '\n' | '\t' if multiline => {
+                previous_was_cr = false;
+                character
+            }
+            value if value.is_control() => {
+                previous_was_cr = false;
+                ' '
+            }
+            value => {
+                previous_was_cr = false;
+                value
+            }
+        };
+        if sanitized.len().saturating_add(character.len_utf8()) > maximum_bytes {
+            truncated = true;
+            break;
+        }
+        sanitized.push(character);
+    }
+    let trimmed = sanitized.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let mut sanitized = trimmed.to_owned();
+    if truncated {
+        const ELLIPSIS: &str = "…";
+        let target = maximum_bytes.saturating_sub(ELLIPSIS.len());
+        let mut end = sanitized.len().min(target);
+        while !sanitized.is_char_boundary(end) {
+            end = end.saturating_sub(1);
+        }
+        sanitized.truncate(end);
+        sanitized.push_str(ELLIPSIS);
+    }
+    Some(sanitized)
+}
+
+fn next_sse_line<'a>(bytes: &'a [u8], cursor: &mut usize) -> Option<&'a [u8]> {
+    if *cursor == bytes.len() {
+        return None;
+    }
+    let start = *cursor;
+    let mut index = start;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\r' => {
+                *cursor = if bytes.get(index + 1) == Some(&b'\n') {
+                    index + 2
+                } else {
+                    index + 1
+                };
+                return Some(&bytes[start..index]);
+            }
+            b'\n' => {
+                *cursor = index + 1;
+                return Some(&bytes[start..index]);
+            }
+            _ => index += 1,
+        }
+    }
+    *cursor = bytes.len();
+    Some(&bytes[start..])
+}
+
+fn sse_field(line: &[u8]) -> Option<(&[u8], &[u8])> {
+    if line.first() == Some(&b':') {
+        return None;
+    }
+    let (field, value) = match line.iter().position(|byte| *byte == b':') {
+        Some(position) => (&line[..position], &line[position + 1..]),
+        None => (line, &[][..]),
+    };
+    Some((field, value.strip_prefix(b" ").unwrap_or(value)))
 }
 
 #[cfg(test)]
 mod tests {
     use axum::body::Bytes;
 
-    use super::{ResponseUsage, UsageCollector};
+    use super::{ResponseUsage, SseTerminalOutcome, UsageCollector};
     use crate::domain::ApiFormat;
 
     #[test]
@@ -429,7 +648,10 @@ mod tests {
         collector.observe(&Bytes::from_static(
             b"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":9,\"output_tokens\":2,\"input_tokens_details\":{\"cached_tokens\":1}}}}\n\n",
         ));
-        assert!(collector.stream_completed());
+        assert_eq!(
+            collector.sse_terminal_outcome(),
+            Some(SseTerminalOutcome::Completed)
+        );
         assert_eq!(
             collector.latest(),
             Some(ResponseUsage {
@@ -445,9 +667,112 @@ mod tests {
     fn recognizes_done_sentinel_split_across_chunks() {
         let mut collector = UsageCollector::new(ApiFormat::OpenAiChatCompletions, true);
         collector.observe(&Bytes::from_static(b"data: [DO"));
-        assert!(!collector.stream_completed());
+        assert_eq!(collector.sse_terminal_outcome(), None);
         collector.observe(&Bytes::from_static(b"NE]\n\n"));
-        assert!(collector.stream_completed());
+        assert_eq!(
+            collector.sse_terminal_outcome(),
+            Some(SseTerminalOutcome::Completed)
+        );
+    }
+
+    #[test]
+    fn recognizes_responses_error_event_split_across_chunks() {
+        let mut collector = UsageCollector::new(ApiFormat::OpenAiResponses, true);
+        collector.observe(&Bytes::from_static(b"event: err"));
+        assert_eq!(collector.sse_terminal_outcome(), None);
+        collector.observe(&Bytes::from_static(
+            b"or\r\ndata: {\"type\":\"error\",\"code\":\"server_error\",\"message\":\"failed\",\"param\":null,\"sequence_number\":3}\r\n\r\n",
+        ));
+        assert_eq!(
+            collector.sse_terminal_outcome(),
+            Some(SseTerminalOutcome::Failed)
+        );
+        assert_eq!(
+            collector.sse_error(),
+            Some(&super::SseErrorDetails {
+                code: Some("server_error".into()),
+                summary: Some("failed".into()),
+            })
+        );
+    }
+
+    #[test]
+    fn recognizes_response_failed_and_its_terminal_usage() {
+        let mut collector = UsageCollector::new(ApiFormat::OpenAiResponses, true);
+        collector.observe(&Bytes::from_static(
+            b"event: response.failed\rdata: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"model_error\",\"message\":\"generation failed\"},\"usage\":{\"input_tokens\":7,\"output_tokens\":1,\"input_tokens_details\":{\"cached_tokens\":2}}}}\r\r",
+        ));
+        assert_eq!(
+            collector.sse_terminal_outcome(),
+            Some(SseTerminalOutcome::Failed)
+        );
+        assert_eq!(
+            collector.latest(),
+            Some(ResponseUsage {
+                input_tokens: 7,
+                cached_input_tokens: 2,
+                cache_write_tokens: 0,
+                output_tokens: 1,
+            })
+        );
+        assert_eq!(
+            collector.sse_error(),
+            Some(&super::SseErrorDetails {
+                code: Some("model_error".into()),
+                summary: Some("generation failed".into()),
+            })
+        );
+    }
+
+    #[test]
+    fn recognizes_chat_error_envelope_without_misclassifying_normal_chunks() {
+        let mut collector = UsageCollector::new(ApiFormat::OpenAiChatCompletions, true);
+        collector.observe(&Bytes::from_static(
+            b"data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"content\":\"error\"}}]}\n\n",
+        ));
+        assert_eq!(collector.sse_terminal_outcome(), None);
+        collector.observe(&Bytes::from_static(
+            b"data: {\"error\":{\"message\":\"upstream failed\",\"type\":\"server_error\",\"code\":null}}\n\n",
+        ));
+        assert_eq!(
+            collector.sse_terminal_outcome(),
+            Some(SseTerminalOutcome::Failed)
+        );
+        assert_eq!(
+            collector.sse_error(),
+            Some(&super::SseErrorDetails {
+                code: Some("server_error".into()),
+                summary: Some("upstream failed".into()),
+            })
+        );
+    }
+
+    #[test]
+    fn sanitizes_and_bounds_sse_error_fields() {
+        let mut collector = UsageCollector::new(ApiFormat::OpenAiResponses, true);
+        let message = format!("first\r\nsecond\0{}", "界".repeat(400));
+        collector.observe(&Bytes::from(
+            format!(
+                "event: error\ndata: {}\n\n",
+                serde_json::json!({
+                    "type": "error",
+                    "code": "provider\ncode",
+                    "message": message,
+                })
+            )
+            .into_bytes(),
+        ));
+        let error = collector.sse_error().unwrap();
+        assert_eq!(error.code.as_deref(), Some("provider code"));
+        assert!(
+            error
+                .summary
+                .as_ref()
+                .unwrap()
+                .starts_with("first\nsecond ")
+        );
+        assert!(error.summary.as_ref().unwrap().ends_with('…'));
+        assert!(error.summary.as_ref().unwrap().len() <= super::MAX_ERROR_SUMMARY_BYTES);
     }
 
     #[test]

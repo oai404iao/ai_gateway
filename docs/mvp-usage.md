@@ -170,7 +170,7 @@ Policy 不再保存额度、RPM、并发、格式、权限或最大活动 Key �
 
 - `automatic_disable.enabled`：自动禁用总开关。关闭时，即使渠道允许自动禁用也不会执行状态变更。
 - `automatic_disable.error_status_codes`：触发临时禁用的上游 HTTP 状态码列表。
-- `automatic_disable.error_message_keywords`：触发临时禁用的上游错误消息关键字；匹配大小写不敏感，错误响应只在内存中按流扫描，不写入日志或审计详情。
+- `automatic_disable.error_message_keywords`：触发临时禁用的上游错误消息关键字；匹配大小写不敏感。自动禁用扫描器不会保存被扫描的响应正文；仅当 SSE 协议解析器识别出结构化错误事件时，请求日志才保存受限、已清洗的错误代码与消息摘要。
 - `scheduled_testing.mode`：`global` 测试全部启用渠道；`failure_only` 只测试临时自动禁用的渠道。
 - `scheduled_testing.auto_recover`：测试成功后是否自动清除临时禁用。
 - `scheduled_testing.interval_minutes`：测试间隔，默认 `5`。

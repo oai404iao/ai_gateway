@@ -524,6 +524,7 @@ mod tests {
             total_duration_ms: 1,
             billing: None,
             error_code: Some("model_not_found".into()),
+            error_summary: None,
         }
     }
 

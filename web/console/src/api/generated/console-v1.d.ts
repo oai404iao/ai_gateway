@@ -1063,6 +1063,8 @@ export interface components {
             /** @description Final request cost in USD, or null when not priced. */
             cost_amount: components["schemas"]["DecimalNullable"];
             error_code: string | null;
+            /** @description Bounded, cleaned upstream error message when available. */
+            error_summary: string | null;
             billed_at: components["schemas"]["DateTimeNullable"];
         };
         /** @enum {string} */

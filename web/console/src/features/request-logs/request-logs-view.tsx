@@ -473,7 +473,11 @@ export function RequestLogsView({
       <Card>
         <CardHeader>
           <CardTitle>{t("Requests")}</CardTitle>
-          <CardDescription>{t("The gateway never stores prompts or completions.")}</CardDescription>
+          <CardDescription>
+            {t(
+              "The gateway does not store request or response bodies. Sanitized upstream error messages may be retained.",
+            )}
+          </CardDescription>
         </CardHeader>
         <CardContent>
           <AsyncResource
@@ -554,6 +558,14 @@ export function RequestLogsView({
               />
               <DetailField label={t("Billed at")} value={formatDateTime(detail.data.billed_at)} />
               <DetailField label={t("Error code")} value={detail.data.error_code ?? "—"} mono />
+              <DetailField
+                label={t("Error message")}
+                value={
+                  <span className="whitespace-pre-wrap">
+                    {detail.data.error_summary ?? "—"}
+                  </span>
+                }
+              />
               <DetailField label={t("Channel group")} value={detail.data.channel_group_id ?? "—"} mono />
               <DetailField label={t("Channel")} value={detail.data.channel_id ?? "—"} mono />
               <DetailField label={t("Completed")} value={formatDateTime(detail.data.completed_at)} />

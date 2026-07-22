@@ -87,7 +87,7 @@ updated_at timestamptz not null
 
 按 PRD，客户端 API Key 与上游 API Key 原始保存，以便所属用户和管理员查看。首版直接使用 `secret_value text UNIQUE` 查询 Key，不额外保存摘要列。
 
-明文 Key、代理密码、`Authorization`、Cookie、请求/响应正文和完整 Header 绝不能写入 `request_logs`、`audit_logs`、tracing 或错误摘要。控制台、备份和只读副本都属于敏感数据边界。
+明文 Key、代理密码、`Authorization`、Cookie、请求/响应正文和完整 Header 绝不能写入 `request_logs`、`audit_logs`、tracing 或错误摘要。错误摘要只允许保存从结构化上游错误事件提取、清理控制字符并限制长度后的错误消息；控制台、备份和只读副本都属于敏感数据边界。
 
 ## 4. 表结构
 
@@ -316,6 +316,7 @@ CHECK (jsonb_typeof(health_check) = 'object');
 - 四个价格字段、币种、计价单位和价格生效时间要么全部为空（未计费），要么全部存在。
 - 费用计算为：`(input - cached_input) * input_price / unit + cached_input * cached_input_price / unit + cache_write * cache_write_price / unit + output * output_price / unit`。
 - 当前不写入 `attempts`，因为网关只进行一次上游尝试。若未来引入重试，只能在尚未收到上游任何字节时追加下一项；收到响应头或首字节后不得切换渠道或重试。
+- SSE `error`、`response.failed` 或兼容的顶层 `error` 对象只提取结构化错误代码与消息；代码和摘要分别限制为 100/1000 字节，并清理控制字符。不得把完整 SSE 帧或其他响应正文写入日志。
 - 结算 worker 对 `cost_amount` 非空且 Key 归属一致的日志，以 `UPDATE ... WHERE id = ? AND billed_at IS NULL RETURNING cost_amount` 取得唯一结算权，再在同一事务更新 `users.balance_amount` 和 `api_keys.quota_used_amount`。事务失败会回滚 `billed_at`，因此 worker 重投、启动恢复和并发结算不会重复扣费；余额不足不阻止结算，余额可为负。缺失成本或归属不一致的日志不会被重试扫描错误地结算。系统只接受 USD 价格和费用，不在内部进行货币转换。
 
 不保存请求体、响应体、完整 Header、任何密钥、Cookie、原始 IP 或未清洗的上游错误。请求遥测清理前，必须确认它仍是首版唯一的计费审计依据；在引入独立账本前，不应任意缩短其保留期。

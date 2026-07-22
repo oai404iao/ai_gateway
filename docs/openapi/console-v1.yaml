@@ -1927,7 +1927,7 @@ components:
          request_source, client_model, upstream_model, model_rule_id, channel_group_id,
          channel_id, outcome, response_status_code, streamed, ttft_ms,
          total_duration_ms, input_tokens, cached_input_tokens,
-         cache_write_tokens, output_tokens, cost_amount, error_code,
+         cache_write_tokens, output_tokens, cost_amount, error_code, error_summary,
          billed_at]
       properties:
         id: { type: string, format: uuid }
@@ -1954,7 +1954,12 @@ components:
         cost_amount:
           allOf: [{ $ref: "#/components/schemas/DecimalNullable" }]
           description: Final request cost in USD, or null when not priced.
-        error_code: { type: string, nullable: true }
+        error_code: { type: string, maxLength: 100, nullable: true }
+        error_summary:
+          type: string
+          maxLength: 1000
+          nullable: true
+          description: Bounded, cleaned upstream error message when available.
         billed_at: { $ref: "#/components/schemas/DateTimeNullable" }
 
     RequestLogSource:

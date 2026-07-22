@@ -1284,14 +1284,20 @@ async fn request_log_filters_match_the_console_contract() {
     .unwrap();
     let now = chrono::Utc::now();
     let matching_log_id = Uuid::new_v4();
-    for (id, client_model, outcome) in [
-        (matching_log_id, "filter-model", "succeeded"),
-        (Uuid::new_v4(), "other-model", "failed"),
+    for (id, client_model, outcome, error_code, error_summary) in [
+        (
+            matching_log_id,
+            "filter-model",
+            "failed",
+            Some("provider_error"),
+            Some("upstream quota exhausted"),
+        ),
+        (Uuid::new_v4(), "other-model", "succeeded", None, None),
     ] {
         sqlx::query(
             "INSERT INTO request_logs \
-             (id,started_at,completed_at,user_id,api_key_id,api_format,client_model,upstream_model,outcome,streamed,total_duration_ms) \
-             VALUES ($1,$2,$2,$3,$4,'open_ai_chat_completions',$5,$6,$7,false,1)",
+             (id,started_at,completed_at,user_id,api_key_id,api_format,client_model,upstream_model,outcome,streamed,total_duration_ms,error_code,error_summary) \
+             VALUES ($1,$2,$2,$3,$4,'open_ai_chat_completions',$5,$6,$7,false,1,$8,$9)",
         )
         .bind(id)
         .bind(now)
@@ -1300,6 +1306,8 @@ async fn request_log_filters_match_the_console_contract() {
         .bind(client_model)
         .bind("filter-upstream")
         .bind(outcome)
+        .bind(error_code)
+        .bind(error_summary)
         .execute(&database.pool)
         .await
         .unwrap();
@@ -1308,7 +1316,7 @@ async fn request_log_filters_match_the_console_contract() {
     let response = request(
         &app,
         "GET",
-        "/console/v1/request-logs?model=filter-model&api_format=open_ai_chat_completions&outcome=succeeded&billed=false&limit=25",
+        "/console/v1/request-logs?model=filter-model&api_format=open_ai_chat_completions&outcome=failed&billed=false&limit=25",
         serde_json::json!({}),
         &[],
     )
@@ -1317,6 +1325,8 @@ async fn request_log_filters_match_the_console_contract() {
     let body = body_json(response).await;
     assert_eq!(body.as_array().unwrap().len(), 1);
     assert_eq!(body[0]["id"], matching_log_id.to_string());
+    assert_eq!(body[0]["error_code"], "provider_error");
+    assert_eq!(body[0]["error_summary"], "upstream quota exhausted");
 
     let detail = request(
         &app,
@@ -1327,7 +1337,10 @@ async fn request_log_filters_match_the_console_contract() {
     )
     .await;
     assert_eq!(detail.status(), StatusCode::OK);
-    assert_eq!(body_json(detail).await["id"], matching_log_id.to_string());
+    let detail = body_json(detail).await;
+    assert_eq!(detail["id"], matching_log_id.to_string());
+    assert_eq!(detail["error_code"], "provider_error");
+    assert_eq!(detail["error_summary"], "upstream quota exhausted");
 
     let missing = request(
         &app,

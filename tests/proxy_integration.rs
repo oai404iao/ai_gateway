@@ -110,6 +110,18 @@ async fn responses_completed_then_hangs() -> Response {
     )
 }
 
+async fn chat_error_then_hangs() -> Response {
+    terminal_sse_then_hangs(
+        b"data: {\"error\":{\"message\":\"sensitive upstream detail\",\"type\":\"server_error\",\"code\":\"provider_error\"}}\n\n",
+    )
+}
+
+async fn responses_error_then_hangs() -> Response {
+    terminal_sse_then_hangs(
+        b"event: error\ndata: {\"type\":\"error\",\"code\":\"server_error\",\"message\":\"sensitive upstream detail\",\"param\":null,\"sequence_number\":3}\n\n",
+    )
+}
+
 async fn first_response_header_hangs(
     State(upstream): State<MockUpstream>,
     request: Request,
@@ -1220,6 +1232,94 @@ async fn protocol_terminal_sse_events_complete_logs_before_transport_eof() {
             cache_write_tokens: 0,
             output_tokens: 3,
         })
+    );
+    drop(responses);
+    assert_eq!(logs.events().len(), 2);
+}
+
+#[tokio::test]
+async fn protocol_sse_errors_fail_logs_before_client_disconnect() {
+    let upstream = start_server(
+        Router::new()
+            .route("/v1/chat/completions", post(chat_error_then_hangs))
+            .route("/v1/responses", post(responses_error_then_hangs)),
+    )
+    .await;
+    let logs = RecordingRequestLogSink::default();
+    let configured = proxy_service_with_policy(
+        &format!("http://{}", upstream.address),
+        logs.clone(),
+        None,
+        None,
+        None,
+        Default::default(),
+    );
+    let gateway = start_server(http::router(configured.proxy)).await;
+    let client = client();
+
+    let mut chat = authorized_post(
+        &client,
+        format!("http://{}/v1/chat/completions", gateway.address),
+        CLIENT_KEY,
+        br#"{"model":"same-model","stream":true}"#.to_vec(),
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(chat.status(), StatusCode::OK);
+    assert!(
+        chat.chunk()
+            .await
+            .unwrap()
+            .unwrap()
+            .windows(b"\"error\"".len())
+            .any(|window| window == b"\"error\"")
+    );
+    let events = logs.events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].outcome.as_str(), "failed");
+    assert_eq!(events[0].error_code.as_deref(), Some("provider_error"));
+    assert_eq!(
+        events[0].error_summary.as_deref(),
+        Some("sensitive upstream detail")
+    );
+    assert_eq!(
+        events[0].response_status_code,
+        Some(StatusCode::OK.as_u16())
+    );
+    drop(chat);
+    assert_eq!(logs.events().len(), 1);
+
+    let mut responses = authorized_post(
+        &client,
+        format!("http://{}/v1/responses", gateway.address),
+        CLIENT_KEY,
+        br#"{"model":"responses-model","stream":true}"#.to_vec(),
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(responses.status(), StatusCode::OK);
+    assert!(
+        responses
+            .chunk()
+            .await
+            .unwrap()
+            .unwrap()
+            .windows(b"event: error".len())
+            .any(|window| window == b"event: error")
+    );
+    let events = logs.events();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[1].outcome.as_str(), "failed");
+    assert_eq!(events[1].error_code.as_deref(), Some("server_error"));
+    assert_eq!(
+        events[1].error_summary.as_deref(),
+        Some("sensitive upstream detail")
+    );
+    assert_eq!(
+        events[1].response_status_code,
+        Some(StatusCode::OK.as_u16())
     );
     drop(responses);
     assert_eq!(logs.events().len(), 2);

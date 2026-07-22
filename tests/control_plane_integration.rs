@@ -360,6 +360,7 @@ async fn system_probe_identity_is_an_internal_active_administrator() {
         total_duration_ms: 1,
         billing: None,
         error_code: None,
+        error_summary: None,
     };
     assert_eq!(
         RequestLogRepository::new(database.pool.clone())
@@ -408,6 +409,7 @@ async fn start_server(app: Router) -> TestServer {
 enum UpstreamMode {
     Immediate(StatusCode),
     UsageJson,
+    SseError,
     HeaderDelay,
     OneChunkThenIdle,
     TwoChunks,
@@ -428,6 +430,13 @@ async fn upstream(State(state): State<UpstreamState>) -> Response {
             .header("content-type", "application/json")
             .body(Body::from(
                 r#"{"id":"usage-result","usage":{"prompt_tokens":2,"completion_tokens":3}}"#,
+            ))
+            .unwrap(),
+        UpstreamMode::SseError => Response::builder()
+            .status(StatusCode::OK)
+            .header("content-type", "text/event-stream")
+            .body(Body::from(
+                "data: {\"error\":{\"code\":\"provider_error\",\"message\":\"upstream quota exhausted\"}}\n\n",
             ))
             .unwrap(),
         UpstreamMode::HeaderDelay => {
@@ -491,6 +500,7 @@ struct PersistedLog {
     ttft_ms: Option<i32>,
     total_duration_ms: Option<i32>,
     error_code: Option<String>,
+    error_summary: Option<String>,
 }
 
 #[derive(FromRow)]
@@ -542,7 +552,7 @@ fn assert_log_timing(log: &PersistedLog) {
 async fn wait_for_log(pool: &PgPool, api_key_id: Uuid, client_model: &str) -> PersistedLog {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
     loop {
-        let rows = sqlx::query_as::<_, PersistedLog>("SELECT started_at, completed_at, user_id, api_key_id, api_format::text AS api_format, client_model, upstream_model, model_rule_id, channel_group_id, channel_id, model_id, outcome, response_status_code, streamed, ttft_ms, total_duration_ms, error_code FROM request_logs WHERE api_key_id = $1 AND client_model = $2")
+        let rows = sqlx::query_as::<_, PersistedLog>("SELECT started_at, completed_at, user_id, api_key_id, api_format::text AS api_format, client_model, upstream_model, model_rule_id, channel_group_id, channel_id, model_id, outcome, response_status_code, streamed, ttft_ms, total_duration_ms, error_code, error_summary FROM request_logs WHERE api_key_id = $1 AND client_model = $2")
             .bind(api_key_id)
             .bind(client_model)
             .fetch_all(pool)
@@ -570,7 +580,7 @@ async fn wait_for_terminal_log(
 ) -> PersistedLog {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
     loop {
-        let rows = sqlx::query_as::<_, PersistedLog>("SELECT started_at, completed_at, user_id, api_key_id, api_format::text AS api_format, client_model, upstream_model, model_rule_id, channel_group_id, channel_id, model_id, outcome, response_status_code, streamed, ttft_ms, total_duration_ms, error_code FROM request_logs WHERE api_key_id = $1 AND client_model = $2 AND outcome = $3 AND error_code IS NOT DISTINCT FROM $4")
+        let rows = sqlx::query_as::<_, PersistedLog>("SELECT started_at, completed_at, user_id, api_key_id, api_format::text AS api_format, client_model, upstream_model, model_rule_id, channel_group_id, channel_id, model_id, outcome, response_status_code, streamed, ttft_ms, total_duration_ms, error_code, error_summary FROM request_logs WHERE api_key_id = $1 AND client_model = $2 AND outcome = $3 AND error_code IS NOT DISTINCT FROM $4")
             .bind(api_key_id)
             .bind(client_model)
             .bind(outcome)
@@ -799,6 +809,7 @@ fn request_log_event(seed: &Seed, outcome: RequestLogOutcome) -> RequestLogEvent
             output_tokens_per_second: Some(rust_decimal::Decimal::new(20, 2)),
         }),
         error_code: None,
+        error_summary: None,
     }
 }
 
@@ -885,6 +896,12 @@ async fn request_log_insert_is_idempotent_and_worker_continues_after_failure() {
     conflicting.error_code = Some("different_terminal_fact".into());
     assert!(matches!(
         repository.insert(&conflicting).await,
+        Err(ai_gateway::persistence::RepositoryError::DuplicateConflict { .. })
+    ));
+    let mut conflicting_summary = event.clone();
+    conflicting_summary.error_summary = Some("different upstream detail".into());
+    assert!(matches!(
+        repository.insert(&conflicting_summary).await,
         Err(ai_gateway::persistence::RepositoryError::DuplicateConflict { .. })
     ));
     let mut invalid_status = request_log_event(&seed, RequestLogOutcome::Failed);
@@ -3656,6 +3673,35 @@ async fn proxy_request_logs_reach_postgres_for_terminal_and_rejected_requests() 
     assert!(success.streamed);
     assert!(success.ttft_ms.is_some());
     assert_eq!(success.error_code, None);
+    assert_eq!(success.error_summary, None);
+
+    *state.0.lock().unwrap() = UpstreamMode::SseError;
+    let response = request(&seed.secret, &seed.client_model, true)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        response
+            .bytes()
+            .await
+            .unwrap()
+            .windows(b"provider_error".len())
+            .any(|window| window == b"provider_error")
+    );
+    let sse_error = wait_for_terminal_log(
+        &database.pool,
+        seed.key,
+        &seed.client_model,
+        "failed",
+        Some("provider_error"),
+    )
+    .await;
+    assert_eq!(sse_error.response_status_code, Some(200));
+    assert_eq!(
+        sse_error.error_summary.as_deref(),
+        Some("upstream quota exhausted")
+    );
 
     *state.0.lock().unwrap() = UpstreamMode::Immediate(StatusCode::TOO_MANY_REQUESTS);
     let response = request(&seed.secret, &seed.client_model, false)
@@ -3792,7 +3838,7 @@ async fn proxy_request_logs_reach_postgres_for_terminal_and_rejected_requests() 
         .fetch_one(&database.pool)
         .await
         .unwrap();
-    assert_eq!(total, 7);
+    assert_eq!(total, 8);
     let grouped = sqlx::query_as::<_, TerminalLogCount>(
         "SELECT api_key_id, client_model, outcome, error_code, count(*) AS count FROM request_logs GROUP BY api_key_id, client_model, outcome, error_code",
     )
@@ -3819,6 +3865,15 @@ async fn proxy_request_logs_reach_postgres_for_terminal_and_rejected_requests() 
                 seed.client_model.clone(),
                 "succeeded".into(),
                 None,
+            ),
+            1,
+        ),
+        (
+            (
+                seed.key,
+                seed.client_model.clone(),
+                "failed".into(),
+                Some("provider_error".into()),
             ),
             1,
         ),

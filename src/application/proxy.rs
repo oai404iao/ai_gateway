@@ -50,7 +50,7 @@ use crate::{
     upstream::{ResolvedUpstreamPolicy, UpstreamClientRegistry},
 };
 
-use super::usage::UsageCollector;
+use super::usage::{SseTerminalOutcome, UsageCollector};
 
 /// Data-plane use case backed by a single immutable configuration snapshot per
 /// request and a process-shared upstream client registry.
@@ -414,6 +414,7 @@ impl ProxyService {
             total_duration_ms: elapsed,
             billing: None,
             error_code: Some("model_not_found".into()),
+            error_summary: None,
         };
         tracing::info!(event = "proxy_request_completed", api_key_id = %api_key.id(), api_format = ?api_format, outcome = "rejected", "proxy request completed");
         self.request_log_sink.try_record(event);
@@ -451,6 +452,7 @@ impl ProxyService {
             total_duration_ms: clamp_duration_ms(started.elapsed()),
             billing: None,
             error_code: Some("no_healthy_channel".into()),
+            error_summary: None,
         };
         tracing::info!(event = "proxy_request_completed", api_key_id = %api_key.id(), api_format = ?api_format, outcome = "no_healthy_channel", "proxy request completed");
         self.request_log_sink.try_record(event);
@@ -1141,20 +1143,31 @@ fn timed_upstream_stream(
                     }
                     Ok(None) => {
                         state.upstream.take();
-                        let outcome = if state.upstream_succeeded {
-                            RequestOutcome::Succeeded
-                        } else {
-                            RequestOutcome::UpstreamHttpError
-                        };
+                        let default_outcome = completed_transport_outcome(state.upstream_succeeded);
                         if let Some(transformer) = &mut state.sse_transformer {
                             if let Some(residual) = transformer.finish() {
                                 record_stream_bytes(&mut state, &residual);
-                                state.completion.finalize_usage();
+                                let outcome = state
+                                    .completion
+                                    .finalize_usage()
+                                    .map(|terminal| {
+                                        sse_terminal_request_outcome(
+                                            terminal,
+                                            state.upstream_succeeded,
+                                        )
+                                    })
+                                    .unwrap_or(default_outcome);
                                 state.completion.finish(outcome);
                                 return Some((Ok(residual), state));
                             }
                         }
-                        state.completion.finalize_usage();
+                        let outcome = state
+                            .completion
+                            .finalize_usage()
+                            .map(|terminal| {
+                                sse_terminal_request_outcome(terminal, state.upstream_succeeded)
+                            })
+                            .unwrap_or(default_outcome);
                         state.completion.finish(outcome);
                         return None;
                     }
@@ -1177,24 +1190,43 @@ fn record_stream_bytes(state: &mut StreamState, bytes: &Bytes) {
     if !bytes.is_empty() {
         state.completion.observe_upstream_error_body(bytes);
         state.completion.record_first_byte();
-        let stream_completed = state.completion.observe_usage(bytes);
-        if stream_completed {
-            state.completion.finish(if state.upstream_succeeded {
-                RequestOutcome::Succeeded
-            } else {
-                RequestOutcome::UpstreamHttpError
-            });
+        if let Some(terminal) = state.completion.observe_usage(bytes) {
+            state.completion.finish(sse_terminal_request_outcome(
+                terminal,
+                state.upstream_succeeded,
+            ));
         }
     }
     if let Some(remaining) = &mut state.remaining_bytes {
         *remaining = remaining.saturating_sub(bytes.len() as u64);
         if *remaining == 0 {
-            state.completion.finalize_usage();
-            state.completion.finish(if state.upstream_succeeded {
-                RequestOutcome::Succeeded
-            } else {
-                RequestOutcome::UpstreamHttpError
-            });
+            let outcome = state
+                .completion
+                .finalize_usage()
+                .map(|terminal| sse_terminal_request_outcome(terminal, state.upstream_succeeded))
+                .unwrap_or_else(|| completed_transport_outcome(state.upstream_succeeded));
+            state.completion.finish(outcome);
+        }
+    }
+}
+
+const fn completed_transport_outcome(upstream_succeeded: bool) -> RequestOutcome {
+    if upstream_succeeded {
+        RequestOutcome::Succeeded
+    } else {
+        RequestOutcome::UpstreamHttpError
+    }
+}
+
+const fn sse_terminal_request_outcome(
+    terminal: SseTerminalOutcome,
+    upstream_succeeded: bool,
+) -> RequestOutcome {
+    match (terminal, upstream_succeeded) {
+        (SseTerminalOutcome::Completed, true) => RequestOutcome::Succeeded,
+        (SseTerminalOutcome::Failed, true) => RequestOutcome::UpstreamSseError,
+        (SseTerminalOutcome::Completed | SseTerminalOutcome::Failed, false) => {
+            RequestOutcome::UpstreamHttpError
         }
     }
 }
@@ -1214,6 +1246,7 @@ impl Error for ResponseTransformBodyError {}
 enum RequestOutcome {
     Succeeded,
     UpstreamHttpError,
+    UpstreamSseError,
     ConnectTimeout,
     ResponseHeaderTimeout,
     UpstreamUnavailable,
@@ -1229,6 +1262,7 @@ impl RequestOutcome {
         match self {
             Self::Succeeded => "succeeded",
             Self::UpstreamHttpError => "upstream_http_error",
+            Self::UpstreamSseError => "upstream_sse_error",
             Self::ConnectTimeout => "connect_timeout",
             Self::ResponseHeaderTimeout => "response_header_timeout",
             Self::UpstreamUnavailable => "upstream_unavailable",
@@ -1245,6 +1279,7 @@ impl RequestOutcome {
             Self::Succeeded => RequestLogOutcome::Succeeded,
             Self::Cancelled => RequestLogOutcome::Cancelled,
             Self::UpstreamHttpError
+            | Self::UpstreamSseError
             | Self::ConnectTimeout
             | Self::ResponseHeaderTimeout
             | Self::UpstreamUnavailable
@@ -1259,6 +1294,7 @@ impl RequestOutcome {
         match self {
             Self::Succeeded => None,
             Self::UpstreamHttpError => Some("upstream_http_error"),
+            Self::UpstreamSseError => Some("upstream_sse_error"),
             Self::ConnectTimeout => Some("connect_timeout"),
             Self::ResponseHeaderTimeout => Some("response_header_timeout"),
             Self::UpstreamUnavailable => Some("upstream_unavailable"),
@@ -1280,6 +1316,7 @@ impl RequestOutcome {
             Self::ClientRequestError => Some(StatusCode::BAD_REQUEST.as_u16()),
             Self::Succeeded
             | Self::UpstreamHttpError
+            | Self::UpstreamSseError
             | Self::UpstreamBodyError
             | Self::StreamIdleTimeout
             | Self::Cancelled => None,
@@ -1290,6 +1327,7 @@ impl RequestOutcome {
         matches!(
             self,
             Self::UpstreamHttpError
+                | Self::UpstreamSseError
                 | Self::ConnectTimeout
                 | Self::ResponseHeaderTimeout
                 | Self::UpstreamUnavailable
@@ -1427,12 +1465,12 @@ impl CompletionGuard {
         }
     }
 
-    fn observe_usage(&mut self, bytes: &Bytes) -> bool {
+    fn observe_usage(&mut self, bytes: &Bytes) -> Option<SseTerminalOutcome> {
         if let Some(context) = &mut self.context {
             context.usage.observe(bytes);
-            context.usage.stream_completed()
+            context.usage.sse_terminal_outcome()
         } else {
-            false
+            None
         }
     }
 
@@ -1451,9 +1489,12 @@ impl CompletionGuard {
         }
     }
 
-    fn finalize_usage(&mut self) {
+    fn finalize_usage(&mut self) -> Option<SseTerminalOutcome> {
         if let Some(context) = &mut self.context {
             context.usage.finalize();
+            context.usage.sse_terminal_outcome()
+        } else {
+            None
         }
     }
 
@@ -1495,6 +1536,7 @@ impl CompletionGuard {
             }
         }
         let usage = context.usage.latest();
+        let upstream_error = context.usage.sse_error().cloned();
         let total_duration_ms = clamp_duration_ms(context.started_at.elapsed());
         let billing = request_billing(
             &context.price_snapshot,
@@ -1542,7 +1584,11 @@ impl CompletionGuard {
             ttft_ms: context.first_byte_at.map(clamp_duration_ms),
             total_duration_ms,
             billing: Some(billing),
-            error_code: outcome.error_code().map(str::to_owned),
+            error_code: upstream_error
+                .as_ref()
+                .and_then(|error| error.code.clone())
+                .or_else(|| outcome.error_code().map(str::to_owned)),
+            error_summary: upstream_error.and_then(|error| error.summary),
         };
         context.sink.try_record(event);
     }

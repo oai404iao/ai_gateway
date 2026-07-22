@@ -124,7 +124,7 @@ describe("RequestLogsView", () => {
       model_rule_id: null,
       channel_group_id: null,
       channel_id: null,
-      outcome: "succeeded",
+      outcome: "failed",
       response_status_code: 200,
       streamed: true,
       ttft_ms: 100,
@@ -134,7 +134,8 @@ describe("RequestLogsView", () => {
       cache_write_tokens: 0,
       output_tokens: 4,
       cost_amount: "0.0001",
-      error_code: null,
+      error_code: "provider_error",
+      error_summary: "Upstream quota exhausted.\nTry another channel.",
       billed_at: "2026-07-21T06:00:02Z",
     } as const;
     let detailRequests = 0;
@@ -155,6 +156,13 @@ describe("RequestLogsView", () => {
     expect(
       await screen.findByText("upstream-detail-model", { selector: "dd" }),
     ).toBeInTheDocument();
+    expect(
+      await screen.findByText("provider_error", { selector: "dd" }),
+    ).toBeInTheDocument();
+    const errorMessageLabel = await screen.findByText("Error message", { selector: "dt" });
+    expect(errorMessageLabel.parentElement).toHaveTextContent(
+      "Upstream quota exhausted. Try another channel.",
+    );
     expect(detailRequests).toBe(1);
   });
 });

@@ -184,6 +184,7 @@ mod tests {
                 output_tokens_per_second: Some(Decimal::ONE),
             }),
             error_code: Some("model_not_found".into()),
+            error_summary: None,
         }
     }
 

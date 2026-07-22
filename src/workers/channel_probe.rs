@@ -458,6 +458,7 @@ fn finished_probe(
             total_duration_ms: clamp_duration_ms(started.elapsed()),
             billing: None,
             error_code: error_code.map(str::to_owned),
+            error_summary: None,
         },
         succeeded,
     }

@@ -8,7 +8,8 @@ use uuid::Uuid;
 use super::ApiFormat;
 
 /// A single idempotent request-log row. It deliberately excludes request and
-/// response bodies, headers, credentials, and raw transport errors.
+/// response bodies, headers, credentials, and raw transport errors. A bounded,
+/// cleaned upstream error summary may be retained for operator diagnostics.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RequestLogEvent {
     pub id: Uuid,
@@ -31,6 +32,8 @@ pub struct RequestLogEvent {
     pub total_duration_ms: i32,
     pub billing: Option<RequestBilling>,
     pub error_code: Option<String>,
+    #[serde(default)]
+    pub error_summary: Option<String>,
 }
 
 /// Identifies whether a row came from an external client request or the

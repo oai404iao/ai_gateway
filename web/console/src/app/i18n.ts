@@ -413,7 +413,8 @@ const zhCN: Record<string, string> = {
   "Routing disabled": "路由已禁用",
   "No channel models": "渠道没有模型",
   "Add available upstream models to this channel.": "请为此渠道添加可用上游模型。",
-  "The gateway never stores prompts or completions.": "网关不会存储提示词或生成内容。",
+  "The gateway does not store request or response bodies. Sanitized upstream error messages may be retained.":
+    "网关不会存储请求或响应正文，但可能保留已清洗的上游错误消息。",
   "No request logs": "没有请求日志",
   "There are no logged requests matching these filters.": "没有符合这些筛选条件的请求日志。",
   "Started": "开始时间",
@@ -433,6 +434,7 @@ const zhCN: Record<string, string> = {
   "Cache write": "缓存写入",
   "Billed at": "结算时间",
   "Error code": "错误代码",
+  "Error message": "错误消息",
   "Channel group": "渠道组",
   "Channel": "渠道",
   "Completed": "完成时间",

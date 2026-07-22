@@ -49,3 +49,47 @@ pub(crate) enum JournalCodecError {
     #[error("request-log journal identifier does not match its payload")]
     IdentifierMismatch,
 }
+
+#[cfg(test)]
+mod tests {
+    use uuid::Uuid;
+
+    use super::EncodedRequestLog;
+
+    #[test]
+    fn decodes_older_payloads_without_an_error_summary() {
+        let id = Uuid::new_v4();
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "id": id,
+            "started_at": "2026-07-22T00:00:00Z",
+            "completed_at": "2026-07-22T00:00:01Z",
+            "user_id": Uuid::new_v4(),
+            "api_key_id": Uuid::new_v4(),
+            "request_source": "client",
+            "api_format": "open_ai_chat_completions",
+            "client_model": "model",
+            "upstream_model": "upstream-model",
+            "model_rule_id": null,
+            "channel_group_id": null,
+            "channel_id": null,
+            "model_id": null,
+            "outcome": "cancelled",
+            "response_status_code": 200,
+            "streamed": true,
+            "ttft_ms": 1,
+            "total_duration_ms": 2,
+            "billing": null,
+            "error_code": "client_cancelled"
+        }))
+        .unwrap();
+        let decoded = EncodedRequestLog {
+            request_log_id: id,
+            schema_version: 1,
+            payload,
+        }
+        .decode()
+        .unwrap();
+
+        assert_eq!(decoded.error_summary, None);
+    }
+}
