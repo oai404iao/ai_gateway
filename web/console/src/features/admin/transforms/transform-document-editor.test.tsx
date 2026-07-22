@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { beforeEach, describe, expect, it } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { I18nProvider } from "@/app/i18n-provider";
 import { STORAGE_KEY, setCurrentLocale } from "@/app/i18n";
@@ -79,6 +79,32 @@ describe("TransformDocumentEditor", () => {
     ).not.toHaveProperty("authorization");
   });
 
+  it("generates a version-two array operation from the visual editor", async () => {
+    const user = userEvent.setup();
+    renderEditor();
+
+    await user.click(screen.getByRole("button", { name: "Add request body rule" }));
+    await user.click(screen.getByLabelText("JSON Patch operation"));
+    await user.click(screen.getByRole("option", { name: "Append to array" }));
+    await user.type(screen.getByLabelText("JSON pointer"), "/messages");
+    const value = screen.getByLabelText("Value (JSON)");
+    fireEvent.change(value, { target: { value: '{"role":"system"}' } });
+
+    expect(JSON.parse(screen.getByTestId("transform-document").textContent ?? "")).toEqual({
+      version: 2,
+      api_format: "open_ai_chat_completions",
+      request_json: [
+        {
+          op: "array_append",
+          path: "/messages",
+          value: {
+            role: "system",
+          },
+        },
+      ],
+    });
+  });
+
   it("uses the template metadata format when replacing a redacted document", async () => {
     const user = userEvent.setup();
     renderEditor({
@@ -92,6 +118,66 @@ describe("TransformDocumentEditor", () => {
 
     expect(JSON.parse(screen.getByTestId("transform-document").textContent ?? "")).toMatchObject({
       api_format: "open_ai_responses",
+    });
+  });
+
+  it("applies a version-two array rewrite reference example", async () => {
+    const user = userEvent.setup();
+    renderEditor();
+
+    await user.click(screen.getByRole("tab", { name: "Reference" }));
+    const exampleTitle = screen.getByText("Array rewrite example");
+    const exampleCard = exampleTitle.closest('[data-slot="card"]');
+    expect(exampleCard).not.toBeNull();
+    await user.click(within(exampleCard as HTMLElement).getByRole("button", { name: "Apply example" }));
+
+    expect(JSON.parse(screen.getByTestId("transform-document").textContent ?? "")).toEqual({
+      version: 2,
+      api_format: "open_ai_chat_completions",
+      request_json: [
+        {
+          op: "array_prepend",
+          path: "/messages",
+          value: {
+            role: "system",
+            content: "Follow the gateway policy.",
+          },
+          when: {
+            type: "array",
+          },
+        },
+      ],
+    });
+  });
+
+  it("applies a version-two current-value reference example", async () => {
+    const user = userEvent.setup();
+    renderEditor();
+
+    await user.click(screen.getByRole("tab", { name: "Reference" }));
+    const exampleTitle = screen.getByText("Current-value reference example");
+    const exampleCard = exampleTitle.closest('[data-slot="card"]');
+    expect(exampleCard).not.toBeNull();
+    await user.click(within(exampleCard as HTMLElement).getByRole("button", { name: "Apply example" }));
+
+    expect(JSON.parse(screen.getByTestId("transform-document").textContent ?? "")).toEqual({
+      version: 2,
+      api_format: "open_ai_chat_completions",
+      request_json: [
+        {
+          op: "replace",
+          path: "/metadata",
+          value: {
+            original: {
+              $ref: "current",
+            },
+            gateway: "console",
+          },
+          when: {
+            type: "object",
+          },
+        },
+      ],
     });
   });
 

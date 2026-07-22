@@ -16,5 +16,7 @@ describe("Console i18n", () => {
     ).toBe("请输入以逗号分隔且唯一的 100 至 599 HTTP 状态码。");
     expect(translateFor("zh-CN", "Visual editor")).toBe("可视化编辑");
     expect(translateFor("zh-CN", "Response body (streaming SSE)")).toBe("响应体（流式 SSE）");
+    expect(translateFor("zh-CN", "Append to array")).toBe("追加到数组");
+    expect(translateFor("zh-CN", "Current path value")).toBe("当前路径值");
   });
 });

@@ -876,8 +876,6 @@ const zhCN: Record<string, string> = {
   "Streaming response event": "流式响应事件",
   "Add event patch": "添加事件 Patch",
   "Transform document JSON": "转换文档 JSON",
-  "Use this mode for direct editing. Visual editor supports the version 1 transform schema and keeps its generated JSON synchronized.":
-    "此模式用于直接编辑。可视化编辑器支持版本 1 的转换架构，并会同步生成 JSON。",
   "Transform rule limits": "转换规则限制",
   "Request rules cannot change authorization, cookies, host, content length, model, or stream. Response rules cannot change content type, content length, encoding, or cookies. Hop-by-hop headers are always protected.":
     "请求规则不能修改 authorization、cookie、host、content-length、model 或 stream；响应规则不能修改 content-type、content-length、content-encoding 或 set-cookie。逐跳请求头始终受保护。",
@@ -918,6 +916,56 @@ const zhCN: Record<string, string> = {
     "每个流式响应事件只能有一条规则。",
   "Each streaming response event rule needs at least one JSON Patch.":
     "每条流式响应事件规则至少需要一个 JSON Patch。",
+  "Append to array": "追加到数组",
+  "Prepend to array": "前插到数组",
+  "Insert into array": "插入数组",
+  "Remove array item": "移除数组元素",
+  "Merge object": "合并对象",
+  "Array index": "数组索引",
+  "Value source": "值来源",
+  "Literal JSON": "字面 JSON",
+  "Current path value": "当前路径值",
+  "String template": "字符串模板",
+  "Copies the value at this rule's target path before the operation runs.":
+    "在操作执行前复制此规则目标路径上的当前值。",
+  "Use {{value}} to interpolate the current value as text.":
+    "使用 {{value}} 将当前值作为文本插入。",
+  "Run when": "执行条件",
+  "Always": "始终执行",
+  "Path exists": "路径存在",
+  "Path is missing": "路径不存在",
+  "Path has JSON type": "路径具有 JSON 类型",
+  "Path equals JSON": "路径等于 JSON",
+  "JSON value type": "JSON 值类型",
+  "Equals value (JSON)": "相等值（JSON）",
+  "Transform DSL version": "转换 DSL 版本",
+  "Version 1 uses standard JSON Patch operations.": "版本 1 使用标准 JSON Patch 操作。",
+  "Version 2 adds bounded array edits, shallow object merge, target-value references, and conditions.":
+    "版本 2 增加受限数组编辑、浅层对象合并、目标值引用和条件执行。",
+  "Apply JSON Patch or version 2 array and object operations to the upstream JSON request. Model and stream remain protected.":
+    "对上游 JSON 请求应用 JSON Patch 或版本 2 数组/对象操作；model 和 stream 字段始终受保护。",
+  "Version 2 safety boundary": "版本 2 安全边界",
+  "Array operations target an existing array, merge is shallow and targets an existing object, and {{value}} can only read this rule's target before it runs.":
+    "数组操作针对已存在的数组，merge 是针对已存在对象的浅合并，{{value}} 只能读取此规则执行前的目标值。",
+  "Use this mode for direct editing. Visual editor supports transform schema versions 1 and 2 and keeps its generated JSON synchronized.":
+    "此模式用于直接编辑。可视化编辑器支持版本 1 和 2 的转换架构，并会同步生成 JSON。",
+  "Array insert and remove need a non-negative integer index.":
+    "数组插入和移除需要非负整数索引。",
+  "Every value rule needs a valid JSON value.": "每条带值规则都需要有效的 JSON 值。",
+  "A string template cannot be blank.": "字符串模板不能为空。",
+  "Choose a JSON type for the condition.": "请为条件选择 JSON 类型。",
+  "The equals condition needs a valid JSON value.": "相等条件需要有效的 JSON 值。",
+  "This operation requires an existing target and cannot run when it is missing.":
+    "此操作需要已存在的目标，不能在路径不存在时执行。",
+  "Array rewrite example": "数组改写示例",
+  "Prepend a system message only when the target path is an array.":
+    "仅当目标路径为数组时，在开头插入一条 system 消息。",
+  "Current-value reference example": "当前值引用示例",
+  "Keep the original target value inside a replacement object.":
+    "在替换对象中保留原始目标值。",
+  "Conditional merge example": "条件合并示例",
+  "Shallow-merge safe metadata only when the target is an object.":
+    "仅当目标是对象时，浅合并安全元数据。",
 };
 
 let activeLocale: ConsoleLocale = "en-US";

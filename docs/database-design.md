@@ -273,7 +273,7 @@ CHECK (jsonb_typeof(override_document) = 'object');
 | `enabled` | `boolean` | 非空，默认 `true`。 |
 | `created_at` / `updated_at` | `timestamptz` | 通用时间列。 |
 
-`document` 与 `channels.override_document` 采用同一受限 schema。支持请求 Header 的 `set`/`remove`/`rename`、受限 JSON Pointer/Patch、非流式 JSON 响应 Patch 和逐个 SSE `data:` JSON 事件 Patch；不支持 JavaScript、Shell、任意模板执行或网络超时默认值。
+`document` 与 `channels.override_document` 采用同一受限 schema。版本 1 支持请求/响应 Header 的 `set`/`remove`/`rename` 和受限 JSON Patch；版本 2 在保留这些能力的基础上增加受限数组插入/删除、浅层对象合并、仅引用当前目标值的 `$ref`/`$template`，以及仅检查当前目标的条件执行。响应体改写仅作用于逐个 SSE `data:` JSON 事件，不缓冲或改写普通非流式 JSON 响应。详细语法见 [Transform DSL](transform-dsl.md)。不支持 JavaScript、Shell、任意模板执行、跨路径/请求头/路由上下文变量或网络超时默认值。
 
 保存模板或渠道时，编译器必须验证 JSON 语法、操作白名单、Pointer、SSE 适配性以及最终合并结果。配置不得改写 `Host`、`Content-Length`、`Connection`、`Transfer-Encoding`、客户端 `Authorization`、`Proxy-Authorization` 或 `Connection` 动态声明的 Header。模板更新会立即影响引用它的渠道；系统没有版本回滚能力，依赖 `audit_logs` 查看变更。
 

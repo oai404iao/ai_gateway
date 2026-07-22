@@ -1,4 +1,4 @@
-//! Compilation of the closed version-one transform DSL.
+//! Compilation of the closed, versioned transform DSL.
 //!
 //! This module deliberately contains plans only. Applying a plan belongs to the
 //! data plane and is introduced separately so a malformed control-plane record
@@ -286,32 +286,48 @@ pub fn apply_json_patch_value(
     document: &mut Value,
     plan: &JsonPatchPlan,
 ) -> Result<(), TransformApplyError> {
-    let operations = plan
-        .operations()
-        .iter()
-        .map(compile_runtime_patch_operation)
-        .collect::<Result<Vec<_>, _>>()?;
-    json_patch::patch(document, &operations).map_err(|_| TransformApplyError::PatchFailed)
+    let mut candidate = document.clone();
+    for operation in plan.operations() {
+        apply_json_patch_operation(&mut candidate, operation)?;
+    }
+    *document = candidate;
+    Ok(())
 }
 
-fn compile_runtime_patch_operation(
+fn apply_json_patch_operation(
+    document: &mut Value,
     operation: &JsonPatchOperation,
-) -> Result<PatchOperation, TransformApplyError> {
+) -> Result<(), TransformApplyError> {
     match operation {
-        JsonPatchOperation::Add { path, value } => Ok(PatchOperation::Add(AddOperation {
-            path: runtime_pointer(path)?,
-            value: value.clone(),
-        })),
-        JsonPatchOperation::Replace { path, value } => {
-            Ok(PatchOperation::Replace(ReplaceOperation {
+        JsonPatchOperation::Add { path, value } => apply_static_patch(
+            document,
+            PatchOperation::Add(AddOperation {
                 path: runtime_pointer(path)?,
                 value: value.clone(),
-            }))
-        }
-        JsonPatchOperation::Remove { path } => Ok(PatchOperation::Remove(RemoveOperation {
-            path: runtime_pointer(path)?,
-        })),
+            }),
+        ),
+        JsonPatchOperation::Replace { path, value } => apply_static_patch(
+            document,
+            PatchOperation::Replace(ReplaceOperation {
+                path: runtime_pointer(path)?,
+                value: value.clone(),
+            }),
+        ),
+        JsonPatchOperation::Remove { path } => apply_static_patch(
+            document,
+            PatchOperation::Remove(RemoveOperation {
+                path: runtime_pointer(path)?,
+            }),
+        ),
+        JsonPatchOperation::Advanced(operation) => apply_advanced_patch(document, operation),
     }
+}
+
+fn apply_static_patch(
+    document: &mut Value,
+    operation: PatchOperation,
+) -> Result<(), TransformApplyError> {
+    json_patch::patch(document, &[operation]).map_err(|_| TransformApplyError::PatchFailed)
 }
 
 fn runtime_pointer(pointer: &JsonPointer) -> Result<PointerBuf, TransformApplyError> {
@@ -386,6 +402,7 @@ pub enum JsonPatchOperation {
     Add { path: JsonPointer, value: Value },
     Replace { path: JsonPointer, value: Value },
     Remove { path: JsonPointer },
+    Advanced(AdvancedJsonOperation),
 }
 impl fmt::Debug for JsonPatchOperation {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -393,8 +410,317 @@ impl fmt::Debug for JsonPatchOperation {
             Self::Add { .. } => formatter.write_str("JsonPatchOperation::Add(<redacted>)"),
             Self::Replace { .. } => formatter.write_str("JsonPatchOperation::Replace(<redacted>)"),
             Self::Remove { .. } => formatter.write_str("JsonPatchOperation::Remove(<redacted>)"),
+            Self::Advanced(..) => formatter.write_str("JsonPatchOperation::Advanced(<redacted>)"),
         }
     }
+}
+
+/// Version-two JSON rewrite operations. They remain deliberately bounded:
+/// values can only reference the operation target, conditions can only inspect
+/// the operation target, and there is no arbitrary expression evaluation.
+#[derive(Clone)]
+pub enum AdvancedJsonOperation {
+    Add {
+        path: JsonPointer,
+        value: JsonValueExpression,
+        when: Option<JsonCondition>,
+    },
+    Replace {
+        path: JsonPointer,
+        value: JsonValueExpression,
+        when: Option<JsonCondition>,
+    },
+    Remove {
+        path: JsonPointer,
+        when: Option<JsonCondition>,
+    },
+    ArrayAppend {
+        path: JsonPointer,
+        value: JsonValueExpression,
+        when: Option<JsonCondition>,
+    },
+    ArrayPrepend {
+        path: JsonPointer,
+        value: JsonValueExpression,
+        when: Option<JsonCondition>,
+    },
+    ArrayInsert {
+        path: JsonPointer,
+        index: usize,
+        value: JsonValueExpression,
+        when: Option<JsonCondition>,
+    },
+    ArrayRemove {
+        path: JsonPointer,
+        index: usize,
+        when: Option<JsonCondition>,
+    },
+    Merge {
+        path: JsonPointer,
+        value: JsonValueExpression,
+        when: Option<JsonCondition>,
+    },
+}
+impl fmt::Debug for AdvancedJsonOperation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AdvancedJsonOperation(<redacted>)")
+    }
+}
+impl AdvancedJsonOperation {
+    fn path(&self) -> &JsonPointer {
+        match self {
+            Self::Add { path, .. }
+            | Self::Replace { path, .. }
+            | Self::Remove { path, .. }
+            | Self::ArrayAppend { path, .. }
+            | Self::ArrayPrepend { path, .. }
+            | Self::ArrayInsert { path, .. }
+            | Self::ArrayRemove { path, .. }
+            | Self::Merge { path, .. } => path,
+        }
+    }
+
+    fn when(&self) -> Option<&JsonCondition> {
+        match self {
+            Self::Add { when, .. }
+            | Self::Replace { when, .. }
+            | Self::Remove { when, .. }
+            | Self::ArrayAppend { when, .. }
+            | Self::ArrayPrepend { when, .. }
+            | Self::ArrayInsert { when, .. }
+            | Self::ArrayRemove { when, .. }
+            | Self::Merge { when, .. } => when.as_ref(),
+        }
+    }
+
+    fn value(&self) -> Option<&JsonValueExpression> {
+        match self {
+            Self::Add { value, .. }
+            | Self::Replace { value, .. }
+            | Self::ArrayAppend { value, .. }
+            | Self::ArrayPrepend { value, .. }
+            | Self::ArrayInsert { value, .. }
+            | Self::Merge { value, .. } => Some(value),
+            Self::Remove { .. } | Self::ArrayRemove { .. } => None,
+        }
+    }
+
+    fn is_array_operation(&self) -> bool {
+        matches!(
+            self,
+            Self::ArrayAppend { .. }
+                | Self::ArrayPrepend { .. }
+                | Self::ArrayInsert { .. }
+                | Self::ArrayRemove { .. }
+        )
+    }
+
+    fn is_remove(&self) -> bool {
+        matches!(self, Self::Remove { .. })
+    }
+
+    fn can_create_target(&self) -> bool {
+        matches!(self, Self::Add { .. })
+    }
+
+    fn requires_existing_target(&self) -> bool {
+        !self.can_create_target()
+    }
+}
+
+/// A bounded value expression used by version-two operations.
+#[derive(Clone)]
+pub enum JsonValueExpression {
+    Literal(Value),
+    Current,
+    Template(Arc<str>),
+    Array(Arc<[JsonValueExpression]>),
+    Object(Arc<[(Arc<str>, JsonValueExpression)]>),
+}
+impl fmt::Debug for JsonValueExpression {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("JsonValueExpression(<redacted>)")
+    }
+}
+impl JsonValueExpression {
+    fn resolve(&self, current: Option<&Value>) -> Result<Value, TransformApplyError> {
+        match self {
+            Self::Literal(value) => Ok(value.clone()),
+            Self::Current => current.cloned().ok_or(TransformApplyError::PatchFailed),
+            Self::Template(template) => {
+                let replacement = if template.contains("{{value}}") {
+                    render_template_value(current.ok_or(TransformApplyError::PatchFailed)?)?
+                } else {
+                    String::new()
+                };
+                Ok(Value::String(template.replace("{{value}}", &replacement)))
+            }
+            Self::Array(items) => items
+                .iter()
+                .map(|item| item.resolve(current))
+                .collect::<Result<Vec<_>, _>>()
+                .map(Value::Array),
+            Self::Object(entries) => {
+                let mut object = Map::with_capacity(entries.len());
+                for (key, value) in entries.iter() {
+                    object.insert(key.to_string(), value.resolve(current)?);
+                }
+                Ok(Value::Object(object))
+            }
+        }
+    }
+}
+
+fn render_template_value(value: &Value) -> Result<String, TransformApplyError> {
+    match value {
+        Value::String(value) => Ok(value.clone()),
+        value => serde_json::to_string(value).map_err(|_| TransformApplyError::SerializationFailed),
+    }
+}
+
+/// One condition over the existing value at an operation's target path.
+#[derive(Clone)]
+pub enum JsonCondition {
+    Exists(bool),
+    Type(JsonValueType),
+    Equals(Value),
+}
+impl fmt::Debug for JsonCondition {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("JsonCondition(<redacted>)")
+    }
+}
+impl JsonCondition {
+    fn matches(&self, current: Option<&Value>) -> bool {
+        match self {
+            Self::Exists(expected) => current.is_some() == *expected,
+            Self::Type(expected) => current.is_some_and(|value| expected.matches(value)),
+            Self::Equals(expected) => current == Some(expected),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub enum JsonValueType {
+    Object,
+    Array,
+    String,
+    Number,
+    Boolean,
+    Null,
+}
+impl fmt::Debug for JsonValueType {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("JsonValueType(<redacted>)")
+    }
+}
+impl JsonValueType {
+    fn matches(self, value: &Value) -> bool {
+        match self {
+            Self::Object => value.is_object(),
+            Self::Array => value.is_array(),
+            Self::String => value.is_string(),
+            Self::Number => value.is_number(),
+            Self::Boolean => value.is_boolean(),
+            Self::Null => value.is_null(),
+        }
+    }
+}
+
+fn apply_advanced_patch(
+    document: &mut Value,
+    operation: &AdvancedJsonOperation,
+) -> Result<(), TransformApplyError> {
+    let path = operation.path();
+    let current = document.pointer(path.as_str());
+    if operation
+        .when()
+        .is_some_and(|condition| !condition.matches(current))
+    {
+        return Ok(());
+    }
+    let value = operation
+        .value()
+        .map(|expression| expression.resolve(current))
+        .transpose()?;
+
+    match operation {
+        AdvancedJsonOperation::Add { .. } => apply_static_patch(
+            document,
+            PatchOperation::Add(AddOperation {
+                path: runtime_pointer(path)?,
+                value: value.expect("advanced add has a value expression"),
+            }),
+        ),
+        AdvancedJsonOperation::Replace { .. } => apply_static_patch(
+            document,
+            PatchOperation::Replace(ReplaceOperation {
+                path: runtime_pointer(path)?,
+                value: value.expect("advanced replace has a value expression"),
+            }),
+        ),
+        AdvancedJsonOperation::Remove { .. } => apply_static_patch(
+            document,
+            PatchOperation::Remove(RemoveOperation {
+                path: runtime_pointer(path)?,
+            }),
+        ),
+        AdvancedJsonOperation::ArrayAppend { .. } => {
+            let array = target_array_mut(document, path)?;
+            array.push(value.expect("advanced array append has a value expression"));
+            Ok(())
+        }
+        AdvancedJsonOperation::ArrayPrepend { .. } => {
+            let array = target_array_mut(document, path)?;
+            array.insert(
+                0,
+                value.expect("advanced array prepend has a value expression"),
+            );
+            Ok(())
+        }
+        AdvancedJsonOperation::ArrayInsert { index, .. } => {
+            let array = target_array_mut(document, path)?;
+            if *index > array.len() {
+                return Err(TransformApplyError::PatchFailed);
+            }
+            array.insert(
+                *index,
+                value.expect("advanced array insert has a value expression"),
+            );
+            Ok(())
+        }
+        AdvancedJsonOperation::ArrayRemove { index, .. } => {
+            let array = target_array_mut(document, path)?;
+            if *index >= array.len() {
+                return Err(TransformApplyError::PatchFailed);
+            }
+            array.remove(*index);
+            Ok(())
+        }
+        AdvancedJsonOperation::Merge { .. } => {
+            let mut incoming = value
+                .expect("advanced merge has a value expression")
+                .as_object()
+                .cloned()
+                .ok_or(TransformApplyError::PatchFailed)?;
+            let target = document
+                .pointer_mut(path.as_str())
+                .and_then(Value::as_object_mut)
+                .ok_or(TransformApplyError::PatchFailed)?;
+            target.append(&mut incoming);
+            Ok(())
+        }
+    }
+}
+
+fn target_array_mut<'a>(
+    document: &'a mut Value,
+    path: &JsonPointer,
+) -> Result<&'a mut Vec<Value>, TransformApplyError> {
+    document
+        .pointer_mut(path.as_str())
+        .and_then(Value::as_array_mut)
+        .ok_or(TransformApplyError::PatchFailed)
 }
 
 #[derive(Clone, Eq, Hash, PartialEq)]
@@ -856,7 +1182,7 @@ fn reject_removed_ancestors(
     override_plan: &JsonPatchPlan,
 ) -> Result<(), TransformCompileError> {
     for operation in defaults.operations() {
-        let JsonPatchOperation::Remove { path: removed } = operation else {
+        let Some(removed) = operation_removed_path(operation) else {
             continue;
         };
         if override_plan
@@ -875,7 +1201,21 @@ fn operation_path(operation: &JsonPatchOperation) -> &JsonPointer {
         JsonPatchOperation::Add { path, .. }
         | JsonPatchOperation::Replace { path, .. }
         | JsonPatchOperation::Remove { path } => path,
+        JsonPatchOperation::Advanced(operation) => operation.path(),
     }
+}
+
+fn operation_removed_path(operation: &JsonPatchOperation) -> Option<&JsonPointer> {
+    match operation {
+        JsonPatchOperation::Remove { path } => Some(path),
+        JsonPatchOperation::Advanced(operation) if operation.is_remove() => Some(operation.path()),
+        _ => None,
+    }
+}
+
+fn operation_can_create_target(operation: &JsonPatchOperation) -> bool {
+    matches!(operation, JsonPatchOperation::Add { .. })
+        || matches!(operation, JsonPatchOperation::Advanced(operation) if operation.can_create_target())
 }
 
 fn removed_path_invalidates_operation(
@@ -892,11 +1232,7 @@ fn removed_path_invalidates_operation(
     if !removed_is_prefix {
         return false;
     }
-    removed.tokens.len() < path.tokens.len()
-        || matches!(
-            operation,
-            JsonPatchOperation::Replace { .. } | JsonPatchOperation::Remove { .. }
-        )
+    removed.tokens.len() < path.tokens.len() || !operation_can_create_target(operation)
 }
 
 /// The sole Chat selector. It matches ordinary unnamed `data:` frames, whose
@@ -975,8 +1311,8 @@ impl ResponsesSsePatchEntry {
     }
 }
 
-/// Compiles the sole accepted document shape. `{}` is an explicit no-op; every
-/// other object must carry a version and matching format.
+/// Compiles the accepted document shape. `{}` is an explicit no-op; every
+/// other object must carry a supported version and matching format.
 pub fn compile_document(
     document: &Value,
     expected_format: ApiFormat,
@@ -998,9 +1334,7 @@ pub fn compile_document(
             "sse",
         ],
     )?;
-    if object.get("version").and_then(Value::as_u64) != Some(1) {
-        return Err(TransformCompileError::UnsupportedVersion);
-    }
+    let version = parse_document_version(object.get("version"))?;
     let format = parse_format(object.get("api_format").and_then(Value::as_str))?;
     if format != expected_format {
         return Err(TransformCompileError::FormatMismatch);
@@ -1009,8 +1343,8 @@ pub fn compile_document(
         api_format: format,
         request_headers: compile_headers(object.get("request_headers"), HeaderScope::Request)?,
         response_headers: compile_headers(object.get("response_headers"), HeaderScope::Response)?,
-        request_json: compile_patch(object.get("request_json"), PatchScope::Request)?,
-        sse_event_patches: compile_sse_event_patches(object.get("sse"), format)?,
+        request_json: compile_patch(object.get("request_json"), PatchScope::Request, version)?,
+        sse_event_patches: compile_sse_event_patches(object.get("sse"), format, version)?,
     })
 }
 
@@ -1100,6 +1434,7 @@ fn compile_headers(
 fn compile_patch(
     value: Option<&Value>,
     scope: PatchScope,
+    version: TransformDocumentVersion,
 ) -> Result<JsonPatchPlan, TransformCompileError> {
     let Some(value) = value else {
         return Ok(JsonPatchPlan::default());
@@ -1107,13 +1442,11 @@ fn compile_patch(
     let values = value
         .as_array()
         .ok_or(TransformCompileError::PatchMustBeArray)?;
-    let mut paths = Vec::<JsonPointer>::new();
     let mut operations = Vec::with_capacity(values.len());
     for value in values {
         let object = value
             .as_object()
             .ok_or(TransformCompileError::PatchOperationMustBeObject)?;
-        reject_unknown(object, &["op", "path", "value"])?;
         let op = object
             .get("op")
             .and_then(Value::as_str)
@@ -1125,29 +1458,16 @@ fn compile_patch(
                 .ok_or(TransformCompileError::PatchOperationMissingField)?,
         )?;
         validate_pointer(&path, scope)?;
-        if paths.iter().any(|other| pointers_conflict(other, &path)) {
+        let operation = match version {
+            TransformDocumentVersion::V1 => compile_v1_patch_operation(object, op, path)?,
+            TransformDocumentVersion::V2 => compile_v2_patch_operation(object, op, path)?,
+        };
+        if operations
+            .iter()
+            .any(|other| json_operations_conflict(other, &operation))
+        {
             return Err(TransformCompileError::ConflictingJsonOperation);
         }
-        paths.push(path.clone());
-        let operation = match op {
-            "add" => JsonPatchOperation::Add {
-                path,
-                value: object
-                    .get("value")
-                    .cloned()
-                    .ok_or(TransformCompileError::PatchValueRequired)?,
-            },
-            "replace" => JsonPatchOperation::Replace {
-                path,
-                value: object
-                    .get("value")
-                    .cloned()
-                    .ok_or(TransformCompileError::PatchValueRequired)?,
-            },
-            "remove" if !object.contains_key("value") => JsonPatchOperation::Remove { path },
-            "remove" => return Err(TransformCompileError::PatchValueForbidden),
-            _ => return Err(TransformCompileError::UnsupportedPatchOperation),
-        };
         operations.push(operation);
     }
     Ok(JsonPatchPlan {
@@ -1155,9 +1475,252 @@ fn compile_patch(
     })
 }
 
+fn compile_v1_patch_operation(
+    object: &Map<String, Value>,
+    op: &str,
+    path: JsonPointer,
+) -> Result<JsonPatchOperation, TransformCompileError> {
+    reject_unknown(object, &["op", "path", "value"])?;
+    match op {
+        "add" => Ok(JsonPatchOperation::Add {
+            path,
+            value: object
+                .get("value")
+                .cloned()
+                .ok_or(TransformCompileError::PatchValueRequired)?,
+        }),
+        "replace" => Ok(JsonPatchOperation::Replace {
+            path,
+            value: object
+                .get("value")
+                .cloned()
+                .ok_or(TransformCompileError::PatchValueRequired)?,
+        }),
+        "remove" if !object.contains_key("value") => Ok(JsonPatchOperation::Remove { path }),
+        "remove" => Err(TransformCompileError::PatchValueForbidden),
+        _ => Err(TransformCompileError::UnsupportedPatchOperation),
+    }
+}
+
+fn compile_v2_patch_operation(
+    object: &Map<String, Value>,
+    op: &str,
+    path: JsonPointer,
+) -> Result<JsonPatchOperation, TransformCompileError> {
+    reject_unknown(object, &["op", "path", "value", "index", "when"])?;
+    let when = compile_patch_condition(object.get("when"))?;
+    let value = |object: &Map<String, Value>| {
+        object
+            .get("value")
+            .ok_or(TransformCompileError::PatchValueRequired)
+            .and_then(|value| compile_value_expression(value, 0))
+    };
+    let forbid_value = |object: &Map<String, Value>| {
+        if object.contains_key("value") {
+            Err(TransformCompileError::PatchValueForbidden)
+        } else {
+            Ok(())
+        }
+    };
+    let forbid_index = |object: &Map<String, Value>| {
+        if object.contains_key("index") {
+            Err(TransformCompileError::PatchIndexForbidden)
+        } else {
+            Ok(())
+        }
+    };
+    let index = |object: &Map<String, Value>| {
+        object
+            .get("index")
+            .and_then(Value::as_u64)
+            .and_then(|index| usize::try_from(index).ok())
+            .ok_or(TransformCompileError::PatchIndexRequired)
+    };
+
+    let operation = match op {
+        "add" => {
+            forbid_index(object)?;
+            AdvancedJsonOperation::Add {
+                path,
+                value: value(object)?,
+                when,
+            }
+        }
+        "replace" => {
+            forbid_index(object)?;
+            AdvancedJsonOperation::Replace {
+                path,
+                value: value(object)?,
+                when,
+            }
+        }
+        "remove" => {
+            forbid_value(object)?;
+            forbid_index(object)?;
+            AdvancedJsonOperation::Remove { path, when }
+        }
+        "array_append" => {
+            forbid_index(object)?;
+            AdvancedJsonOperation::ArrayAppend {
+                path,
+                value: value(object)?,
+                when,
+            }
+        }
+        "array_prepend" => {
+            forbid_index(object)?;
+            AdvancedJsonOperation::ArrayPrepend {
+                path,
+                value: value(object)?,
+                when,
+            }
+        }
+        "array_insert" => AdvancedJsonOperation::ArrayInsert {
+            path,
+            index: index(object)?,
+            value: value(object)?,
+            when,
+        },
+        "array_remove" => {
+            forbid_value(object)?;
+            AdvancedJsonOperation::ArrayRemove {
+                path,
+                index: index(object)?,
+                when,
+            }
+        }
+        "merge" => {
+            forbid_index(object)?;
+            AdvancedJsonOperation::Merge {
+                path,
+                value: value(object)?,
+                when,
+            }
+        }
+        _ => return Err(TransformCompileError::UnsupportedPatchOperation),
+    };
+    if operation.requires_existing_target()
+        && matches!(operation.when(), Some(JsonCondition::Exists(false)))
+    {
+        return Err(TransformCompileError::IncompatiblePatchCondition);
+    }
+    Ok(JsonPatchOperation::Advanced(operation))
+}
+
+fn compile_patch_condition(
+    value: Option<&Value>,
+) -> Result<Option<JsonCondition>, TransformCompileError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let object = value
+        .as_object()
+        .ok_or(TransformCompileError::PatchConditionMustBeObject)?;
+    reject_unknown(object, &["exists", "type", "equals"])?;
+    if object.len() != 1 {
+        return Err(TransformCompileError::PatchConditionMustHaveOnePredicate);
+    }
+    if let Some(exists) = object.get("exists") {
+        return exists
+            .as_bool()
+            .map(JsonCondition::Exists)
+            .ok_or(TransformCompileError::InvalidPatchCondition)
+            .map(Some);
+    }
+    if let Some(kind) = object.get("type").and_then(Value::as_str) {
+        return parse_json_value_type(kind)
+            .map(JsonCondition::Type)
+            .map(Some);
+    }
+    if let Some(expected) = object.get("equals") {
+        return Ok(Some(JsonCondition::Equals(expected.clone())));
+    }
+    Err(TransformCompileError::PatchConditionMustHaveOnePredicate)
+}
+
+fn parse_json_value_type(value: &str) -> Result<JsonValueType, TransformCompileError> {
+    match value {
+        "object" => Ok(JsonValueType::Object),
+        "array" => Ok(JsonValueType::Array),
+        "string" => Ok(JsonValueType::String),
+        "number" => Ok(JsonValueType::Number),
+        "boolean" => Ok(JsonValueType::Boolean),
+        "null" => Ok(JsonValueType::Null),
+        _ => Err(TransformCompileError::InvalidPatchCondition),
+    }
+}
+
+const MAX_VALUE_EXPRESSION_DEPTH: usize = 32;
+const MAX_TEMPLATE_BYTES: usize = 4 * 1024;
+
+fn compile_value_expression(
+    value: &Value,
+    depth: usize,
+) -> Result<JsonValueExpression, TransformCompileError> {
+    if depth > MAX_VALUE_EXPRESSION_DEPTH {
+        return Err(TransformCompileError::ValueExpressionTooDeep);
+    }
+    match value {
+        Value::Array(values) => values
+            .iter()
+            .map(|value| compile_value_expression(value, depth + 1))
+            .collect::<Result<Vec<_>, _>>()
+            .map(|values| JsonValueExpression::Array(values.into())),
+        Value::Object(object) if object.len() == 1 && object.contains_key("$ref") => {
+            match object.get("$ref").and_then(Value::as_str) {
+                Some("current") => Ok(JsonValueExpression::Current),
+                _ => Err(TransformCompileError::InvalidValueExpression),
+            }
+        }
+        Value::Object(object) if object.len() == 1 && object.contains_key("$template") => {
+            let template = object
+                .get("$template")
+                .and_then(Value::as_str)
+                .ok_or(TransformCompileError::InvalidValueExpression)?;
+            if template.len() > MAX_TEMPLATE_BYTES {
+                return Err(TransformCompileError::TemplateTooLong);
+            }
+            Ok(JsonValueExpression::Template(Arc::from(template)))
+        }
+        Value::Object(object) if object.len() == 1 && object.contains_key("$literal") => {
+            Ok(JsonValueExpression::Literal(
+                object
+                    .get("$literal")
+                    .cloned()
+                    .expect("$literal marker was checked"),
+            ))
+        }
+        Value::Object(object) => {
+            let mut entries = Vec::with_capacity(object.len());
+            for (key, value) in object {
+                entries.push((
+                    Arc::from(key.as_str()),
+                    compile_value_expression(value, depth + 1)?,
+                ));
+            }
+            Ok(JsonValueExpression::Object(entries.into()))
+        }
+        value => Ok(JsonValueExpression::Literal(value.clone())),
+    }
+}
+
+fn json_operations_conflict(left: &JsonPatchOperation, right: &JsonPatchOperation) -> bool {
+    let left_path = operation_path(left);
+    let right_path = operation_path(right);
+    if !pointers_conflict(left_path, right_path) {
+        return false;
+    }
+    !(left_path == right_path && operation_is_array_only(left) && operation_is_array_only(right))
+}
+
+fn operation_is_array_only(operation: &JsonPatchOperation) -> bool {
+    matches!(operation, JsonPatchOperation::Advanced(operation) if operation.is_array_operation())
+}
+
 fn compile_sse_event_patches(
     value: Option<&Value>,
     api_format: ApiFormat,
+    version: TransformDocumentVersion,
 ) -> Result<SseEventPatchPlan, TransformCompileError> {
     let Some(value) = value else {
         return Ok(SseEventPatchPlan::empty(api_format));
@@ -1177,7 +1740,7 @@ fn compile_sse_event_patches(
                 }
                 compiled.push(ChatCompletionsSsePatchEntry {
                     event,
-                    json: compile_patch(object.get("json"), PatchScope::Sse(api_format))?,
+                    json: compile_patch(object.get("json"), PatchScope::Sse(api_format), version)?,
                 });
             }
             Ok(SseEventPatchPlan::OpenAiChatCompletions {
@@ -1195,7 +1758,7 @@ fn compile_sse_event_patches(
                 }
                 compiled.push(ResponsesSsePatchEntry {
                     event,
-                    json: compile_patch(object.get("json"), PatchScope::Sse(api_format))?,
+                    json: compile_patch(object.get("json"), PatchScope::Sse(api_format), version)?,
                 });
             }
             Ok(SseEventPatchPlan::OpenAiResponses {
@@ -1400,6 +1963,22 @@ fn parse_format(value: Option<&str>) -> Result<ApiFormat, TransformCompileError>
     }
 }
 
+#[derive(Clone, Copy)]
+enum TransformDocumentVersion {
+    V1,
+    V2,
+}
+
+fn parse_document_version(
+    value: Option<&Value>,
+) -> Result<TransformDocumentVersion, TransformCompileError> {
+    match value.and_then(Value::as_u64) {
+        Some(1) => Ok(TransformDocumentVersion::V1),
+        Some(2) => Ok(TransformDocumentVersion::V2),
+        _ => Err(TransformCompileError::UnsupportedVersion),
+    }
+}
+
 fn reject_unknown(
     object: &Map<String, Value>,
     allowed: &[&str],
@@ -1429,7 +2008,7 @@ pub enum TransformCompileError {
     DocumentMustBeObject,
     #[error("transform document contains an unknown field")]
     UnknownField,
-    #[error("transform document must use version 1")]
+    #[error("transform document must use version 1 or 2")]
     UnsupportedVersion,
     #[error("transform document has an invalid API format")]
     InvalidApiFormat,
@@ -1467,6 +2046,24 @@ pub enum TransformCompileError {
     PatchValueRequired,
     #[error("JSON patch remove cannot have a value")]
     PatchValueForbidden,
+    #[error("JSON patch array operation has an invalid or missing index")]
+    PatchIndexRequired,
+    #[error("JSON patch operation must not have an index")]
+    PatchIndexForbidden,
+    #[error("JSON patch condition must be an object")]
+    PatchConditionMustBeObject,
+    #[error("JSON patch condition must contain exactly one supported predicate")]
+    PatchConditionMustHaveOnePredicate,
+    #[error("JSON patch condition is invalid")]
+    InvalidPatchCondition,
+    #[error("JSON patch condition cannot run this operation against a missing target")]
+    IncompatiblePatchCondition,
+    #[error("JSON patch value expression is invalid")]
+    InvalidValueExpression,
+    #[error("JSON patch value expression is too deeply nested")]
+    ValueExpressionTooDeep,
+    #[error("JSON patch template is too long")]
+    TemplateTooLong,
     #[error("invalid JSON Pointer")]
     InvalidJsonPointer,
     #[error("JSON patch cannot target the document root")]
@@ -1586,11 +2183,7 @@ mod tests {
             .request_json()
             .operations()
             .iter()
-            .map(|operation| match operation {
-                JsonPatchOperation::Add { path, .. }
-                | JsonPatchOperation::Replace { path, .. }
-                | JsonPatchOperation::Remove { path } => path.as_str(),
-            })
+            .map(|operation| operation_path(operation).as_str())
             .collect::<Vec<_>>();
         assert_eq!(paths, ["/metadata/template", "/metadata/channel"]);
     }
@@ -1623,22 +2216,12 @@ mod tests {
         rendered.push_str(&format!("{:?}", plan.request_json().operations()));
         rendered.push_str(&format!("{:?}", plan.sse_event_patches()));
         for operation in plan.request_json().operations() {
-            let path = match operation {
-                JsonPatchOperation::Add { path, .. }
-                | JsonPatchOperation::Replace { path, .. }
-                | JsonPatchOperation::Remove { path } => path,
-            };
-            rendered.push_str(&format!("{path:?}"));
+            rendered.push_str(&format!("{:?}", operation_path(operation)));
         }
         for entry in plan.sse_event_patches().responses_entries().unwrap() {
             rendered.push_str(&format!("{entry:?} {:?}", entry.json().operations()));
             for operation in entry.json().operations() {
-                let path = match operation {
-                    JsonPatchOperation::Add { path, .. }
-                    | JsonPatchOperation::Replace { path, .. }
-                    | JsonPatchOperation::Remove { path } => path,
-                };
-                rendered.push_str(&format!("{path:?}"));
+                rendered.push_str(&format!("{:?}", operation_path(operation)));
             }
         }
 
@@ -1811,6 +2394,7 @@ mod tests {
                 "api_format": "open_ai_chat_completions",
                 "request_json": [
                     {"op": "add", "path": "/payload/added", "value": true},
+                    {"op": "add", "path": "/payload/items/-", "value": "tail"},
                     {"op": "replace", "path": "/payload/replace", "value": "after"},
                     {"op": "remove", "path": "/payload/remove"}
                 ]
@@ -1820,15 +2404,182 @@ mod tests {
         .unwrap();
 
         let body = apply_json_patch_plan(
-            Bytes::from_static(br#"{"payload":{"replace":"before","remove":"gone"}}"#),
+            Bytes::from_static(
+                br#"{"payload":{"items":["head"],"replace":"before","remove":"gone"}}"#,
+            ),
             plan.request_json(),
         )
         .unwrap();
         let value: Value = serde_json::from_slice(&body).unwrap();
 
         assert_eq!(value["payload"]["added"], true);
+        assert_eq!(value["payload"]["items"], json!(["head", "tail"]));
         assert_eq!(value["payload"]["replace"], "after");
         assert!(value["payload"].get("remove").is_none());
+    }
+
+    #[test]
+    fn executor_applies_v2_array_merge_conditions_and_current_value_expressions() {
+        let plan = compile_document(
+            &json!({
+                "version": 2,
+                "api_format": "open_ai_chat_completions",
+                "request_json": [
+                    {
+                        "op": "array_prepend",
+                        "path": "/items",
+                        "value": "first",
+                        "when": {"type": "array"}
+                    },
+                    {
+                        "op": "array_append",
+                        "path": "/items",
+                        "value": "last",
+                        "when": {"exists": true}
+                    },
+                    {
+                        "op": "array_insert",
+                        "path": "/items",
+                        "index": 1,
+                        "value": "inserted"
+                    },
+                    {
+                        "op": "array_remove",
+                        "path": "/items",
+                        "index": 3
+                    },
+                    {
+                        "op": "merge",
+                        "path": "/metadata",
+                        "value": {
+                            "original": {"$ref": "current"},
+                            "gateway": "console"
+                        },
+                        "when": {"type": "object"}
+                    },
+                    {
+                        "op": "replace",
+                        "path": "/label",
+                        "value": {"$template": "gateway-{{value}}"},
+                        "when": {"type": "string"}
+                    },
+                    {
+                        "op": "add",
+                        "path": "/optional",
+                        "value": true,
+                        "when": {"exists": false}
+                    }
+                ]
+            }),
+            CHAT,
+        )
+        .unwrap();
+
+        let body = apply_json_patch_plan(
+            Bytes::from_static(
+                br#"{"items":["middle","removed"],"metadata":{"source":"client"},"label":"tag"}"#,
+            ),
+            plan.request_json(),
+        )
+        .unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(
+            value["items"],
+            json!(["first", "inserted", "middle", "last"])
+        );
+        assert_eq!(
+            value["metadata"],
+            json!({
+                "source": "client",
+                "original": {"source": "client"},
+                "gateway": "console"
+            })
+        );
+        assert_eq!(value["label"], "gateway-tag");
+        assert_eq!(value["optional"], true);
+    }
+
+    #[test]
+    fn v2_conditions_skip_operations_and_failures_are_atomic() {
+        let skip = compile_document(
+            &json!({
+                "version": 2,
+                "api_format": "open_ai_chat_completions",
+                "request_json": [{
+                    "op": "replace",
+                    "path": "/label",
+                    "value": "changed",
+                    "when": {"equals": "different"}
+                }]
+            }),
+            CHAT,
+        )
+        .unwrap();
+        let mut value = json!({"label": "original"});
+        apply_json_patch_value(&mut value, skip.request_json()).unwrap();
+        assert_eq!(value, json!({"label": "original"}));
+
+        let failing = compile_document(
+            &json!({
+                "version": 2,
+                "api_format": "open_ai_chat_completions",
+                "request_json": [
+                    {"op": "array_append", "path": "/items", "value": "changed"},
+                    {"op": "array_remove", "path": "/items", "index": 5}
+                ]
+            }),
+            CHAT,
+        )
+        .unwrap();
+        let mut value = json!({"items": ["original"]});
+        assert!(matches!(
+            apply_json_patch_value(&mut value, failing.request_json()),
+            Err(TransformApplyError::PatchFailed)
+        ));
+        assert_eq!(value, json!({"items": ["original"]}));
+    }
+
+    #[test]
+    fn compiler_keeps_v1_strict_and_validates_v2_operation_shape_without_leaking_values() {
+        let cases = [
+            json!({
+                "version": 1,
+                "api_format": "open_ai_chat_completions",
+                "request_json": [{"op": "array_append", "path": "/items", "value": "secret"}]
+            }),
+            json!({
+                "version": 2,
+                "api_format": "open_ai_chat_completions",
+                "request_json": [{"op": "array_insert", "path": "/items", "value": "secret"}]
+            }),
+            json!({
+                "version": 2,
+                "api_format": "open_ai_chat_completions",
+                "request_json": [{
+                    "op": "replace",
+                    "path": "/label",
+                    "value": {"$ref": "other-secret"},
+                    "when": {"exists": true, "type": "string"}
+                }]
+            }),
+            json!({
+                "version": 2,
+                "api_format": "open_ai_chat_completions",
+                "request_json": [{
+                    "op": "array_append",
+                    "path": "/items",
+                    "value": "secret",
+                    "when": {"exists": false}
+                }]
+            }),
+        ];
+
+        for document in cases {
+            let error = compile_document(&document, CHAT).unwrap_err();
+            let rendered = format!("{error:?} {error}");
+            assert!(!rendered.contains("secret"));
+        }
     }
 
     #[test]
@@ -1972,6 +2723,35 @@ mod tests {
                 ],
             ),
             b"event: response.completed\ndata: {\"type\":\"response.output_text.delta\"}\n\nevent: response.output_text.delta\ndata: {\"type\":\"response.completed\"}\n\nevent: response.output_text.delta\ndata: {\"patched\":\"responses\",\"type\":\"response.output_text.delta\"}\n\n"
+        );
+    }
+
+    #[test]
+    fn sse_transformer_applies_v2_current_value_templates() {
+        let plan = sse_plan(
+            json!({
+                "version": 2,
+                "api_format": "open_ai_responses",
+                "sse": [{
+                    "event": "response.output_text.delta",
+                    "json": [{
+                        "op": "replace",
+                        "path": "/delta",
+                        "value": {"$template": "gateway-{{value}}"},
+                        "when": {"type": "string"}
+                    }]
+                }]
+            }),
+            RESPONSES,
+        );
+        let output = transform_chunks(
+            plan,
+            &[b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n"],
+        );
+
+        assert_eq!(
+            output,
+            b"data: {\"delta\":\"gateway-hello\",\"type\":\"response.output_text.delta\"}\n\n"
         );
     }
 

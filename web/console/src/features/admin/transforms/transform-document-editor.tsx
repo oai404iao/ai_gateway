@@ -42,7 +42,18 @@ import type { ApiFormat } from "@/api/types";
 import { apiFormatLabel, API_FORMATS } from "@/lib/permissions";
 
 type HeaderRuleKind = "set" | "remove" | "rename";
-type PatchRuleKind = "add" | "replace" | "remove";
+type PatchRuleKind =
+  | "add"
+  | "replace"
+  | "remove"
+  | "array_append"
+  | "array_prepend"
+  | "array_insert"
+  | "array_remove"
+  | "merge";
+type PatchValueMode = "literal" | "current" | "template";
+type PatchConditionKind = "always" | "exists" | "missing" | "type" | "equals";
+type JsonValueType = "object" | "array" | "string" | "number" | "boolean" | "null";
 type EditorMode = "visual" | "json" | "reference";
 type HeaderScope = "request" | "response";
 type PatchScope = "request" | "sse";
@@ -59,6 +70,10 @@ interface PatchRule {
   kind: PatchRuleKind;
   path: string;
   value: string;
+  valueMode: PatchValueMode;
+  index: string;
+  condition: PatchConditionKind;
+  conditionValue: string;
 }
 
 interface SseRule {
@@ -68,6 +83,7 @@ interface SseRule {
 }
 
 interface VisualDocument {
+  version: 1 | 2;
   apiFormat: ApiFormat;
   requestHeaders: HeaderRule[];
   requestJson: PatchRule[];
@@ -101,6 +117,15 @@ const RESPONSES_SSE_EVENTS = [
   "response.completed",
 ] as const;
 
+const JSON_VALUE_TYPES: readonly JsonValueType[] = [
+  "object",
+  "array",
+  "string",
+  "number",
+  "boolean",
+  "null",
+];
+
 const HOP_BY_HOP_HEADERS = new Set([
   "connection",
   "keep-alive",
@@ -122,6 +147,7 @@ function ruleId(): string {
 
 function emptyDocument(apiFormat: ApiFormat): VisualDocument {
   return {
+    version: 1,
     apiFormat,
     requestHeaders: [],
     requestJson: [],
@@ -145,11 +171,45 @@ function newPatchRule(): PatchRule {
     kind: "add",
     path: "",
     value: "null",
+    valueMode: "literal",
+    index: "",
+    condition: "always",
+    conditionValue: "",
   };
 }
 
 function sseEvents(apiFormat: ApiFormat): readonly string[] {
   return apiFormat === "open_ai_chat_completions" ? CHAT_SSE_EVENTS : RESPONSES_SSE_EVENTS;
+}
+
+function patchNeedsValue(kind: PatchRuleKind): boolean {
+  return kind !== "remove" && kind !== "array_remove";
+}
+
+function patchNeedsIndex(kind: PatchRuleKind): boolean {
+  return kind === "array_insert" || kind === "array_remove";
+}
+
+function patchIsArrayOperation(kind: PatchRuleKind): boolean {
+  return (
+    kind === "array_append" ||
+    kind === "array_prepend" ||
+    kind === "array_insert" ||
+    kind === "array_remove"
+  );
+}
+
+function patchRequiresExistingTarget(kind: PatchRuleKind): boolean {
+  return kind !== "add";
+}
+
+function patchRequiresV2(rule: PatchRule): boolean {
+  return (
+    patchIsArrayOperation(rule.kind) ||
+    rule.kind === "merge" ||
+    rule.valueMode !== "literal" ||
+    rule.condition !== "always"
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -195,33 +255,95 @@ function parseHeaderRules(value: unknown): HeaderRule[] | null {
   return rules;
 }
 
-function parsePatchRules(value: unknown): PatchRule[] | null {
+function parsePatchValue(value: unknown): Pick<PatchRule, "valueMode" | "value"> | null {
+  if (isRecord(value) && Object.keys(value).length === 1 && value.$ref === "current") {
+    return { valueMode: "current", value: "" };
+  }
+  if (isRecord(value) && Object.keys(value).length === 1 && typeof value.$template === "string") {
+    return { valueMode: "template", value: value.$template };
+  }
+  const serialized = JSON.stringify(value, null, 2);
+  return serialized === undefined ? null : { valueMode: "literal", value: serialized };
+}
+
+function parsePatchCondition(
+  value: unknown,
+): Pick<PatchRule, "condition" | "conditionValue"> | null {
+  if (value === undefined) return { condition: "always", conditionValue: "" };
+  if (!isRecord(value) || Object.keys(value).length !== 1) return null;
+  if (typeof value.exists === "boolean") {
+    return {
+      condition: value.exists ? "exists" : "missing",
+      conditionValue: "",
+    };
+  }
+  if (typeof value.type === "string" && JSON_VALUE_TYPES.includes(value.type as JsonValueType)) {
+    return { condition: "type", conditionValue: value.type };
+  }
+  if (Object.hasOwn(value, "equals")) {
+    const serialized = JSON.stringify(value.equals, null, 2);
+    return serialized === undefined ? null : { condition: "equals", conditionValue: serialized };
+  }
+  return null;
+}
+
+function parsePatchRules(value: unknown, version: 1 | 2): PatchRule[] | null {
   if (value === undefined) return [];
   if (!Array.isArray(value)) return null;
 
   const rules: PatchRule[] = [];
   for (const item of value) {
-    if (!isRecord(item) || !hasOnlyKeys(item, ["op", "path", "value"])) return null;
+    const allowedKeys = version === 1 ? ["op", "path", "value"] : ["op", "path", "value", "index", "when"];
+    if (!isRecord(item) || !hasOnlyKeys(item, allowedKeys) || typeof item.path !== "string") {
+      return null;
+    }
+    const kind = item.op;
     if (
-      (item.op !== "add" && item.op !== "replace" && item.op !== "remove") ||
-      typeof item.path !== "string"
+      kind !== "add" &&
+      kind !== "replace" &&
+      kind !== "remove" &&
+      (version !== 2 ||
+        (kind !== "array_append" &&
+          kind !== "array_prepend" &&
+          kind !== "array_insert" &&
+          kind !== "array_remove" &&
+          kind !== "merge"))
     ) {
       return null;
     }
-    if (item.op === "remove" ? item.value !== undefined : item.value === undefined) {
+    if (version === 1 && kind !== "add" && kind !== "replace" && kind !== "remove") return null;
+    const needsValue = patchNeedsValue(kind);
+    const needsIndex = patchNeedsIndex(kind);
+    if (needsValue ? !Object.hasOwn(item, "value") : Object.hasOwn(item, "value")) return null;
+    if (needsIndex) {
+      if (!Number.isSafeInteger(item.index) || (item.index as number) < 0) return null;
+    } else if (Object.hasOwn(item, "index")) {
       return null;
     }
+    const parsedValue = needsValue
+      ? parsePatchValue(item.value)
+      : { valueMode: "literal" as const, value: "" };
+    const parsedCondition = version === 2
+      ? parsePatchCondition(item.when)
+      : Object.hasOwn(item, "when")
+        ? null
+        : { condition: "always" as const, conditionValue: "" };
+    if (!parsedValue || !parsedCondition) return null;
     rules.push({
       id: ruleId(),
-      kind: item.op,
+      kind,
       path: item.path,
-      value: item.op === "remove" ? "" : JSON.stringify(item.value, null, 2),
+      value: parsedValue.value,
+      valueMode: parsedValue.valueMode,
+      index: needsIndex ? String(item.index) : "",
+      condition: parsedCondition.condition,
+      conditionValue: parsedCondition.conditionValue,
     });
   }
   return rules;
 }
 
-function parseSseRules(value: unknown, apiFormat: ApiFormat): SseRule[] | null {
+function parseSseRules(value: unknown, apiFormat: ApiFormat, version: 1 | 2): SseRule[] | null {
   if (value === undefined) return [];
   if (!Array.isArray(value)) return null;
 
@@ -236,7 +358,7 @@ function parseSseRules(value: unknown, apiFormat: ApiFormat): SseRule[] | null {
     ) {
       return null;
     }
-    const patches = parsePatchRules(item.json);
+    const patches = parsePatchRules(item.json, version);
     if (!patches) return null;
     rules.push({ id: ruleId(), event: item.event, patches });
   }
@@ -270,7 +392,7 @@ function parseVisualDocument(
       "request_json",
       "sse",
     ]) ||
-    decoded.version !== 1 ||
+    (decoded.version !== 1 && decoded.version !== 2) ||
     (decoded.api_format !== "open_ai_chat_completions" &&
       decoded.api_format !== "open_ai_responses")
   ) {
@@ -282,8 +404,8 @@ function parseVisualDocument(
 
   const requestHeaders = parseHeaderRules(decoded.request_headers);
   const responseHeaders = parseHeaderRules(decoded.response_headers);
-  const requestJson = parsePatchRules(decoded.request_json);
-  const sse = parseSseRules(decoded.sse, decoded.api_format);
+  const requestJson = parsePatchRules(decoded.request_json, decoded.version);
+  const sse = parseSseRules(decoded.sse, decoded.api_format, decoded.version);
   if (!requestHeaders || !responseHeaders || !requestJson || !sse) {
     return {
       error:
@@ -292,6 +414,7 @@ function parseVisualDocument(
   }
   return {
     document: {
+      version: decoded.version,
       apiFormat: decoded.api_format,
       requestHeaders,
       requestJson,
@@ -404,7 +527,7 @@ function validatePatchRules(
   scope: PatchScope,
   apiFormat: ApiFormat,
 ): string | null {
-  const paths: string[][] = [];
+  const paths: Array<{ tokens: string[]; kind: PatchRuleKind }> = [];
   for (const rule of rules) {
     const tokens = parsePointer(rule.path);
     if (!tokens) return "Each JSON Patch needs a non-root RFC 6901 JSON Pointer.";
@@ -414,17 +537,49 @@ function validatePatchRules(
     if (scope === "sse" && protectedSsePointer(tokens, apiFormat)) {
       return "Streaming response rules cannot change immutable event envelope fields.";
     }
-    if (rule.kind !== "remove") {
+    if (patchNeedsIndex(rule.kind)) {
+      const index = Number(rule.index);
+      if (!Number.isSafeInteger(index) || index < 0) {
+        return "Array insert and remove need a non-negative integer index.";
+      }
+    }
+    if (patchNeedsValue(rule.kind) && rule.valueMode === "literal") {
       try {
         JSON.parse(rule.value);
       } catch {
-        return "Every add or replace rule needs a valid JSON value.";
+        return "Every value rule needs a valid JSON value.";
       }
     }
-    if (paths.some((other) => pointersConflict(other, tokens))) {
-      return "JSON Patch paths cannot overlap in the same rule list.";
+    if (patchNeedsValue(rule.kind) && rule.valueMode === "template" && !rule.value) {
+      return "A string template cannot be blank.";
     }
-    paths.push(tokens);
+    if (rule.condition === "type" && !JSON_VALUE_TYPES.includes(rule.conditionValue as JsonValueType)) {
+      return "Choose a JSON type for the condition.";
+    }
+    if (rule.condition === "missing" && patchRequiresExistingTarget(rule.kind)) {
+      return "This operation requires an existing target and cannot run when it is missing.";
+    }
+    if (rule.condition === "equals") {
+      try {
+        JSON.parse(rule.conditionValue);
+      } catch {
+        return "The equals condition needs a valid JSON value.";
+      }
+    }
+    if (paths.some((other) => pointersConflict(other.tokens, tokens))) {
+      const conflicts = paths.filter((other) => pointersConflict(other.tokens, tokens));
+      const onlySamePathArrayOperations = conflicts.every(
+        (other) =>
+          other.tokens.length === tokens.length &&
+          other.tokens.every((token, index) => token === tokens[index]) &&
+          patchIsArrayOperation(other.kind) &&
+          patchIsArrayOperation(rule.kind),
+      );
+      if (!onlySamePathArrayOperations) {
+        return "JSON Patch paths cannot overlap in the same rule list.";
+      }
+    }
+    paths.push({ tokens, kind: rule.kind });
   }
   return null;
 }
@@ -474,10 +629,28 @@ function headerDocument(rules: HeaderRule[]): Record<string, unknown> | undefine
   return result;
 }
 
-function patchDocument(rules: PatchRule[]): Array<Record<string, unknown>> {
+function patchValueDocument(rule: PatchRule): unknown {
+  if (rule.valueMode === "current") return { $ref: "current" };
+  if (rule.valueMode === "template") return { $template: rule.value };
+  return JSON.parse(rule.value);
+}
+
+function patchConditionDocument(rule: PatchRule): Record<string, unknown> | undefined {
+  if (rule.condition === "always") return undefined;
+  if (rule.condition === "exists") return { exists: true };
+  if (rule.condition === "missing") return { exists: false };
+  if (rule.condition === "type") return { type: rule.conditionValue };
+  return { equals: JSON.parse(rule.conditionValue) };
+}
+
+function patchDocument(rules: PatchRule[], version: 1 | 2): Array<Record<string, unknown>> {
   return rules.map((rule) => {
-    if (rule.kind === "remove") return { op: rule.kind, path: rule.path };
-    return { op: rule.kind, path: rule.path, value: JSON.parse(rule.value) };
+    const result: Record<string, unknown> = { op: rule.kind, path: rule.path };
+    if (patchNeedsValue(rule.kind)) result.value = patchValueDocument(rule);
+    if (version === 2 && patchNeedsIndex(rule.kind)) result.index = Number(rule.index);
+    const when = version === 2 ? patchConditionDocument(rule) : undefined;
+    if (when) result.when = when;
+    return result;
   });
 }
 
@@ -490,22 +663,30 @@ function hasRules(document: VisualDocument): boolean {
   );
 }
 
+function documentVersion(document: VisualDocument): 1 | 2 {
+  return document.version === 2 ||
+    [...document.requestJson, ...document.sse.flatMap((rule) => rule.patches)].some(patchRequiresV2)
+    ? 2
+    : 1;
+}
+
 function serializeDocument(document: VisualDocument, apiFormat: ApiFormat): string {
   if (!hasRules(document)) return "{}";
+  const version = documentVersion(document);
 
   const result: Record<string, unknown> = {
-    version: 1,
+    version,
     api_format: apiFormat,
   };
   const requestHeaders = headerDocument(document.requestHeaders);
   const responseHeaders = headerDocument(document.responseHeaders);
   if (requestHeaders) result.request_headers = requestHeaders;
-  if (document.requestJson.length > 0) result.request_json = patchDocument(document.requestJson);
+  if (document.requestJson.length > 0) result.request_json = patchDocument(document.requestJson, version);
   if (responseHeaders) result.response_headers = responseHeaders;
   if (document.sse.length > 0) {
     result.sse = document.sse.map((rule) => ({
       event: rule.event,
-      json: patchDocument(rule.patches),
+      json: patchDocument(rule.patches, version),
     }));
   }
   return JSON.stringify(result, null, 2);
@@ -648,7 +829,15 @@ function PatchRulesEditor({
               <FieldLabel>{t("Operation")}</FieldLabel>
               <Select
                 value={rule.kind}
-                onValueChange={(value) => updateRule(index, { kind: value as PatchRuleKind })}
+                onValueChange={(value) => {
+                  const kind = value as PatchRuleKind;
+                  updateRule(index, {
+                    kind,
+                    index: patchNeedsIndex(kind) ? rule.index : "",
+                    value: patchNeedsValue(kind) ? rule.value : "",
+                    valueMode: patchNeedsValue(kind) ? rule.valueMode : "literal",
+                  });
+                }}
               >
                 <SelectTrigger aria-label={t("JSON Patch operation")}>
                   <SelectValue />
@@ -658,6 +847,11 @@ function PatchRulesEditor({
                     <SelectItem value="add">{t("Add value")}</SelectItem>
                     <SelectItem value="replace">{t("Replace value")}</SelectItem>
                     <SelectItem value="remove">{t("Remove value")}</SelectItem>
+                    <SelectItem value="array_append">{t("Append to array")}</SelectItem>
+                    <SelectItem value="array_prepend">{t("Prepend to array")}</SelectItem>
+                    <SelectItem value="array_insert">{t("Insert into array")}</SelectItem>
+                    <SelectItem value="array_remove">{t("Remove array item")}</SelectItem>
+                    <SelectItem value="merge">{t("Merge object")}</SelectItem>
                   </SelectGroup>
                 </SelectContent>
               </Select>
@@ -672,17 +866,170 @@ function PatchRulesEditor({
                 className="font-mono text-xs"
               />
             </Field>
-            {rule.kind !== "remove" ? (
+            {patchNeedsIndex(rule.kind) ? (
+              <Field orientation="responsive">
+                <FieldLabel htmlFor={`${idPrefix}-${rule.id}-index`}>{t("Array index")}</FieldLabel>
+                <Input
+                  id={`${idPrefix}-${rule.id}-index`}
+                  type="number"
+                  min={0}
+                  step={1}
+                  value={rule.index}
+                  onChange={(event) => updateRule(index, { index: event.target.value })}
+                />
+              </Field>
+            ) : null}
+            {patchNeedsValue(rule.kind) ? (
+              <>
+                <Field orientation="responsive">
+                  <FieldLabel>{t("Value source")}</FieldLabel>
+                  <Select
+                    value={rule.valueMode}
+                    onValueChange={(value) => {
+                      const valueMode = value as PatchValueMode;
+                      updateRule(index, {
+                        valueMode,
+                        value:
+                          valueMode === "literal"
+                            ? rule.valueMode === "literal"
+                              ? rule.value
+                              : "null"
+                            : valueMode === "template"
+                              ? rule.valueMode === "template"
+                                ? rule.value
+                                : "{{value}}"
+                              : "",
+                      });
+                    }}
+                  >
+                    <SelectTrigger aria-label={t("Value source")}>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectGroup>
+                        <SelectItem value="literal">{t("Literal JSON")}</SelectItem>
+                        <SelectItem value="current">{t("Current path value")}</SelectItem>
+                        <SelectItem value="template">{t("String template")}</SelectItem>
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                </Field>
+                {rule.valueMode === "literal" ? (
+                  <Field>
+                    <FieldLabel htmlFor={`${idPrefix}-${rule.id}-value`}>
+                      {t("Value (JSON)")}
+                    </FieldLabel>
+                    <Textarea
+                      id={`${idPrefix}-${rule.id}-value`}
+                      rows={2}
+                      value={rule.value}
+                      onChange={(event) => updateRule(index, { value: event.target.value })}
+                      className="font-mono text-xs"
+                    />
+                    <FieldDescription>
+                      {t("Use valid JSON, including quotes around strings.")}
+                    </FieldDescription>
+                  </Field>
+                ) : null}
+                {rule.valueMode === "current" ? (
+                  <Field>
+                    <FieldDescription>
+                      {t(
+                        "Copies the value at this rule's target path before the operation runs.",
+                      )}
+                    </FieldDescription>
+                  </Field>
+                ) : null}
+                {rule.valueMode === "template" ? (
+                  <Field>
+                    <FieldLabel htmlFor={`${idPrefix}-${rule.id}-template`}>
+                      {t("String template")}
+                    </FieldLabel>
+                    <Textarea
+                      id={`${idPrefix}-${rule.id}-template`}
+                      rows={2}
+                      value={rule.value}
+                      onChange={(event) => updateRule(index, { value: event.target.value })}
+                      placeholder="gateway-{{value}}"
+                      className="font-mono text-xs"
+                    />
+                    <FieldDescription>
+                      {t("Use {{value}} to interpolate the current value as text.")}
+                    </FieldDescription>
+                  </Field>
+                ) : null}
+              </>
+            ) : null}
+            <Field orientation="responsive">
+              <FieldLabel>{t("Run when")}</FieldLabel>
+              <Select
+                value={rule.condition}
+                onValueChange={(value) => {
+                  const condition = value as PatchConditionKind;
+                  updateRule(index, {
+                    condition,
+                    conditionValue:
+                      condition === rule.condition
+                        ? rule.conditionValue
+                        : condition === "type"
+                          ? "string"
+                          : "",
+                  });
+                }}
+              >
+                <SelectTrigger aria-label={t("Run when")}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    <SelectItem value="always">{t("Always")}</SelectItem>
+                    <SelectItem value="exists">{t("Path exists")}</SelectItem>
+                    <SelectItem
+                      value="missing"
+                      disabled={patchRequiresExistingTarget(rule.kind)}
+                    >
+                      {t("Path is missing")}
+                    </SelectItem>
+                    <SelectItem value="type">{t("Path has JSON type")}</SelectItem>
+                    <SelectItem value="equals">{t("Path equals JSON")}</SelectItem>
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </Field>
+            {rule.condition === "type" ? (
+              <Field orientation="responsive">
+                <FieldLabel>{t("JSON value type")}</FieldLabel>
+                <Select
+                  value={rule.conditionValue || "string"}
+                  onValueChange={(conditionValue) => updateRule(index, { conditionValue })}
+                >
+                  <SelectTrigger aria-label={t("JSON value type")}>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      {JSON_VALUE_TYPES.map((type) => (
+                        <SelectItem key={type} value={type}>
+                          {type}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+              </Field>
+            ) : null}
+            {rule.condition === "equals" ? (
               <Field>
-                <FieldLabel htmlFor={`${idPrefix}-${rule.id}-value`}>{t("Value (JSON)")}</FieldLabel>
+                <FieldLabel htmlFor={`${idPrefix}-${rule.id}-equals`}>
+                  {t("Equals value (JSON)")}
+                </FieldLabel>
                 <Textarea
-                  id={`${idPrefix}-${rule.id}-value`}
+                  id={`${idPrefix}-${rule.id}-equals`}
                   rows={2}
-                  value={rule.value}
-                  onChange={(event) => updateRule(index, { value: event.target.value })}
+                  value={rule.conditionValue}
+                  onChange={(event) => updateRule(index, { conditionValue: event.target.value })}
                   className="font-mono text-xs"
                 />
-                <FieldDescription>{t("Use valid JSON, including quotes around strings.")}</FieldDescription>
               </Field>
             ) : null}
             <Button
@@ -774,6 +1121,7 @@ export function TransformDocumentEditor({
   }, [fallbackApiFormat, fixedApiFormat, onVisualValidationChange, value]);
 
   const apiFormat = fixedApiFormat ?? document.apiFormat;
+  const activeDocumentVersion = documentVersion(document);
   const availableSseEvents = useMemo(
     () => sseEvents(apiFormat).filter((event) => !document.sse.some((rule) => rule.event === event)),
     [apiFormat, document.sse],
@@ -825,6 +1173,58 @@ export function TransformDocumentEditor({
         op: "replace",
         path: "/temperature",
         value: 0.2,
+      },
+    ],
+  };
+  const arrayRewriteExample = {
+    version: 2,
+    api_format: apiFormat,
+    request_json: [
+      {
+        op: "array_prepend",
+        path: "/messages",
+        value: {
+          role: "system",
+          content: "Follow the gateway policy.",
+        },
+        when: {
+          type: "array",
+        },
+      },
+    ],
+  };
+  const currentValueExample = {
+    version: 2,
+    api_format: apiFormat,
+    request_json: [
+      {
+        op: "replace",
+        path: "/metadata",
+        value: {
+          original: {
+            $ref: "current",
+          },
+          gateway: "console",
+        },
+        when: {
+          type: "object",
+        },
+      },
+    ],
+  };
+  const conditionalMergeExample = {
+    version: 2,
+    api_format: apiFormat,
+    request_json: [
+      {
+        op: "merge",
+        path: "/metadata",
+        value: {
+          gateway: "console",
+        },
+        when: {
+          type: "object",
+        },
       },
     ],
   };
@@ -912,7 +1312,7 @@ export function TransformDocumentEditor({
             </CardDescription>
           </CardHeader>
           <CardContent>
-              <FieldGroup>
+            <FieldGroup>
               <Field>
                 <FieldLabel>{t("Rule format")}</FieldLabel>
                 {fixedApiFormat ? (
@@ -953,6 +1353,17 @@ export function TransformDocumentEditor({
                   {fixedApiFormat
                     ? t("The channel group fixes this transform's API format.")
                     : t("Choose the API format before adding streaming response rules.")}
+                </FieldDescription>
+              </Field>
+              <Field>
+                <FieldLabel>{t("Transform DSL version")}</FieldLabel>
+                <Badge variant="secondary">v{activeDocumentVersion}</Badge>
+                <FieldDescription>
+                  {activeDocumentVersion === 1
+                    ? t("Version 1 uses standard JSON Patch operations.")
+                    : t(
+                        "Version 2 adds bounded array edits, shallow object merge, target-value references, and conditions.",
+                      )}
                 </FieldDescription>
               </Field>
             </FieldGroup>
@@ -998,7 +1409,7 @@ export function TransformDocumentEditor({
               <CardTitle>{t("Request body (JSON Patch)")}</CardTitle>
               <CardDescription>
                 {t(
-                  "Apply add, replace, or remove operations to the upstream JSON request. Model and stream remain protected.",
+                  "Apply JSON Patch or version 2 array and object operations to the upstream JSON request. Model and stream remain protected.",
                 )}
               </CardDescription>
             </div>
@@ -1030,6 +1441,15 @@ export function TransformDocumentEditor({
               <AlertDescription>
                 {t(
                   "Replace and remove require a path that already exists. Add also requires its parent path to exist.",
+                )}
+              </AlertDescription>
+            </Alert>
+            <Alert>
+              <CircleAlert />
+              <AlertTitle>{t("Version 2 safety boundary")}</AlertTitle>
+              <AlertDescription>
+                {t(
+                  "Array operations target an existing array, merge is shallow and targets an existing object, and {{value}} can only read this rule's target before it runs.",
                 )}
               </AlertDescription>
             </Alert>
@@ -1209,7 +1629,7 @@ export function TransformDocumentEditor({
             <FieldLabel htmlFor="transform-document-json">{t("Transform document JSON")}</FieldLabel>
             <FieldDescription>
               {t(
-                "Use this mode for direct editing. Visual editor supports the version 1 transform schema and keeps its generated JSON synchronized.",
+                "Use this mode for direct editing. Visual editor supports transform schema versions 1 and 2 and keeps its generated JSON synchronized.",
               )}
             </FieldDescription>
             <Textarea
@@ -1260,6 +1680,24 @@ export function TransformDocumentEditor({
             description={t("Replace a value that the client request already contains.")}
             document={requestBodyExample}
             onApply={() => applyExample(requestBodyExample)}
+          />
+          <ReferenceExample
+            title={t("Array rewrite example")}
+            description={t("Prepend a system message only when the target path is an array.")}
+            document={arrayRewriteExample}
+            onApply={() => applyExample(arrayRewriteExample)}
+          />
+          <ReferenceExample
+            title={t("Current-value reference example")}
+            description={t("Keep the original target value inside a replacement object.")}
+            document={currentValueExample}
+            onApply={() => applyExample(currentValueExample)}
+          />
+          <ReferenceExample
+            title={t("Conditional merge example")}
+            description={t("Shallow-merge safe metadata only when the target is an object.")}
+            document={conditionalMergeExample}
+            onApply={() => applyExample(conditionalMergeExample)}
           />
           <ReferenceExample
             title={t("Response header example")}
