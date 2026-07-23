@@ -90,7 +90,6 @@ export function CatalogPage() {
           <Checkbox
             aria-label={`${t("Select")} ${model.model_id}`}
             checked={selected.has(key)}
-            onClick={(event) => event.stopPropagation()}
             onCheckedChange={() => toggle(model)}
           />
         );

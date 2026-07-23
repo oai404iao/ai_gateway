@@ -46,6 +46,7 @@ import { useI18n } from "@/app/i18n";
 interface ModelRuleQuickAddDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  triggerId?: string;
 }
 
 function formatBadgeVariant(
@@ -59,6 +60,7 @@ function formatBadgeVariant(
 export function ModelRuleQuickAddDialog({
   open,
   onOpenChange,
+  triggerId,
 }: ModelRuleQuickAddDialogProps) {
   const models = useModels();
   const groups = useChannelGroups();
@@ -189,6 +191,7 @@ export function ModelRuleQuickAddDialog({
   return (
     <Dialog
       open={open}
+      triggerId={triggerId}
       onOpenChange={(nextOpen) => {
         if (!submitting) onOpenChange(nextOpen);
       }}

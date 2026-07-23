@@ -8,6 +8,7 @@
 - `web/console/src/components/ui/toggle-group.tsx:23` renders the callable Base UI group, while `web/console/src/components/ui/toggle-group.tsx:59` renders each item as a Toggle.
 - `web/console/src/features/statistics/channel-status-panel.tsx:188` and `web/console/src/features/statistics/cost-statistics-panel.tsx:410` migrate single selections to Base UI's always-array value shape.
 - `web/console/src/features/admin/system/session-affinity-card.tsx:547` replaces `type="multiple"` with the `multiple` boolean.
+- `web/console/src/features/statistics/statistics-page.test.tsx` asserts Base UI toggle buttons through `aria-pressed` instead of Radix radio roles.
 - Leftover scan clean: `grep -n "radix-ui\|@radix-ui" web/console/src/components/ui/toggle-group.tsx` returned no matches.
 
 ## Left alone
@@ -17,6 +18,7 @@
 ## Behavior changes
 
 - ToggleGroup values and callbacks are arrays in both single and multiple modes. Existing controlled single selections continue to ignore an empty array, preserving their non-empty UI behavior.
+- ToggleGroup items expose toggle-button semantics (`button` with `aria-pressed`) rather than Radix single-group radio semantics.
 
 ## Verify by hand
 

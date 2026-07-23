@@ -16,6 +16,7 @@ export function ModelRulesPage() {
   const { data, isLoading, error } = useModelRules();
   const { t } = useI18n();
   const [quickAddOpen, setQuickAddOpen] = useState(false);
+  const quickAddTriggerId = "model-rule-quick-add-trigger";
   return (
     <>
       <AdminListPage
@@ -27,7 +28,11 @@ export function ModelRulesPage() {
         createLabel={t("New rule")}
         onCreate={() => navigate("/admin/routing/model-rules/new")}
         headerActions={
-          <Button variant="outline" onClick={() => setQuickAddOpen(true)}>
+          <Button
+            id={quickAddTriggerId}
+            variant="outline"
+            onClick={() => setQuickAddOpen(true)}
+          >
             <ListPlus data-icon="inline-start" />
             {t("Quick add")}
           </Button>
@@ -75,7 +80,11 @@ export function ModelRulesPage() {
           { key: "updated", header: t("Updated"), render: (rule) => formatRelative(rule.updated_at) },
         ]}
       />
-      <ModelRuleQuickAddDialog open={quickAddOpen} onOpenChange={setQuickAddOpen} />
+      <ModelRuleQuickAddDialog
+        open={quickAddOpen}
+        onOpenChange={setQuickAddOpen}
+        triggerId={quickAddTriggerId}
+      />
     </>
   );
 }

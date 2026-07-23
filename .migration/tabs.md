@@ -7,6 +7,7 @@
 - `web/console/src/components/ui/tabs.tsx:1` now imports the Base UI tabs primitive.
 - `web/console/src/components/ui/tabs.tsx:50` maps `TabsTrigger` to `Tabs.Tab` and styles active state with `data-active`.
 - `web/console/src/components/ui/tabs.tsx:70` maps `TabsContent` to `Tabs.Panel`.
+- `web/console/src/features/admin/transforms/transform-document-editor.test.tsx` asserts Base UI's `data-active` state hook instead of Radix's `data-state="active"`.
 - Leftover scan clean: `grep -n "radix-ui\|@radix-ui" web/console/src/components/ui/tabs.tsx` returned no matches.
 
 ## Left alone

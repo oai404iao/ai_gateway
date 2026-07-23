@@ -118,12 +118,16 @@ describe("ChannelDetailPage", () => {
     const models = await screen.findByLabelText(/available upstream models/i);
     await user.type(models, "anthropic/claude-sonnet-4");
     await user.keyboard("{Enter}");
-    expect(screen.getByText("anthropic/claude-sonnet-4")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Remove anthropic/claude-sonnet-4" }),
+    ).toBeInTheDocument();
 
     await user.click(
       screen.getByRole("button", { name: "Remove anthropic/claude-sonnet-4" }),
     );
-    expect(screen.queryByText("anthropic/claude-sonnet-4")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Remove anthropic/claude-sonnet-4" }),
+    ).not.toBeInTheDocument();
 
     await user.type(models, "openai/gpt-4.1");
     await user.keyboard("{Enter}");
@@ -183,7 +187,9 @@ describe("ChannelDetailPage", () => {
     );
     await user.click(screen.getByRole("button", { name: /apply selection/i }));
 
-    expect(screen.getByText("openai/gpt-4.1")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Remove openai/gpt-4.1" }),
+    ).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /save channel/i }));
 
     await waitFor(() => {

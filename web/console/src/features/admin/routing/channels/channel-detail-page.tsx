@@ -178,6 +178,7 @@ export function ChannelDetailPage() {
   const [state, setState] = useState<FormState>(empty);
   const [submitting, setSubmitting] = useState(false);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const modelPickerTriggerId = "channel-model-picker-trigger";
   const [discoveredModels, setDiscoveredModels] = useState<string[]>([]);
   const [validation, setValidation] = useState<z.ZodError | null>(null);
   const [overrideDocumentValidation, setOverrideDocumentValidation] = useState<string | null>(
@@ -764,6 +765,7 @@ export function ChannelDetailPage() {
                   error={fieldError("available_models")}
                   action={
                     <Button
+                      id={modelPickerTriggerId}
                       type="button"
                       variant="outline"
                       size="sm"
@@ -894,6 +896,7 @@ export function ChannelDetailPage() {
       <ChannelModelPickerDialog
         open={modelPickerOpen}
         onOpenChange={setModelPickerOpen}
+        triggerId={modelPickerTriggerId}
         models={discoveredModels}
         currentModels={state.available_models}
         onApply={(available_models) =>

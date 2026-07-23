@@ -102,6 +102,7 @@ interface ChannelBatchEditDialogProps {
   channels: ChannelView[];
   onOpenChange: (open: boolean) => void;
   onApplied: () => void;
+  triggerId?: string;
 }
 
 export function ChannelBatchEditDialog({
@@ -109,6 +110,7 @@ export function ChannelBatchEditDialog({
   channels,
   onOpenChange,
   onApplied,
+  triggerId,
 }: ChannelBatchEditDialogProps) {
   const update = useBatchUpdateChannels();
   const { t } = useI18n();
@@ -184,6 +186,7 @@ export function ChannelBatchEditDialog({
   return (
     <Dialog
       open={open}
+      triggerId={triggerId}
       onOpenChange={(nextOpen) => {
         if (!update.isPending) onOpenChange(nextOpen);
       }}

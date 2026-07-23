@@ -9,6 +9,7 @@
 - `web/console/src/components/ui/select.tsx:136` introduces `Portal > Positioner > Popup > List`, forwards all exposed positioning props, and replaces `position` with `alignItemWithTrigger`.
 - `web/console/src/components/ui/select.tsx:189` uses Base UI's ItemText-first anatomy and rendered ItemIndicator.
 - `web/console/src/components/ui/select.test.tsx:14` now pins selected-label rendering and verifies no empty change is emitted.
+- `web/console/src/features/admin/routing/model-rules/model-rule-detail-page.test.tsx` scopes option assertions to Base UI's listbox popup.
 - Leftover scan clean: `grep -n "radix-ui\|@radix-ui" web/console/src/components/ui/select.tsx` returned no matches.
 
 ## Left alone

@@ -39,7 +39,7 @@ if (!window.ResizeObserver) {
   } as unknown as typeof ResizeObserver;
 }
 
-// Radix Select checks this pointer-capture API while opening its menu.
+// Popup and form-control primitives check these browser APIs.
 if (!HTMLElement.prototype.hasPointerCapture) {
   Object.defineProperty(HTMLElement.prototype, "hasPointerCapture", {
     configurable: true,
@@ -51,5 +51,12 @@ if (!HTMLElement.prototype.scrollIntoView) {
   Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
     configurable: true,
     value: () => {},
+  });
+}
+
+if (!Element.prototype.getAnimations) {
+  Object.defineProperty(Element.prototype, "getAnimations", {
+    configurable: true,
+    value: () => [],
   });
 }
