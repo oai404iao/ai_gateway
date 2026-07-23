@@ -4,7 +4,13 @@ import { z } from "zod";
 import { toast } from "sonner";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Field, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
+import {
+  Field,
+  FieldDescription,
+  FieldError,
+  FieldGroup,
+  FieldLabel,
+} from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
@@ -31,6 +37,7 @@ const schema = z.object({
   cache_write_unit_price: z.string().min(1),
   output_unit_price: z.string().min(1),
   price_effective_at: z.string().min(1),
+  advanced_billing: z.string().min(1, "Advanced billing configuration is required."),
   source_payload: z.string(),
 });
 
@@ -47,6 +54,11 @@ const empty: FormState = {
   cache_write_unit_price: "0",
   output_unit_price: "0",
   price_effective_at: new Date().toISOString(),
+  advanced_billing: JSON.stringify(
+    { long_context_tiers: [], request_multipliers: [] },
+    null,
+    2,
+  ),
   source_payload: "{}",
 };
 
@@ -89,6 +101,7 @@ export function ModelDetailPage() {
         cache_write_unit_price: data.data.cache_write_unit_price,
         output_unit_price: data.data.output_unit_price,
         price_effective_at: data.data.price_effective_at,
+        advanced_billing: JSON.stringify(data.data.advanced_billing, null, 2),
         source_payload: "{}",
       });
     }
@@ -98,10 +111,22 @@ export function ModelDetailPage() {
 
   const submit = async () => {
     let payload: unknown = undefined;
+    let advancedBilling: ModelInput["advanced_billing"] = undefined;
     try {
       payload = state.source_payload.trim() ? JSON.parse(state.source_payload) : {};
+      if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
+        throw new Error("Source payload must be a JSON object.");
+      }
+      advancedBilling = JSON.parse(state.advanced_billing);
+      if (
+        typeof advancedBilling !== "object" ||
+        advancedBilling === null ||
+        Array.isArray(advancedBilling)
+      ) {
+        throw new Error("Advanced billing must be a JSON object.");
+      }
     } catch {
-      toast.error(t("Source payload is not valid JSON."));
+      toast.error(t("Advanced billing and source payload must be valid JSON objects."));
       return;
     }
     const parsed = schema.safeParse(state);
@@ -122,6 +147,7 @@ export function ModelDetailPage() {
       cache_write_unit_price: parsed.data.cache_write_unit_price,
       output_unit_price: parsed.data.output_unit_price,
       price_effective_at: fromLocalInput(parsed.data.price_effective_at),
+      advanced_billing: advancedBilling,
       source_payload: payload,
     };
     try {
@@ -183,6 +209,14 @@ export function ModelDetailPage() {
                 <DetailField
                   label={t("Effective")}
                   value={formatDateTime(data.data.price_effective_at)}
+                />
+                <DetailField
+                  label={t("Long-context tiers")}
+                  value={data.data.advanced_billing.long_context_tiers.length}
+                />
+                <DetailField
+                  label={t("Request multipliers")}
+                  value={data.data.advanced_billing.request_multipliers.length}
                 />
               </dl>
             </CardContent>
@@ -274,6 +308,25 @@ export function ModelDetailPage() {
                   error={fieldError("output_unit_price")}
                   required
                 />
+                <Field data-invalid={Boolean(fieldError("advanced_billing"))}>
+                  <FieldLabel htmlFor="advanced_billing">{t("Advanced billing")}</FieldLabel>
+                  <Textarea
+                    id="advanced_billing"
+                    rows={12}
+                    className="font-mono text-xs"
+                    value={state.advanced_billing}
+                    onChange={(event) => patch({ advanced_billing: event.target.value })}
+                    aria-invalid={Boolean(fieldError("advanced_billing"))}
+                  />
+                  <FieldDescription>
+                    {t(
+                      "Use long_context_tiers for whole-request input prices at token thresholds, and request_multipliers for exact JSON Pointer matches on the original client body. All matching multipliers apply to the complete request cost.",
+                    )}
+                  </FieldDescription>
+                  {fieldError("advanced_billing") ? (
+                    <FieldError>{fieldError("advanced_billing")}</FieldError>
+                  ) : null}
+                </Field>
                 <Field>
                   <FieldLabel htmlFor="price_effective_at">{t("Price effective at")}</FieldLabel>
                   <Input

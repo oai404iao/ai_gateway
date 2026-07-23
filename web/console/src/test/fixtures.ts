@@ -193,6 +193,10 @@ export const MODEL: ControlPlaneModel = {
   cache_write_unit_price: "0.3",
   output_unit_price: "0.6",
   price_effective_at: "2026-01-01T00:00:00.000Z",
+  advanced_billing: {
+    long_context_tiers: [],
+    request_multipliers: [],
+  },
   last_synced_at: null,
   created_at: "2026-01-01T00:00:00.000Z",
   updated_at: "2026-01-01T00:00:00.000Z",

@@ -2,6 +2,7 @@
 
 mod api_format;
 mod api_key;
+mod billing;
 mod compiled_routing;
 mod console_auth;
 mod request_log;
@@ -9,6 +10,10 @@ mod system_settings;
 
 pub use api_format::ApiFormat;
 pub use api_key::ApiKeyHash;
+pub use billing::{
+    AdvancedBilling, AdvancedBillingError, CompiledAdvancedBilling, LongContextTier,
+    RequestBillingMultiplier,
+};
 pub use compiled_routing::{
     ApiKeyPermission, ChannelTimeoutPolicy, CompiledApiKey, CompiledChannel, CompiledChannelGroup,
     CompiledChannelUpstreamPolicy, CompiledConfigTemplate, CompiledModelRule, CompiledProxy,

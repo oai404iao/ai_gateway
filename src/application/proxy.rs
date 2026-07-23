@@ -34,9 +34,10 @@ use crate::{
     },
     domain::{
         ApiFormat, ApiKeyPermission, AutomaticDisableSettings, AutomaticDisableTrigger,
-        CompiledApiKey, CompiledChannel, CompiledModelRule, ModelPriceSnapshot, RequestBilling,
-        RequestLogEvent, RequestLogOutcome, RequestLogSource, RequestPriceSnapshot, RequestUsage,
-        SessionAffinityKeySource, SessionAffinitySettings, UpstreamAuth,
+        CompiledAdvancedBilling, CompiledApiKey, CompiledChannel, CompiledModelRule,
+        ModelPriceSnapshot, RequestBilling, RequestLogEvent, RequestLogOutcome, RequestLogSource,
+        RequestPriceSnapshot, RequestUsage, SessionAffinityKeySource, SessionAffinitySettings,
+        UpstreamAuth,
     },
     routing::{
         ChannelLease, RoutingRuntime, SelectionResult, SessionAffinityMatch,
@@ -272,6 +273,7 @@ impl ProxyService {
         let mut current_rule = rule;
         let mut current_channel = channel;
         let current_session_affinity = selected_session_affinity;
+        let request_multiplier = request_billing_multiplier(&current_rule, &original_body);
         let mut completion = CompletionGuard::new(
             Arc::clone(&self.request_log_sink),
             &api_key,
@@ -287,6 +289,7 @@ impl ProxyService {
             self.automatic_disable.clone(),
             snapshot.system_settings().automatic_disable().clone(),
             current_session_affinity.as_ref(),
+            request_multiplier,
         );
         let retry_settings = snapshot.system_settings().request_retry();
         let max_retries = if retry_settings.enabled() {
@@ -414,6 +417,8 @@ impl ProxyService {
                     } = route;
                     let failed_channel_id = current_channel.id();
                     let next_channel_id = channel.id();
+                    let request_billing_multiplier =
+                        request_billing_multiplier(&rule, &original_body);
                     completion.retry_with_route(
                         &rule,
                         &channel,
@@ -421,6 +426,7 @@ impl ProxyService {
                         self.automatic_disable.clone(),
                         snapshot.system_settings().automatic_disable().clone(),
                         selected_session_affinity.as_ref(),
+                        request_billing_multiplier,
                     );
                     current_rule = rule;
                     current_channel = channel;
@@ -809,6 +815,16 @@ fn parse_request(body: &[u8]) -> Result<ParsedRequest, ProxyError> {
         model: probe.model,
         streamed: probe.stream,
     })
+}
+
+fn request_billing_multiplier(rule: &CompiledModelRule, body: &[u8]) -> Decimal {
+    let advanced_billing = rule.advanced_billing();
+    if !advanced_billing.has_request_multipliers() {
+        return Decimal::ONE;
+    }
+    let request =
+        serde_json::from_slice::<Value>(body).expect("model probe already validated request JSON");
+    advanced_billing.request_multiplier(&request)
 }
 
 const MAX_SESSION_AFFINITY_VALUE_BYTES: usize = 512;
@@ -1463,7 +1479,9 @@ struct CompletionContext {
     client_visible_status: Option<u16>,
     usage: UsageCollector,
     price_snapshot: ModelPriceSnapshot,
+    advanced_billing: CompiledAdvancedBilling,
     billing_multiplier: Decimal,
+    request_billing_multiplier: Decimal,
     sink: Arc<dyn RequestLogSink>,
     session_affinity_rule: Option<Arc<str>>,
     session_affinity_hit: Option<bool>,
@@ -1503,6 +1521,7 @@ impl CompletionGuard {
         automatic_disable_service: Option<AutomaticDisableService>,
         automatic_disable_settings: AutomaticDisableSettings,
         session_affinity: Option<&SessionAffinitySelection>,
+        request_billing_multiplier: Decimal,
     ) -> Self {
         Self {
             context: Some(CompletionContext {
@@ -1524,7 +1543,9 @@ impl CompletionGuard {
                 client_visible_status: None,
                 usage: UsageCollector::new(api_format, false),
                 price_snapshot: rule.price_snapshot().clone(),
+                advanced_billing: rule.advanced_billing().clone(),
                 billing_multiplier: channel.billing_multiplier(),
+                request_billing_multiplier,
                 sink,
                 session_affinity_rule: session_affinity
                     .map(|selection| Arc::from(selection.rule_name())),
@@ -1550,6 +1571,7 @@ impl CompletionGuard {
         automatic_disable_service: Option<AutomaticDisableService>,
         automatic_disable_settings: AutomaticDisableSettings,
         session_affinity: Option<&SessionAffinitySelection>,
+        request_billing_multiplier: Decimal,
     ) {
         if let Some(mut previous) = self.lease.take() {
             previous.request_failed();
@@ -1565,7 +1587,9 @@ impl CompletionGuard {
             context.client_visible_status = None;
             context.usage = UsageCollector::new(context.api_format, false);
             context.price_snapshot = rule.price_snapshot().clone();
+            context.advanced_billing = rule.advanced_billing().clone();
             context.billing_multiplier = channel.billing_multiplier();
+            context.request_billing_multiplier = request_billing_multiplier;
             context.session_affinity_rule =
                 session_affinity.map(|selection| Arc::from(selection.rule_name()));
             context.session_affinity_hit =
@@ -1686,7 +1710,9 @@ impl CompletionGuard {
         let total_duration_ms = clamp_duration_ms(context.started_at.elapsed());
         let billing = request_billing(
             &context.price_snapshot,
+            &context.advanced_billing,
             context.billing_multiplier,
+            context.request_billing_multiplier,
             usage,
             total_duration_ms,
             context.first_byte_at.map(clamp_duration_ms),
@@ -1762,32 +1788,47 @@ fn automatic_disable_context(
 
 fn request_billing(
     snapshot: &ModelPriceSnapshot,
+    advanced_billing: &CompiledAdvancedBilling,
     billing_multiplier: Decimal,
+    request_billing_multiplier: Decimal,
     usage: Option<super::usage::ResponseUsage>,
     total_duration_ms: i32,
     ttft_ms: Option<i32>,
 ) -> RequestBilling {
-    let price = RequestPriceSnapshot {
-        currency: snapshot.currency().to_owned(),
-        price_unit_tokens: snapshot.price_unit_tokens(),
-        price_effective_at: snapshot.price_effective_at(),
-        input_unit_price: effective_unit_price(snapshot.input_unit_price(), billing_multiplier),
-        cached_input_unit_price: effective_unit_price(
-            snapshot.cached_input_unit_price(),
-            billing_multiplier,
-        ),
-        cache_write_unit_price: effective_unit_price(
-            snapshot.cache_write_unit_price(),
-            billing_multiplier,
-        ),
-        output_unit_price: effective_unit_price(snapshot.output_unit_price(), billing_multiplier),
-    };
     let usage = usage.map(|usage| RequestUsage {
         input_tokens: usage.input_tokens,
         cached_input_tokens: usage.cached_input_tokens,
         cache_write_tokens: usage.cache_write_tokens,
         output_tokens: usage.output_tokens,
     });
+    let (input_unit_price, cached_input_unit_price, cache_write_unit_price) =
+        usage.as_ref().map_or(
+            (
+                snapshot.input_unit_price(),
+                snapshot.cached_input_unit_price(),
+                snapshot.cache_write_unit_price(),
+            ),
+            |usage| {
+                advanced_billing.input_prices(
+                    usage.input_tokens,
+                    snapshot.input_unit_price(),
+                    snapshot.cached_input_unit_price(),
+                    snapshot.cache_write_unit_price(),
+                )
+            },
+        );
+    let billing_multiplier = billing_multiplier
+        .checked_mul(request_billing_multiplier)
+        .expect("compiled request billing multiplier fits");
+    let price = RequestPriceSnapshot {
+        currency: snapshot.currency().to_owned(),
+        price_unit_tokens: snapshot.price_unit_tokens(),
+        price_effective_at: snapshot.price_effective_at(),
+        input_unit_price: effective_unit_price(input_unit_price, billing_multiplier),
+        cached_input_unit_price: effective_unit_price(cached_input_unit_price, billing_multiplier),
+        cache_write_unit_price: effective_unit_price(cache_write_unit_price, billing_multiplier),
+        output_unit_price: effective_unit_price(snapshot.output_unit_price(), billing_multiplier),
+    };
     let cost_amount = usage.as_ref().map(|usage| calculate_cost(usage, &price));
     let output_tokens_per_second = usage.and_then(|usage| {
         (usage.output_tokens > 0).then(|| {
@@ -1861,10 +1902,12 @@ mod tests {
     use crate::{
         application::usage::ResponseUsage,
         domain::{
-            ApiFormat, CompiledChannel, ModelPriceSnapshot, RequestPriceSnapshot, RequestUsage,
+            AdvancedBilling, ApiFormat, CompiledAdvancedBilling, CompiledChannel, LongContextTier,
+            ModelPriceSnapshot, RequestBillingMultiplier, RequestPriceSnapshot, RequestUsage,
             SessionAffinityKeySource, SessionAffinityRule, SessionAffinitySettings, UpstreamAuth,
         },
     };
+    use serde_json::json;
 
     fn affinity_settings(sources: Vec<SessionAffinityKeySource>) -> SessionAffinitySettings {
         SessionAffinitySettings::new(
@@ -2044,6 +2087,8 @@ mod tests {
         );
         let billing = request_billing(
             &snapshot,
+            &CompiledAdvancedBilling::default(),
+            Decimal::ONE,
             Decimal::ONE,
             Some(ResponseUsage {
                 input_tokens: 10,
@@ -2074,7 +2119,9 @@ mod tests {
         );
         let billing = request_billing(
             &snapshot,
+            &CompiledAdvancedBilling::default(),
             Decimal::new(15, 1),
+            Decimal::ONE,
             Some(ResponseUsage {
                 input_tokens: 10,
                 cached_input_tokens: 2,
@@ -2090,5 +2137,52 @@ mod tests {
         assert_eq!(billing.price.cache_write_unit_price, Decimal::new(375, 3));
         assert_eq!(billing.price.output_unit_price, Decimal::from(3_i64));
         assert_eq!(billing.cost_amount, Some(Decimal::new(25875, 3)));
+    }
+
+    #[test]
+    fn applies_context_tier_then_channel_and_request_multipliers() {
+        let snapshot = ModelPriceSnapshot::new(
+            "USD".into(),
+            1,
+            chrono::Utc::now(),
+            Decimal::ONE,
+            Decimal::new(5, 1),
+            Decimal::new(25, 2),
+            Decimal::from(2_i64),
+        );
+        let advanced = CompiledAdvancedBilling::compile(AdvancedBilling {
+            long_context_tiers: vec![LongContextTier {
+                input_tokens_threshold: 10,
+                input_unit_price: Decimal::from(3_i64),
+                cached_input_unit_price: Decimal::from(2_i64),
+                cache_write_unit_price: Decimal::from(4_i64),
+            }],
+            request_multipliers: vec![RequestBillingMultiplier {
+                json_pointer: "/reasoning/effort".into(),
+                value: json!("high"),
+                multiplier: Decimal::new(2, 0),
+            }],
+        })
+        .unwrap();
+        let billing = request_billing(
+            &snapshot,
+            &advanced,
+            Decimal::new(15, 1),
+            advanced.request_multiplier(&json!({"reasoning": {"effort": "high"}})),
+            Some(ResponseUsage {
+                input_tokens: 10,
+                cached_input_tokens: 2,
+                cache_write_tokens: 1,
+                output_tokens: 4,
+            }),
+            2_000,
+            Some(500),
+        );
+
+        assert_eq!(billing.price.input_unit_price, Decimal::from(9_i64));
+        assert_eq!(billing.price.cached_input_unit_price, Decimal::from(6_i64));
+        assert_eq!(billing.price.cache_write_unit_price, Decimal::from(12_i64));
+        assert_eq!(billing.price.output_unit_price, Decimal::from(6_i64));
+        assert_eq!(billing.cost_amount, Some(Decimal::from(120_i64)));
     }
 }

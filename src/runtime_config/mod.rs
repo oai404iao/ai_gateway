@@ -23,13 +23,14 @@ use zeroize::Zeroizing;
 
 use crate::{
     domain::{
-        ApiFormat, ApiKeyHash, ApiKeyPermission, AutomaticDisableSettings, ChannelTimeoutPolicy,
-        CompiledApiKey, CompiledChannel, CompiledChannelGroup, CompiledChannelUpstreamPolicy,
-        CompiledConfigTemplate, CompiledModelRule, CompiledProxy, CompiledRouteTier,
-        CompiledRuntimeConfig, MAX_REQUEST_RETRIES, ModelPriceSnapshot, ModelRouteKey, NoProxyHost,
-        PassiveHealthSettings, RequestRetrySettings, ScheduledTestingMode,
-        ScheduledTestingSettings, SelectionStrategy, SessionAffinityKeySource, SessionAffinityRule,
-        SessionAffinitySettings, SystemRuntimeSettings, UpstreamAuth, UpstreamTimeoutDefaults,
+        AdvancedBilling, ApiFormat, ApiKeyHash, ApiKeyPermission, AutomaticDisableSettings,
+        ChannelTimeoutPolicy, CompiledApiKey, CompiledChannel, CompiledChannelGroup,
+        CompiledChannelUpstreamPolicy, CompiledConfigTemplate, CompiledModelRule, CompiledProxy,
+        CompiledRouteTier, CompiledRuntimeConfig, MAX_REQUEST_RETRIES, ModelPriceSnapshot,
+        ModelRouteKey, NoProxyHost, PassiveHealthSettings, RequestRetrySettings,
+        ScheduledTestingMode, ScheduledTestingSettings, SelectionStrategy,
+        SessionAffinityKeySource, SessionAffinityRule, SessionAffinitySettings,
+        SystemRuntimeSettings, UpstreamAuth, UpstreamTimeoutDefaults,
     },
     persistence::{
         ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ConfigTemplateRecord, ControlPlaneRecords,
@@ -1413,6 +1414,7 @@ fn compile_rules(
             .sort_unstable_by_key(crate::domain::CompiledUnavailableRouteCandidate::channel_id);
         let key = ModelRouteKey::new(format, Arc::<str>::from(record.client_model.as_str()));
         let price_snapshot = compile_model_price_snapshot(&record)?;
+        let advanced_billing = compile_advanced_billing(&record)?;
         let rule = Arc::new(CompiledModelRule::new_with_unavailable_candidates(
             record.id,
             record.upstream_model_id,
@@ -1420,6 +1422,7 @@ fn compile_rules(
             format,
             Arc::from(record.upstream_model),
             price_snapshot,
+            advanced_billing,
             Arc::from(tiers),
             Arc::from(unavailable_candidates),
         ));
@@ -1437,15 +1440,20 @@ fn validate_effective_channel_prices(
 ) -> Result<(), ConfigError> {
     let max_persisted_unit_price =
         rust_decimal::Decimal::from_i128_with_scale(999_999_999_999_999_999_999_999, 12);
-    for price in [
+    let advanced_billing = compile_advanced_billing(record)?;
+    let request_multiplier = advanced_billing.maximum_request_multiplier();
+    for price in advanced_billing.price_candidates(
         record.input_unit_price,
         record.cached_input_unit_price,
         record.cache_write_unit_price,
         record.output_unit_price,
-    ] {
-        let Some(effective) = price.checked_mul(channel.billing_multiplier()) else {
+    ) {
+        let Some(effective) = price
+            .checked_mul(channel.billing_multiplier())
+            .and_then(|price| price.checked_mul(request_multiplier))
+        else {
             return Err(ConfigError::Compile(
-                "channel billing multiplier overflows the effective model price".into(),
+                "advanced billing multiplier overflows the effective model price".into(),
             ));
         };
         if effective.round_dp(12) > max_persisted_unit_price {
@@ -1455,6 +1463,15 @@ fn validate_effective_channel_prices(
         }
     }
     Ok(())
+}
+fn compile_advanced_billing(
+    record: &ModelRuleRecord,
+) -> Result<crate::domain::CompiledAdvancedBilling, ConfigError> {
+    let advanced_billing =
+        serde_json::from_value::<AdvancedBilling>(record.advanced_billing.clone())
+            .map_err(|_| ConfigError::Compile("invalid advanced billing configuration".into()))?;
+    crate::domain::CompiledAdvancedBilling::compile(advanced_billing)
+        .map_err(|_| ConfigError::Compile("invalid advanced billing configuration".into()))
 }
 fn compile_model_price_snapshot(
     record: &ModelRuleRecord,
@@ -2144,6 +2161,10 @@ mod tests {
                 cached_input_unit_price: Default::default(),
                 cache_write_unit_price: Default::default(),
                 output_unit_price: Default::default(),
+                advanced_billing: serde_json::json!({
+                    "long_context_tiers": [],
+                    "request_multipliers": [],
+                }),
                 upstream_model: "upstream".into(),
                 channel_group_ids: vec![first_group, second_group],
                 channel_ids: direct_duplicate

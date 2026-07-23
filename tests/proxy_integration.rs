@@ -664,6 +664,10 @@ fn configured_proxy_with_policy_and_transforms(
         cached_input_unit_price: Default::default(),
         cache_write_unit_price: Default::default(),
         output_unit_price: Default::default(),
+        advanced_billing: serde_json::json!({
+            "long_context_tiers": [],
+            "request_multipliers": [],
+        }),
         upstream_model: upstream.into(),
         channel_group_ids: vec![],
         channel_ids: vec![channel_id],
@@ -889,6 +893,10 @@ fn session_affinity_proxy(first_upstream_url: &str, second_upstream_url: &str) -
             cached_input_unit_price: Default::default(),
             cache_write_unit_price: Default::default(),
             output_unit_price: Default::default(),
+            advanced_billing: serde_json::json!({
+                "long_context_tiers": [],
+                "request_multipliers": [],
+            }),
             upstream_model: "affinity-model".into(),
             channel_group_ids: vec![group_id],
             channel_ids: vec![],

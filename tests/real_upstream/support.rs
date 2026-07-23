@@ -198,6 +198,10 @@ fn gateway(settings: &SmokeSettings, format: SmokeFormat, upstream_model: &str) 
             cached_input_unit_price: Decimal::new(5, 1),
             cache_write_unit_price: Decimal::new(25, 2),
             output_unit_price: Decimal::from(2_i64),
+            advanced_billing: json!({
+                "long_context_tiers": [],
+                "request_multipliers": [],
+            }),
             upstream_model: upstream_model.into(),
             channel_group_ids: vec![],
             channel_ids: vec![channel_id],

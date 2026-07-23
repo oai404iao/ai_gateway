@@ -2018,7 +2018,7 @@ components:
         [id, source_model_id, display_name, provider_name, enabled,
          price_unit_tokens, input_unit_price, cached_input_unit_price,
          cache_write_unit_price, output_unit_price, price_effective_at,
-         last_synced_at, created_at, updated_at]
+         advanced_billing, last_synced_at, created_at, updated_at]
       properties:
         id: { type: string, format: uuid }
         source_model_id: { type: string }
@@ -2031,6 +2031,7 @@ components:
         cache_write_unit_price: { $ref: "#/components/schemas/Decimal" }
         output_unit_price: { $ref: "#/components/schemas/Decimal" }
         price_effective_at: { $ref: "#/components/schemas/DateTime" }
+        advanced_billing: { $ref: "#/components/schemas/AdvancedBilling" }
         last_synced_at: { $ref: "#/components/schemas/DateTimeNullable" }
         created_at: { $ref: "#/components/schemas/DateTime" }
         updated_at: { $ref: "#/components/schemas/DateTime" }
@@ -2612,7 +2613,53 @@ components:
         cache_write_unit_price: { $ref: "#/components/schemas/Decimal" }
         output_unit_price: { $ref: "#/components/schemas/Decimal" }
         price_effective_at: { $ref: "#/components/schemas/DateTime" }
+        advanced_billing:
+          allOf: [{ $ref: "#/components/schemas/AdvancedBilling" }]
+          description: Omit on update to preserve the stored model-level advanced billing policy.
         source_payload: { $ref: "#/components/schemas/JsonValue" }
+
+    AdvancedBilling:
+      type: object
+      required: [long_context_tiers, request_multipliers]
+      description: Model-level pricing rules. Long-context tiers replace base input prices at or above their threshold; all matching request multipliers are multiplied together and apply to the whole request cost.
+      properties:
+        long_context_tiers:
+          type: array
+          description: Strictly ascending input-token thresholds. A threshold applies to all input-related token categories for the complete request.
+          items: { $ref: "#/components/schemas/LongContextTier" }
+        request_multipliers:
+          type: array
+          description: Exact JSON Pointer matches evaluated against the original client request body before request transforms.
+          items: { $ref: "#/components/schemas/RequestBillingMultiplier" }
+
+    LongContextTier:
+      type: object
+      required:
+        [input_tokens_threshold, input_unit_price, cached_input_unit_price,
+         cache_write_unit_price]
+      properties:
+        input_tokens_threshold:
+          type: integer
+          minimum: 1
+          description: Applies when reported input tokens are greater than or equal to this value.
+        input_unit_price: { $ref: "#/components/schemas/Decimal" }
+        cached_input_unit_price: { $ref: "#/components/schemas/Decimal" }
+        cache_write_unit_price: { $ref: "#/components/schemas/Decimal" }
+
+    RequestBillingMultiplier:
+      type: object
+      required: [json_pointer, value, multiplier]
+      properties:
+        json_pointer:
+          type: string
+          maxLength: 512
+          description: RFC 6901 JSON Pointer into the original client request body.
+        value:
+          allOf: [{ $ref: "#/components/schemas/JsonValue" }]
+          description: Exact JSON value that activates this multiplier.
+        multiplier:
+          allOf: [{ $ref: "#/components/schemas/Decimal" }]
+          description: Non-negative multiplier applied with every other matched request multiplier and the selected channel multiplier.
 
     ChannelGroupInput:
       type: object

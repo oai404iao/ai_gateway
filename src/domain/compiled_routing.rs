@@ -15,7 +15,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 use uuid::Uuid;
 
-use super::{ApiFormat, ApiKeyHash, SystemRuntimeSettings};
+use super::{ApiFormat, ApiKeyHash, CompiledAdvancedBilling, SystemRuntimeSettings};
 use crate::transforms::TransformPlan;
 
 /// A normalized `no_proxy_hosts` pattern.
@@ -842,6 +842,7 @@ pub struct CompiledModelRule {
     api_format: ApiFormat,
     upstream_model: Arc<str>,
     price_snapshot: ModelPriceSnapshot,
+    advanced_billing: CompiledAdvancedBilling,
     tiers: Arc<[CompiledRouteTier]>,
     unavailable_candidates: Arc<[CompiledUnavailableRouteCandidate]>,
 }
@@ -901,6 +902,10 @@ impl CompiledModelRule {
         &self.price_snapshot
     }
     #[must_use]
+    pub fn advanced_billing(&self) -> &CompiledAdvancedBilling {
+        &self.advanced_billing
+    }
+    #[must_use]
     pub fn tiers(&self) -> &[CompiledRouteTier] {
         &self.tiers
     }
@@ -916,6 +921,7 @@ impl CompiledModelRule {
         api_format: ApiFormat,
         upstream_model: Arc<str>,
         price_snapshot: ModelPriceSnapshot,
+        advanced_billing: CompiledAdvancedBilling,
         tiers: Arc<[CompiledRouteTier]>,
         unavailable_candidates: Arc<[CompiledUnavailableRouteCandidate]>,
     ) -> Self {
@@ -926,6 +932,7 @@ impl CompiledModelRule {
             api_format,
             upstream_model,
             price_snapshot,
+            advanced_billing,
             tiers,
             unavailable_candidates,
         }

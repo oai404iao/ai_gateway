@@ -275,6 +275,7 @@ pub struct ModelRuleRecord {
     pub cached_input_unit_price: rust_decimal::Decimal,
     pub cache_write_unit_price: rust_decimal::Decimal,
     pub output_unit_price: rust_decimal::Decimal,
+    pub advanced_billing: Value,
     pub upstream_model: String,
     pub channel_group_ids: Vec<Uuid>,
     pub channel_ids: Vec<Uuid>,
@@ -500,6 +501,10 @@ pub struct ModelInput {
     pub cache_write_unit_price: rust_decimal::Decimal,
     pub output_unit_price: rust_decimal::Decimal,
     pub price_effective_at: DateTime<Utc>,
+    /// Create defaults to no advanced billing; omission during an update
+    /// preserves the model's existing policy.
+    #[serde(default)]
+    pub advanced_billing: Option<crate::domain::AdvancedBilling>,
     /// Create defaults to `{}`; omission during an update preserves the
     /// opaque source document which ordinary reads deliberately do not expose.
     #[serde(default)]
@@ -936,6 +941,7 @@ pub struct ControlPlaneModel {
     pub cache_write_unit_price: rust_decimal::Decimal,
     pub output_unit_price: rust_decimal::Decimal,
     pub price_effective_at: DateTime<Utc>,
+    pub advanced_billing: Value,
     pub last_synced_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -3293,7 +3299,7 @@ impl ControlPlaneRepository {
         transaction: &mut Transaction<'_, Postgres>,
     ) -> Result<ControlPlaneRecords, RepositoryError> {
         let api_keys = sqlx::query_as::<_, ApiKeyRecord>("SELECT k.id, k.user_id, u.status AS user_status, k.secret_value, k.status, k.expires_at, k.allowed_api_formats::text[] AS allowed_api_formats, k.permissions, k.allowed_group_ids, k.allowed_channel_ids, k.requests_per_minute, k.max_concurrent_requests, k.quota_limit_amount, k.quota_used_amount FROM api_keys k JOIN users u ON u.id = k.user_id WHERE NOT k.is_system ORDER BY k.id").fetch_all(&mut **transaction).await?;
-        let model_rules = sqlx::query_as::<_, ModelRuleRecord>("SELECT r.id, r.client_model, r.api_format::text AS api_format, r.upstream_model_id, m.enabled AS upstream_model_enabled, m.currency AS upstream_model_currency, m.price_unit_tokens, m.price_effective_at, m.input_unit_price, m.cached_input_unit_price, m.cache_write_unit_price, m.output_unit_price, m.source_model_id AS upstream_model, r.channel_group_ids, r.channel_ids, r.enabled FROM model_rules r JOIN models m ON m.id = r.upstream_model_id ORDER BY r.id").fetch_all(&mut **transaction).await?;
+        let model_rules = sqlx::query_as::<_, ModelRuleRecord>("SELECT r.id, r.client_model, r.api_format::text AS api_format, r.upstream_model_id, m.enabled AS upstream_model_enabled, m.currency AS upstream_model_currency, m.price_unit_tokens, m.price_effective_at, m.input_unit_price, m.cached_input_unit_price, m.cache_write_unit_price, m.output_unit_price, m.advanced_billing, m.source_model_id AS upstream_model, r.channel_group_ids, r.channel_ids, r.enabled FROM model_rules r JOIN models m ON m.id = r.upstream_model_id ORDER BY r.id").fetch_all(&mut **transaction).await?;
         let groups = sqlx::query_as::<_, ChannelGroupRecord>("SELECT id, name, api_format::text AS api_format, priority, selection_strategy, enabled FROM channel_groups ORDER BY id").fetch_all(&mut **transaction).await?;
         let channels = sqlx::query_as::<_, ChannelRecord>("SELECT id, channel_group_id, api_format::text AS api_format, name, base_url, enabled, auto_disabled, auto_disable_allowed, weight, billing_multiplier, proxy_id, config_template_id, override_document, connect_timeout_ms, response_header_timeout_ms, stream_idle_timeout_ms, upstream_auth_kind, upstream_auth_header_name, upstream_api_key, available_models, test_model FROM channels ORDER BY id").fetch_all(&mut **transaction).await?;
         let proxies = sqlx::query_as::<_, ProxyRecord>("SELECT id, name, proxy_url, username, password, no_proxy_hosts, enabled FROM proxies ORDER BY id").fetch_all(&mut **transaction).await?;
@@ -3442,7 +3448,7 @@ impl ControlPlaneRepository {
         )
         .fetch_all(&self.pool)
         .await?;
-        let models = sqlx::query_as::<_, ControlPlaneModel>("SELECT id,source_model_id,display_name,provider_name,enabled,price_unit_tokens,input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,price_effective_at,last_synced_at,created_at,updated_at FROM models ORDER BY id").fetch_all(&self.pool).await?;
+        let models = sqlx::query_as::<_, ControlPlaneModel>("SELECT id,source_model_id,display_name,provider_name,enabled,price_unit_tokens,input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,price_effective_at,advanced_billing,last_synced_at,created_at,updated_at FROM models ORDER BY id").fetch_all(&self.pool).await?;
         let api_keys = sqlx::query_as::<_, ControlPlaneApiKey>("SELECT k.id, k.user_id, u.status AS user_status, k.name, k.secret_value AS secret, k.status, k.expires_at, k.allowed_api_formats::text[] AS allowed_api_formats, k.permissions, k.allowed_group_ids, k.allowed_channel_ids, k.requests_per_minute, k.max_concurrent_requests, k.quota_limit_amount, k.quota_used_amount, k.updated_at FROM api_keys k JOIN users u ON u.id=k.user_id WHERE NOT k.is_system ORDER BY k.id").fetch_all(&self.pool).await?;
         let api_key_policies = sqlx::query_as::<_, ControlPlaneApiKeyPolicy>("SELECT id,name,allowed_group_ids,allowed_channel_ids,enabled,created_at,updated_at FROM api_key_policies ORDER BY id").fetch_all(&self.pool).await?;
         let channel_groups = sqlx::query_as::<_, ControlPlaneChannelGroup>("SELECT id,name,api_format::text AS api_format,priority,selection_strategy,enabled,updated_at FROM channel_groups ORDER BY id").fetch_all(&self.pool).await?;
@@ -4345,7 +4351,7 @@ async fn model_audit(
     id: Uuid,
 ) -> Result<Value, RepositoryError> {
     let value = sqlx::query_scalar::<_, Value>(
-        "SELECT json_build_object('id',id,'source_model_id',source_model_id,'display_name',display_name,'provider_name',provider_name,'enabled',enabled,'price_unit_tokens',price_unit_tokens,'input_unit_price',input_unit_price,'cached_input_unit_price',cached_input_unit_price,'cache_write_unit_price',cache_write_unit_price,'output_unit_price',output_unit_price,'price_effective_at',price_effective_at,'last_synced_at',last_synced_at,'created_at',created_at,'updated_at',updated_at) FROM models WHERE id=$1 FOR UPDATE",
+        "SELECT json_build_object('id',id,'source_model_id',source_model_id,'display_name',display_name,'provider_name',provider_name,'enabled',enabled,'price_unit_tokens',price_unit_tokens,'input_unit_price',input_unit_price,'cached_input_unit_price',cached_input_unit_price,'cache_write_unit_price',cache_write_unit_price,'output_unit_price',output_unit_price,'price_effective_at',price_effective_at,'advanced_billing',advanced_billing,'last_synced_at',last_synced_at,'created_at',created_at,'updated_at',updated_at) FROM models WHERE id=$1 FOR UPDATE",
     )
     .bind(id)
     .fetch_optional(&mut **transaction)
@@ -4616,6 +4622,14 @@ async fn model_insert(
     {
         return Err(RepositoryError::Validation);
     }
+    if input.advanced_billing.as_ref().is_some_and(|billing| {
+        crate::domain::CompiledAdvancedBilling::compile(billing.clone()).is_err()
+    }) {
+        return Err(RepositoryError::Validation);
+    }
+    let advanced_billing_present = input.advanced_billing.is_some();
+    let advanced_billing = serde_json::to_value(input.advanced_billing.unwrap_or_default())
+        .expect("advanced billing serializes");
     let source_payload_present = input.source_payload.is_some();
     let source_payload = input.source_payload.unwrap_or_else(empty_object);
     let before = if create {
@@ -4624,7 +4638,7 @@ async fn model_insert(
         model_audit(transaction, id).await?
     };
     let updated_at = if create {
-        sqlx::query_scalar("INSERT INTO models (id,source_model_id,display_name,provider_name,enabled,currency,price_unit_tokens,input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,price_effective_at,source_payload) VALUES ($1,$2,$3,$4,$5,'USD',$6,$7,$8,$9,$10,$11,$12) RETURNING updated_at")
+        sqlx::query_scalar("INSERT INTO models (id,source_model_id,display_name,provider_name,enabled,currency,price_unit_tokens,input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,price_effective_at,advanced_billing,source_payload) VALUES ($1,$2,$3,$4,$5,'USD',$6,$7,$8,$9,$10,$11,$12,$13) RETURNING updated_at")
             .bind(id)
             .bind(&input.source_model_id)
             .bind(&input.display_name)
@@ -4636,11 +4650,12 @@ async fn model_insert(
             .bind(input.cache_write_unit_price)
             .bind(input.output_unit_price)
             .bind(input.price_effective_at)
+            .bind(&advanced_billing)
             .bind(&source_payload)
             .fetch_one(&mut **transaction)
             .await?
     } else {
-        sqlx::query_scalar("UPDATE models SET source_model_id=$2,display_name=$3,provider_name=$4,enabled=$5,currency='USD',price_unit_tokens=$6,input_unit_price=$7,cached_input_unit_price=$8,cache_write_unit_price=$9,output_unit_price=$10,price_effective_at=$11,source_payload=CASE WHEN $12 THEN $13 ELSE source_payload END WHERE id=$1 AND updated_at=$14 RETURNING updated_at")
+        sqlx::query_scalar("UPDATE models SET source_model_id=$2,display_name=$3,provider_name=$4,enabled=$5,currency='USD',price_unit_tokens=$6,input_unit_price=$7,cached_input_unit_price=$8,cache_write_unit_price=$9,output_unit_price=$10,price_effective_at=$11,advanced_billing=CASE WHEN $12 THEN $13 ELSE advanced_billing END,source_payload=CASE WHEN $14 THEN $15 ELSE source_payload END WHERE id=$1 AND updated_at=$16 RETURNING updated_at")
             .bind(id)
             .bind(&input.source_model_id)
             .bind(&input.display_name)
@@ -4652,6 +4667,8 @@ async fn model_insert(
             .bind(input.cache_write_unit_price)
             .bind(input.output_unit_price)
             .bind(input.price_effective_at)
+            .bind(advanced_billing_present)
+            .bind(&advanced_billing)
             .bind(source_payload_present)
             .bind(&source_payload)
             .bind(expected_updated_at.expect("PUT version"))

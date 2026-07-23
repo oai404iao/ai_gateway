@@ -1125,6 +1125,7 @@ export interface components {
             cache_write_unit_price: components["schemas"]["Decimal"];
             output_unit_price: components["schemas"]["Decimal"];
             price_effective_at: components["schemas"]["DateTime"];
+            advanced_billing: components["schemas"]["AdvancedBilling"];
             last_synced_at: components["schemas"]["DateTimeNullable"];
             created_at: components["schemas"]["DateTime"];
             updated_at: components["schemas"]["DateTime"];
@@ -1494,7 +1495,31 @@ export interface components {
             cache_write_unit_price: components["schemas"]["Decimal"];
             output_unit_price: components["schemas"]["Decimal"];
             price_effective_at: components["schemas"]["DateTime"];
+            /** @description Omit on update to preserve the stored model-level advanced billing policy. */
+            advanced_billing?: components["schemas"]["AdvancedBilling"];
             source_payload?: components["schemas"]["JsonValue"];
+        };
+        /** @description Model-level pricing rules. Long-context tiers replace base input prices at or above their threshold; all matching request multipliers are multiplied together and apply to the whole request cost. */
+        AdvancedBilling: {
+            /** @description Strictly ascending input-token thresholds. A threshold applies to all input-related token categories for the complete request. */
+            long_context_tiers: components["schemas"]["LongContextTier"][];
+            /** @description Exact JSON Pointer matches evaluated against the original client request body before request transforms. */
+            request_multipliers: components["schemas"]["RequestBillingMultiplier"][];
+        };
+        LongContextTier: {
+            /** @description Applies when reported input tokens are greater than or equal to this value. */
+            input_tokens_threshold: number;
+            input_unit_price: components["schemas"]["Decimal"];
+            cached_input_unit_price: components["schemas"]["Decimal"];
+            cache_write_unit_price: components["schemas"]["Decimal"];
+        };
+        RequestBillingMultiplier: {
+            /** @description RFC 6901 JSON Pointer into the original client request body. */
+            json_pointer: string;
+            /** @description Exact JSON value that activates this multiplier. */
+            value: components["schemas"]["JsonValue"];
+            /** @description Non-negative multiplier applied with every other matched request multiplier and the selected channel multiplier. */
+            multiplier: components["schemas"]["Decimal"];
         };
         ChannelGroupInput: {
             name: string;

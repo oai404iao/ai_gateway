@@ -942,6 +942,93 @@ async fn model_rule_uses_its_upstream_model_as_the_price_source() {
     database.cleanup().await;
 }
 
+/// Model prices may define immutable advanced billing policy: input-price
+/// tiers and request-body JSON Pointer multipliers are model-level facts, not
+/// channel transforms. Invalid policy is rejected before it can be persisted.
+#[tokio::test]
+async fn model_advanced_billing_is_returned_and_validated() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+    let advanced_billing = serde_json::json!({
+        "long_context_tiers": [{
+            "input_tokens_threshold": 128000,
+            "input_unit_price": "0.3",
+            "cached_input_unit_price": "0.15",
+            "cache_write_unit_price": "0.6"
+        }],
+        "request_multipliers": [{
+            "json_pointer": "/reasoning/effort",
+            "value": "high",
+            "multiplier": "2"
+        }]
+    });
+    let created = request(
+        &app,
+        "POST",
+        "/console/v1/models",
+        serde_json::json!({
+            "source_model_id": "advanced-billing-model",
+            "display_name": "Advanced billing model",
+            "enabled": true,
+            "price_unit_tokens": 1000000,
+            "input_unit_price": "0.15",
+            "cached_input_unit_price": "0.075",
+            "cache_write_unit_price": "0.3",
+            "output_unit_price": "0.6",
+            "price_effective_at": chrono::Utc::now().to_rfc3339(),
+            "advanced_billing": advanced_billing,
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let id = body_json(created).await["id"].as_str().unwrap().to_owned();
+
+    let detail = request(
+        &app,
+        "GET",
+        &format!("/console/v1/models/{id}"),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(detail.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(detail).await["advanced_billing"],
+        advanced_billing
+    );
+
+    let invalid = request(
+        &app,
+        "POST",
+        "/console/v1/models",
+        serde_json::json!({
+            "source_model_id": "invalid-advanced-billing-model",
+            "display_name": "Invalid advanced billing model",
+            "enabled": true,
+            "price_unit_tokens": 1000000,
+            "input_unit_price": "0",
+            "cached_input_unit_price": "0",
+            "cache_write_unit_price": "0",
+            "output_unit_price": "0",
+            "price_effective_at": chrono::Utc::now().to_rfc3339(),
+            "advanced_billing": {
+                "long_context_tiers": [{
+                    "input_tokens_threshold": 0,
+                    "input_unit_price": "0",
+                    "cached_input_unit_price": "0",
+                    "cache_write_unit_price": "0"
+                }],
+                "request_multipliers": []
+            }
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    database.cleanup().await;
+}
+
 /// API key creation uses the `sk-` prefix and the same value remains
 /// retrievable from authorized list/detail endpoints.
 #[tokio::test]

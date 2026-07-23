@@ -171,6 +171,10 @@ fn proxy_fixture_with_retry(
             cached_input_unit_price: Default::default(),
             cache_write_unit_price: Default::default(),
             output_unit_price: Default::default(),
+            advanced_billing: serde_json::json!({
+                "long_context_tiers": [],
+                "request_multipliers": [],
+            }),
             upstream_model: "model".into(),
             channel_group_ids: group_ids.clone(),
             channel_ids: vec![],

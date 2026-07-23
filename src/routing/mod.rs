@@ -1054,6 +1054,10 @@ mod tests {
                 cached_input_unit_price: Default::default(),
                 cache_write_unit_price: Default::default(),
                 output_unit_price: Default::default(),
+                advanced_billing: serde_json::json!({
+                    "long_context_tiers": [],
+                    "request_multipliers": [],
+                }),
                 upstream_model: "upstream".into(),
                 channel_group_ids: group_ids,
                 channel_ids: vec![],
@@ -1177,6 +1181,10 @@ mod tests {
                 cached_input_unit_price: Default::default(),
                 cache_write_unit_price: Default::default(),
                 output_unit_price: Default::default(),
+                advanced_billing: serde_json::json!({
+                    "long_context_tiers": [],
+                    "request_multipliers": [],
+                }),
                 upstream_model: "upstream".into(),
                 channel_group_ids: vec![],
                 channel_ids: vec![channel_id],
