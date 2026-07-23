@@ -1,8 +1,9 @@
 # Third-party notices for the ai-gateway Console UI
 
-This file records license attribution for dependencies of `web/console/` that
-are not MIT/Apache-2.0/BSD/ISC and may carry redistribution obligations. The
-full license inventory can be regenerated with `pnpm licenses list`.
+This file records Console-specific attribution notes. Every third-party
+dependency, including MIT/Apache-2.0/BSD/ISC packages, has redistribution
+conditions. Release archives and container images therefore include generated
+`THIRD_PARTY_NOTICES.md` plus the complete per-package `LICENSES/` tree.
 
 ## Bundled into the embedded binary (shipped in `dist/`)
 
@@ -30,8 +31,13 @@ minification at build time). MPL-2.0 is a weak, file-level copyleft license.
 `dist/` or the embedded binary, so no MPL obligations extend to the shipped
 artifact. See <https://www.mozilla.org/en-US/MPL/2.0/>.
 
-## Other permissive licenses in the tree
+## UI component and icon provenance
 
-BlueOak-1.0.0 (`isexe`, `lru-cache`, `minimatch`), Python-2.0 (`argparse`),
-CC-BY-4.0 (`caniuse-lite`), CC0-1.0 (`mdn-data`), 0BSD (`tslib`), MIT-0. All are
-permissive and compatible with embedding and redistribution.
+The source files in `src/components/ui/` were initially added through the
+shadcn/ui CLI and are maintained as project source. Their upstream MIT
+attribution is preserved in the generated third-party materials.
+
+`public/favicon.svg` and the custom symbols in `public/icons.svg` are
+project-owned artwork. Brand names and marks depicted by social-media symbols
+remain the property of their respective owners; use is nominative and does not
+grant trademark rights.
