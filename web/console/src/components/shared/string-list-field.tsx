@@ -1,4 +1,4 @@
-import { useState, type KeyboardEvent } from "react";
+import { useState, type KeyboardEvent, type ReactNode } from "react";
 import { PlusIcon, XIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -23,6 +23,7 @@ interface StringListFieldProps {
   required?: boolean;
   variant?: "lines" | "tokens";
   addLabel?: string;
+  action?: ReactNode;
 }
 
 /**
@@ -40,10 +41,17 @@ export function StringListField({
   required,
   variant = "lines",
   addLabel,
+  action,
 }: StringListFieldProps) {
   const { t } = useI18n();
   const [draft, setDraft] = useState("");
   const nextItem = draft.trim();
+  const fieldLabel = (
+    <FieldLabel htmlFor={id}>
+      {label}
+      {required ? <span className="text-destructive"> *</span> : null}
+    </FieldLabel>
+  );
 
   const add = () => {
     if (!nextItem || value.includes(nextItem)) return;
@@ -60,10 +68,14 @@ export function StringListField({
   if (variant === "tokens") {
     return (
       <Field data-invalid={Boolean(error)}>
-        <FieldLabel htmlFor={id}>
-          {label}
-          {required ? <span className="text-destructive"> *</span> : null}
-        </FieldLabel>
+        {action ? (
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            {fieldLabel}
+            {action}
+          </div>
+        ) : (
+          fieldLabel
+        )}
         {value.length > 0 ? (
           <div className="flex flex-wrap items-center gap-1.5">
             {value.map((item, index) => (
@@ -109,10 +121,14 @@ export function StringListField({
 
   return (
     <Field data-invalid={Boolean(error)}>
-      <FieldLabel htmlFor={id}>
-        {label}
-        {required ? <span className="text-destructive"> *</span> : null}
-      </FieldLabel>
+      {action ? (
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          {fieldLabel}
+          {action}
+        </div>
+      ) : (
+        fieldLabel
+      )}
       <Textarea
         id={id}
         rows={3}

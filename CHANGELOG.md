@@ -12,6 +12,8 @@ Versioning.
 - Per-channel billing multipliers applied to effective request price snapshots
   and settlement.
 - Atomic, versioned batch channel updates in the Console API and web UI.
+- Draft channel model discovery through the upstream OpenAI-compatible
+  `/v1/models` endpoint, with searchable multi-select editing in the Console.
 
 ## [0.1.0] - 2026-07-22
 

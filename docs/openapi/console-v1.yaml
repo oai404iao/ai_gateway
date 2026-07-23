@@ -828,6 +828,32 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/Unprocessable" }
 
+  /routing/channels/models/discover:
+    post:
+      tags: [Channels]
+      operationId: discoverChannelModels
+      description: >
+        Fetches an OpenAI-compatible `GET /v1/models` response using the
+        unsaved channel draft's base URL, proxy, timeout, request-header
+        transforms, and upstream authentication. This operation does not
+        persist any channel changes.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChannelModelDiscoveryInput" }
+      responses:
+        "200":
+          description: Unique upstream model IDs in upstream response order.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChannelModelDiscoveryResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+        "502": { $ref: "#/components/responses/BadGateway" }
+
   /routing/channels/batch:
     post:
       tags: [Channels]
@@ -2762,6 +2788,35 @@ components:
           type: string
           nullable: true
           description: Must be one of available_models when set.
+
+    ChannelModelDiscoveryInput:
+      type: object
+      required: [api_format, base_url, upstream_auth_kind]
+      properties:
+        api_format: { $ref: "#/components/schemas/ApiFormat" }
+        base_url:
+          type: string
+          format: uri
+          description: HTTP(S) URL without embedded credentials, query, or fragment.
+        proxy_id: { type: string, format: uuid, nullable: true }
+        config_template_id: { type: string, format: uuid, nullable: true }
+        override_document:
+          allOf: [{ $ref: "#/components/schemas/JsonValue" }]
+          default: {}
+        connect_timeout_ms: { type: integer, minimum: 1, nullable: true }
+        response_header_timeout_ms: { type: integer, minimum: 1, nullable: true }
+        stream_idle_timeout_ms: { type: integer, minimum: 1, nullable: true }
+        upstream_auth_kind: { $ref: "#/components/schemas/UpstreamAuthKind" }
+        upstream_auth_header_name: { type: string, nullable: true }
+        upstream_api_key: { type: string, nullable: true }
+
+    ChannelModelDiscoveryResponse:
+      type: object
+      required: [models]
+      properties:
+        models:
+          type: array
+          items: { type: string }
 
     ChannelBatchUpdateTarget:
       type: object

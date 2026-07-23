@@ -2,6 +2,7 @@
 
 mod auth;
 mod channel_automation;
+mod channel_models;
 mod control_plane;
 mod model_sync;
 mod proxy;
@@ -15,6 +16,10 @@ pub use auth::{
 };
 pub use channel_automation::{
     AutomaticDisableService, AutomaticDisableWorker, ErrorKeywordMatcher,
+};
+pub use channel_models::{
+    ChannelModelDiscoveryError, ChannelModelDiscoveryInput, ChannelModelDiscoveryResponse,
+    ChannelModelDiscoveryService,
 };
 pub use control_plane::{
     ChannelBatchUpdateResult, ControlPlaneCoordinator, ControlPlaneError, ModelSyncResult,

@@ -1175,6 +1175,65 @@ fn compile_channel_document(
         .map_err(transform_error("channel override document"))
 }
 
+/// Compiles the outbound portion of an unsaved channel draft for explicit
+/// administrator operations such as `GET /v1/models` discovery.
+pub(crate) fn compile_channel_discovery_target(
+    channel: &ChannelRecord,
+    snapshot: &CompiledRuntimeConfig,
+) -> Result<CompiledChannel, ConfigError> {
+    let api_format = parse_format(&channel.api_format)?;
+    let proxy = channel
+        .proxy_id
+        .map(|id| {
+            snapshot.proxy(id).ok_or_else(|| {
+                ConfigError::Compile("channel references a missing or disabled proxy".into())
+            })
+        })
+        .transpose()?;
+    let template = channel
+        .config_template_id
+        .map(|id| {
+            snapshot.template(id).ok_or_else(|| {
+                ConfigError::Compile("channel references a missing or disabled template".into())
+            })
+        })
+        .transpose()?;
+    if template
+        .as_ref()
+        .and_then(|template| template.api_format())
+        .is_some_and(|template_format| template_format != api_format)
+    {
+        return Err(ConfigError::Compile(
+            "channel references a cross-format template".into(),
+        ));
+    }
+    let channel_override = compile_channel_document(channel, api_format)?;
+    let defaults = template.as_ref().map_or_else(
+        || TransformPlan::noop(api_format),
+        |template| template.transform_plan(api_format).clone(),
+    );
+    let effective_transforms = TransformPlan::compose(&defaults, &channel_override)
+        .map_err(transform_error("channel effective transform plan"))?;
+    let upstream_policy = CompiledChannelUpstreamPolicy::new_with_default_connect_timeout(
+        proxy,
+        template,
+        channel_override,
+        effective_transforms,
+        compile_timeouts(channel)?,
+        snapshot.system_settings().upstream_timeouts().connect(),
+    );
+    Ok(CompiledChannel::new_with_policy(
+        channel.id,
+        channel.channel_group_id,
+        api_format,
+        parse_url(channel.id, &channel.base_url)?,
+        channel.weight,
+        compile_auth(channel)?,
+        HashSet::new(),
+        upstream_policy,
+    ))
+}
+
 fn compile_timeouts(channel: &ChannelRecord) -> Result<ChannelTimeoutPolicy, ConfigError> {
     Ok(ChannelTimeoutPolicy::new(
         positive_timeout(channel.connect_timeout_ms, "connect_timeout_ms")?,

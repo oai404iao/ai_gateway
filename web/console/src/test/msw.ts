@@ -107,6 +107,9 @@ export const handlers = [
       headers: { ETag: `"${CHANNEL.updated_at}"` },
     }),
   ),
+  http.post("/console/v1/routing/channels/models/discover", () =>
+    HttpResponse.json({ models: CHANNEL.available_models }),
+  ),
   http.post("/console/v1/routing/channels/batch", () =>
     HttpResponse.json({
       updated_ids: [CHANNEL.id],

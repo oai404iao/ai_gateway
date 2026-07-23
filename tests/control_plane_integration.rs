@@ -9,9 +9,9 @@ use std::{
 use ai_gateway::{
     admission::AdmissionRuntime,
     application::{
-        AutomaticDisableWorker, ConsoleAuthService, ControlPlaneCoordinator, ModelSyncService,
-        NoopRequestLogSink, ProxyService, QueueRequestLogSink, RequestLogSink,
-        SystemMetricsService, hash_console_password,
+        AutomaticDisableWorker, ChannelModelDiscoveryService, ConsoleAuthService,
+        ControlPlaneCoordinator, ModelSyncService, NoopRequestLogSink, ProxyService,
+        QueueRequestLogSink, RequestLogSink, SystemMetricsService, hash_console_password,
     },
     domain::{
         ApiFormat, ApiKeyPermission, AutomaticDisableTrigger, RequestBilling, RequestLogEvent,
@@ -1550,6 +1550,10 @@ async fn admin_app_with_models_dev(
         ConsoleTestApp {
             router: console::router(ConsoleState {
                 coordinator,
+                channel_models: ChannelModelDiscoveryService::new(
+                    Arc::clone(&runtime),
+                    Arc::new(UpstreamClientRegistry::new()),
+                ),
                 model_sync,
                 auth,
                 request_logs: RequestLogRepository::new(pool.clone()),

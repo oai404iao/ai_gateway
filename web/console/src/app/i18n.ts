@@ -699,6 +699,22 @@ const zhCN: Record<string, string> = {
   "Available upstream models": "可用上游模型",
   "Enter an upstream model ID": "输入上游模型 ID",
   "Press Enter or Add to include a model.": "按 Enter 或“添加”以加入模型。",
+  "Fetch models": "获取模型列表",
+  "Select upstream models": "选择上游模型",
+  "Choose models returned by the upstream GET /v1/models endpoint. Applying the selection updates discovered entries while preserving manually entered models that were not returned.":
+    "选择上游 GET /v1/models 接口返回的模型。应用选择时会更新本次发现的条目，并保留未被上游返回的手动输入模型。",
+  "Search by model ID": "按模型 ID 搜索",
+  "{count} models fetched; {selected} selected.":
+    "已获取 {count} 个模型，已选择 {selected} 个。",
+  "Select all results": "选择全部结果",
+  "Discovered models": "已发现模型",
+  "Try a different model ID.": "请尝试其他模型 ID。",
+  "Apply selection": "应用选择",
+  "The channel settings are not valid for model discovery. Check the base URL, timeouts, proxy, template, transforms, and authentication.":
+    "当前渠道设置无法用于模型发现。请检查基础 URL、超时、代理、模板、转换和认证配置。",
+  "Timed out while fetching upstream models.": "获取上游模型列表超时。",
+  "Could not fetch upstream models. Verify the base URL, credential, proxy, and transforms.":
+    "无法获取上游模型列表。请检查基础 URL、凭据、代理和转换配置。",
   "Connect timeout (ms)": "连接超时（毫秒）",
   "Response header timeout (ms)": "响应头超时（毫秒）",
   "Stream idle timeout (ms)": "流空闲超时（毫秒）",

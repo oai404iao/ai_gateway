@@ -18,10 +18,11 @@ use uuid::Uuid;
 
 use crate::{
     application::{
-        AuthError, ConsoleAuthService, ControlPlaneCoordinator, ControlPlaneError,
-        IssuedInvitation, IssuedSession, ModelImportRequest, ModelSyncError, ModelSyncPreview,
-        ModelSyncPreviewRequest, ModelSyncResponse, ModelSyncService, SystemLoadReport,
-        SystemMetricsService,
+        AuthError, ChannelModelDiscoveryError, ChannelModelDiscoveryInput,
+        ChannelModelDiscoveryResponse, ChannelModelDiscoveryService, ConsoleAuthService,
+        ControlPlaneCoordinator, ControlPlaneError, IssuedInvitation, IssuedSession,
+        ModelImportRequest, ModelSyncError, ModelSyncPreview, ModelSyncPreviewRequest,
+        ModelSyncResponse, ModelSyncService, SystemLoadReport, SystemMetricsService,
     },
     domain::{ConsolePrincipal, UserRole},
     persistence::{
@@ -40,6 +41,7 @@ const REFRESH_COOKIE_NAME: &str = "__Host-ai_gateway_refresh";
 #[derive(Clone)]
 pub struct ConsoleState {
     pub coordinator: ControlPlaneCoordinator,
+    pub channel_models: ChannelModelDiscoveryService,
     pub model_sync: ModelSyncService,
     pub auth: ConsoleAuthService,
     pub request_logs: RequestLogRepository,
@@ -128,6 +130,10 @@ pub fn router(state: ConsoleState) -> Router {
         .route(
             "/console/v1/routing/channels",
             get(list_channels).post(create_channel),
+        )
+        .route(
+            "/console/v1/routing/channels/models/discover",
+            post(discover_channel_models),
         )
         .route(
             "/console/v1/routing/channels/batch",
@@ -1006,6 +1012,13 @@ async fn create_channel(
     .await
 }
 
+async fn discover_channel_models(
+    State(state): State<ConsoleState>,
+    Json(input): Json<ChannelModelDiscoveryInput>,
+) -> Result<Json<ChannelModelDiscoveryResponse>, ConsoleError> {
+    Ok(Json(state.channel_models.discover(input).await?))
+}
+
 async fn update_channels_batch(
     State(state): State<ConsoleState>,
     Extension(principal): Extension<ConsolePrincipal>,
@@ -1439,6 +1452,7 @@ fn mutation_response(result: crate::persistence::MutationResult) -> MutationResp
 
 enum ConsoleError {
     Auth(AuthError),
+    ChannelModels(ChannelModelDiscoveryError),
     ControlPlane(ControlPlaneError),
     ModelSync(ModelSyncError),
     Repository(crate::persistence::RepositoryError),
@@ -1451,6 +1465,11 @@ enum ConsoleError {
 impl From<AuthError> for ConsoleError {
     fn from(value: AuthError) -> Self {
         Self::Auth(value)
+    }
+}
+impl From<ChannelModelDiscoveryError> for ConsoleError {
+    fn from(value: ChannelModelDiscoveryError) -> Self {
+        Self::ChannelModels(value)
     }
 }
 impl From<ControlPlaneError> for ConsoleError {
@@ -1491,6 +1510,21 @@ impl IntoResponse for ConsoleError {
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Console operation failed",
             ),
+            Self::ChannelModels(ChannelModelDiscoveryError::InvalidConfiguration) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "channel_models_invalid_configuration",
+            ),
+            Self::ChannelModels(ChannelModelDiscoveryError::ResponseHeaderTimeout)
+            | Self::ChannelModels(ChannelModelDiscoveryError::ResponseBodyTimeout) => {
+                (StatusCode::BAD_GATEWAY, "upstream_models_timeout")
+            }
+            Self::ChannelModels(
+                ChannelModelDiscoveryError::RequestFailed
+                | ChannelModelDiscoveryError::UpstreamHttpStatus(_)
+                | ChannelModelDiscoveryError::ResponseBodyFailed
+                | ChannelModelDiscoveryError::ResponseTooLarge
+                | ChannelModelDiscoveryError::InvalidResponse,
+            ) => (StatusCode::BAD_GATEWAY, "upstream_models_unavailable"),
             Self::ControlPlane(error) => (
                 control_plane_status(&error),
                 control_plane_error_message(&error),

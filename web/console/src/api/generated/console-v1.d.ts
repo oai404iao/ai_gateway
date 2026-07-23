@@ -453,6 +453,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/routing/channels/models/discover": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Fetches an OpenAI-compatible `GET /v1/models` response using the unsaved channel draft's base URL, proxy, timeout, request-header transforms, and upstream authentication. This operation does not persist any channel changes. */
+        post: operations["discoverChannelModels"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/routing/channels/batch": {
         parameters: {
             query?: never;
@@ -1612,6 +1629,29 @@ export interface components {
             available_models?: string[];
             /** @description Must be one of available_models when set. */
             test_model?: string | null;
+        };
+        ChannelModelDiscoveryInput: {
+            api_format: components["schemas"]["ApiFormat"];
+            /**
+             * Format: uri
+             * @description HTTP(S) URL without embedded credentials, query, or fragment.
+             */
+            base_url: string;
+            /** Format: uuid */
+            proxy_id?: string | null;
+            /** Format: uuid */
+            config_template_id?: string | null;
+            /** @default {} */
+            override_document: components["schemas"]["JsonValue"];
+            connect_timeout_ms?: number | null;
+            response_header_timeout_ms?: number | null;
+            stream_idle_timeout_ms?: number | null;
+            upstream_auth_kind: components["schemas"]["UpstreamAuthKind"];
+            upstream_auth_header_name?: string | null;
+            upstream_api_key?: string | null;
+        };
+        ChannelModelDiscoveryResponse: {
+            models: string[];
         };
         ChannelBatchUpdateTarget: {
             /** Format: uuid */
@@ -2922,6 +2962,34 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             422: components["responses"]["Unprocessable"];
+        };
+    };
+    discoverChannelModels: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChannelModelDiscoveryInput"];
+            };
+        };
+        responses: {
+            /** @description Unique upstream model IDs in upstream response order. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChannelModelDiscoveryResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            422: components["responses"]["Unprocessable"];
+            502: components["responses"]["BadGateway"];
         };
     };
     updateChannelsBatch: {

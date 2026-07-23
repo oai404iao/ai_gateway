@@ -15,8 +15,8 @@ use std::sync::Arc;
 
 use ai_gateway::{
     application::{
-        AuthError, ConsoleAuthService, ControlPlaneCoordinator, ModelSyncService,
-        SystemMetricsService, hash_console_password,
+        AuthError, ChannelModelDiscoveryService, ConsoleAuthService, ControlPlaneCoordinator,
+        ModelSyncService, SystemMetricsService, hash_console_password,
     },
     http::console::{self, ConsoleState},
     models_dev::ModelsDevClient,
@@ -26,13 +26,17 @@ use ai_gateway::{
     },
     routing::{PassiveHealthPolicy, RoutingRuntime},
     runtime_config::{AuthConfig, ModelsSyncConfig, RuntimeConfig, compile_runtime_config},
+    upstream::UpstreamClientRegistry,
 };
 use axum::{
+    Json, Router,
     body::Body,
-    http::{StatusCode, header},
+    http::{HeaderMap, StatusCode, header},
+    routing::get,
 };
 use http_body_util::BodyExt;
 use sqlx::{PgPool, postgres::PgPoolOptions};
+use tokio::net::TcpListener;
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -200,6 +204,10 @@ async fn app(pool: PgPool) -> App {
         .expect("issued access token must authenticate");
     let router = console::router(ConsoleState {
         coordinator,
+        channel_models: ChannelModelDiscoveryService::new(
+            Arc::clone(&runtime),
+            Arc::new(UpstreamClientRegistry::new()),
+        ),
         model_sync,
         auth,
         request_logs: RequestLogRepository::new(pool.clone()),
@@ -362,6 +370,28 @@ async fn body_json(response: axum::response::Response) -> serde_json::Value {
 async fn body_text(response: axum::response::Response) -> String {
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     String::from_utf8(bytes.to_vec()).unwrap()
+}
+
+async fn upstream_models(headers: HeaderMap) -> Result<Json<serde_json::Value>, StatusCode> {
+    if headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        != Some("Bearer spec-model-discovery-secret")
+        || headers
+            .get("x-model-discovery")
+            .and_then(|value| value.to_str().ok())
+            != Some("console-spec")
+    {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    Ok(Json(serde_json::json!({
+        "object": "list",
+        "data": [
+            {"id": "model-z"},
+            {"id": "model-a"},
+            {"id": "model-z"}
+        ]
+    })))
 }
 
 /// `/auth/login` matches the spec: `LoginResponse` with token_type "Bearer"
@@ -1230,6 +1260,53 @@ async fn channel_and_template_details_return_stored_editable_values() {
         template_document
     );
 
+    database.cleanup().await;
+}
+
+/// Draft channel model discovery is admin-only, does not persist changes, and
+/// returns unique IDs from an OpenAI-compatible `GET /v1/models` response.
+#[tokio::test]
+async fn channel_model_discovery_uses_draft_network_and_auth_settings() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let upstream = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            Router::new().route("/v1/models", get(upstream_models)),
+        )
+        .await
+        .unwrap();
+    });
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+
+    let response = request(
+        &app,
+        "POST",
+        "/console/v1/routing/channels/models/discover",
+        serde_json::json!({
+            "api_format": "open_ai_chat_completions",
+            "base_url": format!("http://{address}"),
+            "override_document": {
+                "version": 1,
+                "api_format": "open_ai_chat_completions",
+                "request_headers": {
+                    "set": {"x-model-discovery": "console-spec"}
+                }
+            },
+            "upstream_auth_kind": "bearer",
+            "upstream_api_key": "spec-model-discovery-secret"
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(response).await,
+        serde_json::json!({"models": ["model-z", "model-a"]})
+    );
+
+    upstream.abort();
     database.cleanup().await;
 }
 

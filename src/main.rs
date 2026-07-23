@@ -10,8 +10,9 @@ use std::{
 use ai_gateway::{
     admission::AdmissionRuntime,
     application::{
-        AutomaticDisableWorker, ConsoleAuthService, ControlPlaneCoordinator, ModelSyncService,
-        ProxyService, RequestLogSink, SystemMetricsService, hash_console_password,
+        AutomaticDisableWorker, ChannelModelDiscoveryService, ConsoleAuthService,
+        ControlPlaneCoordinator, ModelSyncService, ProxyService, RequestLogSink,
+        SystemMetricsService, hash_console_password,
     },
     http,
     models_dev::ModelsDevClient,
@@ -191,6 +192,8 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
     let console = if let Some(console) = config.console.as_ref() {
         let auth =
             ConsoleAuthService::from_config(AuthRepository::new(pool.clone()), &console.auth)?;
+        let channel_models =
+            ChannelModelDiscoveryService::new(Arc::clone(&runtime), Arc::clone(&upstream_clients));
         let model_sync = ModelSyncService::new(
             coordinator.clone(),
             ModelsDevClient::new(&config.models_sync)?,
@@ -200,6 +203,7 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
         tracing::info!(address = %console.address, "AI gateway Console listener enabled");
         let api_router = http::console::router(http::console::ConsoleState {
             coordinator: coordinator.clone(),
+            channel_models,
             model_sync,
             auth,
             request_logs: RequestLogRepository::new(pool.clone()),

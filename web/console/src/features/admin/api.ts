@@ -14,6 +14,8 @@ import type {
   ChannelGroupView,
   ChannelDetailView,
   ChannelInput,
+  ChannelModelDiscoveryInput,
+  ChannelModelDiscoveryResponse,
   ChannelView,
   ConfigTemplateCreateInput,
   ConfigTemplateDetailView,
@@ -195,6 +197,12 @@ export const useUpdateChannel = makeUpdate<ChannelInput>(
   CHANNELS_KEY,
   channelDetailKey,
 );
+export function useDiscoverChannelModels() {
+  return useMutation({
+    mutationFn: (input: ChannelModelDiscoveryInput) =>
+      apiPost<ChannelModelDiscoveryResponse>("/routing/channels/models/discover", input),
+  });
+}
 export function useBatchUpdateChannels() {
   const queryClient = useQueryClient();
   return useMutation({

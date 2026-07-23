@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router";
+import { RefreshCwIcon } from "lucide-react";
 import { z } from "zod";
 import { toast } from "sonner";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -30,12 +31,14 @@ import { ApiKeyValue } from "@/components/shared/api-key-value";
 import { StringListField } from "@/components/shared/string-list-field";
 import { DecimalField, NullableNumberField } from "@/components/shared/decimal-field";
 import { StatusBadge } from "@/components/shared/status-badge";
+import { ChannelModelPickerDialog } from "@/features/admin/routing/channels/channel-model-picker-dialog";
 import {
   useChannel,
   useChannelGroups,
   useChannels,
   useConfigTemplates,
   useCreateChannel,
+  useDiscoverChannelModels,
   useModelRules,
   useProxies,
   useUpdateChannel,
@@ -45,6 +48,7 @@ import type {
   ApiFormat,
   ChannelCreateInput,
   ChannelInput,
+  ChannelModelDiscoveryInput,
   UpstreamAuthKind,
 } from "@/api/types";
 import { UPSTREAM_AUTH_KINDS, apiFormatLabel, upstreamAuthKindLabel } from "@/lib/permissions";
@@ -164,6 +168,7 @@ export function ChannelDetailPage() {
   const { data, etag, isLoading, error } = useChannel(id);
   const create = useCreateChannel();
   const update = useUpdateChannel(id);
+  const discoverModels = useDiscoverChannelModels();
   const groups = useChannelGroups();
   const channels = useChannels();
   const rules = useModelRules();
@@ -172,6 +177,8 @@ export function ChannelDetailPage() {
   const { t } = useI18n();
   const [state, setState] = useState<FormState>(empty);
   const [submitting, setSubmitting] = useState(false);
+  const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const [discoveredModels, setDiscoveredModels] = useState<string[]>([]);
   const [validation, setValidation] = useState<z.ZodError | null>(null);
   const [overrideDocumentValidation, setOverrideDocumentValidation] = useState<string | null>(
     null,
@@ -212,6 +219,100 @@ export function ChannelDetailPage() {
     () => groups.data?.find((group) => group.id === state.channel_group_id),
     [groups.data, state.channel_group_id],
   );
+
+  const discoverUpstreamModels = async () => {
+    if (overrideDocumentValidation) {
+      toast.error(t(overrideDocumentValidation));
+      return;
+    }
+    if (!isAllowedBaseUrl(state.base_url.trim())) {
+      toast.error(
+        t("Enter an HTTP(S) URL without credentials, query parameters, or a fragment."),
+      );
+      return;
+    }
+    if (
+      state.upstream_auth_kind === "header" &&
+      !state.upstream_auth_header_name?.trim()
+    ) {
+      toast.error(t("A custom header name is required."));
+      return;
+    }
+
+    let overrideDocument: unknown;
+    try {
+      overrideDocument = state.override_document.trim()
+        ? JSON.parse(state.override_document)
+        : data?.data.override_document ?? {};
+    } catch {
+      toast.error(t("Override document is not valid JSON."));
+      return;
+    }
+    if (
+      typeof overrideDocument !== "object" ||
+      overrideDocument === null ||
+      Array.isArray(overrideDocument)
+    ) {
+      toast.error(t("Override document must be a JSON object."));
+      return;
+    }
+
+    const upstreamApiKey =
+      state.upstream_auth_kind === "none"
+        ? null
+        : state.upstream_api_key.trim()
+          ? state.upstream_api_key
+          : data?.data.upstream_api_key ?? null;
+    if (state.upstream_auth_kind !== "none" && !upstreamApiKey) {
+      toast.error(t("An upstream API key is required when upstream auth is enabled."));
+      return;
+    }
+
+    const input: ChannelModelDiscoveryInput = {
+      api_format: state.api_format,
+      base_url: state.base_url.trim(),
+      proxy_id: state.proxy_id,
+      config_template_id: state.config_template_id,
+      override_document: overrideDocument,
+      connect_timeout_ms: state.connect_timeout_ms,
+      response_header_timeout_ms: state.response_header_timeout_ms,
+      stream_idle_timeout_ms: state.stream_idle_timeout_ms,
+      upstream_auth_kind: state.upstream_auth_kind,
+      upstream_auth_header_name:
+        state.upstream_auth_kind === "header"
+          ? state.upstream_auth_header_name?.trim() || null
+          : null,
+      upstream_api_key: upstreamApiKey,
+    };
+
+    try {
+      const response = await discoverModels.mutateAsync(input);
+      setDiscoveredModels(response.models);
+      setModelPickerOpen(true);
+    } catch (error) {
+      if (
+        error instanceof ApiError &&
+        error.code === "channel_models_invalid_configuration"
+      ) {
+        toast.error(
+          t(
+            "The channel settings are not valid for model discovery. Check the base URL, timeouts, proxy, template, transforms, and authentication.",
+          ),
+        );
+      } else if (
+        error instanceof ApiError &&
+        error.code === "upstream_models_timeout"
+      ) {
+        toast.error(t("Timed out while fetching upstream models."));
+      } else {
+        toast.error(
+          t(
+            "Could not fetch upstream models. Verify the base URL, credential, proxy, and transforms.",
+          ),
+        );
+      }
+    }
+  };
 
   const submit = async () => {
     if (overrideDocumentValidation) {
@@ -364,17 +465,18 @@ export function ChannelDetailPage() {
   };
 
   return (
-    <AdminDetailShell
-      title={isNew ? t("New channel") : state.name || t("Channel")}
-      description={t("An upstream endpoint with weight, timeouts, and credential injection.")}
-      backPath="/admin/routing/channels"
-      backLabel={t("Back to channels")}
-      isLoading={isLoading}
-      error={error}
-      hasData={isNew || Boolean(data)}
-      detailCard={
-        !isNew && data ? (
-          <Card>
+    <>
+      <AdminDetailShell
+        title={isNew ? t("New channel") : state.name || t("Channel")}
+        description={t("An upstream endpoint with weight, timeouts, and credential injection.")}
+        backPath="/admin/routing/channels"
+        backLabel={t("Back to channels")}
+        isLoading={isLoading}
+        error={error}
+        hasData={isNew || Boolean(data)}
+        detailCard={
+          !isNew && data ? (
+            <Card>
             <CardHeader>
               <CardTitle>{data.data.name}</CardTitle>
               <CardDescription className="font-mono">{data.data.base_url}</CardDescription>
@@ -428,11 +530,11 @@ export function ChannelDetailPage() {
                 />
               </dl>
             </CardContent>
-          </Card>
-        ) : null
-      }
-      editCard={
-        <Card>
+            </Card>
+          ) : null
+        }
+        editCard={
+          <Card>
           <CardHeader>
             <CardTitle>{isNew ? t("Create channel") : t("Edit channel")}</CardTitle>
             <CardDescription>
@@ -660,6 +762,22 @@ export function ChannelDetailPage() {
                   placeholder={t("Enter an upstream model ID")}
                   description={t("Press Enter or Add to include a model.")}
                   error={fieldError("available_models")}
+                  action={
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={discoverUpstreamModels}
+                      disabled={discoverModels.isPending}
+                    >
+                      {discoverModels.isPending ? (
+                        <Spinner data-icon="inline-start" />
+                      ) : (
+                        <RefreshCwIcon data-icon="inline-start" />
+                      )}
+                      {t("Fetch models")}
+                    </Button>
+                  }
                 />
                 <Field data-invalid={Boolean(fieldError("test_model"))}>
                   <FieldLabel>{t("Scheduled test model")}</FieldLabel>
@@ -770,8 +888,24 @@ export function ChannelDetailPage() {
               </Button>
             </div>
           </CardContent>
-        </Card>
-      }
-    />
+          </Card>
+        }
+      />
+      <ChannelModelPickerDialog
+        open={modelPickerOpen}
+        onOpenChange={setModelPickerOpen}
+        models={discoveredModels}
+        currentModels={state.available_models}
+        onApply={(available_models) =>
+          patch({
+            available_models,
+            test_model:
+              state.test_model && !available_models.includes(state.test_model)
+                ? null
+                : state.test_model,
+          })
+        }
+      />
+    </>
   );
 }

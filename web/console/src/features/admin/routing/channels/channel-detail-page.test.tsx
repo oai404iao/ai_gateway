@@ -7,7 +7,7 @@ import { AppProviders } from "@/app/providers";
 import { AppRouter } from "@/app/router";
 import { server, seedAuthenticatedSession } from "@/test/msw";
 import { CHANNEL, CHANNEL_DETAIL } from "@/test/fixtures";
-import type { ChannelInput } from "@/api/types";
+import type { ChannelInput, ChannelModelDiscoveryInput } from "@/api/types";
 
 function renderAppAt(path: string) {
   window.history.replaceState({}, "", path);
@@ -131,6 +131,71 @@ describe("ChannelDetailPage", () => {
 
     await waitFor(() => {
       expect(submitted).toBeDefined();
+    });
+    expect(submitted?.available_models).toEqual([
+      ...CHANNEL.available_models,
+      "openai/gpt-4.1",
+    ]);
+  });
+
+  it("fetches upstream models from the channel draft and applies the selection", async () => {
+    seedAuthenticatedSession();
+    let discoveryInput: ChannelModelDiscoveryInput | undefined;
+    let submitted: ChannelInput | undefined;
+    server.use(
+      http.post(
+        "/console/v1/routing/channels/models/discover",
+        async ({ request }) => {
+          discoveryInput = (await request.json()) as ChannelModelDiscoveryInput;
+          return HttpResponse.json({
+            models: [
+              CHANNEL.available_models[0],
+              "openai/gpt-4.1",
+              "anthropic/claude-sonnet-4",
+            ],
+          });
+        },
+      ),
+      http.put("/console/v1/routing/channels/:id", async ({ request }) => {
+        submitted = (await request.json()) as ChannelInput;
+        return HttpResponse.json({
+          id: CHANNEL.id,
+          correlation_id: "66666666-0000-0000-0000-000000000000",
+        });
+      }),
+    );
+    const user = userEvent.setup();
+    renderAppAt(`/admin/routing/channels/${CHANNEL.id}`);
+
+    expect(await screen.findByDisplayValue(CHANNEL.name)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /fetch models/i }));
+
+    expect(
+      await screen.findByRole("heading", { name: /select upstream models/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("checkbox", {
+        name: `Select ${CHANNEL.available_models[0]}`,
+      }),
+    ).toBeChecked();
+    await user.click(
+      screen.getByRole("checkbox", { name: "Select openai/gpt-4.1" }),
+    );
+    await user.click(screen.getByRole("button", { name: /apply selection/i }));
+
+    expect(screen.getByText("openai/gpt-4.1")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /save channel/i }));
+
+    await waitFor(() => {
+      expect(discoveryInput).toBeDefined();
+      expect(submitted).toBeDefined();
+    });
+    expect(discoveryInput).toMatchObject({
+      api_format: CHANNEL.api_format,
+      base_url: CHANNEL.base_url,
+      upstream_auth_kind: CHANNEL.upstream_auth_kind,
+      upstream_api_key: CHANNEL_DETAIL.upstream_api_key,
+      override_document: CHANNEL_DETAIL.override_document,
     });
     expect(submitted?.available_models).toEqual([
       ...CHANNEL.available_models,
