@@ -7,6 +7,18 @@ Versioning.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-07-23
+
+### Changed
+
+- Reworked tagged GHCR publishing to build AMD64 and ARM64 images in parallel
+  on native GitHub-hosted runners, then merge their digests into the final
+  multi-platform manifest.
+- Split Docker build caches by architecture and pinned the architecture-neutral
+  Console and `cargo-chef prepare` stages to the native build platform.
+- Upgraded release artifact uploads to the Node.js 24-based
+  `actions/upload-artifact` v7.
+
 ## [0.1.1] - 2026-07-23
 
 ### Added
