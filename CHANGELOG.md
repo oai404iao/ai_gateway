@@ -7,6 +7,8 @@ Versioning.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-07-23
+
 ### Added
 
 - Per-channel billing multipliers applied to effective request price snapshots
@@ -27,6 +29,12 @@ Versioning.
 - Licensed the project under `AGPL-3.0-only`, with license metadata and
   required project and third-party notices included in release archives and
   production container images.
+
+### Security
+
+- Reviewed the repository's full Git history with Gitleaks and narrowly
+  allowlisted the known-public Ed25519 fixture used only by Console integration
+  tests.
 
 ## [0.1.0] - 2026-07-22
 
