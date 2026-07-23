@@ -68,14 +68,17 @@ describe("StatisticsPage", () => {
       expect(queries.length).toBeGreaterThan(0);
       expect(queries.at(-1)?.get("granularity")).toBe("hour");
     });
-    expect(screen.getByRole("radio", { name: "Today" })).toBeChecked();
+    expect(screen.getByRole("button", { name: "Today" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
     const todayStart = new Date(queries.at(-1)?.get("started_after") ?? "");
     const todayEnd = new Date(queries.at(-1)?.get("started_before") ?? "");
     expect(todayStart.getHours()).toBe(0);
     expect(todayStart.getMinutes()).toBe(0);
     expect(todayStart.toDateString()).toBe(todayEnd.toDateString());
 
-    await user.click(screen.getByRole("radio", { name: "This week" }));
+    await user.click(screen.getByRole("button", { name: "This week" }));
     await waitFor(() => {
       expect(queries.at(-1)?.get("granularity")).toBe("day");
       const startedAt = new Date(queries.at(-1)?.get("started_after") ?? "");
@@ -83,7 +86,7 @@ describe("StatisticsPage", () => {
       expect(startedAt.getHours()).toBe(0);
     });
 
-    await user.click(screen.getByRole("radio", { name: "This month" }));
+    await user.click(screen.getByRole("button", { name: "This month" }));
     await waitFor(() => {
       const startedAt = new Date(queries.at(-1)?.get("started_after") ?? "");
       expect(startedAt.getDate()).toBe(1);

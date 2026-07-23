@@ -208,8 +208,7 @@ describe("TransformDocumentEditor", () => {
       ],
     });
     expect(screen.getByRole("tab", { name: "Visual editor" })).toHaveAttribute(
-      "data-state",
-      "active",
+      "data-active",
     );
   });
 });

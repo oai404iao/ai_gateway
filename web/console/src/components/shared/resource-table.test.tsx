@@ -1,8 +1,9 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AppProviders } from "@/app/providers";
 import { ResourceTable } from "@/components/shared/resource-table";
+import { Checkbox } from "@/components/ui/checkbox";
 import { seedAuthenticatedSession } from "@/test/msw";
 
 interface TestRow {
@@ -39,10 +40,41 @@ describe("ResourceTable", () => {
     expect(screen.getByText("Model 20")).toBeInTheDocument();
     expect(screen.queryByText("Model 21")).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("link", { name: /go to next page/i }));
+    await user.click(screen.getByRole("button", { name: /go to next page/i }));
 
     expect(screen.getByText("Anthropic")).toBeInTheDocument();
     expect(screen.getByText("Model 21")).toBeInTheDocument();
     expect(screen.queryByText("Model 20")).not.toBeInTheDocument();
+  });
+
+  it("does not activate a row when an interactive child is clicked", async () => {
+    seedAuthenticatedSession();
+    const user = userEvent.setup();
+    const onRowClick = vi.fn();
+    const row = { id: "1", name: "Model 1", provider: "OpenAI" };
+
+    render(
+      <AppProviders>
+        <ResourceTable
+          columns={[
+            { key: "name", header: "Name", render: (item) => item.name },
+            {
+              key: "action",
+              header: "Action",
+              render: () => <Checkbox aria-label="Select model" />,
+            },
+          ]}
+          rows={[row]}
+          rowKey={(item) => item.id}
+          onRowClick={onRowClick}
+        />
+      </AppProviders>,
+    );
+
+    await user.click(screen.getByRole("checkbox", { name: "Select model" }));
+    expect(onRowClick).not.toHaveBeenCalled();
+
+    await user.click(screen.getByText("Model 1"));
+    expect(onRowClick).toHaveBeenCalledWith(row);
   });
 });

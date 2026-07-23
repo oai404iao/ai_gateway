@@ -115,7 +115,24 @@ export function ResourceTable<T>({
                   <TableRow
                     key={rowKey(row)}
                     className={cn(onRowClick && "cursor-pointer")}
-                    onClick={onRowClick ? () => onRowClick(row) : undefined}
+                    onClick={
+                      onRowClick
+                        ? (event) => {
+                            const target =
+                              event.target instanceof Element ? event.target : null;
+                            const interactiveTarget = target?.closest(
+                              "a, button, input, select, textarea, [role=button], [role=checkbox], [role=switch], [contenteditable=true], [data-row-click-ignore]",
+                            );
+                            if (
+                              interactiveTarget &&
+                              event.currentTarget.contains(interactiveTarget)
+                            ) {
+                              return;
+                            }
+                            onRowClick(row);
+                          }
+                        : undefined
+                    }
                   >
                     {columns.map((column) => (
                       <TableCell key={column.key} className={column.className}>

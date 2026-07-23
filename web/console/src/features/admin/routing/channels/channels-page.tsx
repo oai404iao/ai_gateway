@@ -32,6 +32,7 @@ export function ChannelsPage() {
   const { t } = useI18n();
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [batchOpen, setBatchOpen] = useState(false);
+  const batchDialogTriggerId = "channel-batch-edit-trigger";
 
   useEffect(() => {
     const available = new Set((channels.data ?? []).map((channel) => channel.id));
@@ -82,7 +83,6 @@ export function ChannelsPage() {
         <Checkbox
           aria-label={`${t("Select")} ${channel.name}`}
           checked={selected.has(channel.id)}
-          onClick={(event) => event.stopPropagation()}
           onCheckedChange={() => toggleChannel(channel)}
         />
       ),
@@ -158,6 +158,7 @@ export function ChannelsPage() {
               {allSelected ? t("Clear selection") : t("Select all")}
             </Button>
             <Button
+              id={batchDialogTriggerId}
               variant="outline"
               disabled={selectedChannels.length === 0}
               onClick={() => setBatchOpen(true)}
@@ -252,6 +253,7 @@ export function ChannelsPage() {
         channels={selectedChannels}
         onOpenChange={setBatchOpen}
         onApplied={() => setSelected(new Set())}
+        triggerId={batchDialogTriggerId}
       />
     </div>
   );

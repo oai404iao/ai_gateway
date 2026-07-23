@@ -27,6 +27,7 @@ import { useI18n } from "@/app/i18n";
 interface ChannelModelPickerDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  triggerId?: string;
   models: string[];
   currentModels: string[];
   onApply: (models: string[]) => void;
@@ -35,6 +36,7 @@ interface ChannelModelPickerDialogProps {
 export function ChannelModelPickerDialog({
   open,
   onOpenChange,
+  triggerId,
   models,
   currentModels,
   onApply,
@@ -100,7 +102,7 @@ export function ChannelModelPickerDialog({
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={onOpenChange} triggerId={triggerId}>
       <DialogContent className="max-h-[calc(100svh-2rem)] overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>{t("Select upstream models")}</DialogTitle>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { BrowserRouter } from "react-router";
@@ -38,9 +38,10 @@ describe("ModelRuleDetailPage", () => {
 
     const clientModelSelect = await screen.findByRole("combobox", { name: "Client model" });
     await user.click(clientModelSelect);
-    expect(await screen.findByText(MODEL.provider_name ?? "")).toBeInTheDocument();
+    const listbox = await screen.findByRole("listbox");
+    expect(within(listbox).getByText(MODEL.provider_name ?? "")).toBeInTheDocument();
     await user.click(
-      await screen.findByRole("option", {
+      within(listbox).getByRole("option", {
         name: `${MODEL.display_name} (${MODEL.source_model_id})`,
       }),
     );
