@@ -11,7 +11,7 @@ import {
 } from "@/components/ui/select"
 
 describe("Select", () => {
-  it("ignores Radix's transient empty change while form options mount", async () => {
+  it("renders the selected label without emitting an empty change", async () => {
     const onValueChange = vi.fn()
 
     render(
@@ -33,6 +33,6 @@ describe("Select", () => {
     await waitFor(() => {
       expect(screen.getByLabelText("Role")).toHaveTextContent("Administrator")
     })
-    expect(onValueChange).not.toHaveBeenCalledWith("")
+    expect(onValueChange).not.toHaveBeenCalled()
   })
 })
