@@ -348,9 +348,9 @@ export function CostStatisticsPanel() {
                 {t("Quick range")}
               </FieldLabel>
               <ToggleGroup
-                type="single"
-                value={quickRange ?? ""}
-                onValueChange={(value) => {
+                value={quickRange ? [quickRange] : []}
+                onValueChange={(values) => {
+                  const value = values[0];
                   if (value) applyQuickRange(value as QuickRange);
                 }}
                 variant="outline"
@@ -407,9 +407,9 @@ export function CostStatisticsPanel() {
             <Field>
               <FieldLabel>{t("Granularity")}</FieldLabel>
               <ToggleGroup
-                type="single"
-                value={draft.granularity}
-                onValueChange={(value) => {
+                value={[draft.granularity]}
+                onValueChange={(values) => {
+                  const value = values[0];
                   if (value) {
                     setQuickRange(null);
                     setDraft((current) => ({
