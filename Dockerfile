@@ -18,7 +18,9 @@ RUN --mount=type=cache,target=/pnpm/store \
     pnpm config set store-dir /pnpm/store \
     && pnpm --dir web/console install --frozen-lockfile
 COPY web/console ./web/console
-RUN pnpm --dir web/console build
+RUN pnpm --dir web/console build \
+    && pnpm --dir web/console list --prod --depth Infinity --json \
+        > web/console/production-dependencies.json
 
 # The cargo-chef recipe is architecture-independent; only compilation targets the image platform.
 FROM --platform=$BUILDPLATFORM lukemathwalker/cargo-chef:${CARGO_CHEF_VERSION}-rust-${RUST_VERSION}-bookworm@${CARGO_CHEF_DIGEST} AS planner
@@ -28,6 +30,9 @@ RUN cargo chef prepare --recipe-path recipe.json
 
 FROM lukemathwalker/cargo-chef:${CARGO_CHEF_VERSION}-rust-${RUST_VERSION}-bookworm@${CARGO_CHEF_DIGEST} AS builder
 WORKDIR /workspace
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends python3 \
+    && rm -rf /var/lib/apt/lists/*
 COPY --from=planner /workspace/recipe.json recipe.json
 RUN cargo chef cook \
       --locked \
@@ -38,11 +43,14 @@ RUN cargo chef cook \
 
 COPY . .
 COPY --from=console-builder /workspace/web/console/dist ./web/console/dist
+COPY --from=console-builder /workspace/web/console/node_modules ./web/console/node_modules
+COPY --from=console-builder /workspace/web/console/production-dependencies.json ./web/console/production-dependencies.json
 RUN cargo build \
       --locked \
       --release \
       --features embedded-console-ui \
       --package ai-gateway \
+    && python3 scripts/generate-third-party-notices.py --output /out/licenses \
     && install -D -m 0755 target/release/ai-gateway /out/ai-gateway
 
 FROM debian:bookworm-slim AS runtime
@@ -79,8 +87,7 @@ RUN apt-get update \
 COPY --from=builder /out/ai-gateway /usr/local/bin/ai-gateway
 COPY deploy/docker/entrypoint.sh /usr/local/bin/ai-gateway-entrypoint
 COPY LICENSE /usr/share/doc/ai-gateway/LICENSE
-COPY LICENSES/OFL-1.1.txt /usr/share/doc/ai-gateway/OFL-1.1.txt
-COPY web/console/NOTICES.md /usr/share/doc/ai-gateway/THIRD_PARTY_NOTICES.md
+COPY --from=builder /out/licenses/ /usr/share/doc/ai-gateway/
 
 WORKDIR /var/lib/ai-gateway
 EXPOSE 3000 3001

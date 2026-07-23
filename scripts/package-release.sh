@@ -20,6 +20,10 @@ if [[ ! -x "$binary" ]]; then
     exit 1
 fi
 
+license_materials="target/third-party-licenses"
+python3 "$repo_root/scripts/generate-third-party-notices.py" \
+    --output "$license_materials"
+
 target="$(rustc -vV | awk '/^host:/ { print $2 }')"
 archive_base="ai-gateway-v${version}-${target}"
 stage="$(mktemp -d)"
@@ -41,10 +45,9 @@ install -m 0644 \
     LICENSE \
     "$stage/$archive_base/"
 install -m 0644 \
-    web/console/NOTICES.md \
-    "$stage/$archive_base/THIRD_PARTY_NOTICES.md"
-install -d "$stage/$archive_base/LICENSES"
-install -m 0644 LICENSES/OFL-1.1.txt "$stage/$archive_base/LICENSES/"
+    "$license_materials/THIRD_PARTY_NOTICES.md" \
+    "$stage/$archive_base/"
+cp -a "$license_materials/LICENSES" "$stage/$archive_base/LICENSES"
 install -d "$stage/$archive_base/docs"
 install -m 0644 \
     docs/production-deployment.md \
