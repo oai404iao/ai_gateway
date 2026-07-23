@@ -86,8 +86,13 @@ export function ActivateInvitationPage() {
         </form>
         <p className="mt-4 text-center text-xs text-muted-foreground">
           {t("Already have an account?")}{" "}
-          <Button variant="link" size="xs" asChild>
-            <Link to="/login">{t("Sign in")}</Link>
+          <Button
+            variant="link"
+            size="xs"
+            render={<Link to="/login" />}
+            nativeButton={false}
+          >
+            {t("Sign in")}
           </Button>
         </p>
       </CardContent>
