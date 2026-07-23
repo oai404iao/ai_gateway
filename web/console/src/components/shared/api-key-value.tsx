@@ -52,28 +52,32 @@ export function ApiKeyValue({ value, className }: ApiKeyValueProps) {
       />
       <InputGroupAddon align="inline-end">
         <Tooltip>
-          <TooltipTrigger asChild>
-            <InputGroupButton
-              size="icon-xs"
-              aria-label={t(revealed ? "Hide full API key" : "Show full API key")}
-              onClick={() => setRevealed((current) => !current)}
-            >
-              {revealed ? <EyeOff /> : <Eye />}
-            </InputGroupButton>
+          <TooltipTrigger
+            render={
+              <InputGroupButton
+                size="icon-xs"
+                aria-label={t(revealed ? "Hide full API key" : "Show full API key")}
+                onClick={() => setRevealed((current) => !current)}
+              />
+            }
+          >
+            {revealed ? <EyeOff /> : <Eye />}
           </TooltipTrigger>
           <TooltipContent>
             {t(revealed ? "Hide full API key" : "Show full API key")}
           </TooltipContent>
         </Tooltip>
         <Tooltip>
-          <TooltipTrigger asChild>
-            <InputGroupButton
-              size="icon-xs"
-              aria-label={t("Copy API key")}
-              onClick={copy}
-            >
-              {copied ? <Check /> : <Copy />}
-            </InputGroupButton>
+          <TooltipTrigger
+            render={
+              <InputGroupButton
+                size="icon-xs"
+                aria-label={t("Copy API key")}
+                onClick={copy}
+              />
+            }
+          >
+            {copied ? <Check /> : <Copy />}
           </TooltipTrigger>
           <TooltipContent>{t(copied ? "Copied" : "Copy API key")}</TooltipContent>
         </Tooltip>
