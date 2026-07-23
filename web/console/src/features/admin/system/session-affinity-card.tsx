@@ -544,7 +544,7 @@ export function SessionAffinityCard({
               <FieldSet>
                 <FieldLegend variant="label">{t("API formats")}</FieldLegend>
                 <ToggleGroup
-                  type="multiple"
+                  multiple
                   variant="outline"
                   value={draft.api_formats}
                   onValueChange={(formats) =>

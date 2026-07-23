@@ -185,9 +185,9 @@ export function ChannelStatusPanel() {
           </CardDescription>
           <CardAction>
             <ToggleGroup
-              type="single"
-              value={window}
-              onValueChange={(value) => {
+              value={[window]}
+              onValueChange={(values) => {
+                const value = values[0];
                 if (value) setWindow(value as ChannelStatusWindow);
               }}
               variant="outline"
