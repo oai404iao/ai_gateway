@@ -15,10 +15,10 @@ export function LocaleToggle() {
   const { locale, setLocale, t } = useI18n();
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="icon" aria-label={t("Language")}>
-          <Languages />
-        </Button>
+      <DropdownMenuTrigger
+        render={<Button variant="ghost" size="icon" aria-label={t("Language")} />}
+      >
+        <Languages />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
         <DropdownMenuGroup>

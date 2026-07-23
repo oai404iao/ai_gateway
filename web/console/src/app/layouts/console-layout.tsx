@@ -53,11 +53,13 @@ function ThemeToggle() {
   const { t } = useI18n();
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="icon" aria-label={t("Toggle theme")}>
-          <Sun className="dark:hidden" />
-          <Moon className="hidden dark:block" />
-        </Button>
+      <DropdownMenuTrigger
+        render={
+          <Button variant="ghost" size="icon" aria-label={t("Toggle theme")} />
+        }
+      >
+        <Sun className="dark:hidden" />
+        <Moon className="hidden dark:block" />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
         <DropdownMenuGroup>
@@ -101,14 +103,12 @@ function UserMenu() {
 
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="sm">
-          <Avatar className="size-7">
-            <AvatarFallback>{initials}</AvatarFallback>
-          </Avatar>
-          <span className="hidden text-sm sm:inline-flex">{user?.display_name}</span>
-          <ChevronDown data-icon="inline-end" className="opacity-60" />
-        </Button>
+      <DropdownMenuTrigger render={<Button variant="ghost" size="sm" />}>
+        <Avatar className="size-7">
+          <AvatarFallback>{initials}</AvatarFallback>
+        </Avatar>
+        <span className="hidden text-sm sm:inline-flex">{user?.display_name}</span>
+        <ChevronDown data-icon="inline-end" className="opacity-60" />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-56">
         <DropdownMenuGroup>
