@@ -110,6 +110,8 @@ jobs:
         with:
           images: ${{ env.IMAGE_NAME }}
           flavor: latest=false
+          labels: |
+            org.opencontainers.image.licenses=AGPL-3.0-only
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}},enable=${{ !contains(github.ref_name, '-') }}

@@ -66,8 +66,8 @@ PostgreSQL 集成测试要求先启动 `docker compose up -d`。性能 Harness �
 
 1. 只读权限的 `verify` job 再次校验 tag、代码版本与 Changelog，并执行完整
    Rust workspace、Console 和 embedded UI 门禁。
-2. 构建 release 二进制，生成 Linux tarball、`SHA256SUMS` 与 release notes，
-   并以一天保留期暂存为 Actions artifact。
+2. 构建 release 二进制，生成包含项目许可证和第三方声明的 Linux tarball、
+   `SHA256SUMS` 与 release notes，并以一天保留期暂存为 Actions artifact。
 3. 仅拥有 `packages: write` 的 `publish-image` job 使用
    `docker/metadata-action` 生成 tag/OCI labels，构建并推送
    `linux/amd64`、`linux/arm64` 镜像。
@@ -77,7 +77,8 @@ PostgreSQL 集成测试要求先启动 `docker compose up -d`。性能 Harness �
    并上传资产。
 
 稳定版本会发布精确版本、`major.minor`、`major` 与 `latest`；预发布版本只发布
-精确 SemVer tag。镜像地址为 `ghcr.io/oai404iao/ai_gateway`。
+精确 SemVer tag。镜像地址为 `ghcr.io/oai404iao/ai_gateway`，OCI
+`org.opencontainers.image.licenses` label 固定为 `AGPL-3.0-only`。
 
 首次发布的 GHCR Package 默认是私有的，并与源码仓库分别管理可见性。仓库未来
 转为 Public 时，还需在 Package 设置中单独确认镜像是否公开。已经发布的 GitHub

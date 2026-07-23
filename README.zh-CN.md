@@ -424,4 +424,11 @@ tests/               本地与 PostgreSQL 集成测试
 
 ## 许可证
 
-`Cargo.toml` 将本项目标记为 `UNLICENSED`。在预期环境以外使用或再分发前，请先咨询仓库所有者。
+`ai-gateway` 采用
+[GNU Affero General Public License v3.0 only](LICENSE)
+（`AGPL-3.0-only`）许可证。
+
+如果你修改本程序并通过网络向用户提供修改后的版本，AGPL 第 13 条要求向这些
+用户提供获取对应源码的方式。第三方组件继续遵循各自的许可证；详见
+[Console 第三方声明](web/console/NOTICES.md) 与仓库中的
+[`LICENSES/`](LICENSES/)。

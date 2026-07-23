@@ -5,6 +5,7 @@ edition = "2024"
 rust-version = "1.85"
 publish = false
 description = "Manually invoked end-to-end forwarding performance harness for ai-gateway"
+license = "AGPL-3.0-only"
 
 [dependencies]
 ai-gateway = { path = "../.." }

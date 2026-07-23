@@ -460,4 +460,12 @@ tests/               Local and PostgreSQL integration tests
 
 ## License
 
-This project is marked `UNLICENSED` in `Cargo.toml`. Consult the repository owner before redistributing or using it outside its intended environment.
+`ai-gateway` is licensed under the
+[GNU Affero General Public License v3.0 only](LICENSE)
+(`AGPL-3.0-only`).
+
+If you modify the program and make the modified version available to users
+over a network, section 13 of the AGPL requires offering those users access
+to the corresponding source code. Third-party components retain their own
+licenses; see [the Console third-party notices](web/console/NOTICES.md) and
+the committed texts under [`LICENSES/`](LICENSES/).

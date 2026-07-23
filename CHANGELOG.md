@@ -24,6 +24,9 @@ Versioning.
   checks, short-lived release artifacts, image metadata, and public-image
   provenance attestations.
 - Added cargo-chef dependency layering to production image builds.
+- Licensed the project under `AGPL-3.0-only`, with license metadata and
+  required project and third-party notices included in release archives and
+  production container images.
 
 ## [0.1.0] - 2026-07-22
 

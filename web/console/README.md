@@ -66,8 +66,10 @@ and commit both. `pnpm generate:api:check` is the drift gate.
 
 ## Licenses
 
-All runtime and dev dependencies are permissively licensed (MIT, ISC,
-Apache-2.0, BSD-2/3, BlueOak, 0BSD, CC0). Two are worth calling out:
+The Console UI is part of `ai-gateway` and is licensed under
+`AGPL-3.0-only`; see the repository root `LICENSE`. Most runtime and dev
+dependencies use permissive licenses. Two third-party components are worth
+calling out:
 
 - `@fontsource-variable/geist` (OFL-1.1) — the Geist font is bundled into
   `dist/` and shipped in the binary. The SIL Open Font License requires the
@@ -76,4 +78,5 @@ Apache-2.0, BSD-2/3, BlueOak, 0BSD, CC0). Two are worth calling out:
   not shipped in the binary. MPL-2.0 is weak, file-level copyleft and fine for
   dev tooling.
 
-See `NOTICES.md` for the full attribution list.
+See `NOTICES.md` for the attribution list and the repository root
+`LICENSES/` directory for committed third-party license texts.

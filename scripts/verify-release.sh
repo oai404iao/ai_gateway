@@ -35,5 +35,14 @@ docker build \
     --tag "$image" \
     .
 docker run --rm "$image" --version | grep -Fx "ai-gateway ${version}"
+docker image inspect \
+    --format '{{ index .Config.Labels "org.opencontainers.image.licenses" }}' \
+    "$image" \
+    | grep -Fx "AGPL-3.0-only"
+docker run --rm --entrypoint /bin/sh "$image" -ec '
+    test -s /usr/share/doc/ai-gateway/LICENSE
+    test -s /usr/share/doc/ai-gateway/OFL-1.1.txt
+    test -s /usr/share/doc/ai-gateway/THIRD_PARTY_NOTICES.md
+'
 
 echo "release verification passed: v${version}"

@@ -6,6 +6,10 @@
 
 `ai-gateway` is a single-binary Rust production service intended to forward LLM requests in the OpenAI Chat Completions and Responses formats. It uses Axum/Tokio for HTTP, reqwest for upstream requests, PostgreSQL/SQLx for persistence, and `ArcSwap` for immutable runtime configuration snapshots. Rust 2024 with MSRV 1.85 is required (`Cargo.toml`). The Cargo workspace also contains the development-only `ai-gateway-perf` package under `tools/forwarding-perf/`; it is never linked into the production binary.
 
+The project is licensed under `AGPL-3.0-only`. Third-party license texts and
+attributions that must accompany binary redistribution live in `LICENSES/`
+and `web/console/NOTICES.md`.
+
 The implemented backend includes OpenAI-compatible Chat Completions and
 Responses proxy routes, PostgreSQL-backed control-plane snapshots, a separate
 JWT-authenticated Console API with `user`/`admin` roles, constrained
@@ -74,6 +78,8 @@ repo/
 |-- docker-compose.yml          # Tuned single-node PostgreSQL baseline (not HA)
 |-- docker-compose.prd.yaml     # Full Gateway + PostgreSQL single-host production stack
 |-- CHANGELOG.md                # Dated Keep-a-Changelog release notes
+|-- LICENSE                     # GNU Affero General Public License v3.0-only
+|-- LICENSES/                   # Committed third-party license texts shipped with releases
 `-- Cargo.toml                  # Workspace plus production package metadata, MSRV, features, and dependency source of truth
 ```
 
@@ -271,6 +277,7 @@ Axum HTTP
 13. **Container secrets are copied before privilege drop.** Local Compose file-backed secrets may retain host ownership/mode. `deploy/docker/entrypoint.sh` starts as root, copies config and secrets into a private tmpfs, fixes the persistent spool ownership, then executes the Gateway as UID/GID 10001. Do not bypass that entrypoint in production.
 14. **Release tags are deployment inputs.** `.github/workflows/release.yml` is tag-triggered. Version drift or a missing dated Changelog entry fails the release. Verification runs read-only, GHCR publication has only package write permission, and GitHub Release publication has only contents write permission. Public repositories also publish image provenance attestations; private repositories skip that step.
 15. **GitHub Actions references are immutable.** External Actions are pinned to full commit SHAs; version-tagged Actions are updated through `.github/dependabot.yml`. Do not replace them with mutable major tags or branches. The Rust toolchain Action is pinned to a reviewed `stable` branch commit and requires periodic manual refresh.
+16. **License metadata and redistribution notices move together.** The project license is `AGPL-3.0-only`; keep both Cargo package manifests, `web/console/package.json`, README license sections, Docker OCI labels, and release archives synchronized. The embedded Geist font remains OFL-1.1 and its committed license plus `web/console/NOTICES.md` must stay in binary distributions.
 
 ## Code Style
 
@@ -305,6 +312,7 @@ Axum HTTP
 | Full production Compose | `docker-compose.prd.yaml` and `docs/production-deployment.md` |
 | Release process/version checks | `docs/releasing.md`, `scripts/release.sh`, and `scripts/check-release-version.sh` |
 | CI/release automation | `.github/workflows/ci.yml`, `.github/workflows/release.yml`, and `.github/dependabot.yml` |
+| Project and third-party licensing | `LICENSE`, `LICENSES/`, and `web/console/NOTICES.md` |
 | Console API contract (request/response shapes) | `docs/openapi/console-v1.yaml` |
 | Console UI generated TypeScript types | `web/console/src/api/generated/console-v1.d.ts` (regenerate via `pnpm --dir web/console generate:api`) |
 | Console UI architecture and implementation plan | `docs/console-ui-design.md` |

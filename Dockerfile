@@ -53,7 +53,8 @@ LABEL org.opencontainers.image.title="ai-gateway" \
       org.opencontainers.image.description="OpenAI-compatible LLM request forwarding gateway" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${REVISION}" \
-      org.opencontainers.image.source="${SOURCE_URL}"
+      org.opencontainers.image.source="${SOURCE_URL}" \
+      org.opencontainers.image.licenses="AGPL-3.0-only"
 
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
@@ -76,6 +77,9 @@ RUN apt-get update \
 
 COPY --from=builder /out/ai-gateway /usr/local/bin/ai-gateway
 COPY deploy/docker/entrypoint.sh /usr/local/bin/ai-gateway-entrypoint
+COPY LICENSE /usr/share/doc/ai-gateway/LICENSE
+COPY LICENSES/OFL-1.1.txt /usr/share/doc/ai-gateway/OFL-1.1.txt
+COPY web/console/NOTICES.md /usr/share/doc/ai-gateway/THIRD_PARTY_NOTICES.md
 
 WORKDIR /var/lib/ai-gateway
 EXPOSE 3000 3001

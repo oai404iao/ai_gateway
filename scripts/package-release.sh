@@ -34,7 +34,17 @@ install -m 0644 deploy/compose/env.example \
     "$stage/$archive_base/compose.env.example"
 install -m 0644 docker-compose.prd.yaml \
     "$stage/$archive_base/docker-compose.prd.yaml"
-install -m 0644 README.md README.zh-CN.md CHANGELOG.md "$stage/$archive_base/"
+install -m 0644 \
+    README.md \
+    README.zh-CN.md \
+    CHANGELOG.md \
+    LICENSE \
+    "$stage/$archive_base/"
+install -m 0644 \
+    web/console/NOTICES.md \
+    "$stage/$archive_base/THIRD_PARTY_NOTICES.md"
+install -d "$stage/$archive_base/LICENSES"
+install -m 0644 LICENSES/OFL-1.1.txt "$stage/$archive_base/LICENSES/"
 install -d "$stage/$archive_base/docs"
 install -m 0644 \
     docs/production-deployment.md \

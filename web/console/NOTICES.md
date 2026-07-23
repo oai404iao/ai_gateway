@@ -13,11 +13,12 @@ licensed under the SIL Open Font License 1.1. The font files are bundled into
 `dist/` by Vite and embedded into the Rust binary via `rust-embed`.
 
 The OFL-1.1 permits free use, study, modification, and redistribution provided
-the license text and copyright notice are included. The full OFL-1.1 text is
-available at <https://openfontlicense.org> and in the
-`@fontsource-variable/geist` package (`node_modules/@fontsource-variable/geist/LICENSE`).
+the license text and copyright notice are included. The exact license and
+font copyright notice shipped by the dependency are committed in the
+repository as `LICENSES/OFL-1.1.txt` and included with binary distributions.
 
-When redistributing the binary, retain the OFL-1.1 notice for the Geist font.
+When redistributing the binary, retain this notice and the committed OFL-1.1
+text for the Geist font.
 
 ## Build-time only (not shipped)
 

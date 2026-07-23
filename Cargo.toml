@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 description = "High-performance LLM request forwarding gateway"
-license = "UNLICENSED"
+license = "AGPL-3.0-only"
 repository = "https://github.com/oai404iao/ai_gateway"
 
 [features]
