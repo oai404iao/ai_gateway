@@ -639,7 +639,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * @description Aggregates P90 TTFT, P50 output TPS, and terminal success rate for
+         * @description Available to every authenticated Console user.
+         *     Aggregates P90 TTFT, P50 output TPS, and terminal success rate for
          *     channels whose `status_statistics_enabled` flag is true. Model
          *     identifiers prefer the selected upstream model and retain the API
          *     format dimension. Client-cancelled requests do not participate in the
@@ -662,7 +663,9 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * @description Aggregates request counts, token totals, RPM/TPM, and cost by UTC hour
+         * @description Regular users can only aggregate their own requests. Administrators
+         *     can aggregate all users or filter by `user_id` and `api_key_id`.
+         *     Aggregates request counts, token totals, RPM/TPM, and cost by UTC hour
          *     or day. All monetary amounts are settled in USD, and the response
          *     includes continuous zero-valued buckets across the selected range.
          *     Client-cancelled requests do not participate in model success rates.
@@ -700,7 +703,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * @description Returns a current-instance operational snapshot for the gateway
+         * @description Administrator-only.
+         *     Returns a current-instance operational snapshot for the gateway
          *     process and its host. Linux resource values are sampled from procfs;
          *     unsupported values and temporarily unavailable backlog queries are
          *     null. CPU percentages are deltas between samples, so the first sample

@@ -134,7 +134,7 @@ export function CatalogPage() {
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
-        title={t("Catalog")}
+        title={t("Price sync")}
         description={t(
           "Preview, import, or explicitly update models.dev prices and long-context tiers.",
         )}

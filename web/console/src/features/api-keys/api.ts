@@ -15,10 +15,11 @@ function detailKey(id: string) {
   return ["console", "me", "api-keys", id] as const;
 }
 
-export function useOwnApiKeys() {
+export function useOwnApiKeys(enabled = true) {
   return useQuery({
     queryKey: LIST_KEY,
     queryFn: () => apiGet<ApiKeyView[]>("/me/api-keys"),
+    enabled,
   });
 }
 

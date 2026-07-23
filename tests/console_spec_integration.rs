@@ -150,6 +150,7 @@ struct App {
     access_token: String,
     user_id: Uuid,
     runtime: Arc<RuntimeConfig>,
+    auth: ConsoleAuthService,
 }
 
 async fn app(pool: PgPool) -> App {
@@ -209,7 +210,7 @@ async fn app(pool: PgPool) -> App {
             Arc::new(UpstreamClientRegistry::new()),
         ),
         model_sync,
-        auth,
+        auth: auth.clone(),
         request_logs: RequestLogRepository::new(pool.clone()),
         system_metrics: SystemMetricsService::new(pool, 5),
         console_body_bytes: 1_048_576,
@@ -221,6 +222,7 @@ async fn app(pool: PgPool) -> App {
         access_token: session.access_token,
         user_id,
         runtime,
+        auth,
     }
 }
 
@@ -348,10 +350,21 @@ async fn request(
     body: serde_json::Value,
     headers: &[(&str, &str)],
 ) -> axum::response::Response {
+    request_with_token(app, &app.access_token, method, path, body, headers).await
+}
+
+async fn request_with_token(
+    app: &App,
+    access_token: &str,
+    method: &str,
+    path: &str,
+    body: serde_json::Value,
+    headers: &[(&str, &str)],
+) -> axum::response::Response {
     let mut builder = axum::http::Request::builder()
         .method(method)
         .uri(path)
-        .header("authorization", format!("Bearer {}", app.access_token))
+        .header("authorization", format!("Bearer {access_token}"))
         .header("content-type", "application/json");
     for (name, value) in headers {
         builder = builder.header(*name, *value);
@@ -2180,6 +2193,154 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
             .iter()
             .filter(|bucket| bucket["request_count"].as_i64().unwrap() > 0)
             .count(),
+        1
+    );
+
+    let regular_user_id = Uuid::new_v4();
+    let regular_api_key_id = Uuid::new_v4();
+    let regular_email = format!("statistics-user-{regular_user_id}@example.test");
+    let regular_password_hash = hash_console_password(TEST_PASSWORD.to_owned())
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO users (id,email,display_name,role,status,password_hash) \
+         VALUES ($1,$2,$3,'user','active',$4)",
+    )
+    .bind(regular_user_id)
+    .bind(&regular_email)
+    .bind(format!("statistics-user-{regular_user_id}"))
+    .bind(regular_password_hash)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO api_keys \
+         (id,user_id,name,secret_value,status,allowed_api_formats,permissions) \
+         VALUES ($1,$2,$3,$4,'active', \
+                 ARRAY['open_ai_chat_completions']::api_format[],ARRAY['proxy'])",
+    )
+    .bind(regular_api_key_id)
+    .bind(regular_user_id)
+    .bind(format!("statistics-user-key-{regular_api_key_id}"))
+    .bind(format!("statistics-user-secret-{regular_api_key_id}"))
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO request_logs \
+         (id,started_at,completed_at,user_id,api_key_id,api_format,client_model, \
+          upstream_model,channel_group_id,channel_id,outcome,response_status_code, \
+          streamed,ttft_ms,total_duration_ms,output_tokens_per_second,input_tokens, \
+          cached_input_tokens,cache_write_tokens,output_tokens,currency,price_unit_tokens, \
+          price_effective_at,input_unit_price,cached_input_unit_price, \
+          cache_write_unit_price,output_unit_price,cost_amount) \
+         VALUES ($1,$2,$2,$3,$4,'open_ai_chat_completions','statistics-user-client-model', \
+                 'statistics-user-model',$5,$6,'succeeded',200,false,250,500,25,40,0,0,10, \
+                 'USD',1000000,$2,1,0,0,1,1)",
+    )
+    .bind(Uuid::new_v4())
+    .bind(started_at)
+    .bind(regular_user_id)
+    .bind(regular_api_key_id)
+    .bind(group_id)
+    .bind(channel_id)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let regular_session = app
+        .auth
+        .login(regular_email, TEST_PASSWORD.to_owned())
+        .await
+        .unwrap();
+
+    let user_channel_status = request_with_token(
+        &app,
+        &regular_session.access_token,
+        "GET",
+        "/console/v1/statistics/channel-status?window=24h",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(user_channel_status.status(), StatusCode::OK);
+
+    let user_costs = request_with_token(
+        &app,
+        &regular_session.access_token,
+        "GET",
+        &format!(
+            "/console/v1/statistics/costs?started_after={range_start}&started_before={range_end}&granularity=hour"
+        ),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(user_costs.status(), StatusCode::OK);
+    let user_costs = body_json(user_costs).await;
+    assert_eq!(user_costs["summary"]["request_count"], 1);
+    let user_cost_amount = user_costs["summary"]["cost_amount"]
+        .as_str()
+        .unwrap()
+        .parse::<f64>()
+        .unwrap();
+    assert!((user_cost_amount - 1.0).abs() < f64::EPSILON);
+    assert_eq!(user_costs["models"][0]["model"], "statistics-user-model");
+
+    let other_user_costs = request_with_token(
+        &app,
+        &regular_session.access_token,
+        "GET",
+        &format!(
+            "/console/v1/statistics/costs?started_after={range_start}&started_before={range_end}&granularity=hour&user_id={}",
+            app.user_id
+        ),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(other_user_costs.status(), StatusCode::FORBIDDEN);
+
+    let other_user_key_costs = request_with_token(
+        &app,
+        &regular_session.access_token,
+        "GET",
+        &format!(
+            "/console/v1/statistics/costs?started_after={range_start}&started_before={range_end}&granularity=hour&api_key_id={api_key_id}"
+        ),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(other_user_key_costs.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(other_user_key_costs).await["summary"]["request_count"],
+        0
+    );
+
+    let user_system_load = request_with_token(
+        &app,
+        &regular_session.access_token,
+        "GET",
+        "/console/v1/system/load",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(user_system_load.status(), StatusCode::FORBIDDEN);
+
+    let admin_user_costs = request(
+        &app,
+        "GET",
+        &format!(
+            "/console/v1/statistics/costs?started_after={range_start}&started_before={range_end}&granularity=hour&user_id={regular_user_id}"
+        ),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(admin_user_costs.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(admin_user_costs).await["summary"]["request_count"],
         1
     );
 

@@ -45,10 +45,11 @@ import type {
 type ListResult<T> = ReturnType<typeof useQuery<T[]>>;
 
 function makeList<T>(basePath: string, key: readonly string[]) {
-  return () =>
+  return (enabled = true) =>
     useQuery({
       queryKey: key,
       queryFn: () => apiGet<T[]>(basePath),
+      enabled,
     }) as ListResult<T>;
 }
 

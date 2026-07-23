@@ -62,6 +62,7 @@ describe("CatalogPage", () => {
       </AppProviders>,
     );
 
+    expect(screen.getByRole("heading", { name: "Price sync" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Fetch preview" }));
     await user.click(
       await screen.findByRole("checkbox", { name: "Select openai/gpt-4o-mini" }),

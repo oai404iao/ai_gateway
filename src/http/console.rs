@@ -92,6 +92,13 @@ pub fn router(state: ConsoleState) -> Router {
         .route("/console/v1/me/request-logs", get(list_own_request_logs))
         .route("/console/v1/me/request-logs/{id}", get(get_own_request_log));
 
+    let statistics_routes = Router::new()
+        .route(
+            "/console/v1/statistics/channel-status",
+            get(get_channel_status),
+        )
+        .route("/console/v1/statistics/costs", get(get_cost_statistics));
+
     let control_routes = Router::new()
         .route("/console/v1/users", get(list_users).post(invite_user))
         .route("/console/v1/users/{id}", get(get_user).put(update_user))
@@ -169,11 +176,6 @@ pub fn router(state: ConsoleState) -> Router {
         )
         .route("/console/v1/request-logs", get(list_all_request_logs))
         .route("/console/v1/request-logs/{id}", get(get_request_log))
-        .route(
-            "/console/v1/statistics/channel-status",
-            get(get_channel_status),
-        )
-        .route("/console/v1/statistics/costs", get(get_cost_statistics))
         .route("/console/v1/audit-logs", get(list_audit_logs))
         .route(
             "/console/v1/system/settings",
@@ -184,6 +186,7 @@ pub fn router(state: ConsoleState) -> Router {
         .route_layer(middleware::from_fn(require_admin));
 
     let authenticated = self_routes
+        .merge(statistics_routes)
         .merge(control_routes)
         .route_layer(middleware::from_fn_with_state(state.clone(), authenticate))
         .layer(DefaultBodyLimit::disable())
@@ -1242,6 +1245,7 @@ async fn get_channel_status(
 
 async fn get_cost_statistics(
     State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
     Query(query): Query<CostStatisticsQuery>,
 ) -> Result<Json<crate::persistence::CostStatisticsReport>, ConsoleError> {
     let ended_at = query.started_before.unwrap_or_else(Utc::now);
@@ -1253,6 +1257,17 @@ async fn get_cost_statistics(
         "day" => StatisticsGranularity::Day,
         _ => return Err(ConsoleError::Validation),
     };
+    let user_id = if principal.role().is_admin() {
+        query.user_id
+    } else {
+        if query
+            .user_id
+            .is_some_and(|user_id| user_id != principal.user_id())
+        {
+            return Err(ConsoleError::Forbidden);
+        }
+        Some(principal.user_id())
+    };
     Ok(Json(
         state
             .request_logs
@@ -1260,7 +1275,7 @@ async fn get_cost_statistics(
                 started_at,
                 ended_at,
                 granularity,
-                user_id: query.user_id,
+                user_id,
                 api_key_id: query.api_key_id,
             })
             .await?,

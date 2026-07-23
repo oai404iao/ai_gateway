@@ -171,6 +171,7 @@ export function AppRouter() {
           <Route path="/api-keys" element={<ApiKeysPage />} />
           <Route path="/api-keys/:id" element={<ApiKeyDetailPage />} />
           <Route path="/usage/request-logs" element={<OwnRequestLogsPage />} />
+          <Route path="/statistics" element={<StatisticsPage />} />
 
           <Route element={<RequireAdmin />}>
             <Route path="/admin/users" element={<UsersPage />} />
@@ -196,7 +197,10 @@ export function AppRouter() {
               path="/admin/transforms/templates/:id"
               element={<ConfigTemplateDetailPage />}
             />
-            <Route path="/admin/statistics" element={<StatisticsPage />} />
+            <Route
+              path="/admin/statistics"
+              element={<Navigate to="/statistics" replace />}
+            />
             <Route path="/admin/request-logs" element={<AdminRequestLogsPage />} />
             <Route path="/admin/audit-logs" element={<AuditLogsPage />} />
             <Route path="/admin/system" element={<SystemPage />} />
