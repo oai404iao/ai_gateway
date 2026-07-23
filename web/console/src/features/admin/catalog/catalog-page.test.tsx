@@ -24,6 +24,18 @@ describe("CatalogPage", () => {
               cached_input_unit_price: "0.075",
               cache_write_unit_price: "0.3",
               output_unit_price: "0.6",
+              advanced_billing: {
+                long_context_tiers: [
+                  {
+                    input_tokens_threshold: 200_000,
+                    input_unit_price: "0.3",
+                    cached_input_unit_price: "0.15",
+                    cache_write_unit_price: "0.6",
+                    output_unit_price: "0.9",
+                  },
+                ],
+                request_multipliers: [],
+              },
               action: "price_update",
             },
           ],
@@ -54,6 +66,7 @@ describe("CatalogPage", () => {
     await user.click(
       await screen.findByRole("checkbox", { name: "Select openai/gpt-4o-mini" }),
     );
+    expect(screen.getByText("1")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Apply selected (1)" }));
 
     await waitFor(() => {

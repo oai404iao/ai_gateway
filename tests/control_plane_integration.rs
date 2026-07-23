@@ -468,7 +468,14 @@ async fn models_dev_catalog() -> axum::Json<serde_json::Value> {
                         "input": 1.25,
                         "output": 2.50,
                         "cache_read": 0.25,
-                        "cache_write": 0.50
+                        "cache_write": 0.50,
+                        "tiers": [{
+                            "input": 2.50,
+                            "output": 5.00,
+                            "cache_read": 0.50,
+                            "cache_write": 1.00,
+                            "tier": {"type": "context", "size": 128000}
+                        }]
                     },
                     "metadata": {"safe": true}
                 },
@@ -1950,6 +1957,14 @@ async fn models_dev_catalog_apply_is_explicit_and_updates_selected_existing_pric
     assert_eq!(preview["models"][0]["provider_id"], "provider-a");
     assert_eq!(preview["models"][0]["model_id"], "catalog-model");
     assert_eq!(preview["models"][0]["action"], "import");
+    assert_eq!(
+        preview["models"][0]["advanced_billing"]["long_context_tiers"][0]["input_tokens_threshold"],
+        128_000
+    );
+    assert_eq!(
+        preview["models"][0]["advanced_billing"]["long_context_tiers"][0]["output_unit_price"],
+        "5.0"
+    );
     assert_eq!(preview["excluded_missing_prices"], 1);
     assert!(preview["models"][0].get("source_payload").is_none());
 
@@ -2016,6 +2031,20 @@ async fn models_dev_catalog_apply_is_explicit_and_updates_selected_existing_pric
     .unwrap();
     assert_eq!(source_payload["source"], "models.dev");
     assert_eq!(source_payload["provider_id"], "provider-a");
+    let imported_billing: serde_json::Value = sqlx::query_scalar(
+        "SELECT advanced_billing FROM models WHERE source_model_id='catalog-model'",
+    )
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        imported_billing["long_context_tiers"][0]["input_tokens_threshold"],
+        128_000
+    );
+    assert_eq!(
+        imported_billing["long_context_tiers"][0]["output_unit_price"],
+        "5.0"
+    );
 
     let model_id: Uuid =
         sqlx::query_scalar("SELECT id FROM models WHERE source_model_id='catalog-model'")
@@ -2055,13 +2084,18 @@ async fn models_dev_catalog_apply_is_explicit_and_updates_selected_existing_pric
     assert_eq!(preview["models"][0]["action"], "price_update");
 
     sqlx::query(
-        "UPDATE models
+        r#"UPDATE models
          SET display_name='locally named',
              provider_name='Local provider',
              enabled=false,
              input_unit_price=99,
-             output_unit_price=99
-         WHERE id=$1",
+             output_unit_price=99,
+             advanced_billing=jsonb_set(
+                 advanced_billing,
+                 '{request_multipliers}',
+                 '[{"json_pointer":"/reasoning/effort","value":"high","multiplier":"2"}]'::jsonb
+             )
+         WHERE id=$1"#,
     )
     .bind(model_id)
     .execute(&database.pool)
@@ -2123,6 +2157,20 @@ async fn models_dev_catalog_apply_is_explicit_and_updates_selected_existing_pric
     assert!(!updated_model.2);
     assert_eq!(updated_model.3, rust_decimal::Decimal::new(125, 2));
     assert_eq!(updated_model.4, rust_decimal::Decimal::new(250, 2));
+    let updated_billing: serde_json::Value =
+        sqlx::query_scalar("SELECT advanced_billing FROM models WHERE id=$1")
+            .bind(model_id)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        updated_billing["long_context_tiers"][0]["input_tokens_threshold"],
+        128_000
+    );
+    assert_eq!(
+        updated_billing["request_multipliers"][0]["json_pointer"],
+        "/reasoning/effort"
+    );
 
     let missing_price_import = admin_request(
         app,

@@ -29,6 +29,10 @@ pub struct LongContextTier {
     pub input_unit_price: Decimal,
     pub cached_input_unit_price: Decimal,
     pub cache_write_unit_price: Decimal,
+    /// Omission preserves the model's base output price for compatibility
+    /// with policies created before output-tier pricing was supported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_unit_price: Option<Decimal>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -62,6 +66,9 @@ impl CompiledAdvancedBilling {
                 ]
                 .into_iter()
                 .any(|price| price.is_sign_negative())
+                || tier
+                    .output_unit_price
+                    .is_some_and(|price| price.is_sign_negative())
             {
                 return Err(AdvancedBillingError);
             }
@@ -101,13 +108,14 @@ impl CompiledAdvancedBilling {
     }
 
     #[must_use]
-    pub fn input_prices(
+    pub fn prices(
         &self,
         input_tokens: i64,
         base_input_unit_price: Decimal,
         base_cached_input_unit_price: Decimal,
         base_cache_write_unit_price: Decimal,
-    ) -> (Decimal, Decimal, Decimal) {
+        base_output_unit_price: Decimal,
+    ) -> (Decimal, Decimal, Decimal, Decimal) {
         self.long_context_tiers
             .iter()
             .rev()
@@ -117,12 +125,14 @@ impl CompiledAdvancedBilling {
                     base_input_unit_price,
                     base_cached_input_unit_price,
                     base_cache_write_unit_price,
+                    base_output_unit_price,
                 ),
                 |tier| {
                     (
                         tier.input_unit_price,
                         tier.cached_input_unit_price,
                         tier.cache_write_unit_price,
+                        tier.output_unit_price.unwrap_or(base_output_unit_price),
                     )
                 },
             )
@@ -167,6 +177,9 @@ impl CompiledAdvancedBilling {
                 tier.cached_input_unit_price,
                 tier.cache_write_unit_price,
             ]);
+            if let Some(output_unit_price) = tier.output_unit_price {
+                candidates.push(output_unit_price);
+            }
         }
         candidates
     }
@@ -235,12 +248,14 @@ mod tests {
                     input_unit_price: Decimal::new(2, 0),
                     cached_input_unit_price: Decimal::new(3, 0),
                     cache_write_unit_price: Decimal::new(4, 0),
+                    output_unit_price: Some(Decimal::new(8, 0)),
                 },
                 LongContextTier {
                     input_tokens_threshold: 100,
                     input_unit_price: Decimal::new(5, 0),
                     cached_input_unit_price: Decimal::new(6, 0),
                     cache_write_unit_price: Decimal::new(7, 0),
+                    output_unit_price: Some(Decimal::new(9, 0)),
                 },
             ],
             request_multipliers: vec![
@@ -259,8 +274,13 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            billing.input_prices(100, Decimal::ONE, Decimal::ONE, Decimal::ONE,),
-            (Decimal::new(5, 0), Decimal::new(6, 0), Decimal::new(7, 0))
+            billing.prices(100, Decimal::ONE, Decimal::ONE, Decimal::ONE, Decimal::ONE,),
+            (
+                Decimal::new(5, 0),
+                Decimal::new(6, 0),
+                Decimal::new(7, 0),
+                Decimal::new(9, 0),
+            )
         );
         assert_eq!(
             billing.request_multiplier(&json!({
@@ -281,12 +301,14 @@ mod tests {
                         input_unit_price: Decimal::ONE,
                         cached_input_unit_price: Decimal::ONE,
                         cache_write_unit_price: Decimal::ONE,
+                        output_unit_price: None,
                     },
                     LongContextTier {
                         input_tokens_threshold: 10,
                         input_unit_price: Decimal::ONE,
                         cached_input_unit_price: Decimal::ONE,
                         cache_write_unit_price: Decimal::ONE,
+                        output_unit_price: None,
                     },
                 ],
                 request_multipliers: vec![],

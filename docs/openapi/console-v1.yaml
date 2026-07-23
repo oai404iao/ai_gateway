@@ -2423,7 +2423,8 @@ components:
       type: object
       required:
         [provider_id, provider_name, model_id, display_name, input_unit_price,
-         cached_input_unit_price, cache_write_unit_price, output_unit_price, action]
+         cached_input_unit_price, cache_write_unit_price, output_unit_price,
+         advanced_billing, action]
       properties:
         provider_id: { type: string }
         provider_name: { type: string }
@@ -2433,6 +2434,7 @@ components:
         cached_input_unit_price: { $ref: "#/components/schemas/Decimal" }
         cache_write_unit_price: { $ref: "#/components/schemas/Decimal" }
         output_unit_price: { $ref: "#/components/schemas/Decimal" }
+        advanced_billing: { $ref: "#/components/schemas/AdvancedBilling" }
         action: { $ref: "#/components/schemas/ModelSyncAction" }
 
     ModelImportResponse:
@@ -2621,11 +2623,11 @@ components:
     AdvancedBilling:
       type: object
       required: [long_context_tiers, request_multipliers]
-      description: Model-level pricing rules. Long-context tiers replace base input prices at or above their threshold; all matching request multipliers are multiplied together and apply to the whole request cost.
+      description: Model-level pricing rules. Long-context tiers replace base input/cache prices and optionally the output price at or above their threshold; all matching request multipliers are multiplied together and apply to the whole request cost.
       properties:
         long_context_tiers:
           type: array
-          description: Strictly ascending input-token thresholds. A threshold applies to all input-related token categories for the complete request.
+          description: Strictly ascending input-token thresholds. A threshold selects the complete request's tier prices, including an optional output price.
           items: { $ref: "#/components/schemas/LongContextTier" }
         request_multipliers:
           type: array
@@ -2645,6 +2647,9 @@ components:
         input_unit_price: { $ref: "#/components/schemas/Decimal" }
         cached_input_unit_price: { $ref: "#/components/schemas/Decimal" }
         cache_write_unit_price: { $ref: "#/components/schemas/Decimal" }
+        output_unit_price:
+          allOf: [{ $ref: "#/components/schemas/Decimal" }]
+          description: Optional for compatibility; when omitted, the base output price remains active for this tier.
 
     RequestBillingMultiplier:
       type: object

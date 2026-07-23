@@ -37,7 +37,7 @@ impl ModelSyncService {
     }
 
     /// Shows which catalog models will create a local model and which will
-    /// explicitly refresh the price of an existing local model.
+    /// explicitly refresh the billing configuration of an existing model.
     pub async fn preview(
         &self,
         request: ModelSyncPreviewRequest,
@@ -48,9 +48,9 @@ impl ModelSyncService {
     }
 
     /// Applies administrator-selected catalog entries. A selected local
-    /// `source_model_id` refreshes its models.dev USD price snapshot; a new
-    /// identifier creates a model. No catalog price changes without an
-    /// explicit selection.
+    /// `source_model_id` refreshes its models.dev USD prices and long-context
+    /// tiers; a new identifier creates a model. No catalog billing changes
+    /// without an explicit selection.
     pub async fn apply(
         &self,
         actor: Uuid,
@@ -124,6 +124,7 @@ fn import_input(model: ModelsDevModel) -> SyncedModelInput {
         cached_input_unit_price: model.cached_input_unit_price,
         cache_write_unit_price: model.cache_write_unit_price,
         output_unit_price: model.output_unit_price,
+        advanced_billing: model.advanced_billing,
         source_payload: model.source_payload,
     }
 }

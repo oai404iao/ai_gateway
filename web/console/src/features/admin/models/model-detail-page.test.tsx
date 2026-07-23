@@ -31,6 +31,7 @@ describe("ModelDetailPage", () => {
           input_unit_price: "0.3",
           cached_input_unit_price: "0.15",
           cache_write_unit_price: "0.6",
+          output_unit_price: "0.9",
         },
       ],
       request_multipliers: [

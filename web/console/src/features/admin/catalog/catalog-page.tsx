@@ -58,7 +58,7 @@ export function CatalogPage() {
     try {
       const result = await applyCatalogModels.mutateAsync({ selections });
       toast.success(
-        t("Imported {imported}, updated {updated} price(s).", {
+        t("Imported {imported}, updated {updated} model billing configuration(s).", {
           imported: result.imported_count,
           updated: result.updated_count,
         }),
@@ -114,6 +114,11 @@ export function CatalogPage() {
       render: (model) => formatDecimal(model.input_unit_price),
     },
     {
+      key: "tiers",
+      header: t("Long-context tiers"),
+      render: (model) => model.advanced_billing.long_context_tiers.length,
+    },
+    {
       key: "action",
       header: t("Action"),
       render: (model) => (
@@ -132,7 +137,7 @@ export function CatalogPage() {
       <PageHeader
         title={t("Catalog")}
         description={t(
-          "Preview, import, or explicitly update models.dev prices.",
+          "Preview, import, or explicitly update models.dev prices and long-context tiers.",
         )}
       />
       <Card>
@@ -196,7 +201,9 @@ export function CatalogPage() {
                 onRowClick={toggle}
               />
               <p className="mt-2 text-xs text-muted-foreground">
-                {t("Select rows to import new models or update existing model prices.")}{" "}
+                {t(
+                  "Select rows to import new models or update existing model prices and long-context tiers.",
+                )}{" "}
                 {t("{importable} new, {updatable} updatable, {selected} selected.", {
                   importable: importable.length,
                   updatable: updatable.length,
@@ -210,10 +217,15 @@ export function CatalogPage() {
 
       {preview.data ? (
         <p className="text-xs text-muted-foreground">
-          Preview fetched {formatDateTime(preview.data.fetched_at)}. Excluded:{" "}
-          {preview.data.excluded_missing_prices} missing prices,{" "}
-          {preview.data.excluded_invalid_models} invalid,{" "}
-          {preview.data.excluded_oversized_metadata} oversized metadata.
+          {t(
+            "Preview fetched {time}. Excluded: {missing} missing prices, {invalid} invalid, {oversized} oversized metadata.",
+            {
+              time: formatDateTime(preview.data.fetched_at),
+              missing: preview.data.excluded_missing_prices,
+              invalid: preview.data.excluded_invalid_models,
+              oversized: preview.data.excluded_oversized_metadata,
+            },
+          )}
         </p>
       ) : null}
     </div>

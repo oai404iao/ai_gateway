@@ -1801,19 +1801,21 @@ fn request_billing(
         cache_write_tokens: usage.cache_write_tokens,
         output_tokens: usage.output_tokens,
     });
-    let (input_unit_price, cached_input_unit_price, cache_write_unit_price) =
+    let (input_unit_price, cached_input_unit_price, cache_write_unit_price, output_unit_price) =
         usage.as_ref().map_or(
             (
                 snapshot.input_unit_price(),
                 snapshot.cached_input_unit_price(),
                 snapshot.cache_write_unit_price(),
+                snapshot.output_unit_price(),
             ),
             |usage| {
-                advanced_billing.input_prices(
+                advanced_billing.prices(
                     usage.input_tokens,
                     snapshot.input_unit_price(),
                     snapshot.cached_input_unit_price(),
                     snapshot.cache_write_unit_price(),
+                    snapshot.output_unit_price(),
                 )
             },
         );
@@ -1827,7 +1829,7 @@ fn request_billing(
         input_unit_price: effective_unit_price(input_unit_price, billing_multiplier),
         cached_input_unit_price: effective_unit_price(cached_input_unit_price, billing_multiplier),
         cache_write_unit_price: effective_unit_price(cache_write_unit_price, billing_multiplier),
-        output_unit_price: effective_unit_price(snapshot.output_unit_price(), billing_multiplier),
+        output_unit_price: effective_unit_price(output_unit_price, billing_multiplier),
     };
     let cost_amount = usage.as_ref().map(|usage| calculate_cost(usage, &price));
     let output_tokens_per_second = usage.and_then(|usage| {
@@ -2156,6 +2158,7 @@ mod tests {
                 input_unit_price: Decimal::from(3_i64),
                 cached_input_unit_price: Decimal::from(2_i64),
                 cache_write_unit_price: Decimal::from(4_i64),
+                output_unit_price: Some(Decimal::from(5_i64)),
             }],
             request_multipliers: vec![RequestBillingMultiplier {
                 json_pointer: "/reasoning/effort".into(),
@@ -2182,7 +2185,7 @@ mod tests {
         assert_eq!(billing.price.input_unit_price, Decimal::from(9_i64));
         assert_eq!(billing.price.cached_input_unit_price, Decimal::from(6_i64));
         assert_eq!(billing.price.cache_write_unit_price, Decimal::from(12_i64));
-        assert_eq!(billing.price.output_unit_price, Decimal::from(6_i64));
-        assert_eq!(billing.cost_amount, Some(Decimal::from(120_i64)));
+        assert_eq!(billing.price.output_unit_price, Decimal::from(15_i64));
+        assert_eq!(billing.cost_amount, Some(Decimal::from(156_i64)));
     }
 }

@@ -7,10 +7,13 @@ use futures_util::StreamExt;
 use reqwest::{Url, redirect::Policy};
 use rust_decimal::Decimal;
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use thiserror::Error;
 
-use crate::runtime_config::ModelsSyncConfig;
+use crate::{
+    domain::{AdvancedBilling, LongContextTier},
+    runtime_config::ModelsSyncConfig,
+};
 
 #[derive(Clone)]
 pub struct ModelsDevClient {
@@ -116,6 +119,7 @@ pub struct ModelsDevModel {
     pub cached_input_unit_price: Decimal,
     pub cache_write_unit_price: Decimal,
     pub output_unit_price: Decimal,
+    pub advanced_billing: AdvancedBilling,
     #[serde(skip_serializing)]
     pub source_payload: Value,
 }
@@ -210,6 +214,13 @@ fn parse_catalog(
                 excluded_invalid_models += 1;
                 continue;
             }
+            let advanced_billing = match parse_advanced_billing(cost) {
+                Ok(value) => value,
+                Err(()) => {
+                    excluded_invalid_models += 1;
+                    continue;
+                }
+            };
             let source_payload = json!({
                 "source": "models.dev",
                 "provider_id": provider_id,
@@ -228,6 +239,7 @@ fn parse_catalog(
                     cached_input_unit_price,
                     cache_write_unit_price,
                     output_unit_price,
+                    advanced_billing,
                     source_payload,
                 });
             } else {
@@ -244,6 +256,86 @@ fn parse_catalog(
         excluded_missing_prices,
         excluded_invalid_models,
         excluded_oversized_metadata,
+    })
+}
+
+fn parse_advanced_billing(cost: &Map<String, Value>) -> Result<AdvancedBilling, ()> {
+    let long_context_tiers = match cost.get("tiers") {
+        Some(Value::Array(tiers)) if !tiers.is_empty() => {
+            let mut parsed = tiers
+                .iter()
+                .map(parse_context_tier)
+                .collect::<Result<Vec<_>, _>>()?;
+            parsed.sort_unstable_by_key(|tier| tier.input_tokens_threshold);
+            if parsed
+                .windows(2)
+                .any(|pair| pair[0].input_tokens_threshold == pair[1].input_tokens_threshold)
+            {
+                return Err(());
+            }
+            parsed
+        }
+        Some(Value::Array(_)) | None => match cost.get("context_over_200k") {
+            Some(value) if cost.get("tiers").is_none() => {
+                vec![parse_legacy_context_tier(value)?]
+            }
+            Some(_) | None => Vec::new(),
+        },
+        Some(_) => return Err(()),
+    };
+    Ok(AdvancedBilling {
+        long_context_tiers,
+        request_multipliers: Vec::new(),
+    })
+}
+
+fn parse_context_tier(value: &Value) -> Result<LongContextTier, ()> {
+    let object = value.as_object().ok_or(())?;
+    let tier = object.get("tier").and_then(Value::as_object).ok_or(())?;
+    if tier
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|kind| kind != "context")
+    {
+        return Err(());
+    }
+    let threshold = tier
+        .get("size")
+        .and_then(Value::as_i64)
+        .filter(|size| *size > 0)
+        .ok_or(())?;
+    parse_long_context_prices(object, threshold)
+}
+
+fn parse_legacy_context_tier(value: &Value) -> Result<LongContextTier, ()> {
+    parse_long_context_prices(value.as_object().ok_or(())?, 200_000)
+}
+
+fn parse_long_context_prices(
+    object: &Map<String, Value>,
+    threshold: i64,
+) -> Result<LongContextTier, ()> {
+    let input_unit_price = decimal(object.get("input")).ok_or(())?;
+    let output_unit_price = decimal(object.get("output")).ok_or(())?;
+    let cached_input_unit_price = decimal(object.get("cache_read")).unwrap_or(Decimal::ZERO);
+    let cache_write_unit_price = decimal(object.get("cache_write")).unwrap_or(Decimal::ZERO);
+    if [
+        input_unit_price,
+        cached_input_unit_price,
+        cache_write_unit_price,
+        output_unit_price,
+    ]
+    .into_iter()
+    .any(|price| price.is_sign_negative())
+    {
+        return Err(());
+    }
+    Ok(LongContextTier {
+        input_tokens_threshold: threshold,
+        input_unit_price,
+        cached_input_unit_price,
+        cache_write_unit_price,
+        output_unit_price: Some(output_unit_price),
     })
 }
 
@@ -289,7 +381,29 @@ mod tests {
                         "complete": {
                             "id": "complete",
                             "name": "Complete",
-                            "cost": {"input": 1, "output": 2}
+                            "cost": {
+                                "input": 1,
+                                "output": 2,
+                                "tiers": [
+                                    {
+                                        "input": 3,
+                                        "output": 4,
+                                        "cache_read": 0.3,
+                                        "cache_write": 0.6,
+                                        "tier": {"type": "context", "size": 32000}
+                                    },
+                                    {
+                                        "input": 5,
+                                        "output": 6,
+                                        "cache_read": 0.5,
+                                        "tier": {"type": "context", "size": 128000}
+                                    }
+                                ],
+                                "context_over_200k": {
+                                    "input": 99,
+                                    "output": 99
+                                }
+                            }
                         },
                         "missing": {
                             "id": "missing",
@@ -309,8 +423,105 @@ mod tests {
 
         assert_eq!(catalog.models.len(), 1);
         assert_eq!(catalog.models[0].model_id, "complete");
+        assert_eq!(
+            catalog.models[0]
+                .advanced_billing
+                .long_context_tiers
+                .iter()
+                .map(|tier| (
+                    tier.input_tokens_threshold,
+                    tier.input_unit_price,
+                    tier.output_unit_price,
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    32_000,
+                    rust_decimal::Decimal::from(3),
+                    Some(rust_decimal::Decimal::from(4)),
+                ),
+                (
+                    128_000,
+                    rust_decimal::Decimal::from(5),
+                    Some(rust_decimal::Decimal::from(6)),
+                ),
+            ]
+        );
+        assert_eq!(
+            catalog.models[0].advanced_billing.long_context_tiers[1].cache_write_unit_price,
+            rust_decimal::Decimal::ZERO
+        );
         assert_eq!(catalog.excluded_missing_prices, 1);
         assert_eq!(catalog.excluded_invalid_models, 1);
+    }
+
+    #[test]
+    fn parser_supports_legacy_context_over_200k_when_tiers_are_absent() {
+        let catalog = parse_catalog(
+            json!({
+                "provider": {
+                    "models": {
+                        "legacy": {
+                            "id": "legacy",
+                            "cost": {
+                                "input": 1,
+                                "output": 2,
+                                "context_over_200k": {
+                                    "input": 3,
+                                    "output": 4,
+                                    "cache_read": 0.3
+                                }
+                            }
+                        }
+                    }
+                }
+            }),
+            &HashSet::new(),
+            4_096,
+        )
+        .unwrap();
+
+        let tier = &catalog.models[0].advanced_billing.long_context_tiers[0];
+        assert_eq!(tier.input_tokens_threshold, 200_000);
+        assert_eq!(tier.input_unit_price, rust_decimal::Decimal::from(3));
+        assert_eq!(tier.output_unit_price, Some(rust_decimal::Decimal::from(4)));
+    }
+
+    #[test]
+    fn parser_rejects_duplicate_or_malformed_context_tiers() {
+        let catalog = parse_catalog(
+            json!({
+                "provider": {
+                    "models": {
+                        "duplicate": {
+                            "id": "duplicate",
+                            "cost": {
+                                "input": 1,
+                                "output": 2,
+                                "tiers": [
+                                    {"input": 3, "output": 4, "tier": {"type": "context", "size": 32000}},
+                                    {"input": 5, "output": 6, "tier": {"type": "context", "size": 32000}}
+                                ]
+                            }
+                        },
+                        "malformed": {
+                            "id": "malformed",
+                            "cost": {
+                                "input": 1,
+                                "output": 2,
+                                "tiers": {}
+                            }
+                        }
+                    }
+                }
+            }),
+            &HashSet::new(),
+            4_096,
+        )
+        .unwrap();
+
+        assert!(catalog.models.is_empty());
+        assert_eq!(catalog.excluded_invalid_models, 2);
     }
 
     #[test]

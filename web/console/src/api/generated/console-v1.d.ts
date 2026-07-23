@@ -1390,6 +1390,7 @@ export interface components {
             cached_input_unit_price: components["schemas"]["Decimal"];
             cache_write_unit_price: components["schemas"]["Decimal"];
             output_unit_price: components["schemas"]["Decimal"];
+            advanced_billing: components["schemas"]["AdvancedBilling"];
             action: components["schemas"]["ModelSyncAction"];
         };
         ModelImportResponse: {
@@ -1499,9 +1500,9 @@ export interface components {
             advanced_billing?: components["schemas"]["AdvancedBilling"];
             source_payload?: components["schemas"]["JsonValue"];
         };
-        /** @description Model-level pricing rules. Long-context tiers replace base input prices at or above their threshold; all matching request multipliers are multiplied together and apply to the whole request cost. */
+        /** @description Model-level pricing rules. Long-context tiers replace base input/cache prices and optionally the output price at or above their threshold; all matching request multipliers are multiplied together and apply to the whole request cost. */
         AdvancedBilling: {
-            /** @description Strictly ascending input-token thresholds. A threshold applies to all input-related token categories for the complete request. */
+            /** @description Strictly ascending input-token thresholds. A threshold selects the complete request's tier prices, including an optional output price. */
             long_context_tiers: components["schemas"]["LongContextTier"][];
             /** @description Exact JSON Pointer matches evaluated against the original client request body before request transforms. */
             request_multipliers: components["schemas"]["RequestBillingMultiplier"][];
@@ -1512,6 +1513,8 @@ export interface components {
             input_unit_price: components["schemas"]["Decimal"];
             cached_input_unit_price: components["schemas"]["Decimal"];
             cache_write_unit_price: components["schemas"]["Decimal"];
+            /** @description Optional for compatibility; when omitted, the base output price remains active for this tier. */
+            output_unit_price?: components["schemas"]["Decimal"];
         };
         RequestBillingMultiplier: {
             /** @description RFC 6901 JSON Pointer into the original client request body. */

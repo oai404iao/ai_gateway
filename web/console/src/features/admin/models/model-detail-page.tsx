@@ -320,7 +320,7 @@ export function ModelDetailPage() {
                   />
                   <FieldDescription>
                     {t(
-                      "Use long_context_tiers for whole-request input prices at token thresholds, and request_multipliers for exact JSON Pointer matches on the original client body. All matching multipliers apply to the complete request cost.",
+                      "Use long_context_tiers for whole-request input, cache, and optional output prices at token thresholds. Use request_multipliers for exact JSON Pointer matches on the original client body; all matches multiply the complete request cost.",
                     )}
                   </FieldDescription>
                   {fieldError("advanced_billing") ? (

@@ -18,5 +18,13 @@ describe("Console i18n", () => {
     expect(translateFor("zh-CN", "Response body (streaming SSE)")).toBe("响应体（流式 SSE）");
     expect(translateFor("zh-CN", "Append to array")).toBe("追加到数组");
     expect(translateFor("zh-CN", "Current path value")).toBe("当前路径值");
+    expect(translateFor("zh-CN", "Long-context tiers")).toBe("长上下文价格档位");
+    expect(translateFor("zh-CN", "Request multipliers")).toBe("请求参数倍率");
+    expect(
+      translateFor(
+        "zh-CN",
+        "Preview, import, or explicitly update models.dev prices and long-context tiers.",
+      ),
+    ).toBe("预览、导入或显式更新 models.dev 价格和长上下文价格档位。");
   });
 });

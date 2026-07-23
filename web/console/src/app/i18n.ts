@@ -370,6 +370,14 @@ const zhCN: Record<string, string> = {
   "Save upstream model": "保存上游模型",
   "An upstream model identifier with its USD billing price.": "具有 USD 计费价格的上游模型标识。",
   "Source payload is not valid JSON.": "来源数据不是有效的 JSON。",
+  "Advanced billing": "高级计费",
+  "Advanced billing configuration is required.": "高级计费配置不能为空。",
+  "Advanced billing and source payload must be valid JSON objects.":
+    "高级计费配置和来源数据必须是有效的 JSON 对象。",
+  "Long-context tiers": "长上下文价格档位",
+  "Request multipliers": "请求参数倍率",
+  "Use long_context_tiers for whole-request input, cache, and optional output prices at token thresholds. Use request_multipliers for exact JSON Pointer matches on the original client body; all matches multiply the complete request cost.":
+    "使用 long_context_tiers 配置达到 Token 阈值后整次请求的输入、缓存及可选输出价格。使用 request_multipliers 对原始客户端请求体进行 JSON Pointer 精确匹配；所有命中倍率会共同乘到整次请求费用。",
   "Upstream model created": "上游模型已创建",
   "Upstream model updated": "上游模型已更新",
   "This upstream model was changed elsewhere. Reloading.": "此上游模型已在其他位置修改，正在重新加载。",
@@ -403,8 +411,8 @@ const zhCN: Record<string, string> = {
   "No groups for this format.": "该格式没有可用渠道组。",
   "No channels for this format.": "该格式没有可用渠道。",
   "priority {priority}": "优先级 {priority}",
-  "Preview, import, or explicitly update models.dev prices.":
-    "预览、导入或显式更新 models.dev 价格。",
+  "Preview, import, or explicitly update models.dev prices and long-context tiers.":
+    "预览、导入或显式更新 models.dev 价格和长上下文价格档位。",
   "Preview": "预览",
   "Fetch the models.dev catalog, optionally filtered by provider ids.":
     "获取 models.dev 目录，可按提供商 ID 筛选。",
@@ -415,13 +423,15 @@ const zhCN: Record<string, string> = {
   "{count} catalog models.": "{count} 个目录模型。",
   "No catalog models": "没有目录模型",
   "No models matched the preview request.": "没有模型匹配此预览请求。",
-  "Select rows to import new models or update existing model prices.":
-    "选择行以导入新模型或更新已有模型的价格。",
+  "Select rows to import new models or update existing model prices and long-context tiers.":
+    "选择行以导入新模型，或更新已有模型的价格和长上下文价格档位。",
   "{importable} new, {updatable} updatable, {selected} selected.":
     "{importable} 个新模型，{updatable} 个可更新，已选择 {selected} 个。",
   "Preview failed": "预览失败",
-  "Imported {imported}, updated {updated} price(s).":
-    "已导入 {imported} 个模型，已更新 {updated} 个模型价格。",
+  "Imported {imported}, updated {updated} model billing configuration(s).":
+    "已导入 {imported} 个模型，已更新 {updated} 个模型计费配置。",
+  "Preview fetched {time}. Excluded: {missing} missing prices, {invalid} invalid, {oversized} oversized metadata.":
+    "预览获取时间：{time}。已排除：{missing} 个缺少价格、{invalid} 个无效模型、{oversized} 个元数据过大模型。",
   "Apply failed": "应用失败",
   "Model": "模型",
   "Provider": "提供商",

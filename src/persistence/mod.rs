@@ -521,6 +521,7 @@ pub struct SyncedModelInput {
     pub cached_input_unit_price: rust_decimal::Decimal,
     pub cache_write_unit_price: rust_decimal::Decimal,
     pub output_unit_price: rust_decimal::Decimal,
+    pub advanced_billing: crate::domain::AdvancedBilling,
     pub source_payload: Value,
 }
 #[derive(Clone, Deserialize)]
@@ -4697,7 +4698,9 @@ async fn import_model(
         return Err(RepositoryError::Validation);
     }
     let id = Uuid::new_v4();
-    let updated_at = sqlx::query_scalar("INSERT INTO models (id,source_model_id,display_name,provider_name,enabled,currency,price_unit_tokens,input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,price_effective_at,source_payload,last_synced_at) VALUES ($1,$2,$3,$4,true,'USD',1000000,$5,$6,$7,$8,$9,$10,$11) RETURNING updated_at")
+    let advanced_billing =
+        serde_json::to_value(&input.advanced_billing).expect("advanced billing serializes");
+    let updated_at = sqlx::query_scalar("INSERT INTO models (id,source_model_id,display_name,provider_name,enabled,currency,price_unit_tokens,input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,price_effective_at,advanced_billing,source_payload,last_synced_at) VALUES ($1,$2,$3,$4,true,'USD',1000000,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING updated_at")
         .bind(id)
         .bind(&input.source_model_id)
         .bind(&input.display_name)
@@ -4707,6 +4710,7 @@ async fn import_model(
         .bind(input.cache_write_unit_price)
         .bind(input.output_unit_price)
         .bind(synced_at)
+        .bind(&advanced_billing)
         .bind(&input.source_payload)
         .bind(synced_at)
         .fetch_one(&mut **transaction)
@@ -4723,8 +4727,9 @@ async fn import_model(
         correlation_id: None,
     })
 }
-/// Refreshes only catalog-owned price facts for a local source model. Display
-/// name, provider label, and enabled state remain administrator-managed.
+/// Refreshes catalog-owned price facts and long-context tiers for a local
+/// source model. Display name, provider label, enabled state, and local
+/// request-multiplier rules remain administrator-managed.
 async fn sync_model_price(
     transaction: &mut Transaction<'_, Postgres>,
     id: Uuid,
@@ -4735,6 +4740,8 @@ async fn sync_model_price(
         return Err(RepositoryError::Validation);
     }
     let before = model_audit(transaction, id).await?;
+    let advanced_billing =
+        serde_json::to_value(&input.advanced_billing).expect("advanced billing serializes");
     let updated_at = sqlx::query_scalar(
         "UPDATE models
          SET currency='USD',
@@ -4744,7 +4751,13 @@ async fn sync_model_price(
              cache_write_unit_price=$5,
              output_unit_price=$6,
              price_effective_at=$7,
-             source_payload=$8,
+             advanced_billing=jsonb_set(
+                 advanced_billing,
+                 '{long_context_tiers}',
+                 $8::jsonb->'long_context_tiers',
+                 true
+             ),
+             source_payload=$9,
              last_synced_at=$7
          WHERE id=$1 AND source_model_id=$2
          RETURNING updated_at",
@@ -4756,6 +4769,7 @@ async fn sync_model_price(
     .bind(input.cache_write_unit_price)
     .bind(input.output_unit_price)
     .bind(synced_at)
+    .bind(&advanced_billing)
     .bind(&input.source_payload)
     .fetch_optional(&mut **transaction)
     .await?
