@@ -136,6 +136,7 @@ fn proxy_service_with_network_policy(
             auto_disabled: false,
             auto_disable_allowed: false,
             weight: 1,
+            billing_multiplier: rust_decimal::Decimal::ONE,
             proxy_id: None,
             config_template_id: template_id,
             override_document,

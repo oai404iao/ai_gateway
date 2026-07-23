@@ -583,6 +583,7 @@ pub struct CompiledChannel {
     api_format: ApiFormat,
     base_url: Url,
     weight: i32,
+    billing_multiplier: Decimal,
     upstream_auth: UpstreamAuth,
     available_models: HashSet<Arc<str>>,
     auto_disable_allowed: bool,
@@ -610,6 +611,10 @@ impl CompiledChannel {
     #[must_use]
     pub fn weight(&self) -> i32 {
         self.weight
+    }
+    #[must_use]
+    pub fn billing_multiplier(&self) -> Decimal {
+        self.billing_multiplier
     }
     #[must_use]
     pub fn upstream_auth(&self) -> &UpstreamAuth {
@@ -696,12 +701,43 @@ impl CompiledChannel {
         test_model: Option<Arc<str>>,
         upstream_policy: CompiledChannelUpstreamPolicy,
     ) -> Self {
+        Self::new_with_policy_automation_and_billing(
+            id,
+            group_id,
+            api_format,
+            base_url,
+            weight,
+            Decimal::ONE,
+            upstream_auth,
+            available_models,
+            auto_disable_allowed,
+            auto_disabled,
+            test_model,
+            upstream_policy,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_with_policy_automation_and_billing(
+        id: Uuid,
+        group_id: Uuid,
+        api_format: ApiFormat,
+        base_url: Url,
+        weight: i32,
+        billing_multiplier: Decimal,
+        upstream_auth: UpstreamAuth,
+        available_models: HashSet<Arc<str>>,
+        auto_disable_allowed: bool,
+        auto_disabled: bool,
+        test_model: Option<Arc<str>>,
+        upstream_policy: CompiledChannelUpstreamPolicy,
+    ) -> Self {
         Self {
             id,
             group_id,
             api_format,
             base_url,
             weight,
+            billing_multiplier,
             upstream_auth,
             available_models,
             auto_disable_allowed,

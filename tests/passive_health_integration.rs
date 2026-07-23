@@ -144,6 +144,7 @@ fn proxy_fixture_with_retry(
                 auto_disabled: false,
                 auto_disable_allowed: false,
                 weight: 1,
+                billing_multiplier: rust_decimal::Decimal::ONE,
                 proxy_id: None,
                 config_template_id: None,
                 override_document: serde_json::json!({}),

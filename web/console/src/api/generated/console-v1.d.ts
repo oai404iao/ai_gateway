@@ -453,6 +453,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/routing/channels/batch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Atomically applies common routing and billing changes to up to 100 channels. Each item carries the `updated_at` version returned by the channel list; any stale item rejects the entire batch. */
+        post: operations["updateChannelsBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/routing/channels/{id}": {
         parameters: {
             query?: never;
@@ -1138,6 +1155,8 @@ export interface components {
             /** @description Allows system automatic-disable rules to temporarily remove this channel from routing. */
             auto_disable_allowed: boolean;
             weight: number;
+            /** @description Multiplies the selected upstream model prices before request settlement. */
+            billing_multiplier: components["schemas"]["Decimal"];
             /** Format: uuid */
             proxy_id: string | null;
             /** Format: uuid */
@@ -1506,6 +1525,11 @@ export interface components {
              */
             auto_disable_allowed: boolean;
             weight: number;
+            /**
+             * @description Non-negative multiplier applied to upstream model prices for settlement.
+             * @default 1
+             */
+            billing_multiplier: components["schemas"]["Decimal"];
             /** Format: uuid */
             proxy_id?: string | null;
             /** Format: uuid */
@@ -1543,6 +1567,8 @@ export interface components {
              */
             auto_disable_allowed: boolean;
             weight: number;
+            /** @description Omit to preserve the stored non-negative billing multiplier. */
+            billing_multiplier?: components["schemas"]["Decimal"];
             /** Format: uuid */
             proxy_id?: string | null;
             /** Format: uuid */
@@ -1558,6 +1584,30 @@ export interface components {
             available_models?: string[];
             /** @description Must be one of available_models when set. */
             test_model?: string | null;
+        };
+        ChannelBatchUpdateTarget: {
+            /** Format: uuid */
+            id: string;
+            /** @description Version copied from the channel list response. */
+            updated_at: components["schemas"]["DateTime"];
+        };
+        /** @description At least one property must be supplied. */
+        ChannelBatchChanges: {
+            enabled?: boolean;
+            status_statistics_enabled?: boolean;
+            auto_disable_allowed?: boolean;
+            weight?: number;
+            /** @description Non-negative multiplier applied to upstream model prices for settlement. */
+            billing_multiplier?: components["schemas"]["Decimal"];
+        };
+        ChannelBatchUpdateInput: {
+            items: components["schemas"]["ChannelBatchUpdateTarget"][];
+            changes: components["schemas"]["ChannelBatchChanges"];
+        };
+        ChannelBatchUpdateResponse: {
+            updated_ids: string[];
+            /** Format: uuid */
+            correlation_id: string;
         };
         ModelRuleInput: {
             client_model: string;
@@ -2843,6 +2893,35 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+            422: components["responses"]["Unprocessable"];
+        };
+    };
+    updateChannelsBatch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChannelBatchUpdateInput"];
+            };
+        };
+        responses: {
+            /** @description Updated. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChannelBatchUpdateResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
             422: components["responses"]["Unprocessable"];
         };
     };

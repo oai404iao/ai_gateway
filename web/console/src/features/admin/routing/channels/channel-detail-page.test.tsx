@@ -53,6 +53,7 @@ describe("ChannelDetailPage", () => {
     expect(submitted?.upstream_api_key).toBe(CHANNEL_DETAIL.upstream_api_key);
     expect(submitted?.status_statistics_enabled).toBe(true);
     expect(submitted?.auto_disable_allowed).toBe(true);
+    expect(submitted?.billing_multiplier).toBe(CHANNEL.billing_multiplier);
     expect(submitted?.test_model).toBe(CHANNEL.test_model);
   });
 

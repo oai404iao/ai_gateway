@@ -1062,6 +1062,7 @@ async fn channel_and_template_details_return_stored_editable_values() {
             "base_url": "https://editable-detail.example.test",
             "enabled": true,
             "weight": 1,
+            "billing_multiplier": "1.5",
             "config_template_id": template_id,
             "override_document": override_document,
             "upstream_auth_kind": "bearer",
@@ -1092,6 +1093,7 @@ async fn channel_and_template_details_return_stored_editable_values() {
         .unwrap();
     assert!(channel_list_item.get("override_document").is_none());
     assert!(channel_list_item.get("upstream_api_key").is_none());
+    assert_eq!(channel_list_item["billing_multiplier"], "1.500000000000");
 
     let channel_detail = request(
         &app,
@@ -1106,6 +1108,7 @@ async fn channel_and_template_details_return_stored_editable_values() {
     let channel_detail = body_json(channel_detail).await;
     assert_eq!(channel_detail["override_document"], override_document);
     assert_eq!(channel_detail["upstream_api_key"], upstream_api_key);
+    assert_eq!(channel_detail["billing_multiplier"], "1.500000000000");
 
     let template_list = request(
         &app,
@@ -1139,6 +1142,216 @@ async fn channel_and_template_details_return_stored_editable_values() {
         body_json(template_detail).await["document"],
         template_document
     );
+
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn channel_batch_updates_are_atomic_versioned_and_published_once() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+    let group = request(
+        &app,
+        "POST",
+        "/console/v1/routing/channel-groups",
+        serde_json::json!({
+            "name": "batch-channel-group",
+            "api_format": "open_ai_chat_completions",
+            "priority": 1,
+            "selection_strategy": "weighted_random",
+            "enabled": true,
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(group.status(), StatusCode::CREATED);
+    let group_id = body_json(group).await["id"].as_str().unwrap().to_owned();
+
+    let mut channel_ids = Vec::new();
+    for suffix in ["a", "b"] {
+        let channel = request(
+            &app,
+            "POST",
+            "/console/v1/routing/channels",
+            serde_json::json!({
+                "channel_group_id": group_id,
+                "api_format": "open_ai_chat_completions",
+                "name": format!("batch-channel-{suffix}"),
+                "base_url": format!("https://batch-{suffix}.example.test"),
+                "enabled": true,
+                "weight": 1,
+                "upstream_auth_kind": "none",
+                "available_models": [],
+            }),
+            &[],
+        )
+        .await;
+        assert_eq!(channel.status(), StatusCode::CREATED);
+        channel_ids.push(body_json(channel).await["id"].as_str().unwrap().to_owned());
+    }
+
+    let before = body_json(
+        request(
+            &app,
+            "GET",
+            "/console/v1/routing/channels",
+            serde_json::json!({}),
+            &[],
+        )
+        .await,
+    )
+    .await;
+    let before_items = channel_ids
+        .iter()
+        .map(|id| {
+            let channel = before
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|channel| channel["id"] == *id)
+                .unwrap();
+            serde_json::json!({
+                "id": id,
+                "updated_at": channel["updated_at"],
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let updated = request(
+        &app,
+        "POST",
+        "/console/v1/routing/channels/batch",
+        serde_json::json!({
+            "items": before_items,
+            "changes": {
+                "status_statistics_enabled": true,
+                "auto_disable_allowed": true,
+                "weight": 7,
+                "billing_multiplier": "2.5"
+            }
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(updated.status(), StatusCode::OK);
+    let updated = body_json(updated).await;
+    assert_eq!(updated["updated_ids"].as_array().unwrap().len(), 2);
+    assert!(updated["correlation_id"].is_string());
+
+    let current = body_json(
+        request(
+            &app,
+            "GET",
+            "/console/v1/routing/channels",
+            serde_json::json!({}),
+            &[],
+        )
+        .await,
+    )
+    .await;
+    for id in &channel_ids {
+        let channel = current
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|channel| channel["id"] == *id)
+            .unwrap();
+        assert_eq!(channel["weight"], 7);
+        assert_eq!(channel["billing_multiplier"], "2.500000000000");
+        assert_eq!(channel["status_statistics_enabled"], true);
+        assert_eq!(channel["auto_disable_allowed"], true);
+        let compiled = app
+            .runtime
+            .snapshot()
+            .channel(Uuid::parse_str(id).unwrap())
+            .unwrap();
+        assert_eq!(compiled.weight(), 7);
+        assert_eq!(
+            compiled.billing_multiplier(),
+            rust_decimal::Decimal::new(25, 1)
+        );
+    }
+    let audit_facts: (i64, i64) = sqlx::query_as(
+        "SELECT count(*), count(DISTINCT correlation_id) \
+         FROM audit_logs WHERE action='batch_update' AND object_id = ANY($1)",
+    )
+    .bind(
+        channel_ids
+            .iter()
+            .map(|id| Uuid::parse_str(id).unwrap())
+            .collect::<Vec<_>>(),
+    )
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(audit_facts, (2, 1));
+
+    let current_items = channel_ids
+        .iter()
+        .map(|id| {
+            let channel = current
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|channel| channel["id"] == *id)
+                .unwrap();
+            serde_json::json!({
+                "id": id,
+                "updated_at": channel["updated_at"],
+            })
+        })
+        .collect::<Vec<_>>();
+    let stale_second_version = before
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|channel| channel["id"] == channel_ids[1])
+        .unwrap()["updated_at"]
+        .clone();
+    let conflict = request(
+        &app,
+        "POST",
+        "/console/v1/routing/channels/batch",
+        serde_json::json!({
+            "items": [
+                current_items[0].clone(),
+                {
+                    "id": channel_ids[1],
+                    "updated_at": stale_second_version
+                }
+            ],
+            "changes": {"weight": 9}
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(conflict.status(), StatusCode::CONFLICT);
+    let persisted_weights: Vec<i32> =
+        sqlx::query_scalar("SELECT weight FROM channels WHERE id = ANY($1) ORDER BY id")
+            .bind(
+                channel_ids
+                    .iter()
+                    .map(|id| Uuid::parse_str(id).unwrap())
+                    .collect::<Vec<_>>(),
+            )
+            .fetch_all(&database.pool)
+            .await
+            .unwrap();
+    assert_eq!(persisted_weights, vec![7, 7]);
+    let audit_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_logs \
+         WHERE action='batch_update' AND object_id = ANY($1)",
+    )
+    .bind(
+        channel_ids
+            .iter()
+            .map(|id| Uuid::parse_str(id).unwrap())
+            .collect::<Vec<_>>(),
+    )
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(audit_count, 2);
 
     database.cleanup().await;
 }

@@ -28,7 +28,7 @@ import { TransformDocumentEditor } from "@/features/admin/transforms/transform-d
 import { DetailField } from "@/components/shared/detail-field";
 import { ApiKeyValue } from "@/components/shared/api-key-value";
 import { StringListField } from "@/components/shared/string-list-field";
-import { NullableNumberField } from "@/components/shared/decimal-field";
+import { DecimalField, NullableNumberField } from "@/components/shared/decimal-field";
 import { StatusBadge } from "@/components/shared/status-badge";
 import {
   useChannel,
@@ -50,6 +50,7 @@ import type {
 import { UPSTREAM_AUTH_KINDS, apiFormatLabel, upstreamAuthKindLabel } from "@/lib/permissions";
 import { channelUpdateInvalidatesRouting } from "@/features/admin/routing/routing-validation";
 import { useI18n } from "@/app/i18n";
+import { formatDecimal } from "@/lib/formatters";
 
 function isAllowedBaseUrl(value: string): boolean {
   try {
@@ -67,6 +68,13 @@ function isAllowedBaseUrl(value: string): boolean {
   }
 }
 
+function isNonNegativeDecimal(value: string): boolean {
+  return (
+    /^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(value) &&
+    Number.isFinite(Number(value))
+  );
+}
+
 const schema = z.object({
   channel_group_id: z.string().min(1, "Pick a channel group."),
   api_format: z.enum(["open_ai_chat_completions", "open_ai_responses"]),
@@ -82,6 +90,13 @@ const schema = z.object({
   status_statistics_enabled: z.boolean(),
   auto_disable_allowed: z.boolean(),
   weight: z.number().int().min(1, "Weight must be at least 1."),
+  billing_multiplier: z
+    .string()
+    .trim()
+    .refine(
+      isNonNegativeDecimal,
+      "Billing multiplier must be zero or greater.",
+    ),
   proxy_id: z.string().nullable(),
   config_template_id: z.string().nullable(),
   override_document: z.string(),
@@ -128,6 +143,7 @@ const empty: FormState = {
   status_statistics_enabled: false,
   auto_disable_allowed: false,
   weight: 100,
+  billing_multiplier: "1",
   proxy_id: null,
   config_template_id: null,
   override_document: "{}",
@@ -172,6 +188,7 @@ export function ChannelDetailPage() {
         status_statistics_enabled: data.data.status_statistics_enabled,
         auto_disable_allowed: data.data.auto_disable_allowed,
         weight: data.data.weight,
+        billing_multiplier: data.data.billing_multiplier,
         proxy_id: data.data.proxy_id,
         config_template_id: data.data.config_template_id,
         override_document: JSON.stringify(data.data.override_document, null, 2) ?? "{}",
@@ -272,6 +289,7 @@ export function ChannelDetailPage() {
           status_statistics_enabled: parsed.data.status_statistics_enabled,
           auto_disable_allowed: parsed.data.auto_disable_allowed,
           weight: parsed.data.weight,
+          billing_multiplier: parsed.data.billing_multiplier,
           proxy_id: parsed.data.proxy_id,
           config_template_id: parsed.data.config_template_id,
           override_document: overrideDocument ?? {},
@@ -304,6 +322,7 @@ export function ChannelDetailPage() {
           status_statistics_enabled: parsed.data.status_statistics_enabled,
           auto_disable_allowed: parsed.data.auto_disable_allowed,
           weight: parsed.data.weight,
+          billing_multiplier: parsed.data.billing_multiplier,
           proxy_id: parsed.data.proxy_id,
           config_template_id: parsed.data.config_template_id,
           connect_timeout_ms: parsed.data.connect_timeout_ms,
@@ -392,6 +411,10 @@ export function ChannelDetailPage() {
                   value={data.data.upstream_credential_configured ? t("yes") : t("no")}
                 />
                 <DetailField label={t("Weight")} value={data.data.weight} />
+                <DetailField
+                  label={t("Billing multiplier")}
+                  value={formatDecimal(data.data.billing_multiplier)}
+                />
                 <DetailField
                   label={t("Upstream API key")}
                   value={
@@ -495,6 +518,17 @@ export function ChannelDetailPage() {
                   />
                   {fieldError("weight") ? <FieldError>{fieldError("weight")}</FieldError> : null}
                 </Field>
+                <DecimalField
+                  id="billing_multiplier"
+                  label={t("Billing multiplier")}
+                  value={state.billing_multiplier}
+                  onChange={(value) => patch({ billing_multiplier: value })}
+                  error={fieldError("billing_multiplier")}
+                  description={t(
+                    "Multiplies the upstream model price used for request settlement.",
+                  )}
+                  required
+                />
                 <Field>
                   <FieldLabel>{t("Proxy")}</FieldLabel>
                   <Select

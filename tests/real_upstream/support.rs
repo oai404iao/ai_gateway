@@ -172,6 +172,7 @@ fn gateway(settings: &SmokeSettings, format: SmokeFormat, upstream_model: &str) 
             auto_disabled: false,
             auto_disable_allowed: false,
             weight: 1,
+            billing_multiplier: Decimal::ONE,
             proxy_id: None,
             config_template_id: None,
             override_document: json!({}),

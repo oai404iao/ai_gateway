@@ -706,12 +706,13 @@ pub fn compile_control_plane_with_system_settings(
                 compile_timeouts(&channel)?,
                 system_settings.upstream_timeouts().connect(),
             );
-            let compiled = Arc::new(CompiledChannel::new_with_policy_and_automation(
+            let compiled = Arc::new(CompiledChannel::new_with_policy_automation_and_billing(
                 channel.id,
                 channel.channel_group_id,
                 api_format,
                 parse_url(channel.id, &channel.base_url)?,
                 channel.weight,
+                channel.billing_multiplier,
                 auth,
                 channel
                     .available_models
@@ -1305,6 +1306,7 @@ fn compile_rules(
                         "eligible channel does not support the model rule upstream model".into(),
                     ));
                 }
+                validate_effective_channel_prices(&record, channel)?;
                 selected_candidates.insert(channel.id());
                 if channel.auto_disabled() {
                     unavailable_candidates.insert(channel.id(), channel.group_id());
@@ -1335,6 +1337,7 @@ fn compile_rules(
                     "eligible channel does not support the model rule upstream model".into(),
                 ));
             }
+            validate_effective_channel_prices(&record, channel)?;
             if !selected_candidates.insert(*channel_id) {
                 return Err(ConfigError::Compile(
                     "model rule selects the same channel directly and through a channel group"
@@ -1428,6 +1431,31 @@ fn compile_rules(
     }
     Ok(result)
 }
+fn validate_effective_channel_prices(
+    record: &ModelRuleRecord,
+    channel: &CompiledChannel,
+) -> Result<(), ConfigError> {
+    let max_persisted_unit_price =
+        rust_decimal::Decimal::from_i128_with_scale(999_999_999_999_999_999_999_999, 12);
+    for price in [
+        record.input_unit_price,
+        record.cached_input_unit_price,
+        record.cache_write_unit_price,
+        record.output_unit_price,
+    ] {
+        let Some(effective) = price.checked_mul(channel.billing_multiplier()) else {
+            return Err(ConfigError::Compile(
+                "channel billing multiplier overflows the effective model price".into(),
+            ));
+        };
+        if effective.round_dp(12) > max_persisted_unit_price {
+            return Err(ConfigError::Compile(
+                "effective channel model price exceeds request-log precision".into(),
+            ));
+        }
+    }
+    Ok(())
+}
 fn compile_model_price_snapshot(
     record: &ModelRuleRecord,
 ) -> Result<ModelPriceSnapshot, ConfigError> {
@@ -1511,6 +1539,11 @@ fn validate_channel(
     if record.weight <= 0 {
         return Err(ConfigError::Compile(
             "channel weight must be positive".into(),
+        ));
+    }
+    if record.billing_multiplier.is_sign_negative() {
+        return Err(ConfigError::Compile(
+            "channel billing multiplier must be non-negative".into(),
         ));
     }
     unique(&record.available_models, "channel available_models")?;
@@ -2075,6 +2108,7 @@ mod tests {
             auto_disabled: false,
             auto_disable_allowed: false,
             weight: 1,
+            billing_multiplier: rust_decimal::Decimal::ONE,
             proxy_id: None,
             config_template_id: None,
             override_document: serde_json::json!({}),

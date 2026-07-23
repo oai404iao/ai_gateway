@@ -128,6 +128,7 @@ export const CHANNEL: ChannelView = {
   auto_disabled_reason: null,
   auto_disable_allowed: true,
   weight: 100,
+  billing_multiplier: "1.25",
   proxy_id: null,
   config_template_id: null,
   connect_timeout_ms: null,

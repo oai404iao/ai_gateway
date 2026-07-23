@@ -828,6 +828,32 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/Unprocessable" }
 
+  /routing/channels/batch:
+    post:
+      tags: [Channels]
+      operationId: updateChannelsBatch
+      description: >
+        Atomically applies common routing and billing changes to up to 100
+        channels. Each item carries the `updated_at` version returned by the
+        channel list; any stale item rejects the entire batch.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChannelBatchUpdateInput" }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChannelBatchUpdateResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
   /routing/channels/{id}:
     get:
       tags: [Channels]
@@ -2026,7 +2052,7 @@ components:
       required:
         [id, channel_group_id, api_format, name, base_url, enabled,
          status_statistics_enabled, auto_disabled, auto_disabled_reason, auto_disable_allowed,
-         weight, proxy_id,
+         weight, billing_multiplier, proxy_id,
          config_template_id, connect_timeout_ms, response_header_timeout_ms,
          stream_idle_timeout_ms, upstream_auth_kind, upstream_auth_header_name,
          upstream_credential_configured, available_models, test_model, created_at, updated_at]
@@ -2046,6 +2072,9 @@ components:
           type: boolean
           description: Allows system automatic-disable rules to temporarily remove this channel from routing.
         weight: { type: integer }
+        billing_multiplier:
+          allOf: [{ $ref: "#/components/schemas/Decimal" }]
+          description: Multiplies the selected upstream model prices before request settlement.
         proxy_id: { type: string, format: uuid, nullable: true }
         config_template_id: { type: string, format: uuid, nullable: true }
         connect_timeout_ms: { type: integer, nullable: true }
@@ -2617,6 +2646,10 @@ components:
           default: false
           description: Allows configured automatic-disable rules to temporarily remove this channel from routing.
         weight: { type: integer, minimum: 1 }
+        billing_multiplier:
+          allOf: [{ $ref: "#/components/schemas/Decimal" }]
+          default: "1"
+          description: Non-negative multiplier applied to upstream model prices for settlement.
         proxy_id: { type: string, format: uuid, nullable: true }
         config_template_id: { type: string, format: uuid, nullable: true }
         override_document: { $ref: "#/components/schemas/JsonValue" }
@@ -2656,6 +2689,9 @@ components:
           default: false
           description: Allows configured automatic-disable rules to temporarily remove this channel from routing.
         weight: { type: integer, minimum: 1 }
+        billing_multiplier:
+          allOf: [{ $ref: "#/components/schemas/Decimal" }]
+          description: Omit to preserve the stored non-negative billing multiplier.
         proxy_id: { type: string, format: uuid, nullable: true }
         config_template_id: { type: string, format: uuid, nullable: true }
         override_document:
@@ -2674,6 +2710,47 @@ components:
           type: string
           nullable: true
           description: Must be one of available_models when set.
+
+    ChannelBatchUpdateTarget:
+      type: object
+      required: [id, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        updated_at:
+          allOf: [{ $ref: "#/components/schemas/DateTime" }]
+          description: Version copied from the channel list response.
+
+    ChannelBatchChanges:
+      type: object
+      description: At least one property must be supplied.
+      properties:
+        enabled: { type: boolean }
+        status_statistics_enabled: { type: boolean }
+        auto_disable_allowed: { type: boolean }
+        weight: { type: integer, minimum: 1 }
+        billing_multiplier:
+          allOf: [{ $ref: "#/components/schemas/Decimal" }]
+          description: Non-negative multiplier applied to upstream model prices for settlement.
+
+    ChannelBatchUpdateInput:
+      type: object
+      required: [items, changes]
+      properties:
+        items:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items: { $ref: "#/components/schemas/ChannelBatchUpdateTarget" }
+        changes: { $ref: "#/components/schemas/ChannelBatchChanges" }
+
+    ChannelBatchUpdateResponse:
+      type: object
+      required: [updated_ids, correlation_id]
+      properties:
+        updated_ids:
+          type: array
+          items: { type: string, format: uuid }
+        correlation_id: { type: string, format: uuid }
 
     ModelRuleInput:
       type: object

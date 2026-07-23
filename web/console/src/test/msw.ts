@@ -107,6 +107,12 @@ export const handlers = [
       headers: { ETag: `"${CHANNEL.updated_at}"` },
     }),
   ),
+  http.post("/console/v1/routing/channels/batch", () =>
+    HttpResponse.json({
+      updated_ids: [CHANNEL.id],
+      correlation_id: "99999999-0000-0000-0000-000000000000",
+    }),
+  ),
   http.get("/console/v1/routing/model-rules", () => HttpResponse.json([MODEL_RULE])),
   http.get("/console/v1/routing/model-rules/:id", () =>
     HttpResponse.json(MODEL_RULE, {

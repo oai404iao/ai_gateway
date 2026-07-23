@@ -606,6 +606,7 @@ fn configured_proxy_with_policy_and_transforms(
         auto_disabled: false,
         auto_disable_allowed: false,
         weight: 1,
+        billing_multiplier: rust_decimal::Decimal::ONE,
         proxy_id: None,
         config_template_id: (api_format == "open_ai_chat_completions")
             .then_some(template_id)
@@ -833,6 +834,7 @@ fn session_affinity_proxy(first_upstream_url: &str, second_upstream_url: &str) -
         auto_disabled: false,
         auto_disable_allowed: false,
         weight: 1,
+        billing_multiplier: rust_decimal::Decimal::ONE,
         proxy_id: None,
         config_template_id: None,
         override_document: serde_json::json!({}),

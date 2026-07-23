@@ -16,7 +16,9 @@ pub use auth::{
 pub use channel_automation::{
     AutomaticDisableService, AutomaticDisableWorker, ErrorKeywordMatcher,
 };
-pub use control_plane::{ControlPlaneCoordinator, ControlPlaneError, ModelSyncResult};
+pub use control_plane::{
+    ChannelBatchUpdateResult, ControlPlaneCoordinator, ControlPlaneError, ModelSyncResult,
+};
 pub use model_sync::{
     ModelImportRequest, ModelSyncError, ModelSyncPreview, ModelSyncPreviewRequest,
     ModelSyncResponse, ModelSyncService,

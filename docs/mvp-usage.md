@@ -153,6 +153,7 @@ Policy 不再保存额度、RPM、并发、格式、权限或最大活动 Key �
 - 模型：`/console/v1/models`
 - models.dev：`/console/v1/catalog/models/sync/preview`、`/sync`、`/import`
 - 路由：`/console/v1/routing/channel-groups`、`/channels`、`/model-rules`
+- 渠道批量修改：`POST /console/v1/routing/channels/batch`
 - 网络：`/console/v1/network/proxies`
 - 变换模板：`/console/v1/transforms/templates`
 - 观测事实：`GET /console/v1/request-logs`、`GET /console/v1/audit-logs`
@@ -161,6 +162,12 @@ Policy 不再保存额度、RPM、并发、格式、权限或最大活动 Key �
 - 手动重载：`POST /console/v1/system/reload`
 
 大多数可更新资源遵循 `GET` 返回 `ETag`、`PUT` 携带 `If-Match` 的乐观并发模型。控制面写入在 serializable 事务中再次确认 actor 仍为 active admin，校验完整候选快照、写入脱敏审计记录，并在提交后立即发布运行时快照。
+
+渠道的 `billing_multiplier` 为非负十进制数，默认 `1`。最终选定渠道的倍率会乘到模型
+输入、缓存输入、缓存写入和输出单价上；请求日志保存乘算后的有效价格快照，因此历史费用
+不受后续倍率调整影响。批量修改接口一次最多接收 100 个渠道及各自的 `updated_at` 版本，
+可统一修改启用状态、状态统计、自动禁用授权、权重和计费倍率。任一版本过期或候选路由
+配置无效时，整批修改、审计和运行时发布都会回滚。
 
 渠道与变换模板的列表接口只返回摘要字段；管理员读取单条详情时，渠道响应还会返回
 `upstream_api_key` 与 `override_document`，模板响应会返回 `document`，供 Console

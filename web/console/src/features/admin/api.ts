@@ -2,6 +2,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiGetDetail, apiPost, apiPut } from "@/api/client";
 import type {
   AdminApiKeyView,
+  ChannelBatchUpdateInput,
+  ChannelBatchUpdateResponse,
   ChannelCreateInput,
   ApiKeyCreateInput,
   ApiKeyPolicyInput,
@@ -193,6 +195,16 @@ export const useUpdateChannel = makeUpdate<ChannelInput>(
   CHANNELS_KEY,
   channelDetailKey,
 );
+export function useBatchUpdateChannels() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: ChannelBatchUpdateInput) =>
+      apiPost<ChannelBatchUpdateResponse>("/routing/channels/batch", input),
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: CHANNELS_KEY });
+    },
+  });
+}
 
 // ---- Model Rules ----
 const RULES_KEY = ["console", "model-rules"] as const;

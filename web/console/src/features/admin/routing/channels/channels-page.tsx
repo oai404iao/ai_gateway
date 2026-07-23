@@ -1,8 +1,9 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
-import { Pencil, Plus } from "lucide-react";
+import { CheckCheck, ListChecks, Pencil, Plus } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Card,
   CardAction,
@@ -17,7 +18,9 @@ import { PageHeader } from "@/components/shared/page-header";
 import { ResourceTable, type Column } from "@/components/shared/resource-table";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { useChannelGroups, useChannels } from "@/features/admin/api";
+import { ChannelBatchEditDialog } from "@/features/admin/routing/channels/channel-batch-edit-dialog";
 import { formatRelative } from "@/lib/dates";
+import { formatDecimal } from "@/lib/formatters";
 import { apiFormatLabel, selectionStrategyLabel } from "@/lib/permissions";
 import { useI18n } from "@/app/i18n";
 import type { ChannelView } from "@/api/types";
@@ -27,6 +30,16 @@ export function ChannelsPage() {
   const groups = useChannelGroups();
   const channels = useChannels();
   const { t } = useI18n();
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [batchOpen, setBatchOpen] = useState(false);
+
+  useEffect(() => {
+    const available = new Set((channels.data ?? []).map((channel) => channel.id));
+    setSelected((current) => {
+      const next = new Set([...current].filter((id) => available.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [channels.data]);
 
   const channelsByGroup = useMemo(() => {
     const grouped = new Map<string, ChannelView[]>();
@@ -44,8 +57,37 @@ export function ChannelsPage() {
   const unavailableGroupChannels = (channels.data ?? []).filter(
     (channel) => !knownGroupIds.has(channel.channel_group_id),
   );
+  const selectedChannels = useMemo(
+    () => (channels.data ?? []).filter((channel) => selected.has(channel.id)),
+    [channels.data, selected],
+  );
+  const allSelected =
+    (channels.data?.length ?? 0) > 0 &&
+    selectedChannels.length === channels.data?.length;
+
+  const toggleChannel = (channel: ChannelView) => {
+    setSelected((current) => {
+      const next = new Set(current);
+      if (next.has(channel.id)) next.delete(channel.id);
+      else next.add(channel.id);
+      return next;
+    });
+  };
 
   const columns: Column<ChannelView>[] = [
+    {
+      key: "selected",
+      header: t("Select"),
+      render: (channel) => (
+        <Checkbox
+          aria-label={`${t("Select")} ${channel.name}`}
+          checked={selected.has(channel.id)}
+          onClick={(event) => event.stopPropagation()}
+          onCheckedChange={() => toggleChannel(channel)}
+        />
+      ),
+      className: "w-12",
+    },
     {
       key: "name",
       header: t("Name"),
@@ -69,6 +111,11 @@ export function ChannelsPage() {
       render: (channel) => <StatusBadge value={channel.status_statistics_enabled} />,
     },
     { key: "weight", header: t("Weight"), render: (channel) => channel.weight },
+    {
+      key: "billing_multiplier",
+      header: t("Billing multiplier"),
+      render: (channel) => formatDecimal(channel.billing_multiplier),
+    },
     {
       key: "updated",
       header: t("Updated"),
@@ -99,6 +146,25 @@ export function ChannelsPage() {
         description={t("Manage channel groups and their upstream channels in one grouped view.")}
         actions={
           <>
+            <Button
+              variant="outline"
+              disabled={(channels.data?.length ?? 0) === 0}
+              onClick={() => {
+                if (allSelected) setSelected(new Set());
+                else setSelected(new Set((channels.data ?? []).map((channel) => channel.id)));
+              }}
+            >
+              <CheckCheck data-icon="inline-start" />
+              {allSelected ? t("Clear selection") : t("Select all")}
+            </Button>
+            <Button
+              variant="outline"
+              disabled={selectedChannels.length === 0}
+              onClick={() => setBatchOpen(true)}
+            >
+              <ListChecks data-icon="inline-start" />
+              {t("Batch edit ({count})", { count: selectedChannels.length })}
+            </Button>
             <Button
               variant="outline"
               onClick={() => navigate("/admin/routing/channel-groups/new")}
@@ -180,6 +246,13 @@ export function ChannelsPage() {
           ) : null}
         </div>
       </AsyncResource>
+
+      <ChannelBatchEditDialog
+        open={batchOpen}
+        channels={selectedChannels}
+        onOpenChange={setBatchOpen}
+        onApplied={() => setSelected(new Set())}
+      />
     </div>
   );
 }

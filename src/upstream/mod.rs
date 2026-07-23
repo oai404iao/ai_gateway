@@ -563,6 +563,7 @@ mod tests {
                     auto_disabled: false,
                     auto_disable_allowed: false,
                     weight: 1,
+                    billing_multiplier: rust_decimal::Decimal::ONE,
                     proxy_id: Some(proxy_id),
                     config_template_id: None,
                     override_document: serde_json::json!({}),

@@ -25,11 +25,12 @@ use crate::{
     },
     domain::{ConsolePrincipal, UserRole},
     persistence::{
-        ApiKeyCreate, ApiKeyPolicyInput, ApiKeyUpdate, ChannelCreateInput, ChannelGroupInput,
-        ChannelInput, ChannelStatusWindow, ConfigTemplateCreateInput, ConfigTemplateInput,
-        ConsoleApiKey, ControlPlaneMutation, CostStatisticsFilter, InviteUserInput, ModelInput,
-        ModelRuleInput, ProxyCreateInput, ProxyInput, RequestLogFilter, RequestLogRepository,
-        SelfApiKeyCreate, SelfApiKeyUpdate, StatisticsGranularity, SystemSettingsInput, UserInput,
+        ApiKeyCreate, ApiKeyPolicyInput, ApiKeyUpdate, ChannelBatchUpdateInput, ChannelCreateInput,
+        ChannelGroupInput, ChannelInput, ChannelStatusWindow, ConfigTemplateCreateInput,
+        ConfigTemplateInput, ConsoleApiKey, ControlPlaneMutation, CostStatisticsFilter,
+        InviteUserInput, ModelInput, ModelRuleInput, ProxyCreateInput, ProxyInput,
+        RequestLogFilter, RequestLogRepository, SelfApiKeyCreate, SelfApiKeyUpdate,
+        StatisticsGranularity, SystemSettingsInput, UserInput,
     },
     runtime_config::ConfigError,
 };
@@ -127,6 +128,10 @@ pub fn router(state: ConsoleState) -> Router {
         .route(
             "/console/v1/routing/channels",
             get(list_channels).post(create_channel),
+        )
+        .route(
+            "/console/v1/routing/channels/batch",
+            post(update_channels_batch),
         )
         .route(
             "/console/v1/routing/channels/{id}",
@@ -330,6 +335,12 @@ struct MutationResponse {
 
 #[derive(Serialize)]
 struct ReloadResponse {
+    correlation_id: Uuid,
+}
+
+#[derive(Serialize)]
+struct ChannelBatchUpdateResponse {
+    updated_ids: Vec<Uuid>,
     correlation_id: Uuid,
 }
 
@@ -993,6 +1004,21 @@ async fn create_channel(
         ControlPlaneMutation::CreateChannel(input),
     )
     .await
+}
+
+async fn update_channels_batch(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Json(input): Json<ChannelBatchUpdateInput>,
+) -> Result<Json<ChannelBatchUpdateResponse>, ConsoleError> {
+    let result = state
+        .coordinator
+        .update_channels_batch(principal.user_id(), input)
+        .await?;
+    Ok(Json(ChannelBatchUpdateResponse {
+        updated_ids: result.updated_ids,
+        correlation_id: result.correlation_id,
+    }))
 }
 
 async fn get_channel(

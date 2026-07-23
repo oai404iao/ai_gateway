@@ -9,7 +9,7 @@ use uuid::Uuid;
 use crate::{
     domain::AutomaticDisableTrigger,
     persistence::{
-        ConsoleApiKey, ConsoleAuditLog, ControlPlaneChannelDetail,
+        ChannelBatchUpdateInput, ConsoleApiKey, ConsoleAuditLog, ControlPlaneChannelDetail,
         ControlPlaneConfigTemplateDetail, ControlPlaneLists, ControlPlaneMutation,
         ControlPlaneRepository, MutationResult, RepositoryError, SelfApiKeyCreate,
         SelfApiKeyOptions, SelfApiKeyUpdate, SyncedModelInput, SystemSettingsView,
@@ -169,6 +169,45 @@ impl ControlPlaneCoordinator {
         Ok(MutationResult {
             correlation_id: Some(correlation_id),
             ..result
+        })
+    }
+
+    pub async fn update_channels_batch(
+        &self,
+        actor: Uuid,
+        input: ChannelBatchUpdateInput,
+    ) -> Result<ChannelBatchUpdateResult, ControlPlaneError> {
+        let _guard = self.serial.lock().await;
+        let mut transaction = self.repository.begin_serializable().await?;
+        if !self
+            .repository
+            .active_admin_exists(&mut transaction, actor)
+            .await?
+        {
+            return Err(ControlPlaneError::InvalidActor);
+        }
+        let mutations = self
+            .repository
+            .update_channels_batch(&mut transaction, input)
+            .await?;
+        let candidate = self.compile_transaction(&mut transaction).await?;
+        self.validate_candidate(&candidate)?;
+        let correlation_id = Uuid::new_v4();
+        for mutation in &mutations {
+            self.repository
+                .insert_audit(&mut transaction, actor, mutation, correlation_id)
+                .await?;
+        }
+        transaction.commit().await.map_err(RepositoryError::from)?;
+        self.publish(candidate);
+        tracing::info!(
+            %correlation_id,
+            channel_count = mutations.len(),
+            "channel batch update committed"
+        );
+        Ok(ChannelBatchUpdateResult {
+            updated_ids: mutations.into_iter().map(|mutation| mutation.id).collect(),
+            correlation_id,
         })
     }
 
@@ -480,6 +519,12 @@ pub struct ModelSyncResult {
     pub model_count: usize,
     pub imported_count: usize,
     pub updated_count: usize,
+    pub correlation_id: Uuid,
+}
+
+#[derive(Clone, Debug)]
+pub struct ChannelBatchUpdateResult {
+    pub updated_ids: Vec<Uuid>,
     pub correlation_id: Uuid,
 }
 

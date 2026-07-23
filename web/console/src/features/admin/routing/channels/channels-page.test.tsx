@@ -1,12 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { BrowserRouter } from "react-router";
 import { AppProviders } from "@/app/providers";
 import { AppRouter } from "@/app/router";
 import { server, seedAuthenticatedSession } from "@/test/msw";
 import { CHANNEL, CHANNEL_GROUP } from "@/test/fixtures";
-import type { ChannelGroupView, ChannelView } from "@/api/types";
+import type {
+  ChannelBatchUpdateInput,
+  ChannelGroupView,
+  ChannelView,
+} from "@/api/types";
 
 const RESPONSES_GROUP: ChannelGroupView = {
   ...CHANNEL_GROUP,
@@ -59,5 +64,47 @@ describe("ChannelsPage", () => {
     expect(within(responsesGroup).queryByText(CHANNEL.name)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "New group" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "New channel" })).toBeInTheDocument();
+    expect(screen.getAllByText("1.25")).toHaveLength(2);
+  });
+
+  it("submits an atomic batch update for the selected channels", async () => {
+    seedAuthenticatedSession();
+    let submitted: ChannelBatchUpdateInput | undefined;
+    server.use(
+      http.get("/console/v1/routing/channel-groups", () =>
+        HttpResponse.json([CHANNEL_GROUP, RESPONSES_GROUP]),
+      ),
+      http.get("/console/v1/routing/channels", () =>
+        HttpResponse.json([CHANNEL, RESPONSES_CHANNEL]),
+      ),
+      http.post("/console/v1/routing/channels/batch", async ({ request }) => {
+        submitted = (await request.json()) as ChannelBatchUpdateInput;
+        return HttpResponse.json({
+          updated_ids: [CHANNEL.id, RESPONSES_CHANNEL.id],
+          correlation_id: "77777777-0000-0000-0000-000000000000",
+        });
+      }),
+    );
+    const user = userEvent.setup();
+    renderAppAt("/admin/routing/channels");
+
+    await user.click(
+      await screen.findByRole("checkbox", { name: `Select ${CHANNEL.name}` }),
+    );
+    await user.click(
+      screen.getByRole("checkbox", { name: `Select ${RESPONSES_CHANNEL.name}` }),
+    );
+    await user.click(screen.getByRole("button", { name: "Batch edit (2)" }));
+    await user.type(screen.getByLabelText("Billing multiplier"), "1.75");
+    await user.click(screen.getByRole("button", { name: "Update channels" }));
+
+    await waitFor(() => {
+      expect(submitted).toBeDefined();
+    });
+    expect(submitted?.items).toEqual([
+      { id: CHANNEL.id, updated_at: CHANNEL.updated_at },
+      { id: RESPONSES_CHANNEL.id, updated_at: RESPONSES_CHANNEL.updated_at },
+    ]);
+    expect(submitted?.changes).toEqual({ billing_multiplier: "1.75" });
   });
 });

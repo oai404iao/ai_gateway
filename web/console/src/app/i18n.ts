@@ -517,6 +517,7 @@ const zhCN: Record<string, string> = {
   "Group": "渠道组",
   "State": "状态",
   "Weight": "权重",
+  "Billing multiplier": "计费倍率",
   "Priority": "优先级",
   "Strategy": "策略",
   "auto-disabled": "自动禁用",
@@ -527,6 +528,9 @@ const zhCN: Record<string, string> = {
     "渠道组内具有权重、超时和认证配置的上游端点。",
   "Manage channel groups and their upstream channels in one grouped view.":
     "在一个分组视图中管理渠道组及其上游渠道。",
+  "Select all": "全选",
+  "Clear selection": "清除选择",
+  "Batch edit ({count})": "批量修改（{count}）",
   "No channels in this group": "该渠道组中没有渠道",
   "Create a channel and assign it to this group.": "创建渠道并将其分配到该渠道组。",
   "Unavailable channel groups": "不可用的渠道组",
@@ -671,6 +675,23 @@ const zhCN: Record<string, string> = {
   "Enter an HTTP(S) URL without credentials, query parameters, or a fragment.":
     "请输入不含凭据、查询参数或片段的 HTTP(S) URL。",
   "Weight must be at least 1.": "权重至少为 1。",
+  "Billing multiplier must be zero or greater.": "计费倍率必须大于或等于 0。",
+  "Multiplies the upstream model price used for request settlement.":
+    "将上游模型价格乘以此倍率后用于请求结算。",
+  "Batch edit channels": "批量修改渠道",
+  "Apply the selected changes atomically to {count} channels.":
+    "以原子方式将所选修改应用到 {count} 个渠道。",
+  "Enabled state": "启用状态",
+  "Keep unchanged": "保持不变",
+  "Allowed": "允许",
+  "Not allowed": "不允许",
+  "Choose at least one field to change.": "请至少选择一个要修改的字段。",
+  "Select at most {count} channels per batch.": "每批最多选择 {count} 个渠道。",
+  "Update channels": "更新渠道",
+  "Updated {count} channels.": "已更新 {count} 个渠道。",
+  "One or more channels changed elsewhere. Refresh and try again.":
+    "一个或多个渠道已在其他位置修改，请刷新后重试。",
+  "Batch update failed": "批量更新失败",
   "Model ID is required.": "模型 ID 不能为空。",
   "A custom header name is required.": "必须提供自定义请求头名称。",
   "Available model IDs must be unique.": "可用模型 ID 必须唯一。",

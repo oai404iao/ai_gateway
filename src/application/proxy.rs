@@ -1463,6 +1463,7 @@ struct CompletionContext {
     client_visible_status: Option<u16>,
     usage: UsageCollector,
     price_snapshot: ModelPriceSnapshot,
+    billing_multiplier: Decimal,
     sink: Arc<dyn RequestLogSink>,
     session_affinity_rule: Option<Arc<str>>,
     session_affinity_hit: Option<bool>,
@@ -1523,6 +1524,7 @@ impl CompletionGuard {
                 client_visible_status: None,
                 usage: UsageCollector::new(api_format, false),
                 price_snapshot: rule.price_snapshot().clone(),
+                billing_multiplier: channel.billing_multiplier(),
                 sink,
                 session_affinity_rule: session_affinity
                     .map(|selection| Arc::from(selection.rule_name())),
@@ -1563,6 +1565,7 @@ impl CompletionGuard {
             context.client_visible_status = None;
             context.usage = UsageCollector::new(context.api_format, false);
             context.price_snapshot = rule.price_snapshot().clone();
+            context.billing_multiplier = channel.billing_multiplier();
             context.session_affinity_rule =
                 session_affinity.map(|selection| Arc::from(selection.rule_name()));
             context.session_affinity_hit =
@@ -1683,6 +1686,7 @@ impl CompletionGuard {
         let total_duration_ms = clamp_duration_ms(context.started_at.elapsed());
         let billing = request_billing(
             &context.price_snapshot,
+            context.billing_multiplier,
             usage,
             total_duration_ms,
             context.first_byte_at.map(clamp_duration_ms),
@@ -1758,6 +1762,7 @@ fn automatic_disable_context(
 
 fn request_billing(
     snapshot: &ModelPriceSnapshot,
+    billing_multiplier: Decimal,
     usage: Option<super::usage::ResponseUsage>,
     total_duration_ms: i32,
     ttft_ms: Option<i32>,
@@ -1766,10 +1771,16 @@ fn request_billing(
         currency: snapshot.currency().to_owned(),
         price_unit_tokens: snapshot.price_unit_tokens(),
         price_effective_at: snapshot.price_effective_at(),
-        input_unit_price: snapshot.input_unit_price(),
-        cached_input_unit_price: snapshot.cached_input_unit_price(),
-        cache_write_unit_price: snapshot.cache_write_unit_price(),
-        output_unit_price: snapshot.output_unit_price(),
+        input_unit_price: effective_unit_price(snapshot.input_unit_price(), billing_multiplier),
+        cached_input_unit_price: effective_unit_price(
+            snapshot.cached_input_unit_price(),
+            billing_multiplier,
+        ),
+        cache_write_unit_price: effective_unit_price(
+            snapshot.cache_write_unit_price(),
+            billing_multiplier,
+        ),
+        output_unit_price: effective_unit_price(snapshot.output_unit_price(), billing_multiplier),
     };
     let usage = usage.map(|usage| RequestUsage {
         input_tokens: usage.input_tokens,
@@ -1794,6 +1805,13 @@ fn request_billing(
         cost_amount,
         output_tokens_per_second,
     }
+}
+
+fn effective_unit_price(price: Decimal, billing_multiplier: Decimal) -> Decimal {
+    price
+        .checked_mul(billing_multiplier)
+        .expect("compiled channel billing price multiplication fits")
+        .round_dp(12)
 }
 
 fn calculate_cost(usage: &RequestUsage, price: &RequestPriceSnapshot) -> Decimal {
@@ -2026,6 +2044,7 @@ mod tests {
         );
         let billing = request_billing(
             &snapshot,
+            Decimal::ONE,
             Some(ResponseUsage {
                 input_tokens: 10,
                 cached_input_tokens: 2,
@@ -2040,5 +2059,36 @@ mod tests {
             billing.output_tokens_per_second,
             Some(Decimal::new(26667, 4))
         );
+    }
+
+    #[test]
+    fn applies_the_selected_channel_billing_multiplier_to_price_and_cost() {
+        let snapshot = ModelPriceSnapshot::new(
+            "USD".into(),
+            1,
+            chrono::Utc::now(),
+            Decimal::ONE,
+            Decimal::new(5, 1),
+            Decimal::new(25, 2),
+            Decimal::from(2_i64),
+        );
+        let billing = request_billing(
+            &snapshot,
+            Decimal::new(15, 1),
+            Some(ResponseUsage {
+                input_tokens: 10,
+                cached_input_tokens: 2,
+                cache_write_tokens: 1,
+                output_tokens: 4,
+            }),
+            2_000,
+            Some(500),
+        );
+
+        assert_eq!(billing.price.input_unit_price, Decimal::new(15, 1));
+        assert_eq!(billing.price.cached_input_unit_price, Decimal::new(75, 2));
+        assert_eq!(billing.price.cache_write_unit_price, Decimal::new(375, 3));
+        assert_eq!(billing.price.output_unit_price, Decimal::from(3_i64));
+        assert_eq!(billing.cost_amount, Some(Decimal::new(25875, 3)));
     }
 }
