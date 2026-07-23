@@ -153,13 +153,11 @@ export function ConsoleLayout() {
                 <SidebarMenu>
                   {section.items.map((item) => (
                     <SidebarMenuItem key={item.path}>
-                      <SidebarMenuButton asChild>
-                        <NavLink to={item.path} end={item.end}>
-                          <>
-                            <item.icon />
-                            <span>{t(item.label)}</span>
-                          </>
-                        </NavLink>
+                      <SidebarMenuButton
+                        render={<NavLink to={item.path} end={item.end} />}
+                      >
+                        <item.icon />
+                        <span>{t(item.label)}</span>
                       </SidebarMenuButton>
                     </SidebarMenuItem>
                   ))}
