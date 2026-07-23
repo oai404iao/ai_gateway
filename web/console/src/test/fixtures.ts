@@ -6,9 +6,11 @@ import type {
   AdminApiKeyView,
   ApiKeyPolicyView,
   ApiKeyView,
+  ChannelDetailView,
   ChannelStatusReport,
   ChannelGroupView,
   ChannelView,
+  ConfigTemplateDetailView,
   ConfigTemplateView,
   ConsoleProfile,
   ConsoleSession,
@@ -140,6 +142,20 @@ export const CHANNEL: ChannelView = {
   updated_at: "2026-01-02T00:00:00.000Z",
 };
 
+export const CHANNEL_DETAIL: ChannelDetailView = {
+  ...CHANNEL,
+  override_document: {
+    version: 1,
+    api_format: "open_ai_chat_completions",
+    request_headers: {
+      set: {
+        "x-channel-source": "console-test",
+      },
+    },
+  },
+  upstream_api_key: "sk-upstream-test-secret",
+};
+
 export const API_KEY_OPTIONS: SelfApiKeyOptions = {
   policy_id: API_KEY_POLICY.id,
   policy_name: API_KEY_POLICY.name,
@@ -242,6 +258,19 @@ export const CONFIG_TEMPLATE: ConfigTemplateView = {
   enabled: true,
   created_at: "2026-01-01T00:00:00.000Z",
   updated_at: "2026-01-02T00:00:00.000Z",
+};
+
+export const CONFIG_TEMPLATE_DETAIL: ConfigTemplateDetailView = {
+  ...CONFIG_TEMPLATE,
+  document: {
+    version: 1,
+    api_format: "open_ai_chat_completions",
+    request_headers: {
+      set: {
+        "x-template-source": "console-test",
+      },
+    },
+  },
 };
 
 export const SYSTEM_SETTINGS: SystemSettings = {

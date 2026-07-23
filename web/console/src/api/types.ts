@@ -62,9 +62,11 @@ export type ControlPlaneUser = S["ControlPlaneUser"];
 export type ControlPlaneModel = S["ControlPlaneModel"];
 export type ChannelGroupView = S["ChannelGroupView"];
 export type ChannelView = S["ChannelView"];
+export type ChannelDetailView = S["ChannelDetailView"];
 export type ModelRuleView = S["ModelRuleView"];
 export type ProxyView = S["ProxyView"];
 export type ConfigTemplateView = S["ConfigTemplateView"];
+export type ConfigTemplateDetailView = S["ConfigTemplateDetailView"];
 
 // Observability + catalog
 export type RequestLogView = S["RequestLogView"];

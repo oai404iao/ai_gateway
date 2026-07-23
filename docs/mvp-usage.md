@@ -162,6 +162,11 @@ Policy 不再保存额度、RPM、并发、格式、权限或最大活动 Key �
 
 大多数可更新资源遵循 `GET` 返回 `ETag`、`PUT` 携带 `If-Match` 的乐观并发模型。控制面写入在 serializable 事务中再次确认 actor 仍为 active admin，校验完整候选快照、写入脱敏审计记录，并在提交后立即发布运行时快照。
 
+渠道与变换模板的列表接口只返回摘要字段；管理员读取单条详情时，渠道响应还会返回
+`upstream_api_key` 与 `override_document`，模板响应会返回 `document`，供 Console
+编辑页回显和直接修改。上述详情响应仍使用 `Cache-Control: no-store`，审计日志继续排除
+上游密钥和变换文档。
+
 `GET /console/v1/system/load` 是只读、管理员权限的当前实例快照。Linux 上从 procfs
 采样主机与网关进程 CPU、内存、load average、RSS、文件描述符和线程数；不支持的平台将对应字段
 返回 `null`。它还返回进程内准入与路由 in-flight 状态、请求日志通知/投影队列、自动禁用队列、

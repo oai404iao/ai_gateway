@@ -1154,6 +1154,12 @@ export interface components {
             created_at: components["schemas"]["DateTime"];
             updated_at: components["schemas"]["DateTime"];
         };
+        ChannelDetailView: components["schemas"]["ChannelView"] & {
+            /** @description Stored channel transform overrides returned for administrator editing. */
+            override_document: components["schemas"]["JsonValue"];
+            /** @description Stored upstream credential returned for administrator review and editing. */
+            upstream_api_key: string | null;
+        };
         ModelRuleView: {
             /** Format: uuid */
             id: string;
@@ -1190,6 +1196,10 @@ export interface components {
             enabled: boolean;
             created_at: components["schemas"]["DateTime"];
             updated_at: components["schemas"]["DateTime"];
+        };
+        ConfigTemplateDetailView: components["schemas"]["ConfigTemplateView"] & {
+            /** @description Stored transform template document returned for administrator editing. */
+            document: components["schemas"]["JsonValue"];
         };
         RequestLogView: {
             /** Format: uuid */
@@ -1537,7 +1547,7 @@ export interface components {
             proxy_id?: string | null;
             /** Format: uuid */
             config_template_id?: string | null;
-            /** @description Omit to preserve the redacted stored document; send `{}` to clear it. */
+            /** @description Omit to preserve the stored document; send `{}` to clear it. */
             override_document?: components["schemas"]["JsonValue"];
             connect_timeout_ms?: number | null;
             response_header_timeout_ms?: number | null;
@@ -1584,7 +1594,7 @@ export interface components {
         ConfigTemplateInput: {
             name: string;
             description?: string | null;
-            /** @description Omit to preserve the redacted stored document; send `{}` to clear it. */
+            /** @description Omit to preserve the stored document; send `{}` to clear it. */
             document?: components["schemas"]["JsonValue"];
             enabled: boolean;
         };
@@ -2854,7 +2864,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ChannelView"];
+                    "application/json": components["schemas"]["ChannelDetailView"];
                 };
             };
             401: components["responses"]["Unauthorized"];
@@ -3181,7 +3191,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ConfigTemplateView"];
+                    "application/json": components["schemas"]["ConfigTemplateDetailView"];
                 };
             };
             401: components["responses"]["Unauthorized"];

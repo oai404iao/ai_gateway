@@ -9,7 +9,8 @@ use uuid::Uuid;
 use crate::{
     domain::AutomaticDisableTrigger,
     persistence::{
-        ConsoleApiKey, ConsoleAuditLog, ControlPlaneLists, ControlPlaneMutation,
+        ConsoleApiKey, ConsoleAuditLog, ControlPlaneChannelDetail,
+        ControlPlaneConfigTemplateDetail, ControlPlaneLists, ControlPlaneMutation,
         ControlPlaneRepository, MutationResult, RepositoryError, SelfApiKeyCreate,
         SelfApiKeyOptions, SelfApiKeyUpdate, SyncedModelInput, SystemSettingsView,
     },
@@ -115,6 +116,23 @@ impl ControlPlaneCoordinator {
 
     pub async fn lists(&self) -> Result<ControlPlaneLists, ControlPlaneError> {
         Ok(self.repository.control_plane_lists().await?)
+    }
+
+    pub async fn channel_detail(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<ControlPlaneChannelDetail>, ControlPlaneError> {
+        Ok(self.repository.control_plane_channel_detail(id).await?)
+    }
+
+    pub async fn config_template_detail(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<ControlPlaneConfigTemplateDetail>, ControlPlaneError> {
+        Ok(self
+            .repository
+            .control_plane_config_template_detail(id)
+            .await?)
     }
 
     pub async fn system_settings(&self) -> Result<SystemSettingsView, ControlPlaneError> {

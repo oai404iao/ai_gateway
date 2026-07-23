@@ -11,9 +11,11 @@ import {
   API_KEY_OPTIONS,
   API_KEY_POLICY,
   CHANNEL,
+  CHANNEL_DETAIL,
   CHANNEL_GROUP,
   CHANNEL_STATUS_REPORT,
   CONFIG_TEMPLATE,
+  CONFIG_TEMPLATE_DETAIL,
   CONTROL_PLANE_USER,
   COST_STATISTICS_REPORT,
   MODEL,
@@ -101,7 +103,7 @@ export const handlers = [
   ),
   http.get("/console/v1/routing/channels", () => HttpResponse.json([CHANNEL])),
   http.get("/console/v1/routing/channels/:id", () =>
-    HttpResponse.json(CHANNEL, {
+    HttpResponse.json(CHANNEL_DETAIL, {
       headers: { ETag: `"${CHANNEL.updated_at}"` },
     }),
   ),
@@ -119,7 +121,7 @@ export const handlers = [
   ),
   http.get("/console/v1/transforms/templates", () => HttpResponse.json([CONFIG_TEMPLATE])),
   http.get("/console/v1/transforms/templates/:id", () =>
-    HttpResponse.json(CONFIG_TEMPLATE, {
+    HttpResponse.json(CONFIG_TEMPLATE_DETAIL, {
       headers: { ETag: `"${CONFIG_TEMPLATE.updated_at}"` },
     }),
   ),

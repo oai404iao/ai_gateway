@@ -6,7 +6,7 @@ import { BrowserRouter } from "react-router";
 import { AppProviders } from "@/app/providers";
 import { AppRouter } from "@/app/router";
 import { server, seedAuthenticatedSession } from "@/test/msw";
-import { CHANNEL } from "@/test/fixtures";
+import { CHANNEL, CHANNEL_DETAIL } from "@/test/fixtures";
 import type { ChannelInput } from "@/api/types";
 
 function renderAppAt(path: string) {
@@ -21,7 +21,7 @@ function renderAppAt(path: string) {
 }
 
 describe("ChannelDetailPage", () => {
-  it("preserves redacted channel documents during a metadata-only update", async () => {
+  it("loads and resubmits the stored upstream key and override document", async () => {
     seedAuthenticatedSession();
     let submitted: ChannelInput | undefined;
     server.use(
@@ -37,13 +37,20 @@ describe("ChannelDetailPage", () => {
     renderAppAt(`/admin/routing/channels/${CHANNEL.id}`);
 
     expect(await screen.findByDisplayValue(CHANNEL.name)).toBeInTheDocument();
+    expect(screen.getByLabelText(/upstream api key/i)).toHaveValue(
+      CHANNEL_DETAIL.upstream_api_key,
+    );
+    await user.click(screen.getByRole("tab", { name: /json configuration/i }));
+    expect(screen.getByLabelText(/transform document json/i)).toHaveValue(
+      JSON.stringify(CHANNEL_DETAIL.override_document, null, 2),
+    );
     await user.click(screen.getByRole("button", { name: /save channel/i }));
 
     await waitFor(() => {
       expect(submitted).toBeDefined();
     });
-    expect(submitted).not.toHaveProperty("override_document");
-    expect(submitted).not.toHaveProperty("upstream_api_key");
+    expect(submitted?.override_document).toEqual(CHANNEL_DETAIL.override_document);
+    expect(submitted?.upstream_api_key).toBe(CHANNEL_DETAIL.upstream_api_key);
     expect(submitted?.status_statistics_enabled).toBe(true);
     expect(submitted?.auto_disable_allowed).toBe(true);
     expect(submitted?.test_model).toBe(CHANNEL.test_model);

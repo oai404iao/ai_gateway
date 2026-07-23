@@ -1001,6 +1001,148 @@ async fn api_key_create_returns_retrievable_prefixed_secret() {
     database.cleanup().await;
 }
 
+/// Channel and transform-template detail endpoints return the stored values
+/// needed by the administrator edit forms, while list responses stay compact.
+#[tokio::test]
+async fn channel_and_template_details_return_stored_editable_values() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+    let group = request(
+        &app,
+        "POST",
+        "/console/v1/routing/channel-groups",
+        serde_json::json!({
+            "name": "editable-detail-group",
+            "api_format": "open_ai_chat_completions",
+            "priority": 1,
+            "selection_strategy": "weighted_random",
+            "enabled": true,
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(group.status(), StatusCode::CREATED);
+    let group_id = body_json(group).await["id"].as_str().unwrap().to_owned();
+
+    let template_document = serde_json::json!({
+        "version": 1,
+        "api_format": "open_ai_chat_completions",
+        "request_headers": {"set": {"x-template-source": "spec-test"}}
+    });
+    let template = request(
+        &app,
+        "POST",
+        "/console/v1/transforms/templates",
+        serde_json::json!({
+            "name": "editable-detail-template",
+            "description": "detail contract",
+            "document": template_document,
+            "enabled": true,
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(template.status(), StatusCode::CREATED);
+    let template_id = body_json(template).await["id"].as_str().unwrap().to_owned();
+
+    let upstream_api_key = "sk-upstream-detail-secret";
+    let override_document = serde_json::json!({
+        "version": 1,
+        "api_format": "open_ai_chat_completions",
+        "request_headers": {"set": {"x-channel-source": "spec-test"}}
+    });
+    let channel = request(
+        &app,
+        "POST",
+        "/console/v1/routing/channels",
+        serde_json::json!({
+            "channel_group_id": group_id,
+            "api_format": "open_ai_chat_completions",
+            "name": "editable-detail-channel",
+            "base_url": "https://editable-detail.example.test",
+            "enabled": true,
+            "weight": 1,
+            "config_template_id": template_id,
+            "override_document": override_document,
+            "upstream_auth_kind": "bearer",
+            "upstream_api_key": upstream_api_key,
+            "available_models": ["editable-detail-model"],
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(channel.status(), StatusCode::CREATED);
+    let channel_id = body_json(channel).await["id"].as_str().unwrap().to_owned();
+
+    let channel_list = request(
+        &app,
+        "GET",
+        "/console/v1/routing/channels",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(channel_list.status(), StatusCode::OK);
+    let channel_list = body_json(channel_list).await;
+    let channel_list_item = channel_list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"] == channel_id)
+        .unwrap();
+    assert!(channel_list_item.get("override_document").is_none());
+    assert!(channel_list_item.get("upstream_api_key").is_none());
+
+    let channel_detail = request(
+        &app,
+        "GET",
+        &format!("/console/v1/routing/channels/{channel_id}"),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(channel_detail.status(), StatusCode::OK);
+    assert!(channel_detail.headers().get(header::ETAG).is_some());
+    let channel_detail = body_json(channel_detail).await;
+    assert_eq!(channel_detail["override_document"], override_document);
+    assert_eq!(channel_detail["upstream_api_key"], upstream_api_key);
+
+    let template_list = request(
+        &app,
+        "GET",
+        "/console/v1/transforms/templates",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(template_list.status(), StatusCode::OK);
+    let template_list = body_json(template_list).await;
+    let template_list_item = template_list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"] == template_id)
+        .unwrap();
+    assert!(template_list_item.get("document").is_none());
+
+    let template_detail = request(
+        &app,
+        "GET",
+        &format!("/console/v1/transforms/templates/{template_id}"),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(template_detail.status(), StatusCode::OK);
+    assert!(template_detail.headers().get(header::ETAG).is_some());
+    assert_eq!(
+        body_json(template_detail).await["document"],
+        template_document
+    );
+
+    database.cleanup().await;
+}
+
 #[tokio::test]
 async fn api_key_policy_only_stores_selectable_targets() {
     let database = TestDatabase::new().await;

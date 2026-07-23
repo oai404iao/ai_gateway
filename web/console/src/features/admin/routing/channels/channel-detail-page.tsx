@@ -26,6 +26,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { AdminDetailShell } from "@/features/admin/components/admin-detail-shell";
 import { TransformDocumentEditor } from "@/features/admin/transforms/transform-document-editor";
 import { DetailField } from "@/components/shared/detail-field";
+import { ApiKeyValue } from "@/components/shared/api-key-value";
 import { StringListField } from "@/components/shared/string-list-field";
 import { NullableNumberField } from "@/components/shared/decimal-field";
 import { StatusBadge } from "@/components/shared/status-badge";
@@ -173,13 +174,13 @@ export function ChannelDetailPage() {
         weight: data.data.weight,
         proxy_id: data.data.proxy_id,
         config_template_id: data.data.config_template_id,
-        override_document: "",
+        override_document: JSON.stringify(data.data.override_document, null, 2) ?? "{}",
         connect_timeout_ms: data.data.connect_timeout_ms,
         response_header_timeout_ms: data.data.response_header_timeout_ms,
         stream_idle_timeout_ms: data.data.stream_idle_timeout_ms,
         upstream_auth_kind: data.data.upstream_auth_kind,
         upstream_auth_header_name: data.data.upstream_auth_header_name,
-        upstream_api_key: "",
+        upstream_api_key: data.data.upstream_api_key ?? "",
         available_models: data.data.available_models,
         test_model: data.data.test_model,
       });
@@ -391,6 +392,17 @@ export function ChannelDetailPage() {
                   value={data.data.upstream_credential_configured ? t("yes") : t("no")}
                 />
                 <DetailField label={t("Weight")} value={data.data.weight} />
+                <DetailField
+                  label={t("Upstream API key")}
+                  value={
+                    data.data.upstream_api_key ? (
+                      <ApiKeyValue value={data.data.upstream_api_key} className="max-w-xl" />
+                    ) : (
+                      "—"
+                    )
+                  }
+                  className="sm:col-span-2"
+                />
               </dl>
             </CardContent>
           </Card>
@@ -664,17 +676,12 @@ export function ChannelDetailPage() {
                     {t("Override document (JSON)")}
                   </FieldLabel>
                   <FieldDescription>
-                    {isNew
-                      ? t("Optional constrained transform document.")
-                      : t(
-                          "The current document is redacted. Leave this blank to preserve it; enter {} to clear it.",
-                        )}
+                    {t("Optional constrained transform document.")}
                   </FieldDescription>
                   <TransformDocumentEditor
                     value={state.override_document}
                     onChange={(override_document) => patch({ override_document })}
                     fixedApiFormat={state.api_format}
-                    preserveWhenBlank={!isNew}
                     onVisualValidationChange={setOverrideDocumentValidation}
                   />
                 </Field>

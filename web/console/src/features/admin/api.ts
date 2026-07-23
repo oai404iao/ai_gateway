@@ -10,9 +10,11 @@ import type {
   AuditLogView,
   ChannelGroupInput,
   ChannelGroupView,
+  ChannelDetailView,
   ChannelInput,
   ChannelView,
   ConfigTemplateCreateInput,
+  ConfigTemplateDetailView,
   ConfigTemplateInput,
   ConfigTemplateView,
   ControlPlaneLists,
@@ -181,7 +183,7 @@ export const useUpdateChannelGroup = makeUpdate<ChannelGroupInput>(
 const CHANNELS_KEY = ["console", "channels"] as const;
 const channelDetailKey = (id: string) => ["console", "channels", id] as const;
 export const useChannels = makeList<ChannelView>("/routing/channels", CHANNELS_KEY);
-export const useChannel = makeDetail<ChannelView>("/routing/channels", channelDetailKey);
+export const useChannel = makeDetail<ChannelDetailView>("/routing/channels", channelDetailKey);
 export const useCreateChannel = makeCreate<ChannelCreateInput, MutationResponse>(
   "/routing/channels",
   CHANNELS_KEY,
@@ -226,7 +228,7 @@ export const useConfigTemplates = makeList<ConfigTemplateView>(
   "/transforms/templates",
   TEMPLATES_KEY,
 );
-export const useConfigTemplate = makeDetail<ConfigTemplateView>(
+export const useConfigTemplate = makeDetail<ConfigTemplateDetailView>(
   "/transforms/templates",
   templateDetailKey,
 );

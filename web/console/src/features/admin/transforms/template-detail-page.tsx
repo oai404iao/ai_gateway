@@ -55,7 +55,7 @@ export function ConfigTemplateDetailPage() {
       setState({
         name: data.data.name,
         description: data.data.description,
-        document: "",
+        document: JSON.stringify(data.data.document, null, 2) ?? "{}",
         enabled: data.data.enabled,
       });
       setDocumentValidation(null);
@@ -164,13 +164,6 @@ export function ConfigTemplateDetailPage() {
         <Card>
           <CardHeader>
             <CardTitle>{isNew ? t("Create template") : t("Edit template")}</CardTitle>
-            {!isNew ? (
-              <CardDescription>
-                {t(
-                  "The current document is redacted. Leave the JSON blank to preserve it; enter {} to clear it.",
-                )}
-              </CardDescription>
-            ) : null}
           </CardHeader>
           <CardContent>
             <div className="flex flex-col gap-4">
@@ -196,15 +189,12 @@ export function ConfigTemplateDetailPage() {
                 <Field>
                   <FieldLabel>{t("Document (JSON)")}</FieldLabel>
                   <FieldDescription>
-                    {isNew
-                      ? t("Constrained transform document.")
-                      : t("Optional replacement document.")}
+                    {t("Constrained transform document.")}
                   </FieldDescription>
                   <TransformDocumentEditor
                     value={state.document}
                     onChange={(document) => patch({ document })}
                     defaultApiFormat={data?.data.api_format ?? undefined}
-                    preserveWhenBlank={!isNew}
                     onVisualValidationChange={setDocumentValidation}
                   />
                 </Field>

@@ -576,8 +576,8 @@ pub struct ChannelInput {
     pub proxy_id: Option<Uuid>,
     #[serde(default)]
     pub config_template_id: Option<Uuid>,
-    /// Omission preserves the current opaque transform document; a present
-    /// value replaces it (including `{}` to clear it).
+    /// Omission preserves the current transform document; a present value
+    /// replaces it (including `{}` to clear it).
     #[serde(default, deserialize_with = "deserialize_optional_document")]
     pub override_document: Option<Value>,
     #[serde(default)]
@@ -654,9 +654,7 @@ pub struct ConfigTemplateInput {
     pub name: String,
     #[serde(default)]
     pub description: Option<String>,
-    /// Template documents are deliberately redacted from reads. Omission on
-    /// update therefore preserves the stored document; a present value
-    /// replaces it.
+    /// Omission preserves the stored document; a present value replaces it.
     #[serde(default, deserialize_with = "deserialize_optional_document")]
     pub document: Option<Value>,
     pub enabled: bool,
@@ -1254,6 +1252,34 @@ pub struct ControlPlaneChannel {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
+#[derive(Serialize, FromRow)]
+pub struct ControlPlaneChannelDetail {
+    pub id: Uuid,
+    pub channel_group_id: Uuid,
+    pub api_format: String,
+    pub name: String,
+    pub base_url: String,
+    pub enabled: bool,
+    pub status_statistics_enabled: bool,
+    pub auto_disabled: bool,
+    pub auto_disabled_reason: Option<String>,
+    pub auto_disable_allowed: bool,
+    pub weight: i32,
+    pub proxy_id: Option<Uuid>,
+    pub config_template_id: Option<Uuid>,
+    pub override_document: Value,
+    pub connect_timeout_ms: Option<i32>,
+    pub response_header_timeout_ms: Option<i32>,
+    pub stream_idle_timeout_ms: Option<i32>,
+    pub upstream_auth_kind: String,
+    pub upstream_auth_header_name: Option<String>,
+    pub upstream_api_key: Option<String>,
+    pub upstream_credential_configured: bool,
+    pub available_models: Vec<String>,
+    pub test_model: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
 #[derive(FromRow)]
 struct ControlPlaneChannelRow {
     id: Uuid,
@@ -1340,6 +1366,17 @@ pub struct ControlPlaneConfigTemplate {
     pub name: String,
     pub description: Option<String>,
     pub api_format: Option<String>,
+    pub enabled: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+#[derive(Serialize, FromRow)]
+pub struct ControlPlaneConfigTemplateDetail {
+    pub id: Uuid,
+    pub name: String,
+    pub description: Option<String>,
+    pub api_format: Option<String>,
+    pub document: Value,
     pub enabled: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -3374,6 +3411,32 @@ impl ControlPlaneRepository {
         })
     }
 
+    pub async fn control_plane_channel_detail(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<ControlPlaneChannelDetail>, RepositoryError> {
+        sqlx::query_as::<_, ControlPlaneChannelDetail>(
+            "SELECT id,channel_group_id,api_format::text AS api_format,name,base_url,enabled,status_statistics_enabled,auto_disabled,auto_disabled_reason,auto_disable_allowed,weight,proxy_id,config_template_id,override_document,connect_timeout_ms,response_header_timeout_ms,stream_idle_timeout_ms,upstream_auth_kind,upstream_auth_header_name,upstream_api_key,(upstream_api_key IS NOT NULL) AS upstream_credential_configured,available_models,test_model,created_at,updated_at FROM channels WHERE id=$1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(RepositoryError::from)
+    }
+
+    pub async fn control_plane_config_template_detail(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<ControlPlaneConfigTemplateDetail>, RepositoryError> {
+        sqlx::query_as::<_, ControlPlaneConfigTemplateDetail>(
+            "SELECT id,name,description,document->>'api_format' AS api_format,document,enabled,created_at,updated_at FROM config_templates WHERE id=$1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(RepositoryError::from)
+    }
+
     pub async fn audit_logs(&self, limit: i64) -> Result<Vec<ConsoleAuditLog>, RepositoryError> {
         sqlx::query_as::<_, ConsoleAuditLog>(
             "SELECT id,occurred_at,actor_user_id,actor_type,actor_role,action,object_type,object_id,before_redacted,after_redacted,correlation_id,reason FROM audit_logs ORDER BY occurred_at DESC,id DESC LIMIT $1",
@@ -4190,9 +4253,8 @@ async fn channel_audit(
     transaction: &mut Transaction<'_, Postgres>,
     id: Uuid,
 ) -> Result<Value, RepositoryError> {
-    // Keep this allowlist aligned with `ControlPlaneChannel`: channel documents are
-    // intentionally opaque today and must never leave the database through
-    // either management responses or audit snapshots.
+    // Audit snapshots remain allowlisted even though authorized detail reads
+    // expose the stored credential and transform document for editing.
     let value = sqlx::query_scalar::<_, Value>(
         "SELECT json_build_object('id',id,'channel_group_id',channel_group_id,'api_format',api_format,'name',name,'base_url',base_url,'enabled',enabled,'status_statistics_enabled',status_statistics_enabled,'auto_disabled',auto_disabled,'auto_disabled_reason',auto_disabled_reason,'auto_disable_allowed',auto_disable_allowed,'weight',weight,'proxy_id',proxy_id,'config_template_id',config_template_id,'connect_timeout_ms',connect_timeout_ms,'response_header_timeout_ms',response_header_timeout_ms,'stream_idle_timeout_ms',stream_idle_timeout_ms,'upstream_auth_kind',upstream_auth_kind,'upstream_auth_header_name',upstream_auth_header_name,'upstream_credential_configured',(upstream_api_key IS NOT NULL),'available_models',available_models,'test_model',test_model,'created_at',created_at,'updated_at',updated_at) FROM channels WHERE id=$1 FOR UPDATE",
     )

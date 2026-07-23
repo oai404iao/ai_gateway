@@ -2341,7 +2341,7 @@ async fn invalid_routing_dependency_rolls_back_database_audit_and_snapshot() {
 }
 
 #[tokio::test]
-async fn proxy_template_management_is_redacted_and_publishes_or_rolls_back_atomically() {
+async fn proxy_template_management_exposes_editable_documents_and_keeps_audits_redacted() {
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
     let (app, runtime) = admin_app(database.pool.clone(), seed.user).await;
@@ -2497,8 +2497,8 @@ async fn proxy_template_management_is_redacted_and_publishes_or_rolls_back_atomi
             .to_bytes(),
     )
     .unwrap();
-    assert!(template_detail.get("document").is_none());
-    assert!(!template_detail.to_string().contains(template_value));
+    assert_eq!(template_detail["document"], template_document);
+    assert!(template_detail.to_string().contains(template_value));
     assert_eq!(
         admin_request_with_headers(
             app.clone(),
@@ -2614,8 +2614,12 @@ async fn proxy_template_management_is_redacted_and_publishes_or_rolls_back_atomi
     let channel_read: serde_json::Value =
         serde_json::from_slice(&channel_read.into_body().collect().await.unwrap().to_bytes())
             .unwrap();
-    assert!(channel_read.get("override_document").is_none());
-    assert!(!channel_read.to_string().contains(channel_value));
+    assert_eq!(
+        channel_read["override_document"],
+        valid_channel["override_document"]
+    );
+    assert_eq!(channel_read["upstream_api_key"], "upstream-secret");
+    assert!(channel_read.to_string().contains(channel_value));
     let mut metadata_only_channel = valid_channel.clone();
     metadata_only_channel
         .as_object_mut()
@@ -2830,7 +2834,7 @@ async fn overly_long_revoke_reason_is_a_safe_unprocessable_response() {
 }
 
 #[tokio::test]
-async fn management_channel_credentials_are_redacted_kept_replaced_and_cleared_safely() {
+async fn management_channel_credentials_are_visible_kept_replaced_and_cleared_safely() {
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
     let (app, _) = admin_app(database.pool.clone(), seed.user).await;
@@ -2842,7 +2846,7 @@ async fn management_channel_credentials_are_redacted_kept_replaced_and_cleared_s
     let detail: serde_json::Value =
         serde_json::from_slice(&detail.into_body().collect().await.unwrap().to_bytes()).unwrap();
     assert_eq!(detail["upstream_credential_configured"], true);
-    assert!(!detail.to_string().contains("upstream-secret"));
+    assert_eq!(detail["upstream_api_key"], "upstream-secret");
 
     let update = |credential: serde_json::Value| {
         serde_json::json!({
@@ -2895,7 +2899,7 @@ async fn management_channel_credentials_are_redacted_kept_replaced_and_cleared_s
 }
 
 #[tokio::test]
-async fn channel_documents_are_rejected_and_never_escape_admin_or_audit_allowlists() {
+async fn channel_documents_are_rejected_and_never_escape_audit_allowlists() {
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
     let (app, _) = admin_app(database.pool.clone(), seed.user).await;
@@ -2950,21 +2954,7 @@ async fn channel_documents_are_rejected_and_never_escape_admin_or_audit_allowlis
     let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
     let detail: serde_json::Value =
         serde_json::from_slice(&detail.into_body().collect().await.unwrap().to_bytes()).unwrap();
-    let rendered = detail.to_string();
-    assert!(detail.get("override_document").is_none());
-    for forbidden in [
-        "Authorization",
-        "cookie",
-        "body",
-        "nested-authorization-secret",
-        "nested-cookie-secret",
-        "nested-body-secret",
-    ] {
-        assert!(
-            !rendered.contains(forbidden),
-            "public response leaked {forbidden}"
-        );
-    }
+    assert_eq!(detail["override_document"], persisted_override);
 
     let valid_update = serde_json::json!({
         "channel_group_id": seed.group, "api_format": "open_ai_chat_completions",

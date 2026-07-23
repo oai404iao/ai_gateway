@@ -999,7 +999,13 @@ async fn get_channel(
     State(state): State<ConsoleState>,
     Path(id): Path<Uuid>,
 ) -> Result<Response, ConsoleError> {
-    get_resource(state, id, Resource::Channel).await
+    let value = state
+        .coordinator
+        .channel_detail(id)
+        .await?
+        .map(to_json)
+        .ok_or(ConsoleError::NotFound)?;
+    resource_response(value)
 }
 
 async fn update_channel(
@@ -1133,7 +1139,13 @@ async fn get_config_template(
     State(state): State<ConsoleState>,
     Path(id): Path<Uuid>,
 ) -> Result<Response, ConsoleError> {
-    get_resource(state, id, Resource::ConfigTemplate).await
+    let value = state
+        .coordinator
+        .config_template_detail(id)
+        .await?
+        .map(to_json)
+        .ok_or(ConsoleError::NotFound)?;
+    resource_response(value)
 }
 
 async fn update_config_template(
@@ -1275,10 +1287,8 @@ enum Resource {
     Model,
     ApiKey,
     Group,
-    Channel,
     Rule,
     Proxy,
-    ConfigTemplate,
 }
 
 async fn get_resource(
@@ -1313,11 +1323,6 @@ async fn get_resource(
             .into_iter()
             .find(|item| item.id == id)
             .map(to_json),
-        Resource::Channel => lists
-            .channels
-            .into_iter()
-            .find(|item| item.id == id)
-            .map(to_json),
         Resource::Rule => lists
             .model_rules
             .into_iter()
@@ -1328,13 +1333,12 @@ async fn get_resource(
             .into_iter()
             .find(|item| item.id == id)
             .map(to_json),
-        Resource::ConfigTemplate => lists
-            .config_templates
-            .into_iter()
-            .find(|item| item.id == id)
-            .map(to_json),
     }
     .ok_or(ConsoleError::NotFound)?;
+    resource_response(value)
+}
+
+fn resource_response(value: serde_json::Value) -> Result<Response, ConsoleError> {
     let updated_at: DateTime<Utc> =
         serde_json::from_value(value["updated_at"].clone()).map_err(|_| ConsoleError::Internal)?;
     let mut response = Json(value).into_response();

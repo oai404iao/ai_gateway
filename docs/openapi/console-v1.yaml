@@ -842,7 +842,7 @@ paths:
             ETag: { $ref: "#/components/headers/ETag" }
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/ChannelView" }
+              schema: { $ref: "#/components/schemas/ChannelDetailView" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
@@ -1070,7 +1070,7 @@ paths:
             ETag: { $ref: "#/components/headers/ETag" }
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/ConfigTemplateView" }
+              schema: { $ref: "#/components/schemas/ConfigTemplateDetailView" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
@@ -2064,6 +2064,20 @@ components:
         created_at: { $ref: "#/components/schemas/DateTime" }
         updated_at: { $ref: "#/components/schemas/DateTime" }
 
+    ChannelDetailView:
+      allOf:
+        - $ref: "#/components/schemas/ChannelView"
+        - type: object
+          required: [override_document, upstream_api_key]
+          properties:
+            override_document:
+              allOf: [{ $ref: "#/components/schemas/JsonValue" }]
+              description: Stored channel transform overrides returned for administrator editing.
+            upstream_api_key:
+              type: string
+              nullable: true
+              description: Stored upstream credential returned for administrator review and editing.
+
     ModelRuleView:
       type: object
       required:
@@ -2115,6 +2129,16 @@ components:
         enabled: { type: boolean }
         created_at: { $ref: "#/components/schemas/DateTime" }
         updated_at: { $ref: "#/components/schemas/DateTime" }
+
+    ConfigTemplateDetailView:
+      allOf:
+        - $ref: "#/components/schemas/ConfigTemplateView"
+        - type: object
+          required: [document]
+          properties:
+            document:
+              allOf: [{ $ref: "#/components/schemas/JsonValue" }]
+              description: Stored transform template document returned for administrator editing.
 
     RequestLogView:
       type: object
@@ -2636,7 +2660,7 @@ components:
         config_template_id: { type: string, format: uuid, nullable: true }
         override_document:
           allOf: [{ $ref: "#/components/schemas/JsonValue" }]
-          description: Omit to preserve the redacted stored document; send `{}` to clear it.
+          description: Omit to preserve the stored document; send `{}` to clear it.
         connect_timeout_ms: { type: integer, minimum: 1, nullable: true }
         response_header_timeout_ms: { type: integer, minimum: 1, nullable: true }
         stream_idle_timeout_ms: { type: integer, minimum: 1, nullable: true }
@@ -2710,7 +2734,7 @@ components:
         description: { type: string, nullable: true }
         document:
           allOf: [{ $ref: "#/components/schemas/JsonValue" }]
-          description: Omit to preserve the redacted stored document; send `{}` to clear it.
+          description: Omit to preserve the stored document; send `{}` to clear it.
         enabled: { type: boolean }
 
     ModelSyncPreviewRequest:
