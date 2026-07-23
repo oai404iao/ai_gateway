@@ -87,8 +87,13 @@ export function LoginPage() {
         </form>
         <p className="mt-4 text-center text-xs text-muted-foreground">
           {t("Received an invitation?")}{" "}
-          <Button variant="link" size="xs" asChild>
-            <Link to="/activate-invitation">{t("Activate it")}</Link>
+          <Button
+            variant="link"
+            size="xs"
+            render={<Link to="/activate-invitation" />}
+            nativeButton={false}
+          >
+            {t("Activate it")}
           </Button>
         </p>
       </CardContent>

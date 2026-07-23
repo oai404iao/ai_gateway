@@ -147,8 +147,8 @@ function NotFound() {
       description={t("The page you were looking for does not exist.")}
       className="min-h-80 border"
       actions={
-        <Button asChild>
-          <Link to="/account">{t("Back to account")}</Link>
+        <Button render={<Link to="/account" />} nativeButton={false}>
+          {t("Back to account")}
         </Button>
       }
     />
