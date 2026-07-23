@@ -73,7 +73,7 @@ jobs:
           ./scripts/release-notes.sh "$version" > target/release-package/RELEASE_NOTES.md
 
       - name: Upload release assets
-        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-assets
           path: target/release-package/
@@ -81,21 +81,29 @@ jobs:
           retention-days: 1
           compression-level: 0
 
-  publish-image:
+  publish-platform-images:
+    name: publish-platform-image (${{ matrix.arch }})
     needs: verify
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     permissions:
       contents: read
       packages: write
-      id-token: write
-      attestations: write
     env:
       IMAGE_NAME: ghcr.io/oai404iao/ai_gateway
       DOCKER_BUILD_RECORD_UPLOAD: "false"
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
@@ -118,23 +126,123 @@ jobs:
             type=semver,pattern={{major}},enable=${{ !contains(github.ref_name, '-') }}
             type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
 
-      - name: Build and publish image
+      - name: Build and publish platform image
         id: image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.metadata.outputs.tags }}
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
           labels: ${{ steps.metadata.outputs.labels }}
           cache-from: |
-            type=gha,scope=ci-image
-            type=gha,scope=release-image
-          cache-to: type=gha,mode=max,scope=release-image
+            type=gha,scope=ci-image-${{ matrix.arch }}
+            type=gha,scope=release-image-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=release-image-${{ matrix.arch }}
           build-args: |
             VERSION=${{ steps.metadata.outputs.version }}
             REVISION=${{ github.sha }}
             SOURCE_URL=${{ github.server_url }}/${{ github.repository }}
+
+      - name: Export image digest
+        shell: bash
+        run: |
+          digest="${{ steps.image.outputs.digest }}"
+          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::Unexpected image digest: $digest"
+            exit 1
+          fi
+          mkdir -p /tmp/digests
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload image digest
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: image-digest-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  publish-image:
+    needs: publish-platform-images
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    env:
+      IMAGE_NAME: ghcr.io/oai404iao/ai_gateway
+    steps:
+      - name: Download image digests
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          pattern: image-digest-*
+          path: /tmp/digests
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate image metadata
+        id: metadata
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          flavor: latest=false
+          labels: |
+            org.opencontainers.image.licenses=AGPL-3.0-only
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ !contains(github.ref_name, '-') }}
+            type=semver,pattern={{major}},enable=${{ !contains(github.ref_name, '-') }}
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+
+      - name: Create multi-platform image
+        id: image
+        working-directory: /tmp/digests
+        shell: bash
+        run: |
+          mapfile -t tags < <(jq -r '.tags[]' <<<"$DOCKER_METADATA_OUTPUT_JSON")
+          if (( ${#tags[@]} == 0 )); then
+            echo "::error::No image tags were generated"
+            exit 1
+          fi
+
+          args=()
+          for tag in "${tags[@]}"; do
+            args+=("-t" "$tag")
+          done
+
+          shopt -s nullglob
+          digest_files=(*)
+          if (( ${#digest_files[@]} != 2 )); then
+            echo "::error::Expected 2 platform digests, found ${#digest_files[@]}"
+            exit 1
+          fi
+          for digest in "${digest_files[@]}"; do
+            if [[ ! "$digest" =~ ^[0-9a-f]{64}$ ]]; then
+              echo "::error::Unexpected digest filename: $digest"
+              exit 1
+            fi
+            args+=("${IMAGE_NAME}@sha256:${digest}")
+          done
+
+          docker buildx imagetools create "${args[@]}"
+
+          inspect="$(docker buildx imagetools inspect "${tags[0]}")"
+          printf '%s\n' "$inspect"
+          digest="$(awk '$1 == "Digest:" { print $2; exit }' <<<"$inspect")"
+          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::Unable to resolve multi-platform image digest"
+            exit 1
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
       - name: Attest public image provenance
         if: ${{ github.event.repository.private == false }}

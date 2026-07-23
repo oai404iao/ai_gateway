@@ -5,7 +5,8 @@ ARG RUST_VERSION=1.85.0
 ARG CARGO_CHEF_VERSION=0.1.71
 ARG CARGO_CHEF_DIGEST=sha256:534c4d975e252b30309ca779af73d3a5932dbef19e40a5057980c14f3364984e
 
-FROM node:${NODE_VERSION}-bookworm-slim AS console-builder
+# Static Console assets are architecture-independent; build them natively.
+FROM --platform=$BUILDPLATFORM node:${NODE_VERSION}-bookworm-slim AS console-builder
 ARG PNPM_VERSION=11.7.0
 ENV PNPM_HOME=/pnpm
 ENV PATH="${PNPM_HOME}:${PATH}"
@@ -19,14 +20,14 @@ RUN --mount=type=cache,target=/pnpm/store \
 COPY web/console ./web/console
 RUN pnpm --dir web/console build
 
-FROM lukemathwalker/cargo-chef:${CARGO_CHEF_VERSION}-rust-${RUST_VERSION}-bookworm@${CARGO_CHEF_DIGEST} AS chef
+# The cargo-chef recipe is architecture-independent; only compilation targets the image platform.
+FROM --platform=$BUILDPLATFORM lukemathwalker/cargo-chef:${CARGO_CHEF_VERSION}-rust-${RUST_VERSION}-bookworm@${CARGO_CHEF_DIGEST} AS planner
 WORKDIR /workspace
-
-FROM chef AS planner
 COPY . .
 RUN cargo chef prepare --recipe-path recipe.json
 
-FROM chef AS builder
+FROM lukemathwalker/cargo-chef:${CARGO_CHEF_VERSION}-rust-${RUST_VERSION}-bookworm@${CARGO_CHEF_DIGEST} AS builder
+WORKDIR /workspace
 COPY --from=planner /workspace/recipe.json recipe.json
 RUN cargo chef cook \
       --locked \

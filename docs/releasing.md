@@ -68,12 +68,18 @@ PostgreSQL 集成测试要求先启动 `docker compose up -d`。性能 Harness �
    Rust workspace、Console 和 embedded UI 门禁。
 2. 构建 release 二进制，生成包含项目许可证和第三方声明的 Linux tarball、
    `SHA256SUMS` 与 release notes，并以一天保留期暂存为 Actions artifact。
-3. 仅拥有 `packages: write` 的 `publish-image` job 使用
-   `docker/metadata-action` 生成 tag/OCI labels，构建并推送
-   `linux/amd64`、`linux/arm64` 镜像。
-4. Public 仓库额外为镜像生成并推送 GitHub artifact attestation；Private
-   仓库会跳过此步骤。
-5. 仅拥有 `contents: write` 的 `publish-release` job 创建 GitHub Release
+3. `publish-platform-images` matrix 分别在原生 `ubuntu-24.04`
+   (`linux/amd64`) 与 `ubuntu-24.04-arm` (`linux/arm64`) runner 上并行构建，
+   以平台 digest 推送镜像，避免使用 QEMU 编译 Rust；Dockerfile 中与架构无关的
+   Console 构建和 `cargo-chef prepare` 阶段固定在 `$BUILDPLATFORM`。
+4. 平台构建使用独立的 `ci-image-<arch>` / `release-image-<arch>` GitHub
+   Actions cache scope；普通 CI 预热 AMD64 cache，成功的 Release 构建分别
+   持久化两个架构的 cache。
+5. `publish-image` job 下载两个平台 digest，生成稳定版或预发布版 tag，并将
+   它们合并为一个 multi-platform manifest。
+6. Public 仓库额外为最终 multi-platform 镜像生成并推送 GitHub artifact
+   attestation；Private 仓库会跳过此步骤。
+7. 仅拥有 `contents: write` 的 `publish-release` job 创建 GitHub Release
    并上传资产。
 
 稳定版本会发布精确版本、`major.minor`、`major` 与 `latest`；预发布版本只发布
