@@ -15,6 +15,11 @@ Versioning.
 - Draft channel model discovery through the upstream OpenAI-compatible
   `/v1/models` endpoint, with searchable multi-select editing in the Console.
 
+### Changed
+
+- Migrated CI and tagged release automation from Gitea Actions to GitHub
+  Actions, GitHub Releases, and GitHub Container Registry.
+
 ## [0.1.0] - 2026-07-22
 
 ### Added

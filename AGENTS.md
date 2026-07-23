@@ -63,8 +63,8 @@ repo/
 |-- docs/console-ui-design.md    # Console Web UI architecture and implementation plan
 |-- docs/forwarding-performance.md # Manual performance-harness design, profiles, metrics, and safety model
 |-- docs/production-deployment.md # Full-stack Docker Compose deployment, secrets, upgrades, and rollback boundaries
-|-- docs/releasing.md           # SemVer, release gates, tags, Gitea Release assets, and image publication
-|-- .gitea/workflows/           # Gitea Actions CI plus v* tag release workflow
+|-- docs/releasing.md           # SemVer, release gates, tags, GitHub Release assets, and GHCR image publication
+|-- .github/workflows/          # GitHub Actions CI plus v* tag release workflow
 |-- config/                     # Ignored runtime config, DB password, JWT keys
 |-- config.example.toml         # Canonical configuration template
 |-- deploy/compose/             # Container-specific TOML and Compose environment templates
@@ -140,8 +140,8 @@ tests. `cargo test` is the baseline Rust verification. The ignored
 `./scripts/run-real-upstream-smoke.sh`; see `docs/real-upstream-smoke.md`.
 **Any change to the forwarding path must also run this real-upstream script
 before completion.** It serially verifies both `/v1/chat/completions` and
-`/v1/responses`, with non-streaming and SSE requests. Gitea Actions workflows
-under `.gitea/workflows/` run the ordinary CI and tag release paths.
+`/v1/responses`, with non-streaming and SSE requests. GitHub Actions workflows
+under `.github/workflows/` run the ordinary CI and tag release paths.
 `docker-compose.yml` remains the PostgreSQL-only development/baseline stack;
 `docker-compose.prd.yaml` adds the containerized Gateway. Neither stack
 provides HA, PITR, or backups.
@@ -269,7 +269,7 @@ Axum HTTP
 11. **Performance runs are always opt-in.** `tools/forwarding-perf/` is a separate workspace package and its unit tests are lightweight, but `scripts/run-forwarding-perf.sh` starts release processes and generates sustained concurrent traffic. Do not invoke either the `quick` or `standard` profile without an explicit user request. The harness must keep using random `ai_gateway_perf_*` databases and must never point its admin URL at the normal `ai_gateway` database.
 12. **Request-log durability has two backlogs.** Production uses a process-unique local spool, then `request_log_ingest`, then the indexed `request_logs` table and settlement. Notification-queue fullness is harmless, but spool append errors are not. Never checkpoint before COPY commit or delete ingress rows before final-table persistence succeeds; both replay paths rely on UUID idempotency.
 13. **Container secrets are copied before privilege drop.** Local Compose file-backed secrets may retain host ownership/mode. `deploy/docker/entrypoint.sh` starts as root, copies config and secrets into a private tmpfs, fixes the persistent spool ownership, then executes the Gateway as UID/GID 10001. Do not bypass that entrypoint in production.
-14. **Release tags are deployment inputs.** `.gitea/workflows/release.yml` is tag-triggered. Version drift or a missing dated Changelog entry fails the release; registry credentials are optional for binary Releases but required to push OCI images.
+14. **Release tags are deployment inputs.** `.github/workflows/release.yml` is tag-triggered. Version drift or a missing dated Changelog entry fails the release; the workflow uses `GITHUB_TOKEN` to publish both GitHub Release assets and `ghcr.io/oai404iao/ai_gateway`.
 
 ## Code Style
 
@@ -303,7 +303,7 @@ Axum HTTP
 | Container configuration template | `deploy/compose/config.example.toml` |
 | Full production Compose | `docker-compose.prd.yaml` and `docs/production-deployment.md` |
 | Release process/version checks | `docs/releasing.md`, `scripts/release.sh`, and `scripts/check-release-version.sh` |
-| CI/release automation | `.gitea/workflows/ci.yml` and `.gitea/workflows/release.yml` |
+| CI/release automation | `.github/workflows/ci.yml` and `.github/workflows/release.yml` |
 | Console API contract (request/response shapes) | `docs/openapi/console-v1.yaml` |
 | Console UI generated TypeScript types | `web/console/src/api/generated/console-v1.d.ts` (regenerate via `pnpm --dir web/console generate:api`) |
 | Console UI architecture and implementation plan | `docs/console-ui-design.md` |

@@ -17,9 +17,9 @@
 2. 更新上方所有版本位置。
 3. 在 `CHANGELOG.md` 将变更归入目标版本，并使用 `YYYY-MM-DD` 日期。
 4. 确认工作树只包含发布相关变更，并通过代码评审。
-5. 配置 Gitea Actions runner。若要推送容器镜像，再配置仓库 secrets：
-   - `REGISTRY_USERNAME`
-   - `REGISTRY_TOKEN`（拥有目标 Gitea Container Registry 写权限的 PAT）
+5. 确认 GitHub Actions 已启用。发布工作流使用仓库自动提供的
+   `GITHUB_TOKEN` 创建 GitHub Release 并推送 GHCR，不需要额外配置 Registry
+   用户名或 PAT。
 
 版本一致性可单独检查：
 
@@ -58,30 +58,34 @@ PostgreSQL 集成测试要求先启动 `docker compose up -d`。性能 Harness �
 
 已发布 tag 不得移动、覆盖或复用。发现问题时发布新的 patch 版本；不要强推旧 tag。
 
-## Gitea Actions 发布产物
+## GitHub Actions 发布产物
 
-`.gitea/workflows/release.yml` 在 `v*.*.*` tag 推送后：
+`.github/workflows/release.yml` 在 `v*.*.*` tag 推送后：
 
 1. 再次校验 tag、代码版本与 Changelog。
 2. 构建嵌入 Console UI 的 release 二进制。
 3. 生成 Linux release tarball 与 `SHA256SUMS`。
 4. 构建 `linux/amd64`、`linux/arm64` OCI 镜像。
-5. 若配置 Registry secrets，推送精确版本 tag；稳定版本还推送
+5. 推送到 `ghcr.io/oai404iao/ai_gateway` 的精确版本 tag；稳定版本还推送
    `major.minor`、`major` 与 `latest`。
-6. 使用 Actions 自动注入的 `GITEA_TOKEN` 创建或更新 Gitea Release 并上传资产。
+6. 使用 Actions 自动注入的 `GITHUB_TOKEN` 创建 GitHub Release 并上传资产。
 
-Registry secrets 未配置时，工作流仍验证 Docker 构建并发布二进制 Release，但不会
-推送镜像。生产 Compose 可以改用本地 build。
+首次发布的 GHCR Package 默认是私有的，并与源码仓库分别管理可见性。仓库未来
+转为 Public 时，还需在 Package 设置中单独确认镜像是否公开。已经发布的 GitHub
+Release 不会被工作流覆盖；修复发布问题应使用新的 patch 版本。
+
+迁移时推送的旧 tag 不会补发 GitHub Release，因为对应历史提交中还没有
+`.github/workflows/release.yml`。首次自动发布应创建一个包含该工作流的新版本 tag。
 
 ## 发布后验证
 
 ```bash
 git ls-remote --tags origin refs/tags/v0.1.0
 
-docker pull git.local.hisir.top/local/ai_gateway:0.1.0
-docker run --rm git.local.hisir.top/local/ai_gateway:0.1.0 --version
+docker pull ghcr.io/oai404iao/ai_gateway:0.1.0
+docker run --rm ghcr.io/oai404iao/ai_gateway:0.1.0 --version
 ```
 
 随后在隔离环境按 `docs/production-deployment.md` 启动完整 Compose，验证
-`/health`、Console 登录、migration、spool 与数据库投影。若没有发布镜像，
-跳过 `docker pull`，从对应 tag 构建。
+`/health`、Console 登录、migration、spool 与数据库投影。私有 Package 需要先
+登录 GHCR；也可以从对应 tag 本地构建。

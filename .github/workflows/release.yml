@@ -5,9 +5,18 @@ on:
     tags:
       - "v*.*.*"
 
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   release:
     runs-on: ubuntu-latest
+    timeout-minutes: 180
     services:
       postgres:
         image: postgres:18.4-alpine
@@ -15,23 +24,23 @@ jobs:
           POSTGRES_DB: postgres
           POSTGRES_USER: ai_gateway
           POSTGRES_PASSWORD: release-test-password
+        ports:
+          - 5432:5432
         options: >-
           --health-cmd "pg_isready -U ai_gateway -d postgres"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
     env:
-      TEST_DATABASE_ADMIN_URL: postgres://ai_gateway:release-test-password@postgres:5432/postgres
-      REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
-      REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+      TEST_DATABASE_ADMIN_URL: postgres://ai_gateway:release-test-password@127.0.0.1:5432/postgres
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 24
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 11.7.0
           run_install: false
@@ -62,19 +71,20 @@ jobs:
           ./scripts/package-release.sh "$version"
           ./scripts/release-notes.sh "$version" > target/release-package/RELEASE_NOTES.md
 
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-      - name: Build and optionally publish image
-        env:
-          GITEA_SERVER_URL: ${{ gitea.server_url }}
-          GITEA_REPOSITORY: ${{ gitea.repository }}
-          GITEA_SHA: ${{ gitea.sha }}
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish image
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
-          registry="${GITEA_SERVER_URL#https://}"
-          registry="${registry#http://}"
-          image="${registry}/${GITEA_REPOSITORY}"
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
           tags=(--tag "${image}:${version}")
 
           if [[ "$version" != *-* ]]; then
@@ -88,39 +98,23 @@ jobs:
             )
           fi
 
-          if [[ -n "$REGISTRY_USERNAME" && -n "$REGISTRY_TOKEN" ]]; then
-            printf '%s' "$REGISTRY_TOKEN" |
-              docker login "$registry" \
-                --username "$REGISTRY_USERNAME" \
-                --password-stdin
-            docker buildx build \
-              --platform linux/amd64,linux/arm64 \
-              --push \
-              "${tags[@]}" \
-              --build-arg "VERSION=${version}" \
-              --build-arg "REVISION=${GITEA_SHA}" \
-              --build-arg "SOURCE_URL=${GITEA_SERVER_URL}/${GITEA_REPOSITORY}" \
-              .
-          else
-            echo "::warning::REGISTRY_USERNAME/REGISTRY_TOKEN are unset; image will not be pushed"
-            docker buildx build \
-              --platform linux/amd64 \
-              --load \
-              "${tags[@]}" \
-              --build-arg "VERSION=${version}" \
-              --build-arg "REVISION=${GITEA_SHA}" \
-              --build-arg "SOURCE_URL=${GITEA_SERVER_URL}/${GITEA_REPOSITORY}" \
-              .
-          fi
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --push \
+            --cache-from type=gha,scope=release-image \
+            --cache-to type=gha,mode=max,scope=release-image \
+            "${tags[@]}" \
+            --build-arg "VERSION=${version}" \
+            --build-arg "REVISION=${GITHUB_SHA}" \
+            --build-arg "SOURCE_URL=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+            .
 
-      - name: Publish Gitea release
+      - name: Publish GitHub release
         env:
-          GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
-          GITEA_API_URL: ${{ gitea.api_url }}
-          GITEA_REPOSITORY: ${{ gitea.repository }}
-          GITEA_SHA: ${{ gitea.sha }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: |
-          ./scripts/publish-gitea-release.sh \
+          ./scripts/publish-github-release.sh \
             "$GITHUB_REF_NAME" \
             target/release-package/RELEASE_NOTES.md \
             target/release-package/*.tar.gz \

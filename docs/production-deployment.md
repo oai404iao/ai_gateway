@@ -55,8 +55,9 @@ docker compose \
   pull gateway
 ```
 
-私有 Registry 需要先执行 `docker login <registry>`。若发布流程没有配置
-Registry 凭据，则该版本可能只有 Gitea Release 二进制包；此时使用下方本地构建。
+私有 GHCR Package 需要先执行 `docker login ghcr.io`。tag 发布工作流会同时
+发布 GHCR 镜像与 GitHub Release 二进制包；若当前主机不能访问 GHCR，则使用
+下方本地构建。
 
 ### 从当前 checkout 构建
 
