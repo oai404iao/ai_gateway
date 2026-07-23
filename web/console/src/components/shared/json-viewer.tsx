@@ -34,14 +34,12 @@ export function JsonViewer({ value, className }: JsonViewerProps) {
 
   return (
     <Collapsible open={open} onOpenChange={setOpen} className={className}>
-      <CollapsibleTrigger asChild>
-        <Button variant="ghost" size="xs">
-          <ChevronRight
-            data-icon="inline-start"
-            className={cn("transition-transform", open && "rotate-90")}
-          />
-          {open ? t("Collapse") : t("Expand")}
-        </Button>
+      <CollapsibleTrigger render={<Button variant="ghost" size="xs" />}>
+        <ChevronRight
+          data-icon="inline-start"
+          className={cn("transition-transform", open && "rotate-90")}
+        />
+        {open ? t("Collapse") : t("Expand")}
       </CollapsibleTrigger>
       <CollapsibleContent>
         <ScrollArea className="mt-1 max-h-80 rounded-md border bg-muted/40">
