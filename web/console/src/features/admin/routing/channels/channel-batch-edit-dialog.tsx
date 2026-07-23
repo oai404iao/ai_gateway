@@ -308,10 +308,10 @@ export function ChannelBatchEditDialog({
         </FieldGroup>
 
         <DialogFooter>
-          <DialogClose asChild>
-            <Button variant="outline" disabled={update.isPending}>
-              {t("Cancel")}
-            </Button>
+          <DialogClose
+            render={<Button variant="outline" disabled={update.isPending} />}
+          >
+            {t("Cancel")}
           </DialogClose>
           <Button
             onClick={submit}
