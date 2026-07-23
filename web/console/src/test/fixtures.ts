@@ -47,6 +47,15 @@ export const ADMIN_PROFILE: ConsoleProfile = {
 
 export const ADMIN_ACCESS_TOKEN = "test-access-token-admin";
 
+export const USER_USER: ConsoleUser = {
+  id: "00000000-0000-0000-0000-000000000002",
+  email: "user@example.com",
+  display_name: "Console User",
+  role: "user",
+};
+
+export const USER_ACCESS_TOKEN = "test-access-token-user";
+
 export const ADMIN_LOGIN_RESPONSE: LoginResponse = {
   access_token: ADMIN_ACCESS_TOKEN,
   token_type: "Bearer",

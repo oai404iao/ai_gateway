@@ -18,7 +18,7 @@ const zhCN: Record<string, string> = {
   "Users": "用户",
   "API Key Policies": "API 密钥策略",
   "Upstream Models": "上游模型",
-  "Catalog": "模型目录",
+  "Price sync": "价格同步",
   "Channel Groups": "渠道组",
   "Channels": "渠道",
   "Model Rules": "模型规则",
@@ -855,6 +855,9 @@ const zhCN: Record<string, string> = {
   "Base URL": "基础 URL",
   "Filter by time range, user, API key, and aggregation granularity.":
     "按时间区间、用户、API 密钥和聚合颗粒度筛选。",
+  "Filter your own statistics by time range, API key, and aggregation granularity.":
+    "按时间区间、API 密钥和聚合颗粒度筛选您自己的统计。",
+  "Channel status and your own cost analytics.": "渠道状态和您自己的花费统计。",
   "Quick range": "快速时间范围",
   "Today": "今天",
   "This week": "本周",

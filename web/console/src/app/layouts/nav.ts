@@ -35,6 +35,7 @@ export const NAV_SECTIONS: NavSection[] = [
       { label: "Sessions", path: "/account/sessions", icon: ShieldCheck },
       { label: "API Keys", path: "/api-keys", icon: KeyRound },
       { label: "Request Logs", path: "/usage/request-logs", icon: ScrollText },
+      { label: "Statistics", path: "/statistics", icon: ChartNoAxesCombined },
     ],
   },
   {
@@ -44,7 +45,7 @@ export const NAV_SECTIONS: NavSection[] = [
       { label: "Users", path: "/admin/users", icon: Users },
       { label: "API Key Policies", path: "/admin/api-key-policies", icon: SlidersHorizontal },
       { label: "Models", path: "/admin/models", icon: Boxes },
-      { label: "Catalog", path: "/admin/catalog", icon: GalleryVerticalEnd },
+      { label: "Price sync", path: "/admin/catalog", icon: GalleryVerticalEnd },
     ],
   },
   {
@@ -59,7 +60,6 @@ export const NAV_SECTIONS: NavSection[] = [
     title: "Operations",
     roles: ["admin"],
     items: [
-      { label: "Statistics", path: "/admin/statistics", icon: ChartNoAxesCombined },
       { label: "Proxies", path: "/admin/network/proxies", icon: Network },
       { label: "Templates", path: "/admin/transforms/templates", icon: FileText },
       { label: "Request Logs", path: "/admin/request-logs", icon: ScrollText },

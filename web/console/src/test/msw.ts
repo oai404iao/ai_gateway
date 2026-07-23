@@ -26,6 +26,8 @@ import {
   REVOKED_SESSION,
   SYSTEM_SETTINGS,
   SYSTEM_LOAD_REPORT,
+  USER_ACCESS_TOKEN,
+  USER_USER,
 } from "@/test/fixtures";
 import { clearSession, setSession } from "@/api/session-store";
 
@@ -176,5 +178,24 @@ export function seedAuthenticatedSession() {
     status: "authenticated",
     accessToken: ADMIN_ACCESS_TOKEN,
     user: ADMIN_USER,
+  });
+}
+
+/** Pre-seeds a regular-user session for role-sensitive page tests. */
+export function seedUserSession() {
+  server.use(
+    http.post("/console/v1/auth/refresh", () =>
+      HttpResponse.json({
+        access_token: USER_ACCESS_TOKEN,
+        token_type: "Bearer",
+        expires_in: 900,
+        user: USER_USER,
+      }),
+    ),
+  );
+  setSession({
+    status: "authenticated",
+    accessToken: USER_ACCESS_TOKEN,
+    user: USER_USER,
   });
 }

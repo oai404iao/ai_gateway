@@ -5,15 +5,15 @@ import { BrowserRouter } from "react-router";
 import { http, HttpResponse } from "msw";
 import { AppProviders } from "@/app/providers";
 import { AppRouter } from "@/app/router";
-import { seedAuthenticatedSession, server } from "@/test/msw";
+import { seedAuthenticatedSession, seedUserSession, server } from "@/test/msw";
 import {
   CHANNEL,
   COST_STATISTICS_REPORT,
   MODEL,
 } from "@/test/fixtures";
 
-function renderApp() {
-  window.history.replaceState({}, "", "/admin/statistics");
+function renderApp(path = "/statistics") {
+  window.history.replaceState({}, "", path);
   render(
     <AppProviders>
       <BrowserRouter>
@@ -32,6 +32,7 @@ describe("StatisticsPage", () => {
     expect(
       await screen.findByText("Model overview", {}, { timeout: 5_000 }),
     ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Price sync" })).toBeInTheDocument();
     expect((await screen.findAllByText(MODEL.source_model_id)).length).toBeGreaterThan(0);
     expect(await screen.findByText(CHANNEL.name)).toBeInTheDocument();
     expect((await screen.findAllByText("97.5%")).length).toBeGreaterThan(0);
@@ -49,6 +50,47 @@ describe("StatisticsPage", () => {
     expect(screen.getByText("Bounded queues")).toBeInTheDocument();
     expect(screen.getByText("Request-log notifications")).toBeInTheDocument();
     expect(screen.getByText("2 MiB")).toBeInTheDocument();
+  });
+
+  it("shows regular users public channel status and only their cost views", async () => {
+    seedUserSession();
+    let adminUserRequests = 0;
+    let adminKeyRequests = 0;
+    server.use(
+      http.get("/console/v1/users", () => {
+        adminUserRequests += 1;
+        return new HttpResponse(null, { status: 403 });
+      }),
+      http.get("/console/v1/api-keys", () => {
+        adminKeyRequests += 1;
+        return new HttpResponse(null, { status: 403 });
+      }),
+    );
+    const user = userEvent.setup();
+    renderApp();
+
+    expect(
+      await screen.findByText("Model overview", {}, { timeout: 5_000 }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Statistics" })).toHaveAttribute(
+      "href",
+      "/statistics",
+    );
+    expect(screen.queryByRole("link", { name: "Price sync" })).not.toBeInTheDocument();
+    expect(await screen.findByText(CHANNEL.name)).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "System load" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Cost statistics" }));
+
+    expect(await screen.findByText("Total cost")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Filter your own statistics by time range, API key, and aggregation granularity.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("All users")).not.toBeInTheDocument();
+    expect(adminUserRequests).toBe(0);
+    expect(adminKeyRequests).toBe(0);
   });
 
   it("defaults to today and applies week and month ranges with useful granularities", async () => {

@@ -2,13 +2,15 @@
 
 ## 目标
 
-Console 新增管理员统计页面，包含两个页签：
+Console 提供统计页面：
 
 1. **渠道状态**
+   - 所有已登录用户均可查看。
    - 展示纳入状态统计的渠道。
    - 展示上游模型整体和“渠道 × 上游模型”的 TTFT、TPS、成功率。
    - 支持最近 24 小时、3 天、7 天三个窗口。
 2. **花费统计**
+   - 普通用户只能查看自己的统计；管理员可查看全局或按用户筛选。
    - 支持日期时间区间、用户、API Key 过滤。
    - 支持按小时、按天聚合。
    - 展示请求数、已计价请求数、总 Token、平均 RPM、平均 TPM、USD 花费、
@@ -79,14 +81,19 @@ Console 提供“今天 / 本周 / 本月”快捷范围。“今天”使用小
 
 ## Console API
 
-管理员端点：
+Console 端点：
 
 - `GET /console/v1/statistics/channel-status?window=24h|3d|7d`
+  - 任意已登录用户可访问。
 - `GET /console/v1/statistics/costs`
   - `started_after`
   - `started_before`
   - `granularity=hour|day`
   - `user_id`（可选）
   - `api_key_id`（可选）
+  - 普通用户的查询会强制限定为当前用户；指定其他 `user_id` 返回 `403`。
+  - 管理员可不指定用户查看全局统计，也可按用户和 API Key 筛选。
+
+系统负载仍为管理员专属：`GET /console/v1/system/load`。
 
 响应契约由 `docs/openapi/console-v1.yaml` 定义，前端类型由该规范生成。

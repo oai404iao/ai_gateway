@@ -41,6 +41,7 @@ import { EmptyState } from "@/components/shared/empty-state";
 import { ResourceTable, type Column } from "@/components/shared/resource-table";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { useAdminApiKeys, useUsers } from "@/features/admin/api";
+import { useOwnApiKeys } from "@/features/api-keys/api";
 import {
   useCostStatistics,
   type CostStatisticsFilters,
@@ -57,6 +58,7 @@ import {
 import { formatTokens, formatUsd } from "@/lib/formatters";
 import { apiFormatLabel } from "@/lib/permissions";
 import { useI18n } from "@/app/i18n";
+import { useSession } from "@/lib/use-session";
 
 interface CostFilterDraft {
   started_after: string;
@@ -185,12 +187,18 @@ export function CostStatisticsPanel() {
   );
   const [quickRange, setQuickRange] = useState<QuickRange | null>("today");
   const { data, isLoading, error } = useCostStatistics(filters);
-  const users = useUsers();
-  const apiKeys = useAdminApiKeys();
+  const { user } = useSession();
+  const isAdmin = user?.role === "admin";
+  const users = useUsers(isAdmin);
+  const adminApiKeys = useAdminApiKeys(isAdmin);
+  const ownApiKeys = useOwnApiKeys(!isAdmin);
   const { t } = useI18n();
 
-  const filteredKeys =
-    apiKeys.data?.filter((key) => !draft.user_id || key.user_id === draft.user_id) ?? [];
+  const filteredKeys = isAdmin
+    ? (adminApiKeys.data ?? [])
+        .filter((key) => !draft.user_id || key.user_id === draft.user_id)
+        .map((key) => ({ id: key.id, name: key.name }))
+    : (ownApiKeys.data ?? []).map((key) => ({ id: key.id, name: key.name }));
 
   const apply = () => {
     const next = toFilters(draft);
@@ -338,7 +346,11 @@ export function CostStatisticsPanel() {
         <CardHeader>
           <CardTitle>{t("Filters")}</CardTitle>
           <CardDescription>
-            {t("Filter by time range, user, API key, and aggregation granularity.")}
+            {t(
+              isAdmin
+                ? "Filter by time range, user, API key, and aggregation granularity."
+                : "Filter your own statistics by time range, API key, and aggregation granularity.",
+            )}
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -430,43 +442,45 @@ export function CostStatisticsPanel() {
                 </ToggleGroupItem>
               </ToggleGroup>
             </Field>
-            <Field>
-              <FieldLabel htmlFor="statistics_user">{t("User")}</FieldLabel>
-              <Select
-                value={draft.user_id || "__all__"}
-                onValueChange={(value) => {
-                  const userId = value === "__all__" ? "" : value;
-                  setDraft((current) => ({
-                    ...current,
-                    user_id: userId,
-                    api_key_id:
-                      current.api_key_id &&
-                      apiKeys.data?.some(
-                        (key) =>
-                          key.id === current.api_key_id &&
-                          (!userId || key.user_id === userId),
-                      )
-                        ? current.api_key_id
-                        : "",
-                  }));
-                }}
-              >
-                <SelectTrigger id="statistics_user">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectGroup>
-                    <SelectItem value="__all__">{t("All users")}</SelectItem>
-                    {users.data?.map((user) => (
-                      <SelectItem key={user.id} value={user.id}>
-                        {user.display_name}
-                        {user.email ? ` · ${user.email}` : ""}
-                      </SelectItem>
-                    ))}
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
-            </Field>
+            {isAdmin ? (
+              <Field>
+                <FieldLabel htmlFor="statistics_user">{t("User")}</FieldLabel>
+                <Select
+                  value={draft.user_id || "__all__"}
+                  onValueChange={(value) => {
+                    const userId = value === "__all__" ? "" : value;
+                    setDraft((current) => ({
+                      ...current,
+                      user_id: userId,
+                      api_key_id:
+                        current.api_key_id &&
+                        adminApiKeys.data?.some(
+                          (key) =>
+                            key.id === current.api_key_id &&
+                            (!userId || key.user_id === userId),
+                        )
+                          ? current.api_key_id
+                          : "",
+                    }));
+                  }}
+                >
+                  <SelectTrigger id="statistics_user">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      <SelectItem value="__all__">{t("All users")}</SelectItem>
+                      {users.data?.map((user) => (
+                        <SelectItem key={user.id} value={user.id}>
+                          {user.display_name}
+                          {user.email ? ` · ${user.email}` : ""}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+              </Field>
+            ) : null}
             <Field>
               <FieldLabel htmlFor="statistics_api_key">{t("API key")}</FieldLabel>
               <Select
