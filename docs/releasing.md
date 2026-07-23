@@ -19,7 +19,9 @@
 4. 确认工作树只包含发布相关变更，并通过代码评审。
 5. 确认 GitHub Actions 已启用。发布工作流使用仓库自动提供的
    `GITHUB_TOKEN` 创建 GitHub Release 并推送 GHCR，不需要额外配置 Registry
-   用户名或 PAT。
+   用户名或 PAT。所有外部 Action 都固定到完整 commit SHA，并由
+   `.github/dependabot.yml` 定期更新带版本 tag 的引用；固定到 `stable` 分支
+   commit 的 Rust toolchain Action 需要在常规依赖维护时人工复核。
 
 版本一致性可单独检查：
 
@@ -35,7 +37,7 @@
 
 该脚本执行：
 
-- Rust format、clippy、完整测试。
+- Rust format、workspace-wide clippy 与完整测试（包括性能工具的轻量单元测试）。
 - Console API 类型漂移检查、TypeScript、lint、组件测试与生产构建。
 - 启用 `embedded-console-ui` feature 的 Rust lint/测试。
 - Production Compose 解析。
@@ -62,13 +64,20 @@ PostgreSQL 集成测试要求先启动 `docker compose up -d`。性能 Harness �
 
 `.github/workflows/release.yml` 在 `v*.*.*` tag 推送后：
 
-1. 再次校验 tag、代码版本与 Changelog。
-2. 构建嵌入 Console UI 的 release 二进制。
-3. 生成 Linux release tarball 与 `SHA256SUMS`。
-4. 构建 `linux/amd64`、`linux/arm64` OCI 镜像。
-5. 推送到 `ghcr.io/oai404iao/ai_gateway` 的精确版本 tag；稳定版本还推送
-   `major.minor`、`major` 与 `latest`。
-6. 使用 Actions 自动注入的 `GITHUB_TOKEN` 创建 GitHub Release 并上传资产。
+1. 只读权限的 `verify` job 再次校验 tag、代码版本与 Changelog，并执行完整
+   Rust workspace、Console 和 embedded UI 门禁。
+2. 构建 release 二进制，生成 Linux tarball、`SHA256SUMS` 与 release notes，
+   并以一天保留期暂存为 Actions artifact。
+3. 仅拥有 `packages: write` 的 `publish-image` job 使用
+   `docker/metadata-action` 生成 tag/OCI labels，构建并推送
+   `linux/amd64`、`linux/arm64` 镜像。
+4. Public 仓库额外为镜像生成并推送 GitHub artifact attestation；Private
+   仓库会跳过此步骤。
+5. 仅拥有 `contents: write` 的 `publish-release` job 创建 GitHub Release
+   并上传资产。
+
+稳定版本会发布精确版本、`major.minor`、`major` 与 `latest`；预发布版本只发布
+精确 SemVer tag。镜像地址为 `ghcr.io/oai404iao/ai_gateway`。
 
 首次发布的 GHCR Package 默认是私有的，并与源码仓库分别管理可见性。仓库未来
 转为 Public 时，还需在 Package 设置中单独确认镜像是否公开。已经发布的 GitHub
@@ -76,6 +85,9 @@ Release 不会被工作流覆盖；修复发布问题应使用新的 patch 版�
 
 迁移时推送的旧 tag 不会补发 GitHub Release，因为对应历史提交中还没有
 `.github/workflows/release.yml`。首次自动发布应创建一个包含该工作流的新版本 tag。
+
+仓库转为 Public 后应在 GitHub Release 设置中启用 Immutable Releases。当前发布
+脚本本身也拒绝覆盖已有 Release；修复问题必须发布新的 patch 版本。
 
 ## 发布后验证
 

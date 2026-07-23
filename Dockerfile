@@ -2,6 +2,8 @@
 
 ARG NODE_VERSION=24
 ARG RUST_VERSION=1.85.0
+ARG CARGO_CHEF_VERSION=0.1.71
+ARG CARGO_CHEF_DIGEST=sha256:534c4d975e252b30309ca779af73d3a5932dbef19e40a5057980c14f3364984e
 
 FROM node:${NODE_VERSION}-bookworm-slim AS console-builder
 ARG PNPM_VERSION=11.7.0
@@ -17,15 +19,25 @@ RUN --mount=type=cache,target=/pnpm/store \
 COPY web/console ./web/console
 RUN pnpm --dir web/console build
 
-FROM rust:${RUST_VERSION}-bookworm AS builder
+FROM lukemathwalker/cargo-chef:${CARGO_CHEF_VERSION}-rust-${RUST_VERSION}-bookworm@${CARGO_CHEF_DIGEST} AS chef
 WORKDIR /workspace
+
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
+COPY --from=planner /workspace/recipe.json recipe.json
+RUN cargo chef cook \
+      --locked \
+      --release \
+      --features embedded-console-ui \
+      --package ai-gateway \
+      --recipe-path recipe.json
 
 COPY . .
 COPY --from=console-builder /workspace/web/console/dist ./web/console/dist
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/workspace/target \
-    cargo build \
+RUN cargo build \
       --locked \
       --release \
       --features embedded-console-ui \

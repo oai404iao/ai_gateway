@@ -13,8 +13,8 @@ fi
 "$repo_root/scripts/check-release-version.sh" "$version"
 
 cargo fmt --check
-cargo clippy --all-targets
-cargo test
+cargo clippy --locked --workspace --all-targets
+cargo test --locked --workspace
 
 pnpm --dir web/console install --frozen-lockfile
 pnpm --dir web/console generate:api:check
@@ -23,8 +23,8 @@ pnpm --dir web/console lint
 pnpm --dir web/console test
 pnpm --dir web/console build
 
-cargo clippy --all-targets --features embedded-console-ui
-cargo test --features embedded-console-ui --lib console_ui
+cargo clippy --locked --all-targets --features embedded-console-ui
+cargo test --locked --features embedded-console-ui --lib console_ui
 
 docker compose -f docker-compose.prd.yaml config --quiet
 image="ai-gateway:release-check-${version}"

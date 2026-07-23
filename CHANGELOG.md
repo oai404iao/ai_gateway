@@ -19,6 +19,11 @@ Versioning.
 
 - Migrated CI and tagged release automation from Gitea Actions to GitHub
   Actions, GitHub Releases, and GitHub Container Registry.
+- Hardened and optimized GitHub Actions with immutable action references,
+  least-privilege release jobs, pnpm and Docker caches, workspace-wide Rust
+  checks, short-lived release artifacts, image metadata, and public-image
+  provenance attestations.
+- Added cargo-chef dependency layering to production image builds.
 
 ## [0.1.0] - 2026-07-22
 
