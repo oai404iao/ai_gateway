@@ -1,0 +1,4 @@
+# Known-public Ed25519 key fixture used exclusively by Console integration tests.
+# Keep these fingerprint exceptions narrow so any newly committed key is reported.
+5aeaec7102350e803a776bdccde019a8a763605a:tests/console_spec_integration.rs:private-key:39
+01eb9299c73e2e312927b52783969bfae8bad7e9:tests/control_plane_integration.rs:private-key:807
