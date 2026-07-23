@@ -385,6 +385,34 @@ const zhCN: Record<string, string> = {
   "Map (client model, API format) to one priced upstream model and routing targets.":
     "将客户端模型和 API 格式映射到一个带价格的上游模型及路由目标。",
   "New rule": "新建规则",
+  "Quick add": "快速批量添加",
+  "Quick add model rules": "快速批量添加模型规则",
+  "Select upstream models. Missing rules are created for every API format with compatible enabled channels. Each rule uses the source model id, stays enabled, and targets every compatible channel; complete channel groups are selected when possible.":
+    "选择上游模型。系统会为每种存在兼容已启用渠道的 API 格式创建缺失规则。每条规则使用来源模型 ID、默认启用并覆盖全部兼容渠道；条件允许时会自动选择完整渠道组。",
+  "Search models": "搜索模型",
+  "Search by model id, name, or provider": "按模型 ID、名称或提供商搜索",
+  "Select all available": "选择全部可添加模型",
+  "Selected {models} models; {rules} rules will be created.":
+    "已选择 {models} 个模型，将创建 {rules} 条规则。",
+  "{count} compatible channels": "{count} 个兼容渠道",
+  "Already configured": "已配置",
+  "Manual setup required": "需要手动配置",
+  "Model disabled": "模型已禁用",
+  "Upstream model is disabled.": "上游模型已禁用。",
+  "Routing groups at the same priority use different selection strategies.":
+    "同一优先级的路由组使用了不同的选择策略，需要手动配置。",
+  "All compatible formats already have rules.": "所有兼容格式均已存在规则。",
+  "No compatible enabled channels.": "没有兼容的已启用渠道。",
+  "No upstream models": "没有上游模型",
+  "Create or import upstream models before adding routing rules.":
+    "请先创建或导入上游模型，再添加路由规则。",
+  "No models match this search.": "没有匹配搜索条件的模型。",
+  "Try a different model id, name, or provider.": "请尝试其他模型 ID、名称或提供商。",
+  "Create {count} rules": "创建 {count} 条规则",
+  "Created {count} model rules.": "已创建 {count} 条模型规则。",
+  "Created {created} of {total} model rules. Refresh and retry the remaining items.":
+    "已创建 {total} 条中的 {created} 条模型规则。请刷新后重试剩余项目。",
+  "Batch create failed": "批量创建失败",
   "New model rule": "新建模型规则",
   "Back to rules": "返回规则列表",
   "Create rule": "创建规则",

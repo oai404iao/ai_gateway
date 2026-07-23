@@ -22,6 +22,7 @@ interface AdminListPageProps<T> {
   detailPath: (row: T) => string;
   createLabel?: string;
   onCreate?: () => void;
+  headerActions?: React.ReactNode;
   groupBy?: (row: T) => string;
 }
 
@@ -34,6 +35,7 @@ export function AdminListPage<T>({
   detailPath,
   createLabel,
   onCreate,
+  headerActions,
   groupBy,
 }: AdminListPageProps<T>) {
   const navigate = useNavigate();
@@ -44,10 +46,15 @@ export function AdminListPage<T>({
         title={title}
         description={description}
         actions={
-          onCreate && createLabel ? (
-            <Button onClick={onCreate}>
-              <Plus data-icon="inline-start" /> {createLabel}
-            </Button>
+          headerActions || (onCreate && createLabel) ? (
+            <>
+              {headerActions}
+              {onCreate && createLabel ? (
+                <Button onClick={onCreate}>
+                  <Plus data-icon="inline-start" /> {createLabel}
+                </Button>
+              ) : null}
+            </>
           ) : undefined
         }
       />
