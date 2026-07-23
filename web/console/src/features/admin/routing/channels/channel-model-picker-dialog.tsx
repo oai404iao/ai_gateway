@@ -184,8 +184,8 @@ export function ChannelModelPickerDialog({
         </div>
 
         <DialogFooter>
-          <DialogClose asChild>
-            <Button variant="outline">{t("Cancel")}</Button>
+          <DialogClose render={<Button variant="outline" />}>
+            {t("Cancel")}
           </DialogClose>
           <Button onClick={apply}>{t("Apply selection")}</Button>
         </DialogFooter>

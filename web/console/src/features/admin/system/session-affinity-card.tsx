@@ -730,10 +730,10 @@ export function SessionAffinityCard({
             </FieldGroup>
 
             <DialogFooter>
-              <DialogClose asChild>
-                <Button type="button" variant="outline">
-                  {t("Cancel")}
-                </Button>
+              <DialogClose
+                render={<Button type="button" variant="outline" />}
+              >
+                {t("Cancel")}
               </DialogClose>
               <Button type="submit">{t("Save rule")}</Button>
             </DialogFooter>

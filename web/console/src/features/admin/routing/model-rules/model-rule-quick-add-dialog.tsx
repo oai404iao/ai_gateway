@@ -328,10 +328,8 @@ export function ModelRuleQuickAddDialog({
         </AsyncResource>
 
         <DialogFooter>
-          <DialogClose asChild>
-            <Button variant="outline" disabled={submitting}>
-              {t("Cancel")}
-            </Button>
+          <DialogClose render={<Button variant="outline" disabled={submitting} />}>
+            {t("Cancel")}
           </DialogClose>
           <Button
             onClick={submit}
