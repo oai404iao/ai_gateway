@@ -1,5 +1,7 @@
 # Transform DSL
 
+> 状态：当前。实现与校验以 `src/transforms/` 为准。
+
 `config_templates.document` 与 `channels.override_document` 使用同一份受限
 JSON 转换 DSL。空对象 `{}` 是显式 no-op。非空文档必须声明 API 格式，并且
 格式必须与所绑定渠道一致。

@@ -4,6 +4,9 @@
 
 `ai-gateway` 是一个单二进制 Rust 网关，用于转发 OpenAI 兼容的 LLM 请求。它向客户端提供 Chat Completions 与 Responses API，根据 PostgreSQL 控制面完成路由，并将请求转发到已配置的上游提供商。
 
+文档已按读者分类整理，统一入口见[文档中心](docs/README.md)：用户文档、开发与
+设计文档、OpenAI 外部参考和历史归档。
+
 公共数据面和管理 Console API 是刻意分离的两个监听器：
 
 - **数据面**（`/v1/*`）：面向客户端 API Key 与 OpenAI 兼容请求。
@@ -145,7 +148,7 @@ curl --request POST http://127.0.0.1:3001/console/v1/auth/login \
 
 即使使用同一个上游提供商或模型名，Chat Completions 路由与 Responses 路由仍是两套独立配置。请使用 Console API 管理控制面，不要直接编辑控制面数据表。
 
-Console 路由覆盖与运行行为详见[运行与接口说明](docs/mvp-usage.md)。
+Console 路由覆盖与运行行为详见[运行与接口说明](docs/user/operations.md)。
 
 ## Docker 生产部署
 
@@ -175,7 +178,7 @@ docker compose --env-file ./config/compose.prd.env \
 ```
 
 密钥生成、bootstrap-admin、反向代理/TLS、升级和备份边界详见
-[Docker 生产部署说明](docs/production-deployment.md)。
+[Docker 生产部署说明](docs/user/production-deployment.md)。
 
 ## 手动转发性能测试
 
@@ -191,7 +194,7 @@ docker compose up -d
 ```
 
 完整设计、场景、安全边界和 `standard` 配置见
-[转发性能测试设计与使用说明](docs/forwarding-performance.md)。
+[转发性能测试设计与使用说明](docs/development/forwarding-performance.md)。
 
 ## 使用数据面
 
@@ -235,6 +238,8 @@ curl --request POST "$GATEWAY_URL/v1/responses" \
 ```
 
 网关会转发上游状态码和响应体，并保持流式行为；如客户端需要 SSE，请使用对应 OpenAI 请求中的流式字段。
+最小校验、透传、Streaming、重试和错误边界见
+[OpenAI 兼容性参考](docs/reference/openai-compatibility.md)。
 
 ## 配置模型
 
@@ -258,10 +263,10 @@ TOML 仅保存进程级 bootstrap 配置。二进制默认读取
 
 终态请求日志会先跨过本地可恢复 spool，再通过 `COPY FROM` 进入低索引
 PostgreSQL 入口表，随后异步投影和结算。耐久保证、故障边界与运维指标见
-[docs/request-log-durability.md](docs/request-log-durability.md)。
+[docs/development/request-log-durability.md](docs/development/request-log-durability.md)。
 
 生产机器规格分档、PostgreSQL 参数、密码文件、存储和容量验证方式见
-[生产配置与容量调优](docs/production-configuration.md)。
+[生产配置与容量调优](docs/user/production-configuration.md)。
 
 ## Console API
 
@@ -272,7 +277,7 @@ Console 监听器独立于公共监听器，使用短期 JWT access token。登�
 - 大多数可变资源在 `GET` 时返回 `ETag`，并要求 `PUT` 携带 `If-Match` 实现乐观并发控制。
 - `admin` 是用户角色，不是独立的 `/admin` API 命名空间，也不是进程级静态 Token。
 
-完整路由清单见 [docs/mvp-usage.md](docs/mvp-usage.md)；Console 认证设计见 [docs/console-auth-refactor-plan.md](docs/console-auth-refactor-plan.md)。
+完整路由清单见 [docs/user/operations.md](docs/user/operations.md)；Console 认证设计见 [docs/development/console-auth.md](docs/development/console-auth.md)。
 
 ## Console Web UI
 
@@ -338,7 +343,7 @@ pnpm --dir web/console generate:api:check   # OpenAPI spec/类型漂移门禁
 ```
 
 完整命令列表、目录结构与 OpenAPI 契约流程见 `web/console/README.md`；目录布局、认证/缓存模型、shadcn 使用规范和分阶段实施计划见
-[Console Web UI 设计与实施计划](docs/console-ui-design.md)。
+[Console Web UI 设计与实施计划](docs/development/console-ui.md)。
 
 ## 运行行为与边界
 
@@ -346,9 +351,11 @@ pnpm --dir web/console generate:api:check   # OpenAPI spec/类型漂移门禁
 - 只有模型别名或变换确有需要时才重新序列化请求；否则转发原始请求字节。
 - 变换顺序固定为：模板默认值 → 渠道覆盖 → 受保护 Header 清理 → 上游鉴权。
 - 客户端 `Authorization`、hop-by-hop Header 及 `Connection` 声明的 Header 永不转发给上游。
-- 被动健康仅响应收到上游响应头之前的连接失败；当前没有主动健康检查 worker。
+- 被动健康响应收到上游响应头之前的连接失败。配置允许时，只能在响应头前切换到
+  尚未尝试的健康渠道；上游 HTTP 错误或已经开始的响应流不会重试。
 - RPM、并发和软额度准入均为进程内状态；没有跨实例协调。
-- 用量和计费采用异步、尽力而为方式。额度是基于已结算用量的软预检查，不会在转发前预留本次成本。
+- 终态请求日志会先追加到本地 durable spool；用量提取和结算异步执行。额度是基于
+  已结算用量的软预检查，不会在转发前预留本次成本。
 - 请求日志不保存 prompt、completion、完整 Header、API Key、Cookie 或未经脱敏的上游错误内容。
 
 当前范围不包含 embeddings、images、audio、files、batches、assistants、fine-tuning、通用自动重试、TLS 终止、独立财务账本、充值/退款或多币种兑换。
@@ -364,7 +371,7 @@ cargo clippy --all-targets
 cargo test
 ```
 
-发布准备与 tag 发布流程见 [`docs/releasing.md`](docs/releasing.md)。本地发布门禁：
+发布准备与 tag 发布流程见 [`docs/development/releasing.md`](docs/development/releasing.md)。本地发布门禁：
 
 ```bash
 ./scripts/verify-release.sh 0.1.0
@@ -378,7 +385,7 @@ cp .env.real-upstream.example .env.real-upstream
 ./scripts/run-real-upstream-smoke.sh
 ```
 
-该脚本是仓库中唯一允许使用 `.env` 的例外。运行前请阅读 [docs/real-upstream-smoke.md](docs/real-upstream-smoke.md)。
+该脚本是仓库中唯一允许使用 `.env` 的例外。运行前请阅读 [docs/development/real-upstream-smoke.md](docs/development/real-upstream-smoke.md)。
 
 ## 仓库结构
 
@@ -396,7 +403,7 @@ src/
   workers/           快照重载与异步请求日志 worker
 migrations/          PostgreSQL schema migration
 deploy/postgres/     Compose 初始化辅助文件
-docs/                产品、运行和设计文档
+docs/                用户、开发、外部参考与历史归档文档
 config/              已忽略的运行配置、数据库密码和 JWT 密钥目录
 config.example.toml  已跟踪的配置模板
 tests/               本地与 PostgreSQL 集成测试
@@ -413,14 +420,17 @@ tests/               本地与 PostgreSQL 集成测试
 
 ## 文档
 
-- [运行与接口说明](docs/mvp-usage.md)
-- [生产配置与容量调优](docs/production-configuration.md)
-- [Docker 生产部署](docs/production-deployment.md)
-- [版本发布流程](docs/releasing.md)
-- [Console Web UI 设计与实施计划](docs/console-ui-design.md)
-- [数据库与控制面设计](docs/database-design.md)
-- [真实上游 smoke test 说明](docs/real-upstream-smoke.md)
-- [产品需求文档（中文）](docs/PRD.md)
+- [文档中心与文档规范](docs/README.md)
+- [运行与接口说明](docs/user/operations.md)
+- [生产配置与容量调优](docs/user/production-configuration.md)
+- [Docker 生产部署](docs/user/production-deployment.md)
+- [OpenAI 兼容性参考](docs/reference/openai-compatibility.md)
+- [当前架构](docs/development/architecture.md)
+- [版本发布流程](docs/development/releasing.md)
+- [Console Web UI 设计与实施计划](docs/development/console-ui.md)
+- [数据库与控制面设计](docs/development/database-design.md)
+- [真实上游 smoke test 说明](docs/development/real-upstream-smoke.md)
+- [产品与架构蓝图](docs/development/product-blueprint.md)
 
 ## 许可证
 

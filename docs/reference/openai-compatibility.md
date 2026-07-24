@@ -1,0 +1,75 @@
+# OpenAI API 兼容性总览
+
+> 类型：外部参考与项目兼容契约。
+>
+> 最近核对：2026-07-23。
+>
+> 权威来源：[OpenAI API Reference](https://developers.openai.com/api/reference/overview)。
+
+## 支持范围
+
+| 路径 | ai-gateway 行为 |
+| --- | --- |
+| `GET /health` | 网关自有存活检查，返回 `204`，不属于 OpenAI API。 |
+| `GET /v1/models` | 返回当前 API Key 可达的客户端模型名，不返回完整上游目录。 |
+| `POST /v1/chat/completions` | 仅按 Chat Completions 格式选路并转发。 |
+| `POST /v1/responses` | 仅按 Responses 格式选路并转发。 |
+
+不支持 embeddings、images、audio、files、batches、assistants、fine-tuning 等其他 OpenAI 路径。
+
+## 请求兼容策略
+
+- 客户端使用 `Authorization: Bearer <gateway-api-key>`。
+- 网关只做路由所需的最小 JSON 校验：body 必须是可解析的 JSON 对象，顶层
+  `model` 必须是非空字符串且不超过 300 个字符；可选 `stream` 必须是布尔值。
+- 除 `model`、`stream` 和已配置变换涉及的字段外，其余字段语义由上游决定。
+- 没有模型别名或 body 变换时，网关保留原始请求字节，不重新序列化。
+- 模型别名只改写顶层 `model`。
+- 查询字符串和原 API 路径会拼接到渠道 `base_url`。
+- 客户端 `Authorization`、`Host`、`Content-Length`、代理鉴权和 hop-by-hop headers 不会直接转发；上游鉴权最后注入。
+
+因此，“网关接受某字段”不代表所有上游都支持该字段；同样，上游新增字段通常不需要网关先升级，只要该字段不触发本地变换限制。
+
+## 响应兼容策略
+
+- 收到上游响应头后，状态码和响应体默认透传。
+- 普通 JSON 响应不会为了 usage 采集而整体缓冲。
+- SSE 默认按字节流转发；只有启用 SSE 变换时才按事件边界解析和重写。
+- 上游 HTTP 错误不会触发自动重试。
+- 自动故障转移仅发生在响应头前的连接失败、建连超时或响应头超时。
+- 网关生成的本地错误使用 OpenAI 风格的 `{ "error": { ... } }` JSON 结构，但错误代码是本项目契约。
+
+## 格式隔离
+
+模型规则、渠道组和渠道都绑定一个 `api_format`。同一个客户端模型名若需要同时支持两个接口，必须分别配置 Chat Completions 和 Responses 路由。网关不会：
+
+- 将 `/v1/chat/completions` 转换为 `/v1/responses`；
+- 将 Responses 输入转换为 messages；
+- 在一个格式无可用路由时回退到另一格式。
+
+## SDK 使用
+
+兼容 OpenAI base URL 配置的 SDK 通常可以把 base URL 指向网关公共 listener，并使用网关 API Key。SDK 是否可用还取决于：
+
+- SDK 是否调用本项目未实现的 OpenAI 路径；
+- SDK 是否要求特定响应字段或事件；
+- 目标上游是否支持 SDK 发送的请求字段；
+- 是否配置了与调用路径格式一致的模型规则。
+
+## 本地错误
+
+常见本地错误包括：
+
+| HTTP | `code` | 含义 |
+| --- | --- | --- |
+| `400` | `invalid_request` | body、`model` 或请求变换无效。 |
+| `401` | `invalid_api_key` | 缺少或无法认证 Gateway API Key。 |
+| `403` | `permission_denied` | API Key 没有当前格式或模型列表权限。 |
+| `404` | `model_not_found` | 模型不存在、未授权或当前格式没有路由。 |
+| `413` | `request_too_large` | 超过配置的代理 body 限制。 |
+| `429` | `rate_limit_exceeded` / `concurrent_limit_exceeded` / `insufficient_quota` | 进程内准入或软额度拒绝。 |
+| `502` | `upstream_unavailable` / `response_transform_failed` | 上游连接或响应变换失败。 |
+| `503` | `no_healthy_channel` | 没有可选择的健康渠道。 |
+| `504` | `connect_timeout` / `response_header_timeout` | 响应头前超时。 |
+
+上游已经返回的 HTTP 状态和 body 默认按上游内容传给客户端，不包装成本地错误。

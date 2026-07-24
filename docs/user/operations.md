@@ -1,11 +1,15 @@
 # 运行与接口说明
 
+> 状态：当前。
+
 服务是一个 OpenAI 兼容的数据面网关，加上独立的 **Console API**。`/v1/*` 面向 SDK 和程序调用，使用用户 API Key；`/console/v1/*` 面向用户登录和控制面管理，使用 JWT。`admin` 是用户角色，不是另一套接口或静态 Bearer 凭据。
 
 当前运行时同时提供 Console API 和可选的浏览器管理界面。Console API 仍是程序化接口；
 浏览器管理界面已实现于 `web/console/`，可通过 `embedded-console-ui` Cargo feature 嵌入并由
 Console listener 提供。无论是否启用 UI，本文件描述的 API 行为与边界保持不变。设计详情见
-[Console Web UI 设计与实施计划](console-ui-design.md)。
+[Console Web UI 设计与实施计划](../development/console-ui.md)。
+公共接口与 OpenAI 官方语义的兼容范围见
+[OpenAI API 兼容性总览](../reference/openai-compatibility.md)。
 
 ## 启动
 
@@ -226,7 +230,9 @@ Console 的“系统负载”页默认每 5 秒重新获取一次。
 或 SSE 事件增量提取 usage，在选路时绑定价格快照，并在可结算时以 `billed_at` 条件幂等更新用户余额
 和 API Key 已用额度。
 
-额度是软预检查：不预留金额，已结算额度达到上限后才拒绝后续请求；余额可以为负。队列饱和时请求日志可被丢弃，但不会阻塞或破坏代理响应。
+额度是软预检查：不预留金额，已结算额度达到上限后才拒绝后续请求；余额可以为负。
+终态请求日志先同步追加到本地 durable spool，后台通知队列饱和只会合并唤醒，不会丢弃
+spool 中的事件。spool 写入失败和磁盘空间耗尽仍是必须告警的耐久边界。
 
 ## 已知边界
 

@@ -1,5 +1,7 @@
 # 版本发布流程
 
+> 状态：当前。
+
 本项目使用 Semantic Versioning 和 `v<version>` Git tag。`Cargo.toml` 是产品
 版本的主来源，但发布门禁要求以下位置保持一致：
 
@@ -45,7 +47,7 @@
 
 PostgreSQL 集成测试要求先启动 `docker compose up -d`。性能 Harness 仍然只能在
 用户明确要求时运行；发布门禁不会执行它。只有转发路径发生变化时，才按
-`docs/real-upstream-smoke.md` 额外运行付费真实上游 smoke test。
+`docs/development/real-upstream-smoke.md` 额外运行付费真实上游 smoke test。
 
 ## 创建并发布 tag
 
@@ -67,7 +69,8 @@ PostgreSQL 集成测试要求先启动 `docker compose up -d`。性能 Harness �
 1. 只读权限的 `verify` job 再次校验 tag、代码版本与 Changelog，并执行完整
    Rust workspace、Console 和 embedded UI 门禁。
 2. 构建 release 二进制，生成包含项目许可证和第三方声明的 Linux tarball、
-   `SHA256SUMS` 与 release notes，并以一天保留期暂存为 Actions artifact。
+   完整 `docs/` 文档树、`SHA256SUMS` 与 release notes，并以一天保留期暂存为
+   Actions artifact。
 3. `publish-platform-images` matrix 分别在原生 `ubuntu-24.04`
    (`linux/amd64`) 与 `ubuntu-24.04-arm` (`linux/arm64`) runner 上并行构建，
    以平台 digest 推送镜像，避免使用 QEMU 编译 Rust；Dockerfile 中与架构无关的
@@ -105,6 +108,6 @@ docker pull ghcr.io/oai404iao/ai_gateway:0.1.0
 docker run --rm ghcr.io/oai404iao/ai_gateway:0.1.0 --version
 ```
 
-随后在隔离环境按 `docs/production-deployment.md` 启动完整 Compose，验证
+随后在隔离环境按 `docs/user/production-deployment.md` 启动完整 Compose，验证
 `/health`、Console 登录、migration、spool 与数据库投影。私有 Package 需要先
 登录 GHCR；也可以从对应 tag 本地构建。

@@ -1,5 +1,7 @@
 # Docker Compose 生产部署
 
+> 状态：当前。
+
 `docker-compose.prd.yaml` 在单台主机上运行 Gateway 与 PostgreSQL。Gateway
 镜像内已嵌入 Console Web UI；生产环境不需要常驻 Node 进程。该方案是单节点基线，
 不提供 PostgreSQL 高可用、PITR、跨主机 spool 复制或 TLS 终止。

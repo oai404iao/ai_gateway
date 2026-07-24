@@ -1,6 +1,8 @@
 # AGENTS.md - ai-gateway
 
-> Operational context for coding agents. Verify the current implementation before relying on the product blueprint in `docs/PRD.md`.
+> Operational context for coding agents. Start with `docs/README.md` for the
+> document map and verify current behavior in code, tests, migrations, and
+> machine-readable contracts.
 
 ## What is ai-gateway?
 
@@ -17,9 +19,9 @@ transforms, streaming/SSE forwarding, passive health, admission controls,
 durable spooled request logs, and reusable upstream clients. A React + TypeScript
 Console web UI lives under `web/console/` and can be embedded into the binary
 as static assets via the optional `embedded-console-ui` cargo feature, served
-only from the Console listener. Treat `docs/PRD.md` as the architectural
-source of truth for future work, but verify current behavior in code and the
-MVP task documents.
+only from the Console listener. `docs/development/architecture.md` describes
+the current architecture; `docs/development/product-blueprint.md` preserves
+product direction and design background but never overrides the runtime.
 
 The Console API contract is an authoritative OpenAPI spec at
 `docs/openapi/console-v1.yaml`; the frontend's TypeScript types are generated
@@ -62,12 +64,14 @@ repo/
 |   |-- src/test/               # vitest setup, MSW server, deterministic fixtures
 |   |-- e2e/                    # Playwright browser smoke tests (API mocked at network layer)
 |   `-- vite.e2e.config.ts      # HTTP-only vite config for Playwright's readiness probe
-|-- docs/PRD.md                 # Canonical product and architecture blueprint (Chinese)
-|-- docs/openapi/console-v1.yaml # Authoritative OpenAPI spec for the Console API (TS types are generated from it)
-|-- docs/console-ui-design.md    # Console Web UI architecture and implementation plan
-|-- docs/forwarding-performance.md # Manual performance-harness design, profiles, metrics, and safety model
-|-- docs/production-deployment.md # Full-stack Docker Compose deployment, secrets, upgrades, and rollback boundaries
-|-- docs/releasing.md           # SemVer, release gates, tags, GitHub Release assets, and GHCR image publication
+|-- docs/
+|   |-- README.md                # Documentation map and source precedence
+|   |-- documentation-standard.md # Required categories, status labels, links, and update matrix
+|   |-- user/                    # Current usage, production configuration, and deployment
+|   |-- development/             # Current architecture, design records, testing, performance, and releases
+|   |-- reference/               # External OpenAI semantics and gateway compatibility boundaries
+|   |-- archive/                 # Historical MVP plans; never current behavior
+|   `-- openapi/console-v1.yaml  # Authoritative Console API spec; drives generated TS types
 |-- .github/                    # SHA-pinned GitHub Actions CI/release workflows plus Dependabot updates
 |-- config/                     # Ignored runtime config, DB password, JWT keys
 |-- config.example.toml         # Canonical configuration template
@@ -143,7 +147,7 @@ pnpm --dir web/console generate:api:check # CI drift gate: fails if generated ty
 The Rust test suite contains unit tests and local/PostgreSQL integration
 tests. `cargo test` is the baseline Rust verification. The ignored
 `tests/real_upstream/` contains paid external calls and must only run via
-`./scripts/run-real-upstream-smoke.sh`; see `docs/real-upstream-smoke.md`.
+`./scripts/run-real-upstream-smoke.sh`; see `docs/development/real-upstream-smoke.md`.
 **Any change to the forwarding path must also run this real-upstream script
 before completion.** It serially verifies both `/v1/chat/completions` and
 `/v1/responses`, with non-streaming and SSE requests. GitHub Actions workflows
@@ -153,7 +157,7 @@ under `.github/workflows/` run the ordinary CI and tag release paths.
 provides HA, PITR, or backups.
 
 The separate forwarding performance harness is documented in
-`docs/forwarding-performance.md`. It creates a random throwaway database,
+`docs/development/forwarding-performance.md`. It creates a random throwaway database,
 starts a Mock LLM and a fresh release gateway process, runs direct and proxied
 loads, and writes reports under ignored `target/perf/`. **Never run
 `scripts/run-forwarding-perf.sh` unless the user explicitly asks for a
@@ -170,6 +174,26 @@ performance run.** Building the tool or running
 - Configuration changes intended for live reload should preserve the immutable-snapshot pattern: construct a complete `AppConfig`, then replace it atomically through `RuntimeConfig`.
 - `[console].ui_enabled = true` mounts the embedded Console UI on the Console listener, but requires building with the `embedded-console-ui` cargo feature (and a built `web/console/dist`). Setting `ui_enabled = true` without the feature compiled in is rejected at startup with a `ConfigError` (`src/runtime_config/mod.rs`). The UI is served only from the Console listener, never from the public `/v1/*` data-plane listener.
 
+## Documentation Rules
+
+- Follow `docs/documentation-standard.md` for categories, status labels,
+  relative links, source precedence, and the change synchronization matrix.
+- Put current user-observable behavior in `docs/user/`, maintainer design and
+  workflows in `docs/development/`, third-party API semantics in
+  `docs/reference/`, and obsolete milestone material in `docs/archive/`.
+- `README.md` and `README.zh-CN.md` are project overview and quick-start
+  documents. Link to detailed user docs instead of duplicating long
+  operational sections in new locations.
+- External reference documents must link authoritative sources, record the
+  last verification date, and distinguish external behavior from gateway
+  guarantees. Do not copy complete third-party API references.
+- When moving a document, search the entire repository for the old path,
+  including code comments, scripts, Compose files, package metadata, and
+  release packaging.
+- Documentation-only changes run `git diff --check` and
+  `python3 scripts/check-docs.py`. If source comments or scripts change, also
+  run the narrow formatter or syntax check appropriate to those files.
+
 ## Architecture and Implementation Constraints
 
 ### Intended request flow
@@ -185,7 +209,7 @@ Axum HTTP
   -> asynchronous logging, usage, and billing
 ```
 
-### Load-bearing rules from the PRD
+### Load-bearing rules
 
 - Support only `OpenAiChatCompletions` and `OpenAiResponses` (`src/domain/api_format.rs`). Keep their validation and routing paths separate: never fall back or transform between formats.
 - `model_rules`, channel groups, and channels must agree on `api_format`; a model rule is unique by `(client_model, api_format)`.
@@ -251,7 +275,7 @@ Axum HTTP
 
 ### Prepare a release
 
-1. Follow `docs/releasing.md`; keep the versions in Cargo, the Console package,
+1. Follow `docs/development/releasing.md`; keep the versions in Cargo, the Console package,
    production Compose defaults, and `CHANGELOG.md` synchronized.
 2. Run `./scripts/check-release-version.sh <version>`, then
    `./scripts/verify-release.sh <version>`.
@@ -260,9 +284,19 @@ Axum HTTP
    atomic main/tag push.
 4. Never move or reuse a published tag. Publish a new patch release instead.
 
+### Add or reorganize documentation
+
+1. Choose the audience and category using `docs/documentation-standard.md`.
+2. Add a status marker; external references also need an authoritative source
+   and verification date.
+3. Update `docs/README.md` and the category index when the navigation changes.
+4. Search the entire repository for moved paths and update release packaging
+   if distributed documents changed.
+5. Run `git diff --check` and `python3 scripts/check-docs.py`.
+
 ## Gotchas
 
-1. **The PRD is not the runtime.** It includes later roadmap capabilities such as active health checks, cross-instance coordination, and generic retries. Confirm an API exists before integrating with it.
+1. **The product blueprint is not the runtime.** It includes roadmap and historical language. Use `docs/development/architecture.md`, code, tests, migrations, and OpenAPI for current behavior.
 2. **Public and Console routes are separate.** `src/http/mod.rs` exposes the API-key data plane; `src/http/console.rs` is bound by `main` only when `[console].enabled` is set. Console is intended for an HTTPS reverse proxy, and `admin` is a role rather than a route namespace or static bearer token.
 3. **Migrations are authoritative.** Add ordered SQL migrations for schema changes; there is no SQLx offline cache.
 4. **`./config/config.toml` is auto-loaded.** It is intentionally ignored by Git; invoke `cargo run -- ./config/other-config.toml` only when using another file.
@@ -300,7 +334,10 @@ Axum HTTP
 | Need | Source of truth |
 |---|---|
 | Package/MSRV/dependencies | `Cargo.toml` |
-| Product architecture and constraints | `docs/PRD.md` |
+| Documentation map and rules | `docs/README.md` and `docs/documentation-standard.md` |
+| Documentation validation | `python3 scripts/check-docs.py` |
+| Current architecture and constraints | `docs/development/architecture.md` |
+| Product direction and design background | `docs/development/product-blueprint.md` |
 | Supported client formats | `src/domain/api_format.rs` |
 | Public data-plane route registry | `src/http/mod.rs` |
 | Console API route registry | `src/http/console.rs` |
@@ -309,20 +346,21 @@ Axum HTTP
 | TOML config schema and snapshot API | `src/runtime_config/mod.rs` |
 | Example configuration | `config.example.toml` |
 | Container configuration template | `deploy/compose/config.example.toml` |
-| Full production Compose | `docker-compose.prd.yaml` and `docs/production-deployment.md` |
-| Release process/version checks | `docs/releasing.md`, `scripts/release.sh`, and `scripts/check-release-version.sh` |
+| Full production Compose | `docker-compose.prd.yaml` and `docs/user/production-deployment.md` |
+| Release process/version checks | `docs/development/releasing.md`, `scripts/release.sh`, and `scripts/check-release-version.sh` |
 | CI/release automation | `.github/workflows/ci.yml`, `.github/workflows/release.yml`, and `.github/dependabot.yml` |
 | Project and third-party licensing | `LICENSE`, `LICENSES/`, and `web/console/NOTICES.md` |
 | Console API contract (request/response shapes) | `docs/openapi/console-v1.yaml` |
 | Console UI generated TypeScript types | `web/console/src/api/generated/console-v1.d.ts` (regenerate via `pnpm --dir web/console generate:api`) |
-| Console UI architecture and implementation plan | `docs/console-ui-design.md` |
-| Console/JWT design and execution plan | `docs/console-auth-refactor-plan.md` |
-| Current operational API documentation | `docs/mvp-usage.md` |
+| Console UI architecture and implementation plan | `docs/development/console-ui.md` |
+| Console/JWT design and execution plan | `docs/development/console-auth.md` |
+| Current operational API documentation | `docs/user/operations.md` |
+| OpenAI compatibility and external semantics | `docs/reference/` |
 | Console spec/implementation drift tests | `tests/console_spec_integration.rs` |
 | Frontend package/scripts | `web/console/package.json` |
 | Frontend checks and testing guide | `web/console/README.md` |
 | Frontend license attribution | `web/console/NOTICES.md` |
 | Local PostgreSQL service | `docker-compose.yml` |
-| Opt-in real upstream test | `docs/real-upstream-smoke.md` and `scripts/run-real-upstream-smoke.sh` |
-| Opt-in forwarding performance harness | `docs/forwarding-performance.md`, `tools/forwarding-perf/`, and `scripts/run-forwarding-perf.sh` |
-| Request-log durability pipeline | `docs/request-log-durability.md`, `src/request_log_spool.rs`, and `src/workers/durable_request_log.rs` |
+| Opt-in real upstream test | `docs/development/real-upstream-smoke.md` and `scripts/run-real-upstream-smoke.sh` |
+| Opt-in forwarding performance harness | `docs/development/forwarding-performance.md`, `tools/forwarding-perf/`, and `scripts/run-forwarding-perf.sh` |
+| Request-log durability pipeline | `docs/development/request-log-durability.md`, `src/request_log_spool.rs`, and `src/workers/durable_request_log.rs` |

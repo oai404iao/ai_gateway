@@ -1,5 +1,7 @@
 # 统计页面设计
 
+> 状态：当前。接口形状以 `docs/openapi/console-v1.yaml` 为准。
+
 ## 目标
 
 Console 提供统计页面：

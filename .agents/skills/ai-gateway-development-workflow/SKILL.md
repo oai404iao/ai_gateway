@@ -17,7 +17,7 @@ rebase-and-merge mode.
    declaring a branch or pull request ready.
 3. Read [github-settings.md](references/github-settings.md) when changing
    repository settings or explaining the merge policy.
-4. For releases, also read `docs/releasing.md`.
+4. For releases, also read `docs/development/releasing.md`.
 
 Repository instructions override this skill if they become more specific.
 
@@ -266,7 +266,7 @@ git status --short
 
 1. Create `release/<version>` from current `main`.
 2. Update every version source and the dated changelog entry listed in
-   `docs/releasing.md`.
+   `docs/development/releasing.md`.
 3. Run:
 
    ```bash

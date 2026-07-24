@@ -4,6 +4,10 @@
 
 `ai-gateway` is a single-binary Rust gateway for forwarding OpenAI-compatible LLM requests. It exposes the Chat Completions and Responses APIs to clients, routes each request through a PostgreSQL-backed control plane, and forwards it to a configured upstream provider.
 
+Documentation is organized by audience in the
+[documentation center](docs/README.md): user guides, development/design
+documents, external OpenAI references, and historical archives.
+
 The public data plane and the management Console API are intentionally separate listeners:
 
 - **Data plane** (`/v1/*`): client API keys and OpenAI-compatible requests.
@@ -150,7 +154,7 @@ For a working data-plane route, create compatible records in this order:
 
 A Chat Completions route and a Responses route are separate configurations, even when they use the same upstream provider or model name. Use the Console API rather than editing control-plane tables directly.
 
-See [the operational API guide](docs/mvp-usage.md) for Console route coverage and behavior.
+See [the operational API guide](docs/user/operations.md) for Console route coverage and behavior.
 
 ## Production Docker deployment
 
@@ -181,7 +185,7 @@ docker compose --env-file ./config/compose.prd.env \
   -f docker-compose.prd.yaml up -d --no-build
 ```
 
-See [the production Docker deployment guide](docs/production-deployment.md)
+See [the production Docker deployment guide](docs/user/production-deployment.md)
 for key generation, bootstrap-admin, reverse-proxy/TLS requirements, upgrades,
 and backup boundaries.
 
@@ -200,7 +204,7 @@ docker compose up -d
 ./scripts/run-forwarding-perf.sh --profile quick
 ```
 
-See [docs/forwarding-performance.md](docs/forwarding-performance.md) for the
+See [docs/development/forwarding-performance.md](docs/development/forwarding-performance.md) for the
 design, scenarios, safety model, and `standard` profile.
 
 ## Using the data plane
@@ -245,6 +249,8 @@ curl --request POST "$GATEWAY_URL/v1/responses" \
 ```
 
 The gateway forwards upstream status codes and response bodies. It preserves streaming behavior; use the corresponding OpenAI request streaming fields when your client needs SSE.
+See the [OpenAI compatibility reference](docs/reference/openai-compatibility.md)
+for validation, pass-through, streaming, retry, and error boundaries.
 
 ## Configuration model
 
@@ -270,12 +276,12 @@ Configuration writes through the Console API validate the complete candidate sna
 Terminal request logs first cross a local recoverable spool, then enter a
 low-index PostgreSQL staging table through `COPY FROM`, and are projected and
 settled asynchronously. See
-[docs/request-log-durability.md](docs/request-log-durability.md) for guarantees,
+[docs/development/request-log-durability.md](docs/development/request-log-durability.md) for guarantees,
 failure boundaries, and operational metrics.
 
 The production sizing assumptions, PostgreSQL settings, password-file setup,
 storage guidance, and small/large machine profiles are documented in
-[docs/production-configuration.md](docs/production-configuration.md).
+[docs/user/production-configuration.md](docs/user/production-configuration.md).
 
 ## Console API
 
@@ -286,7 +292,7 @@ The Console listener is separate from the public listener and uses short-lived J
 - Most mutable resources use `ETag` on `GET` and require `If-Match` on `PUT` for optimistic concurrency.
 - `admin` is a user role—not a separate `/admin` API namespace or a process-wide static token.
 
-Refer to [docs/mvp-usage.md](docs/mvp-usage.md) for the route inventory and [docs/console-auth-refactor-plan.md](docs/console-auth-refactor-plan.md) for the Console authentication design.
+Refer to [docs/user/operations.md](docs/user/operations.md) for the route inventory and [docs/development/console-auth.md](docs/development/console-auth.md) for the Console authentication design.
 
 ## Console web UI
 
@@ -370,7 +376,7 @@ pnpm --dir web/console generate:api:check   # OpenAPI spec/type drift gate
 
 See `web/console/README.md` for the full command list, layout, and the
 OpenAPI contract workflow, and the [Console Web UI design and implementation
-plan](docs/console-ui-design.md) for the repository layout, auth/caching model,
+plan](docs/development/console-ui.md) for the repository layout, auth/caching model,
 shadcn conventions, and phased delivery plan.
 
 ## Runtime behavior and boundaries
@@ -379,9 +385,13 @@ shadcn conventions, and phased delivery plan.
 - Model aliases and transforms cause only the necessary request reserialization; otherwise the original request bytes are forwarded.
 - Transform order is fixed: template defaults → channel overrides → protected-header cleanup → upstream authentication.
 - Client `Authorization`, hop-by-hop headers, and `Connection`-declared headers are never forwarded upstream.
-- Passive health reacts to pre-header connection failures. There is no active health-check worker.
+- Passive health reacts to pre-header connection failures. Configured
+  failover can retry an untried healthy channel only before response headers;
+  there is no retry for upstream HTTP errors or a started response stream.
 - RPM, concurrency, and soft quota admission are process-local; there is no cross-instance coordination.
-- Usage and billing are asynchronous and best effort. Quotas are soft prechecks based on settled usage; they do not reserve a cost before forwarding.
+- Terminal request logs are appended to a durable local spool; usage
+  extraction and settlement are asynchronous. Quotas are soft prechecks based
+  on settled usage and do not reserve a cost before forwarding.
 - Request logging does not persist prompts, completions, full headers, API keys, cookies, or unredacted upstream error content.
 
 All balances, quotas, model prices, request costs, and statistics use USD. Current scope does not include embeddings, images, audio, files, batches, assistants, fine-tuning, generic automatic retries, TLS termination, a financial ledger, refunds/top-ups, or currency conversion.
@@ -398,7 +408,7 @@ cargo test
 ```
 
 Release preparation and tag publication are documented in
-[`docs/releasing.md`](docs/releasing.md). The local release gate is:
+[`docs/development/releasing.md`](docs/development/releasing.md). The local release gate is:
 
 ```bash
 ./scripts/verify-release.sh 0.1.0
@@ -412,7 +422,7 @@ cp .env.real-upstream.example .env.real-upstream
 ./scripts/run-real-upstream-smoke.sh
 ```
 
-This script is the sole `.env` exception in the repository. See [docs/real-upstream-smoke.md](docs/real-upstream-smoke.md) before running it.
+This script is the sole `.env` exception in the repository. See [docs/development/real-upstream-smoke.md](docs/development/real-upstream-smoke.md) before running it.
 
 ## Repository layout
 
@@ -430,7 +440,7 @@ src/
   workers/           Snapshot reload and asynchronous request-log workers
 migrations/          PostgreSQL schema migrations
 deploy/postgres/     Compose initialization helpers
-docs/                Product, operational, and design documentation
+docs/                User, development, external reference, and archive docs
 config/              Ignored runtime configuration, DB password, and JWT keys
 config.example.toml  Tracked configuration template
 tests/               Local and PostgreSQL integration tests
@@ -449,14 +459,17 @@ tests/               Local and PostgreSQL integration tests
 
 ## Documentation
 
-- [Operational usage and endpoint guide](docs/mvp-usage.md)
-- [Production configuration and capacity tuning](docs/production-configuration.md)
-- [Production Docker deployment](docs/production-deployment.md)
-- [Version release process](docs/releasing.md)
-- [Console Web UI design and implementation plan](docs/console-ui-design.md)
-- [Database and control-plane design](docs/database-design.md)
-- [Real-upstream smoke-test guide](docs/real-upstream-smoke.md)
-- [Product requirements document (Chinese)](docs/PRD.md)
+- [Documentation center and conventions](docs/README.md)
+- [Operational usage and endpoint guide](docs/user/operations.md)
+- [Production configuration and capacity tuning](docs/user/production-configuration.md)
+- [Production Docker deployment](docs/user/production-deployment.md)
+- [OpenAI compatibility reference](docs/reference/openai-compatibility.md)
+- [Current architecture](docs/development/architecture.md)
+- [Version release process](docs/development/releasing.md)
+- [Console Web UI design and implementation plan](docs/development/console-ui.md)
+- [Database and control-plane design](docs/development/database-design.md)
+- [Real-upstream smoke-test guide](docs/development/real-upstream-smoke.md)
+- [Product and architecture blueprint (Chinese)](docs/development/product-blueprint.md)
 
 ## License
 

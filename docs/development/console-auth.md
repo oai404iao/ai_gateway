@@ -1,9 +1,9 @@
 # Console API、JWT 与角色授权重构计划
 
-> 状态：已完成。本文记录将静态管理 Bearer 接口重构为用户登录、JWT 鉴权及角色授权 Console API 的设计与实施清单。
+> 状态：已完成设计记录。本文记录将静态管理 Bearer 接口重构为用户登录、JWT 鉴权及角色授权 Console API 的设计与实施清单。
 >
 > **后续变更：** migration `0010_api_key_target_selection.sql` 已替换本文最初的 Policy 模板语义。
-> 当前行为以 `docs/mvp-usage.md` 和 Console OpenAPI 为准。
+> 当前行为以 `docs/user/operations.md` 和 Console OpenAPI 为准。
 
 ## 1. 目标
 

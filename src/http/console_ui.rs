@@ -2,7 +2,7 @@
 //! security headers. Only compiled when the `embedded-console-ui` cargo
 //! feature is enabled.
 //!
-//! Routing rules (see docs/console-ui-design.md §3):
+//! Routing rules (see docs/development/console-ui.md §3):
 //! - `/console/v1/*` is owned by the API router. This fallback never returns
 //!   `index.html` for an API path; an unmatched API path yields a JSON 404.
 //! - Fingerprinted `/assets/*` files are served with a long immutable
