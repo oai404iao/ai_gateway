@@ -2,9 +2,11 @@ import { useOwnApiKeys } from "@/features/api-keys/api";
 import { useOwnRequestLogs } from "@/features/request-logs/api";
 import { RequestLogsView } from "@/features/request-logs/request-logs-view";
 import { useI18n } from "@/app/i18n";
+import { useSession } from "@/lib/use-session";
 
 export function OwnRequestLogsPage() {
   const { t } = useI18n();
+  const { user } = useSession();
   const apiKeys = useOwnApiKeys();
 
   return (
@@ -14,6 +16,7 @@ export function OwnRequestLogsPage() {
       basePath="/me/request-logs"
       useLogs={useOwnRequestLogs}
       apiKeys={apiKeys.data ?? []}
+      showChannelDetails={user?.role === "admin"}
     />
   );
 }

@@ -14,6 +14,7 @@ import { useI18n } from "@/app/i18n";
 
 interface StringListFieldProps {
   id?: string;
+  className?: string;
   label: string;
   description?: string;
   value: string[];
@@ -32,6 +33,7 @@ interface StringListFieldProps {
  */
 export function StringListField({
   id,
+  className,
   label,
   description,
   value,
@@ -67,7 +69,7 @@ export function StringListField({
 
   if (variant === "tokens") {
     return (
-      <Field data-invalid={Boolean(error)}>
+      <Field className={className} data-invalid={Boolean(error)}>
         {action ? (
           <div className="flex flex-wrap items-center justify-between gap-2">
             {fieldLabel}
@@ -120,7 +122,7 @@ export function StringListField({
   }
 
   return (
-    <Field data-invalid={Boolean(error)}>
+    <Field className={className} data-invalid={Boolean(error)}>
       {action ? (
         <div className="flex flex-wrap items-center justify-between gap-2">
           {fieldLabel}

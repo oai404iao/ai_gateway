@@ -189,7 +189,7 @@ export function ApiKeyPolicyDetailPage() {
           </CardHeader>
           <CardContent>
             <div className="flex flex-col gap-4">
-              <FieldGroup>
+              <FieldGroup className="grid gap-5 xl:grid-cols-2">
                 <Field data-invalid={Boolean(fieldError("name"))}>
                   <FieldLabel htmlFor="name">{t("Name")}</FieldLabel>
                   <Input
@@ -201,6 +201,14 @@ export function ApiKeyPolicyDetailPage() {
                   {fieldError("name") ? (
                     <FieldError>{fieldError("name")}</FieldError>
                   ) : null}
+                </Field>
+                <Field orientation="horizontal">
+                  <FieldLabel htmlFor="policy_enabled">{t("Enabled")}</FieldLabel>
+                  <Switch
+                    id="policy_enabled"
+                    checked={state.enabled}
+                    onCheckedChange={(checked) => patch({ enabled: Boolean(checked) })}
+                  />
                 </Field>
                 <ApiKeyTargetFields
                   groups={targetGroups}
@@ -215,14 +223,6 @@ export function ApiKeyPolicyDetailPage() {
                   }
                   error={targetError}
                 />
-                <Field orientation="horizontal">
-                  <FieldLabel htmlFor="policy_enabled">{t("Enabled")}</FieldLabel>
-                  <Switch
-                    id="policy_enabled"
-                    checked={state.enabled}
-                    onCheckedChange={(checked) => patch({ enabled: Boolean(checked) })}
-                  />
-                </Field>
               </FieldGroup>
               <Button className="self-start" onClick={submit} disabled={submitting}>
                 {submitting ? <Spinner data-icon="inline-start" /> : null}

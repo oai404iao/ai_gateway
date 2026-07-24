@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { BrowserRouter } from "react-router";
 import { AppProviders } from "@/app/providers";
 import { AppRouter } from "@/app/router";
 import { server, seedAuthenticatedSession } from "@/test/msw";
+import { SYSTEM_SETTINGS } from "@/test/fixtures";
 
 function renderApp() {
   window.history.replaceState({}, "", "/admin/system");
@@ -37,6 +38,14 @@ describe("SystemPage", () => {
     renderApp();
 
     const connectTimeout = await screen.findByLabelText("Connect timeout (seconds)");
+    expect(
+      connectTimeout.closest('[data-slot="system-settings-columns"]'),
+    ).toHaveClass("xl:grid-cols-2");
+    expect(
+      screen
+        .getByLabelText("Maximum cache entries")
+        .closest('[data-slot="field-group"]'),
+    ).toHaveClass("xl:grid-cols-2");
     await user.clear(connectTimeout);
     await user.type(connectTimeout, "12");
     await user.click(screen.getByRole("button", { name: "Add Codex template" }));
@@ -123,5 +132,76 @@ describe("SystemPage", () => {
     expect(
       await screen.findByText("Maximum retries must be between 1 and 10."),
     ).toBeInTheDocument();
+  });
+
+  it("shows valid affinity cache counts and clears one rule", async () => {
+    seedAuthenticatedSession();
+    let clearedRule: string | null = null;
+    server.use(
+      http.get("/console/v1/system/settings", () =>
+        HttpResponse.json(
+          {
+            ...SYSTEM_SETTINGS,
+            session_affinity: {
+              ...SYSTEM_SETTINGS.session_affinity,
+              enabled: true,
+              rules: [
+                {
+                  name: "codex-responses",
+                  enabled: true,
+                  api_formats: ["open_ai_responses"],
+                  model_regex: ["^gpt-.*$"],
+                  key_sources: [
+                    { type: "json_pointer", pointer: "/prompt_cache_key" },
+                  ],
+                  value_regex: null,
+                  ttl_seconds: null,
+                },
+              ],
+            },
+          },
+          { headers: { ETag: `"${SYSTEM_SETTINGS.updated_at}"` } },
+        ),
+      ),
+      http.get("/console/v1/system/session-affinity/cache", () =>
+        HttpResponse.json({
+          enabled: true,
+          max_entries: 100_000,
+          total_entries: 3,
+          rules: [{ name: "codex-responses", entries: 3 }],
+        }),
+      ),
+      http.delete("/console/v1/system/session-affinity/cache", ({ request }) => {
+        clearedRule = new URL(request.url).searchParams.get("rule_name");
+        return HttpResponse.json({
+          cleared_entries: 3,
+          cache: {
+            enabled: true,
+            max_entries: 100_000,
+            total_entries: 0,
+            rules: [{ name: "codex-responses", entries: 0 }],
+          },
+        });
+      }),
+    );
+    const user = userEvent.setup();
+    renderApp();
+
+    const rule = await screen.findByText("codex-responses");
+    const row = rule.closest("tr");
+    expect(row).not.toBeNull();
+    expect(
+      await within(row as HTMLElement).findByText("3"),
+    ).toBeInTheDocument();
+
+    await user.click(
+      within(row as HTMLElement).getByRole("button", {
+        name: "Clear cache for codex-responses",
+      }),
+    );
+    await user.click(screen.getByRole("button", { name: "Clear cache" }));
+
+    await waitFor(() => expect(clearedRule).toBe("codex-responses"));
+    expect(await screen.findByText("Cleared 3 cached entries.")).toBeInTheDocument();
   });
 });

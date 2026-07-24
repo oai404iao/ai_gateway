@@ -167,7 +167,7 @@ export function ConfigTemplateDetailPage() {
           </CardHeader>
           <CardContent>
             <div className="flex flex-col gap-4">
-              <FieldGroup>
+              <FieldGroup className="grid gap-5 xl:grid-cols-2">
                 <Field data-invalid={Boolean(fieldError("name"))}>
                   <FieldLabel htmlFor="name">{t("Name")}</FieldLabel>
                   <Input
@@ -186,7 +186,7 @@ export function ConfigTemplateDetailPage() {
                     onChange={(event) => patch({ description: event.target.value || null })}
                   />
                 </Field>
-                <Field>
+                <Field className="xl:col-span-2">
                   <FieldLabel>{t("Document (JSON)")}</FieldLabel>
                   <FieldDescription>
                     {t("Constrained transform document.")}

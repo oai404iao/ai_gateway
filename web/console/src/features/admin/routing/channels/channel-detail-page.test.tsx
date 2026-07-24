@@ -37,6 +37,14 @@ describe("ChannelDetailPage", () => {
     renderAppAt(`/admin/routing/channels/${CHANNEL.id}`);
 
     expect(await screen.findByDisplayValue(CHANNEL.name)).toBeInTheDocument();
+    expect(
+      screen.getByLabelText("Name").closest('[data-slot="channel-edit-layout"]'),
+    ).toHaveClass("xl:grid-cols-2");
+    expect(
+      screen
+        .getByLabelText(/available upstream models/i)
+        .closest('[data-slot="field"]'),
+    ).toHaveClass("xl:col-span-2");
     expect(screen.getByLabelText(/upstream api key/i)).toHaveValue(
       CHANNEL_DETAIL.upstream_api_key,
     );

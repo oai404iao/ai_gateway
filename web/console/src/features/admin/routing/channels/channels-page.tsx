@@ -1,6 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
-import { CheckCheck, ListChecks, Pencil, Plus } from "lucide-react";
+import {
+  CheckCheck,
+  ListChecks,
+  Pencil,
+  Plus,
+  Power,
+  PowerOff,
+  RotateCcw,
+} from "lucide-react";
+import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -13,11 +22,17 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { AsyncResource } from "@/components/shared/async-resource";
+import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { EmptyState } from "@/components/shared/empty-state";
 import { PageHeader } from "@/components/shared/page-header";
 import { ResourceTable, type Column } from "@/components/shared/resource-table";
 import { StatusBadge } from "@/components/shared/status-badge";
-import { useChannelGroups, useChannels } from "@/features/admin/api";
+import {
+  useBatchUpdateChannels,
+  useChannelGroups,
+  useChannels,
+  useRecoverChannel,
+} from "@/features/admin/api";
 import { ChannelBatchEditDialog } from "@/features/admin/routing/channels/channel-batch-edit-dialog";
 import { formatRelative } from "@/lib/dates";
 import { formatDecimal } from "@/lib/formatters";
@@ -32,6 +47,9 @@ export function ChannelsPage() {
   const { t } = useI18n();
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [batchOpen, setBatchOpen] = useState(false);
+  const [disableTarget, setDisableTarget] = useState<ChannelView | null>(null);
+  const quickUpdate = useBatchUpdateChannels();
+  const recoverChannel = useRecoverChannel();
   const batchDialogTriggerId = "channel-batch-edit-trigger";
 
   useEffect(() => {
@@ -74,6 +92,36 @@ export function ChannelsPage() {
       return next;
     });
   };
+
+  const setChannelEnabled = async (channel: ChannelView, enabled: boolean) => {
+    try {
+      await quickUpdate.mutateAsync({
+        items: [{ id: channel.id, updated_at: channel.updated_at }],
+        changes: { enabled },
+      });
+      toast.success(
+        t(enabled ? "Enabled {name}." : "Disabled {name}.", {
+          name: channel.name,
+        }),
+      );
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t("Request failed"));
+    }
+  };
+
+  const recover = async (channel: ChannelView) => {
+    try {
+      await recoverChannel.mutateAsync({
+        id: channel.id,
+        input: { updated_at: channel.updated_at },
+      });
+      toast.success(t("Recovered {name}.", { name: channel.name }));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t("Request failed"));
+    }
+  };
+
+  const quickActionPending = quickUpdate.isPending || recoverChannel.isPending;
 
   const columns: Column<ChannelView>[] = [
     {
@@ -120,6 +168,55 @@ export function ChannelsPage() {
       key: "updated",
       header: t("Updated"),
       render: (channel) => formatRelative(channel.updated_at),
+    },
+    {
+      key: "actions",
+      header: t("Actions"),
+      render: (channel) => (
+        <div className="flex justify-end gap-1">
+          {channel.enabled ? (
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label={t("Disable {name}", { name: channel.name })}
+              disabled={quickActionPending}
+              onClick={() => setDisableTarget(channel)}
+            >
+              <PowerOff />
+            </Button>
+          ) : (
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label={t("Enable {name}", { name: channel.name })}
+              disabled={quickActionPending}
+              onClick={() => void setChannelEnabled(channel, true)}
+            >
+              <Power />
+            </Button>
+          )}
+          {channel.auto_disabled ? (
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label={t("Recover {name}", { name: channel.name })}
+              disabled={quickActionPending}
+              onClick={() => void recover(channel)}
+            >
+              <RotateCcw />
+            </Button>
+          ) : null}
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label={t("Edit {name}", { name: channel.name })}
+            onClick={() => navigate(`/admin/routing/channels/${channel.id}`)}
+          >
+            <Pencil />
+          </Button>
+        </div>
+      ),
+      className: "text-right",
     },
   ];
 
@@ -254,6 +351,28 @@ export function ChannelsPage() {
         onOpenChange={setBatchOpen}
         onApplied={() => setSelected(new Set())}
         triggerId={batchDialogTriggerId}
+      />
+
+      <ConfirmDialog
+        open={disableTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setDisableTarget(null);
+        }}
+        title={t("Disable channel?")}
+        description={
+          disableTarget
+            ? t("{name} will stop receiving new requests.", {
+                name: disableTarget.name,
+              })
+            : ""
+        }
+        confirmLabel={t("Disable")}
+        destructive
+        onConfirm={() => {
+          const channel = disableTarget;
+          setDisableTarget(null);
+          if (channel) void setChannelEnabled(channel, false);
+        }}
       />
     </div>
   );

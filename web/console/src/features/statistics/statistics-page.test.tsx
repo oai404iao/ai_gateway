@@ -8,6 +8,7 @@ import { AppRouter } from "@/app/router";
 import { seedAuthenticatedSession, seedUserSession, server } from "@/test/msw";
 import {
   CHANNEL,
+  CHANNEL_GROUP,
   COST_STATISTICS_REPORT,
   MODEL,
 } from "@/test/fixtures";
@@ -44,21 +45,30 @@ describe("StatisticsPage", () => {
 
     expect(screen.getAllByText("1,912.06 USD").length).toBeGreaterThan(0);
     expect(screen.getByText("Model cost breakdown")).toBeInTheDocument();
+    expect(screen.getByText("Channel details")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Channel" })).toBeInTheDocument();
+    expect(screen.getAllByText(CHANNEL.name).length).toBeGreaterThan(0);
     expect(screen.getByText(/Cache rate: 40%/)).toBeInTheDocument();
-    expect(screen.getByRole("columnheader", { name: "Input tokens" })).toBeInTheDocument();
     expect(
-      screen.getByRole("columnheader", { name: "Cache hit tokens" }),
-    ).toBeInTheDocument();
-    expect(screen.getByRole("columnheader", { name: "Cache rate" })).toBeInTheDocument();
+      screen.getAllByRole("columnheader", { name: "Input tokens" }).length,
+    ).toBeGreaterThan(0);
     expect(
-      screen.getByRole("columnheader", { name: "Cache write tokens" }),
-    ).toBeInTheDocument();
-    expect(screen.getByRole("columnheader", { name: "Output tokens" })).toBeInTheDocument();
+      screen.getAllByRole("columnheader", { name: "Cache hit tokens" }).length,
+    ).toBeGreaterThan(0);
+    expect(
+      screen.getAllByRole("columnheader", { name: "Cache rate" }).length,
+    ).toBeGreaterThan(0);
+    expect(
+      screen.getAllByRole("columnheader", { name: "Cache write tokens" }).length,
+    ).toBeGreaterThan(0);
+    expect(
+      screen.getAllByRole("columnheader", { name: "Output tokens" }).length,
+    ).toBeGreaterThan(0);
     expect(screen.getAllByText("210M").length).toBeGreaterThan(0);
     expect(screen.getAllByText("84M").length).toBeGreaterThan(0);
     expect(screen.getAllByText("12M").length).toBeGreaterThan(0);
     expect(screen.getAllByText("53M").length).toBeGreaterThan(0);
-    expect(screen.getByText("40%")).toBeInTheDocument();
+    expect(screen.getAllByText("40%").length).toBeGreaterThan(0);
 
     await user.click(screen.getByRole("tab", { name: "System load" }));
 
@@ -96,6 +106,8 @@ describe("StatisticsPage", () => {
     );
     expect(screen.queryByRole("link", { name: "Price sync" })).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "System load" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "Channel" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Channel details")).not.toBeInTheDocument();
 
     expect(
       screen.getByText(
@@ -138,6 +150,19 @@ describe("StatisticsPage", () => {
       "aria-pressed",
       "true",
     );
+
+    const channelSelect = screen.getByRole("combobox", { name: "Channel" });
+    await user.click(channelSelect);
+    await user.click(
+      await screen.findByRole("option", {
+        name: `${CHANNEL_GROUP.name} · ${CHANNEL.name}`,
+      }),
+    );
+    await user.click(screen.getByRole("button", { name: "Apply" }));
+    await waitFor(() => {
+      expect(queries.at(-1)?.get("channel_id")).toBe(CHANNEL.id);
+    });
+
     const todayStart = new Date(queries.at(-1)?.get("started_after") ?? "");
     const todayEnd = new Date(queries.at(-1)?.get("started_before") ?? "");
     expect(todayStart.getHours()).toBe(0);

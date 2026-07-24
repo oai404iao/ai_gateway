@@ -89,6 +89,7 @@ interface RequestLogsViewProps {
   users?: ControlPlaneUser[];
   apiKeys?: RequestLogApiKeyOption[];
   modelOptions?: string[];
+  showChannelDetails?: boolean;
 }
 
 function optionalText(value: string): string | undefined {
@@ -123,6 +124,7 @@ export function RequestLogsView({
   users = [],
   apiKeys = [],
   modelOptions = [],
+  showChannelDetails = false,
 }: RequestLogsViewProps) {
   const { t } = useI18n();
   const [draft, setDraft] = useState<RequestLogFilterDraft>(emptyFilters);
@@ -196,6 +198,28 @@ export function RequestLogsView({
         </span>
       ),
     },
+    {
+      key: "channel-group",
+      header: t("Channel group"),
+      render: (log) => log.channel_group_name ?? "—",
+    },
+    ...(showChannelDetails
+      ? [
+          {
+            key: "channel",
+            header: t("Channel"),
+            render: (log: RequestLogView) => log.channel_name ?? "—",
+          },
+          {
+            key: "channel-id",
+            header: t("Channel ID"),
+            className: "whitespace-nowrap",
+            render: (log: RequestLogView) => (
+              <span className="font-mono text-xs">{log.channel_id ?? "—"}</span>
+            ),
+          },
+        ]
+      : []),
     {
       key: "outcome",
       header: t("Outcome"),
@@ -566,8 +590,23 @@ export function RequestLogsView({
                   </span>
                 }
               />
-              <DetailField label={t("Channel group")} value={detail.data.channel_group_id ?? "—"} mono />
-              <DetailField label={t("Channel")} value={detail.data.channel_id ?? "—"} mono />
+              <DetailField
+                label={t("Channel group")}
+                value={detail.data.channel_group_name ?? "—"}
+              />
+              {showChannelDetails ? (
+                <>
+                  <DetailField
+                    label={t("Channel")}
+                    value={detail.data.channel_name ?? "—"}
+                  />
+                  <DetailField
+                    label={t("Channel ID")}
+                    value={detail.data.channel_id ?? "—"}
+                    mono
+                  />
+                </>
+              ) : null}
               <DetailField label={t("Completed")} value={formatDateTime(detail.data.completed_at)} />
             </dl>
           ) : null}

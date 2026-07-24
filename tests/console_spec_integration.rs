@@ -278,6 +278,51 @@ async fn system_settings_bootstrap_initializes_once_without_overwriting_database
 }
 
 #[tokio::test]
+async fn session_affinity_cache_endpoint_reports_and_clears_current_process_state() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+
+    let report = request(
+        &app,
+        "GET",
+        "/console/v1/system/session-affinity/cache",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(report.status(), StatusCode::OK);
+    let report = body_json(report).await;
+    assert_eq!(report["enabled"], false);
+    assert_eq!(report["total_entries"], 0);
+    assert!(report["rules"].is_array());
+
+    let cleared = request(
+        &app,
+        "DELETE",
+        "/console/v1/system/session-affinity/cache",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(cleared.status(), StatusCode::OK);
+    let cleared = body_json(cleared).await;
+    assert_eq!(cleared["cleared_entries"], 0);
+    assert_eq!(cleared["cache"]["total_entries"], 0);
+
+    let missing_rule = request(
+        &app,
+        "DELETE",
+        "/console/v1/system/session-affinity/cache?rule_name=missing",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(missing_rule.status(), StatusCode::NOT_FOUND);
+
+    database.cleanup().await;
+}
+
+#[tokio::test]
 async fn emergency_admin_password_reset_revokes_existing_sessions() {
     let database = TestDatabase::new().await;
     let user_id = Uuid::new_v4();
@@ -1563,6 +1608,115 @@ async fn channel_batch_updates_are_atomic_versioned_and_published_once() {
 }
 
 #[tokio::test]
+async fn administrator_can_manually_recover_an_auto_disabled_channel() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+    let group = request(
+        &app,
+        "POST",
+        "/console/v1/routing/channel-groups",
+        serde_json::json!({
+            "name": "manual-recovery-group",
+            "api_format": "open_ai_chat_completions",
+            "priority": 1,
+            "selection_strategy": "weighted_random",
+            "enabled": true,
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(group.status(), StatusCode::CREATED);
+    let group_id = body_json(group).await["id"].as_str().unwrap().to_owned();
+    let channel = request(
+        &app,
+        "POST",
+        "/console/v1/routing/channels",
+        serde_json::json!({
+            "channel_group_id": group_id,
+            "api_format": "open_ai_chat_completions",
+            "name": "manual-recovery-channel",
+            "base_url": "https://manual-recovery.example.test",
+            "enabled": true,
+            "weight": 1,
+            "upstream_auth_kind": "none",
+            "available_models": [],
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(channel.status(), StatusCode::CREATED);
+    let channel_id = Uuid::parse_str(body_json(channel).await["id"].as_str().unwrap()).unwrap();
+
+    sqlx::query(
+        "UPDATE channels
+         SET auto_disabled=true, auto_disabled_reason='test automatic disable'
+         WHERE id=$1",
+    )
+    .bind(channel_id)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let channels = body_json(
+        request(
+            &app,
+            "GET",
+            "/console/v1/routing/channels",
+            serde_json::json!({}),
+            &[],
+        )
+        .await,
+    )
+    .await;
+    let channel = channels
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|channel| channel["id"] == channel_id.to_string())
+        .unwrap();
+    assert_eq!(channel["auto_disabled"], true);
+    let updated_at = channel["updated_at"].clone();
+
+    let recovered = request(
+        &app,
+        "POST",
+        &format!("/console/v1/routing/channels/{channel_id}/recover"),
+        serde_json::json!({ "updated_at": updated_at }),
+        &[],
+    )
+    .await;
+    assert_eq!(recovered.status(), StatusCode::OK);
+
+    let state: (bool, Option<String>) =
+        sqlx::query_as("SELECT auto_disabled,auto_disabled_reason FROM channels WHERE id=$1")
+            .bind(channel_id)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert_eq!(state, (false, None));
+    let audit_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_logs
+         WHERE action='manual_recover' AND object_id=$1",
+    )
+    .bind(channel_id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(audit_count, 1);
+
+    let stale = request(
+        &app,
+        "POST",
+        &format!("/console/v1/routing/channels/{channel_id}/recover"),
+        serde_json::json!({ "updated_at": updated_at }),
+        &[],
+    )
+    .await;
+    assert_eq!(stale.status(), StatusCode::CONFLICT);
+
+    database.cleanup().await;
+}
+
+#[tokio::test]
 async fn api_key_policy_only_stores_selectable_targets() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
@@ -2245,6 +2399,17 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
     assert_eq!(costs["models"][0]["cache_write_tokens"], 6);
     assert_eq!(costs["models"][0]["output_tokens"], 50);
     assert_eq!(costs["models"][0]["success_rate"], 0.5);
+    assert_eq!(costs["channels"][0]["id"], channel_id.to_string());
+    assert_eq!(
+        costs["channels"][0]["channel_group_name"],
+        format!("statistics-group-{group_id}")
+    );
+    assert_eq!(
+        costs["channels"][0]["name"],
+        format!("statistics-channel-{group_id}")
+    );
+    assert_eq!(costs["channels"][0]["request_count"], 3);
+    assert_eq!(costs["channels"][0]["success_rate"], 0.5);
     assert!(
         costs["buckets"].as_array().unwrap().len() >= 2,
         "the full selected timeline should include empty UTC buckets"
@@ -2289,6 +2454,7 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
     .execute(&database.pool)
     .await
     .unwrap();
+    let regular_request_log_id = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO request_logs \
          (id,started_at,completed_at,user_id,api_key_id,api_format,client_model, \
@@ -2301,7 +2467,7 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
                  'statistics-user-model',$5,$6,'succeeded',200,false,250,500,25,40,0,0,10, \
                  'USD',1000000,$2,1,0,0,1,1)",
     )
-    .bind(Uuid::new_v4())
+    .bind(regular_request_log_id)
     .bind(started_at)
     .bind(regular_user_id)
     .bind(regular_api_key_id)
@@ -2315,6 +2481,90 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
         .login(regular_email, TEST_PASSWORD.to_owned())
         .await
         .unwrap();
+
+    let admin_logs = request(
+        &app,
+        "GET",
+        &format!("/console/v1/request-logs?api_key_id={regular_api_key_id}"),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(admin_logs.status(), StatusCode::OK);
+    let admin_logs = body_json(admin_logs).await;
+    assert_eq!(
+        admin_logs[0]["channel_group_name"],
+        format!("statistics-group-{group_id}")
+    );
+    assert_eq!(admin_logs[0]["channel_id"], channel_id.to_string());
+    assert_eq!(
+        admin_logs[0]["channel_name"],
+        format!("statistics-channel-{group_id}")
+    );
+
+    let admin_own_logs = request(
+        &app,
+        "GET",
+        &format!("/console/v1/me/request-logs?api_key_id={api_key_id}"),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(admin_own_logs.status(), StatusCode::OK);
+    let admin_own_logs = body_json(admin_own_logs).await;
+    assert_eq!(admin_own_logs[0]["channel_id"], channel_id.to_string());
+    assert_eq!(
+        admin_own_logs[0]["channel_name"],
+        format!("statistics-channel-{group_id}")
+    );
+    let admin_own_log_id = admin_own_logs[0]["id"].as_str().unwrap();
+    let admin_own_log = request(
+        &app,
+        "GET",
+        &format!("/console/v1/me/request-logs/{admin_own_log_id}"),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(admin_own_log.status(), StatusCode::OK);
+    let admin_own_log = body_json(admin_own_log).await;
+    assert_eq!(admin_own_log["channel_id"], channel_id.to_string());
+    assert_eq!(
+        admin_own_log["channel_name"],
+        format!("statistics-channel-{group_id}")
+    );
+
+    let user_logs = request_with_token(
+        &app,
+        &regular_session.access_token,
+        "GET",
+        "/console/v1/me/request-logs",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(user_logs.status(), StatusCode::OK);
+    let user_logs = body_json(user_logs).await;
+    assert_eq!(
+        user_logs[0]["channel_group_name"],
+        format!("statistics-group-{group_id}")
+    );
+    assert!(user_logs[0]["channel_id"].is_null());
+    assert!(user_logs[0]["channel_name"].is_null());
+
+    let user_log = request_with_token(
+        &app,
+        &regular_session.access_token,
+        "GET",
+        &format!("/console/v1/me/request-logs/{regular_request_log_id}"),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(user_log.status(), StatusCode::OK);
+    let user_log = body_json(user_log).await;
+    assert!(user_log["channel_id"].is_null());
+    assert!(user_log["channel_name"].is_null());
 
     let user_channel_status = request_with_token(
         &app,
@@ -2348,6 +2598,20 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
         .unwrap();
     assert!((user_cost_amount - 1.0).abs() < f64::EPSILON);
     assert_eq!(user_costs["models"][0]["model"], "statistics-user-model");
+    assert_eq!(user_costs["channels"], serde_json::json!([]));
+
+    let user_channel_filter = request_with_token(
+        &app,
+        &regular_session.access_token,
+        "GET",
+        &format!(
+            "/console/v1/statistics/costs?started_after={range_start}&started_before={range_end}&granularity=hour&channel_id={channel_id}"
+        ),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(user_channel_filter.status(), StatusCode::FORBIDDEN);
 
     let other_user_costs = request_with_token(
         &app,
@@ -2406,6 +2670,21 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
         body_json(admin_user_costs).await["summary"]["request_count"],
         1
     );
+
+    let admin_channel_costs = request(
+        &app,
+        "GET",
+        &format!(
+            "/console/v1/statistics/costs?started_after={range_start}&started_before={range_end}&granularity=hour&channel_id={channel_id}"
+        ),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(admin_channel_costs.status(), StatusCode::OK);
+    let admin_channel_costs = body_json(admin_channel_costs).await;
+    assert_eq!(admin_channel_costs["summary"]["request_count"], 4);
+    assert_eq!(admin_channel_costs["channels"].as_array().unwrap().len(), 1);
 
     let invalid_start = (started_at - chrono::Duration::days(32))
         .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);

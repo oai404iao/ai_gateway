@@ -1312,7 +1312,7 @@ export function TransformDocumentEditor({
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <FieldGroup>
+            <FieldGroup className="grid gap-5 xl:grid-cols-2">
               <Field>
                 <FieldLabel>{t("Rule format")}</FieldLabel>
                 {fixedApiFormat ? (
@@ -1370,257 +1370,266 @@ export function TransformDocumentEditor({
           </CardContent>
         </Card>
 
-        <Card>
-          <CardHeader className="flex flex-row items-start justify-between gap-4">
-            <div className="flex flex-col gap-1.5">
-              <CardTitle>{t("Request headers")}</CardTitle>
-              <CardDescription>
-                {t("Set, remove, or rename safe headers before the request reaches the upstream.")}
-              </CardDescription>
-            </div>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() =>
-                commitVisualDocument({
-                  ...document,
-                  requestHeaders: [...document.requestHeaders, newHeaderRule()],
-                })
-              }
-            >
-              <Plus data-icon="inline-start" />
-              {t("Add request header rule")}
-            </Button>
-          </CardHeader>
-          <CardContent>
-            <HeaderRulesEditor
-              idPrefix="request-header"
-              rules={document.requestHeaders}
-              scope="request"
-              onChange={(requestHeaders) => commitVisualDocument({ ...document, requestHeaders })}
-            />
-          </CardContent>
-        </Card>
+        <div className="grid items-start gap-4 xl:grid-cols-2">
+          <div className="flex flex-col gap-4">
+            <Card>
+              <CardHeader className="flex flex-row items-start justify-between gap-4">
+                <div className="flex flex-col gap-1.5">
+                  <CardTitle>{t("Request headers")}</CardTitle>
+                  <CardDescription>
+                    {t("Set, remove, or rename safe headers before the request reaches the upstream.")}
+                  </CardDescription>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    commitVisualDocument({
+                      ...document,
+                      requestHeaders: [...document.requestHeaders, newHeaderRule()],
+                    })
+                  }
+                >
+                  <Plus data-icon="inline-start" />
+                  {t("Add request header rule")}
+                </Button>
+              </CardHeader>
+              <CardContent>
+                <HeaderRulesEditor
+                  idPrefix="request-header"
+                  rules={document.requestHeaders}
+                  scope="request"
+                  onChange={(requestHeaders) => commitVisualDocument({ ...document, requestHeaders })}
+                />
+              </CardContent>
+            </Card>
 
-        <Card>
-          <CardHeader className="flex flex-row items-start justify-between gap-4">
-            <div className="flex flex-col gap-1.5">
-              <CardTitle>{t("Request body (JSON Patch)")}</CardTitle>
-              <CardDescription>
-                {t(
-                  "Apply JSON Patch or version 2 array and object operations to the upstream JSON request. Model and stream remain protected.",
-                )}
-              </CardDescription>
-            </div>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() =>
-                commitVisualDocument({
-                  ...document,
-                  requestJson: [...document.requestJson, newPatchRule()],
-                })
-              }
-            >
-              <Plus data-icon="inline-start" />
-              {t("Add request body rule")}
-            </Button>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-4">
-            <PatchRulesEditor
-              idPrefix="request-json"
-              rules={document.requestJson}
-              scope="request"
-              onChange={(requestJson) => commitVisualDocument({ ...document, requestJson })}
-            />
-            <Alert>
-              <CircleAlert />
-              <AlertTitle>{t("JSON Patch note")}</AlertTitle>
-              <AlertDescription>
-                {t(
-                  "Replace and remove require a path that already exists. Add also requires its parent path to exist.",
-                )}
-              </AlertDescription>
-            </Alert>
-            <Alert>
-              <CircleAlert />
-              <AlertTitle>{t("Version 2 safety boundary")}</AlertTitle>
-              <AlertDescription>
-                {t(
-                  "Array operations target an existing array, merge is shallow and targets an existing object, and {{value}} can only read this rule's target before it runs.",
-                )}
-              </AlertDescription>
-            </Alert>
-          </CardContent>
-        </Card>
+            <Card>
+              <CardHeader className="flex flex-row items-start justify-between gap-4">
+                <div className="flex flex-col gap-1.5">
+                  <CardTitle>{t("Request body (JSON Patch)")}</CardTitle>
+                  <CardDescription>
+                    {t(
+                      "Apply JSON Patch or version 2 array and object operations to the upstream JSON request. Model and stream remain protected.",
+                    )}
+                  </CardDescription>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    commitVisualDocument({
+                      ...document,
+                      requestJson: [...document.requestJson, newPatchRule()],
+                    })
+                  }
+                >
+                  <Plus data-icon="inline-start" />
+                  {t("Add request body rule")}
+                </Button>
+              </CardHeader>
+              <CardContent className="flex flex-col gap-4">
+              <PatchRulesEditor
+                idPrefix="request-json"
+                rules={document.requestJson}
+                scope="request"
+                onChange={(requestJson) => commitVisualDocument({ ...document, requestJson })}
+              />
+              </CardContent>
+            </Card>
+          </div>
 
-        <Card>
-          <CardHeader className="flex flex-row items-start justify-between gap-4">
-            <div className="flex flex-col gap-1.5">
-              <CardTitle>{t("Response headers")}</CardTitle>
-              <CardDescription>
-                {t("Set, remove, or rename safe headers before the response is sent to the client.")}
-              </CardDescription>
-            </div>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() =>
-                commitVisualDocument({
-                  ...document,
-                  responseHeaders: [...document.responseHeaders, newHeaderRule()],
-                })
-              }
-            >
-              <Plus data-icon="inline-start" />
-              {t("Add response header rule")}
-            </Button>
-          </CardHeader>
-          <CardContent>
-            <HeaderRulesEditor
-              idPrefix="response-header"
-              rules={document.responseHeaders}
-              scope="response"
-              onChange={(responseHeaders) => commitVisualDocument({ ...document, responseHeaders })}
-            />
-          </CardContent>
-        </Card>
+          <div className="flex flex-col gap-4">
+            <Card>
+              <CardHeader className="flex flex-row items-start justify-between gap-4">
+                <div className="flex flex-col gap-1.5">
+                  <CardTitle>{t("Response headers")}</CardTitle>
+                  <CardDescription>
+                    {t("Set, remove, or rename safe headers before the response is sent to the client.")}
+                  </CardDescription>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    commitVisualDocument({
+                      ...document,
+                      responseHeaders: [...document.responseHeaders, newHeaderRule()],
+                    })
+                  }
+                >
+                  <Plus data-icon="inline-start" />
+                  {t("Add response header rule")}
+                </Button>
+              </CardHeader>
+              <CardContent>
+                <HeaderRulesEditor
+                  idPrefix="response-header"
+                  rules={document.responseHeaders}
+                  scope="response"
+                  onChange={(responseHeaders) => commitVisualDocument({ ...document, responseHeaders })}
+                />
+              </CardContent>
+            </Card>
 
-        <Card>
-          <CardHeader className="flex flex-row items-start justify-between gap-4">
-            <div className="flex flex-col gap-1.5">
-              <CardTitle>{t("Response body (streaming SSE)")}</CardTitle>
-              <CardDescription>
-                {t(
-                  "Patch supported JSON Server-Sent Events. Non-streaming JSON response bodies always pass through unchanged.",
-                )}
-              </CardDescription>
-            </div>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={availableSseEvents.length === 0}
-              onClick={() => {
-                const event = availableSseEvents[0];
-                if (!event) return;
-                commitVisualDocument({
-                  ...document,
-                  sse: [...document.sse, { id: ruleId(), event, patches: [] }],
-                });
-              }}
-            >
-              <Plus data-icon="inline-start" />
-              {t("Add streaming response rule")}
-            </Button>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-4">
-            {document.sse.length === 0
-              ? sectionEmpty(
-                  t("No response-body rules"),
-                  t("Add a supported streaming event and JSON Patch operations."),
-                )
-              : document.sse.map((rule, index) => (
-                  <Card key={rule.id}>
-                    <CardHeader className="flex flex-row items-start justify-between gap-4">
-                      <div className="flex flex-col gap-1.5">
-                        <CardTitle>{t("Streaming event rule")} {index + 1}</CardTitle>
-                        <CardDescription>
-                          {t("Each event can have one rule with one or more JSON Patch operations.")}
-                        </CardDescription>
-                      </div>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        onClick={() =>
-                          commitVisualDocument({
-                            ...document,
-                            sse: document.sse.filter((_, ruleIndex) => ruleIndex !== index),
-                          })
-                        }
-                      >
-                        <Trash2 data-icon="inline-start" />
-                        {t("Delete rule")}
-                      </Button>
-                    </CardHeader>
-                    <CardContent className="flex flex-col gap-4">
-                      <FieldGroup>
-                        <Field>
-                          <FieldLabel>{t("Event")}</FieldLabel>
-                          <Select
-                            value={rule.event}
-                            onValueChange={(event) =>
+            <Card>
+              <CardHeader className="flex flex-row items-start justify-between gap-4">
+                <div className="flex flex-col gap-1.5">
+                  <CardTitle>{t("Response body (streaming SSE)")}</CardTitle>
+                  <CardDescription>
+                    {t(
+                      "Patch supported JSON Server-Sent Events. Non-streaming JSON response bodies always pass through unchanged.",
+                    )}
+                  </CardDescription>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={availableSseEvents.length === 0}
+                  onClick={() => {
+                    const event = availableSseEvents[0];
+                    if (!event) return;
+                    commitVisualDocument({
+                      ...document,
+                      sse: [...document.sse, { id: ruleId(), event, patches: [] }],
+                    });
+                  }}
+                >
+                  <Plus data-icon="inline-start" />
+                  {t("Add streaming response rule")}
+                </Button>
+              </CardHeader>
+              <CardContent className="flex flex-col gap-4">
+                {document.sse.length === 0
+                  ? sectionEmpty(
+                      t("No response-body rules"),
+                      t("Add a supported streaming event and JSON Patch operations."),
+                    )
+                  : document.sse.map((rule, index) => (
+                      <Card key={rule.id}>
+                        <CardHeader className="flex flex-row items-start justify-between gap-4">
+                          <div className="flex flex-col gap-1.5">
+                            <CardTitle>{t("Streaming event rule")} {index + 1}</CardTitle>
+                            <CardDescription>
+                              {t("Each event can have one rule with one or more JSON Patch operations.")}
+                            </CardDescription>
+                          </div>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() =>
+                              commitVisualDocument({
+                                ...document,
+                                sse: document.sse.filter((_, ruleIndex) => ruleIndex !== index),
+                              })
+                            }
+                          >
+                            <Trash2 data-icon="inline-start" />
+                            {t("Delete rule")}
+                          </Button>
+                        </CardHeader>
+                        <CardContent className="flex flex-col gap-4">
+                          <FieldGroup>
+                            <Field>
+                              <FieldLabel>{t("Event")}</FieldLabel>
+                              <Select
+                                value={rule.event}
+                                onValueChange={(event) =>
+                                  commitVisualDocument({
+                                    ...document,
+                                    sse: document.sse.map((item, ruleIndex) =>
+                                      ruleIndex === index ? { ...item, event } : item,
+                                    ),
+                                  })
+                                }
+                              >
+                                <SelectTrigger aria-label={t("Streaming response event")}>
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectGroup>
+                                    {sseEvents(apiFormat).map((event) => (
+                                      <SelectItem
+                                        key={event}
+                                        value={event}
+                                        disabled={document.sse.some(
+                                          (item, ruleIndex) =>
+                                            ruleIndex !== index && item.event === event,
+                                        )}
+                                      >
+                                        {event}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectGroup>
+                                </SelectContent>
+                              </Select>
+                            </Field>
+                          </FieldGroup>
+                          <PatchRulesEditor
+                            idPrefix={`sse-${rule.id}`}
+                            rules={rule.patches}
+                            scope="sse"
+                            onChange={(patches) =>
                               commitVisualDocument({
                                 ...document,
                                 sse: document.sse.map((item, ruleIndex) =>
-                                  ruleIndex === index ? { ...item, event } : item,
+                                  ruleIndex === index ? { ...item, patches } : item,
+                                ),
+                              })
+                            }
+                          />
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="self-start"
+                            onClick={() =>
+                              commitVisualDocument({
+                                ...document,
+                                sse: document.sse.map((item, ruleIndex) =>
+                                  ruleIndex === index
+                                    ? { ...item, patches: [...item.patches, newPatchRule()] }
+                                    : item,
                                 ),
                               })
                             }
                           >
-                            <SelectTrigger aria-label={t("Streaming response event")}>
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectGroup>
-                                {sseEvents(apiFormat).map((event) => (
-                                  <SelectItem
-                                    key={event}
-                                    value={event}
-                                    disabled={document.sse.some(
-                                      (item, ruleIndex) =>
-                                        ruleIndex !== index && item.event === event,
-                                    )}
-                                  >
-                                    {event}
-                                  </SelectItem>
-                                ))}
-                              </SelectGroup>
-                            </SelectContent>
-                          </Select>
-                        </Field>
-                      </FieldGroup>
-                      <PatchRulesEditor
-                        idPrefix={`sse-${rule.id}`}
-                        rules={rule.patches}
-                        scope="sse"
-                        onChange={(patches) =>
-                          commitVisualDocument({
-                            ...document,
-                            sse: document.sse.map((item, ruleIndex) =>
-                              ruleIndex === index ? { ...item, patches } : item,
-                            ),
-                          })
-                        }
-                      />
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="self-start"
-                        onClick={() =>
-                          commitVisualDocument({
-                            ...document,
-                            sse: document.sse.map((item, ruleIndex) =>
-                              ruleIndex === index
-                                ? { ...item, patches: [...item.patches, newPatchRule()] }
-                                : item,
-                            ),
-                          })
-                        }
-                      >
-                        <Plus data-icon="inline-start" />
-                        {t("Add event patch")}
-                      </Button>
-                    </CardContent>
-                  </Card>
-                ))}
-          </CardContent>
-        </Card>
+                            <Plus data-icon="inline-start" />
+                            {t("Add event patch")}
+                          </Button>
+                        </CardContent>
+                      </Card>
+                    ))}
+              </CardContent>
+            </Card>
+          </div>
+        </div>
+
+        <div className="grid gap-4 xl:grid-cols-2">
+          <Alert>
+            <CircleAlert />
+            <AlertTitle>{t("JSON Patch note")}</AlertTitle>
+            <AlertDescription>
+              {t(
+                "Replace and remove require a path that already exists. Add also requires its parent path to exist.",
+              )}
+            </AlertDescription>
+          </Alert>
+          <Alert>
+            <CircleAlert />
+            <AlertTitle>{t("Version 2 safety boundary")}</AlertTitle>
+            <AlertDescription>
+              {t(
+                "Array operations target an existing array, merge is shallow and targets an existing object, and {{value}} can only read this rule's target before it runs.",
+              )}
+            </AlertDescription>
+          </Alert>
+        </div>
       </TabsContent>
 
       <TabsContent value="json">

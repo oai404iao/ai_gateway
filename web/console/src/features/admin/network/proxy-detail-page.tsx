@@ -178,7 +178,7 @@ export function ProxyDetailPage() {
           </CardHeader>
           <CardContent>
             <div className="flex flex-col gap-4">
-              <FieldGroup>
+              <FieldGroup className="grid gap-5 xl:grid-cols-2">
                 <Field data-invalid={Boolean(fieldError("name"))}>
                   <FieldLabel htmlFor="name">{t("Name")}</FieldLabel>
                   <Input

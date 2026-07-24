@@ -50,6 +50,8 @@ export type SystemRequestRetrySettings = S["SystemRequestRetrySettings"];
 export type SystemSessionAffinityKeySource = S["SystemSessionAffinityKeySource"];
 export type SystemSessionAffinityRule = S["SystemSessionAffinityRule"];
 export type SystemSessionAffinitySettings = S["SystemSessionAffinitySettings"];
+export type SessionAffinityCacheReport = S["SessionAffinityCacheReport"];
+export type SessionAffinityCacheClearResponse = S["SessionAffinityCacheClearResponse"];
 
 // Resources (views)
 export type ApiKeyView = S["ApiKeyView"];
@@ -87,6 +89,7 @@ export type CostStatisticsSummary = S["CostStatisticsSummary"];
 export type CostStatisticsBucket = S["CostStatisticsBucket"];
 export type CostStatisticsBucketModel = S["CostStatisticsBucketModel"];
 export type CostStatisticsModel = S["CostStatisticsModel"];
+export type CostStatisticsChannel = S["CostStatisticsChannel"];
 export type ModelSyncPreview = S["ModelSyncPreview"];
 export type ModelSyncPreviewModel = S["ModelSyncPreviewModel"];
 export type ModelImportResponse = S["ModelImportResponse"];
@@ -112,6 +115,7 @@ export type ChannelModelDiscoveryInput = S["ChannelModelDiscoveryInput"];
 export type ChannelBatchUpdateTarget = S["ChannelBatchUpdateTarget"];
 export type ChannelBatchChanges = S["ChannelBatchChanges"];
 export type ChannelBatchUpdateInput = S["ChannelBatchUpdateInput"];
+export type ChannelRecoverInput = S["ChannelRecoverInput"];
 export type ModelRuleInput = S["ModelRuleInput"];
 export type ProxyCreateInput = S["ProxyCreateInput"];
 export type ProxyInput = S["ProxyInput"];

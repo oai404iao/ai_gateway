@@ -23,6 +23,7 @@ import type {
   ProxyView,
   RequestLogView,
   SelfApiKeyOptions,
+  SessionAffinityCacheReport,
   SystemLoadReport,
   SystemSettings,
 } from "@/api/types";
@@ -237,7 +238,9 @@ export const REQUEST_LOG: RequestLogView = {
   upstream_model: MODEL.source_model_id,
   model_rule_id: MODEL_RULE.id,
   channel_group_id: CHANNEL_GROUP.id,
+  channel_group_name: CHANNEL_GROUP.name,
   channel_id: CHANNEL.id,
+  channel_name: CHANNEL.name,
   outcome: "succeeded",
   response_status_code: 200,
   streamed: true,
@@ -443,6 +446,30 @@ export const COST_STATISTICS_REPORT: CostStatisticsReport = {
       cost_amount: "1912.06",
     },
   ],
+  channels: [
+    {
+      id: CHANNEL.id,
+      channel_group_id: CHANNEL_GROUP.id,
+      channel_group_name: CHANNEL_GROUP.name,
+      name: CHANNEL.name,
+      api_format: CHANNEL.api_format,
+      request_count: 18_878,
+      total_tokens: 263_000_000,
+      input_tokens: 210_000_000,
+      cached_input_tokens: 84_000_000,
+      cache_write_tokens: 12_000_000,
+      output_tokens: 53_000_000,
+      success_rate: 0.975,
+      cost_amount: "1912.06",
+    },
+  ],
+};
+
+export const SESSION_AFFINITY_CACHE_REPORT: SessionAffinityCacheReport = {
+  enabled: false,
+  max_entries: 100_000,
+  total_entries: 0,
+  rules: [],
 };
 
 export const SYSTEM_LOAD_REPORT: SystemLoadReport = {

@@ -85,7 +85,7 @@ describe("TransformDocumentEditor", () => {
 
     await user.click(screen.getByRole("button", { name: "Add request body rule" }));
     await user.click(screen.getByLabelText("JSON Patch operation"));
-    await user.click(screen.getByRole("option", { name: "Append to array" }));
+    await user.click(await screen.findByRole("option", { name: "Append to array" }));
     await user.type(screen.getByLabelText("JSON pointer"), "/messages");
     const value = screen.getByLabelText("Value (JSON)");
     fireEvent.change(value, { target: { value: '{"role":"system"}' } });

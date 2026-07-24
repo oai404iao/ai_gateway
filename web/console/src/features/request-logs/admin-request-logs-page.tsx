@@ -18,6 +18,7 @@ export function AdminRequestLogsPage() {
       allowOwnerFilter
       users={users.data ?? []}
       apiKeys={apiKeys.data ?? []}
+      showChannelDetails
       modelOptions={
         modelRules.data?.flatMap((rule) => [rule.client_model, rule.upstream_model]) ?? []
       }

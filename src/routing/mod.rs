@@ -15,6 +15,7 @@ use crate::domain::{
     ApiFormat, CompiledApiKey, CompiledChannel, CompiledModelRule, CompiledRouteTier,
     CompiledRuntimeConfig, OutboundNetworkPolicyFingerprint, SelectionStrategy,
 };
+use serde::Serialize;
 use uuid::Uuid;
 
 /// Process-wide policy for passive connection health. These values apply to all
@@ -300,7 +301,7 @@ struct AffinityEntry {
 struct AffinityState {
     enabled: bool,
     max_entries: usize,
-    active_rules: HashSet<[u8; 32]>,
+    active_rules: HashMap<[u8; 32], Arc<str>>,
     entries: HashMap<AffinityCacheKey, AffinityEntry>,
     recency: VecDeque<(AffinityCacheKey, u64)>,
     next_generation: u64,
@@ -335,6 +336,26 @@ pub struct RoutingPressureSnapshot {
     pub cooling_down_channels: u64,
     pub half_open_channels: u64,
     pub session_affinity_entries: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct SessionAffinityRuleCacheSnapshot {
+    pub name: String,
+    pub entries: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct SessionAffinityCacheSnapshot {
+    pub enabled: bool,
+    pub max_entries: u64,
+    pub total_entries: u64,
+    pub rules: Vec<SessionAffinityRuleCacheSnapshot>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct SessionAffinityCacheClearResult {
+    pub cleared_entries: u64,
+    pub cache: SessionAffinityCacheSnapshot,
 }
 
 impl RoutingRuntime {
@@ -420,11 +441,12 @@ impl RoutingRuntime {
             u64::try_from(configured_active_channels.unwrap_or(tracked_state_channels))
                 .unwrap_or(u64::MAX);
         let session_affinity_entries = {
-            let affinity = self
+            let mut affinity = self
                 .inner
                 .affinity
                 .lock()
                 .expect("routing affinity mutex poisoned");
+            prune_expired_affinity(&mut affinity, now);
             u64::try_from(affinity.entries.len()).unwrap_or(u64::MAX)
         };
         RoutingPressureSnapshot {
@@ -434,6 +456,52 @@ impl RoutingRuntime {
             half_open_channels,
             session_affinity_entries,
         }
+    }
+
+    #[must_use]
+    pub fn session_affinity_cache_snapshot(&self) -> SessionAffinityCacheSnapshot {
+        let now = self.inner.clock.now();
+        let mut state = self
+            .inner
+            .affinity
+            .lock()
+            .expect("routing affinity mutex poisoned");
+        prune_expired_affinity(&mut state, now);
+        affinity_cache_snapshot(&state)
+    }
+
+    #[must_use]
+    pub fn clear_session_affinity_cache(
+        &self,
+        rule_name: Option<&str>,
+    ) -> Option<SessionAffinityCacheClearResult> {
+        let now = self.inner.clock.now();
+        let mut state = self
+            .inner
+            .affinity
+            .lock()
+            .expect("routing affinity mutex poisoned");
+        prune_expired_affinity(&mut state, now);
+
+        let before = state.entries.len();
+        if let Some(rule_name) = rule_name {
+            let fingerprint = state.active_rules.iter().find_map(|(fingerprint, name)| {
+                name.as_ref()
+                    .eq_ignore_ascii_case(rule_name)
+                    .then_some(*fingerprint)
+            })?;
+            state
+                .entries
+                .retain(|key, _| key.rule_fingerprint != fingerprint);
+        } else {
+            state.entries.clear();
+        }
+        rebuild_affinity_recency(&mut state);
+        Some(SessionAffinityCacheClearResult {
+            cleared_entries: u64::try_from(before.saturating_sub(state.entries.len()))
+                .unwrap_or(u64::MAX),
+            cache: affinity_cache_snapshot(&state),
+        })
     }
 
     /// Replaces the process-wide passive-health policy for future connection
@@ -703,8 +771,8 @@ fn reconcile_affinity(inner: &RuntimeInner, snapshot: &CompiledRuntimeConfig) {
     let active_rules = settings
         .rules()
         .iter()
-        .map(crate::domain::SessionAffinityRule::fingerprint)
-        .collect::<HashSet<_>>();
+        .map(|rule| (rule.fingerprint(), Arc::from(rule.name())))
+        .collect::<HashMap<_, _>>();
     let now = inner.clock.now();
     let mut state = inner
         .affinity
@@ -722,7 +790,7 @@ fn reconcile_affinity(inner: &RuntimeInner, snapshot: &CompiledRuntimeConfig) {
         state.active_rules = active_rules;
         let active_rules = state.active_rules.clone();
         state.entries.retain(|key, entry| {
-            active_rules.contains(&key.rule_fingerprint) && entry.expires_at > now
+            active_rules.contains_key(&key.rule_fingerprint) && entry.expires_at > now
         });
         rebuild_affinity_recency(&mut state);
     }
@@ -735,7 +803,7 @@ fn affinity_lookup(inner: &RuntimeInner, key: AffinityCacheKey) -> Option<Uuid> 
         .affinity
         .lock()
         .expect("session affinity mutex poisoned");
-    if !state.enabled || !state.active_rules.contains(&key.rule_fingerprint) {
+    if !state.enabled || !state.active_rules.contains_key(&key.rule_fingerprint) {
         return None;
     }
     let entry = state.entries.get(&key).copied()?;
@@ -754,7 +822,9 @@ fn affinity_store(inner: &RuntimeInner, binding: &AffinityBinding) {
         .expect("session affinity mutex poisoned");
     if !state.enabled
         || state.max_entries == 0
-        || !state.active_rules.contains(&binding.key.rule_fingerprint)
+        || !state
+            .active_rules
+            .contains_key(&binding.key.rule_fingerprint)
     {
         return;
     }
@@ -807,6 +877,39 @@ fn trim_affinity_state(state: &mut AffinityState) {
         {
             state.entries.remove(&key);
         }
+    }
+}
+
+fn prune_expired_affinity(state: &mut AffinityState, now: Duration) {
+    let before = state.entries.len();
+    state.entries.retain(|key, entry| {
+        state.active_rules.contains_key(&key.rule_fingerprint) && entry.expires_at > now
+    });
+    if state.entries.len() != before {
+        rebuild_affinity_recency(state);
+    }
+}
+
+fn affinity_cache_snapshot(state: &AffinityState) -> SessionAffinityCacheSnapshot {
+    let mut counts = HashMap::<[u8; 32], u64>::new();
+    for key in state.entries.keys() {
+        let count = counts.entry(key.rule_fingerprint).or_default();
+        *count = count.saturating_add(1);
+    }
+    let mut rules = state
+        .active_rules
+        .iter()
+        .map(|(fingerprint, name)| SessionAffinityRuleCacheSnapshot {
+            name: name.to_string(),
+            entries: counts.get(fingerprint).copied().unwrap_or_default(),
+        })
+        .collect::<Vec<_>>();
+    rules.sort_unstable_by(|left, right| left.name.cmp(&right.name));
+    SessionAffinityCacheSnapshot {
+        enabled: state.enabled,
+        max_entries: u64::try_from(state.max_entries).unwrap_or(u64::MAX),
+        total_entries: u64::try_from(state.entries.len()).unwrap_or(u64::MAX),
+        rules,
     }
 }
 
@@ -1514,6 +1617,75 @@ mod tests {
         };
         assert!(second.session_affinity.as_ref().unwrap().cache_hit());
         assert_eq!(second.channel.id(), first_channel);
+    }
+
+    #[test]
+    fn session_affinity_cache_reports_only_valid_entries_and_supports_manual_clear() {
+        let fingerprint = [6; 32];
+        let ttl = Duration::from_secs(60);
+        let (snapshot, secret) = snapshot_with_base_and_settings(
+            &[(0, "weighted_random"), (0, "weighted_random")],
+            &[1, 1],
+            None,
+            affinity_system_settings(fingerprint, ttl),
+        );
+        let clock = Arc::new(TestClock(AtomicU64::new(0)));
+        let runtime = RoutingRuntime::with_seams(
+            PassiveHealthPolicy::default(),
+            clock.clone(),
+            Arc::new(Tickets(Mutex::new(VecDeque::from([0, 1])))),
+        );
+        runtime.reconcile(&snapshot);
+        let key = snapshot.authenticate(&secret).unwrap();
+        let affinity =
+            || SessionAffinityMatch::new(Arc::from("test-affinity"), fingerprint, [8; 32], ttl);
+
+        let mut selected = match runtime.select_with_affinity(
+            &snapshot,
+            &key,
+            ApiFormat::OpenAiChatCompletions,
+            "model",
+            Some(affinity()),
+        ) {
+            SelectionResult::Selected(route) => route,
+            _ => panic!("affinity request must select"),
+        };
+        selected.lease.request_succeeded();
+        drop(selected);
+
+        let report = runtime.session_affinity_cache_snapshot();
+        assert_eq!(report.total_entries, 1);
+        assert_eq!(report.rules[0].name, "test-affinity");
+        assert_eq!(report.rules[0].entries, 1);
+        assert!(
+            runtime
+                .clear_session_affinity_cache(Some("missing-rule"))
+                .is_none()
+        );
+
+        let cleared = runtime
+            .clear_session_affinity_cache(Some("TEST-AFFINITY"))
+            .unwrap();
+        assert_eq!(cleared.cleared_entries, 1);
+        assert_eq!(cleared.cache.total_entries, 0);
+
+        let mut selected = match runtime.select_with_affinity(
+            &snapshot,
+            &key,
+            ApiFormat::OpenAiChatCompletions,
+            "model",
+            Some(affinity()),
+        ) {
+            SelectionResult::Selected(route) => route,
+            _ => panic!("affinity request must select after clear"),
+        };
+        selected.lease.request_succeeded();
+        drop(selected);
+        clock.advance(Duration::from_secs(61));
+
+        let expired = runtime.session_affinity_cache_snapshot();
+        assert_eq!(expired.total_entries, 0);
+        assert_eq!(expired.rules[0].entries, 0);
     }
 
     #[test]
