@@ -7,6 +7,19 @@ Versioning.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-24
+
+### Added
+
+- Administrator-managed API host URLs, displayed with copy controls on users'
+  API Key pages.
+- A public Console Channel status page in the left navigation.
+
+### Changed
+
+- Moved channel status out of Statistics; Statistics now focuses on cost
+  analytics and administrator system load.
+
 ## [0.1.2] - 2026-07-23
 
 ### Changed
