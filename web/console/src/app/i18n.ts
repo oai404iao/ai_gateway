@@ -192,6 +192,10 @@ const zhCN: Record<string, string> = {
   "Reload now": "立即重载",
   "Correlation id": "关联 ID",
   "Channel status": "渠道状态",
+  "Cost analytics and current system pressure.": "成本分析和当前系统压力。",
+  "Your own cost analytics.": "您自己的成本分析。",
+  "Availability and performance for channels included in status statistics.":
+    "已纳入状态统计的渠道可用性与性能。",
   "Cost statistics": "花费统计",
   "System load": "系统负载",
   "Channel, cost, and current system pressure analytics.":

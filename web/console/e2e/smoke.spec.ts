@@ -64,6 +64,19 @@ test.describe("Console SPA smoke", () => {
     await expect(keyValue).toHaveValue(E2E_API_KEY_SECRET);
   });
 
+  test("all users can open the Channel status page", async ({ page }) => {
+    await mockConsoleApi(page);
+    await page.goto("/login");
+    await page.getByLabel(/email/i).fill("admin@example.com");
+    await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
+    await page.getByRole("button", { name: /sign in/i }).click();
+    await page.getByRole("link", { name: "Channel status" }).click();
+
+    await expect(page).toHaveURL(/\/channel-status/);
+    await expect(page.getByRole("heading", { name: "Channel status" })).toBeVisible();
+    await expect(page.getByText("Model overview")).toBeVisible();
+  });
+
   test("users choose API key targets and per-key limits", async ({ page }) => {
     await mockConsoleApi(page);
     await page.goto("/login");

@@ -1,6 +1,5 @@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { PageHeader } from "@/components/shared/page-header";
-import { ChannelStatusPanel } from "@/features/statistics/channel-status-panel";
 import { CostStatisticsPanel } from "@/features/statistics/cost-statistics-panel";
 import { SystemLoadPanel } from "@/features/statistics/system-load-panel";
 import { useI18n } from "@/app/i18n";
@@ -17,21 +16,17 @@ export function StatisticsPage() {
         title="Statistics"
         description={
           isAdmin
-            ? "Channel, cost, and current system pressure analytics."
-            : "Channel status and your own cost analytics."
+            ? "Cost analytics and current system pressure."
+            : "Your own cost analytics."
         }
       />
-      <Tabs defaultValue="channel-status">
+      <Tabs defaultValue="costs">
         <TabsList>
-          <TabsTrigger value="channel-status">{t("Channel status")}</TabsTrigger>
           <TabsTrigger value="costs">{t("Cost statistics")}</TabsTrigger>
           {isAdmin ? (
             <TabsTrigger value="system-load">{t("System load")}</TabsTrigger>
           ) : null}
         </TabsList>
-        <TabsContent value="channel-status">
-          <ChannelStatusPanel />
-        </TabsContent>
         <TabsContent value="costs">
           <CostStatisticsPanel />
         </TabsContent>
