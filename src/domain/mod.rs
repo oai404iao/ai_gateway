@@ -15,11 +15,12 @@ pub use billing::{
     RequestBillingMultiplier,
 };
 pub use compiled_routing::{
-    ApiKeyPermission, ChannelTimeoutPolicy, CompiledApiKey, CompiledChannel, CompiledChannelGroup,
-    CompiledChannelUpstreamPolicy, CompiledConfigTemplate, CompiledModelRule, CompiledProxy,
-    CompiledRouteTier, CompiledRuntimeConfig, CompiledUnavailableRouteCandidate,
-    ModelPriceSnapshot, ModelRouteKey, NoProxyHost, NoProxyHostError,
-    OutboundNetworkPolicyFingerprint, SelectionStrategy, UpstreamAuth,
+    ApiKeyPermission, AuthorizationProfile, ChannelTimeoutPolicy, CompiledApiKey,
+    CompiledCandidate, CompiledChannel, CompiledChannelGroup, CompiledChannelUpstreamPolicy,
+    CompiledConfigTemplate, CompiledModelRule, CompiledProxy, CompiledRouteTier,
+    CompiledRuntimeConfig, CompiledUnavailableRouteCandidate, ModelPriceSnapshot, ModelRouteKey,
+    NoProxyHost, NoProxyHostError, OutboundNetworkPolicyFingerprint, SelectionStrategy,
+    UpstreamAuth,
 };
 pub use console_auth::{ConsolePrincipal, UserRole};
 pub use request_log::{

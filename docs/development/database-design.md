@@ -362,11 +362,11 @@ CHECK (jsonb_typeof(override_document) = 'object');
 
 以下规则涉及数组、JSONB 或当前内存状态，必须在保存配置及构建快照时验证：
 
-1. `model_rules` 中所有渠道组/渠道 ID 存在、无重复、启用，且与规则 `api_format` 相同；禁止跨格式回退。
-2. `channels.available_models` 覆盖规则的 `upstream_model`；直接渠道和渠道组目标不能形成重复候选。
-3. 每个启用规则至少展开为一个可选渠道；同一最低优先级候选组的选路策略一致。
+1. `model_rules` 中所有渠道组/渠道 ID 存在、无重复且与规则 `api_format` 相同；禁止跨格式回退。目标资源可以处于禁用状态。
+2. 渠道组目标按 `channels.available_models` 与规则 `upstream_model` 求交，不支持该模型的组成员不会进入该模型的候选池；显式 `channel_ids` 必须支持该模型。直接渠道和渠道组产生的重复候选按渠道 ID 去重。
+3. 每个启用规则至少有一个配置上支持模型的候选渠道；渠道组、渠道禁用或自动禁用只会使候选暂时不可选。同一优先级内所有配置候选组的选路策略必须一致。
 4. API Key 的 `allowed_group_ids` / `allowed_channel_ids` 均存在、无重复，并且 Key 的自动推导格式覆盖这些目标；`proxy` 权限用于代理，`/v1/models` 还需要 `models.read`。
-5. API Key 的渠道组/渠道范围与模型规则目标存在交集；`/v1/models` 只输出这些可达规则的 `client_model`，不返回全局 `models`。
+5. API Key 的渠道组/渠道范围展开为 dense channel slot 位图；相同范围共享一个 `AuthorizationProfile`，并预计算 `accessible_routes` 位图。API Key 可以没有可达路由；`/v1/models` 只输出配置可达规则的 `client_model`，不返回全局 `models`，也不受临时健康冷却影响。
 6. 模板和渠道覆盖符合受限 DSL、Header 保护、SSE 逐事件处理、URL 和超时规则；`forwarding_policy` 的字段必须为正数、响应头超时大于建连超时，且所有渠道覆盖与其合并后的有效超时均有效。
 
 控制面在一个事务中保存变更和审计日志，完成上述全量校验并编译 `CompiledRuntimeConfig` 后提交；提交后直接替换内存 `ArcSwap` 快照。启动、定时重载和 Console 管理写入均使用 PostgreSQL 控制面；TOML 保留进程级监听、数据库、系统设置首次初始化值、日志、Console listener 和 JWT 密钥文件路径设置。
@@ -376,8 +376,9 @@ CHECK (jsonb_typeof(override_document) = 'object');
 ```text
 Bearer Key
   → 内存快照校验 Key 状态、格式、权限和分组；软额度预检查 `used >= limit` 时拒绝
-  → 根据 (api_format, client_model) 找到 model_rule
-  → 展开数组目标，按组优先级、渠道权重和内存健康状态选择渠道
+  → 根据 (api_format, client_model) 从分格式索引找到 model_rule
+  → 通过 accessible_routes 位图完成模型授权判断
+  → 使用已编译的模型候选 tier，按渠道授权位图、组优先级、渠道权重和内存健康状态选择渠道
   → 模板默认值 + 渠道覆盖 + 上游鉴权
   → 原路径流式转发
   → 异步写入一条 request_logs；对已持久化的可结算成本幂等更新余额和已用额度

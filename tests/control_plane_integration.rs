@@ -2349,7 +2349,7 @@ async fn admin_api_key_policies_persist_publish_and_are_audited_without_secrets(
 }
 
 #[tokio::test]
-async fn invalid_routing_dependency_rolls_back_database_audit_and_snapshot() {
+async fn manual_channel_disable_publishes_an_unavailable_route() {
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
     let (app, runtime) = admin_app(database.pool.clone(), seed.user).await;
@@ -2375,15 +2375,123 @@ async fn invalid_routing_dependency_rolls_back_database_audit_and_snapshot() {
         &[("if-match", &etag)],
     )
     .await;
-    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-    let body = response.into_body().collect().await.unwrap().to_bytes();
-    assert_eq!(body.as_ref(), br#"{"error":"routing_dependency_invalid"}"#);
+    assert_eq!(response.status(), StatusCode::OK);
     let enabled: bool = sqlx::query_scalar("SELECT enabled FROM channels WHERE id=$1")
         .bind(seed.channel)
         .fetch_one(&database.pool)
         .await
         .unwrap();
-    assert!(enabled);
+    assert!(!enabled);
+    let audit_after: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_logs")
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    assert_eq!(audit_after, audit_before + 1);
+    let snapshot = runtime.snapshot();
+    assert!(snapshot.channel(seed.channel).is_none());
+    let rule = snapshot
+        .model_rule(ApiFormat::OpenAiChatCompletions, &seed.client_model)
+        .unwrap();
+    assert!(rule.tiers().is_empty());
+    assert_eq!(rule.unavailable_candidates()[0].channel_id(), seed.channel);
+    let key = snapshot.authenticate(&seed.secret).unwrap();
+    assert_eq!(
+        snapshot.models_for(&key, ApiFormat::OpenAiChatCompletions),
+        vec![Arc::from(seed.client_model.as_str())]
+    );
+    assert!(matches!(
+        routing::select(
+            &snapshot,
+            &key,
+            ApiFormat::OpenAiChatCompletions,
+            &seed.client_model,
+        ),
+        ai_gateway::routing::SelectionResult::NoHealthyChannel { .. }
+    ));
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn adding_a_group_channel_for_another_model_preserves_existing_routes() {
+    let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
+    sqlx::query(
+        "UPDATE model_rules SET channel_group_ids=ARRAY[$1]::uuid[], channel_ids='{}' WHERE id=$2",
+    )
+    .bind(seed.group)
+    .bind(seed.rule)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let (app, runtime) = admin_app(database.pool.clone(), seed.user).await;
+    let response = admin_request(
+        app,
+        "POST",
+        "/console/v1/routing/channels",
+        serde_json::json!({
+            "channel_group_id": seed.group,
+            "api_format": "open_ai_chat_completions",
+            "name": format!("other-model-{}", Uuid::new_v4()),
+            "base_url": "https://other-model.example.test",
+            "enabled": true,
+            "weight": 1,
+            "upstream_auth_kind": "bearer",
+            "upstream_api_key": "other-upstream-secret",
+            "available_models": ["different-upstream"]
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let created: serde_json::Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let created_channel: Uuid = serde_json::from_value(created["id"].clone()).unwrap();
+
+    let snapshot = runtime.snapshot();
+    assert!(snapshot.channel(created_channel).is_some());
+    let rule = snapshot
+        .model_rule(ApiFormat::OpenAiChatCompletions, &seed.client_model)
+        .unwrap();
+    assert_eq!(rule.tiers().len(), 1);
+    assert_eq!(rule.tiers()[0].channel_ids(), &[seed.channel]);
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn model_incompatible_direct_channel_rolls_back_database_audit_and_snapshot() {
+    let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
+    let (app, runtime) = admin_app(database.pool.clone(), seed.user).await;
+    let audit_before: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_logs")
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    let path = format!("/console/v1/routing/channels/{}", seed.channel);
+    let detail = admin_request(app.clone(), "GET", &path, serde_json::json!({})).await;
+    let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
+    let response = admin_request_with_headers(
+        app,
+        "PUT",
+        &path,
+        serde_json::json!({
+            "channel_group_id": seed.group, "api_format": "open_ai_chat_completions",
+            "name": format!("test-channel-{}", seed.channel), "base_url": "https://example.test",
+            "enabled": true, "weight": 1,
+            "upstream_auth_kind": "bearer",
+            "available_models": ["different-upstream"]
+        }),
+        &[("if-match", &etag)],
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(body.as_ref(), br#"{"error":"routing_dependency_invalid"}"#);
+    let available_models: Vec<String> =
+        sqlx::query_scalar("SELECT available_models FROM channels WHERE id=$1")
+            .bind(seed.channel)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert_eq!(available_models, vec!["upstream-v1"]);
     let audit_after: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_logs")
         .fetch_one(&database.pool)
         .await
@@ -3469,7 +3577,7 @@ async fn group_authorization_and_expired_keys_are_not_usable() {
 }
 
 #[tokio::test]
-async fn admission_controls_are_compiled_and_invalid_channel_targets_are_rejected() {
+async fn admission_controls_and_overlapping_group_targets_are_compiled() {
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
     sqlx::query("UPDATE api_keys SET requests_per_minute = 1 WHERE id = $1")
@@ -3514,7 +3622,7 @@ async fn admission_controls_are_compiled_and_invalid_channel_targets_are_rejecte
         .load()
         .await
         .unwrap();
-    assert!(compile_control_plane(records).is_err());
+    assert!(compile_control_plane(records).is_ok());
     database.cleanup().await;
 }
 
