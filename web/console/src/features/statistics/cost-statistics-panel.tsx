@@ -40,13 +40,19 @@ import { AsyncResource } from "@/components/shared/async-resource";
 import { EmptyState } from "@/components/shared/empty-state";
 import { ResourceTable, type Column } from "@/components/shared/resource-table";
 import { StatusBadge } from "@/components/shared/status-badge";
-import { useAdminApiKeys, useUsers } from "@/features/admin/api";
+import {
+  useAdminApiKeys,
+  useChannelGroups,
+  useChannels,
+  useUsers,
+} from "@/features/admin/api";
 import { useOwnApiKeys } from "@/features/api-keys/api";
 import {
   useCostStatistics,
   type CostStatisticsFilters,
 } from "@/features/statistics/api";
 import type {
+  CostStatisticsChannel,
   CostStatisticsModel,
   StatisticsGranularity,
 } from "@/api/types";
@@ -66,6 +72,7 @@ interface CostFilterDraft {
   granularity: StatisticsGranularity;
   user_id: string;
   api_key_id: string;
+  channel_id: string;
 }
 
 type QuickRange = "today" | "this_week" | "this_month";
@@ -89,6 +96,7 @@ function defaultDraft(): CostFilterDraft {
     granularity: "hour",
     user_id: "",
     api_key_id: "",
+    channel_id: "",
   };
 }
 
@@ -128,6 +136,7 @@ function toFilters(draft: CostFilterDraft): CostStatisticsFilters | null {
     granularity: draft.granularity,
     user_id: draft.user_id || undefined,
     api_key_id: draft.api_key_id || undefined,
+    channel_id: draft.channel_id || undefined,
   };
 }
 
@@ -195,6 +204,8 @@ export function CostStatisticsPanel() {
   const isAdmin = user?.role === "admin";
   const users = useUsers(isAdmin);
   const adminApiKeys = useAdminApiKeys(isAdmin);
+  const channels = useChannels(isAdmin);
+  const channelGroups = useChannelGroups(isAdmin);
   const ownApiKeys = useOwnApiKeys(!isAdmin);
   const { t } = useI18n();
 
@@ -203,6 +214,21 @@ export function CostStatisticsPanel() {
         .filter((key) => !draft.user_id || key.user_id === draft.user_id)
         .map((key) => ({ id: key.id, name: key.name }))
     : (ownApiKeys.data ?? []).map((key) => ({ id: key.id, name: key.name }));
+  const channelGroupNames = new Map(
+    (channelGroups.data ?? []).map((group) => [group.id, group.name]),
+  );
+  const channelOptions = (channels.data ?? [])
+    .map((channel) => ({
+      id: channel.id,
+      name: channel.name,
+      groupName:
+        channelGroupNames.get(channel.channel_group_id) ?? channel.channel_group_id,
+    }))
+    .sort(
+      (left, right) =>
+        left.groupName.localeCompare(right.groupName) ||
+        left.name.localeCompare(right.name),
+    );
 
   const apply = () => {
     const next = toFilters(draft);
@@ -304,6 +330,14 @@ export function CostStatisticsPanel() {
       return costDelta || right.request_count - left.request_count;
     });
   }, [data]);
+  const channelRows = useMemo(() => {
+    if (!data) return [];
+    return [...data.channels].sort((left, right) => {
+      const costDelta =
+        numericAmount(right.cost_amount) - numericAmount(left.cost_amount);
+      return costDelta || right.request_count - left.request_count;
+    });
+  }, [data]);
 
   const columns: Column<CostStatisticsModel>[] = [
     {
@@ -369,6 +403,77 @@ export function CostStatisticsPanel() {
       render: (model) => formatUsd(model.cost_amount),
     },
   ];
+  const channelColumns: Column<CostStatisticsChannel>[] = [
+    {
+      key: "group",
+      header: t("Channel group"),
+      render: (channel) => (
+        <span className="font-medium">{channel.channel_group_name}</span>
+      ),
+    },
+    {
+      key: "channel",
+      header: t("Channel"),
+      render: (channel) => <span className="font-medium">{channel.name}</span>,
+    },
+    {
+      key: "format",
+      header: t("Format"),
+      render: (channel) => (
+        <StatusBadge
+          value={channel.api_format}
+          label={apiFormatLabel(channel.api_format)}
+          variant="info"
+        />
+      ),
+    },
+    {
+      key: "requests",
+      header: t("Requests"),
+      render: (channel) => channel.request_count.toLocaleString(),
+    },
+    {
+      key: "success",
+      header: t("Success rate"),
+      render: (channel) => formatRate(channel.success_rate),
+    },
+    {
+      key: "tokens",
+      header: t("Total tokens"),
+      render: (channel) => formatCompactTokens(channel.total_tokens),
+    },
+    {
+      key: "input_tokens",
+      header: t("Input tokens"),
+      render: (channel) => formatCompactTokens(channel.input_tokens),
+    },
+    {
+      key: "cached_input_tokens",
+      header: t("Cache hit tokens"),
+      render: (channel) => formatCompactTokens(channel.cached_input_tokens),
+    },
+    {
+      key: "cache_rate",
+      header: t("Cache rate"),
+      render: (channel) =>
+        formatRate(cacheRate(channel.input_tokens, channel.cached_input_tokens)),
+    },
+    {
+      key: "cache_write_tokens",
+      header: t("Cache write tokens"),
+      render: (channel) => formatCompactTokens(channel.cache_write_tokens),
+    },
+    {
+      key: "output_tokens",
+      header: t("Output tokens"),
+      render: (channel) => formatCompactTokens(channel.output_tokens),
+    },
+    {
+      key: "cost",
+      header: t("Cost"),
+      render: (channel) => formatUsd(channel.cost_amount),
+    },
+  ];
 
   return (
     <div className="flex flex-col gap-6">
@@ -378,7 +483,7 @@ export function CostStatisticsPanel() {
           <CardDescription>
             {t(
               isAdmin
-                ? "Filter by time range, user, API key, and aggregation granularity."
+                ? "Filter by time range, user, API key, channel, and aggregation granularity."
                 : "Filter your own statistics by time range, API key, and aggregation granularity.",
             )}
           </CardDescription>
@@ -537,6 +642,34 @@ export function CostStatisticsPanel() {
                 </SelectContent>
               </Select>
             </Field>
+            {isAdmin ? (
+              <Field>
+                <FieldLabel htmlFor="statistics_channel">{t("Channel")}</FieldLabel>
+                <Select
+                  value={draft.channel_id || "__all__"}
+                  onValueChange={(value) =>
+                    setDraft((current) => ({
+                      ...current,
+                      channel_id: value === "__all__" ? "" : value,
+                    }))
+                  }
+                >
+                  <SelectTrigger id="statistics_channel">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      <SelectItem value="__all__">{t("All channels")}</SelectItem>
+                      {channelOptions.map((channel) => (
+                        <SelectItem key={channel.id} value={channel.id}>
+                          {channel.groupName} · {channel.name}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+              </Field>
+            ) : null}
             <Field className="justify-end">
               <FieldLabel className="sr-only">{t("Filter actions")}</FieldLabel>
               <div className="flex gap-2">
@@ -704,6 +837,38 @@ export function CostStatisticsPanel() {
                 )}
               </CardContent>
             </Card>
+
+            {isAdmin ? (
+              <Card>
+                <CardHeader>
+                  <CardTitle>{t("Channel details")}</CardTitle>
+                  <CardDescription>
+                    {t(
+                      "Requests, reliability, tokens, and cost for each selected channel.",
+                    )}
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {channelRows.length === 0 ? (
+                    <EmptyState
+                      title={t("No channel statistics")}
+                      description={t(
+                        "No routed requests matched the selected filter.",
+                      )}
+                      className="py-12"
+                    />
+                  ) : (
+                    <ResourceTable
+                      columns={channelColumns}
+                      rows={channelRows}
+                      rowKey={(channel) =>
+                        `${channel.id}:${channel.channel_group_id}:${channel.api_format}`
+                      }
+                    />
+                  )}
+                </CardContent>
+              </Card>
+            ) : null}
           </>
         ) : null}
       </AsyncResource>

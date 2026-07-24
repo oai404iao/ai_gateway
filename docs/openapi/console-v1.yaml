@@ -937,6 +937,34 @@ paths:
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/Unprocessable" }
 
+  /routing/channels/{id}/recover:
+    post:
+      tags: [Channels]
+      operationId: recoverChannel
+      description: |
+        Administrator-only. Clears a temporary automatic disable without
+        changing the channel's explicit enabled flag. The list response's
+        `updated_at` value provides optimistic concurrency.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChannelRecoverInput" }
+      responses:
+        "200":
+          description: Recovered.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
   /routing/model-rules:
     get:
       tags: [ModelRules]
@@ -1238,7 +1266,8 @@ paths:
       operationId: getCostStatistics
       description: |
         Regular users can only aggregate their own requests. Administrators
-        can aggregate all users or filter by `user_id` and `api_key_id`.
+        can aggregate all users or filter by `user_id`, `api_key_id`, and
+        `channel_id`. Channel-level details are returned only to administrators.
         Aggregates request counts, token totals and usage categories, RPM/TPM,
         and cost by UTC hour or day. All monetary amounts are settled in USD,
         and the response includes continuous zero-valued buckets across the
@@ -1251,6 +1280,7 @@ paths:
         - $ref: "#/components/parameters/StatisticsGranularity"
         - $ref: "#/components/parameters/RequestLogUserId"
         - $ref: "#/components/parameters/RequestLogApiKeyId"
+        - $ref: "#/components/parameters/StatisticsChannelId"
       responses:
         "200":
           description: Cost and usage statistics.
@@ -1301,6 +1331,42 @@ paths:
               schema: { $ref: "#/components/schemas/SystemLoadReport" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+
+  /system/session-affinity/cache:
+    get:
+      tags: [System]
+      operationId: getSessionAffinityCache
+      description: |
+        Administrator-only. Returns current-process, unexpired session-affinity
+        entry counts for each compiled enabled rule.
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Current session-affinity cache state.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SessionAffinityCacheReport" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    delete:
+      tags: [System]
+      operationId: clearSessionAffinityCache
+      description: |
+        Administrator-only. Clears all current-process entries, or only entries
+        belonging to the named compiled rule.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/SessionAffinityRuleName"
+      responses:
+        "200":
+          description: Cache entries cleared.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SessionAffinityCacheClearResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
 
   /system/settings:
     get:
@@ -1448,6 +1514,18 @@ components:
       schema:
         $ref: "#/components/schemas/StatisticsGranularity"
         default: day
+    StatisticsChannelId:
+      name: channel_id
+      in: query
+      required: false
+      description: Administrator-only exact channel filter.
+      schema: { type: string, format: uuid }
+    SessionAffinityRuleName:
+      name: rule_name
+      in: query
+      required: false
+      description: Exact session-affinity rule name. Omit to clear the whole cache.
+      schema: { type: string, minLength: 1, maxLength: 64 }
 
   headers:
     ETag:
@@ -1788,6 +1866,31 @@ components:
           required: [updated_at]
           properties:
             updated_at: { $ref: "#/components/schemas/DateTime" }
+
+    SessionAffinityRuleCache:
+      type: object
+      required: [name, entries]
+      properties:
+        name: { type: string }
+        entries: { type: integer, format: int64, minimum: 0 }
+
+    SessionAffinityCacheReport:
+      type: object
+      required: [enabled, max_entries, total_entries, rules]
+      properties:
+        enabled: { type: boolean }
+        max_entries: { type: integer, format: int64, minimum: 0 }
+        total_entries: { type: integer, format: int64, minimum: 0 }
+        rules:
+          type: array
+          items: { $ref: "#/components/schemas/SessionAffinityRuleCache" }
+
+    SessionAffinityCacheClearResponse:
+      type: object
+      required: [cleared_entries, cache]
+      properties:
+        cleared_entries: { type: integer, format: int64, minimum: 0 }
+        cache: { $ref: "#/components/schemas/SessionAffinityCacheReport" }
 
     ApiHostsView:
       type: object
@@ -2239,7 +2342,7 @@ components:
       required:
         [id, started_at, completed_at, user_id, api_key_id, api_format,
          request_source, client_model, upstream_model, model_rule_id, channel_group_id,
-         channel_id, outcome, response_status_code, streamed, ttft_ms,
+         channel_group_name, channel_id, channel_name, outcome, response_status_code, streamed, ttft_ms,
          total_duration_ms, input_tokens, cached_input_tokens,
          cache_write_tokens, output_tokens, cost_amount, error_code, error_summary,
          billed_at]
@@ -2255,7 +2358,19 @@ components:
         upstream_model: { type: string, nullable: true }
         model_rule_id: { type: string, format: uuid, nullable: true }
         channel_group_id: { type: string, format: uuid, nullable: true }
-        channel_id: { type: string, format: uuid, nullable: true }
+        channel_group_name:
+          type: string
+          nullable: true
+          description: Current display name of the selected channel group.
+        channel_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Administrator-only; regular-user self-service responses return null.
+        channel_name:
+          type: string
+          nullable: true
+          description: Administrator-only current display name; regular-user self-service responses return null.
         outcome: { type: string }
         response_status_code: { type: integer, nullable: true }
         streamed: { type: boolean }
@@ -2374,7 +2489,7 @@ components:
 
     CostStatisticsReport:
       type: object
-      required: [started_at, ended_at, granularity, summary, buckets, models]
+      required: [started_at, ended_at, granularity, summary, buckets, models, channels]
       properties:
         started_at: { $ref: "#/components/schemas/DateTime" }
         ended_at: { $ref: "#/components/schemas/DateTime" }
@@ -2387,6 +2502,10 @@ components:
         models:
           type: array
           items: { $ref: "#/components/schemas/CostStatisticsModel" }
+        channels:
+          type: array
+          description: Administrator-only channel breakdown; empty for regular users.
+          items: { $ref: "#/components/schemas/CostStatisticsChannel" }
 
     CostStatisticsSummary:
       type: object
@@ -2471,6 +2590,41 @@ components:
         cost_amount:
           allOf: [{ $ref: "#/components/schemas/Decimal" }]
           description: Total model cost in USD.
+
+    CostStatisticsChannel:
+      type: object
+      required:
+        [id, channel_group_id, channel_group_name, name, api_format, request_count,
+         total_tokens, input_tokens, cached_input_tokens, cache_write_tokens,
+         output_tokens, success_rate, cost_amount]
+      properties:
+        id: { type: string, format: uuid }
+        channel_group_id: { type: string, format: uuid }
+        channel_group_name: { type: string }
+        name: { type: string }
+        api_format: { $ref: "#/components/schemas/ApiFormat" }
+        request_count: { type: integer }
+        total_tokens: { type: integer }
+        input_tokens:
+          type: integer
+          description: Channel input tokens, including cached and cache-write input.
+        cached_input_tokens:
+          type: integer
+          description: Channel input tokens served from an upstream prompt cache.
+        cache_write_tokens:
+          type: integer
+          description: Channel input tokens reported as written to an upstream prompt cache.
+        output_tokens: { type: integer }
+        success_rate:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+          nullable: true
+          description: Successful requests divided by non-cancelled terminal requests.
+        cost_amount:
+          allOf: [{ $ref: "#/components/schemas/Decimal" }]
+          description: Total channel cost in USD.
 
     AuditLogView:
       type: object
@@ -2919,6 +3073,14 @@ components:
           type: array
           items: { type: string, format: uuid }
         correlation_id: { type: string, format: uuid }
+
+    ChannelRecoverInput:
+      type: object
+      required: [updated_at]
+      properties:
+        updated_at:
+          allOf: [{ $ref: "#/components/schemas/DateTime" }]
+          description: Version copied from the channel list response.
 
     ModelRuleInput:
       type: object

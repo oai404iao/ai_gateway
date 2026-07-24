@@ -14,6 +14,7 @@ export interface CostStatisticsFilters {
   granularity: StatisticsGranularity;
   user_id?: string;
   api_key_id?: string;
+  channel_id?: string;
 }
 
 function queryString(values: Record<string, string | undefined>): string {
@@ -45,6 +46,7 @@ export function useCostStatistics(filters: CostStatisticsFilters) {
           granularity: filters.granularity,
           user_id: filters.user_id,
           api_key_id: filters.api_key_id,
+          channel_id: filters.channel_id,
         })}`,
       ),
   });

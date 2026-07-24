@@ -2,11 +2,13 @@ import { useState, type FormEvent } from "react";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
+  EraserIcon,
   PencilIcon,
   PlusIcon,
   SparklesIcon,
   Trash2Icon,
 } from "lucide-react";
+import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -57,6 +59,11 @@ import {
 } from "@/components/ui/table";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { StringListField } from "@/components/shared/string-list-field";
+import { ConfirmDialog } from "@/components/shared/confirm-dialog";
+import {
+  useClearSessionAffinityCache,
+  useSessionAffinityCache,
+} from "@/features/admin/api";
 import { useI18n } from "@/app/i18n";
 import type {
   ApiFormat,
@@ -232,6 +239,14 @@ export function SessionAffinityCard({
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [draft, setDraft] = useState<SystemSessionAffinityRule>(() => cloneRule(EMPTY_RULE));
   const [editorError, setEditorError] = useState<string | null>(null);
+  const [cacheClearTarget, setCacheClearTarget] = useState<{
+    ruleName?: string;
+  } | null>(null);
+  const cache = useSessionAffinityCache();
+  const clearCache = useClearSessionAffinityCache();
+  const cacheCounts = new Map(
+    cache.data?.rules.map((rule) => [rule.name, rule.entries]) ?? [],
+  );
 
   const update = (patch: Partial<SystemSessionAffinitySettings>) =>
     onChange({ ...value, ...patch });
@@ -282,6 +297,24 @@ export function SessionAffinityCard({
       key_sources: [...current.key_sources, { type: "request_header", name: "" }],
     }));
 
+  const confirmClearCache = () => {
+    const target = cacheClearTarget;
+    if (!target) return;
+    setCacheClearTarget(null);
+    clearCache.mutate(target.ruleName, {
+      onSuccess: (response) => {
+        toast.success(
+          t("Cleared {count} cached entries.", {
+            count: response.cleared_entries,
+          }),
+        );
+      },
+      onError: (error) => {
+        toast.error(error instanceof Error ? error.message : t("Request failed"));
+      },
+    });
+  };
+
   return (
     <>
       <Card>
@@ -294,8 +327,8 @@ export function SessionAffinityCard({
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <FieldGroup>
-            <Field orientation="horizontal">
+          <FieldGroup className="grid gap-5 xl:grid-cols-2">
+            <Field className="xl:col-span-2" orientation="horizontal">
               <FieldContent>
                 <FieldLabel htmlFor="session_affinity_enabled">
                   {t("Enable session affinity")}
@@ -353,7 +386,10 @@ export function SessionAffinityCard({
               {errors?.defaultTtl ? <FieldError>{t(errors.defaultTtl)}</FieldError> : null}
             </Field>
 
-            <Field data-invalid={Boolean(errors?.rules)}>
+            <Field
+              className="xl:col-span-2"
+              data-invalid={Boolean(errors?.rules)}
+            >
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex flex-col gap-1">
                   <FieldLabel>{t("Affinity rules")}</FieldLabel>
@@ -362,6 +398,19 @@ export function SessionAffinityCard({
                   </FieldDescription>
                 </div>
                 <div className="flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={
+                      clearCache.isPending || (cache.data?.total_entries ?? 0) === 0
+                    }
+                    onClick={() => setCacheClearTarget({})}
+                  >
+                    <EraserIcon data-icon="inline-start" />
+                    {t("Clear all cache ({count})", {
+                      count: cache.data?.total_entries ?? 0,
+                    })}
+                  </Button>
                   <Button
                     type="button"
                     variant="outline"
@@ -394,13 +443,14 @@ export function SessionAffinityCard({
                   </EmptyContent>
                 </Empty>
               ) : (
-                <Table>
+                <Table className="min-w-max">
                   <TableHeader>
                     <TableRow>
                       <TableHead>{t("Rule")}</TableHead>
                       <TableHead>{t("Formats")}</TableHead>
                       <TableHead>{t("Key sources")}</TableHead>
                       <TableHead>{t("TTL")}</TableHead>
+                      <TableHead>{t("Valid cache entries")}</TableHead>
                       <TableHead className="text-right">{t("Actions")}</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -435,7 +485,31 @@ export function SessionAffinityCard({
                             : `${rule.ttl_seconds}s`}
                         </TableCell>
                         <TableCell>
+                          <Badge variant="secondary">
+                            {cache.isLoading
+                              ? "…"
+                              : (cacheCounts.get(rule.name) ?? 0).toLocaleString()}
+                          </Badge>
+                        </TableCell>
+                        <TableCell>
                           <div className="flex justify-end gap-1">
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon-sm"
+                              aria-label={t("Clear cache for {name}", {
+                                name: rule.name,
+                              })}
+                              disabled={
+                                clearCache.isPending ||
+                                (cacheCounts.get(rule.name) ?? 0) === 0
+                              }
+                              onClick={() =>
+                                setCacheClearTarget({ ruleName: rule.name })
+                              }
+                            >
+                              <EraserIcon />
+                            </Button>
                             <Button
                               type="button"
                               variant="ghost"
@@ -505,9 +579,9 @@ export function SessionAffinityCard({
               </DialogDescription>
             </DialogHeader>
 
-            <FieldGroup className="py-4">
+            <FieldGroup className="grid gap-5 py-4 md:grid-cols-2">
               {editorError ? (
-                <Alert variant="destructive">
+                <Alert className="md:col-span-2" variant="destructive">
                   <AlertTitle>{t("Review the rule")}</AlertTitle>
                   <AlertDescription>{t(editorError)}</AlertDescription>
                 </Alert>
@@ -612,7 +686,7 @@ export function SessionAffinityCard({
                 />
               </Field>
 
-              <FieldSet>
+              <FieldSet className="md:col-span-2">
                 <FieldLegend variant="label">{t("Key sources")}</FieldLegend>
                 <FieldDescription>
                   {t("Sources are tried in order until one yields a non-empty scalar value.")}
@@ -740,6 +814,24 @@ export function SessionAffinityCard({
           </form>
         </DialogContent>
       </Dialog>
+
+      <ConfirmDialog
+        open={cacheClearTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setCacheClearTarget(null);
+        }}
+        title={t("Clear session affinity cache?")}
+        description={
+          cacheClearTarget?.ruleName
+            ? t("This clears all valid cached bindings for rule {name}.", {
+                name: cacheClearTarget.ruleName,
+              })
+            : t("This clears every valid session affinity binding in this process.")
+        }
+        confirmLabel={t("Clear cache")}
+        destructive
+        onConfirm={confirmClearCache}
+      />
     </>
   );
 }

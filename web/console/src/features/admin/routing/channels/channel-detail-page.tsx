@@ -535,296 +535,338 @@ export function ChannelDetailPage() {
           ) : null
         }
         editCard={
-          <Card>
-          <CardHeader>
-            <CardTitle>{isNew ? t("Create channel") : t("Edit channel")}</CardTitle>
-            <CardDescription>
-              {t("The channel format must match its group's format.")}
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="flex flex-col gap-4">
-              <FieldGroup>
-                <Field data-invalid={Boolean(fieldError("channel_group_id"))}>
-                  <FieldLabel>{t("Channel group")}</FieldLabel>
-                  <Select
-                    value={state.channel_group_id || "__none__"}
-                    onValueChange={(value) => {
-                      const group = groups.data?.find((item) => item.id === value);
-                      patch({
-                        channel_group_id: value === "__none__" ? "" : value,
-                        api_format: (group?.api_format ?? state.api_format) as ApiFormat,
-                      });
-                    }}
-                  >
-                    <SelectTrigger aria-invalid={Boolean(fieldError("channel_group_id"))}>
-                      <SelectValue placeholder={t("Pick a group")} />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectGroup>
-                        <SelectItem value="__none__">{t("None")}</SelectItem>
-                        {groups.data?.map((group) => (
-                          <SelectItem
-                            key={group.id}
-                            value={group.id}
-                            disabled={state.enabled && !group.enabled}
-                          >
-                            {group.name} ({apiFormatLabel(group.api_format)})
-                          </SelectItem>
-                        ))}
-                      </SelectGroup>
-                    </SelectContent>
-                  </Select>
-                  {fieldError("channel_group_id") ? (
-                    <FieldError>{fieldError("channel_group_id")}</FieldError>
-                  ) : null}
-                </Field>
-                <Field>
-                  <FieldLabel>{t("API format")}</FieldLabel>
-                  <Input
-                    value={apiFormatLabel(selectedGroup?.api_format ?? state.api_format)}
-                    disabled
-                  />
-                </Field>
-                <Field data-invalid={Boolean(fieldError("name"))}>
-                  <FieldLabel htmlFor="name">{t("Name")}</FieldLabel>
-                  <Input
-                    id="name"
-                    value={state.name}
-                    onChange={(event) => patch({ name: event.target.value })}
-                    aria-invalid={Boolean(fieldError("name"))}
-                  />
-                  {fieldError("name") ? <FieldError>{fieldError("name")}</FieldError> : null}
-                </Field>
-                <Field data-invalid={Boolean(fieldError("base_url"))}>
-                  <FieldLabel htmlFor="base_url">{t("Base URL")}</FieldLabel>
-                  <Input
-                    id="base_url"
-                    value={state.base_url}
-                    onChange={(event) => patch({ base_url: event.target.value })}
-                    placeholder="https://api.upstream.com"
-                    aria-invalid={Boolean(fieldError("base_url"))}
-                  />
-                  {fieldError("base_url") ? <FieldError>{fieldError("base_url")}</FieldError> : null}
-                </Field>
-                <Field data-invalid={Boolean(fieldError("weight"))}>
-                  <FieldLabel htmlFor="weight">{t("Weight")}</FieldLabel>
-                  <Input
-                    id="weight"
-                    type="number"
-                    min={1}
-                    value={state.weight}
-                    onChange={(event) =>
-                      patch({ weight: Math.max(1, Number(event.target.value) || 1) })
-                    }
-                    aria-invalid={Boolean(fieldError("weight"))}
-                  />
-                  {fieldError("weight") ? <FieldError>{fieldError("weight")}</FieldError> : null}
-                </Field>
-                <DecimalField
-                  id="billing_multiplier"
-                  label={t("Billing multiplier")}
-                  value={state.billing_multiplier}
-                  onChange={(value) => patch({ billing_multiplier: value })}
-                  error={fieldError("billing_multiplier")}
-                  description={t(
-                    "Multiplies the upstream model price used for request settlement.",
-                  )}
-                  required
-                />
-                <Field>
-                  <FieldLabel>{t("Proxy")}</FieldLabel>
-                  <Select
-                    value={state.proxy_id ?? "__none__"}
-                    onValueChange={(value) => patch({ proxy_id: value === "__none__" ? null : value })}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectGroup>
-                        <SelectItem value="__none__">{t("None")}</SelectItem>
-                        {proxies.data?.filter((proxy) => proxy.enabled).map((proxy) => (
-                          <SelectItem key={proxy.id} value={proxy.id}>
-                            {proxy.name}
-                          </SelectItem>
-                        ))}
-                      </SelectGroup>
-                    </SelectContent>
-                  </Select>
-                </Field>
-                <Field>
-                  <FieldLabel>{t("Config template")}</FieldLabel>
-                  <Select
-                    value={state.config_template_id ?? "__none__"}
-                    onValueChange={(value) =>
-                      patch({ config_template_id: value === "__none__" ? null : value })
-                    }
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectGroup>
-                        <SelectItem value="__none__">{t("None")}</SelectItem>
-                        {templates.data
-                          ?.filter(
-                            (template) =>
-                              template.enabled &&
-                              (template.api_format === null ||
-                                template.api_format === state.api_format),
-                          )
-                          .map((template) => (
-                            <SelectItem key={template.id} value={template.id}>
-                              {template.name}
+          <div
+            data-slot="channel-edit-layout"
+            className="grid items-start gap-6 xl:grid-cols-2"
+          >
+            <Card>
+              <CardHeader>
+                <CardTitle>{t("Routing and identity")}</CardTitle>
+                <CardDescription>
+                  {t("The channel format must match its group's format.")}
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <FieldGroup>
+                  <Field data-invalid={Boolean(fieldError("channel_group_id"))}>
+                    <FieldLabel>{t("Channel group")}</FieldLabel>
+                    <Select
+                      value={state.channel_group_id || "__none__"}
+                      onValueChange={(value) => {
+                        const group = groups.data?.find((item) => item.id === value);
+                        patch({
+                          channel_group_id: value === "__none__" ? "" : value,
+                          api_format: (group?.api_format ?? state.api_format) as ApiFormat,
+                        });
+                      }}
+                    >
+                      <SelectTrigger aria-invalid={Boolean(fieldError("channel_group_id"))}>
+                        <SelectValue placeholder={t("Pick a group")} />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectGroup>
+                          <SelectItem value="__none__">{t("None")}</SelectItem>
+                          {groups.data?.map((group) => (
+                            <SelectItem
+                              key={group.id}
+                              value={group.id}
+                              disabled={state.enabled && !group.enabled}
+                            >
+                              {group.name} ({apiFormatLabel(group.api_format)})
                             </SelectItem>
                           ))}
-                      </SelectGroup>
-                    </SelectContent>
-                  </Select>
-                </Field>
-                <Field>
-                  <FieldLabel>{t("Upstream auth kind")}</FieldLabel>
-                  <Select
-                    value={state.upstream_auth_kind}
-                    onValueChange={(value) => {
-                      const upstreamAuthKind = value as UpstreamAuthKind;
-                      patch({
-                        upstream_auth_kind: upstreamAuthKind,
-                        upstream_auth_header_name:
-                          upstreamAuthKind === "header"
-                            ? state.upstream_auth_header_name
-                            : null,
-                      });
-                    }}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectGroup>
-                        {UPSTREAM_AUTH_KINDS.map((kind) => (
-                          <SelectItem key={kind} value={kind}>
-                            {upstreamAuthKindLabel(kind)}
-                          </SelectItem>
-                        ))}
-                      </SelectGroup>
-                    </SelectContent>
-                  </Select>
-                </Field>
-                {state.upstream_auth_kind === "header" ? (
-                  <Field data-invalid={Boolean(fieldError("upstream_auth_header_name"))}>
-                    <FieldLabel htmlFor="header_name">{t("Header name")}</FieldLabel>
-                    <Input
-                      id="header_name"
-                      value={state.upstream_auth_header_name ?? ""}
-                      onChange={(event) =>
-                        patch({ upstream_auth_header_name: event.target.value || null })
-                      }
-                      placeholder="x-api-key"
-                      aria-invalid={Boolean(fieldError("upstream_auth_header_name"))}
-                    />
-                    {fieldError("upstream_auth_header_name") ? (
-                      <FieldError>{fieldError("upstream_auth_header_name")}</FieldError>
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                    {fieldError("channel_group_id") ? (
+                      <FieldError>{fieldError("channel_group_id")}</FieldError>
                     ) : null}
                   </Field>
-                ) : null}
-                {state.upstream_auth_kind !== "none" ? (
                   <Field>
-                    <FieldLabel htmlFor="upstream_api_key">
-                      {t("Upstream API key")}{" "}
-                      {!isNew ? (
-                        <span className="text-xs text-muted-foreground">
-                          {t("(leave blank to keep current)")}
-                        </span>
-                      ) : null}
-                    </FieldLabel>
+                    <FieldLabel>{t("API format")}</FieldLabel>
                     <Input
-                      id="upstream_api_key"
-                      value={state.upstream_api_key}
-                      onChange={(event) => patch({ upstream_api_key: event.target.value })}
-                      autoComplete="off"
+                      value={apiFormatLabel(selectedGroup?.api_format ?? state.api_format)}
+                      disabled
                     />
                   </Field>
-                ) : null}
-                <StringListField
-                  id="available_models"
-                  variant="tokens"
-                  label={t("Available upstream models")}
-                  value={state.available_models}
-                  onChange={(value) =>
-                    patch({
-                      available_models: value,
-                      test_model: state.test_model && !value.includes(state.test_model)
-                        ? null
-                        : state.test_model,
-                    })
-                  }
-                  placeholder={t("Enter an upstream model ID")}
-                  description={t("Press Enter or Add to include a model.")}
-                  error={fieldError("available_models")}
-                  action={
-                    <Button
-                      id={modelPickerTriggerId}
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={discoverUpstreamModels}
-                      disabled={discoverModels.isPending}
-                    >
-                      {discoverModels.isPending ? (
-                        <Spinner data-icon="inline-start" />
-                      ) : (
-                        <RefreshCwIcon data-icon="inline-start" />
-                      )}
-                      {t("Fetch models")}
-                    </Button>
-                  }
-                />
-                <Field data-invalid={Boolean(fieldError("test_model"))}>
-                  <FieldLabel>{t("Scheduled test model")}</FieldLabel>
-                  <Select
-                    value={state.test_model ?? "__none__"}
-                    onValueChange={(value) =>
-                      patch({ test_model: value === "__none__" ? null : value })
-                    }
-                  >
-                    <SelectTrigger aria-invalid={Boolean(fieldError("test_model"))}>
-                      <SelectValue placeholder={t("Select a test model")} />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectGroup>
-                        <SelectItem value="__none__">{t("None")}</SelectItem>
-                        {state.available_models.map((model) => (
-                          <SelectItem key={model} value={model}>
-                            {model}
-                          </SelectItem>
-                        ))}
-                      </SelectGroup>
-                    </SelectContent>
-                  </Select>
-                  <FieldDescription>
-                    {t(
-                      "Periodic scheduled tests use this model. It must be one of the available upstream models.",
+                  <Field data-invalid={Boolean(fieldError("name"))}>
+                    <FieldLabel htmlFor="name">{t("Name")}</FieldLabel>
+                    <Input
+                      id="name"
+                      value={state.name}
+                      onChange={(event) => patch({ name: event.target.value })}
+                      aria-invalid={Boolean(fieldError("name"))}
+                    />
+                    {fieldError("name") ? <FieldError>{fieldError("name")}</FieldError> : null}
+                  </Field>
+                  <Field data-invalid={Boolean(fieldError("base_url"))}>
+                    <FieldLabel htmlFor="base_url">{t("Base URL")}</FieldLabel>
+                    <Input
+                      id="base_url"
+                      value={state.base_url}
+                      onChange={(event) => patch({ base_url: event.target.value })}
+                      placeholder="https://api.upstream.com"
+                      aria-invalid={Boolean(fieldError("base_url"))}
+                    />
+                    {fieldError("base_url") ? <FieldError>{fieldError("base_url")}</FieldError> : null}
+                  </Field>
+                  <Field data-invalid={Boolean(fieldError("weight"))}>
+                    <FieldLabel htmlFor="weight">{t("Weight")}</FieldLabel>
+                    <Input
+                      id="weight"
+                      type="number"
+                      min={1}
+                      value={state.weight}
+                      onChange={(event) =>
+                        patch({ weight: Math.max(1, Number(event.target.value) || 1) })
+                      }
+                      aria-invalid={Boolean(fieldError("weight"))}
+                    />
+                    {fieldError("weight") ? <FieldError>{fieldError("weight")}</FieldError> : null}
+                  </Field>
+                  <DecimalField
+                    id="billing_multiplier"
+                    label={t("Billing multiplier")}
+                    value={state.billing_multiplier}
+                    onChange={(value) => patch({ billing_multiplier: value })}
+                    error={fieldError("billing_multiplier")}
+                    description={t(
+                      "Multiplies the upstream model price used for request settlement.",
                     )}
-                  </FieldDescription>
-                  {fieldError("test_model") ? <FieldError>{fieldError("test_model")}</FieldError> : null}
-                </Field>
-                <NullableNumberField
-                  label={t("Connect timeout (ms)")}
-                  value={state.connect_timeout_ms}
-                  onChange={(value) => patch({ connect_timeout_ms: value })}
-                />
-                <NullableNumberField
-                  label={t("Response header timeout (ms)")}
-                  value={state.response_header_timeout_ms}
-                  onChange={(value) => patch({ response_header_timeout_ms: value })}
-                />
-                <NullableNumberField
-                  label={t("Stream idle timeout (ms)")}
-                  value={state.stream_idle_timeout_ms}
-                  onChange={(value) => patch({ stream_idle_timeout_ms: value })}
-                />
+                    required
+                  />
+                </FieldGroup>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>{t("Upstream connection")}</CardTitle>
+                <CardDescription>
+                  {t("Proxy, template, authentication, and credential overrides.")}
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <FieldGroup>
+                  <Field>
+                    <FieldLabel>{t("Proxy")}</FieldLabel>
+                    <Select
+                      value={state.proxy_id ?? "__none__"}
+                      onValueChange={(value) => patch({ proxy_id: value === "__none__" ? null : value })}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectGroup>
+                          <SelectItem value="__none__">{t("None")}</SelectItem>
+                          {proxies.data?.filter((proxy) => proxy.enabled).map((proxy) => (
+                            <SelectItem key={proxy.id} value={proxy.id}>
+                              {proxy.name}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                  <Field>
+                    <FieldLabel>{t("Config template")}</FieldLabel>
+                    <Select
+                      value={state.config_template_id ?? "__none__"}
+                      onValueChange={(value) =>
+                        patch({ config_template_id: value === "__none__" ? null : value })
+                      }
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectGroup>
+                          <SelectItem value="__none__">{t("None")}</SelectItem>
+                          {templates.data
+                            ?.filter(
+                              (template) =>
+                                template.enabled &&
+                                (template.api_format === null ||
+                                  template.api_format === state.api_format),
+                            )
+                            .map((template) => (
+                              <SelectItem key={template.id} value={template.id}>
+                                {template.name}
+                              </SelectItem>
+                            ))}
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                  <Field>
+                    <FieldLabel>{t("Upstream auth kind")}</FieldLabel>
+                    <Select
+                      value={state.upstream_auth_kind}
+                      onValueChange={(value) => {
+                        const upstreamAuthKind = value as UpstreamAuthKind;
+                        patch({
+                          upstream_auth_kind: upstreamAuthKind,
+                          upstream_auth_header_name:
+                            upstreamAuthKind === "header"
+                              ? state.upstream_auth_header_name
+                              : null,
+                        });
+                      }}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectGroup>
+                          {UPSTREAM_AUTH_KINDS.map((kind) => (
+                            <SelectItem key={kind} value={kind}>
+                              {upstreamAuthKindLabel(kind)}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                  {state.upstream_auth_kind === "header" ? (
+                    <Field data-invalid={Boolean(fieldError("upstream_auth_header_name"))}>
+                      <FieldLabel htmlFor="header_name">{t("Header name")}</FieldLabel>
+                      <Input
+                        id="header_name"
+                        value={state.upstream_auth_header_name ?? ""}
+                        onChange={(event) =>
+                          patch({ upstream_auth_header_name: event.target.value || null })
+                        }
+                        placeholder="x-api-key"
+                        aria-invalid={Boolean(fieldError("upstream_auth_header_name"))}
+                      />
+                      {fieldError("upstream_auth_header_name") ? (
+                        <FieldError>{fieldError("upstream_auth_header_name")}</FieldError>
+                      ) : null}
+                    </Field>
+                  ) : null}
+                  {state.upstream_auth_kind !== "none" ? (
+                    <Field>
+                      <FieldLabel htmlFor="upstream_api_key">
+                        {t("Upstream API key")}{" "}
+                        {!isNew ? (
+                          <span className="text-xs text-muted-foreground">
+                            {t("(leave blank to keep current)")}
+                          </span>
+                        ) : null}
+                      </FieldLabel>
+                      <Input
+                        id="upstream_api_key"
+                        value={state.upstream_api_key}
+                        onChange={(event) => patch({ upstream_api_key: event.target.value })}
+                        autoComplete="off"
+                      />
+                    </Field>
+                  ) : null}
+                  <NullableNumberField
+                    label={t("Connect timeout (ms)")}
+                    value={state.connect_timeout_ms}
+                    onChange={(value) => patch({ connect_timeout_ms: value })}
+                  />
+                  <NullableNumberField
+                    label={t("Response header timeout (ms)")}
+                    value={state.response_header_timeout_ms}
+                    onChange={(value) => patch({ response_header_timeout_ms: value })}
+                  />
+                  <NullableNumberField
+                    label={t("Stream idle timeout (ms)")}
+                    value={state.stream_idle_timeout_ms}
+                    onChange={(value) => patch({ stream_idle_timeout_ms: value })}
+                  />
+                </FieldGroup>
+              </CardContent>
+            </Card>
+
+            <Card className="xl:col-span-2">
+              <CardHeader>
+                <CardTitle>{t("Models and timeouts")}</CardTitle>
+                <CardDescription>
+                  {t("Available upstream models, scheduled checks, and timeout overrides.")}
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <FieldGroup className="grid gap-5 xl:grid-cols-2">
+                  <StringListField
+                    id="available_models"
+                    className="xl:col-span-2"
+                    variant="tokens"
+                    label={t("Available upstream models")}
+                    value={state.available_models}
+                    onChange={(value) =>
+                      patch({
+                        available_models: value,
+                        test_model: state.test_model && !value.includes(state.test_model)
+                          ? null
+                          : state.test_model,
+                      })
+                    }
+                    placeholder={t("Enter an upstream model ID")}
+                    description={t("Press Enter or Add to include a model.")}
+                    error={fieldError("available_models")}
+                    action={
+                      <Button
+                        id={modelPickerTriggerId}
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={discoverUpstreamModels}
+                        disabled={discoverModels.isPending}
+                      >
+                        {discoverModels.isPending ? (
+                          <Spinner data-icon="inline-start" />
+                        ) : (
+                          <RefreshCwIcon data-icon="inline-start" />
+                        )}
+                        {t("Fetch models")}
+                      </Button>
+                    }
+                  />
+                  <Field data-invalid={Boolean(fieldError("test_model"))}>
+                    <FieldLabel>{t("Scheduled test model")}</FieldLabel>
+                    <Select
+                      value={state.test_model ?? "__none__"}
+                      onValueChange={(value) =>
+                        patch({ test_model: value === "__none__" ? null : value })
+                      }
+                    >
+                      <SelectTrigger aria-invalid={Boolean(fieldError("test_model"))}>
+                        <SelectValue placeholder={t("Select a test model")} />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectGroup>
+                          <SelectItem value="__none__">{t("None")}</SelectItem>
+                          {state.available_models.map((model) => (
+                            <SelectItem key={model} value={model}>
+                              {model}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                    <FieldDescription>
+                      {t(
+                        "Periodic scheduled tests use this model. It must be one of the available upstream models.",
+                      )}
+                    </FieldDescription>
+                    {fieldError("test_model") ? <FieldError>{fieldError("test_model")}</FieldError> : null}
+                  </Field>
+                </FieldGroup>
+              </CardContent>
+            </Card>
+
+            <Card className="xl:col-span-2">
+              <CardHeader>
+                <CardTitle>{t("Transform override")}</CardTitle>
+                <CardDescription>
+                  {t("Optional constrained transform document.")}
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
                 <Field>
                   <FieldLabel>
                     {t("Override document (JSON)")}
@@ -839,58 +881,75 @@ export function ChannelDetailPage() {
                     onVisualValidationChange={setOverrideDocumentValidation}
                   />
                 </Field>
-                <Field orientation="horizontal">
-                  <FieldContent>
-                    <FieldLabel htmlFor="status_statistics_enabled">
-                      {t("Status statistics")}
-                    </FieldLabel>
-                    <FieldDescription>
-                      {t("Include this channel in the channel status report.")}
-                    </FieldDescription>
-                  </FieldContent>
-                  <Switch
-                    id="status_statistics_enabled"
-                    checked={state.status_statistics_enabled}
-                    onCheckedChange={(checked) =>
-                      patch({ status_statistics_enabled: Boolean(checked) })
-                    }
+              </CardContent>
+            </Card>
+
+            <Card className="xl:col-span-2">
+              <CardHeader>
+                <CardTitle>{t("Availability and automation")}</CardTitle>
+                <CardDescription>
+                  {t("Routing state, status reporting, and automatic disable behavior.")}
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <FieldGroup className="grid gap-5 xl:grid-cols-3">
+                  <Field orientation="horizontal">
+                    <FieldContent>
+                      <FieldLabel htmlFor="status_statistics_enabled">
+                        {t("Status statistics")}
+                      </FieldLabel>
+                      <FieldDescription>
+                        {t("Include this channel in the channel status report.")}
+                      </FieldDescription>
+                    </FieldContent>
+                    <Switch
+                      id="status_statistics_enabled"
+                      checked={state.status_statistics_enabled}
+                      onCheckedChange={(checked) =>
+                        patch({ status_statistics_enabled: Boolean(checked) })
+                      }
+                    />
+                  </Field>
+                  <Field orientation="horizontal">
+                    <FieldContent>
+                      <FieldLabel htmlFor="auto_disable_allowed">
+                        {t("Allow automatic disable")}
+                      </FieldLabel>
+                      <FieldDescription>
+                        {t(
+                          "Allow matching system automatic-disable rules to temporarily remove this channel from routing.",
+                        )}
+                      </FieldDescription>
+                    </FieldContent>
+                    <Switch
+                      id="auto_disable_allowed"
+                      checked={state.auto_disable_allowed}
+                      onCheckedChange={(checked) =>
+                        patch({ auto_disable_allowed: Boolean(checked) })
+                      }
+                    />
+                  </Field>
+                  <Field orientation="horizontal">
+                    <FieldLabel htmlFor="channel_enabled">{t("Enabled")}</FieldLabel>
+                    <Switch
+                      id="channel_enabled"
+                      checked={state.enabled}
+                      onCheckedChange={(checked) => patch({ enabled: Boolean(checked) })}
                   />
                 </Field>
-                <Field orientation="horizontal">
-                  <FieldContent>
-                    <FieldLabel htmlFor="auto_disable_allowed">
-                      {t("Allow automatic disable")}
-                    </FieldLabel>
-                    <FieldDescription>
-                      {t(
-                        "Allow matching system automatic-disable rules to temporarily remove this channel from routing.",
-                      )}
-                    </FieldDescription>
-                  </FieldContent>
-                  <Switch
-                    id="auto_disable_allowed"
-                    checked={state.auto_disable_allowed}
-                    onCheckedChange={(checked) =>
-                      patch({ auto_disable_allowed: Boolean(checked) })
-                    }
-                  />
-                </Field>
-                <Field orientation="horizontal">
-                  <FieldLabel htmlFor="channel_enabled">{t("Enabled")}</FieldLabel>
-                  <Switch
-                    id="channel_enabled"
-                    checked={state.enabled}
-                    onCheckedChange={(checked) => patch({ enabled: Boolean(checked) })}
-                  />
-                </Field>
-              </FieldGroup>
-              <Button className="self-start" onClick={submit} disabled={submitting}>
-                {submitting ? <Spinner data-icon="inline-start" /> : null}
-                {isNew ? t("Create channel") : t("Save channel")}
-              </Button>
-            </div>
-          </CardContent>
-          </Card>
+                </FieldGroup>
+              </CardContent>
+            </Card>
+
+            <Button
+              className="w-fit xl:col-span-2"
+              onClick={submit}
+              disabled={submitting}
+            >
+              {submitting ? <Spinner data-icon="inline-start" /> : null}
+              {isNew ? t("Create channel") : t("Save channel")}
+            </Button>
+          </div>
         }
       />
       <ChannelModelPickerDialog

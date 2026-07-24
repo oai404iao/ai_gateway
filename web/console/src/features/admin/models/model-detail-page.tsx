@@ -235,7 +235,7 @@ export function ModelDetailPage() {
           </CardHeader>
           <CardContent>
             <div className="flex flex-col gap-4">
-              <FieldGroup>
+              <FieldGroup className="grid gap-5 xl:grid-cols-2">
                 <Field data-invalid={Boolean(fieldError("source_model_id"))}>
                   <FieldLabel htmlFor="source_model_id">{t("Source model id")}</FieldLabel>
                   <Input
@@ -308,7 +308,10 @@ export function ModelDetailPage() {
                   error={fieldError("output_unit_price")}
                   required
                 />
-                <Field data-invalid={Boolean(fieldError("advanced_billing"))}>
+                <Field
+                  className="xl:col-span-2"
+                  data-invalid={Boolean(fieldError("advanced_billing"))}
+                >
                   <FieldLabel htmlFor="advanced_billing">{t("Advanced billing")}</FieldLabel>
                   <Textarea
                     id="advanced_billing"
@@ -344,7 +347,7 @@ export function ModelDetailPage() {
                     onCheckedChange={(checked) => patch({ enabled: Boolean(checked) })}
                   />
                 </Field>
-                <Field>
+                <Field className="xl:col-span-2">
                   <FieldLabel htmlFor="source_payload">
                     {t("Source payload (JSON, optional)")}
                   </FieldLabel>

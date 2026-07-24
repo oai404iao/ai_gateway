@@ -120,7 +120,17 @@ const zhCN: Record<string, string> = {
   "Rule": "规则",
   "Key sources": "Key 来源",
   "TTL": "TTL",
+  "Valid cache entries": "有效缓存数",
   "Actions": "操作",
+  "Clear all cache ({count})": "清理全部缓存（{count}）",
+  "Clear cache for {name}": "清理 {name} 的缓存",
+  "Cleared {count} cached entries.": "已清理 {count} 条缓存。",
+  "Clear session affinity cache?": "清理 Session 粘性缓存？",
+  "This clears all valid cached bindings for rule {name}.":
+    "这会清理规则 {name} 的全部有效缓存绑定。",
+  "This clears every valid session affinity binding in this process.":
+    "这会清理当前进程中的全部有效 Session 粘性绑定。",
+  "Clear cache": "清理缓存",
   "Default": "默认",
   "Move rule up": "上移规则",
   "Move rule down": "下移规则",
@@ -575,6 +585,7 @@ const zhCN: Record<string, string> = {
   "Error message": "错误消息",
   "Channel group": "渠道组",
   "Channel": "渠道",
+  "Channel ID": "渠道 ID",
   "Completed": "完成时间",
   "Format": "格式",
   "Group": "渠道组",
@@ -589,6 +600,17 @@ const zhCN: Record<string, string> = {
   "New group": "新建渠道组",
   "Upstream endpoints inside a channel group with weight, timeouts, and auth.":
     "渠道组内具有权重、超时和认证配置的上游端点。",
+  "Routing and identity": "路由与标识",
+  "Upstream connection": "上游连接",
+  "Proxy, template, authentication, and credential overrides.":
+    "配置代理、模板、认证方式与凭据覆盖。",
+  "Models and timeouts": "模型与超时",
+  "Available upstream models, scheduled checks, and timeout overrides.":
+    "配置可用上游模型、定时检测与超时覆盖。",
+  "Transform override": "转换覆盖",
+  "Availability and automation": "可用性与自动化",
+  "Routing state, status reporting, and automatic disable behavior.":
+    "配置路由状态、状态统计与自动禁用行为。",
   "Manage channel groups and their upstream channels in one grouped view.":
     "在一个分组视图中管理渠道组及其上游渠道。",
   "Select all": "全选",
@@ -600,6 +622,16 @@ const zhCN: Record<string, string> = {
   "These channels reference a group that is not available in the current response.":
     "这些渠道引用了当前响应中不可用的渠道组。",
   "New channel": "新建渠道",
+  "Enable {name}": "启用 {name}",
+  "Disable {name}": "禁用 {name}",
+  "Recover {name}": "恢复 {name}",
+  "Edit {name}": "编辑 {name}",
+  "Enabled {name}.": "已启用 {name}。",
+  "Disabled {name}.": "已禁用 {name}。",
+  "Recovered {name}.": "已恢复 {name}。",
+  "Disable channel?": "禁用渠道？",
+  "{name} will stop receiving new requests.": "{name} 将停止接收新请求。",
+  "Disable": "禁用",
   "yes": "是",
   "no": "否",
   "Request failed": "请求失败",
@@ -880,6 +912,8 @@ const zhCN: Record<string, string> = {
   "Base URL": "基础 URL",
   "Filter by time range, user, API key, and aggregation granularity.":
     "按时间区间、用户、API 密钥和聚合颗粒度筛选。",
+  "Filter by time range, user, API key, channel, and aggregation granularity.":
+    "按时间区间、用户、API 密钥、渠道和聚合颗粒度筛选。",
   "Filter your own statistics by time range, API key, and aggregation granularity.":
     "按时间区间、API 密钥和聚合颗粒度筛选您自己的统计。",
   "Channel status and your own cost analytics.": "渠道状态和您自己的花费统计。",
@@ -894,6 +928,7 @@ const zhCN: Record<string, string> = {
   "daily": "按天",
   "All users": "所有用户",
   "All API keys": "所有 API 密钥",
+  "All channels": "所有渠道",
   "Enter a valid statistics time range.": "请输入有效的统计时间区间。",
   "The start time must be before the end time.": "开始时间必须早于结束时间。",
   "The selected {granularity} range cannot exceed {days} days.":
@@ -913,6 +948,12 @@ const zhCN: Record<string, string> = {
   "Model cost breakdown": "模型花费明细",
   "Requests, reliability, tokens, and cost for each upstream model.":
     "各上游模型的请求数、可靠性、Token 与花费。",
+  "Channel details": "渠道明细",
+  "Requests, reliability, tokens, and cost for each selected channel.":
+    "各渠道的请求数、可靠性、Token 与花费。",
+  "No channel statistics": "没有渠道统计",
+  "No routed requests matched the selected filter.":
+    "没有已路由请求符合当前筛选条件。",
   "No statistics": "没有统计数据",
   "No requests matched the selected filter.": "没有请求符合当前筛选条件。",
   "Visual editor": "可视化编辑",

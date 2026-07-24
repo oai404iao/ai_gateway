@@ -24,6 +24,7 @@ import {
   OWN_API_KEY,
   PROXY,
   REVOKED_SESSION,
+  SESSION_AFFINITY_CACHE_REPORT,
   SYSTEM_SETTINGS,
   SYSTEM_LOAD_REPORT,
   USER_ACCESS_TOKEN,
@@ -121,6 +122,12 @@ export const handlers = [
       correlation_id: "99999999-0000-0000-0000-000000000000",
     }),
   ),
+  http.post("/console/v1/routing/channels/:id/recover", () =>
+    HttpResponse.json({
+      id: CHANNEL.id,
+      correlation_id: "99999999-0000-0000-0000-000000000001",
+    }),
+  ),
   http.get("/console/v1/routing/model-rules", () => HttpResponse.json([MODEL_RULE])),
   http.get("/console/v1/routing/model-rules/:id", () =>
     HttpResponse.json(MODEL_RULE, {
@@ -148,6 +155,15 @@ export const handlers = [
     HttpResponse.json(COST_STATISTICS_REPORT),
   ),
   http.get("/console/v1/system/load", () => HttpResponse.json(SYSTEM_LOAD_REPORT)),
+  http.get("/console/v1/system/session-affinity/cache", () =>
+    HttpResponse.json(SESSION_AFFINITY_CACHE_REPORT),
+  ),
+  http.delete("/console/v1/system/session-affinity/cache", () =>
+    HttpResponse.json({
+      cleared_entries: 0,
+      cache: SESSION_AFFINITY_CACHE_REPORT,
+    }),
+  ),
   http.get("/console/v1/audit-logs", () => HttpResponse.json([])),
   http.get("/console/v1/system/settings", () =>
     HttpResponse.json(SYSTEM_SETTINGS, {

@@ -10,6 +10,7 @@ import { CHANNEL, CHANNEL_GROUP } from "@/test/fixtures";
 import type {
   ChannelBatchUpdateInput,
   ChannelGroupView,
+  ChannelRecoverInput,
   ChannelView,
 } from "@/api/types";
 
@@ -29,6 +30,21 @@ const RESPONSES_CHANNEL: ChannelView = {
   api_format: RESPONSES_GROUP.api_format,
   name: "responses-upstream",
   base_url: "https://responses.example",
+};
+
+const DISABLED_CHANNEL: ChannelView = {
+  ...RESPONSES_CHANNEL,
+  id: "00000000-0000-0000-0000-000000000025",
+  name: "disabled-upstream",
+  enabled: false,
+};
+
+const AUTO_DISABLED_CHANNEL: ChannelView = {
+  ...CHANNEL,
+  id: "00000000-0000-0000-0000-000000000026",
+  name: "auto-disabled-upstream",
+  auto_disabled: true,
+  auto_disabled_reason: "quota exceeded",
 };
 
 function renderAppAt(path: string) {
@@ -106,5 +122,61 @@ describe("ChannelsPage", () => {
       { id: RESPONSES_CHANNEL.id, updated_at: RESPONSES_CHANNEL.updated_at },
     ]);
     expect(submitted?.changes).toEqual({ billing_multiplier: "1.75" });
+  });
+
+  it("quickly disables, enables, and recovers channels from the operations column", async () => {
+    seedAuthenticatedSession();
+    const batchInputs: ChannelBatchUpdateInput[] = [];
+    let recoverInput: ChannelRecoverInput | undefined;
+    server.use(
+      http.get("/console/v1/routing/channel-groups", () =>
+        HttpResponse.json([CHANNEL_GROUP, RESPONSES_GROUP]),
+      ),
+      http.get("/console/v1/routing/channels", () =>
+        HttpResponse.json([CHANNEL, DISABLED_CHANNEL, AUTO_DISABLED_CHANNEL]),
+      ),
+      http.post("/console/v1/routing/channels/batch", async ({ request }) => {
+        batchInputs.push((await request.json()) as ChannelBatchUpdateInput);
+        return HttpResponse.json({
+          updated_ids: [CHANNEL.id],
+          correlation_id: "77777777-0000-0000-0000-000000000001",
+        });
+      }),
+      http.post(
+        "/console/v1/routing/channels/:id/recover",
+        async ({ params, request }) => {
+          expect(params.id).toBe(AUTO_DISABLED_CHANNEL.id);
+          recoverInput = (await request.json()) as ChannelRecoverInput;
+          return HttpResponse.json({
+            id: AUTO_DISABLED_CHANNEL.id,
+            correlation_id: "77777777-0000-0000-0000-000000000002",
+          });
+        },
+      ),
+    );
+    const user = userEvent.setup();
+    renderAppAt("/admin/routing/channels");
+
+    await user.click(
+      await screen.findByRole("button", { name: `Disable ${CHANNEL.name}` }),
+    );
+    await user.click(screen.getByRole("button", { name: "Disable" }));
+    await waitFor(() => expect(batchInputs[0]?.changes).toEqual({ enabled: false }));
+
+    await user.click(
+      screen.getByRole("button", { name: `Enable ${DISABLED_CHANNEL.name}` }),
+    );
+    await waitFor(() => expect(batchInputs[1]?.changes).toEqual({ enabled: true }));
+
+    await user.click(
+      screen.getByRole("button", {
+        name: `Recover ${AUTO_DISABLED_CHANNEL.name}`,
+      }),
+    );
+    await waitFor(() => {
+      expect(recoverInput).toEqual({
+        updated_at: AUTO_DISABLED_CHANNEL.updated_at,
+      });
+    });
   });
 });

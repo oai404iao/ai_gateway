@@ -168,7 +168,7 @@ export function ApiKeyTargetFields({
           ) : null}
         </FieldGroup>
       </FieldSet>
-      {error ? <FieldError>{error}</FieldError> : null}
+      {error ? <FieldError className="md:col-span-2">{error}</FieldError> : null}
     </>
   );
 }

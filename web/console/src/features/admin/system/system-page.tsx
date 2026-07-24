@@ -326,7 +326,11 @@ export function SystemPage() {
       </Alert>
       <AsyncResource isLoading={settings.isLoading} error={settings.error}>
         {settings.data ? (
-          <form onSubmit={form.handleSubmit(save)} className="flex flex-col gap-6">
+          <form
+            data-slot="system-settings-columns"
+            onSubmit={form.handleSubmit(save)}
+            className="grid items-start gap-6 xl:grid-cols-2"
+          >
             <Card>
               <CardHeader>
                 <CardTitle>{t("API hosts")}</CardTitle>
@@ -504,25 +508,6 @@ export function SystemPage() {
                 </FieldGroup>
               </CardContent>
             </Card>
-
-            <SessionAffinityCard
-              value={form.watch("session_affinity")}
-              onChange={(session_affinity) =>
-                form.setValue("session_affinity", session_affinity, {
-                  shouldDirty: true,
-                  shouldValidate: true,
-                })
-              }
-              errors={{
-                maxEntries: errorMessage(
-                  form.formState.errors.session_affinity?.max_entries?.message,
-                ),
-                defaultTtl: errorMessage(
-                  form.formState.errors.session_affinity?.default_ttl_seconds?.message,
-                ),
-                rules: errorMessage(form.formState.errors.session_affinity?.rules?.message),
-              }}
-            />
 
             <Card>
               <CardHeader>
@@ -776,7 +761,32 @@ export function SystemPage() {
               </CardContent>
             </Card>
 
-            <Button type="submit" className="self-start" disabled={updateSettings.isPending}>
+            <div className="xl:col-span-2">
+              <SessionAffinityCard
+                value={form.watch("session_affinity")}
+                onChange={(session_affinity) =>
+                  form.setValue("session_affinity", session_affinity, {
+                    shouldDirty: true,
+                    shouldValidate: true,
+                  })
+                }
+                errors={{
+                  maxEntries: errorMessage(
+                    form.formState.errors.session_affinity?.max_entries?.message,
+                  ),
+                  defaultTtl: errorMessage(
+                    form.formState.errors.session_affinity?.default_ttl_seconds?.message,
+                  ),
+                  rules: errorMessage(form.formState.errors.session_affinity?.rules?.message),
+                }}
+              />
+            </div>
+
+            <Button
+              type="submit"
+              className="w-fit xl:col-span-2"
+              disabled={updateSettings.isPending}
+            >
               {updateSettings.isPending ? (
                 <Spinner data-icon="inline-start" />
               ) : (

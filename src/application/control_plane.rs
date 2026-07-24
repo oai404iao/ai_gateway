@@ -15,7 +15,10 @@ use crate::{
         SelfApiKeyCreate, SelfApiKeyOptions, SelfApiKeyUpdate, SyncedModelInput,
         SystemSettingsView,
     },
-    routing::{PassiveHealthPolicy, RoutingRuntime},
+    routing::{
+        PassiveHealthPolicy, RoutingRuntime, SessionAffinityCacheClearResult,
+        SessionAffinityCacheSnapshot,
+    },
     runtime_config::{ConfigError, RuntimeConfig, compile_runtime_config},
     upstream::{UpstreamClientError, UpstreamClientRegistry, validate_snapshot_upstream_policies},
 };
@@ -138,6 +141,19 @@ impl ControlPlaneCoordinator {
 
     pub async fn system_settings(&self) -> Result<SystemSettingsView, ControlPlaneError> {
         Ok(self.repository.system_settings().await?)
+    }
+
+    #[must_use]
+    pub fn session_affinity_cache(&self) -> SessionAffinityCacheSnapshot {
+        self.routing.session_affinity_cache_snapshot()
+    }
+
+    #[must_use]
+    pub fn clear_session_affinity_cache(
+        &self,
+        rule_name: Option<&str>,
+    ) -> Option<SessionAffinityCacheClearResult> {
+        self.routing.clear_session_affinity_cache(rule_name)
     }
 
     pub async fn api_hosts(&self) -> Result<ApiHostsView, ControlPlaneError> {

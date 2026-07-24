@@ -174,7 +174,7 @@ export function UserDetailPage() {
                 onSubmit={form.handleSubmit(onSubmit, onInvalid)}
                 className="flex flex-col gap-4"
               >
-                <FieldGroup>
+                <FieldGroup className="grid gap-5 xl:grid-cols-2">
                   <Field data-invalid={Boolean(form.formState.errors.display_name)}>
                     <FieldLabel htmlFor="display_name">{t("Display name")}</FieldLabel>
                     <Input

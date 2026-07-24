@@ -177,8 +177,8 @@ export function ConsoleLayout() {
             <UserMenu />
           </div>
         </header>
-        <main className="flex-1 p-4 md:p-6">
-          <div className="mx-auto flex max-w-6xl flex-col gap-6">
+        <main className="min-w-0 flex-1 p-4 md:p-6">
+          <div className="mx-auto flex w-full max-w-6xl min-w-0 flex-col gap-6">
             <Suspense fallback={<RouteFallback />}>
               <Outlet />
             </Suspense>

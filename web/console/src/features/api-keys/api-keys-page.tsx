@@ -316,7 +316,7 @@ export function ApiKeysPage() {
             </DialogDescription>
           </DialogHeader>
           <form onSubmit={form.handleSubmit(onSubmit)} className="flex flex-col gap-4">
-            <FieldGroup>
+            <FieldGroup className="grid gap-5 md:grid-cols-2">
               <Field data-invalid={Boolean(form.formState.errors.name)}>
                 <FieldLabel htmlFor="name">{t("Name")}</FieldLabel>
                 <Input
@@ -341,25 +341,29 @@ export function ApiKeysPage() {
                 ) : null}
               </Field>
               {options.error ? (
-                <FieldError>{createErrorMessage(options.error, t)}</FieldError>
+                <FieldError className="md:col-span-2">
+                  {createErrorMessage(options.error, t)}
+                </FieldError>
               ) : null}
-              <ApiKeyTargetFields
-                groups={targetGroups}
-                channels={targetChannels}
-                selectedGroupIds={selectedGroupIds}
-                selectedChannelIds={selectedChannelIds}
-                onChange={(allowedGroupIds, allowedChannelIds) => {
-                  form.setValue("allowed_group_ids", allowedGroupIds, {
-                    shouldDirty: true,
-                    shouldValidate: true,
-                  });
-                  form.setValue("allowed_channel_ids", allowedChannelIds, {
-                    shouldDirty: true,
-                    shouldValidate: true,
-                  });
-                }}
-                error={targetError ? t(targetError) : undefined}
-              />
+              <div className="grid gap-5 md:col-span-2 md:grid-cols-2">
+                <ApiKeyTargetFields
+                  groups={targetGroups}
+                  channels={targetChannels}
+                  selectedGroupIds={selectedGroupIds}
+                  selectedChannelIds={selectedChannelIds}
+                  onChange={(allowedGroupIds, allowedChannelIds) => {
+                    form.setValue("allowed_group_ids", allowedGroupIds, {
+                      shouldDirty: true,
+                      shouldValidate: true,
+                    });
+                    form.setValue("allowed_channel_ids", allowedChannelIds, {
+                      shouldDirty: true,
+                      shouldValidate: true,
+                    });
+                  }}
+                  error={targetError ? t(targetError) : undefined}
+                />
+              </div>
               <NullableNumberField
                 id="requests_per_minute"
                 label={t("Requests / minute")}

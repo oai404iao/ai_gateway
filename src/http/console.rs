@@ -27,10 +27,10 @@ use crate::{
     domain::{ConsolePrincipal, UserRole},
     persistence::{
         ApiKeyCreate, ApiKeyPolicyInput, ApiKeyUpdate, ChannelBatchUpdateInput, ChannelCreateInput,
-        ChannelGroupInput, ChannelInput, ChannelStatusWindow, ConfigTemplateCreateInput,
-        ConfigTemplateInput, ConsoleApiKey, ControlPlaneMutation, CostStatisticsFilter,
-        InviteUserInput, ModelInput, ModelRuleInput, ProxyCreateInput, ProxyInput,
-        RequestLogFilter, RequestLogRepository, SelfApiKeyCreate, SelfApiKeyUpdate,
+        ChannelGroupInput, ChannelInput, ChannelRecoverInput, ChannelStatusWindow,
+        ConfigTemplateCreateInput, ConfigTemplateInput, ConsoleApiKey, ControlPlaneMutation,
+        CostStatisticsFilter, InviteUserInput, ModelInput, ModelRuleInput, ProxyCreateInput,
+        ProxyInput, RequestLogFilter, RequestLogRepository, SelfApiKeyCreate, SelfApiKeyUpdate,
         StatisticsGranularity, SystemSettingsInput, UserInput,
     },
     runtime_config::ConfigError,
@@ -152,6 +152,10 @@ pub fn router(state: ConsoleState) -> Router {
             get(get_channel).put(update_channel),
         )
         .route(
+            "/console/v1/routing/channels/{id}/recover",
+            post(recover_channel),
+        )
+        .route(
             "/console/v1/routing/model-rules",
             get(list_rules).post(create_rule),
         )
@@ -181,6 +185,10 @@ pub fn router(state: ConsoleState) -> Router {
         .route(
             "/console/v1/system/settings",
             get(get_system_settings).put(update_system_settings),
+        )
+        .route(
+            "/console/v1/system/session-affinity/cache",
+            get(get_session_affinity_cache).delete(clear_session_affinity_cache),
         )
         .route("/console/v1/system/load", get(get_system_load))
         .route("/console/v1/system/reload", post(reload))
@@ -457,6 +465,15 @@ struct CostStatisticsQuery {
     user_id: Option<Uuid>,
     #[serde(default)]
     api_key_id: Option<Uuid>,
+    #[serde(default)]
+    channel_id: Option<Uuid>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SessionAffinityCacheQuery {
+    #[serde(default)]
+    rule_name: Option<String>,
 }
 
 impl LogQuery {
@@ -702,7 +719,11 @@ async fn list_own_request_logs(
     Ok(Json(
         state
             .request_logs
-            .list_for_user(principal.user_id(), query.into_filter())
+            .list_for_user(
+                principal.user_id(),
+                query.into_filter(),
+                principal.role().is_admin(),
+            )
             .await?,
     ))
 }
@@ -714,7 +735,7 @@ async fn get_own_request_log(
 ) -> Result<Json<crate::persistence::ConsoleRequestLog>, ConsoleError> {
     state
         .request_logs
-        .get_for_user(principal.user_id(), id)
+        .get_for_user(principal.user_id(), id, principal.role().is_admin())
         .await?
         .map(Json)
         .ok_or(ConsoleError::NotFound)
@@ -1076,6 +1097,23 @@ async fn update_channel(
     .await
 }
 
+async fn recover_channel(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Path(id): Path<Uuid>,
+    Json(input): Json<ChannelRecoverInput>,
+) -> Result<Json<MutationResponse>, ConsoleError> {
+    mutate(
+        &state,
+        principal,
+        ControlPlaneMutation::RecoverChannel {
+            id,
+            expected_updated_at: input.updated_at,
+        },
+    )
+    .await
+}
+
 async fn list_rules(
     State(state): State<ConsoleState>,
 ) -> Result<Json<serde_json::Value>, ConsoleError> {
@@ -1275,6 +1313,9 @@ async fn get_cost_statistics(
         }
         Some(principal.user_id())
     };
+    if !principal.role().is_admin() && query.channel_id.is_some() {
+        return Err(ConsoleError::Forbidden);
+    }
     Ok(Json(
         state
             .request_logs
@@ -1284,6 +1325,8 @@ async fn get_cost_statistics(
                 granularity,
                 user_id,
                 api_key_id: query.api_key_id,
+                channel_id: query.channel_id,
+                include_channel_details: principal.role().is_admin(),
             })
             .await?,
     ))
@@ -1310,6 +1353,38 @@ async fn get_system_settings(State(state): State<ConsoleState>) -> Result<Respon
         HeaderValue::from_str(&etag(updated_at)).expect("ETag is valid"),
     );
     Ok(response)
+}
+
+async fn get_session_affinity_cache(
+    State(state): State<ConsoleState>,
+) -> Json<crate::routing::SessionAffinityCacheSnapshot> {
+    Json(state.coordinator.session_affinity_cache())
+}
+
+async fn clear_session_affinity_cache(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Query(query): Query<SessionAffinityCacheQuery>,
+) -> Result<Json<crate::routing::SessionAffinityCacheClearResult>, ConsoleError> {
+    let rule_name = query
+        .rule_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty());
+    if query.rule_name.is_some() && rule_name.is_none() {
+        return Err(ConsoleError::Validation);
+    }
+    let result = state
+        .coordinator
+        .clear_session_affinity_cache(rule_name)
+        .ok_or(ConsoleError::NotFound)?;
+    tracing::info!(
+        actor_user_id = %principal.user_id(),
+        rule_name,
+        cleared_entries = result.cleared_entries,
+        "session affinity cache cleared"
+    );
+    Ok(Json(result))
 }
 
 async fn get_system_load(State(state): State<ConsoleState>) -> Json<SystemLoadReport> {

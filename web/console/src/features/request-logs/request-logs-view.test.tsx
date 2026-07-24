@@ -7,12 +7,14 @@ import { AppProviders } from "@/app/providers";
 import { AppRouter } from "@/app/router";
 import {
   ADMIN_API_KEY,
+  CHANNEL,
+  CHANNEL_GROUP,
   CONTROL_PLANE_USER,
   MODEL_RULE,
   OWN_API_KEY,
   REQUEST_LOG,
 } from "@/test/fixtures";
-import { server, seedAuthenticatedSession } from "@/test/msw";
+import { server, seedAuthenticatedSession, seedUserSession } from "@/test/msw";
 
 function renderAppAt(path: string) {
   window.history.replaceState({}, "", path);
@@ -38,6 +40,15 @@ describe("RequestLogsView", () => {
 
     const user = userEvent.setup();
     renderAppAt("/usage/request-logs");
+
+    expect(
+      await screen.findByRole("columnheader", { name: "Channel" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("columnheader", { name: "Channel ID" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(CHANNEL.name)).toBeInTheDocument();
+    expect(screen.getByText(CHANNEL.id)).toBeInTheDocument();
 
     const apiKey = await screen.findByRole("combobox", { name: "API key" });
     await user.click(apiKey);
@@ -71,12 +82,21 @@ describe("RequestLogsView", () => {
     server.use(
       http.get("/console/v1/request-logs", ({ request }) => {
         queries.push(new URL(request.url).searchParams);
-        return HttpResponse.json([]);
+        return HttpResponse.json([REQUEST_LOG]);
       }),
     );
 
     const user = userEvent.setup();
     renderAppAt("/admin/request-logs");
+
+    expect(
+      await screen.findByRole("columnheader", { name: "Channel group" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Channel" })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Channel ID" })).toBeInTheDocument();
+    expect(screen.getByText(CHANNEL_GROUP.name)).toBeInTheDocument();
+    expect(screen.getByText(CHANNEL.name)).toBeInTheDocument();
+    expect(screen.getByText(CHANNEL.id)).toBeInTheDocument();
 
     const userSelect = await screen.findByRole("combobox", { name: "User" });
     await user.click(userSelect);
@@ -122,8 +142,10 @@ describe("RequestLogsView", () => {
       client_model: "detail-model",
       upstream_model: "upstream-detail-model",
       model_rule_id: null,
-      channel_group_id: null,
-      channel_id: null,
+      channel_group_id: CHANNEL_GROUP.id,
+      channel_group_name: CHANNEL_GROUP.name,
+      channel_id: CHANNEL.id,
+      channel_name: CHANNEL.name,
       outcome: "failed",
       response_status_code: 200,
       streamed: true,
@@ -159,10 +181,57 @@ describe("RequestLogsView", () => {
     expect(
       await screen.findByText("provider_error", { selector: "dd" }),
     ).toBeInTheDocument();
+    const channelLabel = await screen.findByText("Channel", { selector: "dt" });
+    expect(channelLabel.parentElement).toHaveTextContent(CHANNEL.name);
+    const channelIdLabel = await screen.findByText("Channel ID", { selector: "dt" });
+    expect(channelIdLabel.parentElement).toHaveTextContent(CHANNEL.id);
     const errorMessageLabel = await screen.findByText("Error message", { selector: "dt" });
     expect(errorMessageLabel.parentElement).toHaveTextContent(
       "Upstream quota exhausted. Try another channel.",
     );
     expect(detailRequests).toBe(1);
+  });
+
+  it("shows channel groups to regular users without exposing concrete channels", async () => {
+    seedUserSession();
+    server.use(
+      http.get("/console/v1/me/request-logs", () =>
+        HttpResponse.json([REQUEST_LOG]),
+      ),
+      http.get("/console/v1/me/request-logs/:id", () =>
+        HttpResponse.json({
+          ...REQUEST_LOG,
+          channel_id: null,
+          channel_name: null,
+        }),
+      ),
+    );
+
+    const user = userEvent.setup();
+    renderAppAt("/usage/request-logs");
+
+    expect(
+      await screen.findByRole("columnheader", { name: "Channel group" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("columnheader", { name: "Channel" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("columnheader", { name: "Channel ID" }),
+    ).not.toBeInTheDocument();
+    expect(await screen.findByText(CHANNEL_GROUP.name)).toBeInTheDocument();
+
+    await user.click(screen.getByText(REQUEST_LOG.client_model));
+    const groupLabel = await screen.findByText("Channel group", {
+      selector: "dt",
+    });
+    expect(groupLabel.parentElement).toHaveTextContent(CHANNEL_GROUP.name);
+    expect(
+      screen.queryByText("Channel", { selector: "dt" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Channel ID", { selector: "dt" }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(CHANNEL.name, { selector: "dd" })).not.toBeInTheDocument();
   });
 });

@@ -1,9 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiGet, apiGetDetail, apiPost, apiPut } from "@/api/client";
+import { apiGet, apiGetDetail, apiPost, apiPut, apiSend } from "@/api/client";
 import type {
   AdminApiKeyView,
   ChannelBatchUpdateInput,
   ChannelBatchUpdateResponse,
+  ChannelRecoverInput,
   ChannelCreateInput,
   ApiKeyCreateInput,
   ApiKeyPolicyInput,
@@ -37,6 +38,8 @@ import type {
   ProxyInput,
   ProxyView,
   ReloadResponse,
+  SessionAffinityCacheClearResponse,
+  SessionAffinityCacheReport,
   SystemSettings,
   SystemSettingsInput,
   UserInput,
@@ -214,6 +217,17 @@ export function useBatchUpdateChannels() {
     },
   });
 }
+export function useRecoverChannel() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, input }: { id: string; input: ChannelRecoverInput }) =>
+      apiPost<MutationResponse>(`/routing/channels/${id}/recover`, input),
+    onSettled: (_data, _error, variables) => {
+      void queryClient.invalidateQueries({ queryKey: CHANNELS_KEY });
+      void queryClient.invalidateQueries({ queryKey: channelDetailKey(variables.id) });
+    },
+  });
+}
 
 // ---- Model Rules ----
 const RULES_KEY = ["console", "model-rules"] as const;
@@ -294,6 +308,11 @@ export function useReload() {
   });
 }
 const SYSTEM_SETTINGS_KEY = ["console", "system-settings"] as const;
+const SESSION_AFFINITY_CACHE_KEY = [
+  "console",
+  "system",
+  "session-affinity-cache",
+] as const;
 export function useSystemSettings() {
   return useQuery({
     queryKey: SYSTEM_SETTINGS_KEY,
@@ -307,6 +326,31 @@ export function useUpdateSystemSettings() {
       apiPut<MutationResponse>("/system/settings", input, ifMatch),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: SYSTEM_SETTINGS_KEY });
+    },
+  });
+}
+export function useSessionAffinityCache() {
+  return useQuery({
+    queryKey: SESSION_AFFINITY_CACHE_KEY,
+    queryFn: () =>
+      apiGet<SessionAffinityCacheReport>("/system/session-affinity/cache"),
+    refetchInterval: 5_000,
+  });
+}
+export function useClearSessionAffinityCache() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (ruleName?: string) => {
+      const query = ruleName
+        ? `?${new URLSearchParams({ rule_name: ruleName }).toString()}`
+        : "";
+      return apiSend<SessionAffinityCacheClearResponse>(
+        `/system/session-affinity/cache${query}`,
+        "DELETE",
+      );
+    },
+    onSuccess: (response) => {
+      queryClient.setQueryData(SESSION_AFFINITY_CACHE_KEY, response.cache);
     },
   });
 }

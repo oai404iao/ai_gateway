@@ -632,6 +632,11 @@ pub struct ChannelBatchUpdateTarget {
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct ChannelRecoverInput {
+    pub updated_at: DateTime<Utc>,
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ChannelBatchChanges {
     #[serde(default)]
     pub enabled: Option<bool>,
@@ -877,6 +882,10 @@ pub enum ControlPlaneMutation {
         input: ChannelInput,
         expected_updated_at: DateTime<Utc>,
     },
+    RecoverChannel {
+        id: Uuid,
+        expected_updated_at: DateTime<Utc>,
+    },
     CreateRule(ModelRuleInput),
     UpdateRule {
         id: Uuid,
@@ -1025,7 +1034,9 @@ pub struct ConsoleRequestLog {
     pub upstream_model: Option<String>,
     pub model_rule_id: Option<Uuid>,
     pub channel_group_id: Option<Uuid>,
+    pub channel_group_name: Option<String>,
     pub channel_id: Option<Uuid>,
+    pub channel_name: Option<String>,
     pub outcome: String,
     pub response_status_code: Option<i16>,
     pub streamed: bool,
@@ -1142,6 +1153,8 @@ pub struct CostStatisticsFilter {
     pub granularity: StatisticsGranularity,
     pub user_id: Option<Uuid>,
     pub api_key_id: Option<Uuid>,
+    pub channel_id: Option<Uuid>,
+    pub include_channel_details: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1204,6 +1217,7 @@ pub struct CostStatisticsReport {
     pub summary: CostStatisticsSummary,
     pub buckets: Vec<CostStatisticsBucket>,
     pub models: Vec<CostStatisticsModel>,
+    pub channels: Vec<CostStatisticsChannel>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1242,6 +1256,23 @@ pub struct CostStatisticsBucketModel {
 pub struct CostStatisticsModel {
     pub api_format: String,
     pub model: String,
+    pub request_count: i64,
+    pub total_tokens: i64,
+    pub input_tokens: i64,
+    pub cached_input_tokens: i64,
+    pub cache_write_tokens: i64,
+    pub output_tokens: i64,
+    pub success_rate: Option<f64>,
+    pub cost_amount: rust_decimal::Decimal,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct CostStatisticsChannel {
+    pub id: Uuid,
+    pub channel_group_id: Uuid,
+    pub channel_group_name: String,
+    pub name: String,
+    pub api_format: String,
     pub request_count: i64,
     pub total_tokens: i64,
     pub input_tokens: i64,
@@ -1613,16 +1644,32 @@ impl RequestLogRepository {
         &self,
         user_id: Uuid,
         filter: RequestLogFilter,
+        include_channel_details: bool,
     ) -> Result<Vec<ConsoleRequestLog>, RepositoryError> {
-        query_console_request_logs(&self.pool, Some(user_id), filter).await
+        let mut logs = query_console_request_logs(&self.pool, Some(user_id), filter).await?;
+        if !include_channel_details {
+            for log in &mut logs {
+                log.channel_id = None;
+                log.channel_name = None;
+            }
+        }
+        Ok(logs)
     }
 
     pub async fn get_for_user(
         &self,
         user_id: Uuid,
         id: Uuid,
+        include_channel_details: bool,
     ) -> Result<Option<ConsoleRequestLog>, RepositoryError> {
-        query_console_request_log(&self.pool, id, Some(user_id)).await
+        let mut log = query_console_request_log(&self.pool, id, Some(user_id)).await?;
+        if !include_channel_details {
+            if let Some(log) = &mut log {
+                log.channel_id = None;
+                log.channel_name = None;
+            }
+        }
+        Ok(log)
     }
 
     pub async fn list_all(
@@ -1862,12 +1909,14 @@ impl RequestLogRepository {
              WHERE started_at >= $1
                AND started_at < $2
                AND ($3::uuid IS NULL OR user_id = $3)
-               AND ($4::uuid IS NULL OR api_key_id = $4)",
+               AND ($4::uuid IS NULL OR api_key_id = $4)
+               AND ($5::uuid IS NULL OR channel_id = $5)",
         )
         .bind(filter.started_at)
         .bind(filter.ended_at)
         .bind(filter.user_id)
         .bind(filter.api_key_id)
+        .bind(filter.channel_id)
         .fetch_one(&self.pool)
         .await?;
 
@@ -1886,6 +1935,7 @@ impl RequestLogRepository {
                AND started_at < $2
                AND ($3::uuid IS NULL OR user_id = $3)
                AND ($4::uuid IS NULL OR api_key_id = $4)
+               AND ($5::uuid IS NULL OR channel_id = $5)
              GROUP BY bucket_started_at,
                       COALESCE(upstream_model, client_model),
                       api_format
@@ -1899,6 +1949,7 @@ impl RequestLogRepository {
             .bind(filter.ended_at)
             .bind(filter.user_id)
             .bind(filter.api_key_id)
+            .bind(filter.channel_id)
             .fetch_all(&self.pool)
             .await?;
 
@@ -1923,6 +1974,7 @@ impl RequestLogRepository {
                AND started_at < $2
                AND ($3::uuid IS NULL OR user_id = $3)
                AND ($4::uuid IS NULL OR api_key_id = $4)
+               AND ($5::uuid IS NULL OR channel_id = $5)
              GROUP BY COALESCE(upstream_model, client_model), api_format
              ORDER BY COALESCE(upstream_model, client_model), api_format",
         )
@@ -1930,8 +1982,59 @@ impl RequestLogRepository {
         .bind(filter.ended_at)
         .bind(filter.user_id)
         .bind(filter.api_key_id)
+        .bind(filter.channel_id)
         .fetch_all(&self.pool)
         .await?;
+
+        let channels = if filter.include_channel_details {
+            sqlx::query_as::<_, CostChannelMetricRow>(
+                "SELECT log.channel_id AS id,
+                        log.channel_group_id,
+                        channel_group.name AS channel_group_name,
+                        channel.name,
+                        log.api_format::text AS api_format,
+                        count(*)::bigint AS request_count,
+                        count(*) FILTER (WHERE log.outcome <> 'cancelled')::bigint
+                            AS success_rate_request_count,
+                        count(*) FILTER (WHERE log.outcome = 'succeeded')::bigint
+                            AS succeeded_count,
+                        COALESCE(
+                            sum(COALESCE(log.input_tokens, 0) + COALESCE(log.output_tokens, 0)),
+                            0
+                        )::bigint AS total_tokens,
+                        COALESCE(sum(log.input_tokens), 0)::bigint AS input_tokens,
+                        COALESCE(sum(log.cached_input_tokens), 0)::bigint
+                            AS cached_input_tokens,
+                        COALESCE(sum(log.cache_write_tokens), 0)::bigint
+                            AS cache_write_tokens,
+                        COALESCE(sum(log.output_tokens), 0)::bigint AS output_tokens,
+                        COALESCE(sum(log.cost_amount), 0) AS cost_amount
+                 FROM request_logs AS log
+                 JOIN channels AS channel ON channel.id = log.channel_id
+                 JOIN channel_groups AS channel_group
+                   ON channel_group.id = log.channel_group_id
+                 WHERE log.started_at >= $1
+                   AND log.started_at < $2
+                   AND ($3::uuid IS NULL OR log.user_id = $3)
+                   AND ($4::uuid IS NULL OR log.api_key_id = $4)
+                   AND ($5::uuid IS NULL OR log.channel_id = $5)
+                 GROUP BY log.channel_id, log.channel_group_id, channel_group.name,
+                          channel.name, log.api_format
+                 ORDER BY channel_group.name, channel.name, log.api_format",
+            )
+            .bind(filter.started_at)
+            .bind(filter.ended_at)
+            .bind(filter.user_id)
+            .bind(filter.api_key_id)
+            .bind(filter.channel_id)
+            .fetch_all(&self.pool)
+            .await?
+            .into_iter()
+            .map(CostChannelMetricRow::into_metric)
+            .collect()
+        } else {
+            Vec::new()
+        };
 
         let duration_minutes = duration.num_milliseconds().max(1) as f64 / 60_000.0;
         Ok(CostStatisticsReport {
@@ -1957,6 +2060,7 @@ impl RequestLogRepository {
                 filter.granularity,
             ),
             models: fold_cost_models(model_rows),
+            channels,
         })
     }
 
@@ -2391,7 +2495,7 @@ impl RequestLogRepository {
     }
 }
 
-const CONSOLE_REQUEST_LOG_COLUMNS: &str = "id,started_at,completed_at,user_id,api_key_id,request_source,api_format::text AS api_format,client_model,upstream_model,model_rule_id,channel_group_id,channel_id,outcome,response_status_code,streamed,ttft_ms,total_duration_ms,input_tokens,cached_input_tokens,cache_write_tokens,output_tokens,cost_amount,error_code,error_summary,billed_at";
+const CONSOLE_REQUEST_LOG_COLUMNS: &str = "log.id,log.started_at,log.completed_at,log.user_id,log.api_key_id,log.request_source,log.api_format::text AS api_format,log.client_model,log.upstream_model,log.model_rule_id,log.channel_group_id,channel_group.name AS channel_group_name,log.channel_id,channel.name AS channel_name,log.outcome,log.response_status_code,log.streamed,log.ttft_ms,log.total_duration_ms,log.input_tokens,log.cached_input_tokens,log.cache_write_tokens,log.output_tokens,log.cost_amount,log.error_code,log.error_summary,log.billed_at";
 
 async fn query_console_request_log(
     pool: &PgPool,
@@ -2399,11 +2503,15 @@ async fn query_console_request_log(
     owner_user_id: Option<Uuid>,
 ) -> Result<Option<ConsoleRequestLog>, RepositoryError> {
     let mut query = QueryBuilder::<Postgres>::new(format!(
-        "SELECT {CONSOLE_REQUEST_LOG_COLUMNS} FROM request_logs WHERE id = "
+        "SELECT {CONSOLE_REQUEST_LOG_COLUMNS}
+         FROM request_logs AS log
+         LEFT JOIN channel_groups AS channel_group ON channel_group.id = log.channel_group_id
+         LEFT JOIN channels AS channel ON channel.id = log.channel_id
+         WHERE log.id = "
     ));
     query.push_bind(id);
     if let Some(user_id) = owner_user_id {
-        query.push(" AND user_id = ").push_bind(user_id);
+        query.push(" AND log.user_id = ").push_bind(user_id);
     }
     query
         .build_query_as::<ConsoleRequestLog>()
@@ -2434,46 +2542,56 @@ async fn query_console_request_logs(
     }
 
     let mut query = QueryBuilder::<Postgres>::new(format!(
-        "SELECT {CONSOLE_REQUEST_LOG_COLUMNS} FROM request_logs WHERE TRUE"
+        "SELECT {CONSOLE_REQUEST_LOG_COLUMNS}
+         FROM request_logs AS log
+         LEFT JOIN channel_groups AS channel_group ON channel_group.id = log.channel_group_id
+         LEFT JOIN channels AS channel ON channel.id = log.channel_id
+         WHERE TRUE"
     ));
     if let Some(user_id) = owner_user_id {
-        query.push(" AND user_id = ").push_bind(user_id);
+        query.push(" AND log.user_id = ").push_bind(user_id);
     }
     if let Some(user_id) = filter.user_id {
-        query.push(" AND user_id = ").push_bind(user_id);
+        query.push(" AND log.user_id = ").push_bind(user_id);
     }
     if let Some(api_key_id) = filter.api_key_id {
-        query.push(" AND api_key_id = ").push_bind(api_key_id);
+        query.push(" AND log.api_key_id = ").push_bind(api_key_id);
     }
     if let Some(model) = filter.model {
         query
-            .push(" AND (client_model = ")
+            .push(" AND (log.client_model = ")
             .push_bind(model.clone())
-            .push(" OR upstream_model = ")
+            .push(" OR log.upstream_model = ")
             .push_bind(model)
             .push(")");
     }
     if let Some(api_format) = filter.api_format {
-        query.push(" AND api_format::text = ").push_bind(api_format);
+        query
+            .push(" AND log.api_format::text = ")
+            .push_bind(api_format);
     }
     if let Some(outcome) = filter.outcome {
-        query.push(" AND outcome = ").push_bind(outcome);
+        query.push(" AND log.outcome = ").push_bind(outcome);
     }
     if let Some(started_after) = filter.started_after {
-        query.push(" AND started_at >= ").push_bind(started_after);
+        query
+            .push(" AND log.started_at >= ")
+            .push_bind(started_after);
     }
     if let Some(started_before) = filter.started_before {
-        query.push(" AND started_at <= ").push_bind(started_before);
+        query
+            .push(" AND log.started_at <= ")
+            .push_bind(started_before);
     }
     if let Some(billed) = filter.billed {
         if billed {
-            query.push(" AND billed_at IS NOT NULL");
+            query.push(" AND log.billed_at IS NOT NULL");
         } else {
-            query.push(" AND billed_at IS NULL");
+            query.push(" AND log.billed_at IS NULL");
         }
     }
     query
-        .push(" ORDER BY started_at DESC, id DESC LIMIT ")
+        .push(" ORDER BY log.started_at DESC, log.id DESC LIMIT ")
         .push_bind(filter.limit.clamp(1, 100));
     query
         .build_query_as::<ConsoleRequestLog>()
@@ -2638,6 +2756,44 @@ struct CostModelMetricRow {
     cache_write_tokens: i64,
     output_tokens: i64,
     cost_amount: rust_decimal::Decimal,
+}
+
+#[derive(FromRow)]
+struct CostChannelMetricRow {
+    id: Uuid,
+    channel_group_id: Uuid,
+    channel_group_name: String,
+    name: String,
+    api_format: String,
+    request_count: i64,
+    success_rate_request_count: i64,
+    succeeded_count: i64,
+    total_tokens: i64,
+    input_tokens: i64,
+    cached_input_tokens: i64,
+    cache_write_tokens: i64,
+    output_tokens: i64,
+    cost_amount: rust_decimal::Decimal,
+}
+
+impl CostChannelMetricRow {
+    fn into_metric(self) -> CostStatisticsChannel {
+        CostStatisticsChannel {
+            id: self.id,
+            channel_group_id: self.channel_group_id,
+            channel_group_name: self.channel_group_name,
+            name: self.name,
+            api_format: self.api_format,
+            request_count: self.request_count,
+            total_tokens: self.total_tokens,
+            input_tokens: self.input_tokens,
+            cached_input_tokens: self.cached_input_tokens,
+            cache_write_tokens: self.cache_write_tokens,
+            output_tokens: self.output_tokens,
+            success_rate: success_rate(self.success_rate_request_count, self.succeeded_count),
+            cost_amount: self.cost_amount,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -4009,6 +4165,10 @@ impl ControlPlaneRepository {
                 input,
                 expected_updated_at,
             } => channel_insert(transaction, id, input, false, Some(expected_updated_at)).await,
+            ControlPlaneMutation::RecoverChannel {
+                id,
+                expected_updated_at,
+            } => channel_recover(transaction, id, expected_updated_at).await,
             ControlPlaneMutation::CreateRule(input) => {
                 rule_insert(transaction, Uuid::new_v4(), input, true, None).await
             }
@@ -4895,6 +5055,44 @@ async fn channel_insert(
         correlation_id: None,
     })
 }
+
+async fn channel_recover(
+    transaction: &mut Transaction<'_, Postgres>,
+    id: Uuid,
+    expected_updated_at: DateTime<Utc>,
+) -> Result<MutationResult, RepositoryError> {
+    let before = channel_audit(transaction, id).await?;
+    let current_updated_at: DateTime<Utc> = serde_json::from_value(before["updated_at"].clone())
+        .map_err(|_| RepositoryError::Validation)?;
+    if current_updated_at != expected_updated_at || before["auto_disabled"].as_bool() != Some(true)
+    {
+        return Err(RepositoryError::Conflict);
+    }
+    let reason = "manually recovered by administrator".to_owned();
+    let updated_at = sqlx::query_scalar(
+        "UPDATE channels
+         SET auto_disabled=false, auto_disabled_reason=NULL
+         WHERE id=$1 AND updated_at=$2 AND auto_disabled
+         RETURNING updated_at",
+    )
+    .bind(id)
+    .bind(expected_updated_at)
+    .fetch_optional(&mut **transaction)
+    .await?
+    .ok_or(RepositoryError::Conflict)?;
+    Ok(MutationResult {
+        id,
+        object_type: "channel",
+        action: "manual_recover",
+        before_redacted: before,
+        after_redacted: channel_audit(transaction, id).await?,
+        created_secret: None,
+        reason: Some(reason),
+        updated_at,
+        correlation_id: None,
+    })
+}
+
 async fn rule_insert(
     transaction: &mut Transaction<'_, Postgres>,
     id: Uuid,

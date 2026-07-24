@@ -520,6 +520,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/routing/channels/{id}/recover": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * @description Administrator-only. Clears a temporary automatic disable without
+         *     changing the channel's explicit enabled flag. The list response's
+         *     `updated_at` value provides optimistic concurrency.
+         */
+        post: operations["recoverChannel"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/routing/model-rules": {
         parameters: {
             query?: never;
@@ -681,7 +702,8 @@ export interface paths {
         };
         /**
          * @description Regular users can only aggregate their own requests. Administrators
-         *     can aggregate all users or filter by `user_id` and `api_key_id`.
+         *     can aggregate all users or filter by `user_id`, `api_key_id`, and
+         *     `channel_id`. Channel-level details are returned only to administrators.
          *     Aggregates request counts, token totals and usage categories, RPM/TPM,
          *     and cost by UTC hour or day. All monetary amounts are settled in USD,
          *     and the response includes continuous zero-valued buckets across the
@@ -734,6 +756,30 @@ export interface paths {
         put?: never;
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/system/session-affinity/cache": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * @description Administrator-only. Returns current-process, unexpired session-affinity
+         *     entry counts for each compiled enabled rule.
+         */
+        get: operations["getSessionAffinityCache"];
+        put?: never;
+        post?: never;
+        /**
+         * @description Administrator-only. Clears all current-process entries, or only entries
+         *     belonging to the named compiled rule.
+         */
+        delete: operations["clearSessionAffinityCache"];
         options?: never;
         head?: never;
         patch?: never;
@@ -957,6 +1003,24 @@ export interface components {
         };
         SystemSettings: components["schemas"]["SystemSettingsInput"] & {
             updated_at: components["schemas"]["DateTime"];
+        };
+        SessionAffinityRuleCache: {
+            name: string;
+            /** Format: int64 */
+            entries: number;
+        };
+        SessionAffinityCacheReport: {
+            enabled: boolean;
+            /** Format: int64 */
+            max_entries: number;
+            /** Format: int64 */
+            total_entries: number;
+            rules: components["schemas"]["SessionAffinityRuleCache"][];
+        };
+        SessionAffinityCacheClearResponse: {
+            /** Format: int64 */
+            cleared_entries: number;
+            cache: components["schemas"]["SessionAffinityCacheReport"];
         };
         ApiHostsView: {
             api_hosts: string[];
@@ -1282,8 +1346,15 @@ export interface components {
             model_rule_id: string | null;
             /** Format: uuid */
             channel_group_id: string | null;
-            /** Format: uuid */
+            /** @description Current display name of the selected channel group. */
+            channel_group_name: string | null;
+            /**
+             * Format: uuid
+             * @description Administrator-only; regular-user self-service responses return null.
+             */
             channel_id: string | null;
+            /** @description Administrator-only current display name; regular-user self-service responses return null. */
+            channel_name: string | null;
             outcome: string;
             response_status_code: number | null;
             streamed: boolean;
@@ -1360,6 +1431,8 @@ export interface components {
             /** @description Continuous UTC buckets covering the selected range, including empty buckets. */
             buckets: components["schemas"]["CostStatisticsBucket"][];
             models: components["schemas"]["CostStatisticsModel"][];
+            /** @description Administrator-only channel breakdown; empty for regular users. */
+            channels: components["schemas"]["CostStatisticsChannel"][];
         };
         CostStatisticsSummary: {
             request_count: number;
@@ -1413,6 +1486,31 @@ export interface components {
              */
             success_rate: number | null;
             /** @description Total model cost in USD. */
+            cost_amount: components["schemas"]["Decimal"];
+        };
+        CostStatisticsChannel: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            channel_group_id: string;
+            channel_group_name: string;
+            name: string;
+            api_format: components["schemas"]["ApiFormat"];
+            request_count: number;
+            total_tokens: number;
+            /** @description Channel input tokens, including cached and cache-write input. */
+            input_tokens: number;
+            /** @description Channel input tokens served from an upstream prompt cache. */
+            cached_input_tokens: number;
+            /** @description Channel input tokens reported as written to an upstream prompt cache. */
+            cache_write_tokens: number;
+            output_tokens: number;
+            /**
+             * Format: double
+             * @description Successful requests divided by non-cancelled terminal requests.
+             */
+            success_rate: number | null;
+            /** @description Total channel cost in USD. */
             cost_amount: components["schemas"]["Decimal"];
         };
         AuditLogView: {
@@ -1718,6 +1816,10 @@ export interface components {
             /** Format: uuid */
             correlation_id: string;
         };
+        ChannelRecoverInput: {
+            /** @description Version copied from the channel list response. */
+            updated_at: components["schemas"]["DateTime"];
+        };
         ModelRuleInput: {
             client_model: string;
             api_format: components["schemas"]["ApiFormat"];
@@ -1869,6 +1971,10 @@ export interface components {
         StatisticsStartedBefore: components["schemas"]["DateTime"];
         /** @description Hour supports at most 31 days; day supports at most 366 days. */
         StatisticsGranularity: components["schemas"]["StatisticsGranularity"];
+        /** @description Administrator-only exact channel filter. */
+        StatisticsChannelId: string;
+        /** @description Exact session-affinity rule name. Omit to clear the whole cache. */
+        SessionAffinityRuleName: string;
     };
     requestBodies: never;
     headers: {
@@ -3143,6 +3249,37 @@ export interface operations {
             422: components["responses"]["Unprocessable"];
         };
     };
+    recoverChannel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChannelRecoverInput"];
+            };
+        };
+        responses: {
+            /** @description Recovered. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MutationResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
+        };
+    };
     listModelRules: {
         parameters: {
             query?: never;
@@ -3566,6 +3703,8 @@ export interface operations {
                 /** @description Administrator-only owner filter. */
                 user_id?: components["parameters"]["RequestLogUserId"];
                 api_key_id?: components["parameters"]["RequestLogApiKeyId"];
+                /** @description Administrator-only exact channel filter. */
+                channel_id?: components["parameters"]["StatisticsChannelId"];
             };
             header?: never;
             path?: never;
@@ -3631,6 +3770,55 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+        };
+    };
+    getSessionAffinityCache: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current session-affinity cache state. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionAffinityCacheReport"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    clearSessionAffinityCache: {
+        parameters: {
+            query?: {
+                /** @description Exact session-affinity rule name. Omit to clear the whole cache. */
+                rule_name?: components["parameters"]["SessionAffinityRuleName"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Cache entries cleared. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionAffinityCacheClearResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["Unprocessable"];
         };
     };
     getSystemSettings: {
