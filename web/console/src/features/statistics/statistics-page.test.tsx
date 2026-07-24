@@ -24,22 +24,24 @@ function renderApp(path = "/statistics") {
 }
 
 describe("StatisticsPage", () => {
-  it("shows channel, cost, and system load analytics", async () => {
+  it("redirects the Console root to statistics", async () => {
+    seedAuthenticatedSession();
+    renderApp("/");
+
+    expect(await screen.findByText("Total cost")).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/statistics");
+  });
+
+  it("shows cost and system load analytics", async () => {
     seedAuthenticatedSession();
     const user = userEvent.setup();
     renderApp();
 
-    expect(
-      await screen.findByText("Model overview", {}, { timeout: 5_000 }),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("Total cost", {}, { timeout: 5_000 })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Price sync" })).toBeInTheDocument();
     expect((await screen.findAllByText(MODEL.source_model_id)).length).toBeGreaterThan(0);
-    expect(await screen.findByText(CHANNEL.name)).toBeInTheDocument();
     expect((await screen.findAllByText("97.5%")).length).toBeGreaterThan(0);
 
-    await user.click(screen.getByRole("tab", { name: "Cost statistics" }));
-
-    expect(await screen.findByText("Total cost")).toBeInTheDocument();
     expect(screen.getAllByText("1,912.06 USD").length).toBeGreaterThan(0);
     expect(screen.getByText("Model cost breakdown")).toBeInTheDocument();
     expect(screen.getByText(/Cache rate: 40%/)).toBeInTheDocument();
@@ -67,7 +69,7 @@ describe("StatisticsPage", () => {
     expect(screen.getByText("2 MiB")).toBeInTheDocument();
   });
 
-  it("shows regular users public channel status and only their cost views", async () => {
+  it("keeps regular-user statistics scoped to their own costs", async () => {
     seedUserSession();
     let adminUserRequests = 0;
     let adminKeyRequests = 0;
@@ -81,23 +83,20 @@ describe("StatisticsPage", () => {
         return new HttpResponse(null, { status: 403 });
       }),
     );
-    const user = userEvent.setup();
     renderApp();
 
-    expect(
-      await screen.findByText("Model overview", {}, { timeout: 5_000 }),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("Total cost", {}, { timeout: 5_000 })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Statistics" })).toHaveAttribute(
       "href",
       "/statistics",
     );
+    expect(screen.getByRole("link", { name: "Channel status" })).toHaveAttribute(
+      "href",
+      "/channel-status",
+    );
     expect(screen.queryByRole("link", { name: "Price sync" })).not.toBeInTheDocument();
-    expect(await screen.findByText(CHANNEL.name)).toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "System load" })).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("tab", { name: "Cost statistics" }));
-
-    expect(await screen.findByText("Total cost")).toBeInTheDocument();
     expect(
       screen.getByText(
         "Filter your own statistics by time range, API key, and aggregation granularity.",
@@ -106,6 +105,16 @@ describe("StatisticsPage", () => {
     expect(screen.queryByText("All users")).not.toBeInTheDocument();
     expect(adminUserRequests).toBe(0);
     expect(adminKeyRequests).toBe(0);
+  });
+
+  it("shows public channel status on its own page", async () => {
+    seedUserSession();
+    renderApp("/channel-status");
+
+    expect(await screen.findByRole("heading", { name: "Channel status" })).toBeInTheDocument();
+    expect(await screen.findByText("Model overview")).toBeInTheDocument();
+    expect(await screen.findByText(CHANNEL.name)).toBeInTheDocument();
+    expect(screen.queryByText("Total cost")).not.toBeInTheDocument();
   });
 
   it("defaults to today and applies week and month ranges with useful granularities", async () => {

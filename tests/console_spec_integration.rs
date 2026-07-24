@@ -129,6 +129,7 @@ fn auth_config() -> AuthConfig {
 
 fn bootstrap_system_settings() -> SystemSettingsInput {
     SystemSettingsInput {
+        api_hosts: Vec::new(),
         upstream: SystemUpstreamSettingsInput {
             connect_timeout_seconds: 1,
             response_header_timeout_seconds: 2,
@@ -232,6 +233,7 @@ async fn system_settings_bootstrap_initializes_once_without_overwriting_database
     let repository = ControlPlaneRepository::new(database.pool.clone());
     let first = bootstrap_system_settings();
     let replacement = SystemSettingsInput {
+        api_hosts: Vec::new(),
         upstream: SystemUpstreamSettingsInput {
             connect_timeout_seconds: 5,
             response_header_timeout_seconds: 10,
@@ -777,6 +779,7 @@ async fn system_settings_are_versioned_audited_and_updated_via_console() {
         .unwrap()
         .to_owned();
     let mut input = body_json(detail).await;
+    input["api_hosts"] = serde_json::json!(["https://gateway.example.test/v1"]);
     input["upstream"]["connect_timeout_seconds"] = serde_json::json!(2);
     input["upstream"]["response_header_timeout_seconds"] = serde_json::json!(5);
     input["upstream"]["stream_idle_timeout_seconds"] = serde_json::json!(8);
@@ -825,6 +828,18 @@ async fn system_settings_are_versioned_audited_and_updated_via_console() {
     .await;
     assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
+    let mut invalid_api_host = input.clone();
+    invalid_api_host["api_hosts"] = serde_json::json!(["ftp://gateway.example.test"]);
+    let invalid = request(
+        &app,
+        "PUT",
+        "/console/v1/system/settings",
+        invalid_api_host,
+        &[("if-match", &etag)],
+    )
+    .await;
+    assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
     let updated = request(
         &app,
         "PUT",
@@ -835,6 +850,20 @@ async fn system_settings_are_versioned_audited_and_updated_via_console() {
     .await;
     assert_eq!(updated.status(), StatusCode::OK);
     assert!(body_json(updated).await["correlation_id"].is_string());
+
+    let api_hosts = request(
+        &app,
+        "GET",
+        "/console/v1/me/api-hosts",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(api_hosts.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(api_hosts).await,
+        serde_json::json!({"api_hosts": ["https://gateway.example.test/v1"]})
+    );
 
     let stored: serde_json::Value = sqlx::query_scalar(
         "SELECT value FROM system_settings WHERE setting_key='forwarding_policy'",

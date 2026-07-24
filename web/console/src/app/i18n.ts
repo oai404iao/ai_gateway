@@ -28,6 +28,24 @@ const zhCN: Record<string, string> = {
   "Audit Logs": "审计日志",
   "System": "系统",
   "System settings": "系统设置",
+  "API hosts": "API 地址",
+  "API host": "API 地址",
+  "API host copied": "API 地址已复制",
+  "Copy API host": "复制 API 地址",
+  "No API hosts configured": "尚未配置 API 地址",
+  "Ask an administrator to configure an API host in System settings.":
+    "请联系管理员在系统设置中配置 API 地址。",
+  "Copy a configured base URL to connect an OpenAI-compatible client.":
+    "复制已配置的基础 URL，用于连接 OpenAI 兼容客户端。",
+  "HTTP(S) base URLs shown on users' API Keys pages for copying into OpenAI-compatible clients.":
+    "显示在用户 API 密钥页面上，供复制到 OpenAI 兼容客户端的 HTTP(S) 基础 URL。",
+  "One HTTP(S) base URL per line. Paths are allowed; credentials, query strings, and fragments are not.":
+    "每行一个 HTTP(S) 基础 URL。允许路径，不允许凭据、查询字符串和片段。",
+  "API host cannot be blank.": "API 地址不能为空。",
+  "API host must be at most 2048 characters.": "API 地址最多 2048 个字符。",
+  "Enter a valid HTTP(S) API host.": "请输入有效的 HTTP(S) API 地址。",
+  "Configure at most 32 API hosts.": "最多配置 32 个 API 地址。",
+  "API hosts must be unique.": "API 地址不能重复。",
   "Database-backed forwarding defaults for future requests.": "面向后续请求的数据库转发默认配置。",
   "Applies immediately": "立即生效",
   "Saving validates the full routing configuration and publishes a new runtime snapshot. Requests already in flight retain their original settings.":
@@ -174,6 +192,10 @@ const zhCN: Record<string, string> = {
   "Reload now": "立即重载",
   "Correlation id": "关联 ID",
   "Channel status": "渠道状态",
+  "Cost analytics and current system pressure.": "成本分析和当前系统压力。",
+  "Your own cost analytics.": "您自己的成本分析。",
+  "Availability and performance for channels included in status statistics.":
+    "已纳入状态统计的渠道可用性与性能。",
   "Cost statistics": "花费统计",
   "System load": "系统负载",
   "Channel, cost, and current system pressure analytics.":

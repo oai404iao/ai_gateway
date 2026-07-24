@@ -46,6 +46,11 @@ const StatisticsPage = lazy(() =>
     default: m.StatisticsPage,
   })),
 );
+const ChannelStatusPage = lazy(() =>
+  import("@/features/statistics/channel-status-page").then((m) => ({
+    default: m.ChannelStatusPage,
+  })),
+);
 const UsersPage = lazy(() =>
   import("@/features/admin/users/users-page").then((m) => ({ default: m.UsersPage })),
 );
@@ -165,12 +170,13 @@ export function AppRouter() {
 
       <Route element={<RequireAuth />}>
         <Route element={<ConsoleLayout />}>
-          <Route index element={<Navigate to="/account" replace />} />
+          <Route index element={<Navigate to="/statistics" replace />} />
           <Route path="/account" element={<ProfilePage />} />
           <Route path="/account/sessions" element={<SessionsPage />} />
           <Route path="/api-keys" element={<ApiKeysPage />} />
           <Route path="/api-keys/:id" element={<ApiKeyDetailPage />} />
           <Route path="/usage/request-logs" element={<OwnRequestLogsPage />} />
+          <Route path="/channel-status" element={<ChannelStatusPage />} />
           <Route path="/statistics" element={<StatisticsPage />} />
 
           <Route element={<RequireAdmin />}>

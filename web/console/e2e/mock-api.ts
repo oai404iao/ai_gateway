@@ -73,6 +73,25 @@ export async function mockConsoleApi(page: Page): Promise<void> {
         ],
       });
     }
+    if (path === "/console/v1/me/api-hosts" && method === "GET") {
+      return route.fulfill({
+        status: 200,
+        json: { api_hosts: ["https://api.e2e.example.test/v1"] },
+      });
+    }
+    if (path === "/console/v1/statistics/channel-status" && method === "GET") {
+      return route.fulfill({
+        status: 200,
+        json: {
+          window: "24h",
+          started_at: "2026-07-23T00:00:00.000Z",
+          ended_at: "2026-07-24T00:00:00.000Z",
+          bucket_seconds: 3600,
+          models: [],
+          channels: [],
+        },
+      });
+    }
     if (path === "/console/v1/me/api-key-options" && method === "GET") {
       return route.fulfill({
         status: 200,

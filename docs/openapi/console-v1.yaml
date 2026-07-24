@@ -246,6 +246,20 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorBody" }
 
+  /me/api-hosts:
+    get:
+      tags: [Self]
+      operationId: getApiHosts
+      description: User-visible HTTP(S) base URLs configured by an administrator.
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Configured API base URLs.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiHostsView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
   /me/api-keys/{id}:
     get:
       tags: [Self]
@@ -1749,8 +1763,16 @@ components:
     SystemSettingsInput:
       type: object
       required:
-        [upstream, request_retry, passive_health, automatic_disable, scheduled_testing, session_affinity]
+        [api_hosts, upstream, request_retry, passive_health, automatic_disable, scheduled_testing, session_affinity]
       properties:
+        api_hosts:
+          type: array
+          maxItems: 32
+          description: User-visible HTTP(S) base URLs for the OpenAI-compatible data plane.
+          items:
+            type: string
+            format: uri
+            maxLength: 2048
         upstream: { $ref: "#/components/schemas/SystemUpstreamSettings" }
         request_retry: { $ref: "#/components/schemas/SystemRequestRetrySettings" }
         passive_health: { $ref: "#/components/schemas/SystemPassiveHealthSettings" }
@@ -1765,6 +1787,16 @@ components:
           required: [updated_at]
           properties:
             updated_at: { $ref: "#/components/schemas/DateTime" }
+
+    ApiHostsView:
+      type: object
+      required: [api_hosts]
+      properties:
+        api_hosts:
+          type: array
+          items:
+            type: string
+            format: uri
 
     SystemLoadReport:
       type: object

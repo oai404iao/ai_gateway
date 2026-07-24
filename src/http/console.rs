@@ -81,6 +81,7 @@ pub fn router(state: ConsoleState) -> Router {
             "/console/v1/me/api-key-options",
             get(get_own_api_key_options),
         )
+        .route("/console/v1/me/api-hosts", get(get_api_hosts))
         .route(
             "/console/v1/me/api-keys/{id}",
             get(get_own_api_key).put(update_own_api_key),
@@ -623,6 +624,12 @@ async fn get_own_api_key_options(
             .own_api_key_options(principal.user_id())
             .await?,
     ))
+}
+
+async fn get_api_hosts(
+    State(state): State<ConsoleState>,
+) -> Result<Json<crate::persistence::ApiHostsView>, ConsoleError> {
+    Ok(Json(state.coordinator.api_hosts().await?))
 }
 
 async fn create_own_api_key(
