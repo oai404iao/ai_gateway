@@ -1,6 +1,8 @@
 # 数据库设计
 
-> 状态：数据库控制面与运行时快照设计已由 migration 实现。当前运行时范围以 [`mvp-usage.md`](mvp-usage.md) 为准，Console/JWT 重构的决策和实施清单以 [`console-auth-refactor-plan.md`](console-auth-refactor-plan.md) 为准。
+> 状态：已完成设计记录。数据库 schema 以 `migrations/` 为准；当前运行时范围以
+> [运行与接口说明](../user/operations.md) 为准，Console/JWT 背景见
+> [Console 认证设计记录](console-auth.md)。
 >
 > **历史说明：** 下文的“首版 11 张表”描述的是 Console 登录重构前的简化基线。migration `0005_console_auth_and_policies.sql` 已新增用户角色、登录凭据、session、邀请和 API Key Policy，并将 `users.name` 迁移为 `users.display_name`。migration `0010_api_key_target_selection.sql` 又将 Policy 收敛为用户可选渠道组/渠道的授权边界，并把实际目标、RPM、并发和额度保留在具体 API Key 上。涉及用户认证或 Console 权限时，以新 migration、`src/persistence/auth.rs` 和 `src/http/console.rs` 为准。
 

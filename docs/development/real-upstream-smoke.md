@@ -1,5 +1,8 @@
 # Real upstream smoke test
 
+> Status: current. This is an explicit, paid validation path and is never part
+> of ordinary tests.
+
 `tests/real_upstream/` verifies the gateway against one real,
 OpenAI-compatible upstream. It is deliberately ignored by normal `cargo test`
 runs: it has separate Chat Completions and Responses tests for non-streaming

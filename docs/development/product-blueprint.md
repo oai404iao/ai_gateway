@@ -1,8 +1,13 @@
-### 项目描述
+# 产品与架构蓝图
+
+> 状态：提案/设计蓝图。本文保留产品方向、设计动机和未来约束；当前运行时行为以
+> [当前架构](architecture.md)、代码、测试、migration 和 OpenAPI 为准。
+
+## 项目描述
 
 一个 基于RUST的 高性能 LLM请求转发 网关.
 
-### 技术栈
+## 技术栈
 
 - HTTP：axum + tower + tower-http
 - 上游请求：reqwest（rustls-tls、stream）
@@ -16,7 +21,7 @@
 - Console Web UI（计划）：React + TypeScript + Vite；Tailwind CSS + shadcn/ui（Radix）。
   前端仅在构建期使用 Node.js，生产运行时仍为 Rust 单二进制。
 
-### 架构
+## 架构
 
 模块化单体:  一个 Rust 服务，明确分离数据面（请求转发）与控制面（配置、模型同步、日志），暂不引入微服务或 Redis。
 
@@ -36,7 +41,7 @@ Console 浏览器（计划）
   → /console/v1/* JWT Console API
   → PostgreSQL 控制面事务 + 审计 + 快照发布
 
-### 实体
+## 实体
 
 ```
 User
@@ -221,7 +226,7 @@ https://console.example.com/
 - 不引入 SSR、Next.js、常驻 Node 服务或生产环境的文件系统静态目录。
 
 详细的目录、接口契约、构建、安全和分阶段实施计划见
-[Console Web UI 设计与实施计划](console-ui-design.md)。
+[Console Web UI 设计与实施计划](console-ui.md)。
 
 ## 代码组织
 

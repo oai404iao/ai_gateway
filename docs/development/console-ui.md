@@ -1,10 +1,10 @@
 # Console Web UI 设计与实施计划
 
-> 状态：**前端骨架与嵌入式交付已实现（Phase 0–3）**。React + TypeScript +
-> Vite + Tailwind + shadcn/ui（Radix）工程位于 `web/console/`，可选
+> 状态：已完成设计记录。React + TypeScript + Vite + Tailwind +
+> shadcn/ui（Radix）工程位于 `web/console/`，可选
 > `embedded-console-ui` Cargo feature 将 `web/console/dist` 编入二进制并由
-> Console listener 同源提供。Phase 4 的 MSW/Playwright 与 CI 门禁仍在推进。
-> 本文件仍是对齐架构与约束的源文档。
+> Console listener 同源提供。当前实现以 `web/console/`、`src/http/console_ui.rs`
+> 和测试为准。
 
 ## 1. 目标与边界
 
@@ -286,10 +286,10 @@ API 集成测试应同时验证实现与该规范的关键请求/响应示例，
 
 ### 8.1 编译与运行时开关
 
-计划同时使用两个明确开关：
+当前使用两个明确开关：
 
 ```toml
-# 提议的配置；当前版本尚不识别 ui_enabled。
+# 当前配置
 [console]
 enabled = true
 ui_enabled = true
@@ -298,7 +298,7 @@ port = 3001
 allowed_origins = []
 ```
 
-- `console.enabled`：现有 Console listener 的总开关。
+- `console.enabled`：Console listener 的总开关。
 - `console.ui_enabled`：只控制是否在该 listener 挂载 UI；默认为 `false`，使 API-only 部署保持当前行为。
 - `embedded-console-ui`：Cargo feature，控制二进制是否包含前端资源。
 - 若 `ui_enabled = true` 但二进制未启用 feature，启动必须返回明确配置错误，不能静默提供一个空白或磁盘
@@ -341,6 +341,8 @@ cargo build --release --features embedded-console-ui
 为了开发而放宽生产 Cookie 属性或 CORS 策略。Vite 的 `preview` 只用于检查构建产物，不作为生产服务。
 
 ## 9. 分阶段实施计划
+
+> 以下 checkbox 保留原始实施计划，不再作为当前完成度追踪器。
 
 ### Phase 0：契约与交付基础
 

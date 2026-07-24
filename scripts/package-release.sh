@@ -48,11 +48,7 @@ install -m 0644 \
     "$license_materials/THIRD_PARTY_NOTICES.md" \
     "$stage/$archive_base/"
 cp -a "$license_materials/LICENSES" "$stage/$archive_base/LICENSES"
-install -d "$stage/$archive_base/docs"
-install -m 0644 \
-    docs/production-deployment.md \
-    docs/releasing.md \
-    "$stage/$archive_base/docs/"
+cp -a docs "$stage/$archive_base/docs"
 
 mkdir -p "$output_dir"
 archive="$output_dir/${archive_base}.tar.gz"

@@ -4,7 +4,7 @@ Embedded admin console for `ai-gateway`: a React 19 + TypeScript single-page
 app built with Vite, Tailwind CSS v4, and shadcn/ui (Radix). The production
 build is embedded into the Rust binary via `rust-embed` (see the
 `embedded-console-ui` cargo feature) and served only on the Console listener,
-never on the public `/v1/*` data plane. See [`docs/console-ui-design.md`](../../docs/console-ui-design.md)
+never on the public `/v1/*` data plane. See [`docs/development/console-ui.md`](../../docs/development/console-ui.md)
 for the architecture and [`docs/openapi/console-v1.yaml`](../../docs/openapi/console-v1.yaml)
 for the API contract this UI consumes.
 

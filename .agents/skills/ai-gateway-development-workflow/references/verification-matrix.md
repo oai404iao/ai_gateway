@@ -8,6 +8,7 @@ completion gate.
 
 ```bash
 git diff --check
+python3 scripts/check-docs.py
 ```
 
 - Verify command examples against the current scripts and package manifests.

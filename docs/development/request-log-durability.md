@@ -1,5 +1,7 @@
 # 请求日志耐久化流水线
 
+> 状态：当前。
+
 请求日志不再直接依赖最终 `request_logs` 宽表的瞬时写入能力。生产启动路径使用三段式流水线：
 
 ```text
@@ -100,4 +102,4 @@ Migration `0012_request_log_ingest.sql` 创建 `request_log_ingest`：
 
 生产模板将已排空 spool 的压缩阈值设为 256MiB，以减少高请求率下频繁
 truncate/sync 对尾延迟的影响。完整机器分档和 PostgreSQL 参数见
-[生产配置与容量调优](production-configuration.md)。
+[生产配置与容量调优](../user/production-configuration.md)。

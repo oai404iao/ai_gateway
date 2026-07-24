@@ -2,7 +2,7 @@
 #
 # Defaults target a 4-8 GiB host with 4-8 CPU cores and durable local storage.
 # Size- and workload-sensitive PostgreSQL settings can be overridden with the
-# environment variables shown below. See docs/production-configuration.md
+# environment variables shown below. See docs/user/production-configuration.md
 # before using a smaller machine, multiple Gateway instances, or CoW storage.
 #
 # Before first startup:

@@ -1,5 +1,7 @@
 # 生产配置与容量调优
 
+> 状态：当前。参数默认值仍以配置模板和 `src/runtime_config/mod.rs` 为准。
+
 仓库默认配置面向单个 Gateway 进程与单节点 PostgreSQL，基线机器为：
 
 - 4–8 个 CPU 核心。
@@ -11,7 +13,7 @@
 
 本文件说明参数与容量基线。若要把 Gateway 本身也运行在容器中，请使用
 `docker-compose.prd.yaml`，并先阅读
-[`docs/production-deployment.md`](production-deployment.md)。
+[`docs/user/production-deployment.md`](production-deployment.md)。
 
 ## 首次启动
 

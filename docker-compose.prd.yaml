@@ -4,7 +4,7 @@
 #   docker compose -f docker-compose.prd.yaml pull gateway
 #   docker compose -f docker-compose.prd.yaml build gateway
 #
-# Before first startup, follow docs/production-deployment.md to create:
+# Before first startup, follow docs/user/production-deployment.md to create:
 #   ./config/config.prd.toml
 #   ./config/postgres-password
 #   ./config/console-jwt-private.pem
