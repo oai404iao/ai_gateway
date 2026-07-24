@@ -7,6 +7,29 @@ Versioning.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-24
+
+### Added
+
+- Model-first routing that precompiles model-capable channel candidates and
+  distinguishes inaccessible models from configured routes with no healthy
+  channels.
+- Administrator controls for inspecting and clearing active session-affinity
+  cache entries, with audit logging.
+- Channel enable, disable, and manual recovery actions with concurrency
+  protection.
+- Channel-aware request logs and cost statistics, including channel-group
+  context, administrator filtering and aggregation, and server-enforced
+  redaction for regular users.
+
+### Changed
+
+- Reworked runtime routing around dense channel and route slots, shared
+  authorization profiles, precompiled accessible-route bitsets, and sharded
+  atomic state.
+- Reorganized dense Console settings and resource editors into responsive
+  two-column cards while keeping wide model, rule, and JSON editors full width.
+
 ## [0.2.0] - 2026-07-24
 
 ### Added
