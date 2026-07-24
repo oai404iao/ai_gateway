@@ -47,6 +47,7 @@ describe("StatisticsPage", () => {
     expect(
       screen.getByRole("columnheader", { name: "Cache hit tokens" }),
     ).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Cache rate" })).toBeInTheDocument();
     expect(
       screen.getByRole("columnheader", { name: "Cache write tokens" }),
     ).toBeInTheDocument();
@@ -55,6 +56,7 @@ describe("StatisticsPage", () => {
     expect(screen.getAllByText("84M").length).toBeGreaterThan(0);
     expect(screen.getAllByText("12M").length).toBeGreaterThan(0);
     expect(screen.getAllByText("53M").length).toBeGreaterThan(0);
+    expect(screen.getByText("40%")).toBeInTheDocument();
 
     await user.click(screen.getByRole("tab", { name: "System load" }));
 

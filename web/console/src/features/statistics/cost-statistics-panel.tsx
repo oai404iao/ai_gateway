@@ -348,6 +348,12 @@ export function CostStatisticsPanel() {
       render: (model) => formatCompactTokens(model.cached_input_tokens),
     },
     {
+      key: "cache_rate",
+      header: t("Cache rate"),
+      render: (model) =>
+        formatRate(cacheRate(model.input_tokens, model.cached_input_tokens)),
+    },
+    {
       key: "cache_write_tokens",
       header: t("Cache write tokens"),
       render: (model) => formatCompactTokens(model.cache_write_tokens),
