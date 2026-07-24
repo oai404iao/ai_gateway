@@ -665,10 +665,11 @@ export interface paths {
         /**
          * @description Regular users can only aggregate their own requests. Administrators
          *     can aggregate all users or filter by `user_id` and `api_key_id`.
-         *     Aggregates request counts, token totals, RPM/TPM, and cost by UTC hour
-         *     or day. All monetary amounts are settled in USD, and the response
-         *     includes continuous zero-valued buckets across the selected range.
-         *     Client-cancelled requests do not participate in model success rates.
+         *     Aggregates request counts, token totals and usage categories, RPM/TPM,
+         *     and cost by UTC hour or day. All monetary amounts are settled in USD,
+         *     and the response includes continuous zero-valued buckets across the
+         *     selected range. Client-cancelled requests do not participate in model
+         *     success rates.
          */
         get: operations["getCostStatistics"];
         put?: never;
@@ -1342,6 +1343,13 @@ export interface components {
             request_count: number;
             priced_request_count: number;
             total_tokens: number;
+            /** @description Total input tokens, including cached and cache-write input. */
+            input_tokens: number;
+            /** @description Input tokens served from an upstream prompt cache. */
+            cached_input_tokens: number;
+            /** @description Input tokens reported as written to an upstream prompt cache. */
+            cache_write_tokens: number;
+            output_tokens: number;
             /** Format: double */
             average_rpm: number;
             /** Format: double */
@@ -1370,6 +1378,13 @@ export interface components {
             model: string;
             request_count: number;
             total_tokens: number;
+            /** @description Model input tokens, including cached and cache-write input. */
+            input_tokens: number;
+            /** @description Model input tokens served from an upstream prompt cache. */
+            cached_input_tokens: number;
+            /** @description Model input tokens reported as written to an upstream prompt cache. */
+            cache_write_tokens: number;
+            output_tokens: number;
             /**
              * Format: double
              * @description Successful requests divided by non-cancelled terminal requests.

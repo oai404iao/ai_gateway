@@ -2069,13 +2069,25 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
     .unwrap();
 
     let started_at = chrono::Utc::now() - chrono::Duration::minutes(10);
-    for (outcome, status, ttft_ms, tps, input_tokens, output_tokens, cost) in [
+    for (
+        outcome,
+        status,
+        ttft_ms,
+        tps,
+        input_tokens,
+        cached_input_tokens,
+        cache_write_tokens,
+        output_tokens,
+        cost,
+    ) in [
         (
             "succeeded",
             200_i16,
             Some(500_i32),
             Some(rust_decimal::Decimal::new(200, 1)),
             100_i64,
+            20_i64,
+            5_i64,
             50_i64,
             Some(rust_decimal::Decimal::new(25, 2)),
         ),
@@ -2085,10 +2097,22 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
             None,
             None,
             10_i64,
+            2_i64,
+            1_i64,
             0_i64,
             Some(rust_decimal::Decimal::new(5, 2)),
         ),
-        ("cancelled", 200_i16, None, None, 0_i64, 0_i64, None),
+        (
+            "cancelled",
+            200_i16,
+            None,
+            None,
+            0_i64,
+            0_i64,
+            0_i64,
+            0_i64,
+            None,
+        ),
     ] {
         sqlx::query(
             "INSERT INTO request_logs \
@@ -2099,8 +2123,8 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
               price_effective_at,input_unit_price,cached_input_unit_price, \
               cache_write_unit_price,output_unit_price,cost_amount) \
              VALUES ($1,$2,$2,$3,$4,'open_ai_chat_completions','statistics-client-model', \
-                     'statistics-model',$5,$6,$7,$8,false,$9,1000,$10,$11,0,0,$12, \
-                     'USD',1000000,$2,1,0,0,1,$13)",
+                     'statistics-model',$5,$6,$7,$8,false,$9,1000,$10,$11,$12,$13,$14, \
+                     'USD',1000000,$2,1,0,0,1,$15)",
         )
         .bind(Uuid::new_v4())
         .bind(started_at)
@@ -2113,6 +2137,8 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
         .bind(ttft_ms)
         .bind(tps)
         .bind(input_tokens)
+        .bind(cached_input_tokens)
+        .bind(cache_write_tokens)
         .bind(output_tokens)
         .bind(cost)
         .execute(&database.pool)
@@ -2174,6 +2200,10 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
     assert_eq!(costs["summary"]["request_count"], 3);
     assert_eq!(costs["summary"]["priced_request_count"], 2);
     assert_eq!(costs["summary"]["total_tokens"], 160);
+    assert_eq!(costs["summary"]["input_tokens"], 110);
+    assert_eq!(costs["summary"]["cached_input_tokens"], 22);
+    assert_eq!(costs["summary"]["cache_write_tokens"], 6);
+    assert_eq!(costs["summary"]["output_tokens"], 50);
     let amount = costs["summary"]["cost_amount"]
         .as_str()
         .unwrap()
@@ -2181,6 +2211,10 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
         .unwrap();
     assert!((amount - 0.30).abs() < f64::EPSILON);
     assert_eq!(costs["models"][0]["model"], "statistics-model");
+    assert_eq!(costs["models"][0]["input_tokens"], 110);
+    assert_eq!(costs["models"][0]["cached_input_tokens"], 22);
+    assert_eq!(costs["models"][0]["cache_write_tokens"], 6);
+    assert_eq!(costs["models"][0]["output_tokens"], 50);
     assert_eq!(costs["models"][0]["success_rate"], 0.5);
     assert!(
         costs["buckets"].as_array().unwrap().len() >= 2,
