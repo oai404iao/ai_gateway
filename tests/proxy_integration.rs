@@ -453,6 +453,7 @@ async fn harness_with_transforms(transforms: TransformDocuments) -> Harness {
         },
         transforms,
         OutboundTestPolicy::default(),
+        true,
     );
     let gateway = start_server(http::router(configured.proxy)).await;
 
@@ -546,6 +547,7 @@ fn configured_proxy_with_policy(
         upstream_config,
         TransformDocuments::default(),
         OutboundTestPolicy::default(),
+        true,
     )
 }
 
@@ -566,6 +568,7 @@ fn configured_proxy_with_outbound_policy(
         upstream_config,
         TransformDocuments::default(),
         outbound,
+        true,
     )
 }
 
@@ -581,6 +584,7 @@ fn configured_proxy_with_policy_and_transforms(
     upstream_config: UpstreamConfig,
     transforms: TransformDocuments,
     outbound: OutboundTestPolicy,
+    chat_channel_enabled: bool,
 ) -> ConfiguredProxy {
     let chat_group = Uuid::new_v4();
     let responses_group = Uuid::new_v4();
@@ -750,6 +754,7 @@ fn configured_proxy_with_policy_and_transforms(
         response_header_timeout_ms,
         stream_idle_timeout_ms,
     } = outbound;
+    records.channels[0].enabled = chat_channel_enabled;
     records.channels[0].connect_timeout_ms = connect_timeout_ms;
     records.channels[0].response_header_timeout_ms = response_header_timeout_ms;
     records.channels[0].stream_idle_timeout_ms = stream_idle_timeout_ms;
@@ -1067,6 +1072,67 @@ async fn unknown_model_returns_not_found_without_upstream_contact() {
     assert_eq!(logs.len(), 1);
     assert_eq!(logs[0].outcome.as_str(), "rejected");
     assert_eq!(logs[0].response_status_code, Some(404));
+}
+
+#[tokio::test]
+async fn known_model_without_an_authorized_candidate_returns_not_found() {
+    let harness = harness(StatusCode::OK, Vec::new()).await;
+
+    let response = authorized_post(
+        &client(),
+        harness.url("/v1/chat/completions"),
+        NO_REACHABLE_MODELS_KEY,
+        br#"{"model":"same-model"}"#.to_vec(),
+    )
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let body: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+    assert_eq!(body["error"]["code"], "model_not_found");
+    assert!(harness.upstream_requests().is_empty());
+}
+
+#[tokio::test]
+async fn configured_model_with_only_disabled_channels_returns_service_unavailable() {
+    let logs = RecordingRequestLogSink::default();
+    let configured = configured_proxy_with_policy_and_transforms(
+        "https://disabled-channel.example.test",
+        logs.clone(),
+        None,
+        None,
+        None,
+        Default::default(),
+        None,
+        UpstreamConfig {
+            connect_timeout_seconds: 1,
+            response_header_timeout_seconds: 2,
+            stream_idle_timeout_seconds: 1,
+        },
+        TransformDocuments::default(),
+        OutboundTestPolicy::default(),
+        false,
+    );
+    let gateway = start_server(http::router(configured.proxy)).await;
+
+    let response = authorized_post(
+        &client(),
+        format!("http://{}/v1/chat/completions", gateway.address),
+        CLIENT_KEY,
+        br#"{"model":"same-model"}"#.to_vec(),
+    )
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+    assert_eq!(body["error"]["code"], "no_healthy_channel");
+    let events = logs.events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].response_status_code, Some(503));
+    assert_eq!(events[0].error_code.as_deref(), Some("no_healthy_channel"));
 }
 
 #[tokio::test]
@@ -2304,6 +2370,7 @@ async fn snapshot_replacement_uses_new_proxy_policy_after_cancelling_an_existing
             )),
             ..Default::default()
         },
+        true,
     );
     let app = http::router(current.proxy);
 

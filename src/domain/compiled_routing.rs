@@ -442,14 +442,61 @@ pub enum ApiKeyPermission {
     ModelsRead,
 }
 
+/// A deduplicated, immutable routing authorization scope shared by API keys
+/// with the same expanded channel access.
+#[derive(Clone, Debug)]
+pub struct AuthorizationProfile {
+    allowed_channel_slots: Arc<[u64]>,
+    accessible_route_slots: Arc<[u64]>,
+    fingerprint: [u8; 32],
+}
+impl AuthorizationProfile {
+    #[must_use]
+    fn permits_route_candidate(&self, slot: usize) -> bool {
+        bit_is_set(&self.allowed_channel_slots, slot)
+    }
+
+    #[must_use]
+    fn permits_route(&self, slot: usize) -> bool {
+        bit_is_set(&self.accessible_route_slots, slot)
+    }
+
+    #[must_use]
+    const fn fingerprint(&self) -> [u8; 32] {
+        self.fingerprint
+    }
+
+    pub(crate) fn new(
+        allowed_channel_ids: HashSet<Uuid>,
+        allowed_channel_slots: Arc<[u64]>,
+        accessible_route_slots: Arc<[u64]>,
+    ) -> Self {
+        let fingerprint = routing_scope_fingerprint(&HashSet::new(), &allowed_channel_ids);
+        Self {
+            allowed_channel_slots,
+            accessible_route_slots,
+            fingerprint,
+        }
+    }
+
+    #[cfg(test)]
+    fn legacy(allowed_group_ids: HashSet<Uuid>, allowed_channel_ids: HashSet<Uuid>) -> Self {
+        let fingerprint = routing_scope_fingerprint(&allowed_group_ids, &allowed_channel_ids);
+        Self {
+            allowed_channel_slots: Arc::from([]),
+            accessible_route_slots: Arc::from([]),
+            fingerprint,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct CompiledApiKey {
     id: Uuid,
     user_id: Uuid,
     allowed_api_formats: HashSet<ApiFormat>,
     permissions: HashSet<ApiKeyPermission>,
-    allowed_group_ids: HashSet<Uuid>,
-    allowed_channel_ids: HashSet<Uuid>,
+    authorization: Arc<AuthorizationProfile>,
     expires_at: Option<DateTime<Utc>>,
     requests_per_minute: Option<u32>,
     max_concurrent_requests: Option<u32>,
@@ -471,9 +518,20 @@ impl CompiledApiKey {
             && self.permissions.contains(&permission)
             && !self.is_expired()
     }
+    pub(crate) fn permits_route_candidate(&self, slot: usize) -> bool {
+        self.authorization.permits_route_candidate(slot)
+    }
     #[must_use]
-    pub fn permits_channel(&self, group_id: Uuid, channel_id: Uuid) -> bool {
-        self.allowed_group_ids.contains(&group_id) || self.allowed_channel_ids.contains(&channel_id)
+    pub(crate) fn permits_route(&self, slot: usize) -> bool {
+        self.authorization.permits_route(slot)
+    }
+    #[must_use]
+    pub(crate) fn routing_scope_fingerprint(&self) -> [u8; 32] {
+        self.authorization.fingerprint()
+    }
+    #[cfg(test)]
+    pub(crate) fn shares_authorization_profile(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.authorization, &other.authorization)
     }
     #[must_use]
     pub fn is_expired(&self) -> bool {
@@ -505,6 +563,7 @@ impl CompiledApiKey {
             .is_some_and(|limit| quota_used_amount >= limit)
     }
     #[allow(clippy::too_many_arguments)] // immutable compiled key construction mirrors validated records
+    #[cfg(test)]
     pub(crate) fn new(
         id: Uuid,
         user_id: Uuid,
@@ -518,13 +577,38 @@ impl CompiledApiKey {
         quota_limit_amount: Option<Decimal>,
         quota_used_amount: Decimal,
     ) -> Self {
+        Self::new_with_authorization_profile(
+            id,
+            user_id,
+            formats,
+            permissions,
+            Arc::new(AuthorizationProfile::legacy(groups, channels)),
+            expires_at,
+            requests_per_minute,
+            max_concurrent_requests,
+            quota_limit_amount,
+            quota_used_amount,
+        )
+    }
+    #[allow(clippy::too_many_arguments)] // immutable compiled key construction mirrors validated records
+    pub(crate) fn new_with_authorization_profile(
+        id: Uuid,
+        user_id: Uuid,
+        formats: HashSet<ApiFormat>,
+        permissions: HashSet<ApiKeyPermission>,
+        authorization: Arc<AuthorizationProfile>,
+        expires_at: Option<DateTime<Utc>>,
+        requests_per_minute: Option<u32>,
+        max_concurrent_requests: Option<u32>,
+        quota_limit_amount: Option<Decimal>,
+        quota_used_amount: Decimal,
+    ) -> Self {
         Self {
             id,
             user_id,
             allowed_api_formats: formats,
             permissions,
-            allowed_group_ids: groups,
-            allowed_channel_ids: channels,
+            authorization,
             expires_at,
             requests_per_minute,
             max_concurrent_requests,
@@ -556,6 +640,29 @@ impl CompiledApiKey {
     }
 }
 
+fn routing_scope_fingerprint(groups: &HashSet<Uuid>, channels: &HashSet<Uuid>) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"ai-gateway:routing-scope:v1\0");
+    let mut groups = groups.iter().copied().collect::<Vec<_>>();
+    groups.sort_unstable();
+    let mut channels = channels.iter().copied().collect::<Vec<_>>();
+    channels.sort_unstable();
+    for group in groups {
+        hasher.update(group.as_bytes());
+    }
+    hasher.update([0]);
+    for channel in channels {
+        hasher.update(channel.as_bytes());
+    }
+    hasher.finalize().into()
+}
+
+fn bit_is_set(words: &[u64], slot: usize) -> bool {
+    words
+        .get(slot / u64::BITS as usize)
+        .is_some_and(|bits| bits & (1_u64 << (slot % u64::BITS as usize)) != 0)
+}
+
 #[derive(Clone)]
 pub enum UpstreamAuth {
     None,
@@ -582,6 +689,7 @@ pub struct CompiledChannel {
     group_id: Uuid,
     api_format: ApiFormat,
     base_url: Url,
+    connectivity_fingerprint: Arc<str>,
     weight: i32,
     billing_multiplier: Decimal,
     upstream_auth: UpstreamAuth,
@@ -607,6 +715,10 @@ impl CompiledChannel {
     #[must_use]
     pub fn base_url(&self) -> &Url {
         &self.base_url
+    }
+    #[must_use]
+    pub(crate) fn connectivity_fingerprint(&self) -> &Arc<str> {
+        &self.connectivity_fingerprint
     }
     #[must_use]
     pub fn weight(&self) -> i32 {
@@ -731,11 +843,13 @@ impl CompiledChannel {
         test_model: Option<Arc<str>>,
         upstream_policy: CompiledChannelUpstreamPolicy,
     ) -> Self {
+        let connectivity_fingerprint = Arc::from(base_url.as_str());
         Self {
             id,
             group_id,
             api_format,
             base_url,
+            connectivity_fingerprint,
             weight,
             billing_multiplier,
             upstream_auth,
@@ -803,10 +917,43 @@ impl CompiledChannelGroup {
 }
 
 #[derive(Clone, Debug)]
+pub struct CompiledCandidate {
+    channel_slot: usize,
+    channel: Arc<CompiledChannel>,
+    weight: u32,
+}
+impl CompiledCandidate {
+    #[must_use]
+    pub(crate) const fn channel_slot(&self) -> usize {
+        self.channel_slot
+    }
+
+    #[must_use]
+    pub(crate) fn channel(&self) -> &Arc<CompiledChannel> {
+        &self.channel
+    }
+
+    #[must_use]
+    pub(crate) const fn weight(&self) -> u32 {
+        self.weight
+    }
+
+    pub(crate) fn new(channel_slot: usize, channel: Arc<CompiledChannel>) -> Self {
+        Self {
+            channel_slot,
+            weight: u32::try_from(channel.weight()).expect("compiled positive channel weight"),
+            channel,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct CompiledRouteTier {
     priority: i32,
     strategy: SelectionStrategy,
+    fingerprint: [u8; 32],
     channel_ids: Arc<[Uuid]>,
+    candidates: Arc<[CompiledCandidate]>,
 }
 impl CompiledRouteTier {
     #[must_use]
@@ -818,24 +965,51 @@ impl CompiledRouteTier {
         self.strategy
     }
     #[must_use]
+    pub(crate) const fn fingerprint(&self) -> [u8; 32] {
+        self.fingerprint
+    }
+    #[must_use]
     pub fn channel_ids(&self) -> &[Uuid] {
         &self.channel_ids
+    }
+    pub(crate) fn candidates(&self) -> &[CompiledCandidate] {
+        &self.candidates
     }
     pub(crate) fn new(
         priority: i32,
         strategy: SelectionStrategy,
-        channel_ids: Arc<[Uuid]>,
+        candidates: Arc<[CompiledCandidate]>,
     ) -> Self {
+        let mut hasher = Sha256::new();
+        hasher.update(b"ai-gateway:route-tier:v1\0");
+        hasher.update(priority.to_le_bytes());
+        hasher.update([match strategy {
+            SelectionStrategy::WeightedRandom => 0,
+            SelectionStrategy::WeightedRoundRobin => 1,
+        }]);
+        for candidate in candidates.iter() {
+            hasher.update(candidate.channel().id().as_bytes());
+            hasher.update(candidate.weight().to_le_bytes());
+        }
+        let fingerprint = hasher.finalize().into();
+        let channel_ids = candidates
+            .iter()
+            .map(|candidate| candidate.channel().id())
+            .collect::<Vec<_>>()
+            .into();
         Self {
             priority,
             strategy,
+            fingerprint,
             channel_ids,
+            candidates,
         }
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct CompiledModelRule {
+    route_slot: usize,
     id: Uuid,
     upstream_model_id: Uuid,
     client_model: Arc<str>,
@@ -845,12 +1019,12 @@ pub struct CompiledModelRule {
     advanced_billing: CompiledAdvancedBilling,
     tiers: Arc<[CompiledRouteTier]>,
     unavailable_candidates: Arc<[CompiledUnavailableRouteCandidate]>,
+    configured_candidates: Arc<[u64]>,
 }
 
-/// A route target that is structurally valid but temporarily excluded because
-/// its channel is auto-disabled. It lets routing distinguish "no healthy
-/// channel" from an unknown or unauthorized model without returning the
-/// channel to the active snapshot.
+/// A model-capable route target that is structurally valid but not currently
+/// selectable because its group or channel is disabled, or because the channel
+/// is automatically disabled.
 #[derive(Clone, Debug)]
 pub struct CompiledUnavailableRouteCandidate {
     channel_id: Uuid,
@@ -877,6 +1051,10 @@ impl CompiledUnavailableRouteCandidate {
 }
 
 impl CompiledModelRule {
+    #[must_use]
+    pub(crate) const fn route_slot(&self) -> usize {
+        self.route_slot
+    }
     #[must_use]
     pub fn id(&self) -> Uuid {
         self.id
@@ -913,8 +1091,16 @@ impl CompiledModelRule {
     pub fn unavailable_candidates(&self) -> &[CompiledUnavailableRouteCandidate] {
         &self.unavailable_candidates
     }
+    #[must_use]
+    pub(crate) fn configured_candidates_intersect(&self, allowed_channel_slots: &[u64]) -> bool {
+        self.configured_candidates
+            .iter()
+            .zip(allowed_channel_slots)
+            .any(|(configured, allowed)| configured & allowed != 0)
+    }
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_with_unavailable_candidates(
+        route_slot: usize,
         id: Uuid,
         upstream_model_id: Uuid,
         client_model: Arc<str>,
@@ -924,8 +1110,10 @@ impl CompiledModelRule {
         advanced_billing: CompiledAdvancedBilling,
         tiers: Arc<[CompiledRouteTier]>,
         unavailable_candidates: Arc<[CompiledUnavailableRouteCandidate]>,
+        configured_candidates: Arc<[u64]>,
     ) -> Self {
         Self {
+            route_slot,
             id,
             upstream_model_id,
             client_model,
@@ -935,6 +1123,7 @@ impl CompiledModelRule {
             advanced_billing,
             tiers,
             unavailable_candidates,
+            configured_candidates,
         }
     }
 }
@@ -1016,10 +1205,42 @@ impl ModelRouteKey {
     }
 }
 
+#[derive(Debug, Default)]
+struct CompiledModelRoutes {
+    chat_completions: HashMap<Arc<str>, Arc<CompiledModelRule>>,
+    responses: HashMap<Arc<str>, Arc<CompiledModelRule>>,
+}
+impl CompiledModelRoutes {
+    fn from_flat(routes: HashMap<ModelRouteKey, Arc<CompiledModelRule>>) -> Self {
+        let mut compiled = Self::default();
+        for (key, rule) in routes {
+            let target = match key.api_format {
+                ApiFormat::OpenAiChatCompletions => &mut compiled.chat_completions,
+                ApiFormat::OpenAiResponses => &mut compiled.responses,
+            };
+            target.insert(key.client_model, rule);
+        }
+        compiled
+    }
+
+    fn get(&self, format: ApiFormat, model: &str) -> Option<&Arc<CompiledModelRule>> {
+        match format {
+            ApiFormat::OpenAiChatCompletions => self.chat_completions.get(model),
+            ApiFormat::OpenAiResponses => self.responses.get(model),
+        }
+    }
+
+    fn values(&self) -> impl Iterator<Item = &Arc<CompiledModelRule>> {
+        self.chat_completions
+            .values()
+            .chain(self.responses.values())
+    }
+}
+
 #[derive(Debug)]
 pub struct CompiledRuntimeConfig {
     api_keys: HashMap<ApiKeyHash, Arc<CompiledApiKey>>,
-    model_rules: HashMap<ModelRouteKey, Arc<CompiledModelRule>>,
+    model_rules: CompiledModelRoutes,
     channels: HashMap<Uuid, Arc<CompiledChannel>>,
     probe_channels: HashMap<Uuid, Arc<CompiledChannel>>,
     groups: HashMap<Uuid, Arc<CompiledChannelGroup>>,
@@ -1100,7 +1321,7 @@ impl CompiledRuntimeConfig {
     ) -> Self {
         Self {
             api_keys,
-            model_rules,
+            model_rules: CompiledModelRoutes::from_flat(model_rules),
             channels,
             probe_channels,
             groups,
@@ -1127,9 +1348,7 @@ impl CompiledRuntimeConfig {
     }
     #[must_use]
     pub fn model_rule(&self, format: ApiFormat, model: &str) -> Option<Arc<CompiledModelRule>> {
-        self.model_rules
-            .get(&ModelRouteKey::new(format, Arc::<str>::from(model)))
-            .cloned()
+        self.model_rules.get(format, model).cloned()
     }
     #[must_use]
     pub fn channel(&self, id: Uuid) -> Option<Arc<CompiledChannel>> {
@@ -1179,18 +1398,7 @@ impl CompiledRuntimeConfig {
         let mut models = self
             .model_rules
             .values()
-            .filter(|rule| {
-                rule.api_format == format
-                    && rule
-                        .tiers
-                        .iter()
-                        .flat_map(CompiledRouteTier::channel_ids)
-                        .any(|id| {
-                            self.channels.get(id).is_some_and(|channel| {
-                                key.permits_channel(channel.group_id(), channel.id())
-                            })
-                        })
-            })
+            .filter(|rule| rule.api_format == format && key.permits_route(rule.route_slot))
             .map(|rule| Arc::clone(&rule.client_model))
             .collect::<Vec<_>>();
         models.sort_unstable();

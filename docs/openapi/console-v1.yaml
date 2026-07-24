@@ -21,9 +21,10 @@ info:
       that are never retrievable again.
     - Every error body is `{"error":"<code>"}`.
     - `routing_dependency_invalid` means a mutation would make the routing
-      graph invalid (for example, by leaving an enabled model rule without an
-      eligible channel). Add or retain compatible enabled resources, or update
-      the affected rule first.
+      graph structurally invalid (for example, by leaving an enabled model
+      rule without any configured channel that supports its upstream model).
+      Disabled and automatically disabled channels remain valid configured
+      candidates but are excluded from active selection.
     - `limit` query parameters are clamped to `1..=100` (default `50`).
 
 servers:

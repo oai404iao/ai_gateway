@@ -3,13 +3,17 @@
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
-    sync::{Arc, Mutex},
+    hash::{Hash, Hasher},
+    sync::{
+        Arc, Mutex, RwLock,
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+    },
     time::{Duration, Instant},
 };
 
 use crate::domain::{
-    ApiFormat, CompiledApiKey, CompiledChannel, CompiledModelRule, CompiledRuntimeConfig,
-    OutboundNetworkPolicyFingerprint, SelectionStrategy,
+    ApiFormat, CompiledApiKey, CompiledChannel, CompiledModelRule, CompiledRouteTier,
+    CompiledRuntimeConfig, OutboundNetworkPolicyFingerprint, SelectionStrategy,
 };
 use uuid::Uuid;
 
@@ -82,14 +86,10 @@ struct RuntimeInner {
     policy: Mutex<PassiveHealthPolicy>,
     clock: Arc<dyn Clock>,
     entropy: Arc<dyn Entropy>,
-    state: Mutex<RuntimeState>,
+    channel_states: [RwLock<HashMap<ChannelIdentity, Arc<ChannelState>>>; CHANNEL_STATE_SHARDS],
+    active_channels: RwLock<Option<HashSet<ChannelIdentity>>>,
+    round_robin: [Mutex<HashMap<RoundRobinKey, HashMap<Uuid, i64>>>; ROUND_ROBIN_SHARDS],
     affinity: Mutex<AffinityState>,
-}
-#[derive(Default)]
-struct RuntimeState {
-    channels: HashMap<ChannelIdentity, ChannelState>,
-    round_robin: HashMap<RoundRobinKey, HashMap<Uuid, i64>>,
-    active_channels: Option<HashSet<ChannelIdentity>>,
 }
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct ChannelIdentity {
@@ -101,25 +101,139 @@ impl ChannelIdentity {
     fn from_channel(channel: &CompiledChannel) -> Self {
         Self {
             id: channel.id(),
-            connectivity_fingerprint: Arc::from(channel.base_url().as_str()),
+            connectivity_fingerprint: Arc::clone(channel.connectivity_fingerprint()),
             outbound_network_policy_fingerprint: channel
                 .upstream_policy()
                 .outbound_network_policy_fingerprint(),
         }
     }
 }
-#[derive(Default)]
 struct ChannelState {
-    in_flight: u64,
-    consecutive_connection_failures: u32,
-    cooldown_until: Option<Duration>,
-    half_open_probe: bool,
+    in_flight: AtomicU64,
+    consecutive_connection_failures: AtomicU32,
+    cooldown_state: AtomicU64,
+    active: AtomicBool,
+}
+impl ChannelState {
+    fn new(active: bool) -> Self {
+        Self {
+            in_flight: AtomicU64::new(0),
+            consecutive_connection_failures: AtomicU32::new(0),
+            cooldown_state: AtomicU64::new(0),
+            active: AtomicBool::new(active),
+        }
+    }
+
+    fn is_usable(&self, now: Duration) -> bool {
+        let cooldown_state = self.cooldown_state.load(Ordering::SeqCst);
+        cooldown_state == 0
+            || (!half_open_claimed(cooldown_state)
+                && decode_millis(cooldown_state) <= duration_millis(now))
+    }
+
+    fn try_acquire(&self, now: Duration) -> Option<u64> {
+        loop {
+            let cooldown_state = self.cooldown_state.load(Ordering::SeqCst);
+            if cooldown_state == 0 {
+                self.in_flight.fetch_add(1, Ordering::SeqCst);
+                return Some(0);
+            }
+            if half_open_claimed(cooldown_state)
+                || decode_millis(cooldown_state) > duration_millis(now)
+            {
+                return None;
+            }
+            let claimed = cooldown_state | HALF_OPEN_CLAIM;
+            if self
+                .cooldown_state
+                .compare_exchange(cooldown_state, claimed, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                self.in_flight.fetch_add(1, Ordering::SeqCst);
+                return Some(claimed);
+            }
+        }
+    }
+
+    fn release(&self) -> u64 {
+        self.in_flight
+            .fetch_sub(1, Ordering::SeqCst)
+            .saturating_sub(1)
+    }
+
+    fn connection_failed(&self, threshold: u32, cooldown_until: Duration) {
+        let failures = self
+            .consecutive_connection_failures
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+                Some(current.saturating_add(1))
+            })
+            .unwrap_or(u32::MAX)
+            .saturating_add(1);
+        if failures >= threshold {
+            self.cooldown_state
+                .store(encode_millis(cooldown_until), Ordering::SeqCst);
+        }
+    }
+
+    fn response_headers_received(&self) {
+        self.consecutive_connection_failures
+            .store(0, Ordering::SeqCst);
+        self.cooldown_state.store(0, Ordering::SeqCst);
+    }
+
+    fn probe_failed(&self, half_open_claim: u64, cooldown_until: Duration) {
+        if half_open_claim != 0 {
+            let _ = self.cooldown_state.compare_exchange(
+                half_open_claim,
+                encode_millis(cooldown_until),
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            );
+        }
+    }
+
+    fn snapshot(&self, now: Duration) -> ChannelHealthSnapshot {
+        let cooldown_state = self.cooldown_state.load(Ordering::SeqCst);
+        ChannelHealthSnapshot {
+            in_flight: self.in_flight.load(Ordering::SeqCst),
+            consecutive_connection_failures: self
+                .consecutive_connection_failures
+                .load(Ordering::SeqCst),
+            cooling_down: cooldown_state != 0
+                && decode_millis(cooldown_state) > duration_millis(now),
+            half_open_probe: half_open_claimed(cooldown_state),
+        }
+    }
+}
+
+const ROUND_ROBIN_SHARDS: usize = 64;
+const CHANNEL_STATE_SHARDS: usize = 64;
+const HALF_OPEN_CLAIM: u64 = 1_u64 << 63;
+const COOLDOWN_MILLIS_MASK: u64 = HALF_OPEN_CLAIM - 1;
+
+fn duration_millis(value: Duration) -> u64 {
+    u64::try_from(value.as_millis())
+        .unwrap_or(COOLDOWN_MILLIS_MASK - 1)
+        .min(COOLDOWN_MILLIS_MASK - 1)
+}
+
+fn encode_millis(value: Duration) -> u64 {
+    duration_millis(value).saturating_add(1)
+}
+
+fn decode_millis(value: u64) -> u64 {
+    (value & COOLDOWN_MILLIS_MASK).saturating_sub(1)
+}
+
+fn half_open_claimed(value: u64) -> bool {
+    value & HALF_OPEN_CLAIM != 0
 }
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct RoundRobinKey {
     rule_id: Uuid,
     priority: i32,
-    authorized_candidates: Arc<[Uuid]>,
+    tier_fingerprint: [u8; 32],
+    routing_scope_fingerprint: [u8; 32],
 }
 
 /// A matched and hashed request-side session-affinity rule. Raw extracted
@@ -251,7 +365,9 @@ impl RoutingRuntime {
                 policy: Mutex::new(policy),
                 clock,
                 entropy,
-                state: Mutex::new(RuntimeState::default()),
+                channel_states: std::array::from_fn(|_| RwLock::new(HashMap::new())),
+                active_channels: RwLock::new(None),
+                round_robin: std::array::from_fn(|_| Mutex::new(HashMap::new())),
                 affinity: Mutex::new(AffinityState::default()),
             }),
         }
@@ -259,57 +375,50 @@ impl RoutingRuntime {
     #[must_use]
     pub fn health(&self, channel: &CompiledChannel) -> ChannelHealthSnapshot {
         let now = self.inner.clock.now();
-        let state = self
-            .inner
-            .state
-            .lock()
-            .expect("routing state mutex poisoned");
-        let entry = state.channels.get(&ChannelIdentity::from_channel(channel));
-        ChannelHealthSnapshot {
-            in_flight: entry.map_or(0, |value| value.in_flight),
-            consecutive_connection_failures: entry
-                .map_or(0, |value| value.consecutive_connection_failures),
-            cooling_down: entry
-                .and_then(|value| value.cooldown_until)
-                .is_some_and(|until| until > now),
-            half_open_probe: entry.is_some_and(|value| value.half_open_probe),
-        }
+        channel_state(&self.inner, &ChannelIdentity::from_channel(channel)).map_or(
+            ChannelHealthSnapshot {
+                in_flight: 0,
+                consecutive_connection_failures: 0,
+                cooling_down: false,
+                half_open_probe: false,
+            },
+            |entry| entry.snapshot(now),
+        )
     }
 
     #[must_use]
     pub fn pressure_snapshot(&self) -> RoutingPressureSnapshot {
         let now = self.inner.clock.now();
-        let (tracked_channels, in_flight_requests, cooling_down_channels, half_open_channels) = {
-            let state = self
-                .inner
-                .state
-                .lock()
-                .expect("routing state mutex poisoned");
-            let mut in_flight_requests = 0_u64;
-            let mut cooling_down_channels = 0_u64;
-            let mut half_open_channels = 0_u64;
-            for channel in state.channels.values() {
-                in_flight_requests = in_flight_requests.saturating_add(channel.in_flight);
-                if channel.cooldown_until.is_some_and(|until| until > now) {
+        let configured_active_channels = self
+            .inner
+            .active_channels
+            .read()
+            .expect("routing active-channel lock poisoned")
+            .as_ref()
+            .map(HashSet::len);
+        let mut tracked_state_channels = 0_usize;
+        let mut in_flight_requests = 0_u64;
+        let mut cooling_down_channels = 0_u64;
+        let mut half_open_channels = 0_u64;
+        for shard in &self.inner.channel_states {
+            let shard = shard
+                .read()
+                .expect("routing channel-state shard lock poisoned");
+            tracked_state_channels = tracked_state_channels.saturating_add(shard.len());
+            for channel in shard.values() {
+                let snapshot = channel.snapshot(now);
+                in_flight_requests = in_flight_requests.saturating_add(snapshot.in_flight);
+                if snapshot.cooling_down {
                     cooling_down_channels = cooling_down_channels.saturating_add(1);
                 }
-                if channel.half_open_probe {
+                if snapshot.half_open_probe {
                     half_open_channels = half_open_channels.saturating_add(1);
                 }
             }
-            (
-                u64::try_from(
-                    state
-                        .active_channels
-                        .as_ref()
-                        .map_or(state.channels.len(), HashSet::len),
-                )
-                .unwrap_or(u64::MAX),
-                in_flight_requests,
-                cooling_down_channels,
-                half_open_channels,
-            )
-        };
+        }
+        let tracked_channels =
+            u64::try_from(configured_active_channels.unwrap_or(tracked_state_channels))
+                .unwrap_or(u64::MAX);
         let session_affinity_entries = {
             let affinity = self
                 .inner
@@ -352,20 +461,42 @@ impl RoutingRuntime {
             .channels()
             .map(|channel| ChannelIdentity::from_channel(channel))
             .collect::<HashSet<_>>();
-        let mut state = self
-            .inner
-            .state
-            .lock()
-            .expect("routing state mutex poisoned");
-        state.channels.retain(|identity, channel| {
-            active_channels.contains(identity) || channel.in_flight > 0
-        });
-        state.active_channels = Some(active_channels);
+        {
+            let mut active = self
+                .inner
+                .active_channels
+                .write()
+                .expect("routing active-channel lock poisoned");
+            for shard in &self.inner.channel_states {
+                shard
+                    .write()
+                    .expect("routing channel-state shard lock poisoned")
+                    .retain(|identity, channel| {
+                        let is_active = active_channels.contains(identity);
+                        channel.active.store(is_active, Ordering::SeqCst);
+                        is_active || channel.in_flight.load(Ordering::SeqCst) > 0
+                    });
+            }
+            for identity in &active_channels {
+                self.inner.channel_states[channel_state_shard(identity)]
+                    .write()
+                    .expect("routing channel-state shard lock poisoned")
+                    .entry(identity.clone())
+                    .or_insert_with(|| Arc::new(ChannelState::new(true)))
+                    .active
+                    .store(true, Ordering::SeqCst);
+            }
+            *active = Some(active_channels);
+        }
         // Cursor state is an optimization, not routing health. Clearing it makes
         // successful reload work proportional to active channels and bounds it to
         // selections made in the current generation.
-        state.round_robin.clear();
-        drop(state);
+        for shard in &self.inner.round_robin {
+            shard
+                .lock()
+                .expect("routing round-robin mutex poisoned")
+                .clear();
+        }
         reconcile_affinity(&self.inner, snapshot);
     }
     #[must_use]
@@ -376,7 +507,7 @@ impl RoutingRuntime {
         format: ApiFormat,
         model: &str,
     ) -> SelectionResult {
-        self.select_with_affinity_excluding(snapshot, key, format, model, None, &HashSet::new())
+        self.select_with_affinity_excluding(snapshot, key, format, model, None, &[])
     }
 
     #[must_use]
@@ -388,7 +519,7 @@ impl RoutingRuntime {
         model: &str,
         affinity: Option<SessionAffinityMatch>,
     ) -> SelectionResult {
-        self.select_with_affinity_excluding(snapshot, key, format, model, affinity, &HashSet::new())
+        self.select_with_affinity_excluding(snapshot, key, format, model, affinity, &[])
     }
 
     /// Selects a route while excluding channels already attempted by the same
@@ -403,11 +534,14 @@ impl RoutingRuntime {
         format: ApiFormat,
         model: &str,
         affinity: Option<SessionAffinityMatch>,
-        excluded_channel_ids: &HashSet<Uuid>,
+        excluded_channel_slots: &[usize],
     ) -> SelectionResult {
         let Some(rule) = snapshot.model_rule(format, model) else {
             return SelectionResult::UnknownOrInaccessibleModel;
         };
+        if !key.permits_route(rule.route_slot()) {
+            return SelectionResult::UnknownOrInaccessibleModel;
+        }
         let affinity = affinity.map(|affinity| {
             let cache_key = AffinityCacheKey {
                 rule_fingerprint: affinity.rule_fingerprint,
@@ -423,147 +557,144 @@ impl RoutingRuntime {
             }
         });
         let now = self.inner.clock.now();
-        let mut state = self
-            .inner
-            .state
-            .lock()
-            .expect("routing state mutex poisoned");
-        let mut has_authorized_candidate = false;
         for tier in rule.tiers() {
-            let authorized_candidates = tier
-                .channel_ids()
-                .iter()
-                .filter_map(|id| {
-                    let channel = snapshot.channel(*id)?;
-                    if key.permits_channel(channel.group_id(), channel.id()) {
-                        has_authorized_candidate = true;
-                        Some(channel)
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>();
-            if !authorized_candidates.is_empty() {
-                has_authorized_candidate = true;
-            }
-            let candidates = authorized_candidates
-                .iter()
-                .filter(|channel| {
-                    !excluded_channel_ids.contains(&channel.id())
-                        && usable(&mut state, &ChannelIdentity::from_channel(channel), now)
-                })
-                .cloned()
-                .collect::<Vec<_>>();
-            if candidates.is_empty() {
-                continue;
-            }
-            let affinity_hit_index = affinity
-                .as_ref()
-                .and_then(|affinity| affinity.preferred_channel_id)
-                .and_then(|preferred| {
-                    candidates
-                        .iter()
-                        .position(|channel| channel.id() == preferred)
-                });
-            let selected_index = affinity_hit_index.unwrap_or_else(|| {
-                match tier.strategy() {
-                    SelectionStrategy::WeightedRandom => {
-                        weighted_ticket(&candidates, &*self.inner.entropy)
-                    }
-                    SelectionStrategy::WeightedRoundRobin => {
-                        let key = RoundRobinKey {
-                            rule_id: rule.id(),
-                            priority: tier.priority(),
-                            authorized_candidates: Arc::from(
-                                authorized_candidates
-                                    .iter()
-                                    .map(|channel| channel.id())
-                                    .collect::<Vec<_>>(),
-                            ),
-                        };
-                        let candidates_are_active =
-                            state
-                                .active_channels
+            let mut allow_affinity = true;
+            loop {
+                let (channel, cache_hit) = {
+                    let affinity_channel = allow_affinity
+                        .then(|| {
+                            affinity
                                 .as_ref()
-                                .is_none_or(|active_channels| {
-                                    authorized_candidates.iter().all(|channel| {
-                                        active_channels
-                                            .contains(&ChannelIdentity::from_channel(channel))
+                                .and_then(|affinity| affinity.preferred_channel_id)
+                                .and_then(|preferred| {
+                                    tier.candidates().iter().find_map(|candidate| {
+                                        let slot = candidate.channel_slot();
+                                        let channel = candidate.channel();
+                                        (channel.id() == preferred
+                                            && key.permits_route_candidate(slot)
+                                            && !excluded_channel_slots.contains(&slot)
+                                            && usable(
+                                                &self.inner,
+                                                &ChannelIdentity::from_channel(channel),
+                                                now,
+                                            ))
+                                        .then(|| (slot, Arc::clone(channel)))
                                     })
+                                })
+                        })
+                        .flatten();
+                    let cache_hit = affinity_channel.is_some();
+                    let channel = affinity_channel.or_else(|| match tier.strategy() {
+                        SelectionStrategy::WeightedRandom => weighted_ticket(
+                            tier,
+                            key,
+                            excluded_channel_slots,
+                            &self.inner,
+                            now,
+                            &*self.inner.entropy,
+                        ),
+                        SelectionStrategy::WeightedRoundRobin => {
+                            let round_robin_key = RoundRobinKey {
+                                rule_id: rule.id(),
+                                priority: tier.priority(),
+                                tier_fingerprint: tier.fingerprint(),
+                                routing_scope_fingerprint: key.routing_scope_fingerprint(),
+                            };
+                            let candidates_are_active = tier
+                                .candidates()
+                                .iter()
+                                .filter(|candidate| {
+                                    key.permits_route_candidate(candidate.channel_slot())
+                                })
+                                .all(|candidate| {
+                                    channel_is_active(
+                                        &self.inner,
+                                        &ChannelIdentity::from_channel(candidate.channel()),
+                                    )
                                 });
-                        if candidates_are_active {
-                            smooth_round_robin(
-                                state.round_robin.entry(key).or_default(),
-                                &candidates,
-                            )
-                        } else {
-                            // A request may still hold an old snapshot after reload.
-                            // It can route and hold a lease, but cannot grow state for
-                            // a retired connectivity identity.
-                            smooth_round_robin(&mut HashMap::new(), &candidates)
+                            if candidates_are_active {
+                                let shard = round_robin_shard(&round_robin_key);
+                                let mut shard = self.inner.round_robin[shard]
+                                    .lock()
+                                    .expect("routing round-robin mutex poisoned");
+                                smooth_round_robin(
+                                    shard.entry(round_robin_key).or_default(),
+                                    tier,
+                                    key,
+                                    excluded_channel_slots,
+                                    &self.inner,
+                                    now,
+                                )
+                            } else {
+                                // A request may still hold an old snapshot after reload.
+                                // It can route and hold a lease, but cannot grow state for
+                                // a retired connectivity identity.
+                                smooth_round_robin(
+                                    &mut HashMap::new(),
+                                    tier,
+                                    key,
+                                    excluded_channel_slots,
+                                    &self.inner,
+                                    now,
+                                )
+                            }
                         }
-                    }
-                }
-            });
-            let channel = Arc::clone(&candidates[selected_index]);
-            let identity = ChannelIdentity::from_channel(&channel);
-            let entry = state.channels.entry(identity.clone()).or_default();
-            let half_open_probe = entry.cooldown_until.is_some_and(|until| until <= now);
-            if half_open_probe {
-                entry.half_open_probe = true;
-            }
-            entry.in_flight += 1;
-            let cache_hit = affinity_hit_index.is_some();
-            let affinity_binding = affinity.as_ref().map(|affinity| {
-                Box::new(AffinityBinding {
+                    });
+                    (channel, cache_hit)
+                };
+                let Some((channel_slot, channel)) = channel else {
+                    break;
+                };
+                let identity = ChannelIdentity::from_channel(&channel);
+                let Some((channel_state, half_open_claim)) =
+                    try_acquire_channel(&self.inner, &identity, now)
+                else {
+                    // Another request won the half-open probe between candidate
+                    // inspection and lease acquisition. Re-evaluate this tier.
+                    allow_affinity = false;
+                    continue;
+                };
+                let affinity_binding = affinity.as_ref().map(|affinity| AffinityBinding {
                     key: affinity.key,
                     ttl: affinity.ttl,
                     channel_id: channel.id(),
                     cache_hit,
-                })
-            });
-            let affinity_selection = affinity.as_ref().map(|affinity| SessionAffinitySelection {
-                rule_name: Arc::clone(&affinity.rule_name),
-                cache_hit,
-            });
-            let stale_affinity = affinity
-                .as_ref()
-                .and_then(|affinity| affinity.preferred_channel_id)
-                .filter(|_| !cache_hit);
-            let selected = SelectedRoute {
-                rule,
-                channel,
-                session_affinity: affinity_selection,
-                lease: ChannelLease {
-                    inner: Arc::clone(&self.inner),
-                    identity,
-                    half_open_probe,
-                    affinity: affinity_binding,
-                    released: false,
-                },
-            };
-            drop(state);
-            if let (Some(affinity), Some(channel_id)) = (&affinity, stale_affinity) {
-                affinity_remove_if_channel(&self.inner, affinity.key, channel_id);
+                });
+                let affinity_selection =
+                    affinity.as_ref().map(|affinity| SessionAffinitySelection {
+                        rule_name: Arc::clone(&affinity.rule_name),
+                        cache_hit,
+                    });
+                let stale_affinity = affinity
+                    .as_ref()
+                    .and_then(|affinity| affinity.preferred_channel_id)
+                    .filter(|_| !cache_hit);
+                let selected = SelectedRoute {
+                    rule,
+                    channel,
+                    channel_slot,
+                    session_affinity: affinity_selection,
+                    lease: ChannelLease {
+                        inner: Arc::clone(&self.inner),
+                        identity,
+                        state: channel_state,
+                        half_open_claim,
+                        affinity: affinity_binding,
+                        released: false,
+                    },
+                };
+                if let (Some(affinity), Some(channel_id)) = (&affinity, stale_affinity) {
+                    affinity_remove_if_channel(&self.inner, affinity.key, channel_id);
+                }
+                return SelectionResult::Selected(selected);
             }
-            return SelectionResult::Selected(selected);
         }
-        drop(state);
         if let Some(affinity) = &affinity {
             if let Some(channel_id) = affinity.preferred_channel_id {
                 affinity_remove_if_channel(&self.inner, affinity.key, channel_id);
             }
         }
-        if has_authorized_candidate
-            || rule
-                .unavailable_candidates()
-                .iter()
-                .any(|candidate| key.permits_channel(candidate.group_id(), candidate.channel_id()))
-        {
-            SelectionResult::NoHealthyChannel { rule }
-        } else {
-            SelectionResult::UnknownOrInaccessibleModel
-        }
+        SelectionResult::NoHealthyChannel { rule }
     }
 }
 
@@ -697,71 +828,172 @@ fn rebuild_affinity_recency(state: &mut AffinityState) {
     state.recency = entries.into();
 }
 
-fn usable(state: &mut RuntimeState, identity: &ChannelIdentity, now: Duration) -> bool {
-    match state.channels.get(identity) {
-        None => true,
-        Some(channel) => match channel.cooldown_until {
-            None => true,
-            Some(until) if until > now => false,
-            Some(_) => !channel.half_open_probe,
-        },
-    }
+fn try_acquire_channel(
+    inner: &RuntimeInner,
+    identity: &ChannelIdentity,
+    now: Duration,
+) -> Option<(Arc<ChannelState>, u64)> {
+    let channel =
+        channel_state(inner, identity).unwrap_or_else(|| channel_state_or_insert(inner, identity));
+    let half_open_claim = channel.try_acquire(now)?;
+    Some((channel, half_open_claim))
 }
 
-fn weighted_ticket(channels: &[Arc<CompiledChannel>], entropy: &dyn Entropy) -> usize {
-    let total = channels
-        .iter()
-        .map(|channel| u64::try_from(channel.weight()).expect("compiled positive weight"))
-        .sum::<u64>();
-    let zone = u64::MAX - (u64::MAX % total);
-    let ticket = loop {
-        let value = entropy.next_u64();
-        if value < zone {
-            break value % total;
-        }
-    };
-    let mut remaining = ticket;
-    for (index, channel) in channels.iter().enumerate() {
-        let weight = u64::try_from(channel.weight()).expect("compiled positive weight");
-        if remaining < weight {
-            return index;
-        }
-        remaining -= weight;
+fn channel_state(inner: &RuntimeInner, identity: &ChannelIdentity) -> Option<Arc<ChannelState>> {
+    inner.channel_states[channel_state_shard(identity)]
+        .read()
+        .expect("routing channel-state shard lock poisoned")
+        .get(identity)
+        .cloned()
+}
+
+fn channel_state_or_insert(inner: &RuntimeInner, identity: &ChannelIdentity) -> Arc<ChannelState> {
+    if let Some(channel) = channel_state(inner, identity) {
+        return channel;
     }
-    unreachable!("ticket is bounded by compiled total weight")
+    let active_channels = inner
+        .active_channels
+        .read()
+        .expect("routing active-channel lock poisoned");
+    let active = active_channels
+        .as_ref()
+        .is_none_or(|channels| channels.contains(identity));
+    Arc::clone(
+        inner.channel_states[channel_state_shard(identity)]
+            .write()
+            .expect("routing channel-state shard lock poisoned")
+            .entry(identity.clone())
+            .or_insert_with(|| Arc::new(ChannelState::new(active))),
+    )
+}
+
+fn channel_state_shard(identity: &ChannelIdentity) -> usize {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    identity.hash(&mut hasher);
+    (hasher.finish() % CHANNEL_STATE_SHARDS as u64) as usize
+}
+
+fn round_robin_shard(key: &RoundRobinKey) -> usize {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    key.hash(&mut hasher);
+    (hasher.finish() % ROUND_ROBIN_SHARDS as u64) as usize
+}
+
+fn channel_is_active(inner: &RuntimeInner, identity: &ChannelIdentity) -> bool {
+    let shard = inner.channel_states[channel_state_shard(identity)]
+        .read()
+        .expect("routing channel-state shard lock poisoned");
+    if let Some(channel) = shard.get(identity) {
+        return channel.active.load(Ordering::SeqCst);
+    }
+    drop(shard);
+    inner
+        .active_channels
+        .read()
+        .expect("routing active-channel lock poisoned")
+        .as_ref()
+        .is_none_or(|channels| channels.contains(identity))
+}
+
+fn usable(inner: &RuntimeInner, identity: &ChannelIdentity, now: Duration) -> bool {
+    inner.channel_states[channel_state_shard(identity)]
+        .read()
+        .expect("routing channel-state shard lock poisoned")
+        .get(identity)
+        .is_none_or(|channel| channel.is_usable(now))
+}
+
+fn weighted_ticket(
+    tier: &CompiledRouteTier,
+    key: &CompiledApiKey,
+    excluded_channel_slots: &[usize],
+    inner: &RuntimeInner,
+    now: Duration,
+    entropy: &dyn Entropy,
+) -> Option<(usize, Arc<CompiledChannel>)> {
+    let eligible = |slot: usize, channel: &CompiledChannel| {
+        key.permits_route_candidate(slot)
+            && !excluded_channel_slots.contains(&slot)
+            && usable(inner, &ChannelIdentity::from_channel(channel), now)
+    };
+    loop {
+        let total = tier
+            .candidates()
+            .iter()
+            .filter(|candidate| eligible(candidate.channel_slot(), candidate.channel()))
+            .map(|candidate| u64::from(candidate.weight()))
+            .sum::<u64>();
+        if total == 0 {
+            return None;
+        }
+        let zone = u64::MAX - (u64::MAX % total);
+        let ticket = loop {
+            let value = entropy.next_u64();
+            if value < zone {
+                break value % total;
+            }
+        };
+        let mut remaining = ticket;
+        let mut observed_total = 0_u64;
+        let mut selected = None;
+        for candidate in tier.candidates() {
+            let slot = candidate.channel_slot();
+            let channel = candidate.channel();
+            if !eligible(slot, channel) {
+                continue;
+            }
+            let weight = u64::from(candidate.weight());
+            observed_total += weight;
+            if selected.is_none() && remaining < weight {
+                selected = Some((slot, Arc::clone(channel)));
+            } else if selected.is_none() {
+                remaining -= weight;
+            }
+        }
+        if observed_total == total {
+            return selected;
+        }
+        // Channel health may change between the two allocation-free scans.
+        // Retry with a fresh total so the ticket always corresponds to the
+        // exact candidate set observed by the selection pass.
+    }
 }
 
 fn smooth_round_robin(
     current: &mut HashMap<Uuid, i64>,
-    channels: &[Arc<CompiledChannel>],
-) -> usize {
-    let total = channels
-        .iter()
-        .map(|channel| i64::from(channel.weight()))
-        .sum::<i64>();
-    let allowed = channels
-        .iter()
-        .map(|channel| channel.id())
-        .collect::<HashSet<_>>();
-    current.retain(|id, _| allowed.contains(id));
-    let mut winner = 0;
-    for (index, channel) in channels.iter().enumerate() {
-        let value = current.entry(channel.id()).or_insert(0);
-        *value += i64::from(channel.weight());
-        if *value
-            > *current
-                .get(&channels[winner].id())
-                .expect("current weight exists")
+    tier: &CompiledRouteTier,
+    key: &CompiledApiKey,
+    excluded_channel_slots: &[usize],
+    inner: &RuntimeInner,
+    now: Duration,
+) -> Option<(usize, Arc<CompiledChannel>)> {
+    let mut total = 0_i64;
+    let mut winner = None::<(usize, Arc<CompiledChannel>, i64)>;
+    for candidate in tier.candidates() {
+        let slot = candidate.channel_slot();
+        let channel = candidate.channel();
+        if !key.permits_route_candidate(slot)
+            || excluded_channel_slots.contains(&slot)
+            || !usable(inner, &ChannelIdentity::from_channel(channel), now)
         {
-            winner = index;
+            continue;
+        }
+        total += i64::from(candidate.weight());
+        let value = current.entry(channel.id()).or_insert(0);
+        *value += i64::from(candidate.weight());
+        if winner
+            .as_ref()
+            .is_none_or(|(_, _, winner_value)| *value > *winner_value)
+        {
+            winner = Some((slot, Arc::clone(channel), *value));
         }
     }
-    *current
-        .get_mut(&channels[winner].id())
-        .expect("winner exists") -= total;
-    winner
+    let (slot, winner, _) = winner?;
+    *current.get_mut(&winner.id()).expect("winner exists") -= total;
+    Some((slot, winner))
 }
 
+#[allow(clippy::large_enum_variant)] // keep successful selection free of request-level boxing
 pub enum SelectionResult {
     UnknownOrInaccessibleModel,
     NoHealthyChannel { rule: Arc<CompiledModelRule> },
@@ -780,6 +1012,7 @@ impl SelectionResult {
 pub struct SelectedRoute {
     pub rule: Arc<CompiledModelRule>,
     pub channel: Arc<CompiledChannel>,
+    pub channel_slot: usize,
     pub session_affinity: Option<SessionAffinitySelection>,
     pub lease: ChannelLease,
 }
@@ -789,19 +1022,20 @@ pub struct SelectedRoute {
 pub struct ChannelLease {
     inner: Arc<RuntimeInner>,
     identity: ChannelIdentity,
-    half_open_probe: bool,
-    affinity: Option<Box<AffinityBinding>>,
+    state: Arc<ChannelState>,
+    half_open_claim: u64,
+    affinity: Option<AffinityBinding>,
     released: bool,
 }
 impl ChannelLease {
     pub fn request_succeeded(&mut self) {
-        if let Some(affinity) = self.affinity.as_deref() {
+        if let Some(affinity) = self.affinity.as_ref() {
             affinity_store(&self.inner, affinity);
         }
     }
 
     pub fn request_failed(&mut self) {
-        if let Some(affinity) = self.affinity.as_deref() {
+        if let Some(affinity) = self.affinity.as_ref() {
             if affinity.cache_hit {
                 affinity_remove_if_channel(&self.inner, affinity.key, affinity.channel_id);
             }
@@ -809,15 +1043,7 @@ impl ChannelLease {
     }
 
     pub fn response_headers_received(&mut self) {
-        let mut state = self
-            .inner
-            .state
-            .lock()
-            .expect("routing state mutex poisoned");
-        let entry = state.channels.entry(self.identity.clone()).or_default();
-        entry.consecutive_connection_failures = 0;
-        entry.cooldown_until = None;
-        entry.half_open_probe = false;
+        self.state.response_headers_received();
     }
     pub fn connection_failed(&mut self) {
         let now = self.inner.clock.now();
@@ -826,24 +1052,14 @@ impl ChannelLease {
             .policy
             .lock()
             .expect("routing policy mutex poisoned");
-        let mut state = self
-            .inner
-            .state
-            .lock()
-            .expect("routing state mutex poisoned");
-        let entry = state.channels.entry(self.identity.clone()).or_default();
-        entry.consecutive_connection_failures =
-            entry.consecutive_connection_failures.saturating_add(1);
-        if entry.consecutive_connection_failures >= policy.connection_failure_threshold {
-            entry.cooldown_until = Some(now + policy.cooldown);
-            entry.half_open_probe = false;
-        }
+        self.state
+            .connection_failed(policy.connection_failure_threshold, now + policy.cooldown);
     }
     /// A half-open request reached neither response headers nor a known-success
     /// state. Reopen the cooldown without treating ordinary header timeouts as
     /// connection failures.
     pub fn probe_failed(&mut self) {
-        if !self.half_open_probe {
+        if self.half_open_claim == 0 {
             return;
         }
         let now = self.inner.clock.now();
@@ -852,16 +1068,8 @@ impl ChannelLease {
             .policy
             .lock()
             .expect("routing policy mutex poisoned");
-        let mut state = self
-            .inner
-            .state
-            .lock()
-            .expect("routing state mutex poisoned");
-        let entry = state.channels.entry(self.identity.clone()).or_default();
-        if entry.half_open_probe {
-            entry.cooldown_until = Some(now + policy.cooldown);
-            entry.half_open_probe = false;
-        }
+        self.state
+            .probe_failed(self.half_open_claim, now + policy.cooldown);
     }
 }
 impl Drop for ChannelLease {
@@ -869,27 +1077,28 @@ impl Drop for ChannelLease {
         if self.released {
             return;
         }
-        let mut state = self
-            .inner
-            .state
-            .lock()
-            .expect("routing state mutex poisoned");
-        let remove_retired = if let Some(entry) = state.channels.get_mut(&self.identity) {
-            entry.in_flight = entry.in_flight.saturating_sub(1);
-            // Cancellation is neutral. Explicit failed-probe transitions reopen cooldown.
-            if self.half_open_probe && entry.half_open_probe {
-                entry.half_open_probe = false;
+        let remaining = self.state.release();
+        // Cancellation is neutral. Explicit failed-probe transitions reopen cooldown.
+        if self.half_open_claim != 0 {
+            let _ = self.state.cooldown_state.compare_exchange(
+                self.half_open_claim,
+                self.half_open_claim & COOLDOWN_MILLIS_MASK,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            );
+        }
+        if remaining == 0 && !self.state.active.load(Ordering::SeqCst) {
+            let mut shard = self.inner.channel_states[channel_state_shard(&self.identity)]
+                .write()
+                .expect("routing channel-state shard lock poisoned");
+            let remove = shard.get(&self.identity).is_some_and(|current| {
+                Arc::ptr_eq(current, &self.state)
+                    && current.in_flight.load(Ordering::SeqCst) == 0
+                    && !current.active.load(Ordering::SeqCst)
+            });
+            if remove {
+                shard.remove(&self.identity);
             }
-            entry.in_flight == 0
-                && state
-                    .active_channels
-                    .as_ref()
-                    .is_some_and(|channels| !channels.contains(&self.identity))
-        } else {
-            false
-        };
-        if remove_retired {
-            state.channels.remove(&self.identity);
         }
         self.released = true;
     }
@@ -912,8 +1121,8 @@ mod tests {
     use std::{
         collections::VecDeque,
         sync::{
-            Arc, Mutex,
-            atomic::{AtomicU64, Ordering},
+            Arc, Barrier, Mutex,
+            atomic::{AtomicU64, AtomicUsize, Ordering},
         },
         time::Duration,
     };
@@ -984,8 +1193,8 @@ mod tests {
         let secret = "routing-test-key".to_owned();
         let records = ControlPlaneRecords {
             api_keys: vec![ApiKeyRecord {
-                id: Uuid::new_v4(),
-                user_id: Uuid::new_v4(),
+                id: Uuid::from_u128(1_000),
+                user_id: Uuid::from_u128(1_001),
                 user_status: "active".into(),
                 secret_value: secret.clone(),
                 status: "active".into(),
@@ -1042,10 +1251,10 @@ mod tests {
                 })
                 .collect(),
             model_rules: vec![ModelRuleRecord {
-                id: Uuid::new_v4(),
+                id: Uuid::from_u128(1_002),
                 client_model: "model".into(),
                 api_format: "open_ai_chat_completions".into(),
-                upstream_model_id: Uuid::new_v4(),
+                upstream_model_id: Uuid::from_u128(1_003),
                 upstream_model_enabled: true,
                 upstream_model_currency: "USD".into(),
                 price_unit_tokens: 1_000_000,
@@ -1107,6 +1316,15 @@ mod tests {
             SelectionResult::Selected(route) => route,
             _ => panic!("fixture must select a route"),
         }
+    }
+
+    fn round_robin_len(runtime: &RoutingRuntime) -> usize {
+        runtime
+            .inner
+            .round_robin
+            .iter()
+            .map(|shard| shard.lock().unwrap().len())
+            .sum()
     }
 
     fn snapshot_with_outbound_policy(
@@ -1533,6 +1751,52 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_cooldown_expiry_admits_exactly_one_half_open_probe() {
+        let (snapshot, secret) = snapshot(&[(0, "weighted_random")], &[1]);
+        let snapshot = Arc::new(snapshot);
+        let clock = Arc::new(TestClock(AtomicU64::new(0)));
+        let runtime = RoutingRuntime::with_seams(
+            PassiveHealthPolicy {
+                connection_failure_threshold: 1,
+                cooldown: Duration::from_secs(10),
+            },
+            clock.clone(),
+            Arc::new(Tickets(Mutex::new(VecDeque::new()))),
+        );
+        let mut failed = select(&runtime, &snapshot, &secret);
+        failed.lease.connection_failed();
+        drop(failed);
+        clock.advance(Duration::from_secs(10));
+
+        const WORKERS: usize = 16;
+        let start = Arc::new(Barrier::new(WORKERS));
+        let finish = Arc::new(Barrier::new(WORKERS));
+        let selected = Arc::new(AtomicUsize::new(0));
+        std::thread::scope(|scope| {
+            for _ in 0..WORKERS {
+                let runtime = runtime.clone();
+                let snapshot = Arc::clone(&snapshot);
+                let start = Arc::clone(&start);
+                let finish = Arc::clone(&finish);
+                let selected = Arc::clone(&selected);
+                let secret = secret.clone();
+                scope.spawn(move || {
+                    let key = snapshot.authenticate(&secret).unwrap();
+                    start.wait();
+                    let route =
+                        runtime.select(&snapshot, &key, ApiFormat::OpenAiChatCompletions, "model");
+                    if matches!(&route, SelectionResult::Selected(_)) {
+                        selected.fetch_add(1, Ordering::SeqCst);
+                    }
+                    finish.wait();
+                    drop(route);
+                });
+            }
+        });
+        assert_eq!(selected.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
     fn reconciliation_preserves_connectivity_and_discards_reconfigured_idle_state() {
         let (initial, secret) = snapshot_with_base(
             &[(0, "weighted_random")],
@@ -1707,8 +1971,7 @@ mod tests {
         let second = select(&runtime, &snapshot, &secret);
         drop(second);
 
-        let state = runtime.inner.state.lock().unwrap();
-        assert_eq!(state.round_robin.len(), 1);
+        assert_eq!(round_robin_len(&runtime), 1);
     }
 
     #[test]
@@ -1730,10 +1993,10 @@ mod tests {
         );
 
         drop(select(&runtime, &old, &secret));
-        assert_eq!(runtime.inner.state.lock().unwrap().round_robin.len(), 1);
+        assert_eq!(round_robin_len(&runtime), 1);
 
         runtime.reconcile(&next);
-        assert!(runtime.inner.state.lock().unwrap().round_robin.is_empty());
+        assert_eq!(round_robin_len(&runtime), 0);
         let old_identity = super::ChannelIdentity::from_channel(
             &old.channel(
                 old.model_rule(ApiFormat::OpenAiChatCompletions, "model")
@@ -1757,10 +2020,9 @@ mod tests {
         assert!(
             !runtime
                 .inner
-                .state
-                .lock()
-                .unwrap()
                 .active_channels
+                .read()
+                .unwrap()
                 .as_ref()
                 .unwrap()
                 .contains(&old_identity)
@@ -1769,11 +2031,44 @@ mod tests {
         // An in-flight request can select from its old snapshot, but that stale
         // connectivity identity must not recreate a retained cursor.
         let stale = select(&runtime, &old, &secret);
-        assert!(runtime.inner.state.lock().unwrap().round_robin.is_empty());
+        assert_eq!(round_robin_len(&runtime), 0);
         drop(stale);
 
         drop(select(&runtime, &next, &secret));
-        assert_eq!(runtime.inner.state.lock().unwrap().round_robin.len(), 1);
+        assert_eq!(round_robin_len(&runtime), 1);
+    }
+
+    #[test]
+    fn stale_weighted_round_robin_tiers_cannot_contaminate_new_weights() {
+        let (old, secret) = snapshot(
+            &[(0, "weighted_round_robin"), (0, "weighted_round_robin")],
+            &[1, 1],
+        );
+        let (next, _) = snapshot(
+            &[(0, "weighted_round_robin"), (0, "weighted_round_robin")],
+            &[3, 1],
+        );
+        let runtime = RoutingRuntime::with_seams(
+            PassiveHealthPolicy::default(),
+            Arc::new(TestClock(AtomicU64::new(0))),
+            Arc::new(Tickets(Mutex::new(VecDeque::new()))),
+        );
+        runtime.reconcile(&old);
+        drop(select(&runtime, &old, &secret));
+        runtime.reconcile(&next);
+
+        // An in-flight request may still use the old tier after publication.
+        // Its cursor must be keyed by the old candidate weights.
+        drop(select(&runtime, &old, &secret));
+
+        let expected = next
+            .model_rule(ApiFormat::OpenAiChatCompletions, "model")
+            .unwrap()
+            .tiers()[0]
+            .channel_ids()[0];
+        assert_eq!(select(&runtime, &next, &secret).channel.id(), expected);
+        assert_eq!(select(&runtime, &next, &secret).channel.id(), expected);
+        assert_eq!(round_robin_len(&runtime), 2);
     }
 
     #[test]

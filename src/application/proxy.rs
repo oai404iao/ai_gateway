@@ -35,9 +35,9 @@ use crate::{
     domain::{
         ApiFormat, ApiKeyPermission, AutomaticDisableSettings, AutomaticDisableTrigger,
         CompiledAdvancedBilling, CompiledApiKey, CompiledChannel, CompiledModelRule,
-        ModelPriceSnapshot, RequestBilling, RequestLogEvent, RequestLogOutcome, RequestLogSource,
-        RequestPriceSnapshot, RequestUsage, SessionAffinityKeySource, SessionAffinitySettings,
-        UpstreamAuth,
+        MAX_REQUEST_RETRIES, ModelPriceSnapshot, RequestBilling, RequestLogEvent,
+        RequestLogOutcome, RequestLogSource, RequestPriceSnapshot, RequestUsage,
+        SessionAffinityKeySource, SessionAffinitySettings, UpstreamAuth,
     },
     routing::{
         ChannelLease, RoutingRuntime, SelectionResult, SessionAffinityMatch,
@@ -267,11 +267,13 @@ impl ProxyService {
         let crate::routing::SelectedRoute {
             rule,
             channel,
+            channel_slot,
             session_affinity: selected_session_affinity,
             lease,
         } = route;
         let mut current_rule = rule;
         let mut current_channel = channel;
+        let mut current_channel_slot = channel_slot;
         let current_session_affinity = selected_session_affinity;
         let request_multiplier = request_billing_multiplier(&current_rule, &original_body);
         let mut completion = CompletionGuard::new(
@@ -299,10 +301,12 @@ impl ProxyService {
         };
         let max_attempts = max_retries.saturating_add(1);
         let mut attempt = 1_u32;
-        let mut attempted_channel_ids = HashSet::with_capacity(max_attempts as usize);
+        let mut attempted_channel_slots = [usize::MAX; MAX_REQUEST_RETRIES as usize + 1];
+        let mut attempted_channel_count = 0_usize;
 
         loop {
-            attempted_channel_ids.insert(current_channel.id());
+            attempted_channel_slots[attempted_channel_count] = current_channel_slot;
+            attempted_channel_count += 1;
             let transforms = current_channel.upstream_policy().effective_transforms();
             let body =
                 match rewrite_model_alias(original_body.clone(), &parsed.model, &current_rule) {
@@ -402,7 +406,7 @@ impl ProxyService {
                             api_format,
                             &parsed.model,
                             session_affinity.clone(),
-                            &attempted_channel_ids,
+                            &attempted_channel_slots[..attempted_channel_count],
                         )
                     });
                     let Some(SelectionResult::Selected(route)) = retry_route else {
@@ -412,6 +416,7 @@ impl ProxyService {
                     let crate::routing::SelectedRoute {
                         rule,
                         channel,
+                        channel_slot,
                         session_affinity: selected_session_affinity,
                         lease,
                     } = route;
@@ -430,6 +435,7 @@ impl ProxyService {
                     );
                     current_rule = rule;
                     current_channel = channel;
+                    current_channel_slot = channel_slot;
                     attempt = attempt.saturating_add(1);
                     tracing::warn!(
                         event = "proxy_request_retry",
