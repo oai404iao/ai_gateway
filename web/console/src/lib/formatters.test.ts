@@ -2,10 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   formatBoolean,
   formatBytes,
-  formatUsd,
+  formatCompactTokens,
   formatDurationMs,
   formatList,
   formatTokens,
+  formatUsd,
   truncate,
 } from "@/lib/formatters";
 
@@ -28,6 +29,10 @@ describe("formatters", () => {
 
   it("formats tokens and lists", () => {
     expect(formatTokens(1234)).toBe("1,234");
+    expect(formatCompactTokens(999)).toBe("999");
+    expect(formatCompactTokens(1_250)).toBe("1.25K");
+    expect(formatCompactTokens(12_500_000)).toBe("12.5M");
+    expect(formatCompactTokens(2_000_000_000)).toBe("2B");
     expect(formatList(["a", "b"])).toBe("a, b");
     expect(formatList([], "none")).toBe("none");
   });

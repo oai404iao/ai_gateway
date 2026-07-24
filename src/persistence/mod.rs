@@ -1203,6 +1203,10 @@ pub struct CostStatisticsSummary {
     pub request_count: i64,
     pub priced_request_count: i64,
     pub total_tokens: i64,
+    pub input_tokens: i64,
+    pub cached_input_tokens: i64,
+    pub cache_write_tokens: i64,
+    pub output_tokens: i64,
     pub average_rpm: f64,
     pub average_tpm: f64,
     pub cost_amount: rust_decimal::Decimal,
@@ -1232,6 +1236,10 @@ pub struct CostStatisticsModel {
     pub model: String,
     pub request_count: i64,
     pub total_tokens: i64,
+    pub input_tokens: i64,
+    pub cached_input_tokens: i64,
+    pub cache_write_tokens: i64,
+    pub output_tokens: i64,
     pub success_rate: Option<f64>,
     pub cost_amount: rust_decimal::Decimal,
 }
@@ -1837,6 +1845,10 @@ impl RequestLogRepository {
                         sum(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)),
                         0
                     )::bigint AS total_tokens,
+                    COALESCE(sum(input_tokens), 0)::bigint AS input_tokens,
+                    COALESCE(sum(cached_input_tokens), 0)::bigint AS cached_input_tokens,
+                    COALESCE(sum(cache_write_tokens), 0)::bigint AS cache_write_tokens,
+                    COALESCE(sum(output_tokens), 0)::bigint AS output_tokens,
                     COALESCE(sum(cost_amount), 0) AS cost_amount
              FROM request_logs
              WHERE started_at >= $1
@@ -1893,6 +1905,10 @@ impl RequestLogRepository {
                         sum(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)),
                         0
                     )::bigint AS total_tokens,
+                    COALESCE(sum(input_tokens), 0)::bigint AS input_tokens,
+                    COALESCE(sum(cached_input_tokens), 0)::bigint AS cached_input_tokens,
+                    COALESCE(sum(cache_write_tokens), 0)::bigint AS cache_write_tokens,
+                    COALESCE(sum(output_tokens), 0)::bigint AS output_tokens,
                     COALESCE(sum(cost_amount), 0) AS cost_amount
              FROM request_logs
              WHERE started_at >= $1
@@ -1918,6 +1934,10 @@ impl RequestLogRepository {
                 request_count: summary.request_count,
                 priced_request_count: summary.priced_request_count,
                 total_tokens: summary.total_tokens,
+                input_tokens: summary.input_tokens,
+                cached_input_tokens: summary.cached_input_tokens,
+                cache_write_tokens: summary.cache_write_tokens,
+                output_tokens: summary.output_tokens,
                 average_rpm: summary.request_count as f64 / duration_minutes,
                 average_tpm: summary.total_tokens as f64 / duration_minutes,
                 cost_amount: summary.cost_amount,
@@ -2580,6 +2600,10 @@ struct CostSummaryRow {
     request_count: i64,
     priced_request_count: i64,
     total_tokens: i64,
+    input_tokens: i64,
+    cached_input_tokens: i64,
+    cache_write_tokens: i64,
+    output_tokens: i64,
     cost_amount: rust_decimal::Decimal,
 }
 
@@ -2601,6 +2625,10 @@ struct CostModelMetricRow {
     success_rate_request_count: i64,
     succeeded_count: i64,
     total_tokens: i64,
+    input_tokens: i64,
+    cached_input_tokens: i64,
+    cache_write_tokens: i64,
+    output_tokens: i64,
     cost_amount: rust_decimal::Decimal,
 }
 
@@ -2625,6 +2653,10 @@ struct CostModelBuilder {
     success_rate_request_count: i64,
     succeeded_count: i64,
     total_tokens: i64,
+    input_tokens: i64,
+    cached_input_tokens: i64,
+    cache_write_tokens: i64,
+    output_tokens: i64,
     cost_amount: rust_decimal::Decimal,
 }
 
@@ -2697,6 +2729,14 @@ fn fold_cost_models(rows: Vec<CostModelMetricRow>) -> Vec<CostStatisticsModel> {
             .saturating_add(row.success_rate_request_count);
         model.succeeded_count = model.succeeded_count.saturating_add(row.succeeded_count);
         model.total_tokens = model.total_tokens.saturating_add(row.total_tokens);
+        model.input_tokens = model.input_tokens.saturating_add(row.input_tokens);
+        model.cached_input_tokens = model
+            .cached_input_tokens
+            .saturating_add(row.cached_input_tokens);
+        model.cache_write_tokens = model
+            .cache_write_tokens
+            .saturating_add(row.cache_write_tokens);
+        model.output_tokens = model.output_tokens.saturating_add(row.output_tokens);
         model.cost_amount += row.cost_amount;
     }
 
@@ -2707,6 +2747,10 @@ fn fold_cost_models(rows: Vec<CostModelMetricRow>) -> Vec<CostStatisticsModel> {
             model,
             request_count: metric.request_count,
             total_tokens: metric.total_tokens,
+            input_tokens: metric.input_tokens,
+            cached_input_tokens: metric.cached_input_tokens,
+            cache_write_tokens: metric.cache_write_tokens,
+            output_tokens: metric.output_tokens,
             success_rate: success_rate(metric.success_rate_request_count, metric.succeeded_count),
             cost_amount: metric.cost_amount,
         })

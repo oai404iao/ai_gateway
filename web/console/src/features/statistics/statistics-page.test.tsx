@@ -42,6 +42,21 @@ describe("StatisticsPage", () => {
     expect(await screen.findByText("Total cost")).toBeInTheDocument();
     expect(screen.getAllByText("1,912.06 USD").length).toBeGreaterThan(0);
     expect(screen.getByText("Model cost breakdown")).toBeInTheDocument();
+    expect(screen.getByText(/Cache rate: 40%/)).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Input tokens" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("columnheader", { name: "Cache hit tokens" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Cache rate" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("columnheader", { name: "Cache write tokens" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Output tokens" })).toBeInTheDocument();
+    expect(screen.getAllByText("210M").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("84M").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("12M").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("53M").length).toBeGreaterThan(0);
+    expect(screen.getByText("40%")).toBeInTheDocument();
 
     await user.click(screen.getByRole("tab", { name: "System load" }));
 

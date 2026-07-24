@@ -1224,10 +1224,11 @@ paths:
       description: |
         Regular users can only aggregate their own requests. Administrators
         can aggregate all users or filter by `user_id` and `api_key_id`.
-        Aggregates request counts, token totals, RPM/TPM, and cost by UTC hour
-        or day. All monetary amounts are settled in USD, and the response
-        includes continuous zero-valued buckets across the selected range.
-        Client-cancelled requests do not participate in model success rates.
+        Aggregates request counts, token totals and usage categories, RPM/TPM,
+        and cost by UTC hour or day. All monetary amounts are settled in USD,
+        and the response includes continuous zero-valued buckets across the
+        selected range. Client-cancelled requests do not participate in model
+        success rates.
       security: [{ bearerAuth: [] }]
       parameters:
         - $ref: "#/components/parameters/StatisticsStartedAfter"
@@ -2357,12 +2358,23 @@ components:
     CostStatisticsSummary:
       type: object
       required:
-        [request_count, priced_request_count, total_tokens, average_rpm,
+        [request_count, priced_request_count, total_tokens, input_tokens,
+         cached_input_tokens, cache_write_tokens, output_tokens, average_rpm,
          average_tpm, cost_amount]
       properties:
         request_count: { type: integer }
         priced_request_count: { type: integer }
         total_tokens: { type: integer }
+        input_tokens:
+          type: integer
+          description: Total input tokens, including cached and cache-write input.
+        cached_input_tokens:
+          type: integer
+          description: Input tokens served from an upstream prompt cache.
+        cache_write_tokens:
+          type: integer
+          description: Input tokens reported as written to an upstream prompt cache.
+        output_tokens: { type: integer }
         average_rpm: { type: number, format: double, minimum: 0 }
         average_tpm: { type: number, format: double, minimum: 0 }
         cost_amount:
@@ -2398,12 +2410,24 @@ components:
     CostStatisticsModel:
       type: object
       required:
-        [api_format, model, request_count, total_tokens, success_rate, cost_amount]
+        [api_format, model, request_count, total_tokens, input_tokens,
+         cached_input_tokens, cache_write_tokens, output_tokens, success_rate,
+         cost_amount]
       properties:
         api_format: { $ref: "#/components/schemas/ApiFormat" }
         model: { type: string }
         request_count: { type: integer }
         total_tokens: { type: integer }
+        input_tokens:
+          type: integer
+          description: Model input tokens, including cached and cache-write input.
+        cached_input_tokens:
+          type: integer
+          description: Model input tokens served from an upstream prompt cache.
+        cache_write_tokens:
+          type: integer
+          description: Model input tokens reported as written to an upstream prompt cache.
+        output_tokens: { type: integer }
         success_rate:
           type: number
           format: double
