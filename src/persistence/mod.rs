@@ -74,6 +74,9 @@ pub struct SystemSettingsRecord {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SystemSettingsInput {
+    /// User-facing HTTP(S) base URLs for the OpenAI-compatible data plane.
+    #[serde(default)]
+    pub api_hosts: Vec<String>,
     pub upstream: SystemUpstreamSettingsInput,
     #[serde(default)]
     pub request_retry: SystemRequestRetrySettingsInput,
@@ -221,6 +224,11 @@ pub struct SystemSettingsView {
     #[serde(flatten)]
     pub settings: SystemSettingsInput,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Serialize)]
+pub struct ApiHostsView {
+    pub api_hosts: Vec<String>,
 }
 
 #[derive(FromRow)]
@@ -5144,13 +5152,15 @@ fn system_settings_view(
 }
 
 fn validate_system_settings_input(input: &SystemSettingsInput) -> Result<(), RepositoryError> {
+    let api_hosts = &input.api_hosts;
     let upstream = &input.upstream;
     let request_retry = &input.request_retry;
     let passive_health = &input.passive_health;
     let automatic_disable = &input.automatic_disable;
     let scheduled_testing = &input.scheduled_testing;
     let session_affinity = &input.session_affinity;
-    if upstream.connect_timeout_seconds == 0
+    if !valid_api_hosts(api_hosts)
+        || upstream.connect_timeout_seconds == 0
         || upstream.response_header_timeout_seconds <= upstream.connect_timeout_seconds
         || upstream.stream_idle_timeout_seconds == 0
         || request_retry.max_retries == 0
@@ -5174,6 +5184,31 @@ fn validate_system_settings_input(input: &SystemSettingsInput) -> Result<(), Rep
         return Err(RepositoryError::Validation);
     }
     Ok(())
+}
+
+pub fn valid_api_hosts(api_hosts: &[String]) -> bool {
+    if api_hosts.len() > 32 {
+        return false;
+    }
+    let mut unique_hosts = HashSet::new();
+    api_hosts.iter().all(|api_host| {
+        if api_host.trim() != api_host || api_host.is_empty() || api_host.chars().count() > 2_048 {
+            return false;
+        }
+        let Ok(url) = reqwest::Url::parse(api_host) else {
+            return false;
+        };
+        if !matches!(url.scheme(), "http" | "https")
+            || url.host_str().is_none()
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            return false;
+        }
+        unique_hosts.insert(url.to_string())
+    })
 }
 
 fn valid_session_affinity_input(input: &SystemSessionAffinitySettingsInput) -> bool {

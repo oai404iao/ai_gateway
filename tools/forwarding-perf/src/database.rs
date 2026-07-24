@@ -185,6 +185,7 @@ pub struct PersistedLogStats {
 
 fn system_settings() -> SystemSettingsInput {
     SystemSettingsInput {
+        api_hosts: Vec::new(),
         upstream: SystemUpstreamSettingsInput {
             connect_timeout_seconds: 5,
             response_header_timeout_seconds: 30,

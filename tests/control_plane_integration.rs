@@ -71,6 +71,7 @@ fn default_admin_url() -> String {
 
 fn system_settings() -> SystemSettingsInput {
     SystemSettingsInput {
+        api_hosts: Vec::new(),
         upstream: SystemUpstreamSettingsInput {
             connect_timeout_seconds: 1,
             response_header_timeout_seconds: 2,

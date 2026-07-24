@@ -37,6 +37,7 @@ use crate::{
         FORWARDING_SETTINGS_KEY, ModelRuleRecord, ProxyRecord, RuntimeConfigRecords,
         SystemSessionAffinityKeySourceInput, SystemSessionAffinityRuleInput,
         SystemSessionAffinitySettingsInput, SystemSettingsInput, SystemSettingsRecord,
+        valid_api_hosts,
     },
     transforms::{TransformCompileError, TransformPlan, compile_document, declared_api_format},
 };
@@ -777,7 +778,8 @@ pub fn compile_system_settings_input(
     let automatic_disable = &input.automatic_disable;
     let scheduled_testing = &input.scheduled_testing;
     let session_affinity = compile_session_affinity_settings(&input.session_affinity)?;
-    if upstream.connect_timeout_seconds == 0
+    if !valid_api_hosts(&input.api_hosts)
+        || upstream.connect_timeout_seconds == 0
         || upstream.response_header_timeout_seconds <= upstream.connect_timeout_seconds
         || upstream.stream_idle_timeout_seconds == 0
         || request_retry.max_retries == 0
@@ -2296,6 +2298,7 @@ mod tests {
             system_settings: SystemSettingsRecord {
                 setting_key: FORWARDING_SETTINGS_KEY.into(),
                 value: serde_json::to_value(SystemSettingsInput {
+                    api_hosts: Vec::new(),
                     upstream: SystemUpstreamSettingsInput {
                         connect_timeout_seconds: 2,
                         response_header_timeout_seconds: 5,
@@ -2358,6 +2361,7 @@ mod tests {
     #[test]
     fn compiler_prevalidates_session_affinity_rules() {
         let compiled = compile_system_settings_input(&SystemSettingsInput {
+            api_hosts: Vec::new(),
             upstream: SystemUpstreamSettingsInput {
                 connect_timeout_seconds: 1,
                 response_header_timeout_seconds: 2,

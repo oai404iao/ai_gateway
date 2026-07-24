@@ -4,7 +4,7 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { toast } from "sonner";
-import { Plus } from "lucide-react";
+import { Check, Copy, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -17,6 +17,12 @@ import {
 } from "@/components/ui/dialog";
 import { Field, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupButton,
+  InputGroupInput,
+} from "@/components/ui/input-group";
 import { Spinner } from "@/components/ui/spinner";
 import {
   ApiKeyTargetFields,
@@ -31,6 +37,7 @@ import { ResourceTable, type Column } from "@/components/shared/resource-table";
 import { StatusBadge } from "@/components/shared/status-badge";
 import {
   useCreateOwnApiKey,
+  useApiHosts,
   useOwnApiKeyOptions,
   useOwnApiKeys,
 } from "@/features/api-keys/api";
@@ -94,9 +101,11 @@ export function ApiKeysPage() {
   const navigate = useNavigate();
   const { data: keys, isLoading, error } = useOwnApiKeys();
   const create = useCreateOwnApiKey();
+  const apiHosts = useApiHosts();
   const { t } = useI18n();
   const [createOpen, setCreateOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [copiedHost, setCopiedHost] = useState<string | null>(null);
   const options = useOwnApiKeyOptions(createOpen);
 
   const form = useForm<CreateValues>({
@@ -147,6 +156,17 @@ export function ApiKeysPage() {
   const targetError =
     form.formState.errors.allowed_group_ids?.message ??
     form.formState.errors.allowed_channel_ids?.message;
+
+  const copyApiHost = async (apiHost: string) => {
+    try {
+      await navigator.clipboard.writeText(apiHost);
+      setCopiedHost(apiHost);
+      toast.success(t("API host copied"));
+      window.setTimeout(() => setCopiedHost(null), 2000);
+    } catch {
+      toast.error(t("Copy failed"));
+    }
+  };
 
   const columns: Column<ApiKeyView>[] = [
     {
@@ -209,6 +229,49 @@ export function ApiKeysPage() {
           </Button>
         }
       />
+      <Card>
+        <CardHeader>
+          <CardTitle>{t("API hosts")}</CardTitle>
+          <CardDescription>
+            {t("Copy a configured base URL to connect an OpenAI-compatible client.")}
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <AsyncResource
+            isLoading={apiHosts.isLoading}
+            error={apiHosts.error}
+            isEmpty={apiHosts.data?.api_hosts.length === 0}
+            emptyTitle={t("No API hosts configured")}
+            emptyDescription={t("Ask an administrator to configure an API host in System settings.")}
+          >
+            <div className="flex flex-col gap-2">
+              {(apiHosts.data?.api_hosts ?? []).map((apiHost) => (
+                <InputGroup key={apiHost}>
+                  <InputGroupInput
+                    readOnly
+                    value={apiHost}
+                    aria-label={t("API host")}
+                    className="font-mono text-xs"
+                  />
+                  <InputGroupAddon align="inline-end">
+                    <InputGroupButton
+                      aria-label={t("Copy API host")}
+                      onClick={() => void copyApiHost(apiHost)}
+                    >
+                      {copiedHost === apiHost ? (
+                        <Check data-icon="inline-start" />
+                      ) : (
+                        <Copy data-icon="inline-start" />
+                      )}
+                      {t(copiedHost === apiHost ? "Copied" : "Copy")}
+                    </InputGroupButton>
+                  </InputGroupAddon>
+                </InputGroup>
+              ))}
+            </div>
+          </AsyncResource>
+        </CardContent>
+      </Card>
       <Card>
         <CardHeader>
           <CardTitle>{t("Keys")}</CardTitle>

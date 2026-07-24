@@ -55,6 +55,9 @@ test.describe("Console SPA smoke", () => {
     await page.getByRole("button", { name: /sign in/i }).click();
     await page.getByRole("link", { name: "API Keys" }).click();
 
+    await expect(page.getByRole("textbox", { name: "API host" })).toHaveValue(
+      "https://api.e2e.example.test/v1",
+    );
     const keyValue = page.getByLabel("API key value");
     await expect(keyValue).toHaveValue(`sk-${"•".repeat(24)}`);
     await page.getByRole("button", { name: "Show full API key" }).click();

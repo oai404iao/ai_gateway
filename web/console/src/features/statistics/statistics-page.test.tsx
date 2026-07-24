@@ -24,6 +24,14 @@ function renderApp(path = "/statistics") {
 }
 
 describe("StatisticsPage", () => {
+  it("redirects the Console root to statistics", async () => {
+    seedAuthenticatedSession();
+    renderApp("/");
+
+    expect(await screen.findByText("Model overview")).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/statistics");
+  });
+
   it("shows channel, cost, and system load analytics", async () => {
     seedAuthenticatedSession();
     const user = userEvent.setup();

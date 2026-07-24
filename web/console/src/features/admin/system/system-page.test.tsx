@@ -43,6 +43,7 @@ describe("SystemPage", () => {
     await user.click(screen.getByRole("button", { name: /save system settings/i }));
 
     expect(received).toEqual({
+      api_hosts: ["https://api.example.test/v1"],
       upstream: {
         connect_timeout_seconds: 12,
         response_header_timeout_seconds: 30,

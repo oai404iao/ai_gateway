@@ -73,6 +73,12 @@ export async function mockConsoleApi(page: Page): Promise<void> {
         ],
       });
     }
+    if (path === "/console/v1/me/api-hosts" && method === "GET") {
+      return route.fulfill({
+        status: 200,
+        json: { api_hosts: ["https://api.e2e.example.test/v1"] },
+      });
+    }
     if (path === "/console/v1/me/api-key-options" && method === "GET") {
       return route.fulfill({
         status: 200,

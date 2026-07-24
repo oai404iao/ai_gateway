@@ -86,6 +86,7 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
     let repository = ControlPlaneRepository::new(pool.clone());
     repository
         .ensure_system_settings(SystemSettingsInput {
+            api_hosts: Vec::new(),
             upstream: SystemUpstreamSettingsInput {
                 connect_timeout_seconds: config.upstream.connect_timeout_seconds,
                 response_header_timeout_seconds: config.upstream.response_header_timeout_seconds,

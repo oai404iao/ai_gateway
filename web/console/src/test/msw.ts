@@ -62,6 +62,9 @@ export const handlers = [
 
   http.get("/console/v1/me/api-keys", () => HttpResponse.json([OWN_API_KEY])),
   http.get("/console/v1/me/api-key-options", () => HttpResponse.json(API_KEY_OPTIONS)),
+  http.get("/console/v1/me/api-hosts", () =>
+    HttpResponse.json({ api_hosts: SYSTEM_SETTINGS.api_hosts }),
+  ),
   http.get("/console/v1/me/api-keys/:id", () =>
     HttpResponse.json(OWN_API_KEY, {
       headers: { ETag: `"${OWN_API_KEY.updated_at}"` },

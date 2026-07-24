@@ -165,6 +165,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/me/api-hosts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description User-visible HTTP(S) base URLs configured by an administrator. */
+        get: operations["getApiHosts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/me/api-keys/{id}": {
         parameters: {
             query?: never;
@@ -929,6 +946,8 @@ export interface components {
             rules: components["schemas"]["SystemSessionAffinityRule"][];
         };
         SystemSettingsInput: {
+            /** @description User-visible HTTP(S) base URLs for the OpenAI-compatible data plane. */
+            api_hosts: string[];
             upstream: components["schemas"]["SystemUpstreamSettings"];
             request_retry: components["schemas"]["SystemRequestRetrySettings"];
             passive_health: components["schemas"]["SystemPassiveHealthSettings"];
@@ -938,6 +957,9 @@ export interface components {
         };
         SystemSettings: components["schemas"]["SystemSettingsInput"] & {
             updated_at: components["schemas"]["DateTime"];
+        };
+        ApiHostsView: {
+            api_hosts: string[];
         };
         SystemLoadReport: {
             sampled_at: components["schemas"]["DateTime"];
@@ -2154,6 +2176,27 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+        };
+    };
+    getApiHosts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Configured API base URLs. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiHostsView"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
         };
     };
     getOwnApiKey: {

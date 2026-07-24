@@ -58,6 +58,7 @@ export type ApiKeyPolicyView = S["ApiKeyPolicyView"];
 export type SelfApiKeyOptions = S["SelfApiKeyOptions"];
 export type SelfApiKeyGroupOption = S["SelfApiKeyGroupOption"];
 export type SelfApiKeyChannelOption = S["SelfApiKeyChannelOption"];
+export type ApiHostsView = S["ApiHostsView"];
 export type ControlPlaneUser = S["ControlPlaneUser"];
 export type ControlPlaneModel = S["ControlPlaneModel"];
 export type AdvancedBilling = S["AdvancedBilling"];

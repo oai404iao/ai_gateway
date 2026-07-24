@@ -288,6 +288,7 @@ export const CONFIG_TEMPLATE_DETAIL: ConfigTemplateDetailView = {
 };
 
 export const SYSTEM_SETTINGS: SystemSettings = {
+  api_hosts: ["https://api.example.test/v1"],
   upstream: {
     connect_timeout_seconds: 10,
     response_header_timeout_seconds: 30,

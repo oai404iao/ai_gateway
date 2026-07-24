@@ -59,6 +59,46 @@ function parseStatusCodes(value: string): number[] {
 
 const systemSettingsSchema = z
   .object({
+    api_hosts: z
+      .array(
+        z
+          .string()
+          .trim()
+          .min(1, "API host cannot be blank.")
+          .max(2048, "API host must be at most 2048 characters.")
+          .refine(
+            (value) => {
+              try {
+                const url = new URL(value);
+                return (
+                  (url.protocol === "http:" || url.protocol === "https:") &&
+                  Boolean(url.hostname) &&
+                  !url.username &&
+                  !url.password &&
+                  !url.search &&
+                  !url.hash
+                );
+              } catch {
+                return false;
+              }
+            },
+            "Enter a valid HTTP(S) API host.",
+          ),
+      )
+      .max(32, "Configure at most 32 API hosts.")
+      .refine(
+        (hosts) => {
+          const normalizedHosts = hosts.map((host) => {
+            try {
+              return new URL(host).toString();
+            } catch {
+              return host;
+            }
+          });
+          return new Set(normalizedHosts).size === hosts.length;
+        },
+        "API hosts must be unique.",
+      ),
     upstream: z.object({
       connect_timeout_seconds: z.number().int().min(1, "Enter a positive number of seconds."),
       response_header_timeout_seconds: z
@@ -165,6 +205,7 @@ const systemSettingsSchema = z
 type SystemSettingsValues = z.infer<typeof systemSettingsSchema>;
 
 const defaultValues: SystemSettingsValues = {
+  api_hosts: [],
   upstream: {
     connect_timeout_seconds: 10,
     response_header_timeout_seconds: 30,
@@ -211,6 +252,7 @@ export function SystemPage() {
   useEffect(() => {
     if (settings.data) {
       form.reset({
+        api_hosts: settings.data.data.api_hosts,
         upstream: settings.data.data.upstream,
         request_retry: settings.data.data.request_retry,
         passive_health: settings.data.data.passive_health,
@@ -231,6 +273,7 @@ export function SystemPage() {
     if (!settings.data) return;
     try {
       const input: SystemSettingsInput = {
+        api_hosts: values.api_hosts,
         upstream: values.upstream,
         request_retry: values.request_retry,
         passive_health: values.passive_health,
@@ -284,6 +327,37 @@ export function SystemPage() {
       <AsyncResource isLoading={settings.isLoading} error={settings.error}>
         {settings.data ? (
           <form onSubmit={form.handleSubmit(save)} className="flex flex-col gap-6">
+            <Card>
+              <CardHeader>
+                <CardTitle>{t("API hosts")}</CardTitle>
+                <CardDescription>
+                  {t(
+                    "HTTP(S) base URLs shown on users' API Keys pages for copying into OpenAI-compatible clients.",
+                  )}
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <FieldGroup>
+                  <StringListField
+                    id="api_hosts"
+                    label={t("API hosts")}
+                    value={form.watch("api_hosts")}
+                    onChange={(value) =>
+                      form.setValue("api_hosts", value, {
+                        shouldDirty: true,
+                        shouldValidate: true,
+                      })
+                    }
+                    placeholder="https://api.example.com/v1"
+                    description={t(
+                      "One HTTP(S) base URL per line. Paths are allowed; credentials, query strings, and fragments are not.",
+                    )}
+                    error={errorMessage(form.formState.errors.api_hosts?.message)}
+                  />
+                </FieldGroup>
+              </CardContent>
+            </Card>
+
             <Card>
               <CardHeader>
                 <CardTitle>{t("Default upstream timeouts")}</CardTitle>

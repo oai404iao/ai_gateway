@@ -165,7 +165,7 @@ export function AppRouter() {
 
       <Route element={<RequireAuth />}>
         <Route element={<ConsoleLayout />}>
-          <Route index element={<Navigate to="/account" replace />} />
+          <Route index element={<Navigate to="/statistics" replace />} />
           <Route path="/account" element={<ProfilePage />} />
           <Route path="/account/sessions" element={<SessionsPage />} />
           <Route path="/api-keys" element={<ApiKeysPage />} />

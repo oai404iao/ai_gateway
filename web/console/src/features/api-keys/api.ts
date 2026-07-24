@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiGetDetail, apiPost, apiPut } from "@/api/client";
 import type {
+  ApiHostsView,
   ApiKeyView,
   MutationResponse,
   RevokeInput,
@@ -10,6 +11,7 @@ import type {
 } from "@/api/types";
 
 const LIST_KEY = ["console", "me", "api-keys"] as const;
+const API_HOSTS_KEY = ["console", "me", "api-hosts"] as const;
 
 function detailKey(id: string) {
   return ["console", "me", "api-keys", id] as const;
@@ -28,6 +30,13 @@ export function useOwnApiKeyOptions(enabled = true) {
     queryKey: ["console", "me", "api-key-options"] as const,
     queryFn: () => apiGet<SelfApiKeyOptions>("/me/api-key-options"),
     enabled,
+  });
+}
+
+export function useApiHosts() {
+  return useQuery({
+    queryKey: API_HOSTS_KEY,
+    queryFn: () => apiGet<ApiHostsView>("/me/api-hosts"),
   });
 }
 

@@ -57,6 +57,18 @@ describe("ApiKeysPage", () => {
     expect(await navigator.clipboard.readText()).toBe(NEW_API_KEY_SECRET);
   });
 
+  it("shows and copies administrator-configured API hosts", async () => {
+    seedAuthenticatedSession();
+    const user = userEvent.setup();
+    renderAppAt("/api-keys");
+
+    expect(await screen.findByDisplayValue("https://api.example.test/v1")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Copy API host" }));
+
+    expect(await navigator.clipboard.readText()).toBe("https://api.example.test/v1");
+    expect(await screen.findByText("API host copied")).toBeInTheDocument();
+  });
+
   it("serializes a datetime-local expiry as RFC 3339", async () => {
     seedAuthenticatedSession();
     let submitted: SelfApiKeyCreateInput | undefined;

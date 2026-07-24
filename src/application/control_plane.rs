@@ -9,10 +9,11 @@ use uuid::Uuid;
 use crate::{
     domain::AutomaticDisableTrigger,
     persistence::{
-        ChannelBatchUpdateInput, ConsoleApiKey, ConsoleAuditLog, ControlPlaneChannelDetail,
-        ControlPlaneConfigTemplateDetail, ControlPlaneLists, ControlPlaneMutation,
-        ControlPlaneRepository, MutationResult, RepositoryError, SelfApiKeyCreate,
-        SelfApiKeyOptions, SelfApiKeyUpdate, SyncedModelInput, SystemSettingsView,
+        ApiHostsView, ChannelBatchUpdateInput, ConsoleApiKey, ConsoleAuditLog,
+        ControlPlaneChannelDetail, ControlPlaneConfigTemplateDetail, ControlPlaneLists,
+        ControlPlaneMutation, ControlPlaneRepository, MutationResult, RepositoryError,
+        SelfApiKeyCreate, SelfApiKeyOptions, SelfApiKeyUpdate, SyncedModelInput,
+        SystemSettingsView,
     },
     routing::{PassiveHealthPolicy, RoutingRuntime},
     runtime_config::{ConfigError, RuntimeConfig, compile_runtime_config},
@@ -137,6 +138,12 @@ impl ControlPlaneCoordinator {
 
     pub async fn system_settings(&self) -> Result<SystemSettingsView, ControlPlaneError> {
         Ok(self.repository.system_settings().await?)
+    }
+
+    pub async fn api_hosts(&self) -> Result<ApiHostsView, ControlPlaneError> {
+        Ok(ApiHostsView {
+            api_hosts: self.repository.system_settings().await?.settings.api_hosts,
+        })
     }
 
     pub async fn mutate(
