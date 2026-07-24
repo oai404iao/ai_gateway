@@ -29,6 +29,23 @@ export function formatTokens(value: number | null | undefined): string {
   return value.toLocaleString(currentLocale());
 }
 
+export function formatCompactTokens(value: number | null | undefined): string {
+  if (value === null || value === undefined) return "—";
+  const absoluteValue = Math.abs(value);
+  const unit =
+    absoluteValue >= 1_000_000_000
+      ? { divisor: 1_000_000_000, suffix: "B" }
+      : absoluteValue >= 1_000_000
+        ? { divisor: 1_000_000, suffix: "M" }
+        : absoluteValue >= 1_000
+          ? { divisor: 1_000, suffix: "K" }
+          : null;
+  if (!unit) return formatTokens(value);
+  return `${(value / unit.divisor).toLocaleString(currentLocale(), {
+    maximumFractionDigits: 2,
+  })}${unit.suffix}`;
+}
+
 export function formatBytes(value: number | null | undefined): string {
   if (value === null || value === undefined) return "—";
   const units = ["B", "KiB", "MiB", "GiB", "TiB"] as const;

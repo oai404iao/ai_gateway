@@ -55,7 +55,7 @@ import {
   formatDateTime,
   formatDateTimeLocalInput,
 } from "@/lib/dates";
-import { formatTokens, formatUsd } from "@/lib/formatters";
+import { formatCompactTokens, formatUsd } from "@/lib/formatters";
 import { apiFormatLabel } from "@/lib/permissions";
 import { useI18n } from "@/app/i18n";
 import { useSession } from "@/lib/use-session";
@@ -335,27 +335,27 @@ export function CostStatisticsPanel() {
     {
       key: "tokens",
       header: t("Total tokens"),
-      render: (model) => formatTokens(model.total_tokens),
+      render: (model) => formatCompactTokens(model.total_tokens),
     },
     {
       key: "input_tokens",
       header: t("Input tokens"),
-      render: (model) => formatTokens(model.input_tokens),
+      render: (model) => formatCompactTokens(model.input_tokens),
     },
     {
       key: "cached_input_tokens",
       header: t("Cache hit tokens"),
-      render: (model) => formatTokens(model.cached_input_tokens),
+      render: (model) => formatCompactTokens(model.cached_input_tokens),
     },
     {
       key: "cache_write_tokens",
       header: t("Cache write tokens"),
-      render: (model) => formatTokens(model.cache_write_tokens),
+      render: (model) => formatCompactTokens(model.cache_write_tokens),
     },
     {
       key: "output_tokens",
       header: t("Output tokens"),
-      render: (model) => formatTokens(model.output_tokens),
+      render: (model) => formatCompactTokens(model.output_tokens),
     },
     {
       key: "cost",
@@ -570,22 +570,24 @@ export function CostStatisticsPanel() {
               />
               <SummaryCard
                 title={t("Total tokens")}
-                value={formatCompact(data.summary.total_tokens)}
+                value={formatCompactTokens(data.summary.total_tokens)}
                 description={
                   <div className="grid grid-cols-2 gap-x-3 gap-y-1">
                     <span>
-                      {t("Input tokens")}: {formatCompact(data.summary.input_tokens)}
+                      {t("Input tokens")}:{" "}
+                      {formatCompactTokens(data.summary.input_tokens)}
                     </span>
                     <span>
                       {t("Cache hit tokens")}:{" "}
-                      {formatCompact(data.summary.cached_input_tokens)}
+                      {formatCompactTokens(data.summary.cached_input_tokens)}
                     </span>
                     <span>
                       {t("Cache write tokens")}:{" "}
-                      {formatCompact(data.summary.cache_write_tokens)}
+                      {formatCompactTokens(data.summary.cache_write_tokens)}
                     </span>
                     <span>
-                      {t("Output tokens")}: {formatCompact(data.summary.output_tokens)}
+                      {t("Output tokens")}:{" "}
+                      {formatCompactTokens(data.summary.output_tokens)}
                     </span>
                     <span className="col-span-2">
                       {t("Cache rate")}:{" "}
@@ -610,7 +612,7 @@ export function CostStatisticsPanel() {
               />
               <SummaryCard
                 title={t("Average TPM")}
-                value={formatCompact(data.summary.average_tpm)}
+                value={formatCompactTokens(data.summary.average_tpm)}
                 description={t("Tokens per minute across the selected range.")}
                 icon={Zap}
               />

@@ -51,10 +51,10 @@ describe("StatisticsPage", () => {
       screen.getByRole("columnheader", { name: "Cache write tokens" }),
     ).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: "Output tokens" })).toBeInTheDocument();
-    expect(screen.getAllByText("210,000,000").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("84,000,000").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("12,000,000").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("53,000,000").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("210M").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("84M").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("12M").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("53M").length).toBeGreaterThan(0);
 
     await user.click(screen.getByRole("tab", { name: "System load" }));
 
