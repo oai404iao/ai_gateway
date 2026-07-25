@@ -7,6 +7,8 @@ Versioning.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-07-25
+
 ### Added
 
 - Partial administrator user updates, independent account/balance/status
