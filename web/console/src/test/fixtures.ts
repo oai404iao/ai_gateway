@@ -331,6 +331,7 @@ export const CONTROL_PLANE_USER: ControlPlaneUser = {
   display_name: ADMIN_USER.display_name,
   role: "admin",
   status: "active",
+  can_reissue_invitation: false,
   default_api_key_policy_id: API_KEY_POLICY.id,
   balance_amount: "12.50",
   created_at: "2026-01-01T00:00:00.000Z",

@@ -316,6 +316,10 @@ impl AuthRepository {
             transaction.rollback().await?;
             return Err(RepositoryError::Validation);
         }
+        if input.initial_balance_amount.is_sign_negative() {
+            transaction.rollback().await?;
+            return Err(RepositoryError::Validation);
+        }
         if let Some(policy_id) = input.default_api_key_policy_id {
             let enabled = sqlx::query_scalar::<_, bool>(
                 "SELECT enabled FROM api_key_policies WHERE id=$1 FOR KEY SHARE",
@@ -332,13 +336,14 @@ impl AuthRepository {
         let user_id = Uuid::new_v4();
         let updated_at = sqlx::query_scalar::<_, DateTime<Utc>>(
             "INSERT INTO users \
-             (id,email,display_name,role,status,default_api_key_policy_id) \
-             VALUES ($1,$2,$3,$4,'invited',$5) RETURNING updated_at",
+             (id,email,display_name,role,status,balance_amount,default_api_key_policy_id) \
+             VALUES ($1,$2,$3,$4,'invited',$5,$6) RETURNING updated_at",
         )
         .bind(user_id)
         .bind(&input.email)
         .bind(&input.display_name)
         .bind(input.role.as_str())
+        .bind(input.initial_balance_amount)
         .bind(input.default_api_key_policy_id)
         .fetch_one(&mut *transaction)
         .await?;
@@ -371,9 +376,120 @@ impl AuthRepository {
             "display_name": input.display_name,
             "role": input.role.as_str(),
             "status": "invited",
+            "balance_amount": input.initial_balance_amount,
             "default_api_key_policy_id": input.default_api_key_policy_id,
             "updated_at": updated_at,
         }))
+        .bind(correlation_id.to_string())
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(InvitationCreated {
+            user_id,
+            invitation_id,
+            expires_at,
+            correlation_id,
+        })
+    }
+
+    pub async fn reissue_invitation(
+        &self,
+        actor_user_id: Uuid,
+        user_id: Uuid,
+        invitation_id: Uuid,
+        invitation_token_hash: &[u8],
+        invitation_ttl: Duration,
+    ) -> Result<InvitationCreated, RepositoryError> {
+        let mut transaction = begin_serializable(&self.pool).await?;
+        ensure_active_admin(&mut transaction, actor_user_id).await?;
+        let user = sqlx::query_as::<_, UserForReinvitation>(
+            "SELECT id,email,display_name,role,status,password_hash,balance_amount, \
+                    default_api_key_policy_id,updated_at \
+             FROM users WHERE id=$1 AND NOT is_system FOR UPDATE",
+        )
+        .bind(user_id)
+        .fetch_optional(&mut *transaction)
+        .await?
+        .ok_or(RepositoryError::NotFound)?;
+        if user.email.is_none()
+            || user.password_hash.is_some()
+            || !matches!(user.status.as_str(), "invited" | "suspended" | "disabled")
+        {
+            transaction.rollback().await?;
+            return Err(RepositoryError::Validation);
+        }
+
+        sqlx::query(
+            "UPDATE user_invitations SET revoked_at=now() \
+             WHERE user_id=$1 AND accepted_at IS NULL AND revoked_at IS NULL",
+        )
+        .bind(user_id)
+        .execute(&mut *transaction)
+        .await?;
+        let updated_at = sqlx::query_scalar::<_, DateTime<Utc>>(
+            "UPDATE users SET status='invited',auth_version=auth_version+1 \
+             WHERE id=$1 RETURNING updated_at",
+        )
+        .bind(user_id)
+        .fetch_one(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "UPDATE user_sessions SET revoked_at=now() \
+             WHERE user_id=$1 AND revoked_at IS NULL",
+        )
+        .bind(user_id)
+        .execute(&mut *transaction)
+        .await?;
+
+        let expires_at = Utc::now()
+            + chrono::Duration::from_std(invitation_ttl)
+                .map_err(|_| RepositoryError::Validation)?;
+        sqlx::query(
+            "INSERT INTO user_invitations \
+             (id,user_id,invited_by,token_hash,expires_at) \
+             VALUES ($1,$2,$3,$4,$5)",
+        )
+        .bind(invitation_id)
+        .bind(user_id)
+        .bind(actor_user_id)
+        .bind(invitation_token_hash)
+        .bind(expires_at)
+        .execute(&mut *transaction)
+        .await?;
+
+        let correlation_id = Uuid::new_v4();
+        let before = json!({
+            "id": user.id,
+            "email": user.email,
+            "display_name": user.display_name,
+            "role": user.role,
+            "status": user.status,
+            "balance_amount": user.balance_amount,
+            "default_api_key_policy_id": user.default_api_key_policy_id,
+            "updated_at": user.updated_at,
+        });
+        let after = json!({
+            "id": user_id,
+            "email": before["email"],
+            "display_name": before["display_name"],
+            "role": before["role"],
+            "status": "invited",
+            "balance_amount": before["balance_amount"],
+            "default_api_key_policy_id": before["default_api_key_policy_id"],
+            "invitation_id": invitation_id,
+            "invitation_expires_at": expires_at,
+            "updated_at": updated_at,
+        });
+        sqlx::query(
+            "INSERT INTO audit_logs \
+             (id,actor_user_id,actor_type,actor_role,action,object_type,object_id,before_redacted,after_redacted,correlation_id) \
+             VALUES ($1,$2,'user','admin','reinvite','user',$3,$4,$5,$6)",
+        )
+        .bind(Uuid::new_v4())
+        .bind(actor_user_id)
+        .bind(user_id)
+        .bind(before)
+        .bind(after)
         .bind(correlation_id.to_string())
         .execute(&mut *transaction)
         .await?;
@@ -394,7 +510,7 @@ impl AuthRepository {
     ) -> Result<Option<SessionUser>, RepositoryError> {
         let mut transaction = begin_serializable(&self.pool).await?;
         let invitation = sqlx::query_as::<_, InvitationForAcceptance>(
-            "SELECT i.user_id,i.token_hash,i.expires_at,i.accepted_at, \
+            "SELECT i.user_id,i.token_hash,i.expires_at,i.accepted_at,i.revoked_at, \
                     u.email,u.display_name,u.role,u.status \
              FROM user_invitations AS i \
              JOIN users AS u ON u.id=i.user_id \
@@ -408,6 +524,7 @@ impl AuthRepository {
             return Ok(None);
         };
         if invitation.accepted_at.is_some()
+            || invitation.revoked_at.is_some()
             || invitation.expires_at <= Utc::now()
             || invitation.status != "invited"
             || !bool::from(invitation.token_hash.ct_eq(presented_token_hash))
@@ -619,6 +736,7 @@ pub struct InviteUserInput {
     pub email: String,
     pub display_name: String,
     pub role: UserRole,
+    pub initial_balance_amount: rust_decimal::Decimal,
     pub default_api_key_policy_id: Option<Uuid>,
 }
 
@@ -636,8 +754,22 @@ struct InvitationForAcceptance {
     token_hash: Vec<u8>,
     expires_at: DateTime<Utc>,
     accepted_at: Option<DateTime<Utc>>,
+    revoked_at: Option<DateTime<Utc>>,
     email: Option<String>,
     display_name: String,
     role: String,
     status: String,
+}
+
+#[derive(FromRow)]
+struct UserForReinvitation {
+    id: Uuid,
+    email: Option<String>,
+    display_name: String,
+    role: String,
+    status: String,
+    password_hash: Option<String>,
+    balance_amount: rust_decimal::Decimal,
+    default_api_key_policy_id: Option<Uuid>,
+    updated_at: DateTime<Utc>,
 }

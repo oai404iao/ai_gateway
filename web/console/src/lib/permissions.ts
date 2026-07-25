@@ -36,6 +36,19 @@ export function roleLabel(value: UserRole): string {
   return value === "admin" ? translate("Administrator") : translate("User");
 }
 
+export function userStatusLabel(value: (typeof USER_STATUSES)[number]): string {
+  switch (value) {
+    case "active":
+      return translate("Active");
+    case "invited":
+      return translate("Invited");
+    case "suspended":
+      return translate("Suspended");
+    case "disabled":
+      return translate("Disabled");
+  }
+}
+
 export function selectionStrategyLabel(value: SelectionStrategy): string {
   return value === "weighted_random"
     ? translate("Weighted random")

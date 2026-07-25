@@ -42,7 +42,7 @@ import type {
   SessionAffinityCacheReport,
   SystemSettings,
   SystemSettingsInput,
-  UserInput,
+  UserUpdateInput,
 } from "@/api/types";
 
 type ListResult<T> = ReturnType<typeof useQuery<T[]>>;
@@ -68,6 +68,7 @@ function makeDetail<T>(basePath: string, key: (id: string) => readonly string[])
       etag: query.data?.etag ?? "",
       isLoading: query.isLoading,
       error: query.error,
+      refetch: query.refetch,
     };
   };
 }
@@ -119,7 +120,27 @@ export function useInviteUser() {
     },
   });
 }
-export const useUpdateUser = makeUpdate<UserInput>("/users", USERS_KEY, userDetailKey);
+export function useReissueUserInvitation(id: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => apiPost<InvitationResponse>(`/users/${id}/invitation`),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: USERS_KEY });
+      void queryClient.invalidateQueries({ queryKey: userDetailKey(id) });
+    },
+  });
+}
+export function useUpdateUser(id: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ input, ifMatch }: { input: UserUpdateInput; ifMatch: string }) =>
+      apiSend<MutationResponse>(`/users/${id}`, "PATCH", input, { ifMatch }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: USERS_KEY });
+      void queryClient.invalidateQueries({ queryKey: userDetailKey(id) });
+    },
+  });
+}
 
 // ---- API Key Policies ----
 const POLICIES_KEY = ["console", "api-key-policies"] as const;

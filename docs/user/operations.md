@@ -120,7 +120,9 @@ Console 登录接口：
 - refresh token 仅保存 SHA-256 哈希。刷新时会轮换；重放旧 refresh token 会撤销该 session；
 - 每个 Console 请求都会验证 JWT 签名、issuer、audience、用户状态、session 状态和 `auth_version`。禁用用户、改密码、登出和角色变化会立即使旧 token 失效。
 
-用户由管理员邀请创建。邀请响应中的 `invitation_token` 只返回一次，外部邮件/通知系统负责投递。激活邀请后用户设置自己的密码；管理员不提交或保存用户明文密码。
+用户由管理员邀请创建。管理员可在邀请请求中通过 `initial_balance_amount` 设置非负的初始
+USD 余额；省略时为 `0`。邀请响应中的 `invitation_token` 只返回一次，外部邮件/通知系统负责
+投递。邀请有效期为 7 天。激活邀请后用户设置自己的密码；管理员不提交或保存用户明文密码。
 
 ## 普通用户接口
 
@@ -165,7 +167,20 @@ Policy 不再保存额度、RPM、并发、格式、权限或最大活动 Key �
 - 系统转发设置：`GET` / `PUT /console/v1/system/settings`（管理员；`PUT` 使用 `If-Match`，保存后立即发布快照）
 - 手动重载：`POST /console/v1/system/reload`
 
-大多数可更新资源遵循 `GET` 返回 `ETag`、`PUT` 携带 `If-Match` 的乐观并发模型。控制面写入在 serializable 事务中再次确认 actor 仍为 active admin，校验完整候选快照、写入脱敏审计记录，并在提交后立即发布运行时快照。
+用户详情支持带 `If-Match` 的 `PATCH /console/v1/users/{id}`，只修改请求中出现的字段；
+例如仅提交 `balance_amount` 不会重写邮箱、角色、策略或状态。`invited` 是邀请流程拥有的待激活
+状态，管理员修改资料或余额时会保持该状态，只有持有邀请令牌的用户完成激活后才会变为
+`active`。兼容用的完整 `PUT` 仍保留，但新客户端应使用 `PATCH`。
+
+对于邀请过期、令牌丢失，或历史版本误把待激活用户改成 `disabled` 的情况，管理员可调用
+`POST /console/v1/users/{id}/invitation` 重新签发邀请。该操作仅适用于尚未设置密码的
+`invited`、`suspended` 或 `disabled` 用户；会保留用户资料、策略和余额，将状态恢复为
+`invited`，撤销所有旧邀请令牌，并返回一个新的只显示一次的令牌。没有密码的账户不能由管理员
+直接改成 `active`。
+
+其他大多数可更新资源遵循 `GET` 返回 `ETag`、`PUT` 携带 `If-Match` 的乐观并发模型。控制面
+写入在 serializable 事务中再次确认 actor 仍为 active admin，校验完整候选快照、写入脱敏
+审计记录，并在提交后立即发布运行时快照。
 
 渠道的 `billing_multiplier` 为非负十进制数，默认 `1`。最终选定渠道的倍率会乘到模型
 输入、缓存输入、缓存写入和输出单价上；请求日志保存乘算后的有效价格快照，因此历史费用

@@ -85,7 +85,9 @@ verification_key_path = "/run/secrets/ai-gateway-jwt-public.pem"
 
 ### 5.3 user_invitations
 
-管理员创建用户时产生一次性、过期的邀请 token 哈希。token 只在创建响应中返回一次；邮件发送由外部系统负责。
+管理员创建用户时产生一次性、过期的邀请 token 哈希。token 只在创建响应中返回一次；邮件发送由
+外部系统负责。未设置密码的待激活、暂停或禁用用户可重新签发邀请；重新签发会设置
+`revoked_at` 撤销所有旧邀请，将用户恢复为 `invited`，并返回新的单次可见 token。
 
 ### 5.4 api_key_policies
 

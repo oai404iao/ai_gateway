@@ -104,6 +104,7 @@ export type SelfApiKeyCreateInput = S["SelfApiKeyCreateInput"];
 export type SelfApiKeyUpdateInput = S["SelfApiKeyUpdateInput"];
 export type InviteUserInput = S["InviteUserInput"];
 export type UserInput = S["UserInput"];
+export type UserUpdateInput = S["UserUpdateInput"];
 export type ApiKeyPolicyInput = S["ApiKeyPolicyInput"];
 export type ApiKeyCreateInput = S["ApiKeyCreateInput"];
 export type ApiKeyUpdateInput = S["ApiKeyUpdateInput"];

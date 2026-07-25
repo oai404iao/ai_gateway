@@ -11,7 +11,7 @@ let refreshPromise: Promise<string | null> | null = null;
 interface RequestOptions {
   method?: string;
   body?: unknown;
-  /** ETag captured from the GET detail response, sent as If-Match on PUT. */
+  /** ETag captured from the GET detail response, sent as If-Match on a mutation. */
   ifMatch?: string;
   /** Suppresses the automatic 401 refresh+retry path (used by refresh itself). */
   skipAuthRetry?: boolean;
@@ -83,7 +83,7 @@ export async function apiGet<T>(path: string, signal?: AbortSignal): Promise<T> 
   return (await parseJson(response)) as T;
 }
 
-/** GET a detail resource and capture its ETag for optimistic-concurrency PUTs. */
+/** GET a detail resource and capture its ETag for optimistic-concurrency mutations. */
 export async function apiGetDetail<T>(
   path: string,
   signal?: AbortSignal,

@@ -43,7 +43,7 @@ const createRoutes = [
 ] as const;
 
 const editRoutes = [
-  [`/admin/users/${CONTROL_PLANE_USER.id}`, /save user/i],
+  [`/admin/users/${CONTROL_PLANE_USER.id}`, /save account details/i],
   [`/admin/api-key-policies/${API_KEY_POLICY.id}`, /save policy/i],
   [`/admin/models/${MODEL.id}`, /save upstream model/i],
   [`/admin/routing/channel-groups/${CHANNEL_GROUP.id}`, /save group/i],

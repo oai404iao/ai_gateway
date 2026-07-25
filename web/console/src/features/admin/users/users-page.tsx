@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { AdminListPage } from "@/features/admin/components/admin-list-page";
+import { DecimalField } from "@/components/shared/decimal-field";
 import { SecretOnceDialog } from "@/components/shared/secret-once-dialog";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { useApiKeyPolicies, useInviteUser, useUsers } from "@/features/admin/api";
@@ -44,6 +45,9 @@ export function UsersPage() {
     email: z.string().email(t("Enter a valid email.")),
     display_name: z.string().min(1, t("Display name is required.")).max(200),
     role: z.enum(["user", "admin"]),
+    initial_balance_amount: z
+      .string()
+      .regex(/^\d+(?:\.\d+)?$/, t("Enter a valid non-negative balance.")),
     default_api_key_policy_id: z.string().optional(),
   });
   type InviteValues = z.infer<typeof inviteSchema>;
@@ -54,6 +58,7 @@ export function UsersPage() {
       email: "",
       display_name: "",
       role: "user",
+      initial_balance_amount: "0",
       default_api_key_policy_id: "",
     },
   });
@@ -65,6 +70,7 @@ export function UsersPage() {
         email: values.email,
         display_name: values.display_name,
         role: values.role,
+        initial_balance_amount: values.initial_balance_amount,
         default_api_key_policy_id: values.default_api_key_policy_id || null,
       });
       setToken(result.invitation_token);
@@ -73,6 +79,7 @@ export function UsersPage() {
         email: "",
         display_name: "",
         role: "user",
+        initial_balance_amount: "0",
         default_api_key_policy_id: "",
       });
       toast.success(t("Invitation issued"));
@@ -233,6 +240,20 @@ export function UsersPage() {
                     ) : null}
                   </Field>
                 )}
+              />
+              <DecimalField
+                id="invite_initial_balance_amount"
+                label={t("Initial balance")}
+                value={form.watch("initial_balance_amount")}
+                onChange={(value) =>
+                  form.setValue("initial_balance_amount", value, {
+                    shouldDirty: true,
+                    shouldValidate: true,
+                  })
+                }
+                error={form.formState.errors.initial_balance_amount?.message}
+                required
+                description={t("Starting USD credit available after activation.")}
               />
             </FieldGroup>
             <DialogFooter>

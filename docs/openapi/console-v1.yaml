@@ -420,7 +420,11 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
     put:
       tags: [Users]
-      operationId: updateUser
+      operationId: replaceUser
+      deprecated: true
+      description: |
+        Compatibility full-resource update. New clients should use `PATCH`,
+        which preserves every omitted field.
       security: [{ bearerAuth: [] }]
       parameters:
         - $ref: "#/components/parameters/PathId"
@@ -440,6 +444,56 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+    patch:
+      tags: [Users]
+      operationId: updateUser
+      description: |
+        Partially updates one user. Omitted fields retain their current values.
+        An `invited` account remains pending until the invitation holder
+        activates it; administrators cannot mark an invitation active through
+        this endpoint.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UserUpdateInput" }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /users/{id}/invitation:
+    post:
+      tags: [Users]
+      operationId: reissueUserInvitation
+      description: |
+        Replaces every unaccepted invitation for a user who has never set a
+        password. The user returns to `invited`, previous invitation tokens are
+        revoked, and a new one-time token is returned.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "201":
+          description: Replacement invitation issued.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InvitationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/Unprocessable" }
 
   /api-key-policies:
@@ -2164,7 +2218,8 @@ components:
     ControlPlaneUser:
       type: object
       required:
-        [id, email, display_name, role, status, default_api_key_policy_id,
+        [id, email, display_name, role, status, can_reissue_invitation,
+         default_api_key_policy_id,
          balance_amount, created_at, updated_at]
       properties:
         id: { type: string, format: uuid }
@@ -2172,6 +2227,11 @@ components:
         display_name: { type: string }
         role: { $ref: "#/components/schemas/UserRole" }
         status: { type: string }
+        can_reissue_invitation:
+          type: boolean
+          description: |
+            True when the account has no password and an administrator may
+            safely replace its invitation.
         default_api_key_policy_id: { type: string, format: uuid, nullable: true }
         balance_amount:
           allOf: [{ $ref: "#/components/schemas/Decimal" }]
@@ -2761,6 +2821,9 @@ components:
         email: { type: string }
         display_name: { type: string }
         role: { $ref: "#/components/schemas/UserRole" }
+        initial_balance_amount:
+          allOf: [{ $ref: "#/components/schemas/Decimal" }]
+          description: Initial non-negative account balance in USD; defaults to zero.
         default_api_key_policy_id: { type: string, format: uuid, nullable: true }
 
     UserInput:
@@ -2775,6 +2838,31 @@ components:
           allOf: [{ $ref: "#/components/schemas/Decimal" }]
           description: Current account balance in USD.
         default_api_key_policy_id: { type: string, format: uuid, nullable: true }
+
+    UserUpdateInput:
+      type: object
+      minProperties: 1
+      properties:
+        display_name: { type: string }
+        email:
+          type: string
+          nullable: true
+          description: Set to null to clear the email; omit to preserve it.
+        role: { $ref: "#/components/schemas/UserRole" }
+        status:
+          type: string
+          enum: [active, suspended, disabled]
+          description: |
+            Runtime access state. Pending invitations are activated only
+            through `/auth/activate-invitation`.
+        balance_amount:
+          allOf: [{ $ref: "#/components/schemas/Decimal" }]
+          description: Replaces the current account balance in USD.
+        default_api_key_policy_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Set to null to clear the policy; omit to preserve it.
 
     ApiKeyPolicyInput:
       type: object
