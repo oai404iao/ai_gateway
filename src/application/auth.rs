@@ -237,6 +237,9 @@ impl ConsoleAuthService {
         }
         validate_email(&input.email)?;
         validate_display_name(&input.display_name)?;
+        if input.initial_balance_amount.is_sign_negative() {
+            return Err(AuthError::InvalidInput);
+        }
         let invitation_id = Uuid::new_v4();
         // The ID in the transport token is intentionally also the invitation
         // primary key, so acceptance can locate one indexed row before doing a
@@ -255,6 +258,35 @@ impl ConsoleAuthService {
         {
             Ok(created) => created,
             Err(RepositoryError::NotFound) => return Err(AuthError::Forbidden),
+            Err(error) => return Err(error.into()),
+        };
+        Ok(IssuedInvitation { created, token })
+    }
+
+    pub async fn reissue_invitation(
+        &self,
+        actor: ConsolePrincipal,
+        user_id: Uuid,
+    ) -> Result<IssuedInvitation, AuthError> {
+        if !actor.role().is_admin() {
+            return Err(AuthError::Forbidden);
+        }
+        let invitation_id = Uuid::new_v4();
+        let token = new_opaque_token(invitation_id);
+        let created = match self
+            .repository
+            .reissue_invitation(
+                actor.user_id(),
+                user_id,
+                invitation_id,
+                &token_hash(&token),
+                INVITATION_TTL,
+            )
+            .await
+        {
+            Ok(created) => created,
+            Err(RepositoryError::NotFound) => return Err(AuthError::NotFound),
+            Err(RepositoryError::Validation) => return Err(AuthError::InvalidInput),
             Err(error) => return Err(error.into()),
         };
         Ok(IssuedInvitation { created, token })
@@ -607,6 +639,8 @@ pub enum AuthError {
     RateLimited,
     #[error("Console action is forbidden")]
     Forbidden,
+    #[error("Console authentication record was not found")]
+    NotFound,
     #[error("Console authentication storage failed")]
     Repository(#[from] RepositoryError),
 }

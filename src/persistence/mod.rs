@@ -492,6 +492,52 @@ pub struct UserInput {
     pub default_api_key_policy_id: Option<Uuid>,
 }
 
+/// Partial administrator update for a Console user.
+///
+/// Omitted fields preserve their current value. Nullable fields use a nested
+/// option so an explicit JSON `null` can clear the value while omission leaves
+/// it unchanged.
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UserUpdateInput {
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_string")]
+    pub email: Option<Option<String>>,
+    #[serde(default)]
+    pub role: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub balance_amount: Option<rust_decimal::Decimal>,
+    #[serde(default, deserialize_with = "deserialize_optional_uuid")]
+    pub default_api_key_policy_id: Option<Option<Uuid>>,
+}
+
+impl UserUpdateInput {
+    fn is_empty(&self) -> bool {
+        self.display_name.is_none()
+            && self.email.is_none()
+            && self.role.is_none()
+            && self.status.is_none()
+            && self.balance_amount.is_none()
+            && self.default_api_key_policy_id.is_none()
+    }
+}
+
+impl From<UserInput> for UserUpdateInput {
+    fn from(value: UserInput) -> Self {
+        Self {
+            display_name: Some(value.display_name),
+            email: Some(value.email),
+            role: Some(value.role),
+            status: Some(value.status),
+            balance_amount: Some(value.balance_amount),
+            default_api_key_policy_id: Some(value.default_api_key_policy_id),
+        }
+    }
+}
+
 fn default_user_role() -> String {
     "user".into()
 }
@@ -611,7 +657,7 @@ pub struct ChannelInput {
     #[serde(default)]
     pub upstream_auth_header_name: Option<String>,
     /// Absent keeps the current secret; null explicitly clears it.
-    #[serde(default, deserialize_with = "deserialize_optional_credential")]
+    #[serde(default, deserialize_with = "deserialize_optional_string")]
     pub upstream_api_key: Option<Option<String>>,
     #[serde(default)]
     pub available_models: Vec<String>,
@@ -691,10 +737,10 @@ pub struct ProxyInput {
     pub name: String,
     pub proxy_url: String,
     /// Absent keeps the current credential component; null explicitly clears it.
-    #[serde(default, deserialize_with = "deserialize_optional_credential")]
+    #[serde(default, deserialize_with = "deserialize_optional_string")]
     pub username: Option<Option<String>>,
     /// Absent keeps the current credential component; null explicitly clears it.
-    #[serde(default, deserialize_with = "deserialize_optional_credential")]
+    #[serde(default, deserialize_with = "deserialize_optional_string")]
     pub password: Option<Option<String>>,
     #[serde(default)]
     pub no_proxy_hosts: Vec<String>,
@@ -726,13 +772,17 @@ fn empty_object() -> Value {
 fn default_billing_multiplier() -> rust_decimal::Decimal {
     rust_decimal::Decimal::ONE
 }
-fn deserialize_optional_credential<'de, D>(
-    deserializer: D,
-) -> Result<Option<Option<String>>, D::Error>
+fn deserialize_optional_string<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     Option::<String>::deserialize(deserializer).map(Some)
+}
+fn deserialize_optional_uuid<'de, D>(deserializer: D) -> Result<Option<Option<Uuid>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<Uuid>::deserialize(deserializer).map(Some)
 }
 fn deserialize_optional_document<'de, D>(deserializer: D) -> Result<Option<Value>, D::Error>
 where
@@ -845,7 +895,7 @@ pub enum ControlPlaneMutation {
     CreateUser(UserInput),
     UpdateUser {
         id: Uuid,
-        input: UserInput,
+        input: UserUpdateInput,
         expected_updated_at: DateTime<Utc>,
     },
     CreateModel(ModelInput),
@@ -941,6 +991,7 @@ pub struct ControlPlaneUser {
     pub display_name: String,
     pub role: String,
     pub status: String,
+    pub can_reissue_invitation: bool,
     pub default_api_key_policy_id: Option<Uuid>,
     pub balance_amount: rust_decimal::Decimal,
     pub created_at: DateTime<Utc>,
@@ -3653,7 +3704,10 @@ impl ControlPlaneRepository {
 
     pub async fn control_plane_lists(&self) -> Result<ControlPlaneLists, RepositoryError> {
         let users = sqlx::query_as::<_, ControlPlaneUser>(
-            "SELECT id,email,display_name,role,status,default_api_key_policy_id,balance_amount,created_at,updated_at FROM users WHERE NOT is_system ORDER BY id",
+            "SELECT id,email,display_name,role,status, \
+                    (password_hash IS NULL AND email IS NOT NULL AND status IN ('invited','suspended','disabled')) AS can_reissue_invitation, \
+                    default_api_key_policy_id,balance_amount,created_at,updated_at \
+             FROM users WHERE NOT is_system ORDER BY id",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -4042,13 +4096,13 @@ impl ControlPlaneRepository {
     ) -> Result<MutationResult, RepositoryError> {
         match mutation {
             ControlPlaneMutation::CreateUser(input) => {
-                user_insert(transaction, Uuid::new_v4(), input, true, None).await
+                user_create(transaction, Uuid::new_v4(), input).await
             }
             ControlPlaneMutation::UpdateUser {
                 id,
                 input,
                 expected_updated_at,
-            } => user_insert(transaction, id, input, false, Some(expected_updated_at)).await,
+            } => user_update(transaction, id, input, expected_updated_at).await,
             ControlPlaneMutation::CreateModel(input) => {
                 model_insert(transaction, Uuid::new_v4(), input, true, None).await
             }
@@ -4552,7 +4606,18 @@ async fn user_audit(
     id: Uuid,
 ) -> Result<Value, RepositoryError> {
     let value = sqlx::query_scalar::<_, Value>(
-        "SELECT json_build_object('id',id,'email',email,'display_name',display_name,'role',role,'status',status,'default_api_key_policy_id',default_api_key_policy_id,'balance_amount',balance_amount,'created_at',created_at,'updated_at',updated_at) FROM users WHERE id=$1 AND NOT is_system FOR UPDATE",
+        "SELECT json_build_object( \
+            'id',id, \
+            'email',email, \
+            'display_name',display_name, \
+            'role',role, \
+            'status',status, \
+            'can_reissue_invitation',(password_hash IS NULL AND email IS NOT NULL AND status IN ('invited','suspended','disabled')), \
+            'default_api_key_policy_id',default_api_key_policy_id, \
+            'balance_amount',balance_amount, \
+            'created_at',created_at, \
+            'updated_at',updated_at \
+         ) FROM users WHERE id=$1 AND NOT is_system FOR UPDATE",
     )
     .bind(id)
     .fetch_optional(&mut **transaction)
@@ -4753,54 +4818,102 @@ async fn group_insert(
         correlation_id: None,
     })
 }
-async fn user_insert(
+async fn user_create(
     transaction: &mut Transaction<'_, Postgres>,
     id: Uuid,
     input: UserInput,
-    create: bool,
-    expected_updated_at: Option<DateTime<Utc>>,
 ) -> Result<MutationResult, RepositoryError> {
-    let before = if create {
-        json!({})
-    } else {
-        user_audit(transaction, id).await?
-    };
-    let invalidates_sessions = !create
-        && (before["email"].as_str() != input.email.as_deref()
-            || before["role"].as_str() != Some(input.role.as_str())
-            || before["status"].as_str() != Some(input.status.as_str()));
-    let updated_at = if create {
-        sqlx::query_scalar(
-            "INSERT INTO users (id,email,display_name,role,status,balance_amount,default_api_key_policy_id) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING updated_at",
-        )
-        .bind(id)
-        .bind(&input.email)
-        .bind(&input.display_name)
-        .bind(&input.role)
-        .bind(&input.status)
-        .bind(input.balance_amount)
-        .bind(input.default_api_key_policy_id)
-        .fetch_one(&mut **transaction)
-        .await?
-    } else {
-        sqlx::query_scalar(
-            "UPDATE users SET email=$2,display_name=$3,role=$4,status=$5,balance_amount=$6,default_api_key_policy_id=$7, \
-             auth_version=auth_version+CASE WHEN $8 THEN 1 ELSE 0 END \
-             WHERE id=$1 AND updated_at=$9 RETURNING updated_at",
-        )
-        .bind(id)
-        .bind(&input.email)
-        .bind(&input.display_name)
-        .bind(&input.role)
-        .bind(&input.status)
-        .bind(input.balance_amount)
-        .bind(input.default_api_key_policy_id)
-        .bind(invalidates_sessions)
-        .bind(expected_updated_at.expect("PUT version"))
-        .fetch_optional(&mut **transaction)
-        .await?
-        .ok_or(RepositoryError::Conflict)?
-    };
+    let updated_at = sqlx::query_scalar(
+        "INSERT INTO users (id,email,display_name,role,status,balance_amount,default_api_key_policy_id) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING updated_at",
+    )
+    .bind(id)
+    .bind(&input.email)
+    .bind(&input.display_name)
+    .bind(&input.role)
+    .bind(&input.status)
+    .bind(input.balance_amount)
+    .bind(input.default_api_key_policy_id)
+    .fetch_one(&mut **transaction)
+    .await?;
+    Ok(MutationResult {
+        id,
+        object_type: "user",
+        action: "create",
+        before_redacted: json!({}),
+        after_redacted: user_audit(transaction, id).await?,
+        created_secret: None,
+        reason: None,
+        updated_at,
+        correlation_id: None,
+    })
+}
+
+async fn user_update(
+    transaction: &mut Transaction<'_, Postgres>,
+    id: Uuid,
+    input: UserUpdateInput,
+    expected_updated_at: DateTime<Utc>,
+) -> Result<MutationResult, RepositoryError> {
+    if input.is_empty() {
+        return Err(RepositoryError::Validation);
+    }
+
+    let before = user_audit(transaction, id).await?;
+    validate_user_update(transaction, &before, &input).await?;
+
+    let email_changed = input
+        .email
+        .as_ref()
+        .is_some_and(|email| before["email"].as_str() != email.as_deref());
+    let role_changed = input
+        .role
+        .as_deref()
+        .is_some_and(|role| before["role"].as_str() != Some(role));
+    let status_changed = input
+        .status
+        .as_deref()
+        .is_some_and(|status| before["status"].as_str() != Some(status));
+    let invalidates_sessions = email_changed || role_changed || status_changed;
+
+    let UserUpdateInput {
+        display_name,
+        email,
+        role,
+        status,
+        balance_amount,
+        default_api_key_policy_id,
+    } = input;
+    let email_present = email.is_some();
+    let email = email.flatten();
+    let policy_present = default_api_key_policy_id.is_some();
+    let default_api_key_policy_id = default_api_key_policy_id.flatten();
+
+    let updated_at = sqlx::query_scalar(
+        "UPDATE users SET \
+         email=CASE WHEN $2 THEN $3::varchar ELSE email END, \
+         display_name=COALESCE($4,display_name), \
+         role=COALESCE($5,role), \
+         status=COALESCE($6,status), \
+         balance_amount=COALESCE($7,balance_amount), \
+         default_api_key_policy_id=CASE WHEN $8 THEN $9::uuid ELSE default_api_key_policy_id END, \
+         auth_version=auth_version+CASE WHEN $10 THEN 1 ELSE 0 END \
+         WHERE id=$1 AND updated_at=$11 RETURNING updated_at",
+    )
+    .bind(id)
+    .bind(email_present)
+    .bind(email)
+    .bind(display_name)
+    .bind(role)
+    .bind(status)
+    .bind(balance_amount)
+    .bind(policy_present)
+    .bind(default_api_key_policy_id)
+    .bind(invalidates_sessions)
+    .bind(expected_updated_at)
+    .fetch_optional(&mut **transaction)
+    .await?
+    .ok_or(RepositoryError::Conflict)?;
+
     if invalidates_sessions {
         sqlx::query(
             "UPDATE user_sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL",
@@ -4809,10 +4922,11 @@ async fn user_insert(
         .execute(&mut **transaction)
         .await?;
     }
+
     Ok(MutationResult {
         id,
         object_type: "user",
-        action: if create { "create" } else { "update" },
+        action: "update",
         before_redacted: before,
         after_redacted: user_audit(transaction, id).await?,
         created_secret: None,
@@ -4820,6 +4934,74 @@ async fn user_insert(
         updated_at,
         correlation_id: None,
     })
+}
+
+async fn validate_user_update(
+    transaction: &mut Transaction<'_, Postgres>,
+    before: &Value,
+    input: &UserUpdateInput,
+) -> Result<(), RepositoryError> {
+    if input
+        .display_name
+        .as_ref()
+        .is_some_and(|name| name.trim().is_empty() || name.len() > 200)
+        || input.email.as_ref().is_some_and(|email| {
+            email.as_ref().is_some_and(|email| {
+                let email = email.trim();
+                email.is_empty()
+                    || email.len() > 320
+                    || email.bytes().any(|byte| byte.is_ascii_whitespace())
+                    || !email.contains('@')
+            })
+        })
+        || input
+            .role
+            .as_deref()
+            .is_some_and(|role| !matches!(role, "user" | "admin"))
+    {
+        return Err(RepositoryError::Validation);
+    }
+
+    if let Some(next_status) = input.status.as_deref() {
+        let current_status = before["status"]
+            .as_str()
+            .ok_or(RepositoryError::Validation)?;
+        let manageable_transition = matches!(
+            (current_status, next_status),
+            (
+                "active" | "suspended" | "disabled",
+                "active" | "suspended" | "disabled"
+            )
+        );
+        if current_status != next_status && !manageable_transition {
+            return Err(RepositoryError::Validation);
+        }
+        if next_status == "active"
+            && current_status != "active"
+            && before["can_reissue_invitation"].as_bool() == Some(true)
+        {
+            return Err(RepositoryError::Validation);
+        }
+    }
+
+    if let Some(Some(policy_id)) = input.default_api_key_policy_id {
+        let current_policy_id = before["default_api_key_policy_id"]
+            .as_str()
+            .and_then(|value| Uuid::parse_str(value).ok());
+        if current_policy_id != Some(policy_id) {
+            let enabled =
+                sqlx::query_scalar::<_, bool>("SELECT enabled FROM api_key_policies WHERE id=$1")
+                    .bind(policy_id)
+                    .fetch_optional(&mut **transaction)
+                    .await?
+                    .ok_or(RepositoryError::Validation)?;
+            if !enabled {
+                return Err(RepositoryError::Validation);
+            }
+        }
+    }
+
+    Ok(())
 }
 async fn model_insert(
     transaction: &mut Transaction<'_, Postgres>,

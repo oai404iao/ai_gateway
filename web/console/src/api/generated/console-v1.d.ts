@@ -270,8 +270,40 @@ export interface paths {
             cookie?: never;
         };
         get: operations["getUser"];
-        put: operations["updateUser"];
+        /**
+         * @deprecated
+         * @description Compatibility full-resource update. New clients should use `PATCH`,
+         *     which preserves every omitted field.
+         */
+        put: operations["replaceUser"];
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * @description Partially updates one user. Omitted fields retain their current values.
+         *     An `invited` account remains pending until the invitation holder
+         *     activates it; administrators cannot mark an invitation active through
+         *     this endpoint.
+         */
+        patch: operations["updateUser"];
+        trace?: never;
+    };
+    "/users/{id}/invitation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * @description Replaces every unaccepted invitation for a user who has never set a
+         *     password. The user returns to `invited`, previous invitation tokens are
+         *     revoked, and a new one-time token is returned.
+         */
+        post: operations["reissueUserInvitation"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1213,6 +1245,11 @@ export interface components {
             display_name: string;
             role: components["schemas"]["UserRole"];
             status: string;
+            /**
+             * @description True when the account has no password and an administrator may
+             *     safely replace its invitation.
+             */
+            can_reissue_invitation: boolean;
             /** Format: uuid */
             default_api_key_policy_id: string | null;
             /** @description Current account balance in USD. */
@@ -1597,6 +1634,8 @@ export interface components {
             email: string;
             display_name: string;
             role: components["schemas"]["UserRole"];
+            /** @description Initial non-negative account balance in USD; defaults to zero. */
+            initial_balance_amount?: components["schemas"]["Decimal"];
             /** Format: uuid */
             default_api_key_policy_id?: string | null;
         };
@@ -1608,6 +1647,25 @@ export interface components {
             /** @description Current account balance in USD. */
             balance_amount: components["schemas"]["Decimal"];
             /** Format: uuid */
+            default_api_key_policy_id?: string | null;
+        };
+        UserUpdateInput: {
+            display_name?: string;
+            /** @description Set to null to clear the email; omit to preserve it. */
+            email?: string | null;
+            role?: components["schemas"]["UserRole"];
+            /**
+             * @description Runtime access state. Pending invitations are activated only
+             *     through `/auth/activate-invitation`.
+             * @enum {string}
+             */
+            status?: "active" | "suspended" | "disabled";
+            /** @description Replaces the current account balance in USD. */
+            balance_amount?: components["schemas"]["Decimal"];
+            /**
+             * Format: uuid
+             * @description Set to null to clear the policy; omit to preserve it.
+             */
             default_api_key_policy_id?: string | null;
         };
         ApiKeyPolicyInput: {
@@ -2529,7 +2587,7 @@ export interface operations {
             404: components["responses"]["NotFound"];
         };
     };
-    updateUser: {
+    replaceUser: {
         parameters: {
             query?: never;
             header: {
@@ -2560,6 +2618,66 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
+        };
+    };
+    updateUser: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description ETag from the preceding GET; stale values yield `409`. */
+                "If-Match": components["parameters"]["IfMatch"];
+            };
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UserUpdateInput"];
+            };
+        };
+        responses: {
+            /** @description Updated. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MutationResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
+        };
+    };
+    reissueUserInvitation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Replacement invitation issued. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvitationResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
             422: components["responses"]["Unprocessable"];
         };
     };

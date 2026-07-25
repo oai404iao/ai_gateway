@@ -31,7 +31,7 @@ use crate::{
         ConfigTemplateCreateInput, ConfigTemplateInput, ConsoleApiKey, ControlPlaneMutation,
         CostStatisticsFilter, InviteUserInput, ModelInput, ModelRuleInput, ProxyCreateInput,
         ProxyInput, RequestLogFilter, RequestLogRepository, SelfApiKeyCreate, SelfApiKeyUpdate,
-        StatisticsGranularity, SystemSettingsInput, UserInput,
+        StatisticsGranularity, SystemSettingsInput, UserInput, UserUpdateInput,
     },
     runtime_config::ConfigError,
 };
@@ -102,7 +102,14 @@ pub fn router(state: ConsoleState) -> Router {
 
     let control_routes = Router::new()
         .route("/console/v1/users", get(list_users).post(invite_user))
-        .route("/console/v1/users/{id}", get(get_user).put(update_user))
+        .route(
+            "/console/v1/users/{id}/invitation",
+            post(reissue_user_invitation),
+        )
+        .route(
+            "/console/v1/users/{id}",
+            get(get_user).put(replace_user).patch(update_user),
+        )
         .route(
             "/console/v1/api-key-policies",
             get(list_api_key_policies).post(create_api_key_policy),
@@ -418,6 +425,8 @@ struct InviteUserRequest {
     email: String,
     display_name: String,
     role: UserRole,
+    #[serde(default)]
+    initial_balance_amount: rust_decimal::Decimal,
     #[serde(default)]
     default_api_key_policy_id: Option<Uuid>,
 }
@@ -763,6 +772,7 @@ async fn invite_user(
                 email: input.email,
                 display_name: input.display_name,
                 role: input.role,
+                initial_balance_amount: input.initial_balance_amount,
                 default_api_key_policy_id: input.default_api_key_policy_id,
             },
         )
@@ -787,12 +797,41 @@ async fn get_user(
     get_resource(state, id, Resource::User).await
 }
 
-async fn update_user(
+async fn reissue_user_invitation(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Path(id): Path<Uuid>,
+) -> Result<(StatusCode, Json<InvitationResponse>), ConsoleError> {
+    let invitation = state.auth.reissue_invitation(principal, id).await?;
+    Ok((StatusCode::CREATED, Json(invitation_response(invitation))))
+}
+
+async fn replace_user(
     State(state): State<ConsoleState>,
     Extension(principal): Extension<ConsolePrincipal>,
     Path(id): Path<Uuid>,
     headers: HeaderMap,
     Json(input): Json<UserInput>,
+) -> Result<Json<MutationResponse>, ConsoleError> {
+    update_user_fields(state, principal, id, headers, input.into()).await
+}
+
+async fn update_user(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(input): Json<UserUpdateInput>,
+) -> Result<Json<MutationResponse>, ConsoleError> {
+    update_user_fields(state, principal, id, headers, input).await
+}
+
+async fn update_user_fields(
+    state: ConsoleState,
+    principal: ConsolePrincipal,
+    id: Uuid,
+    headers: HeaderMap,
+    input: UserUpdateInput,
 ) -> Result<Json<MutationResponse>, ConsoleError> {
     mutate(
         &state,
@@ -1596,6 +1635,7 @@ impl IntoResponse for ConsoleError {
             Self::Auth(AuthError::Forbidden) | Self::Forbidden => {
                 (StatusCode::FORBIDDEN, "forbidden")
             }
+            Self::Auth(AuthError::NotFound) => (StatusCode::NOT_FOUND, "not found"),
             Self::Auth(AuthError::InvalidInput) | Self::Validation => {
                 (StatusCode::UNPROCESSABLE_ENTITY, "request rejected")
             }

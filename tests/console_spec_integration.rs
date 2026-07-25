@@ -639,13 +639,14 @@ async fn user_updates_only_revoke_sessions_for_auth_identity_changes() {
     let detail = request(&app, "GET", &path, serde_json::json!({}), &[]).await;
     assert_eq!(detail.status(), StatusCode::OK);
     let etag = detail.headers()[header::ETAG].to_str().unwrap().to_owned();
-    let mut update = body_json(detail).await;
-    update["display_name"] = serde_json::json!("Updated display name");
-    for field in ["id", "created_at", "updated_at"] {
-        update.as_object_mut().unwrap().remove(field);
-    }
-
-    let display_name_update = request(&app, "PUT", &path, update, &[("if-match", &etag)]).await;
+    let display_name_update = request(
+        &app,
+        "PATCH",
+        &path,
+        serde_json::json!({"display_name": "Updated display name"}),
+        &[("if-match", &etag)],
+    )
+    .await;
     assert_eq!(display_name_update.status(), StatusCode::OK);
     let profile = request(&app, "GET", "/console/v1/me", serde_json::json!({}), &[]).await;
     assert_eq!(profile.status(), StatusCode::OK);
@@ -657,13 +658,14 @@ async fn user_updates_only_revoke_sessions_for_auth_identity_changes() {
     let detail = request(&app, "GET", &path, serde_json::json!({}), &[]).await;
     assert_eq!(detail.status(), StatusCode::OK);
     let etag = detail.headers()[header::ETAG].to_str().unwrap().to_owned();
-    let mut update = body_json(detail).await;
-    update["role"] = serde_json::json!("user");
-    for field in ["id", "created_at", "updated_at"] {
-        update.as_object_mut().unwrap().remove(field);
-    }
-
-    let role_update = request(&app, "PUT", &path, update, &[("if-match", &etag)]).await;
+    let role_update = request(
+        &app,
+        "PATCH",
+        &path,
+        serde_json::json!({"role": "user"}),
+        &[("if-match", &etag)],
+    )
+    .await;
     assert_eq!(role_update.status(), StatusCode::OK);
     let invalidated = request(&app, "GET", "/console/v1/me", serde_json::json!({}), &[]).await;
     assert_eq!(invalidated.status(), StatusCode::UNAUTHORIZED);
@@ -680,12 +682,14 @@ async fn administrator_can_manage_user_balance() {
     let detail = request(&app, "GET", &path, serde_json::json!({}), &[]).await;
     assert_eq!(detail.status(), StatusCode::OK);
     let etag = detail.headers()[header::ETAG].to_str().unwrap().to_owned();
-    let mut update = body_json(detail).await;
-    update["balance_amount"] = serde_json::json!("42.75");
-    for field in ["id", "created_at", "updated_at"] {
-        update.as_object_mut().unwrap().remove(field);
-    }
-    let response = request(&app, "PUT", &path, update, &[("if-match", &etag)]).await;
+    let response = request(
+        &app,
+        "PATCH",
+        &path,
+        serde_json::json!({"balance_amount": "42.75"}),
+        &[("if-match", &etag)],
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::OK);
 
     let balance: rust_decimal::Decimal =

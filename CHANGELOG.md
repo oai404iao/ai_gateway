@@ -7,6 +7,18 @@ Versioning.
 
 ## [Unreleased]
 
+### Added
+
+- Partial administrator user updates, independent account/balance/status
+  controls, and configurable initial balances for invited users.
+- Safe invitation reissuance for never-activated users, including recovery
+  from historically disabled pending accounts and revocation of older tokens.
+
+### Fixed
+
+- Preserve the `invited` state when administrators edit a pending user's
+  profile or balance, so the invitation can still be activated.
+
 ## [0.3.0] - 2026-07-24
 
 ### Added

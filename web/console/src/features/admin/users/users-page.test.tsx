@@ -45,6 +45,9 @@ describe("UsersPage", () => {
     await user.click(await screen.findByRole("button", { name: /invite user/i }))
     await user.type(screen.getByLabelText("Email"), "new-user@example.test")
     await user.type(screen.getByLabelText("Display name"), "New User")
+    const initialBalance = screen.getByLabelText(/initial balance/i)
+    await user.clear(initialBalance)
+    await user.type(initialBalance, "50")
     await user.click(screen.getByRole("button", { name: /send invitation/i }))
 
     await waitFor(() => {
@@ -52,6 +55,7 @@ describe("UsersPage", () => {
         email: "new-user@example.test",
         display_name: "New User",
         role: "user",
+        initial_balance_amount: "50",
         default_api_key_policy_id: null,
       })
     })

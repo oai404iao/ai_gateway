@@ -1668,6 +1668,7 @@ async fn managed_users_are_versioned_audited_and_immediately_revoke_their_keys()
             "email": format!("managed-user-{}@example.test", Uuid::new_v4()),
             "display_name": format!("managed-user-{}", Uuid::new_v4()),
             "role": "user",
+            "initial_balance_amount": "15.25",
             "default_api_key_policy_id": null
         }),
     )
@@ -1677,8 +1678,85 @@ async fn managed_users_are_versioned_audited_and_immediately_revoke_their_keys()
         serde_json::from_slice(&created.into_body().collect().await.unwrap().to_bytes()).unwrap();
     let user_id = Uuid::parse_str(created["user_id"].as_str().unwrap()).unwrap();
     let invitation_token = created["invitation_token"].as_str().unwrap();
+    let path = format!("/console/v1/users/{user_id}");
+    let pending = admin_request(app.clone(), "GET", &path, serde_json::json!({})).await;
+    assert_eq!(pending.status(), StatusCode::OK);
+    let pending_etag = pending.headers()["etag"].to_str().unwrap().to_owned();
+    let pending: serde_json::Value =
+        serde_json::from_slice(&pending.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(pending["status"], "invited");
+    assert_eq!(
+        pending["balance_amount"]
+            .as_str()
+            .unwrap()
+            .parse::<rust_decimal::Decimal>()
+            .unwrap(),
+        rust_decimal::Decimal::new(1_525, 2)
+    );
+    assert_eq!(
+        admin_request_with_headers(
+            app.clone(),
+            "PATCH",
+            &path,
+            serde_json::json!({"status": "active"}),
+            &[("if-match", &pending_etag)]
+        )
+        .await
+        .status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        admin_request_with_headers(
+            app.clone(),
+            "PATCH",
+            &path,
+            serde_json::json!({"display_name": "Managed invitee renamed"}),
+            &[("if-match", &pending_etag)]
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    let pending = admin_request(app.clone(), "GET", &path, serde_json::json!({})).await;
+    assert_eq!(pending.status(), StatusCode::OK);
+    let pending: serde_json::Value =
+        serde_json::from_slice(&pending.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(pending["status"], "invited");
+    assert_eq!(pending["display_name"], "Managed invitee renamed");
+
+    sqlx::query("UPDATE users SET status='disabled' WHERE id=$1")
+        .bind(user_id)
+        .execute(&database.pool)
+        .await
+        .unwrap();
     assert_eq!(
         activate_invitation(&app, invitation_token).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let replacement = admin_request(
+        app.clone(),
+        "POST",
+        &format!("/console/v1/users/{user_id}/invitation"),
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(replacement.status(), StatusCode::CREATED);
+    let replacement: serde_json::Value =
+        serde_json::from_slice(&replacement.into_body().collect().await.unwrap().to_bytes())
+            .unwrap();
+    let replacement_token = replacement["invitation_token"].as_str().unwrap();
+    assert_eq!(
+        activate_invitation(&app, invitation_token).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let recovered = admin_request(app.clone(), "GET", &path, serde_json::json!({})).await;
+    assert_eq!(recovered.status(), StatusCode::OK);
+    let recovered: serde_json::Value =
+        serde_json::from_slice(&recovered.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(recovered["status"], "invited");
+    assert_eq!(recovered["can_reissue_invitation"], true);
+    assert_eq!(
+        activate_invitation(&app, replacement_token).await.status(),
         StatusCode::OK
     );
     let users = admin_request(
@@ -1721,24 +1799,27 @@ async fn managed_users_are_versioned_audited_and_immediately_revoke_their_keys()
     let old_snapshot = runtime.snapshot();
     assert!(old_snapshot.authenticate(&secret).is_some());
 
-    let path = format!("/console/v1/users/{user_id}");
     let detail = admin_request(app.clone(), "GET", &path, serde_json::json!({})).await;
     assert_eq!(detail.status(), StatusCode::OK);
     let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
-    let mut detail: serde_json::Value =
+    let detail: serde_json::Value =
         serde_json::from_slice(&detail.into_body().collect().await.unwrap().to_bytes()).unwrap();
-    assert_eq!(detail["balance_amount"], "0");
-    detail["status"] = serde_json::json!("suspended");
-    for field in ["id", "created_at", "updated_at"] {
-        detail.as_object_mut().unwrap().remove(field);
-    }
+    assert_eq!(
+        detail["balance_amount"]
+            .as_str()
+            .unwrap()
+            .parse::<rust_decimal::Decimal>()
+            .unwrap(),
+        rust_decimal::Decimal::new(1_525, 2)
+    );
+    let status_update = serde_json::json!({"status": "suspended"});
 
     assert_eq!(
         admin_request_with_headers(
             app.clone(),
-            "PUT",
+            "PATCH",
             &path,
-            detail.clone(),
+            status_update.clone(),
             &[("if-match", &etag)]
         )
         .await
@@ -1757,10 +1838,10 @@ async fn managed_users_are_versioned_audited_and_immediately_revoke_their_keys()
     .unwrap();
     assert_eq!(audit["before"]["status"], "active");
     assert_eq!(audit["after"]["status"], "suspended");
-    assert_eq!(audit["after"]["balance_amount"].as_f64(), Some(0.0));
+    assert_eq!(audit["after"]["balance_amount"].as_f64(), Some(15.25));
 
     assert_eq!(
-        admin_request_with_headers(app, "PUT", &path, detail, &[("if-match", &etag)])
+        admin_request_with_headers(app, "PATCH", &path, status_update, &[("if-match", &etag)])
             .await
             .status(),
         StatusCode::CONFLICT
