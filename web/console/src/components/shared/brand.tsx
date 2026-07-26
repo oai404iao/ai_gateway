@@ -1,4 +1,5 @@
 import { useI18n } from "@/app/i18n";
+import { GatewayMark } from "@/components/shared/gateway-mark";
 import { cn } from "@/lib/utils";
 
 interface BrandProps {
@@ -25,12 +26,12 @@ export function Brand({
     >
       <div
         className={cn(
-          "flex items-center justify-center rounded-md bg-primary text-primary-foreground",
+          "flex items-center justify-center rounded-lg bg-brand-surface",
           compact ? "size-7" : "size-8",
         )}
         aria-hidden="true"
       >
-        <span className={cn("font-bold", compact ? "text-xs" : "text-sm")}>AG</span>
+        <GatewayMark className={compact ? "size-4" : "size-5"} />
       </div>
       <div
         className={cn(
