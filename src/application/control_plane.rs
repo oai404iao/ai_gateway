@@ -13,7 +13,7 @@ use crate::{
         ControlPlaneChannelDetail, ControlPlaneConfigTemplateDetail, ControlPlaneLists,
         ControlPlaneMutation, ControlPlaneRepository, MutationResult, RepositoryError,
         SelfApiKeyCreate, SelfApiKeyOptions, SelfApiKeyUpdate, SyncedModelInput,
-        SystemSettingsView,
+        SystemSettingsView, UserBatchUpdateInput,
     },
     routing::{
         PassiveHealthPolicy, RoutingRuntime, SessionAffinityCacheClearResult,
@@ -229,6 +229,45 @@ impl ControlPlaneCoordinator {
             "channel batch update committed"
         );
         Ok(ChannelBatchUpdateResult {
+            updated_ids: mutations.into_iter().map(|mutation| mutation.id).collect(),
+            correlation_id,
+        })
+    }
+
+    pub async fn update_users_batch(
+        &self,
+        actor: Uuid,
+        input: UserBatchUpdateInput,
+    ) -> Result<UserBatchUpdateResult, ControlPlaneError> {
+        let _guard = self.serial.lock().await;
+        let mut transaction = self.repository.begin_serializable().await?;
+        if !self
+            .repository
+            .active_admin_exists(&mut transaction, actor)
+            .await?
+        {
+            return Err(ControlPlaneError::InvalidActor);
+        }
+        let mutations = self
+            .repository
+            .update_users_batch(&mut transaction, actor, input)
+            .await?;
+        let candidate = self.compile_transaction(&mut transaction).await?;
+        self.validate_candidate(&candidate)?;
+        let correlation_id = Uuid::new_v4();
+        for mutation in &mutations {
+            self.repository
+                .insert_audit(&mut transaction, actor, mutation, correlation_id)
+                .await?;
+        }
+        transaction.commit().await.map_err(RepositoryError::from)?;
+        self.publish(candidate);
+        tracing::info!(
+            %correlation_id,
+            user_count = mutations.len(),
+            "user batch update committed"
+        );
+        Ok(UserBatchUpdateResult {
             updated_ids: mutations.into_iter().map(|mutation| mutation.id).collect(),
             correlation_id,
         })
@@ -547,6 +586,12 @@ pub struct ModelSyncResult {
 
 #[derive(Clone, Debug)]
 pub struct ChannelBatchUpdateResult {
+    pub updated_ids: Vec<Uuid>,
+    pub correlation_id: Uuid,
+}
+
+#[derive(Clone, Debug)]
+pub struct UserBatchUpdateResult {
     pub updated_ids: Vec<Uuid>,
     pub correlation_id: Uuid,
 }

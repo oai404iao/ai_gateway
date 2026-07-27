@@ -274,7 +274,7 @@ API 集成测试应同时验证实现与该规范的关键请求/响应示例，
 | 个人资料与安全 | `/account`、`/account/sessions` | `/console/v1/me*` | user |
 | 我的 API Key | `/api-keys` | `/console/v1/me/api-keys*` | user |
 | 我的请求日志 | `/usage/request-logs` | `/console/v1/me/request-logs*` | user |
-| 用户与策略 | `/admin/users`、`/admin/api-key-policies` | `/console/v1/users*`、`/api-key-policies*` | admin |
+| 用户、用户组与策略 | `/admin/users`、`/admin/user-groups`、`/admin/api-key-policies` | `/console/v1/users*`、`/user-groups*`、`/api-key-policies*` | admin |
 | 模型和目录 | `/admin/models`、`/admin/catalog` | `/console/v1/models*`、`/catalog/models/*` | admin |
 | 路由 | `/admin/routing/*` | `/console/v1/routing/*` | admin |
 | 网络与变换 | `/admin/network/proxies`、`/admin/transforms/templates` | `/console/v1/network/*`、`/transforms/*` | admin |

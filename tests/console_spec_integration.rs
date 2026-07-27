@@ -21,8 +21,9 @@ use ai_gateway::{
     http::console::{self, ConsoleState},
     models_dev::ModelsDevClient,
     persistence::{
-        AuthRepository, ControlPlaneRepository, MIGRATOR, RequestLogRepository,
-        SystemPassiveHealthSettingsInput, SystemSettingsInput, SystemUpstreamSettingsInput,
+        AuthRepository, ControlPlaneRepository, DEFAULT_USER_GROUP_ID, MIGRATOR,
+        RequestLogRepository, SystemPassiveHealthSettingsInput, SystemSettingsInput,
+        SystemUpstreamSettingsInput,
     },
     routing::{PassiveHealthPolicy, RoutingRuntime},
     runtime_config::{AuthConfig, ModelsSyncConfig, RuntimeConfig, compile_runtime_config},
@@ -708,6 +709,477 @@ async fn administrator_can_manage_user_balance() {
     .await
     .unwrap();
     assert_eq!(audit["balance_amount"].as_f64(), Some(42.75));
+    database.cleanup().await;
+}
+
+/// Built-in role groups are present after migration, newly invited users enter
+/// the matching group, and the group's policy is inherited dynamically.
+#[tokio::test]
+async fn user_groups_supply_role_defaults_and_inherited_api_policy() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+    let policy_id = Uuid::new_v4();
+    let override_policy_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO api_key_policies \
+         (id,name,allowed_group_ids,allowed_channel_ids,enabled) \
+         VALUES ($1,$2,'{}','{}',true)",
+    )
+    .bind(policy_id)
+    .bind(format!("group-policy-{policy_id}"))
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO api_key_policies \
+         (id,name,allowed_group_ids,allowed_channel_ids,enabled) \
+         VALUES ($1,$2,'{}','{}',true)",
+    )
+    .bind(override_policy_id)
+    .bind(format!("override-policy-{override_policy_id}"))
+    .execute(&database.pool)
+    .await
+    .unwrap();
+
+    let groups = request(
+        &app,
+        "GET",
+        "/console/v1/user-groups",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(groups.status(), StatusCode::OK);
+    let groups = body_json(groups).await;
+    let default_user_group = groups
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|group| group["system_role"] == "user")
+        .unwrap();
+    assert_eq!(default_user_group["id"], DEFAULT_USER_GROUP_ID.to_string());
+    assert!(
+        groups
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|group| group["system_role"] == "admin")
+    );
+
+    let group_path = format!("/console/v1/user-groups/{DEFAULT_USER_GROUP_ID}");
+    let detail = request(&app, "GET", &group_path, serde_json::json!({}), &[]).await;
+    assert_eq!(detail.status(), StatusCode::OK);
+    let etag = detail.headers()[header::ETAG].to_str().unwrap().to_owned();
+    let group = body_json(detail).await;
+    let update = request(
+        &app,
+        "PUT",
+        &group_path,
+        serde_json::json!({
+            "name": group["name"],
+            "description": group["description"],
+            "default_api_key_policy_id": policy_id,
+        }),
+        &[("if-match", &etag)],
+    )
+    .await;
+    assert_eq!(update.status(), StatusCode::OK);
+
+    let email = format!("group-invite-{policy_id}@example.test");
+    let invite = request(
+        &app,
+        "POST",
+        "/console/v1/users",
+        serde_json::json!({
+            "email": email,
+            "display_name": "Inherited policy user",
+            "role": "user",
+            "initial_balance_amount": "0",
+            "default_api_key_policy_id": null,
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(invite.status(), StatusCode::CREATED);
+    let invited_user_id =
+        Uuid::parse_str(body_json(invite).await["user_id"].as_str().unwrap()).unwrap();
+    let assignment: (Uuid, Option<Uuid>) =
+        sqlx::query_as("SELECT user_group_id,default_api_key_policy_id FROM users WHERE id=$1")
+            .bind(invited_user_id)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert_eq!(assignment, (DEFAULT_USER_GROUP_ID, None));
+
+    sqlx::query("UPDATE users SET status='active' WHERE id=$1")
+        .bind(invited_user_id)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    let options = ControlPlaneRepository::new(database.pool.clone())
+        .own_api_key_options(invited_user_id)
+        .await
+        .unwrap();
+    assert_eq!(options.policy_id, policy_id);
+
+    let user_path = format!("/console/v1/users/{invited_user_id}");
+    let user_detail = request(&app, "GET", &user_path, serde_json::json!({}), &[]).await;
+    let user_etag = user_detail.headers()[header::ETAG]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let override_update = request(
+        &app,
+        "PATCH",
+        &user_path,
+        serde_json::json!({
+            "default_api_key_policy_id": override_policy_id
+        }),
+        &[("if-match", &user_etag)],
+    )
+    .await;
+    assert_eq!(override_update.status(), StatusCode::OK);
+    let overridden = ControlPlaneRepository::new(database.pool.clone())
+        .own_api_key_options(invited_user_id)
+        .await
+        .unwrap();
+    assert_eq!(overridden.policy_id, override_policy_id);
+
+    let user_detail = request(&app, "GET", &user_path, serde_json::json!({}), &[]).await;
+    let user_etag = user_detail.headers()[header::ETAG]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let inherit_update = request(
+        &app,
+        "PATCH",
+        &user_path,
+        serde_json::json!({"default_api_key_policy_id": null}),
+        &[("if-match", &user_etag)],
+    )
+    .await;
+    assert_eq!(inherit_update.status(), StatusCode::OK);
+    let inherited_again = ControlPlaneRepository::new(database.pool.clone())
+        .own_api_key_options(invited_user_id)
+        .await
+        .unwrap();
+    assert_eq!(inherited_again.policy_id, policy_id);
+
+    let default_group = request(&app, "GET", &group_path, serde_json::json!({}), &[]).await;
+    let default_group_etag = default_group.headers()[header::ETAG]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let protected = request(
+        &app,
+        "DELETE",
+        &group_path,
+        serde_json::json!({}),
+        &[("if-match", &default_group_etag)],
+    )
+    .await;
+    assert_eq!(protected.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        body_json(protected).await,
+        serde_json::json!({"error": "protected_user_group"})
+    );
+    database.cleanup().await;
+}
+
+/// Batch user updates are all-or-nothing, versioned, and support status,
+/// balance adjustment, policy override, and group assignment together.
+#[tokio::test]
+async fn user_batch_updates_are_atomic_and_cover_supported_fields() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+    let group_id = Uuid::new_v4();
+    let policy_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO user_groups (id,name) VALUES ($1,$2)")
+        .bind(group_id)
+        .bind(format!("batch-group-{group_id}"))
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO api_key_policies \
+         (id,name,allowed_group_ids,allowed_channel_ids,enabled) \
+         VALUES ($1,$2,'{}','{}',true)",
+    )
+    .bind(policy_id)
+    .bind(format!("batch-policy-{policy_id}"))
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let user_ids = [Uuid::new_v4(), Uuid::new_v4()];
+    for (index, user_id) in user_ids.into_iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO users \
+             (id,email,display_name,role,status,balance_amount) \
+             VALUES ($1,$2,$3,'user','active',$4)",
+        )
+        .bind(user_id)
+        .bind(format!("batch-{user_id}@example.test"))
+        .bind(format!("batch-user-{user_id}"))
+        .bind(rust_decimal::Decimal::from(10 + index as i64 * 10))
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    }
+
+    let users = request(&app, "GET", "/console/v1/users", serde_json::json!({}), &[]).await;
+    let users = body_json(users).await;
+    let versions = user_ids
+        .iter()
+        .map(|id| {
+            users
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|user| user["id"] == id.to_string())
+                .unwrap()["updated_at"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect::<Vec<_>>();
+    let update = request(
+        &app,
+        "POST",
+        "/console/v1/users/batch",
+        serde_json::json!({
+            "items": [
+                {"id": user_ids[0], "updated_at": versions[0]},
+                {"id": user_ids[1], "updated_at": versions[1]},
+            ],
+            "changes": {
+                "status": "suspended",
+                "balance": {"operation": "increase", "amount": "5"},
+                "user_group_id": group_id,
+                "default_api_key_policy_id": policy_id,
+            }
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(update.status(), StatusCode::OK);
+    let update_body = body_json(update).await;
+    assert_eq!(update_body["updated_ids"].as_array().unwrap().len(), 2);
+
+    let rows: Vec<(Uuid, String, rust_decimal::Decimal, Uuid, Option<Uuid>)> = sqlx::query_as(
+        "SELECT id,status,balance_amount,user_group_id,default_api_key_policy_id \
+             FROM users WHERE id=ANY($1) ORDER BY id",
+    )
+    .bind(user_ids)
+    .fetch_all(&database.pool)
+    .await
+    .unwrap();
+    assert!(rows.iter().all(|row| row.1 == "suspended"));
+    let mut balances = rows.iter().map(|row| row.2).collect::<Vec<_>>();
+    balances.sort();
+    assert_eq!(
+        balances,
+        vec![
+            rust_decimal::Decimal::from(15),
+            rust_decimal::Decimal::from(25)
+        ]
+    );
+    assert!(
+        rows.iter()
+            .all(|row| row.3 == group_id && row.4 == Some(policy_id))
+    );
+
+    let current_users = request(&app, "GET", "/console/v1/users", serde_json::json!({}), &[]).await;
+    let current_users = body_json(current_users).await;
+    let current_version = current_users
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|user| user["id"] == user_ids[1].to_string())
+        .unwrap()["updated_at"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let stale = request(
+        &app,
+        "POST",
+        "/console/v1/users/batch",
+        serde_json::json!({
+            "items": [
+                {"id": user_ids[1], "updated_at": current_version},
+                {"id": user_ids[0], "updated_at": versions[0]},
+            ],
+            "changes": {
+                "balance": {"operation": "set", "amount": "99"}
+            }
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(stale.status(), StatusCode::CONFLICT);
+    let unchanged: rust_decimal::Decimal =
+        sqlx::query_scalar("SELECT balance_amount FROM users WHERE id=$1")
+            .bind(user_ids[1])
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert_eq!(unchanged, rust_decimal::Decimal::from(25));
+    database.cleanup().await;
+}
+
+/// Deleting a user anonymizes the retained owner row and revokes every live
+/// credential instead of cascading away request-log/audit ownership.
+#[tokio::test]
+async fn user_delete_anonymizes_and_revokes_credentials() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+    let user_id = Uuid::new_v4();
+    let api_key_id = Uuid::new_v4();
+    let session_id = Uuid::new_v4();
+    let invitation_id = Uuid::new_v4();
+    let email = format!("delete-{user_id}@example.test");
+    sqlx::query(
+        "INSERT INTO users \
+         (id,email,display_name,role,status,password_hash,balance_amount) \
+         VALUES ($1,$2,$3,'user','active','test-hash',10)",
+    )
+    .bind(user_id)
+    .bind(&email)
+    .bind(format!("delete-user-{user_id}"))
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO api_keys \
+         (id,user_id,name,secret_value,status,allowed_api_formats,permissions, \
+          allowed_group_ids,allowed_channel_ids) \
+         VALUES ($1,$2,'delete-key',$3,'active', \
+                 ARRAY['open_ai_chat_completions']::api_format[], \
+                 ARRAY['proxy']::text[],'{}','{}')",
+    )
+    .bind(api_key_id)
+    .bind(user_id)
+    .bind(format!("sk-delete-{}", Uuid::new_v4().simple()))
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO user_sessions \
+         (id,user_id,refresh_token_hash,expires_at) \
+         VALUES ($1,$2,$3,now()+interval '1 day')",
+    )
+    .bind(session_id)
+    .bind(user_id)
+    .bind(vec![1_u8; 32])
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO user_invitations \
+         (id,user_id,invited_by,token_hash,expires_at) \
+         VALUES ($1,$2,$3,$4,now()+interval '1 day')",
+    )
+    .bind(invitation_id)
+    .bind(user_id)
+    .bind(app.user_id)
+    .bind(vec![2_u8; 32])
+    .execute(&database.pool)
+    .await
+    .unwrap();
+
+    let path = format!("/console/v1/users/{user_id}");
+    let detail = request(&app, "GET", &path, serde_json::json!({}), &[]).await;
+    let etag = detail.headers()[header::ETAG].to_str().unwrap().to_owned();
+    let deleted = request(
+        &app,
+        "DELETE",
+        &path,
+        serde_json::json!({}),
+        &[("if-match", &etag)],
+    )
+    .await;
+    assert_eq!(deleted.status(), StatusCode::OK);
+
+    let hidden = request(&app, "GET", &path, serde_json::json!({}), &[]).await;
+    assert_eq!(hidden.status(), StatusCode::NOT_FOUND);
+    let retained: (
+        Option<String>,
+        String,
+        String,
+        Option<chrono::DateTime<chrono::Utc>>,
+        Uuid,
+    ) = sqlx::query_as(
+        "SELECT email,display_name,status,deleted_at,user_group_id \
+             FROM users WHERE id=$1",
+    )
+    .bind(user_id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert!(retained.0.is_none());
+    assert!(retained.1.starts_with("Deleted user "));
+    assert_eq!(retained.2, "disabled");
+    assert!(retained.3.is_some());
+    assert_eq!(retained.4, DEFAULT_USER_GROUP_ID);
+    let key_status: String = sqlx::query_scalar("SELECT status FROM api_keys WHERE id=$1")
+        .bind(api_key_id)
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    assert_eq!(key_status, "revoked");
+    let session_revoked: bool =
+        sqlx::query_scalar("SELECT revoked_at IS NOT NULL FROM user_sessions WHERE id=$1")
+            .bind(session_id)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert!(session_revoked);
+    let invitation_revoked: bool =
+        sqlx::query_scalar("SELECT revoked_at IS NOT NULL FROM user_invitations WHERE id=$1")
+            .bind(invitation_id)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert!(invitation_revoked);
+    let delete_audit: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_logs \
+         WHERE object_type='user' AND object_id=$1 AND action='delete'",
+    )
+    .bind(user_id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(delete_audit, 1);
+
+    sqlx::query(
+        "INSERT INTO users (id,email,display_name,role,status) \
+         VALUES ($1,$2,$3,'user','active')",
+    )
+    .bind(Uuid::new_v4())
+    .bind(email)
+    .bind(format!("replacement-{user_id}"))
+    .execute(&database.pool)
+    .await
+    .expect("anonymization releases the email");
+
+    let self_path = format!("/console/v1/users/{}", app.user_id);
+    let self_detail = request(&app, "GET", &self_path, serde_json::json!({}), &[]).await;
+    let self_etag = self_detail.headers()[header::ETAG]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let self_delete = request(
+        &app,
+        "DELETE",
+        &self_path,
+        serde_json::json!({}),
+        &[("if-match", &self_etag)],
+    )
+    .await;
+    assert_eq!(self_delete.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        body_json(self_delete).await,
+        serde_json::json!({"error": "cannot_delete_self"})
+    );
     database.cleanup().await;
 }
 

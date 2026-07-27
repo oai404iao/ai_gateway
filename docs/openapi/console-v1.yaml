@@ -34,6 +34,7 @@ tags:
   - name: Auth
   - name: Self
   - name: Users
+  - name: UserGroups
   - name: ApiKeyPolicies
   - name: ApiKeys
   - name: Models
@@ -400,6 +401,31 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/Unprocessable" }
 
+  /users/batch:
+    post:
+      tags: [Users]
+      operationId: updateUsersBatch
+      description: |
+        Atomically applies the same partial changes to at most 100 users.
+        Every item carries the `updated_at` value returned by the list API;
+        one stale or invalid item rejects the complete batch.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UserBatchUpdateInput" }
+      responses:
+        "200":
+          description: Users updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserBatchUpdateResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
   /users/{id}:
     get:
       tags: [Users]
@@ -437,6 +463,29 @@ paths:
       responses:
         "200":
           description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+    delete:
+      tags: [Users]
+      operationId: deleteUser
+      description: |
+        Irreversibly anonymizes the user, revokes every session, invitation,
+        and API key, and hides the account from management lists. Request logs
+        and audit history retain their user id. Administrators cannot delete
+        their own account.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+        - $ref: "#/components/parameters/IfMatch"
+      responses:
+        "200":
+          description: User anonymized.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/MutationResponse" }
@@ -494,6 +543,103 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /user-groups:
+    get:
+      tags: [UserGroups]
+      operationId: listUserGroups
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: User groups.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/UserGroupView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [UserGroups]
+      operationId: createUserGroup
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UserGroupInput" }
+      responses:
+        "201":
+          description: User group created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /user-groups/{id}:
+    get:
+      tags: [UserGroups]
+      operationId: getUserGroup
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "200":
+          description: User group detail.
+          headers:
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserGroupView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [UserGroups]
+      operationId: updateUserGroup
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UserGroupInput" }
+      responses:
+        "200":
+          description: User group updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+    delete:
+      tags: [UserGroups]
+      operationId: deleteUserGroup
+      description: |
+        Deletes an empty custom group. The built-in default user and
+        administrator groups are protected.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+        - $ref: "#/components/parameters/IfMatch"
+      responses:
+        "200":
+          description: User group deleted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/Unprocessable" }
 
   /api-key-policies:
@@ -1734,6 +1880,15 @@ components:
           description: Created API key value; present only on API key create responses.
         correlation_id: { type: string, format: uuid }
 
+    UserBatchUpdateResponse:
+      type: object
+      required: [updated_ids, correlation_id]
+      properties:
+        updated_ids:
+          type: array
+          items: { type: string, format: uuid }
+        correlation_id: { type: string, format: uuid }
+
     ReloadResponse:
       type: object
       required: [correlation_id]
@@ -2219,7 +2374,7 @@ components:
       type: object
       required:
         [id, email, display_name, role, status, can_reissue_invitation,
-         default_api_key_policy_id,
+         user_group_id, default_api_key_policy_id, effective_api_key_policy_id,
          balance_amount, created_at, updated_at]
       properties:
         id: { type: string, format: uuid }
@@ -2232,10 +2387,46 @@ components:
           description: |
             True when the account has no password and an administrator may
             safely replace its invitation.
-        default_api_key_policy_id: { type: string, format: uuid, nullable: true }
+        user_group_id: { type: string, format: uuid }
+        default_api_key_policy_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: |
+            Optional user-level API key policy override. Null means the user
+            inherits the policy configured on their group.
+        effective_api_key_policy_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Resolved user override or group default policy.
         balance_amount:
           allOf: [{ $ref: "#/components/schemas/Decimal" }]
           description: Current account balance in USD.
+        created_at: { $ref: "#/components/schemas/DateTime" }
+        updated_at: { $ref: "#/components/schemas/DateTime" }
+
+    UserGroupView:
+      type: object
+      required:
+        [id, name, description, default_api_key_policy_id, system_role,
+         member_count, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: string, nullable: true }
+        default_api_key_policy_id: { type: string, format: uuid, nullable: true }
+        system_role:
+          type: string
+          enum: [user, admin]
+          nullable: true
+          description: |
+            Non-null only for the protected built-in group used when a user of
+            that role is invited without an explicit group.
+        member_count:
+          type: integer
+          format: int64
+          minimum: 0
         created_at: { $ref: "#/components/schemas/DateTime" }
         updated_at: { $ref: "#/components/schemas/DateTime" }
 
@@ -2824,6 +3015,13 @@ components:
         initial_balance_amount:
           allOf: [{ $ref: "#/components/schemas/Decimal" }]
           description: Initial non-negative account balance in USD; defaults to zero.
+        user_group_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: |
+            Explicit group assignment. Null or omission selects the protected
+            default group for the requested role.
         default_api_key_policy_id: { type: string, format: uuid, nullable: true }
 
     UserInput:
@@ -2837,6 +3035,11 @@ components:
         balance_amount:
           allOf: [{ $ref: "#/components/schemas/Decimal" }]
           description: Current account balance in USD.
+        user_group_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Null or omission selects the protected default role group.
         default_api_key_policy_id: { type: string, format: uuid, nullable: true }
 
     UserUpdateInput:
@@ -2858,11 +3061,74 @@ components:
         balance_amount:
           allOf: [{ $ref: "#/components/schemas/Decimal" }]
           description: Replaces the current account balance in USD.
+        user_group_id:
+          type: string
+          format: uuid
+          description: Moves the user to this group; omit to preserve membership.
         default_api_key_policy_id:
           type: string
           format: uuid
           nullable: true
-          description: Set to null to clear the policy; omit to preserve it.
+          description: |
+            Set to null to inherit the group policy; omit to preserve the
+            current user-level override.
+
+    UserBatchUpdateTarget:
+      type: object
+      required: [id, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        updated_at:
+          allOf: [{ $ref: "#/components/schemas/DateTime" }]
+          description: Version copied from the user list response.
+
+    UserBalanceBatchChange:
+      type: object
+      required: [operation, amount]
+      properties:
+        operation:
+          type: string
+          enum: [set, increase, decrease]
+        amount:
+          allOf: [{ $ref: "#/components/schemas/Decimal" }]
+          description: Non-negative USD amount.
+
+    UserBatchChanges:
+      type: object
+      description: At least one property must be supplied.
+      properties:
+        status:
+          type: string
+          enum: [active, suspended, disabled]
+        balance: { $ref: "#/components/schemas/UserBalanceBatchChange" }
+        user_group_id: { type: string, format: uuid }
+        default_api_key_policy_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Set to null to inherit each selected user's group policy.
+
+    UserBatchUpdateInput:
+      type: object
+      required: [items, changes]
+      properties:
+        items:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items: { $ref: "#/components/schemas/UserBatchUpdateTarget" }
+        changes: { $ref: "#/components/schemas/UserBatchChanges" }
+
+    UserGroupInput:
+      type: object
+      required: [name, default_api_key_policy_id]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100 }
+        description: { type: string, maxLength: 500, nullable: true }
+        default_api_key_policy_id:
+          type: string
+          format: uuid
+          nullable: true
 
     ApiKeyPolicyInput:
       type: object

@@ -2,7 +2,8 @@
 
 > 状态：已完成设计记录。本文记录将静态管理 Bearer 接口重构为用户登录、JWT 鉴权及角色授权 Console API 的设计与实施清单。
 >
-> **后续变更：** migration `0010_api_key_target_selection.sql` 已替换本文最初的 Policy 模板语义。
+> **后续变更：** migration `0010_api_key_target_selection.sql` 已替换本文最初的 Policy 模板语义；
+> migration `0022_user_groups_and_user_lifecycle.sql` 又加入单一用户组、组策略继承和匿名化删除。
 > 当前行为以 `docs/user/operations.md` 和 Console OpenAPI 为准。
 
 ## 1. 目标
@@ -75,7 +76,9 @@ verification_key_path = "/run/secrets/ai-gateway-jwt-public.pem"
 - `password_hash`：Argon2id 哈希，不保存明文密码。
 - `auth_version`：认证状态变更时递增，用于立即作废旧 JWT。
 - `password_changed_at`：可选安全审计字段。
-- `default_api_key_policy_id`：普通用户自助创建 API Key 的默认策略。
+- `user_group_id`：用户所属的唯一用户组。
+- `default_api_key_policy_id`：可选用户级策略覆盖；为空时继承用户组默认策略。
+- `deleted_at` / `deleted_by`：不可恢复匿名化删除的事实；被删除用户不再出现在管理列表中。
 
 邀请中的用户使用 `status = 'invited'`；接受邀请后变为 `active`。
 
@@ -93,6 +96,11 @@ verification_key_path = "/run/secrets/ai-gateway-jwt-public.pem"
 
 管理员定义普通用户创建或调整 API Key 时可选择的渠道组和单独渠道。Policy 只表达资源选择上界，
 不再保存格式、权限、RPM、并发、额度或最大活动 Key 数。
+
+### 5.5 user_groups
+
+每个用户组可配置一个默认 API Key Policy。系统预置受保护的默认用户组和默认管理员组；邀请未显式
+指定组时按角色使用对应默认组。自定义组只有在没有成员时才能删除。
 
 ## 6. 认证和授权
 
@@ -145,6 +153,7 @@ GET       /console/v1/me/request-logs/{{id}}
 
 ```text
 /console/v1/users
+/console/v1/user-groups
 /console/v1/api-key-policies
 /console/v1/models
 /console/v1/catalog/*
@@ -160,7 +169,8 @@ GET       /console/v1/me/request-logs/{{id}}
 
 ## 8. API Key 自助服务规则
 
-普通用户不可传入 `user_id`、API 格式或权限。用户从默认 Policy 允许的列表中选择
+普通用户不可传入 `user_id`、API 格式或权限。有效 Policy 按“用户覆盖优先，否则继承用户组默认”
+解析；用户从该 Policy 允许的列表中选择
 `allowed_group_ids` / `allowed_channel_ids`，并可在创建和后续更新时设置该 Key 的 RPM、并发和额度。
 格式由目标自动推导，自助创建权限固定为 `proxy`、`models.read`；Policy 更新不反向改写既有 Key。
 

@@ -73,6 +73,11 @@ Browser or Console client
 
 数据面不会为每个请求查询 PostgreSQL。进程内限流、被动健康、in-flight 和 Session 粘性不跨实例共享。
 
+Console 用户采用单用户组模型。内置默认用户组和默认管理员组负责邀请时的角色默认归属；用户没有
+单独 API Key Policy 覆盖时，动态继承所在组的默认策略。用户批量修改在同一 serializable 事务中
+验证所有 `updated_at` 版本并统一审计，任一失败会回滚整批。删除用户采用不可恢复的匿名化：
+撤销会话、邀请和 API Key，但保留用户主键以维持请求日志与审计记录的引用完整性。
+
 路由快照为渠道和模型路由分配进程内 dense slot。模型 tier 保存连续的
 `CompiledCandidate(slot, channel, weight)` 数组；相同授权范围的 API Key 共享
 `AuthorizationProfile`，其中包含允许渠道和可达路由两个位图。模型查找、模型可达性

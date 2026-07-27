@@ -21,6 +21,54 @@ const ADMIN_PROFILE = {
   access_token: "e2e-mock-access-token",
 };
 
+const E2E_USER = {
+  id: "00000000-0000-0000-0000-000000000090",
+  email: "batch-user@example.test",
+  display_name: "Batch User",
+  role: "user",
+  status: "active",
+  can_reissue_invitation: false,
+  user_group_id: "00000000-0000-0000-0000-000000000101",
+  default_api_key_policy_id: null,
+  effective_api_key_policy_id: "00000000-0000-0000-0000-000000000031",
+  balance_amount: "10.00",
+  created_at: "2026-01-01T00:00:00.000Z",
+  updated_at: "2026-01-02T00:00:00.000Z",
+};
+
+const E2E_USER_GROUPS = [
+  {
+    id: "00000000-0000-0000-0000-000000000101",
+    name: "Default Users",
+    description: "Default group for newly invited users.",
+    default_api_key_policy_id: "00000000-0000-0000-0000-000000000031",
+    system_role: "user",
+    member_count: 1,
+    created_at: "2026-01-01T00:00:00.000Z",
+    updated_at: "2026-01-02T00:00:00.000Z",
+  },
+  {
+    id: "00000000-0000-0000-0000-000000000102",
+    name: "Default Administrators",
+    description: "Default group for newly invited administrators.",
+    default_api_key_policy_id: "00000000-0000-0000-0000-000000000031",
+    system_role: "admin",
+    member_count: 1,
+    created_at: "2026-01-01T00:00:00.000Z",
+    updated_at: "2026-01-02T00:00:00.000Z",
+  },
+];
+
+const E2E_API_KEY_POLICY = {
+  id: "00000000-0000-0000-0000-000000000031",
+  name: "default",
+  allowed_group_ids: ["00000000-0000-0000-0000-000000000021"],
+  allowed_channel_ids: [],
+  enabled: true,
+  created_at: "2026-01-01T00:00:00.000Z",
+  updated_at: "2026-01-02T00:00:00.000Z",
+};
+
 export const E2E_API_KEY_SECRET = "sk-e2e-retrievable-api-key";
 
 export async function mockConsoleApi(page: Page): Promise<void> {
@@ -48,6 +96,24 @@ export async function mockConsoleApi(page: Page): Promise<void> {
     }
     if (path === "/console/v1/me/sessions" && method === "GET") {
       return route.fulfill({ status: 200, json: [] });
+    }
+    if (path === "/console/v1/users" && method === "GET") {
+      return route.fulfill({ status: 200, json: [E2E_USER] });
+    }
+    if (path === "/console/v1/user-groups" && method === "GET") {
+      return route.fulfill({ status: 200, json: E2E_USER_GROUPS });
+    }
+    if (path === "/console/v1/api-key-policies" && method === "GET") {
+      return route.fulfill({ status: 200, json: [E2E_API_KEY_POLICY] });
+    }
+    if (path === "/console/v1/users/batch" && method === "POST") {
+      return route.fulfill({
+        status: 200,
+        json: {
+          updated_ids: [E2E_USER.id],
+          correlation_id: "00000000-0000-0000-0000-000000000091",
+        },
+      });
     }
     if (path === "/console/v1/me/api-keys" && method === "GET") {
       return route.fulfill({

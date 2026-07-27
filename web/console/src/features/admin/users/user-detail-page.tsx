@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useParams } from "react-router";
+import { useNavigate, useParams } from "react-router";
 import { Controller, useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -29,8 +29,10 @@ import { StatusBadge } from "@/components/shared/status-badge";
 import { AdminDetailShell } from "@/features/admin/components/admin-detail-shell";
 import {
   useApiKeyPolicies,
+  useDeleteUser,
   useReissueUserInvitation,
   useUpdateUser,
+  useUserGroups,
   useUser,
 } from "@/features/admin/api";
 import { useI18n } from "@/app/i18n";
@@ -48,6 +50,7 @@ const accountSchema = z.object({
   display_name: z.string().min(1, "Display name is required.").max(200),
   email: z.union([z.literal(""), z.string().email("Enter a valid email.")]),
   role: z.enum(["user", "admin"]),
+  user_group_id: z.string().min(1, "Pick a user group."),
   default_api_key_policy_id: z.string(),
 });
 
@@ -73,6 +76,7 @@ const emptyAccountValues: AccountValues = {
   display_name: "",
   email: "",
   role: "user",
+  user_group_id: "",
   default_api_key_policy_id: "",
 };
 
@@ -90,14 +94,18 @@ function isManageableStatus(value: string): value is ManageableStatus {
 
 export function UserDetailPage() {
   const { id = "" } = useParams();
+  const navigate = useNavigate();
   const { data, etag, isLoading, error, refetch } = useUser(id);
   const update = useUpdateUser(id);
+  const remove = useDeleteUser(id);
   const reissue = useReissueUserInvitation(id);
   const policies = useApiKeyPolicies();
+  const groups = useUserGroups();
   const { user: currentUser } = useSession();
   const { t } = useI18n();
   const [submitting, setSubmitting] = useState<SubmittingAction | null>(null);
   const [reissueOpen, setReissueOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
   const [invitationToken, setInvitationToken] = useState<string | null>(null);
   const user = data?.data;
 
@@ -106,6 +114,7 @@ export function UserDetailPage() {
         display_name: user.display_name,
         email: user.email ?? "",
         role: user.role,
+        user_group_id: user.user_group_id,
         default_api_key_policy_id: user.default_api_key_policy_id ?? "",
       }
     : emptyAccountValues;
@@ -187,6 +196,9 @@ export function UserDetailPage() {
     if (values.role !== user.role) {
       input.role = values.role;
     }
+    if (values.user_group_id !== user.user_group_id) {
+      input.user_group_id = values.user_group_id;
+    }
     if (values.default_api_key_policy_id !== (user.default_api_key_policy_id ?? "")) {
       input.default_api_key_policy_id = values.default_api_key_policy_id || null;
     }
@@ -248,6 +260,39 @@ export function UserDetailPage() {
     }
   };
 
+  const deleteUser = async () => {
+    setDeleteOpen(false);
+    try {
+      await remove.mutateAsync({ ifMatch: etag });
+      toast.success(t("User deleted"));
+      navigate("/admin/users", { replace: true });
+    } catch (error) {
+      if (error instanceof ApiError && error.code === "cannot_delete_self") {
+        toast.error(t("You cannot delete your own administrator account."));
+      } else if (
+        error instanceof ApiError &&
+        error.code === "last_administrator"
+      ) {
+        toast.error(t("Create another active administrator before deleting this user."));
+      } else if (error instanceof ApiError && error.isConflict) {
+        toast.error(t("This user was changed elsewhere. Reloading."));
+        await refetch();
+      } else {
+        toast.error(error instanceof Error ? error.message : t("Delete failed"));
+      }
+    }
+  };
+
+  const groupName =
+    groups.data?.find((group) => group.id === user?.user_group_id)?.name ??
+    user?.user_group_id ??
+    "—";
+  const effectivePolicyName = user?.effective_api_key_policy_id
+    ? policies.data?.find(
+        (policy) => policy.id === user.effective_api_key_policy_id,
+      )?.name ?? user.effective_api_key_policy_id
+    : t("None");
+
   return (
     <>
       <AdminDetailShell
@@ -255,8 +300,8 @@ export function UserDetailPage() {
       description={t("Manage identity, policy, balance, and access independently.")}
       backPath="/admin/users"
       backLabel={t("Back to users")}
-      isLoading={isLoading}
-      error={error}
+      isLoading={isLoading || policies.isLoading || groups.isLoading}
+      error={error ?? policies.error ?? groups.error}
       hasData={Boolean(user)}
       detailCard={
         user ? (
@@ -270,6 +315,11 @@ export function UserDetailPage() {
                 <DetailField label={t("Email")} value={user.email ?? "—"} />
                 <DetailField label={t("Role")} value={<StatusBadge value={user.role} />} />
                 <DetailField label={t("Status")} value={<StatusBadge value={user.status} />} />
+                <DetailField label={t("User group")} value={groupName} />
+                <DetailField
+                  label={t("Effective API policy")}
+                  value={effectivePolicyName}
+                />
                 <DetailField label={t("Balance")} value={formatUsd(user.balance_amount)} />
                 <DetailField label={t("Created")} value={formatDateTime(user.created_at)} />
                 <DetailField label={t("Updated")} value={formatDateTime(user.updated_at)} />
@@ -348,17 +398,49 @@ export function UserDetailPage() {
                     />
                     <Controller
                       control={accountForm.control}
+                      name="user_group_id"
+                      defaultValue={accountValues.user_group_id}
+                      render={({ field, fieldState }) => (
+                        <Field data-invalid={fieldState.invalid}>
+                          <FieldLabel htmlFor="user_group_id">
+                            {t("User group")}
+                          </FieldLabel>
+                          <Select value={field.value} onValueChange={field.onChange}>
+                            <SelectTrigger
+                              id="user_group_id"
+                              aria-invalid={fieldState.invalid}
+                            >
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectGroup>
+                                {groups.data?.map((group) => (
+                                  <SelectItem key={group.id} value={group.id}>
+                                    {group.name}
+                                  </SelectItem>
+                                ))}
+                              </SelectGroup>
+                            </SelectContent>
+                          </Select>
+                          {fieldState.error ? (
+                            <FieldError>{fieldState.error.message}</FieldError>
+                          ) : null}
+                        </Field>
+                      )}
+                    />
+                    <Controller
+                      control={accountForm.control}
                       name="default_api_key_policy_id"
                       defaultValue={accountValues.default_api_key_policy_id}
                       render={({ field, fieldState }) => (
                         <Field data-invalid={fieldState.invalid}>
                           <FieldLabel htmlFor="default_api_key_policy_id">
-                            {t("Default API key policy")}
+                            {t("API policy override")}
                           </FieldLabel>
                           <Select
-                            value={field.value || "__none__"}
+                            value={field.value || "__inherit__"}
                             onValueChange={(value) =>
-                              field.onChange(value === "__none__" ? "" : value)
+                              field.onChange(value === "__inherit__" ? "" : value)
                             }
                           >
                             <SelectTrigger
@@ -369,9 +451,16 @@ export function UserDetailPage() {
                             </SelectTrigger>
                             <SelectContent>
                               <SelectGroup>
-                                <SelectItem value="__none__">{t("None")}</SelectItem>
+                                <SelectItem value="__inherit__">
+                                  {t("Inherit group policy")}
+                                </SelectItem>
                                 {policies.data
-                                  ?.filter((policy) => policy.enabled)
+                                  ?.filter(
+                                    (policy) =>
+                                      policy.enabled ||
+                                      policy.id ===
+                                        accountValues.default_api_key_policy_id,
+                                  )
                                   .map((policy) => (
                                     <SelectItem key={policy.id} value={policy.id}>
                                       {policy.name}
@@ -526,9 +615,52 @@ export function UserDetailPage() {
                 )}
               </CardContent>
             </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>{t("Danger zone")}</CardTitle>
+                <CardDescription>
+                  {t("Deleting a user is permanent and audited.")}
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="flex flex-col items-start gap-4">
+                {currentUser?.id === user.id ? (
+                  <Alert>
+                    <AlertTitle>{t("Current administrator account")}</AlertTitle>
+                    <AlertDescription>
+                      {t("You cannot delete your own administrator account.")}
+                    </AlertDescription>
+                  </Alert>
+                ) : null}
+                <Button
+                  type="button"
+                  variant="destructive"
+                  disabled={
+                    remove.isPending ||
+                    submitting !== null ||
+                    currentUser?.id === user.id
+                  }
+                  onClick={() => setDeleteOpen(true)}
+                >
+                  {remove.isPending ? <Spinner data-icon="inline-start" /> : null}
+                  {t("Delete user")}
+                </Button>
+              </CardContent>
+            </Card>
           </>
         ) : null
       }
+      />
+      <ConfirmDialog
+        open={deleteOpen}
+        onOpenChange={setDeleteOpen}
+        title={t("Delete user?")}
+        description={t(
+          "This anonymizes the account and revokes every session, invitation, and API key. Request logs and audit history are preserved. This action cannot be undone.",
+        )}
+        confirmLabel={t("Delete user")}
+        destructive
+        onConfirm={() => void deleteUser()}
       />
       <ConfirmDialog
         open={reissueOpen}

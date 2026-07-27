@@ -12,6 +12,7 @@ import {
   SlidersHorizontal,
   ChartNoAxesCombined,
   Activity,
+  UsersRound,
   type LucideIcon,
 } from "lucide-react";
 import type { UserRole } from "@/api/types";
@@ -45,6 +46,7 @@ export const NAV_SECTIONS: NavSection[] = [
     roles: ["admin"],
     items: [
       { label: "Users", path: "/admin/users", icon: Users },
+      { label: "User Groups", path: "/admin/user-groups", icon: UsersRound },
       { label: "API Key Policies", path: "/admin/api-key-policies", icon: SlidersHorizontal },
       { label: "Models", path: "/admin/models", icon: Boxes },
       { label: "Price sync", path: "/admin/catalog", icon: GalleryVerticalEnd },

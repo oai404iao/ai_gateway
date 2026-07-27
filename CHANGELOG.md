@@ -7,6 +7,15 @@ Versioning.
 
 ## [Unreleased]
 
+### Added
+
+- Administrator-managed user groups with protected default user/admin groups,
+  inherited API key policies, and optional per-user policy overrides.
+- Atomic batch user updates for status, balance set/increase/decrease, API
+  policy overrides, and group membership.
+- Confirmed user deletion that anonymizes the account, revokes credentials,
+  preserves request/audit ownership, and releases the email for reuse.
+
 ## [0.3.1] - 2026-07-25
 
 ### Added

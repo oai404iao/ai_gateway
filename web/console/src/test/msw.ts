@@ -18,6 +18,7 @@ import {
   CONFIG_TEMPLATE_DETAIL,
   CONTROL_PLANE_USER,
   COST_STATISTICS_REPORT,
+  DEFAULT_USER_GROUP,
   MODEL,
   MODEL_RULE,
   NEW_API_KEY_SECRET,
@@ -28,6 +29,7 @@ import {
   SYSTEM_SETTINGS,
   SYSTEM_LOAD_REPORT,
   USER_ACCESS_TOKEN,
+  USER_GROUP,
   USER_USER,
 } from "@/test/fixtures";
 import { clearSession, setSession } from "@/api/session-store";
@@ -86,6 +88,14 @@ export const handlers = [
   http.get("/console/v1/users/:id", () =>
     HttpResponse.json(CONTROL_PLANE_USER, {
       headers: { ETag: `"${CONTROL_PLANE_USER.updated_at}"` },
+    }),
+  ),
+  http.get("/console/v1/user-groups", () =>
+    HttpResponse.json([DEFAULT_USER_GROUP, USER_GROUP]),
+  ),
+  http.get("/console/v1/user-groups/:id", () =>
+    HttpResponse.json(USER_GROUP, {
+      headers: { ETag: `"${USER_GROUP.updated_at}"` },
     }),
   ),
   http.get("/console/v1/api-key-policies", () => HttpResponse.json([API_KEY_POLICY])),

@@ -112,4 +112,43 @@ test.describe("Console SPA smoke", () => {
     });
     await expect(page.getByText("API key created")).toBeVisible();
   });
+
+  test("administrators batch-adjust selected user balances", async ({ page }) => {
+    await mockConsoleApi(page);
+    await page.goto("/login");
+    await page.getByLabel(/email/i).fill("admin@example.com");
+    await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
+    await page.getByRole("button", { name: /sign in/i }).click();
+    await page.getByRole("link", { name: "Users" }).click();
+
+    await page.getByRole("checkbox", { name: "Select Batch User" }).check();
+    await page.getByRole("button", { name: "Batch edit (1)" }).click();
+    const dialog = page.getByRole("dialog");
+    await dialog.getByRole("combobox").nth(3).click();
+    await page.getByRole("option", { name: "Increase balance" }).click();
+    await dialog.getByLabel("Balance amount").fill("5");
+
+    const requestPromise = page.waitForRequest(
+      (request) =>
+        request.url().endsWith("/console/v1/users/batch") &&
+        request.method() === "POST",
+    );
+    await dialog.getByRole("button", { name: "Update users" }).click();
+    const request = await requestPromise;
+    expect(request.postDataJSON()).toEqual({
+      items: [
+        {
+          id: "00000000-0000-0000-0000-000000000090",
+          updated_at: "2026-01-02T00:00:00.000Z",
+        },
+      ],
+      changes: {
+        balance: {
+          operation: "increase",
+          amount: "5",
+        },
+      },
+    });
+    await expect(page.getByText("Updated 1 users.")).toBeVisible();
+  });
 });

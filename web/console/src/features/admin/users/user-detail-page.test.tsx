@@ -148,4 +148,43 @@ describe("UserDetailPage", () => {
     ).toBeInTheDocument();
     expect(reissued).toBe(true);
   });
+
+  it("requires confirmation before deleting and anonymizing a user", async () => {
+    seedAuthenticatedSession();
+    const managedUser = {
+      ...CONTROL_PLANE_USER,
+      id: "00000000-0000-0000-0000-000000000096",
+      email: "delete-me@example.test",
+      display_name: "Delete Me",
+      role: "user" as const,
+    };
+    let deleted = false;
+    server.use(
+      http.get("/console/v1/users/:id", () =>
+        HttpResponse.json(managedUser, {
+          headers: { ETag: `"${managedUser.updated_at}"` },
+        }),
+      ),
+      http.delete("/console/v1/users/:id", ({ request }) => {
+        deleted = request.headers.get("If-Match") === `"${managedUser.updated_at}"`;
+        return HttpResponse.json({
+          id: managedUser.id,
+          correlation_id: "00000000-0000-0000-0000-000000000053",
+        });
+      }),
+    );
+    const user = userEvent.setup();
+    renderAppAt(`/admin/users/${managedUser.id}`);
+
+    await user.click(await screen.findByRole("button", { name: "Delete user" }));
+    const confirmation = await screen.findByRole("alertdialog");
+    expect(
+      within(confirmation).getByText(/revokes every session, invitation, and API key/i),
+    ).toBeInTheDocument();
+    await user.click(
+      within(confirmation).getByRole("button", { name: "Delete user" }),
+    );
+
+    await waitFor(() => expect(deleted).toBe(true));
+  });
 });

@@ -262,6 +262,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/users/batch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * @description Atomically applies the same partial changes to at most 100 users.
+         *     Every item carries the `updated_at` value returned by the list API;
+         *     one stale or invalid item rejects the complete batch.
+         */
+        post: operations["updateUsersBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/users/{id}": {
         parameters: {
             query?: never;
@@ -277,7 +298,13 @@ export interface paths {
          */
         put: operations["replaceUser"];
         post?: never;
-        delete?: never;
+        /**
+         * @description Irreversibly anonymizes the user, revokes every session, invitation,
+         *     and API key, and hides the account from management lists. Request logs
+         *     and audit history retain their user id. Administrators cannot delete
+         *     their own account.
+         */
+        delete: operations["deleteUser"];
         options?: never;
         head?: never;
         /**
@@ -305,6 +332,42 @@ export interface paths {
          */
         post: operations["reissueUserInvitation"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/user-groups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listUserGroups"];
+        put?: never;
+        post: operations["createUserGroup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/user-groups/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getUserGroup"];
+        put: operations["updateUserGroup"];
+        post?: never;
+        /**
+         * @description Deletes an empty custom group. The built-in default user and
+         *     administrator groups are protected.
+         */
+        delete: operations["deleteUserGroup"];
         options?: never;
         head?: never;
         patch?: never;
@@ -932,6 +995,11 @@ export interface components {
             /** Format: uuid */
             correlation_id: string;
         };
+        UserBatchUpdateResponse: {
+            updated_ids: string[];
+            /** Format: uuid */
+            correlation_id: string;
+        };
         ReloadResponse: {
             /** Format: uuid */
             correlation_id: string;
@@ -1251,9 +1319,38 @@ export interface components {
              */
             can_reissue_invitation: boolean;
             /** Format: uuid */
+            user_group_id: string;
+            /**
+             * Format: uuid
+             * @description Optional user-level API key policy override. Null means the user
+             *     inherits the policy configured on their group.
+             */
             default_api_key_policy_id: string | null;
+            /**
+             * Format: uuid
+             * @description Resolved user override or group default policy.
+             */
+            effective_api_key_policy_id: string | null;
             /** @description Current account balance in USD. */
             balance_amount: components["schemas"]["Decimal"];
+            created_at: components["schemas"]["DateTime"];
+            updated_at: components["schemas"]["DateTime"];
+        };
+        UserGroupView: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            description: string | null;
+            /** Format: uuid */
+            default_api_key_policy_id: string | null;
+            /**
+             * @description Non-null only for the protected built-in group used when a user of
+             *     that role is invited without an explicit group.
+             * @enum {string|null}
+             */
+            system_role: "user" | "admin" | null;
+            /** Format: int64 */
+            member_count: number;
             created_at: components["schemas"]["DateTime"];
             updated_at: components["schemas"]["DateTime"];
         };
@@ -1636,6 +1733,12 @@ export interface components {
             role: components["schemas"]["UserRole"];
             /** @description Initial non-negative account balance in USD; defaults to zero. */
             initial_balance_amount?: components["schemas"]["Decimal"];
+            /**
+             * Format: uuid
+             * @description Explicit group assignment. Null or omission selects the protected
+             *     default group for the requested role.
+             */
+            user_group_id?: string | null;
             /** Format: uuid */
             default_api_key_policy_id?: string | null;
         };
@@ -1646,6 +1749,11 @@ export interface components {
             status: string;
             /** @description Current account balance in USD. */
             balance_amount: components["schemas"]["Decimal"];
+            /**
+             * Format: uuid
+             * @description Null or omission selects the protected default role group.
+             */
+            user_group_id?: string | null;
             /** Format: uuid */
             default_api_key_policy_id?: string | null;
         };
@@ -1664,9 +1772,50 @@ export interface components {
             balance_amount?: components["schemas"]["Decimal"];
             /**
              * Format: uuid
-             * @description Set to null to clear the policy; omit to preserve it.
+             * @description Moves the user to this group; omit to preserve membership.
+             */
+            user_group_id?: string;
+            /**
+             * Format: uuid
+             * @description Set to null to inherit the group policy; omit to preserve the
+             *     current user-level override.
              */
             default_api_key_policy_id?: string | null;
+        };
+        UserBatchUpdateTarget: {
+            /** Format: uuid */
+            id: string;
+            /** @description Version copied from the user list response. */
+            updated_at: components["schemas"]["DateTime"];
+        };
+        UserBalanceBatchChange: {
+            /** @enum {string} */
+            operation: "set" | "increase" | "decrease";
+            /** @description Non-negative USD amount. */
+            amount: components["schemas"]["Decimal"];
+        };
+        /** @description At least one property must be supplied. */
+        UserBatchChanges: {
+            /** @enum {string} */
+            status?: "active" | "suspended" | "disabled";
+            balance?: components["schemas"]["UserBalanceBatchChange"];
+            /** Format: uuid */
+            user_group_id?: string;
+            /**
+             * Format: uuid
+             * @description Set to null to inherit each selected user's group policy.
+             */
+            default_api_key_policy_id?: string | null;
+        };
+        UserBatchUpdateInput: {
+            items: components["schemas"]["UserBatchUpdateTarget"][];
+            changes: components["schemas"]["UserBatchChanges"];
+        };
+        UserGroupInput: {
+            name: string;
+            description?: string | null;
+            /** Format: uuid */
+            default_api_key_policy_id: string | null;
         };
         ApiKeyPolicyInput: {
             name: string;
@@ -2561,6 +2710,34 @@ export interface operations {
             422: components["responses"]["Unprocessable"];
         };
     };
+    updateUsersBatch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UserBatchUpdateInput"];
+            };
+        };
+        responses: {
+            /** @description Users updated. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserBatchUpdateResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
+        };
+    };
     getUser: {
         parameters: {
             query?: never;
@@ -2606,6 +2783,36 @@ export interface operations {
         };
         responses: {
             /** @description Updated. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MutationResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
+        };
+    };
+    deleteUser: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description ETag from the preceding GET; stale values yield `409`. */
+                "If-Match": components["parameters"]["IfMatch"];
+            };
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description User anonymized. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -2678,6 +2885,145 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+            422: components["responses"]["Unprocessable"];
+        };
+    };
+    listUserGroups: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description User groups. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserGroupView"][];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    createUserGroup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UserGroupInput"];
+            };
+        };
+        responses: {
+            /** @description User group created. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MutationResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            422: components["responses"]["Unprocessable"];
+        };
+    };
+    getUserGroup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description User group detail. */
+            200: {
+                headers: {
+                    ETag: components["headers"]["ETag"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserGroupView"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    updateUserGroup: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description ETag from the preceding GET; stale values yield `409`. */
+                "If-Match": components["parameters"]["IfMatch"];
+            };
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UserGroupInput"];
+            };
+        };
+        responses: {
+            /** @description User group updated. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MutationResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
+        };
+    };
+    deleteUserGroup: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description ETag from the preceding GET; stale values yield `409`. */
+                "If-Match": components["parameters"]["IfMatch"];
+            };
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description User group deleted. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MutationResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
             422: components["responses"]["Unprocessable"];
         };
     };

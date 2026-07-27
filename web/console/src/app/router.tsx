@@ -59,6 +59,16 @@ const UserDetailPage = lazy(() =>
     default: m.UserDetailPage,
   })),
 );
+const UserGroupsPage = lazy(() =>
+  import("@/features/admin/user-groups/user-groups-page").then((m) => ({
+    default: m.UserGroupsPage,
+  })),
+);
+const UserGroupDetailPage = lazy(() =>
+  import("@/features/admin/user-groups/user-group-detail-page").then((m) => ({
+    default: m.UserGroupDetailPage,
+  })),
+);
 const ApiKeyPoliciesPage = lazy(() =>
   import("@/features/admin/api-key-policies/api-key-policies-page").then((m) => ({
     default: m.ApiKeyPoliciesPage,
@@ -182,6 +192,8 @@ export function AppRouter() {
           <Route element={<RequireAdmin />}>
             <Route path="/admin/users" element={<UsersPage />} />
             <Route path="/admin/users/:id" element={<UserDetailPage />} />
+            <Route path="/admin/user-groups" element={<UserGroupsPage />} />
+            <Route path="/admin/user-groups/:id" element={<UserGroupDetailPage />} />
             <Route path="/admin/api-key-policies" element={<ApiKeyPoliciesPage />} />
             {/* Detail pages use the "new" path segment as their create-mode sentinel. */}
             <Route path="/admin/api-key-policies/:id" element={<ApiKeyPolicyDetailPage />} />

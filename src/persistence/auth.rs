@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::domain::UserRole;
 
-use super::RepositoryError;
+use super::{DEFAULT_ADMIN_GROUP_ID, DEFAULT_USER_GROUP_ID, RepositoryError};
 
 #[derive(Clone)]
 pub struct AuthRepository {
@@ -26,7 +26,7 @@ impl AuthRepository {
 
     pub async fn find_login_user(&self, email: &str) -> Result<Option<LoginUser>, RepositoryError> {
         sqlx::query_as::<_, LoginUser>(
-            "SELECT id,email,display_name,role,status,password_hash,auth_version,default_api_key_policy_id \
+            "SELECT id,email,display_name,role,status,password_hash,auth_version \
              FROM users WHERE lower(email) = lower($1)",
         )
         .bind(email)
@@ -320,6 +320,19 @@ impl AuthRepository {
             transaction.rollback().await?;
             return Err(RepositoryError::Validation);
         }
+        let user_group_id = input.user_group_id.unwrap_or(match input.role {
+            UserRole::User => DEFAULT_USER_GROUP_ID,
+            UserRole::Admin => DEFAULT_ADMIN_GROUP_ID,
+        });
+        let group_exists =
+            sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM user_groups WHERE id=$1)")
+                .bind(user_group_id)
+                .fetch_one(&mut *transaction)
+                .await?;
+        if !group_exists {
+            transaction.rollback().await?;
+            return Err(RepositoryError::Validation);
+        }
         if let Some(policy_id) = input.default_api_key_policy_id {
             let enabled = sqlx::query_scalar::<_, bool>(
                 "SELECT enabled FROM api_key_policies WHERE id=$1 FOR KEY SHARE",
@@ -336,14 +349,15 @@ impl AuthRepository {
         let user_id = Uuid::new_v4();
         let updated_at = sqlx::query_scalar::<_, DateTime<Utc>>(
             "INSERT INTO users \
-             (id,email,display_name,role,status,balance_amount,default_api_key_policy_id) \
-             VALUES ($1,$2,$3,$4,'invited',$5,$6) RETURNING updated_at",
+             (id,email,display_name,role,status,balance_amount,user_group_id,default_api_key_policy_id) \
+             VALUES ($1,$2,$3,$4,'invited',$5,$6,$7) RETURNING updated_at",
         )
         .bind(user_id)
         .bind(&input.email)
         .bind(&input.display_name)
         .bind(input.role.as_str())
         .bind(input.initial_balance_amount)
+        .bind(user_group_id)
         .bind(input.default_api_key_policy_id)
         .fetch_one(&mut *transaction)
         .await?;
@@ -377,6 +391,7 @@ impl AuthRepository {
             "role": input.role.as_str(),
             "status": "invited",
             "balance_amount": input.initial_balance_amount,
+            "user_group_id": user_group_id,
             "default_api_key_policy_id": input.default_api_key_policy_id,
             "updated_at": updated_at,
         }))
@@ -404,7 +419,7 @@ impl AuthRepository {
         ensure_active_admin(&mut transaction, actor_user_id).await?;
         let user = sqlx::query_as::<_, UserForReinvitation>(
             "SELECT id,email,display_name,role,status,password_hash,balance_amount, \
-                    default_api_key_policy_id,updated_at \
+                    user_group_id,default_api_key_policy_id,updated_at \
              FROM users WHERE id=$1 AND NOT is_system FOR UPDATE",
         )
         .bind(user_id)
@@ -465,6 +480,7 @@ impl AuthRepository {
             "role": user.role,
             "status": user.status,
             "balance_amount": user.balance_amount,
+            "user_group_id": user.user_group_id,
             "default_api_key_policy_id": user.default_api_key_policy_id,
             "updated_at": user.updated_at,
         });
@@ -475,6 +491,7 @@ impl AuthRepository {
             "role": before["role"],
             "status": "invited",
             "balance_amount": before["balance_amount"],
+            "user_group_id": before["user_group_id"],
             "default_api_key_policy_id": before["default_api_key_policy_id"],
             "invitation_id": invitation_id,
             "invitation_expires_at": expires_at,
@@ -589,13 +606,15 @@ impl AuthRepository {
         }
         let id = Uuid::new_v4();
         sqlx::query(
-            "INSERT INTO users (id,email,display_name,role,status,password_hash,password_changed_at) \
-             VALUES ($1,$2,$3,'admin','active',$4,now())",
+            "INSERT INTO users \
+             (id,email,display_name,role,status,password_hash,password_changed_at,user_group_id) \
+             VALUES ($1,$2,$3,'admin','active',$4,now(),$5)",
         )
         .bind(id)
         .bind(email)
         .bind(display_name)
         .bind(password_hash)
+        .bind(DEFAULT_ADMIN_GROUP_ID)
         .execute(&mut *transaction)
         .await?;
         sqlx::query(
@@ -652,7 +671,6 @@ pub struct LoginUser {
     pub status: String,
     pub password_hash: Option<String>,
     pub auth_version: i64,
-    pub default_api_key_policy_id: Option<Uuid>,
 }
 
 #[derive(Clone, FromRow)]
@@ -737,6 +755,7 @@ pub struct InviteUserInput {
     pub display_name: String,
     pub role: UserRole,
     pub initial_balance_amount: rust_decimal::Decimal,
+    pub user_group_id: Option<Uuid>,
     pub default_api_key_policy_id: Option<Uuid>,
 }
 
@@ -770,6 +789,7 @@ struct UserForReinvitation {
     status: String,
     password_hash: Option<String>,
     balance_amount: rust_decimal::Decimal,
+    user_group_id: Uuid,
     default_api_key_policy_id: Option<Uuid>,
     updated_at: DateTime<Utc>,
 }
