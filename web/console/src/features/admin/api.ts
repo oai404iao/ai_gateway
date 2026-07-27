@@ -42,6 +42,10 @@ import type {
   SessionAffinityCacheReport,
   SystemSettings,
   SystemSettingsInput,
+  UserBatchUpdateInput,
+  UserBatchUpdateResponse,
+  UserGroupInput,
+  UserGroupView,
   UserUpdateInput,
 } from "@/api/types";
 
@@ -138,6 +142,62 @@ export function useUpdateUser(id: string) {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: USERS_KEY });
       void queryClient.invalidateQueries({ queryKey: userDetailKey(id) });
+    },
+  });
+}
+export function useBatchUpdateUsers() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: UserBatchUpdateInput) =>
+      apiPost<UserBatchUpdateResponse>("/users/batch", input),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: USERS_KEY });
+    },
+  });
+}
+export function useDeleteUser(id: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ ifMatch }: { ifMatch: string }) =>
+      apiSend<MutationResponse>(`/users/${id}`, "DELETE", undefined, { ifMatch }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: USERS_KEY });
+      void queryClient.removeQueries({ queryKey: userDetailKey(id) });
+    },
+  });
+}
+
+// ---- User Groups ----
+const USER_GROUPS_KEY = ["console", "user-groups"] as const;
+const userGroupDetailKey = (id: string) => ["console", "user-groups", id] as const;
+export const useUserGroups = makeList<UserGroupView>("/user-groups", USER_GROUPS_KEY);
+export const useUserGroup = makeDetail<UserGroupView>("/user-groups", userGroupDetailKey);
+export const useCreateUserGroup = makeCreate<UserGroupInput, MutationResponse>(
+  "/user-groups",
+  USER_GROUPS_KEY,
+);
+export function useUpdateUserGroup(id: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ input, ifMatch }: { input: UserGroupInput; ifMatch: string }) =>
+      apiPut<MutationResponse>(`/user-groups/${id}`, input, ifMatch),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: USER_GROUPS_KEY });
+      void queryClient.invalidateQueries({ queryKey: userGroupDetailKey(id) });
+      void queryClient.invalidateQueries({ queryKey: USERS_KEY });
+    },
+  });
+}
+export function useDeleteUserGroup(id: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ ifMatch }: { ifMatch: string }) =>
+      apiSend<MutationResponse>(`/user-groups/${id}`, "DELETE", undefined, {
+        ifMatch,
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: USER_GROUPS_KEY });
+      void queryClient.removeQueries({ queryKey: userGroupDetailKey(id) });
     },
   });
 }
@@ -381,9 +441,10 @@ export function useControlPlaneLists() {
   return useQuery({
     queryKey: ["console", "control-plane-lists"] as const,
     queryFn: async (): Promise<ControlPlaneLists> => {
-      const [users, models, api_keys, api_key_policies, channel_groups, channels, model_rules, proxies, config_templates] =
+      const [users, user_groups, models, api_keys, api_key_policies, channel_groups, channels, model_rules, proxies, config_templates] =
         await Promise.all([
           apiGet<ControlPlaneUser[]>("/users"),
+          apiGet<UserGroupView[]>("/user-groups"),
           apiGet<ControlPlaneModel[]>("/models"),
           apiGet<AdminApiKeyView[]>("/api-keys"),
           apiGet<ApiKeyPolicyView[]>("/api-key-policies"),
@@ -395,6 +456,7 @@ export function useControlPlaneLists() {
         ]);
       return {
         users,
+        user_groups,
         models,
         api_keys,
         api_key_policies,

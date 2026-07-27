@@ -123,6 +123,8 @@ Console 登录接口：
 用户由管理员邀请创建。管理员可在邀请请求中通过 `initial_balance_amount` 设置非负的初始
 USD 余额；省略时为 `0`。邀请响应中的 `invitation_token` 只返回一次，外部邮件/通知系统负责
 投递。邀请有效期为 7 天。激活邀请后用户设置自己的密码；管理员不提交或保存用户明文密码。
+每个用户必须属于一个用户组。邀请未显式指定 `user_group_id` 时，普通用户进入内置“默认用户组”，
+管理员进入内置“默认管理员组”；这两个系统组可以修改名称、说明和默认策略，但不能删除。
 
 ## 普通用户接口
 
@@ -139,7 +141,8 @@ USD 余额；省略时为 `0`。邀请响应中的 `invitation_token` 只返回�
 - `GET /console/v1/me/request-logs?limit=50`
 - `GET /console/v1/me/request-logs/{id}`
 
-管理员分配的默认 `api_key_policy` 只定义用户可选择的渠道组和单独渠道。用户通过
+用户的有效 `api_key_policy` 按“用户覆盖优先，否则继承用户组默认策略”解析。Policy 只定义用户
+可选择的渠道组和单独渠道。用户通过
 `GET /console/v1/me/api-key-options` 获取当前可选列表；创建或更新 API Key 时，从该列表中选择
 `allowed_group_ids` / `allowed_channel_ids`，并为该 Key 独立配置 RPM、最大并发和可选额度上限。
 API 格式由所选目标自动推导，自助创建 Key 的权限固定为 `proxy` 和 `models.read`。
@@ -154,6 +157,8 @@ Policy 不再保存额度、RPM、并发、格式、权限或最大活动 Key �
 拥有 `role = admin` 的用户可使用全部普通用户接口，以及以下 Console 控制面接口：
 
 - 用户与邀请：`/console/v1/users`
+- 用户组：`/console/v1/user-groups`
+- 用户批量修改：`POST /console/v1/users/batch`
 - API Key Policy：`/console/v1/api-key-policies`
 - 全局 API Key：`/console/v1/api-keys`
 - 模型：`/console/v1/models`
@@ -168,9 +173,25 @@ Policy 不再保存额度、RPM、并发、格式、权限或最大活动 Key �
 - 手动重载：`POST /console/v1/system/reload`
 
 用户详情支持带 `If-Match` 的 `PATCH /console/v1/users/{id}`，只修改请求中出现的字段；
-例如仅提交 `balance_amount` 不会重写邮箱、角色、策略或状态。`invited` 是邀请流程拥有的待激活
+例如仅提交 `balance_amount` 不会重写邮箱、角色、用户组、策略或状态。用户级
+`default_api_key_policy_id` 是可选覆盖；显式设为 `null` 后立即恢复继承用户组默认策略。
+`invited` 是邀请流程拥有的待激活
 状态，管理员修改资料或余额时会保持该状态，只有持有邀请令牌的用户完成激活后才会变为
 `active`。兼容用的完整 `PUT` 仍保留，但新客户端应使用 `PATCH`。
+
+`POST /console/v1/users/batch` 一次最多接收 100 个用户及各自的 `updated_at` 版本，可原子地统一
+修改运行状态、用户组、用户级 API 策略覆盖和余额。余额支持设置绝对值、统一增加或统一扣减；
+任一用户版本过期、状态转换非法或引用不存在时，整批修改与审计全部回滚。包含当前管理员时，
+批量操作不能暂停或禁用其自己的账户。
+
+`DELETE /console/v1/users/{id}` 需要 `If-Match` 和 Console 二次确认。删除不会物理移除用户主键：
+服务会清空邮箱与密码、匿名化显示名称、撤销全部会话、未接受邀请和 API Key，并从管理列表隐藏
+该用户；请求日志和审计记录继续保留原 user ID。管理员不能删除自己，也不能删除最后一个活跃的
+非系统管理员。匿名化后原邮箱可重新使用。
+
+用户组通过 `/console/v1/user-groups` 管理。每个组可设置一个默认 API Key Policy；修改后，所有
+没有用户级覆盖的组成员立即使用新策略。自定义组只有在没有成员时才能删除；内置默认用户组和默认
+管理员组始终受保护。
 
 对于邀请过期、令牌丢失，或历史版本误把待激活用户改成 `disabled` 的情况，管理员可调用
 `POST /console/v1/users/{id}/invitation` 重新签发邀请。该操作仅适用于尚未设置密码的

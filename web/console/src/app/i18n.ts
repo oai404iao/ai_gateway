@@ -16,6 +16,7 @@ const zhCN: Record<string, string> = {
   "API Keys": "API 密钥",
   "Request Logs": "请求日志",
   "Users": "用户",
+  "User Groups": "用户组",
   "API Key Policies": "API 密钥策略",
   "Upstream Models": "上游模型",
   "Price sync": "价格同步",
@@ -362,6 +363,8 @@ const zhCN: Record<string, string> = {
   "Passwords do not match.": "两次密码输入不一致。",
   "Console users, roles, and balances. New users join by invitation.":
     "控制台用户、角色和余额；新用户通过邀请加入。",
+  "Console users, groups, policies, and balances. New users join by invitation.":
+    "控制台用户、用户组、策略和额度；新用户通过邀请加入。",
   "Invite user": "邀请用户",
   "Name": "名称",
   "Invitation issued": "邀请已创建",
@@ -370,6 +373,12 @@ const zhCN: Record<string, string> = {
   "The invitation token is shown once and must be delivered out of band.":
     "邀请令牌只显示一次，需通过安全渠道发送给用户。",
   "Default API key policy": "默认 API 密钥策略",
+  "API policy override": "API 策略覆盖",
+  "Effective API policy": "生效 API 策略",
+  "Inherit group policy": "继承用户组策略",
+  "User group": "用户组",
+  "Pick a user group": "选择用户组",
+  "Pick a user group.": "请选择用户组。",
   "None": "无",
   "Initial balance": "初始额度",
   "Starting USD credit available after activation.": "账户激活后可使用的初始 USD 额度。",
@@ -427,6 +436,73 @@ const zhCN: Record<string, string> = {
   "Review the highlighted balance field.": "请检查标记的额度字段。",
   "Set the current account balance in USD.": "设置当前账户的 USD 余额。",
   "Enter a valid balance.": "请输入有效的余额。",
+  "Batch edit users": "批量修改用户",
+  "Apply the selected changes atomically to {count} users.":
+    "以原子方式将所选修改应用到 {count} 个用户。",
+  "Pending invitations cannot be batch-updated to a runtime status.":
+    "待激活邀请不能通过批量操作修改为运行状态。",
+  "You cannot suspend or disable your own account in a batch.":
+    "不能通过批量操作暂停或禁用自己的账户。",
+  "Leave status unchanged when pending invitations are selected.":
+    "选择了待激活用户时，请保持状态不变。",
+  "Balance change": "额度变更",
+  "Set balance": "设置额度",
+  "Increase balance": "增加额度",
+  "Decrease balance": "扣减额度",
+  "Balance amount": "额度金额",
+  "Increase and decrease apply the same USD amount to every selected user.":
+    "增加或扣减会对每个已选用户应用相同的 USD 金额。",
+  "Select at most {count} users per batch.": "每批最多选择 {count} 个用户。",
+  "Update users": "更新用户",
+  "Updated {count} users.": "已更新 {count} 个用户。",
+  "One or more users changed elsewhere. Refresh and try again.":
+    "一个或多个用户已在其他位置修改，请刷新后重试。",
+  "User deleted": "用户已删除",
+  "Delete user": "删除用户",
+  "Delete user?": "删除用户？",
+  "Deleting a user is permanent and audited.": "删除用户不可撤销，且会记录审计日志。",
+  "Current administrator account": "当前管理员账户",
+  "You cannot delete your own administrator account.":
+    "不能删除当前登录的管理员账户。",
+  "Create another active administrator before deleting this user.":
+    "删除该用户前，请先创建另一个活跃管理员。",
+  "This anonymizes the account and revokes every session, invitation, and API key. Request logs and audit history are preserved. This action cannot be undone.":
+    "此操作会匿名化账户并撤销全部会话、邀请和 API 密钥；请求日志与审计历史会保留，且无法撤销。",
+  "Delete failed": "删除失败",
+  "Assign one group to each user and inherit its default API policy.":
+    "每个用户属于一个用户组，并继承该组的默认 API 策略。",
+  "New user group": "新建用户组",
+  "Default for {role}": "{role}默认组",
+  "Members": "成员数",
+  "Group defaults apply when a user has no policy override.":
+    "用户未设置策略覆盖时，使用用户组默认策略。",
+  "Back to user groups": "返回用户组",
+  "Protected default group for {role} accounts.": "{role}账户的受保护默认组。",
+  "Custom user group": "自定义用户组",
+  "Create user group": "创建用户组",
+  "Edit user group": "编辑用户组",
+  "Users inherit this policy unless they have an individual override.":
+    "除非用户单独设置覆盖，否则会继承此策略。",
+  "Optional note shown to administrators.": "向管理员显示的可选说明。",
+  "Users without an override inherit this policy immediately.":
+    "未设置覆盖的用户会立即继承此策略。",
+  "Save user group": "保存用户组",
+  "User group created": "用户组已创建",
+  "User group updated": "用户组已更新",
+  "This user group was changed elsewhere. Reloading.":
+    "此用户组已在其他位置修改，正在重新加载。",
+  "Deleting a custom group is permanent and audited.":
+    "删除自定义用户组不可撤销，且会记录审计日志。",
+  "Protected default group": "受保护的默认组",
+  "Built-in default groups cannot be deleted.": "内置默认用户组不能删除。",
+  "Group still has members": "用户组仍有成员",
+  "Move every member out of this group before deleting it.":
+    "删除前请先将所有成员移出该用户组。",
+  "Delete user group": "删除用户组",
+  "Delete user group?": "删除用户组？",
+  "This permanently deletes the empty group. This action cannot be undone.":
+    "此操作会永久删除空用户组，且无法撤销。",
+  "User group deleted": "用户组已删除",
   "Name is required.": "名称不能为空。",
   "Proxy URL is required.": "代理 URL 不能为空。",
   "Client model is required.": "客户端模型不能为空。",

@@ -31,7 +31,8 @@ use crate::{
         ConfigTemplateCreateInput, ConfigTemplateInput, ConsoleApiKey, ControlPlaneMutation,
         CostStatisticsFilter, InviteUserInput, ModelInput, ModelRuleInput, ProxyCreateInput,
         ProxyInput, RequestLogFilter, RequestLogRepository, SelfApiKeyCreate, SelfApiKeyUpdate,
-        StatisticsGranularity, SystemSettingsInput, UserInput, UserUpdateInput,
+        StatisticsGranularity, SystemSettingsInput, UserBatchUpdateInput, UserGroupInput,
+        UserInput, UserUpdateInput,
     },
     runtime_config::ConfigError,
 };
@@ -102,13 +103,27 @@ pub fn router(state: ConsoleState) -> Router {
 
     let control_routes = Router::new()
         .route("/console/v1/users", get(list_users).post(invite_user))
+        .route("/console/v1/users/batch", post(update_users_batch))
         .route(
             "/console/v1/users/{id}/invitation",
             post(reissue_user_invitation),
         )
         .route(
             "/console/v1/users/{id}",
-            get(get_user).put(replace_user).patch(update_user),
+            get(get_user)
+                .put(replace_user)
+                .patch(update_user)
+                .delete(delete_user),
+        )
+        .route(
+            "/console/v1/user-groups",
+            get(list_user_groups).post(create_user_group),
+        )
+        .route(
+            "/console/v1/user-groups/{id}",
+            get(get_user_group)
+                .put(update_user_group)
+                .delete(delete_user_group),
         )
         .route(
             "/console/v1/api-key-policies",
@@ -370,6 +385,12 @@ struct ChannelBatchUpdateResponse {
 }
 
 #[derive(Serialize)]
+struct UserBatchUpdateResponse {
+    updated_ids: Vec<Uuid>,
+    correlation_id: Uuid,
+}
+
+#[derive(Serialize)]
 struct LoginResponse {
     access_token: String,
     token_type: &'static str,
@@ -427,6 +448,8 @@ struct InviteUserRequest {
     role: UserRole,
     #[serde(default)]
     initial_balance_amount: rust_decimal::Decimal,
+    #[serde(default)]
+    user_group_id: Option<Uuid>,
     #[serde(default)]
     default_api_key_policy_id: Option<Uuid>,
 }
@@ -773,6 +796,7 @@ async fn invite_user(
                 display_name: input.display_name,
                 role: input.role,
                 initial_balance_amount: input.initial_balance_amount,
+                user_group_id: input.user_group_id,
                 default_api_key_policy_id: input.default_api_key_policy_id,
             },
         )
@@ -839,6 +863,104 @@ async fn update_user_fields(
         ControlPlaneMutation::UpdateUser {
             id,
             input,
+            expected_updated_at: if_match(&headers)?,
+        },
+    )
+    .await
+}
+
+async fn delete_user(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Json<MutationResponse>, ConsoleError> {
+    mutate(
+        &state,
+        principal,
+        ControlPlaneMutation::DeleteUser {
+            id,
+            deleted_by: principal.user_id(),
+            expected_updated_at: if_match(&headers)?,
+        },
+    )
+    .await
+}
+
+async fn update_users_batch(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Json(input): Json<UserBatchUpdateInput>,
+) -> Result<Json<UserBatchUpdateResponse>, ConsoleError> {
+    let result = state
+        .coordinator
+        .update_users_batch(principal.user_id(), input)
+        .await?;
+    Ok(Json(UserBatchUpdateResponse {
+        updated_ids: result.updated_ids,
+        correlation_id: result.correlation_id,
+    }))
+}
+
+async fn list_user_groups(
+    State(state): State<ConsoleState>,
+) -> Result<Json<serde_json::Value>, ConsoleError> {
+    Ok(Json(
+        serde_json::to_value(state.coordinator.lists().await?.user_groups)
+            .expect("Console user-group DTO serializes"),
+    ))
+}
+
+async fn create_user_group(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Json(input): Json<UserGroupInput>,
+) -> Result<(StatusCode, Json<MutationResponse>), ConsoleError> {
+    mutate_created(
+        &state,
+        principal,
+        ControlPlaneMutation::CreateUserGroup(input),
+    )
+    .await
+}
+
+async fn get_user_group(
+    State(state): State<ConsoleState>,
+    Path(id): Path<Uuid>,
+) -> Result<Response, ConsoleError> {
+    get_resource(state, id, Resource::UserGroup).await
+}
+
+async fn update_user_group(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(input): Json<UserGroupInput>,
+) -> Result<Json<MutationResponse>, ConsoleError> {
+    mutate(
+        &state,
+        principal,
+        ControlPlaneMutation::UpdateUserGroup {
+            id,
+            input,
+            expected_updated_at: if_match(&headers)?,
+        },
+    )
+    .await
+}
+
+async fn delete_user_group(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Json<MutationResponse>, ConsoleError> {
+    mutate(
+        &state,
+        principal,
+        ControlPlaneMutation::DeleteUserGroup {
+            id,
             expected_updated_at: if_match(&headers)?,
         },
     )
@@ -1458,6 +1580,7 @@ async fn reload(
 
 enum Resource {
     User,
+    UserGroup,
     ApiKeyPolicy,
     Model,
     ApiKey,
@@ -1475,6 +1598,11 @@ async fn get_resource(
     let value = match resource {
         Resource::User => lists
             .users
+            .into_iter()
+            .find(|item| item.id == id)
+            .map(to_json),
+        Resource::UserGroup => lists
+            .user_groups
             .into_iter()
             .find(|item| item.id == id)
             .map(to_json),
@@ -1752,6 +1880,11 @@ fn repository_error_message(error: &crate::persistence::RepositoryError) -> &'st
             "default_api_key_policy_disabled"
         }
         crate::persistence::RepositoryError::ApiKeyTargetNotAllowed => "api_key_target_not_allowed",
+        crate::persistence::RepositoryError::ProtectedUserGroup => "protected_user_group",
+        crate::persistence::RepositoryError::UserGroupInUse => "user_group_in_use",
+        crate::persistence::RepositoryError::CannotDeleteSelf => "cannot_delete_self",
+        crate::persistence::RepositoryError::LastAdministrator => "last_administrator",
+        crate::persistence::RepositoryError::CannotDisableSelf => "cannot_disable_self",
         _ => "Console operation rejected",
     }
 }
@@ -1759,7 +1892,12 @@ fn repository_error_message(error: &crate::persistence::RepositoryError) -> &'st
 fn repository_status(error: &crate::persistence::RepositoryError) -> StatusCode {
     match error {
         crate::persistence::RepositoryError::NotFound => StatusCode::NOT_FOUND,
-        crate::persistence::RepositoryError::Conflict => StatusCode::CONFLICT,
+        crate::persistence::RepositoryError::Conflict
+        | crate::persistence::RepositoryError::ProtectedUserGroup
+        | crate::persistence::RepositoryError::UserGroupInUse
+        | crate::persistence::RepositoryError::CannotDeleteSelf
+        | crate::persistence::RepositoryError::LastAdministrator
+        | crate::persistence::RepositoryError::CannotDisableSelf => StatusCode::CONFLICT,
         crate::persistence::RepositoryError::Validation => StatusCode::UNPROCESSABLE_ENTITY,
         crate::persistence::RepositoryError::DefaultApiKeyPolicyRequired
         | crate::persistence::RepositoryError::DefaultApiKeyPolicyDisabled

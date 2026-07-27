@@ -1,9 +1,13 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router";
 import { Controller, useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
+import { CheckCheck, ListChecks, Plus } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -23,28 +27,46 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
-import { AdminListPage } from "@/features/admin/components/admin-list-page";
+import { AsyncResource } from "@/components/shared/async-resource";
 import { DecimalField } from "@/components/shared/decimal-field";
+import { PageHeader } from "@/components/shared/page-header";
+import { ResourceTable, type Column } from "@/components/shared/resource-table";
 import { SecretOnceDialog } from "@/components/shared/secret-once-dialog";
 import { StatusBadge } from "@/components/shared/status-badge";
-import { useApiKeyPolicies, useInviteUser, useUsers } from "@/features/admin/api";
+import {
+  useApiKeyPolicies,
+  useInviteUser,
+  useUserGroups,
+  useUsers,
+} from "@/features/admin/api";
+import { UserBatchEditDialog } from "@/features/admin/users/user-batch-edit-dialog";
 import { formatUsd } from "@/lib/formatters";
 import { formatRelative } from "@/lib/dates";
 import { ROLES, roleLabel } from "@/lib/permissions";
+import { useSession } from "@/lib/use-session";
 import { useI18n } from "@/app/i18n";
+import type { ControlPlaneUser, UserRole } from "@/api/types";
 
 export function UsersPage() {
-  const { data, isLoading, error } = useUsers();
+  const navigate = useNavigate();
+  const users = useUsers();
+  const groups = useUserGroups();
   const policies = useApiKeyPolicies();
   const invite = useInviteUser();
-  const [open, setOpen] = useState(false);
+  const { user: currentUser } = useSession();
+  const { t } = useI18n();
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [batchOpen, setBatchOpen] = useState(false);
+  const [inviteOpen, setInviteOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [token, setToken] = useState<string | null>(null);
-  const { t } = useI18n();
+  const batchDialogTriggerId = "user-batch-edit-trigger";
+
   const inviteSchema = z.object({
     email: z.string().email(t("Enter a valid email.")),
     display_name: z.string().min(1, t("Display name is required.")).max(200),
     role: z.enum(["user", "admin"]),
+    user_group_id: z.string().min(1, t("Pick a user group.")),
     initial_balance_amount: z
       .string()
       .regex(/^\d+(?:\.\d+)?$/, t("Enter a valid non-negative balance.")),
@@ -58,10 +80,70 @@ export function UsersPage() {
       email: "",
       display_name: "",
       role: "user",
+      user_group_id: "",
       initial_balance_amount: "0",
       default_api_key_policy_id: "",
     },
   });
+
+  useEffect(() => {
+    const available = new Set((users.data ?? []).map((user) => user.id));
+    setSelected((current) => {
+      const next = new Set([...current].filter((id) => available.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [users.data]);
+
+  useEffect(() => {
+    if (form.getValues("user_group_id")) return;
+    const defaultGroup = groups.data?.find(
+      (group) => group.system_role === form.getValues("role"),
+    );
+    if (defaultGroup) {
+      form.setValue("user_group_id", defaultGroup.id, {
+        shouldValidate: true,
+      });
+    }
+  }, [form, groups.data]);
+
+  const selectedUsers = useMemo(
+    () => (users.data ?? []).filter((user) => selected.has(user.id)),
+    [selected, users.data],
+  );
+  const allSelected =
+    (users.data?.length ?? 0) > 0 &&
+    selectedUsers.length === users.data?.length;
+  const groupName = (id: string) =>
+    groups.data?.find((group) => group.id === id)?.name ?? id;
+  const policyName = (id: string | null) =>
+    id ? policies.data?.find((policy) => policy.id === id)?.name ?? id : t("None");
+
+  const toggleUser = (user: ControlPlaneUser) => {
+    setSelected((current) => {
+      const next = new Set(current);
+      if (next.has(user.id)) next.delete(user.id);
+      else next.add(user.id);
+      return next;
+    });
+  };
+
+  const onRoleChange = (
+    role: UserRole,
+    onChange: (value: UserRole) => void,
+  ) => {
+    const currentGroupId = form.getValues("user_group_id");
+    const currentGroup = groups.data?.find((group) => group.id === currentGroupId);
+    onChange(role);
+    if (!currentGroup || currentGroup.system_role) {
+      const defaultGroup = groups.data?.find(
+        (group) => group.system_role === role,
+      );
+      form.setValue("user_group_id", defaultGroup?.id ?? "", {
+        shouldDirty: true,
+        shouldValidate: true,
+      });
+    }
+  };
 
   const onSubmit = async (values: InviteValues) => {
     setSubmitting(true);
@@ -70,15 +152,20 @@ export function UsersPage() {
         email: values.email,
         display_name: values.display_name,
         role: values.role,
+        user_group_id: values.user_group_id,
         initial_balance_amount: values.initial_balance_amount,
         default_api_key_policy_id: values.default_api_key_policy_id || null,
       });
       setToken(result.invitation_token);
-      setOpen(false);
+      setInviteOpen(false);
+      const defaultGroup = groups.data?.find(
+        (group) => group.system_role === "user",
+      );
       form.reset({
         email: "",
         display_name: "",
         role: "user",
+        user_group_id: defaultGroup?.id ?? "",
         initial_balance_amount: "0",
         default_api_key_policy_id: "",
       });
@@ -90,55 +177,127 @@ export function UsersPage() {
     }
   };
 
-  const onInvalid = () => {
-    toast.error(t("Review the highlighted invitation fields."));
-  };
+  const columns: Column<ControlPlaneUser>[] = [
+    {
+      key: "selected",
+      header: t("Select"),
+      render: (user) => (
+        <Checkbox
+          aria-label={`${t("Select")} ${user.display_name}`}
+          checked={selected.has(user.id)}
+          onCheckedChange={() => toggleUser(user)}
+        />
+      ),
+      className: "w-12",
+    },
+    {
+      key: "name",
+      header: t("Name"),
+      render: (user) => (
+        <span className="flex flex-col">
+          <span className="font-medium">{user.display_name}</span>
+          <span className="text-xs text-muted-foreground">{user.email ?? "—"}</span>
+        </span>
+      ),
+    },
+    {
+      key: "role",
+      header: t("Role"),
+      render: (user) => <StatusBadge value={user.role} />,
+    },
+    {
+      key: "group",
+      header: t("User group"),
+      render: (user) => groupName(user.user_group_id),
+    },
+    {
+      key: "status",
+      header: t("Status"),
+      render: (user) => <StatusBadge value={user.status} />,
+    },
+    {
+      key: "balance",
+      header: t("Balance"),
+      render: (user) => formatUsd(user.balance_amount),
+    },
+    {
+      key: "policy",
+      header: t("Effective API policy"),
+      render: (user) => policyName(user.effective_api_key_policy_id),
+    },
+    {
+      key: "updated",
+      header: t("Updated"),
+      render: (user) => formatRelative(user.updated_at),
+    },
+  ];
 
   return (
     <>
-      <AdminListPage
-        title={t("Users")}
-        description={t("Console users, roles, and balances. New users join by invitation.")}
-        query={{ data, isLoading, error }}
-        rowKey={(user) => user.id}
-        detailPath={(user) => `/admin/users/${user.id}`}
-        createLabel={t("Invite user")}
-        onCreate={() => setOpen(true)}
-        columns={[
-          {
-            key: "name",
-            header: t("Name"),
-            render: (user) => (
-              <span className="flex flex-col">
-                <span className="font-medium">{user.display_name}</span>
-                <span className="text-xs text-muted-foreground">{user.email ?? "—"}</span>
-              </span>
-            ),
-          },
-          {
-            key: "role",
-            header: t("Role"),
-            render: (user) => <StatusBadge value={user.role} />,
-          },
-          {
-            key: "status",
-            header: t("Status"),
-            render: (user) => <StatusBadge value={user.status} />,
-          },
-          {
-            key: "balance",
-            header: t("Balance"),
-            render: (user) => formatUsd(user.balance_amount),
-          },
-          {
-            key: "updated",
-            header: t("Updated"),
-            render: (user) => formatRelative(user.updated_at),
-          },
-        ]}
-      />
+      <div className="flex flex-col gap-6">
+        <PageHeader
+          title={t("Users")}
+          description={t(
+            "Console users, groups, policies, and balances. New users join by invitation.",
+          )}
+          actions={
+            <>
+              <Button
+                variant="outline"
+                disabled={(users.data?.length ?? 0) === 0}
+                onClick={() => {
+                  if (allSelected) setSelected(new Set());
+                  else {
+                    setSelected(
+                      new Set((users.data ?? []).map((user) => user.id)),
+                    );
+                  }
+                }}
+              >
+                <CheckCheck data-icon="inline-start" />
+                {allSelected ? t("Clear selection") : t("Select all")}
+              </Button>
+              <Button
+                id={batchDialogTriggerId}
+                variant="outline"
+                disabled={selectedUsers.length === 0}
+                onClick={() => setBatchOpen(true)}
+              >
+                <ListChecks data-icon="inline-start" />
+                {t("Batch edit ({count})", { count: selectedUsers.length })}
+              </Button>
+              <Button onClick={() => setInviteOpen(true)}>
+                <Plus data-icon="inline-start" />
+                {t("Invite user")}
+              </Button>
+            </>
+          }
+        />
+        <Card>
+          <CardHeader>
+            <CardTitle>{t("Users")}</CardTitle>
+            <CardDescription>{t("Click a row to view or edit.")}</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <AsyncResource
+              isLoading={users.isLoading || groups.isLoading || policies.isLoading}
+              error={users.error ?? groups.error ?? policies.error}
+              isEmpty={users.data?.length === 0}
+              emptyTitle={t("No records")}
+              emptyDescription={t("There are no records to show yet.")}
+            >
+              <ResourceTable
+                columns={columns}
+                rows={users.data ?? []}
+                rowKey={(user) => user.id}
+                onRowClick={(user) => navigate(`/admin/users/${user.id}`)}
+              />
+            </AsyncResource>
+          </CardContent>
+        </Card>
+      </div>
 
-      <Dialog open={open} onOpenChange={setOpen}>
+      <Dialog open={inviteOpen} onOpenChange={setInviteOpen}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>{t("Invite user")}</DialogTitle>
@@ -147,7 +306,9 @@ export function UsersPage() {
             </DialogDescription>
           </DialogHeader>
           <form
-            onSubmit={form.handleSubmit(onSubmit, onInvalid)}
+            onSubmit={form.handleSubmit(onSubmit, () =>
+              toast.error(t("Review the highlighted invitation fields.")),
+            )}
             className="flex flex-col gap-4"
           >
             <FieldGroup>
@@ -181,7 +342,12 @@ export function UsersPage() {
                 render={({ field, fieldState }) => (
                   <Field data-invalid={fieldState.invalid}>
                     <FieldLabel htmlFor="invite_role">{t("Role")}</FieldLabel>
-                    <Select value={field.value} onValueChange={field.onChange}>
+                    <Select
+                      value={field.value}
+                      onValueChange={(value) =>
+                        onRoleChange(value as UserRole, field.onChange)
+                      }
+                    >
                       <SelectTrigger id="invite_role" aria-invalid={fieldState.invalid}>
                         <SelectValue />
                       </SelectTrigger>
@@ -203,17 +369,49 @@ export function UsersPage() {
               />
               <Controller
                 control={form.control}
+                name="user_group_id"
+                defaultValue=""
+                render={({ field, fieldState }) => (
+                  <Field data-invalid={fieldState.invalid}>
+                    <FieldLabel htmlFor="invite_user_group_id">
+                      {t("User group")}
+                    </FieldLabel>
+                    <Select value={field.value} onValueChange={field.onChange}>
+                      <SelectTrigger
+                        id="invite_user_group_id"
+                        aria-invalid={fieldState.invalid}
+                      >
+                        <SelectValue placeholder={t("Pick a user group")} />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectGroup>
+                          {groups.data?.map((group) => (
+                            <SelectItem key={group.id} value={group.id}>
+                              {group.name}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                    {fieldState.error ? (
+                      <FieldError>{fieldState.error.message}</FieldError>
+                    ) : null}
+                  </Field>
+                )}
+              />
+              <Controller
+                control={form.control}
                 name="default_api_key_policy_id"
                 defaultValue=""
                 render={({ field, fieldState }) => (
                   <Field data-invalid={fieldState.invalid}>
                     <FieldLabel htmlFor="invite_default_api_key_policy_id">
-                      {t("Default API key policy")}
+                      {t("API policy override")}
                     </FieldLabel>
                     <Select
-                      value={field.value || "__none__"}
+                      value={field.value || "__inherit__"}
                       onValueChange={(value) =>
-                        field.onChange(value === "__none__" ? "" : value)
+                        field.onChange(value === "__inherit__" ? "" : value)
                       }
                     >
                       <SelectTrigger
@@ -224,7 +422,9 @@ export function UsersPage() {
                       </SelectTrigger>
                       <SelectContent>
                         <SelectGroup>
-                          <SelectItem value="__none__">{t("None")}</SelectItem>
+                          <SelectItem value="__inherit__">
+                            {t("Inherit group policy")}
+                          </SelectItem>
                           {policies.data
                             ?.filter((policy) => policy.enabled)
                             .map((policy) => (
@@ -265,6 +465,17 @@ export function UsersPage() {
           </form>
         </DialogContent>
       </Dialog>
+
+      <UserBatchEditDialog
+        open={batchOpen}
+        users={selectedUsers}
+        groups={groups.data ?? []}
+        policies={policies.data ?? []}
+        currentUserId={currentUser?.id}
+        onOpenChange={setBatchOpen}
+        onApplied={() => setSelected(new Set())}
+        triggerId={batchDialogTriggerId}
+      />
 
       <SecretOnceDialog
         open={Boolean(token)}

@@ -25,6 +25,7 @@ pub use channel_models::{
 };
 pub use control_plane::{
     ChannelBatchUpdateResult, ControlPlaneCoordinator, ControlPlaneError, ModelSyncResult,
+    UserBatchUpdateResult,
 };
 pub use model_sync::{
     ModelImportRequest, ModelSyncError, ModelSyncPreview, ModelSyncPreviewRequest,

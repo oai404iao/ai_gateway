@@ -33,6 +33,8 @@ pub const FORWARDING_SETTINGS_KEY: &str = "forwarding_policy";
 pub const SYSTEM_PROBE_USER_ID: Uuid = Uuid::from_u128(0x2c2e_3fd5_07e6_4c44_b5c7_cfe4_7bda_2b10);
 pub const SYSTEM_PROBE_API_KEY_ID: Uuid =
     Uuid::from_u128(0x729d_37d8_2ad3_44ef_9e65_bf7e_410b_0f2f);
+pub const DEFAULT_USER_GROUP_ID: Uuid = Uuid::from_u128(0x101);
+pub const DEFAULT_ADMIN_GROUP_ID: Uuid = Uuid::from_u128(0x102);
 const SYSTEM_PROBE_DISPLAY_NAME: &str = "ai-gateway-system-scheduled-tests-2c2e3fd5";
 const SYSTEM_PROBE_API_KEY_NAME: &str = "system-scheduled-tests";
 
@@ -462,6 +464,16 @@ pub struct ApiKeyPolicyInput {
 
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct UserGroupInput {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub default_api_key_policy_id: Option<Uuid>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SelfApiKeyCreate {
     pub name: String,
     pub allowed_group_ids: Vec<Uuid>,
@@ -503,6 +515,8 @@ pub struct UserInput {
     pub status: String,
     pub balance_amount: rust_decimal::Decimal,
     #[serde(default)]
+    pub user_group_id: Option<Uuid>,
+    #[serde(default)]
     pub default_api_key_policy_id: Option<Uuid>,
 }
 
@@ -524,6 +538,8 @@ pub struct UserUpdateInput {
     pub status: Option<String>,
     #[serde(default)]
     pub balance_amount: Option<rust_decimal::Decimal>,
+    #[serde(default)]
+    pub user_group_id: Option<Uuid>,
     #[serde(default, deserialize_with = "deserialize_optional_uuid")]
     pub default_api_key_policy_id: Option<Option<Uuid>>,
 }
@@ -535,6 +551,7 @@ impl UserUpdateInput {
             && self.role.is_none()
             && self.status.is_none()
             && self.balance_amount.is_none()
+            && self.user_group_id.is_none()
             && self.default_api_key_policy_id.is_none()
     }
 }
@@ -547,8 +564,52 @@ impl From<UserInput> for UserUpdateInput {
             role: Some(value.role),
             status: Some(value.status),
             balance_amount: Some(value.balance_amount),
+            user_group_id: value.user_group_id,
             default_api_key_policy_id: Some(value.default_api_key_policy_id),
         }
+    }
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UserBatchUpdateInput {
+    pub items: Vec<UserBatchUpdateTarget>,
+    pub changes: UserBatchChanges,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UserBatchUpdateTarget {
+    pub id: Uuid,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UserBalanceBatchChange {
+    pub operation: String,
+    pub amount: rust_decimal::Decimal,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UserBatchChanges {
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub balance: Option<UserBalanceBatchChange>,
+    #[serde(default)]
+    pub user_group_id: Option<Uuid>,
+    #[serde(default, deserialize_with = "deserialize_optional_uuid")]
+    pub default_api_key_policy_id: Option<Option<Uuid>>,
+}
+
+impl UserBatchChanges {
+    fn is_empty(&self) -> bool {
+        self.status.is_none()
+            && self.balance.is_none()
+            && self.user_group_id.is_none()
+            && self.default_api_key_policy_id.is_none()
     }
 }
 
@@ -912,6 +973,21 @@ pub enum ControlPlaneMutation {
         input: UserUpdateInput,
         expected_updated_at: DateTime<Utc>,
     },
+    DeleteUser {
+        id: Uuid,
+        deleted_by: Uuid,
+        expected_updated_at: DateTime<Utc>,
+    },
+    CreateUserGroup(UserGroupInput),
+    UpdateUserGroup {
+        id: Uuid,
+        input: UserGroupInput,
+        expected_updated_at: DateTime<Utc>,
+    },
+    DeleteUserGroup {
+        id: Uuid,
+        expected_updated_at: DateTime<Utc>,
+    },
     CreateModel(ModelInput),
     UpdateModel {
         id: Uuid,
@@ -989,6 +1065,7 @@ pub struct MutationResult {
 #[derive(Serialize)]
 pub struct ControlPlaneLists {
     pub users: Vec<ControlPlaneUser>,
+    pub user_groups: Vec<ControlPlaneUserGroup>,
     pub models: Vec<ControlPlaneModel>,
     pub api_keys: Vec<ControlPlaneApiKey>,
     pub api_key_policies: Vec<ControlPlaneApiKeyPolicy>,
@@ -1006,8 +1083,21 @@ pub struct ControlPlaneUser {
     pub role: String,
     pub status: String,
     pub can_reissue_invitation: bool,
+    pub user_group_id: Uuid,
     pub default_api_key_policy_id: Option<Uuid>,
+    pub effective_api_key_policy_id: Option<Uuid>,
     pub balance_amount: rust_decimal::Decimal,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+#[derive(Serialize, FromRow)]
+pub struct ControlPlaneUserGroup {
+    pub id: Uuid,
+    pub name: String,
+    pub description: Option<String>,
+    pub default_api_key_policy_id: Option<Uuid>,
+    pub system_role: Option<String>,
+    pub member_count: i64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -3408,13 +3498,14 @@ impl ControlPlaneRepository {
         let mut transaction = self.begin_serializable().await?;
         let user_created = sqlx::query_scalar::<_, bool>(
             "INSERT INTO users
-             (id,email,display_name,role,status,balance_amount,is_system)
-             VALUES ($1,NULL,$2,'admin','active',0,true)
+             (id,email,display_name,role,status,balance_amount,user_group_id,is_system)
+             VALUES ($1,NULL,$2,'admin','active',0,$3,true)
              ON CONFLICT DO NOTHING
              RETURNING true",
         )
         .bind(SYSTEM_PROBE_USER_ID)
         .bind(SYSTEM_PROBE_DISPLAY_NAME)
+        .bind(DEFAULT_ADMIN_GROUP_ID)
         .fetch_optional(&mut *transaction)
         .await?
         .unwrap_or(false);
@@ -3720,15 +3811,30 @@ impl ControlPlaneRepository {
 
     pub async fn control_plane_lists(&self) -> Result<ControlPlaneLists, RepositoryError> {
         let users = sqlx::query_as::<_, ControlPlaneUser>(
-            "SELECT id,email,display_name,role,status, \
-                    (password_hash IS NULL AND email IS NOT NULL AND status IN ('invited','suspended','disabled')) AS can_reissue_invitation, \
-                    default_api_key_policy_id,balance_amount,created_at,updated_at \
-             FROM users WHERE NOT is_system ORDER BY id",
+            "SELECT u.id,u.email,u.display_name,u.role,u.status, \
+                    (u.password_hash IS NULL AND u.email IS NOT NULL AND u.status IN ('invited','suspended','disabled')) AS can_reissue_invitation, \
+                    u.user_group_id,u.default_api_key_policy_id, \
+                    COALESCE(u.default_api_key_policy_id,g.default_api_key_policy_id) AS effective_api_key_policy_id, \
+                    u.balance_amount,u.created_at,u.updated_at \
+             FROM users AS u \
+             JOIN user_groups AS g ON g.id=u.user_group_id \
+             WHERE NOT u.is_system AND u.deleted_at IS NULL ORDER BY u.id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        let user_groups = sqlx::query_as::<_, ControlPlaneUserGroup>(
+            "SELECT g.id,g.name,g.description,g.default_api_key_policy_id,g.system_role, \
+                    count(u.id) FILTER (WHERE u.deleted_at IS NULL AND NOT u.is_system) AS member_count, \
+                    g.created_at,g.updated_at \
+             FROM user_groups AS g \
+             LEFT JOIN users AS u ON u.user_group_id=g.id \
+             GROUP BY g.id \
+             ORDER BY g.system_role NULLS LAST,g.name,g.id",
         )
         .fetch_all(&self.pool)
         .await?;
         let models = sqlx::query_as::<_, ControlPlaneModel>("SELECT id,source_model_id,display_name,provider_name,enabled,price_unit_tokens,input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,price_effective_at,advanced_billing,last_synced_at,created_at,updated_at FROM models ORDER BY id").fetch_all(&self.pool).await?;
-        let api_keys = sqlx::query_as::<_, ControlPlaneApiKey>("SELECT k.id, k.user_id, u.status AS user_status, k.name, k.secret_value AS secret, k.status, k.expires_at, k.allowed_api_formats::text[] AS allowed_api_formats, k.permissions, k.allowed_group_ids, k.allowed_channel_ids, k.requests_per_minute, k.max_concurrent_requests, k.quota_limit_amount, k.quota_used_amount, k.updated_at FROM api_keys k JOIN users u ON u.id=k.user_id WHERE NOT k.is_system ORDER BY k.id").fetch_all(&self.pool).await?;
+        let api_keys = sqlx::query_as::<_, ControlPlaneApiKey>("SELECT k.id, k.user_id, u.status AS user_status, k.name, k.secret_value AS secret, k.status, k.expires_at, k.allowed_api_formats::text[] AS allowed_api_formats, k.permissions, k.allowed_group_ids, k.allowed_channel_ids, k.requests_per_minute, k.max_concurrent_requests, k.quota_limit_amount, k.quota_used_amount, k.updated_at FROM api_keys k JOIN users u ON u.id=k.user_id WHERE NOT k.is_system AND u.deleted_at IS NULL ORDER BY k.id").fetch_all(&self.pool).await?;
         let api_key_policies = sqlx::query_as::<_, ControlPlaneApiKeyPolicy>("SELECT id,name,allowed_group_ids,allowed_channel_ids,enabled,created_at,updated_at FROM api_key_policies ORDER BY id").fetch_all(&self.pool).await?;
         let channel_groups = sqlx::query_as::<_, ControlPlaneChannelGroup>("SELECT id,name,api_format::text AS api_format,priority,selection_strategy,enabled,updated_at FROM channel_groups ORDER BY id").fetch_all(&self.pool).await?;
         let channels = sqlx::query_as::<_, ControlPlaneChannelRow>("SELECT id,channel_group_id,api_format::text AS api_format,name,base_url,enabled,status_statistics_enabled,auto_disabled,auto_disabled_reason,auto_disable_allowed,weight,billing_multiplier,proxy_id,config_template_id,connect_timeout_ms,response_header_timeout_ms,stream_idle_timeout_ms,upstream_auth_kind,upstream_auth_header_name,(upstream_api_key IS NOT NULL) AS upstream_credential_configured,available_models,test_model,created_at,updated_at FROM channels ORDER BY id").fetch_all(&self.pool).await?;
@@ -3737,6 +3843,7 @@ impl ControlPlaneRepository {
         let config_templates = sqlx::query_as::<_, ControlPlaneConfigTemplate>("SELECT id,name,description,document->>'api_format' AS api_format,enabled,created_at,updated_at FROM config_templates ORDER BY id").fetch_all(&self.pool).await?;
         Ok(ControlPlaneLists {
             users,
+            user_groups,
             models,
             api_keys,
             api_key_policies,
@@ -3822,8 +3929,10 @@ impl ControlPlaneRepository {
         let policy = sqlx::query_as::<_, SelfApiKeyPolicy>(
             "SELECT p.id,p.name,p.allowed_group_ids,p.allowed_channel_ids,p.enabled \
              FROM users AS u \
-             JOIN api_key_policies AS p ON p.id=u.default_api_key_policy_id \
-             WHERE u.id=$1 AND u.status='active'",
+             JOIN user_groups AS g ON g.id=u.user_group_id \
+             JOIN api_key_policies AS p \
+               ON p.id=COALESCE(u.default_api_key_policy_id,g.default_api_key_policy_id) \
+             WHERE u.id=$1 AND u.status='active' AND u.deleted_at IS NULL",
         )
         .bind(user_id)
         .fetch_optional(&self.pool)
@@ -4039,6 +4148,133 @@ impl ControlPlaneRepository {
         })
     }
 
+    pub async fn update_users_batch(
+        &self,
+        transaction: &mut Transaction<'_, Postgres>,
+        actor: Uuid,
+        input: UserBatchUpdateInput,
+    ) -> Result<Vec<MutationResult>, RepositoryError> {
+        const MAX_BATCH_SIZE: usize = 100;
+
+        if input.items.is_empty()
+            || input.items.len() > MAX_BATCH_SIZE
+            || input.changes.is_empty()
+            || input
+                .changes
+                .status
+                .as_deref()
+                .is_some_and(|status| !matches!(status, "active" | "suspended" | "disabled"))
+            || input.changes.balance.as_ref().is_some_and(|balance| {
+                balance.amount.is_sign_negative()
+                    || !matches!(balance.operation.as_str(), "set" | "increase" | "decrease")
+            })
+        {
+            return Err(RepositoryError::Validation);
+        }
+        let mut ids = HashSet::with_capacity(input.items.len());
+        if input.items.iter().any(|item| !ids.insert(item.id)) {
+            return Err(RepositoryError::Validation);
+        }
+        if let Some(group_id) = input.changes.user_group_id {
+            ensure_user_group_exists(transaction, group_id).await?;
+        }
+        if let Some(Some(policy_id)) = input.changes.default_api_key_policy_id {
+            ensure_enabled_policy(transaction, policy_id).await?;
+        }
+
+        let balance_operation = input
+            .changes
+            .balance
+            .as_ref()
+            .map(|balance| balance.operation.as_str());
+        let balance_amount = input.changes.balance.as_ref().map(|balance| balance.amount);
+        let policy_present = input.changes.default_api_key_policy_id.is_some();
+        let policy_id = input.changes.default_api_key_policy_id.flatten();
+        let mut results = Vec::with_capacity(input.items.len());
+
+        for item in input.items {
+            let before = user_audit(transaction, item.id).await?;
+            if !before["deleted_at"].is_null() {
+                return Err(RepositoryError::NotFound);
+            }
+            let current_updated_at: DateTime<Utc> =
+                serde_json::from_value(before["updated_at"].clone())
+                    .map_err(|_| RepositoryError::Validation)?;
+            if current_updated_at != item.updated_at {
+                return Err(RepositoryError::Conflict);
+            }
+            let status_changed = input
+                .changes
+                .status
+                .as_deref()
+                .is_some_and(|status| before["status"].as_str() != Some(status));
+            if let Some(next_status) = input.changes.status.as_deref() {
+                validate_user_status_transition(
+                    before["status"]
+                        .as_str()
+                        .ok_or(RepositoryError::Validation)?,
+                    next_status,
+                    before["can_reissue_invitation"].as_bool() == Some(true),
+                )?;
+                if item.id == actor && next_status != "active" {
+                    return Err(RepositoryError::CannotDisableSelf);
+                }
+            }
+
+            let updated_at = sqlx::query_scalar(
+                "UPDATE users SET \
+                 status=COALESCE($2,status), \
+                 balance_amount=CASE $3::text \
+                   WHEN 'set' THEN $4 \
+                   WHEN 'increase' THEN balance_amount+$4 \
+                   WHEN 'decrease' THEN balance_amount-$4 \
+                   ELSE balance_amount \
+                 END, \
+                 user_group_id=COALESCE($5,user_group_id), \
+                 default_api_key_policy_id=CASE \
+                   WHEN $6 THEN $7::uuid ELSE default_api_key_policy_id \
+                 END, \
+                 auth_version=auth_version+CASE WHEN $8 THEN 1 ELSE 0 END \
+                 WHERE id=$1 AND updated_at=$9 AND deleted_at IS NULL AND NOT is_system \
+                 RETURNING updated_at",
+            )
+            .bind(item.id)
+            .bind(&input.changes.status)
+            .bind(balance_operation)
+            .bind(balance_amount)
+            .bind(input.changes.user_group_id)
+            .bind(policy_present)
+            .bind(policy_id)
+            .bind(status_changed)
+            .bind(item.updated_at)
+            .fetch_optional(&mut **transaction)
+            .await?
+            .ok_or(RepositoryError::Conflict)?;
+
+            if status_changed {
+                sqlx::query(
+                    "UPDATE user_sessions SET revoked_at=now() \
+                     WHERE user_id=$1 AND revoked_at IS NULL",
+                )
+                .bind(item.id)
+                .execute(&mut **transaction)
+                .await?;
+            }
+            results.push(MutationResult {
+                id: item.id,
+                object_type: "user",
+                action: "batch_update",
+                before_redacted: before,
+                after_redacted: user_audit(transaction, item.id).await?,
+                created_secret: None,
+                reason: None,
+                updated_at,
+                correlation_id: None,
+            });
+        }
+        Ok(results)
+    }
+
     pub async fn update_channels_batch(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
@@ -4119,6 +4355,23 @@ impl ControlPlaneRepository {
                 input,
                 expected_updated_at,
             } => user_update(transaction, id, input, expected_updated_at).await,
+            ControlPlaneMutation::DeleteUser {
+                id,
+                deleted_by,
+                expected_updated_at,
+            } => user_soft_delete(transaction, id, deleted_by, expected_updated_at).await,
+            ControlPlaneMutation::CreateUserGroup(input) => {
+                user_group_insert(transaction, Uuid::new_v4(), input, true, None).await
+            }
+            ControlPlaneMutation::UpdateUserGroup {
+                id,
+                input,
+                expected_updated_at,
+            } => user_group_insert(transaction, id, input, false, Some(expected_updated_at)).await,
+            ControlPlaneMutation::DeleteUserGroup {
+                id,
+                expected_updated_at,
+            } => user_group_delete(transaction, id, expected_updated_at).await,
             ControlPlaneMutation::CreateModel(input) => {
                 model_insert(transaction, Uuid::new_v4(), input, true, None).await
             }
@@ -4396,9 +4649,11 @@ async fn load_self_api_key_policy(
     let policy = sqlx::query_as::<_, SelfApiKeyPolicy>(
         "SELECT p.id,p.name,p.allowed_group_ids,p.allowed_channel_ids,p.enabled \
          FROM users AS u \
-         JOIN api_key_policies AS p ON p.id=u.default_api_key_policy_id \
-         WHERE u.id=$1 AND u.status='active' \
-         FOR UPDATE OF u,p",
+         JOIN user_groups AS g ON g.id=u.user_group_id \
+         JOIN api_key_policies AS p \
+           ON p.id=COALESCE(u.default_api_key_policy_id,g.default_api_key_policy_id) \
+         WHERE u.id=$1 AND u.status='active' AND u.deleted_at IS NULL \
+         FOR UPDATE OF u,g,p",
     )
     .bind(user_id)
     .fetch_optional(&mut **transaction)
@@ -4623,17 +4878,57 @@ async fn user_audit(
 ) -> Result<Value, RepositoryError> {
     let value = sqlx::query_scalar::<_, Value>(
         "SELECT json_build_object( \
-            'id',id, \
-            'email',email, \
-            'display_name',display_name, \
-            'role',role, \
-            'status',status, \
-            'can_reissue_invitation',(password_hash IS NULL AND email IS NOT NULL AND status IN ('invited','suspended','disabled')), \
-            'default_api_key_policy_id',default_api_key_policy_id, \
-            'balance_amount',balance_amount, \
-            'created_at',created_at, \
-            'updated_at',updated_at \
-         ) FROM users WHERE id=$1 AND NOT is_system FOR UPDATE",
+            'id',u.id, \
+            'email',u.email, \
+            'display_name',u.display_name, \
+            'role',u.role, \
+            'status',u.status, \
+            'can_reissue_invitation',(u.password_hash IS NULL AND u.email IS NOT NULL AND u.status IN ('invited','suspended','disabled')), \
+            'user_group_id',u.user_group_id, \
+            'user_group_system_role',g.system_role, \
+            'default_api_key_policy_id',u.default_api_key_policy_id, \
+            'effective_api_key_policy_id',COALESCE(u.default_api_key_policy_id,g.default_api_key_policy_id), \
+            'balance_amount',u.balance_amount, \
+            'deleted_at',u.deleted_at, \
+            'deleted_by',u.deleted_by, \
+            'created_at',u.created_at, \
+            'updated_at',u.updated_at \
+         ) FROM users AS u \
+         JOIN user_groups AS g ON g.id=u.user_group_id \
+         WHERE u.id=$1 AND NOT u.is_system FOR UPDATE OF u,g",
+    )
+    .bind(id)
+    .fetch_optional(&mut **transaction)
+    .await?;
+    value.ok_or(RepositoryError::NotFound)
+}
+async fn user_group_audit(
+    transaction: &mut Transaction<'_, Postgres>,
+    id: Uuid,
+) -> Result<Value, RepositoryError> {
+    let exists =
+        sqlx::query_scalar::<_, bool>("SELECT true FROM user_groups WHERE id=$1 FOR UPDATE")
+            .bind(id)
+            .fetch_optional(&mut **transaction)
+            .await?;
+    if exists.is_none() {
+        return Err(RepositoryError::NotFound);
+    }
+    let value = sqlx::query_scalar::<_, Value>(
+        "SELECT json_build_object( \
+            'id',g.id, \
+            'name',g.name, \
+            'description',g.description, \
+            'default_api_key_policy_id',g.default_api_key_policy_id, \
+            'system_role',g.system_role, \
+            'member_count',count(u.id) FILTER (WHERE u.deleted_at IS NULL AND NOT u.is_system), \
+            'created_at',g.created_at, \
+            'updated_at',g.updated_at \
+         ) \
+         FROM user_groups AS g \
+         LEFT JOIN users AS u ON u.user_group_id=g.id \
+         WHERE g.id=$1 \
+         GROUP BY g.id",
     )
     .bind(id)
     .fetch_optional(&mut **transaction)
@@ -4834,13 +5129,178 @@ async fn group_insert(
         correlation_id: None,
     })
 }
+
+fn default_user_group_id(role: &str) -> Result<Uuid, RepositoryError> {
+    match role {
+        "user" => Ok(DEFAULT_USER_GROUP_ID),
+        "admin" => Ok(DEFAULT_ADMIN_GROUP_ID),
+        _ => Err(RepositoryError::Validation),
+    }
+}
+
+async fn ensure_user_group_exists(
+    transaction: &mut Transaction<'_, Postgres>,
+    id: Uuid,
+) -> Result<(), RepositoryError> {
+    let exists =
+        sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM user_groups WHERE id=$1)")
+            .bind(id)
+            .fetch_one(&mut **transaction)
+            .await?;
+    if exists {
+        Ok(())
+    } else {
+        Err(RepositoryError::Validation)
+    }
+}
+
+async fn resolve_user_group_id(
+    transaction: &mut Transaction<'_, Postgres>,
+    requested: Option<Uuid>,
+    role: &str,
+) -> Result<Uuid, RepositoryError> {
+    let id = requested.unwrap_or(default_user_group_id(role)?);
+    ensure_user_group_exists(transaction, id).await?;
+    Ok(id)
+}
+
+async fn ensure_enabled_policy(
+    transaction: &mut Transaction<'_, Postgres>,
+    id: Uuid,
+) -> Result<(), RepositoryError> {
+    let enabled = sqlx::query_scalar::<_, bool>("SELECT enabled FROM api_key_policies WHERE id=$1")
+        .bind(id)
+        .fetch_optional(&mut **transaction)
+        .await?
+        .ok_or(RepositoryError::Validation)?;
+    if enabled {
+        Ok(())
+    } else {
+        Err(RepositoryError::Validation)
+    }
+}
+
+async fn user_group_insert(
+    transaction: &mut Transaction<'_, Postgres>,
+    id: Uuid,
+    input: UserGroupInput,
+    create: bool,
+    expected_updated_at: Option<DateTime<Utc>>,
+) -> Result<MutationResult, RepositoryError> {
+    if input.name.trim().is_empty()
+        || input.name.len() > 100
+        || input
+            .description
+            .as_ref()
+            .is_some_and(|description| description.len() > 500)
+    {
+        return Err(RepositoryError::Validation);
+    }
+    let before = if create {
+        json!({})
+    } else {
+        user_group_audit(transaction, id).await?
+    };
+    if let Some(policy_id) = input.default_api_key_policy_id {
+        let current_policy_id = before["default_api_key_policy_id"]
+            .as_str()
+            .and_then(|value| Uuid::parse_str(value).ok());
+        if create || current_policy_id != Some(policy_id) {
+            ensure_enabled_policy(transaction, policy_id).await?;
+        }
+    }
+    let updated_at = if create {
+        sqlx::query_scalar(
+            "INSERT INTO user_groups \
+             (id,name,description,default_api_key_policy_id) \
+             VALUES ($1,$2,$3,$4) RETURNING updated_at",
+        )
+        .bind(id)
+        .bind(&input.name)
+        .bind(&input.description)
+        .bind(input.default_api_key_policy_id)
+        .fetch_one(&mut **transaction)
+        .await?
+    } else {
+        sqlx::query_scalar(
+            "UPDATE user_groups SET \
+             name=$2,description=$3,default_api_key_policy_id=$4 \
+             WHERE id=$1 AND updated_at=$5 RETURNING updated_at",
+        )
+        .bind(id)
+        .bind(&input.name)
+        .bind(&input.description)
+        .bind(input.default_api_key_policy_id)
+        .bind(expected_updated_at.expect("PUT version"))
+        .fetch_optional(&mut **transaction)
+        .await?
+        .ok_or(RepositoryError::Conflict)?
+    };
+    Ok(MutationResult {
+        id,
+        object_type: "user_group",
+        action: if create { "create" } else { "update" },
+        before_redacted: before,
+        after_redacted: user_group_audit(transaction, id).await?,
+        created_secret: None,
+        reason: None,
+        updated_at,
+        correlation_id: None,
+    })
+}
+
+async fn user_group_delete(
+    transaction: &mut Transaction<'_, Postgres>,
+    id: Uuid,
+    expected_updated_at: DateTime<Utc>,
+) -> Result<MutationResult, RepositoryError> {
+    let before = user_group_audit(transaction, id).await?;
+    let current_updated_at: DateTime<Utc> = serde_json::from_value(before["updated_at"].clone())
+        .map_err(|_| RepositoryError::Validation)?;
+    if current_updated_at != expected_updated_at {
+        return Err(RepositoryError::Conflict);
+    }
+    if !before["system_role"].is_null() {
+        return Err(RepositoryError::ProtectedUserGroup);
+    }
+    if before["member_count"].as_i64().unwrap_or_default() > 0 {
+        return Err(RepositoryError::UserGroupInUse);
+    }
+    let deleted = sqlx::query("DELETE FROM user_groups WHERE id=$1 AND updated_at=$2")
+        .bind(id)
+        .bind(expected_updated_at)
+        .execute(&mut **transaction)
+        .await?;
+    if deleted.rows_affected() != 1 {
+        return Err(RepositoryError::Conflict);
+    }
+    Ok(MutationResult {
+        id,
+        object_type: "user_group",
+        action: "delete",
+        before_redacted: before,
+        after_redacted: json!({}),
+        created_secret: None,
+        reason: None,
+        updated_at: expected_updated_at,
+        correlation_id: None,
+    })
+}
+
 async fn user_create(
     transaction: &mut Transaction<'_, Postgres>,
     id: Uuid,
     input: UserInput,
 ) -> Result<MutationResult, RepositoryError> {
+    let user_group_id =
+        resolve_user_group_id(transaction, input.user_group_id, &input.role).await?;
+    if let Some(policy_id) = input.default_api_key_policy_id {
+        ensure_enabled_policy(transaction, policy_id).await?;
+    }
     let updated_at = sqlx::query_scalar(
-        "INSERT INTO users (id,email,display_name,role,status,balance_amount,default_api_key_policy_id) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING updated_at",
+        "INSERT INTO users \
+         (id,email,display_name,role,status,balance_amount,user_group_id,default_api_key_policy_id) \
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING updated_at",
     )
     .bind(id)
     .bind(&input.email)
@@ -4848,6 +5308,7 @@ async fn user_create(
     .bind(&input.role)
     .bind(&input.status)
     .bind(input.balance_amount)
+    .bind(user_group_id)
     .bind(input.default_api_key_policy_id)
     .fetch_one(&mut **transaction)
     .await?;
@@ -4875,6 +5336,9 @@ async fn user_update(
     }
 
     let before = user_audit(transaction, id).await?;
+    if !before["deleted_at"].is_null() {
+        return Err(RepositoryError::NotFound);
+    }
     validate_user_update(transaction, &before, &input).await?;
 
     let email_changed = input
@@ -4890,6 +5354,18 @@ async fn user_update(
         .as_deref()
         .is_some_and(|status| before["status"].as_str() != Some(status));
     let invalidates_sessions = email_changed || role_changed || status_changed;
+    let resolved_group_id = if let Some(group_id) = input.user_group_id {
+        Some(group_id)
+    } else if role_changed && before["user_group_system_role"].as_str() == before["role"].as_str() {
+        Some(default_user_group_id(
+            input.role.as_deref().ok_or(RepositoryError::Validation)?,
+        )?)
+    } else {
+        None
+    };
+    if let Some(group_id) = resolved_group_id {
+        ensure_user_group_exists(transaction, group_id).await?;
+    }
 
     let UserUpdateInput {
         display_name,
@@ -4897,6 +5373,7 @@ async fn user_update(
         role,
         status,
         balance_amount,
+        user_group_id: _,
         default_api_key_policy_id,
     } = input;
     let email_present = email.is_some();
@@ -4911,9 +5388,10 @@ async fn user_update(
          role=COALESCE($5,role), \
          status=COALESCE($6,status), \
          balance_amount=COALESCE($7,balance_amount), \
-         default_api_key_policy_id=CASE WHEN $8 THEN $9::uuid ELSE default_api_key_policy_id END, \
-         auth_version=auth_version+CASE WHEN $10 THEN 1 ELSE 0 END \
-         WHERE id=$1 AND updated_at=$11 RETURNING updated_at",
+         user_group_id=COALESCE($8,user_group_id), \
+         default_api_key_policy_id=CASE WHEN $9 THEN $10::uuid ELSE default_api_key_policy_id END, \
+         auth_version=auth_version+CASE WHEN $11 THEN 1 ELSE 0 END \
+         WHERE id=$1 AND updated_at=$12 AND deleted_at IS NULL RETURNING updated_at",
     )
     .bind(id)
     .bind(email_present)
@@ -4922,6 +5400,7 @@ async fn user_update(
     .bind(role)
     .bind(status)
     .bind(balance_amount)
+    .bind(resolved_group_id)
     .bind(policy_present)
     .bind(default_api_key_policy_id)
     .bind(invalidates_sessions)
@@ -4982,22 +5461,11 @@ async fn validate_user_update(
         let current_status = before["status"]
             .as_str()
             .ok_or(RepositoryError::Validation)?;
-        let manageable_transition = matches!(
-            (current_status, next_status),
-            (
-                "active" | "suspended" | "disabled",
-                "active" | "suspended" | "disabled"
-            )
-        );
-        if current_status != next_status && !manageable_transition {
-            return Err(RepositoryError::Validation);
-        }
-        if next_status == "active"
-            && current_status != "active"
-            && before["can_reissue_invitation"].as_bool() == Some(true)
-        {
-            return Err(RepositoryError::Validation);
-        }
+        validate_user_status_transition(
+            current_status,
+            next_status,
+            before["can_reissue_invitation"].as_bool() == Some(true),
+        )?;
     }
 
     if let Some(Some(policy_id)) = input.default_api_key_policy_id {
@@ -5005,19 +5473,117 @@ async fn validate_user_update(
             .as_str()
             .and_then(|value| Uuid::parse_str(value).ok());
         if current_policy_id != Some(policy_id) {
-            let enabled =
-                sqlx::query_scalar::<_, bool>("SELECT enabled FROM api_key_policies WHERE id=$1")
-                    .bind(policy_id)
-                    .fetch_optional(&mut **transaction)
-                    .await?
-                    .ok_or(RepositoryError::Validation)?;
-            if !enabled {
-                return Err(RepositoryError::Validation);
-            }
+            ensure_enabled_policy(transaction, policy_id).await?;
         }
+    }
+    if let Some(group_id) = input.user_group_id {
+        ensure_user_group_exists(transaction, group_id).await?;
     }
 
     Ok(())
+}
+
+fn validate_user_status_transition(
+    current_status: &str,
+    next_status: &str,
+    can_reissue_invitation: bool,
+) -> Result<(), RepositoryError> {
+    if !matches!(next_status, "active" | "suspended" | "disabled") {
+        return Err(RepositoryError::Validation);
+    }
+    if current_status != next_status
+        && !matches!(current_status, "active" | "suspended" | "disabled")
+    {
+        return Err(RepositoryError::Validation);
+    }
+    if next_status == "active" && current_status != "active" && can_reissue_invitation {
+        return Err(RepositoryError::Validation);
+    }
+    Ok(())
+}
+
+async fn user_soft_delete(
+    transaction: &mut Transaction<'_, Postgres>,
+    id: Uuid,
+    deleted_by: Uuid,
+    expected_updated_at: DateTime<Utc>,
+) -> Result<MutationResult, RepositoryError> {
+    if id == deleted_by {
+        return Err(RepositoryError::CannotDeleteSelf);
+    }
+    let before = user_audit(transaction, id).await?;
+    if !before["deleted_at"].is_null() {
+        return Err(RepositoryError::NotFound);
+    }
+    let current_updated_at: DateTime<Utc> = serde_json::from_value(before["updated_at"].clone())
+        .map_err(|_| RepositoryError::Validation)?;
+    if current_updated_at != expected_updated_at {
+        return Err(RepositoryError::Conflict);
+    }
+    if before["role"].as_str() == Some("admin") && before["status"].as_str() == Some("active") {
+        let remaining = sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM users \
+             WHERE role='admin' AND status='active' AND NOT is_system \
+               AND deleted_at IS NULL AND id<>$1",
+        )
+        .bind(id)
+        .fetch_one(&mut **transaction)
+        .await?;
+        if remaining == 0 {
+            return Err(RepositoryError::LastAdministrator);
+        }
+    }
+
+    let deleted_name = format!("Deleted user {}", id.simple());
+    let updated_at = sqlx::query_scalar(
+        "UPDATE users SET \
+         email=NULL,display_name=$2,role='user',status='disabled',password_hash=NULL, \
+         auth_version=auth_version+1,user_group_id=$3,default_api_key_policy_id=NULL, \
+         deleted_at=now(),deleted_by=$4 \
+         WHERE id=$1 AND updated_at=$5 AND deleted_at IS NULL AND NOT is_system \
+         RETURNING updated_at",
+    )
+    .bind(id)
+    .bind(deleted_name)
+    .bind(DEFAULT_USER_GROUP_ID)
+    .bind(deleted_by)
+    .bind(expected_updated_at)
+    .fetch_optional(&mut **transaction)
+    .await?
+    .ok_or(RepositoryError::Conflict)?;
+    sqlx::query(
+        "UPDATE user_sessions SET revoked_at=now() \
+         WHERE user_id=$1 AND revoked_at IS NULL",
+    )
+    .bind(id)
+    .execute(&mut **transaction)
+    .await?;
+    sqlx::query(
+        "UPDATE user_invitations SET revoked_at=now() \
+         WHERE user_id=$1 AND accepted_at IS NULL AND revoked_at IS NULL",
+    )
+    .bind(id)
+    .execute(&mut **transaction)
+    .await?;
+    sqlx::query(
+        "UPDATE api_keys SET status='revoked' \
+         WHERE user_id=$1 AND status<>'revoked' AND NOT is_system",
+    )
+    .bind(id)
+    .execute(&mut **transaction)
+    .await?;
+
+    Ok(MutationResult {
+        id,
+        object_type: "user",
+        action: "delete",
+        before_redacted: before,
+        after_redacted: user_audit(transaction, id).await?,
+        created_secret: None,
+        reason: Some("user anonymized and credentials revoked".into()),
+        updated_at,
+        correlation_id: None,
+    })
 }
 async fn model_insert(
     transaction: &mut Transaction<'_, Postgres>,
@@ -5733,6 +6299,16 @@ pub enum RepositoryError {
     Conflict,
     #[error("management input is invalid")]
     Validation,
+    #[error("the built-in user group is protected")]
+    ProtectedUserGroup,
+    #[error("the user group still has members")]
+    UserGroupInUse,
+    #[error("an administrator cannot delete their own account")]
+    CannotDeleteSelf,
+    #[error("the last active administrator cannot be deleted")]
+    LastAdministrator,
+    #[error("an administrator cannot disable their own account in a batch")]
+    CannotDisableSelf,
     #[error("the user has no default API key policy")]
     DefaultApiKeyPolicyRequired,
     #[error("the user's default API key policy is disabled")]
