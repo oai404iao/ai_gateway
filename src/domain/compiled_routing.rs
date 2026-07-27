@@ -1022,6 +1022,44 @@ pub struct CompiledModelRule {
     configured_candidates: Arc<[u64]>,
 }
 
+/// Immutable billable-model facts used by scheduled channel tests. Unlike a
+/// client route, a test selects its upstream model directly from the channel.
+#[derive(Clone, Debug)]
+pub struct CompiledScheduledTestModel {
+    id: Uuid,
+    price_snapshot: ModelPriceSnapshot,
+    advanced_billing: CompiledAdvancedBilling,
+}
+
+impl CompiledScheduledTestModel {
+    #[must_use]
+    pub const fn id(&self) -> Uuid {
+        self.id
+    }
+
+    #[must_use]
+    pub fn price_snapshot(&self) -> &ModelPriceSnapshot {
+        &self.price_snapshot
+    }
+
+    #[must_use]
+    pub fn advanced_billing(&self) -> &CompiledAdvancedBilling {
+        &self.advanced_billing
+    }
+
+    pub(crate) fn new(
+        id: Uuid,
+        price_snapshot: ModelPriceSnapshot,
+        advanced_billing: CompiledAdvancedBilling,
+    ) -> Self {
+        Self {
+            id,
+            price_snapshot,
+            advanced_billing,
+        }
+    }
+}
+
 /// A model-capable route target that is structurally valid but not currently
 /// selectable because its group or channel is disabled, or because the channel
 /// is automatically disabled.
@@ -1243,6 +1281,7 @@ pub struct CompiledRuntimeConfig {
     model_rules: CompiledModelRoutes,
     channels: HashMap<Uuid, Arc<CompiledChannel>>,
     probe_channels: HashMap<Uuid, Arc<CompiledChannel>>,
+    scheduled_test_models: HashMap<Arc<str>, Arc<CompiledScheduledTestModel>>,
     groups: HashMap<Uuid, Arc<CompiledChannelGroup>>,
     proxies: HashMap<Uuid, Arc<CompiledProxy>>,
     templates: HashMap<Uuid, Arc<CompiledConfigTemplate>>,
@@ -1301,6 +1340,7 @@ impl CompiledRuntimeConfig {
             model_rules,
             channels,
             probe_channels,
+            HashMap::new(),
             groups,
             proxies,
             templates,
@@ -1314,6 +1354,7 @@ impl CompiledRuntimeConfig {
         model_rules: HashMap<ModelRouteKey, Arc<CompiledModelRule>>,
         channels: HashMap<Uuid, Arc<CompiledChannel>>,
         probe_channels: HashMap<Uuid, Arc<CompiledChannel>>,
+        scheduled_test_models: HashMap<Arc<str>, Arc<CompiledScheduledTestModel>>,
         groups: HashMap<Uuid, Arc<CompiledChannelGroup>>,
         proxies: HashMap<Uuid, Arc<CompiledProxy>>,
         templates: HashMap<Uuid, Arc<CompiledConfigTemplate>>,
@@ -1324,6 +1365,7 @@ impl CompiledRuntimeConfig {
             model_rules: CompiledModelRoutes::from_flat(model_rules),
             channels,
             probe_channels,
+            scheduled_test_models,
             groups,
             proxies,
             templates,
@@ -1353,6 +1395,10 @@ impl CompiledRuntimeConfig {
     #[must_use]
     pub fn channel(&self, id: Uuid) -> Option<Arc<CompiledChannel>> {
         self.channels.get(&id).cloned()
+    }
+    #[must_use]
+    pub fn scheduled_test_model(&self, model: &str) -> Option<Arc<CompiledScheduledTestModel>> {
+        self.scheduled_test_models.get(model).cloned()
     }
     #[must_use]
     pub fn group(&self, id: Uuid) -> Option<Arc<CompiledChannelGroup>> {

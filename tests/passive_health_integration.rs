@@ -158,6 +158,7 @@ fn proxy_fixture_with_retry(
                 test_model: None,
             })
             .collect(),
+        models: vec![],
         model_rules: vec![ModelRuleRecord {
             id: Uuid::new_v4(),
             client_model: "model".into(),

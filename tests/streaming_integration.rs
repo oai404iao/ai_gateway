@@ -149,6 +149,7 @@ fn proxy_service_with_network_policy(
             available_models: vec!["stream-model".into()],
             test_model: None,
         }],
+        models: vec![],
         model_rules: vec![ModelRuleRecord {
             id: Uuid::new_v4(),
             client_model: "stream-model".into(),

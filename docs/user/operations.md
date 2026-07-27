@@ -215,12 +215,11 @@ Console 的“系统负载”页默认每 5 秒重新获取一次。
 - `scheduled_testing.prompt`：测试 prompt，默认 `reply '1'`。
 
 渠道的 `auto_disable_allowed` 必须为 true 才会被自动禁用；`test_model` 必须从该渠道的
-`available_models` 中选择。定时测试按渠道 API 格式发出非流式 Chat Completions 或 Responses 请求，
+`available_models` 中选择，并匹配已配置模型的 `source_model_id`，以便保存价格快照。定时测试按渠道 API 格式发出非流式 Chat Completions 或 Responses 请求，
 并复用该渠道的代理、超时、变换和上游鉴权配置。手工禁用的渠道与禁用渠道组不会被测试。
 
 定时测试日志写入 `request_logs`，`request_source` 为 `scheduled_test`。它们使用系统内置、
-管理员角色的内部 API Key，不计入任何普通用户的费用或额度；系统内部身份不会出现在用户和 API Key
-管理列表中。自动禁用和自动恢复都会写入系统审计日志并立即发布新的路由快照。
+管理员角色的内部 API Key。网关会解析响应中的 token 用量，并按该模型的不可变价格快照、模型高级计费规则和渠道计费倍率计算成本；结算会扣减该系统管理员账户余额并累计其内部 API Key 的额度用量，不会归属到任何普通用户。系统内部身份不会出现在用户和 API Key 管理列表中。自动禁用和自动恢复都会写入系统审计日志并立即发布新的路由快照。
 管理员也可以在渠道列表中直接启用、禁用或手工恢复渠道。手工恢复只清除
 `auto_disabled` 与其原因，不会改变渠道显式的 `enabled` 值，并使用列表中的
 `updated_at` 做并发版本检查。

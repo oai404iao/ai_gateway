@@ -659,7 +659,7 @@ export function SystemPage() {
                 <CardTitle>{t("Scheduled channel tests")}</CardTitle>
                 <CardDescription>
                   {t(
-                    "Direct non-streaming test requests use each channel's selected test model and are logged under a system-owned API key.",
+                    "Direct non-streaming test requests use each channel's selected test model. Their token usage and costs are logged and billed to a system-owned administrator API key.",
                   )}
                 </CardDescription>
               </CardHeader>

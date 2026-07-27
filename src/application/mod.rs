@@ -1,6 +1,7 @@
 //! Application use cases: proxying, model listing, Console authentication, and configuration management.
 
 mod auth;
+mod billing;
 mod channel_automation;
 mod channel_models;
 mod control_plane;
@@ -14,6 +15,7 @@ pub use auth::{
     AuthError, ConsoleAuthService, ConsoleUser, IssuedInvitation, IssuedSession,
     hash_console_password,
 };
+pub(crate) use billing::{request_billing, request_billing_multiplier};
 pub use channel_automation::{
     AutomaticDisableService, AutomaticDisableWorker, ErrorKeywordMatcher,
 };
@@ -34,3 +36,4 @@ pub use request_log::{
     RequestLogPipelineMonitor, RequestLogSink,
 };
 pub use system_metrics::{SystemLoadReport, SystemMetricsService};
+pub(crate) use usage::{ResponseUsage, UsageCollector};

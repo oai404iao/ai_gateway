@@ -850,7 +850,7 @@ export function ChannelDetailPage() {
                     </Select>
                     <FieldDescription>
                       {t(
-                        "Periodic scheduled tests use this model. It must be one of the available upstream models.",
+                        "Periodic scheduled tests use this model. It must be one of the available upstream models and have a configured price.",
                       )}
                     </FieldDescription>
                     {fieldError("test_model") ? <FieldError>{fieldError("test_model")}</FieldError> : null}

@@ -713,6 +713,7 @@ fn configured_proxy_with_policy_and_transforms(
             channel(chat, chat_group, "open_ai_chat_completions"),
             channel(responses, responses_group, "open_ai_responses"),
         ],
+        models: vec![],
         model_rules: vec![
             rule("same-model", "same-model", "open_ai_chat_completions", chat),
             rule(
@@ -885,6 +886,7 @@ fn session_affinity_proxy(first_upstream_url: &str, second_upstream_url: &str) -
             channel(first_channel_id, "first", first_upstream_url),
             channel(second_channel_id, "second", second_upstream_url),
         ],
+        models: vec![],
         model_rules: vec![ModelRuleRecord {
             id: model_rule_id,
             client_model: "affinity-model".into(),

@@ -576,6 +576,7 @@ mod tests {
                     available_models: vec!["upstream".into()],
                     test_model: None,
                 }],
+                models: vec![],
                 model_rules: vec![],
                 proxies: vec![ProxyRecord {
                     id: proxy_id,

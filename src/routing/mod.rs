@@ -1353,6 +1353,7 @@ mod tests {
                     test_model: None,
                 })
                 .collect(),
+            models: vec![],
             model_rules: vec![ModelRuleRecord {
                 id: Uuid::from_u128(1_002),
                 client_model: "model".into(),
@@ -1489,6 +1490,7 @@ mod tests {
                 available_models: vec!["upstream".into()],
                 test_model: None,
             }],
+            models: vec![],
             model_rules: vec![ModelRuleRecord {
                 id: Uuid::from_u128(400),
                 client_model: "model".into(),

@@ -35,9 +35,8 @@ use crate::{
     domain::{
         ApiFormat, ApiKeyPermission, AutomaticDisableSettings, AutomaticDisableTrigger,
         CompiledAdvancedBilling, CompiledApiKey, CompiledChannel, CompiledModelRule,
-        MAX_REQUEST_RETRIES, ModelPriceSnapshot, RequestBilling, RequestLogEvent,
-        RequestLogOutcome, RequestLogSource, RequestPriceSnapshot, RequestUsage,
-        SessionAffinityKeySource, SessionAffinitySettings, UpstreamAuth,
+        MAX_REQUEST_RETRIES, ModelPriceSnapshot, RequestLogEvent, RequestLogOutcome,
+        RequestLogSource, SessionAffinityKeySource, SessionAffinitySettings, UpstreamAuth,
     },
     routing::{
         ChannelLease, RoutingRuntime, SelectionResult, SessionAffinityMatch,
@@ -51,7 +50,10 @@ use crate::{
     upstream::{ResolvedUpstreamPolicy, UpstreamClientRegistry},
 };
 
-use super::usage::{SseTerminalOutcome, UsageCollector};
+use super::{
+    request_billing, request_billing_multiplier,
+    usage::{SseTerminalOutcome, UsageCollector},
+};
 
 /// Data-plane use case backed by a single immutable configuration snapshot per
 /// request and a process-shared upstream client registry.
@@ -275,7 +277,8 @@ impl ProxyService {
         let mut current_channel = channel;
         let mut current_channel_slot = channel_slot;
         let current_session_affinity = selected_session_affinity;
-        let request_multiplier = request_billing_multiplier(&current_rule, &original_body);
+        let request_multiplier =
+            request_billing_multiplier(current_rule.advanced_billing(), &original_body);
         let mut completion = CompletionGuard::new(
             Arc::clone(&self.request_log_sink),
             &api_key,
@@ -423,7 +426,7 @@ impl ProxyService {
                     let failed_channel_id = current_channel.id();
                     let next_channel_id = channel.id();
                     let request_billing_multiplier =
-                        request_billing_multiplier(&rule, &original_body);
+                        request_billing_multiplier(rule.advanced_billing(), &original_body);
                     completion.retry_with_route(
                         &rule,
                         &channel,
@@ -821,16 +824,6 @@ fn parse_request(body: &[u8]) -> Result<ParsedRequest, ProxyError> {
         model: probe.model,
         streamed: probe.stream,
     })
-}
-
-fn request_billing_multiplier(rule: &CompiledModelRule, body: &[u8]) -> Decimal {
-    let advanced_billing = rule.advanced_billing();
-    if !advanced_billing.has_request_multipliers() {
-        return Decimal::ONE;
-    }
-    let request =
-        serde_json::from_slice::<Value>(body).expect("model probe already validated request JSON");
-    advanced_billing.request_multiplier(&request)
 }
 
 const MAX_SESSION_AFFINITY_VALUE_BYTES: usize = 512;
@@ -1792,88 +1785,6 @@ fn automatic_disable_context(
         .flatten()
 }
 
-fn request_billing(
-    snapshot: &ModelPriceSnapshot,
-    advanced_billing: &CompiledAdvancedBilling,
-    billing_multiplier: Decimal,
-    request_billing_multiplier: Decimal,
-    usage: Option<super::usage::ResponseUsage>,
-    total_duration_ms: i32,
-    ttft_ms: Option<i32>,
-) -> RequestBilling {
-    let usage = usage.map(|usage| RequestUsage {
-        input_tokens: usage.input_tokens,
-        cached_input_tokens: usage.cached_input_tokens,
-        cache_write_tokens: usage.cache_write_tokens,
-        output_tokens: usage.output_tokens,
-    });
-    let (input_unit_price, cached_input_unit_price, cache_write_unit_price, output_unit_price) =
-        usage.as_ref().map_or(
-            (
-                snapshot.input_unit_price(),
-                snapshot.cached_input_unit_price(),
-                snapshot.cache_write_unit_price(),
-                snapshot.output_unit_price(),
-            ),
-            |usage| {
-                advanced_billing.prices(
-                    usage.input_tokens,
-                    snapshot.input_unit_price(),
-                    snapshot.cached_input_unit_price(),
-                    snapshot.cache_write_unit_price(),
-                    snapshot.output_unit_price(),
-                )
-            },
-        );
-    let billing_multiplier = billing_multiplier
-        .checked_mul(request_billing_multiplier)
-        .expect("compiled request billing multiplier fits");
-    let price = RequestPriceSnapshot {
-        currency: snapshot.currency().to_owned(),
-        price_unit_tokens: snapshot.price_unit_tokens(),
-        price_effective_at: snapshot.price_effective_at(),
-        input_unit_price: effective_unit_price(input_unit_price, billing_multiplier),
-        cached_input_unit_price: effective_unit_price(cached_input_unit_price, billing_multiplier),
-        cache_write_unit_price: effective_unit_price(cache_write_unit_price, billing_multiplier),
-        output_unit_price: effective_unit_price(output_unit_price, billing_multiplier),
-    };
-    let cost_amount = usage.as_ref().map(|usage| calculate_cost(usage, &price));
-    let output_tokens_per_second = usage.and_then(|usage| {
-        (usage.output_tokens > 0).then(|| {
-            let generation_ms = total_duration_ms
-                .saturating_sub(ttft_ms.unwrap_or(0))
-                .max(1);
-            (Decimal::from(usage.output_tokens) * Decimal::from(1_000_i64)
-                / Decimal::from(generation_ms))
-            .round_dp(4)
-        })
-    });
-    RequestBilling {
-        usage,
-        price,
-        cost_amount,
-        output_tokens_per_second,
-    }
-}
-
-fn effective_unit_price(price: Decimal, billing_multiplier: Decimal) -> Decimal {
-    price
-        .checked_mul(billing_multiplier)
-        .expect("compiled channel billing price multiplication fits")
-        .round_dp(12)
-}
-
-fn calculate_cost(usage: &RequestUsage, price: &RequestPriceSnapshot) -> Decimal {
-    let unit = Decimal::from(price.price_unit_tokens);
-    let non_cached_input = usage.input_tokens.saturating_sub(usage.cached_input_tokens);
-    ((Decimal::from(non_cached_input) * price.input_unit_price
-        + Decimal::from(usage.cached_input_tokens) * price.cached_input_unit_price
-        + Decimal::from(usage.cache_write_tokens) * price.cache_write_unit_price
-        + Decimal::from(usage.output_tokens) * price.output_unit_price)
-        / unit)
-        .round_dp(8)
-}
-
 fn clamp_duration_ms(duration: Duration) -> i32 {
     i32::try_from(duration.as_millis()).unwrap_or(i32::MAX)
 }
@@ -1904,10 +1815,11 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        calculate_cost, forward_request_headers, forward_response_headers, inject_upstream_auth,
-        match_session_affinity, parse_bearer_token, request_billing, response_has_no_body,
+        forward_request_headers, forward_response_headers, inject_upstream_auth,
+        match_session_affinity, parse_bearer_token, response_has_no_body,
     };
     use crate::{
+        application::billing::{calculate_cost, request_billing},
         application::usage::ResponseUsage,
         domain::{
             AdvancedBilling, ApiFormat, CompiledAdvancedBilling, CompiledChannel, LongContextTier,

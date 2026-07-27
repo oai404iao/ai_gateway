@@ -2317,7 +2317,7 @@ components:
         test_model:
           type: string
           nullable: true
-          description: Available upstream model used by periodic scheduled tests.
+          description: Available upstream model used by periodic scheduled tests. It must also match a configured model source ID so usage and cost can be settled.
         created_at: { $ref: "#/components/schemas/DateTime" }
         updated_at: { $ref: "#/components/schemas/DateTime" }
 

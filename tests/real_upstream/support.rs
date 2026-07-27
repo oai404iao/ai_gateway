@@ -185,6 +185,7 @@ fn gateway(settings: &SmokeSettings, format: SmokeFormat, upstream_model: &str) 
             available_models: vec![upstream_model.into()],
             test_model: None,
         }],
+        models: vec![],
         model_rules: vec![ModelRuleRecord {
             id: Uuid::new_v4(),
             client_model: CLIENT_MODEL.into(),

@@ -341,6 +341,20 @@ async fn system_probe_identity_is_an_internal_active_administrator() {
     assert!(lists.api_keys.iter().all(|key| key.id != first.api_key_id));
 
     let now = Utc::now();
+    let model_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO models
+         (id,source_model_id,display_name,enabled,currency,price_unit_tokens,
+          input_unit_price,cached_input_unit_price,cache_write_unit_price,
+          output_unit_price,price_effective_at)
+         VALUES ($1,'scheduled-test-model','Scheduled test model',true,'USD',1,1,0,0,1,$2)",
+    )
+    .bind(model_id)
+    .bind(now)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let cost = rust_decimal::Decimal::new(125, 2);
     let event = RequestLogEvent {
         id: Uuid::new_v4(),
         started_at: now,
@@ -354,13 +368,31 @@ async fn system_probe_identity_is_an_internal_active_administrator() {
         model_rule_id: None,
         channel_group_id: None,
         channel_id: None,
-        model_id: None,
+        model_id: Some(model_id),
         outcome: RequestLogOutcome::Succeeded,
         response_status_code: Some(200),
         streamed: false,
         ttft_ms: Some(1),
         total_duration_ms: 1,
-        billing: None,
+        billing: Some(RequestBilling {
+            usage: Some(RequestUsage {
+                input_tokens: 10,
+                cached_input_tokens: 0,
+                cache_write_tokens: 0,
+                output_tokens: 5,
+            }),
+            price: RequestPriceSnapshot {
+                currency: "USD".into(),
+                price_unit_tokens: 1,
+                price_effective_at: now,
+                input_unit_price: rust_decimal::Decimal::new(5, 2),
+                cached_input_unit_price: rust_decimal::Decimal::ZERO,
+                cache_write_unit_price: rust_decimal::Decimal::ZERO,
+                output_unit_price: rust_decimal::Decimal::new(15, 2),
+            },
+            cost_amount: Some(cost),
+            output_tokens_per_second: Some(rust_decimal::Decimal::ONE),
+        }),
         error_code: None,
         error_summary: None,
     };
@@ -378,6 +410,31 @@ async fn system_probe_identity_is_an_internal_active_administrator() {
             .await
             .unwrap();
     assert_eq!(request_source, "scheduled_test");
+    assert!(matches!(
+        RequestLogRepository::new(database.pool.clone())
+            .settle(event.id)
+            .await
+            .unwrap(),
+        RequestLogSettlementOutcome::Settled { .. }
+    ));
+    let settled: (rust_decimal::Decimal, rust_decimal::Decimal, bool) = sqlx::query_as(
+        "SELECT user_account.balance_amount,
+                key.quota_used_amount,
+                log.billed_at IS NOT NULL
+         FROM users AS user_account
+         JOIN api_keys AS key ON key.user_id=user_account.id
+         JOIN request_logs AS log ON log.api_key_id=key.id
+         WHERE user_account.id=$1 AND key.id=$2 AND log.id=$3",
+    )
+    .bind(first.user_id)
+    .bind(first.api_key_id)
+    .bind(event.id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(settled.0, -cost);
+    assert_eq!(settled.1, cost);
+    assert!(settled.2);
     database.cleanup().await;
 }
 
