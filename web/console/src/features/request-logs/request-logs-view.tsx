@@ -210,14 +210,6 @@ export function RequestLogsView({
             header: t("Channel"),
             render: (log: RequestLogView) => log.channel_name ?? "—",
           },
-          {
-            key: "channel-id",
-            header: t("Channel ID"),
-            className: "whitespace-nowrap",
-            render: (log: RequestLogView) => (
-              <span className="font-mono text-xs">{log.channel_id ?? "—"}</span>
-            ),
-          },
         ]
       : []),
     {
