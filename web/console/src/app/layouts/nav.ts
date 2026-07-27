@@ -37,7 +37,7 @@ export const NAV_SECTIONS: NavSection[] = [
   {
     title: "Personal",
     items: [
-      { label: "Sessions", path: "/account/sessions", icon: ShieldCheck },
+      { label: "Login sessions", path: "/account/sessions", icon: ShieldCheck },
       { label: "API Keys", path: "/api-keys", icon: KeyRound },
       { label: "Request Logs", path: "/usage/request-logs", icon: ScrollText },
       { label: "Channel status", path: "/channel-status", icon: Activity },

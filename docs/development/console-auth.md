@@ -86,7 +86,9 @@ verification_key_path = "/run/secrets/ai-gateway-jwt-public.pem"
 
 ### 5.2 user_sessions
 
-存储 refresh token 的哈希、会话状态、过期时间和轮换时间。refresh token 永不明文入库；每次刷新必须轮换，重放旧 token 将撤销该会话。
+存储 refresh token 的哈希、会话状态、过期时间、轮换时间和最长 512 字符的浏览器
+`User-Agent`。refresh token 永不明文入库；每次刷新必须轮换，重放旧 token 将撤销该会话。
+`User-Agent` 在 session 签发和刷新时更新，使用户可以区分登录设备；现有记录允许为空。
 
 ### 5.3 user_invitations
 
@@ -142,8 +144,9 @@ POST /console/v1/auth/activate-invitation
 
 ```text
 GET/PATCH /console/v1/me
-PUT       /console/v1/me/password
-GET/DELETE /console/v1/me/sessions[/{{id}}]
+POST      /console/v1/me/password
+GET/DELETE /console/v1/me/sessions
+DELETE     /console/v1/me/sessions/{{id}}
 GET/POST  /console/v1/me/api-keys
 GET/PUT   /console/v1/me/api-keys/{{id}}
 POST      /console/v1/me/api-keys/{{id}}/revoke

@@ -133,7 +133,7 @@ export interface paths {
         get: operations["listSessions"];
         put?: never;
         post?: never;
-        delete?: never;
+        delete: operations["revokeOtherSessions"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1080,13 +1080,21 @@ export interface components {
             created_at: components["schemas"]["DateTime"];
             updated_at: components["schemas"]["DateTime"];
         };
+        /** @enum {string} */
+        ConsoleSessionState: "active" | "expired" | "revoked";
         ConsoleSession: {
             /** Format: uuid */
             id: string;
+            /** @description Browser-supplied User-Agent captured when the session was issued or refreshed. */
+            user_agent: string | null;
             created_at: components["schemas"]["DateTime"];
-            last_seen_at: components["schemas"]["DateTimeNullable"];
+            /** @description Last refresh-token rotation time; initially equal to created_at. */
+            last_seen_at: components["schemas"]["DateTime"];
             expires_at: components["schemas"]["DateTime"];
             revoked_at: components["schemas"]["DateTimeNullable"];
+            state: components["schemas"]["ConsoleSessionState"];
+            /** @description Whether this session authenticated the list request. */
+            is_current: boolean;
         };
         InvitationResponse: {
             /** Format: uuid */
@@ -2685,7 +2693,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Sessions. */
+            /** @description Current, active, expired, and revoked Console login sessions. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -2693,6 +2701,25 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ConsoleSession"][];
                 };
+            };
+            401: components["responses"]["Unauthorized"];
+        };
+    };
+    revokeOtherSessions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every active session except the caller's current session was revoked. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             401: components["responses"]["Unauthorized"];
         };
@@ -2708,7 +2735,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Session revoked. */
+            /** @description Session revoked. Revoking the current session also clears its refresh cookie. */
             204: {
                 headers: {
                     [name: string]: unknown;

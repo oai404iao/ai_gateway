@@ -7,6 +7,12 @@ Versioning.
 
 ## [Unreleased]
 
+### Added
+
+- Device-aware Console login-session management with current-device markers,
+  per-session sign-out, sign-out-all-other-devices, explicit active/expired/
+  revoked states, and collapsible session history.
+
 ## [0.4.0] - 2026-07-27
 
 ### Added

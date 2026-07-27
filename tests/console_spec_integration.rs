@@ -198,7 +198,10 @@ async fn app(pool: PgPool) -> App {
     )
     .unwrap();
     let email = format!("spec-user-{user_id}@example.test");
-    let session = auth.login(email, TEST_PASSWORD.into()).await.unwrap();
+    let session = auth
+        .login_with_user_agent(email, TEST_PASSWORD.into(), Some("Spec Browser/1.0".into()))
+        .await
+        .unwrap();
     // Sanity: the freshly issued token must round-trip through the same
     // authenticator before we hand it to HTTP. This surfaces key/claim
     // mismatches as a clear panic instead of a downstream 401.
@@ -484,7 +487,7 @@ async fn login_response_shape_matches_spec() {
             "email": format!("spec-user-{}@example.test", app.user_id),
             "password": TEST_PASSWORD,
         }),
-        &[],
+        &[("user-agent", "Spec Login Browser/2.0")],
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -494,6 +497,175 @@ async fn login_response_shape_matches_spec() {
     assert!(body["expires_in"].is_number());
     assert_eq!(body["user"]["role"], "admin");
     assert!(body["user"]["id"].is_string());
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn session_management_identifies_clients_and_revokes_selected_scopes() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+    let email = format!("spec-user-{}@example.test", app.user_id);
+
+    let second_login = request(
+        &app,
+        "POST",
+        "/console/v1/auth/login",
+        serde_json::json!({
+            "email": email,
+            "password": TEST_PASSWORD,
+        }),
+        &[(
+            "user-agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Firefox/128.0",
+        )],
+    )
+    .await;
+    assert_eq!(second_login.status(), StatusCode::OK);
+
+    let expired_session_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO user_sessions \
+         (id,user_id,refresh_token_hash,user_agent,created_at,last_seen_at,expires_at) \
+         VALUES ($1,$2,$3,'Expired Browser/1.0',now()-interval '2 days', \
+                 now()-interval '2 days',now()-interval '1 day')",
+    )
+    .bind(expired_session_id)
+    .bind(app.user_id)
+    .bind(vec![3_u8; 32])
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let revoked_session_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO user_sessions \
+         (id,user_id,refresh_token_hash,user_agent,created_at,last_seen_at,expires_at,revoked_at) \
+         VALUES ($1,$2,$3,'curl/8.7.1 (Linux)',now()-interval '3 days', \
+                 now()-interval '3 days',now()+interval '7 days',now()-interval '2 days')",
+    )
+    .bind(revoked_session_id)
+    .bind(app.user_id)
+    .bind(vec![4_u8; 32])
+    .execute(&database.pool)
+    .await
+    .unwrap();
+
+    let sessions = request(
+        &app,
+        "GET",
+        "/console/v1/me/sessions",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(sessions.status(), StatusCode::OK);
+    let sessions = body_json(sessions).await;
+    let sessions = sessions.as_array().unwrap();
+    assert_eq!(sessions.len(), 4);
+    assert_eq!(sessions[0]["is_current"], true);
+    assert_eq!(sessions[0]["state"], "active");
+    assert_eq!(sessions[0]["user_agent"], "Spec Browser/1.0");
+    assert!(sessions[0]["last_seen_at"].is_string());
+    let current_session_id = Uuid::parse_str(sessions[0]["id"].as_str().unwrap()).unwrap();
+    let other_active = sessions
+        .iter()
+        .find(|session| {
+            session["user_agent"]
+                .as_str()
+                .is_some_and(|value| value.contains("Firefox/128.0"))
+        })
+        .unwrap();
+    assert_eq!(other_active["state"], "active");
+    assert_eq!(other_active["is_current"], false);
+    let other_active_id = Uuid::parse_str(other_active["id"].as_str().unwrap()).unwrap();
+    let expired = sessions
+        .iter()
+        .find(|session| session["id"] == expired_session_id.to_string())
+        .unwrap();
+    assert_eq!(expired["state"], "expired");
+    let revoked = sessions
+        .iter()
+        .find(|session| session["id"] == revoked_session_id.to_string())
+        .unwrap();
+    assert_eq!(revoked["state"], "revoked");
+
+    let other_user_id = Uuid::new_v4();
+    let other_user_session_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO users (id,email,display_name,role,status) \
+         VALUES ($1,$2,'Other session owner','user','active')",
+    )
+    .bind(other_user_id)
+    .bind(format!("session-owner-{other_user_id}@example.test"))
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO user_sessions (id,user_id,refresh_token_hash,expires_at) \
+         VALUES ($1,$2,$3,now()+interval '1 day')",
+    )
+    .bind(other_user_session_id)
+    .bind(other_user_id)
+    .bind(vec![5_u8; 32])
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let cross_user_revoke = request(
+        &app,
+        "DELETE",
+        &format!("/console/v1/me/sessions/{other_user_session_id}"),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(cross_user_revoke.status(), StatusCode::NOT_FOUND);
+
+    let revoke_others = request(
+        &app,
+        "DELETE",
+        "/console/v1/me/sessions",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(revoke_others.status(), StatusCode::NO_CONTENT);
+    let revocation_state: (bool, bool) = sqlx::query_as(
+        "SELECT \
+           (SELECT revoked_at IS NOT NULL FROM user_sessions WHERE id=$1), \
+           (SELECT revoked_at IS NOT NULL FROM user_sessions WHERE id=$2)",
+    )
+    .bind(current_session_id)
+    .bind(other_active_id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert!(!revocation_state.0);
+    assert!(revocation_state.1);
+    let other_user_revoked: bool =
+        sqlx::query_scalar("SELECT revoked_at IS NOT NULL FROM user_sessions WHERE id=$1")
+            .bind(other_user_session_id)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert!(!other_user_revoked);
+
+    let revoke_current = request(
+        &app,
+        "DELETE",
+        &format!("/console/v1/me/sessions/{current_session_id}"),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(revoke_current.status(), StatusCode::NO_CONTENT);
+    assert!(
+        revoke_current.headers()[header::SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .contains("Max-Age=0")
+    );
+    let rejected = request(&app, "GET", "/console/v1/me", serde_json::json!({}), &[]).await;
+    assert_eq!(rejected.status(), StatusCode::UNAUTHORIZED);
+
     database.cleanup().await;
 }
 

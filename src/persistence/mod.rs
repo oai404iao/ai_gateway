@@ -3,10 +3,10 @@
 mod auth;
 
 pub use auth::{
-    AuthRepository, ConsoleProfile, ConsoleSession, InvitationCreated, InviteUserInput,
-    LiveConsoleIdentity, LoginUser, PasswordUser, RegistrationAttempt, RegistrationInvitationCode,
-    RegistrationInvitationCodeInput, RegistrationInvitationCodeMutation, SessionRotation,
-    SessionUser,
+    AuthRepository, ConsoleProfile, ConsoleSession, ConsoleSessionState, InvitationCreated,
+    InviteUserInput, LiveConsoleIdentity, LoginUser, PasswordUser, RegistrationAttempt,
+    RegistrationInvitationCode, RegistrationInvitationCodeInput,
+    RegistrationInvitationCodeMutation, SessionRotation, SessionUser,
 };
 
 use std::{

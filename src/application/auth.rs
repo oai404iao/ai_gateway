@@ -41,6 +41,7 @@ const MAX_DISPLAY_NAME_BYTES: usize = 200;
 const MIN_REGISTRATION_CODE_BYTES: usize = 12;
 const MAX_REGISTRATION_CODE_BYTES: usize = 128;
 const MAX_REGISTRATION_CODE_NAME_BYTES: usize = 100;
+const MAX_SESSION_USER_AGENT_CHARS: usize = 512;
 const INVITATION_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 const AUTH_FAILURE_WINDOW: Duration = Duration::from_secs(60);
 const AUTH_FAILURE_LIMIT: u32 = 10;
@@ -89,6 +90,15 @@ impl ConsoleAuthService {
     }
 
     pub async fn login(&self, email: String, password: String) -> Result<IssuedSession, AuthError> {
+        self.login_with_user_agent(email, password, None).await
+    }
+
+    pub async fn login_with_user_agent(
+        &self,
+        email: String,
+        password: String,
+        user_agent: Option<String>,
+    ) -> Result<IssuedSession, AuthError> {
         validate_email(&email)?;
         validate_password(&password)?;
         let limiter_key = format!("login:{}", email.trim().to_ascii_lowercase());
@@ -112,10 +122,20 @@ impl ConsoleAuthService {
             return Err(AuthError::InvalidCredentials);
         }
         self.clear_failed_attempts(&limiter_key).await;
-        self.issue_session(user.into_session_user()).await
+        self.issue_session(user.into_session_user(), user_agent)
+            .await
     }
 
     pub async fn refresh(&self, refresh_token: &str) -> Result<IssuedSession, AuthError> {
+        self.refresh_with_user_agent(refresh_token, None).await
+    }
+
+    pub async fn refresh_with_user_agent(
+        &self,
+        refresh_token: &str,
+        user_agent: Option<String>,
+    ) -> Result<IssuedSession, AuthError> {
+        let user_agent = normalize_session_user_agent(user_agent);
         let (session_id, _) = parse_opaque_token(refresh_token).ok_or(AuthError::InvalidToken)?;
         let next = new_opaque_token(session_id);
         let next_hash = token_hash(&next);
@@ -127,6 +147,7 @@ impl ConsoleAuthService {
                 &token_hash(refresh_token),
                 &next_hash,
                 next_expiry,
+                user_agent.as_deref(),
             )
             .await?
         {
@@ -179,6 +200,16 @@ impl ConsoleAuthService {
         invitation_token: &str,
         password: String,
     ) -> Result<IssuedSession, AuthError> {
+        self.accept_invitation_with_user_agent(invitation_token, password, None)
+            .await
+    }
+
+    pub async fn accept_invitation_with_user_agent(
+        &self,
+        invitation_token: &str,
+        password: String,
+        user_agent: Option<String>,
+    ) -> Result<IssuedSession, AuthError> {
         validate_password(&password)?;
         let (invitation_id, _) =
             parse_opaque_token(invitation_token).ok_or(AuthError::InvalidInvitation)?;
@@ -197,10 +228,18 @@ impl ConsoleAuthService {
             }
         };
         self.clear_failed_attempts(&limiter_key).await;
-        self.issue_session(user).await
+        self.issue_session(user, user_agent).await
     }
 
     pub async fn register(&self, input: SelfRegistrationInput) -> Result<IssuedSession, AuthError> {
+        self.register_with_user_agent(input, None).await
+    }
+
+    pub async fn register_with_user_agent(
+        &self,
+        input: SelfRegistrationInput,
+        user_agent: Option<String>,
+    ) -> Result<IssuedSession, AuthError> {
         validate_email(&input.email)?;
         validate_display_name(&input.display_name)?;
         validate_password(&input.password)?;
@@ -236,7 +275,7 @@ impl ConsoleAuthService {
         };
         self.clear_failed_attempts(&email_limiter_key).await;
         self.clear_failed_attempts(&code_limiter_key).await;
-        self.issue_session(user).await
+        self.issue_session(user, user_agent).await
     }
 
     pub async fn change_password(
@@ -439,7 +478,12 @@ impl ConsoleAuthService {
         self.failures.lock().await.clear(key);
     }
 
-    async fn issue_session(&self, user: SessionUser) -> Result<IssuedSession, AuthError> {
+    async fn issue_session(
+        &self,
+        user: SessionUser,
+        user_agent: Option<String>,
+    ) -> Result<IssuedSession, AuthError> {
+        let user_agent = normalize_session_user_agent(user_agent);
         let session_id = Uuid::new_v4();
         let refresh_token = new_opaque_token(session_id);
         let refresh_expiry = self.refresh_expiry()?;
@@ -449,6 +493,7 @@ impl ConsoleAuthService {
                 user.id,
                 &token_hash(&refresh_token),
                 refresh_expiry,
+                user_agent.as_deref(),
             )
             .await?;
         self.finish_issued_session(user, session_id, refresh_token, refresh_expiry)
@@ -486,6 +531,20 @@ impl ConsoleAuthService {
             )
             .ok_or(AuthError::Configuration)
     }
+}
+
+fn normalize_session_user_agent(user_agent: Option<String>) -> Option<String> {
+    let user_agent = user_agent?;
+    let user_agent = user_agent.trim();
+    if user_agent.is_empty() {
+        return None;
+    }
+    Some(
+        user_agent
+            .chars()
+            .take(MAX_SESSION_USER_AGENT_CHARS)
+            .collect(),
+    )
 }
 
 #[derive(Clone)]
@@ -848,7 +907,7 @@ pub enum AuthError {
 
 #[cfg(test)]
 mod tests {
-    use super::{AuthError, hash_console_password};
+    use super::{AuthError, hash_console_password, normalize_session_user_agent};
 
     #[tokio::test]
     async fn hashing_a_console_password_rejects_a_short_value() {
@@ -856,5 +915,21 @@ mod tests {
             hash_console_password("too-short".to_owned()).await,
             Err(AuthError::InvalidInput)
         ));
+    }
+
+    #[test]
+    fn session_user_agent_is_trimmed_and_bounded() {
+        assert_eq!(
+            normalize_session_user_agent(Some("  Browser/1.0  ".into())).as_deref(),
+            Some("Browser/1.0")
+        );
+        assert_eq!(normalize_session_user_agent(Some("   ".into())), None);
+        assert_eq!(
+            normalize_session_user_agent(Some("x".repeat(600)))
+                .unwrap()
+                .chars()
+                .count(),
+            512
+        );
     }
 }

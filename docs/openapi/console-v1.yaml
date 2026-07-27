@@ -211,12 +211,20 @@ paths:
       security: [{ bearerAuth: [] }]
       responses:
         "200":
-          description: Sessions.
+          description: Current, active, expired, and revoked Console login sessions.
           content:
             application/json:
               schema:
                 type: array
                 items: { $ref: "#/components/schemas/ConsoleSession" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    delete:
+      tags: [Self]
+      operationId: revokeOtherSessions
+      security: [{ bearerAuth: [] }]
+      responses:
+        "204":
+          description: Every active session except the caller's current session was revoked.
         "401": { $ref: "#/components/responses/Unauthorized" }
 
   /me/sessions/{id}:
@@ -227,7 +235,8 @@ paths:
       parameters:
         - $ref: "#/components/parameters/PathId"
       responses:
-        "204": { description: Session revoked. }
+        "204":
+          description: Session revoked. Revoking the current session also clears its refresh cookie.
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
 
@@ -2038,15 +2047,32 @@ components:
         created_at: { $ref: "#/components/schemas/DateTime" }
         updated_at: { $ref: "#/components/schemas/DateTime" }
 
+    ConsoleSessionState:
+      type: string
+      enum: [active, expired, revoked]
+
     ConsoleSession:
       type: object
-      required: [id, created_at, last_seen_at, expires_at, revoked_at]
+      required:
+        [id, user_agent, created_at, last_seen_at, expires_at, revoked_at, state,
+         is_current]
       properties:
         id: { type: string, format: uuid }
+        user_agent:
+          type: string
+          maxLength: 512
+          nullable: true
+          description: Browser-supplied User-Agent captured when the session was issued or refreshed.
         created_at: { $ref: "#/components/schemas/DateTime" }
-        last_seen_at: { $ref: "#/components/schemas/DateTimeNullable" }
+        last_seen_at:
+          allOf: [{ $ref: "#/components/schemas/DateTime" }]
+          description: Last refresh-token rotation time; initially equal to created_at.
         expires_at: { $ref: "#/components/schemas/DateTime" }
         revoked_at: { $ref: "#/components/schemas/DateTimeNullable" }
+        state: { $ref: "#/components/schemas/ConsoleSessionState" }
+        is_current:
+          type: boolean
+          description: Whether this session authenticated the list request.
 
     InvitationResponse:
       type: object
