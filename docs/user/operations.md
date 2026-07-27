@@ -140,6 +140,7 @@ USD 余额；省略时为 `0`。邀请响应中的 `invitation_token` 只返回�
 - `POST /console/v1/me/api-keys/{id}/revoke`
 - `GET /console/v1/me/request-logs?limit=50`
 - `GET /console/v1/me/request-logs/{id}`
+- `GET /console/v1/me/usage`
 
 用户的有效 `api_key_policy` 按“用户覆盖优先，否则继承用户组默认策略”解析。Policy 只定义用户
 可选择的渠道组和单独渠道。用户通过
@@ -169,7 +170,7 @@ Policy 不再保存额度、RPM、并发、格式、权限或最大活动 Key �
 - 变换模板：`/console/v1/transforms/templates`
 - 观测事实：`GET /console/v1/request-logs`、`GET /console/v1/audit-logs`
 - 花费排行榜：`GET /console/v1/statistics/spend-leaderboard`
-- 系统负载：`GET /console/v1/system/load`（当前实例的 CPU、内存、运行时、队列、日志积压和数据库连接池压力）
+- 系统负载：`GET /console/v1/system/load`（当前实例的 CPU、内存、运行时、队列、日志积压和数据库连接池压力；Console 页面位于“运维”下的 `/admin/system-load`）
 - 系统转发设置：`GET` / `PUT /console/v1/system/settings`（管理员；`PUT` 使用 `If-Match`，保存后立即发布快照）
 - 手动重载：`POST /console/v1/system/reload`
 
@@ -221,6 +222,11 @@ Policy 不再保存额度、RPM、并发、格式、权限或最大活动 Key �
 本地 spool pending bytes、PostgreSQL ingress/settlement backlog 以及控制面和请求日志连接池占用。
 CPU 百分比依赖相邻采样差值，因此进程启动后的首次采样可能为 `null`。这些数据不是多实例集群聚合；
 Console 的“系统负载”页默认每 5 秒重新获取一次。
+
+所有已登录用户可在 Console 的“统计”页面查看自己的“个人使用情况”。页面固定展示截至当前
+UTC 日期的连续 365 天客户端请求数，并使用类似 GitHub 贡献图的日期网格显示每日强度；没有请求的
+日期也会保留。摘要同时显示总请求数、活跃天数、当前连续活跃天数和最长连续活跃天数。该接口只从
+JWT 主体推导用户 ID，管理员也只能在个人使用情况标签中看到自己的数据；系统定时渠道测试不会计入。
 
 所有已登录用户可在 Console 独立的“花费排行榜”页面查看用户花费排名。页面固定提供自然日、
 自然周和自然月榜，均按 `Asia/Shanghai` 时区切分：日榜为当日 00:00 至次日 00:00，周榜为周一至周日，

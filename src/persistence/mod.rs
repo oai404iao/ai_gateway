@@ -1394,6 +1394,23 @@ pub struct ChannelStatusReport {
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub struct PersonalUsageReport {
+    pub started_on: NaiveDate,
+    pub ended_on: NaiveDate,
+    pub total_request_count: i64,
+    pub active_day_count: i64,
+    pub current_streak_days: i64,
+    pub longest_streak_days: i64,
+    pub days: Vec<PersonalUsageDay>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct PersonalUsageDay {
+    pub date: NaiveDate,
+    pub request_count: i64,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct ChannelStatusModelMetric {
     pub api_format: String,
     pub model: String,
@@ -1936,6 +1953,47 @@ impl RequestLogRepository {
 
     pub async fn get(&self, id: Uuid) -> Result<Option<ConsoleRequestLog>, RepositoryError> {
         query_console_request_log(&self.pool, id, None).await
+    }
+
+    pub async fn personal_usage(
+        &self,
+        user_id: Uuid,
+        ended_on: NaiveDate,
+    ) -> Result<PersonalUsageReport, RepositoryError> {
+        let started_on = ended_on
+            .checked_sub_signed(chrono::Duration::days(364))
+            .ok_or(RepositoryError::Validation)?;
+        let ended_exclusive_on = ended_on.succ_opt().ok_or(RepositoryError::Validation)?;
+        let started_at: DateTime<Utc> = DateTime::from_naive_utc_and_offset(
+            started_on
+                .and_hms_opt(0, 0, 0)
+                .ok_or(RepositoryError::Validation)?,
+            Utc,
+        );
+        let ended_at: DateTime<Utc> = DateTime::from_naive_utc_and_offset(
+            ended_exclusive_on
+                .and_hms_opt(0, 0, 0)
+                .ok_or(RepositoryError::Validation)?,
+            Utc,
+        );
+        let rows = sqlx::query_as::<_, PersonalUsageDayRow>(
+            "SELECT (started_at AT TIME ZONE 'UTC')::date AS date,
+                    count(*)::bigint AS request_count
+             FROM request_logs
+             WHERE user_id = $1
+               AND request_source = 'client'
+               AND started_at >= $2
+               AND started_at < $3
+             GROUP BY (started_at AT TIME ZONE 'UTC')::date
+             ORDER BY (started_at AT TIME ZONE 'UTC')::date",
+        )
+        .bind(user_id)
+        .bind(started_at)
+        .bind(ended_at)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(fold_personal_usage(rows, started_on, ended_on))
     }
 
     pub async fn channel_status(
@@ -3269,6 +3327,12 @@ fn success_rate(eligible_request_count: i64, succeeded_count: i64) -> Option<f64
 }
 
 #[derive(FromRow)]
+struct PersonalUsageDayRow {
+    date: NaiveDate,
+    request_count: i64,
+}
+
+#[derive(FromRow)]
 struct CostSummaryRow {
     request_count: i64,
     priced_request_count: i64,
@@ -3387,6 +3451,57 @@ struct CostModelBuilder {
     cache_write_tokens: i64,
     output_tokens: i64,
     cost_amount: rust_decimal::Decimal,
+}
+
+fn fold_personal_usage(
+    rows: Vec<PersonalUsageDayRow>,
+    started_on: NaiveDate,
+    ended_on: NaiveDate,
+) -> PersonalUsageReport {
+    let counts = rows
+        .into_iter()
+        .map(|row| (row.date, row.request_count))
+        .collect::<BTreeMap<_, _>>();
+    let mut total_request_count = 0_i64;
+    let mut active_day_count = 0_i64;
+    let mut current_streak_days = 0_i64;
+    let mut longest_streak_days = 0_i64;
+    let mut days = Vec::with_capacity(365);
+    let mut date = started_on;
+
+    loop {
+        let request_count = counts.get(&date).copied().unwrap_or_default();
+        total_request_count = total_request_count.saturating_add(request_count);
+        if request_count > 0 {
+            active_day_count = active_day_count.saturating_add(1);
+            current_streak_days = current_streak_days.saturating_add(1);
+            longest_streak_days = longest_streak_days.max(current_streak_days);
+        } else {
+            current_streak_days = 0;
+        }
+        days.push(PersonalUsageDay {
+            date,
+            request_count,
+        });
+
+        if date >= ended_on {
+            break;
+        }
+        let Some(next) = date.succ_opt() else {
+            break;
+        };
+        date = next;
+    }
+
+    PersonalUsageReport {
+        started_on,
+        ended_on,
+        total_request_count,
+        active_day_count,
+        current_streak_days,
+        longest_streak_days,
+        days,
+    }
 }
 
 fn fold_cost_buckets(

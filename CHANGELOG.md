@@ -15,6 +15,13 @@ Versioning.
   policy overrides, and group membership.
 - Confirmed user deletion that anonymizes the account, revokes credentials,
   preserves request/audit ownership, and releases the email for reuse.
+- A personal 365-day request-activity contribution calendar with active-day
+  and streak summaries for every Console user.
+
+### Changed
+
+- Moved administrator system-load monitoring from Statistics to a dedicated
+  page in the Operations navigation.
 
 ## [0.3.1] - 2026-07-25
 

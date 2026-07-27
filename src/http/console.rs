@@ -92,7 +92,8 @@ pub fn router(state: ConsoleState) -> Router {
             post(revoke_own_api_key),
         )
         .route("/console/v1/me/request-logs", get(list_own_request_logs))
-        .route("/console/v1/me/request-logs/{id}", get(get_own_request_log));
+        .route("/console/v1/me/request-logs/{id}", get(get_own_request_log))
+        .route("/console/v1/me/usage", get(get_own_usage));
 
     let statistics_routes = Router::new()
         .route(
@@ -786,6 +787,18 @@ async fn get_own_request_log(
         .await?
         .map(Json)
         .ok_or(ConsoleError::NotFound)
+}
+
+async fn get_own_usage(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+) -> Result<Json<crate::persistence::PersonalUsageReport>, ConsoleError> {
+    Ok(Json(
+        state
+            .request_logs
+            .personal_usage(principal.user_id(), Utc::now().date_naive())
+            .await?,
+    ))
 }
 
 async fn list_users(

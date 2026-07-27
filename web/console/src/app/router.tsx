@@ -143,6 +143,11 @@ const AuditLogsPage = lazy(() =>
     default: m.AuditLogsPage,
   })),
 );
+const SystemLoadPage = lazy(() =>
+  import("@/features/admin/system-load/system-load-page").then((m) => ({
+    default: m.SystemLoadPage,
+  })),
+);
 const SystemPage = lazy(() =>
   import("@/features/admin/system/system-page").then((m) => ({ default: m.SystemPage })),
 );
@@ -227,6 +232,7 @@ export function AppRouter() {
             />
             <Route path="/admin/request-logs" element={<AdminRequestLogsPage />} />
             <Route path="/admin/audit-logs" element={<AuditLogsPage />} />
+            <Route path="/admin/system-load" element={<SystemLoadPage />} />
             <Route path="/admin/system" element={<SystemPage />} />
           </Route>
 

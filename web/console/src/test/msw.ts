@@ -23,6 +23,7 @@ import {
   MODEL_RULE,
   NEW_API_KEY_SECRET,
   OWN_API_KEY,
+  PERSONAL_USAGE_REPORT,
   PROXY,
   REVOKED_SESSION,
   SESSION_AFFINITY_CACHE_REPORT,
@@ -159,6 +160,7 @@ export const handlers = [
   ),
   http.get("/console/v1/request-logs", () => HttpResponse.json([])),
   http.get("/console/v1/me/request-logs", () => HttpResponse.json([])),
+  http.get("/console/v1/me/usage", () => HttpResponse.json(PERSONAL_USAGE_REPORT)),
   http.get("/console/v1/statistics/channel-status", () =>
     HttpResponse.json(CHANNEL_STATUS_REPORT),
   ),

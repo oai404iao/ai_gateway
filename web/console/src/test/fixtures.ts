@@ -20,6 +20,7 @@ import type {
   ControlPlaneUser,
   LoginResponse,
   ModelRuleView,
+  PersonalUsageReport,
   ProxyView,
   RequestLogView,
   SelfApiKeyOptions,
@@ -409,6 +410,43 @@ export const CHANNEL_STATUS_REPORT: ChannelStatusReport = {
       ],
     },
   ],
+};
+
+const PERSONAL_USAGE_COUNTS: Record<string, number> = {
+  "2025-08-03": 1,
+  "2025-08-04": 2,
+  "2025-08-05": 3,
+  "2025-08-06": 4,
+  "2025-08-07": 5,
+  "2025-08-08": 6,
+  "2026-07-23": 3,
+  "2026-07-24": 5,
+  "2026-07-25": 8,
+  "2026-07-26": 2,
+  "2026-07-27": 4,
+};
+
+const PERSONAL_USAGE_DAYS: PersonalUsageReport["days"] = Array.from(
+  { length: 365 },
+  (_, index) => {
+    const date = new Date(Date.UTC(2025, 6, 28 + index))
+      .toISOString()
+      .slice(0, 10);
+    return {
+      date,
+      request_count: PERSONAL_USAGE_COUNTS[date] ?? 0,
+    };
+  },
+);
+
+export const PERSONAL_USAGE_REPORT: PersonalUsageReport = {
+  started_on: "2025-07-28",
+  ended_on: "2026-07-27",
+  total_request_count: 43,
+  active_day_count: 11,
+  current_streak_days: 5,
+  longest_streak_days: 6,
+  days: PERSONAL_USAGE_DAYS,
 };
 
 export const COST_STATISTICS_REPORT: CostStatisticsReport = {

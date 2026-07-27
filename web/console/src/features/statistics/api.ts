@@ -4,8 +4,8 @@ import type {
   ChannelStatusReport,
   ChannelStatusWindow,
   CostStatisticsReport,
+  PersonalUsageReport,
   StatisticsGranularity,
-  SystemLoadReport,
 } from "@/api/types";
 
 export interface CostStatisticsFilters {
@@ -35,6 +35,13 @@ export function useChannelStatus(window: ChannelStatusWindow) {
   });
 }
 
+export function usePersonalUsage() {
+  return useQuery({
+    queryKey: ["console", "statistics", "personal-usage"] as const,
+    queryFn: () => apiGet<PersonalUsageReport>("/me/usage"),
+  });
+}
+
 export function useCostStatistics(filters: CostStatisticsFilters) {
   return useQuery({
     queryKey: ["console", "statistics", "costs", filters] as const,
@@ -49,13 +56,5 @@ export function useCostStatistics(filters: CostStatisticsFilters) {
           channel_id: filters.channel_id,
         })}`,
       ),
-  });
-}
-
-export function useSystemLoad() {
-  return useQuery({
-    queryKey: ["console", "system", "load"] as const,
-    queryFn: () => apiGet<SystemLoadReport>("/system/load"),
-    refetchInterval: 5_000,
   });
 }
