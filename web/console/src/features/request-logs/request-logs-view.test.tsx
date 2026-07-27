@@ -45,10 +45,10 @@ describe("RequestLogsView", () => {
       await screen.findByRole("columnheader", { name: "Channel" }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("columnheader", { name: "Channel ID" }),
-    ).toBeInTheDocument();
+      screen.queryByRole("columnheader", { name: "Channel ID" }),
+    ).not.toBeInTheDocument();
     expect(screen.getByText(CHANNEL.name)).toBeInTheDocument();
-    expect(screen.getByText(CHANNEL.id)).toBeInTheDocument();
+    expect(screen.queryByText(CHANNEL.id)).not.toBeInTheDocument();
 
     const apiKey = await screen.findByRole("combobox", { name: "API key" });
     await user.click(apiKey);
@@ -93,10 +93,12 @@ describe("RequestLogsView", () => {
       await screen.findByRole("columnheader", { name: "Channel group" }),
     ).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: "Channel" })).toBeInTheDocument();
-    expect(screen.getByRole("columnheader", { name: "Channel ID" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("columnheader", { name: "Channel ID" }),
+    ).not.toBeInTheDocument();
     expect(screen.getByText(CHANNEL_GROUP.name)).toBeInTheDocument();
     expect(screen.getByText(CHANNEL.name)).toBeInTheDocument();
-    expect(screen.getByText(CHANNEL.id)).toBeInTheDocument();
+    expect(screen.queryByText(CHANNEL.id)).not.toBeInTheDocument();
 
     const userSelect = await screen.findByRole("combobox", { name: "User" });
     await user.click(userSelect);
