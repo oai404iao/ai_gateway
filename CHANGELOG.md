@@ -7,6 +7,8 @@ Versioning.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-27
+
 ### Added
 
 - Self-service Console registration through administrator-managed reusable
@@ -20,9 +22,17 @@ Versioning.
   preserves request/audit ownership, and releases the email for reuse.
 - A personal 365-day request-activity contribution calendar with active-day
   and streak summaries for every Console user.
+- Periodic day, week, and month spend leaderboards backed by durable snapshots
+  and refreshed asynchronously.
+- A project-owned gateway mark shared by the Console brand and favicon.
 
 ### Changed
 
+- Scheduled channel tests now record token usage and bill the hidden system
+  administrator account using configured model prices, advanced billing rules,
+  and channel multipliers.
+- Request-log tables hide internal channel IDs while preserving them in the
+  administrator detail view.
 - Moved administrator system-load monitoring from Statistics to a dedicated
   page in the Operations navigation.
 
