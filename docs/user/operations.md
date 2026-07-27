@@ -168,6 +168,7 @@ Policy 不再保存额度、RPM、并发、格式、权限或最大活动 Key �
 - 网络：`/console/v1/network/proxies`
 - 变换模板：`/console/v1/transforms/templates`
 - 观测事实：`GET /console/v1/request-logs`、`GET /console/v1/audit-logs`
+- 花费排行榜：`GET /console/v1/statistics/spend-leaderboard`
 - 系统负载：`GET /console/v1/system/load`（当前实例的 CPU、内存、运行时、队列、日志积压和数据库连接池压力）
 - 系统转发设置：`GET` / `PUT /console/v1/system/settings`（管理员；`PUT` 使用 `If-Match`，保存后立即发布快照）
 - 手动重载：`POST /console/v1/system/reload`
@@ -220,6 +221,13 @@ Policy 不再保存额度、RPM、并发、格式、权限或最大活动 Key �
 本地 spool pending bytes、PostgreSQL ingress/settlement backlog 以及控制面和请求日志连接池占用。
 CPU 百分比依赖相邻采样差值，因此进程启动后的首次采样可能为 `null`。这些数据不是多实例集群聚合；
 Console 的“系统负载”页默认每 5 秒重新获取一次。
+
+所有已登录用户可在 Console 独立的“花费排行榜”页面查看用户花费排名。页面固定提供自然日、
+自然周和自然月榜，均按 `Asia/Shanghai` 时区切分：日榜为当日 00:00 至次日 00:00，周榜为周一至周日，
+月榜为每月 1 日至月底；并可前后浏览已保留的历史榜单；不再提供任意日志时间范围筛选。后台每 15 分钟汇总一次排行榜快照，因此当前
+数据不是实时数据，除刷新间隔外还会受到请求日志投影和刷新耗时影响。前三名使用领奖台柱状图展示，排行榜表格显示最多 50 名用户的已记录 USD
+花费、占比、已计价请求数和 Token。排行榜仅包含该周期内至少有一个已定价请求的用户；其总花费来自
+客户端请求的 `request_logs.cost_amount`，不等待异步结算 worker 写入 `billed_at`；系统定时渠道测试不会参与排行榜。
 
 ## 自动禁用与定时测试
 

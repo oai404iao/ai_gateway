@@ -26,6 +26,7 @@ export type RequestLogSource = S["RequestLogSource"];
 export type ModelSyncAction = S["ModelSyncAction"];
 export type ChannelStatusWindow = S["ChannelStatusWindow"];
 export type StatisticsGranularity = S["StatisticsGranularity"];
+export type SpendLeaderboardPeriod = S["SpendLeaderboardPeriod"];
 
 // Auth + shared responses
 export type ErrorBody = S["ErrorBody"];
@@ -92,6 +93,8 @@ export type CostStatisticsBucket = S["CostStatisticsBucket"];
 export type CostStatisticsBucketModel = S["CostStatisticsBucketModel"];
 export type CostStatisticsModel = S["CostStatisticsModel"];
 export type CostStatisticsChannel = S["CostStatisticsChannel"];
+export type SpendLeaderboardReport = S["SpendLeaderboardReport"];
+export type SpendLeaderboardEntry = S["SpendLeaderboardEntry"];
 export type ModelSyncPreview = S["ModelSyncPreview"];
 export type ModelSyncPreviewModel = S["ModelSyncPreviewModel"];
 export type ModelImportResponse = S["ModelImportResponse"];

@@ -113,7 +113,7 @@ spool 和 ingress 分别形成两层可恢复 backlog。不得在数据库 COPY 
 | `src/upstream/` | reqwest client 复用、代理和超时策略 |
 | `src/persistence/` | SQLx repository、事务和查询 |
 | `src/runtime_config/` | TOML bootstrap 配置和 `ArcSwap` 快照 |
-| `src/workers/` | 重载、日志 ingest/投影/结算、渠道自动化 |
+| `src/workers/` | 重载、日志 ingest/投影/结算、渠道自动化、花费排行榜快照 |
 | `web/console/` | React Console SPA；仅构建/开发阶段使用 Node |
 
 ## 权威来源

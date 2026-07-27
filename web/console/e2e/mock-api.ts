@@ -71,6 +71,66 @@ const E2E_API_KEY_POLICY = {
 
 export const E2E_API_KEY_SECRET = "sk-e2e-retrievable-api-key";
 
+const E2E_COST_STATISTICS = {
+  started_at: "2026-07-01T00:00:00.000Z",
+  ended_at: "2026-07-24T12:00:00.000Z",
+  granularity: "day",
+  summary: {
+    request_count: 12,
+    priced_request_count: 12,
+    total_tokens: 1_200_000,
+    input_tokens: 900_000,
+    cached_input_tokens: 300_000,
+    cache_write_tokens: 20_000,
+    output_tokens: 300_000,
+    average_rpm: 0.5,
+    average_tpm: 50_000,
+    cost_amount: "1912.06",
+  },
+  buckets: [],
+  models: [],
+  channels: [],
+};
+
+const E2E_SPEND_LEADERBOARD = {
+  period: "day",
+  period_start: "2026-07-24",
+  period_end: "2026-07-25",
+  refreshed_at: "2026-07-24T12:15:00.000Z",
+  total_cost_amount: "1912.06",
+  previous_period_start: "2026-07-23",
+  next_period_start: null,
+  entries: [
+    {
+      rank: 1,
+      user_id: "00000000-0000-0000-0000-000000000201",
+      display_name: "Ada Lovelace",
+      request_count: 6_810,
+      priced_request_count: 6_800,
+      total_tokens: 98_300_000,
+      cost_amount: "721.95",
+    },
+    {
+      rank: 2,
+      user_id: "00000000-0000-0000-0000-000000000202",
+      display_name: "Diego Rivera",
+      request_count: 5_024,
+      priced_request_count: 5_000,
+      total_tokens: 74_200_000,
+      cost_amount: "602.12",
+    },
+    {
+      rank: 3,
+      user_id: "00000000-0000-0000-0000-000000000203",
+      display_name: "Lin Qiao",
+      request_count: 3_106,
+      priced_request_count: 3_085,
+      total_tokens: 51_400_000,
+      cost_amount: "385.12",
+    },
+  ],
+};
+
 export async function mockConsoleApi(page: Page): Promise<void> {
   await page.route("**/console/v1/**", (route: Route) => {
     const url = new URL(route.request().url());
@@ -99,6 +159,9 @@ export async function mockConsoleApi(page: Page): Promise<void> {
     }
     if (path === "/console/v1/users" && method === "GET") {
       return route.fulfill({ status: 200, json: [E2E_USER] });
+    }
+    if (path === "/console/v1/api-keys" && method === "GET") {
+      return route.fulfill({ status: 200, json: [] });
     }
     if (path === "/console/v1/user-groups" && method === "GET") {
       return route.fulfill({ status: 200, json: E2E_USER_GROUPS });
@@ -157,6 +220,21 @@ export async function mockConsoleApi(page: Page): Promise<void> {
           channels: [],
         },
       });
+    }
+    if (path === "/console/v1/statistics/costs" && method === "GET") {
+      return route.fulfill({ status: 200, json: E2E_COST_STATISTICS });
+    }
+    if (
+      path === "/console/v1/statistics/spend-leaderboard" &&
+      method === "GET"
+    ) {
+      return route.fulfill({ status: 200, json: E2E_SPEND_LEADERBOARD });
+    }
+    if (path === "/console/v1/routing/channel-groups" && method === "GET") {
+      return route.fulfill({ status: 200, json: [] });
+    }
+    if (path === "/console/v1/routing/channels" && method === "GET") {
+      return route.fulfill({ status: 200, json: [] });
     }
     if (path === "/console/v1/me/api-key-options" && method === "GET") {
       return route.fulfill({

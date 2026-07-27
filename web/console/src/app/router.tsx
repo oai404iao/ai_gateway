@@ -51,6 +51,11 @@ const ChannelStatusPage = lazy(() =>
     default: m.ChannelStatusPage,
   })),
 );
+const SpendLeaderboardPage = lazy(() =>
+  import("@/features/spend-leaderboard/spend-leaderboard-page").then((m) => ({
+    default: m.SpendLeaderboardPage,
+  })),
+);
 const UsersPage = lazy(() =>
   import("@/features/admin/users/users-page").then((m) => ({ default: m.UsersPage })),
 );
@@ -188,6 +193,7 @@ export function AppRouter() {
           <Route path="/usage/request-logs" element={<OwnRequestLogsPage />} />
           <Route path="/channel-status" element={<ChannelStatusPage />} />
           <Route path="/statistics" element={<StatisticsPage />} />
+          <Route path="/leaderboard" element={<SpendLeaderboardPage />} />
 
           <Route element={<RequireAdmin />}>
             <Route path="/admin/users" element={<UsersPage />} />

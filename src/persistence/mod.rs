@@ -12,7 +12,7 @@ use std::{
     fmt,
 };
 
-use chrono::{DateTime, Timelike, Utc};
+use chrono::{DateTime, Datelike, NaiveDate, Timelike, Utc, Weekday};
 use regex::Regex;
 use reqwest::header::HeaderName;
 use serde::{Deserialize, Serialize};
@@ -37,6 +37,7 @@ pub const DEFAULT_USER_GROUP_ID: Uuid = Uuid::from_u128(0x101);
 pub const DEFAULT_ADMIN_GROUP_ID: Uuid = Uuid::from_u128(0x102);
 const SYSTEM_PROBE_DISPLAY_NAME: &str = "ai-gateway-system-scheduled-tests-2c2e3fd5";
 const SYSTEM_PROBE_API_KEY_NAME: &str = "system-scheduled-tests";
+const SPEND_LEADERBOARD_REFRESH_LOCK: i64 = 0x5350_454E_445F_4C42;
 
 fn forwarding_settings_object_id() -> Uuid {
     Uuid::from_u128(0x6ed3_d02b_bda1_4d85_85b9_3f9d_7362_5001)
@@ -1312,6 +1313,76 @@ pub struct CostStatisticsFilter {
     pub include_channel_details: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SpendLeaderboardPeriod {
+    Day,
+    Week,
+    Month,
+}
+
+impl SpendLeaderboardPeriod {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Day => "day",
+            Self::Week => "week",
+            Self::Month => "month",
+        }
+    }
+
+    #[must_use]
+    pub fn current_start_at(self, now: DateTime<Utc>) -> NaiveDate {
+        // Asia/Shanghai is UTC+08:00 and does not observe daylight saving time.
+        let today = (now + chrono::Duration::hours(8)).date_naive();
+        match self {
+            Self::Day => today,
+            Self::Week => {
+                today - chrono::Duration::days(i64::from(today.weekday().num_days_from_monday()))
+            }
+            Self::Month => today
+                .with_day(1)
+                .expect("every calendar month has a first day"),
+        }
+    }
+
+    #[must_use]
+    pub fn end_after(self, period_start: NaiveDate) -> NaiveDate {
+        match self {
+            Self::Day => period_start
+                .succ_opt()
+                .expect("a supported date always has a next day"),
+            Self::Week => period_start
+                .checked_add_signed(chrono::Duration::days(7))
+                .expect("a supported date always has a following week"),
+            Self::Month => {
+                let (year, month) = if period_start.month() == 12 {
+                    (period_start.year() + 1, 1)
+                } else {
+                    (period_start.year(), period_start.month() + 1)
+                };
+                NaiveDate::from_ymd_opt(year, month, 1)
+                    .expect("a supported date always has a following month")
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn is_valid_start(self, period_start: NaiveDate) -> bool {
+        match self {
+            Self::Day => true,
+            Self::Week => period_start.weekday() == Weekday::Mon,
+            Self::Month => period_start.day() == 1,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct SpendLeaderboardFilter {
+    pub period: SpendLeaderboardPeriod,
+    pub period_start: NaiveDate,
+    pub limit: i64,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct ChannelStatusReport {
     pub window: String,
@@ -1435,6 +1506,35 @@ pub struct CostStatisticsChannel {
     pub cache_write_tokens: i64,
     pub output_tokens: i64,
     pub success_rate: Option<f64>,
+    pub cost_amount: rust_decimal::Decimal,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct SpendLeaderboardReport {
+    pub period: String,
+    pub period_start: NaiveDate,
+    pub period_end: NaiveDate,
+    pub refreshed_at: Option<DateTime<Utc>>,
+    pub total_cost_amount: rust_decimal::Decimal,
+    pub previous_period_start: Option<NaiveDate>,
+    pub next_period_start: Option<NaiveDate>,
+    pub entries: Vec<SpendLeaderboardEntry>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SpendLeaderboardRefresh {
+    Updated,
+    AlreadyRunning,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct SpendLeaderboardEntry {
+    pub rank: i64,
+    pub user_id: Uuid,
+    pub display_name: String,
+    pub request_count: i64,
+    pub priced_request_count: i64,
+    pub total_tokens: i64,
     pub cost_amount: rust_decimal::Decimal,
 }
 
@@ -2219,6 +2319,298 @@ impl RequestLogRepository {
         })
     }
 
+    /// Rebuilds Asia/Shanghai day, ISO-week, and calendar-month user-spend
+    /// snapshots from immutable request logs. Console reads only these
+    /// snapshot tables; no request-time leaderboard aggregate touches
+    /// `request_logs`.
+    pub async fn refresh_spend_leaderboard_snapshots(
+        &self,
+    ) -> Result<SpendLeaderboardRefresh, RepositoryError> {
+        let mut transaction = self.pool.begin().await?;
+        let acquired = sqlx::query_scalar::<_, bool>("SELECT pg_try_advisory_xact_lock($1)")
+            .bind(SPEND_LEADERBOARD_REFRESH_LOCK)
+            .fetch_one(&mut *transaction)
+            .await?;
+        if !acquired {
+            transaction.rollback().await?;
+            return Ok(SpendLeaderboardRefresh::AlreadyRunning);
+        }
+
+        sqlx::query(
+            "WITH local_today AS (
+                 SELECT (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date AS value
+             ),
+             current_periods AS (
+                 SELECT 'day'::text AS period,
+                        value AS period_start,
+                        value + 1 AS period_end
+                 FROM local_today
+                 UNION ALL
+                 SELECT 'week',
+                        date_trunc('week', value::timestamp)::date,
+                        date_trunc('week', value::timestamp)::date + 7
+                 FROM local_today
+                 UNION ALL
+                 SELECT 'month',
+                        date_trunc('month', value::timestamp)::date,
+                        (
+                            date_trunc('month', value::timestamp)
+                            + INTERVAL '1 month'
+                        )::date
+                 FROM local_today
+             )
+             INSERT INTO spend_leaderboard_periods (
+                 period,
+                 period_start,
+                 period_end,
+                 refreshed_at,
+                 total_cost_amount
+             )
+             SELECT period, period_start, period_end, CURRENT_TIMESTAMP, 0
+             FROM current_periods
+             ON CONFLICT (period, period_start) DO UPDATE
+             SET refreshed_at = EXCLUDED.refreshed_at",
+        )
+        .execute(&mut *transaction)
+        .await?;
+
+        sqlx::query(
+            "CREATE TEMP TABLE spend_leaderboard_refresh_rows ON COMMIT DROP AS
+             SELECT 'day'::text AS period,
+                    (log.started_at AT TIME ZONE 'Asia/Shanghai')::date AS period_start,
+                    log.user_id,
+                    count(*)::bigint AS request_count,
+                    count(log.cost_amount)::bigint AS priced_request_count,
+                    COALESCE(
+                        sum(COALESCE(log.input_tokens, 0) + COALESCE(log.output_tokens, 0)),
+                        0
+                    )::bigint AS total_tokens,
+                    COALESCE(sum(log.cost_amount), 0) AS cost_amount
+             FROM request_logs AS log
+             WHERE log.request_source = 'client'
+             GROUP BY (log.started_at AT TIME ZONE 'Asia/Shanghai')::date, log.user_id
+             HAVING count(log.cost_amount) > 0
+
+             UNION ALL
+
+             SELECT 'week',
+                    date_trunc(
+                        'week',
+                        log.started_at AT TIME ZONE 'Asia/Shanghai'
+                    )::date,
+                    log.user_id,
+                    count(*)::bigint,
+                    count(log.cost_amount)::bigint,
+                    COALESCE(
+                        sum(COALESCE(log.input_tokens, 0) + COALESCE(log.output_tokens, 0)),
+                        0
+                    )::bigint,
+                    COALESCE(sum(log.cost_amount), 0)
+             FROM request_logs AS log
+             WHERE log.request_source = 'client'
+             GROUP BY date_trunc(
+                 'week',
+                 log.started_at AT TIME ZONE 'Asia/Shanghai'
+             )::date, log.user_id
+             HAVING count(log.cost_amount) > 0
+
+             UNION ALL
+
+             SELECT 'month',
+                    date_trunc(
+                        'month',
+                        log.started_at AT TIME ZONE 'Asia/Shanghai'
+                    )::date,
+                    log.user_id,
+                    count(*)::bigint,
+                    count(log.cost_amount)::bigint,
+                    COALESCE(
+                        sum(COALESCE(log.input_tokens, 0) + COALESCE(log.output_tokens, 0)),
+                        0
+                    )::bigint,
+                    COALESCE(sum(log.cost_amount), 0)
+             FROM request_logs AS log
+             WHERE log.request_source = 'client'
+             GROUP BY date_trunc(
+                 'month',
+                 log.started_at AT TIME ZONE 'Asia/Shanghai'
+             )::date, log.user_id
+             HAVING count(log.cost_amount) > 0",
+        )
+        .execute(&mut *transaction)
+        .await?;
+
+        sqlx::query(
+            "INSERT INTO spend_leaderboard_periods (
+                 period,
+                 period_start,
+                 period_end,
+                 refreshed_at,
+                 total_cost_amount
+             )
+             SELECT period,
+                    period_start,
+                    CASE period
+                        WHEN 'day' THEN period_start + 1
+                        WHEN 'week' THEN period_start + 7
+                        ELSE (period_start + INTERVAL '1 month')::date
+                    END,
+                    CURRENT_TIMESTAMP,
+                    sum(cost_amount)
+             FROM spend_leaderboard_refresh_rows
+             GROUP BY period, period_start
+             ON CONFLICT (period, period_start) DO UPDATE
+             SET period_end = EXCLUDED.period_end,
+                 refreshed_at = EXCLUDED.refreshed_at,
+                 total_cost_amount = EXCLUDED.total_cost_amount",
+        )
+        .execute(&mut *transaction)
+        .await?;
+
+        sqlx::query(
+            "INSERT INTO spend_leaderboard_entries (
+                 period,
+                 period_start,
+                 user_id,
+                 rank,
+                 request_count,
+                 priced_request_count,
+                 total_tokens,
+                 cost_amount
+             )
+             SELECT period,
+                    period_start,
+                    user_id,
+                    row_number() OVER (
+                        PARTITION BY period, period_start
+                        ORDER BY cost_amount DESC, request_count DESC, user_id
+                    )::bigint,
+                    request_count,
+                    priced_request_count,
+                    total_tokens,
+                    cost_amount
+             FROM spend_leaderboard_refresh_rows
+             ON CONFLICT (period, period_start, user_id) DO UPDATE
+             SET rank = EXCLUDED.rank,
+                 request_count = EXCLUDED.request_count,
+                 priced_request_count = EXCLUDED.priced_request_count,
+                 total_tokens = EXCLUDED.total_tokens,
+                 cost_amount = EXCLUDED.cost_amount
+             WHERE (
+                 spend_leaderboard_entries.rank,
+                 spend_leaderboard_entries.request_count,
+                 spend_leaderboard_entries.priced_request_count,
+                 spend_leaderboard_entries.total_tokens,
+                 spend_leaderboard_entries.cost_amount
+             ) IS DISTINCT FROM (
+                 EXCLUDED.rank,
+                 EXCLUDED.request_count,
+                 EXCLUDED.priced_request_count,
+                 EXCLUDED.total_tokens,
+                 EXCLUDED.cost_amount
+             )",
+        )
+        .execute(&mut *transaction)
+        .await?;
+
+        transaction.commit().await?;
+        Ok(SpendLeaderboardRefresh::Updated)
+    }
+
+    pub async fn spend_leaderboard(
+        &self,
+        filter: SpendLeaderboardFilter,
+    ) -> Result<SpendLeaderboardReport, RepositoryError> {
+        if !(1..=100).contains(&filter.limit) || !filter.period.is_valid_start(filter.period_start)
+        {
+            return Err(RepositoryError::Validation);
+        }
+
+        let period = filter.period.as_str();
+        let snapshot = sqlx::query_as::<_, SpendLeaderboardPeriodRow>(
+            "SELECT period_end, refreshed_at, total_cost_amount
+             FROM spend_leaderboard_periods
+             WHERE period = $1
+               AND period_start = $2",
+        )
+        .bind(period)
+        .bind(filter.period_start)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        let rows = sqlx::query_as::<_, SpendLeaderboardRow>(
+            "SELECT entry.rank,
+                    entry.user_id,
+                    account_user.display_name,
+                    entry.request_count,
+                    entry.priced_request_count,
+                    entry.total_tokens,
+                    entry.cost_amount
+             FROM spend_leaderboard_entries AS entry
+             JOIN users AS account_user ON account_user.id = entry.user_id
+             WHERE entry.period = $1
+               AND entry.period_start = $2
+             ORDER BY entry.rank
+             LIMIT $3",
+        )
+        .bind(period)
+        .bind(filter.period_start)
+        .bind(filter.limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let previous_period_start = sqlx::query_scalar::<_, Option<NaiveDate>>(
+            "SELECT max(period_start)
+             FROM spend_leaderboard_periods
+             WHERE period = $1
+               AND period_start < $2",
+        )
+        .bind(period)
+        .bind(filter.period_start)
+        .fetch_one(&self.pool)
+        .await?;
+        let next_period_start = sqlx::query_scalar::<_, Option<NaiveDate>>(
+            "SELECT min(period_start)
+             FROM spend_leaderboard_periods
+             WHERE period = $1
+               AND period_start > $2",
+        )
+        .bind(period)
+        .bind(filter.period_start)
+        .fetch_one(&self.pool)
+        .await?;
+
+        let period_end = snapshot.as_ref().map_or_else(
+            || filter.period.end_after(filter.period_start),
+            |row| row.period_end,
+        );
+        let entries = rows
+            .into_iter()
+            .map(|row| SpendLeaderboardEntry {
+                rank: row.rank,
+                user_id: row.user_id,
+                display_name: row.display_name,
+                request_count: row.request_count,
+                priced_request_count: row.priced_request_count,
+                total_tokens: row.total_tokens,
+                cost_amount: row.cost_amount,
+            })
+            .collect();
+
+        Ok(SpendLeaderboardReport {
+            period: period.into(),
+            period_start: filter.period_start,
+            period_end,
+            refreshed_at: snapshot.as_ref().map(|row| row.refreshed_at),
+            total_cost_amount: snapshot
+                .as_ref()
+                .map_or(rust_decimal::Decimal::ZERO, |row| row.total_cost_amount),
+            previous_period_start,
+            next_period_start,
+            entries,
+        })
+    }
+
     /// Inserts one terminal event without changing schema-owned defaults.
     ///
     /// A duplicate id is successful only if every field owned by this event is
@@ -2886,6 +3278,24 @@ struct CostSummaryRow {
     cache_write_tokens: i64,
     output_tokens: i64,
     cost_amount: rust_decimal::Decimal,
+}
+
+#[derive(FromRow)]
+struct SpendLeaderboardRow {
+    rank: i64,
+    user_id: Uuid,
+    display_name: String,
+    request_count: i64,
+    priced_request_count: i64,
+    total_tokens: i64,
+    cost_amount: rust_decimal::Decimal,
+}
+
+#[derive(FromRow)]
+struct SpendLeaderboardPeriodRow {
+    period_end: NaiveDate,
+    refreshed_at: DateTime<Utc>,
+    total_cost_amount: rust_decimal::Decimal,
 }
 
 #[derive(FromRow)]

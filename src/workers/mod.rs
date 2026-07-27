@@ -2,6 +2,7 @@
 
 mod channel_probe;
 mod durable_request_log;
+mod spend_leaderboard;
 
 use std::{future::pending, sync::Arc, time::Duration};
 
@@ -27,6 +28,7 @@ use crate::{
 
 pub use channel_probe::ChannelProbeWorker;
 pub use durable_request_log::{DurableRequestLogWorker, DurableRequestLogWorkerStartError};
+pub use spend_leaderboard::SpendLeaderboardWorker;
 
 /// Bounds one batch database operation so a stalled connection cannot retain
 /// an insert or settlement task indefinitely.

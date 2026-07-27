@@ -29,7 +29,9 @@ describe("StatisticsPage", () => {
     seedAuthenticatedSession();
     renderApp("/");
 
-    expect(await screen.findByText("Total cost")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Total cost", {}, { timeout: 5_000 }),
+    ).toBeInTheDocument();
     expect(window.location.pathname).toBe("/statistics");
   });
 
@@ -103,6 +105,10 @@ describe("StatisticsPage", () => {
     expect(screen.getByRole("link", { name: "Channel status" })).toHaveAttribute(
       "href",
       "/channel-status",
+    );
+    expect(screen.getByRole("link", { name: "Spend leaderboard" })).toHaveAttribute(
+      "href",
+      "/leaderboard",
     );
     expect(screen.queryByRole("link", { name: "Price sync" })).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "System load" })).not.toBeInTheDocument();

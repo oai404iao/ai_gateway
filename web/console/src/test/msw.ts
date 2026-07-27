@@ -26,6 +26,7 @@ import {
   PROXY,
   REVOKED_SESSION,
   SESSION_AFFINITY_CACHE_REPORT,
+  SPEND_LEADERBOARD_REPORT,
   SYSTEM_SETTINGS,
   SYSTEM_LOAD_REPORT,
   USER_ACCESS_TOKEN,
@@ -163,6 +164,9 @@ export const handlers = [
   ),
   http.get("/console/v1/statistics/costs", () =>
     HttpResponse.json(COST_STATISTICS_REPORT),
+  ),
+  http.get("/console/v1/statistics/spend-leaderboard", () =>
+    HttpResponse.json(SPEND_LEADERBOARD_REPORT),
   ),
   http.get("/console/v1/system/load", () => HttpResponse.json(SYSTEM_LOAD_REPORT)),
   http.get("/console/v1/system/session-affinity/cache", () =>

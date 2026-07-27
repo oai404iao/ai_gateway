@@ -1491,6 +1491,33 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/Unprocessable" }
 
+  /statistics/spend-leaderboard:
+    get:
+      tags: [Statistics]
+      operationId: getSpendLeaderboard
+      description: |
+        Available to every authenticated Console user. Reads a periodically
+        refreshed snapshot instead of aggregating request logs at request time.
+        Rankings use Asia/Shanghai boundaries: a day is 00:00 inclusive through
+        the following 00:00 exclusive; a week is Monday through Sunday; and a
+        month is the 1st through its final day. Only client requests participate.
+        Omit `period_start` for the current period, or use the adjacent period
+        values in the response to browse retained history. Users without any priced
+        request in the selected period are omitted.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/SpendLeaderboardPeriod"
+        - $ref: "#/components/parameters/SpendLeaderboardPeriodStart"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: User spend leaderboard.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SpendLeaderboardReport" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
   /audit-logs:
     get:
       tags: [AuditLogs]
@@ -1700,6 +1727,22 @@ components:
       required: false
       description: Inclusive range start; defaults to seven days before the end.
       schema: { $ref: "#/components/schemas/DateTime" }
+    SpendLeaderboardPeriod:
+      name: period
+      in: query
+      required: false
+      description: "Natural Asia/Shanghai period to rank: day (00:00–next 00:00), week (Monday–Sunday), or month (day 1–final day)."
+      schema:
+        allOf: [{ $ref: "#/components/schemas/SpendLeaderboardPeriod" }]
+        default: day
+    SpendLeaderboardPeriodStart:
+      name: period_start
+      in: query
+      required: false
+      description: |
+        Asia/Shanghai period start in YYYY-MM-DD form. Weeks must start Monday;
+        months must start on day 1. Omit for the current natural period.
+      schema: { type: string, format: date }
     StatisticsStartedBefore:
       name: started_before
       in: query
@@ -2876,6 +2919,69 @@ components:
         cost_amount:
           allOf: [{ $ref: "#/components/schemas/Decimal" }]
           description: Total channel cost in USD.
+
+    SpendLeaderboardPeriod:
+      type: string
+      enum: [day, week, month]
+
+    SpendLeaderboardReport:
+      type: object
+      required:
+        [period, period_start, period_end, refreshed_at, total_cost_amount,
+         previous_period_start, next_period_start, entries]
+      properties:
+        period: { $ref: "#/components/schemas/SpendLeaderboardPeriod" }
+        period_start:
+          type: string
+          format: date
+          description: Inclusive Asia/Shanghai natural-period start.
+        period_end:
+          type: string
+          format: date
+          description: Exclusive Asia/Shanghai natural-period end.
+        refreshed_at:
+          allOf: [{ $ref: "#/components/schemas/DateTime" }]
+          nullable: true
+          description: Snapshot refresh timestamp, or null before the first refresh completes.
+        total_cost_amount:
+          allOf: [{ $ref: "#/components/schemas/Decimal" }]
+          description: Total recorded cost for every qualifying user in USD, before the entry limit.
+        previous_period_start:
+          type: string
+          format: date
+          nullable: true
+          description: Nearest earlier retained period of the same type.
+        next_period_start:
+          type: string
+          format: date
+          nullable: true
+          description: Nearest later retained period of the same type.
+        entries:
+          type: array
+          description: Descending user-cost ranking from the selected snapshot, capped by the requested limit.
+          items: { $ref: "#/components/schemas/SpendLeaderboardEntry" }
+
+    SpendLeaderboardEntry:
+      type: object
+      required:
+        [rank, user_id, display_name, request_count, priced_request_count,
+         total_tokens, cost_amount]
+      properties:
+        rank: { type: integer, minimum: 1 }
+        user_id: { type: string, format: uuid }
+        display_name: { type: string }
+        request_count:
+          type: integer
+          description: All requests by this user in the selected period.
+        priced_request_count:
+          type: integer
+          description: Requests by this user whose final cost is known.
+        total_tokens:
+          type: integer
+          description: Input plus output tokens for all requests by this user in the selected period.
+        cost_amount:
+          allOf: [{ $ref: "#/components/schemas/Decimal" }]
+          description: Total recorded user cost in USD.
 
     AuditLogView:
       type: object

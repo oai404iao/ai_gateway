@@ -8,7 +8,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use tower_http::{
     cors::{AllowOrigin, CorsLayer},
@@ -31,8 +31,8 @@ use crate::{
         ConfigTemplateCreateInput, ConfigTemplateInput, ConsoleApiKey, ControlPlaneMutation,
         CostStatisticsFilter, InviteUserInput, ModelInput, ModelRuleInput, ProxyCreateInput,
         ProxyInput, RequestLogFilter, RequestLogRepository, SelfApiKeyCreate, SelfApiKeyUpdate,
-        StatisticsGranularity, SystemSettingsInput, UserBatchUpdateInput, UserGroupInput,
-        UserInput, UserUpdateInput,
+        SpendLeaderboardFilter, SpendLeaderboardPeriod, StatisticsGranularity, SystemSettingsInput,
+        UserBatchUpdateInput, UserGroupInput, UserInput, UserUpdateInput,
     },
     runtime_config::ConfigError,
 };
@@ -99,7 +99,11 @@ pub fn router(state: ConsoleState) -> Router {
             "/console/v1/statistics/channel-status",
             get(get_channel_status),
         )
-        .route("/console/v1/statistics/costs", get(get_cost_statistics));
+        .route("/console/v1/statistics/costs", get(get_cost_statistics))
+        .route(
+            "/console/v1/statistics/spend-leaderboard",
+            get(get_spend_leaderboard),
+        );
 
     let control_routes = Router::new()
         .route("/console/v1/users", get(list_users).post(invite_user))
@@ -499,6 +503,17 @@ struct CostStatisticsQuery {
     api_key_id: Option<Uuid>,
     #[serde(default)]
     channel_id: Option<Uuid>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SpendLeaderboardQuery {
+    #[serde(default)]
+    period: Option<String>,
+    #[serde(default)]
+    period_start: Option<NaiveDate>,
+    #[serde(default)]
+    limit: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -1488,6 +1503,32 @@ async fn get_cost_statistics(
                 api_key_id: query.api_key_id,
                 channel_id: query.channel_id,
                 include_channel_details: principal.role().is_admin(),
+            })
+            .await?,
+    ))
+}
+
+async fn get_spend_leaderboard(
+    State(state): State<ConsoleState>,
+    Query(query): Query<SpendLeaderboardQuery>,
+) -> Result<Json<crate::persistence::SpendLeaderboardReport>, ConsoleError> {
+    let period = match query.period.as_deref().unwrap_or("day") {
+        "day" => SpendLeaderboardPeriod::Day,
+        "week" => SpendLeaderboardPeriod::Week,
+        "month" => SpendLeaderboardPeriod::Month,
+        _ => return Err(ConsoleError::Validation),
+    };
+    let limit = query.limit.unwrap_or(50);
+    let period_start = query
+        .period_start
+        .unwrap_or_else(|| period.current_start_at(Utc::now()));
+    Ok(Json(
+        state
+            .request_logs
+            .spend_leaderboard(SpendLeaderboardFilter {
+                period,
+                period_start,
+                limit,
             })
             .await?,
     ))
