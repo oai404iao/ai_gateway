@@ -246,6 +246,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/me/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * @description Returns a continuous 365-day UTC contribution calendar for the
+         *     authenticated user, ending on the current UTC date. Only client
+         *     requests participate; scheduled channel tests are excluded.
+         */
+        get: operations["getOwnUsage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/users": {
         parameters: {
             query?: never;
@@ -1533,6 +1554,33 @@ export interface components {
         };
         /** @enum {string} */
         RequestLogSource: "client" | "scheduled_test";
+        PersonalUsageReport: {
+            /**
+             * Format: date
+             * @description Inclusive first UTC date in the 365-day window.
+             */
+            started_on: string;
+            /**
+             * Format: date
+             * @description Inclusive current UTC date.
+             */
+            ended_on: string;
+            /** @description Client requests made by the authenticated user in the window. */
+            total_request_count: number;
+            /** @description UTC dates with at least one client request. */
+            active_day_count: number;
+            /** @description Consecutive active UTC dates ending on `ended_on`. */
+            current_streak_days: number;
+            /** @description Longest consecutive run of active UTC dates in the window. */
+            longest_streak_days: number;
+            /** @description Continuous UTC dates in ascending order, including zero-request dates. */
+            days: components["schemas"]["PersonalUsageDay"][];
+        };
+        PersonalUsageDay: {
+            /** Format: date */
+            date: string;
+            request_count: number;
+        };
         ChannelStatusReport: {
             window: components["schemas"]["ChannelStatusWindow"];
             started_at: components["schemas"]["DateTime"];
@@ -2737,6 +2785,27 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             404: components["responses"]["NotFound"];
+        };
+    };
+    getOwnUsage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Personal request activity for the current user. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PersonalUsageReport"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
         };
     };
     listUsers: {

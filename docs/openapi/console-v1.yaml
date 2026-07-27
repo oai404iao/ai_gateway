@@ -367,6 +367,23 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /me/usage:
+    get:
+      tags: [Self, Statistics]
+      operationId: getOwnUsage
+      description: |
+        Returns a continuous 365-day UTC contribution calendar for the
+        authenticated user, ending on the current UTC date. Only client
+        requests participate; scheduled channel tests are excluded.
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Personal request activity for the current user.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PersonalUsageReport" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
   /users:
     get:
       tags: [Users]
@@ -2688,6 +2705,57 @@ components:
     RequestLogSource:
       type: string
       enum: [client, scheduled_test]
+
+    PersonalUsageReport:
+      type: object
+      required:
+        [started_on, ended_on, total_request_count, active_day_count,
+         current_streak_days, longest_streak_days, days]
+      properties:
+        started_on:
+          type: string
+          format: date
+          description: Inclusive first UTC date in the 365-day window.
+        ended_on:
+          type: string
+          format: date
+          description: Inclusive current UTC date.
+        total_request_count:
+          type: integer
+          minimum: 0
+          description: Client requests made by the authenticated user in the window.
+        active_day_count:
+          type: integer
+          minimum: 0
+          maximum: 365
+          description: UTC dates with at least one client request.
+        current_streak_days:
+          type: integer
+          minimum: 0
+          maximum: 365
+          description: Consecutive active UTC dates ending on `ended_on`.
+        longest_streak_days:
+          type: integer
+          minimum: 0
+          maximum: 365
+          description: Longest consecutive run of active UTC dates in the window.
+        days:
+          type: array
+          minItems: 365
+          maxItems: 365
+          description: Continuous UTC dates in ascending order, including zero-request dates.
+          items: { $ref: "#/components/schemas/PersonalUsageDay" }
+
+    PersonalUsageDay:
+      type: object
+      required: [date, request_count]
+      properties:
+        date:
+          type: string
+          format: date
+        request_count:
+          type: integer
+          minimum: 0
 
     ChannelStatusReport:
       type: object

@@ -13,11 +13,8 @@ import {
 import { Progress } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
 import { AsyncResource } from "@/components/shared/async-resource";
-import { useSystemLoad } from "@/features/statistics/api";
-import type {
-  SystemDatabasePoolLoad,
-  SystemQueueLoad,
-} from "@/api/types";
+import { useSystemLoad } from "@/features/admin/system-load/api";
+import type { SystemDatabasePoolLoad, SystemQueueLoad } from "@/api/types";
 import { formatDateTime } from "@/lib/dates";
 import { formatBytes } from "@/lib/formatters";
 import { useI18n } from "@/app/i18n";

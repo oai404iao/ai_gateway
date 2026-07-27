@@ -77,6 +77,28 @@ test.describe("Console SPA smoke", () => {
     await expect(page.getByText("Model overview")).toBeVisible();
   });
 
+  test("statistics shows personal activity and operations has system load", async ({
+    page,
+  }) => {
+    await mockConsoleApi(page);
+    await page.goto("/login");
+    await page.getByLabel(/email/i).fill("admin@example.com");
+    await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
+    await page.getByRole("button", { name: /sign in/i }).click();
+
+    await page.getByRole("link", { name: "Statistics" }).click();
+    await expect(page).toHaveURL(/\/statistics/);
+    await expect(page.getByText("Request activity", { exact: true })).toBeVisible();
+    await expect(
+      page.getByLabel("6 requests on Jul 27, 2026"),
+    ).toBeVisible();
+
+    await page.getByRole("link", { name: "System load" }).click();
+    await expect(page).toHaveURL(/\/admin\/system-load/);
+    await expect(page.getByRole("heading", { name: "System load" })).toBeVisible();
+    await expect(page.getByText("Host CPU", { exact: true })).toBeVisible();
+  });
+
   test("users can open the spend leaderboard podium", async ({
     page,
   }) => {

@@ -82,6 +82,8 @@ export type ConfigTemplateDetailView = S["ConfigTemplateDetailView"];
 // Observability + catalog
 export type RequestLogView = S["RequestLogView"];
 export type AuditLogView = S["AuditLogView"];
+export type PersonalUsageReport = S["PersonalUsageReport"];
+export type PersonalUsageDay = S["PersonalUsageDay"];
 export type ChannelStatusReport = S["ChannelStatusReport"];
 export type ChannelStatusModelMetric = S["ChannelStatusModelMetric"];
 export type ChannelStatusChannel = S["ChannelStatusChannel"];

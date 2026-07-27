@@ -2805,6 +2805,29 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
         .unwrap();
     }
 
+    let scheduled_test_at = started_at - chrono::Duration::days(2);
+    sqlx::query(
+        "INSERT INTO request_logs \
+         (id,started_at,completed_at,user_id,api_key_id,request_source,api_format,client_model, \
+          upstream_model,channel_group_id,channel_id,outcome,response_status_code, \
+          streamed,ttft_ms,total_duration_ms,input_tokens,cached_input_tokens, \
+          cache_write_tokens,output_tokens,currency,price_unit_tokens,price_effective_at, \
+          input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price, \
+          cost_amount) \
+         VALUES ($1,$2,$2,$3,$4,'scheduled_test','open_ai_chat_completions', \
+                 'statistics-scheduled-client-model','statistics-model',$5,$6,'succeeded',200, \
+                 false,100,200,1,0,0,1,'USD',1000000,$2,1,0,0,1,0.01)",
+    )
+    .bind(Uuid::new_v4())
+    .bind(scheduled_test_at)
+    .bind(app.user_id)
+    .bind(api_key_id)
+    .bind(group_id)
+    .bind(channel_id)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+
     let channel_detail = request(
         &app,
         "GET",
@@ -2898,6 +2921,29 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
             .filter(|bucket| bucket["request_count"].as_i64().unwrap() > 0)
             .count(),
         1
+    );
+
+    let admin_usage = request(
+        &app,
+        "GET",
+        "/console/v1/me/usage",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(admin_usage.status(), StatusCode::OK);
+    let admin_usage = body_json(admin_usage).await;
+    assert_eq!(admin_usage["total_request_count"], 3);
+    assert_eq!(admin_usage["active_day_count"], 1);
+    assert_eq!(admin_usage["days"].as_array().unwrap().len(), 365);
+    assert_eq!(
+        admin_usage["days"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|day| day["request_count"].as_i64().unwrap())
+            .sum::<i64>(),
+        3
     );
 
     let regular_user_id = Uuid::new_v4();
@@ -3052,6 +3098,21 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
     )
     .await;
     assert_eq!(user_channel_status.status(), StatusCode::OK);
+
+    let user_usage = request_with_token(
+        &app,
+        &regular_session.access_token,
+        "GET",
+        "/console/v1/me/usage",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(user_usage.status(), StatusCode::OK);
+    let user_usage = body_json(user_usage).await;
+    assert_eq!(user_usage["total_request_count"], 1);
+    assert_eq!(user_usage["active_day_count"], 1);
+    assert_eq!(user_usage["days"].as_array().unwrap().len(), 365);
 
     let user_costs = request_with_token(
         &app,

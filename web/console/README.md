@@ -43,7 +43,8 @@ pnpm e2e:install            # install Playwright Chromium + OS deps (first run)
   `types.ts` re-exports it).
 - `src/app/` — providers, router, layouts, theme.
 - `src/features/` — feature modules (auth, profile, sessions, api-keys,
-  request-logs, user/user-group management, and the remaining admin control plane).
+  request-logs, personal/cost statistics, channel status, spend leaderboard,
+  user/user-group management, system load, and the remaining admin control plane).
 - `src/components/` — shadcn/ui primitives (`ui/`) and shared app components.
 - `src/test/` — vitest setup, MSW server, deterministic fixtures.
 - `e2e/` — Playwright browser smoke tests (API mocked at the network layer).

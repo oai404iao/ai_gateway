@@ -30,18 +30,36 @@ describe("StatisticsPage", () => {
     renderApp("/");
 
     expect(
-      await screen.findByText("Total cost", {}, { timeout: 5_000 }),
+      await screen.findByText("Request activity", {}, { timeout: 5_000 }),
     ).toBeInTheDocument();
     expect(window.location.pathname).toBe("/statistics");
   });
 
-  it("shows cost and system load analytics", async () => {
+  it("shows personal usage, cost analytics, and the operations load page", async () => {
     seedAuthenticatedSession();
     const user = userEvent.setup();
     renderApp();
 
-    expect(await screen.findByText("Total cost", {}, { timeout: 5_000 })).toBeInTheDocument();
+    expect(
+      await screen.findByText("Request activity", {}, { timeout: 5_000 }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("43")).toBeInTheDocument();
+    expect(screen.getByText("11 / 365")).toBeInTheDocument();
+    expect(screen.getByText("5 days")).toBeInTheDocument();
+    expect(screen.getByText("6 days")).toBeInTheDocument();
+    expect(
+      screen.getByLabelText("8 requests on Jul 25, 2026"),
+    ).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Price sync" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "System load" })).toHaveAttribute(
+      "href",
+      "/admin/system-load",
+    );
+    expect(screen.queryByRole("tab", { name: "System load" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Cost statistics" }));
+
+    expect(await screen.findByText("Total cost", {}, { timeout: 5_000 })).toBeInTheDocument();
     expect((await screen.findAllByText(MODEL.source_model_id)).length).toBeGreaterThan(0);
     expect((await screen.findAllByText("97.5%")).length).toBeGreaterThan(0);
 
@@ -72,8 +90,10 @@ describe("StatisticsPage", () => {
     expect(screen.getAllByText("53M").length).toBeGreaterThan(0);
     expect(screen.getAllByText("40%").length).toBeGreaterThan(0);
 
-    await user.click(screen.getByRole("tab", { name: "System load" }));
+    await user.click(screen.getByRole("link", { name: "System load" }));
 
+    expect(window.location.pathname).toBe("/admin/system-load");
+    expect(await screen.findByRole("heading", { name: "System load" })).toBeInTheDocument();
     expect(await screen.findByText("Host CPU")).toBeInTheDocument();
     expect(screen.getByText("42.5%")).toBeInTheDocument();
     expect(screen.getByText("Bounded queues")).toBeInTheDocument();
@@ -83,6 +103,7 @@ describe("StatisticsPage", () => {
 
   it("keeps regular-user statistics scoped to their own costs", async () => {
     seedUserSession();
+    const user = userEvent.setup();
     let adminUserRequests = 0;
     let adminKeyRequests = 0;
     server.use(
@@ -97,7 +118,9 @@ describe("StatisticsPage", () => {
     );
     renderApp();
 
-    expect(await screen.findByText("Total cost", {}, { timeout: 5_000 })).toBeInTheDocument();
+    expect(
+      await screen.findByText("Request activity", {}, { timeout: 5_000 }),
+    ).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Statistics" })).toHaveAttribute(
       "href",
       "/statistics",
@@ -111,7 +134,12 @@ describe("StatisticsPage", () => {
       "/leaderboard",
     );
     expect(screen.queryByRole("link", { name: "Price sync" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "System load" })).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "System load" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Cost statistics" }));
+
+    expect(await screen.findByText("Total cost", {}, { timeout: 5_000 })).toBeInTheDocument();
     expect(screen.queryByRole("combobox", { name: "Channel" })).not.toBeInTheDocument();
     expect(screen.queryByText("Channel details")).not.toBeInTheDocument();
 

@@ -92,6 +92,113 @@ const E2E_COST_STATISTICS = {
   channels: [],
 };
 
+const E2E_PERSONAL_USAGE_COUNTS: Record<string, number> = {
+  "2026-07-24": 2,
+  "2026-07-25": 4,
+  "2026-07-26": 1,
+  "2026-07-27": 6,
+};
+
+const E2E_PERSONAL_USAGE = {
+  started_on: "2025-07-28",
+  ended_on: "2026-07-27",
+  total_request_count: 13,
+  active_day_count: 4,
+  current_streak_days: 4,
+  longest_streak_days: 4,
+  days: Array.from({ length: 365 }, (_, index) => {
+    const date = new Date(Date.UTC(2025, 6, 28 + index))
+      .toISOString()
+      .slice(0, 10);
+    return {
+      date,
+      request_count: E2E_PERSONAL_USAGE_COUNTS[date] ?? 0,
+    };
+  }),
+};
+
+const E2E_SYSTEM_LOAD = {
+  sampled_at: "2026-07-27T10:00:00.000Z",
+  started_at: "2026-07-27T08:00:00.000Z",
+  uptime_seconds: 7_200,
+  host: {
+    logical_cpu_count: 8,
+    cpu_usage_percent: 42.5,
+    load_average_1m: 1.25,
+    load_average_5m: 1.1,
+    load_average_15m: 0.95,
+    memory_total_bytes: 17_179_869_184,
+    memory_used_bytes: 8_589_934_592,
+    memory_usage_percent: 50,
+  },
+  process: {
+    cpu_usage_percent: 12.5,
+    resident_memory_bytes: 536_870_912,
+    resident_memory_percent: 3.125,
+    open_file_descriptors: 96,
+    threads: 18,
+  },
+  runtime: {
+    tracked_api_keys: 12,
+    requests_in_current_windows: 320,
+    in_flight_requests: 7,
+    routing_in_flight_requests: 6,
+    tracked_channels: 4,
+    cooling_down_channels: 1,
+    half_open_channels: 0,
+    session_affinity_entries: 128,
+  },
+  queues: {
+    request_log_notifications: {
+      depth: 128,
+      capacity: 1_024,
+      utilization_percent: 12.5,
+    },
+    request_log_projection: {
+      depth: 1,
+      capacity: 1,
+      utilization_percent: 100,
+    },
+    automatic_disable: {
+      depth: 0,
+      capacity: 1_024,
+      utilization_percent: 0,
+    },
+  },
+  request_log: {
+    spool_pending_bytes: 2_097_152,
+    ingress_backlog_rows_estimate: 240,
+    ingress_oldest_age_seconds: 12,
+    settlement_backlog_rows: 18,
+    settlement_oldest_age_seconds: 4,
+    recorded_total: 20_000,
+    spooled_total: 20_000,
+    projected_rows_total: 19_760,
+    projection_deferred_total: 0,
+    settled_rows_total: 19_742,
+    spool_append_failures_total: 0,
+    ingress_failures_total: 0,
+    projection_failures_total: 0,
+    settlement_failures_total: 0,
+  },
+  database: {
+    control_plane: {
+      size: 5,
+      idle: 3,
+      in_use: 2,
+      capacity: 20,
+      utilization_percent: 10,
+    },
+    request_log: {
+      size: 4,
+      idle: 2,
+      in_use: 2,
+      capacity: 4,
+      utilization_percent: 50,
+    },
+  },
+};
+
 const E2E_SPEND_LEADERBOARD = {
   period: "day",
   period_start: "2026-07-24",
@@ -156,6 +263,9 @@ export async function mockConsoleApi(page: Page): Promise<void> {
     }
     if (path === "/console/v1/me/sessions" && method === "GET") {
       return route.fulfill({ status: 200, json: [] });
+    }
+    if (path === "/console/v1/me/usage" && method === "GET") {
+      return route.fulfill({ status: 200, json: E2E_PERSONAL_USAGE });
     }
     if (path === "/console/v1/users" && method === "GET") {
       return route.fulfill({ status: 200, json: [E2E_USER] });
@@ -229,6 +339,9 @@ export async function mockConsoleApi(page: Page): Promise<void> {
       method === "GET"
     ) {
       return route.fulfill({ status: 200, json: E2E_SPEND_LEADERBOARD });
+    }
+    if (path === "/console/v1/system/load" && method === "GET") {
+      return route.fulfill({ status: 200, json: E2E_SYSTEM_LOAD });
     }
     if (path === "/console/v1/routing/channel-groups" && method === "GET") {
       return route.fulfill({ status: 200, json: [] });
