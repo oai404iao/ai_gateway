@@ -4,7 +4,9 @@ mod auth;
 
 pub use auth::{
     AuthRepository, ConsoleProfile, ConsoleSession, InvitationCreated, InviteUserInput,
-    LiveConsoleIdentity, LoginUser, PasswordUser, SessionRotation, SessionUser,
+    LiveConsoleIdentity, LoginUser, PasswordUser, RegistrationAttempt, RegistrationInvitationCode,
+    RegistrationInvitationCodeInput, RegistrationInvitationCodeMutation, SessionRotation,
+    SessionUser,
 };
 
 use std::{
@@ -5791,6 +5793,15 @@ async fn user_group_delete(
     if before["member_count"].as_i64().unwrap_or_default() > 0 {
         return Err(RepositoryError::UserGroupInUse);
     }
+    let registration_code_count = sqlx::query_scalar::<_, i64>(
+        "SELECT count(*) FROM registration_invitation_codes WHERE user_group_id=$1",
+    )
+    .bind(id)
+    .fetch_one(&mut **transaction)
+    .await?;
+    if registration_code_count > 0 {
+        return Err(RepositoryError::UserGroupInUse);
+    }
     let deleted = sqlx::query("DELETE FROM user_groups WHERE id=$1 AND updated_at=$2")
         .bind(id)
         .bind(expected_updated_at)
@@ -6840,4 +6851,6 @@ pub enum RepositoryError {
     DefaultApiKeyPolicyDisabled,
     #[error("the selected API key target is not allowed by the user's policy")]
     ApiKeyTargetNotAllowed,
+    #[error("the registration invitation code name or secret already exists")]
+    RegistrationInvitationCodeConflict,
 }

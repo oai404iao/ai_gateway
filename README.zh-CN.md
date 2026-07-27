@@ -21,7 +21,7 @@
 - 转发前会移除客户端凭据和 hop-by-hop Header，再注入渠道专属的上游鉴权。
 - 上游响应以流式方式转发，不缓冲完整响应；一旦发送响应头或任何响应字节，绝不重试或切换渠道。
 - 提供进程内 RPM、并发和软额度准入控制、被动连接健康、异步请求日志、用量提取与结算。
-- 提供独立的 JWT Console API，包括邀请、轮换 refresh session、用户/管理员角色、审计日志，以及大多数可变资源的乐观并发控制。
+- 提供独立的 JWT Console API，包括按用户邀请、可复用邀请码自助注册、轮换 refresh session、用户/管理员角色、审计日志，以及大多数可变资源的乐观并发控制。
 
 ## 架构
 
@@ -270,10 +270,11 @@ PostgreSQL 入口表，随后异步投影和结算。耐久保证、故障边界
 
 ## Console API
 
-Console 监听器独立于公共监听器，使用短期 JWT access token。登录、刷新和邀请激活成功时还会签发轮换的 `HttpOnly; Secure; SameSite=Lax` refresh Cookie。
+Console 监听器独立于公共监听器，使用短期 JWT access token。登录、邀请码注册、刷新和邀请激活成功时还会签发轮换的 `HttpOnly; Secure; SameSite=Lax` refresh Cookie。
 
 - 用户自助接口位于 `/console/v1/me`，资源归属完全从 JWT 主体推导。
-- 仅管理员可调用的控制面接口可管理用户、API Key Policy、API Key、模型、路由、网络代理、变换模板、请求日志、审计日志和手动重载。
+- 管理员可创建和调整可复用注册邀请码，配置可选次数、可选过期时间、目标用户组和初始 USD 额度；邀请码明文只在创建时返回。
+- 仅管理员可调用的控制面接口可管理用户、注册邀请码、API Key Policy、API Key、模型、路由、网络代理、变换模板、请求日志、审计日志和手动重载。
 - 大多数可变资源在 `GET` 时返回 `ETag`，并要求 `PUT` 携带 `If-Match` 实现乐观并发控制。
 - `admin` 是用户角色，不是独立的 `/admin` API 命名空间，也不是进程级静态 Token。
 

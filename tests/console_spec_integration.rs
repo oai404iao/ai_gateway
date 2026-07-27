@@ -423,6 +423,21 @@ async fn request_with_token(
     app.router.clone().oneshot(request).await.unwrap()
 }
 
+async fn unauthenticated_request(
+    app: &App,
+    method: &str,
+    path: &str,
+    body: serde_json::Value,
+) -> axum::response::Response {
+    let request = axum::http::Request::builder()
+        .method(method)
+        .uri(path)
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&body).unwrap()))
+        .unwrap();
+    app.router.clone().oneshot(request).await.unwrap()
+}
+
 async fn body_json(response: axum::response::Response) -> serde_json::Value {
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
@@ -479,6 +494,318 @@ async fn login_response_shape_matches_spec() {
     assert!(body["expires_in"].is_number());
     assert_eq!(body["user"]["role"], "admin");
     assert!(body["user"]["id"].is_string());
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn reusable_invitation_code_registers_an_active_user_and_enforces_usage_limit() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+    let invitation_code = "TEAM-ACCESS-2026";
+    let created = request(
+        &app,
+        "POST",
+        "/console/v1/registration-invitation-codes",
+        serde_json::json!({
+            "name": "One seat",
+            "invitation_code": invitation_code,
+            "max_uses": 1,
+            "expires_at": "2030-01-01T00:00:00Z",
+            "enabled": true,
+            "user_group_id": DEFAULT_USER_GROUP_ID,
+            "initial_balance_amount": "25.50",
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let created = body_json(created).await;
+    assert_eq!(created["invitation_code"], invitation_code);
+    let code_id = Uuid::parse_str(created["id"].as_str().unwrap()).unwrap();
+
+    let listed = request(
+        &app,
+        "GET",
+        "/console/v1/registration-invitation-codes",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(listed.status(), StatusCode::OK);
+    let listed = body_json(listed).await;
+    let listed_code = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|code| code["id"] == code_id.to_string())
+        .unwrap();
+    assert!(listed_code.get("invitation_code").is_none());
+    assert!(listed_code.get("code_hash").is_none());
+    assert_eq!(listed_code["used_count"], 0);
+    assert_eq!(listed_code["max_uses"], 1);
+
+    let email = format!("self-register-{code_id}@example.test");
+    let registered = unauthenticated_request(
+        &app,
+        "POST",
+        "/console/v1/auth/register",
+        serde_json::json!({
+            "invitation_code": invitation_code,
+            "email": email,
+            "display_name": "Self Registered",
+            "password": TEST_PASSWORD,
+        }),
+    )
+    .await;
+    assert_eq!(registered.status(), StatusCode::OK);
+    assert!(registered.headers().contains_key(header::SET_COOKIE));
+    let registered = body_json(registered).await;
+    assert_eq!(registered["token_type"], "Bearer");
+    assert_eq!(registered["user"]["role"], "user");
+    assert_eq!(registered["user"]["email"], email);
+
+    let account: (String, String, rust_decimal::Decimal, Uuid) = sqlx::query_as(
+        "SELECT role,status,balance_amount,user_group_id FROM users WHERE lower(email)=lower($1)",
+    )
+    .bind(&email)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(account.0, "user");
+    assert_eq!(account.1, "active");
+    assert_eq!(account.2, rust_decimal::Decimal::new(2_550, 2));
+    assert_eq!(account.3, DEFAULT_USER_GROUP_ID);
+
+    let usage: (i64, Option<chrono::DateTime<chrono::Utc>>) = sqlx::query_as(
+        "SELECT used_count,last_used_at FROM registration_invitation_codes WHERE id=$1",
+    )
+    .bind(code_id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(usage.0, 1);
+    assert!(usage.1.is_some());
+
+    let exhausted = unauthenticated_request(
+        &app,
+        "POST",
+        "/console/v1/auth/register",
+        serde_json::json!({
+            "invitation_code": invitation_code,
+            "email": format!("second-{code_id}@example.test"),
+            "display_name": "Second User",
+            "password": TEST_PASSWORD,
+        }),
+    )
+    .await;
+    assert_eq!(exhausted.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        body_json(exhausted).await["error"],
+        "invalid_registration_code"
+    );
+
+    let leaked: bool = sqlx::query_scalar(
+        "SELECT EXISTS( \
+           SELECT 1 FROM audit_logs \
+           WHERE before_redacted::text LIKE '%' || $1 || '%' \
+              OR after_redacted::text LIKE '%' || $1 || '%' \
+         )",
+    )
+    .bind(invitation_code)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert!(!leaked);
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn registration_invitation_code_settings_are_versioned_and_adjustable() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+    let target_group_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO user_groups (id,name,description) VALUES ($1,$2,$3)")
+        .bind(target_group_id)
+        .bind(format!("registration-group-{target_group_id}"))
+        .bind("Group selected by a reusable registration code")
+        .execute(&database.pool)
+        .await
+        .unwrap();
+
+    let invitation_code = "ADJUSTABLE-ACCESS-2026";
+    let created = request(
+        &app,
+        "POST",
+        "/console/v1/registration-invitation-codes",
+        serde_json::json!({
+            "name": "Adjustable",
+            "invitation_code": invitation_code,
+            "max_uses": null,
+            "expires_at": null,
+            "enabled": true,
+            "user_group_id": DEFAULT_USER_GROUP_ID,
+            "initial_balance_amount": "0",
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let code_id = body_json(created).await["id"].as_str().unwrap().to_owned();
+    let path = format!("/console/v1/registration-invitation-codes/{code_id}");
+
+    let detail = request(&app, "GET", &path, serde_json::json!({}), &[]).await;
+    assert_eq!(detail.status(), StatusCode::OK);
+    let etag = detail.headers()[header::ETAG].to_str().unwrap().to_owned();
+    let detail_body = body_json(detail).await;
+    assert!(detail_body.get("invitation_code").is_none());
+
+    let adjusted = request(
+        &app,
+        "PUT",
+        &path,
+        serde_json::json!({
+            "name": "Adjusted",
+            "max_uses": 3,
+            "expires_at": "2031-06-01T12:00:00Z",
+            "enabled": false,
+            "user_group_id": target_group_id,
+            "initial_balance_amount": "75.25",
+        }),
+        &[("if-match", &etag)],
+    )
+    .await;
+    assert_eq!(adjusted.status(), StatusCode::OK);
+
+    let stale = request(
+        &app,
+        "PUT",
+        &path,
+        serde_json::json!({
+            "name": "Stale",
+            "max_uses": null,
+            "expires_at": null,
+            "enabled": true,
+            "user_group_id": DEFAULT_USER_GROUP_ID,
+            "initial_balance_amount": "0",
+        }),
+        &[("if-match", &etag)],
+    )
+    .await;
+    assert_eq!(stale.status(), StatusCode::CONFLICT);
+
+    let detail = request(&app, "GET", &path, serde_json::json!({}), &[]).await;
+    assert_eq!(detail.status(), StatusCode::OK);
+    let fresh_etag = detail.headers()[header::ETAG].to_str().unwrap().to_owned();
+    let detail = body_json(detail).await;
+    assert_eq!(detail["name"], "Adjusted");
+    assert_eq!(detail["max_uses"], 3);
+    assert_eq!(detail["enabled"], false);
+    assert_eq!(detail["user_group_id"], target_group_id.to_string());
+    assert_eq!(
+        detail["initial_balance_amount"]
+            .as_str()
+            .unwrap()
+            .parse::<rust_decimal::Decimal>()
+            .unwrap(),
+        rust_decimal::Decimal::new(7_525, 2)
+    );
+
+    let group_path = format!("/console/v1/user-groups/{target_group_id}");
+    let group_detail = request(&app, "GET", &group_path, serde_json::json!({}), &[]).await;
+    assert_eq!(group_detail.status(), StatusCode::OK);
+    let group_etag = group_detail.headers()[header::ETAG]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let delete_group = request(
+        &app,
+        "DELETE",
+        &group_path,
+        serde_json::json!({}),
+        &[("if-match", &group_etag)],
+    )
+    .await;
+    assert_eq!(delete_group.status(), StatusCode::CONFLICT);
+    assert_eq!(body_json(delete_group).await["error"], "user_group_in_use");
+
+    let disabled = unauthenticated_request(
+        &app,
+        "POST",
+        "/console/v1/auth/register",
+        serde_json::json!({
+            "invitation_code": invitation_code,
+            "email": format!("disabled-{code_id}@example.test"),
+            "display_name": "Disabled Code",
+            "password": TEST_PASSWORD,
+        }),
+    )
+    .await;
+    assert_eq!(disabled.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let enabled = request(
+        &app,
+        "PUT",
+        &path,
+        serde_json::json!({
+            "name": "Adjusted",
+            "max_uses": 3,
+            "expires_at": "2031-06-01T12:00:00Z",
+            "enabled": true,
+            "user_group_id": target_group_id,
+            "initial_balance_amount": "75.25",
+        }),
+        &[("if-match", &fresh_etag)],
+    )
+    .await;
+    assert_eq!(enabled.status(), StatusCode::OK);
+
+    let email = format!("adjusted-{code_id}@example.test");
+    let registered = unauthenticated_request(
+        &app,
+        "POST",
+        "/console/v1/auth/register",
+        serde_json::json!({
+            "invitation_code": invitation_code,
+            "email": email,
+            "display_name": "Adjusted User",
+            "password": TEST_PASSWORD,
+        }),
+    )
+    .await;
+    assert_eq!(registered.status(), StatusCode::OK);
+    let assignment: (Uuid, rust_decimal::Decimal) =
+        sqlx::query_as("SELECT user_group_id,balance_amount FROM users WHERE email=$1")
+            .bind(&email)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert_eq!(assignment.0, target_group_id);
+    assert_eq!(assignment.1, rust_decimal::Decimal::new(7_525, 2));
+
+    let duplicate = unauthenticated_request(
+        &app,
+        "POST",
+        "/console/v1/auth/register",
+        serde_json::json!({
+            "invitation_code": invitation_code,
+            "email": email,
+            "display_name": "Duplicate Email",
+            "password": TEST_PASSWORD,
+        }),
+    )
+    .await;
+    assert_eq!(duplicate.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        body_json(duplicate).await["error"],
+        "registration_email_conflict"
+    );
+    let used_count: i64 =
+        sqlx::query_scalar("SELECT used_count FROM registration_invitation_codes WHERE id=$1")
+            .bind(Uuid::parse_str(&code_id).unwrap())
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert_eq!(used_count, 1);
     database.cleanup().await;
 }
 

@@ -12,8 +12,9 @@ mod system_metrics;
 mod usage;
 
 pub use auth::{
-    AuthError, ConsoleAuthService, ConsoleUser, IssuedInvitation, IssuedSession,
-    hash_console_password,
+    AuthError, ConsoleAuthService, ConsoleUser, IssuedInvitation, IssuedRegistrationInvitationCode,
+    IssuedSession, RegistrationInvitationCodeCreateInput, RegistrationInvitationCodeMutation,
+    RegistrationInvitationCodeUpdateInput, SelfRegistrationInput, hash_console_password,
 };
 pub(crate) use billing::{request_billing, request_billing_multiplier};
 pub use channel_automation::{

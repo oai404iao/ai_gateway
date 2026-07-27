@@ -136,7 +136,11 @@ export function UserGroupDetailPage() {
       navigate("/admin/user-groups", { replace: true });
     } catch (error) {
       if (error instanceof ApiError && error.code === "user_group_in_use") {
-        toast.error(t("Move every member out of this group before deleting it."));
+        toast.error(
+          t(
+            "Move every member out of this group and reassign its registration codes before deleting it.",
+          ),
+        );
       } else if (
         error instanceof ApiError &&
         error.code === "protected_user_group"

@@ -22,6 +22,7 @@ import type {
   ModelRuleView,
   PersonalUsageReport,
   ProxyView,
+  RegistrationInvitationCodeView,
   RequestLogView,
   SelfApiKeyOptions,
   SessionAffinityCacheReport,
@@ -113,6 +114,21 @@ export const USER_GROUP: UserGroupView = {
   member_count: 1,
   created_at: "2026-01-01T00:00:00.000Z",
   updated_at: "2026-01-02T00:00:00.000Z",
+};
+
+export const REGISTRATION_INVITATION_CODE: RegistrationInvitationCodeView = {
+  id: "00000000-0000-0000-0000-0000000000c1",
+  name: "Community launch",
+  max_uses: 100,
+  used_count: 12,
+  expires_at: "2030-01-01T00:00:00.000Z",
+  enabled: true,
+  user_group_id: DEFAULT_USER_GROUP.id,
+  initial_balance_amount: "20.00",
+  created_by: ADMIN_USER.id,
+  last_used_at: "2026-07-26T12:00:00.000Z",
+  created_at: "2026-07-01T00:00:00.000Z",
+  updated_at: "2026-07-26T12:00:00.000Z",
 };
 
 export const NEW_API_KEY_SECRET = "sk-ag-test-secret-retrievable";

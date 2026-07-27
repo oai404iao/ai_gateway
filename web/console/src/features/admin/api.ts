@@ -37,6 +37,10 @@ import type {
   MutationResponse,
   ProxyInput,
   ProxyView,
+  RegistrationInvitationCodeCreateInput,
+  RegistrationInvitationCodeCreateResponse,
+  RegistrationInvitationCodeUpdateInput,
+  RegistrationInvitationCodeView,
   ReloadResponse,
   SessionAffinityCacheClearResponse,
   SessionAffinityCacheReport,
@@ -201,6 +205,34 @@ export function useDeleteUserGroup(id: string) {
     },
   });
 }
+
+// ---- Registration Invitation Codes ----
+const REGISTRATION_CODES_KEY = [
+  "console",
+  "registration-invitation-codes",
+] as const;
+const registrationCodeDetailKey = (id: string) =>
+  ["console", "registration-invitation-codes", id] as const;
+export const useRegistrationInvitationCodes =
+  makeList<RegistrationInvitationCodeView>(
+    "/registration-invitation-codes",
+    REGISTRATION_CODES_KEY,
+  );
+export const useRegistrationInvitationCode =
+  makeDetail<RegistrationInvitationCodeView>(
+    "/registration-invitation-codes",
+    registrationCodeDetailKey,
+  );
+export const useCreateRegistrationInvitationCode = makeCreate<
+  RegistrationInvitationCodeCreateInput,
+  RegistrationInvitationCodeCreateResponse
+>("/registration-invitation-codes", REGISTRATION_CODES_KEY);
+export const useUpdateRegistrationInvitationCode =
+  makeUpdate<RegistrationInvitationCodeUpdateInput>(
+    "/registration-invitation-codes",
+    REGISTRATION_CODES_KEY,
+    registrationCodeDetailKey,
+  );
 
 // ---- API Key Policies ----
 const POLICIES_KEY = ["console", "api-key-policies"] as const;

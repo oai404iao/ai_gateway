@@ -1,4 +1,5 @@
-//! PostgreSQL persistence for Console identities, invitations, and sessions.
+//! PostgreSQL persistence for Console identities, invitations, registration
+//! codes, and sessions.
 
 use std::time::Duration;
 
@@ -217,6 +218,34 @@ impl AuthRepository {
         .map_err(RepositoryError::from)
     }
 
+    pub async fn registration_invitation_codes(
+        &self,
+    ) -> Result<Vec<RegistrationInvitationCode>, RepositoryError> {
+        sqlx::query_as::<_, RegistrationInvitationCode>(
+            "SELECT id,name,max_uses,used_count,expires_at,enabled,user_group_id, \
+                    initial_balance_amount,created_by,last_used_at,created_at,updated_at \
+             FROM registration_invitation_codes ORDER BY created_at DESC,id",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(RepositoryError::from)
+    }
+
+    pub async fn registration_invitation_code(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<RegistrationInvitationCode>, RepositoryError> {
+        sqlx::query_as::<_, RegistrationInvitationCode>(
+            "SELECT id,name,max_uses,used_count,expires_at,enabled,user_group_id, \
+                    initial_balance_amount,created_by,last_used_at,created_at,updated_at \
+             FROM registration_invitation_codes WHERE id=$1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(RepositoryError::from)
+    }
+
     pub async fn change_password(
         &self,
         user_id: Uuid,
@@ -300,6 +329,211 @@ impl AuthRepository {
         .await?;
         transaction.commit().await?;
         Ok(true)
+    }
+
+    pub async fn create_registration_invitation_code(
+        &self,
+        actor_user_id: Uuid,
+        code_hash: &[u8],
+        input: RegistrationInvitationCodeInput,
+    ) -> Result<RegistrationInvitationCodeMutation, RepositoryError> {
+        let mut transaction = begin_serializable(&self.pool).await?;
+        ensure_active_admin(&mut transaction, actor_user_id).await?;
+        validate_registration_invitation_code_input(&input, 0)?;
+        ensure_registration_user_group(&mut transaction, input.user_group_id).await?;
+
+        let id = Uuid::new_v4();
+        let inserted = sqlx::query_scalar::<_, DateTime<Utc>>(
+            "INSERT INTO registration_invitation_codes \
+             (id,name,code_hash,max_uses,expires_at,enabled,user_group_id, \
+              initial_balance_amount,created_by) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) \
+             ON CONFLICT DO NOTHING RETURNING updated_at",
+        )
+        .bind(id)
+        .bind(input.name.trim())
+        .bind(code_hash)
+        .bind(input.max_uses)
+        .bind(input.expires_at)
+        .bind(input.enabled)
+        .bind(input.user_group_id)
+        .bind(input.initial_balance_amount)
+        .bind(actor_user_id)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        if inserted.is_none() {
+            transaction.rollback().await?;
+            return Err(RepositoryError::RegistrationInvitationCodeConflict);
+        }
+
+        let after = registration_invitation_code_for_update(&mut transaction, id).await?;
+        let correlation_id = Uuid::new_v4();
+        insert_registration_invitation_code_audit(
+            &mut transaction,
+            actor_user_id,
+            "create",
+            id,
+            json!({}),
+            registration_invitation_code_audit(&after),
+            correlation_id,
+        )
+        .await?;
+        transaction.commit().await?;
+        Ok(RegistrationInvitationCodeMutation { id, correlation_id })
+    }
+
+    pub async fn update_registration_invitation_code(
+        &self,
+        actor_user_id: Uuid,
+        id: Uuid,
+        input: RegistrationInvitationCodeInput,
+        expected_updated_at: DateTime<Utc>,
+    ) -> Result<RegistrationInvitationCodeMutation, RepositoryError> {
+        let mut transaction = begin_serializable(&self.pool).await?;
+        ensure_active_admin(&mut transaction, actor_user_id).await?;
+        let before = registration_invitation_code_for_update(&mut transaction, id).await?;
+        if before.updated_at != expected_updated_at {
+            transaction.rollback().await?;
+            return Err(RepositoryError::Conflict);
+        }
+        validate_registration_invitation_code_input(&input, before.used_count)?;
+        ensure_registration_user_group(&mut transaction, input.user_group_id).await?;
+
+        let updated = sqlx::query_scalar::<_, DateTime<Utc>>(
+            "UPDATE registration_invitation_codes SET \
+             name=$2,max_uses=$3,expires_at=$4,enabled=$5,user_group_id=$6, \
+             initial_balance_amount=$7 \
+             WHERE id=$1 AND updated_at=$8 RETURNING updated_at",
+        )
+        .bind(id)
+        .bind(input.name.trim())
+        .bind(input.max_uses)
+        .bind(input.expires_at)
+        .bind(input.enabled)
+        .bind(input.user_group_id)
+        .bind(input.initial_balance_amount)
+        .bind(expected_updated_at)
+        .fetch_optional(&mut *transaction)
+        .await;
+        let updated = match updated {
+            Ok(updated) => updated,
+            Err(error) if unique_violation(&error) => {
+                transaction.rollback().await?;
+                return Err(RepositoryError::RegistrationInvitationCodeConflict);
+            }
+            Err(error) => return Err(error.into()),
+        };
+        if updated.is_none() {
+            transaction.rollback().await?;
+            return Err(RepositoryError::Conflict);
+        }
+
+        let after = registration_invitation_code_for_update(&mut transaction, id).await?;
+        let correlation_id = Uuid::new_v4();
+        insert_registration_invitation_code_audit(
+            &mut transaction,
+            actor_user_id,
+            "update",
+            id,
+            registration_invitation_code_audit(&before),
+            registration_invitation_code_audit(&after),
+            correlation_id,
+        )
+        .await?;
+        transaction.commit().await?;
+        Ok(RegistrationInvitationCodeMutation { id, correlation_id })
+    }
+
+    pub async fn register_with_invitation_code(
+        &self,
+        code_hash: &[u8],
+        email: &str,
+        display_name: &str,
+        password_hash: &str,
+    ) -> Result<RegistrationAttempt, RepositoryError> {
+        let mut transaction = begin_serializable(&self.pool).await?;
+        let invitation = sqlx::query_as::<_, RegistrationInvitationCodeForUse>(
+            "SELECT id,max_uses,used_count,expires_at,enabled,user_group_id, \
+                    initial_balance_amount \
+             FROM registration_invitation_codes WHERE code_hash=$1 FOR UPDATE",
+        )
+        .bind(code_hash)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let Some(invitation) = invitation else {
+            transaction.rollback().await?;
+            return Ok(RegistrationAttempt::InvalidCode);
+        };
+        if !invitation.enabled
+            || invitation
+                .expires_at
+                .is_some_and(|expiry| expiry <= Utc::now())
+            || invitation
+                .max_uses
+                .is_some_and(|maximum| invitation.used_count >= maximum)
+        {
+            transaction.rollback().await?;
+            return Ok(RegistrationAttempt::InvalidCode);
+        }
+
+        let user_id = Uuid::new_v4();
+        let auth_version = sqlx::query_scalar::<_, i64>(
+            "INSERT INTO users \
+             (id,email,display_name,role,status,password_hash,password_changed_at, \
+              balance_amount,user_group_id) \
+             VALUES ($1,$2,$3,'user','active',$4,now(),$5,$6) \
+             ON CONFLICT DO NOTHING RETURNING auth_version",
+        )
+        .bind(user_id)
+        .bind(email)
+        .bind(display_name)
+        .bind(password_hash)
+        .bind(invitation.initial_balance_amount)
+        .bind(invitation.user_group_id)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let Some(auth_version) = auth_version else {
+            transaction.rollback().await?;
+            return Ok(RegistrationAttempt::EmailConflict);
+        };
+
+        sqlx::query(
+            "UPDATE registration_invitation_codes \
+             SET used_count=used_count+1,last_used_at=now() WHERE id=$1",
+        )
+        .bind(invitation.id)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "INSERT INTO audit_logs \
+             (id,actor_user_id,actor_type,actor_role,action,object_type,object_id, \
+              before_redacted,after_redacted,correlation_id) \
+             VALUES ($1,$2,'user','user','register','user',$2,'{}',$3,$4)",
+        )
+        .bind(Uuid::new_v4())
+        .bind(user_id)
+        .bind(json!({
+            "id": user_id,
+            "email": email,
+            "display_name": display_name,
+            "role": "user",
+            "status": "active",
+            "balance_amount": invitation.initial_balance_amount,
+            "user_group_id": invitation.user_group_id,
+            "registration_invitation_code_id": invitation.id,
+        }))
+        .bind(Uuid::new_v4().to_string())
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+
+        Ok(RegistrationAttempt::Registered(SessionUser {
+            id: user_id,
+            email: Some(email.to_owned()),
+            display_name: display_name.to_owned(),
+            role: UserRole::User,
+            auth_version,
+        }))
     }
 
     pub async fn invite_user(
@@ -658,6 +892,103 @@ async fn ensure_active_admin(
     }
 }
 
+async fn ensure_registration_user_group(
+    transaction: &mut Transaction<'_, Postgres>,
+    user_group_id: Uuid,
+) -> Result<(), RepositoryError> {
+    let exists =
+        sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM user_groups WHERE id=$1)")
+            .bind(user_group_id)
+            .fetch_one(&mut **transaction)
+            .await?;
+    if exists {
+        Ok(())
+    } else {
+        Err(RepositoryError::Validation)
+    }
+}
+
+fn validate_registration_invitation_code_input(
+    input: &RegistrationInvitationCodeInput,
+    used_count: i64,
+) -> Result<(), RepositoryError> {
+    if input.name.trim().is_empty()
+        || input.name.len() > 100
+        || input.max_uses.is_some_and(|maximum| maximum <= 0)
+        || input.max_uses.is_some_and(|maximum| maximum < used_count)
+        || input.initial_balance_amount.is_sign_negative()
+    {
+        return Err(RepositoryError::Validation);
+    }
+    Ok(())
+}
+
+async fn registration_invitation_code_for_update(
+    transaction: &mut Transaction<'_, Postgres>,
+    id: Uuid,
+) -> Result<RegistrationInvitationCode, RepositoryError> {
+    sqlx::query_as::<_, RegistrationInvitationCode>(
+        "SELECT id,name,max_uses,used_count,expires_at,enabled,user_group_id, \
+                initial_balance_amount,created_by,last_used_at,created_at,updated_at \
+         FROM registration_invitation_codes WHERE id=$1 FOR UPDATE",
+    )
+    .bind(id)
+    .fetch_optional(&mut **transaction)
+    .await?
+    .ok_or(RepositoryError::NotFound)
+}
+
+fn registration_invitation_code_audit(code: &RegistrationInvitationCode) -> serde_json::Value {
+    json!({
+        "id": code.id,
+        "name": code.name,
+        "max_uses": code.max_uses,
+        "used_count": code.used_count,
+        "expires_at": code.expires_at,
+        "enabled": code.enabled,
+        "user_group_id": code.user_group_id,
+        "initial_balance_amount": code.initial_balance_amount,
+        "created_by": code.created_by,
+        "last_used_at": code.last_used_at,
+        "created_at": code.created_at,
+        "updated_at": code.updated_at,
+    })
+}
+
+async fn insert_registration_invitation_code_audit(
+    transaction: &mut Transaction<'_, Postgres>,
+    actor_user_id: Uuid,
+    action: &str,
+    id: Uuid,
+    before: serde_json::Value,
+    after: serde_json::Value,
+    correlation_id: Uuid,
+) -> Result<(), RepositoryError> {
+    sqlx::query(
+        "INSERT INTO audit_logs \
+         (id,actor_user_id,actor_type,actor_role,action,object_type,object_id, \
+          before_redacted,after_redacted,correlation_id) \
+         VALUES ($1,$2,'user','admin',$3,'registration_invitation_code',$4,$5,$6,$7)",
+    )
+    .bind(Uuid::new_v4())
+    .bind(actor_user_id)
+    .bind(action)
+    .bind(id)
+    .bind(before)
+    .bind(after)
+    .bind(correlation_id.to_string())
+    .execute(&mut **transaction)
+    .await?;
+    Ok(())
+}
+
+fn unique_violation(error: &sqlx::Error) -> bool {
+    error
+        .as_database_error()
+        .and_then(|database| database.code())
+        .is_some_and(|code| code == "23505")
+}
+
 fn parse_role(value: &str) -> Result<UserRole, RepositoryError> {
     UserRole::parse(value).ok_or(RepositoryError::Validation)
 }
@@ -767,6 +1098,44 @@ pub struct InvitationCreated {
     pub correlation_id: Uuid,
 }
 
+#[derive(Clone, Debug, Serialize, FromRow)]
+pub struct RegistrationInvitationCode {
+    pub id: Uuid,
+    pub name: String,
+    pub max_uses: Option<i64>,
+    pub used_count: i64,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub enabled: bool,
+    pub user_group_id: Uuid,
+    pub initial_balance_amount: rust_decimal::Decimal,
+    pub created_by: Uuid,
+    pub last_used_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Clone)]
+pub struct RegistrationInvitationCodeInput {
+    pub name: String,
+    pub max_uses: Option<i64>,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub enabled: bool,
+    pub user_group_id: Uuid,
+    pub initial_balance_amount: rust_decimal::Decimal,
+}
+
+#[derive(Clone, Debug)]
+pub struct RegistrationInvitationCodeMutation {
+    pub id: Uuid,
+    pub correlation_id: Uuid,
+}
+
+pub enum RegistrationAttempt {
+    Registered(SessionUser),
+    InvalidCode,
+    EmailConflict,
+}
+
 #[derive(FromRow)]
 struct InvitationForAcceptance {
     user_id: Uuid,
@@ -792,4 +1161,15 @@ struct UserForReinvitation {
     user_group_id: Uuid,
     default_api_key_policy_id: Option<Uuid>,
     updated_at: DateTime<Utc>,
+}
+
+#[derive(FromRow)]
+struct RegistrationInvitationCodeForUse {
+    id: Uuid,
+    max_uses: Option<i64>,
+    used_count: i64,
+    expires_at: Option<DateTime<Utc>>,
+    enabled: bool,
+    user_group_id: Uuid,
+    initial_balance_amount: rust_decimal::Decimal,
 }

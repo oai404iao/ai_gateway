@@ -13,6 +13,7 @@ import {
   MODEL,
   MODEL_RULE,
   PROXY,
+  REGISTRATION_INVITATION_CODE,
   USER_GROUP,
 } from "@/test/fixtures";
 import { STORAGE_KEY, setCurrentLocale } from "@/app/i18n";
@@ -35,6 +36,7 @@ afterEach(() => {
 
 const createRoutes = [
   ["/admin/user-groups/new", /create user group/i],
+  ["/admin/registration-invitation-codes/new", /create registration code/i],
   ["/admin/api-key-policies/new", /create policy/i],
   ["/admin/models/new", /create upstream model/i],
   ["/admin/routing/channel-groups/new", /create group/i],
@@ -47,6 +49,10 @@ const createRoutes = [
 const editRoutes = [
   [`/admin/users/${CONTROL_PLANE_USER.id}`, /save account details/i],
   [`/admin/user-groups/${USER_GROUP.id}`, /save user group/i],
+  [
+    `/admin/registration-invitation-codes/${REGISTRATION_INVITATION_CODE.id}`,
+    /save registration code/i,
+  ],
   [`/admin/api-key-policies/${API_KEY_POLICY.id}`, /save policy/i],
   [`/admin/models/${MODEL.id}`, /save upstream model/i],
   [`/admin/routing/channel-groups/${CHANNEL_GROUP.id}`, /save group/i],

@@ -12,6 +12,9 @@ import { AuthLayout } from "@/app/layouts/auth-layout";
 const LoginPage = lazy(() =>
   import("@/features/auth/login-page").then((m) => ({ default: m.LoginPage })),
 );
+const RegisterPage = lazy(() =>
+  import("@/features/auth/register-page").then((m) => ({ default: m.RegisterPage })),
+);
 const ActivateInvitationPage = lazy(() =>
   import("@/features/auth/activate-invitation-page").then((m) => ({
     default: m.ActivateInvitationPage,
@@ -73,6 +76,16 @@ const UserGroupDetailPage = lazy(() =>
   import("@/features/admin/user-groups/user-group-detail-page").then((m) => ({
     default: m.UserGroupDetailPage,
   })),
+);
+const RegistrationInvitationCodesPage = lazy(() =>
+  import(
+    "@/features/admin/registration-invitation-codes/registration-invitation-codes-page"
+  ).then((m) => ({ default: m.RegistrationInvitationCodesPage })),
+);
+const RegistrationInvitationCodeDetailPage = lazy(() =>
+  import(
+    "@/features/admin/registration-invitation-codes/registration-invitation-code-detail-page"
+  ).then((m) => ({ default: m.RegistrationInvitationCodeDetailPage })),
 );
 const ApiKeyPoliciesPage = lazy(() =>
   import("@/features/admin/api-key-policies/api-key-policies-page").then((m) => ({
@@ -185,6 +198,7 @@ export function AppRouter() {
     <Routes>
       <Route element={<AuthLayout />}>
         <Route path="/login" element={<LoginPage />} />
+        <Route path="/register" element={<RegisterPage />} />
         <Route path="/activate-invitation" element={<ActivateInvitationPage />} />
       </Route>
 
@@ -205,6 +219,14 @@ export function AppRouter() {
             <Route path="/admin/users/:id" element={<UserDetailPage />} />
             <Route path="/admin/user-groups" element={<UserGroupsPage />} />
             <Route path="/admin/user-groups/:id" element={<UserGroupDetailPage />} />
+            <Route
+              path="/admin/registration-invitation-codes"
+              element={<RegistrationInvitationCodesPage />}
+            />
+            <Route
+              path="/admin/registration-invitation-codes/:id"
+              element={<RegistrationInvitationCodeDetailPage />}
+            />
             <Route path="/admin/api-key-policies" element={<ApiKeyPoliciesPage />} />
             {/* Detail pages use the "new" path segment as their create-mode sentinel. */}
             <Route path="/admin/api-key-policies/:id" element={<ApiKeyPolicyDetailPage />} />

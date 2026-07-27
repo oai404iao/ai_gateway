@@ -35,6 +35,8 @@ export type LoginResponse = S["LoginResponse"];
 export type ConsoleProfile = S["ConsoleProfile"];
 export type ConsoleSession = S["ConsoleSession"];
 export type InvitationResponse = S["InvitationResponse"];
+export type RegistrationInvitationCodeCreateResponse =
+  S["RegistrationInvitationCodeCreateResponse"];
 export type MutationResponse = S["MutationResponse"];
 export type UserBatchUpdateResponse = S["UserBatchUpdateResponse"];
 export type ReloadResponse = S["ReloadResponse"];
@@ -65,6 +67,7 @@ export type SelfApiKeyChannelOption = S["SelfApiKeyChannelOption"];
 export type ApiHostsView = S["ApiHostsView"];
 export type ControlPlaneUser = S["ControlPlaneUser"];
 export type UserGroupView = S["UserGroupView"];
+export type RegistrationInvitationCodeView = S["RegistrationInvitationCodeView"];
 export type ControlPlaneModel = S["ControlPlaneModel"];
 export type AdvancedBilling = S["AdvancedBilling"];
 export type LongContextTier = S["LongContextTier"];
@@ -103,6 +106,7 @@ export type ModelImportResponse = S["ModelImportResponse"];
 
 // Request bodies
 export type LoginInput = S["LoginInput"];
+export type RegisterInput = S["RegisterInput"];
 export type ActivateInvitationInput = S["ActivateInvitationInput"];
 export type ProfileUpdateInput = S["ProfileUpdateInput"];
 export type PasswordChangeInput = S["PasswordChangeInput"];
@@ -110,6 +114,10 @@ export type RevokeInput = S["RevokeInput"];
 export type SelfApiKeyCreateInput = S["SelfApiKeyCreateInput"];
 export type SelfApiKeyUpdateInput = S["SelfApiKeyUpdateInput"];
 export type InviteUserInput = S["InviteUserInput"];
+export type RegistrationInvitationCodeCreateInput =
+  S["RegistrationInvitationCodeCreateInput"];
+export type RegistrationInvitationCodeUpdateInput =
+  S["RegistrationInvitationCodeUpdateInput"];
 export type UserInput = S["UserInput"];
 export type UserUpdateInput = S["UserUpdateInput"];
 export type UserBatchUpdateTarget = S["UserBatchUpdateTarget"];

@@ -291,16 +291,16 @@ async fn matching_proxy_status_asynchronously_auto_disables_an_opted_in_channel(
             .fetch_one(&database.pool)
             .await
             .unwrap();
-        if disabled {
+        let removed_from_runtime = runtime.snapshot().channel(seed.channel).is_none();
+        if disabled && removed_from_runtime {
             break;
         }
         assert!(
             tokio::time::Instant::now() < deadline,
-            "matching upstream status did not auto-disable the channel"
+            "matching upstream status did not publish an auto-disabled channel"
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    assert!(runtime.snapshot().channel(seed.channel).is_none());
     let unavailable = app.oneshot(request()).await.unwrap();
     assert_eq!(unavailable.status(), StatusCode::SERVICE_UNAVAILABLE);
 

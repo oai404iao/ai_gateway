@@ -14,6 +14,7 @@ import {
   Activity,
   Gauge,
   Trophy,
+  TicketCheck,
   UsersRound,
   type LucideIcon,
 } from "lucide-react";
@@ -50,6 +51,11 @@ export const NAV_SECTIONS: NavSection[] = [
     items: [
       { label: "Users", path: "/admin/users", icon: Users },
       { label: "User Groups", path: "/admin/user-groups", icon: UsersRound },
+      {
+        label: "Registration Codes",
+        path: "/admin/registration-invitation-codes",
+        icon: TicketCheck,
+      },
       { label: "API Key Policies", path: "/admin/api-key-policies", icon: SlidersHorizontal },
       { label: "Models", path: "/admin/models", icon: Boxes },
       { label: "Price sync", path: "/admin/catalog", icon: GalleryVerticalEnd },

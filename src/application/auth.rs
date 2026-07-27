@@ -2,6 +2,7 @@
 
 use std::{
     collections::HashMap,
+    fmt::Write as _,
     fs,
     sync::Arc,
     time::{Duration, Instant},
@@ -25,7 +26,9 @@ use zeroize::Zeroizing;
 use crate::{
     domain::{ConsolePrincipal, UserRole},
     persistence::{
-        AuthRepository, InvitationCreated, InviteUserInput, LoginUser, RepositoryError,
+        AuthRepository, InvitationCreated, InviteUserInput, LoginUser, RegistrationAttempt,
+        RegistrationInvitationCodeInput as PersistenceRegistrationCodeInput,
+        RegistrationInvitationCodeMutation as PersistenceRegistrationCodeMutation, RepositoryError,
         SessionRotation, SessionUser,
     },
     runtime_config::AuthConfig,
@@ -35,6 +38,9 @@ const MIN_PASSWORD_BYTES: usize = 12;
 const MAX_PASSWORD_BYTES: usize = 1_024;
 const MAX_EMAIL_BYTES: usize = 320;
 const MAX_DISPLAY_NAME_BYTES: usize = 200;
+const MIN_REGISTRATION_CODE_BYTES: usize = 12;
+const MAX_REGISTRATION_CODE_BYTES: usize = 128;
+const MAX_REGISTRATION_CODE_NAME_BYTES: usize = 100;
 const INVITATION_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 const AUTH_FAILURE_WINDOW: Duration = Duration::from_secs(60);
 const AUTH_FAILURE_LIMIT: u32 = 10;
@@ -194,6 +200,45 @@ impl ConsoleAuthService {
         self.issue_session(user).await
     }
 
+    pub async fn register(&self, input: SelfRegistrationInput) -> Result<IssuedSession, AuthError> {
+        validate_email(&input.email)?;
+        validate_display_name(&input.display_name)?;
+        validate_password(&input.password)?;
+        let invitation_code = normalize_registration_code(&input.invitation_code)?;
+        let code_hash = token_hash(&invitation_code);
+        let email_limiter_key = format!("registration:{}", input.email.trim().to_ascii_lowercase());
+        let code_limiter_key = format!("registration-code:{}", limiter_hash_prefix(&code_hash));
+        self.ensure_attempt_allowed(&email_limiter_key).await?;
+        self.ensure_attempt_allowed(&code_limiter_key).await?;
+
+        let password_hash = hash_console_password(input.password).await?;
+        let registration = self
+            .repository
+            .register_with_invitation_code(
+                &code_hash,
+                input.email.trim(),
+                input.display_name.trim(),
+                &password_hash,
+            )
+            .await?;
+        let user = match registration {
+            RegistrationAttempt::Registered(user) => user,
+            RegistrationAttempt::InvalidCode => {
+                self.record_failed_attempt(&email_limiter_key).await;
+                self.record_failed_attempt(&code_limiter_key).await;
+                return Err(AuthError::InvalidRegistrationCode);
+            }
+            RegistrationAttempt::EmailConflict => {
+                self.record_failed_attempt(&email_limiter_key).await;
+                self.record_failed_attempt(&code_limiter_key).await;
+                return Err(AuthError::RegistrationConflict);
+            }
+        };
+        self.clear_failed_attempts(&email_limiter_key).await;
+        self.clear_failed_attempts(&code_limiter_key).await;
+        self.issue_session(user).await
+    }
+
     pub async fn change_password(
         &self,
         principal: ConsolePrincipal,
@@ -290,6 +335,76 @@ impl ConsoleAuthService {
             Err(error) => return Err(error.into()),
         };
         Ok(IssuedInvitation { created, token })
+    }
+
+    pub async fn create_registration_invitation_code(
+        &self,
+        actor: ConsolePrincipal,
+        input: RegistrationInvitationCodeCreateInput,
+    ) -> Result<IssuedRegistrationInvitationCode, AuthError> {
+        if !actor.role().is_admin() {
+            return Err(AuthError::Forbidden);
+        }
+        validate_registration_invitation_code_name(&input.name)?;
+        validate_registration_invitation_code_settings(
+            input.max_uses,
+            input.initial_balance_amount,
+        )?;
+        let invitation_code = normalize_registration_code(&input.invitation_code)?;
+        let mutation = self
+            .repository
+            .create_registration_invitation_code(
+                actor.user_id(),
+                &token_hash(&invitation_code),
+                PersistenceRegistrationCodeInput {
+                    name: input.name,
+                    max_uses: input.max_uses,
+                    expires_at: input.expires_at,
+                    enabled: input.enabled,
+                    user_group_id: input.user_group_id,
+                    initial_balance_amount: input.initial_balance_amount,
+                },
+            )
+            .await?;
+        Ok(IssuedRegistrationInvitationCode {
+            id: mutation.id,
+            invitation_code,
+            correlation_id: mutation.correlation_id,
+        })
+    }
+
+    pub async fn update_registration_invitation_code(
+        &self,
+        actor: ConsolePrincipal,
+        id: Uuid,
+        input: RegistrationInvitationCodeUpdateInput,
+        expected_updated_at: DateTime<Utc>,
+    ) -> Result<RegistrationInvitationCodeMutation, AuthError> {
+        if !actor.role().is_admin() {
+            return Err(AuthError::Forbidden);
+        }
+        validate_registration_invitation_code_name(&input.name)?;
+        validate_registration_invitation_code_settings(
+            input.max_uses,
+            input.initial_balance_amount,
+        )?;
+        let mutation = self
+            .repository
+            .update_registration_invitation_code(
+                actor.user_id(),
+                id,
+                PersistenceRegistrationCodeInput {
+                    name: input.name,
+                    max_uses: input.max_uses,
+                    expires_at: input.expires_at,
+                    enabled: input.enabled,
+                    user_group_id: input.user_group_id,
+                    initial_balance_amount: input.initial_balance_amount,
+                },
+                expected_updated_at,
+            )
+            .await?;
+        Ok(mutation.into())
     }
 
     pub async fn bootstrap_admin(
@@ -481,6 +596,52 @@ pub struct IssuedInvitation {
     pub token: String,
 }
 
+pub struct SelfRegistrationInput {
+    pub invitation_code: String,
+    pub email: String,
+    pub display_name: String,
+    pub password: String,
+}
+
+pub struct RegistrationInvitationCodeCreateInput {
+    pub name: String,
+    pub invitation_code: String,
+    pub max_uses: Option<i64>,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub enabled: bool,
+    pub user_group_id: Uuid,
+    pub initial_balance_amount: rust_decimal::Decimal,
+}
+
+pub struct RegistrationInvitationCodeUpdateInput {
+    pub name: String,
+    pub max_uses: Option<i64>,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub enabled: bool,
+    pub user_group_id: Uuid,
+    pub initial_balance_amount: rust_decimal::Decimal,
+}
+
+pub struct IssuedRegistrationInvitationCode {
+    pub id: Uuid,
+    pub invitation_code: String,
+    pub correlation_id: Uuid,
+}
+
+pub struct RegistrationInvitationCodeMutation {
+    pub id: Uuid,
+    pub correlation_id: Uuid,
+}
+
+impl From<PersistenceRegistrationCodeMutation> for RegistrationInvitationCodeMutation {
+    fn from(value: PersistenceRegistrationCodeMutation) -> Self {
+        Self {
+            id: value.id,
+            correlation_id: value.correlation_id,
+        }
+    }
+}
+
 fn active_login_user(user: LoginUser) -> Result<LoginUser, AuthError> {
     if user.status != "active"
         || user.password_hash.is_none()
@@ -527,6 +688,42 @@ fn validate_password(value: &str) -> Result<(), AuthError> {
         return Err(AuthError::InvalidInput);
     }
     Ok(())
+}
+
+fn validate_registration_invitation_code_name(value: &str) -> Result<(), AuthError> {
+    if value.trim().is_empty() || value.len() > MAX_REGISTRATION_CODE_NAME_BYTES {
+        return Err(AuthError::InvalidInput);
+    }
+    Ok(())
+}
+
+fn validate_registration_invitation_code_settings(
+    max_uses: Option<i64>,
+    initial_balance_amount: rust_decimal::Decimal,
+) -> Result<(), AuthError> {
+    if max_uses.is_some_and(|maximum| maximum <= 0) || initial_balance_amount.is_sign_negative() {
+        return Err(AuthError::InvalidInput);
+    }
+    Ok(())
+}
+
+fn normalize_registration_code(value: &str) -> Result<String, AuthError> {
+    let value = value.trim();
+    if value.len() < MIN_REGISTRATION_CODE_BYTES
+        || value.len() > MAX_REGISTRATION_CODE_BYTES
+        || value.chars().any(char::is_whitespace)
+    {
+        return Err(AuthError::InvalidInput);
+    }
+    Ok(value.to_owned())
+}
+
+fn limiter_hash_prefix(hash: &[u8]) -> String {
+    let mut prefix = String::with_capacity(16);
+    for byte in hash.iter().take(8) {
+        write!(&mut prefix, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    prefix
 }
 
 pub async fn hash_console_password(password: String) -> Result<String, AuthError> {
@@ -633,6 +830,10 @@ pub enum AuthError {
     InvalidToken,
     #[error("invalid or expired invitation")]
     InvalidInvitation,
+    #[error("invalid, expired, disabled, or exhausted registration invitation code")]
+    InvalidRegistrationCode,
+    #[error("a Console account already uses this email")]
+    RegistrationConflict,
     #[error("invalid authentication input")]
     InvalidInput,
     #[error("too many failed authentication attempts")]
