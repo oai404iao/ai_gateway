@@ -1,3 +1,5 @@
+mod websocket;
+
 use std::{
     collections::{BTreeSet, HashSet},
     error::Error,
@@ -66,6 +68,7 @@ pub struct ProxyService {
     routing: RoutingRuntime,
     admission: AdmissionRuntime,
     automatic_disable: Option<AutomaticDisableService>,
+    websocket_lifecycle: websocket::WebSocketLifecycle,
 }
 
 impl ProxyService {
@@ -165,6 +168,7 @@ impl ProxyService {
             routing,
             admission,
             automatic_disable,
+            websocket_lifecycle: websocket::WebSocketLifecycle::new(),
         })
     }
 
@@ -724,6 +728,18 @@ impl ProxyError {
             error_type: "api_error",
             param: None,
             code: Some("no_healthy_channel"),
+            authenticate: false,
+            retry_after: None,
+        }
+    }
+
+    fn shutting_down() -> Self {
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message: "The gateway is shutting down and cannot accept a new WebSocket.".to_owned(),
+            error_type: "api_error",
+            param: None,
+            code: Some("server_shutting_down"),
             authenticate: false,
             retry_after: None,
         }
@@ -1641,6 +1657,12 @@ impl CompletionGuard {
         } else {
             None
         }
+    }
+
+    fn observe_websocket_usage(&mut self, bytes: &Bytes) -> Option<SseTerminalOutcome> {
+        self.context
+            .as_mut()
+            .and_then(|context| context.usage.observe_websocket_event(bytes))
     }
 
     fn observe_upstream_error_body(&mut self, bytes: &Bytes) {

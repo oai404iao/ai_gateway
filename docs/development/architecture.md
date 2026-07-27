@@ -23,8 +23,8 @@ OpenAI-compatible client
   -> immutable control-plane snapshot
   -> channel selection and optional session affinity
   -> request transforms and upstream authentication
-  -> reusable reqwest client
-  -> streamed upstream response
+  -> reusable reqwest client or pinned Responses WebSocket
+  -> streamed HTTP/SSE response or WebSocket events
   -> durable asynchronous request logging and settlement
 
 Browser or Console client
@@ -58,9 +58,20 @@ Browser or Console client
 
 没有 body 变换或模型别名时，原始请求字节保持不变。普通响应不会为了 usage 采集而整体缓冲。
 
+Responses WebSocket 使用同一个 `/v1/responses` 路径的 `GET` Upgrade。握手只做 API Key
+认证；每条顺序的 `response.create` 独立执行准入、选路、变换、usage 和日志。由于
+`previous_response_id` 的增量缓存属于具体上游连接，下游连接会固定到一个仍可用的上游渠道和
+WebSocket 身份，不做请求多路复用。每个成功请求结束后，上游连接立即回到按 API Key、Session
+握手身份、渠道网络配置、目标和最终 Header 精确隔离的有界空闲池；下一条消息优先取回同一连接。
+池只复用成功终态后的无残留连接，并在空闲 5 分钟或连接总龄 55 分钟时淘汰。
+关闭流程单独跟踪 Axum Upgrade 后的任务：停止新 Upgrade 并清空空闲池，允许当前逻辑请求在全局
+grace period 内完成，截止时强制取消，避免 Upgrade 脱离 Hyper connection tracker 后绕过进程排空。
+
 ## 重试与 Streaming 边界
 
 - 自动故障转移只覆盖收到响应头前的连接失败、建连超时和响应头超时。
+- Responses WebSocket 只在上游 Upgrade/建连完成前故障转移；`response.create`
+  一旦发送就不再切换连接或渠道。
 - 每次后续尝试排除已经尝试过的渠道，并重新遵守授权、优先级、健康和权重规则。
 - 上游返回任意 HTTP 响应头后，不再重试 HTTP 错误。
 - 向客户端发送响应头或任何响应字节后，不得切换渠道。
@@ -115,7 +126,7 @@ spool 和 ingress 分别形成两层可恢复 backlog。不得在数据库 COPY 
 | `src/domain/` | API 格式、编译路由、凭据和值对象 |
 | `src/routing/` | 渠道选择、被动健康、Session 粘性 |
 | `src/transforms/` | 受限 JSON/Header/SSE DSL |
-| `src/upstream/` | reqwest client 复用、代理和超时策略 |
+| `src/upstream/` | reqwest client 复用、Responses WebSocket 连接池、代理和超时策略 |
 | `src/persistence/` | SQLx repository、事务和查询 |
 | `src/runtime_config/` | TOML bootstrap 配置和 `ArcSwap` 快照 |
 | `src/workers/` | 重载、日志 ingest/投影/结算、渠道自动化、花费排行榜快照 |
@@ -127,6 +138,7 @@ spool 和 ingress 分别形成两层可恢复 backlog。不得在数据库 COPY 
 | --- | --- |
 | 支持的 API 格式 | `src/domain/api_format.rs` |
 | 公共路由 | `src/http/mod.rs` |
+| Responses WebSocket 转发与连接池 | `src/application/proxy/websocket.rs`、`src/upstream/websocket.rs` |
 | Console 路由 | `src/http/console.rs` |
 | Console 契约 | `docs/openapi/console-v1.yaml` |
 | 配置 schema | `src/runtime_config/mod.rs` |

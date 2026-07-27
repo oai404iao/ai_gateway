@@ -7,7 +7,7 @@ pub mod console_ui;
 
 use axum::{
     Json, Router,
-    extract::{Request, State},
+    extract::{OriginalUri, Request, State, ws::WebSocketUpgrade},
     http::{HeaderMap, StatusCode},
     response::Response,
     routing::{get, post},
@@ -16,6 +16,7 @@ use axum::{
 use crate::{
     application::{ModelsResponse, ProxyError, ProxyService},
     domain::ApiFormat,
+    upstream::MAX_UPSTREAM_MESSAGE_BYTES,
 };
 
 /// Builds the public HTTP router with a reusable data-plane service.
@@ -24,7 +25,7 @@ pub fn router(proxy: ProxyService) -> Router {
         .route("/health", get(health))
         .route("/v1/models", get(models))
         .route("/v1/chat/completions", post(chat_completions))
-        .route("/v1/responses", post(responses))
+        .route("/v1/responses", post(responses).get(responses_websocket))
         .with_state(proxy)
 }
 
@@ -51,6 +52,23 @@ async fn responses(
     request: Request,
 ) -> Result<Response, ProxyError> {
     proxy.proxy(ApiFormat::OpenAiResponses, request).await
+}
+
+async fn responses_websocket(
+    State(proxy): State<ProxyService>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    websocket: WebSocketUpgrade,
+) -> Result<Response, ProxyError> {
+    let session = proxy.prepare_responses_websocket(&headers, &uri)?;
+    let request_limit = proxy.websocket_request_limit();
+    Ok(websocket
+        .read_buffer_size(64 * 1024)
+        .write_buffer_size(32 * 1024)
+        .max_write_buffer_size(MAX_UPSTREAM_MESSAGE_BYTES.saturating_add(32 * 1024))
+        .max_message_size(request_limit)
+        .max_frame_size(request_limit)
+        .on_upgrade(move |socket| session.run(socket)))
 }
 
 #[cfg(test)]

@@ -2,7 +2,7 @@
 
 > 类型：外部参考与项目兼容契约。
 >
-> 最近核对：2026-07-23。
+> 最近核对：2026-07-27。
 >
 > 权威来源：[OpenAI API Reference](https://developers.openai.com/api/reference/overview)。
 
@@ -14,6 +14,7 @@
 | `GET /v1/models` | 返回当前 API Key 可达的客户端模型名，不返回完整上游目录。 |
 | `POST /v1/chat/completions` | 仅按 Chat Completions 格式选路并转发。 |
 | `POST /v1/responses` | 仅按 Responses 格式选路并转发。 |
+| 带 WebSocket Upgrade 的 `GET /v1/responses` | 顺序转发 Responses WebSocket `response.create`；不做并发多路复用。 |
 
 不支持 embeddings、images、audio、files、batches、assistants、fine-tuning 等其他 OpenAI 路径。
 
@@ -38,6 +39,12 @@
 - 上游 HTTP 错误不会触发自动重试。
 - 自动故障转移仅发生在响应头前的连接失败、建连超时或响应头超时。
 - 网关生成的本地错误使用 OpenAI 风格的 `{ "error": { ... } }` JSON 结构，但错误代码是本项目契约。
+
+Responses WebSocket 的上游事件以 JSON 文本消息透传；配置的 Responses SSE 事件规则会应用到
+同类型 WebSocket 事件。网关按顺序一次处理一个 `response.create`，并让同一下游 Session 优先取回
+同一条上游连接，以保留 `previous_response_id` 的连接级缓存；只有成功、无残留的连接才会归还池中。
+上游 WebSocket Upgrade 在首条消息之后发生，因此上游握手响应 Header 不会出现在已经完成的下游
+Upgrade 响应中。
 
 ## 格式隔离
 

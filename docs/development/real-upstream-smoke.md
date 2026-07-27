@@ -6,14 +6,15 @@
 `tests/real_upstream/` verifies the gateway against one real,
 OpenAI-compatible upstream. It is deliberately ignored by normal `cargo test`
 runs: it has separate Chat Completions and Responses tests for non-streaming
-and streaming requests.
+and streaming requests, plus a Responses WebSocket request.
 
 The test constructs an in-memory control-plane snapshot and drives the public
 Axum router. It verifies the production forwarding path—model aliasing,
 replacement of the synthetic client Bearer credential with the configured
-upstream Bearer credential, `reqwest` forwarding, SSE streaming, usage
-extraction, price-snapshot binding, and terminal request-log costs—without
-requiring PostgreSQL or modifying a shared control plane.
+upstream Bearer credential, `reqwest` forwarding, SSE streaming, downstream
+and upstream WebSocket upgrades, usage extraction, price-snapshot binding, and
+terminal request-log costs—without requiring PostgreSQL or modifying a shared
+control plane.
 
 ## Local configuration
 
@@ -31,7 +32,7 @@ Fill these values in `.env.real-upstream`:
 | `REAL_UPSTREAM_BASE_URL` | Channel base URL. The gateway appends the selected `/v1/...` route. It may include a provider path prefix, but not the final route, query, fragment, or credentials. |
 | `REAL_UPSTREAM_API_KEY` | Dedicated upstream test credential. |
 | `REAL_UPSTREAM_CHAT_COMPLETIONS_MODEL` | A low-cost model supported by `/v1/chat/completions`. |
-| `REAL_UPSTREAM_RESPONSES_MODEL` | A low-cost model supported by `/v1/responses`. |
+| `REAL_UPSTREAM_RESPONSES_MODEL` | A low-cost model supported by both HTTP and WebSocket `/v1/responses`. |
 | `REAL_UPSTREAM_TIMEOUT_SECONDS` | Optional per-request limit; defaults to 60 and must be at least 3. |
 
 Run:
@@ -55,10 +56,14 @@ then runs the ignored test with `RUN_REAL_UPSTREAM_SMOKE=1`.
 
 - Use a dedicated credential with a strict spending cap, model allowlist, and
   rate limit. Never use a production credential.
-- The four requests run serially. Each sends a deliberately short prompt and
-  asks for one output token; provider-specific minimum-output behavior may
-  still incur a small charge. The Chat Completions streaming request includes
-  `stream_options.include_usage=true` so its final SSE usage can be verified.
+- The five requests run serially. Each sends a deliberately short prompt. The
+  four HTTP/SSE requests ask for one output token; provider-specific
+  minimum-output behavior may still incur a small charge. The Chat Completions
+  streaming request includes `stream_options.include_usage=true` so its final
+  SSE usage can be verified. The Responses WebSocket request uses the same beta
+  and Session/thread/client-request identity headers as Codex, uses Codex's
+  `response.create` field set without provider-sensitive output-limit fields,
+  and waits for `response.completed`.
 - Do not run it in ordinary PR checks. CI automation is intentionally not part
   of this change.
 - Do not add real credentials to `./config/*`, test source, shell history, or

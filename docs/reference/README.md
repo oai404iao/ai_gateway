@@ -9,6 +9,7 @@
 - [兼容性总览](openai-compatibility.md)
 - [Chat Completions](chat-completions.md)
 - [Responses](responses.md)
+- [Codex Responses WebSocket 实现参考](codex-responses-websocket.md)
 
 ## 使用原则
 

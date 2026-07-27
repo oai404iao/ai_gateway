@@ -99,10 +99,52 @@ verification_key_path = "./config/console-jwt-public.pem"
 - `GET /v1/models`：列出当前 API Key 可达的模型；需要相应格式的 `proxy` 和 `models.read` 权限。
 - `POST /v1/chat/completions`：仅匹配 Chat Completions 路由规则。
 - `POST /v1/responses`：仅匹配 Responses 路由规则。
+- 带 WebSocket Upgrade 的 `GET /v1/responses`：接受顺序的 Responses
+  `response.create` 文本消息，仅匹配 Responses 路由规则。
 
 两个 OpenAI 格式绝不互相回退。客户端 `Authorization` 不会转发给上游；网关清理 hop-by-hop headers 后，按渠道配置最后注入上游认证。
 
 数据面在认证后、读取请求体前执行 RPM、并发与已结算软额度预检查。请求体只有在模型别名或 JSON 变换启用时才重新序列化；响应默认逐块流式转发，SSE 变换按事件边界执行且不缓冲整条流。连接失败、连接超时或等待响应头超时时，可以按系统设置在尚未尝试过的其他健康渠道上故障转移；一旦收到上游响应头或向客户端发送任何响应字节，绝不重试或切换渠道。
+
+### Responses WebSocket
+
+WebSocket Upgrade 在 HTTP 握手阶段验证 Gateway API Key 和 Responses `proxy`
+权限，但不消耗 RPM 或并发槽。每个后续 `response.create` 才作为一个独立逻辑请求：
+
+- 重新检查 API Key 是否仍有效，执行 RPM、并发和软额度准入；
+- 从消息顶层 `model` 完成 Responses 路由、模型别名和请求 JSON 变换；
+- 应用渠道请求 Header 变换；若最终缺失则注入
+  `OpenAI-Beta: responses_websockets=2026-02-06`，再应用上游认证，然后连接或复用上游
+  WebSocket；
+- 将上游 Responses JSON 事件逐消息转发，Responses SSE 事件变换规则也用于同类型
+  WebSocket 事件；
+- 在 `response.completed`、`response.failed`、`response.incomplete`、
+  `response.cancelled` 或 `error` 终态记录 usage、计费和请求日志。
+
+OpenAI 的增量 `previous_response_id` 缓存属于具体上游 WebSocket 连接，因此网关不会把同一条连接上的
+请求多路复用到多个上游连接。每个请求成功终止后，只有没有残留消息的上游连接才会立即归还进程内
+有界空闲池；同一条或重连后的下游 Session 会优先取回这个精确连接。池按 Gateway API Key、下游握手
+身份、渠道、目标 URL、代理/TLS 策略和最终上游请求 Header 精确隔离；不同下游 Session 不共享连接级
+上下文。
+
+每条 WebSocket 连接同时只允许一个 `response.create` 在途。上游握手完成前的连接类失败仍可按全局
+重试设置切换未尝试渠道；消息一旦发往上游，就不再自动重试，以避免重复生成。连接期间客户端 API Key
+被撤销或过期后，下一条消息会收到 `invalid_api_key` 错误。
+
+由于上游渠道只能在下游 Upgrade 完成并收到首条 `response.create` 后确定，上游 Upgrade 响应 Header
+无法回填到已经完成的下游握手；配置的响应 Header 变换因此只适用于 HTTP Responses，WebSocket
+事件变换仍正常生效。HTTP、HTTPS、SOCKS4/4a 和 SOCKS5/5h 渠道代理策略均用于上游 WebSocket 建连。
+若公共 listener 前有 TLS/负载均衡反向代理，必须允许 WebSocket Upgrade，并把连接空闲和最长时限
+设置得足以覆盖模型响应；网关自身仍不终止 TLS。
+
+Codex 会在握手中发送 `session-id`、`thread-id`、`x-client-request-id`、`originator` 和
+User-Agent。网关会把这些非 hop-by-hop Header 纳入连接池隔离并转发；反向代理和渠道 Header 变换
+不应无意删除它们。Codex 请求形状与恢复逻辑见
+[Codex Responses WebSocket 实现参考](../reference/codex-responses-websocket.md)。
+
+进程收到关闭信号后不再接受新的 WebSocket Upgrade，立即清空空闲上游池并用 `1001` 关闭空闲下游
+连接；已经在途的 `response.create` 可在 `shutdown_grace_period_seconds` 内完成，超过时限后会被
+强制取消并按客户端取消记录。
 
 ## Console 认证
 

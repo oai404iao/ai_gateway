@@ -236,10 +236,12 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
         None
     };
 
+    let websocket_proxy = proxy.clone();
     let serve_result = run_servers(
         (listener, http::router(proxy)),
         console,
         Duration::from_secs(config.server.shutdown_grace_period_seconds),
+        websocket_proxy,
     )
     .await;
     channel_probe_worker.shutdown().await;
@@ -451,6 +453,7 @@ async fn run_servers(
     public: (TcpListener, Router),
     console: Option<(TcpListener, Router)>,
     shutdown_grace_period: Duration,
+    websocket_proxy: ProxyService,
 ) -> Result<(), std::io::Error> {
     let (shutdown_sender, shutdown_receiver) = watch::channel(());
     let mut servers = JoinSet::new();
@@ -476,14 +479,57 @@ async fn run_servers(
             _ => None,
         },
     };
+    websocket_proxy.begin_websocket_shutdown();
     let _ = shutdown_sender.send(());
     let mut error = first_error;
-    while let Some(result) = servers.join_next().await {
-        match result {
-            Ok(Ok(())) => {}
-            Ok(Err(next)) if error.is_none() => error = Some(next),
-            Ok(Err(next)) => tracing::warn!(%next, "listener task failed while draining"),
-            Err(next) => tracing::warn!(%next, "listener task join failed while draining"),
+    let deadline = tokio::time::Instant::now() + shutdown_grace_period;
+    let mut force_close = false;
+    loop {
+        if servers.is_empty() && websocket_proxy.active_websocket_sessions() == 0 {
+            break;
+        }
+        tokio::select! {
+            result = servers.join_next(), if !servers.is_empty() => {
+                let Some(result) = result else {
+                    continue;
+                };
+                match result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(next)) if error.is_none() => error = Some(next),
+                    Ok(Err(next)) => tracing::warn!(%next, "listener task failed while draining"),
+                    Err(next) => tracing::warn!(%next, "listener task join failed while draining"),
+                }
+            }
+            _ = websocket_proxy.wait_for_websocket_shutdown(),
+                if websocket_proxy.active_websocket_sessions() > 0 => {}
+            _ = tokio::time::sleep_until(deadline) => {
+                force_close = true;
+                break;
+            }
+        }
+    }
+    if force_close {
+        tracing::warn!(
+            grace_period_seconds = shutdown_grace_period.as_secs(),
+            "graceful shutdown deadline expired; force-closing HTTP and WebSocket connections"
+        );
+        websocket_proxy.force_websocket_shutdown();
+        servers.abort_all();
+        while let Some(result) = servers.join_next().await {
+            if let Err(next) = result
+                && !next.is_cancelled()
+            {
+                tracing::warn!(%next, "listener task join failed while force-closing");
+            }
+        }
+        if timeout(
+            Duration::from_secs(1),
+            websocket_proxy.wait_for_websocket_shutdown(),
+        )
+        .await
+        .is_err()
+        {
+            tracing::warn!("Responses WebSocket tasks did not stop after forced shutdown");
         }
     }
     error.map_or(Ok(()), Err)

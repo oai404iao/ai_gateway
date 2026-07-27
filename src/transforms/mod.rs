@@ -951,6 +951,44 @@ impl SseTransformer {
     }
 }
 
+/// Applies Responses SSE event rules to one Responses WebSocket JSON message.
+///
+/// WebSocket transport carries the same typed event objects as SSE but without
+/// the `event:`/`data:` envelope, so the compiled selector and JSON patch plan
+/// can be reused without reconstructing an SSE frame.
+pub fn apply_websocket_event_plan(
+    payload: Bytes,
+    plan: &SseEventPatchPlan,
+) -> Result<Bytes, TransformApplyError> {
+    if !plan.has_operations() {
+        return Ok(payload);
+    }
+    if payload.len() > SseTransformer::MAX_FRAME_BYTES {
+        return Err(TransformApplyError::SseFrameTooLarge);
+    }
+    let SseEventPatchPlan::OpenAiResponses { entries } = plan else {
+        return Ok(payload);
+    };
+    let Ok(mut value) = serde_json::from_slice::<Value>(&payload) else {
+        return Ok(payload);
+    };
+    if !value.is_object() {
+        return Ok(payload);
+    }
+    let Some(event_type) = value.get("type").and_then(Value::as_str) else {
+        return Ok(payload);
+    };
+    let Some(selector) = response_selector(event_type) else {
+        return Ok(payload);
+    };
+    if !apply_matching_response_entries(&mut value, entries, selector)? {
+        return Ok(payload);
+    }
+    serde_json::to_vec(&value)
+        .map(Bytes::from)
+        .map_err(|_| TransformApplyError::SerializationFailed)
+}
+
 struct SseLine {
     start: usize,
     content_end: usize,
@@ -2810,6 +2848,39 @@ mod tests {
         assert_eq!(
             output,
             [passthrough.as_slice(), residual.as_slice()].concat()
+        );
+    }
+
+    #[test]
+    fn websocket_event_transform_reuses_responses_sse_selector_without_envelope() {
+        let plan = sse_plan(
+            json!({
+                "version": 1,
+                "api_format": "open_ai_responses",
+                "sse": [{
+                    "event": "response.output_text.delta",
+                    "json": [{"op": "add", "path": "/patched", "value": true}]
+                }]
+            }),
+            RESPONSES,
+        );
+        assert_eq!(
+            apply_websocket_event_plan(
+                Bytes::from_static(br#"{"type":"response.output_text.delta","delta":"hello"}"#,),
+                &plan,
+            )
+            .unwrap(),
+            Bytes::from_static(
+                br#"{"delta":"hello","patched":true,"type":"response.output_text.delta"}"#,
+            )
+        );
+        assert_eq!(
+            apply_websocket_event_plan(
+                Bytes::from_static(br#"{"type":"response.completed"}"#),
+                &plan,
+            )
+            .unwrap(),
+            Bytes::from_static(br#"{"type":"response.completed"}"#)
         );
     }
 

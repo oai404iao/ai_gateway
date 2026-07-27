@@ -7,6 +7,14 @@ Versioning.
 
 ## [Unreleased]
 
+### Added
+
+- OpenAI Responses WebSocket proxying on `/v1/responses`, including
+  per-message authentication/admission/routing/logging, model and event
+  transforms, HTTP/SOCKS proxy support, connection-local
+  `previous_response_id` continuity, graceful process draining, and a bounded
+  upstream WebSocket pool.
+
 ## [0.4.0] - 2026-07-27
 
 ### Added

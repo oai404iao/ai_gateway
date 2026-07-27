@@ -590,6 +590,90 @@ impl RoutingRuntime {
         self.select_with_affinity_excluding(snapshot, key, format, model, affinity, &[])
     }
 
+    /// Tries to pin a stateful transport to one specific channel while still
+    /// enforcing the current model rule, API-key authorization, exclusions,
+    /// passive health, highest usable priority tier, and session-affinity
+    /// bookkeeping.
+    ///
+    /// Returns `None` when the preferred channel is no longer eligible. The
+    /// caller may then perform ordinary weighted selection.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)] // mirrors the existing format/model selection surface
+    pub fn select_preferred_channel(
+        &self,
+        snapshot: &CompiledRuntimeConfig,
+        key: &CompiledApiKey,
+        format: ApiFormat,
+        model: &str,
+        preferred_channel_id: Uuid,
+        affinity: Option<SessionAffinityMatch>,
+        excluded_channel_slots: &[usize],
+    ) -> Option<SelectedRoute> {
+        let rule = snapshot.model_rule(format, model)?;
+        if !key.permits_route(rule.route_slot()) {
+            return None;
+        }
+        let affinity = prepare_affinity(&self.inner, key, &rule, affinity);
+        let now = self.inner.clock.now();
+        let eligible = |candidate: &crate::domain::CompiledCandidate| {
+            let channel_slot = candidate.channel_slot();
+            let channel = candidate.channel();
+            key.permits_route_candidate(channel_slot)
+                && !excluded_channel_slots.contains(&channel_slot)
+                && usable(&self.inner, &ChannelIdentity::from_channel(channel), now)
+        };
+        let mut preferred = None;
+        for tier in rule.tiers() {
+            if !tier.candidates().iter().any(&eligible) {
+                continue;
+            }
+            preferred = tier.candidates().iter().find(|candidate| {
+                candidate.channel().id() == preferred_channel_id && eligible(candidate)
+            });
+            break;
+        }
+        let candidate = preferred?;
+        let channel_slot = candidate.channel_slot();
+        let channel = Arc::clone(candidate.channel());
+        let identity = ChannelIdentity::from_channel(&channel);
+        let (channel_state, half_open_claim) = try_acquire_channel(&self.inner, &identity, now)?;
+        let cache_hit = affinity
+            .as_ref()
+            .and_then(|affinity| affinity.preferred_channel_id)
+            == Some(channel.id());
+        let affinity_binding = affinity.as_ref().map(|affinity| AffinityBinding {
+            key: affinity.key,
+            ttl: affinity.ttl,
+            channel_id: channel.id(),
+            cache_hit,
+        });
+        let affinity_selection = affinity.as_ref().map(|affinity| SessionAffinitySelection {
+            rule_name: Arc::clone(&affinity.rule_name),
+            cache_hit,
+        });
+        if let Some(affinity) = &affinity
+            && let Some(stale_channel_id) = affinity
+                .preferred_channel_id
+                .filter(|channel_id| *channel_id != channel.id())
+        {
+            affinity_remove_if_channel(&self.inner, affinity.key, stale_channel_id);
+        }
+        Some(SelectedRoute {
+            rule,
+            channel,
+            channel_slot,
+            session_affinity: affinity_selection,
+            lease: ChannelLease {
+                inner: Arc::clone(&self.inner),
+                identity,
+                state: channel_state,
+                half_open_claim,
+                affinity: affinity_binding,
+                released: false,
+            },
+        })
+    }
+
     /// Selects a route while excluding channels already attempted by the same
     /// client request. Exclusions are applied after authorization and before
     /// priority/weight selection, so failover exhausts each priority tier
@@ -610,20 +694,7 @@ impl RoutingRuntime {
         if !key.permits_route(rule.route_slot()) {
             return SelectionResult::UnknownOrInaccessibleModel;
         }
-        let affinity = affinity.map(|affinity| {
-            let cache_key = AffinityCacheKey {
-                rule_fingerprint: affinity.rule_fingerprint,
-                api_key_id: key.id(),
-                model_rule_id: rule.id(),
-                session_hash: affinity.session_hash,
-            };
-            PreparedAffinity {
-                preferred_channel_id: affinity_lookup(&self.inner, cache_key),
-                key: cache_key,
-                rule_name: affinity.rule_name,
-                ttl: affinity.ttl,
-            }
-        });
+        let affinity = prepare_affinity(&self.inner, key, &rule, affinity);
         let now = self.inner.clock.now();
         for tier in rule.tiers() {
             let mut allow_affinity = true;
@@ -764,6 +835,28 @@ impl RoutingRuntime {
         }
         SelectionResult::NoHealthyChannel { rule }
     }
+}
+
+fn prepare_affinity(
+    inner: &RuntimeInner,
+    key: &CompiledApiKey,
+    rule: &CompiledModelRule,
+    affinity: Option<SessionAffinityMatch>,
+) -> Option<PreparedAffinity> {
+    affinity.map(|affinity| {
+        let cache_key = AffinityCacheKey {
+            rule_fingerprint: affinity.rule_fingerprint,
+            api_key_id: key.id(),
+            model_rule_id: rule.id(),
+            session_hash: affinity.session_hash,
+        };
+        PreparedAffinity {
+            preferred_channel_id: affinity_lookup(inner, cache_key),
+            key: cache_key,
+            rule_name: affinity.rule_name,
+            ttl: affinity.ttl,
+        }
+    })
 }
 
 fn reconcile_affinity(inner: &RuntimeInner, snapshot: &CompiledRuntimeConfig) {
@@ -1540,6 +1633,74 @@ mod tests {
         let route = select(&runtime, &snapshot, &secret);
         assert_eq!(route.rule.tiers()[0].priority(), 0);
         assert_eq!(route.channel.id(), route.rule.tiers()[0].channel_ids()[0]);
+    }
+
+    #[test]
+    fn stateful_transport_can_pin_a_preferred_channel_within_the_active_priority_tier() {
+        let (flat_snapshot, secret) =
+            snapshot(&[(0, "weighted_random"), (0, "weighted_random")], &[1, 1]);
+        let runtime = RoutingRuntime::with_seams(
+            PassiveHealthPolicy::default(),
+            Arc::new(TestClock(AtomicU64::new(0))),
+            Arc::new(Tickets(Mutex::new(VecDeque::from([0])))),
+        );
+        runtime.reconcile(&flat_snapshot);
+        let key = flat_snapshot.authenticate(&secret).unwrap();
+        let rule = flat_snapshot
+            .model_rule(ApiFormat::OpenAiChatCompletions, "model")
+            .unwrap();
+        let preferred = rule.tiers()[0].channel_ids()[1];
+
+        let selected = runtime
+            .select_preferred_channel(
+                &flat_snapshot,
+                &key,
+                ApiFormat::OpenAiChatCompletions,
+                "model",
+                preferred,
+                None,
+                &[],
+            )
+            .expect("preferred channel should remain eligible");
+        assert_eq!(selected.channel.id(), preferred);
+        let preferred_slot = selected.channel_slot;
+        drop(selected);
+
+        assert!(
+            runtime
+                .select_preferred_channel(
+                    &flat_snapshot,
+                    &key,
+                    ApiFormat::OpenAiChatCompletions,
+                    "model",
+                    preferred,
+                    None,
+                    &[preferred_slot],
+                )
+                .is_none()
+        );
+
+        let (tiered_snapshot, tiered_secret) =
+            snapshot(&[(0, "weighted_random"), (10, "weighted_random")], &[1, 1]);
+        runtime.reconcile(&tiered_snapshot);
+        let tiered_key = tiered_snapshot.authenticate(&tiered_secret).unwrap();
+        let tiered_rule = tiered_snapshot
+            .model_rule(ApiFormat::OpenAiChatCompletions, "model")
+            .unwrap();
+        assert!(
+            runtime
+                .select_preferred_channel(
+                    &tiered_snapshot,
+                    &tiered_key,
+                    ApiFormat::OpenAiChatCompletions,
+                    "model",
+                    tiered_rule.tiers()[1].channel_ids()[0],
+                    None,
+                    &[],
+                )
+                .is_none(),
+            "stateful reuse must not bypass a healthier higher-priority tier"
+        );
     }
 
     #[test]
