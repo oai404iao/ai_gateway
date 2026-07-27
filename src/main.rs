@@ -26,7 +26,9 @@ use ai_gateway::{
     routing::{PassiveHealthPolicy, RoutingRuntime},
     runtime_config::{AppConfig, RuntimeConfig, compile_runtime_config},
     upstream::UpstreamClientRegistry,
-    workers::{ChannelProbeWorker, ControlPlaneReloader, DurableRequestLogWorker},
+    workers::{
+        ChannelProbeWorker, ControlPlaneReloader, DurableRequestLogWorker, SpendLeaderboardWorker,
+    },
 };
 use axum::{Router, body::Body};
 use chrono::Utc;
@@ -133,6 +135,7 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
         .acquire_timeout(Duration::from_secs(config.database.connect_timeout_seconds))
         .connect_with(request_log_connect_options)
         .await?;
+    let spend_leaderboard_repository = RequestLogRepository::new(request_log_pool.clone());
     let (request_log_sink, request_log_worker) = DurableRequestLogWorker::start_with_admission(
         RequestLogRepository::new(request_log_pool),
         &config.request_logging,
@@ -184,6 +187,10 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
         automatic_disable_service,
         system_probe_identity,
     );
+    let spend_leaderboard_worker = config
+        .console
+        .as_ref()
+        .map(|_| SpendLeaderboardWorker::start(spend_leaderboard_repository));
     ControlPlaneReloader::from_coordinator(coordinator.clone()).spawn(Duration::from_secs(
         config.runtime_config.reload_interval_seconds,
     ));
@@ -237,6 +244,9 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
     .await;
     channel_probe_worker.shutdown().await;
     automatic_disable_worker.shutdown().await;
+    if let Some(worker) = spend_leaderboard_worker {
+        worker.shutdown().await;
+    }
     request_log_worker.shutdown().await;
     serve_result?;
     Ok(())

@@ -12,6 +12,7 @@ import {
   SlidersHorizontal,
   ChartNoAxesCombined,
   Activity,
+  Trophy,
   UsersRound,
   type LucideIcon,
 } from "lucide-react";
@@ -39,6 +40,7 @@ export const NAV_SECTIONS: NavSection[] = [
       { label: "Request Logs", path: "/usage/request-logs", icon: ScrollText },
       { label: "Channel status", path: "/channel-status", icon: Activity },
       { label: "Statistics", path: "/statistics", icon: ChartNoAxesCombined },
+      { label: "Spend leaderboard", path: "/leaderboard", icon: Trophy },
     ],
   },
   {

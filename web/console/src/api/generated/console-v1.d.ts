@@ -814,6 +814,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/statistics/spend-leaderboard": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * @description Available to every authenticated Console user. Reads a periodically
+         *     refreshed snapshot instead of aggregating request logs at request time.
+         *     Rankings use Asia/Shanghai boundaries: a day is 00:00 inclusive through
+         *     the following 00:00 exclusive; a week is Monday through Sunday; and a
+         *     month is the 1st through its final day. Only client requests participate.
+         *     Omit `period_start` for the current period, or use the adjacent period
+         *     values in the response to browse retained history. Users without any priced
+         *     request in the selected period are omitted.
+         */
+        get: operations["getSpendLeaderboard"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/audit-logs": {
         parameters: {
             query?: never;
@@ -1647,6 +1673,51 @@ export interface components {
             /** @description Total channel cost in USD. */
             cost_amount: components["schemas"]["Decimal"];
         };
+        /** @enum {string} */
+        SpendLeaderboardPeriod: "day" | "week" | "month";
+        SpendLeaderboardReport: {
+            period: components["schemas"]["SpendLeaderboardPeriod"];
+            /**
+             * Format: date
+             * @description Inclusive Asia/Shanghai natural-period start.
+             */
+            period_start: string;
+            /**
+             * Format: date
+             * @description Exclusive Asia/Shanghai natural-period end.
+             */
+            period_end: string;
+            /** @description Snapshot refresh timestamp, or null before the first refresh completes. */
+            refreshed_at: components["schemas"]["DateTime"] | null;
+            /** @description Total recorded cost for every qualifying user in USD, before the entry limit. */
+            total_cost_amount: components["schemas"]["Decimal"];
+            /**
+             * Format: date
+             * @description Nearest earlier retained period of the same type.
+             */
+            previous_period_start: string | null;
+            /**
+             * Format: date
+             * @description Nearest later retained period of the same type.
+             */
+            next_period_start: string | null;
+            /** @description Descending user-cost ranking from the selected snapshot, capped by the requested limit. */
+            entries: components["schemas"]["SpendLeaderboardEntry"][];
+        };
+        SpendLeaderboardEntry: {
+            rank: number;
+            /** Format: uuid */
+            user_id: string;
+            display_name: string;
+            /** @description All requests by this user in the selected period. */
+            request_count: number;
+            /** @description Requests by this user whose final cost is known. */
+            priced_request_count: number;
+            /** @description Input plus output tokens for all requests by this user in the selected period. */
+            total_tokens: number;
+            /** @description Total recorded user cost in USD. */
+            cost_amount: components["schemas"]["Decimal"];
+        };
         AuditLogView: {
             /** Format: uuid */
             id: string;
@@ -2174,6 +2245,13 @@ export interface components {
         StatisticsWindow: components["schemas"]["ChannelStatusWindow"];
         /** @description Inclusive range start; defaults to seven days before the end. */
         StatisticsStartedAfter: components["schemas"]["DateTime"];
+        /** @description Natural Asia/Shanghai period to rank: day (00:00–next 00:00), week (Monday–Sunday), or month (day 1–final day). */
+        SpendLeaderboardPeriod: components["schemas"]["SpendLeaderboardPeriod"];
+        /**
+         * @description Asia/Shanghai period start in YYYY-MM-DD form. Weeks must start Monday;
+         *     months must start on day 1. Omit for the current natural period.
+         */
+        SpendLeaderboardPeriodStart: string;
         /** @description Exclusive range end; defaults to the current time. */
         StatisticsStartedBefore: components["schemas"]["DateTime"];
         /** @description Hour supports at most 31 days; day supports at most 366 days. */
@@ -4187,6 +4265,37 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+            422: components["responses"]["Unprocessable"];
+        };
+    };
+    getSpendLeaderboard: {
+        parameters: {
+            query?: {
+                /** @description Natural Asia/Shanghai period to rank: day (00:00–next 00:00), week (Monday–Sunday), or month (day 1–final day). */
+                period?: components["parameters"]["SpendLeaderboardPeriod"];
+                /**
+                 * @description Asia/Shanghai period start in YYYY-MM-DD form. Weeks must start Monday;
+                 *     months must start on day 1. Omit for the current natural period.
+                 */
+                period_start?: components["parameters"]["SpendLeaderboardPeriodStart"];
+                limit?: components["parameters"]["Limit"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description User spend leaderboard. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SpendLeaderboardReport"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
             422: components["responses"]["Unprocessable"];
         };
     };

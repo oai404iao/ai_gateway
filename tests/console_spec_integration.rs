@@ -2954,7 +2954,7 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
     .unwrap();
     let regular_session = app
         .auth
-        .login(regular_email, TEST_PASSWORD.to_owned())
+        .login(regular_email.clone(), TEST_PASSWORD.to_owned())
         .await
         .unwrap();
 
@@ -3162,6 +3162,102 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
     assert_eq!(admin_channel_costs["summary"]["request_count"], 4);
     assert_eq!(admin_channel_costs["channels"].as_array().unwrap().len(), 1);
 
+    RequestLogRepository::new(database.pool.clone())
+        .refresh_spend_leaderboard_snapshots()
+        .await
+        .unwrap();
+
+    let leaderboard = request(
+        &app,
+        "GET",
+        "/console/v1/statistics/spend-leaderboard?period=day&limit=1",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(leaderboard.status(), StatusCode::OK);
+    let leaderboard = body_json(leaderboard).await;
+    assert_eq!(leaderboard["period"], "day");
+    assert!(leaderboard["refreshed_at"].is_string());
+    let leaderboard_total = leaderboard["total_cost_amount"]
+        .as_str()
+        .unwrap()
+        .parse::<f64>()
+        .unwrap();
+    assert!((leaderboard_total - 1.30).abs() < f64::EPSILON);
+    let entries = leaderboard["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["rank"], 1);
+    assert_eq!(entries[0]["user_id"], regular_user_id.to_string());
+    assert_eq!(
+        entries[0]["display_name"],
+        format!("statistics-user-{regular_user_id}")
+    );
+    assert!(entries[0].get("email").is_none());
+    assert_eq!(entries[0]["request_count"], 1);
+    assert_eq!(entries[0]["priced_request_count"], 1);
+    assert_eq!(entries[0]["total_tokens"], 50);
+    let entry_cost_amount = entries[0]["cost_amount"]
+        .as_str()
+        .unwrap()
+        .parse::<f64>()
+        .unwrap();
+    assert!((entry_cost_amount - 1.0).abs() < f64::EPSILON);
+
+    let user_leaderboard = request_with_token(
+        &app,
+        &regular_session.access_token,
+        "GET",
+        "/console/v1/statistics/spend-leaderboard?period=day",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(user_leaderboard.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(user_leaderboard).await["total_cost_amount"],
+        leaderboard["total_cost_amount"]
+    );
+
+    let invalid_leaderboard_limit = request(
+        &app,
+        "GET",
+        "/console/v1/statistics/spend-leaderboard?limit=0",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(
+        invalid_leaderboard_limit.status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+
+    let invalid_leaderboard_period = request(
+        &app,
+        "GET",
+        "/console/v1/statistics/spend-leaderboard?period=quarter",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(
+        invalid_leaderboard_period.status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+
+    let invalid_leaderboard_week = request(
+        &app,
+        "GET",
+        "/console/v1/statistics/spend-leaderboard?period=week&period_start=2026-07-21",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(
+        invalid_leaderboard_week.status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+
     let invalid_start = (started_at - chrono::Duration::days(32))
         .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     let invalid = request(
@@ -3175,5 +3271,277 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
     )
     .await;
     assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn spend_leaderboard_uses_shanghai_periods_and_serves_snapshots() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+    let api_key_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO api_keys \
+         (id,user_id,name,secret_value,status,allowed_api_formats,permissions) \
+         VALUES ($1,$2,$3,$4,'active', \
+                 ARRAY['open_ai_chat_completions']::api_format[],ARRAY['proxy'])",
+    )
+    .bind(api_key_id)
+    .bind(app.user_id)
+    .bind(format!("leaderboard-key-{api_key_id}"))
+    .bind(format!("leaderboard-secret-{api_key_id}"))
+    .execute(&database.pool)
+    .await
+    .unwrap();
+
+    let before_midnight = chrono::DateTime::parse_from_rfc3339("2026-01-01T15:59:59Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    let after_midnight = chrono::DateTime::parse_from_rfc3339("2026-01-01T16:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    let sunday_before_midnight = chrono::DateTime::parse_from_rfc3339("2026-01-04T15:59:59Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    let monday_at_midnight = chrono::DateTime::parse_from_rfc3339("2026-01-04T16:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    let month_last_second = chrono::DateTime::parse_from_rfc3339("2026-01-31T15:59:59Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    let next_month_at_midnight = chrono::DateTime::parse_from_rfc3339("2026-01-31T16:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    for (started_at, cost) in [
+        (before_midnight, rust_decimal::Decimal::new(25, 2)),
+        (after_midnight, rust_decimal::Decimal::new(75, 2)),
+        (sunday_before_midnight, rust_decimal::Decimal::new(50, 2)),
+        (monday_at_midnight, rust_decimal::Decimal::new(200, 2)),
+        (month_last_second, rust_decimal::Decimal::new(60, 2)),
+        (next_month_at_midnight, rust_decimal::Decimal::new(300, 2)),
+    ] {
+        sqlx::query(
+            "INSERT INTO request_logs \
+             (id,started_at,completed_at,user_id,api_key_id,api_format,client_model, \
+              outcome,response_status_code,streamed,input_tokens,output_tokens,currency, \
+              price_unit_tokens,price_effective_at,input_unit_price,cached_input_unit_price, \
+              cache_write_unit_price,output_unit_price,cost_amount) \
+             VALUES ($1,$2,$2,$3,$4,'open_ai_chat_completions','leaderboard-model', \
+                     'succeeded',200,false,10,5,'USD',1000000,$2,1,0,0,1,$5)",
+        )
+        .bind(Uuid::new_v4())
+        .bind(started_at)
+        .bind(app.user_id)
+        .bind(api_key_id)
+        .bind(cost)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    }
+
+    let repository = RequestLogRepository::new(database.pool.clone());
+    repository
+        .refresh_spend_leaderboard_snapshots()
+        .await
+        .unwrap();
+
+    let first_day = request(
+        &app,
+        "GET",
+        "/console/v1/statistics/spend-leaderboard?period=day&period_start=2026-01-01",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(first_day.status(), StatusCode::OK);
+    let first_day = body_json(first_day).await;
+    assert_eq!(first_day["period_start"], "2026-01-01");
+    assert_eq!(first_day["period_end"], "2026-01-02");
+    assert!(first_day["previous_period_start"].is_null());
+    assert_eq!(first_day["next_period_start"], "2026-01-02");
+    assert!(
+        (first_day["total_cost_amount"]
+            .as_str()
+            .unwrap()
+            .parse::<f64>()
+            .unwrap()
+            - 0.25)
+            .abs()
+            < f64::EPSILON
+    );
+
+    let second_day = request(
+        &app,
+        "GET",
+        "/console/v1/statistics/spend-leaderboard?period=day&period_start=2026-01-02",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(second_day.status(), StatusCode::OK);
+    let second_day = body_json(second_day).await;
+    assert_eq!(second_day["previous_period_start"], "2026-01-01");
+    assert!(second_day["next_period_start"].is_string());
+    assert!(
+        (second_day["total_cost_amount"]
+            .as_str()
+            .unwrap()
+            .parse::<f64>()
+            .unwrap()
+            - 0.75)
+            .abs()
+            < f64::EPSILON
+    );
+    assert_eq!(second_day["entries"][0]["total_tokens"], 15);
+
+    let week = request(
+        &app,
+        "GET",
+        "/console/v1/statistics/spend-leaderboard?period=week&period_start=2025-12-29",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(week.status(), StatusCode::OK);
+    let week = body_json(week).await;
+    assert_eq!(week["period_end"], "2026-01-05");
+    assert!(
+        (week["total_cost_amount"]
+            .as_str()
+            .unwrap()
+            .parse::<f64>()
+            .unwrap()
+            - 1.5)
+            .abs()
+            < f64::EPSILON
+    );
+
+    let next_week = request(
+        &app,
+        "GET",
+        "/console/v1/statistics/spend-leaderboard?period=week&period_start=2026-01-05",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(next_week.status(), StatusCode::OK);
+    let next_week = body_json(next_week).await;
+    assert_eq!(next_week["period_end"], "2026-01-12");
+    assert!(
+        (next_week["total_cost_amount"]
+            .as_str()
+            .unwrap()
+            .parse::<f64>()
+            .unwrap()
+            - 2.0)
+            .abs()
+            < f64::EPSILON
+    );
+
+    let month = request(
+        &app,
+        "GET",
+        "/console/v1/statistics/spend-leaderboard?period=month&period_start=2026-01-01",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(month.status(), StatusCode::OK);
+    let month = body_json(month).await;
+    assert_eq!(month["period_end"], "2026-02-01");
+    assert!(
+        (month["total_cost_amount"]
+            .as_str()
+            .unwrap()
+            .parse::<f64>()
+            .unwrap()
+            - 4.1)
+            .abs()
+            < f64::EPSILON
+    );
+
+    let next_month = request(
+        &app,
+        "GET",
+        "/console/v1/statistics/spend-leaderboard?period=month&period_start=2026-02-01",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(next_month.status(), StatusCode::OK);
+    let next_month = body_json(next_month).await;
+    assert_eq!(next_month["period_end"], "2026-03-01");
+    assert!(
+        (next_month["total_cost_amount"]
+            .as_str()
+            .unwrap()
+            .parse::<f64>()
+            .unwrap()
+            - 3.0)
+            .abs()
+            < f64::EPSILON
+    );
+
+    sqlx::query(
+        "INSERT INTO request_logs \
+         (id,started_at,completed_at,user_id,api_key_id,api_format,client_model, \
+          outcome,response_status_code,streamed,input_tokens,output_tokens,currency, \
+          price_unit_tokens,price_effective_at,input_unit_price,cached_input_unit_price, \
+          cache_write_unit_price,output_unit_price,cost_amount) \
+         VALUES ($1,$2,$2,$3,$4,'open_ai_chat_completions','leaderboard-model', \
+                 'succeeded',200,false,10,5,'USD',1000000,$2,1,0,0,1,1)",
+    )
+    .bind(Uuid::new_v4())
+    .bind(after_midnight)
+    .bind(app.user_id)
+    .bind(api_key_id)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+
+    let stale_snapshot = request(
+        &app,
+        "GET",
+        "/console/v1/statistics/spend-leaderboard?period=day&period_start=2026-01-02",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(stale_snapshot.status(), StatusCode::OK);
+    let stale_snapshot = body_json(stale_snapshot).await;
+    assert!(
+        (stale_snapshot["total_cost_amount"]
+            .as_str()
+            .unwrap()
+            .parse::<f64>()
+            .unwrap()
+            - 0.75)
+            .abs()
+            < f64::EPSILON
+    );
+
+    repository
+        .refresh_spend_leaderboard_snapshots()
+        .await
+        .unwrap();
+    let refreshed_snapshot = request(
+        &app,
+        "GET",
+        "/console/v1/statistics/spend-leaderboard?period=day&period_start=2026-01-02",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(refreshed_snapshot.status(), StatusCode::OK);
+    let refreshed_snapshot = body_json(refreshed_snapshot).await;
+    assert!(
+        (refreshed_snapshot["total_cost_amount"]
+            .as_str()
+            .unwrap()
+            .parse::<f64>()
+            .unwrap()
+            - 1.75)
+            .abs()
+            < f64::EPSILON
+    );
     database.cleanup().await;
 }

@@ -208,6 +208,8 @@ const zhCN: Record<string, string> = {
   "Availability and performance for channels included in status statistics.":
     "已纳入状态统计的渠道可用性与性能。",
   "Cost statistics": "花费统计",
+  "Spend leaderboard": "花费排行榜",
+  "Periodically refreshed user-spend rankings.": "按周期刷新的用户花费排名。",
   "System load": "系统负载",
   "Channel, cost, and current system pressure analytics.":
     "渠道、花费与当前系统压力分析。",
@@ -1039,6 +1041,7 @@ const zhCN: Record<string, string> = {
   "Today": "今天",
   "This week": "本周",
   "This month": "本月",
+  "Last 30 days": "最近 30 天",
   "Granularity": "颗粒度",
   "Hourly": "按小时",
   "Daily": "按天",
@@ -1051,6 +1054,8 @@ const zhCN: Record<string, string> = {
   "The start time must be before the end time.": "开始时间必须早于结束时间。",
   "The selected {granularity} range cannot exceed {days} days.":
     "所选{granularity}区间不能超过 {days} 天。",
+  "The selected leaderboard range cannot exceed 366 days.":
+    "排行榜所选时间区间不能超过 366 天。",
   "{count} priced requests": "{count} 个已计价请求",
   "Total cost": "总花费",
   "All costs are settled in USD.": "所有花费统一使用 USD 结算。",
@@ -1074,6 +1079,37 @@ const zhCN: Record<string, string> = {
     "没有已路由请求符合当前筛选条件。",
   "No statistics": "没有统计数据",
   "No requests matched the selected filter.": "没有请求符合当前筛选条件。",
+  "Ranking period": "排行榜周期",
+  "Daily rankings run from 00:00 to the following 00:00; weekly rankings run Monday through Sunday; monthly rankings run from the 1st through the final day. All periods use Asia/Shanghai and refresh every 15 minutes.":
+    "日榜按上海时间当日 00:00 至次日 00:00 切分；周榜为周一至周日；月榜为每月 1 日至月底。所有周期均使用 Asia/Shanghai 时区，并每 15 分钟刷新一次。",
+  "Asia/Shanghai": "Asia/Shanghai",
+  "Weekly": "按周",
+  "Monthly": "按月",
+  "Historical period": "历史周期",
+  "Current period": "当前周期",
+  "Snapshot refreshed {time}": "快照刷新于 {time}",
+  "History": "历史排行榜",
+  "Browse earlier and later retained rankings for this period.":
+    "浏览此周期类型中已保留的更早或更晚排行榜。",
+  "Previous period": "上一周期",
+  "Next period": "下一周期",
+  "No spend data": "暂无花费数据",
+  "No recorded request costs were found for this period.":
+    "此周期内没有已记录的请求花费。",
+  "Top spenders": "花费前三",
+  "The top three users take the podium; the table lists up to {count} users.":
+    "前三名用户显示在领奖台上；表格最多列出 {count} 名用户。",
+  "Top 3": "前三名",
+  "Total recorded cost": "已记录总花费",
+  "Users shown": "已显示用户数",
+  "Leaderboard": "排行榜",
+  "Top {count} ranked users for the selected period.":
+    "所选周期内排名前 {count} 的用户。",
+  "Share": "占比",
+  "Share of spend": "花费占比",
+  "Priced requests": "已计价请求",
+  "Rank": "排名",
+  "Rank {rank}": "第 {rank} 名",
   "Visual editor": "可视化编辑",
   "JSON configuration": "JSON 配置",
   "Reference": "参考说明",
