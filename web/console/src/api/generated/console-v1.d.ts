@@ -1314,7 +1314,7 @@ export interface components {
             upstream_auth_header_name: string | null;
             upstream_credential_configured: boolean;
             available_models: string[];
-            /** @description Available upstream model used by periodic scheduled tests. */
+            /** @description Available upstream model used by periodic scheduled tests. It must also match a configured model source ID so usage and cost can be settled. */
             test_model: string | null;
             created_at: components["schemas"]["DateTime"];
             updated_at: components["schemas"]["DateTime"];

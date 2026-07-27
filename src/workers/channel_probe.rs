@@ -9,6 +9,7 @@ use axum::http::{
 };
 use bytes::Bytes;
 use futures_util::StreamExt;
+use rust_decimal::Decimal;
 use serde_json::json;
 use tokio::{
     sync::oneshot,
@@ -20,10 +21,11 @@ use uuid::Uuid;
 use crate::{
     application::{
         AutomaticDisableService, ControlPlaneCoordinator, ErrorKeywordMatcher, RequestLogSink,
+        ResponseUsage, UsageCollector, request_billing, request_billing_multiplier,
     },
     domain::{
-        ApiFormat, AutomaticDisableTrigger, CompiledChannel, RequestLogEvent, RequestLogOutcome,
-        RequestLogSource, ScheduledTestingMode, UpstreamAuth,
+        ApiFormat, AutomaticDisableTrigger, CompiledChannel, CompiledScheduledTestModel,
+        RequestLogEvent, RequestLogOutcome, RequestLogSource, ScheduledTestingMode, UpstreamAuth,
     },
     persistence::SystemProbeIdentity,
     runtime_config::RuntimeConfig,
@@ -122,9 +124,16 @@ async fn run_probe_round(
         .collect::<Vec<_>>();
 
     for channel in channels {
+        let model = channel
+            .test_model()
+            .expect("selected scheduled test channels always have a test model");
+        let billing_model = snapshot
+            .scheduled_test_model(model)
+            .expect("runtime compilation validates scheduled test model pricing");
         let result = probe_channel(
             &snapshot.system_settings().upstream_timeouts(),
             &channel,
+            &billing_model,
             scheduled.prompt(),
             upstream_clients,
             automatic_disable,
@@ -159,17 +168,34 @@ struct ProbeResult {
     succeeded: bool,
 }
 
+struct ProbeContext<'a> {
+    channel: &'a CompiledChannel,
+    billing_model: &'a CompiledScheduledTestModel,
+    identity: SystemProbeIdentity,
+    started_at: chrono::DateTime<chrono::Utc>,
+    started: Instant,
+    request_billing_multiplier: Decimal,
+}
+
+#[allow(clippy::too_many_arguments)] // direct scheduled probes need all immutable dependencies
 async fn probe_channel(
     upstream_defaults: &crate::domain::UpstreamTimeoutDefaults,
     channel: &CompiledChannel,
+    billing_model: &CompiledScheduledTestModel,
     prompt: &str,
     upstream_clients: &UpstreamClientRegistry,
     automatic_disable: &AutomaticDisableService,
     automatic_settings: &crate::domain::AutomaticDisableSettings,
     identity: SystemProbeIdentity,
 ) -> ProbeResult {
-    let started = Instant::now();
-    let started_at = chrono::Utc::now();
+    let mut context = ProbeContext {
+        channel,
+        billing_model,
+        identity,
+        started_at: chrono::Utc::now(),
+        started: Instant::now(),
+        request_billing_multiplier: Decimal::ONE,
+    };
     let model = channel
         .test_model()
         .expect("selected scheduled test channels always have a test model");
@@ -182,32 +208,28 @@ async fn probe_channel(
         Ok(body) => body,
         Err(()) => {
             return finished_probe(
-                channel,
-                model,
-                identity,
-                started_at,
-                started,
+                &context,
                 outcome,
                 response_status_code,
                 ttft_ms,
                 error_code,
+                None,
             );
         }
     };
+    context.request_billing_multiplier =
+        request_billing_multiplier(billing_model.advanced_billing(), &body);
     let transforms = channel.upstream_policy().effective_transforms();
     let body = match apply_json_patch_plan(body, transforms.request_json()) {
         Ok(body) => body,
         Err(_) => {
             return finished_probe(
-                channel,
-                model,
-                identity,
-                started_at,
-                started,
+                &context,
                 outcome,
                 response_status_code,
                 ttft_ms,
                 error_code,
+                None,
             );
         }
     };
@@ -217,30 +239,24 @@ async fn probe_channel(
         || inject_upstream_auth(&mut headers, channel).is_err()
     {
         return finished_probe(
-            channel,
-            model,
-            identity,
-            started_at,
-            started,
+            &context,
             outcome,
             response_status_code,
             ttft_ms,
             error_code,
+            None,
         );
     }
     let url = match probe_url(channel) {
         Ok(url) => url,
         Err(()) => {
             return finished_probe(
-                channel,
-                model,
-                identity,
-                started_at,
-                started,
+                &context,
                 outcome,
                 response_status_code,
                 ttft_ms,
                 error_code,
+                None,
             );
         }
     };
@@ -249,15 +265,12 @@ async fn probe_channel(
             Ok(policy) => policy,
             Err(_) => {
                 return finished_probe(
-                    channel,
-                    model,
-                    identity,
-                    started_at,
-                    started,
+                    &context,
                     outcome,
                     response_status_code,
                     ttft_ms,
                     error_code,
+                    None,
                 );
             }
         };
@@ -265,15 +278,12 @@ async fn probe_channel(
         Ok(client) => client,
         Err(_) => {
             return finished_probe(
-                channel,
-                model,
-                identity,
-                started_at,
-                started,
+                &context,
                 outcome,
                 response_status_code,
                 ttft_ms,
                 error_code,
+                None,
             );
         }
     };
@@ -291,15 +301,12 @@ async fn probe_channel(
         Err(_) => {
             error_code = Some("scheduled_test_response_header_timeout");
             return finished_probe(
-                channel,
-                model,
-                identity,
-                started_at,
-                started,
+                &context,
                 outcome,
                 response_status_code,
                 ttft_ms,
                 error_code,
+                None,
             );
         }
         Ok(Err(error)) => {
@@ -309,15 +316,12 @@ async fn probe_channel(
                 "scheduled_test_upstream_unavailable"
             });
             return finished_probe(
-                channel,
-                model,
-                identity,
-                started_at,
-                started,
+                &context,
                 outcome,
                 response_status_code,
                 ttft_ms,
                 error_code,
+                None,
             );
         }
         Ok(Ok(response)) => response,
@@ -335,13 +339,15 @@ async fn probe_channel(
     let mut keyword_matcher = (!upstream_succeeded && channel.auto_disable_allowed())
         .then(|| ErrorKeywordMatcher::new(automatic_settings))
         .flatten();
+    let mut usage = UsageCollector::new(channel.api_format(), is_sse_response(response.headers()));
     let mut response_stream = response.bytes_stream();
     let mut total_bytes = 0_usize;
     loop {
         match timeout(policy.timeouts().stream_idle(), response_stream.next()).await {
             Ok(Some(Ok(bytes))) => {
-                ttft_ms.get_or_insert_with(|| clamp_duration_ms(started.elapsed()));
+                ttft_ms.get_or_insert_with(|| clamp_duration_ms(context.started.elapsed()));
                 total_bytes = total_bytes.saturating_add(bytes.len());
+                usage.observe(&bytes);
                 if let Some(matcher) = &mut keyword_matcher {
                     if let Some(trigger) = matcher.observe(&bytes) {
                         automatic_disable.try_report(channel.id(), trigger);
@@ -351,30 +357,24 @@ async fn probe_channel(
                 if total_bytes > MAX_PROBE_RESPONSE_BYTES {
                     error_code = Some("scheduled_test_response_too_large");
                     return finished_probe(
-                        channel,
-                        model,
-                        identity,
-                        started_at,
-                        started,
+                        &context,
                         outcome,
                         response_status_code,
                         ttft_ms,
                         error_code,
+                        usage.latest(),
                     );
                 }
             }
             Ok(Some(Err(_))) => {
                 error_code = Some("scheduled_test_response_body_error");
                 return finished_probe(
-                    channel,
-                    model,
-                    identity,
-                    started_at,
-                    started,
+                    &context,
                     outcome,
                     response_status_code,
                     ttft_ms,
                     error_code,
+                    usage.latest(),
                 );
             }
             Ok(None) => {
@@ -384,79 +384,86 @@ async fn probe_channel(
                     RequestLogOutcome::Failed
                 };
                 error_code = (!upstream_succeeded).then_some("scheduled_test_http_error");
+                usage.finalize();
                 return finished_probe(
-                    channel,
-                    model,
-                    identity,
-                    started_at,
-                    started,
+                    &context,
                     outcome,
                     response_status_code,
                     ttft_ms,
                     error_code,
+                    usage.latest(),
                 );
             }
             Err(_) => {
                 error_code = Some("scheduled_test_stream_idle_timeout");
                 return finished_probe(
-                    channel,
-                    model,
-                    identity,
-                    started_at,
-                    started,
+                    &context,
                     outcome,
                     response_status_code,
                     ttft_ms,
                     error_code,
+                    usage.latest(),
                 );
             }
         }
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn finished_probe(
-    channel: &CompiledChannel,
-    model: &str,
-    identity: SystemProbeIdentity,
-    started_at: chrono::DateTime<chrono::Utc>,
-    started: Instant,
+    context: &ProbeContext<'_>,
     outcome: RequestLogOutcome,
     response_status_code: Option<u16>,
     ttft_ms: Option<i32>,
     error_code: Option<&'static str>,
+    usage: Option<ResponseUsage>,
 ) -> ProbeResult {
     let succeeded = outcome == RequestLogOutcome::Succeeded;
+    let model = context
+        .channel
+        .test_model()
+        .expect("selected scheduled test channels always have a test model");
+    let total_duration_ms = clamp_duration_ms(context.started.elapsed());
+    let billing = request_billing(
+        context.billing_model.price_snapshot(),
+        context.billing_model.advanced_billing(),
+        context.channel.billing_multiplier(),
+        context.request_billing_multiplier,
+        usage,
+        total_duration_ms,
+        ttft_ms,
+    );
     tracing::info!(
         event = "scheduled_channel_test_completed",
-        channel_id = %channel.id(),
-        api_format = ?channel.api_format(),
+        channel_id = %context.channel.id(),
+        api_format = ?context.channel.api_format(),
         upstream_status = ?response_status_code,
-        latency_ms = started.elapsed().as_millis(),
+        latency_ms = context.started.elapsed().as_millis(),
+        input_tokens = ?billing.usage.as_ref().map(|usage| usage.input_tokens),
+        output_tokens = ?billing.usage.as_ref().map(|usage| usage.output_tokens),
         outcome = outcome.as_str(),
         "scheduled channel test completed"
     );
     ProbeResult {
         event: RequestLogEvent {
             id: Uuid::new_v4(),
-            started_at,
-            completed_at: completed_at(started_at, started.elapsed()),
-            user_id: identity.user_id,
-            api_key_id: identity.api_key_id,
+            started_at: context.started_at,
+            completed_at: completed_at(context.started_at, context.started.elapsed()),
+            user_id: context.identity.user_id,
+            api_key_id: context.identity.api_key_id,
             request_source: RequestLogSource::ScheduledTest,
-            api_format: channel.api_format(),
+            api_format: context.channel.api_format(),
             client_model: model.to_owned(),
             upstream_model: Some(model.to_owned()),
             model_rule_id: None,
-            channel_group_id: Some(channel.group_id()),
-            channel_id: Some(channel.id()),
-            model_id: None,
+            channel_group_id: Some(context.channel.group_id()),
+            channel_id: Some(context.channel.id()),
+            model_id: Some(context.billing_model.id()),
             outcome,
             response_status_code,
             streamed: false,
             ttft_ms,
-            total_duration_ms: clamp_duration_ms(started.elapsed()),
-            billing: None,
+            total_duration_ms,
+            billing: Some(billing),
             error_code: error_code.map(str::to_owned),
             error_summary: None,
         },
@@ -508,6 +515,14 @@ fn inject_upstream_auth(headers: &mut HeaderMap, channel: &CompiledChannel) -> R
     }
 }
 
+fn is_sse_response(headers: &HeaderMap) -> bool {
+    headers
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("text/event-stream"))
+}
+
 fn clamp_duration_ms(duration: Duration) -> i32 {
     i32::try_from(duration.as_millis()).unwrap_or(i32::MAX)
 }
@@ -536,6 +551,7 @@ mod tests {
         response::Response,
         routing::post,
     };
+    use rust_decimal::Decimal;
     use serde_json::Value;
     use tokio::{
         net::TcpListener,
@@ -549,8 +565,9 @@ mod tests {
     use crate::{
         application::AutomaticDisableService,
         domain::{
-            ApiFormat, AutomaticDisableSettings, AutomaticDisableTrigger, CompiledChannel,
-            CompiledChannelUpstreamPolicy, RequestLogOutcome, RequestLogSource, UpstreamAuth,
+            ApiFormat, AutomaticDisableSettings, AutomaticDisableTrigger, CompiledAdvancedBilling,
+            CompiledChannel, CompiledChannelUpstreamPolicy, CompiledScheduledTestModel,
+            ModelPriceSnapshot, RequestLogOutcome, RequestLogSource, RequestUsage, UpstreamAuth,
             UpstreamTimeoutDefaults,
         },
         persistence::SystemProbeIdentity,
@@ -560,6 +577,8 @@ mod tests {
     #[derive(Clone)]
     struct TestUpstream {
         requests: Arc<Mutex<Vec<Value>>>,
+        status: StatusCode,
+        response_body: &'static str,
     }
 
     async fn upstream(State(state): State<TestUpstream>, request: Request) -> Response {
@@ -570,9 +589,25 @@ mod tests {
             .unwrap()
             .push(serde_json::from_slice(&body).unwrap());
         Response::builder()
-            .status(StatusCode::TOO_MANY_REQUESTS)
-            .body(Body::from(r#"{"error":{"message":"quota exceeded"}}"#))
+            .status(state.status)
+            .body(Body::from(state.response_body))
             .unwrap()
+    }
+
+    fn scheduled_test_model(id: Uuid) -> CompiledScheduledTestModel {
+        CompiledScheduledTestModel::new(
+            id,
+            ModelPriceSnapshot::new(
+                "USD".into(),
+                1,
+                chrono::Utc::now(),
+                Decimal::from(2_i64),
+                Decimal::ONE,
+                Decimal::from(3_i64),
+                Decimal::from(4_i64),
+            ),
+            CompiledAdvancedBilling::default(),
+        )
     }
 
     struct TestServer {
@@ -607,8 +642,12 @@ mod tests {
         let requests = Arc::new(Mutex::new(vec![]));
         let server = start_server(TestUpstream {
             requests: Arc::clone(&requests),
+            status: StatusCode::TOO_MANY_REQUESTS,
+            response_body: r#"{"error":{"message":"quota exceeded"}}"#,
         })
         .await;
+        let model_id = Uuid::new_v4();
+        let billing_model = scheduled_test_model(model_id);
         let channel = CompiledChannel::new_with_policy_and_automation(
             Uuid::new_v4(),
             Uuid::new_v4(),
@@ -636,6 +675,7 @@ mod tests {
                 Duration::from_secs(2),
             ),
             &channel,
+            &billing_model,
             "reply '1'",
             &UpstreamClientRegistry::new(),
             &service,
@@ -651,6 +691,8 @@ mod tests {
         assert_eq!(result.event.request_source, RequestLogSource::ScheduledTest);
         assert_eq!(result.event.outcome, RequestLogOutcome::Failed);
         assert_eq!(result.event.response_status_code, Some(429));
+        assert_eq!(result.event.model_id, Some(model_id));
+        assert!(result.event.billing.is_some());
         assert_eq!(
             result.event.error_code.as_deref(),
             Some("scheduled_test_http_error")
@@ -667,5 +709,71 @@ mod tests {
         assert_eq!(bodies.len(), 1);
         assert_eq!(bodies[0]["model"], "probe-model");
         assert_eq!(bodies[0]["messages"][0]["content"], "reply '1'");
+    }
+
+    #[tokio::test]
+    async fn scheduled_probe_records_usage_and_bills_the_system_administrator() {
+        let requests = Arc::new(Mutex::new(vec![]));
+        let server = start_server(TestUpstream {
+            requests: Arc::clone(&requests),
+            status: StatusCode::OK,
+            response_body: r#"{"usage":{"prompt_tokens":10,"completion_tokens":4,"prompt_tokens_details":{"cached_tokens":2,"cache_write_tokens":1}}}"#,
+        })
+        .await;
+        let model_id = Uuid::new_v4();
+        let billing_model = scheduled_test_model(model_id);
+        let channel = CompiledChannel::new_with_policy_automation_and_billing(
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            ApiFormat::OpenAiChatCompletions,
+            reqwest::Url::parse(&format!("http://{}", server.address)).unwrap(),
+            1,
+            Decimal::new(15, 1),
+            UpstreamAuth::None,
+            HashSet::from([Arc::<str>::from("probe-model")]),
+            false,
+            false,
+            Some(Arc::from("probe-model")),
+            CompiledChannelUpstreamPolicy::transparent(ApiFormat::OpenAiChatCompletions),
+        );
+        let (sender, _receiver) = mpsc::channel(1);
+        let service = AutomaticDisableService::new(sender);
+        let result = probe_channel(
+            &UpstreamTimeoutDefaults::new(
+                Duration::from_secs(1),
+                Duration::from_secs(2),
+                Duration::from_secs(2),
+            ),
+            &channel,
+            &billing_model,
+            "reply '1'",
+            &UpstreamClientRegistry::new(),
+            &service,
+            &AutomaticDisableSettings::default(),
+            SystemProbeIdentity {
+                user_id: Uuid::new_v4(),
+                api_key_id: Uuid::new_v4(),
+            },
+        )
+        .await;
+
+        let billing = result
+            .event
+            .billing
+            .expect("scheduled probe must be billable");
+        assert!(result.succeeded);
+        assert_eq!(result.event.outcome, RequestLogOutcome::Succeeded);
+        assert_eq!(result.event.model_id, Some(model_id));
+        assert_eq!(
+            billing.usage,
+            Some(RequestUsage {
+                input_tokens: 10,
+                cached_input_tokens: 2,
+                cache_write_tokens: 1,
+                output_tokens: 4,
+            })
+        );
+        assert_eq!(billing.cost_amount, Some(Decimal::new(555, 1)));
+        assert_eq!(requests.lock().unwrap().len(), 1);
     }
 }

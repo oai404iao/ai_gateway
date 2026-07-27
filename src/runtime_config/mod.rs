@@ -27,14 +27,15 @@ use crate::{
         AutomaticDisableSettings, ChannelTimeoutPolicy, CompiledApiKey, CompiledCandidate,
         CompiledChannel, CompiledChannelGroup, CompiledChannelUpstreamPolicy,
         CompiledConfigTemplate, CompiledModelRule, CompiledProxy, CompiledRouteTier,
-        CompiledRuntimeConfig, MAX_REQUEST_RETRIES, ModelPriceSnapshot, ModelRouteKey, NoProxyHost,
-        PassiveHealthSettings, RequestRetrySettings, ScheduledTestingMode,
-        ScheduledTestingSettings, SelectionStrategy, SessionAffinityKeySource, SessionAffinityRule,
-        SessionAffinitySettings, SystemRuntimeSettings, UpstreamAuth, UpstreamTimeoutDefaults,
+        CompiledRuntimeConfig, CompiledScheduledTestModel, MAX_REQUEST_RETRIES, ModelPriceSnapshot,
+        ModelRouteKey, NoProxyHost, PassiveHealthSettings, RequestRetrySettings,
+        ScheduledTestingMode, ScheduledTestingSettings, SelectionStrategy,
+        SessionAffinityKeySource, SessionAffinityRule, SessionAffinitySettings,
+        SystemRuntimeSettings, UpstreamAuth, UpstreamTimeoutDefaults,
     },
     persistence::{
         ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ConfigTemplateRecord, ControlPlaneRecords,
-        FORWARDING_SETTINGS_KEY, ModelRuleRecord, ProxyRecord, RuntimeConfigRecords,
+        FORWARDING_SETTINGS_KEY, ModelRecord, ModelRuleRecord, ProxyRecord, RuntimeConfigRecords,
         SystemSessionAffinityKeySourceInput, SystemSessionAffinityRuleInput,
         SystemSessionAffinitySettingsInput, SystemSettingsInput, SystemSettingsRecord,
         valid_api_hosts,
@@ -663,6 +664,7 @@ pub fn compile_control_plane_with_system_settings(
     }
     let proxies = compile_proxies(records.proxies)?;
     let templates = compile_templates(records.templates)?;
+    let models_by_source = index_models(records.models)?;
     let mut channels = HashMap::new();
     let mut probe_channels = HashMap::new();
     let mut all_channels = HashMap::new();
@@ -701,6 +703,7 @@ pub fn compile_control_plane_with_system_settings(
                 .push(*id);
         }
     }
+    let scheduled_test_models = compile_scheduled_test_models(&all_channels, &models_by_source)?;
     for channel in validated_channels {
         if channel.enabled {
             let auth = compile_auth(&channel)?;
@@ -783,6 +786,7 @@ pub fn compile_control_plane_with_system_settings(
             model_rules,
             channels,
             probe_channels,
+            scheduled_test_models,
             groups,
             proxies,
             templates,
@@ -1424,6 +1428,120 @@ fn compile_accessible_route_slots(
         accessible == rule.configured_candidates_intersect(allowed_channel_slots)
     }));
     words
+}
+
+fn index_models(records: Vec<ModelRecord>) -> Result<HashMap<String, ModelRecord>, ConfigError> {
+    let mut ids = HashSet::new();
+    let mut by_source = HashMap::new();
+    for record in records {
+        if !ids.insert(record.id) {
+            return Err(dup("model id"));
+        }
+        if by_source
+            .insert(record.source_model_id.clone(), record)
+            .is_some()
+        {
+            return Err(dup("model source id"));
+        }
+    }
+    Ok(by_source)
+}
+
+fn compile_scheduled_test_models(
+    channels: &HashMap<Uuid, ChannelRecord>,
+    models_by_source: &HashMap<String, ModelRecord>,
+) -> Result<HashMap<Arc<str>, Arc<CompiledScheduledTestModel>>, ConfigError> {
+    let mut result = HashMap::new();
+    for channel in channels.values() {
+        let Some(test_model) = channel.test_model.as_deref() else {
+            continue;
+        };
+        let model = models_by_source.get(test_model).ok_or_else(|| {
+            ConfigError::Compile(
+                "channel test model must reference a configured priced model".into(),
+            )
+        })?;
+        if !result.contains_key(test_model) {
+            result.insert(
+                Arc::from(test_model),
+                Arc::new(compile_scheduled_test_model(model)?),
+            );
+        }
+        let scheduled_test_model = result
+            .get(test_model)
+            .expect("scheduled test model was just inserted or already present");
+        validate_effective_scheduled_test_prices(scheduled_test_model, channel.billing_multiplier)?;
+    }
+    Ok(result)
+}
+
+fn compile_scheduled_test_model(
+    record: &ModelRecord,
+) -> Result<CompiledScheduledTestModel, ConfigError> {
+    if record.currency != "USD"
+        || record.price_unit_tokens <= 0
+        || [
+            record.input_unit_price,
+            record.cached_input_unit_price,
+            record.cache_write_unit_price,
+            record.output_unit_price,
+        ]
+        .into_iter()
+        .any(|price| price.is_sign_negative())
+    {
+        return Err(ConfigError::Compile(
+            "scheduled test model has invalid price metadata".into(),
+        ));
+    }
+    let advanced_billing =
+        serde_json::from_value::<AdvancedBilling>(record.advanced_billing.clone())
+            .map_err(|_| ConfigError::Compile("invalid advanced billing configuration".into()))?;
+    let advanced_billing = crate::domain::CompiledAdvancedBilling::compile(advanced_billing)
+        .map_err(|_| ConfigError::Compile("invalid advanced billing configuration".into()))?;
+    Ok(CompiledScheduledTestModel::new(
+        record.id,
+        ModelPriceSnapshot::new(
+            Arc::from(record.currency.as_str()),
+            record.price_unit_tokens,
+            record.price_effective_at,
+            record.input_unit_price,
+            record.cached_input_unit_price,
+            record.cache_write_unit_price,
+            record.output_unit_price,
+        ),
+        advanced_billing,
+    ))
+}
+
+fn validate_effective_scheduled_test_prices(
+    model: &CompiledScheduledTestModel,
+    billing_multiplier: rust_decimal::Decimal,
+) -> Result<(), ConfigError> {
+    let max_persisted_unit_price =
+        rust_decimal::Decimal::from_i128_with_scale(999_999_999_999_999_999_999_999, 12);
+    let request_multiplier = model.advanced_billing().maximum_request_multiplier();
+    let snapshot = model.price_snapshot();
+    for price in model.advanced_billing().price_candidates(
+        snapshot.input_unit_price(),
+        snapshot.cached_input_unit_price(),
+        snapshot.cache_write_unit_price(),
+        snapshot.output_unit_price(),
+    ) {
+        let Some(effective) = price
+            .checked_mul(billing_multiplier)
+            .and_then(|price| price.checked_mul(request_multiplier))
+        else {
+            return Err(ConfigError::Compile(
+                "advanced billing multiplier overflows scheduled test price".into(),
+            ));
+        };
+        if effective.round_dp(12) > max_persisted_unit_price {
+            return Err(ConfigError::Compile(
+                "effective scheduled test price exceeds request-log precision".into(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 struct CompiledRules {
@@ -2290,10 +2408,11 @@ pub enum ConfigError {
 mod tests {
     use crate::persistence::{
         ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ConfigTemplateRecord, ControlPlaneRecords,
-        ModelRuleRecord, ProxyRecord, RuntimeConfigRecords, SystemPassiveHealthSettingsInput,
-        SystemRequestRetrySettingsInput, SystemSessionAffinityKeySourceInput,
-        SystemSessionAffinityRuleInput, SystemSessionAffinitySettingsInput, SystemSettingsInput,
-        SystemSettingsRecord, SystemUpstreamSettingsInput,
+        ModelRecord, ModelRuleRecord, ProxyRecord, RuntimeConfigRecords,
+        SystemPassiveHealthSettingsInput, SystemRequestRetrySettingsInput,
+        SystemSessionAffinityKeySourceInput, SystemSessionAffinityRuleInput,
+        SystemSessionAffinitySettingsInput, SystemSettingsInput, SystemSettingsRecord,
+        SystemUpstreamSettingsInput,
     };
 
     use super::*;
@@ -2350,6 +2469,7 @@ mod tests {
                 channel(first_channel, first_group),
                 channel(second_channel, second_group),
             ],
+            models: vec![],
             model_rules: vec![ModelRuleRecord {
                 id: Uuid::from_u128(20),
                 client_model: "client".into(),
@@ -2385,6 +2505,41 @@ mod tests {
         let mut records = route_records(0, "weighted_random", 1, "weighted_random", false);
         records.model_rules[0].upstream_model_currency = "EUR".into();
         assert!(compile_control_plane(records).is_err());
+    }
+
+    #[test]
+    fn compiler_requires_a_priced_model_for_each_scheduled_test_model() {
+        let mut records = route_records(0, "weighted_random", 1, "weighted_random", false);
+        records.channels[0].test_model = Some("upstream".into());
+        let error = compile_control_plane(records).unwrap_err().to_string();
+        assert!(error.contains("configured priced model"));
+
+        let mut records = route_records(0, "weighted_random", 1, "weighted_random", false);
+        records.channels[0].test_model = Some("upstream".into());
+        let model_id = records.model_rules[0].upstream_model_id;
+        records.models.push(ModelRecord {
+            id: model_id,
+            source_model_id: "upstream".into(),
+            currency: "USD".into(),
+            price_unit_tokens: 1_000_000,
+            price_effective_at: chrono::Utc::now(),
+            input_unit_price: rust_decimal::Decimal::new(10, 2),
+            cached_input_unit_price: rust_decimal::Decimal::new(5, 2),
+            cache_write_unit_price: rust_decimal::Decimal::new(20, 2),
+            output_unit_price: rust_decimal::Decimal::new(30, 2),
+            advanced_billing: serde_json::json!({
+                "long_context_tiers": [],
+                "request_multipliers": [],
+            }),
+        });
+
+        let snapshot = compile_control_plane(records).unwrap();
+        let scheduled = snapshot.scheduled_test_model("upstream").unwrap();
+        assert_eq!(scheduled.id(), model_id);
+        assert_eq!(
+            scheduled.price_snapshot().output_unit_price(),
+            rust_decimal::Decimal::new(30, 2)
+        );
     }
 
     #[test]

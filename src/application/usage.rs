@@ -86,13 +86,13 @@ enum CollectorMode {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum SseTerminalOutcome {
+pub(crate) enum SseTerminalOutcome {
     Completed,
     Failed,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(super) struct SseErrorDetails {
+pub(crate) struct SseErrorDetails {
     pub code: Option<String>,
     pub summary: Option<String>,
 }

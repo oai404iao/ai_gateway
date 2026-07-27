@@ -86,8 +86,8 @@ const zhCN: Record<string, string> = {
   "Case-insensitive upstream error-message substrings. Response bodies are inspected only in memory.":
     "不区分大小写匹配上游错误消息的子字符串。响应正文仅在内存中检查。",
   "Scheduled channel tests": "渠道定时测活",
-  "Direct non-streaming test requests use each channel's selected test model and are logged under a system-owned API key.":
-    "直接发起的非流式测试请求会使用各渠道选择的测试模型，并以系统内置 API 密钥的身份记录日志。",
+  "Direct non-streaming test requests use each channel's selected test model. Their token usage and costs are logged and billed to a system-owned administrator API key.":
+    "直接发起的非流式测试请求会使用各渠道选择的测试模型，其 token 用量和成本会被记录并记账到系统内置管理员 API 密钥。",
   "Test mode": "测试模式",
   "Global": "全局",
   "Failures only": "仅失败渠道",
@@ -781,8 +781,8 @@ const zhCN: Record<string, string> = {
   "Allow automatic disable": "允许自动禁用",
   "Scheduled test model": "定时测试模型",
   "Select a test model": "选择测试模型",
-  "Periodic scheduled tests use this model. It must be one of the available upstream models.":
-    "定时测试会使用此模型。它必须是可用上游模型之一。",
+  "Periodic scheduled tests use this model. It must be one of the available upstream models and have a configured price.":
+    "定时测试会使用此模型。它必须是可用上游模型之一，并且已配置价格。",
   "Allow matching system automatic-disable rules to temporarily remove this channel from routing.":
     "允许匹配的系统自动禁用规则暂时将此渠道移出路由。",
   "Choose a test model from the available upstream models.":
