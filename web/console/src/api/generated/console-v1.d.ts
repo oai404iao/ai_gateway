@@ -20,6 +20,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/auth/register": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * @description Creates an active `user` account with a reusable registration
+         *     invitation code. The code is matched case-sensitively after trimming
+         *     surrounding whitespace. Its current user group and initial USD balance
+         *     apply at registration time. A session is issued immediately.
+         */
+        post: operations["register"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/auth/refresh": {
         parameters: {
             query?: never;
@@ -389,6 +411,48 @@ export interface paths {
          *     administrator groups are protected.
          */
         delete: operations["deleteUserGroup"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/registration-invitation-codes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listRegistrationInvitationCodes"];
+        put?: never;
+        /**
+         * @description Stores only a SHA-256 hash of the administrator-supplied code. The
+         *     plaintext is returned once in the create response and cannot be
+         *     recovered later.
+         */
+        post: operations["createRegistrationInvitationCode"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/registration-invitation-codes/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getRegistrationInvitationCode"];
+        /**
+         * @description Changes the name and all settings that apply to future registrations.
+         *     The original code value and accumulated usage count are immutable.
+         *     `max_uses` cannot be reduced below `used_count`.
+         */
+        put: operations["updateRegistrationInvitationCode"];
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -1031,6 +1095,43 @@ export interface components {
             user_id: string;
             invitation_token: string;
             expires_at: components["schemas"]["DateTime"];
+            /** Format: uuid */
+            correlation_id: string;
+        };
+        RegistrationInvitationCodeView: {
+            /** Format: uuid */
+            id: string;
+            /** @description Administrator-facing label; this is not the invitation code. */
+            name: string;
+            /**
+             * Format: int64
+             * @description Null means unlimited registrations.
+             */
+            max_uses: number | null;
+            /** Format: int64 */
+            used_count: number;
+            /** @description Null means no time-based expiry. */
+            expires_at: components["schemas"]["DateTimeNullable"];
+            /** @description Disabled codes cannot register new users. */
+            enabled: boolean;
+            /**
+             * Format: uuid
+             * @description Group assigned to future registrations.
+             */
+            user_group_id: string;
+            /** @description Non-negative USD balance assigned to future registrations. */
+            initial_balance_amount: components["schemas"]["Decimal"];
+            /** Format: uuid */
+            created_by: string;
+            last_used_at: components["schemas"]["DateTimeNullable"];
+            created_at: components["schemas"]["DateTime"];
+            updated_at: components["schemas"]["DateTime"];
+        };
+        RegistrationInvitationCodeCreateResponse: {
+            /** Format: uuid */
+            id: string;
+            /** @description One-time plaintext value; it cannot be retrieved later. */
+            invitation_code: string;
             /** Format: uuid */
             correlation_id: string;
         };
@@ -1813,6 +1914,13 @@ export interface components {
             email: string;
             password: string;
         };
+        RegisterInput: {
+            /** @description Case-sensitive reusable registration invitation code. */
+            invitation_code: string;
+            email: string;
+            display_name: string;
+            password: string;
+        };
         ActivateInvitationInput: {
             invitation_token: string;
             password: string;
@@ -1860,6 +1968,41 @@ export interface components {
             user_group_id?: string | null;
             /** Format: uuid */
             default_api_key_policy_id?: string | null;
+        };
+        RegistrationInvitationCodeCreateInput: {
+            name: string;
+            /**
+             * @description Administrator-supplied, case-sensitive code with no whitespace.
+             *     Only its SHA-256 hash is persisted.
+             */
+            invitation_code: string;
+            /**
+             * Format: int64
+             * @description Null means unlimited registrations.
+             */
+            max_uses: number | null;
+            /** @description Null means no time-based expiry. */
+            expires_at: components["schemas"]["DateTimeNullable"];
+            enabled: boolean;
+            /** Format: uuid */
+            user_group_id: string;
+            /** @description Initial non-negative USD balance for future registrations. */
+            initial_balance_amount: components["schemas"]["Decimal"];
+        };
+        RegistrationInvitationCodeUpdateInput: {
+            name: string;
+            /**
+             * Format: int64
+             * @description Null means unlimited; cannot be below `used_count`.
+             */
+            max_uses: number | null;
+            /** @description Null removes time-based expiry. */
+            expires_at: components["schemas"]["DateTimeNullable"];
+            enabled: boolean;
+            /** Format: uuid */
+            user_group_id: string;
+            /** @description Updated initial USD balance for future registrations. */
+            initial_balance_amount: components["schemas"]["Decimal"];
         };
         UserInput: {
             display_name: string;
@@ -2344,6 +2487,51 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             422: components["responses"]["Unprocessable"];
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    register: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RegisterInput"];
+            };
+        };
+        responses: {
+            /** @description Account created and session issued. */
+            200: {
+                headers: {
+                    /** @description Rotating `__Host-ai_gateway_refresh` HttpOnly cookie. */
+                    "Set-Cookie"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LoginResponse"];
+                };
+            };
+            /** @description The email already belongs to a Console account. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Invalid input or unavailable registration invitation code. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             429: components["responses"]["RateLimited"];
         };
     };
@@ -3159,6 +3347,116 @@ export interface operations {
         requestBody?: never;
         responses: {
             /** @description User group deleted. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MutationResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
+        };
+    };
+    listRegistrationInvitationCodes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Reusable registration invitation codes without secrets. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RegistrationInvitationCodeView"][];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    createRegistrationInvitationCode: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RegistrationInvitationCodeCreateInput"];
+            };
+        };
+        responses: {
+            /** @description Registration invitation code created. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RegistrationInvitationCodeCreateResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
+        };
+    };
+    getRegistrationInvitationCode: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Registration invitation code settings and usage. */
+            200: {
+                headers: {
+                    ETag: components["headers"]["ETag"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RegistrationInvitationCodeView"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    updateRegistrationInvitationCode: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description ETag from the preceding GET; stale values yield `409`. */
+                "If-Match": components["parameters"]["IfMatch"];
+            };
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RegistrationInvitationCodeUpdateInput"];
+            };
+        };
+        responses: {
+            /** @description Registration invitation code updated. */
             200: {
                 headers: {
                     [name: string]: unknown;

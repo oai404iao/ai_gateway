@@ -4,7 +4,7 @@
 > [运行与接口说明](../user/operations.md) 为准，Console/JWT 背景见
 > [Console 认证设计记录](console-auth.md)。
 >
-> **历史说明：** 下文的“首版 11 张表”描述的是 Console 登录重构前的简化基线。migration `0005_console_auth_and_policies.sql` 已新增用户角色、登录凭据、session、邀请和 API Key Policy，并将 `users.name` 迁移为 `users.display_name`。migration `0010_api_key_target_selection.sql` 又将 Policy 收敛为用户可选渠道组/渠道的授权边界，并把实际目标、RPM、并发和额度保留在具体 API Key 上。涉及用户认证或 Console 权限时，以新 migration、`src/persistence/auth.rs` 和 `src/http/console.rs` 为准。
+> **历史说明：** 下文的“首版 11 张表”描述的是 Console 登录重构前的简化基线。migration `0005_console_auth_and_policies.sql` 已新增用户角色、登录凭据、session、邀请和 API Key Policy，并将 `users.name` 迁移为 `users.display_name`。migration `0010_api_key_target_selection.sql` 又将 Policy 收敛为用户可选渠道组/渠道的授权边界，并把实际目标、RPM、并发和额度保留在具体 API Key 上。migration `0024_registration_invitation_codes.sql` 进一步新增只保存哈希、可限次数、可过期并绑定用户组与初始余额的可复用注册邀请码。涉及用户认证或 Console 权限时，以新 migration、`src/persistence/auth.rs` 和 `src/http/console.rs` 为准。
 
 ## 1. 设计原则
 

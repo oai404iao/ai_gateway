@@ -33,6 +33,32 @@ test.describe("Console SPA smoke", () => {
     await expect(page).toHaveURL(/\/login/);
   });
 
+  test("a user can self-register with a reusable invitation code", async ({ page }) => {
+    await mockConsoleApi(page);
+    await page.goto("/register");
+
+    await page.getByLabel("Invitation code").fill("COMMUNITY-ACCESS-2026");
+    await page.getByLabel("Email").fill("new-user@example.test");
+    await page.getByLabel("Display name").fill("New User");
+    await page.getByLabel(/^Password$/).fill("correct-horse-battery-staple");
+    await page.getByLabel("Confirm password").fill("correct-horse-battery-staple");
+
+    const requestPromise = page.waitForRequest(
+      (request) =>
+        request.url().endsWith("/console/v1/auth/register") &&
+        request.method() === "POST",
+    );
+    await page.getByRole("button", { name: "Create account" }).click();
+    const request = await requestPromise;
+    expect(request.postDataJSON()).toEqual({
+      invitation_code: "COMMUNITY-ACCESS-2026",
+      email: "new-user@example.test",
+      display_name: "New User",
+      password: "correct-horse-battery-staple",
+    });
+    await expect(page).toHaveURL(/\/account/);
+  });
+
   test("the login UI switches to Simplified Chinese and retains the preference", async ({
     page,
   }) => {
@@ -191,5 +217,44 @@ test.describe("Console SPA smoke", () => {
       },
     });
     await expect(page.getByText("Updated 1 users.")).toBeVisible();
+  });
+
+  test("administrators create reusable registration invitation codes", async ({
+    page,
+  }) => {
+    await mockConsoleApi(page);
+    await page.goto("/login");
+    await page.getByLabel(/email/i).fill("admin@example.com");
+    await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
+    await page.getByRole("button", { name: /sign in/i }).click();
+    await page.getByRole("link", { name: "Registration Codes" }).click();
+    await page.getByRole("button", { name: "New registration code" }).click();
+
+    await page.getByLabel("Name").fill("Community launch");
+    await page.getByLabel("Invitation code").fill("COMMUNITY-ACCESS-2026");
+    await page.getByLabel("Maximum uses").fill("100");
+    await page.getByLabel(/Initial balance/i).fill("25");
+
+    const requestPromise = page.waitForRequest(
+      (request) =>
+        request.url().endsWith("/console/v1/registration-invitation-codes") &&
+        request.method() === "POST",
+    );
+    await page.getByRole("button", { name: "Create registration code" }).click();
+    const request = await requestPromise;
+    expect(request.postDataJSON()).toEqual({
+      name: "Community launch",
+      invitation_code: "COMMUNITY-ACCESS-2026",
+      max_uses: 100,
+      expires_at: null,
+      enabled: true,
+      user_group_id: "00000000-0000-0000-0000-000000000101",
+      initial_balance_amount: "25",
+    });
+    await expect(
+      page
+        .getByRole("dialog")
+        .getByRole("textbox", { name: "Registration invitation code" }),
+    ).toHaveValue("COMMUNITY-ACCESS-2026");
   });
 });

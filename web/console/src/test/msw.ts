@@ -25,6 +25,7 @@ import {
   OWN_API_KEY,
   PERSONAL_USAGE_REPORT,
   PROXY,
+  REGISTRATION_INVITATION_CODE,
   REVOKED_SESSION,
   SESSION_AFFINITY_CACHE_REPORT,
   SPEND_LEADERBOARD_REPORT,
@@ -48,6 +49,9 @@ export const handlers = [
     HttpResponse.json(ADMIN_LOGIN_RESPONSE, { headers: { "Set-Cookie": "refresh=rotated" } }),
   ),
   http.post("/console/v1/auth/login", () =>
+    HttpResponse.json(ADMIN_LOGIN_RESPONSE, { headers: { "Set-Cookie": "refresh=rotated" } }),
+  ),
+  http.post("/console/v1/auth/register", () =>
     HttpResponse.json(ADMIN_LOGIN_RESPONSE, { headers: { "Set-Cookie": "refresh=rotated" } }),
   ),
   http.post("/console/v1/auth/logout", () => new HttpResponse(null, { status: 204 })),
@@ -98,6 +102,30 @@ export const handlers = [
   http.get("/console/v1/user-groups/:id", () =>
     HttpResponse.json(USER_GROUP, {
       headers: { ETag: `"${USER_GROUP.updated_at}"` },
+    }),
+  ),
+  http.get("/console/v1/registration-invitation-codes", () =>
+    HttpResponse.json([REGISTRATION_INVITATION_CODE]),
+  ),
+  http.get("/console/v1/registration-invitation-codes/:id", () =>
+    HttpResponse.json(REGISTRATION_INVITATION_CODE, {
+      headers: { ETag: `"${REGISTRATION_INVITATION_CODE.updated_at}"` },
+    }),
+  ),
+  http.post("/console/v1/registration-invitation-codes", () =>
+    HttpResponse.json(
+      {
+        id: REGISTRATION_INVITATION_CODE.id,
+        invitation_code: "COMMUNITY-ACCESS-2026",
+        correlation_id: "11111111-0000-0000-0000-0000000000c1",
+      },
+      { status: 201 },
+    ),
+  ),
+  http.put("/console/v1/registration-invitation-codes/:id", () =>
+    HttpResponse.json({
+      id: REGISTRATION_INVITATION_CODE.id,
+      correlation_id: "11111111-0000-0000-0000-0000000000c2",
     }),
   ),
   http.get("/console/v1/api-key-policies", () => HttpResponse.json([API_KEY_POLICY])),

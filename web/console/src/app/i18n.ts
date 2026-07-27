@@ -17,6 +17,7 @@ const zhCN: Record<string, string> = {
   "Request Logs": "请求日志",
   "Users": "用户",
   "User Groups": "用户组",
+  "Registration Codes": "注册邀请码",
   "API Key Policies": "API 密钥策略",
   "Upstream Models": "上游模型",
   "Price sync": "价格同步",
@@ -343,6 +344,21 @@ const zhCN: Record<string, string> = {
   "Use your Console account to continue.": "使用您的控制台账户继续。",
   "Email": "邮箱",
   "Password": "密码",
+  "Have a registration code?": "已有注册邀请码？",
+  "Received a personal invitation?": "收到个人邀请？",
+  "Create account": "创建账户",
+  "Use a registration invitation code to create your Console account.":
+    "使用注册邀请码创建控制台账户。",
+  "Invitation code": "邀请码",
+  "Confirm password": "确认密码",
+  "Account created": "账户已创建",
+  "Registration failed": "注册失败",
+  "Invitation code must be at least 12 characters.": "邀请码至少需要 12 个字符。",
+  "Invitation code must be at most 128 characters.": "邀请码最多 128 个字符。",
+  "Invitation code cannot contain whitespace.": "邀请码不能包含空白字符。",
+  "The invitation code is invalid, expired, disabled, or exhausted.":
+    "邀请码无效、已过期、已禁用或次数已用尽。",
+  "An account with this email already exists.": "该邮箱已存在控制台账户。",
   "Received an invitation?": "收到邀请？",
   "Activate it": "激活账户",
   "Activate invitation": "激活邀请",
@@ -521,11 +537,57 @@ const zhCN: Record<string, string> = {
   "Group still has members": "用户组仍有成员",
   "Move every member out of this group before deleting it.":
     "删除前请先将所有成员移出该用户组。",
+  "Move every member out of this group and reassign its registration codes before deleting it.":
+    "删除前请先将所有成员移出该用户组，并重新分配引用该组的注册邀请码。",
   "Delete user group": "删除用户组",
   "Delete user group?": "删除用户组？",
   "This permanently deletes the empty group. This action cannot be undone.":
     "此操作会永久删除空用户组，且无法撤销。",
   "User group deleted": "用户组已删除",
+  "Create and adjust reusable invitation codes for self-service registration.":
+    "创建并调整用于自助注册的可复用邀请码。",
+  "New registration code": "新建注册邀请码",
+  "Registration code": "注册邀请码",
+  "Create registration code": "创建注册邀请码",
+  "Edit registration code": "编辑注册邀请码",
+  "Save registration code": "保存注册邀请码",
+  "Registration code created": "注册邀请码已创建",
+  "Registration code updated": "注册邀请码已更新",
+  "Registration invitation code": "注册邀请码",
+  "Back to registration codes": "返回注册邀请码",
+  "Uses": "使用次数",
+  "{used} / unlimited": "{used} / 不限",
+  "Expired": "已过期",
+  "Exhausted": "次数已用尽",
+  "Last used": "最近使用",
+  "Maximum uses": "最大使用次数",
+  "Maximum uses must be a positive integer.": "最大使用次数必须为正整数。",
+  "Maximum uses cannot be below the current usage count.":
+    "最大使用次数不能小于当前已使用次数。",
+  "Leave blank for unlimited registrations.": "留空表示注册次数不限。",
+  "Leave blank for no time-based expiry.": "留空表示永不过期。",
+  "Settings are evaluated atomically when each user registers and affect only future accounts.":
+    "每次注册时会原子校验这些设置，并且只影响之后创建的账户。",
+  "Usage and current availability of this registration code.":
+    "此注册邀请码的使用情况和当前可用状态。",
+  "Choose who can register, how often, and with which starting balance.":
+    "设置可注册的用户组、使用次数和初始额度。",
+  "Use 12 to 128 case-sensitive characters without whitespace. The value cannot be recovered or changed after creation.":
+    "使用 12 至 128 个区分大小写且不含空白的字符。创建后无法找回或修改。",
+  "Invitation code is immutable": "邀请码不可修改",
+  "The gateway stores only a hash. To replace the value, create a new registration code and disable this one.":
+    "网关只保存哈希。如需更换邀请码，请新建一个并禁用当前邀请码。",
+  "Future registrations are assigned to this group.": "之后注册的用户会加入该用户组。",
+  "Non-negative USD balance assigned to each future account.":
+    "为之后创建的每个账户分配非负的 USD 初始额度。",
+  "A registration code with this name or value already exists.":
+    "已存在同名或相同值的注册邀请码。",
+  "This registration code was changed elsewhere. Reloading.":
+    "此注册邀请码已在其他位置修改，正在重新加载。",
+  "Review the highlighted registration code fields.":
+    "请检查标记的注册邀请码字段。",
+  "Save the code now. Future detail views show only its settings and usage.":
+    "请立即保存邀请码，后续详情页只显示设置和使用情况。",
   "Name is required.": "名称不能为空。",
   "Proxy URL is required.": "代理 URL 不能为空。",
   "Client model is required.": "客户端模型不能为空。",

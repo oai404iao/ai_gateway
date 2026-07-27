@@ -17,8 +17,9 @@ info:
       `If-Match` on `PUT` for optimistic concurrency. A stale `If-Match`
       yields `409`.
     - API key values are retrievable by their owner and administrators; the
-      Console masks them by default. Invitation tokens remain one-time values
-      that are never retrievable again.
+      Console masks them by default. Per-user invitation tokens and reusable
+      registration invitation code plaintext are returned only at issuance
+      and are never retrievable again.
     - Every error body is `{"error":"<code>"}`.
     - `routing_dependency_invalid` means a mutation would make the routing
       graph structurally invalid (for example, by leaving an enabled model
@@ -35,6 +36,7 @@ tags:
   - name: Self
   - name: Users
   - name: UserGroups
+  - name: RegistrationInvitationCodes
   - name: ApiKeyPolicies
   - name: ApiKeys
   - name: Models
@@ -71,6 +73,42 @@ paths:
               schema: { $ref: "#/components/schemas/LoginResponse" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "422": { $ref: "#/components/responses/Unprocessable" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /auth/register:
+    post:
+      tags: [Auth]
+      operationId: register
+      description: |
+        Creates an active `user` account with a reusable registration
+        invitation code. The code is matched case-sensitively after trimming
+        surrounding whitespace. Its current user group and initial USD balance
+        apply at registration time. A session is issued immediately.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RegisterInput" }
+      responses:
+        "200":
+          description: Account created and session issued.
+          headers:
+            Set-Cookie:
+              description: Rotating `__Host-ai_gateway_refresh` HttpOnly cookie.
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LoginResponse" }
+        "409":
+          description: The email already belongs to a Console account.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorBody" }
+        "422":
+          description: Invalid input or unavailable registration invitation code.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorBody" }
         "429": { $ref: "#/components/responses/RateLimited" }
 
   /auth/refresh:
@@ -650,6 +688,96 @@ paths:
       responses:
         "200":
           description: User group deleted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /registration-invitation-codes:
+    get:
+      tags: [RegistrationInvitationCodes]
+      operationId: listRegistrationInvitationCodes
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Reusable registration invitation codes without secrets.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  { $ref: "#/components/schemas/RegistrationInvitationCodeView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [RegistrationInvitationCodes]
+      operationId: createRegistrationInvitationCode
+      description: |
+        Stores only a SHA-256 hash of the administrator-supplied code. The
+        plaintext is returned once in the create response and cannot be
+        recovered later.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              { $ref: "#/components/schemas/RegistrationInvitationCodeCreateInput" }
+      responses:
+        "201":
+          description: Registration invitation code created.
+          content:
+            application/json:
+              schema:
+                { $ref: "#/components/schemas/RegistrationInvitationCodeCreateResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /registration-invitation-codes/{id}:
+    get:
+      tags: [RegistrationInvitationCodes]
+      operationId: getRegistrationInvitationCode
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "200":
+          description: Registration invitation code settings and usage.
+          headers:
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/json:
+              schema:
+                { $ref: "#/components/schemas/RegistrationInvitationCodeView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [RegistrationInvitationCodes]
+      operationId: updateRegistrationInvitationCode
+      description: |
+        Changes the name and all settings that apply to future registrations.
+        The original code value and accumulated usage count are immutable.
+        `max_uses` cannot be reduced below `used_count`.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              { $ref: "#/components/schemas/RegistrationInvitationCodeUpdateInput" }
+      responses:
+        "200":
+          description: Registration invitation code updated.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/MutationResponse" }
@@ -1930,6 +2058,54 @@ components:
         expires_at: { $ref: "#/components/schemas/DateTime" }
         correlation_id: { type: string, format: uuid }
 
+    RegistrationInvitationCodeView:
+      type: object
+      required:
+        [id, name, max_uses, used_count, expires_at, enabled, user_group_id,
+         initial_balance_amount, created_by, last_used_at, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        name:
+          type: string
+          description: Administrator-facing label; this is not the invitation code.
+        max_uses:
+          type: integer
+          format: int64
+          minimum: 1
+          nullable: true
+          description: Null means unlimited registrations.
+        used_count:
+          type: integer
+          format: int64
+          minimum: 0
+        expires_at:
+          allOf: [{ $ref: "#/components/schemas/DateTimeNullable" }]
+          description: Null means no time-based expiry.
+        enabled:
+          type: boolean
+          description: Disabled codes cannot register new users.
+        user_group_id:
+          type: string
+          format: uuid
+          description: Group assigned to future registrations.
+        initial_balance_amount:
+          allOf: [{ $ref: "#/components/schemas/Decimal" }]
+          description: Non-negative USD balance assigned to future registrations.
+        created_by: { type: string, format: uuid }
+        last_used_at: { $ref: "#/components/schemas/DateTimeNullable" }
+        created_at: { $ref: "#/components/schemas/DateTime" }
+        updated_at: { $ref: "#/components/schemas/DateTime" }
+
+    RegistrationInvitationCodeCreateResponse:
+      type: object
+      required: [id, invitation_code, correlation_id]
+      properties:
+        id: { type: string, format: uuid }
+        invitation_code:
+          type: string
+          description: One-time plaintext value; it cannot be retrieved later.
+        correlation_id: { type: string, format: uuid }
+
     MutationResponse:
       type: object
       required: [id, correlation_id]
@@ -3120,6 +3296,19 @@ components:
         email: { type: string }
         password: { type: string }
 
+    RegisterInput:
+      type: object
+      required: [invitation_code, email, display_name, password]
+      properties:
+        invitation_code:
+          type: string
+          minLength: 12
+          maxLength: 128
+          description: Case-sensitive reusable registration invitation code.
+        email: { type: string, maxLength: 320 }
+        display_name: { type: string, minLength: 1, maxLength: 200 }
+        password: { type: string, minLength: 12, maxLength: 1024 }
+
     ActivateInvitationInput:
       type: object
       required: [invitation_token, password]
@@ -3197,6 +3386,57 @@ components:
             Explicit group assignment. Null or omission selects the protected
             default group for the requested role.
         default_api_key_policy_id: { type: string, format: uuid, nullable: true }
+
+    RegistrationInvitationCodeCreateInput:
+      type: object
+      required:
+        [name, invitation_code, max_uses, expires_at, enabled, user_group_id,
+         initial_balance_amount]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100 }
+        invitation_code:
+          type: string
+          minLength: 12
+          maxLength: 128
+          description: |
+            Administrator-supplied, case-sensitive code with no whitespace.
+            Only its SHA-256 hash is persisted.
+        max_uses:
+          type: integer
+          format: int64
+          minimum: 1
+          nullable: true
+          description: Null means unlimited registrations.
+        expires_at:
+          allOf: [{ $ref: "#/components/schemas/DateTimeNullable" }]
+          description: Null means no time-based expiry.
+        enabled: { type: boolean }
+        user_group_id: { type: string, format: uuid }
+        initial_balance_amount:
+          allOf: [{ $ref: "#/components/schemas/Decimal" }]
+          description: Initial non-negative USD balance for future registrations.
+
+    RegistrationInvitationCodeUpdateInput:
+      type: object
+      required:
+        [name, max_uses, expires_at, enabled, user_group_id,
+         initial_balance_amount]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100 }
+        max_uses:
+          type: integer
+          format: int64
+          minimum: 1
+          nullable: true
+          description: Null means unlimited; cannot be below `used_count`.
+        expires_at:
+          allOf: [{ $ref: "#/components/schemas/DateTimeNullable" }]
+          description: Null removes time-based expiry.
+        enabled: { type: boolean }
+        user_group_id: { type: string, format: uuid }
+        initial_balance_amount:
+          allOf: [{ $ref: "#/components/schemas/Decimal" }]
+          description: Updated initial USD balance for future registrations.
 
     UserInput:
       type: object

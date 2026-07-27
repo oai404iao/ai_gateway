@@ -91,7 +91,7 @@ verification_key_path = "./config/console-jwt-public.pem"
 
 - 公共数据面默认监听 `127.0.0.1:3000`。
 - Console 是独立监听器；应仅通过 HTTPS 反向代理对外暴露。
-- `proxy_body_bytes` 限制 OpenAI 代理请求；`console_body_bytes` 限制已认证 Console 写操作；`auth_body_bytes` 限制登录、刷新和邀请激活请求。
+- `proxy_body_bytes` 限制 OpenAI 代理请求；`console_body_bytes` 限制已认证 Console 写操作；`auth_body_bytes` 限制登录、注册、刷新和邀请激活请求。
 
 ## 公共数据面
 
@@ -109,22 +109,37 @@ verification_key_path = "./config/console-jwt-public.pem"
 Console 登录接口：
 
 - `POST /console/v1/auth/login`
+- `POST /console/v1/auth/register`
 - `POST /console/v1/auth/refresh`
 - `POST /console/v1/auth/activate-invitation`
 - `POST /console/v1/auth/logout`（需要 access JWT）
 
-登录或邀请激活成功后：
+登录、自助注册或邀请激活成功后：
 
 - 响应 JSON 返回短期 Access JWT，客户端以 `Authorization: Bearer <token>` 调用 Console API；
 - 响应设置轮换的 `HttpOnly; Secure; SameSite=Lax` refresh Cookie；
 - refresh token 仅保存 SHA-256 哈希。刷新时会轮换；重放旧 refresh token 会撤销该 session；
 - 每个 Console 请求都会验证 JWT 签名、issuer、audience、用户状态、session 状态和 `auth_version`。禁用用户、改密码、登出和角色变化会立即使旧 token 失效。
 
-用户由管理员邀请创建。管理员可在邀请请求中通过 `initial_balance_amount` 设置非负的初始
-USD 余额；省略时为 `0`。邀请响应中的 `invitation_token` 只返回一次，外部邮件/通知系统负责
-投递。邀请有效期为 7 天。激活邀请后用户设置自己的密码；管理员不提交或保存用户明文密码。
-每个用户必须属于一个用户组。邀请未显式指定 `user_group_id` 时，普通用户进入内置“默认用户组”，
-管理员进入内置“默认管理员组”；这两个系统组可以修改名称、说明和默认策略，但不能删除。
+账户有两种创建方式，当前都不要求邮箱确认：
+
+1. **管理员按用户邀请。** 管理员先创建 `invited` 用户，可通过
+   `initial_balance_amount` 设置非负的初始 USD 余额；省略时为 `0`。响应中的
+   `invitation_token` 只返回一次，外部邮件/通知系统负责投递。邀请有效期为 7 天，用户通过
+   `/auth/activate-invitation` 设置密码并激活账户。
+2. **邀请码自助注册。** 匿名用户向 `/auth/register` 提交管理员创建的注册邀请码、邮箱、显示名称和
+   密码。成功后直接创建 `role = user`、`status = active` 的账户并立即签发 Console session。
+   同一邮箱仍保持大小写无关唯一。
+
+注册邀请码由管理员自定义，长度为 12 到 128 个字符、区分大小写且不能包含空白。数据库只保存
+SHA-256 哈希，明文仅在创建响应中返回一次，之后无法查看或修改。每个邀请码可独立设置可选的最大
+使用次数、可选过期时间、启用状态、目标用户组和非负初始 USD 余额；次数和过期时间为空分别表示
+不限次数和永不过期。管理员可以调整上述设置，修改只影响后续注册。注册时在 serializable 事务中
+锁定邀请码、再次检查启用/过期/剩余次数、创建用户并递增使用次数，失败不会消耗次数。
+
+每个用户必须属于一个用户组。按用户邀请未显式指定 `user_group_id` 时，普通用户进入内置“默认
+用户组”，管理员进入内置“默认管理员组”；自助注册使用邀请码当前配置的用户组。这两个系统组可以
+修改名称、说明和默认策略，但不能删除。
 
 ## 普通用户接口
 
@@ -159,6 +174,7 @@ Policy 不再保存额度、RPM、并发、格式、权限或最大活动 Key �
 
 - 用户与邀请：`/console/v1/users`
 - 用户组：`/console/v1/user-groups`
+- 注册邀请码：`/console/v1/registration-invitation-codes`
 - 用户批量修改：`POST /console/v1/users/batch`
 - API Key Policy：`/console/v1/api-key-policies`
 - 全局 API Key：`/console/v1/api-keys`
@@ -193,7 +209,12 @@ Policy 不再保存额度、RPM、并发、格式、权限或最大活动 Key �
 
 用户组通过 `/console/v1/user-groups` 管理。每个组可设置一个默认 API Key Policy；修改后，所有
 没有用户级覆盖的组成员立即使用新策略。自定义组只有在没有成员时才能删除；内置默认用户组和默认
-管理员组始终受保护。
+管理员组始终受保护。仍被注册邀请码引用的用户组同样不能删除，必须先把相关邀请码调整到其他组。
+
+注册邀请码通过 `/console/v1/registration-invitation-codes` 管理。列表和详情只返回名称、启用状态、
+次数、过期时间、用户组、初始额度和使用统计，不返回明文或哈希。详情 `GET` 返回 `ETag`，调整名称、
+最大次数、过期时间、启用状态、用户组或初始额度时必须用 `PUT` 携带 `If-Match`；最大次数不能调低到
+当前 `used_count` 以下。邀请码值本身不可调整，如需更换，应创建新邀请码并禁用旧邀请码。
 
 对于邀请过期、令牌丢失，或历史版本误把待激活用户改成 `disabled` 的情况，管理员可调用
 `POST /console/v1/users/{id}/invitation` 重新签发邀请。该操作仅适用于尚未设置密码的

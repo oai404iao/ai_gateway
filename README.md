@@ -22,7 +22,7 @@ The public data plane and the management Console API are intentionally separate 
 - Removes client credentials and hop-by-hop headers before injecting channel-specific upstream authentication.
 - Streams upstream responses without buffering the whole response; it never retries or changes channels after response headers or bytes are sent.
 - Provides process-local RPM, concurrency, and soft quota admission controls, passive connection health, asynchronous request logs, usage extraction, and USD-only settlement.
-- Includes a separate JWT Console API with invitations, rotating refresh sessions, user/admin roles, audit logs, and optimistic concurrency for most mutable resources.
+- Includes a separate JWT Console API with per-user invitations, reusable invite-code self-registration, rotating refresh sessions, user/admin roles, audit logs, and optimistic concurrency for most mutable resources.
 
 ## Architecture
 
@@ -285,10 +285,11 @@ storage guidance, and small/large machine profiles are documented in
 
 ## Console API
 
-The Console listener is separate from the public listener and uses short-lived JWT access tokens. Successful login, refresh, and invitation activation also issue a rotating `HttpOnly; Secure; SameSite=Lax` refresh cookie.
+The Console listener is separate from the public listener and uses short-lived JWT access tokens. Successful login, invite-code registration, refresh, and invitation activation also issue a rotating `HttpOnly; Secure; SameSite=Lax` refresh cookie.
 
 - Self-service endpoints are under `/console/v1/me` and derive ownership from the JWT subject.
-- Administrator-only control-plane endpoints manage users, API-key policies, API keys, models, routes, network proxies, transform templates, request logs, audit logs, and reloads.
+- Administrators can create and adjust reusable registration codes with optional usage limits and expiry, a target user group, and an initial USD balance. Code plaintext is returned only at creation.
+- Administrator-only control-plane endpoints manage users, registration codes, API-key policies, API keys, models, routes, network proxies, transform templates, request logs, audit logs, and reloads.
 - Most mutable resources use `ETag` on `GET` and require `If-Match` on `PUT` for optimistic concurrency.
 - `admin` is a user role—not a separate `/admin` API namespace or a process-wide static token.
 

@@ -85,17 +85,30 @@ export function LoginPage() {
             {t("Sign in")}
           </Button>
         </form>
-        <p className="mt-4 text-center text-xs text-muted-foreground">
-          {t("Received an invitation?")}{" "}
-          <Button
-            variant="link"
-            size="xs"
-            render={<Link to="/activate-invitation" />}
-            nativeButton={false}
-          >
-            {t("Activate it")}
-          </Button>
-        </p>
+        <div className="mt-4 flex flex-col gap-1 text-center text-xs text-muted-foreground">
+          <p>
+            {t("Have a registration code?")}{" "}
+            <Button
+              variant="link"
+              size="xs"
+              render={<Link to="/register" />}
+              nativeButton={false}
+            >
+              {t("Create account")}
+            </Button>
+          </p>
+          <p>
+            {t("Received a personal invitation?")}{" "}
+            <Button
+              variant="link"
+              size="xs"
+              render={<Link to="/activate-invitation" />}
+              nativeButton={false}
+            >
+              {t("Activate it")}
+            </Button>
+          </p>
+        </div>
       </CardContent>
     </Card>
   );

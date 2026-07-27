@@ -20,9 +20,11 @@ use crate::{
     application::{
         AuthError, ChannelModelDiscoveryError, ChannelModelDiscoveryInput,
         ChannelModelDiscoveryResponse, ChannelModelDiscoveryService, ConsoleAuthService,
-        ControlPlaneCoordinator, ControlPlaneError, IssuedInvitation, IssuedSession,
-        ModelImportRequest, ModelSyncError, ModelSyncPreview, ModelSyncPreviewRequest,
-        ModelSyncResponse, ModelSyncService, SystemLoadReport, SystemMetricsService,
+        ControlPlaneCoordinator, ControlPlaneError, IssuedInvitation,
+        IssuedRegistrationInvitationCode, IssuedSession, ModelImportRequest, ModelSyncError,
+        ModelSyncPreview, ModelSyncPreviewRequest, ModelSyncResponse, ModelSyncService,
+        RegistrationInvitationCodeCreateInput, RegistrationInvitationCodeUpdateInput,
+        SelfRegistrationInput, SystemLoadReport, SystemMetricsService,
     },
     domain::{ConsolePrincipal, UserRole},
     persistence::{
@@ -57,6 +59,7 @@ pub struct ConsoleState {
 pub fn router(state: ConsoleState) -> Router {
     let auth_routes = Router::new()
         .route("/console/v1/auth/login", post(login))
+        .route("/console/v1/auth/register", post(register))
         .route("/console/v1/auth/refresh", post(refresh))
         .route(
             "/console/v1/auth/activate-invitation",
@@ -129,6 +132,14 @@ pub fn router(state: ConsoleState) -> Router {
             get(get_user_group)
                 .put(update_user_group)
                 .delete(delete_user_group),
+        )
+        .route(
+            "/console/v1/registration-invitation-codes",
+            get(list_registration_invitation_codes).post(create_registration_invitation_code),
+        )
+        .route(
+            "/console/v1/registration-invitation-codes/{id}",
+            get(get_registration_invitation_code).put(update_registration_invitation_code),
         )
         .route(
             "/console/v1/api-key-policies",
@@ -412,10 +423,26 @@ struct InvitationResponse {
     correlation_id: Uuid,
 }
 
+#[derive(Serialize)]
+struct RegistrationInvitationCodeCreateResponse {
+    id: Uuid,
+    invitation_code: String,
+    correlation_id: Uuid,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LoginInput {
     email: String,
+    password: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RegisterInput {
+    invitation_code: String,
+    email: String,
+    display_name: String,
     password: String,
 }
 
@@ -457,6 +484,40 @@ struct InviteUserRequest {
     user_group_id: Option<Uuid>,
     #[serde(default)]
     default_api_key_policy_id: Option<Uuid>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RegistrationInvitationCodeCreateRequest {
+    name: String,
+    invitation_code: String,
+    #[serde(default)]
+    max_uses: Option<i64>,
+    #[serde(default)]
+    expires_at: Option<DateTime<Utc>>,
+    #[serde(default = "default_true")]
+    enabled: bool,
+    user_group_id: Uuid,
+    #[serde(default)]
+    initial_balance_amount: rust_decimal::Decimal,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RegistrationInvitationCodeUpdateRequest {
+    name: String,
+    #[serde(default)]
+    max_uses: Option<i64>,
+    #[serde(default)]
+    expires_at: Option<DateTime<Utc>>,
+    enabled: bool,
+    user_group_id: Uuid,
+    #[serde(default)]
+    initial_balance_amount: rust_decimal::Decimal,
+}
+
+const fn default_true() -> bool {
+    true
 }
 
 #[derive(Deserialize)]
@@ -545,6 +606,22 @@ async fn login(
     Json(input): Json<LoginInput>,
 ) -> Result<Response, ConsoleError> {
     let session = state.auth.login(input.email, input.password).await?;
+    Ok(session_response(session))
+}
+
+async fn register(
+    State(state): State<ConsoleState>,
+    Json(input): Json<RegisterInput>,
+) -> Result<Response, ConsoleError> {
+    let session = state
+        .auth
+        .register(SelfRegistrationInput {
+            invitation_code: input.invitation_code,
+            email: input.email,
+            display_name: input.display_name,
+            password: input.password,
+        })
+        .await?;
     Ok(session_response(session))
 }
 
@@ -993,6 +1070,103 @@ async fn delete_user_group(
         },
     )
     .await
+}
+
+async fn list_registration_invitation_codes(
+    State(state): State<ConsoleState>,
+) -> Result<Json<Vec<crate::persistence::RegistrationInvitationCode>>, ConsoleError> {
+    Ok(Json(
+        state
+            .auth
+            .repository()
+            .registration_invitation_codes()
+            .await?,
+    ))
+}
+
+async fn create_registration_invitation_code(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Json(input): Json<RegistrationInvitationCodeCreateRequest>,
+) -> Result<(StatusCode, Json<RegistrationInvitationCodeCreateResponse>), ConsoleError> {
+    let issued = state
+        .auth
+        .create_registration_invitation_code(
+            principal,
+            RegistrationInvitationCodeCreateInput {
+                name: input.name,
+                invitation_code: input.invitation_code,
+                max_uses: input.max_uses,
+                expires_at: input.expires_at,
+                enabled: input.enabled,
+                user_group_id: input.user_group_id,
+                initial_balance_amount: input.initial_balance_amount,
+            },
+        )
+        .await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(registration_invitation_code_create_response(issued)),
+    ))
+}
+
+fn registration_invitation_code_create_response(
+    issued: IssuedRegistrationInvitationCode,
+) -> RegistrationInvitationCodeCreateResponse {
+    RegistrationInvitationCodeCreateResponse {
+        id: issued.id,
+        invitation_code: issued.invitation_code,
+        correlation_id: issued.correlation_id,
+    }
+}
+
+async fn get_registration_invitation_code(
+    State(state): State<ConsoleState>,
+    Path(id): Path<Uuid>,
+) -> Result<Response, ConsoleError> {
+    let code = state
+        .auth
+        .repository()
+        .registration_invitation_code(id)
+        .await?
+        .ok_or(ConsoleError::NotFound)?;
+    let updated_at = code.updated_at;
+    let mut response = Json(code).into_response();
+    response.headers_mut().insert(
+        header::ETAG,
+        HeaderValue::from_str(&etag(updated_at)).expect("ETag is valid"),
+    );
+    Ok(response)
+}
+
+async fn update_registration_invitation_code(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(input): Json<RegistrationInvitationCodeUpdateRequest>,
+) -> Result<Json<MutationResponse>, ConsoleError> {
+    let mutation = state
+        .auth
+        .update_registration_invitation_code(
+            principal,
+            id,
+            RegistrationInvitationCodeUpdateInput {
+                name: input.name,
+                max_uses: input.max_uses,
+                expires_at: input.expires_at,
+                enabled: input.enabled,
+                user_group_id: input.user_group_id,
+                initial_balance_amount: input.initial_balance_amount,
+            },
+            if_match(&headers)?,
+        )
+        .await?;
+    Ok(Json(MutationResponse {
+        id: mutation.id,
+        secret: None,
+        correlation_id: mutation.correlation_id,
+    }))
 }
 
 async fn list_api_key_policies(
@@ -1814,6 +1988,13 @@ impl IntoResponse for ConsoleError {
             | Self::Auth(AuthError::InvalidInvitation) => {
                 (StatusCode::UNAUTHORIZED, "unauthorized")
             }
+            Self::Auth(AuthError::InvalidRegistrationCode) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "invalid_registration_code",
+            ),
+            Self::Auth(AuthError::RegistrationConflict) => {
+                (StatusCode::CONFLICT, "registration_email_conflict")
+            }
             Self::Auth(AuthError::Forbidden) | Self::Forbidden => {
                 (StatusCode::FORBIDDEN, "forbidden")
             }
@@ -1825,10 +2006,13 @@ impl IntoResponse for ConsoleError {
                 StatusCode::TOO_MANY_REQUESTS,
                 "too many authentication attempts",
             ),
-            Self::Auth(AuthError::Configuration) | Self::Auth(AuthError::Repository(_)) => (
+            Self::Auth(AuthError::Configuration) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Console operation failed",
             ),
+            Self::Auth(AuthError::Repository(error)) => {
+                (repository_status(&error), repository_error_message(&error))
+            }
             Self::ChannelModels(ChannelModelDiscoveryError::InvalidConfiguration) => (
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "channel_models_invalid_configuration",
@@ -1939,6 +2123,9 @@ fn repository_error_message(error: &crate::persistence::RepositoryError) -> &'st
         crate::persistence::RepositoryError::CannotDeleteSelf => "cannot_delete_self",
         crate::persistence::RepositoryError::LastAdministrator => "last_administrator",
         crate::persistence::RepositoryError::CannotDisableSelf => "cannot_disable_self",
+        crate::persistence::RepositoryError::RegistrationInvitationCodeConflict => {
+            "registration_invitation_code_conflict"
+        }
         _ => "Console operation rejected",
     }
 }
@@ -1951,7 +2138,10 @@ fn repository_status(error: &crate::persistence::RepositoryError) -> StatusCode 
         | crate::persistence::RepositoryError::UserGroupInUse
         | crate::persistence::RepositoryError::CannotDeleteSelf
         | crate::persistence::RepositoryError::LastAdministrator
-        | crate::persistence::RepositoryError::CannotDisableSelf => StatusCode::CONFLICT,
+        | crate::persistence::RepositoryError::CannotDisableSelf
+        | crate::persistence::RepositoryError::RegistrationInvitationCodeConflict => {
+            StatusCode::CONFLICT
+        }
         crate::persistence::RepositoryError::Validation => StatusCode::UNPROCESSABLE_ENTITY,
         crate::persistence::RepositoryError::DefaultApiKeyPolicyRequired
         | crate::persistence::RepositoryError::DefaultApiKeyPolicyDisabled

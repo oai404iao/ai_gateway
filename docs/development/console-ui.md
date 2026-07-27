@@ -79,7 +79,7 @@ OpenAI 客户端
 | 首次加载 | `SessionProvider` 调用 refresh，若成功则只在内存保存新的 access token 和用户资料。 |
 | 普通 API 请求 | `ConsoleApiClient` 在内存 token 存在时加入 `Authorization: Bearer …`。 |
 | 收到一次 401 | 对并发请求实施 single-flight refresh；刷新成功后仅重试原请求一次，失败则清空本地会话并跳转登录页。 |
-| 登录/邀请激活/刷新 | 使用 `credentials: "include"`，让现有 `HttpOnly; Secure; SameSite=Lax` refresh Cookie 正常工作。 |
+| 登录/自助注册/邀请激活/刷新 | 使用 `credentials: "include"`，让现有 `HttpOnly; Secure; SameSite=Lax` refresh Cookie 正常工作。 |
 | 刷新页面 | access token 不持久化；应用重新走 refresh 流程。 |
 | 登出、改密、禁用或角色变更 | 尊重后端 session 与 `auth_version` 失效结果，清空前端缓存并回到未认证状态。 |
 
@@ -92,8 +92,8 @@ OpenAI 客户端
   SPA 同源而删除现有 Cookie 安全属性。
 - API Key 可由其所有者和管理员重新读取，但前端必须默认打码，并仅在用户主动点击后显示完整值；复制动作
   始终复制完整值。API Key 不得写入浏览器持久化存储、URL 或日志。
-- 邀请 token 等真正的一次性 secret 必须使用专用“仅展示一次”对话框。关闭后不从查询缓存、路由 state
-  或日志恢复。
+- 邀请 token、注册邀请码等数据库不可恢复的 secret 必须使用专用“仅展示一次”对话框。关闭后不从
+  查询缓存、路由 state 或日志恢复。注册邀请码虽然可重复使用，但明文同样只在管理员创建时展示一次。
 - UI 静态响应至少添加 CSP、`X-Content-Type-Options: nosniff`、`Referrer-Policy` 与
   `frame-ancestors 'none'`。生产 CSP 仅允许本 origin 的脚本、样式、连接和图片，除非新增功能有明确
   安全评审。
@@ -249,8 +249,9 @@ web/console/src/api/generated/console-v1.d.ts  # openapi-typescript 生成，禁
 web/console/src/api/types.ts      # 薄 shim：re-export 生成结果的 schema
 ```
 
-契约覆盖登录、刷新、邀请、本人资源、管理员资源、错误响应、`ETag`/`If-Match`、分页/limit 参数、
-可重新读取的 API Key、一次性邀请 token 和 role 权限。生成命令为 `pnpm --dir web/console generate:api`；
+契约覆盖登录、自助注册、刷新、按用户邀请、注册邀请码管理、本人资源、管理员资源、错误响应、
+`ETag`/`If-Match`、分页/limit 参数、可重新读取的 API Key、不可恢复的邀请 secret 和 role 权限。
+生成命令为 `pnpm --dir web/console generate:api`；
 `pnpm --dir web/console generate:api:check` 重新生成并用 `git diff --exit-code` 校验无漂移，供 CI 使用。
 `types.ts` 仅把 `components["schemas"]` 下的 schema 以同名导出，加上客户端聚合体 `ControlPlaneLists`；
 页面继续从 `@/api/types` 导入，不直接依赖生成文件的内部结构。在 Rust 自动导出 OpenAPI 成熟前，
@@ -270,12 +271,12 @@ API 集成测试应同时验证实现与该规范的关键请求/响应示例，
 
 | 区域 | 建议浏览器路由 | 后端 API 范围 | 最低角色 |
 | --- | --- | --- | --- |
-| 登录/邀请激活 | `/login`、`/activate-invitation` | `/console/v1/auth/*` | 匿名 |
+| 登录/注册/邀请激活 | `/login`、`/register`、`/activate-invitation` | `/console/v1/auth/*` | 匿名 |
 | 个人资料与安全 | `/account`、`/account/sessions` | `/console/v1/me*` | user |
 | 我的 API Key | `/api-keys` | `/console/v1/me/api-keys*` | user |
 | 我的请求日志 | `/usage/request-logs` | `/console/v1/me/request-logs*` | user |
 | 统计与排行 | `/statistics`、`/channel-status`、`/leaderboard` | `/console/v1/me/usage`、`/statistics/*` | user |
-| 用户、用户组与策略 | `/admin/users`、`/admin/user-groups`、`/admin/api-key-policies` | `/console/v1/users*`、`/user-groups*`、`/api-key-policies*` | admin |
+| 用户、用户组、注册邀请码与策略 | `/admin/users`、`/admin/user-groups`、`/admin/registration-invitation-codes`、`/admin/api-key-policies` | `/console/v1/users*`、`/user-groups*`、`/registration-invitation-codes*`、`/api-key-policies*` | admin |
 | 模型和目录 | `/admin/models`、`/admin/catalog` | `/console/v1/models*`、`/catalog/models/*` | admin |
 | 路由 | `/admin/routing/*` | `/console/v1/routing/*` | admin |
 | 网络与变换 | `/admin/network/proxies`、`/admin/transforms/templates` | `/console/v1/network/*`、`/transforms/*` | admin |

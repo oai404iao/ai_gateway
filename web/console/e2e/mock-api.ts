@@ -69,6 +69,21 @@ const E2E_API_KEY_POLICY = {
   updated_at: "2026-01-02T00:00:00.000Z",
 };
 
+const E2E_REGISTRATION_CODE = {
+  id: "00000000-0000-0000-0000-0000000000c1",
+  name: "Community launch",
+  max_uses: 100,
+  used_count: 12,
+  expires_at: "2030-01-01T00:00:00.000Z",
+  enabled: true,
+  user_group_id: E2E_USER_GROUPS[0].id,
+  initial_balance_amount: "20.00",
+  created_by: ADMIN_PROFILE.user.id,
+  last_used_at: "2026-07-26T12:00:00.000Z",
+  created_at: "2026-07-01T00:00:00.000Z",
+  updated_at: "2026-07-26T12:00:00.000Z",
+};
+
 export const E2E_API_KEY_SECRET = "sk-e2e-retrievable-api-key";
 
 const E2E_COST_STATISTICS = {
@@ -250,6 +265,9 @@ export async function mockConsoleApi(page: Page): Promise<void> {
       // below unconditionally.
       return route.fulfill({ status: 200, json: ADMIN_PROFILE });
     }
+    if (path === "/console/v1/auth/register" && method === "POST") {
+      return route.fulfill({ status: 200, json: ADMIN_PROFILE });
+    }
     if (path === "/console/v1/auth/refresh" && method === "POST") {
       // Start unauthenticated so the login page renders; the login POST
       // below establishes the session.
@@ -275,6 +293,49 @@ export async function mockConsoleApi(page: Page): Promise<void> {
     }
     if (path === "/console/v1/user-groups" && method === "GET") {
       return route.fulfill({ status: 200, json: E2E_USER_GROUPS });
+    }
+    if (
+      path === "/console/v1/registration-invitation-codes" &&
+      method === "GET"
+    ) {
+      return route.fulfill({ status: 200, json: [E2E_REGISTRATION_CODE] });
+    }
+    if (
+      path === "/console/v1/registration-invitation-codes" &&
+      method === "POST"
+    ) {
+      return route.fulfill({
+        status: 201,
+        json: {
+          id: E2E_REGISTRATION_CODE.id,
+          invitation_code: "COMMUNITY-ACCESS-2026",
+          correlation_id: "00000000-0000-0000-0000-0000000000c2",
+        },
+      });
+    }
+    if (
+      path ===
+        `/console/v1/registration-invitation-codes/${E2E_REGISTRATION_CODE.id}` &&
+      method === "GET"
+    ) {
+      return route.fulfill({
+        status: 200,
+        headers: { ETag: `"${E2E_REGISTRATION_CODE.updated_at}"` },
+        json: E2E_REGISTRATION_CODE,
+      });
+    }
+    if (
+      path ===
+        `/console/v1/registration-invitation-codes/${E2E_REGISTRATION_CODE.id}` &&
+      method === "PUT"
+    ) {
+      return route.fulfill({
+        status: 200,
+        json: {
+          id: E2E_REGISTRATION_CODE.id,
+          correlation_id: "00000000-0000-0000-0000-0000000000c3",
+        },
+      });
     }
     if (path === "/console/v1/api-key-policies" && method === "GET") {
       return route.fulfill({ status: 200, json: [E2E_API_KEY_POLICY] });

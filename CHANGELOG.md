@@ -9,6 +9,9 @@ Versioning.
 
 ### Added
 
+- Self-service Console registration through administrator-managed reusable
+  invitation codes with optional usage limits and expiry, adjustable user
+  group and initial balance defaults, hash-only storage, and immediate login.
 - Administrator-managed user groups with protected default user/admin groups,
   inherited API key policies, and optional per-user policy overrides.
 - Atomic batch user updates for status, balance set/increase/decrease, API
