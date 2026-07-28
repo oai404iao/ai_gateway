@@ -348,11 +348,11 @@ async fn probe_channel(
                 ttft_ms.get_or_insert_with(|| clamp_duration_ms(context.started.elapsed()));
                 total_bytes = total_bytes.saturating_add(bytes.len());
                 usage.observe(&bytes);
-                if let Some(matcher) = &mut keyword_matcher {
-                    if let Some(trigger) = matcher.observe(&bytes) {
-                        automatic_disable.try_report(channel.id(), trigger);
-                        keyword_matcher = None;
-                    }
+                if let Some(matcher) = &mut keyword_matcher
+                    && let Some(trigger) = matcher.observe(&bytes)
+                {
+                    automatic_disable.try_report(channel.id(), trigger);
+                    keyword_matcher = None;
                 }
                 if total_bytes > MAX_PROBE_RESPONSE_BYTES {
                     error_code = Some("scheduled_test_response_too_large");

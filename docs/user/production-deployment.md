@@ -70,7 +70,7 @@ docker compose \
   build gateway
 ```
 
-Dockerfile 使用 Rust 1.85 构建 release 二进制，并先构建、再嵌入 Console
+Dockerfile 使用 Rust 1.92 构建 release 二进制，并先构建、再嵌入 Console
 Web UI。运行镜像只保留二进制及必要的 CA、健康检查和权限切换工具。
 
 ## 3. 启动与验证

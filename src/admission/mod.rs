@@ -124,13 +124,13 @@ impl AdmissionRuntime {
             state.requests_in_window = 0;
         }
 
-        if let Some(limit) = key.requests_per_minute() {
-            if state.requests_in_window >= limit {
-                let reset_at = state.window_started_at.expect("window initialized") + WINDOW;
-                return Err(AdmissionError::RateLimited {
-                    retry_after: retry_after(now, reset_at),
-                });
-            }
+        if let Some(limit) = key.requests_per_minute()
+            && state.requests_in_window >= limit
+        {
+            let reset_at = state.window_started_at.expect("window initialized") + WINDOW;
+            return Err(AdmissionError::RateLimited {
+                retry_after: retry_after(now, reset_at),
+            });
         }
         // A request that reaches this point has passed the quota gate and made
         // an admission decision. Concurrency rejection intentionally consumes

@@ -49,7 +49,7 @@ Separate Console listener (/console/v1/*)
 
 ## Requirements
 
-- Rust **1.85** or newer (Rust 2024 edition)
+- Rust **1.92** or newer (Rust 2024 edition)
 - PostgreSQL
 - Docker Compose is optional: `docker-compose.yml` provides PostgreSQL for
   development, while `docker-compose.prd.yaml` can run the complete production

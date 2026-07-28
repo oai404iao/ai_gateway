@@ -2,7 +2,7 @@
 name = "ai-gateway"
 version = "0.4.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.92"
 description = "High-performance LLM request forwarding gateway"
 license = "AGPL-3.0-only"
 repository = "https://github.com/oai404iao/ai_gateway"
@@ -26,7 +26,7 @@ futures-util = "0.3"
 hyper = { version = "1", features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["server-auto", "server-graceful", "service", "tokio"] }
 http-body-util = "0.1"
-jsonwebtoken = { version = "9.3", default-features = false, features = ["use_pem"] }
+jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto", "use_pem"] }
 json-patch = "4.2"
 jsonptr = "0.7"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "socks", "stream"] }
@@ -35,15 +35,15 @@ rust_decimal = { version = "1.36", features = ["serde"] }
 secrecy = "0.10"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-sha2 = "0.10"
+sha2 = "0.11"
 sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio-rustls", "migrate", "chrono", "uuid", "json", "rust_decimal", "macros"] }
 subtle = "2.6"
 thiserror = "2.0"
-time = "=0.3.45"
+time = "=0.3.54"
 tokio = { version = "1.43", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
-toml = "0.8"
+toml = "1.1"
 tower = { version = "0.5", features = ["util"] }
-tower-http = { version = "0.6", features = ["cors", "limit", "trace"] }
+tower-http = { version = "0.7", features = ["cors", "limit", "trace"] }
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }

@@ -10,7 +10,7 @@ for the API contract this UI consumes.
 
 ## Prerequisites
 
-- Node.js 20+ and [pnpm](https://pnpm.io)
+- Node.js 24 and pnpm 11.17.0 (pinned by `packageManager`)
 - For component/e2e tests: a POSIX shell; Playwright installs its own Chromium
 
 ## Common commands

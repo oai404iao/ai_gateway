@@ -783,10 +783,10 @@ impl IntoResponse for ProxyError {
                 .headers_mut()
                 .insert("www-authenticate", HeaderValue::from_static("Bearer"));
         }
-        if let Some(retry_after) = self.retry_after {
-            if let Ok(value) = HeaderValue::from_str(&retry_after.to_string()) {
-                response.headers_mut().insert("retry-after", value);
-            }
+        if let Some(retry_after) = self.retry_after
+            && let Ok(value) = HeaderValue::from_str(&retry_after.to_string())
+        {
+            response.headers_mut().insert("retry-after", value);
         }
         response
     }
@@ -1226,22 +1226,19 @@ fn timed_upstream_stream(
                     Ok(None) => {
                         state.upstream.take();
                         let default_outcome = completed_transport_outcome(state.upstream_succeeded);
-                        if let Some(transformer) = &mut state.sse_transformer {
-                            if let Some(residual) = transformer.finish() {
-                                record_stream_bytes(&mut state, &residual);
-                                let outcome = state
-                                    .completion
-                                    .finalize_usage()
-                                    .map(|terminal| {
-                                        sse_terminal_request_outcome(
-                                            terminal,
-                                            state.upstream_succeeded,
-                                        )
-                                    })
-                                    .unwrap_or(default_outcome);
-                                state.completion.finish(outcome);
-                                return Some((Ok(residual), state));
-                            }
+                        if let Some(transformer) = &mut state.sse_transformer
+                            && let Some(residual) = transformer.finish()
+                        {
+                            record_stream_bytes(&mut state, &residual);
+                            let outcome = state
+                                .completion
+                                .finalize_usage()
+                                .map(|terminal| {
+                                    sse_terminal_request_outcome(terminal, state.upstream_succeeded)
+                                })
+                                .unwrap_or(default_outcome);
+                            state.completion.finish(outcome);
+                            return Some((Ok(residual), state));
                         }
                         let outcome = state
                             .completion

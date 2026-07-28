@@ -6,7 +6,7 @@
 
 ## What is ai-gateway?
 
-`ai-gateway` is a single-binary Rust production service intended to forward LLM requests in the OpenAI Chat Completions and Responses formats. It uses Axum/Tokio for HTTP, reqwest for upstream requests, PostgreSQL/SQLx for persistence, and `ArcSwap` for immutable runtime configuration snapshots. Rust 2024 with MSRV 1.85 is required (`Cargo.toml`). The Cargo workspace also contains the development-only `ai-gateway-perf` package under `tools/forwarding-perf/`; it is never linked into the production binary.
+`ai-gateway` is a single-binary Rust production service intended to forward LLM requests in the OpenAI Chat Completions and Responses formats. It uses Axum/Tokio for HTTP, reqwest for upstream requests, PostgreSQL/SQLx for persistence, and `ArcSwap` for immutable runtime configuration snapshots. Rust 2024 with MSRV 1.92 is required (`Cargo.toml`). The Cargo workspace also contains the development-only `ai-gateway-perf` package under `tools/forwarding-perf/`; it is never linked into the production binary.
 
 The project is licensed under `AGPL-3.0-only`. Third-party license texts and
 attributions that must accompany binary redistribution live in `LICENSES/`

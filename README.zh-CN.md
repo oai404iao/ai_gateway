@@ -48,7 +48,7 @@ Console 客户端
 
 ## 环境要求
 
-- Rust **1.85** 或更高版本（Rust 2024 edition）
+- Rust **1.92** 或更高版本（Rust 2024 edition）
 - PostgreSQL
 - Docker Compose（可选；`docker-compose.yml` 提供开发用 PostgreSQL，
   `docker-compose.prd.yaml` 可通过拉取或本地构建 Gateway 镜像运行完整生产栈）
