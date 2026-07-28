@@ -18,7 +18,9 @@ use reqwest::Url;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
-use tokio_tungstenite::tungstenite::{Message, protocol::WebSocketConfig};
+use tokio_tungstenite::tungstenite::{
+    Message, extensions::compression::deflate::DeflateConfig, protocol::WebSocketConfig,
+};
 use uuid::Uuid;
 
 use crate::domain::{
@@ -287,12 +289,13 @@ pub(crate) async fn connect_upstream_websocket(
     policy: ResolvedUpstreamPolicy,
     max_message_bytes: usize,
 ) -> Result<UpstreamWebSocket, UpstreamWebSocketError> {
-    let config = WebSocketConfig::default()
+    let mut config = WebSocketConfig::default()
         .read_buffer_size(64 * 1024)
         .write_buffer_size(32 * 1024)
         .max_write_buffer_size(max_message_bytes.saturating_add(32 * 1024))
         .max_message_size(Some(max_message_bytes))
         .max_frame_size(Some(max_message_bytes));
+    config.extensions.permessage_deflate = Some(DeflateConfig::default());
     let connected = tokio::time::timeout(
         policy.timeouts().response_header(),
         dialer::connect(

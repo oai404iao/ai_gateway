@@ -16,7 +16,7 @@ Versioning.
   per-message authentication/admission/routing/logging, model and event
   transforms, HTTP/SOCKS proxy support, connection-local
   `previous_response_id` continuity, graceful process draining, and a bounded
-  upstream WebSocket pool.
+  upstream WebSocket pool with Codex-compatible per-message deflate.
 - Database-backed Responses WebSocket controls with explicit system, user, and
   channel opt-in; configurable idle-pool capacity and lifetimes; a personal
   settings page; channel capability controls; and current-process pool/session

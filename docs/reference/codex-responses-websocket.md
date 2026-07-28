@@ -2,7 +2,7 @@
 
 > 类型：外部实现参考，不是 `ai-gateway` 行为契约。
 >
-> 最近核对：2026-07-27。
+> 最近核对：2026-07-28。
 >
 > 参考版本：[`openai/codex@fbe65995bbcd4da249cfdafe0300ac3cb2cb3b3c`](https://github.com/openai/codex/tree/fbe65995bbcd4da249cfdafe0300ac3cb2cb3b3c)。
 >
@@ -101,8 +101,9 @@ Responses 事件的 channel 容量为 1600。
 发送和等待下一条事件都受 provider 的 stream idle timeout 约束。发生终态错误时，Codex 立即从
 `Option` 取走并销毁 stream，不等待可能无限阻塞的 WebSocket Close handshake。
 
-Codex 的 WebSocket 配置启用 per-message deflate。该优化属于 Codex 客户端实现细节，不是
-OpenAI 协议的必选项。
+Codex 的 WebSocket 配置启用 per-message deflate。该扩展不是 OpenAI 协议的必选项，但部分
+Codex 兼容上游在 Upgrade 后依赖该协商。`ai-gateway` 因此使用与所核对 Codex 版本相同、SHA
+固定的 OpenAI Tungstenite forks，并在上游连接主动提供该扩展；上游未接受时仍使用未压缩消息。
 
 ## 预连接、预热与增量请求
 
@@ -178,14 +179,14 @@ Codex WebSocket 测试至少覆盖：
 | 增量压缩 | 根据上一请求/响应自动生成 delta 和 `previous_response_id` | 原样转发客户端提供的增量语义 |
 | 连接持有 | 一个 Session 缓存一个连接 | 成功请求后把干净连接归还到有界、Session 隔离的池 |
 | 接收队列 | 无界 | 有界，向上游施加背压 |
-| 压缩扩展 | 启用 per-message deflate | 当前不主动协商 per-message deflate |
+| 压缩扩展 | 启用 per-message deflate | 使用 SHA 固定的 OpenAI Tungstenite forks 主动协商；上游不接受时回退为未压缩消息 |
 | 失败恢复 | 客户端重连，预算耗尽后切 HTTP | 只允许上游 Upgrade 前故障转移；消息发送后不重试 |
 | Header | Codex主动构造 Session 和内部 Header | 转发下游 Header，并按渠道变换/认证；缺省补 WebSocket Beta Header |
 | 能力开关 | provider 声明支持后由 Codex 使用 | 网关要求系统、用户和 Responses 渠道三层均显式启用；默认关闭 |
 
 因此，`ai-gateway` 不应为了某个兼容上游而全局删除 `max_output_tokens` 或伪造全部 Codex
-metadata。需要模拟 Codex 的真实上游 smoke 应显式发送 Codex 请求形状；生产渠道的上游偏差应通过
-渠道变换或上游专属配置处理。
+metadata。真实上游 smoke 直接启动本机 Codex CLI 连接测试 Gateway，由当前 Codex 构造
+model-specific 请求、prewarm 和 turn；生产渠道的上游偏差仍应通过渠道变换或上游专属配置处理。
 
 ## 维护检查项
 

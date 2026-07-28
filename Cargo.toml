@@ -45,7 +45,11 @@ time = "=0.3.54"
 tokio = { version = "1.43", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 tokio-socks = "0.5"
-tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
+# Codex negotiates permessage-deflate for Responses WebSocket connections.
+# These SHA-pinned OpenAI forks add RFC 7692 support that is not available in
+# the corresponding crates.io tungstenite release.
+tokio-tungstenite = { git = "https://github.com/openai-oss-forks/tokio-tungstenite", rev = "0e5b2d73aa18dd9f0a50ee9ff199d5aef7594186", features = ["rustls-tls-webpki-roots"] }
+tungstenite = { git = "https://github.com/openai-oss-forks/tungstenite-rs", rev = "4fffad30fe373adbdcffab9545e9e9bf4f2fc19f", features = ["deflate"] }
 toml = "1.1"
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.7", features = ["cors", "limit", "trace"] }
@@ -57,6 +61,9 @@ zeroize = { version = "1.8", features = ["derive"] }
 uuid = { version = "1.11", features = ["v4", "serde"] }
 rust-embed = { version = "8", optional = true }
 mime_guess = { version = "2", optional = true }
+
+[dev-dependencies]
+tokio = { version = "1.43", features = ["process"] }
 
 [workspace]
 members = [".", "tools/forwarding-perf"]

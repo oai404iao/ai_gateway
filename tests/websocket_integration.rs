@@ -35,11 +35,13 @@ use tokio::{
     time::timeout,
 };
 use tokio_tungstenite::{
-    accept_hdr_async, connect_async,
+    accept_hdr_async_with_config, connect_async,
     tungstenite::{
         Error as WebSocketError, Message,
         client::IntoClientRequest,
+        extensions::compression::deflate::DeflateConfig,
         handshake::server::{Request, Response},
+        protocol::WebSocketConfig,
     },
 };
 use uuid::Uuid;
@@ -138,7 +140,12 @@ async fn start_mock_upstream() -> MockResponsesWebSocket {
                         });
                         Ok(response)
                     };
-                    let mut websocket = accept_hdr_async(stream, callback).await.unwrap();
+                    let mut config = WebSocketConfig::default();
+                    config.extensions.permessage_deflate = Some(DeflateConfig::default());
+                    let mut websocket =
+                        accept_hdr_async_with_config(stream, callback, Some(config))
+                            .await
+                            .unwrap();
                     let mut last_response_id = None::<String>;
                     while let Some(message) = websocket.next().await {
                         let Ok(Message::Text(text)) = message else {
@@ -703,6 +710,17 @@ async fn responses_websocket_forwards_transforms_reuses_connection_and_logs_requ
     assert_eq!(
         handshakes[0].headers.get("openai-beta").unwrap(),
         OPENAI_BETA
+    );
+    assert!(
+        handshakes[0]
+            .headers
+            .get("sec-websocket-extensions")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .is_some_and(|extension| extension.trim() == "permessage-deflate")
     );
     assert_eq!(
         handshakes[0].headers.get("x-gateway-transform").unwrap(),
