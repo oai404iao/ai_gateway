@@ -89,8 +89,9 @@ const schema = z.object({
     .refine(
       isAllowedBaseUrl,
       "Enter an HTTP(S) URL without credentials, query parameters, or a fragment.",
-    ),
+  ),
   enabled: z.boolean(),
+  supports_websocket: z.boolean(),
   status_statistics_enabled: z.boolean(),
   auto_disable_allowed: z.boolean(),
   weight: z.number().int().min(1, "Weight must be at least 1."),
@@ -134,6 +135,13 @@ const schema = z.object({
       message: "Choose a test model from the available upstream models.",
     });
   }
+  if (value.supports_websocket && value.api_format !== "open_ai_responses") {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["supports_websocket"],
+      message: "Only Responses channels can support WebSocket forwarding.",
+    });
+  }
 });
 
 type FormState = z.infer<typeof schema>;
@@ -144,6 +152,7 @@ const empty: FormState = {
   name: "",
   base_url: "",
   enabled: true,
+  supports_websocket: false,
   status_statistics_enabled: false,
   auto_disable_allowed: false,
   weight: 100,
@@ -193,6 +202,7 @@ export function ChannelDetailPage() {
         name: data.data.name,
         base_url: data.data.base_url,
         enabled: data.data.enabled,
+        supports_websocket: data.data.supports_websocket,
         status_statistics_enabled: data.data.status_statistics_enabled,
         auto_disable_allowed: data.data.auto_disable_allowed,
         weight: data.data.weight,
@@ -388,6 +398,7 @@ export function ChannelDetailPage() {
           name: parsed.data.name,
           base_url: parsed.data.base_url,
           enabled: parsed.data.enabled,
+          supports_websocket: parsed.data.supports_websocket,
           status_statistics_enabled: parsed.data.status_statistics_enabled,
           auto_disable_allowed: parsed.data.auto_disable_allowed,
           weight: parsed.data.weight,
@@ -421,6 +432,7 @@ export function ChannelDetailPage() {
           name: parsed.data.name,
           base_url: parsed.data.base_url,
           enabled: parsed.data.enabled,
+          supports_websocket: parsed.data.supports_websocket,
           status_statistics_enabled: parsed.data.status_statistics_enabled,
           auto_disable_allowed: parsed.data.auto_disable_allowed,
           weight: parsed.data.weight,
@@ -487,6 +499,10 @@ export function ChannelDetailPage() {
                 <DetailField
                   label={t("Enabled")}
                   value={<StatusBadge value={data.data.enabled} />}
+                />
+                <DetailField
+                  label={t("Responses WebSocket")}
+                  value={<StatusBadge value={data.data.supports_websocket} />}
                 />
                 <DetailField
                   label={t("Auto-disabled")}
@@ -557,6 +573,10 @@ export function ChannelDetailPage() {
                         patch({
                           channel_group_id: value === "__none__" ? "" : value,
                           api_format: (group?.api_format ?? state.api_format) as ApiFormat,
+                          supports_websocket:
+                            group?.api_format === "open_ai_responses"
+                              ? state.supports_websocket
+                              : false,
                         });
                       }}
                     >
@@ -892,7 +912,7 @@ export function ChannelDetailPage() {
                 </CardDescription>
               </CardHeader>
               <CardContent>
-                <FieldGroup className="grid gap-5 xl:grid-cols-3">
+                <FieldGroup className="grid gap-5 xl:grid-cols-2">
                   <Field orientation="horizontal">
                     <FieldContent>
                       <FieldLabel htmlFor="status_statistics_enabled">
@@ -907,6 +927,34 @@ export function ChannelDetailPage() {
                       checked={state.status_statistics_enabled}
                       onCheckedChange={(checked) =>
                         patch({ status_statistics_enabled: Boolean(checked) })
+                      }
+                    />
+                  </Field>
+                  <Field
+                    orientation="horizontal"
+                    data-invalid={Boolean(fieldError("supports_websocket"))}
+                  >
+                    <FieldContent>
+                      <FieldLabel htmlFor="supports_websocket">
+                        {t("Supports Responses WebSocket")}
+                      </FieldLabel>
+                      <FieldDescription>
+                        {state.api_format === "open_ai_responses"
+                          ? t(
+                              "Allow this channel to receive WebSocket requests when the system and user are also enabled.",
+                            )
+                          : t("Only OpenAI Responses channels can enable WebSocket forwarding.")}
+                      </FieldDescription>
+                      {fieldError("supports_websocket") ? (
+                        <FieldError>{fieldError("supports_websocket")}</FieldError>
+                      ) : null}
+                    </FieldContent>
+                    <Switch
+                      id="supports_websocket"
+                      checked={state.supports_websocket}
+                      disabled={state.api_format !== "open_ai_responses"}
+                      onCheckedChange={(checked) =>
+                        patch({ supports_websocket: Boolean(checked) })
                       }
                     />
                   </Field>

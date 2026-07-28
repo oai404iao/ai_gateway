@@ -16,6 +16,7 @@ import {
   Trophy,
   TicketCheck,
   UsersRound,
+  Settings2,
   type LucideIcon,
 } from "lucide-react";
 import type { UserRole } from "@/api/types";
@@ -37,6 +38,7 @@ export const NAV_SECTIONS: NavSection[] = [
   {
     title: "Personal",
     items: [
+      { label: "Personal settings", path: "/account/settings", icon: Settings2 },
       { label: "Login sessions", path: "/account/sessions", icon: ShieldCheck },
       { label: "API Keys", path: "/api-keys", icon: KeyRound },
       { label: "Request Logs", path: "/usage/request-logs", icon: ScrollText },

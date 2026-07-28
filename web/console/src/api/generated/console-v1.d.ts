@@ -107,6 +107,22 @@ export interface paths {
         patch: operations["updateMe"];
         trace?: never;
     };
+    "/me/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getUserSettings"];
+        put: operations["updateUserSettings"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/me/password": {
         parameters: {
             query?: never;
@@ -955,8 +971,9 @@ export interface paths {
          *     unsupported values and temporarily unavailable backlog queries are
          *     null. CPU percentages are deltas between samples, so the first sample
          *     after process start may be null. Queue depth, durable request-log
-         *     backlog, runtime in-flight state, and database pool pressure are
-         *     process-local except for PostgreSQL-backed backlog counts.
+         *     backlog, runtime in-flight state, Responses WebSocket sessions and
+         *     pool counters, and database pool pressure are process-local except for
+         *     PostgreSQL-backed backlog counts.
          */
         get: operations["getSystemLoad"];
         put?: never;
@@ -1078,6 +1095,11 @@ export interface components {
             /** @description Current account balance in USD. */
             balance_amount: components["schemas"]["Decimal"];
             created_at: components["schemas"]["DateTime"];
+            updated_at: components["schemas"]["DateTime"];
+        };
+        UserSettings: {
+            /** @description User opt-in required before this user's API keys can open Responses WebSockets. */
+            websocket_enabled: boolean;
             updated_at: components["schemas"]["DateTime"];
         };
         /** @enum {string} */
@@ -1247,6 +1269,29 @@ export interface components {
             default_ttl_seconds: number;
             rules: components["schemas"]["SystemSessionAffinityRule"][];
         };
+        SystemWebSocketSettings: {
+            /**
+             * @description Global opt-in required before Responses WebSocket upgrades are accepted.
+             * @default false
+             */
+            enabled: boolean;
+            /**
+             * @description Process-wide maximum number of clean idle upstream WebSockets retained for reuse. Zero disables idle pooling.
+             * @default 128
+             */
+            max_idle_connections: number;
+            /**
+             * Format: int64
+             * @default 300
+             */
+            idle_timeout_seconds: number;
+            /**
+             * Format: int64
+             * @description Must be greater than idle_timeout_seconds.
+             * @default 3300
+             */
+            max_connection_age_seconds: number;
+        };
         SystemSettingsInput: {
             /** @description User-visible HTTP(S) base URLs for the OpenAI-compatible data plane. */
             api_hosts: string[];
@@ -1256,6 +1301,7 @@ export interface components {
             automatic_disable: components["schemas"]["SystemAutomaticDisableSettings"];
             scheduled_testing: components["schemas"]["SystemScheduledTestingSettings"];
             session_affinity: components["schemas"]["SystemSessionAffinitySettings"];
+            websocket: components["schemas"]["SystemWebSocketSettings"];
         };
         SystemSettings: components["schemas"]["SystemSettingsInput"] & {
             updated_at: components["schemas"]["DateTime"];
@@ -1291,6 +1337,7 @@ export interface components {
             runtime: components["schemas"]["SystemRuntimeLoad"];
             queues: components["schemas"]["SystemQueuesLoad"];
             request_log: components["schemas"]["SystemRequestLogLoad"];
+            websocket: components["schemas"]["SystemWebSocketLoad"];
             database: components["schemas"]["SystemDatabaseLoad"];
         };
         SystemHostLoad: {
@@ -1386,6 +1433,29 @@ export interface components {
             projection_failures_total: number;
             /** Format: int64 */
             settlement_failures_total: number;
+        };
+        SystemWebSocketLoad: {
+            enabled: boolean;
+            /** Format: int64 */
+            active_downstream_sessions: number;
+            /** Format: int64 */
+            idle_upstream_connections: number;
+            /** Format: int64 */
+            leased_upstream_connections: number;
+            /** Format: int64 */
+            pool_capacity: number;
+            /** Format: double */
+            idle_pool_utilization_percent: number | null;
+            /** Format: int64 */
+            pool_hits_total: number;
+            /** Format: int64 */
+            pool_misses_total: number;
+            /** Format: int64 */
+            pool_discarded_total: number;
+            /** Format: int64 */
+            idle_timeout_seconds: number;
+            /** Format: int64 */
+            max_connection_age_seconds: number;
         };
         SystemDatabaseLoad: {
             control_plane: components["schemas"]["SystemDatabasePoolLoad"];
@@ -1547,6 +1617,8 @@ export interface components {
             name: string;
             base_url: string;
             enabled: boolean;
+            /** @description Whether this OpenAI Responses channel accepts WebSocket upgrades. */
+            supports_websocket: boolean;
             /** @description Includes this channel in the administrator channel-status report. */
             status_statistics_enabled: boolean;
             auto_disabled: boolean;
@@ -1936,6 +2008,10 @@ export interface components {
         ProfileUpdateInput: {
             display_name: string;
         };
+        UserSettingsInput: {
+            /** @description User opt-in for Responses WebSocket forwarding. */
+            websocket_enabled: boolean;
+        };
         PasswordChangeInput: {
             current_password: string;
             new_password: string;
@@ -2176,6 +2252,11 @@ export interface components {
             base_url: string;
             enabled: boolean;
             /**
+             * @description Valid only for open_ai_responses channels.
+             * @default false
+             */
+            supports_websocket: boolean;
+            /**
              * @description Includes this channel in the administrator channel-status report.
              * @default false
              */
@@ -2217,6 +2298,11 @@ export interface components {
              */
             base_url: string;
             enabled: boolean;
+            /**
+             * @description Valid only for open_ai_responses channels.
+             * @default false
+             */
+            supports_websocket: boolean;
             /**
              * @description Includes this channel in the administrator channel-status report.
              * @default false
@@ -2653,6 +2739,53 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ConsoleProfile"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            422: components["responses"]["Unprocessable"];
+        };
+    };
+    getUserSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current user forwarding preferences. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserSettings"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+        };
+    };
+    updateUserSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UserSettingsInput"];
+            };
+        };
+        responses: {
+            /** @description Updated user forwarding preferences. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserSettings"];
                 };
             };
             401: components["responses"]["Unauthorized"];
@@ -4797,7 +4930,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Database-backed forwarding, retry, health, automation, scheduled-test, and session-affinity defaults. */
+            /** @description Database-backed forwarding, retry, health, automation, scheduled-test, session-affinity, and Responses WebSocket defaults. */
             200: {
                 headers: {
                     ETag: components["headers"]["ETag"];

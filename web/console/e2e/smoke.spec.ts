@@ -123,6 +123,34 @@ test.describe("Console SPA smoke", () => {
     await expect(page.getByText("Revoked session", { exact: true })).toBeVisible();
   });
 
+  test("users can enable Responses WebSocket in personal settings", async ({
+    page,
+  }) => {
+    await mockConsoleApi(page);
+    await page.goto("/login");
+    await page.getByLabel(/email/i).fill("admin@example.com");
+    await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
+    await page.getByRole("button", { name: /sign in/i }).click();
+    await page.getByRole("link", { name: "Personal settings" }).click();
+
+    await expect(page).toHaveURL(/\/account\/settings/);
+    const toggle = page.getByRole("switch", {
+      name: "Enable Responses WebSocket",
+    });
+    await expect(toggle).not.toBeChecked();
+    await toggle.click();
+
+    const requestPromise = page.waitForRequest(
+      (request) =>
+        request.url().endsWith("/console/v1/me/settings") &&
+        request.method() === "PUT",
+    );
+    await page.getByRole("button", { name: "Save personal settings" }).click();
+    const request = await requestPromise;
+    expect(request.postDataJSON()).toEqual({ websocket_enabled: true });
+    await expect(page.getByText("Personal settings saved.")).toBeVisible();
+  });
+
   test("all users can open the Channel status page", async ({ page }) => {
     await mockConsoleApi(page);
     await page.goto("/login");

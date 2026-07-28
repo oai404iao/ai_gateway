@@ -272,7 +272,7 @@ API 集成测试应同时验证实现与该规范的关键请求/响应示例，
 | 区域 | 建议浏览器路由 | 后端 API 范围 | 最低角色 |
 | --- | --- | --- | --- |
 | 登录/注册/邀请激活 | `/login`、`/register`、`/activate-invitation` | `/console/v1/auth/*` | 匿名 |
-| 个人资料与安全 | `/account`、`/account/sessions` | `/console/v1/me*` | user |
+| 个人资料、设置与安全 | `/account`、`/account/settings`、`/account/sessions` | `/console/v1/me*` | user |
 | 我的 API Key | `/api-keys` | `/console/v1/me/api-keys*` | user |
 | 我的请求日志 | `/usage/request-logs` | `/console/v1/me/request-logs*` | user |
 | 统计与排行 | `/statistics`、`/channel-status`、`/leaderboard` | `/console/v1/me/usage`、`/statistics/*` | user |
@@ -287,6 +287,10 @@ API 集成测试应同时验证实现与该规范的关键请求/响应示例，
 `/account/sessions` 当前按“活跃会话”和可折叠历史分组，使用后端返回的 `is_current` 与明确
 session 状态标记当前设备、已过期和已撤销记录。活跃会话提供逐设备退出，页面还可一次撤销除当前
 设备外的全部活跃会话；浏览器名称和平台由已保存的 `User-Agent` 在前端做展示级解析。
+
+`/account/settings` 当前提供用户级 Responses WebSocket 开关。管理员系统设置页管理全局开关和
+空闲连接池参数，渠道详情页声明上游渠道能力，系统负载页展示当前进程的下游 Session、空闲/借出
+上游连接和命中、未命中、丢弃累计计数。
 
 ## 8. 嵌入、配置、缓存与发布
 

@@ -71,6 +71,20 @@ pub struct ProxyService {
     websocket_lifecycle: websocket::WebSocketLifecycle,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct WebSocketRuntimeSnapshot {
+    pub(crate) active_downstream_sessions: u64,
+    pub(crate) enabled: bool,
+    pub(crate) idle_upstream_connections: u64,
+    pub(crate) leased_upstream_connections: u64,
+    pub(crate) pool_capacity: u64,
+    pub(crate) pool_hits_total: u64,
+    pub(crate) pool_misses_total: u64,
+    pub(crate) pool_discarded_total: u64,
+    pub(crate) idle_timeout_seconds: u64,
+    pub(crate) max_connection_age_seconds: u64,
+}
+
 impl ProxyService {
     pub fn new(
         runtime: Arc<RuntimeConfig>,
@@ -159,7 +173,9 @@ impl ProxyService {
         admission: AdmissionRuntime,
         automatic_disable: Option<AutomaticDisableService>,
     ) -> Result<Self, reqwest::Error> {
-        routing.reconcile(&runtime.snapshot());
+        let snapshot = runtime.snapshot();
+        routing.reconcile(&snapshot);
+        upstream_clients.configure_websockets(snapshot.system_settings().websocket());
         Ok(Self {
             runtime,
             upstream_clients,
@@ -626,6 +642,18 @@ impl ProxyError {
             error_type: "permission_error",
             param: None,
             code: "permission_denied".into(),
+            authenticate: false,
+            retry_after: None,
+        }
+    }
+
+    fn websocket_disabled(message: &'static str) -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
+            message: message.to_owned(),
+            error_type: "permission_error",
+            param: None,
+            code: Some("websocket_disabled"),
             authenticate: false,
             retry_after: None,
         }

@@ -391,6 +391,63 @@ impl Default for SessionAffinitySettings {
     }
 }
 
+/// Immutable process-wide Responses WebSocket admission and idle-pool policy.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ResponsesWebSocketSettings {
+    enabled: bool,
+    max_idle_connections: usize,
+    idle_timeout: Duration,
+    max_connection_age: Duration,
+}
+
+impl ResponsesWebSocketSettings {
+    #[must_use]
+    pub const fn new(
+        enabled: bool,
+        max_idle_connections: usize,
+        idle_timeout: Duration,
+        max_connection_age: Duration,
+    ) -> Self {
+        Self {
+            enabled,
+            max_idle_connections,
+            idle_timeout,
+            max_connection_age,
+        }
+    }
+
+    #[must_use]
+    pub const fn enabled(self) -> bool {
+        self.enabled
+    }
+
+    #[must_use]
+    pub const fn max_idle_connections(self) -> usize {
+        self.max_idle_connections
+    }
+
+    #[must_use]
+    pub const fn idle_timeout(self) -> Duration {
+        self.idle_timeout
+    }
+
+    #[must_use]
+    pub const fn max_connection_age(self) -> Duration {
+        self.max_connection_age
+    }
+}
+
+impl Default for ResponsesWebSocketSettings {
+    fn default() -> Self {
+        Self::new(
+            false,
+            128,
+            Duration::from_secs(5 * 60),
+            Duration::from_secs(55 * 60),
+        )
+    }
+}
+
 /// Immutable global forwarding policy published with each runtime snapshot.
 #[derive(Clone, Debug)]
 pub struct SystemRuntimeSettings {
@@ -400,6 +457,7 @@ pub struct SystemRuntimeSettings {
     automatic_disable: AutomaticDisableSettings,
     scheduled_testing: ScheduledTestingSettings,
     session_affinity: SessionAffinitySettings,
+    websocket: ResponsesWebSocketSettings,
 }
 
 impl SystemRuntimeSettings {
@@ -415,6 +473,24 @@ impl SystemRuntimeSettings {
             automatic_disable: AutomaticDisableSettings::default(),
             scheduled_testing: ScheduledTestingSettings::default(),
             session_affinity: SessionAffinitySettings::default(),
+            websocket: ResponsesWebSocketSettings::default(),
+        }
+    }
+
+    #[must_use]
+    pub fn new_with_websocket(
+        upstream_timeouts: UpstreamTimeoutDefaults,
+        passive_health: PassiveHealthSettings,
+        websocket: ResponsesWebSocketSettings,
+    ) -> Self {
+        Self {
+            upstream_timeouts,
+            request_retry: RequestRetrySettings::default(),
+            passive_health,
+            automatic_disable: AutomaticDisableSettings::default(),
+            scheduled_testing: ScheduledTestingSettings::default(),
+            session_affinity: SessionAffinitySettings::default(),
+            websocket,
         }
     }
 
@@ -432,6 +508,7 @@ impl SystemRuntimeSettings {
             automatic_disable,
             scheduled_testing,
             session_affinity: SessionAffinitySettings::default(),
+            websocket: ResponsesWebSocketSettings::default(),
         }
     }
 
@@ -451,6 +528,29 @@ impl SystemRuntimeSettings {
             automatic_disable,
             scheduled_testing,
             session_affinity,
+            websocket: ResponsesWebSocketSettings::default(),
+        }
+    }
+
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_all_and_websocket(
+        upstream_timeouts: UpstreamTimeoutDefaults,
+        request_retry: RequestRetrySettings,
+        passive_health: PassiveHealthSettings,
+        automatic_disable: AutomaticDisableSettings,
+        scheduled_testing: ScheduledTestingSettings,
+        session_affinity: SessionAffinitySettings,
+        websocket: ResponsesWebSocketSettings,
+    ) -> Self {
+        Self {
+            upstream_timeouts,
+            request_retry,
+            passive_health,
+            automatic_disable,
+            scheduled_testing,
+            session_affinity,
+            websocket,
         }
     }
 
@@ -482,6 +582,11 @@ impl SystemRuntimeSettings {
     #[must_use]
     pub fn session_affinity(&self) -> &SessionAffinitySettings {
         &self.session_affinity
+    }
+
+    #[must_use]
+    pub const fn websocket(&self) -> ResponsesWebSocketSettings {
+        self.websocket
     }
 }
 

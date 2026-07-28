@@ -22,6 +22,7 @@ use ai_gateway::{
         SystemAutomaticDisableSettingsInput, SystemPassiveHealthSettingsInput,
         SystemRequestRetrySettingsInput, SystemScheduledTestingSettingsInput,
         SystemSessionAffinitySettingsInput, SystemSettingsInput, SystemUpstreamSettingsInput,
+        SystemWebSocketSettingsInput,
     },
     routing::{PassiveHealthPolicy, RoutingRuntime},
     runtime_config::{AppConfig, RuntimeConfig, compile_runtime_config},
@@ -119,6 +120,7 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
                 default_ttl_seconds: config.session_affinity.default_ttl_seconds,
                 rules: config.session_affinity.rules,
             },
+            websocket: SystemWebSocketSettingsInput::default(),
         })
         .await?;
     let system_probe_identity = repository.ensure_system_probe_identity().await?;
@@ -158,6 +160,15 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
     )?;
     let (automatic_disable_service, automatic_disable_worker) =
         AutomaticDisableWorker::start(coordinator.clone());
+    let proxy = ProxyService::with_dependencies_and_registry_and_automation(
+        Arc::clone(&runtime),
+        config.request_limits.proxy_body_bytes,
+        Arc::clone(&upstream_clients),
+        Arc::clone(&request_log_sink),
+        routing.clone(),
+        admission.clone(),
+        Some(automatic_disable_service.clone()),
+    )?;
     let system_metrics = SystemMetricsService::new_at(
         pool.clone(),
         config.database.max_connections,
@@ -165,20 +176,12 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
         gateway_started,
     )
     .with_runtime(
-        admission.clone(),
+        admission,
         routing.clone(),
         request_log_monitor,
         automatic_disable_service.clone(),
-    );
-    let proxy = ProxyService::with_dependencies_and_registry_and_automation(
-        Arc::clone(&runtime),
-        config.request_limits.proxy_body_bytes,
-        Arc::clone(&upstream_clients),
-        Arc::clone(&request_log_sink),
-        routing.clone(),
-        admission,
-        Some(automatic_disable_service.clone()),
-    )?;
+    )
+    .with_websocket_proxy(proxy.clone());
     let channel_probe_worker = ChannelProbeWorker::start(
         Arc::clone(&runtime),
         coordinator.clone(),

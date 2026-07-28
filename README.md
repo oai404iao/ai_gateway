@@ -257,7 +257,10 @@ key. The gateway admits and logs each sequential `response.create`, pins it to
 the same session-isolated upstream socket whenever available for
 connection-local cache continuity, and returns clean completed sockets to a
 bounded pool between requests. It does not multiplex concurrent Responses on
-one WebSocket.
+one WebSocket. WebSocket forwarding is explicitly opt-in: the administrator
+must enable the database-backed system setting and mark a Responses channel as
+supported, and the API-key owner must enable it under Personal settings. Pool
+capacity and connection lifetimes are also managed from System settings.
 See the [OpenAI compatibility reference](docs/reference/openai-compatibility.md)
 for validation, pass-through, streaming, retry, and error boundaries.
 

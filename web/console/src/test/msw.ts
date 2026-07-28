@@ -35,6 +35,7 @@ import {
   SYSTEM_LOAD_REPORT,
   USER_ACCESS_TOKEN,
   USER_GROUP,
+  USER_SETTINGS,
   USER_USER,
 } from "@/test/fixtures";
 import { clearSession, setSession } from "@/api/session-store";
@@ -64,6 +65,14 @@ export const handlers = [
     return HttpResponse.json({
       ...ADMIN_PROFILE,
       display_name: body.display_name ?? ADMIN_PROFILE.display_name,
+    });
+  }),
+  http.get("/console/v1/me/settings", () => HttpResponse.json(USER_SETTINGS)),
+  http.put("/console/v1/me/settings", async ({ request }) => {
+    const body = (await request.json()) as { websocket_enabled?: boolean };
+    return HttpResponse.json({
+      ...USER_SETTINGS,
+      websocket_enabled: body.websocket_enabled ?? USER_SETTINGS.websocket_enabled,
     });
   }),
   http.post("/console/v1/me/password", () => new HttpResponse(null, { status: 204 })),

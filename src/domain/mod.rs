@@ -29,6 +29,7 @@ pub use request_log::{
 };
 pub use system_settings::{
     AutomaticDisableSettings, AutomaticDisableTrigger, MAX_REQUEST_RETRIES, PassiveHealthSettings,
-    RequestRetrySettings, ScheduledTestingMode, ScheduledTestingSettings, SessionAffinityKeySource,
-    SessionAffinityRule, SessionAffinitySettings, SystemRuntimeSettings, UpstreamTimeoutDefaults,
+    RequestRetrySettings, ResponsesWebSocketSettings, ScheduledTestingMode,
+    ScheduledTestingSettings, SessionAffinityKeySource, SessionAffinityRule,
+    SessionAffinitySettings, SystemRuntimeSettings, UpstreamTimeoutDefaults,
 };

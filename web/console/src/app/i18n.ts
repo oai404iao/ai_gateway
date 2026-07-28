@@ -1391,6 +1391,65 @@ const zhCN: Record<string, string> = {
   "Conditional merge example": "条件合并示例",
   "Shallow-merge safe metadata only when the target is an object.":
     "仅当目标是对象时，浅合并安全元数据。",
+  "Personal settings": "个人设置",
+  "Control optional forwarding capabilities for your account.":
+    "控制当前账户可选的转发能力。",
+  "Three-layer WebSocket access": "三层 WebSocket 访问控制",
+  "Responses WebSocket requests are accepted only when the administrator enables the system, you enable this preference, and the selected upstream channel declares WebSocket support.":
+    "仅当管理员启用系统开关、你启用个人偏好，并且选中的上游渠道声明支持 WebSocket 时，Responses WebSocket 请求才会被接受。",
+  "Enable your API keys to request the OpenAI Responses WebSocket transport.":
+    "允许你的 API 密钥请求 OpenAI Responses WebSocket 传输。",
+  "This preference applies to all active API keys owned by your account.":
+    "此偏好适用于当前账户拥有的全部有效 API 密钥。",
+  "Personal settings saved.": "个人设置已保存。",
+  "Save personal settings": "保存个人设置",
+  "Responses WebSocket": "Responses WebSocket",
+  "Enable Responses WebSocket": "启用 Responses WebSocket",
+  "WebSocket forwarding requires the system, user, and selected Responses channel to be enabled. Pool settings apply process-wide.":
+    "WebSocket 转发要求系统、用户和选中的 Responses 渠道均已启用。连接池设置对当前进程全局生效。",
+  "Disabled systems reject new WebSocket upgrades and discard idle upstream connections.":
+    "系统开关关闭后会拒绝新的 WebSocket 升级，并丢弃空闲上游连接。",
+  "Maximum idle connections": "最大空闲连接数",
+  "Set to zero to disable upstream connection reuse.": "设置为 0 可禁用上游连接复用。",
+  "Idle timeout (seconds)": "空闲超时（秒）",
+  "Maximum connection age (seconds)": "连接最长寿命（秒）",
+  "Must be greater than the idle timeout.": "必须大于空闲超时。",
+  "Idle pool capacity must be between 0 and 4096.": "空闲连接池容量必须在 0 至 4096 之间。",
+  "WebSocket idle timeout must be between 1 and 3600 seconds.":
+    "WebSocket 空闲超时必须在 1 至 3600 秒之间。",
+  "Maximum WebSocket age must be between 60 and 3600 seconds.":
+    "WebSocket 最长寿命必须在 60 至 3600 秒之间。",
+  "Maximum WebSocket age must exceed the idle timeout.":
+    "WebSocket 最长寿命必须大于空闲超时。",
+  "Supports Responses WebSocket": "支持 Responses WebSocket",
+  "Allow this channel to receive WebSocket requests when the system and user are also enabled.":
+    "当系统和用户开关也启用时，允许此渠道接收 WebSocket 请求。",
+  "Only OpenAI Responses channels can enable WebSocket forwarding.":
+    "只有 OpenAI Responses 渠道可以启用 WebSocket 转发。",
+  "Only Responses channels can support WebSocket forwarding.":
+    "只有 Responses 渠道可以支持 WebSocket 转发。",
+  "WebSocket": "WebSocket",
+  "WebSocket sessions": "WebSocket 会话",
+  "{idle} idle upstream · {leased} leased": "{idle} 条上游空闲 · {leased} 条已借出",
+  "Responses WebSocket pool": "Responses WebSocket 连接池",
+  "Process-local downstream sessions, upstream connection reuse, and cumulative pool outcomes.":
+    "当前进程的下游会话、上游连接复用和连接池累计结果。",
+  "Active downstream sessions": "活跃下游会话",
+  "Accepted client WebSocket connections still open.": "仍保持打开的客户端 WebSocket 连接。",
+  "Leased upstream connections": "已借出上游连接",
+  "Upstream WebSockets currently serving a logical request.":
+    "当前正在处理逻辑请求的上游 WebSocket。",
+  "Idle upstream pool": "空闲上游连接池",
+  "Clean upstream connections available for exact-key reuse.":
+    "可按完全一致的连接键复用的干净上游连接。",
+  "Pool hits / misses": "连接池命中 / 未命中",
+  "Cumulative exact-key reuse lookups for this process.":
+    "当前进程按完全一致连接键查找复用的累计结果。",
+  "Discarded connections": "已丢弃连接",
+  "Closed, expired, replaced, or otherwise non-reusable connections.":
+    "已关闭、过期、被替换或其他不可复用的连接。",
+  "Pool policy": "连接池策略",
+  "Idle timeout / maximum connection age.": "空闲超时 / 连接最长寿命。",
 };
 
 let activeLocale: ConsoleLocale = "en-US";

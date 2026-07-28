@@ -7,7 +7,7 @@ use std::{
     fmt,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -23,16 +23,13 @@ use uuid::Uuid;
 
 use crate::domain::{
     CompiledChannel, CompiledChannelUpstreamPolicy, CompiledRuntimeConfig,
-    OutboundNetworkPolicyFingerprint,
+    OutboundNetworkPolicyFingerprint, ResponsesWebSocketSettings,
 };
 
 use super::ResolvedUpstreamPolicy;
 
 const COMMAND_CAPACITY: usize = 8;
 const MESSAGE_CAPACITY: usize = 16;
-const IDLE_POOL_CAPACITY: usize = 128;
-const IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
-const MAX_CONNECTION_AGE: Duration = Duration::from_secs(55 * 60);
 const REAPER_INTERVAL: Duration = Duration::from_secs(30);
 pub(crate) const MAX_UPSTREAM_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 
@@ -317,13 +314,35 @@ struct IdleWebSocket {
     idle_since: Instant,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct WebSocketPoolSnapshot {
+    pub(crate) enabled: bool,
+    pub(crate) idle_connections: u64,
+    pub(crate) leased_connections: u64,
+    pub(crate) capacity: u64,
+    pub(crate) hits_total: u64,
+    pub(crate) misses_total: u64,
+    pub(crate) discarded_total: u64,
+    pub(crate) idle_timeout_seconds: u64,
+    pub(crate) max_connection_age_seconds: u64,
+}
+
 pub(super) struct UpstreamWebSocketPool {
     inner: Arc<PoolInner>,
     reaper_started: AtomicBool,
 }
 
 struct PoolInner {
-    idle: Mutex<VecDeque<IdleWebSocket>>,
+    state: Mutex<PoolState>,
+    leased_connections: AtomicU64,
+    hits_total: AtomicU64,
+    misses_total: AtomicU64,
+    discarded_total: AtomicU64,
+}
+
+struct PoolState {
+    idle: VecDeque<IdleWebSocket>,
+    settings: ResponsesWebSocketSettings,
 }
 
 impl UpstreamWebSocketPool {
@@ -331,45 +350,104 @@ impl UpstreamWebSocketPool {
     pub(super) fn new() -> Self {
         Self {
             inner: Arc::new(PoolInner {
-                idle: Mutex::new(VecDeque::new()),
+                state: Mutex::new(PoolState {
+                    idle: VecDeque::new(),
+                    settings: ResponsesWebSocketSettings::default(),
+                }),
+                leased_connections: AtomicU64::new(0),
+                hits_total: AtomicU64::new(0),
+                misses_total: AtomicU64::new(0),
+                discarded_total: AtomicU64::new(0),
             }),
             reaper_started: AtomicBool::new(false),
         }
     }
 
-    pub(super) fn acquire(&self, key: &UpstreamWebSocketKey) -> Option<UpstreamWebSocket> {
+    pub(super) fn configure(&self, settings: ResponsesWebSocketSettings) {
         let now = Instant::now();
-        let mut idle = self
+        let mut state = self
             .inner
-            .idle
+            .state
             .lock()
             .expect("websocket pool mutex poisoned");
-        prune_idle(&mut idle, now);
-        let index = idle.iter().rposition(|entry| entry.key == *key)?;
-        idle.remove(index).map(|entry| entry.connection)
+        state.settings = settings;
+        let mut discarded = prune_idle(&mut state, now);
+        if !settings.enabled() {
+            discarded = discarded.saturating_add(clear_idle(&mut state));
+        } else {
+            discarded = discarded.saturating_add(trim_to_capacity(&mut state));
+        }
+        drop(state);
+        record_discarded(&self.inner, discarded);
+    }
+
+    pub(super) fn acquire(&self, key: &UpstreamWebSocketKey) -> Option<UpstreamWebSocket> {
+        let now = Instant::now();
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .expect("websocket pool mutex poisoned");
+        let discarded = prune_idle(&mut state, now);
+        record_discarded(&self.inner, discarded);
+        if !state.settings.enabled() {
+            self.inner.misses_total.fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
+        let Some(index) = state.idle.iter().rposition(|entry| entry.key == *key) else {
+            self.inner.misses_total.fetch_add(1, Ordering::Relaxed);
+            return None;
+        };
+        let connection = state
+            .idle
+            .remove(index)
+            .expect("matched websocket pool entry exists")
+            .connection;
+        self.inner.hits_total.fetch_add(1, Ordering::Relaxed);
+        self.inner.leased_connections.fetch_add(1, Ordering::AcqRel);
+        Some(connection)
     }
 
     pub(super) fn release(&self, key: UpstreamWebSocketKey, mut connection: UpstreamWebSocket) {
+        decrement(&self.inner.leased_connections);
         let now = Instant::now();
-        if connection.age(now) >= MAX_CONNECTION_AGE || !connection.is_clean() {
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .expect("websocket pool mutex poisoned");
+        let settings = state.settings;
+        let mut discarded = prune_idle(&mut state, now);
+        if !settings.enabled()
+            || settings.max_idle_connections() == 0
+            || connection.age(now) >= settings.max_connection_age()
+            || !connection.is_clean()
+        {
+            drop(state);
+            record_discarded(&self.inner, discarded.saturating_add(1));
             return;
         }
         self.ensure_reaper();
-        let mut idle = self
-            .inner
-            .idle
-            .lock()
-            .expect("websocket pool mutex poisoned");
-        prune_idle(&mut idle, now);
-        idle.retain(|entry| entry.key != key);
-        idle.push_back(IdleWebSocket {
+        let before = state.idle.len();
+        state.idle.retain(|entry| entry.key != key);
+        discarded = discarded.saturating_add(usize_to_u64(before - state.idle.len()));
+        state.idle.push_back(IdleWebSocket {
             key,
             connection,
             idle_since: now,
         });
-        while idle.len() > IDLE_POOL_CAPACITY {
-            idle.pop_front();
-        }
+        discarded = discarded.saturating_add(trim_to_capacity(&mut state));
+        drop(state);
+        record_discarded(&self.inner, discarded);
+    }
+
+    pub(super) fn record_connected(&self) {
+        self.inner.leased_connections.fetch_add(1, Ordering::AcqRel);
+    }
+
+    pub(super) fn discard_leased(&self) {
+        decrement(&self.inner.leased_connections);
+        self.inner.discarded_total.fetch_add(1, Ordering::Relaxed);
     }
 
     pub(super) fn preferred_channel(
@@ -378,13 +456,19 @@ impl UpstreamWebSocketPool {
         client_identity: WebSocketClientIdentity,
     ) -> Option<Uuid> {
         let now = Instant::now();
-        let mut idle = self
+        let mut state = self
             .inner
-            .idle
+            .state
             .lock()
             .expect("websocket pool mutex poisoned");
-        prune_idle(&mut idle, now);
-        idle.iter()
+        let discarded = prune_idle(&mut state, now);
+        record_discarded(&self.inner, discarded);
+        if !state.settings.enabled() {
+            return None;
+        }
+        state
+            .idle
+            .iter()
             .rev()
             .find(|entry| {
                 entry.key.api_key_id == api_key_id && entry.key.client_identity == client_identity
@@ -393,43 +477,80 @@ impl UpstreamWebSocketPool {
     }
 
     pub(super) fn reconcile(&self, snapshot: &CompiledRuntimeConfig) {
+        let settings = snapshot.system_settings().websocket();
         let active_api_keys = snapshot
             .api_keys()
+            .filter(|api_key| api_key.websocket_enabled())
             .map(|api_key| api_key.id())
             .collect::<HashSet<_>>();
         let active_channels = snapshot
             .model_rules()
             .flat_map(|rule| rule.tiers())
             .flat_map(crate::domain::CompiledRouteTier::candidates)
+            .filter(|candidate| candidate.channel().supports_websocket())
             .map(|candidate| candidate.channel().id())
             .collect::<HashSet<_>>();
-        let mut idle = self
+        let mut state = self
             .inner
-            .idle
+            .state
             .lock()
             .expect("websocket pool mutex poisoned");
-        prune_idle(&mut idle, Instant::now());
-        idle.retain(|entry| {
-            active_api_keys.contains(&entry.key.api_key_id)
+        state.settings = settings;
+        let mut discarded = prune_idle(&mut state, Instant::now());
+        let before = state.idle.len();
+        state.idle.retain(|entry| {
+            settings.enabled()
+                && active_api_keys.contains(&entry.key.api_key_id)
                 && active_channels.contains(&entry.key.channel_id)
                 && snapshot
                     .channel(entry.key.channel_id)
                     .is_some_and(|channel| {
-                        channel.connectivity_fingerprint() == &entry.key.connectivity_fingerprint
+                        channel.supports_websocket()
+                            && channel.connectivity_fingerprint()
+                                == &entry.key.connectivity_fingerprint
                             && channel
                                 .upstream_policy()
                                 .outbound_network_policy_fingerprint()
                                 == entry.key.outbound_network_policy_fingerprint
                     })
         });
+        discarded = discarded.saturating_add(usize_to_u64(before - state.idle.len()));
+        discarded = discarded.saturating_add(trim_to_capacity(&mut state));
+        drop(state);
+        record_discarded(&self.inner, discarded);
+    }
+
+    pub(super) fn snapshot(&self) -> WebSocketPoolSnapshot {
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .expect("websocket pool mutex poisoned");
+        let discarded = prune_idle(&mut state, Instant::now());
+        record_discarded(&self.inner, discarded);
+        let settings = state.settings;
+        WebSocketPoolSnapshot {
+            enabled: settings.enabled(),
+            idle_connections: usize_to_u64(state.idle.len()),
+            leased_connections: self.inner.leased_connections.load(Ordering::Acquire),
+            capacity: usize_to_u64(settings.max_idle_connections()),
+            hits_total: self.inner.hits_total.load(Ordering::Relaxed),
+            misses_total: self.inner.misses_total.load(Ordering::Relaxed),
+            discarded_total: self.inner.discarded_total.load(Ordering::Relaxed),
+            idle_timeout_seconds: settings.idle_timeout().as_secs(),
+            max_connection_age_seconds: settings.max_connection_age().as_secs(),
+        }
     }
 
     pub(super) fn clear(&self) {
-        self.inner
-            .idle
+        let mut state = self
+            .inner
+            .state
             .lock()
-            .expect("websocket pool mutex poisoned")
-            .clear();
+            .expect("websocket pool mutex poisoned");
+        let discarded = clear_idle(&mut state);
+        drop(state);
+        record_discarded(&self.inner, discarded);
     }
 
     fn ensure_reaper(&self) {
@@ -443,17 +564,55 @@ impl UpstreamWebSocketPool {
                 let Some(inner) = inner.upgrade() else {
                     return;
                 };
-                let mut idle = inner.idle.lock().expect("websocket pool mutex poisoned");
-                prune_idle(&mut idle, Instant::now());
+                let mut state = inner.state.lock().expect("websocket pool mutex poisoned");
+                let mut discarded = prune_idle(&mut state, Instant::now());
+                discarded = discarded.saturating_add(trim_to_capacity(&mut state));
+                drop(state);
+                record_discarded(&inner, discarded);
             }
         });
     }
 }
 
-fn prune_idle(idle: &mut VecDeque<IdleWebSocket>, now: Instant) {
-    idle.retain_mut(|entry| {
+fn prune_idle(state: &mut PoolState, now: Instant) -> u64 {
+    let before = state.idle.len();
+    let idle_timeout = state.settings.idle_timeout();
+    let max_connection_age = state.settings.max_connection_age();
+    state.idle.retain_mut(|entry| {
         entry.connection.is_clean()
-            && now.saturating_duration_since(entry.idle_since) < IDLE_TIMEOUT
-            && entry.connection.age(now) < MAX_CONNECTION_AGE
+            && now.saturating_duration_since(entry.idle_since) < idle_timeout
+            && entry.connection.age(now) < max_connection_age
     });
+    usize_to_u64(before - state.idle.len())
+}
+
+fn trim_to_capacity(state: &mut PoolState) -> u64 {
+    let mut discarded = 0_u64;
+    while state.idle.len() > state.settings.max_idle_connections() {
+        state.idle.pop_front();
+        discarded = discarded.saturating_add(1);
+    }
+    discarded
+}
+
+fn clear_idle(state: &mut PoolState) -> u64 {
+    let discarded = usize_to_u64(state.idle.len());
+    state.idle.clear();
+    discarded
+}
+
+fn record_discarded(inner: &PoolInner, count: u64) {
+    if count > 0 {
+        inner.discarded_total.fetch_add(count, Ordering::Relaxed);
+    }
+}
+
+fn decrement(counter: &AtomicU64) {
+    let _ = counter.fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+        Some(value.saturating_sub(1))
+    });
+}
+
+fn usize_to_u64(value: usize) -> u64 {
+    u64::try_from(value).unwrap_or(u64::MAX)
 }

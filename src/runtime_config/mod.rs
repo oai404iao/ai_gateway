@@ -29,8 +29,8 @@ use crate::{
         CompiledConfigTemplate, CompiledModelRule, CompiledProxy, CompiledRouteTier,
         CompiledRuntimeConfig, CompiledScheduledTestModel, MAX_REQUEST_RETRIES, ModelPriceSnapshot,
         ModelRouteKey, NoProxyHost, PassiveHealthSettings, RequestRetrySettings,
-        ScheduledTestingMode, ScheduledTestingSettings, SelectionStrategy,
-        SessionAffinityKeySource, SessionAffinityRule, SessionAffinitySettings,
+        ResponsesWebSocketSettings, ScheduledTestingMode, ScheduledTestingSettings,
+        SelectionStrategy, SessionAffinityKeySource, SessionAffinityRule, SessionAffinitySettings,
         SystemRuntimeSettings, UpstreamAuth, UpstreamTimeoutDefaults,
     },
     persistence::{
@@ -748,6 +748,7 @@ pub fn compile_control_plane_with_system_settings(
                     .iter()
                     .map(|model| Arc::<str>::from(model.as_str()))
                     .collect(),
+                channel.supports_websocket,
                 channel.auto_disable_allowed,
                 channel.auto_disabled,
                 channel.test_model.as_deref().map(Arc::<str>::from),
@@ -818,6 +819,7 @@ pub fn compile_system_settings_input(
     let automatic_disable = &input.automatic_disable;
     let scheduled_testing = &input.scheduled_testing;
     let session_affinity = compile_session_affinity_settings(&input.session_affinity)?;
+    let websocket = &input.websocket;
     if !valid_api_hosts(&input.api_hosts)
         || upstream.connect_timeout_seconds == 0
         || upstream.response_header_timeout_seconds <= upstream.connect_timeout_seconds
@@ -838,6 +840,12 @@ pub fn compile_system_settings_input(
         || scheduled_testing.prompt.trim().is_empty()
         || scheduled_testing.prompt.chars().count() > 4_000
         || !matches!(scheduled_testing.mode.as_str(), "global" | "failure_only")
+        || websocket.max_idle_connections > 4_096
+        || websocket.idle_timeout_seconds == 0
+        || websocket.idle_timeout_seconds > 3_600
+        || websocket.max_connection_age_seconds < 60
+        || websocket.max_connection_age_seconds > 3_600
+        || websocket.idle_timeout_seconds >= websocket.max_connection_age_seconds
     {
         return Err(ConfigError::Compile(
             "invalid forwarding system settings".into(),
@@ -858,7 +866,7 @@ pub fn compile_system_settings_input(
         "failure_only" => ScheduledTestingMode::FailureOnly,
         _ => unreachable!("validated scheduled testing mode"),
     };
-    Ok(SystemRuntimeSettings::new_with_all(
+    Ok(SystemRuntimeSettings::new_with_all_and_websocket(
         UpstreamTimeoutDefaults::new(
             std::time::Duration::from_secs(upstream.connect_timeout_seconds),
             std::time::Duration::from_secs(upstream.response_header_timeout_seconds),
@@ -885,6 +893,12 @@ pub fn compile_system_settings_input(
             Arc::from(scheduled_testing.prompt.trim()),
         ),
         session_affinity,
+        ResponsesWebSocketSettings::new(
+            websocket.enabled,
+            websocket.max_idle_connections,
+            std::time::Duration::from_secs(websocket.idle_timeout_seconds),
+            std::time::Duration::from_secs(websocket.max_connection_age_seconds),
+        ),
     ))
 }
 
@@ -1362,6 +1376,7 @@ fn compile_keys(
         let key = Arc::new(CompiledApiKey::new_with_authorization_profile(
             record.id,
             record.user_id,
+            record.user_websocket_enabled,
             formats,
             permissions,
             authorization,
@@ -1870,6 +1885,11 @@ fn validate_channel(
 ) -> Result<(), ConfigError> {
     require("channel name", &record.name)?;
     let format = parse_format(&record.api_format)?;
+    if record.supports_websocket && format != ApiFormat::OpenAiResponses {
+        return Err(ConfigError::Compile(
+            "only Responses channels can support WebSocket forwarding".into(),
+        ));
+    }
     compile_document(&record.override_document, format)
         .map_err(transform_error("channel override document"))?;
     compile_timeouts(record)?;
@@ -2443,6 +2463,7 @@ mod tests {
             name: id.to_string(),
             base_url: format!("https://{id}.test"),
             enabled: true,
+            supports_websocket: false,
             auto_disabled: false,
             auto_disable_allowed: false,
             weight: 1,
@@ -2620,6 +2641,7 @@ mod tests {
                         prompt: "reply '1'".into(),
                     },
                     session_affinity: Default::default(),
+                    websocket: Default::default(),
                 })
                 .unwrap(),
                 updated_at: chrono::Utc::now(),
@@ -2686,6 +2708,7 @@ mod tests {
                     ttl_seconds: None,
                 }],
             },
+            websocket: Default::default(),
         })
         .unwrap();
 
@@ -2925,6 +2948,7 @@ mod tests {
             id: Uuid::from_u128(id),
             user_id: Uuid::from_u128(id + 100),
             user_status: "active".into(),
+            user_websocket_enabled: false,
             secret_value: secret.into(),
             status: "active".into(),
             expires_at: None,

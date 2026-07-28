@@ -34,7 +34,7 @@ use crate::{
         CostStatisticsFilter, InviteUserInput, ModelInput, ModelRuleInput, ProxyCreateInput,
         ProxyInput, RequestLogFilter, RequestLogRepository, SelfApiKeyCreate, SelfApiKeyUpdate,
         SpendLeaderboardFilter, SpendLeaderboardPeriod, StatisticsGranularity, SystemSettingsInput,
-        UserBatchUpdateInput, UserGroupInput, UserInput, UserUpdateInput,
+        UserBatchUpdateInput, UserGroupInput, UserInput, UserSettingsInput, UserUpdateInput,
     },
     runtime_config::ConfigError,
 };
@@ -71,6 +71,10 @@ pub fn router(state: ConsoleState) -> Router {
     let self_routes = Router::new()
         .route("/console/v1/auth/logout", post(logout))
         .route("/console/v1/me", get(get_me).patch(update_me))
+        .route(
+            "/console/v1/me/settings",
+            get(get_user_settings).put(update_user_settings),
+        )
         .route("/console/v1/me/password", post(change_password))
         .route(
             "/console/v1/me/sessions",
@@ -722,6 +726,31 @@ async fn update_me(
         .await?
         .map(Json)
         .ok_or(ConsoleError::NotFound)
+}
+
+async fn get_user_settings(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+) -> Result<Json<crate::persistence::UserSettingsView>, ConsoleError> {
+    state
+        .coordinator
+        .user_settings(principal.user_id())
+        .await?
+        .map(Json)
+        .ok_or(ConsoleError::NotFound)
+}
+
+async fn update_user_settings(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Json(input): Json<UserSettingsInput>,
+) -> Result<Json<crate::persistence::UserSettingsView>, ConsoleError> {
+    Ok(Json(
+        state
+            .coordinator
+            .update_user_settings(principal.user_id(), input)
+            .await?,
+    ))
 }
 
 async fn change_password(

@@ -17,6 +17,10 @@ Versioning.
   transforms, HTTP/SOCKS proxy support, connection-local
   `previous_response_id` continuity, graceful process draining, and a bounded
   upstream WebSocket pool.
+- Database-backed Responses WebSocket controls with explicit system, user, and
+  channel opt-in; configurable idle-pool capacity and lifetimes; a personal
+  settings page; channel capability controls; and current-process pool/session
+  metrics on the administrator system-load page.
 
 ## [0.4.0] - 2026-07-27
 

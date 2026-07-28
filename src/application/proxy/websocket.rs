@@ -40,9 +40,9 @@ use crate::{
 };
 
 use super::{
-    CompletionGuard, ProxyError, ProxyService, RequestOutcome, forward_request_headers,
-    inject_upstream_auth, match_session_affinity, parse_bearer_token, request_billing_multiplier,
-    rewrite_model_alias, sse_terminal_request_outcome, upstream_url,
+    CompletionGuard, ProxyError, ProxyService, RequestOutcome, WebSocketRuntimeSnapshot,
+    forward_request_headers, inject_upstream_auth, match_session_affinity, parse_bearer_token,
+    request_billing_multiplier, rewrite_model_alias, sse_terminal_request_outcome, upstream_url,
 };
 pub(super) use lifecycle::WebSocketLifecycle;
 use lifecycle::WebSocketSessionGuard;
@@ -78,6 +78,16 @@ impl ProxyService {
         if !api_key.permits(OPENAI_RESPONSES_FORMAT, ApiKeyPermission::Proxy) {
             return Err(ProxyError::forbidden(
                 "This API key cannot proxy Responses WebSocket requests.",
+            ));
+        }
+        if !snapshot.system_settings().websocket().enabled() {
+            return Err(ProxyError::websocket_disabled(
+                "Responses WebSocket forwarding is disabled by the gateway administrator.",
+            ));
+        }
+        if !api_key.websocket_enabled() {
+            return Err(ProxyError::websocket_disabled(
+                "Responses WebSocket forwarding is disabled in this user's settings.",
             ));
         }
         let lifecycle_guard = self
@@ -124,6 +134,24 @@ impl ProxyService {
     #[must_use]
     pub fn active_websocket_sessions(&self) -> usize {
         self.websocket_lifecycle.active()
+    }
+
+    #[must_use]
+    pub(crate) fn websocket_runtime_snapshot(&self) -> WebSocketRuntimeSnapshot {
+        let pool = self.upstream_clients.websocket_pool_snapshot();
+        WebSocketRuntimeSnapshot {
+            active_downstream_sessions: u64::try_from(self.websocket_lifecycle.active())
+                .unwrap_or(u64::MAX),
+            enabled: pool.enabled,
+            idle_upstream_connections: pool.idle_connections,
+            leased_upstream_connections: pool.leased_connections,
+            pool_capacity: pool.capacity,
+            pool_hits_total: pool.hits_total,
+            pool_misses_total: pool.misses_total,
+            pool_discarded_total: pool.discarded_total,
+            idle_timeout_seconds: pool.idle_timeout_seconds,
+            max_connection_age_seconds: pool.max_connection_age_seconds,
+        }
     }
 
     /// Waits until all Responses WebSocket upgrade callbacks have exited.
@@ -213,7 +241,7 @@ impl ResponsesWebSocketSession {
             .as_ref()
             .is_some_and(|pinned| !pinned.reusable || pinned.connection.is_closed())
         {
-            pinned.take();
+            self.release_pinned(pinned.take());
         }
 
         let snapshot = self.proxy.runtime.snapshot();
@@ -239,6 +267,30 @@ impl ResponsesWebSocketSession {
                 "permission_error",
                 "permission_denied",
                 "This API key cannot proxy Responses WebSocket requests.",
+                None,
+            )
+            .await;
+            return SessionAction::Close;
+        }
+        if !snapshot.system_settings().websocket().enabled() {
+            send_error(
+                client,
+                403,
+                "permission_error",
+                "websocket_disabled",
+                "Responses WebSocket forwarding is disabled by the gateway administrator.",
+                None,
+            )
+            .await;
+            return SessionAction::Close;
+        }
+        if !api_key.websocket_enabled() {
+            send_error(
+                client,
+                403,
+                "permission_error",
+                "websocket_disabled",
+                "Responses WebSocket forwarding is disabled in this user's settings.",
                 None,
             )
             .await;
@@ -458,6 +510,7 @@ impl ResponsesWebSocketSession {
                     .await
                     {
                         Ok(connection) => {
+                            self.proxy.upstream_clients.record_connected_websocket();
                             *pinned = Some(PinnedUpstream::new(prepared.key.clone(), connection));
                             completion.response_headers_received();
                         }
@@ -575,7 +628,7 @@ impl ResponsesWebSocketSession {
                 Ok(Err(_)) => {
                     completion.connection_failed();
                     completion.finish(RequestOutcome::UpstreamUnavailable);
-                    pinned.take();
+                    self.release_pinned(pinned.take());
                     send_error(
                         client,
                         502,
@@ -589,7 +642,7 @@ impl ResponsesWebSocketSession {
                 }
                 Err(_) => {
                     completion.finish(RequestOutcome::StreamIdleTimeout);
-                    pinned.take();
+                    self.release_pinned(pinned.take());
                     send_error(
                         client,
                         504,
@@ -614,11 +667,7 @@ impl ResponsesWebSocketSession {
                     .sse_event_patches(),
             )
             .await;
-            if active.reusable {
-                self.release_pinned(pinned.take());
-            } else {
-                pinned.take();
-            }
+            self.release_pinned(pinned.take());
             return action;
         }
     }
@@ -676,6 +725,8 @@ impl ResponsesWebSocketSession {
             self.proxy
                 .upstream_clients
                 .release_websocket(pinned.key, pinned.connection);
+        } else {
+            self.proxy.upstream_clients.discard_leased_websocket();
         }
     }
 }
@@ -768,7 +819,7 @@ fn select_websocket_route(
     excluded_channel_slots: &[usize],
 ) -> SelectionResult {
     if let Some(preferred_channel) = preferred_channel
-        && let Some(selected) = proxy.routing.select_preferred_channel(
+        && let Some(selected) = proxy.routing.select_preferred_websocket_channel(
             snapshot,
             api_key,
             OPENAI_RESPONSES_FORMAT,
@@ -780,7 +831,7 @@ fn select_websocket_route(
     {
         return SelectionResult::Selected(selected);
     }
-    proxy.routing.select_with_affinity_excluding(
+    proxy.routing.select_websocket_with_affinity_excluding(
         snapshot,
         api_key,
         OPENAI_RESPONSES_FORMAT,

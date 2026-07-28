@@ -181,6 +181,7 @@ Codex WebSocket 测试至少覆盖：
 | 压缩扩展 | 启用 per-message deflate | 当前不主动协商 per-message deflate |
 | 失败恢复 | 客户端重连，预算耗尽后切 HTTP | 只允许上游 Upgrade 前故障转移；消息发送后不重试 |
 | Header | Codex主动构造 Session 和内部 Header | 转发下游 Header，并按渠道变换/认证；缺省补 WebSocket Beta Header |
+| 能力开关 | provider 声明支持后由 Codex 使用 | 网关要求系统、用户和 Responses 渠道三层均显式启用；默认关闭 |
 
 因此，`ai-gateway` 不应为了某个兼容上游而全局删除 `max_output_tokens` 或伪造全部 Codex
 metadata。需要模拟 Codex 的真实上游 smoke 应显式发送 Codex 请求形状；生产渠道的上游偏差应通过

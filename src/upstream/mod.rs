@@ -14,12 +14,13 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::domain::{
-    CompiledChannelUpstreamPolicy, CompiledRuntimeConfig, NoProxyHost, UpstreamTimeoutDefaults,
+    CompiledChannelUpstreamPolicy, CompiledRuntimeConfig, NoProxyHost, ResponsesWebSocketSettings,
+    UpstreamTimeoutDefaults,
 };
 
 pub(crate) use websocket::{
     MAX_UPSTREAM_MESSAGE_BYTES, UpstreamWebSocket, UpstreamWebSocketError, UpstreamWebSocketKey,
-    WebSocketClientIdentity, connect_upstream_websocket,
+    WebSocketClientIdentity, WebSocketPoolSnapshot, connect_upstream_websocket,
 };
 
 /// The only TLS configuration permitted for upstream clients.
@@ -346,6 +347,10 @@ impl UpstreamClientRegistry {
         Ok(())
     }
 
+    pub(crate) fn configure_websockets(&self, settings: ResponsesWebSocketSettings) {
+        self.websockets.configure(settings);
+    }
+
     /// Checks out an idle Responses WebSocket with the exact same client,
     /// channel, network, target, and handshake-header identity.
     #[must_use]
@@ -363,6 +368,19 @@ impl UpstreamClientRegistry {
         connection: UpstreamWebSocket,
     ) {
         self.websockets.release(key, connection);
+    }
+
+    pub(crate) fn record_connected_websocket(&self) {
+        self.websockets.record_connected();
+    }
+
+    pub(crate) fn discard_leased_websocket(&self) {
+        self.websockets.discard_leased();
+    }
+
+    #[must_use]
+    pub(crate) fn websocket_pool_snapshot(&self) -> WebSocketPoolSnapshot {
+        self.websockets.snapshot()
     }
 
     /// Finds the most recently pooled channel for one downstream WebSocket
@@ -607,6 +625,7 @@ mod tests {
                     name: "channel".into(),
                     base_url: "https://upstream.test".into(),
                     enabled: true,
+                    supports_websocket: false,
                     auto_disabled: false,
                     auto_disable_allowed: false,
                     weight: 1,

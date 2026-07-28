@@ -13,7 +13,7 @@ use crate::{
         ControlPlaneChannelDetail, ControlPlaneConfigTemplateDetail, ControlPlaneLists,
         ControlPlaneMutation, ControlPlaneRepository, MutationResult, RepositoryError,
         SelfApiKeyCreate, SelfApiKeyOptions, SelfApiKeyUpdate, SyncedModelInput,
-        SystemSettingsView, UserBatchUpdateInput,
+        SystemSettingsView, UserBatchUpdateInput, UserSettingsInput, UserSettingsView,
     },
     routing::{
         PassiveHealthPolicy, RoutingRuntime, SessionAffinityCacheClearResult,
@@ -141,6 +141,37 @@ impl ControlPlaneCoordinator {
 
     pub async fn system_settings(&self) -> Result<SystemSettingsView, ControlPlaneError> {
         Ok(self.repository.system_settings().await?)
+    }
+
+    pub async fn user_settings(
+        &self,
+        user_id: Uuid,
+    ) -> Result<Option<UserSettingsView>, ControlPlaneError> {
+        Ok(self.repository.user_settings(user_id).await?)
+    }
+
+    pub async fn update_user_settings(
+        &self,
+        user_id: Uuid,
+        input: UserSettingsInput,
+    ) -> Result<UserSettingsView, ControlPlaneError> {
+        let _guard = self.serial.lock().await;
+        let mut transaction = self.repository.begin_serializable().await?;
+        let settings = self
+            .repository
+            .update_user_settings(&mut transaction, user_id, input)
+            .await?
+            .ok_or(RepositoryError::NotFound)?;
+        let candidate = self.compile_transaction(&mut transaction).await?;
+        self.validate_candidate(&candidate)?;
+        transaction.commit().await.map_err(RepositoryError::from)?;
+        self.publish(candidate);
+        tracing::info!(
+            %user_id,
+            websocket_enabled = settings.websocket_enabled,
+            "user settings updated"
+        );
+        Ok(settings)
     }
 
     #[must_use]

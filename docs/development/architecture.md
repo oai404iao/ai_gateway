@@ -58,12 +58,17 @@ Browser or Console client
 
 没有 body 变换或模型别名时，原始请求字节保持不变。普通响应不会为了 usage 采集而整体缓冲。
 
-Responses WebSocket 使用同一个 `/v1/responses` 路径的 `GET` Upgrade。握手只做 API Key
-认证；每条顺序的 `response.create` 独立执行准入、选路、变换、usage 和日志。由于
+Responses WebSocket 使用同一个 `/v1/responses` 路径的 `GET` Upgrade。握手先验证 API Key
+认证与 Responses `proxy` 权限，再要求数据库系统设置、API Key 所属用户和最终候选渠道三层均显式
+允许 WebSocket；migration 和新记录均默认关闭。每条顺序的 `response.create` 重新读取当前快照并
+独立执行鉴权、准入、选路、变换、usage 和日志。由于
 `previous_response_id` 的增量缓存属于具体上游连接，下游连接会固定到一个仍可用的上游渠道和
 WebSocket 身份，不做请求多路复用。每个成功请求结束后，上游连接立即回到按 API Key、Session
 握手身份、渠道网络配置、目标和最终 Header 精确隔离的有界空闲池；下一条消息优先取回同一连接。
-池只复用成功终态后的无残留连接，并在空闲 5 分钟或连接总龄 55 分钟时淘汰。
+池只复用成功终态后的无残留连接。系统设置动态配置是否启用、最大空闲连接数、空闲超时和连接
+最长寿命；发布新快照时会立即清理失效 API Key、用户、渠道、网络身份和超出新容量的空闲连接。
+连接池维护进程级空闲/借出数及命中、未命中、丢弃累计计数，并与下游活跃 Session 一同出现在
+管理员系统负载快照中。
 关闭流程单独跟踪 Axum Upgrade 后的任务：停止新 Upgrade 并清空空闲池，允许当前逻辑请求在全局
 grace period 内完成，截止时强制取消，避免 Upgrade 脱离 Hyper connection tracker 后绕过进程排空。
 
@@ -82,7 +87,8 @@ grace period 内完成，截止时强制取消，避免 Upgrade 脱离 Hyper con
 
 动态配置保存在 PostgreSQL。Console 写操作在事务中完成授权、候选配置校验、审计和提交；提交成功后立即编译并发布新的不可变快照。周期 worker 负责从数据库重新加载，以覆盖进程间或外部变更。
 
-数据面不会为每个请求查询 PostgreSQL。进程内限流、被动健康、in-flight 和 Session 粘性不跨实例共享。
+数据面不会为每个请求查询 PostgreSQL。用户 WebSocket 偏好和渠道 WebSocket 能力随完整控制面快照
+编译并原子发布。进程内限流、被动健康、in-flight、Session 粘性和 WebSocket 连接池不跨实例共享。
 
 Console 用户采用单用户组模型。内置默认用户组和默认管理员组负责按用户邀请时的角色默认归属；用户
 没有单独 API Key Policy 覆盖时，动态继承所在组的默认策略。除管理员按用户签发一次性邀请外，匿名

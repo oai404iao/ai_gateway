@@ -9,8 +9,11 @@ use std::{
 
 use ai_gateway::{
     admission::AdmissionRuntime,
-    application::{ProxyService, RecordingRequestLogSink},
-    domain::{PassiveHealthSettings, SystemRuntimeSettings, UpstreamTimeoutDefaults},
+    application::{ProxyService, RecordingRequestLogSink, SystemMetricsService},
+    domain::{
+        PassiveHealthSettings, ResponsesWebSocketSettings, SystemRuntimeSettings,
+        UpstreamTimeoutDefaults,
+    },
     http,
     persistence::{
         ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ControlPlaneRecords, ModelRuleRecord,
@@ -24,6 +27,7 @@ use axum::http::{HeaderMap, HeaderValue, header::AUTHORIZATION};
 use futures_util::{SinkExt, StreamExt};
 use rust_decimal::Decimal;
 use serde_json::{Value, json};
+use sqlx::postgres::PgPoolOptions;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -370,6 +374,25 @@ struct GatewayHarness {
     logs: RecordingRequestLogSink,
 }
 
+#[derive(Clone, Copy)]
+struct WebSocketControls {
+    system_enabled: bool,
+    user_enabled: bool,
+    channel_supported: bool,
+    max_idle_connections: usize,
+}
+
+impl Default for WebSocketControls {
+    fn default() -> Self {
+        Self {
+            system_enabled: true,
+            user_enabled: true,
+            channel_supported: true,
+            max_idle_connections: 128,
+        }
+    }
+}
+
 async fn gateway_harness(upstream: &MockResponsesWebSocket) -> GatewayHarness {
     gateway_harness_with_proxy(upstream, None).await
 }
@@ -377,6 +400,14 @@ async fn gateway_harness(upstream: &MockResponsesWebSocket) -> GatewayHarness {
 async fn gateway_harness_with_proxy(
     upstream: &MockResponsesWebSocket,
     outbound_proxy: Option<ProxyRecord>,
+) -> GatewayHarness {
+    gateway_harness_with_controls(upstream, outbound_proxy, WebSocketControls::default()).await
+}
+
+async fn gateway_harness_with_controls(
+    upstream: &MockResponsesWebSocket,
+    outbound_proxy: Option<ProxyRecord>,
+    controls: WebSocketControls,
 ) -> GatewayHarness {
     let api_key_id = Uuid::new_v4();
     let group_id = Uuid::new_v4();
@@ -387,6 +418,7 @@ async fn gateway_harness_with_proxy(
             id: api_key_id,
             user_id: Uuid::new_v4(),
             user_status: "active".into(),
+            user_websocket_enabled: controls.user_enabled,
             secret_value: CLIENT_KEY.into(),
             status: "active".into(),
             expires_at: None,
@@ -414,6 +446,7 @@ async fn gateway_harness_with_proxy(
             name: "responses".into(),
             base_url: upstream.base_url(),
             enabled: true,
+            supports_websocket: controls.channel_supported,
             auto_disabled: false,
             auto_disable_allowed: false,
             weight: 1,
@@ -478,13 +511,19 @@ async fn gateway_harness_with_proxy(
     let runtime = Arc::new(RuntimeConfig::new(
         compile_control_plane_with_system_settings(
             records,
-            SystemRuntimeSettings::new(
+            SystemRuntimeSettings::new_with_websocket(
                 UpstreamTimeoutDefaults::new(
                     Duration::from_secs(1),
                     Duration::from_secs(2),
                     Duration::from_secs(2),
                 ),
                 PassiveHealthSettings::default(),
+                ResponsesWebSocketSettings::new(
+                    controls.system_enabled,
+                    controls.max_idle_connections,
+                    Duration::from_secs(5 * 60),
+                    Duration::from_secs(55 * 60),
+                ),
             ),
         )
         .unwrap(),
@@ -695,6 +734,22 @@ async fn responses_websocket_forwards_transforms_reuses_connection_and_logs_requ
         assert_eq!(usage.cached_input_tokens, 1);
         assert_eq!(usage.output_tokens, 2);
     }
+
+    let metrics = SystemMetricsService::new(
+        PgPoolOptions::new()
+            .connect_lazy("postgres://postgres@localhost/unused")
+            .unwrap(),
+        1,
+    )
+    .with_websocket_proxy(gateway.proxy.clone())
+    .snapshot()
+    .await;
+    assert!(metrics.websocket.enabled);
+    assert_eq!(metrics.websocket.active_downstream_sessions, 0);
+    assert_eq!(metrics.websocket.idle_upstream_connections, 2);
+    assert_eq!(metrics.websocket.leased_upstream_connections, 0);
+    assert_eq!(metrics.websocket.pool_hits_total, 2);
+    assert_eq!(metrics.websocket.pool_misses_total, 2);
 }
 
 #[tokio::test]
@@ -714,6 +769,106 @@ async fn responses_websocket_rejects_an_invalid_gateway_api_key_during_upgrade()
     };
     assert_eq!(response.status(), 401);
     assert!(upstream.handshakes().is_empty());
+}
+
+#[tokio::test]
+async fn responses_websocket_requires_system_and_user_opt_in() {
+    for controls in [
+        WebSocketControls {
+            system_enabled: false,
+            ..WebSocketControls::default()
+        },
+        WebSocketControls {
+            user_enabled: false,
+            ..WebSocketControls::default()
+        },
+    ] {
+        let upstream = start_mock_upstream().await;
+        let gateway = gateway_harness_with_controls(&upstream, None, controls).await;
+        let error = connect_async(websocket_request(
+            gateway.server.address,
+            CLIENT_KEY,
+            "disabled-session",
+        ))
+        .await
+        .expect_err("disabled WebSocket upgrade must be rejected");
+        let WebSocketError::Http(response) = error else {
+            panic!("expected HTTP upgrade rejection, got {error:?}");
+        };
+        assert_eq!(response.status(), 403);
+        assert!(upstream.handshakes().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn responses_websocket_excludes_channels_without_websocket_support() {
+    let upstream = start_mock_upstream().await;
+    let gateway = gateway_harness_with_controls(
+        &upstream,
+        None,
+        WebSocketControls {
+            channel_supported: false,
+            ..WebSocketControls::default()
+        },
+    )
+    .await;
+    let (mut websocket, response) = connect_async(websocket_request(
+        gateway.server.address,
+        CLIENT_KEY,
+        "unsupported-channel",
+    ))
+    .await
+    .unwrap();
+    assert_eq!(response.status(), 101);
+
+    let events = response_create(&mut websocket, None).await;
+    let terminal = events.last().expect("terminal error event");
+    assert_eq!(terminal["type"], "error");
+    assert_eq!(terminal["status"], 503);
+    assert_eq!(terminal["error"]["code"], "no_healthy_channel");
+    assert!(upstream.handshakes().is_empty());
+}
+
+#[tokio::test]
+async fn responses_websocket_zero_idle_capacity_disables_connection_reuse() {
+    let upstream = start_mock_upstream().await;
+    let gateway = gateway_harness_with_controls(
+        &upstream,
+        None,
+        WebSocketControls {
+            max_idle_connections: 0,
+            ..WebSocketControls::default()
+        },
+    )
+    .await;
+
+    for _ in 0..2 {
+        let (mut websocket, _) = connect_async(websocket_request(
+            gateway.server.address,
+            CLIENT_KEY,
+            "no-pool-session",
+        ))
+        .await
+        .unwrap();
+        response_create(&mut websocket, None).await;
+        close_and_wait(websocket).await;
+    }
+
+    assert_eq!(upstream.handshakes().len(), 2);
+    let metrics = SystemMetricsService::new(
+        PgPoolOptions::new()
+            .connect_lazy("postgres://postgres@localhost/unused")
+            .unwrap(),
+        1,
+    )
+    .with_websocket_proxy(gateway.proxy.clone())
+    .snapshot()
+    .await;
+    assert_eq!(metrics.websocket.pool_capacity, 0);
+    assert_eq!(metrics.websocket.idle_upstream_connections, 0);
+    assert_eq!(metrics.websocket.pool_hits_total, 0);
+    assert_eq!(metrics.websocket.pool_misses_total, 2);
+    assert_eq!(metrics.websocket.pool_discarded_total, 2);
 }
 
 #[tokio::test]

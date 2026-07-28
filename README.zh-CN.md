@@ -244,7 +244,8 @@ Responses WebSocket 客户端使用同一个 Gateway Bearer Key 连接
 `ws://<gateway>/v1/responses`（或通过终止 TLS 的反向代理使用 `wss://`）。网关对每个顺序到达的
 `response.create` 独立执行准入和日志记录，在可用时取回同一 Session 隔离的上游 WebSocket 以保持
 连接级缓存连续性，并在请求成功完成后把干净连接归还有界池；同一个 WebSocket 不支持并发多路复用
-Responses 请求。
+Responses 请求。WebSocket 转发默认关闭：管理员必须在数据库系统设置中启用总开关并把 Responses
+渠道标记为支持，API Key 所属用户也必须在个人设置中启用；连接池容量和连接寿命同样由系统设置管理。
 最小校验、透传、Streaming、重试和错误边界见
 [OpenAI 兼容性参考](docs/reference/openai-compatibility.md)。
 

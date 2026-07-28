@@ -92,6 +92,8 @@ pub struct SystemSettingsInput {
     #[serde(default)]
     pub scheduled_testing: SystemScheduledTestingSettingsInput,
     pub session_affinity: SystemSessionAffinitySettingsInput,
+    #[serde(default)]
+    pub websocket: SystemWebSocketSettingsInput,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -184,6 +186,30 @@ impl Default for SystemSessionAffinitySettingsInput {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+pub struct SystemWebSocketSettingsInput {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_websocket_max_idle_connections")]
+    pub max_idle_connections: usize,
+    #[serde(default = "default_websocket_idle_timeout_seconds")]
+    pub idle_timeout_seconds: u64,
+    #[serde(default = "default_websocket_max_connection_age_seconds")]
+    pub max_connection_age_seconds: u64,
+}
+
+impl Default for SystemWebSocketSettingsInput {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_idle_connections: default_websocket_max_idle_connections(),
+            idle_timeout_seconds: default_websocket_idle_timeout_seconds(),
+            max_connection_age_seconds: default_websocket_max_connection_age_seconds(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct SystemSessionAffinityRuleInput {
     pub name: String,
     pub enabled: bool,
@@ -225,6 +251,18 @@ fn default_scheduled_testing_prompt() -> String {
     "reply '1'".into()
 }
 
+const fn default_websocket_max_idle_connections() -> usize {
+    128
+}
+
+const fn default_websocket_idle_timeout_seconds() -> u64 {
+    5 * 60
+}
+
+const fn default_websocket_max_connection_age_seconds() -> u64 {
+    55 * 60
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct SystemSettingsView {
     #[serde(flatten)]
@@ -237,11 +275,24 @@ pub struct ApiHostsView {
     pub api_hosts: Vec<String>,
 }
 
+#[derive(Clone, Debug, Serialize, FromRow)]
+pub struct UserSettingsView {
+    pub websocket_enabled: bool,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UserSettingsInput {
+    pub websocket_enabled: bool,
+}
+
 #[derive(FromRow)]
 pub struct ApiKeyRecord {
     pub id: Uuid,
     pub user_id: Uuid,
     pub user_status: String,
+    pub user_websocket_enabled: bool,
     pub secret_value: String,
     pub status: String,
     pub expires_at: Option<DateTime<Utc>>,
@@ -261,6 +312,7 @@ impl fmt::Debug for ApiKeyRecord {
             .field("id", &self.id)
             .field("user_id", &self.user_id)
             .field("user_status", &self.user_status)
+            .field("user_websocket_enabled", &self.user_websocket_enabled)
             .field("secret_value", &"REDACTED")
             .field("status", &self.status)
             .field("expires_at", &self.expires_at)
@@ -325,6 +377,7 @@ pub struct ChannelRecord {
     pub name: String,
     pub base_url: String,
     pub enabled: bool,
+    pub supports_websocket: bool,
     pub auto_disabled: bool,
     pub auto_disable_allowed: bool,
     pub weight: i32,
@@ -351,6 +404,7 @@ impl fmt::Debug for ChannelRecord {
             .field("name", &self.name)
             .field("base_url", &self.base_url)
             .field("enabled", &self.enabled)
+            .field("supports_websocket", &self.supports_websocket)
             .field("auto_disabled", &self.auto_disabled)
             .field("auto_disable_allowed", &self.auto_disable_allowed)
             .field("weight", &self.weight)
@@ -674,6 +728,8 @@ pub struct ChannelCreateInput {
     pub base_url: String,
     pub enabled: bool,
     #[serde(default)]
+    pub supports_websocket: bool,
+    #[serde(default)]
     pub status_statistics_enabled: bool,
     #[serde(default)]
     pub auto_disable_allowed: bool,
@@ -709,6 +765,8 @@ pub struct ChannelInput {
     pub name: String,
     pub base_url: String,
     pub enabled: bool,
+    #[serde(default)]
+    pub supports_websocket: bool,
     #[serde(default)]
     pub status_statistics_enabled: bool,
     #[serde(default)]
@@ -874,6 +932,7 @@ struct ChannelMutationInput {
     name: String,
     base_url: String,
     enabled: bool,
+    supports_websocket: bool,
     status_statistics_enabled: bool,
     auto_disable_allowed: bool,
     weight: i32,
@@ -898,6 +957,7 @@ impl From<ChannelCreateInput> for ChannelMutationInput {
             name: value.name,
             base_url: value.base_url,
             enabled: value.enabled,
+            supports_websocket: value.supports_websocket,
             status_statistics_enabled: value.status_statistics_enabled,
             auto_disable_allowed: value.auto_disable_allowed,
             weight: value.weight,
@@ -924,6 +984,7 @@ impl From<ChannelInput> for ChannelMutationInput {
             name: value.name,
             base_url: value.base_url,
             enabled: value.enabled,
+            supports_websocket: value.supports_websocket,
             status_statistics_enabled: value.status_statistics_enabled,
             auto_disable_allowed: value.auto_disable_allowed,
             weight: value.weight,
@@ -1610,6 +1671,7 @@ pub struct ControlPlaneChannel {
     pub name: String,
     pub base_url: String,
     pub enabled: bool,
+    pub supports_websocket: bool,
     pub status_statistics_enabled: bool,
     pub auto_disabled: bool,
     pub auto_disabled_reason: Option<String>,
@@ -1637,6 +1699,7 @@ pub struct ControlPlaneChannelDetail {
     pub name: String,
     pub base_url: String,
     pub enabled: bool,
+    pub supports_websocket: bool,
     pub status_statistics_enabled: bool,
     pub auto_disabled: bool,
     pub auto_disabled_reason: Option<String>,
@@ -1666,6 +1729,7 @@ struct ControlPlaneChannelRow {
     name: String,
     base_url: String,
     enabled: bool,
+    supports_websocket: bool,
     status_statistics_enabled: bool,
     auto_disabled: bool,
     auto_disabled_reason: Option<String>,
@@ -1694,6 +1758,7 @@ impl From<ControlPlaneChannelRow> for ControlPlaneChannel {
             name: value.name,
             base_url: value.base_url,
             enabled: value.enabled,
+            supports_websocket: value.supports_websocket,
             status_statistics_enabled: value.status_statistics_enabled,
             auto_disabled: value.auto_disabled,
             auto_disabled_reason: value.auto_disabled_reason,
@@ -4185,14 +4250,48 @@ impl ControlPlaneRepository {
         system_settings_view(record)
     }
 
+    pub async fn user_settings(
+        &self,
+        user_id: Uuid,
+    ) -> Result<Option<UserSettingsView>, RepositoryError> {
+        sqlx::query_as::<_, UserSettingsView>(
+            "SELECT websocket_enabled,updated_at
+             FROM users
+             WHERE id=$1 AND status='active' AND deleted_at IS NULL",
+        )
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(RepositoryError::from)
+    }
+
+    pub async fn update_user_settings(
+        &self,
+        transaction: &mut Transaction<'_, Postgres>,
+        user_id: Uuid,
+        input: UserSettingsInput,
+    ) -> Result<Option<UserSettingsView>, RepositoryError> {
+        sqlx::query_as::<_, UserSettingsView>(
+            "UPDATE users
+             SET websocket_enabled=$2
+             WHERE id=$1 AND status='active' AND deleted_at IS NULL
+             RETURNING websocket_enabled,updated_at",
+        )
+        .bind(user_id)
+        .bind(input.websocket_enabled)
+        .fetch_optional(&mut **transaction)
+        .await
+        .map_err(RepositoryError::from)
+    }
+
     pub async fn load_transaction(
         transaction: &mut Transaction<'_, Postgres>,
     ) -> Result<ControlPlaneRecords, RepositoryError> {
-        let api_keys = sqlx::query_as::<_, ApiKeyRecord>("SELECT k.id, k.user_id, u.status AS user_status, k.secret_value, k.status, k.expires_at, k.allowed_api_formats::text[] AS allowed_api_formats, k.permissions, k.allowed_group_ids, k.allowed_channel_ids, k.requests_per_minute, k.max_concurrent_requests, k.quota_limit_amount, k.quota_used_amount FROM api_keys k JOIN users u ON u.id = k.user_id WHERE NOT k.is_system ORDER BY k.id").fetch_all(&mut **transaction).await?;
+        let api_keys = sqlx::query_as::<_, ApiKeyRecord>("SELECT k.id, k.user_id, u.status AS user_status, u.websocket_enabled AS user_websocket_enabled, k.secret_value, k.status, k.expires_at, k.allowed_api_formats::text[] AS allowed_api_formats, k.permissions, k.allowed_group_ids, k.allowed_channel_ids, k.requests_per_minute, k.max_concurrent_requests, k.quota_limit_amount, k.quota_used_amount FROM api_keys k JOIN users u ON u.id = k.user_id WHERE NOT k.is_system ORDER BY k.id").fetch_all(&mut **transaction).await?;
         let models = sqlx::query_as::<_, ModelRecord>("SELECT id,source_model_id,currency,price_unit_tokens,price_effective_at,input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,advanced_billing FROM models ORDER BY id").fetch_all(&mut **transaction).await?;
         let model_rules = sqlx::query_as::<_, ModelRuleRecord>("SELECT r.id, r.client_model, r.api_format::text AS api_format, r.upstream_model_id, m.enabled AS upstream_model_enabled, m.currency AS upstream_model_currency, m.price_unit_tokens, m.price_effective_at, m.input_unit_price, m.cached_input_unit_price, m.cache_write_unit_price, m.output_unit_price, m.advanced_billing, m.source_model_id AS upstream_model, r.channel_group_ids, r.channel_ids, r.enabled FROM model_rules r JOIN models m ON m.id = r.upstream_model_id ORDER BY r.id").fetch_all(&mut **transaction).await?;
         let groups = sqlx::query_as::<_, ChannelGroupRecord>("SELECT id, name, api_format::text AS api_format, priority, selection_strategy, enabled FROM channel_groups ORDER BY id").fetch_all(&mut **transaction).await?;
-        let channels = sqlx::query_as::<_, ChannelRecord>("SELECT id, channel_group_id, api_format::text AS api_format, name, base_url, enabled, auto_disabled, auto_disable_allowed, weight, billing_multiplier, proxy_id, config_template_id, override_document, connect_timeout_ms, response_header_timeout_ms, stream_idle_timeout_ms, upstream_auth_kind, upstream_auth_header_name, upstream_api_key, available_models, test_model FROM channels ORDER BY id").fetch_all(&mut **transaction).await?;
+        let channels = sqlx::query_as::<_, ChannelRecord>("SELECT id, channel_group_id, api_format::text AS api_format, name, base_url, enabled, supports_websocket, auto_disabled, auto_disable_allowed, weight, billing_multiplier, proxy_id, config_template_id, override_document, connect_timeout_ms, response_header_timeout_ms, stream_idle_timeout_ms, upstream_auth_kind, upstream_auth_header_name, upstream_api_key, available_models, test_model FROM channels ORDER BY id").fetch_all(&mut **transaction).await?;
         let proxies = sqlx::query_as::<_, ProxyRecord>("SELECT id, name, proxy_url, username, password, no_proxy_hosts, enabled FROM proxies ORDER BY id").fetch_all(&mut **transaction).await?;
         let templates = sqlx::query_as::<_, ConfigTemplateRecord>(
             "SELECT id, name, description, document, enabled FROM config_templates ORDER BY id",
@@ -4362,7 +4461,7 @@ impl ControlPlaneRepository {
         let api_keys = sqlx::query_as::<_, ControlPlaneApiKey>("SELECT k.id, k.user_id, u.status AS user_status, k.name, k.secret_value AS secret, k.status, k.expires_at, k.allowed_api_formats::text[] AS allowed_api_formats, k.permissions, k.allowed_group_ids, k.allowed_channel_ids, k.requests_per_minute, k.max_concurrent_requests, k.quota_limit_amount, k.quota_used_amount, k.updated_at FROM api_keys k JOIN users u ON u.id=k.user_id WHERE NOT k.is_system AND u.deleted_at IS NULL ORDER BY k.id").fetch_all(&self.pool).await?;
         let api_key_policies = sqlx::query_as::<_, ControlPlaneApiKeyPolicy>("SELECT id,name,allowed_group_ids,allowed_channel_ids,enabled,created_at,updated_at FROM api_key_policies ORDER BY id").fetch_all(&self.pool).await?;
         let channel_groups = sqlx::query_as::<_, ControlPlaneChannelGroup>("SELECT id,name,api_format::text AS api_format,priority,selection_strategy,enabled,updated_at FROM channel_groups ORDER BY id").fetch_all(&self.pool).await?;
-        let channels = sqlx::query_as::<_, ControlPlaneChannelRow>("SELECT id,channel_group_id,api_format::text AS api_format,name,base_url,enabled,status_statistics_enabled,auto_disabled,auto_disabled_reason,auto_disable_allowed,weight,billing_multiplier,proxy_id,config_template_id,connect_timeout_ms,response_header_timeout_ms,stream_idle_timeout_ms,upstream_auth_kind,upstream_auth_header_name,(upstream_api_key IS NOT NULL) AS upstream_credential_configured,available_models,test_model,created_at,updated_at FROM channels ORDER BY id").fetch_all(&self.pool).await?;
+        let channels = sqlx::query_as::<_, ControlPlaneChannelRow>("SELECT id,channel_group_id,api_format::text AS api_format,name,base_url,enabled,supports_websocket,status_statistics_enabled,auto_disabled,auto_disabled_reason,auto_disable_allowed,weight,billing_multiplier,proxy_id,config_template_id,connect_timeout_ms,response_header_timeout_ms,stream_idle_timeout_ms,upstream_auth_kind,upstream_auth_header_name,(upstream_api_key IS NOT NULL) AS upstream_credential_configured,available_models,test_model,created_at,updated_at FROM channels ORDER BY id").fetch_all(&self.pool).await?;
         let model_rules = sqlx::query_as::<_, ControlPlaneModelRule>("SELECT r.id,r.client_model,r.api_format::text AS api_format,r.upstream_model_id,m.enabled AS upstream_model_enabled,m.source_model_id AS upstream_model,r.description,r.channel_group_ids,r.channel_ids,r.enabled,r.updated_at FROM model_rules r JOIN models m ON m.id=r.upstream_model_id ORDER BY r.id").fetch_all(&self.pool).await?;
         let proxies = sqlx::query_as::<_, ControlPlaneProxy>("SELECT id,name,regexp_replace(regexp_replace(proxy_url, '^([^:/?#]+://)[^/?#]*@', E'\\1'), '[?#].*$', '') AS proxy_url,no_proxy_hosts,enabled,(username IS NOT NULL OR password IS NOT NULL) AS credential_configured,created_at,updated_at FROM proxies ORDER BY id").fetch_all(&self.pool).await?;
         let config_templates = sqlx::query_as::<_, ControlPlaneConfigTemplate>("SELECT id,name,description,document->>'api_format' AS api_format,enabled,created_at,updated_at FROM config_templates ORDER BY id").fetch_all(&self.pool).await?;
@@ -4385,7 +4484,7 @@ impl ControlPlaneRepository {
         id: Uuid,
     ) -> Result<Option<ControlPlaneChannelDetail>, RepositoryError> {
         sqlx::query_as::<_, ControlPlaneChannelDetail>(
-            "SELECT id,channel_group_id,api_format::text AS api_format,name,base_url,enabled,status_statistics_enabled,auto_disabled,auto_disabled_reason,auto_disable_allowed,weight,billing_multiplier,proxy_id,config_template_id,override_document,connect_timeout_ms,response_header_timeout_ms,stream_idle_timeout_ms,upstream_auth_kind,upstream_auth_header_name,upstream_api_key,(upstream_api_key IS NOT NULL) AS upstream_credential_configured,available_models,test_model,created_at,updated_at FROM channels WHERE id=$1",
+            "SELECT id,channel_group_id,api_format::text AS api_format,name,base_url,enabled,supports_websocket,status_statistics_enabled,auto_disabled,auto_disabled_reason,auto_disable_allowed,weight,billing_multiplier,proxy_id,config_template_id,override_document,connect_timeout_ms,response_header_timeout_ms,stream_idle_timeout_ms,upstream_auth_kind,upstream_auth_header_name,upstream_api_key,(upstream_api_key IS NOT NULL) AS upstream_credential_configured,available_models,test_model,created_at,updated_at FROM channels WHERE id=$1",
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -5494,7 +5593,7 @@ async fn channel_audit(
     // Audit snapshots remain allowlisted even though authorized detail reads
     // expose the stored credential and transform document for editing.
     let value = sqlx::query_scalar::<_, Value>(
-        "SELECT json_build_object('id',id,'channel_group_id',channel_group_id,'api_format',api_format,'name',name,'base_url',base_url,'enabled',enabled,'status_statistics_enabled',status_statistics_enabled,'auto_disabled',auto_disabled,'auto_disabled_reason',auto_disabled_reason,'auto_disable_allowed',auto_disable_allowed,'weight',weight,'billing_multiplier',billing_multiplier,'proxy_id',proxy_id,'config_template_id',config_template_id,'connect_timeout_ms',connect_timeout_ms,'response_header_timeout_ms',response_header_timeout_ms,'stream_idle_timeout_ms',stream_idle_timeout_ms,'upstream_auth_kind',upstream_auth_kind,'upstream_auth_header_name',upstream_auth_header_name,'upstream_credential_configured',(upstream_api_key IS NOT NULL),'available_models',available_models,'test_model',test_model,'created_at',created_at,'updated_at',updated_at) FROM channels WHERE id=$1 FOR UPDATE",
+        "SELECT json_build_object('id',id,'channel_group_id',channel_group_id,'api_format',api_format,'name',name,'base_url',base_url,'enabled',enabled,'supports_websocket',supports_websocket,'status_statistics_enabled',status_statistics_enabled,'auto_disabled',auto_disabled,'auto_disabled_reason',auto_disabled_reason,'auto_disable_allowed',auto_disable_allowed,'weight',weight,'billing_multiplier',billing_multiplier,'proxy_id',proxy_id,'config_template_id',config_template_id,'connect_timeout_ms',connect_timeout_ms,'response_header_timeout_ms',response_header_timeout_ms,'stream_idle_timeout_ms',stream_idle_timeout_ms,'upstream_auth_kind',upstream_auth_kind,'upstream_auth_header_name',upstream_auth_header_name,'upstream_credential_configured',(upstream_api_key IS NOT NULL),'available_models',available_models,'test_model',test_model,'created_at',created_at,'updated_at',updated_at) FROM channels WHERE id=$1 FOR UPDATE",
     )
     .bind(id)
     .fetch_optional(&mut **transaction)
@@ -6320,6 +6419,9 @@ async fn channel_insert(
     {
         return Err(RepositoryError::Validation);
     }
+    if input.supports_websocket && input.api_format != "open_ai_responses" {
+        return Err(RepositoryError::Validation);
+    }
     if input.test_model.as_ref().is_some_and(|model| {
         !input
             .available_models
@@ -6347,10 +6449,10 @@ async fn channel_insert(
         channel_audit(transaction, id).await?
     };
     let updated_at = if create {
-        sqlx::query_scalar("INSERT INTO channels (id,channel_group_id,api_format,name,base_url,enabled,weight,billing_multiplier,proxy_id,config_template_id,override_document,connect_timeout_ms,response_header_timeout_ms,stream_idle_timeout_ms,upstream_auth_kind,upstream_auth_header_name,upstream_api_key,available_models,test_model,status_statistics_enabled,auto_disable_allowed) VALUES ($1,$2,$3::api_format,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) RETURNING updated_at").bind(id).bind(input.channel_group_id).bind(&input.api_format).bind(&input.name).bind(&input.base_url).bind(input.enabled).bind(input.weight).bind(input.billing_multiplier.unwrap_or_else(default_billing_multiplier)).bind(input.proxy_id).bind(input.config_template_id).bind(&override_document).bind(input.connect_timeout_ms).bind(input.response_header_timeout_ms).bind(input.stream_idle_timeout_ms).bind(&input.upstream_auth_kind).bind(&input.upstream_auth_header_name).bind(input.upstream_api_key.flatten()).bind(&input.available_models).bind(&input.test_model).bind(input.status_statistics_enabled).bind(input.auto_disable_allowed).fetch_one(&mut **transaction).await?
+        sqlx::query_scalar("INSERT INTO channels (id,channel_group_id,api_format,name,base_url,enabled,weight,billing_multiplier,proxy_id,config_template_id,override_document,connect_timeout_ms,response_header_timeout_ms,stream_idle_timeout_ms,upstream_auth_kind,upstream_auth_header_name,upstream_api_key,available_models,test_model,status_statistics_enabled,auto_disable_allowed,supports_websocket) VALUES ($1,$2,$3::api_format,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) RETURNING updated_at").bind(id).bind(input.channel_group_id).bind(&input.api_format).bind(&input.name).bind(&input.base_url).bind(input.enabled).bind(input.weight).bind(input.billing_multiplier.unwrap_or_else(default_billing_multiplier)).bind(input.proxy_id).bind(input.config_template_id).bind(&override_document).bind(input.connect_timeout_ms).bind(input.response_header_timeout_ms).bind(input.stream_idle_timeout_ms).bind(&input.upstream_auth_kind).bind(&input.upstream_auth_header_name).bind(input.upstream_api_key.flatten()).bind(&input.available_models).bind(&input.test_model).bind(input.status_statistics_enabled).bind(input.auto_disable_allowed).bind(input.supports_websocket).fetch_one(&mut **transaction).await?
     } else {
         let credential_present = input.upstream_api_key.is_some();
-        sqlx::query_scalar("UPDATE channels SET channel_group_id=$2,api_format=$3::api_format,name=$4,base_url=$5,enabled=$6,weight=$7,billing_multiplier=COALESCE($8,billing_multiplier),proxy_id=$9,config_template_id=$10,override_document=CASE WHEN $11 THEN $12 ELSE override_document END,connect_timeout_ms=$13,response_header_timeout_ms=$14,stream_idle_timeout_ms=$15,upstream_auth_kind=$16,upstream_auth_header_name=$17,upstream_api_key=CASE WHEN $18 THEN $19 ELSE upstream_api_key END,available_models=$20,test_model=$21,status_statistics_enabled=$22,auto_disable_allowed=$23 WHERE id=$1 AND updated_at=$24 RETURNING updated_at").bind(id).bind(input.channel_group_id).bind(&input.api_format).bind(&input.name).bind(&input.base_url).bind(input.enabled).bind(input.weight).bind(input.billing_multiplier).bind(input.proxy_id).bind(input.config_template_id).bind(override_document_present).bind(&override_document).bind(input.connect_timeout_ms).bind(input.response_header_timeout_ms).bind(input.stream_idle_timeout_ms).bind(&input.upstream_auth_kind).bind(&input.upstream_auth_header_name).bind(credential_present).bind(input.upstream_api_key.flatten()).bind(&input.available_models).bind(&input.test_model).bind(input.status_statistics_enabled).bind(input.auto_disable_allowed).bind(expected_updated_at.expect("PUT version")).fetch_optional(&mut **transaction).await?.ok_or(RepositoryError::Conflict)?
+        sqlx::query_scalar("UPDATE channels SET channel_group_id=$2,api_format=$3::api_format,name=$4,base_url=$5,enabled=$6,weight=$7,billing_multiplier=COALESCE($8,billing_multiplier),proxy_id=$9,config_template_id=$10,override_document=CASE WHEN $11 THEN $12 ELSE override_document END,connect_timeout_ms=$13,response_header_timeout_ms=$14,stream_idle_timeout_ms=$15,upstream_auth_kind=$16,upstream_auth_header_name=$17,upstream_api_key=CASE WHEN $18 THEN $19 ELSE upstream_api_key END,available_models=$20,test_model=$21,status_statistics_enabled=$22,auto_disable_allowed=$23,supports_websocket=$24 WHERE id=$1 AND updated_at=$25 RETURNING updated_at").bind(id).bind(input.channel_group_id).bind(&input.api_format).bind(&input.name).bind(&input.base_url).bind(input.enabled).bind(input.weight).bind(input.billing_multiplier).bind(input.proxy_id).bind(input.config_template_id).bind(override_document_present).bind(&override_document).bind(input.connect_timeout_ms).bind(input.response_header_timeout_ms).bind(input.stream_idle_timeout_ms).bind(&input.upstream_auth_kind).bind(&input.upstream_auth_header_name).bind(credential_present).bind(input.upstream_api_key.flatten()).bind(&input.available_models).bind(&input.test_model).bind(input.status_statistics_enabled).bind(input.auto_disable_allowed).bind(input.supports_websocket).bind(expected_updated_at.expect("PUT version")).fetch_optional(&mut **transaction).await?.ok_or(RepositoryError::Conflict)?
     };
     Ok(MutationResult {
         id,
@@ -6666,6 +6768,7 @@ fn validate_system_settings_input(input: &SystemSettingsInput) -> Result<(), Rep
     let automatic_disable = &input.automatic_disable;
     let scheduled_testing = &input.scheduled_testing;
     let session_affinity = &input.session_affinity;
+    let websocket = &input.websocket;
     if !valid_api_hosts(api_hosts)
         || upstream.connect_timeout_seconds == 0
         || upstream.response_header_timeout_seconds <= upstream.connect_timeout_seconds
@@ -6687,6 +6790,12 @@ fn validate_system_settings_input(input: &SystemSettingsInput) -> Result<(), Rep
         || scheduled_testing.prompt.chars().count() > 4_000
         || !matches!(scheduled_testing.mode.as_str(), "global" | "failure_only")
         || !valid_session_affinity_input(session_affinity)
+        || websocket.max_idle_connections > 4_096
+        || websocket.idle_timeout_seconds == 0
+        || websocket.idle_timeout_seconds > 3_600
+        || websocket.max_connection_age_seconds < 60
+        || websocket.max_connection_age_seconds > 3_600
+        || websocket.idle_timeout_seconds >= websocket.max_connection_age_seconds
     {
         return Err(RepositoryError::Validation);
     }

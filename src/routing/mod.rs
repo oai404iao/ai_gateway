@@ -83,6 +83,22 @@ impl Entropy for ProcessEntropy {
 pub struct RoutingRuntime {
     inner: Arc<RuntimeInner>,
 }
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum ChannelCapability {
+    Any,
+    ResponsesWebSocket,
+}
+
+impl ChannelCapability {
+    fn permits(self, channel: &CompiledChannel) -> bool {
+        match self {
+            Self::Any => true,
+            Self::ResponsesWebSocket => channel.supports_websocket(),
+        }
+    }
+}
+
 struct RuntimeInner {
     policy: Mutex<PassiveHealthPolicy>,
     clock: Arc<dyn Clock>,
@@ -235,6 +251,7 @@ struct RoundRobinKey {
     priority: i32,
     tier_fingerprint: [u8; 32],
     routing_scope_fingerprint: [u8; 32],
+    capability: ChannelCapability,
 }
 
 /// A matched and hashed request-side session-affinity rule. Raw extracted
@@ -609,6 +626,56 @@ impl RoutingRuntime {
         affinity: Option<SessionAffinityMatch>,
         excluded_channel_slots: &[usize],
     ) -> Option<SelectedRoute> {
+        self.select_preferred_channel_with_capability(
+            snapshot,
+            key,
+            format,
+            model,
+            preferred_channel_id,
+            affinity,
+            excluded_channel_slots,
+            ChannelCapability::Any,
+        )
+    }
+
+    /// WebSocket-specific preferred selection that excludes channels which do
+    /// not explicitly advertise Responses WebSocket support.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn select_preferred_websocket_channel(
+        &self,
+        snapshot: &CompiledRuntimeConfig,
+        key: &CompiledApiKey,
+        format: ApiFormat,
+        model: &str,
+        preferred_channel_id: Uuid,
+        affinity: Option<SessionAffinityMatch>,
+        excluded_channel_slots: &[usize],
+    ) -> Option<SelectedRoute> {
+        self.select_preferred_channel_with_capability(
+            snapshot,
+            key,
+            format,
+            model,
+            preferred_channel_id,
+            affinity,
+            excluded_channel_slots,
+            ChannelCapability::ResponsesWebSocket,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn select_preferred_channel_with_capability(
+        &self,
+        snapshot: &CompiledRuntimeConfig,
+        key: &CompiledApiKey,
+        format: ApiFormat,
+        model: &str,
+        preferred_channel_id: Uuid,
+        affinity: Option<SessionAffinityMatch>,
+        excluded_channel_slots: &[usize],
+        capability: ChannelCapability,
+    ) -> Option<SelectedRoute> {
         let rule = snapshot.model_rule(format, model)?;
         if !key.permits_route(rule.route_slot()) {
             return None;
@@ -618,7 +685,8 @@ impl RoutingRuntime {
         let eligible = |candidate: &crate::domain::CompiledCandidate| {
             let channel_slot = candidate.channel_slot();
             let channel = candidate.channel();
-            key.permits_route_candidate(channel_slot)
+            capability.permits(channel)
+                && key.permits_route_candidate(channel_slot)
                 && !excluded_channel_slots.contains(&channel_slot)
                 && usable(&self.inner, &ChannelIdentity::from_channel(channel), now)
         };
@@ -688,6 +756,51 @@ impl RoutingRuntime {
         affinity: Option<SessionAffinityMatch>,
         excluded_channel_slots: &[usize],
     ) -> SelectionResult {
+        self.select_with_affinity_excluding_capability(
+            snapshot,
+            key,
+            format,
+            model,
+            affinity,
+            excluded_channel_slots,
+            ChannelCapability::Any,
+        )
+    }
+
+    /// WebSocket-specific weighted selection that excludes channels which do
+    /// not explicitly advertise Responses WebSocket support.
+    #[must_use]
+    pub fn select_websocket_with_affinity_excluding(
+        &self,
+        snapshot: &CompiledRuntimeConfig,
+        key: &CompiledApiKey,
+        format: ApiFormat,
+        model: &str,
+        affinity: Option<SessionAffinityMatch>,
+        excluded_channel_slots: &[usize],
+    ) -> SelectionResult {
+        self.select_with_affinity_excluding_capability(
+            snapshot,
+            key,
+            format,
+            model,
+            affinity,
+            excluded_channel_slots,
+            ChannelCapability::ResponsesWebSocket,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn select_with_affinity_excluding_capability(
+        &self,
+        snapshot: &CompiledRuntimeConfig,
+        key: &CompiledApiKey,
+        format: ApiFormat,
+        model: &str,
+        affinity: Option<SessionAffinityMatch>,
+        excluded_channel_slots: &[usize],
+        capability: ChannelCapability,
+    ) -> SelectionResult {
         let Some(rule) = snapshot.model_rule(format, model) else {
             return SelectionResult::UnknownOrInaccessibleModel;
         };
@@ -710,6 +823,7 @@ impl RoutingRuntime {
                                         let slot = candidate.channel_slot();
                                         let channel = candidate.channel();
                                         (channel.id() == preferred
+                                            && capability.permits(channel)
                                             && key.permits_route_candidate(slot)
                                             && !excluded_channel_slots.contains(&slot)
                                             && usable(
@@ -731,6 +845,7 @@ impl RoutingRuntime {
                             &self.inner,
                             now,
                             &*self.inner.entropy,
+                            capability,
                         ),
                         SelectionStrategy::WeightedRoundRobin => {
                             let round_robin_key = RoundRobinKey {
@@ -738,12 +853,16 @@ impl RoutingRuntime {
                                 priority: tier.priority(),
                                 tier_fingerprint: tier.fingerprint(),
                                 routing_scope_fingerprint: key.routing_scope_fingerprint(),
+                                capability,
                             };
                             let candidates_are_active = tier
                                 .candidates()
                                 .iter()
                                 .filter(|candidate| {
-                                    key.permits_route_candidate(candidate.channel_slot())
+                                    capability.permits(candidate.channel())
+                                        && key.permits_route_candidate(candidate.channel_slot())
+                                        && !excluded_channel_slots
+                                            .contains(&candidate.channel_slot())
                                 })
                                 .all(|candidate| {
                                     channel_is_active(
@@ -763,6 +882,7 @@ impl RoutingRuntime {
                                     excluded_channel_slots,
                                     &self.inner,
                                     now,
+                                    capability,
                                 )
                             } else {
                                 // A request may still hold an old snapshot after reload.
@@ -775,6 +895,7 @@ impl RoutingRuntime {
                                     excluded_channel_slots,
                                     &self.inner,
                                     now,
+                                    capability,
                                 )
                             }
                         }
@@ -1106,9 +1227,11 @@ fn weighted_ticket(
     inner: &RuntimeInner,
     now: Duration,
     entropy: &dyn Entropy,
+    capability: ChannelCapability,
 ) -> Option<(usize, Arc<CompiledChannel>)> {
     let eligible = |slot: usize, channel: &CompiledChannel| {
-        key.permits_route_candidate(slot)
+        capability.permits(channel)
+            && key.permits_route_candidate(slot)
             && !excluded_channel_slots.contains(&slot)
             && usable(inner, &ChannelIdentity::from_channel(channel), now)
     };
@@ -1162,13 +1285,15 @@ fn smooth_round_robin(
     excluded_channel_slots: &[usize],
     inner: &RuntimeInner,
     now: Duration,
+    capability: ChannelCapability,
 ) -> Option<(usize, Arc<CompiledChannel>)> {
     let mut total = 0_i64;
     let mut winner = None::<(usize, Arc<CompiledChannel>, i64)>;
     for candidate in tier.candidates() {
         let slot = candidate.channel_slot();
         let channel = candidate.channel();
-        if !key.permits_route_candidate(slot)
+        if !capability.permits(channel)
+            || !key.permits_route_candidate(slot)
             || excluded_channel_slots.contains(&slot)
             || !usable(inner, &ChannelIdentity::from_channel(channel), now)
         {
@@ -1392,6 +1517,7 @@ mod tests {
                 id: Uuid::from_u128(1_000),
                 user_id: Uuid::from_u128(1_001),
                 user_status: "active".into(),
+                user_websocket_enabled: false,
                 secret_value: secret.clone(),
                 status: "active".into(),
                 expires_at: None,
@@ -1429,6 +1555,7 @@ mod tests {
                         .map(ToOwned::to_owned)
                         .unwrap_or_else(|| format!("https://{id}.test")),
                     enabled: true,
+                    supports_websocket: false,
                     auto_disabled: false,
                     auto_disable_allowed: false,
                     weight: *weight,
@@ -1540,6 +1667,7 @@ mod tests {
                 id: Uuid::from_u128(300),
                 user_id: Uuid::from_u128(301),
                 user_status: "active".into(),
+                user_websocket_enabled: false,
                 secret_value: secret.clone(),
                 status: "active".into(),
                 expires_at: None,
@@ -1567,6 +1695,7 @@ mod tests {
                 name: "channel".into(),
                 base_url: "https://upstream.test".into(),
                 enabled: true,
+                supports_websocket: false,
                 auto_disabled: false,
                 auto_disable_allowed: false,
                 weight: 1,

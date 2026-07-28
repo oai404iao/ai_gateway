@@ -8,7 +8,7 @@ use ai_gateway::{
     application::{ProxyService, RecordingRequestLogSink},
     domain::{
         ApiFormat, PassiveHealthSettings, RequestLogEvent, RequestLogOutcome, RequestUsage,
-        SystemRuntimeSettings, UpstreamTimeoutDefaults,
+        ResponsesWebSocketSettings, SystemRuntimeSettings, UpstreamTimeoutDefaults,
     },
     http,
     persistence::{
@@ -173,6 +173,7 @@ fn gateway(settings: &SmokeSettings, format: SmokeFormat, upstream_model: &str) 
             id: Uuid::new_v4(),
             user_id: Uuid::new_v4(),
             user_status: "active".into(),
+            user_websocket_enabled: true,
             secret_value: CLIENT_KEY.into(),
             status: "active".into(),
             expires_at: None,
@@ -200,6 +201,7 @@ fn gateway(settings: &SmokeSettings, format: SmokeFormat, upstream_model: &str) 
             name: "real-upstream-smoke".into(),
             base_url: settings.base_url.clone(),
             enabled: true,
+            supports_websocket: matches!(format, SmokeFormat::Responses),
             auto_disabled: false,
             auto_disable_allowed: false,
             weight: 1,
@@ -250,7 +252,16 @@ fn gateway(settings: &SmokeSettings, format: SmokeFormat, upstream_model: &str) 
     let runtime = Arc::new(RuntimeConfig::new(
         compile_control_plane_with_system_settings(
             records,
-            SystemRuntimeSettings::new(upstream, PassiveHealthSettings::default()),
+            SystemRuntimeSettings::new_with_websocket(
+                upstream,
+                PassiveHealthSettings::default(),
+                ResponsesWebSocketSettings::new(
+                    true,
+                    128,
+                    Duration::from_secs(5 * 60),
+                    Duration::from_secs(55 * 60),
+                ),
+            ),
         )
         .expect("the smoke-test route must compile"),
     ));
