@@ -293,10 +293,10 @@ impl UpstreamClientRegistry {
         }
 
         let client = build_client(channel, policy)?;
-        if entries.clients.len() == UPSTREAM_CLIENT_REGISTRY_CAPACITY {
-            if let Some(evicted) = entries.least_to_most_recent.pop_front() {
-                entries.clients.remove(&evicted);
-            }
+        if entries.clients.len() == UPSTREAM_CLIENT_REGISTRY_CAPACITY
+            && let Some(evicted) = entries.least_to_most_recent.pop_front()
+        {
+            entries.clients.remove(&evicted);
         }
         entries.least_to_most_recent.push_back(key.clone());
         entries.clients.insert(key, client.clone());

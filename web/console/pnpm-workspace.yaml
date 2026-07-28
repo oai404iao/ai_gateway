@@ -1,2 +1,11 @@
 allowBuilds:
   msw: true
+# Required so shadcn's MCP tooling can select the patched Hono 2.x line.
+minimumReleaseAgeExclude:
+  - '@modelcontextprotocol/sdk@1.30.0'
+# Keep vulnerable transitive releases out until their parent ranges catch up.
+overrides:
+  "@hono/node-server": 2.0.12
+  "@modelcontextprotocol/sdk": 1.30.0
+  fast-uri: 3.1.4
+  js-yaml: 4.3.0

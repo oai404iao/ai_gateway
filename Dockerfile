@@ -1,13 +1,15 @@
 # syntax=docker/dockerfile:1.7
 
 ARG NODE_VERSION=24
-ARG RUST_VERSION=1.85.0
-ARG CARGO_CHEF_VERSION=0.1.71
-ARG CARGO_CHEF_DIGEST=sha256:534c4d975e252b30309ca779af73d3a5932dbef19e40a5057980c14f3364984e
+ARG RUST_VERSION=1.97.1
+ARG RUST_IMAGE_DIGEST=sha256:77fac8b98f9f46062bb680b6d25d5bcaabfc400143952ebc572e924bcbedc3fa
+ARG CARGO_CHEF_VERSION=0.1.73
+ARG CARGO_CHEF_RUST_VERSION=1.92.0
+ARG CARGO_CHEF_DIGEST=sha256:856a5a208a9d33cf1eaddb9b78e67192a6dd3381f8299f0c5880b44f15e271ea
 
 # Static Console assets are architecture-independent; build them natively.
 FROM --platform=$BUILDPLATFORM node:${NODE_VERSION}-bookworm-slim AS console-builder
-ARG PNPM_VERSION=11.7.0
+ARG PNPM_VERSION=11.17.0
 ENV PNPM_HOME=/pnpm
 ENV PATH="${PNPM_HOME}:${PATH}"
 WORKDIR /workspace
@@ -22,14 +24,26 @@ RUN pnpm --dir web/console build \
     && pnpm --dir web/console list --prod --depth Infinity --json \
         > web/console/production-dependencies.json
 
-# The cargo-chef recipe is architecture-independent; only compilation targets the image platform.
-FROM --platform=$BUILDPLATFORM lukemathwalker/cargo-chef:${CARGO_CHEF_VERSION}-rust-${RUST_VERSION}-bookworm@${CARGO_CHEF_DIGEST} AS planner
+# Use cargo-chef only as an architecture-matched binary source. Project
+# dependency and release compilation both run in the pinned official Rust image.
+FROM --platform=$BUILDPLATFORM lukemathwalker/cargo-chef:${CARGO_CHEF_VERSION}-rust-${CARGO_CHEF_RUST_VERSION}-bookworm@${CARGO_CHEF_DIGEST} AS cargo-chef-planner
+FROM lukemathwalker/cargo-chef:${CARGO_CHEF_VERSION}-rust-${CARGO_CHEF_RUST_VERSION}-bookworm@${CARGO_CHEF_DIGEST} AS cargo-chef-builder
+
+# The cargo-chef recipe is architecture-independent; prepare it natively.
+FROM --platform=$BUILDPLATFORM rust:${RUST_VERSION}-bookworm@${RUST_IMAGE_DIGEST} AS planner
 WORKDIR /workspace
+# The exact image already contains RUST_VERSION; this override prevents the
+# repository toolchain file from requesting development-only components.
+ENV RUSTUP_TOOLCHAIN=${RUST_VERSION}
+COPY --from=cargo-chef-planner /usr/local/cargo/bin/cargo-chef /usr/local/cargo/bin/cargo-chef
 COPY . .
 RUN cargo chef prepare --recipe-path recipe.json
 
-FROM lukemathwalker/cargo-chef:${CARGO_CHEF_VERSION}-rust-${RUST_VERSION}-bookworm@${CARGO_CHEF_DIGEST} AS builder
+FROM rust:${RUST_VERSION}-bookworm@${RUST_IMAGE_DIGEST} AS builder
 WORKDIR /workspace
+# See the planner-stage note above.
+ENV RUSTUP_TOOLCHAIN=${RUST_VERSION}
+COPY --from=cargo-chef-builder /usr/local/cargo/bin/cargo-chef /usr/local/cargo/bin/cargo-chef
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends python3 \
     && rm -rf /var/lib/apt/lists/*

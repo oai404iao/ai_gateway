@@ -31,6 +31,10 @@
 ./scripts/check-release-version.sh 0.1.0
 ```
 
+发布构建使用 `rust-toolchain.toml` 固定的 Rust 1.97.1；源码 MSRV 为 1.92，
+并由普通 CI 的独立 job 持续验证。版本职责和约半年的兼容窗口见
+[Rust 工具链与 MSRV 策略](rust-toolchain-policy.md)。
+
 ## 本地发布门禁
 
 ```bash
