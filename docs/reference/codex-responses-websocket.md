@@ -185,8 +185,9 @@ Codex WebSocket 测试至少覆盖：
 | 能力开关 | provider 声明支持后由 Codex 使用 | 网关要求系统、用户和 Responses 渠道三层均显式启用；默认关闭 |
 
 因此，`ai-gateway` 不应为了某个兼容上游而全局删除 `max_output_tokens` 或伪造全部 Codex
-metadata。真实上游 smoke 直接启动本机 Codex CLI 连接测试 Gateway，由当前 Codex 构造
-model-specific 请求、prewarm 和 turn；生产渠道的上游偏差仍应通过渠道变换或上游专属配置处理。
+metadata。真实上游 smoke 使用一个最小且可审阅的手写 `response.create` fixture 验证 WebSocket
+转发；Codex 特有行为继续由确定性集成测试和本参考文档覆盖。生产渠道的上游偏差仍应通过渠道变换
+或上游专属配置处理。
 
 ## 维护检查项
 

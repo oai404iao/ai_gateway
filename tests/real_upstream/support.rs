@@ -2,7 +2,7 @@
 //! upstream. This test is ignored by default and must be started through
 //! `scripts/run-real-upstream-smoke.sh`.
 
-use std::{env, fs, net::SocketAddr, path::PathBuf, process::Stdio, sync::Arc, time::Duration};
+use std::{env, net::SocketAddr, sync::Arc, time::Duration};
 
 use ai_gateway::{
     application::{ProxyService, RecordingRequestLogSink},
@@ -18,19 +18,27 @@ use ai_gateway::{
 };
 use axum::{
     body::{Body, Bytes},
-    http::{Request, header},
+    http::{HeaderValue, Request, header},
 };
+use futures_util::{SinkExt, StreamExt};
 use http_body_util::BodyExt;
 use rust_decimal::Decimal;
 use serde_json::{Value, json};
-use tokio::{net::TcpListener, process::Command, task::JoinHandle, time::timeout};
+use tokio::{
+    net::TcpListener,
+    task::JoinHandle,
+    time::{sleep, timeout},
+};
+use tokio_tungstenite::{
+    connect_async,
+    tungstenite::{Message, client::IntoClientRequest},
+};
 use tower::ServiceExt;
 use uuid::Uuid;
 
 const CLIENT_KEY: &str = "gateway-real-upstream-smoke-client-key";
 const CLIENT_MODEL: &str = "gateway-real-upstream-smoke-model";
-const CODEX_CLIENT_KEY_ENV: &str = "AI_GATEWAY_REAL_UPSTREAM_SMOKE_CLIENT_KEY";
-const CODEX_PROVIDER_ID: &str = "ai_gateway_real_upstream_smoke";
+const MAX_WEBSOCKET_ATTEMPTS: usize = 3;
 
 #[derive(Clone, Copy)]
 pub(super) enum SmokeFormat {
@@ -94,7 +102,6 @@ pub(super) struct SmokeSettings {
     pub(super) chat_completions_model: String,
     pub(super) responses_model: String,
     timeout: Duration,
-    codex_bin: String,
 }
 
 impl SmokeSettings {
@@ -119,8 +126,6 @@ impl SmokeSettings {
             chat_completions_model: required_environment("REAL_UPSTREAM_CHAT_COMPLETIONS_MODEL"),
             responses_model: required_environment("REAL_UPSTREAM_RESPONSES_MODEL"),
             timeout: Duration::from_secs(timeout_seconds),
-            codex_bin: optional_environment("REAL_UPSTREAM_CODEX_BIN")
-                .unwrap_or_else(|| "codex".into()),
         }
     }
 }
@@ -141,14 +146,6 @@ struct SmokeGateway {
 struct SmokeServer {
     address: SocketAddr,
     task: JoinHandle<()>,
-}
-
-struct TemporaryDirectory(PathBuf);
-
-impl Drop for TemporaryDirectory {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
 }
 
 impl Drop for SmokeServer {
@@ -387,159 +384,197 @@ pub(super) async fn smoke_streaming_format(
     assert_streaming_usage_matches_terminal_sse_event(&events, format, &raw_sse);
 }
 
-/// Runs the installed Codex CLI through a real TCP listener so its exact
-/// WebSocket prewarm and turn payloads exercise both gateway upgrade paths.
+/// Sends one deterministic Responses WebSocket request through a real TCP
+/// listener so both downstream and upstream upgrade paths are exercised.
 pub(super) async fn smoke_responses_websocket(settings: &SmokeSettings, upstream_model: &str) {
     let gateway = gateway(
         settings,
         SmokeFormat::Responses,
-        upstream_model,
+        CLIENT_MODEL,
         upstream_model,
     );
     let server = start_gateway_server(gateway.app).await;
-    let temporary_path =
-        env::temp_dir().join(format!("ai-gateway-real-upstream-codex-{}", Uuid::new_v4()));
-    fs::create_dir_all(&temporary_path).expect("create temporary Codex smoke directory");
-    let _temporary_directory = TemporaryDirectory(temporary_path.clone());
-    let instructions_path = temporary_path.join("instructions.md");
-    fs::write(
-        &instructions_path,
-        "Reply exactly OK. Do not use tools or inspect files.\n",
-    )
-    .expect("write temporary Codex smoke instructions");
-
-    let mut provider = toml::Table::new();
-    provider.insert("name".into(), "ai-gateway real-upstream smoke".into());
-    provider.insert(
-        "base_url".into(),
-        format!("http://{}/v1", server.address).into(),
-    );
-    provider.insert("env_key".into(), CODEX_CLIENT_KEY_ENV.into());
-    provider.insert("wire_api".into(), "responses".into());
-    provider.insert("supports_websockets".into(), true.into());
-    let mut providers = toml::Table::new();
-    providers.insert(CODEX_PROVIDER_ID.into(), provider.into());
-    let mut config = toml::Table::new();
-    config.insert("model".into(), upstream_model.into());
-    config.insert("model_provider".into(), CODEX_PROVIDER_ID.into());
-    config.insert(
-        "model_instructions_file".into(),
-        instructions_path.to_string_lossy().into_owned().into(),
-    );
-    config.insert("approval_policy".into(), "never".into());
-    config.insert("sandbox_mode".into(), "read-only".into());
-    config.insert("model_providers".into(), providers.into());
-    fs::write(
-        temporary_path.join("config.toml"),
-        toml::to_string(&config).expect("serialize temporary Codex smoke configuration"),
-    )
-    .expect("write temporary Codex smoke configuration");
-
-    let mut command = Command::new(&settings.codex_bin);
-    command
-        .arg("exec")
-        .arg("--ephemeral")
-        .arg("--ignore-rules")
-        .arg("--skip-git-repo-check")
-        .arg("-C")
-        .arg(&temporary_path)
-        .arg("Reply exactly OK. Do not use tools or inspect files.")
-        .env("CODEX_HOME", &temporary_path)
-        .env(CODEX_CLIENT_KEY_ENV, CLIENT_KEY)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    let output = timeout(settings.timeout.saturating_mul(3), command.output())
-        .await
-        .expect("Codex CLI real-upstream WebSocket smoke timed out")
-        .expect("launch Codex CLI for the real-upstream WebSocket smoke");
-    assert!(
-        output.status.success(),
-        "Codex CLI real-upstream WebSocket smoke failed with status {}",
-        output.status
-    );
-    let stdout = String::from_utf8(output.stdout).expect("Codex CLI stdout must be UTF-8");
-    let stderr = String::from_utf8(output.stderr).expect("Codex CLI stderr must be UTF-8");
-    assert!(
-        stdout.lines().any(|line| line.trim() == "OK"),
-        "Codex CLI real-upstream WebSocket smoke must return exactly OK"
-    );
-    assert!(
-        !stderr
-            .to_ascii_lowercase()
-            .contains("falling back from websockets"),
-        "Codex CLI must complete the real-upstream smoke without HTTP fallback"
-    );
-
-    let events = gateway.logs.events();
-    assert!(
-        events.len() >= 2,
-        "Codex WebSocket prewarm and turn must produce terminal logs"
-    );
-    for event in &events {
-        assert_eq!(event.api_format, SmokeFormat::Responses.api_format());
-        assert!(event.streamed);
-        match event.outcome {
-            RequestLogOutcome::Succeeded => {
-                assert!(
-                    event
-                        .response_status_code
-                        .is_some_and(|status| (200..300).contains(&status))
-                );
-                assert_eq!(event.error_code, None);
+    let session_id = Uuid::new_v4().to_string();
+    let thread_id = Uuid::new_v4().to_string();
+    let mut attempts = 0;
+    let completed = loop {
+        attempts += 1;
+        match send_responses_websocket_attempt(settings, server.address, &session_id, &thread_id)
+            .await
+        {
+            Ok(completed) => break completed,
+            Err(()) if attempts < MAX_WEBSOCKET_ATTEMPTS => {
+                sleep(Duration::from_millis(250 * attempts as u64)).await;
             }
-            RequestLogOutcome::Failed => assert!(
-                event
-                    .response_status_code
-                    .is_none_or(|status| (100..600).contains(&status))
-                    && event.error_code.is_some(),
-                "failed Codex WebSocket attempts must retain a safe optional status and error code"
-            ),
-            RequestLogOutcome::Rejected | RequestLogOutcome::Cancelled => {
-                panic!("Codex WebSocket smoke must not be rejected or cancelled")
+            Err(()) => {
+                panic!(
+                    "real-upstream websocket closed upstream on all {MAX_WEBSOCKET_ATTEMPTS} client attempts"
+                );
             }
         }
-    }
-    if let Some(prewarm) = events.iter().find(|event| {
-        event.outcome == RequestLogOutcome::Succeeded
-            && event
-                .billing
-                .as_ref()
-                .and_then(|billing| billing.usage)
-                .is_some_and(|usage| usage.output_tokens == 0)
-    }) {
-        let billing = prewarm
-            .billing
-            .as_ref()
-            .expect("successful Codex WebSocket prewarm retains billing");
-        let usage = billing
-            .usage
-            .expect("successful Codex WebSocket prewarm records usage");
-        assert!(usage.input_tokens > 0);
+    };
+
+    let events = gateway.logs.events();
+    assert_eq!(
+        events.len(),
+        attempts,
+        "each manual WebSocket client attempt must produce one terminal log"
+    );
+    for event in &events[..attempts - 1] {
+        assert_eq!(event.api_format, SmokeFormat::Responses.api_format());
+        assert!(event.streamed);
+        assert_eq!(event.outcome, RequestLogOutcome::Failed);
         assert!(
-            billing
-                .cost_amount
-                .is_some_and(|amount| amount > Decimal::ZERO)
+            event
+                .response_status_code
+                .is_none_or(|status| status == 502)
+        );
+        assert_eq!(
+            event.error_code.as_deref(),
+            Some("upstream_websocket_closed")
         );
     }
-    let completed_turn = events
-        .iter()
-        .rev()
-        .find(|event| {
-            event.outcome == RequestLogOutcome::Succeeded
-                && event
-                    .billing
-                    .as_ref()
-                    .and_then(|billing| billing.usage)
-                    .is_some_and(|usage| usage.output_tokens > 0)
-        })
-        .expect("Codex WebSocket smoke must complete a turn with output usage");
+    let successful_event = events
+        .last()
+        .expect("manual WebSocket smoke must retain a successful terminal log");
     assert_usage_was_logged(
-        std::slice::from_ref(completed_turn),
+        std::slice::from_ref(successful_event),
         SmokeFormat::Responses,
         true,
     );
+    let expected = usage_from_sse_value(SmokeFormat::Responses, &completed)
+        .expect("real-upstream websocket response.completed must include usage");
+    assert_eq!(
+        successful_event
+            .billing
+            .as_ref()
+            .and_then(|billing| billing.usage),
+        Some(expected)
+    );
+}
+
+async fn send_responses_websocket_attempt(
+    settings: &SmokeSettings,
+    address: SocketAddr,
+    session_id: &str,
+    thread_id: &str,
+) -> Result<Value, ()> {
+    let mut request = format!("ws://{address}/v1/responses")
+        .into_client_request()
+        .expect("real-upstream websocket smoke request builds");
+    request.headers_mut().insert(
+        header::AUTHORIZATION,
+        HeaderValue::from_static("Bearer gateway-real-upstream-smoke-client-key"),
+    );
+    request.headers_mut().insert(
+        "openai-beta",
+        HeaderValue::from_static("responses_websockets=2026-02-06"),
+    );
+    request.headers_mut().insert(
+        "session-id",
+        HeaderValue::from_str(session_id).expect("smoke session id is a valid header"),
+    );
+    request.headers_mut().insert(
+        "thread-id",
+        HeaderValue::from_str(thread_id).expect("smoke thread id is a valid header"),
+    );
+    request.headers_mut().insert(
+        "x-client-request-id",
+        HeaderValue::from_str(thread_id).expect("smoke client request id is a valid header"),
+    );
+    request.headers_mut().insert(
+        "originator",
+        HeaderValue::from_static("ai-gateway-real-upstream-smoke"),
+    );
+    request.headers_mut().insert(
+        header::USER_AGENT,
+        HeaderValue::from_static(concat!(
+            "ai-gateway-real-upstream-smoke/",
+            env!("CARGO_PKG_VERSION")
+        )),
+    );
+    let (mut websocket, response) = timeout(settings.timeout, connect_async(request))
+        .await
+        .expect("real-upstream websocket upgrade timed out")
+        .expect("real-upstream websocket upgrade failed");
+    assert_eq!(response.status(), 101);
+    websocket
+        .send(Message::Text(
+            json!({
+                "type": "response.create",
+                "model": CLIENT_MODEL,
+                "instructions": "Reply exactly OK.",
+                "input": [{
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "Reply exactly OK."}],
+                }],
+                "tools": [],
+                "tool_choice": "auto",
+                "parallel_tool_calls": false,
+                "reasoning": null,
+                "store": false,
+                "stream": true,
+                "include": [],
+                "client_metadata": {
+                    "session_id": session_id,
+                    "thread_id": thread_id,
+                },
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .expect("real-upstream websocket request send failed");
+
+    let completed = loop {
+        let message = timeout(settings.timeout, websocket.next())
+            .await
+            .expect("real-upstream websocket event timed out")
+            .expect("real-upstream websocket closed before response.completed")
+            .expect("real-upstream websocket event failed");
+        let Message::Text(text) = message else {
+            continue;
+        };
+        let event: Value =
+            serde_json::from_str(&text).expect("real-upstream websocket event must be JSON");
+        match event.get("type").and_then(Value::as_str) {
+            Some("response.completed") => break Ok(event),
+            Some("error" | "response.failed" | "response.incomplete" | "response.cancelled") => {
+                let kind = event
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .unwrap_or("<missing>");
+                let status = event.get("status").and_then(Value::as_u64);
+                let code = event
+                    .pointer("/error/code")
+                    .and_then(Value::as_str)
+                    .map(safe_error_code)
+                    .unwrap_or_else(|| "<missing>".into());
+                if kind == "error" && status == Some(502) && code == "upstream_websocket_closed" {
+                    break Err(());
+                }
+                panic!(
+                    "real-upstream websocket returned terminal event type={kind} status={status:?} code={code}"
+                );
+            }
+            _ => {}
+        }
+    };
+    let _ = websocket.close(None).await;
+    completed
+}
+
+fn safe_error_code(value: &str) -> String {
+    if value.len() <= 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+    {
+        value.to_owned()
+    } else {
+        "<redacted>".into()
+    }
 }
 
 fn assert_response_has_usage(format: SmokeFormat, value: &Value) {

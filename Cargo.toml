@@ -62,9 +62,6 @@ uuid = { version = "1.11", features = ["v4", "serde"] }
 rust-embed = { version = "8", optional = true }
 mime_guess = { version = "2", optional = true }
 
-[dev-dependencies]
-tokio = { version = "1.43", features = ["process"] }
-
 [workspace]
 members = [".", "tools/forwarding-perf"]
 default-members = ["."]

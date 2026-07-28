@@ -31,13 +31,5 @@ for name in "${required[@]}"; do
   fi
 done
 
-codex_bin="${REAL_UPSTREAM_CODEX_BIN:-codex}"
-if ! command -v "$codex_bin" >/dev/null 2>&1; then
-  printf 'Codex CLI for the real-upstream WebSocket smoke was not found: %s\n' "$codex_bin" >&2
-  printf 'Set REAL_UPSTREAM_CODEX_BIN to an installed codex command or absolute path.\n' >&2
-  exit 2
-fi
-export REAL_UPSTREAM_CODEX_BIN="$codex_bin"
-
 export RUN_REAL_UPSTREAM_SMOKE=1
 cargo test --test real_upstream -- --ignored --test-threads=1
