@@ -19,9 +19,11 @@ import {
   CONTROL_PLANE_USER,
   COST_STATISTICS_REPORT,
   DEFAULT_USER_GROUP,
+  EXPIRED_SESSION,
   MODEL,
   MODEL_RULE,
   NEW_API_KEY_SECRET,
+  OTHER_ACTIVE_SESSION,
   OWN_API_KEY,
   PERSONAL_USAGE_REPORT,
   PROXY,
@@ -66,7 +68,15 @@ export const handlers = [
   }),
   http.post("/console/v1/me/password", () => new HttpResponse(null, { status: 204 })),
 
-  http.get("/console/v1/me/sessions", () => HttpResponse.json([ACTIVE_SESSION, REVOKED_SESSION])),
+  http.get("/console/v1/me/sessions", () =>
+    HttpResponse.json([
+      ACTIVE_SESSION,
+      OTHER_ACTIVE_SESSION,
+      REVOKED_SESSION,
+      EXPIRED_SESSION,
+    ]),
+  ),
+  http.delete("/console/v1/me/sessions", () => new HttpResponse(null, { status: 204 })),
   http.delete("/console/v1/me/sessions/:id", () => new HttpResponse(null, { status: 204 })),
 
   http.get("/console/v1/me/api-keys", () => HttpResponse.json([OWN_API_KEY])),

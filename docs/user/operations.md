@@ -120,6 +120,8 @@ Console 登录接口：
 - 响应设置轮换的 `HttpOnly; Secure; SameSite=Lax` refresh Cookie；
 - refresh token 仅保存 SHA-256 哈希。刷新时会轮换；重放旧 refresh token 会撤销该 session；
 - 每个 Console 请求都会验证 JWT 签名、issuer、audience、用户状态、session 状态和 `auth_version`。禁用用户、改密码、登出和角色变化会立即使旧 token 失效。
+- 新建或刷新 session 时会保存最长 512 字符的浏览器 `User-Agent`，供账户本人在登录设备页面识别会话。
+  升级前已存在的 session 在下一次刷新后补齐该字段；网关不根据未经信任的转发 Header 推断客户端 IP。
 
 账户有两种创建方式，当前都不要求邮箱确认：
 
@@ -148,6 +150,7 @@ SHA-256 哈希，明文仅在创建响应中返回一次，之后无法查看或
 - `GET/PATCH /console/v1/me`
 - `POST /console/v1/me/password`
 - `GET /console/v1/me/sessions`
+- `DELETE /console/v1/me/sessions`（撤销除当前会话外的所有活跃会话）
 - `DELETE /console/v1/me/sessions/{id}`
 - `GET/POST /console/v1/me/api-keys`
 - `GET /console/v1/me/api-key-options`
@@ -156,6 +159,11 @@ SHA-256 哈希，明文仅在创建响应中返回一次，之后无法查看或
 - `GET /console/v1/me/request-logs?limit=50`
 - `GET /console/v1/me/request-logs/{id}`
 - `GET /console/v1/me/usage`
+
+`GET /console/v1/me/sessions` 返回每条 session 的浏览器 `user_agent`、`active` / `expired` /
+`revoked` 状态和 `is_current` 标记。`last_seen_at` 表示 refresh token 最近一次轮换时间，而不是每个
+Console HTTP 请求的最后访问时间。按 ID 撤销当前 session 时，响应还会清除 refresh Cookie；所有
+撤销操作都在 SQL 中以 JWT 主体的 user ID 限定资源归属。
 
 用户的有效 `api_key_policy` 按“用户覆盖优先，否则继承用户组默认策略”解析。Policy 只定义用户
 可选择的渠道组和单独渠道。用户通过

@@ -70,18 +70,47 @@ export const ADMIN_LOGIN_RESPONSE: LoginResponse = {
 
 export const ACTIVE_SESSION: ConsoleSession = {
   id: "00000000-0000-0000-0000-0000000000a1",
-  created_at: "2026-01-10T10:00:00.000Z",
-  last_seen_at: "2026-01-10T11:00:00.000Z",
-  expires_at: "2026-02-09T10:00:00.000Z",
+  user_agent:
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/18.0 Safari/605.1.15",
+  created_at: "2026-07-27T08:00:00.000Z",
+  last_seen_at: "2026-07-27T10:00:00.000Z",
+  expires_at: "2099-08-26T08:00:00.000Z",
   revoked_at: null,
+  state: "active",
+  is_current: true,
+};
+
+export const OTHER_ACTIVE_SESSION: ConsoleSession = {
+  id: "00000000-0000-0000-0000-0000000000a3",
+  user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Firefox/128.0",
+  created_at: "2026-07-26T08:00:00.000Z",
+  last_seen_at: "2026-07-27T09:00:00.000Z",
+  expires_at: "2099-08-25T08:00:00.000Z",
+  revoked_at: null,
+  state: "active",
+  is_current: false,
 };
 
 export const REVOKED_SESSION: ConsoleSession = {
   id: "00000000-0000-0000-0000-0000000000a2",
+  user_agent: "curl/8.7.1 (Linux)",
   created_at: "2026-01-05T10:00:00.000Z",
-  last_seen_at: null,
+  last_seen_at: "2026-01-05T10:00:00.000Z",
   expires_at: "2026-01-12T10:00:00.000Z",
   revoked_at: "2026-01-06T10:00:00.000Z",
+  state: "revoked",
+  is_current: false,
+};
+
+export const EXPIRED_SESSION: ConsoleSession = {
+  id: "00000000-0000-0000-0000-0000000000a4",
+  user_agent: null,
+  created_at: "2026-01-01T10:00:00.000Z",
+  last_seen_at: "2026-01-01T10:00:00.000Z",
+  expires_at: "2026-01-02T10:00:00.000Z",
+  revoked_at: null,
+  state: "expired",
+  is_current: false,
 };
 
 export const API_KEY_POLICY: ApiKeyPolicyView = {
