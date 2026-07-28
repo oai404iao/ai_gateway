@@ -418,9 +418,9 @@ impl ResponsesWebSocketSession {
                 }
             };
 
-            if let Some(existing) = pinned.as_ref()
-                && existing.key != prepared.key
-                && parsed.previous_response_id
+            if pinned
+                .as_ref()
+                .is_some_and(|existing| existing.key != prepared.key && parsed.previous_response_id)
             {
                 completion.finish(RequestOutcome::ClientRequestError);
                 send_error(
@@ -767,8 +767,8 @@ fn select_websocket_route(
     preferred_channel: Option<Uuid>,
     excluded_channel_slots: &[usize],
 ) -> SelectionResult {
-    if let Some(preferred_channel) = preferred_channel
-        && let Some(selected) = proxy.routing.select_preferred_channel(
+    if let Some(preferred_channel) = preferred_channel {
+        if let Some(selected) = proxy.routing.select_preferred_channel(
             snapshot,
             api_key,
             OPENAI_RESPONSES_FORMAT,
@@ -776,9 +776,9 @@ fn select_websocket_route(
             preferred_channel,
             affinity.clone(),
             excluded_channel_slots,
-        )
-    {
-        return SelectionResult::Selected(selected);
+        ) {
+            return SelectionResult::Selected(selected);
+        }
     }
     proxy.routing.select_with_affinity_excluding(
         snapshot,

@@ -516,10 +516,10 @@ async fn run_servers(
         websocket_proxy.force_websocket_shutdown();
         servers.abort_all();
         while let Some(result) = servers.join_next().await {
-            if let Err(next) = result
-                && !next.is_cancelled()
-            {
-                tracing::warn!(%next, "listener task join failed while force-closing");
+            if let Err(next) = result {
+                if !next.is_cancelled() {
+                    tracing::warn!(%next, "listener task join failed while force-closing");
+                }
             }
         }
         if timeout(
