@@ -84,6 +84,40 @@ const E2E_REGISTRATION_CODE = {
   updated_at: "2026-07-26T12:00:00.000Z",
 };
 
+const E2E_SESSIONS = [
+  {
+    id: "00000000-0000-0000-0000-0000000000e1",
+    user_agent:
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/18.0 Safari/605.1.15",
+    created_at: "2026-07-27T08:00:00.000Z",
+    last_seen_at: "2026-07-27T10:00:00.000Z",
+    expires_at: "2099-08-26T08:00:00.000Z",
+    revoked_at: null,
+    state: "active",
+    is_current: true,
+  },
+  {
+    id: "00000000-0000-0000-0000-0000000000e2",
+    user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Firefox/128.0",
+    created_at: "2026-07-26T08:00:00.000Z",
+    last_seen_at: "2026-07-27T09:00:00.000Z",
+    expires_at: "2099-08-25T08:00:00.000Z",
+    revoked_at: null,
+    state: "active",
+    is_current: false,
+  },
+  {
+    id: "00000000-0000-0000-0000-0000000000e3",
+    user_agent: "curl/8.7.1 (Linux)",
+    created_at: "2026-01-05T10:00:00.000Z",
+    last_seen_at: "2026-01-05T10:00:00.000Z",
+    expires_at: "2026-01-12T10:00:00.000Z",
+    revoked_at: "2026-01-06T10:00:00.000Z",
+    state: "revoked",
+    is_current: false,
+  },
+];
+
 export const E2E_API_KEY_SECRET = "sk-e2e-retrievable-api-key";
 
 const E2E_COST_STATISTICS = {
@@ -280,7 +314,13 @@ export async function mockConsoleApi(page: Page): Promise<void> {
       return route.fulfill({ status: 200, json: ADMIN_PROFILE.user });
     }
     if (path === "/console/v1/me/sessions" && method === "GET") {
-      return route.fulfill({ status: 200, json: [] });
+      return route.fulfill({ status: 200, json: E2E_SESSIONS });
+    }
+    if (path === "/console/v1/me/sessions" && method === "DELETE") {
+      return route.fulfill({ status: 204 });
+    }
+    if (path.startsWith("/console/v1/me/sessions/") && method === "DELETE") {
+      return route.fulfill({ status: 204 });
     }
     if (path === "/console/v1/me/usage" && method === "GET") {
       return route.fulfill({ status: 200, json: E2E_PERSONAL_USAGE });

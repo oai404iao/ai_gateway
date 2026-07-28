@@ -90,6 +90,39 @@ test.describe("Console SPA smoke", () => {
     await expect(keyValue).toHaveValue(E2E_API_KEY_SECRET);
   });
 
+  test("users can identify and revoke a specific login session", async ({ page }) => {
+    await mockConsoleApi(page);
+    await page.goto("/login");
+    await page.getByLabel(/email/i).fill("admin@example.com");
+    await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
+    await page.getByRole("button", { name: /sign in/i }).click();
+    await page.getByRole("link", { name: "Login sessions" }).click();
+
+    await expect(page).toHaveURL(/\/account\/sessions/);
+    await expect(page.getByText("Safari 18 · macOS")).toBeVisible();
+    await expect(page.getByText("Current device")).toBeVisible();
+    await expect(page.getByText("Firefox 128 · Windows")).toBeVisible();
+
+    const requestPromise = page.waitForRequest(
+      (request) =>
+        request.url().endsWith(
+          "/console/v1/me/sessions/00000000-0000-0000-0000-0000000000e2",
+        ) && request.method() === "DELETE",
+    );
+    await page
+      .getByRole("button", { name: "Sign out Firefox 128 · Windows" })
+      .click();
+    await page
+      .getByRole("alertdialog")
+      .getByRole("button", { name: "Sign out", exact: true })
+      .click();
+    await requestPromise;
+    await expect(page.getByText("Device signed out")).toBeVisible();
+
+    await page.getByRole("button", { name: "Show history" }).click();
+    await expect(page.getByText("Revoked session", { exact: true })).toBeVisible();
+  });
+
   test("all users can open the Channel status page", async ({ page }) => {
     await mockConsoleApi(page);
     await page.goto("/login");

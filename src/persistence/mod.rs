@@ -3,10 +3,10 @@
 mod auth;
 
 pub use auth::{
-    AuthRepository, ConsoleProfile, ConsoleSession, InvitationCreated, InviteUserInput,
-    LiveConsoleIdentity, LoginUser, PasswordUser, RegistrationAttempt, RegistrationInvitationCode,
-    RegistrationInvitationCodeInput, RegistrationInvitationCodeMutation, SessionRotation,
-    SessionUser,
+    AuthRepository, ConsoleProfile, ConsoleSession, ConsoleSessionState, InvitationCreated,
+    InviteUserInput, LiveConsoleIdentity, LoginUser, PasswordUser, RegistrationAttempt,
+    RegistrationInvitationCode, RegistrationInvitationCodeInput,
+    RegistrationInvitationCodeMutation, SessionRotation, SessionUser,
 };
 
 use std::{
@@ -1937,11 +1937,9 @@ impl RequestLogRepository {
         include_channel_details: bool,
     ) -> Result<Option<ConsoleRequestLog>, RepositoryError> {
         let mut log = query_console_request_log(&self.pool, id, Some(user_id)).await?;
-        if !include_channel_details {
-            if let Some(log) = &mut log {
-                log.channel_id = None;
-                log.channel_name = None;
-            }
+        if !include_channel_details && let Some(log) = &mut log {
+            log.channel_id = None;
+            log.channel_name = None;
         }
         Ok(log)
     }

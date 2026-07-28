@@ -92,7 +92,8 @@ Console 用户采用单用户组模型。内置默认用户组和默认管理员
 
 用户批量修改在同一 serializable 事务中验证所有 `updated_at` 版本并统一审计，任一失败会回滚整批。
 删除用户采用不可恢复的匿名化：撤销会话、邀请和 API Key，但保留用户主键以维持请求日志与审计记录
-的引用完整性。
+的引用完整性。Console session 保存 refresh token 哈希和浏览器 `User-Agent`；本人会话查询在响应中
+派生当前、活跃、过期和已撤销状态，撤销操作始终按 JWT 主体限定 user ID。
 
 路由快照为渠道和模型路由分配进程内 dense slot。模型 tier 保存连续的
 `CompiledCandidate(slot, channel, weight)` 数组；相同授权范围的 API Key 共享

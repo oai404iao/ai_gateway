@@ -14,7 +14,20 @@ export function useSessions() {
 export function useRevokeSession() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) => apiDelete(`/me/sessions/${id}`),
+    mutationFn: ({ id }: { id: string; isCurrent: boolean }) =>
+      apiDelete(`/me/sessions/${id}`),
+    onSuccess: (_data, variables) => {
+      if (!variables.isCurrent) {
+        void queryClient.invalidateQueries({ queryKey: SESSIONS_KEY });
+      }
+    },
+  });
+}
+
+export function useRevokeOtherSessions() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => apiDelete("/me/sessions"),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: SESSIONS_KEY });
     },

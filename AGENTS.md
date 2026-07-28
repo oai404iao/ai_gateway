@@ -6,7 +6,7 @@
 
 ## What is ai-gateway?
 
-`ai-gateway` is a single-binary Rust production service intended to forward LLM requests in the OpenAI Chat Completions and Responses formats. It uses Axum/Tokio for HTTP, reqwest for upstream requests, PostgreSQL/SQLx for persistence, and `ArcSwap` for immutable runtime configuration snapshots. Rust 2024 with MSRV 1.85 is required (`Cargo.toml`). The Cargo workspace also contains the development-only `ai-gateway-perf` package under `tools/forwarding-perf/`; it is never linked into the production binary.
+`ai-gateway` is a single-binary Rust production service intended to forward LLM requests in the OpenAI Chat Completions and Responses formats. It uses Axum/Tokio for HTTP, reqwest for upstream requests, PostgreSQL/SQLx for persistence, and `ArcSwap` for immutable runtime configuration snapshots. Rust 2024 with MSRV 1.92 is required (`Cargo.toml`); `rust-toolchain.toml` pins Rust 1.97.1 for normal development and release builds. The Cargo workspace also contains the development-only `ai-gateway-perf` package under `tools/forwarding-perf/`; it is never linked into the production binary.
 
 The project is licensed under `AGPL-3.0-only`. Third-party license texts and
 attributions that must accompany binary redistribution live in `LICENSES/`
@@ -85,6 +85,7 @@ repo/
 |-- CHANGELOG.md                # Dated Keep-a-Changelog release notes
 |-- LICENSE                     # GNU Affero General Public License v3.0-only
 |-- LICENSES/                   # Committed third-party license texts shipped with releases
+|-- rust-toolchain.toml         # Exact default development/release Rust toolchain
 `-- Cargo.toml                  # Workspace plus production package metadata, MSRV, features, and dependency source of truth
 ```
 
@@ -92,7 +93,8 @@ repo/
 
 Run Rust commands from the repository root; run frontend commands with
 `pnpm --dir web/console <script>` (Node/pnpm are build/test/dev tooling only,
-not a production runtime).
+not a production runtime). Plain `cargo` commands use Rust 1.97.1 from
+`rust-toolchain.toml`; invoke Rust 1.92.0 explicitly for MSRV validation.
 
 ```bash
 # --- Rust: check, format, lint, test ---
@@ -104,6 +106,8 @@ cargo test --lib console_ui               # embedded-UI serving tests (needs --f
 cargo test --test console_spec_integration # OpenAPI spec/Console-API drift tests (needs PostgreSQL)
 cargo test --package ai-gateway-perf       # Fast unit tests for the manual performance tooling; does not run a benchmark
 cargo clippy --package ai-gateway-perf --all-targets # Lint the separate performance-tool package
+cargo +1.92.0 check --locked --workspace --all-targets # MSRV compile gate
+cargo +1.92.0 test --locked --workspace    # MSRV test gate
 
 # --- Rust: run ---
 cargo run                                 # loads ignored ./config/config.toml
@@ -358,6 +362,7 @@ pool isolation, transforms, and configured outbound proxies.
 
 | Need | Source of truth |
 |---|---|
+| Default Rust toolchain and MSRV policy | `rust-toolchain.toml` and `docs/development/rust-toolchain-policy.md` |
 | Package/MSRV/dependencies | `Cargo.toml` |
 | Documentation map and rules | `docs/README.md` and `docs/documentation-standard.md` |
 | Documentation validation | `python3 scripts/check-docs.py` |

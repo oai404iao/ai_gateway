@@ -71,24 +71,22 @@ impl Resources {
 
     async fn cleanup(&mut self, keep_database: bool) -> Result<(), Box<dyn Error + Send + Sync>> {
         let mut first_error: Option<Box<dyn Error + Send + Sync>> = None;
-        if let Some(gateway) = self.gateway.take() {
-            if let Err(error) = gateway.terminate(Duration::from_secs(90)).await {
-                first_error = Some(error);
-            }
+        if let Some(gateway) = self.gateway.take()
+            && let Err(error) = gateway.terminate(Duration::from_secs(90)).await
+        {
+            first_error = Some(error);
         }
-        if let Some(mock) = self.mock.take() {
-            if let Err(error) = mock.terminate(Duration::from_secs(5)).await {
-                if first_error.is_none() {
-                    first_error = Some(error);
-                }
-            }
+        if let Some(mock) = self.mock.take()
+            && let Err(error) = mock.terminate(Duration::from_secs(5)).await
+            && first_error.is_none()
+        {
+            first_error = Some(error);
         }
-        if let Some(database) = self.database.take() {
-            if let Err(error) = database.cleanup(keep_database).await {
-                if first_error.is_none() {
-                    first_error = Some(error);
-                }
-            }
+        if let Some(database) = self.database.take()
+            && let Err(error) = database.cleanup(keep_database).await
+            && first_error.is_none()
+        {
+            first_error = Some(error);
         }
         if let Some(path) = self.runtime_config.take() {
             let _ = fs::remove_file(path).await;

@@ -651,13 +651,12 @@ impl RoutingRuntime {
             rule_name: Arc::clone(&affinity.rule_name),
             cache_hit,
         });
-        if let Some(affinity) = &affinity {
-            if let Some(stale_channel_id) = affinity
+        if let Some(affinity) = &affinity
+            && let Some(stale_channel_id) = affinity
                 .preferred_channel_id
                 .filter(|channel_id| *channel_id != channel.id())
-            {
-                affinity_remove_if_channel(&self.inner, affinity.key, stale_channel_id);
-            }
+        {
+            affinity_remove_if_channel(&self.inner, affinity.key, stale_channel_id);
         }
         Some(SelectedRoute {
             rule,
@@ -829,10 +828,10 @@ impl RoutingRuntime {
                 return SelectionResult::Selected(selected);
             }
         }
-        if let Some(affinity) = &affinity {
-            if let Some(channel_id) = affinity.preferred_channel_id {
-                affinity_remove_if_channel(&self.inner, affinity.key, channel_id);
-            }
+        if let Some(affinity) = &affinity
+            && let Some(channel_id) = affinity.preferred_channel_id
+        {
+            affinity_remove_if_channel(&self.inner, affinity.key, channel_id);
         }
         SelectionResult::NoHealthyChannel { rule }
     }
@@ -1232,10 +1231,10 @@ impl ChannelLease {
     }
 
     pub fn request_failed(&mut self) {
-        if let Some(affinity) = self.affinity.as_ref() {
-            if affinity.cache_hit {
-                affinity_remove_if_channel(&self.inner, affinity.key, affinity.channel_id);
-            }
+        if let Some(affinity) = self.affinity.as_ref()
+            && affinity.cache_hit
+        {
+            affinity_remove_if_channel(&self.inner, affinity.key, affinity.channel_id);
         }
     }
 

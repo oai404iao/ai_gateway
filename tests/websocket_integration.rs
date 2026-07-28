@@ -105,6 +105,8 @@ impl MockResponsesWebSocket {
     }
 }
 
+// tokio-tungstenite fixes the handshake callback's error type to a full HTTP response.
+#[allow(clippy::result_large_err)]
 async fn start_mock_upstream() -> MockResponsesWebSocket {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();

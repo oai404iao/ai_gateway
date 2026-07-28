@@ -64,15 +64,18 @@ impl AuthRepository {
         user_id: Uuid,
         refresh_token_hash: &[u8],
         expires_at: DateTime<Utc>,
+        user_agent: Option<&str>,
     ) -> Result<(), RepositoryError> {
         sqlx::query(
-            "INSERT INTO user_sessions (id,user_id,refresh_token_hash,expires_at) \
-             VALUES ($1,$2,$3,$4)",
+            "INSERT INTO user_sessions \
+             (id,user_id,refresh_token_hash,expires_at,user_agent) \
+             VALUES ($1,$2,$3,$4,$5)",
         )
         .bind(id)
         .bind(user_id)
         .bind(refresh_token_hash)
         .bind(expires_at)
+        .bind(user_agent)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -97,6 +100,7 @@ impl AuthRepository {
         presented_hash: &[u8],
         next_hash: &[u8],
         next_expires_at: DateTime<Utc>,
+        user_agent: Option<&str>,
     ) -> Result<SessionRotation, RepositoryError> {
         let mut transaction = self.pool.begin().await?;
         let session = sqlx::query_as::<_, SessionForRotation>(
@@ -132,12 +136,14 @@ impl AuthRepository {
         }
         sqlx::query(
             "UPDATE user_sessions \
-             SET refresh_token_hash=$2,expires_at=$3,rotated_at=now(),last_seen_at=now() \
+             SET refresh_token_hash=$2,expires_at=$3,rotated_at=now(),last_seen_at=now(), \
+                 user_agent=COALESCE($4,user_agent) \
              WHERE id=$1",
         )
         .bind(session_id)
         .bind(next_hash)
         .bind(next_expires_at)
+        .bind(user_agent)
         .execute(&mut *transaction)
         .await?;
         transaction.commit().await?;
@@ -177,18 +183,58 @@ impl AuthRepository {
         Ok(())
     }
 
+    pub async fn revoke_other_sessions(
+        &self,
+        user_id: Uuid,
+        current_session_id: Uuid,
+    ) -> Result<u64, RepositoryError> {
+        let result = sqlx::query(
+            "UPDATE user_sessions SET revoked_at=now() \
+             WHERE user_id=$1 AND id<>$2 AND revoked_at IS NULL AND expires_at>now()",
+        )
+        .bind(user_id)
+        .bind(current_session_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
     pub async fn sessions_for_user(
         &self,
         user_id: Uuid,
+        current_session_id: Uuid,
     ) -> Result<Vec<ConsoleSession>, RepositoryError> {
-        sqlx::query_as::<_, ConsoleSession>(
-            "SELECT id,created_at,last_seen_at,expires_at,revoked_at \
-             FROM user_sessions WHERE user_id=$1 ORDER BY created_at DESC",
+        let sessions = sqlx::query_as::<_, StoredConsoleSession>(
+            "SELECT id,user_agent,created_at,last_seen_at,expires_at,revoked_at \
+             FROM user_sessions WHERE user_id=$1 \
+             ORDER BY (id=$2) DESC, \
+                      (revoked_at IS NULL AND expires_at>now()) DESC, \
+                      created_at DESC",
         )
         .bind(user_id)
+        .bind(current_session_id)
         .fetch_all(&self.pool)
-        .await
-        .map_err(RepositoryError::from)
+        .await?;
+        let now = Utc::now();
+        Ok(sessions
+            .into_iter()
+            .map(|session| ConsoleSession {
+                id: session.id,
+                user_agent: session.user_agent,
+                created_at: session.created_at,
+                last_seen_at: session.last_seen_at,
+                expires_at: session.expires_at,
+                revoked_at: session.revoked_at,
+                state: if session.revoked_at.is_some() {
+                    ConsoleSessionState::Revoked
+                } else if session.expires_at <= now {
+                    ConsoleSessionState::Expired
+                } else {
+                    ConsoleSessionState::Active
+                },
+                is_current: session.id == current_session_id,
+            })
+            .collect())
     }
 
     pub async fn profile(&self, user_id: Uuid) -> Result<Option<ConsoleProfile>, RepositoryError> {
@@ -1059,13 +1105,34 @@ pub enum SessionRotation {
     Replayed,
 }
 
-#[derive(Clone, Debug, Serialize, FromRow)]
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConsoleSessionState {
+    Active,
+    Expired,
+    Revoked,
+}
+
+#[derive(Clone, Debug, FromRow)]
+struct StoredConsoleSession {
+    id: Uuid,
+    user_agent: Option<String>,
+    created_at: DateTime<Utc>,
+    last_seen_at: DateTime<Utc>,
+    expires_at: DateTime<Utc>,
+    revoked_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct ConsoleSession {
     pub id: Uuid,
+    pub user_agent: Option<String>,
     pub created_at: DateTime<Utc>,
     pub last_seen_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
     pub revoked_at: Option<DateTime<Utc>>,
+    pub state: ConsoleSessionState,
+    pub is_current: bool,
 }
 
 #[derive(Clone, Debug, Serialize, FromRow)]

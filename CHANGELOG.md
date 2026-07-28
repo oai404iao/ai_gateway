@@ -9,6 +9,9 @@ Versioning.
 
 ### Added
 
+- Device-aware Console login-session management with current-device markers,
+  per-session sign-out, sign-out-all-other-devices, explicit active/expired/
+  revoked states, and collapsible session history.
 - OpenAI Responses WebSocket proxying on `/v1/responses`, including
   per-message authentication/admission/routing/logging, model and event
   transforms, HTTP/SOCKS proxy support, connection-local

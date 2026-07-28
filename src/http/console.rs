@@ -72,7 +72,10 @@ pub fn router(state: ConsoleState) -> Router {
         .route("/console/v1/auth/logout", post(logout))
         .route("/console/v1/me", get(get_me).patch(update_me))
         .route("/console/v1/me/password", post(change_password))
-        .route("/console/v1/me/sessions", get(list_sessions))
+        .route(
+            "/console/v1/me/sessions",
+            get(list_sessions).delete(revoke_other_sessions),
+        )
         .route(
             "/console/v1/me/sessions/{id}",
             axum::routing::delete(revoke_session),
@@ -603,24 +606,32 @@ impl LogQuery {
 
 async fn login(
     State(state): State<ConsoleState>,
+    headers: HeaderMap,
     Json(input): Json<LoginInput>,
 ) -> Result<Response, ConsoleError> {
-    let session = state.auth.login(input.email, input.password).await?;
+    let session = state
+        .auth
+        .login_with_user_agent(input.email, input.password, session_user_agent(&headers))
+        .await?;
     Ok(session_response(session))
 }
 
 async fn register(
     State(state): State<ConsoleState>,
+    headers: HeaderMap,
     Json(input): Json<RegisterInput>,
 ) -> Result<Response, ConsoleError> {
     let session = state
         .auth
-        .register(SelfRegistrationInput {
-            invitation_code: input.invitation_code,
-            email: input.email,
-            display_name: input.display_name,
-            password: input.password,
-        })
+        .register_with_user_agent(
+            SelfRegistrationInput {
+                invitation_code: input.invitation_code,
+                email: input.email,
+                display_name: input.display_name,
+                password: input.password,
+            },
+            session_user_agent(&headers),
+        )
         .await?;
     Ok(session_response(session))
 }
@@ -631,17 +642,25 @@ async fn refresh(
 ) -> Result<Response, ConsoleError> {
     let refresh_token =
         refresh_cookie(&headers).ok_or(ConsoleError::Auth(AuthError::InvalidToken))?;
-    let session = state.auth.refresh(refresh_token).await?;
+    let session = state
+        .auth
+        .refresh_with_user_agent(refresh_token, session_user_agent(&headers))
+        .await?;
     Ok(session_response(session))
 }
 
 async fn activate_invitation(
     State(state): State<ConsoleState>,
+    headers: HeaderMap,
     Json(input): Json<ActivateInvitationInput>,
 ) -> Result<Response, ConsoleError> {
     let session = state
         .auth
-        .accept_invitation(&input.invitation_token, input.password)
+        .accept_invitation_with_user_agent(
+            &input.invitation_token,
+            input.password,
+            session_user_agent(&headers),
+        )
         .await?;
     Ok(session_response(session))
 }
@@ -725,26 +744,50 @@ async fn list_sessions(
         state
             .auth
             .repository()
-            .sessions_for_user(principal.user_id())
+            .sessions_for_user(principal.user_id(), principal.session_id())
             .await?,
     ))
+}
+
+async fn revoke_other_sessions(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+) -> Result<StatusCode, ConsoleError> {
+    state
+        .auth
+        .repository()
+        .revoke_other_sessions(principal.user_id(), principal.session_id())
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn revoke_session(
     State(state): State<ConsoleState>,
     Extension(principal): Extension<ConsolePrincipal>,
     Path(id): Path<Uuid>,
-) -> Result<StatusCode, ConsoleError> {
+) -> Result<Response, ConsoleError> {
     if state
         .auth
         .repository()
         .revoke_session_for_user(principal.user_id(), id)
         .await?
     {
-        Ok(StatusCode::NO_CONTENT)
+        let mut response = StatusCode::NO_CONTENT.into_response();
+        if id == principal.session_id() {
+            clear_refresh_cookie(&mut response);
+        }
+        Ok(response)
     } else {
         Err(ConsoleError::NotFound)
     }
+}
+
+fn session_user_agent(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(header::USER_AGENT)?
+        .to_str()
+        .ok()
+        .map(ToOwned::to_owned)
 }
 
 async fn list_own_api_keys(

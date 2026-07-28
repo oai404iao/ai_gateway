@@ -34,6 +34,7 @@ export type ConsoleUser = S["ConsoleUser"];
 export type LoginResponse = S["LoginResponse"];
 export type ConsoleProfile = S["ConsoleProfile"];
 export type ConsoleSession = S["ConsoleSession"];
+export type ConsoleSessionState = S["ConsoleSessionState"];
 export type InvitationResponse = S["InvitationResponse"];
 export type RegistrationInvitationCodeCreateResponse =
   S["RegistrationInvitationCodeCreateResponse"];

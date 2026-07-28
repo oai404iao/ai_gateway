@@ -15,6 +15,8 @@
 
 ## 测试、性能与发布
 
+- [Rust 工具链与 MSRV 策略](rust-toolchain-policy.md)：区分默认构建工具链与
+  最低支持版本，并定义兼容窗口和升级门禁。
 - [真实上游 smoke test](real-upstream-smoke.md)：付费、显式执行的转发验证。
 - [转发性能测试](forwarding-performance.md)：隔离的手动性能 Harness。
 - [版本发布流程](releasing.md)
