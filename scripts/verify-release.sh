@@ -43,7 +43,7 @@ docker run --rm --entrypoint /bin/sh "$image" -ec '
     test -s /usr/share/doc/ai-gateway/LICENSE
     test -s /usr/share/doc/ai-gateway/THIRD_PARTY_NOTICES.md
     test -s /usr/share/doc/ai-gateway/LICENSES/cargo/axum_0.8.9/LICENSE
-    test -s /usr/share/doc/ai-gateway/LICENSES/npm/fontsource-variable_geist_5.2.9/LICENSE
+    test -s /usr/share/doc/ai-gateway/LICENSES/npm/fontsource-variable_geist_5.3.0/LICENSE
 '
 
 echo "release verification passed: v${version}"

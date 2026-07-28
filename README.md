@@ -49,7 +49,8 @@ Separate Console listener (/console/v1/*)
 
 ## Requirements
 
-- Rust **1.92** or newer (Rust 2024 edition)
+- Rust **1.92** or newer (the MSRV; Rust 2024 edition). The repository pins
+  **1.97.1** in `rust-toolchain.toml` for normal development and release builds.
 - PostgreSQL
 - Docker Compose is optional: `docker-compose.yml` provides PostgreSQL for
   development, while `docker-compose.prd.yaml` can run the complete production
