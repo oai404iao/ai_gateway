@@ -19,6 +19,7 @@ pub struct RequestLogEvent {
     pub api_key_id: Uuid,
     pub request_source: RequestLogSource,
     pub api_format: ApiFormat,
+    pub request_protocol: RequestProtocol,
     pub client_model: String,
     pub upstream_model: Option<String>,
     pub model_rule_id: Option<Uuid>,
@@ -59,6 +60,37 @@ impl RequestLogSource {
             Self::Client => "client",
             Self::ScheduledTest => "scheduled_test",
         }
+    }
+}
+
+/// Client-visible transport used for one logical request.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RequestProtocol {
+    NonStream,
+    Sse,
+    #[serde(rename = "websocket")]
+    WebSocket,
+}
+
+impl RequestProtocol {
+    #[must_use]
+    pub const fn from_http_streamed(streamed: bool) -> Self {
+        if streamed { Self::Sse } else { Self::NonStream }
+    }
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NonStream => "non_stream",
+            Self::Sse => "sse",
+            Self::WebSocket => "websocket",
+        }
+    }
+
+    #[must_use]
+    pub const fn is_streamed(self) -> bool {
+        !matches!(self, Self::NonStream)
     }
 }
 

@@ -495,7 +495,9 @@ mod tests {
     use uuid::Uuid;
 
     use super::RequestLogSpool;
-    use crate::domain::{ApiFormat, RequestLogEvent, RequestLogOutcome, RequestLogSource};
+    use crate::domain::{
+        ApiFormat, RequestLogEvent, RequestLogOutcome, RequestLogSource, RequestProtocol,
+    };
 
     fn directory() -> std::path::PathBuf {
         std::env::temp_dir().join(format!("ai-gateway-spool-test-{}", Uuid::new_v4()))
@@ -511,6 +513,7 @@ mod tests {
             api_key_id: Uuid::new_v4(),
             request_source: RequestLogSource::Client,
             api_format: ApiFormat::OpenAiResponses,
+            request_protocol: RequestProtocol::NonStream,
             client_model: "spool-test".into(),
             upstream_model: None,
             model_rule_id: None,

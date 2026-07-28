@@ -2955,7 +2955,7 @@ components:
       type: object
       required:
         [id, started_at, completed_at, user_id, api_key_id, api_format,
-         request_source, client_model, upstream_model, model_rule_id, channel_group_id,
+         request_source, request_protocol, client_model, upstream_model, model_rule_id, channel_group_id,
          channel_group_name, channel_id, channel_name, outcome, response_status_code, streamed, ttft_ms,
          total_duration_ms, input_tokens, cached_input_tokens,
          cache_write_tokens, output_tokens, cost_amount, error_code, error_summary,
@@ -2968,6 +2968,7 @@ components:
         api_key_id: { type: string, format: uuid }
         request_source: { $ref: "#/components/schemas/RequestLogSource" }
         api_format: { $ref: "#/components/schemas/ApiFormat" }
+        request_protocol: { $ref: "#/components/schemas/RequestProtocol" }
         client_model: { type: string }
         upstream_model: { type: string, nullable: true }
         model_rule_id: { type: string, format: uuid, nullable: true }
@@ -2987,7 +2988,9 @@ components:
           description: Administrator-only current display name; regular-user self-service responses return null.
         outcome: { type: string }
         response_status_code: { type: integer, nullable: true }
-        streamed: { type: boolean }
+        streamed:
+          type: boolean
+          description: Compatibility flag; true for SSE and WebSocket requests.
         ttft_ms: { type: integer, nullable: true }
         total_duration_ms: { type: integer, nullable: true }
         input_tokens: { type: integer, nullable: true }
@@ -3008,6 +3011,10 @@ components:
     RequestLogSource:
       type: string
       enum: [client, scheduled_test]
+
+    RequestProtocol:
+      type: string
+      enum: [non_stream, sse, websocket]
 
     PersonalUsageReport:
       type: object

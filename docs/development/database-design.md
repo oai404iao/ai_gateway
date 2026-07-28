@@ -291,12 +291,13 @@ CHECK (jsonb_typeof(override_document) = 'object');
 | `started_at` / `completed_at` | `timestamptz` | 请求开始与结束时间。 |
 | `user_id` / `api_key_id` | `uuid` | 请求归属与认证 Key。 |
 | `api_format` | `api_format` | 本次请求格式。 |
+| `request_protocol` | `text` | `non_stream`、`sse` 或 `websocket`；表示客户端请求使用的传输方式。 |
 | `client_model` / `upstream_model` | `varchar(300)` | 客户端与实际发送模型名。 |
 | `model_rule_id` | `uuid` | 使用的模型规则。 |
 | `channel_group_id` / `channel_id` | `uuid` | 最终命中的组和渠道；拒绝请求时可空。 |
 | `outcome` | `text` | `succeeded`、`failed`、`rejected` 或 `cancelled`。 |
 | `response_status_code` | `smallint` | 可空。 |
-| `streamed` | `boolean` | 非空，默认 `false`。 |
+| `streamed` | `boolean` | 兼容字段；SSE 与 WebSocket 为 `true`，非流式请求为 `false`。 |
 | `ttft_ms` / `total_duration_ms` | `integer` | 可空、非负。 |
 | `output_tokens_per_second` | `numeric(14,4)` | 可空、非负。 |
 | `input_tokens` / `cached_input_tokens` / `cache_write_tokens` / `output_tokens` | `bigint` | 可空、非负；未知保持 `NULL`。 |

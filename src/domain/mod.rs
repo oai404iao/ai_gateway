@@ -25,7 +25,7 @@ pub use compiled_routing::{
 pub use console_auth::{ConsolePrincipal, UserRole};
 pub use request_log::{
     RequestBilling, RequestLogEvent, RequestLogOutcome, RequestLogSource, RequestPriceSnapshot,
-    RequestUsage,
+    RequestProtocol, RequestUsage,
 };
 pub use system_settings::{
     AutomaticDisableSettings, AutomaticDisableTrigger, MAX_REQUEST_RETRIES, PassiveHealthSettings,

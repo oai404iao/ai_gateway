@@ -38,7 +38,8 @@ use crate::{
         ApiFormat, ApiKeyPermission, AutomaticDisableSettings, AutomaticDisableTrigger,
         CompiledAdvancedBilling, CompiledApiKey, CompiledChannel, CompiledModelRule,
         MAX_REQUEST_RETRIES, ModelPriceSnapshot, RequestLogEvent, RequestLogOutcome,
-        RequestLogSource, SessionAffinityKeySource, SessionAffinitySettings, UpstreamAuth,
+        RequestLogSource, RequestProtocol, SessionAffinityKeySource, SessionAffinitySettings,
+        UpstreamAuth,
     },
     routing::{
         ChannelLease, RoutingRuntime, SelectionResult, SessionAffinityMatch,
@@ -267,7 +268,7 @@ impl ProxyService {
                     &api_key,
                     api_format,
                     &parsed.model,
-                    parsed.streamed,
+                    parsed.request_protocol,
                     started_wall_at,
                     started_at,
                 );
@@ -278,7 +279,7 @@ impl ProxyService {
                     &api_key,
                     api_format,
                     &parsed.model,
-                    parsed.streamed,
+                    parsed.request_protocol,
                     &rule,
                     started_wall_at,
                     started_at,
@@ -303,7 +304,7 @@ impl ProxyService {
             Arc::clone(&self.request_log_sink),
             &api_key,
             &parsed.model,
-            parsed.streamed,
+            parsed.request_protocol,
             api_format,
             &current_rule,
             &current_channel,
@@ -490,7 +491,7 @@ impl ProxyService {
         api_key: &CompiledApiKey,
         api_format: ApiFormat,
         client_model: &str,
-        streamed: bool,
+        request_protocol: RequestProtocol,
         started_at: chrono::DateTime<chrono::Utc>,
         started: Instant,
     ) {
@@ -503,6 +504,7 @@ impl ProxyService {
             api_key_id: api_key.id(),
             request_source: RequestLogSource::Client,
             api_format,
+            request_protocol,
             client_model: client_model.to_owned(),
             upstream_model: None,
             model_rule_id: None,
@@ -511,7 +513,7 @@ impl ProxyService {
             model_id: None,
             outcome: RequestLogOutcome::Rejected,
             response_status_code: Some(StatusCode::NOT_FOUND.as_u16()),
-            streamed,
+            streamed: request_protocol.is_streamed(),
             ttft_ms: None,
             total_duration_ms: elapsed,
             billing: None,
@@ -528,7 +530,7 @@ impl ProxyService {
         api_key: &CompiledApiKey,
         api_format: ApiFormat,
         client_model: &str,
-        streamed: bool,
+        request_protocol: RequestProtocol,
         rule: &CompiledModelRule,
         started_at: chrono::DateTime<chrono::Utc>,
         started: Instant,
@@ -541,6 +543,7 @@ impl ProxyService {
             api_key_id: api_key.id(),
             request_source: RequestLogSource::Client,
             api_format,
+            request_protocol,
             client_model: client_model.to_owned(),
             upstream_model: Some(rule.upstream_model().to_owned()),
             model_rule_id: Some(rule.id()),
@@ -549,7 +552,7 @@ impl ProxyService {
             model_id: Some(rule.upstream_model_id()),
             outcome: RequestLogOutcome::Failed,
             response_status_code: Some(StatusCode::SERVICE_UNAVAILABLE.as_u16()),
-            streamed,
+            streamed: request_protocol.is_streamed(),
             ttft_ms: None,
             total_duration_ms: clamp_duration_ms(started.elapsed()),
             billing: None,
@@ -845,7 +848,7 @@ struct RequestProbe {
 
 struct ParsedRequest {
     model: String,
-    streamed: bool,
+    request_protocol: RequestProtocol,
 }
 
 fn parse_request(body: &[u8]) -> Result<ParsedRequest, ProxyError> {
@@ -866,7 +869,7 @@ fn parse_request(body: &[u8]) -> Result<ParsedRequest, ProxyError> {
     }
     Ok(ParsedRequest {
         model: probe.model,
-        streamed: probe.stream,
+        request_protocol: RequestProtocol::from_http_streamed(probe.stream),
     })
 }
 
@@ -1511,7 +1514,7 @@ struct CompletionContext {
     channel_id: Uuid,
     model_id: Uuid,
     api_format: ApiFormat,
-    streamed: bool,
+    request_protocol: RequestProtocol,
     started_wall_at: chrono::DateTime<chrono::Utc>,
     started_at: Instant,
     first_byte_at: Option<Duration>,
@@ -1550,7 +1553,7 @@ impl CompletionGuard {
         sink: Arc<dyn RequestLogSink>,
         api_key: &CompiledApiKey,
         client_model: &str,
-        streamed: bool,
+        request_protocol: RequestProtocol,
         api_format: ApiFormat,
         rule: &CompiledModelRule,
         channel: &CompiledChannel,
@@ -1575,7 +1578,7 @@ impl CompletionGuard {
                 channel_id: channel.id(),
                 model_id: rule.upstream_model_id(),
                 api_format,
-                streamed,
+                request_protocol,
                 started_wall_at,
                 started_at,
                 first_byte_at: None,
@@ -1770,6 +1773,7 @@ impl CompletionGuard {
             upstream_model = %context.upstream_model,
             channel_id = %context.channel_id,
             api_format = ?context.api_format,
+            request_protocol = context.request_protocol.as_str(),
             upstream_status = ?context.upstream_status,
             latency_ms = context.started_at.elapsed().as_millis(),
             ttft_ms = ?context.first_byte_at.map(|duration| duration.as_millis()),
@@ -1789,6 +1793,7 @@ impl CompletionGuard {
             api_key_id: context.api_key_id,
             request_source: RequestLogSource::Client,
             api_format: context.api_format,
+            request_protocol: context.request_protocol,
             client_model: context.client_model,
             upstream_model: Some(context.upstream_model),
             model_rule_id: Some(context.model_rule_id),
@@ -1800,7 +1805,7 @@ impl CompletionGuard {
                 .client_visible_status
                 .or(context.upstream_status)
                 .or(outcome.fallback_status()),
-            streamed: context.streamed,
+            streamed: context.request_protocol.is_streamed(),
             ttft_ms: context.first_byte_at.map(clamp_duration_ms),
             total_duration_ms,
             billing: Some(billing),
