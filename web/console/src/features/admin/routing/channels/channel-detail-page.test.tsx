@@ -6,8 +6,13 @@ import { BrowserRouter } from "react-router";
 import { AppProviders } from "@/app/providers";
 import { AppRouter } from "@/app/router";
 import { server, seedAuthenticatedSession } from "@/test/msw";
-import { CHANNEL, CHANNEL_DETAIL } from "@/test/fixtures";
-import type { ChannelInput, ChannelModelDiscoveryInput } from "@/api/types";
+import { CHANNEL, CHANNEL_DETAIL, CHANNEL_GROUP } from "@/test/fixtures";
+import type {
+  ChannelDetailView,
+  ChannelGroupView,
+  ChannelInput,
+  ChannelModelDiscoveryInput,
+} from "@/api/types";
 
 function renderAppAt(path: string) {
   window.history.replaceState({}, "", path);
@@ -61,8 +66,65 @@ describe("ChannelDetailPage", () => {
     expect(submitted?.upstream_api_key).toBe(CHANNEL_DETAIL.upstream_api_key);
     expect(submitted?.status_statistics_enabled).toBe(true);
     expect(submitted?.auto_disable_allowed).toBe(true);
+    expect(submitted?.supports_websocket).toBe(false);
     expect(submitted?.billing_multiplier).toBe(CHANNEL.billing_multiplier);
     expect(submitted?.test_model).toBe(CHANNEL.test_model);
+  });
+
+  it("enables WebSocket support only for a Responses channel", async () => {
+    seedAuthenticatedSession();
+    const responsesGroup: ChannelGroupView = {
+      ...CHANNEL_GROUP,
+      id: "00000000-0000-0000-0000-000000000123",
+      name: "responses-websocket",
+      api_format: "open_ai_responses",
+    };
+    const responsesChannel: ChannelDetailView = {
+      ...CHANNEL_DETAIL,
+      id: "00000000-0000-0000-0000-000000000124",
+      channel_group_id: responsesGroup.id,
+      api_format: "open_ai_responses",
+      name: "responses-websocket",
+      supports_websocket: false,
+      override_document: {
+        version: 1,
+        api_format: "open_ai_responses",
+      },
+    };
+    let submitted: ChannelInput | undefined;
+    server.use(
+      http.get("/console/v1/routing/channel-groups", () =>
+        HttpResponse.json([responsesGroup]),
+      ),
+      http.get("/console/v1/routing/channels", () =>
+        HttpResponse.json([responsesChannel]),
+      ),
+      http.get("/console/v1/routing/channels/:id", () =>
+        HttpResponse.json(responsesChannel, {
+          headers: { ETag: `"${responsesChannel.updated_at}"` },
+        }),
+      ),
+      http.get("/console/v1/routing/model-rules", () => HttpResponse.json([])),
+      http.put("/console/v1/routing/channels/:id", async ({ request }) => {
+        submitted = (await request.json()) as ChannelInput;
+        return HttpResponse.json({
+          id: responsesChannel.id,
+          correlation_id: "77777777-0000-0000-0000-000000000000",
+        });
+      }),
+    );
+    const user = userEvent.setup();
+    renderAppAt(`/admin/routing/channels/${responsesChannel.id}`);
+
+    const toggle = await screen.findByRole("switch", {
+      name: "Supports Responses WebSocket",
+    });
+    expect(toggle).not.toBeDisabled();
+    expect(toggle).not.toBeChecked();
+    await user.click(toggle);
+    await user.click(screen.getByRole("button", { name: /save channel/i }));
+
+    await waitFor(() => expect(submitted?.supports_websocket).toBe(true));
   });
 
   it("explains a routing dependency rejection instead of showing an opaque error", async () => {

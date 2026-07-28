@@ -12,6 +12,15 @@ Versioning.
 - Device-aware Console login-session management with current-device markers,
   per-session sign-out, sign-out-all-other-devices, explicit active/expired/
   revoked states, and collapsible session history.
+- OpenAI Responses WebSocket proxying on `/v1/responses`, including
+  per-message authentication/admission/routing/logging, model and event
+  transforms, HTTP/SOCKS proxy support, connection-local
+  `previous_response_id` continuity, graceful process draining, and a bounded
+  upstream WebSocket pool with Codex-compatible per-message deflate.
+- Database-backed Responses WebSocket controls with explicit system, user, and
+  channel opt-in; configurable idle-pool capacity and lifetimes; a personal
+  settings page; channel capability controls; and current-process pool/session
+  metrics on the administrator system-load page.
 
 ## [0.4.0] - 2026-07-27
 

@@ -16,6 +16,7 @@ use crate::{
 
 use super::{
     channel_automation::AutomaticDisableService,
+    proxy::ProxyService,
     request_log::{RequestLogPipelineMonitor, RequestLogPipelineSnapshot},
 };
 
@@ -32,6 +33,7 @@ pub struct SystemMetricsService {
     routing: Option<RoutingRuntime>,
     request_logs: Option<RequestLogPipelineMonitor>,
     automatic_disable: Option<AutomaticDisableService>,
+    websocket_proxy: Option<ProxyService>,
 }
 
 impl SystemMetricsService {
@@ -62,6 +64,7 @@ impl SystemMetricsService {
             routing: None,
             request_logs: None,
             automatic_disable: None,
+            websocket_proxy: None,
         }
     }
 
@@ -77,6 +80,12 @@ impl SystemMetricsService {
         self.routing = Some(routing);
         self.request_logs = Some(request_logs);
         self.automatic_disable = Some(automatic_disable);
+        self
+    }
+
+    #[must_use]
+    pub fn with_websocket_proxy(mut self, proxy: ProxyService) -> Self {
+        self.websocket_proxy = Some(proxy);
         self
     }
 
@@ -123,6 +132,10 @@ impl SystemMetricsService {
             request_logs.database_pool_idle,
             request_logs.database_pool_capacity,
         );
+        let websocket = self
+            .websocket_proxy
+            .as_ref()
+            .map_or_else(Default::default, ProxyService::websocket_runtime_snapshot);
 
         SystemLoadReport {
             sampled_at: Utc::now(),
@@ -188,6 +201,22 @@ impl SystemMetricsService {
                 projection_failures_total: request_logs.projection_failures_total,
                 settlement_failures_total: request_logs.settlement_failures_total,
             },
+            websocket: SystemWebSocketLoad {
+                enabled: websocket.enabled,
+                active_downstream_sessions: websocket.active_downstream_sessions,
+                idle_upstream_connections: websocket.idle_upstream_connections,
+                leased_upstream_connections: websocket.leased_upstream_connections,
+                pool_capacity: websocket.pool_capacity,
+                idle_pool_utilization_percent: percentage(
+                    Some(websocket.idle_upstream_connections),
+                    Some(websocket.pool_capacity),
+                ),
+                pool_hits_total: websocket.pool_hits_total,
+                pool_misses_total: websocket.pool_misses_total,
+                pool_discarded_total: websocket.pool_discarded_total,
+                idle_timeout_seconds: websocket.idle_timeout_seconds,
+                max_connection_age_seconds: websocket.max_connection_age_seconds,
+            },
             database: SystemDatabaseLoad {
                 control_plane: control_plane_pool,
                 request_log: request_log_pool,
@@ -206,6 +235,7 @@ pub struct SystemLoadReport {
     pub runtime: SystemRuntimeLoad,
     pub queues: SystemQueuesLoad,
     pub request_log: SystemRequestLogLoad,
+    pub websocket: SystemWebSocketLoad,
     pub database: SystemDatabaseLoad,
 }
 
@@ -286,6 +316,21 @@ pub struct SystemRequestLogLoad {
     pub ingress_failures_total: u64,
     pub projection_failures_total: u64,
     pub settlement_failures_total: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct SystemWebSocketLoad {
+    pub enabled: bool,
+    pub active_downstream_sessions: u64,
+    pub idle_upstream_connections: u64,
+    pub leased_upstream_connections: u64,
+    pub pool_capacity: u64,
+    pub idle_pool_utilization_percent: Option<f64>,
+    pub pool_hits_total: u64,
+    pub pool_misses_total: u64,
+    pub pool_discarded_total: u64,
+    pub idle_timeout_seconds: u64,
+    pub max_connection_age_seconds: u64,
 }
 
 #[derive(Clone, Debug, Serialize)]

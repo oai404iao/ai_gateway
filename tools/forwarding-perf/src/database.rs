@@ -204,6 +204,7 @@ fn system_settings() -> SystemSettingsInput {
             prompt: "reply '1'".into(),
         },
         session_affinity: Default::default(),
+        websocket: Default::default(),
     }
 }
 

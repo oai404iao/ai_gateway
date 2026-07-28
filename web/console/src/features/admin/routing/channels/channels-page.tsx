@@ -158,6 +158,11 @@ export function ChannelsPage() {
       header: t("Status statistics"),
       render: (channel) => <StatusBadge value={channel.status_statistics_enabled} />,
     },
+    {
+      key: "websocket",
+      header: t("WebSocket"),
+      render: (channel) => <StatusBadge value={channel.supports_websocket} />,
+    },
     { key: "weight", header: t("Weight"), render: (channel) => channel.weight },
     {
       key: "billing_multiplier",

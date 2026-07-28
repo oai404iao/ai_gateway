@@ -30,6 +30,7 @@ import type {
   SystemLoadReport,
   SystemSettings,
   UserGroupView,
+  UserSettings,
 } from "@/api/types";
 
 export const ADMIN_USER: ConsoleUser = {
@@ -47,6 +48,11 @@ export const ADMIN_PROFILE: ConsoleProfile = {
   status: "active",
   balance_amount: "12.50",
   created_at: "2026-01-01T00:00:00.000Z",
+  updated_at: "2026-01-02T00:00:00.000Z",
+};
+
+export const USER_SETTINGS: UserSettings = {
+  websocket_enabled: false,
   updated_at: "2026-01-02T00:00:00.000Z",
 };
 
@@ -203,6 +209,7 @@ export const CHANNEL: ChannelView = {
   name: "upstream-a",
   base_url: "https://api.upstream.example",
   enabled: true,
+  supports_websocket: false,
   status_statistics_enabled: true,
   auto_disabled: false,
   auto_disabled_reason: null,
@@ -391,6 +398,12 @@ export const SYSTEM_SETTINGS: SystemSettings = {
     max_entries: 100_000,
     default_ttl_seconds: 3_600,
     rules: [],
+  },
+  websocket: {
+    enabled: false,
+    max_idle_connections: 128,
+    idle_timeout_seconds: 300,
+    max_connection_age_seconds: 3_300,
   },
   updated_at: "2026-01-02T00:00:00.000Z",
 };
@@ -693,6 +706,19 @@ export const SYSTEM_LOAD_REPORT: SystemLoadReport = {
     ingress_failures_total: 0,
     projection_failures_total: 0,
     settlement_failures_total: 0,
+  },
+  websocket: {
+    enabled: true,
+    active_downstream_sessions: 3,
+    idle_upstream_connections: 12,
+    leased_upstream_connections: 2,
+    pool_capacity: 128,
+    idle_pool_utilization_percent: 9.375,
+    pool_hits_total: 900,
+    pool_misses_total: 100,
+    pool_discarded_total: 25,
+    idle_timeout_seconds: 300,
+    max_connection_age_seconds: 3_300,
   },
   database: {
     control_plane: {

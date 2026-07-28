@@ -99,6 +99,8 @@ describe("StatisticsPage", () => {
     expect(screen.getByText("Bounded queues")).toBeInTheDocument();
     expect(screen.getByText("Request-log notifications")).toBeInTheDocument();
     expect(screen.getByText("2 MiB")).toBeInTheDocument();
+    expect(screen.getByText("Responses WebSocket pool")).toBeInTheDocument();
+    expect(screen.getByText("900 / 100")).toBeInTheDocument();
   });
 
   it("keeps regular-user statistics scoped to their own costs", async () => {

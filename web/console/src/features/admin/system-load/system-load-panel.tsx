@@ -256,7 +256,7 @@ export function SystemLoadPanel() {
 
       {data ? (
         <>
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
               <MetricCard
                 title={t("Host CPU")}
                 value={formatPercent(data.host.cpu_usage_percent)}
@@ -299,6 +299,18 @@ export function SystemLoadPanel() {
                 })}
                 status={{ label: "Live", variant: "info" }}
               />
+              <MetricCard
+                title={t("WebSocket sessions")}
+                value={data.websocket.active_downstream_sessions.toLocaleString()}
+                description={t("{idle} idle upstream · {leased} leased", {
+                  idle: data.websocket.idle_upstream_connections,
+                  leased: data.websocket.leased_upstream_connections,
+                })}
+                status={{
+                  label: data.websocket.enabled ? "Enabled" : "Disabled",
+                  variant: data.websocket.enabled ? "success" : "secondary",
+                }}
+              />
             </div>
 
             <div className="grid gap-6 xl:grid-cols-2">
@@ -316,6 +328,70 @@ export function SystemLoadPanel() {
                       <QueueRow {...item} />
                     </Fragment>
                   ))}
+                </CardContent>
+              </Card>
+
+              <Card className="xl:col-span-2">
+                <CardHeader>
+                  <CardTitle>{t("Responses WebSocket pool")}</CardTitle>
+                  <CardDescription>
+                    {t(
+                      "Process-local downstream sessions, upstream connection reuse, and cumulative pool outcomes.",
+                    )}
+                  </CardDescription>
+                  <CardAction>
+                    <Badge variant={data.websocket.enabled ? "success" : "secondary"}>
+                      {t(data.websocket.enabled ? "Enabled" : "Disabled")}
+                    </Badge>
+                  </CardAction>
+                </CardHeader>
+                <CardContent className="grid gap-4 md:grid-cols-2">
+                  <div className="flex flex-col gap-4">
+                    <BacklogRow
+                      label={t("Active downstream sessions")}
+                      value={data.websocket.active_downstream_sessions.toLocaleString()}
+                      description={t("Accepted client WebSocket connections still open.")}
+                    />
+                    <Separator />
+                    <BacklogRow
+                      label={t("Leased upstream connections")}
+                      value={data.websocket.leased_upstream_connections.toLocaleString()}
+                      description={t("Upstream WebSockets currently serving a logical request.")}
+                    />
+                    <Separator />
+                    <div className="flex flex-col gap-2">
+                      <BacklogRow
+                        label={t("Idle upstream pool")}
+                        value={`${data.websocket.idle_upstream_connections.toLocaleString()} / ${data.websocket.pool_capacity.toLocaleString()}`}
+                        description={t("Clean upstream connections available for exact-key reuse.")}
+                      />
+                      {data.websocket.idle_pool_utilization_percent !== null ? (
+                        <Progress value={data.websocket.idle_pool_utilization_percent} />
+                      ) : null}
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col gap-4">
+                    <BacklogRow
+                      label={t("Pool hits / misses")}
+                      value={`${data.websocket.pool_hits_total.toLocaleString()} / ${data.websocket.pool_misses_total.toLocaleString()}`}
+                      description={t("Cumulative exact-key reuse lookups for this process.")}
+                    />
+                    <Separator />
+                    <BacklogRow
+                      label={t("Discarded connections")}
+                      value={data.websocket.pool_discarded_total.toLocaleString()}
+                      description={t("Closed, expired, replaced, or otherwise non-reusable connections.")}
+                    />
+                    <Separator />
+                    <BacklogRow
+                      label={t("Pool policy")}
+                      value={`${formatAge(data.websocket.idle_timeout_seconds)} / ${formatAge(
+                        data.websocket.max_connection_age_seconds,
+                      )}`}
+                      description={t("Idle timeout / maximum connection age.")}
+                    />
+                  </div>
                 </CardContent>
               </Card>
 

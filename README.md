@@ -218,6 +218,7 @@ All public API endpoints use `Authorization: Bearer <client-api-key>`.
 | `GET /v1/models` | Lists models reachable by the API key; requires both `proxy` and `models.read` for at least one format. |
 | `POST /v1/chat/completions` | Proxies a Chat Completions request only. |
 | `POST /v1/responses` | Proxies a Responses request only. |
+| `GET /v1/responses` with WebSocket Upgrade | Proxies sequential Responses `response.create` messages over WebSocket. |
 
 After provisioning a matching rule and API key:
 
@@ -250,6 +251,16 @@ curl --request POST "$GATEWAY_URL/v1/responses" \
 ```
 
 The gateway forwards upstream status codes and response bodies. It preserves streaming behavior; use the corresponding OpenAI request streaming fields when your client needs SSE.
+Responses WebSocket clients connect to `ws://<gateway>/v1/responses` (or
+`wss://` through a TLS-terminating reverse proxy) with the same Gateway Bearer
+key. The gateway admits and logs each sequential `response.create`, pins it to
+the same session-isolated upstream socket whenever available for
+connection-local cache continuity, and returns clean completed sockets to a
+bounded pool between requests. It does not multiplex concurrent Responses on
+one WebSocket. WebSocket forwarding is explicitly opt-in: the administrator
+must enable the database-backed system setting and mark a Responses channel as
+supported, and the API-key owner must enable it under Personal settings. Pool
+capacity and connection lifetimes are also managed from System settings.
 See the [OpenAI compatibility reference](docs/reference/openai-compatibility.md)
 for validation, pass-through, streaming, retry, and error boundaries.
 

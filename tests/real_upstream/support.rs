@@ -2,13 +2,13 @@
 //! upstream. This test is ignored by default and must be started through
 //! `scripts/run-real-upstream-smoke.sh`.
 
-use std::{env, sync::Arc, time::Duration};
+use std::{env, net::SocketAddr, sync::Arc, time::Duration};
 
 use ai_gateway::{
     application::{ProxyService, RecordingRequestLogSink},
     domain::{
         ApiFormat, PassiveHealthSettings, RequestLogEvent, RequestLogOutcome, RequestUsage,
-        SystemRuntimeSettings, UpstreamTimeoutDefaults,
+        ResponsesWebSocketSettings, SystemRuntimeSettings, UpstreamTimeoutDefaults,
     },
     http,
     persistence::{
@@ -18,17 +18,27 @@ use ai_gateway::{
 };
 use axum::{
     body::{Body, Bytes},
-    http::{Request, header},
+    http::{HeaderValue, Request, header},
 };
+use futures_util::{SinkExt, StreamExt};
 use http_body_util::BodyExt;
 use rust_decimal::Decimal;
 use serde_json::{Value, json};
-use tokio::time::timeout;
+use tokio::{
+    net::TcpListener,
+    task::JoinHandle,
+    time::{sleep, timeout},
+};
+use tokio_tungstenite::{
+    connect_async,
+    tungstenite::{Message, client::IntoClientRequest},
+};
 use tower::ServiceExt;
 use uuid::Uuid;
 
 const CLIENT_KEY: &str = "gateway-real-upstream-smoke-client-key";
 const CLIENT_MODEL: &str = "gateway-real-upstream-smoke-model";
+const MAX_WEBSOCKET_ATTEMPTS: usize = 3;
 
 #[derive(Clone, Copy)]
 pub(super) enum SmokeFormat {
@@ -133,7 +143,38 @@ struct SmokeGateway {
     logs: RecordingRequestLogSink,
 }
 
-fn gateway(settings: &SmokeSettings, format: SmokeFormat, upstream_model: &str) -> SmokeGateway {
+struct SmokeServer {
+    address: SocketAddr,
+    task: JoinHandle<()>,
+}
+
+impl Drop for SmokeServer {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+async fn start_gateway_server(app: axum::Router) -> SmokeServer {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind real-upstream websocket smoke gateway");
+    let address = listener
+        .local_addr()
+        .expect("real-upstream websocket smoke gateway address");
+    let task = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("serve real-upstream websocket smoke gateway");
+    });
+    SmokeServer { address, task }
+}
+
+fn gateway(
+    settings: &SmokeSettings,
+    format: SmokeFormat,
+    client_model: &str,
+    upstream_model: &str,
+) -> SmokeGateway {
     let group_id = Uuid::new_v4();
     let channel_id = Uuid::new_v4();
     let logs = RecordingRequestLogSink::default();
@@ -142,6 +183,7 @@ fn gateway(settings: &SmokeSettings, format: SmokeFormat, upstream_model: &str) 
             id: Uuid::new_v4(),
             user_id: Uuid::new_v4(),
             user_status: "active".into(),
+            user_websocket_enabled: true,
             secret_value: CLIENT_KEY.into(),
             status: "active".into(),
             expires_at: None,
@@ -169,6 +211,7 @@ fn gateway(settings: &SmokeSettings, format: SmokeFormat, upstream_model: &str) 
             name: "real-upstream-smoke".into(),
             base_url: settings.base_url.clone(),
             enabled: true,
+            supports_websocket: matches!(format, SmokeFormat::Responses),
             auto_disabled: false,
             auto_disable_allowed: false,
             weight: 1,
@@ -188,7 +231,7 @@ fn gateway(settings: &SmokeSettings, format: SmokeFormat, upstream_model: &str) 
         models: vec![],
         model_rules: vec![ModelRuleRecord {
             id: Uuid::new_v4(),
-            client_model: CLIENT_MODEL.into(),
+            client_model: client_model.into(),
             api_format: format.api_format_name().into(),
             upstream_model_id: Uuid::new_v4(),
             upstream_model_enabled: true,
@@ -219,7 +262,16 @@ fn gateway(settings: &SmokeSettings, format: SmokeFormat, upstream_model: &str) 
     let runtime = Arc::new(RuntimeConfig::new(
         compile_control_plane_with_system_settings(
             records,
-            SystemRuntimeSettings::new(upstream, PassiveHealthSettings::default()),
+            SystemRuntimeSettings::new_with_websocket(
+                upstream,
+                PassiveHealthSettings::default(),
+                ResponsesWebSocketSettings::new(
+                    true,
+                    128,
+                    Duration::from_secs(5 * 60),
+                    Duration::from_secs(55 * 60),
+                ),
+            ),
         )
         .expect("the smoke-test route must compile"),
     ));
@@ -249,7 +301,7 @@ pub(super) async fn smoke_nonstreaming_format(
     format: SmokeFormat,
     upstream_model: &str,
 ) {
-    let gateway = gateway(settings, format, upstream_model);
+    let gateway = gateway(settings, format, CLIENT_MODEL, upstream_model);
 
     let response = timeout(
         settings.timeout,
@@ -285,7 +337,7 @@ pub(super) async fn smoke_streaming_format(
     format: SmokeFormat,
     upstream_model: &str,
 ) {
-    let gateway = gateway(settings, format, upstream_model);
+    let gateway = gateway(settings, format, CLIENT_MODEL, upstream_model);
     let response = timeout(settings.timeout, gateway.app.oneshot(request(format, true)))
         .await
         .expect("streaming gateway request timed out")
@@ -330,6 +382,199 @@ pub(super) async fn smoke_streaming_format(
     let events = gateway.logs.events();
     assert_usage_was_logged(&events, format, true);
     assert_streaming_usage_matches_terminal_sse_event(&events, format, &raw_sse);
+}
+
+/// Sends one deterministic Responses WebSocket request through a real TCP
+/// listener so both downstream and upstream upgrade paths are exercised.
+pub(super) async fn smoke_responses_websocket(settings: &SmokeSettings, upstream_model: &str) {
+    let gateway = gateway(
+        settings,
+        SmokeFormat::Responses,
+        CLIENT_MODEL,
+        upstream_model,
+    );
+    let server = start_gateway_server(gateway.app).await;
+    let session_id = Uuid::new_v4().to_string();
+    let thread_id = Uuid::new_v4().to_string();
+    let mut attempts = 0;
+    let completed = loop {
+        attempts += 1;
+        match send_responses_websocket_attempt(settings, server.address, &session_id, &thread_id)
+            .await
+        {
+            Ok(completed) => break completed,
+            Err(()) if attempts < MAX_WEBSOCKET_ATTEMPTS => {
+                sleep(Duration::from_millis(250 * attempts as u64)).await;
+            }
+            Err(()) => {
+                panic!(
+                    "real-upstream websocket closed upstream on all {MAX_WEBSOCKET_ATTEMPTS} client attempts"
+                );
+            }
+        }
+    };
+
+    let events = gateway.logs.events();
+    assert_eq!(
+        events.len(),
+        attempts,
+        "each manual WebSocket client attempt must produce one terminal log"
+    );
+    for event in &events[..attempts - 1] {
+        assert_eq!(event.api_format, SmokeFormat::Responses.api_format());
+        assert!(event.streamed);
+        assert_eq!(event.outcome, RequestLogOutcome::Failed);
+        assert!(
+            event
+                .response_status_code
+                .is_none_or(|status| status == 502)
+        );
+        assert_eq!(
+            event.error_code.as_deref(),
+            Some("upstream_websocket_closed")
+        );
+    }
+    let successful_event = events
+        .last()
+        .expect("manual WebSocket smoke must retain a successful terminal log");
+    assert_usage_was_logged(
+        std::slice::from_ref(successful_event),
+        SmokeFormat::Responses,
+        true,
+    );
+    let expected = usage_from_sse_value(SmokeFormat::Responses, &completed)
+        .expect("real-upstream websocket response.completed must include usage");
+    assert_eq!(
+        successful_event
+            .billing
+            .as_ref()
+            .and_then(|billing| billing.usage),
+        Some(expected)
+    );
+}
+
+async fn send_responses_websocket_attempt(
+    settings: &SmokeSettings,
+    address: SocketAddr,
+    session_id: &str,
+    thread_id: &str,
+) -> Result<Value, ()> {
+    let mut request = format!("ws://{address}/v1/responses")
+        .into_client_request()
+        .expect("real-upstream websocket smoke request builds");
+    request.headers_mut().insert(
+        header::AUTHORIZATION,
+        HeaderValue::from_static("Bearer gateway-real-upstream-smoke-client-key"),
+    );
+    request.headers_mut().insert(
+        "openai-beta",
+        HeaderValue::from_static("responses_websockets=2026-02-06"),
+    );
+    request.headers_mut().insert(
+        "session-id",
+        HeaderValue::from_str(session_id).expect("smoke session id is a valid header"),
+    );
+    request.headers_mut().insert(
+        "thread-id",
+        HeaderValue::from_str(thread_id).expect("smoke thread id is a valid header"),
+    );
+    request.headers_mut().insert(
+        "x-client-request-id",
+        HeaderValue::from_str(thread_id).expect("smoke client request id is a valid header"),
+    );
+    request.headers_mut().insert(
+        "originator",
+        HeaderValue::from_static("ai-gateway-real-upstream-smoke"),
+    );
+    request.headers_mut().insert(
+        header::USER_AGENT,
+        HeaderValue::from_static(concat!(
+            "ai-gateway-real-upstream-smoke/",
+            env!("CARGO_PKG_VERSION")
+        )),
+    );
+    let (mut websocket, response) = timeout(settings.timeout, connect_async(request))
+        .await
+        .expect("real-upstream websocket upgrade timed out")
+        .expect("real-upstream websocket upgrade failed");
+    assert_eq!(response.status(), 101);
+    websocket
+        .send(Message::Text(
+            json!({
+                "type": "response.create",
+                "model": CLIENT_MODEL,
+                "instructions": "Reply exactly OK.",
+                "input": [{
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "Reply exactly OK."}],
+                }],
+                "tools": [],
+                "tool_choice": "auto",
+                "parallel_tool_calls": false,
+                "reasoning": null,
+                "store": false,
+                "stream": true,
+                "include": [],
+                "client_metadata": {
+                    "session_id": session_id,
+                    "thread_id": thread_id,
+                },
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .expect("real-upstream websocket request send failed");
+
+    let completed = loop {
+        let message = timeout(settings.timeout, websocket.next())
+            .await
+            .expect("real-upstream websocket event timed out")
+            .expect("real-upstream websocket closed before response.completed")
+            .expect("real-upstream websocket event failed");
+        let Message::Text(text) = message else {
+            continue;
+        };
+        let event: Value =
+            serde_json::from_str(&text).expect("real-upstream websocket event must be JSON");
+        match event.get("type").and_then(Value::as_str) {
+            Some("response.completed") => break Ok(event),
+            Some("error" | "response.failed" | "response.incomplete" | "response.cancelled") => {
+                let kind = event
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .unwrap_or("<missing>");
+                let status = event.get("status").and_then(Value::as_u64);
+                let code = event
+                    .pointer("/error/code")
+                    .and_then(Value::as_str)
+                    .map(safe_error_code)
+                    .unwrap_or_else(|| "<missing>".into());
+                if kind == "error" && status == Some(502) && code == "upstream_websocket_closed" {
+                    break Err(());
+                }
+                panic!(
+                    "real-upstream websocket returned terminal event type={kind} status={status:?} code={code}"
+                );
+            }
+            _ => {}
+        }
+    };
+    let _ = websocket.close(None).await;
+    completed
+}
+
+fn safe_error_code(value: &str) -> String {
+    if value.len() <= 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+    {
+        value.to_owned()
+    } else {
+        "<redacted>".into()
+    }
 }
 
 fn assert_response_has_usage(format: SmokeFormat, value: &Value) {

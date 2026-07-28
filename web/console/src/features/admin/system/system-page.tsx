@@ -191,6 +191,24 @@ const systemSettingsSchema = z
           "Rule names must be unique.",
         ),
     }),
+    websocket: z.object({
+      enabled: z.boolean(),
+      max_idle_connections: z
+        .number()
+        .int()
+        .min(0, "Idle pool capacity must be between 0 and 4096.")
+        .max(4096, "Idle pool capacity must be between 0 and 4096."),
+      idle_timeout_seconds: z
+        .number()
+        .int()
+        .min(1, "WebSocket idle timeout must be between 1 and 3600 seconds.")
+        .max(3600, "WebSocket idle timeout must be between 1 and 3600 seconds."),
+      max_connection_age_seconds: z
+        .number()
+        .int()
+        .min(60, "Maximum WebSocket age must be between 60 and 3600 seconds.")
+        .max(3600, "Maximum WebSocket age must be between 60 and 3600 seconds."),
+    }),
   })
   .superRefine((value, context) => {
     if (value.upstream.response_header_timeout_seconds <= value.upstream.connect_timeout_seconds) {
@@ -198,6 +216,13 @@ const systemSettingsSchema = z
         code: z.ZodIssueCode.custom,
         path: ["upstream", "response_header_timeout_seconds"],
         message: "Response header timeout must exceed connect timeout.",
+      });
+    }
+    if (value.websocket.idle_timeout_seconds >= value.websocket.max_connection_age_seconds) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["websocket", "max_connection_age_seconds"],
+        message: "Maximum WebSocket age must exceed the idle timeout.",
       });
     }
   });
@@ -236,6 +261,12 @@ const defaultValues: SystemSettingsValues = {
     default_ttl_seconds: 3_600,
     rules: [],
   },
+  websocket: {
+    enabled: false,
+    max_idle_connections: 128,
+    idle_timeout_seconds: 300,
+    max_connection_age_seconds: 3300,
+  },
 };
 
 export function SystemPage() {
@@ -263,6 +294,7 @@ export function SystemPage() {
         },
         scheduled_testing: settings.data.data.scheduled_testing,
         session_affinity: settings.data.data.session_affinity,
+        websocket: settings.data.data.websocket,
       });
     }
   }, [form, settings.data]);
@@ -284,6 +316,7 @@ export function SystemPage() {
         },
         scheduled_testing: values.scheduled_testing,
         session_affinity: values.session_affinity,
+        websocket: values.websocket,
       };
       const result = await updateSettings.mutateAsync({
         input,
@@ -760,6 +793,140 @@ export function SystemPage() {
                 </FieldGroup>
               </CardContent>
             </Card>
+
+            <div className="xl:col-span-2">
+              <Card>
+                <CardHeader>
+                  <CardTitle>{t("Responses WebSocket")}</CardTitle>
+                  <CardDescription>
+                    {t(
+                      "WebSocket forwarding requires the system, user, and selected Responses channel to be enabled. Pool settings apply process-wide.",
+                    )}
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <FieldGroup>
+                    <Field orientation="horizontal">
+                      <FieldContent>
+                        <FieldLabel htmlFor="websocket_enabled">
+                          {t("Enable Responses WebSocket")}
+                        </FieldLabel>
+                        <FieldDescription>
+                          {t(
+                            "Disabled systems reject new WebSocket upgrades and discard idle upstream connections.",
+                          )}
+                        </FieldDescription>
+                      </FieldContent>
+                      <Switch
+                        id="websocket_enabled"
+                        checked={form.watch("websocket.enabled")}
+                        onCheckedChange={(checked) =>
+                          form.setValue("websocket.enabled", Boolean(checked), {
+                            shouldDirty: true,
+                            shouldValidate: true,
+                          })
+                        }
+                      />
+                    </Field>
+
+                    <div className="grid gap-4 md:grid-cols-3">
+                      <Field
+                        data-invalid={Boolean(
+                          form.formState.errors.websocket?.max_idle_connections,
+                        )}
+                      >
+                        <FieldLabel htmlFor="websocket_max_idle_connections">
+                          {t("Maximum idle connections")}
+                        </FieldLabel>
+                        <Input
+                          id="websocket_max_idle_connections"
+                          type="number"
+                          min={0}
+                          max={4096}
+                          aria-invalid={Boolean(
+                            form.formState.errors.websocket?.max_idle_connections,
+                          )}
+                          {...form.register("websocket.max_idle_connections", {
+                            valueAsNumber: true,
+                          })}
+                        />
+                        <FieldDescription>
+                          {t("Set to zero to disable upstream connection reuse.")}
+                        </FieldDescription>
+                        {form.formState.errors.websocket?.max_idle_connections ? (
+                          <FieldError>
+                            {errorMessage(
+                              form.formState.errors.websocket.max_idle_connections.message,
+                            )}
+                          </FieldError>
+                        ) : null}
+                      </Field>
+
+                      <Field
+                        data-invalid={Boolean(
+                          form.formState.errors.websocket?.idle_timeout_seconds,
+                        )}
+                      >
+                        <FieldLabel htmlFor="websocket_idle_timeout_seconds">
+                          {t("Idle timeout (seconds)")}
+                        </FieldLabel>
+                        <Input
+                          id="websocket_idle_timeout_seconds"
+                          type="number"
+                          min={1}
+                          max={3600}
+                          aria-invalid={Boolean(
+                            form.formState.errors.websocket?.idle_timeout_seconds,
+                          )}
+                          {...form.register("websocket.idle_timeout_seconds", {
+                            valueAsNumber: true,
+                          })}
+                        />
+                        {form.formState.errors.websocket?.idle_timeout_seconds ? (
+                          <FieldError>
+                            {errorMessage(
+                              form.formState.errors.websocket.idle_timeout_seconds.message,
+                            )}
+                          </FieldError>
+                        ) : null}
+                      </Field>
+
+                      <Field
+                        data-invalid={Boolean(
+                          form.formState.errors.websocket?.max_connection_age_seconds,
+                        )}
+                      >
+                        <FieldLabel htmlFor="websocket_max_connection_age_seconds">
+                          {t("Maximum connection age (seconds)")}
+                        </FieldLabel>
+                        <Input
+                          id="websocket_max_connection_age_seconds"
+                          type="number"
+                          min={60}
+                          max={3600}
+                          aria-invalid={Boolean(
+                            form.formState.errors.websocket?.max_connection_age_seconds,
+                          )}
+                          {...form.register("websocket.max_connection_age_seconds", {
+                            valueAsNumber: true,
+                          })}
+                        />
+                        <FieldDescription>
+                          {t("Must be greater than the idle timeout.")}
+                        </FieldDescription>
+                        {form.formState.errors.websocket?.max_connection_age_seconds ? (
+                          <FieldError>
+                            {errorMessage(
+                              form.formState.errors.websocket.max_connection_age_seconds.message,
+                            )}
+                          </FieldError>
+                        ) : null}
+                      </Field>
+                    </div>
+                  </FieldGroup>
+                </CardContent>
+              </Card>
+            </div>
 
             <div className="xl:col-span-2">
               <SessionAffinityCard

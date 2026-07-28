@@ -22,6 +22,7 @@ use ai_gateway::{
         SystemAutomaticDisableSettingsInput, SystemPassiveHealthSettingsInput,
         SystemRequestRetrySettingsInput, SystemScheduledTestingSettingsInput,
         SystemSessionAffinitySettingsInput, SystemSettingsInput, SystemUpstreamSettingsInput,
+        SystemWebSocketSettingsInput,
     },
     routing::{PassiveHealthPolicy, RoutingRuntime},
     runtime_config::{AppConfig, RuntimeConfig, compile_runtime_config},
@@ -119,6 +120,7 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
                 default_ttl_seconds: config.session_affinity.default_ttl_seconds,
                 rules: config.session_affinity.rules,
             },
+            websocket: SystemWebSocketSettingsInput::default(),
         })
         .await?;
     let system_probe_identity = repository.ensure_system_probe_identity().await?;
@@ -158,6 +160,15 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
     )?;
     let (automatic_disable_service, automatic_disable_worker) =
         AutomaticDisableWorker::start(coordinator.clone());
+    let proxy = ProxyService::with_dependencies_and_registry_and_automation(
+        Arc::clone(&runtime),
+        config.request_limits.proxy_body_bytes,
+        Arc::clone(&upstream_clients),
+        Arc::clone(&request_log_sink),
+        routing.clone(),
+        admission.clone(),
+        Some(automatic_disable_service.clone()),
+    )?;
     let system_metrics = SystemMetricsService::new_at(
         pool.clone(),
         config.database.max_connections,
@@ -165,20 +176,12 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
         gateway_started,
     )
     .with_runtime(
-        admission.clone(),
+        admission,
         routing.clone(),
         request_log_monitor,
         automatic_disable_service.clone(),
-    );
-    let proxy = ProxyService::with_dependencies_and_registry_and_automation(
-        Arc::clone(&runtime),
-        config.request_limits.proxy_body_bytes,
-        Arc::clone(&upstream_clients),
-        Arc::clone(&request_log_sink),
-        routing.clone(),
-        admission,
-        Some(automatic_disable_service.clone()),
-    )?;
+    )
+    .with_websocket_proxy(proxy.clone());
     let channel_probe_worker = ChannelProbeWorker::start(
         Arc::clone(&runtime),
         coordinator.clone(),
@@ -236,10 +239,12 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
         None
     };
 
+    let websocket_proxy = proxy.clone();
     let serve_result = run_servers(
         (listener, http::router(proxy)),
         console,
         Duration::from_secs(config.server.shutdown_grace_period_seconds),
+        websocket_proxy,
     )
     .await;
     channel_probe_worker.shutdown().await;
@@ -451,6 +456,7 @@ async fn run_servers(
     public: (TcpListener, Router),
     console: Option<(TcpListener, Router)>,
     shutdown_grace_period: Duration,
+    websocket_proxy: ProxyService,
 ) -> Result<(), std::io::Error> {
     let (shutdown_sender, shutdown_receiver) = watch::channel(());
     let mut servers = JoinSet::new();
@@ -476,14 +482,57 @@ async fn run_servers(
             _ => None,
         },
     };
+    websocket_proxy.begin_websocket_shutdown();
     let _ = shutdown_sender.send(());
     let mut error = first_error;
-    while let Some(result) = servers.join_next().await {
-        match result {
-            Ok(Ok(())) => {}
-            Ok(Err(next)) if error.is_none() => error = Some(next),
-            Ok(Err(next)) => tracing::warn!(%next, "listener task failed while draining"),
-            Err(next) => tracing::warn!(%next, "listener task join failed while draining"),
+    let deadline = tokio::time::Instant::now() + shutdown_grace_period;
+    let mut force_close = false;
+    loop {
+        if servers.is_empty() && websocket_proxy.active_websocket_sessions() == 0 {
+            break;
+        }
+        tokio::select! {
+            result = servers.join_next(), if !servers.is_empty() => {
+                let Some(result) = result else {
+                    continue;
+                };
+                match result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(next)) if error.is_none() => error = Some(next),
+                    Ok(Err(next)) => tracing::warn!(%next, "listener task failed while draining"),
+                    Err(next) => tracing::warn!(%next, "listener task join failed while draining"),
+                }
+            }
+            _ = websocket_proxy.wait_for_websocket_shutdown(),
+                if websocket_proxy.active_websocket_sessions() > 0 => {}
+            _ = tokio::time::sleep_until(deadline) => {
+                force_close = true;
+                break;
+            }
+        }
+    }
+    if force_close {
+        tracing::warn!(
+            grace_period_seconds = shutdown_grace_period.as_secs(),
+            "graceful shutdown deadline expired; force-closing HTTP and WebSocket connections"
+        );
+        websocket_proxy.force_websocket_shutdown();
+        servers.abort_all();
+        while let Some(result) = servers.join_next().await {
+            if let Err(next) = result
+                && !next.is_cancelled()
+            {
+                tracing::warn!(%next, "listener task join failed while force-closing");
+            }
+        }
+        if timeout(
+            Duration::from_secs(1),
+            websocket_proxy.wait_for_websocket_shutdown(),
+        )
+        .await
+        .is_err()
+        {
+            tracing::warn!("Responses WebSocket tasks did not stop after forced shutdown");
         }
     }
     error.map_or(Ok(()), Err)

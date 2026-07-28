@@ -733,6 +733,7 @@ mod tests {
             HashSet::from([Arc::<str>::from("probe-model")]),
             false,
             false,
+            false,
             Some(Arc::from("probe-model")),
             CompiledChannelUpstreamPolicy::transparent(ApiFormat::OpenAiChatCompletions),
         );

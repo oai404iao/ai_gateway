@@ -230,6 +230,19 @@ const E2E_SYSTEM_LOAD = {
     projection_failures_total: 0,
     settlement_failures_total: 0,
   },
+  websocket: {
+    enabled: true,
+    active_downstream_sessions: 3,
+    idle_upstream_connections: 12,
+    leased_upstream_connections: 2,
+    pool_capacity: 128,
+    idle_pool_utilization_percent: 9.375,
+    pool_hits_total: 900,
+    pool_misses_total: 100,
+    pool_discarded_total: 25,
+    idle_timeout_seconds: 300,
+    max_connection_age_seconds: 3_300,
+  },
   database: {
     control_plane: {
       size: 5,
@@ -288,6 +301,7 @@ const E2E_SPEND_LEADERBOARD = {
 };
 
 export async function mockConsoleApi(page: Page): Promise<void> {
+  let websocketEnabled = false;
   await page.route("**/console/v1/**", (route: Route) => {
     const url = new URL(route.request().url());
     const method = route.request().method();
@@ -312,6 +326,28 @@ export async function mockConsoleApi(page: Page): Promise<void> {
     }
     if (path === "/console/v1/me" && method === "GET") {
       return route.fulfill({ status: 200, json: ADMIN_PROFILE.user });
+    }
+    if (path === "/console/v1/me/settings" && method === "GET") {
+      return route.fulfill({
+        status: 200,
+        json: {
+          websocket_enabled: websocketEnabled,
+          updated_at: "2026-07-28T00:00:00.000Z",
+        },
+      });
+    }
+    if (path === "/console/v1/me/settings" && method === "PUT") {
+      const input = route.request().postDataJSON() as {
+        websocket_enabled: boolean;
+      };
+      websocketEnabled = input.websocket_enabled;
+      return route.fulfill({
+        status: 200,
+        json: {
+          websocket_enabled: websocketEnabled,
+          updated_at: "2026-07-28T00:00:00.000Z",
+        },
+      });
     }
     if (path === "/console/v1/me/sessions" && method === "GET") {
       return route.fulfill({ status: 200, json: E2E_SESSIONS });

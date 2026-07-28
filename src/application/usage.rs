@@ -5,6 +5,7 @@
 //! time and inspects its event name and `data:` JSON payload.
 
 use axum::body::Bytes;
+use serde::Deserialize;
 use serde_json::Value;
 
 use crate::domain::ApiFormat;
@@ -125,6 +126,40 @@ impl UsageCollector {
             self.sse_error = error;
         }
         self.record(values);
+    }
+
+    /// Observes one complete Responses WebSocket event JSON object.
+    ///
+    /// WebSocket messages already provide event boundaries, so this path avoids
+    /// synthesizing an SSE envelope while preserving the same bounded usage and
+    /// structured-error extraction semantics.
+    pub fn observe_websocket_event(&mut self, bytes: &Bytes) -> Option<SseTerminalOutcome> {
+        #[derive(Deserialize)]
+        struct EventTypeProbe<'a> {
+            #[serde(borrow, rename = "type")]
+            kind: Option<&'a str>,
+        }
+
+        let Ok(probe) = serde_json::from_slice::<EventTypeProbe<'_>>(bytes) else {
+            return None;
+        };
+        let terminal_outcome = match probe.kind {
+            Some("response.completed") => Some(SseTerminalOutcome::Completed),
+            Some("error" | "response.failed" | "response.incomplete" | "response.cancelled") => {
+                Some(SseTerminalOutcome::Failed)
+            }
+            _ => None,
+        }?;
+        let Ok(value) = serde_json::from_slice::<Value>(bytes) else {
+            return None;
+        };
+        if self.sse_terminal_outcome.is_none() {
+            self.sse_terminal_outcome = Some(terminal_outcome);
+            self.sse_error = (terminal_outcome == SseTerminalOutcome::Failed)
+                .then(|| extract_sse_error(Some(&value)));
+        }
+        self.record(vec![value]);
+        Some(terminal_outcome)
     }
 
     /// Processes one terminal SSE frame that ended with the upstream body
@@ -659,6 +694,42 @@ mod tests {
                 cached_input_tokens: 1,
                 cache_write_tokens: 0,
                 output_tokens: 2,
+            })
+        );
+    }
+
+    #[test]
+    fn extracts_responses_usage_and_terminal_state_from_websocket_event() {
+        let mut collector = UsageCollector::new(ApiFormat::OpenAiResponses, false);
+        let terminal = collector.observe_websocket_event(&Bytes::from_static(
+            br#"{"type":"response.completed","response":{"usage":{"input_tokens":9,"output_tokens":2,"input_tokens_details":{"cached_tokens":1}}}}"#,
+        ));
+        assert_eq!(terminal, Some(SseTerminalOutcome::Completed));
+        assert_eq!(
+            collector.latest(),
+            Some(ResponseUsage {
+                input_tokens: 9,
+                cached_input_tokens: 1,
+                cache_write_tokens: 0,
+                output_tokens: 2,
+            })
+        );
+    }
+
+    #[test]
+    fn extracts_responses_error_from_websocket_terminal_event() {
+        let mut collector = UsageCollector::new(ApiFormat::OpenAiResponses, false);
+        assert_eq!(
+            collector.observe_websocket_event(&Bytes::from_static(
+                br#"{"type":"error","status":400,"error":{"code":"previous_response_not_found","message":"retry full request"}}"#,
+            )),
+            Some(SseTerminalOutcome::Failed)
+        );
+        assert_eq!(
+            collector.sse_error(),
+            Some(&super::SseErrorDetails {
+                code: Some("previous_response_not_found".into()),
+                summary: Some("retry full request".into()),
             })
         );
     }

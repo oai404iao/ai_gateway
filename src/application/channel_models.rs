@@ -139,6 +139,7 @@ impl ChannelModelDiscoveryInput {
             name: "channel-model-discovery".into(),
             base_url: self.base_url,
             enabled: true,
+            supports_websocket: false,
             auto_disabled: false,
             auto_disable_allowed: false,
             weight: 1,

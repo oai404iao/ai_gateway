@@ -12,11 +12,12 @@ The project is licensed under `AGPL-3.0-only`. Third-party license texts and
 attributions that must accompany binary redistribution live in `LICENSES/`
 and `web/console/NOTICES.md`.
 
-The implemented backend includes OpenAI-compatible Chat Completions and
-Responses proxy routes, PostgreSQL-backed control-plane snapshots, a separate
-JWT-authenticated Console API with `user`/`admin` roles, constrained
-transforms, streaming/SSE forwarding, passive health, admission controls,
-durable spooled request logs, and reusable upstream clients. A React + TypeScript
+The implemented backend includes OpenAI-compatible Chat Completions, HTTP
+Responses, and Responses WebSocket proxy routes, PostgreSQL-backed
+control-plane snapshots, a separate JWT-authenticated Console API with
+`user`/`admin` roles, constrained transforms, streaming/SSE/WebSocket
+forwarding, passive health, admission controls, durable spooled request logs,
+and reusable upstream clients. A React + TypeScript
 Console web UI lives under `web/console/` and can be embedded into the binary
 as static assets via the optional `embedded-console-ui` cargo feature, served
 only from the Console listener. `docs/development/architecture.md` describes
@@ -50,7 +51,7 @@ repo/
 |   |-- request_log_spool.rs    # CRC-protected local append log and checkpoints
 |   |-- routing/                # Priority/weight selection and passive health state
 |   |-- transforms/             # Compiled constrained JSON/header/SSE transform DSL
-|   |-- upstream/               # Reused reqwest clients, proxy policy, timeout resolution
+|   |-- upstream/               # Reused reqwest clients, Responses WebSocket pool/dialer, proxy policy, timeout resolution
 |   |-- persistence/            # SQLx repositories, Console auth/session state, control-plane mutations, logs
 |   `-- workers/                # Snapshot reload plus spool ingestion, DB projection, and settlement
 |-- migrations/                 # PostgreSQL control-plane and log schema migrations
@@ -154,7 +155,8 @@ tests. `cargo test` is the baseline Rust verification. The ignored
 `./scripts/run-real-upstream-smoke.sh`; see `docs/development/real-upstream-smoke.md`.
 **Any change to the forwarding path must also run this real-upstream script
 before completion.** It serially verifies both `/v1/chat/completions` and
-`/v1/responses`, with non-streaming and SSE requests. GitHub Actions workflows
+`/v1/responses`, with non-streaming and SSE requests plus Responses WebSocket.
+GitHub Actions workflows
 under `.github/workflows/` run the ordinary CI and tag release paths.
 `docker-compose.yml` remains the PostgreSQL-only development/baseline stack;
 `docker-compose.prd.yaml` adds the containerized Gateway. Neither stack
@@ -220,6 +222,19 @@ Axum HTTP
 - Parse a request only as far as necessary to obtain `model`; absent an enabled transform or model alias, forward the original request bytes without reserialization.
 - Keep the fixed transform order: template defaults → channel overrides → upstream authentication. Configurable transforms must not alter protected or hop-by-hop headers.
 - Stream upstream responses instead of buffering them. Do not retry or switch channels after sending response headers or any response byte to the client.
+- Responses WebSocket accepts `GET /v1/responses` upgrades only. Authenticate
+  the upgrade, then treat each sequential `response.create` as its own
+  admitted, routed, logged request; never multiplex concurrent Responses on
+  one socket.
+- Keep each in-flight `response.create` exclusively pinned to one eligible
+  upstream socket because incremental `previous_response_id` cache state is
+  connection-local. Return only clean sockets to the session-isolated pool
+  after a successful terminal event, key pool entries by API key, handshake
+  identity, channel, network policy, target, and final headers, and never retry
+  after sending a WebSocket request message upstream.
+- Track upgraded Responses WebSocket tasks independently from Hyper connection
+  futures: reject new upgrades during shutdown, drain the current logical
+  request within the configured grace period, then force-close any remainder.
 - Reuse reqwest clients keyed by proxy, TLS, and timeout policy. Do not create an HTTP client per request.
 - Compile database-backed control-plane configuration into immutable runtime snapshots; the data plane must not query the database on every request.
 
@@ -277,6 +292,10 @@ Axum HTTP
 3. Run `./scripts/run-real-upstream-smoke.sh` before considering the change complete. It requires the ignored `.env.real-upstream` file and makes paid calls to both configured upstream formats.
 4. Do not print, commit, or copy credentials from `.env.real-upstream` into TOML, source, tests, or logs.
 
+For Responses WebSocket changes, also run
+`cargo test --locked --test websocket_integration`; cover sequential reuse,
+pool isolation, transforms, and configured outbound proxies.
+
 ### Prepare a release
 
 1. Follow `docs/development/releasing.md`; keep the versions in Cargo, the Console package,
@@ -316,6 +335,12 @@ Axum HTTP
 14. **Release tags are deployment inputs.** `.github/workflows/release.yml` is tag-triggered. Version drift or a missing dated Changelog entry fails the release. Verification runs read-only, GHCR publication has only package write permission, and GitHub Release publication has only contents write permission. Public repositories also publish image provenance attestations; private repositories skip that step.
 15. **GitHub Actions references are immutable.** External Actions are pinned to full commit SHAs; version-tagged Actions are updated through `.github/dependabot.yml`. Do not replace them with mutable major tags or branches. The Rust toolchain Action is pinned to a reviewed `stable` branch commit and requires periodic manual refresh.
 16. **License metadata and redistribution notices move together.** The project license is `AGPL-3.0-only`; keep both Cargo package manifests, `web/console/package.json`, README license sections, Docker OCI labels, and release archives synchronized. The embedded Geist font remains OFL-1.1 and its committed license plus `web/console/NOTICES.md` must stay in binary distributions.
+17. **Responses WebSocket state is connection-local.** Do not build a
+    multiplexing pool that moves sequential `response.create` messages between
+    arbitrary upstream sockets. Keep one request in flight, prefer the same
+    session-isolated connection for `previous_response_id`, and discard any
+    socket with an incomplete response, terminal error, queued residual
+    message, or expired pool lifetime.
 
 ## Code Style
 
@@ -345,6 +370,7 @@ Axum HTTP
 | Product direction and design background | `docs/development/product-blueprint.md` |
 | Supported client formats | `src/domain/api_format.rs` |
 | Public data-plane route registry | `src/http/mod.rs` |
+| Responses WebSocket proxy and pooling | `src/application/proxy/websocket.rs` and `src/upstream/websocket.rs` |
 | Console API route registry | `src/http/console.rs` |
 | Embedded UI serving/fallback/cache | `src/http/console_ui.rs` (feature-gated) |
 | Startup, config-path, UI merge behavior | `src/main.rs` |
@@ -361,6 +387,7 @@ Axum HTTP
 | Console/JWT design and execution plan | `docs/development/console-auth.md` |
 | Current operational API documentation | `docs/user/operations.md` |
 | OpenAI compatibility and external semantics | `docs/reference/` |
+| Codex Responses WebSocket source study | `docs/reference/codex-responses-websocket.md` |
 | Console spec/implementation drift tests | `tests/console_spec_integration.rs` |
 | Frontend package/scripts | `web/console/package.json` |
 | Frontend checks and testing guide | `web/console/README.md` |

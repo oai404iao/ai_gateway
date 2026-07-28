@@ -23,6 +23,11 @@ const ActivateInvitationPage = lazy(() =>
 const ProfilePage = lazy(() =>
   import("@/features/profile/profile-page").then((m) => ({ default: m.ProfilePage })),
 );
+const PersonalSettingsPage = lazy(() =>
+  import("@/features/personal-settings/personal-settings-page").then((m) => ({
+    default: m.PersonalSettingsPage,
+  })),
+);
 const SessionsPage = lazy(() =>
   import("@/features/sessions/sessions-page").then((m) => ({ default: m.SessionsPage })),
 );
@@ -206,6 +211,7 @@ export function AppRouter() {
         <Route element={<ConsoleLayout />}>
           <Route index element={<Navigate to="/statistics" replace />} />
           <Route path="/account" element={<ProfilePage />} />
+          <Route path="/account/settings" element={<PersonalSettingsPage />} />
           <Route path="/account/sessions" element={<SessionsPage />} />
           <Route path="/api-keys" element={<ApiKeysPage />} />
           <Route path="/api-keys/:id" element={<ApiKeyDetailPage />} />

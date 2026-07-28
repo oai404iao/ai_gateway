@@ -188,6 +188,36 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "422": { $ref: "#/components/responses/Unprocessable" }
 
+  /me/settings:
+    get:
+      tags: [Self]
+      operationId: getUserSettings
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Current user forwarding preferences.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserSettings" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    put:
+      tags: [Self]
+      operationId: updateUserSettings
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UserSettingsInput" }
+      responses:
+        "200":
+          description: Updated user forwarding preferences.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserSettings" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
   /me/password:
     post:
       tags: [Self]
@@ -1701,8 +1731,9 @@ paths:
         unsupported values and temporarily unavailable backlog queries are
         null. CPU percentages are deltas between samples, so the first sample
         after process start may be null. Queue depth, durable request-log
-        backlog, runtime in-flight state, and database pool pressure are
-        process-local except for PostgreSQL-backed backlog counts.
+        backlog, runtime in-flight state, Responses WebSocket sessions and
+        pool counters, and database pool pressure are process-local except for
+        PostgreSQL-backed backlog counts.
       security: [{ bearerAuth: [] }]
       responses:
         "200":
@@ -1756,7 +1787,7 @@ paths:
       security: [{ bearerAuth: [] }]
       responses:
         "200":
-          description: Database-backed forwarding, retry, health, automation, scheduled-test, and session-affinity defaults.
+          description: Database-backed forwarding, retry, health, automation, scheduled-test, session-affinity, and Responses WebSocket defaults.
           headers:
             ETag: { $ref: "#/components/headers/ETag" }
           content:
@@ -2047,6 +2078,15 @@ components:
         created_at: { $ref: "#/components/schemas/DateTime" }
         updated_at: { $ref: "#/components/schemas/DateTime" }
 
+    UserSettings:
+      type: object
+      required: [websocket_enabled, updated_at]
+      properties:
+        websocket_enabled:
+          type: boolean
+          description: User opt-in required before this user's API keys can open Responses WebSockets.
+        updated_at: { $ref: "#/components/schemas/DateTime" }
+
     ConsoleSessionState:
       type: string
       enum: [active, expired, revoked]
@@ -2310,10 +2350,40 @@ components:
           maxItems: 64
           items: { $ref: "#/components/schemas/SystemSessionAffinityRule" }
 
+    SystemWebSocketSettings:
+      type: object
+      required:
+        [enabled, max_idle_connections, idle_timeout_seconds, max_connection_age_seconds]
+      properties:
+        enabled:
+          type: boolean
+          default: false
+          description: Global opt-in required before Responses WebSocket upgrades are accepted.
+        max_idle_connections:
+          type: integer
+          minimum: 0
+          maximum: 4096
+          default: 128
+          description: Process-wide maximum number of clean idle upstream WebSockets retained for reuse. Zero disables idle pooling.
+        idle_timeout_seconds:
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 3600
+          default: 300
+        max_connection_age_seconds:
+          type: integer
+          format: int64
+          minimum: 60
+          maximum: 3600
+          default: 3300
+          description: Must be greater than idle_timeout_seconds.
+
     SystemSettingsInput:
       type: object
       required:
-        [api_hosts, upstream, request_retry, passive_health, automatic_disable, scheduled_testing, session_affinity]
+        [api_hosts, upstream, request_retry, passive_health, automatic_disable, scheduled_testing,
+         session_affinity, websocket]
       properties:
         api_hosts:
           type: array
@@ -2329,6 +2399,7 @@ components:
         automatic_disable: { $ref: "#/components/schemas/SystemAutomaticDisableSettings" }
         scheduled_testing: { $ref: "#/components/schemas/SystemScheduledTestingSettings" }
         session_affinity: { $ref: "#/components/schemas/SystemSessionAffinitySettings" }
+        websocket: { $ref: "#/components/schemas/SystemWebSocketSettings" }
 
     SystemSettings:
       allOf:
@@ -2377,7 +2448,7 @@ components:
       type: object
       required:
         [sampled_at, started_at, uptime_seconds, host, process, runtime,
-         queues, request_log, database]
+         queues, request_log, websocket, database]
       properties:
         sampled_at: { $ref: "#/components/schemas/DateTime" }
         started_at: { $ref: "#/components/schemas/DateTime" }
@@ -2387,6 +2458,7 @@ components:
         runtime: { $ref: "#/components/schemas/SystemRuntimeLoad" }
         queues: { $ref: "#/components/schemas/SystemQueuesLoad" }
         request_log: { $ref: "#/components/schemas/SystemRequestLogLoad" }
+        websocket: { $ref: "#/components/schemas/SystemWebSocketLoad" }
         database: { $ref: "#/components/schemas/SystemDatabaseLoad" }
 
     SystemHostLoad:
@@ -2515,6 +2587,32 @@ components:
         ingress_failures_total: { type: integer, format: int64, minimum: 0 }
         projection_failures_total: { type: integer, format: int64, minimum: 0 }
         settlement_failures_total: { type: integer, format: int64, minimum: 0 }
+
+    SystemWebSocketLoad:
+      type: object
+      required:
+        [enabled, active_downstream_sessions, idle_upstream_connections,
+         leased_upstream_connections, pool_capacity,
+         idle_pool_utilization_percent, pool_hits_total, pool_misses_total,
+         pool_discarded_total, idle_timeout_seconds,
+         max_connection_age_seconds]
+      properties:
+        enabled: { type: boolean }
+        active_downstream_sessions: { type: integer, format: int64, minimum: 0 }
+        idle_upstream_connections: { type: integer, format: int64, minimum: 0 }
+        leased_upstream_connections: { type: integer, format: int64, minimum: 0 }
+        pool_capacity: { type: integer, format: int64, minimum: 0 }
+        idle_pool_utilization_percent:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 100
+          nullable: true
+        pool_hits_total: { type: integer, format: int64, minimum: 0 }
+        pool_misses_total: { type: integer, format: int64, minimum: 0 }
+        pool_discarded_total: { type: integer, format: int64, minimum: 0 }
+        idle_timeout_seconds: { type: integer, format: int64, minimum: 0 }
+        max_connection_age_seconds: { type: integer, format: int64, minimum: 0 }
 
     SystemDatabaseLoad:
       type: object
@@ -2731,7 +2829,7 @@ components:
     ChannelView:
       type: object
       required:
-        [id, channel_group_id, api_format, name, base_url, enabled,
+        [id, channel_group_id, api_format, name, base_url, enabled, supports_websocket,
          status_statistics_enabled, auto_disabled, auto_disabled_reason, auto_disable_allowed,
          weight, billing_multiplier, proxy_id,
          config_template_id, connect_timeout_ms, response_header_timeout_ms,
@@ -2744,6 +2842,9 @@ components:
         name: { type: string }
         base_url: { type: string }
         enabled: { type: boolean }
+        supports_websocket:
+          type: boolean
+          description: Whether this OpenAI Responses channel accepts WebSocket upgrades.
         status_statistics_enabled:
           type: boolean
           description: Includes this channel in the administrator channel-status report.
@@ -3348,6 +3449,14 @@ components:
       properties:
         display_name: { type: string }
 
+    UserSettingsInput:
+      type: object
+      required: [websocket_enabled]
+      properties:
+        websocket_enabled:
+          type: boolean
+          description: User opt-in for Responses WebSocket forwarding.
+
     PasswordChangeInput:
       type: object
       required: [current_password, new_password]
@@ -3724,6 +3833,10 @@ components:
           format: uri
           description: HTTP(S) URL without embedded credentials, query, or fragment.
         enabled: { type: boolean }
+        supports_websocket:
+          type: boolean
+          default: false
+          description: Valid only for open_ai_responses channels.
         status_statistics_enabled:
           type: boolean
           default: false
@@ -3767,6 +3880,10 @@ components:
           format: uri
           description: HTTP(S) URL without embedded credentials, query, or fragment.
         enabled: { type: boolean }
+        supports_websocket:
+          type: boolean
+          default: false
+          description: Valid only for open_ai_responses channels.
         status_statistics_enabled:
           type: boolean
           default: false

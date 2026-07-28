@@ -99,10 +99,73 @@ verification_key_path = "./config/console-jwt-public.pem"
 - `GET /v1/models`：列出当前 API Key 可达的模型；需要相应格式的 `proxy` 和 `models.read` 权限。
 - `POST /v1/chat/completions`：仅匹配 Chat Completions 路由规则。
 - `POST /v1/responses`：仅匹配 Responses 路由规则。
+- 带 WebSocket Upgrade 的 `GET /v1/responses`：接受顺序的 Responses
+  `response.create` 文本消息，仅匹配 Responses 路由规则。
 
 两个 OpenAI 格式绝不互相回退。客户端 `Authorization` 不会转发给上游；网关清理 hop-by-hop headers 后，按渠道配置最后注入上游认证。
 
 数据面在认证后、读取请求体前执行 RPM、并发与已结算软额度预检查。请求体只有在模型别名或 JSON 变换启用时才重新序列化；响应默认逐块流式转发，SSE 变换按事件边界执行且不缓冲整条流。连接失败、连接超时或等待响应头超时时，可以按系统设置在尚未尝试过的其他健康渠道上故障转移；一旦收到上游响应头或向客户端发送任何响应字节，绝不重试或切换渠道。
+
+### Responses WebSocket
+
+WebSocket Upgrade 在 HTTP 握手阶段验证 Gateway API Key 和 Responses `proxy`
+权限，但不消耗 RPM 或并发槽。该传输默认关闭，只有以下三层均开启才接受请求：
+
+1. 管理员在 `/console/v1/system/settings` 中设置 `websocket.enabled = true`；
+2. 用户在个人设置页 `/account/settings` 中开启 WebSocket，对应
+   `GET/PUT /console/v1/me/settings` 的 `websocket_enabled`；
+3. 管理员在 OpenAI Responses 渠道上设置 `supports_websocket = true`。
+
+migration 后的现有系统、用户和渠道以及所有新记录都保持关闭，必须显式启用。Chat Completions
+渠道不能声明 WebSocket 支持。系统或用户未开启时，HTTP Upgrade 返回
+`403 websocket_disabled`；没有可用且声明支持的 Responses 渠道时，首条
+`response.create` 返回 `503 no_healthy_channel`。
+
+每个后续 `response.create` 才作为一个独立逻辑请求：
+
+- 重新检查 API Key 是否仍有效，执行 RPM、并发和软额度准入；
+- 从消息顶层 `model` 完成 Responses 路由、模型别名和请求 JSON 变换；
+- 应用渠道请求 Header 变换；若最终缺失则注入
+  `OpenAI-Beta: responses_websockets=2026-02-06`，再应用上游认证，然后连接或复用上游
+  WebSocket；
+- 将上游 Responses JSON 事件逐消息转发，Responses SSE 事件变换规则也用于同类型
+  WebSocket 事件；
+- 在 `response.completed`、`response.failed`、`response.incomplete`、
+  `response.cancelled` 或 `error` 终态记录 usage、计费和请求日志。
+
+OpenAI 的增量 `previous_response_id` 缓存属于具体上游 WebSocket 连接，因此网关不会把同一条连接上的
+请求多路复用到多个上游连接。每个请求成功终止后，只有没有残留消息的上游连接才会立即归还进程内
+有界空闲池；同一条或重连后的下游 Session 会优先取回这个精确连接。池按 Gateway API Key、下游握手
+身份、渠道、目标 URL、代理/TLS 策略和最终上游请求 Header 精确隔离；不同下游 Session 不共享连接级
+上下文。
+
+每条 WebSocket 连接同时只允许一个 `response.create` 在途。上游握手完成前的连接类失败仍可按全局
+重试设置切换未尝试渠道；消息一旦发往上游，就不再自动重试，以避免重复生成。连接期间客户端 API Key
+被撤销或过期后，下一条消息会收到 `invalid_api_key` 错误；系统或用户开关在连接期间关闭后，下一条
+消息会收到 `websocket_disabled` 并结束连接。
+
+由于上游渠道只能在下游 Upgrade 完成并收到首条 `response.create` 后确定，上游 Upgrade 响应 Header
+无法回填到已经完成的下游握手；配置的响应 Header 变换因此只适用于 HTTP Responses，WebSocket
+事件变换仍正常生效。HTTP、HTTPS、SOCKS4/4a 和 SOCKS5/5h 渠道代理策略均用于上游 WebSocket 建连。
+若公共 listener 前有 TLS/负载均衡反向代理，必须允许 WebSocket Upgrade，并把连接空闲和最长时限
+设置得足以覆盖模型响应；网关自身仍不终止 TLS。
+
+Codex 会在握手中发送 `session-id`、`thread-id`、`x-client-request-id`、`originator` 和
+User-Agent。网关会把这些非 hop-by-hop Header 纳入连接池隔离并转发；反向代理和渠道 Header 变换
+不应无意删除它们。Codex 请求形状与恢复逻辑见
+[Codex Responses WebSocket 实现参考](../reference/codex-responses-websocket.md)。
+
+系统设置中的 WebSocket 连接池参数为：
+
+- `max_idle_connections`：进程级最大空闲上游连接数，范围 `0..=4096`，默认 `128`；`0`
+  表示保留 WebSocket 转发但不复用空闲连接。
+- `idle_timeout_seconds`：空闲连接保留时间，范围 `1..=3600`，默认 `300`。
+- `max_connection_age_seconds`：连接总寿命，范围 `60..=3600`，默认 `3300`，且必须大于
+  空闲超时。
+
+进程收到关闭信号后不再接受新的 WebSocket Upgrade，立即清空空闲上游池并用 `1001` 关闭空闲下游
+连接；已经在途的 `response.create` 可在 `shutdown_grace_period_seconds` 内完成，超过时限后会被
+强制取消并按客户端取消记录。
 
 ## Console 认证
 
@@ -148,6 +211,7 @@ SHA-256 哈希，明文仅在创建响应中返回一次，之后无法查看或
 所有下列资源均强制从 JWT 主体推导 user ID，不能通过路径或 body 参数访问他人的数据：
 
 - `GET/PATCH /console/v1/me`
+- `GET/PUT /console/v1/me/settings`
 - `POST /console/v1/me/password`
 - `GET /console/v1/me/sessions`
 - `DELETE /console/v1/me/sessions`（撤销除当前会话外的所有活跃会话）
@@ -194,7 +258,7 @@ Policy 不再保存额度、RPM、并发、格式、权限或最大活动 Key �
 - 变换模板：`/console/v1/transforms/templates`
 - 观测事实：`GET /console/v1/request-logs`、`GET /console/v1/audit-logs`
 - 花费排行榜：`GET /console/v1/statistics/spend-leaderboard`
-- 系统负载：`GET /console/v1/system/load`（当前实例的 CPU、内存、运行时、队列、日志积压和数据库连接池压力；Console 页面位于“运维”下的 `/admin/system-load`）
+- 系统负载：`GET /console/v1/system/load`（当前实例的 CPU、内存、运行时、队列、日志积压、Responses WebSocket Session/连接池和数据库连接池压力；Console 页面位于“运维”下的 `/admin/system-load`）
 - 系统转发设置：`GET` / `PUT /console/v1/system/settings`（管理员；`PUT` 使用 `If-Match`，保存后立即发布快照）
 - 手动重载：`POST /console/v1/system/reload`
 
@@ -249,6 +313,8 @@ Policy 不再保存额度、RPM、并发、格式、权限或最大活动 Key �
 采样主机与网关进程 CPU、内存、load average、RSS、文件描述符和线程数；不支持的平台将对应字段
 返回 `null`。它还返回进程内准入与路由 in-flight 状态、请求日志通知/投影队列、自动禁用队列、
 本地 spool pending bytes、PostgreSQL ingress/settlement backlog 以及控制面和请求日志连接池占用。
+Responses WebSocket 部分返回全局启用状态、活跃下游 Session、空闲和借出的上游连接、空闲池容量/
+占用、命中/未命中/丢弃累计计数以及当前空闲超时和连接最长寿命。
 CPU 百分比依赖相邻采样差值，因此进程启动后的首次采样可能为 `null`。这些数据不是多实例集群聚合；
 Console 的“系统负载”页默认每 5 秒重新获取一次。
 
@@ -268,6 +334,8 @@ JWT 主体推导用户 ID，管理员也只能在个人使用情况标签中看�
 
 `/console/v1/system/settings` 的完整配置还包含：
 
+- `websocket.enabled`、`max_idle_connections`、`idle_timeout_seconds` 和
+  `max_connection_age_seconds`：Responses WebSocket 总开关和进程级上游空闲池策略。
 - `request_retry.enabled`：是否启用响应头前故障转移，默认启用。
 - `request_retry.max_retries`：首次请求失败后的最大自动重试次数，范围 `1..=10`，默认 `1`。同一客户端请求不会重复尝试同一渠道。
 - `automatic_disable.enabled`：自动禁用总开关。关闭时，即使渠道允许自动禁用也不会执行状态变更。

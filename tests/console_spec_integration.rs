@@ -144,6 +144,7 @@ fn bootstrap_system_settings() -> SystemSettingsInput {
         automatic_disable: Default::default(),
         scheduled_testing: Default::default(),
         session_affinity: Default::default(),
+        websocket: Default::default(),
     }
 }
 
@@ -251,6 +252,7 @@ async fn system_settings_bootstrap_initializes_once_without_overwriting_database
         automatic_disable: Default::default(),
         scheduled_testing: Default::default(),
         session_affinity: Default::default(),
+        websocket: Default::default(),
     };
 
     repository
@@ -1015,6 +1017,59 @@ async fn profile_shape_matches_spec() {
     database.cleanup().await;
 }
 
+#[tokio::test]
+async fn personal_websocket_setting_is_published_to_owned_api_keys() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+    let secret = format!("sk-user-settings-{}", Uuid::new_v4().simple());
+    sqlx::query(
+        "INSERT INTO api_keys
+         (id,user_id,name,secret_value,status,allowed_api_formats,permissions,
+          allowed_group_ids,allowed_channel_ids)
+         VALUES ($1,$2,$3,$4,'active',
+                 ARRAY['open_ai_responses']::api_format[],
+                 ARRAY['proxy']::text[],'{}'::uuid[],'{}'::uuid[])",
+    )
+    .bind(Uuid::new_v4())
+    .bind(app.user_id)
+    .bind(format!("user-settings-{}", Uuid::new_v4()))
+    .bind(&secret)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+
+    let current = request(
+        &app,
+        "GET",
+        "/console/v1/me/settings",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(current.status(), StatusCode::OK);
+    assert_eq!(body_json(current).await["websocket_enabled"], false);
+
+    let updated = request(
+        &app,
+        "PUT",
+        "/console/v1/me/settings",
+        serde_json::json!({"websocket_enabled": true}),
+        &[],
+    )
+    .await;
+    assert_eq!(updated.status(), StatusCode::OK);
+    assert_eq!(body_json(updated).await["websocket_enabled"], true);
+
+    let compiled = app
+        .runtime
+        .snapshot()
+        .authenticate(&secret)
+        .expect("newly loaded API key");
+    assert!(compiled.websocket_enabled());
+
+    database.cleanup().await;
+}
+
 /// Currency is a system-wide USD invariant rather than a mutable Console
 /// field, so legacy currency properties are rejected by request decoding.
 #[tokio::test]
@@ -1771,6 +1826,8 @@ async fn system_load_reports_current_instance_pressure_shape() {
     assert!(body["runtime"]["in_flight_requests"].is_number());
     assert!(body["queues"]["request_log_notifications"]["depth"].is_number());
     assert!(body["request_log"]["spool_pending_bytes"].is_number());
+    assert!(body["websocket"]["active_downstream_sessions"].is_number());
+    assert!(body["websocket"]["pool_hits_total"].is_number());
     assert!(body["database"]["control_plane"]["capacity"].is_number());
     database.cleanup().await;
 }
@@ -1834,6 +1891,12 @@ async fn system_settings_are_versioned_audited_and_updated_via_console() {
             "ttl_seconds": null,
         }],
     });
+    input["websocket"] = serde_json::json!({
+        "enabled": true,
+        "max_idle_connections": 64,
+        "idle_timeout_seconds": 120,
+        "max_connection_age_seconds": 3300,
+    });
     input.as_object_mut().unwrap().remove("updated_at");
 
     let mut invalid_retry = input.clone();
@@ -1843,6 +1906,18 @@ async fn system_settings_are_versioned_audited_and_updated_via_console() {
         "PUT",
         "/console/v1/system/settings",
         invalid_retry,
+        &[("if-match", &etag)],
+    )
+    .await;
+    assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let mut invalid_websocket = input.clone();
+    invalid_websocket["websocket"]["max_connection_age_seconds"] = serde_json::json!(120);
+    let invalid = request(
+        &app,
+        "PUT",
+        "/console/v1/system/settings",
+        invalid_websocket,
         &[("if-match", &etag)],
     )
     .await;
@@ -1915,6 +1990,12 @@ async fn system_settings_are_versioned_audited_and_updated_via_console() {
     assert!(published.session_affinity().enabled());
     assert_eq!(published.session_affinity().max_entries(), 1_000);
     assert_eq!(published.session_affinity().rules()[0].name(), "codex");
+    assert!(published.websocket().enabled());
+    assert_eq!(published.websocket().max_idle_connections(), 64);
+    assert_eq!(
+        published.websocket().idle_timeout(),
+        std::time::Duration::from_secs(120)
+    );
     let audit: serde_json::Value = sqlx::query_scalar(
         "SELECT after_redacted FROM audit_logs \
          WHERE object_type='system_settings' ORDER BY occurred_at DESC LIMIT 1",
@@ -2321,6 +2402,103 @@ async fn channel_and_template_details_return_stored_editable_values() {
         body_json(template_detail).await["document"],
         template_document
     );
+
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn channel_websocket_support_is_responses_only_and_defaults_to_opt_in() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+
+    let responses_group = request(
+        &app,
+        "POST",
+        "/console/v1/routing/channel-groups",
+        serde_json::json!({
+            "name": "websocket-responses-group",
+            "api_format": "open_ai_responses",
+            "priority": 1,
+            "selection_strategy": "weighted_random",
+            "enabled": true,
+        }),
+        &[],
+    )
+    .await;
+    let responses_group_id = body_json(responses_group).await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let responses_channel = request(
+        &app,
+        "POST",
+        "/console/v1/routing/channels",
+        serde_json::json!({
+            "channel_group_id": responses_group_id,
+            "api_format": "open_ai_responses",
+            "name": "websocket-capable",
+            "base_url": "https://responses-websocket.example.test",
+            "enabled": true,
+            "supports_websocket": true,
+            "weight": 1,
+            "upstream_auth_kind": "none",
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(responses_channel.status(), StatusCode::CREATED);
+    let responses_channel_id = body_json(responses_channel).await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let detail = request(
+        &app,
+        "GET",
+        &format!("/console/v1/routing/channels/{responses_channel_id}"),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(detail.status(), StatusCode::OK);
+    assert_eq!(body_json(detail).await["supports_websocket"], true);
+
+    let chat_group = request(
+        &app,
+        "POST",
+        "/console/v1/routing/channel-groups",
+        serde_json::json!({
+            "name": "websocket-chat-group",
+            "api_format": "open_ai_chat_completions",
+            "priority": 1,
+            "selection_strategy": "weighted_random",
+            "enabled": true,
+        }),
+        &[],
+    )
+    .await;
+    let chat_group_id = body_json(chat_group).await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let invalid = request(
+        &app,
+        "POST",
+        "/console/v1/routing/channels",
+        serde_json::json!({
+            "channel_group_id": chat_group_id,
+            "api_format": "open_ai_chat_completions",
+            "name": "invalid-websocket-chat",
+            "base_url": "https://chat-websocket.example.test",
+            "enabled": true,
+            "supports_websocket": true,
+            "weight": 1,
+            "upstream_auth_kind": "none",
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
     database.cleanup().await;
 }

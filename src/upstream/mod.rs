@@ -1,5 +1,7 @@
 //! Reusable reqwest clients keyed by compiled outbound network policy.
 
+mod websocket;
+
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     fmt,
@@ -12,7 +14,13 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::domain::{
-    CompiledChannelUpstreamPolicy, CompiledRuntimeConfig, NoProxyHost, UpstreamTimeoutDefaults,
+    CompiledChannelUpstreamPolicy, CompiledRuntimeConfig, NoProxyHost, ResponsesWebSocketSettings,
+    UpstreamTimeoutDefaults,
+};
+
+pub(crate) use websocket::{
+    MAX_UPSTREAM_MESSAGE_BYTES, UpstreamWebSocket, UpstreamWebSocketError, UpstreamWebSocketKey,
+    WebSocketClientIdentity, WebSocketPoolSnapshot, connect_upstream_websocket,
 };
 
 /// The only TLS configuration permitted for upstream clients.
@@ -239,6 +247,7 @@ pub const UPSTREAM_CLIENT_REGISTRY_CAPACITY: usize = 64;
 /// already cloned by an in-flight request remains valid.
 pub struct UpstreamClientRegistry {
     entries: Mutex<RegistryEntries>,
+    websockets: websocket::UpstreamWebSocketPool,
 }
 
 struct RegistryEntries {
@@ -262,6 +271,7 @@ impl UpstreamClientRegistry {
                 least_to_most_recent: VecDeque::new(),
                 active_keys: None,
             }),
+            websockets: websocket::UpstreamWebSocketPool::new(),
         }
     }
 
@@ -332,7 +342,62 @@ impl UpstreamClientRegistry {
             .least_to_most_recent
             .retain(|key| cached.contains(key));
         entries.active_keys = Some(active_keys);
+        drop(entries);
+        self.websockets.reconcile(snapshot);
         Ok(())
+    }
+
+    pub(crate) fn configure_websockets(&self, settings: ResponsesWebSocketSettings) {
+        self.websockets.configure(settings);
+    }
+
+    /// Checks out an idle Responses WebSocket with the exact same client,
+    /// channel, network, target, and handshake-header identity.
+    #[must_use]
+    pub(crate) fn acquire_websocket(
+        &self,
+        key: &UpstreamWebSocketKey,
+    ) -> Option<UpstreamWebSocket> {
+        self.websockets.acquire(key)
+    }
+
+    /// Returns a clean, completed Responses WebSocket to the bounded idle pool.
+    pub(crate) fn release_websocket(
+        &self,
+        key: UpstreamWebSocketKey,
+        connection: UpstreamWebSocket,
+    ) {
+        self.websockets.release(key, connection);
+    }
+
+    pub(crate) fn record_connected_websocket(&self) {
+        self.websockets.record_connected();
+    }
+
+    pub(crate) fn discard_leased_websocket(&self) {
+        self.websockets.discard_leased();
+    }
+
+    #[must_use]
+    pub(crate) fn websocket_pool_snapshot(&self) -> WebSocketPoolSnapshot {
+        self.websockets.snapshot()
+    }
+
+    /// Finds the most recently pooled channel for one downstream WebSocket
+    /// identity so reconnects can preserve OpenAI's connection-local cache.
+    #[must_use]
+    pub(crate) fn preferred_websocket_channel(
+        &self,
+        api_key_id: uuid::Uuid,
+        client_identity: WebSocketClientIdentity,
+    ) -> Option<uuid::Uuid> {
+        self.websockets
+            .preferred_channel(api_key_id, client_identity)
+    }
+
+    /// Drops every idle Responses WebSocket during process shutdown.
+    pub(crate) fn clear_websockets(&self) {
+        self.websockets.clear();
     }
 
     #[cfg(test)]
@@ -560,6 +625,7 @@ mod tests {
                     name: "channel".into(),
                     base_url: "https://upstream.test".into(),
                     enabled: true,
+                    supports_websocket: false,
                     auto_disabled: false,
                     auto_disable_allowed: false,
                     weight: 1,

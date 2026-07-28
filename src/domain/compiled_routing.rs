@@ -494,6 +494,7 @@ impl AuthorizationProfile {
 pub struct CompiledApiKey {
     id: Uuid,
     user_id: Uuid,
+    websocket_enabled: bool,
     allowed_api_formats: HashSet<ApiFormat>,
     permissions: HashSet<ApiKeyPermission>,
     authorization: Arc<AuthorizationProfile>,
@@ -511,6 +512,10 @@ impl CompiledApiKey {
     #[must_use]
     pub fn user_id(&self) -> Uuid {
         self.user_id
+    }
+    #[must_use]
+    pub const fn websocket_enabled(&self) -> bool {
+        self.websocket_enabled
     }
     #[must_use]
     pub fn permits(&self, format: ApiFormat, permission: ApiKeyPermission) -> bool {
@@ -580,6 +585,7 @@ impl CompiledApiKey {
         Self::new_with_authorization_profile(
             id,
             user_id,
+            false,
             formats,
             permissions,
             Arc::new(AuthorizationProfile::legacy(groups, channels)),
@@ -594,6 +600,7 @@ impl CompiledApiKey {
     pub(crate) fn new_with_authorization_profile(
         id: Uuid,
         user_id: Uuid,
+        websocket_enabled: bool,
         formats: HashSet<ApiFormat>,
         permissions: HashSet<ApiKeyPermission>,
         authorization: Arc<AuthorizationProfile>,
@@ -606,6 +613,7 @@ impl CompiledApiKey {
         Self {
             id,
             user_id,
+            websocket_enabled,
             allowed_api_formats: formats,
             permissions,
             authorization,
@@ -690,6 +698,7 @@ pub struct CompiledChannel {
     api_format: ApiFormat,
     base_url: Url,
     connectivity_fingerprint: Arc<str>,
+    supports_websocket: bool,
     weight: i32,
     billing_multiplier: Decimal,
     upstream_auth: UpstreamAuth,
@@ -719,6 +728,10 @@ impl CompiledChannel {
     #[must_use]
     pub(crate) fn connectivity_fingerprint(&self) -> &Arc<str> {
         &self.connectivity_fingerprint
+    }
+    #[must_use]
+    pub const fn supports_websocket(&self) -> bool {
+        self.supports_websocket
     }
     #[must_use]
     pub fn weight(&self) -> i32 {
@@ -822,6 +835,7 @@ impl CompiledChannel {
             Decimal::ONE,
             upstream_auth,
             available_models,
+            false,
             auto_disable_allowed,
             auto_disabled,
             test_model,
@@ -838,6 +852,7 @@ impl CompiledChannel {
         billing_multiplier: Decimal,
         upstream_auth: UpstreamAuth,
         available_models: HashSet<Arc<str>>,
+        supports_websocket: bool,
         auto_disable_allowed: bool,
         auto_disabled: bool,
         test_model: Option<Arc<str>>,
@@ -850,6 +865,7 @@ impl CompiledChannel {
             api_format,
             base_url,
             connectivity_fingerprint,
+            supports_websocket,
             weight,
             billing_multiplier,
             upstream_auth,

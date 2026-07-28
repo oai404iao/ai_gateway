@@ -207,6 +207,7 @@ docker compose up -d
 | `GET /v1/models` | 列出此 API Key 可达的模型；至少一个格式需要同时拥有 `proxy` 与 `models.read`。 |
 | `POST /v1/chat/completions` | 仅代理 Chat Completions 请求。 |
 | `POST /v1/responses` | 仅代理 Responses 请求。 |
+| 带 WebSocket Upgrade 的 `GET /v1/responses` | 通过 WebSocket 顺序代理 Responses `response.create` 消息。 |
 
 在创建匹配的模型规则和 API Key 后：
 
@@ -239,6 +240,12 @@ curl --request POST "$GATEWAY_URL/v1/responses" \
 ```
 
 网关会转发上游状态码和响应体，并保持流式行为；如客户端需要 SSE，请使用对应 OpenAI 请求中的流式字段。
+Responses WebSocket 客户端使用同一个 Gateway Bearer Key 连接
+`ws://<gateway>/v1/responses`（或通过终止 TLS 的反向代理使用 `wss://`）。网关对每个顺序到达的
+`response.create` 独立执行准入和日志记录，在可用时取回同一 Session 隔离的上游 WebSocket 以保持
+连接级缓存连续性，并在请求成功完成后把干净连接归还有界池；同一个 WebSocket 不支持并发多路复用
+Responses 请求。WebSocket 转发默认关闭：管理员必须在数据库系统设置中启用总开关并把 Responses
+渠道标记为支持，API Key 所属用户也必须在个人设置中启用；连接池容量和连接寿命同样由系统设置管理。
 最小校验、透传、Streaming、重试和错误边界见
 [OpenAI 兼容性参考](docs/reference/openai-compatibility.md)。
 

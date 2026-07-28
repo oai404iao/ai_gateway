@@ -97,6 +97,12 @@ describe("SystemPage", () => {
           },
         ],
       },
+      websocket: {
+        enabled: false,
+        max_idle_connections: 128,
+        idle_timeout_seconds: 300,
+        max_connection_age_seconds: 3300,
+      },
     });
     expect(ifMatch).toBe('"2026-01-02T00:00:00.000Z"');
     expect(await screen.findByText("System settings saved and applied.")).toBeInTheDocument();
