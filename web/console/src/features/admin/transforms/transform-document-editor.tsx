@@ -1165,6 +1165,30 @@ export function TransformDocumentEditor({
       },
     },
   };
+  const proxyHeaderFilterExample = {
+    version: 1,
+    api_format: apiFormat,
+    request_headers: {
+      remove: [
+        "forwarded",
+        "via",
+        "x-forwarded-for",
+        "x-forwarded-host",
+        "x-forwarded-proto",
+        "x-forwarded-port",
+        "x-real-ip",
+        "x-client-ip",
+        "x-original-forwarded-for",
+        "true-client-ip",
+        "cf-connecting-ip",
+        "cf-connecting-ipv6",
+        "cf-pseudo-ipv4",
+        "cf-ipcountry",
+        "cf-ray",
+        "cf-visitor",
+      ],
+    },
+  };
   const requestBodyExample = {
     version: 1,
     api_format: apiFormat,
@@ -1683,6 +1707,14 @@ export function TransformDocumentEditor({
             description={t("Add an upstream marker without touching protected credentials.")}
             document={requestHeaderExample}
             onApply={() => applyExample(requestHeaderExample)}
+          />
+          <ReferenceExample
+            title={t("Proxy and CDN header filter template")}
+            description={t(
+              "Remove forwarding metadata commonly added by CDNs, Caddy, and nginx. Review the list if your upstream relies on proxy headers.",
+            )}
+            document={proxyHeaderFilterExample}
+            onApply={() => applyExample(proxyHeaderFilterExample)}
           />
           <ReferenceExample
             title={t("Request body example")}

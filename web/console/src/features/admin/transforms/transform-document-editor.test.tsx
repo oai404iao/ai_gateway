@@ -121,6 +121,44 @@ describe("TransformDocumentEditor", () => {
     });
   });
 
+  it("applies the proxy and CDN request-header filter template", async () => {
+    const user = userEvent.setup();
+    renderEditor();
+
+    await user.click(screen.getByRole("tab", { name: "Reference" }));
+    const exampleTitle = screen.getByText("Proxy and CDN header filter template");
+    const exampleCard = exampleTitle.closest('[data-slot="card"]');
+    expect(exampleCard).not.toBeNull();
+    await user.click(
+      within(exampleCard as HTMLElement).getByRole("button", { name: "Apply example" }),
+    );
+
+    expect(JSON.parse(screen.getByTestId("transform-document").textContent ?? "")).toEqual({
+      version: 1,
+      api_format: "open_ai_chat_completions",
+      request_headers: {
+        remove: [
+          "forwarded",
+          "via",
+          "x-forwarded-for",
+          "x-forwarded-host",
+          "x-forwarded-proto",
+          "x-forwarded-port",
+          "x-real-ip",
+          "x-client-ip",
+          "x-original-forwarded-for",
+          "true-client-ip",
+          "cf-connecting-ip",
+          "cf-connecting-ipv6",
+          "cf-pseudo-ipv4",
+          "cf-ipcountry",
+          "cf-ray",
+          "cf-visitor",
+        ],
+      },
+    });
+  });
+
   it("applies a version-two array rewrite reference example", async () => {
     const user = userEvent.setup();
     renderEditor();
