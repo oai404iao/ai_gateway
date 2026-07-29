@@ -1,99 +1,146 @@
+<p align="center">
+  <img src="assets/logo.svg" width="96" height="96" alt="ai-gateway logo">
+</p>
+
 # ai-gateway
 
-[中文文档](README.zh-CN.md) | English
+<p align="center">
+  A production-oriented, single-binary Rust gateway for OpenAI-compatible LLM traffic.
+</p>
 
-`ai-gateway` is a single-binary Rust gateway for forwarding OpenAI-compatible LLM requests. It exposes the Chat Completions and Responses APIs to clients, routes each request through a PostgreSQL-backed control plane, and forwards it to a configured upstream provider.
+<p align="center">
+  <a href="https://github.com/oai404iao/ai_gateway/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/oai404iao/ai_gateway/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/oai404iao/ai_gateway/releases"><img alt="GitHub release" src="https://img.shields.io/github/v/release/oai404iao/ai_gateway"></a>
+  <a href="rust-toolchain.toml"><img alt="Rust 1.92+" src="https://img.shields.io/badge/Rust-1.92%2B-orange"></a>
+  <a href="LICENSE"><img alt="License: AGPL-3.0-only" src="https://img.shields.io/badge/license-AGPL--3.0--only-blue"></a>
+</p>
 
-Documentation is organized by audience in the
-[documentation center](docs/README.md): user guides, development/design
-documents, external OpenAI references, and historical archives.
+<p align="center">
+  <strong>English</strong>
+  ·
+  <a href="README.zh-CN.md">简体中文</a>
+  ·
+  <a href="docs/README.md">Documentation</a>
+</p>
 
-The public data plane and the management Console API are intentionally separate listeners:
+> **Status:** Current implementation, under active development. The public
+> data plane intentionally supports only Chat Completions and Responses.
 
-- **Data plane** (`/v1/*`): client API keys and OpenAI-compatible requests.
-- **Console API** (`/console/v1/*`): JWT-authenticated user self-service and administrator control-plane management.
+`ai-gateway` is a self-hosted LLM request gateway built with Rust, Axum,
+Tokio, SQLx, and PostgreSQL. It keeps routing on an immutable in-memory
+snapshot, streams responses without whole-body buffering, and provides a
+separate management Console for users and administrators.
 
-## Highlights
+## ✨ Features
 
-- Supports **only** OpenAI Chat Completions and Responses; the two formats never fall back to one another.
-- Routes by `(client model, API format)` using channel-group priority and weighted channel selection.
-- Compiles PostgreSQL control-plane records into immutable in-memory snapshots, so proxy requests do not query the database.
-- Rewrites model aliases and applies constrained JSON, header, response, and SSE transforms when configured.
-- Removes client credentials and hop-by-hop headers before injecting channel-specific upstream authentication.
-- Streams upstream responses without buffering the whole response; it never retries or changes channels after response headers or bytes are sent.
-- Provides process-local RPM, concurrency, and soft quota admission controls, passive connection health, asynchronous request logs, usage extraction, and USD-only settlement.
-- Includes a separate JWT Console API with per-user invitations, reusable invite-code self-registration, rotating refresh sessions, user/admin roles, audit logs, and optimistic concurrency for most mutable resources.
+- **OpenAI-compatible data plane** for Chat Completions and Responses over
+  HTTP, SSE, and Responses WebSocket.
+- **Priority and weighted routing** with passive health, optional session
+  affinity, and controlled failover before upstream response headers arrive.
+- **Database-backed control plane** compiled into immutable runtime snapshots;
+  proxy requests do not query PostgreSQL on the hot path.
+- **Constrained transforms** for request JSON, headers, normal responses, and
+  SSE events, with protected-header enforcement and upstream credential
+  injection.
+- **Admission and accounting** with process-local RPM/concurrency limits, soft
+  USD quotas, durable request-log spooling, usage extraction, and asynchronous
+  settlement.
+- **Management Console** with JWT sessions, user/admin roles, API-key policy,
+  routing and channel management, audit logs, and optimistic concurrency.
+- **Single-binary deployment** with an optional embedded React Console UI; no
+  Node.js process is required in production.
 
-## Architecture
+## 🔌 Supported APIs
+
+| Endpoint | Authentication | Purpose |
+| --- | --- | --- |
+| `GET /health` | None | Liveness check; returns `204 No Content`. |
+| `GET /v1/models` | Client API key | Lists models reachable by the key. |
+| `POST /v1/chat/completions` | Client API key | Proxies Chat Completions requests. |
+| `POST /v1/responses` | Client API key | Proxies Responses requests over HTTP or SSE. |
+| `GET /v1/responses` + Upgrade | Client API key | Proxies sequential Responses requests over WebSocket. |
+
+Chat Completions and Responses use separate routing rules and never fall back
+or transform into one another. Embeddings, images, audio, files, batches,
+assistants, and fine-tuning APIs are outside the current scope. See the
+[OpenAI compatibility reference](docs/reference/openai-compatibility.md) for
+the exact validation, streaming, retry, and pass-through boundaries.
+
+## 🏗️ Architecture
 
 ```text
 OpenAI-compatible client
-  │ Bearer API key
+  │  Bearer API key
   ▼
 Public listener (/v1/*)
   → authentication and admission
   → immutable routing snapshot
   → channel selection and optional transforms
-  → reusable reqwest upstream client
-  → streaming upstream response
-  → asynchronous request logging / usage / settlement
+  → reusable HTTP client or pinned Responses WebSocket
+  → streamed upstream response
+  → durable asynchronous logging, usage, and settlement
 
-Console client
-  │ JWT
+Browser or Console client
+  │  JWT through an HTTPS reverse proxy
   ▼
-Separate Console listener (/console/v1/*)
-  → user or admin authorization
-  → PostgreSQL control-plane transaction + audit record
+Console listener (/console/v1/*)
+  → user/admin authorization
+  → PostgreSQL transaction and audit record
   → immediate runtime snapshot publication
 ```
 
-## Requirements
+The public data-plane listener never serves the Console API or UI. The Console
+listener is separate so it can have its own network and browser security
+policy.
 
-- Rust **1.92** or newer (the MSRV; Rust 2024 edition). The repository pins
-  **1.97.1** in `rust-toolchain.toml` for normal development and release builds.
-- PostgreSQL
-- Docker Compose is optional: `docker-compose.yml` provides PostgreSQL for
-  development, while `docker-compose.prd.yaml` can run the complete production
-  stack from a pulled or locally built Gateway image
-- OpenSSL is useful for generating the local database password and Console
-  Ed25519 keys
+## 🚀 Quick start
 
-## Quick start / 快速启动
+### Prerequisites
 
-> `./config/config.toml` is ignored by Git and is the default configuration
-> location. Local JWT files also belong in `./config/`.
-> The service does not load `.env` files or use an XDG configuration directory.
-> 中文启动说明见下方对应步骤及 [中文文档](README.zh-CN.md)。
+- Rust **1.92** or newer; this repository pins Rust **1.97.1** for normal
+  development and release builds.
+- PostgreSQL, or Docker with Docker Compose.
+- OpenSSL for generating the local password and Console signing keys.
+- Node.js 24 and pnpm 11.17 only when developing or building the Console UI.
 
-### 1. Create local secrets/configuration and start PostgreSQL
+### 1. Start PostgreSQL and the gateway
 
 ```bash
+git clone https://github.com/oai404iao/ai_gateway.git
+cd ai_gateway
+
 mkdir -p ./config
 openssl rand -hex 32 > ./config/postgres-password
 chmod 600 ./config/postgres-password
 cp config.example.toml ./config/config.toml
+
 docker compose up -d
+cargo run
 ```
 
-Edit `./config/config.toml` as needed. At minimum, verify `[database]`, public `[server]`, and `[upstream]` timeout settings. The supplied Docker Compose service matches the example database URL.
-The example reads the database password from
-`./config/postgres-password`; it does not embed a default password in TOML or
-Compose. The Compose defaults target a 4–8 GiB single-node host and can be
-overridden with documented `AI_GATEWAY_POSTGRES_*` variables.
-
-If you are upgrading from the former root-level layout, move local files once:
+Verify the public listener:
 
 ```bash
-mkdir -p ./config
-mv ./config.toml ./config/config.toml
-mv ./console-jwt-private.pem ./console-jwt-public.pem ./config/
+curl -i http://127.0.0.1:3000/health
+# HTTP/1.1 204 No Content
 ```
 
-The binary applies database migrations automatically at startup.
+The binary applies database migrations automatically. The default template
+starts with an empty control plane and leaves the Console disabled, so health
+checks work immediately but proxy requests require the next steps.
 
-### 2. Enable the Console API (recommended)
+The default configuration path is `./config/config.toml`. A different path can
+be passed as the first argument:
 
-The Console API is the supported way to manage users, API keys, models, routes, channels, and transforms. Generate an Ed25519 key pair in `./config/`; these files are ignored by Git:
+```bash
+cargo run -- ./config/other-config.toml
+```
+
+The service does not load `.env` files or use an XDG configuration directory.
+
+### 2. Enable the Console
+
+Generate an Ed25519 key pair:
 
 ```bash
 openssl genpkey -algorithm Ed25519 \
@@ -105,13 +152,12 @@ openssl pkey \
 chmod 600 ./config/console-jwt-private.pem
 ```
 
-Then enable `[console]` and fill in `[auth]` in `./config/config.toml` using the commented template in `config.example.toml`. Use `./config/console-jwt-private.pem` and `./config/console-jwt-public.pem` for the two generated PEM paths.
+Uncomment and review `[console]` and `[auth]` in
+[`config.example.toml`](config.example.toml), then apply those settings to
+`./config/config.toml`. The Console listener should remain behind an HTTPS
+reverse proxy; the gateway does not terminate TLS.
 
-The service does **not** terminate TLS. Put the Console listener behind a correctly configured HTTPS reverse proxy before exposing it to browsers or the Internet.
-
-### 3. Create the first administrator
-
-The one-time bootstrap command succeeds only when no active administrator exists. Read the password from a protected file or secret manager through standard input:
+Create the first administrator by reading the password from standard input:
 
 ```bash
 cargo run -- bootstrap-admin \
@@ -120,378 +166,202 @@ cargo run -- bootstrap-admin \
   --password-stdin < /secure/path/admin-password.txt
 ```
 
-### 4. Run the gateway
+Restart the gateway after enabling the Console. By default, the public API is
+available at `http://127.0.0.1:3000` and the Console API at
+`http://127.0.0.1:3001`.
+
+### 3. Provision a route
+
+Use the Console UI or API to create:
+
+1. A priced model.
+2. A channel group for the required API format.
+3. A channel with its upstream URL, credentials, and available models.
+4. A model rule mapping the client model to the upstream model and route.
+5. A client API key with `proxy` permission; add `models.read` for
+   `/v1/models`.
+
+Create separate model rules for Chat Completions and Responses, even when both
+use the same provider. The
+[operations guide](docs/user/operations.md) documents the full Console route
+inventory and control-plane behavior.
+
+### 4. Send a request
 
 ```bash
-cargo run
-```
-
-Verify the public listener:
-
-```bash
-curl -i http://127.0.0.1:3000/health
-# HTTP/1.1 204 No Content
-```
-
-An empty control plane can start successfully, but it cannot proxy requests until you provision a user/API key and routing configuration.
-
-### 5. Provision the control plane
-
-Log in to the Console API with the bootstrap administrator, then use its access JWT for subsequent Console requests. If you enabled the Console web UI (`[console].ui_enabled = true` with the `embedded-console-ui` feature, or the Vite dev server in development), browse it instead and skip the curl below — the UI drives the same Console API.
-
-```bash
-curl --request POST http://127.0.0.1:3001/console/v1/auth/login \
-  --header 'Content-Type: application/json' \
-  --data '{"email":"admin@example.com","password":"your-password"}'
-```
-
-For a working data-plane route, create compatible records in this order:
-
-1. A priced **model**.
-2. A **channel group** for the required API format.
-3. A **channel** in that group with its upstream URL, upstream credentials, and supported upstream model name.
-4. A **model rule** that maps the client model name to the priced model, upstream model name, and route target.
-5. A client **API key** with `proxy` permission; add `models.read` if it must call `/v1/models`.
-
-A Chat Completions route and a Responses route are separate configurations, even when they use the same upstream provider or model name. Use the Console API rather than editing control-plane tables directly.
-
-See [the operational API guide](docs/user/operations.md) for Console route coverage and behavior.
-
-## Production Docker deployment
-
-The release image contains the Rust binary and embedded Console UI. The
-full-stack production Compose keeps PostgreSQL private to the Compose network,
-binds the public and Console listeners to host loopback by default, and stores
-the request-log spool in a dedicated persistent volume.
-
-Prepare the ignored configuration and secrets:
-
-```bash
-mkdir -p ./config
-cp deploy/compose/config.example.toml ./config/config.prd.toml
-cp deploy/compose/env.example ./config/compose.prd.env
-# Generate ./config/postgres-password and the two Console JWT PEM files.
-```
-
-Then either pull the pinned release image or build it from the current
-checkout:
-
-```bash
-docker compose --env-file ./config/compose.prd.env \
-  -f docker-compose.prd.yaml pull gateway
-# Or: docker compose --env-file ./config/compose.prd.env \
-#       -f docker-compose.prd.yaml build gateway
-
-docker compose --env-file ./config/compose.prd.env \
-  -f docker-compose.prd.yaml up -d --no-build
-```
-
-See [the production Docker deployment guide](docs/user/production-deployment.md)
-for key generation, bootstrap-admin, reverse-proxy/TLS requirements, upgrades,
-and backup boundaries.
-
-## Manual forwarding performance harness
-
-The repository includes an explicitly invoked, isolated end-to-end forwarding
-performance harness. It creates a throwaway PostgreSQL database, starts a Mock
-LLM upstream and a fresh release gateway process, runs direct and proxied JSON
-and SSE loads, verifies asynchronous request-log persistence, and writes
-Markdown/JSON reports.
-
-It is never run by ordinary `cargo test` or CI commands:
-
-```bash
-docker compose up -d
-./scripts/run-forwarding-perf.sh --profile quick
-```
-
-See [docs/development/forwarding-performance.md](docs/development/forwarding-performance.md) for the
-design, scenarios, safety model, and `standard` profile.
-
-## Using the data plane
-
-All public API endpoints use `Authorization: Bearer <client-api-key>`.
-
-| Endpoint | Purpose |
-| --- | --- |
-| `GET /health` | Unauthenticated liveness endpoint; returns `204`. |
-| `GET /v1/models` | Lists models reachable by the API key; requires both `proxy` and `models.read` for at least one format. |
-| `POST /v1/chat/completions` | Proxies a Chat Completions request only. |
-| `POST /v1/responses` | Proxies a Responses request only. |
-| `GET /v1/responses` with WebSocket Upgrade | Proxies sequential Responses `response.create` messages over WebSocket. |
-
-After provisioning a matching rule and API key:
-
-```bash
-export GATEWAY_URL=http://127.0.0.1:3000
 export AI_GATEWAY_API_KEY='replace-with-client-key'
 
-curl "$GATEWAY_URL/v1/models" \
-  --header "Authorization: Bearer $AI_GATEWAY_API_KEY"
-
-curl --request POST "$GATEWAY_URL/v1/chat/completions" \
+curl http://127.0.0.1:3000/v1/chat/completions \
   --header "Authorization: Bearer $AI_GATEWAY_API_KEY" \
   --header 'Content-Type: application/json' \
   --data '{
     "model": "gateway-chat-model",
-    "messages": [{"role": "user", "content": "Say hello."}]
+    "messages": [
+      {"role": "user", "content": "Say hello."}
+    ]
   }'
 ```
 
-For Responses, configure a separate `open_ai_responses` model rule and send a normal Responses request:
+OpenAI-compatible clients can use the public listener as their base URL. A
+Responses route uses the same client authentication but sends requests to
+`/v1/responses`.
+
+## 🖥️ Console UI
+
+For frontend development, run the Rust API and Vite dev server separately:
 
 ```bash
-curl --request POST "$GATEWAY_URL/v1/responses" \
-  --header "Authorization: Bearer $AI_GATEWAY_API_KEY" \
-  --header 'Content-Type: application/json' \
-  --data '{
-    "model": "gateway-responses-model",
-    "input": "Say hello."
-  }'
-```
-
-The gateway forwards upstream status codes and response bodies. It preserves streaming behavior; use the corresponding OpenAI request streaming fields when your client needs SSE.
-Responses WebSocket clients connect to `ws://<gateway>/v1/responses` (or
-`wss://` through a TLS-terminating reverse proxy) with the same Gateway Bearer
-key. The gateway admits and logs each sequential `response.create`, pins it to
-the same session-isolated upstream socket whenever available for
-connection-local cache continuity, and returns clean completed sockets to a
-bounded pool between requests. It does not multiplex concurrent Responses on
-one WebSocket. WebSocket forwarding is explicitly opt-in: the administrator
-must enable the database-backed system setting and mark a Responses channel as
-supported, and the API-key owner must enable it under Personal settings. Pool
-capacity and connection lifetimes are also managed from System settings.
-See the [OpenAI compatibility reference](docs/reference/openai-compatibility.md)
-for validation, pass-through, streaming, retry, and error boundaries.
-
-## Configuration model
-
-TOML is for process/bootstrap settings only. By default the binary reads
-`./config/config.toml`; the ignored `./config/` directory also holds local JWT
-key files.
-
-| Area | Examples |
-| --- | --- |
-| `[server]` | Public listener and graceful-shutdown deadline. |
-| `[request_limits]` | Independent proxy, Console, and authentication body-size limits. |
-| `[database]` | PostgreSQL URL, pool size, and connection timeout. |
-| `[upstream]` | Default connect, response-header, and stream-idle timeouts. |
-| `[runtime_config]` | Periodic PostgreSQL control-plane reload interval. |
-| `[passive_health]` | Connection-failure threshold and cooldown. |
-| `[request_logging]` | Durable local spool, isolated DB pool, COPY ingress, projection, settlement, and telemetry limits. |
-| `[console]` and `[auth]` | Optional dedicated Console listener and JWT key-file settings. |
-
-Dynamic data-plane configuration—users, API keys, models, model rules, channel groups, channels, proxies, and transform templates—lives in PostgreSQL and is compiled into an immutable runtime snapshot. Dynamic `[[api_keys]]`, `[[channels]]`, and `[[model_rules]]` TOML tables are deliberately unsupported.
-
-Configuration writes through the Console API validate the complete candidate snapshot and publish it immediately after commit. A periodic reloader also refreshes the snapshot from PostgreSQL.
-
-Terminal request logs first cross a local recoverable spool, then enter a
-low-index PostgreSQL staging table through `COPY FROM`, and are projected and
-settled asynchronously. See
-[docs/development/request-log-durability.md](docs/development/request-log-durability.md) for guarantees,
-failure boundaries, and operational metrics.
-
-The production sizing assumptions, PostgreSQL settings, password-file setup,
-storage guidance, and small/large machine profiles are documented in
-[docs/user/production-configuration.md](docs/user/production-configuration.md).
-
-## Console API
-
-The Console listener is separate from the public listener and uses short-lived JWT access tokens. Successful login, invite-code registration, refresh, and invitation activation also issue a rotating `HttpOnly; Secure; SameSite=Lax` refresh cookie.
-
-- Self-service endpoints are under `/console/v1/me` and derive ownership from the JWT subject.
-- Administrators can create and adjust reusable registration codes with optional usage limits and expiry, a target user group, and an initial USD balance. Code plaintext is returned only at creation.
-- Administrator-only control-plane endpoints manage users, registration codes, API-key policies, API keys, models, routes, network proxies, transform templates, request logs, audit logs, and reloads.
-- Most mutable resources use `ETag` on `GET` and require `If-Match` on `PUT` for optimistic concurrency.
-- `admin` is a user role—not a separate `/admin` API namespace or a process-wide static token.
-
-Refer to [docs/user/operations.md](docs/user/operations.md) for the route inventory and [docs/development/console-auth.md](docs/development/console-auth.md) for the Console authentication design.
-
-## Console web UI
-
-The Console UI is a React + TypeScript + Vite + Tailwind CSS + shadcn/ui
-(Radix) SPA that lives under `web/console/`. Release builds can embed the
-Vite assets in the Rust binary and serve them only from the dedicated Console
-listener at the same origin as the existing API:
-
-```text
-https://console.example.com/                 # SPA
-https://console.example.com/assets/*          # static assets
-https://console.example.com/console/v1/*      # existing Console API
-```
-
-It never exposes UI resources on the public `/v1/*` listener and does not
-introduce SSR or a long-running Node service. Access tokens stay in memory;
-the rotating refresh cookie keeps its `HttpOnly; Secure; SameSite=Lax`
-attributes.
-
-The UI ships in two run modes. Prerequisites for both: PostgreSQL is up,
-`./config/config.toml` has `[console]` enabled with an `[auth]` JWT key pair
-(see Quick start steps 1–2), and the bootstrap administrator exists (step 3).
-
-### Run mode A — development (live reload, no embedding)
-
-Run the gateway (Console API only) and the Vite dev server separately. The dev
-server serves the SPA over HTTPS and proxies `/console/v1/*` to the gateway's
-Console listener, so you edit frontend code with hot reload while the Rust
-binary answers real API calls.
-
-```bash
-# Terminal 1 — gateway on 127.0.0.1:3000 (public) and 127.0.0.1:3001 (Console)
+# Terminal 1
 cargo run
 
-# Terminal 2 — Vite dev server on https://console.localhost:5173
+# Terminal 2
 pnpm --dir web/console install --frozen-lockfile
 pnpm --dir web/console dev
 ```
 
-Browse `https://console.localhost:5173`. The `console.localhost` host and
-self-signed HTTPS make the `__Host-` refresh cookie and its `Secure` attribute
-behave like production. `ui_enabled` is irrelevant in this mode (the gateway
-serves only the API); the Vite dev server is a Node process for development,
-not a production runtime.
+Then open `https://console.localhost:5173`. The Vite server proxies
+`/console/v1/*` to the gateway.
 
-### Run mode B — production (embedded single binary)
-
-Build the frontend, then build the gateway with the `embedded-console-ui`
-feature so the Vite assets are baked into the binary and served only from the
-Console listener. No Node process runs in production.
+For a production single binary, build and embed the SPA:
 
 ```bash
-# 1. Build the frontend (produces web/console/dist)
 pnpm --dir web/console install --frozen-lockfile
 pnpm --dir web/console build
-
-# 2. Build the gateway with the embedded UI feature
 cargo build --release --features embedded-console-ui
 ```
 
-Set `[console].ui_enabled = true` in `./config/config.toml` to mount the SPA on
-the Console listener. With `ui_enabled = true` but the feature compiled out,
-startup is rejected. (In debug builds, `rust-embed` reads `web/console/dist`
-from disk at runtime, so the dist must still exist; release builds embed it.)
+Set `[console].ui_enabled = true` before running that binary. UI assets are
+served only from the Console listener. See
+[`web/console/README.md`](web/console/README.md) for frontend workflows.
+
+## ⚙️ Configuration
+
+Configuration is split into two layers:
+
+| Layer | Source | Examples |
+| --- | --- | --- |
+| Process/bootstrap | TOML | Listeners, PostgreSQL, request limits, default timeouts, durable spool, Console JWT key paths. |
+| Dynamic control plane | PostgreSQL through the Console | Users, API keys, models, routes, channels, proxies, transforms, and forwarding settings. |
+
+Console writes validate the complete candidate configuration before commit and
+publish a new immutable snapshot immediately afterward. A periodic reload
+worker provides cross-process convergence.
+
+Start with [`config.example.toml`](config.example.toml). Production sizing,
+PostgreSQL tuning, storage, and operational metrics are covered in the
+[production configuration guide](docs/user/production-configuration.md).
+
+## 🐳 Production deployment
+
+Tagged releases publish:
+
+- a multi-platform image at `ghcr.io/oai404iao/ai_gateway`;
+- GitHub Release archives containing the production binary and required
+  license material.
+
+Pin an immutable version in production instead of relying on `latest`.
+[`docker-compose.prd.yaml`](docker-compose.prd.yaml) provides a complete
+single-host Gateway and PostgreSQL stack with persistent database and
+request-log spool volumes.
+
+This Compose setup is a deployment baseline, not a high-availability platform:
+TLS termination, backups, PITR, monitoring, alerting, and PostgreSQL HA remain
+operator responsibilities. Follow the
+[production deployment guide](docs/user/production-deployment.md) before
+starting the stack.
+
+## 🧭 Runtime boundaries
+
+- Requests are authenticated and admitted before their body is read.
+- Original request bytes are preserved unless a model alias or configured body
+  transform requires reserialization.
+- Upstream responses are streamed; the gateway does not buffer the complete
+  response for normal forwarding or usage collection.
+- Automatic failover is limited to connection failures and timeouts before
+  upstream response headers. It never switches channels after headers or
+  response bytes are sent.
+- RPM, concurrency, passive health, session affinity, and WebSocket pools are
+  process-local rather than cluster-coordinated.
+- Request logs do not persist prompts, completions, full headers, API keys,
+  cookies, or unredacted upstream error bodies.
+- All balances, quotas, prices, and request costs use USD.
+
+## 🛠️ Development
+
+Start PostgreSQL, then run the Rust checks from the repository root:
 
 ```bash
-# Run the single binary behind an HTTPS reverse proxy
-cargo run --release --features embedded-console-ui
-# Browse the Console listener origin, e.g. https://console.example.com/
-```
-
-### Frontend checks and tests
-
-```bash
-pnpm --dir web/console typecheck   # tsc --noEmit (strict)
-pnpm --dir web/console lint         # oxlint
-pnpm --dir web/console test         # vitest component tests (jsdom + MSW)
-pnpm --dir web/console e2e          # Playwright browser tests (installs Chromium)
-pnpm --dir web/console generate:api:check   # OpenAPI spec/type drift gate
-```
-
-See `web/console/README.md` for the full command list, layout, and the
-OpenAPI contract workflow, and the [Console Web UI design and implementation
-plan](docs/development/console-ui.md) for the repository layout, auth/caching model,
-shadcn conventions, and phased delivery plan.
-
-## Runtime behavior and boundaries
-
-- Requests are authenticated and admitted before the body is read.
-- Model aliases and transforms cause only the necessary request reserialization; otherwise the original request bytes are forwarded.
-- Transform order is fixed: template defaults → channel overrides → protected-header cleanup → upstream authentication.
-- Client `Authorization`, hop-by-hop headers, and `Connection`-declared headers are never forwarded upstream.
-- Passive health reacts to pre-header connection failures. Configured
-  failover can retry an untried healthy channel only before response headers;
-  there is no retry for upstream HTTP errors or a started response stream.
-- RPM, concurrency, and soft quota admission are process-local; there is no cross-instance coordination.
-- Terminal request logs are appended to a durable local spool; usage
-  extraction and settlement are asynchronous. Quotas are soft prechecks based
-  on settled usage and do not reserve a cost before forwarding.
-- Request logging does not persist prompts, completions, full headers, API keys, cookies, or unredacted upstream error content.
-
-All balances, quotas, model prices, request costs, and statistics use USD. Current scope does not include embeddings, images, audio, files, batches, assistants, fine-tuning, generic automatic retries, TLS termination, a financial ledger, refunds/top-ups, or currency conversion.
-
-## Development and verification
-
-Run these commands from the repository root:
-
-```bash
-cargo check
+docker compose up -d
 cargo fmt --check
-cargo clippy --all-targets
-cargo test
+cargo clippy --locked --workspace --all-targets
+cargo test --locked --workspace
 ```
 
-Release preparation and tag publication are documented in
-[`docs/development/releasing.md`](docs/development/releasing.md). The local release gate is:
+Console checks:
 
 ```bash
-./scripts/verify-release.sh 0.1.0
+pnpm --dir web/console install --frozen-lockfile
+pnpm --dir web/console generate:api:check
+pnpm --dir web/console typecheck
+pnpm --dir web/console lint
+pnpm --dir web/console test
+pnpm --dir web/console build
 ```
 
-Changes to the request-forwarding path also require the opt-in paid real-upstream smoke test. Use a dedicated low-spend credential and keep it only in the ignored local secrets file:
+The Console OpenAPI contract is
+[`docs/openapi/console-v1.yaml`](docs/openapi/console-v1.yaml); generated
+TypeScript declarations must not be edited by hand. Forwarding-path changes
+also require the explicitly authorized real-upstream smoke test described in
+[`docs/development/real-upstream-smoke.md`](docs/development/real-upstream-smoke.md).
 
-```bash
-cp .env.real-upstream.example .env.real-upstream
-# Fill local values, then:
-./scripts/run-real-upstream-smoke.sh
-```
-
-This script is the sole `.env` exception in the repository. See [docs/development/real-upstream-smoke.md](docs/development/real-upstream-smoke.md) before running it.
-
-## Repository layout
+## 🗂️ Repository layout
 
 ```text
-src/
-  application/       Proxy, Console auth, control-plane, logging, usage
-  admission/         Process-local RPM, concurrency, and soft quota controls
-  domain/            API formats, routing, credentials, request-log types
-  http/              Public Axum routes and separate Console router
-  persistence/       SQLx repositories and migrations integration
-  runtime_config/    TOML bootstrap config and ArcSwap snapshots
-  routing/           Priority/weight selection and passive health
-  transforms/        Constrained JSON, header, response, and SSE transforms
-  upstream/          Reusable reqwest clients and proxy/timeout policies
-  workers/           Snapshot reload and asynchronous request-log workers
-migrations/          PostgreSQL schema migrations
-deploy/postgres/     Compose initialization helpers
-docs/                User, development, external reference, and archive docs
-config/              Ignored runtime configuration, DB password, and JWT keys
-config.example.toml  Tracked configuration template
-tests/               Local and PostgreSQL integration tests
+src/                    Rust service
+  application/          Proxy and Console orchestration
+  domain/               API formats, routing, and value objects
+  http/                 Public and Console Axum routers
+  persistence/          PostgreSQL repositories
+  routing/              Selection and passive health
+  transforms/           Constrained transform engine
+  upstream/             Reusable HTTP and WebSocket clients
+  workers/              Reload, logging, projection, and settlement
+web/console/            React + TypeScript management SPA
+migrations/             Ordered PostgreSQL migrations
+tests/                  Rust integration tests
+tools/forwarding-perf/  Opt-in forwarding benchmark tooling
+docs/                   User, development, and compatibility documentation
 ```
 
-## Security notes
+## 📚 Documentation
 
-- Keep JWT private keys in ignored local files (the recommended development
-  location is `./config/console-jwt-private.pem`) with restrictive filesystem
-  permissions.
-- Keep `./config/postgres-password` mode `0600`; prefer
-  `[database].password_file` over embedding a database password in TOML.
-- Treat the database, backups, and Console access as credential-sensitive: control-plane records include client and upstream credentials.
-- Do not place client/upstream credentials or JWT private-key material in TOML, source files, logs, test fixtures, or shell history.
-- Expose the Console API only through HTTPS with a deliberate origin policy. Keep the public data-plane listener appropriately network-restricted as well.
+| Guide | Audience |
+| --- | --- |
+| [Documentation center](docs/README.md) | Complete document map and source precedence. |
+| [Operations](docs/user/operations.md) | Data plane, Console API, logging, billing, and runtime behavior. |
+| [Production configuration](docs/user/production-configuration.md) | Capacity, PostgreSQL, storage, and observability. |
+| [Production deployment](docs/user/production-deployment.md) | Compose, secrets, upgrades, and deployment boundaries. |
+| [OpenAI compatibility](docs/reference/openai-compatibility.md) | Supported semantics and intentional differences. |
+| [Current architecture](docs/development/architecture.md) | Runtime design and module boundaries. |
+| [Release process](docs/development/releasing.md) | Versioning, verification, packaging, and publication. |
 
-## Documentation
+## 🔐 Security
 
-- [Documentation center and conventions](docs/README.md)
-- [Operational usage and endpoint guide](docs/user/operations.md)
-- [Production configuration and capacity tuning](docs/user/production-configuration.md)
-- [Production Docker deployment](docs/user/production-deployment.md)
-- [OpenAI compatibility reference](docs/reference/openai-compatibility.md)
-- [Current architecture](docs/development/architecture.md)
-- [Version release process](docs/development/releasing.md)
-- [Console Web UI design and implementation plan](docs/development/console-ui.md)
-- [Database and control-plane design](docs/development/database-design.md)
-- [Real-upstream smoke-test guide](docs/development/real-upstream-smoke.md)
-- [Product and architecture blueprint (Chinese)](docs/development/product-blueprint.md)
+- Keep `./config/config.toml`, database passwords, upstream credentials, client
+  API keys, and Console JWT private keys out of version control.
+- Prefer `[database].password_file` over embedding a password in TOML.
+- Treat PostgreSQL, backups, and Console access as credential-sensitive.
+- Expose the Console only through a deliberately configured HTTPS reverse
+  proxy and restrict the public listener to the intended network boundary.
 
-## License
+## 📜 License
 
 `ai-gateway` is licensed under the
 [GNU Affero General Public License v3.0 only](LICENSE)
 (`AGPL-3.0-only`).
 
 If you modify the program and make the modified version available to users
-over a network, section 13 of the AGPL requires offering those users access
-to the corresponding source code. Third-party components retain their own
-licenses; see [the Console third-party notices](web/console/NOTICES.md) and
-the committed texts under [`LICENSES/`](LICENSES/).
+over a network, AGPL section 13 requires offering those users access to the
+corresponding source code. Third-party components retain their own licenses;
+see [`LICENSES/`](LICENSES/) and
+[`web/console/NOTICES.md`](web/console/NOTICES.md).
