@@ -328,6 +328,7 @@ export const REQUEST_LOG: RequestLogView = {
   cached_input_tokens: 2,
   cache_write_tokens: 0,
   output_tokens: 4,
+  reasoning_tokens: 1,
   cost_amount: "0.0001",
   error_code: null,
   error_summary: null,

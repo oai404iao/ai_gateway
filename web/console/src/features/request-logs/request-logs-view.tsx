@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Search, X } from "lucide-react";
+import { ArrowDown, ArrowUp, Search, X } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
@@ -95,6 +95,14 @@ interface RequestLogsViewProps {
 function optionalText(value: string): string | undefined {
   const trimmed = value.trim();
   return trimmed || undefined;
+}
+
+function tokenRemainder(
+  total: number | null | undefined,
+  subset: number | null | undefined,
+): number | null {
+  if (total === null || total === undefined) return null;
+  return Math.max(0, total - (subset ?? 0));
 }
 
 function requestSourceLabel(source: RequestLogView["request_source"], t: (value: string) => string) {
@@ -252,8 +260,55 @@ export function RequestLogsView({
     },
     {
       key: "tokens",
-      header: t("Output tokens"),
-      render: (log) => formatTokens(log.output_tokens),
+      header: t("Tokens"),
+      className: "min-w-44",
+      render: (log) => {
+        const uncachedInput = tokenRemainder(log.input_tokens, log.cached_input_tokens);
+        const nonReasoningOutput = tokenRemainder(log.output_tokens, log.reasoning_tokens);
+        const uncachedInputLabel = `${t("Uncached input")}: ${formatTokens(uncachedInput)}`;
+        const cachedInputLabel = `${t("Cached input")}: ${formatTokens(log.cached_input_tokens)}`;
+        const nonReasoningOutputLabel = `${t("Non-reasoning output")}: ${formatTokens(nonReasoningOutput)}`;
+        const reasoningLabel = `${t("Reasoning tokens")}: ${formatTokens(log.reasoning_tokens)}`;
+
+        return (
+          <span className="flex flex-col gap-1.5 tabular-nums">
+            <span className="flex items-center gap-2">
+              <span
+                className="flex min-w-20 items-center gap-1.5"
+                aria-label={uncachedInputLabel}
+                title={uncachedInputLabel}
+              >
+                <ArrowUp className="size-4 shrink-0 text-success" aria-hidden />
+                <span>{formatTokens(uncachedInput)}</span>
+              </span>
+              {log.cached_input_tokens !== null && log.cached_input_tokens > 0 ? (
+                <Badge
+                  variant="success"
+                  aria-label={cachedInputLabel}
+                  title={cachedInputLabel}
+                >
+                  {formatTokens(log.cached_input_tokens)}
+                </Badge>
+              ) : null}
+            </span>
+            <span className="flex items-center gap-2">
+              <span
+                className="flex min-w-20 items-center gap-1.5"
+                aria-label={nonReasoningOutputLabel}
+                title={nonReasoningOutputLabel}
+              >
+                <ArrowDown className="size-4 shrink-0 text-info" aria-hidden />
+                <span>{formatTokens(nonReasoningOutput)}</span>
+              </span>
+              {log.reasoning_tokens !== null && log.reasoning_tokens > 0 ? (
+                <Badge variant="info" aria-label={reasoningLabel} title={reasoningLabel}>
+                  {formatTokens(log.reasoning_tokens)}
+                </Badge>
+              ) : null}
+            </span>
+          </span>
+        );
+      },
     },
     {
       key: "cost",
@@ -592,6 +647,10 @@ export function RequestLogsView({
                 value={formatTokens(detail.data.cache_write_tokens)}
               />
               <DetailField label={t("Output tokens")} value={formatTokens(detail.data.output_tokens)} />
+              <DetailField
+                label={t("Reasoning tokens")}
+                value={formatTokens(detail.data.reasoning_tokens)}
+              />
               <DetailField
                 label={t("Cost")}
                 value={formatUsd(detail.data.cost_amount)}

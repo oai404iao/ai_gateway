@@ -199,6 +199,7 @@ async fn start_mock_upstream() -> MockResponsesWebSocket {
                                             "input_tokens": 5,
                                             "input_tokens_details": {"cached_tokens": 1},
                                             "output_tokens": 2,
+                                            "output_tokens_details": {"reasoning_tokens": 1},
                                             "total_tokens": 7
                                         }
                                     }
@@ -752,6 +753,7 @@ async fn responses_websocket_forwards_transforms_reuses_connection_and_logs_requ
         assert_eq!(usage.input_tokens, 5);
         assert_eq!(usage.cached_input_tokens, 1);
         assert_eq!(usage.output_tokens, 2);
+        assert_eq!(usage.reasoning_tokens, 1);
     }
 
     let metrics = SystemMetricsService::new(

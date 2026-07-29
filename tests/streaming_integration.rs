@@ -708,7 +708,7 @@ async fn chat_usage_sse() -> Response {
     sse_response(Body::from(Bytes::from_static(
         br#"data: {"object":"chat.completion.chunk","choices":[]}
 
-data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":11,"completion_tokens":4,"prompt_tokens_details":{"cached_tokens":2}}}
+data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":11,"completion_tokens":4,"prompt_tokens_details":{"cached_tokens":2},"completion_tokens_details":{"reasoning_tokens":1}}}
 
 data: [DONE]
 
@@ -756,6 +756,7 @@ async fn chat_sse_usage_is_collected_without_changing_forwarded_bytes() {
             cached_input_tokens: 2,
             cache_write_tokens: 0,
             output_tokens: 4,
+            reasoning_tokens: 1,
         })
     );
     assert_eq!(billing.price.currency, "USD");
@@ -799,6 +800,7 @@ async fn chat_sse_usage_in_unterminated_terminal_frame_is_collected() {
             cached_input_tokens: 0,
             cache_write_tokens: 0,
             output_tokens: 1361,
+            reasoning_tokens: 0,
         })
     );
 }

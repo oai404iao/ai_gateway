@@ -1728,6 +1728,8 @@ export interface components {
             cached_input_tokens: number | null;
             cache_write_tokens: number | null;
             output_tokens: number | null;
+            /** @description Subset of output_tokens spent on model reasoning, or null when usage is unavailable. */
+            reasoning_tokens: number | null;
             /** @description Final request cost in USD, or null when not priced. */
             cost_amount: components["schemas"]["DecimalNullable"];
             error_code: string | null;

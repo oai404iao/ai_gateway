@@ -389,7 +389,9 @@ JWT 主体推导用户 ID，管理员也只能在个人使用情况标签中看�
 每次故障转移会产生 `proxy_request_retry` tracing 事件；每个客户端请求仍只产生一个终态 tracing
 事件和一条 `request_logs`，其中渠道、结果和计费快照对应最终尝试。worker 从两种格式的普通 JSON
 或 SSE 事件增量提取 usage，在选路时绑定价格快照，并在可结算时以 `billed_at` 条件幂等更新用户余额
-和 API Key 已用额度。
+和 API Key 已用额度。usage 同时保留输入、缓存命中、缓存写入、输出总量，以及输出中包含的
+reasoning token。Console 请求日志的 `Tokens` 列将未缓存输入和非 reasoning 输出作为主数字，
+并用紧凑标记分别展示缓存命中与 reasoning token。
 
 额度是软预检查：不预留金额，已结算额度达到上限后才拒绝后续请求；余额可以为负。
 终态请求日志先同步追加到本地 durable spool，后台通知队列饱和只会合并唤醒，不会丢弃

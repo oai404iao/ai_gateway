@@ -11,6 +11,9 @@ Versioning.
 
 - Request protocol classification on user and administrator request logs,
   distinguishing non-streaming HTTP, SSE, and Responses WebSocket requests.
+- Request-log reasoning-token extraction and persistence for Chat Completions
+  and Responses, with a compact Console Tokens column that separates uncached
+  input, cached input, non-reasoning output, and reasoning tokens.
 - Device-aware Console login-session management with current-device markers,
   per-session sign-out, sign-out-all-other-devices, explicit active/expired/
   revoked states, and collapsible session history.

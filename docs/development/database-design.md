@@ -307,7 +307,7 @@ CHECK (jsonb_typeof(override_document) = 'object');
 | `streamed` | `boolean` | 兼容字段；SSE 与 WebSocket 为 `true`，非流式请求为 `false`。 |
 | `ttft_ms` / `total_duration_ms` | `integer` | 可空、非负。 |
 | `output_tokens_per_second` | `numeric(14,4)` | 可空、非负。 |
-| `input_tokens` / `cached_input_tokens` / `cache_write_tokens` / `output_tokens` | `bigint` | 可空、非负；未知保持 `NULL`。 |
+| `input_tokens` / `cached_input_tokens` / `cache_write_tokens` / `output_tokens` / `reasoning_tokens` | `bigint` | 可空、非负；`reasoning_tokens` 是 `output_tokens` 中用于推理的子集；未知保持 `NULL`。 |
 | `model_id` | `uuid` | 实际计价模型。 |
 | `currency` / `price_unit_tokens` / `price_effective_at` | 币种、整数、时间 | 本次价格快照上下文；币种固定为 `USD`。 |
 | `input_unit_price` / `cached_input_unit_price` / `cache_write_unit_price` / `output_unit_price` | `numeric(24,12)` | 本次价格快照。 |
@@ -319,6 +319,7 @@ CHECK (jsonb_typeof(override_document) = 'object');
 必须满足：
 
 - `cached_input_tokens` 和 `cache_write_tokens` 非空时都不得大于 `input_tokens`。
+- `reasoning_tokens` 非空时不得大于 `output_tokens`。
 - 四个价格字段、币种、计价单位和价格生效时间要么全部为空（未计费），要么全部存在。
 - 费用计算为：`(input - cached_input) * input_price / unit + cached_input * cached_input_price / unit + cache_write * cache_write_price / unit + output * output_price / unit`。
 - 当前不写入 `attempts`，因为网关只进行一次上游尝试。若未来引入重试，只能在尚未收到上游任何字节时追加下一项；收到响应头或首字节后不得切换渠道或重试。

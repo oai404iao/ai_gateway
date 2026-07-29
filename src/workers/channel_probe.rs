@@ -719,7 +719,7 @@ mod tests {
         let server = start_server(TestUpstream {
             requests: Arc::clone(&requests),
             status: StatusCode::OK,
-            response_body: r#"{"usage":{"prompt_tokens":10,"completion_tokens":4,"prompt_tokens_details":{"cached_tokens":2,"cache_write_tokens":1}}}"#,
+            response_body: r#"{"usage":{"prompt_tokens":10,"completion_tokens":4,"prompt_tokens_details":{"cached_tokens":2,"cache_write_tokens":1},"completion_tokens_details":{"reasoning_tokens":1}}}"#,
         })
         .await;
         let model_id = Uuid::new_v4();
@@ -774,6 +774,7 @@ mod tests {
                 cached_input_tokens: 2,
                 cache_write_tokens: 1,
                 output_tokens: 4,
+                reasoning_tokens: 1,
             })
         );
         assert_eq!(billing.cost_amount, Some(Decimal::new(555, 1)));
