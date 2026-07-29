@@ -308,6 +308,7 @@ export const REQUEST_LOG: RequestLogView = {
   started_at: "2026-07-21T06:00:00Z",
   completed_at: "2026-07-21T06:00:01Z",
   user_id: ADMIN_USER.id,
+  user_name: ADMIN_USER.display_name,
   api_key_id: OWN_API_KEY.id,
   request_source: "client",
   api_format: "open_ai_chat_completions",

@@ -1246,6 +1246,7 @@ pub struct ConsoleRequestLog {
     pub started_at: DateTime<Utc>,
     pub completed_at: DateTime<Utc>,
     pub user_id: Uuid,
+    pub user_name: Option<String>,
     pub api_key_id: Uuid,
     pub request_source: String,
     pub api_format: String,
@@ -1985,14 +1986,10 @@ impl RequestLogRepository {
         &self,
         user_id: Uuid,
         filter: RequestLogFilter,
-        include_channel_details: bool,
     ) -> Result<Vec<ConsoleRequestLog>, RepositoryError> {
         let mut logs = query_console_request_logs(&self.pool, Some(user_id), filter).await?;
-        if !include_channel_details {
-            for log in &mut logs {
-                log.channel_id = None;
-                log.channel_name = None;
-            }
+        for log in &mut logs {
+            redact_self_service_request_log(log);
         }
         Ok(logs)
     }
@@ -2001,12 +1998,10 @@ impl RequestLogRepository {
         &self,
         user_id: Uuid,
         id: Uuid,
-        include_channel_details: bool,
     ) -> Result<Option<ConsoleRequestLog>, RepositoryError> {
         let mut log = query_console_request_log(&self.pool, id, Some(user_id)).await?;
-        if !include_channel_details && let Some(log) = &mut log {
-            log.channel_id = None;
-            log.channel_name = None;
+        if let Some(log) = &mut log {
+            redact_self_service_request_log(log);
         }
         Ok(log)
     }
@@ -3172,7 +3167,13 @@ impl RequestLogRepository {
     }
 }
 
-const CONSOLE_REQUEST_LOG_COLUMNS: &str = "log.id,log.started_at,log.completed_at,log.user_id,log.api_key_id,log.request_source,log.api_format::text AS api_format,log.request_protocol,log.client_model,log.upstream_model,log.model_rule_id,log.channel_group_id,channel_group.name AS channel_group_name,log.channel_id,channel.name AS channel_name,log.outcome,log.response_status_code,log.streamed,log.ttft_ms,log.total_duration_ms,log.input_tokens,log.cached_input_tokens,log.cache_write_tokens,log.output_tokens,log.reasoning_tokens,log.cost_amount,log.error_code,log.error_summary,log.billed_at";
+fn redact_self_service_request_log(log: &mut ConsoleRequestLog) {
+    log.user_name = None;
+    log.channel_id = None;
+    log.channel_name = None;
+}
+
+const CONSOLE_REQUEST_LOG_COLUMNS: &str = "log.id,log.started_at,log.completed_at,log.user_id,request_user.display_name AS user_name,log.api_key_id,log.request_source,log.api_format::text AS api_format,log.request_protocol,log.client_model,log.upstream_model,log.model_rule_id,log.channel_group_id,channel_group.name AS channel_group_name,log.channel_id,channel.name AS channel_name,log.outcome,log.response_status_code,log.streamed,log.ttft_ms,log.total_duration_ms,log.input_tokens,log.cached_input_tokens,log.cache_write_tokens,log.output_tokens,log.reasoning_tokens,log.cost_amount,log.error_code,log.error_summary,log.billed_at";
 
 async fn query_console_request_log(
     pool: &PgPool,
@@ -3182,6 +3183,7 @@ async fn query_console_request_log(
     let mut query = QueryBuilder::<Postgres>::new(format!(
         "SELECT {CONSOLE_REQUEST_LOG_COLUMNS}
          FROM request_logs AS log
+         JOIN users AS request_user ON request_user.id = log.user_id
          LEFT JOIN channel_groups AS channel_group ON channel_group.id = log.channel_group_id
          LEFT JOIN channels AS channel ON channel.id = log.channel_id
          WHERE log.id = "
@@ -3221,6 +3223,7 @@ async fn query_console_request_logs(
     let mut query = QueryBuilder::<Postgres>::new(format!(
         "SELECT {CONSOLE_REQUEST_LOG_COLUMNS}
          FROM request_logs AS log
+         JOIN users AS request_user ON request_user.id = log.user_id
          LEFT JOIN channel_groups AS channel_group ON channel_group.id = log.channel_group_id
          LEFT JOIN channels AS channel ON channel.id = log.channel_id
          WHERE TRUE"

@@ -408,6 +408,10 @@ paths:
     get:
       tags: [Self, RequestLogs]
       operationId: listOwnRequestLogs
+      description: |
+        Returns only request logs owned by the authenticated user. Concrete
+        channel identity and the user display name are redacted for every
+        self-service caller, including administrators.
       security: [{ bearerAuth: [] }]
       parameters:
         - $ref: "#/components/parameters/Limit"
@@ -420,7 +424,7 @@ paths:
         - $ref: "#/components/parameters/RequestLogBilled"
       responses:
         "200":
-          description: Own request logs.
+          description: Owner-scoped request logs with self-service redaction.
           content:
             application/json:
               schema:
@@ -432,6 +436,10 @@ paths:
     get:
       tags: [Self, RequestLogs]
       operationId: getOwnRequestLog
+      description: |
+        Returns an owner-scoped request log. Concrete channel identity and the
+        user display name are redacted for every self-service caller,
+        including administrators.
       security: [{ bearerAuth: [] }]
       parameters:
         - $ref: "#/components/parameters/PathId"
@@ -1581,6 +1589,9 @@ paths:
     get:
       tags: [RequestLogs]
       operationId: listAllRequestLogs
+      description: |
+        Administrator-only global request logs, including current user and
+        channel display names.
       security: [{ bearerAuth: [] }]
       parameters:
         - $ref: "#/components/parameters/Limit"
@@ -1607,6 +1618,9 @@ paths:
     get:
       tags: [RequestLogs]
       operationId: getRequestLog
+      description: |
+        Administrator-only global request-log detail, including current user
+        and channel display names.
       security: [{ bearerAuth: [] }]
       parameters:
         - $ref: "#/components/parameters/PathId"
@@ -2954,7 +2968,7 @@ components:
     RequestLogView:
       type: object
       required:
-        [id, started_at, completed_at, user_id, api_key_id, api_format,
+        [id, started_at, completed_at, user_id, user_name, api_key_id, api_format,
          request_source, request_protocol, client_model, upstream_model, model_rule_id, channel_group_id,
          channel_group_name, channel_id, channel_name, outcome, response_status_code, streamed, ttft_ms,
          total_duration_ms, input_tokens, cached_input_tokens,
@@ -2965,6 +2979,10 @@ components:
         started_at: { $ref: "#/components/schemas/DateTime" }
         completed_at: { $ref: "#/components/schemas/DateTime" }
         user_id: { type: string, format: uuid }
+        user_name:
+          type: string
+          nullable: true
+          description: Administrator-only current display name; self-service responses return null.
         api_key_id: { type: string, format: uuid }
         request_source: { $ref: "#/components/schemas/RequestLogSource" }
         api_format: { $ref: "#/components/schemas/ApiFormat" }
@@ -2981,11 +2999,11 @@ components:
           type: string
           format: uuid
           nullable: true
-          description: Administrator-only; regular-user self-service responses return null.
+          description: Administrator-only; all self-service responses return null.
         channel_name:
           type: string
           nullable: true
-          description: Administrator-only current display name; regular-user self-service responses return null.
+          description: Administrator-only current display name; all self-service responses return null.
         outcome: { type: string }
         response_status_code: { type: integer, nullable: true }
         streamed:

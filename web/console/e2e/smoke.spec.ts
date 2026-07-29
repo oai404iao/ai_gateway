@@ -186,6 +186,114 @@ test.describe("Console SPA smoke", () => {
     await expect(page.getByText("Host CPU", { exact: true })).toBeVisible();
   });
 
+  test("personal and system request logs expose the intended fields", async ({
+    page,
+  }) => {
+    await mockConsoleApi(page);
+    await page.goto("/login");
+    await page.getByLabel(/email/i).fill("admin@example.com");
+    await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
+    await page.getByRole("button", { name: /sign in/i }).click();
+
+    await page.locator('a[href="/usage/request-logs"]').click();
+    await expect(page).toHaveURL(/\/usage\/request-logs/);
+    await expect(
+      page.getByRole("columnheader", { name: "Started" }),
+    ).toBeVisible();
+    expect(await page.getByRole("columnheader").allTextContents()).toEqual([
+      "Started",
+      "Model",
+      "Protocol",
+      "Channel group",
+      "Outcome",
+      "Tokens",
+      "Cost",
+      "Duration",
+    ]);
+    await expect(page.getByText("upstream-a", { exact: true })).toHaveCount(0);
+    await page.getByRole("cell", { name: "gateway-e2e-model" }).click();
+    const personalDetail = page.getByRole("dialog");
+    await expect(personalDetail).toBeVisible();
+    await expect(
+      personalDetail.locator("dt").filter({ hasText: "Completed" }),
+    ).toBeVisible();
+    expect(await personalDetail.locator("dt").allTextContents()).toEqual([
+      "Started",
+      "Model",
+      "Protocol",
+      "Channel group",
+      "Outcome",
+      "Tokens",
+      "Cost",
+      "Duration",
+      "HTTP",
+      "Error code",
+      "Error message",
+      "Completed",
+    ]);
+    await expect(page.getByText("upstream-a", { exact: true })).toHaveCount(0);
+    await page.keyboard.press("Escape");
+    await expect(personalDetail).toBeHidden();
+
+    await page.locator('a[href="/admin/request-logs"]').click();
+    await expect(page).toHaveURL(/\/admin\/request-logs/);
+    await expect(
+      page.getByRole("columnheader", { name: "User", exact: true }),
+    ).toBeVisible();
+    expect(await page.getByRole("columnheader").allTextContents()).toEqual([
+      "Started",
+      "Model",
+      "Protocol",
+      "Channel group",
+      "Channel",
+      "User",
+      "Outcome",
+      "Tokens",
+      "Cost",
+      "Duration",
+    ]);
+    await expect(page.getByRole("cell", { name: "upstream-a" })).toBeVisible();
+    await expect(page.getByRole("cell", { name: "Batch User" })).toBeVisible();
+    await page.getByRole("cell", { name: "gateway-e2e-model" }).click();
+    const systemDetail = page.getByRole("dialog");
+    await expect(systemDetail).toBeVisible();
+    await expect(
+      systemDetail.locator("dt").filter({ hasText: "Completed" }),
+    ).toBeVisible();
+    expect(await systemDetail.locator("dt").allTextContents()).toEqual([
+      "Started",
+      "Model",
+      "Protocol",
+      "Channel group",
+      "Channel",
+      "User",
+      "Outcome",
+      "Tokens",
+      "Cost",
+      "Duration",
+      "HTTP",
+      "Error code",
+      "Error message",
+      "Completed",
+    ]);
+    await expect(
+      systemDetail.getByText("upstream-a", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      systemDetail.getByText("Batch User", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("00000000-0000-0000-0000-000000000022", {
+        exact: true,
+      }),
+    ).toHaveCount(0);
+    await expect(
+      page.getByText("00000000-0000-0000-0000-000000000090", {
+        exact: true,
+      }),
+    ).toHaveCount(0);
+  });
+
   test("users can open the spend leaderboard podium", async ({
     page,
   }) => {
