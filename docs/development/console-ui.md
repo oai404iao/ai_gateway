@@ -182,6 +182,8 @@ web/console/
         channel-groups/
         channels/
         model-rules/
+      providers/
+        codex-oauth/              # managed credential list, PKCE/import dialogs and quota state
       network/
         proxies/
       transforms/
@@ -279,10 +281,17 @@ API 集成测试应同时验证实现与该规范的关键请求/响应示例，
 | 用户、用户组、注册邀请码与策略 | `/admin/users`、`/admin/user-groups`、`/admin/registration-invitation-codes`、`/admin/api-key-policies` | `/console/v1/users*`、`/user-groups*`、`/registration-invitation-codes*`、`/api-key-policies*` | admin |
 | 模型和目录 | `/admin/models`、`/admin/catalog` | `/console/v1/models*`、`/catalog/models/*` | admin |
 | 路由 | `/admin/routing/*` | `/console/v1/routing/*` | admin |
+| Provider 凭证 | `/admin/providers/codex-oauth/:groupId` | `/console/v1/providers/codex-oauth/*` | admin |
 | 网络与变换 | `/admin/network/proxies`、`/admin/transforms/templates` | `/console/v1/network/*`、`/transforms/*` | admin |
 | 可观测性与系统 | `/admin/request-logs`、`/admin/audit-logs`、`/admin/system-load`、`/admin/system` | `/console/v1/request-logs`、`/audit-logs`、`/system/load`、`/system/reload` | admin |
 
 浏览器路由中的 `/admin` 仅表示 UI 信息架构，不新增或恢复 `/admin/v1/*` 后端接口。
+
+Codex OAuth 页面按 connector Channel Group 隔离。PKCE `authorization_url` 只保留在当前
+Dialog state；管理员粘贴 callback URL 后立即提交，不能进入 URL、持久化 storage 或 Query Cache。
+手工导入的 ID/access/refresh token 使用临时受控输入，mutation 完成或 Dialog 关闭后清空。凭证列表
+只展示账户元数据、状态、quota、proxy、weight 和时间戳，后端不会回传已保存 token。普通 Channel
+详情遇到 `provider_managed=true` 时跳转到该 provider 页面，避免用标准渠道表单覆盖 connector 状态。
 
 `/account/sessions` 当前按“活跃会话”和可折叠历史分组，使用后端返回的 `is_current` 与明确
 session 状态标记当前设备、已过期和已撤销记录。活跃会话提供逐设备退出，页面还可一次撤销除当前

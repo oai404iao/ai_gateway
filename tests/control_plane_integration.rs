@@ -9,20 +9,25 @@ use std::{
 use ai_gateway::{
     admission::AdmissionRuntime,
     application::{
-        AutomaticDisableWorker, ChannelModelDiscoveryService, ConsoleAuthService,
-        ControlPlaneCoordinator, ModelSyncService, NoopRequestLogSink, ProxyService,
-        QueueRequestLogSink, RequestLogSink, SystemMetricsService, hash_console_password,
+        AutomaticDisableWorker, ChannelModelDiscoveryService, CodexConnectorService,
+        ConsoleAuthService, ControlPlaneCoordinator, ModelSyncService, NoopRequestLogSink,
+        ProxyService, QueueRequestLogSink, RequestLogSink, SystemMetricsService,
+        UpstreamConnectorRegistry, hash_console_password,
     },
     domain::{
-        ApiFormat, ApiKeyPermission, AutomaticDisableTrigger, RequestBilling, RequestLogEvent,
-        RequestLogOutcome, RequestLogSource, RequestPriceSnapshot, RequestProtocol, RequestUsage,
+        ApiFormat, ApiKeyPermission, AutomaticDisableTrigger, ConnectorKind, RequestBilling,
+        RequestLogEvent, RequestLogOutcome, RequestLogSource, RequestPriceSnapshot,
+        RequestProtocol, RequestUsage,
     },
     http::console::{self, ConsoleState},
     models_dev::ModelsDevClient,
     persistence::{
-        AuthRepository, ControlPlaneRepository, MIGRATOR, RequestLogBatchInsertOutcome,
-        RequestLogInsertOutcome, RequestLogRepository, RequestLogSettlementOutcome,
-        SystemAutomaticDisableSettingsInput, SystemPassiveHealthSettingsInput, SystemSettingsInput,
+        AuthRepository, ChannelGroupInput, CodexCredentialCreate, CodexCredentialUpdateInput,
+        CodexQuotaUpdate, CodexTokenRefreshUpdate, ControlPlaneMutation, ControlPlaneRepository,
+        MIGRATOR, RequestLogBatchInsertOutcome, RequestLogInsertOutcome, RequestLogRepository,
+        RequestLogSettlementOutcome, SystemAutomaticDisableSettingsInput,
+        SystemPassiveHealthSettingsInput, SystemSessionAffinityKeySourceInput,
+        SystemSessionAffinityRuleInput, SystemSessionAffinitySettingsInput, SystemSettingsInput,
         SystemUpstreamSettingsInput,
     },
     routing::{self, PassiveHealthPolicy, RoutingRuntime},
@@ -37,7 +42,7 @@ use axum::{
     Router,
     body::{Body, Bytes},
     extract::State,
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::Response,
     routing::{get, post},
 };
@@ -480,6 +485,49 @@ enum UpstreamMode {
 #[derive(Clone)]
 struct UpstreamState(Arc<Mutex<UpstreamMode>>);
 
+#[derive(Clone, Debug)]
+struct CapturedCodexRequest {
+    authorization: Option<String>,
+    account_id: Option<String>,
+    originator: Option<String>,
+    session_id: Option<String>,
+    thread_id: Option<String>,
+    client_request_id: Option<String>,
+    body: serde_json::Value,
+}
+
+#[derive(Clone, Default)]
+struct CodexUpstreamState(Arc<Mutex<Vec<CapturedCodexRequest>>>);
+
+async fn codex_responses_upstream(
+    State(state): State<CodexUpstreamState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let header = |name: &'static str| {
+        headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned)
+    };
+    state.0.lock().unwrap().push(CapturedCodexRequest {
+        authorization: header("authorization"),
+        account_id: header("chatgpt-account-id"),
+        originator: header("originator"),
+        session_id: header("session-id"),
+        thread_id: header("thread-id"),
+        client_request_id: header("x-client-request-id"),
+        body: serde_json::from_slice(&body).unwrap(),
+    });
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "text/event-stream")
+        .body(Body::from(
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_codex\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n",
+        ))
+        .unwrap()
+}
+
 async fn upstream(State(state): State<UpstreamState>) -> Response {
     let mode = { state.0.lock().unwrap().clone() };
     match mode {
@@ -901,6 +949,695 @@ fn request_log_event(seed: &Seed, outcome: RequestLogOutcome) -> RequestLogEvent
         error_code: None,
         error_summary: None,
     }
+}
+
+#[tokio::test]
+async fn codex_credentials_create_managed_channels_and_recompute_quota_state() {
+    let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
+    let codex_group = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO channel_groups \
+         (id,name,api_format,connector_kind,priority,selection_strategy,enabled) \
+         VALUES ($1,'codex-managed','open_ai_responses','codex_oauth',0,'weighted_random',true)",
+    )
+    .bind(codex_group)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let repository = ControlPlaneRepository::new(database.pool.clone());
+    let runtime = Arc::new(RuntimeConfig::new(
+        compile_runtime_config(repository.load_runtime().await.unwrap()).unwrap(),
+    ));
+    let coordinator = ControlPlaneCoordinator::new(
+        repository.clone(),
+        Arc::clone(&runtime),
+        RoutingRuntime::new(PassiveHealthPolicy::default()),
+    );
+    let now = Utc::now();
+    let created = coordinator
+        .create_codex_credential(
+            seed.user,
+            CodexCredentialCreate {
+                channel_group_id: codex_group,
+                label: "plus-account".into(),
+                proxy_id: None,
+                weight: 100,
+                quota_threshold_percent: 95,
+                base_url: "https://chatgpt.com/backend-api/codex".into(),
+                email: Some("codex@example.test".into()),
+                account_id: "account-123".into(),
+                plan_type: Some("plus".into()),
+                is_fedramp: false,
+                id_token: "secret-id-token".into(),
+                access_token: "secret-access-token".into(),
+                refresh_token: "secret-refresh-token".into(),
+                access_token_expires_at: Some(now + chrono::Duration::hours(1)),
+                available_models: vec!["gpt-5-codex".into()],
+                quota: Some(CodexQuotaUpdate {
+                    allowed: true,
+                    limit_reached: false,
+                    primary_used_percent: Some(96),
+                    primary_window_seconds: Some(10_800),
+                    primary_reset_at: Some(now + chrono::Duration::hours(1)),
+                    secondary_used_percent: None,
+                    secondary_window_seconds: None,
+                    secondary_reset_at: None,
+                    checked_at: now,
+                }),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(created.object_type, "codex_oauth_credential");
+    let audit = created.after_redacted.to_string();
+    assert!(!audit.contains("secret-id-token"));
+    assert!(!audit.contains("secret-access-token"));
+    assert!(!audit.contains("secret-refresh-token"));
+    let snapshot = runtime.snapshot();
+    let channel = snapshot
+        .channel(created.id)
+        .expect("managed channel compiled");
+    assert_eq!(channel.connector_kind(), ConnectorKind::CodexOauth);
+    assert!(!channel.supports_websocket());
+
+    let before = repository
+        .codex_credential_view(created.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(before.runtime_status, "draining");
+    let updated = coordinator
+        .update_codex_credential(
+            seed.user,
+            created.id,
+            CodexCredentialUpdateInput {
+                label: "plus-account".into(),
+                enabled: true,
+                proxy_id: None,
+                weight: 50,
+                quota_threshold_percent: 99,
+            },
+            before.updated_at,
+        )
+        .await
+        .unwrap();
+    assert_eq!(updated.action, "update");
+    let after = repository
+        .codex_credential_view(created.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(after.runtime_status, "active");
+    assert_eq!(after.weight, 50);
+
+    repository
+        .mark_codex_credential_error(
+            created.id,
+            true,
+            "codex_refresh_token_invalid",
+            "The Codex refresh token requires a new login.",
+        )
+        .await
+        .unwrap();
+    let reauth = repository
+        .codex_credential_view(created.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(reauth.runtime_status, "unavailable");
+    coordinator
+        .update_codex_credential(
+            seed.user,
+            created.id,
+            CodexCredentialUpdateInput {
+                label: "plus-account".into(),
+                enabled: true,
+                proxy_id: None,
+                weight: 75,
+                quota_threshold_percent: 99,
+            },
+            reauth.updated_at,
+        )
+        .await
+        .unwrap();
+    repository
+        .persist_codex_quota(
+            created.id,
+            CodexQuotaUpdate {
+                allowed: true,
+                limit_reached: false,
+                primary_used_percent: Some(1),
+                primary_window_seconds: Some(10_800),
+                primary_reset_at: Some(now + chrono::Duration::hours(1)),
+                secondary_used_percent: None,
+                secondary_window_seconds: None,
+                secondary_reset_at: None,
+                checked_at: Utc::now(),
+            },
+        )
+        .await
+        .unwrap();
+    let still_reauth = repository
+        .codex_credential_view(created.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(still_reauth.runtime_status, "unavailable");
+    assert_eq!(
+        still_reauth.last_error_code.as_deref(),
+        Some("codex_refresh_token_invalid")
+    );
+
+    let record = repository
+        .codex_credential(created.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(record.reauth_required);
+    let mut transaction = repository.begin_codex_refresh().await.unwrap();
+    assert!(
+        repository
+            .persist_codex_token_refresh_transaction(
+                &mut transaction,
+                created.id,
+                CodexTokenRefreshUpdate {
+                    expected_generation: record.refresh_generation,
+                    id_token: None,
+                    access_token: Some("replacement-access-token".into()),
+                    refresh_token: Some("replacement-refresh-token".into()),
+                    email: None,
+                    account_id: None,
+                    plan_type: None,
+                    is_fedramp: None,
+                    access_token_expires_at: Some(now + chrono::Duration::hours(2)),
+                    refreshed_at: Utc::now(),
+                },
+            )
+            .await
+            .unwrap()
+    );
+    transaction.commit().await.unwrap();
+    let recovered = repository
+        .codex_credential(created.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!recovered.reauth_required);
+    assert_eq!(recovered.runtime_status, "active");
+    assert!(recovered.last_error_code.is_none());
+
+    let reauthorized = coordinator
+        .create_codex_credential(
+            seed.user,
+            CodexCredentialCreate {
+                channel_group_id: codex_group,
+                label: "plus-reauthorized".into(),
+                proxy_id: None,
+                weight: 80,
+                quota_threshold_percent: 98,
+                base_url: "https://chatgpt.com/backend-api/codex".into(),
+                email: Some("codex-updated@example.test".into()),
+                account_id: "account-123".into(),
+                plan_type: Some("pro".into()),
+                is_fedramp: false,
+                id_token: "reauthorized-id-token".into(),
+                access_token: "reauthorized-access-token".into(),
+                refresh_token: "reauthorized-refresh-token".into(),
+                access_token_expires_at: Some(now + chrono::Duration::hours(3)),
+                available_models: vec!["gpt-5-codex".into(), "gpt-5.1-codex".into()],
+                quota: None,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(reauthorized.id, created.id);
+    assert_eq!(reauthorized.action, "update");
+    let reauthorized_audit = reauthorized.after_redacted.to_string();
+    assert!(!reauthorized_audit.contains("reauthorized-id-token"));
+    assert!(!reauthorized_audit.contains("reauthorized-access-token"));
+    assert!(!reauthorized_audit.contains("reauthorized-refresh-token"));
+    let reauthorized_record = repository
+        .codex_credential(created.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(reauthorized_record.label, "plus-reauthorized");
+    assert_eq!(
+        reauthorized_record.access_token,
+        "reauthorized-access-token"
+    );
+    assert_eq!(reauthorized_record.weight, 80);
+    assert_eq!(
+        reauthorized_record.available_models,
+        vec!["gpt-5-codex", "gpt-5.1-codex"]
+    );
+
+    let group_updated_at: DateTime<Utc> =
+        sqlx::query_scalar("SELECT updated_at FROM channel_groups WHERE id=$1")
+            .bind(codex_group)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    let connector_change = coordinator
+        .mutate(
+            seed.user,
+            ControlPlaneMutation::UpdateGroup {
+                id: codex_group,
+                input: ChannelGroupInput {
+                    name: "codex-managed".into(),
+                    api_format: "open_ai_responses".into(),
+                    connector_kind: "openai_compatible".into(),
+                    priority: 0,
+                    selection_strategy: "weighted_random".into(),
+                    enabled: true,
+                },
+                expected_updated_at: group_updated_at,
+            },
+        )
+        .await;
+    assert!(connector_change.is_err());
+
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn codex_connector_forwards_responses_with_managed_credentials_and_headers() {
+    let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
+    let captured = CodexUpstreamState::default();
+    let upstream = start_server(
+        Router::new()
+            .route(
+                "/backend-api/codex/responses",
+                post(codex_responses_upstream),
+            )
+            .with_state(captured.clone()),
+    )
+    .await;
+    let codex_group = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO channel_groups \
+         (id,name,api_format,connector_kind,priority,selection_strategy,enabled) \
+         VALUES ($1,'codex-forwarding','open_ai_responses','codex_oauth',0,'weighted_random',true)",
+    )
+    .bind(codex_group)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let mut settings = system_settings();
+    settings.session_affinity = SystemSessionAffinitySettingsInput {
+        enabled: true,
+        max_entries: 100,
+        default_ttl_seconds: 3_600,
+        rules: vec![SystemSessionAffinityRuleInput {
+            name: "codex-session".into(),
+            enabled: true,
+            api_formats: vec!["open_ai_responses".into()],
+            model_regex: vec!["^codex-client-.*$".into()],
+            key_sources: vec![SystemSessionAffinityKeySourceInput::RequestHeader {
+                name: "session-id".into(),
+            }],
+            value_regex: None,
+            ttl_seconds: Some(3_600),
+        }],
+    };
+    sqlx::query("UPDATE system_settings SET value=$2 WHERE setting_key=$1")
+        .bind("forwarding_policy")
+        .bind(serde_json::to_value(settings).unwrap())
+        .execute(&database.pool)
+        .await
+        .unwrap();
+
+    let repository = ControlPlaneRepository::new(database.pool.clone());
+    let runtime = Arc::new(RuntimeConfig::new(
+        compile_runtime_config(repository.load_runtime().await.unwrap()).unwrap(),
+    ));
+    let routing = RoutingRuntime::new(PassiveHealthPolicy::default());
+    let upstream_clients = Arc::new(UpstreamClientRegistry::new());
+    let coordinator = ControlPlaneCoordinator::new_with_upstream_registry(
+        repository.clone(),
+        Arc::clone(&runtime),
+        routing.clone(),
+        Arc::clone(&upstream_clients),
+    )
+    .unwrap();
+    let now = Utc::now();
+    let credential = coordinator
+        .create_codex_credential(
+            seed.user,
+            CodexCredentialCreate {
+                channel_group_id: codex_group,
+                label: "forwarding-account".into(),
+                proxy_id: None,
+                weight: 100,
+                quota_threshold_percent: 95,
+                base_url: format!("http://{}/backend-api/codex", upstream.address),
+                email: Some("codex@example.test".into()),
+                account_id: "account-123".into(),
+                plan_type: Some("plus".into()),
+                is_fedramp: false,
+                id_token: "id-token".into(),
+                access_token: "access-token".into(),
+                refresh_token: "refresh-token".into(),
+                access_token_expires_at: Some(now + chrono::Duration::hours(1)),
+                available_models: vec!["upstream-v1".into()],
+                quota: Some(CodexQuotaUpdate {
+                    allowed: true,
+                    limit_reached: false,
+                    primary_used_percent: Some(10),
+                    primary_window_seconds: Some(10_800),
+                    primary_reset_at: Some(now + chrono::Duration::hours(1)),
+                    secondary_used_percent: None,
+                    secondary_window_seconds: None,
+                    secondary_reset_at: None,
+                    checked_at: now,
+                }),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let client_model = format!("codex-client-{}", Uuid::new_v4());
+    sqlx::query(
+        "INSERT INTO model_rules \
+         (id,client_model,api_format,upstream_model_id,channel_group_ids,enabled) \
+         VALUES ($1,$2,'open_ai_responses',$3,ARRAY[$4]::uuid[],true)",
+    )
+    .bind(Uuid::new_v4())
+    .bind(&client_model)
+    .bind(seed.model)
+    .bind(codex_group)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE api_keys SET \
+         allowed_api_formats=ARRAY['open_ai_chat_completions','open_ai_responses']::api_format[], \
+         allowed_group_ids=ARRAY[$2,$3]::uuid[] \
+         WHERE id=$1",
+    )
+    .bind(seed.key)
+    .bind(seed.group)
+    .bind(codex_group)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    coordinator.reload().await.unwrap();
+
+    let codex_connector = CodexConnectorService::new(
+        repository.clone(),
+        coordinator,
+        Arc::clone(&runtime),
+        Arc::clone(&upstream_clients),
+    )
+    .await
+    .unwrap();
+    let connectors = UpstreamConnectorRegistry::default().with_codex(codex_connector.clone());
+    let proxy = ProxyService::with_dependencies_and_registry(
+        runtime,
+        1_048_576,
+        upstream_clients,
+        Arc::new(NoopRequestLogSink),
+        routing,
+        AdmissionRuntime::new(),
+    )
+    .unwrap()
+    .with_connector_registry(connectors);
+    let app = ai_gateway::http::router(proxy);
+    let request = |session_id: &'static str, body: serde_json::Value| {
+        axum::http::Request::builder()
+            .method("POST")
+            .uri("/v1/responses")
+            .header("authorization", format!("Bearer {}", seed.secret))
+            .header("content-type", "application/json")
+            .header("session-id", session_id)
+            .header("thread-id", "thread-456")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap()
+    };
+
+    let response = app
+        .clone()
+        .oneshot(request(
+            "session-123",
+            serde_json::json!({
+                "model": client_model.clone(),
+                "stream": true,
+                "store": true,
+                "input": "hello"
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let response_body = response.into_body().collect().await.unwrap().to_bytes();
+    assert!(String::from_utf8_lossy(&response_body).contains("response.completed"));
+
+    let requests = captured.0.lock().unwrap().clone();
+    assert_eq!(requests.len(), 1);
+    let forwarded = &requests[0];
+    assert_eq!(
+        forwarded.authorization.as_deref(),
+        Some("Bearer access-token")
+    );
+    assert_eq!(forwarded.account_id.as_deref(), Some("account-123"));
+    assert_eq!(forwarded.originator.as_deref(), Some("ai_gateway"));
+    assert_eq!(forwarded.session_id.as_deref(), Some("session-123"));
+    assert_eq!(forwarded.thread_id.as_deref(), Some("thread-456"));
+    assert_eq!(forwarded.client_request_id.as_deref(), Some("thread-456"));
+    assert_eq!(forwarded.body["model"], "upstream-v1");
+    assert_eq!(forwarded.body["stream"], true);
+    assert_eq!(forwarded.body["store"], false);
+    assert_eq!(
+        runtime_channel_connector(&database.pool, credential.id).await,
+        "codex_oauth"
+    );
+
+    let non_streaming = app
+        .clone()
+        .oneshot(request(
+            "session-123",
+            serde_json::json!({
+                "model": client_model.clone(),
+                "stream": false,
+                "input": "hello"
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(non_streaming.status(), StatusCode::BAD_REQUEST);
+    let non_streaming_body = non_streaming
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    assert!(String::from_utf8_lossy(&non_streaming_body).contains("codex_streaming_required"));
+
+    let previous = app
+        .clone()
+        .oneshot(request(
+            "session-123",
+            serde_json::json!({
+                "model": client_model.clone(),
+                "stream": true,
+                "previous_response_id": "resp_previous",
+                "input": "hello"
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(previous.status(), StatusCode::BAD_REQUEST);
+    let previous_body = previous.into_body().collect().await.unwrap().to_bytes();
+    assert!(
+        String::from_utf8_lossy(&previous_body).contains("codex_previous_response_unsupported")
+    );
+    assert_eq!(captured.0.lock().unwrap().len(), 1);
+
+    repository
+        .persist_codex_quota(
+            credential.id,
+            CodexQuotaUpdate {
+                allowed: true,
+                limit_reached: false,
+                primary_used_percent: Some(96),
+                primary_window_seconds: Some(10_800),
+                primary_reset_at: Some(Utc::now() + chrono::Duration::hours(1)),
+                secondary_used_percent: None,
+                secondary_window_seconds: None,
+                secondary_reset_at: None,
+                checked_at: Utc::now(),
+            },
+        )
+        .await
+        .unwrap();
+    codex_connector.run_maintenance().await.unwrap();
+
+    let sticky = app
+        .clone()
+        .oneshot(request(
+            "session-123",
+            serde_json::json!({
+                "model": client_model.clone(),
+                "stream": true,
+                "input": "continue"
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(sticky.status(), StatusCode::OK);
+    let _ = sticky.into_body().collect().await.unwrap();
+
+    let new_session = app
+        .clone()
+        .oneshot(request(
+            "session-other",
+            serde_json::json!({
+                "model": client_model.clone(),
+                "stream": true,
+                "input": "new"
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(new_session.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let new_session_body = new_session.into_body().collect().await.unwrap().to_bytes();
+    assert!(String::from_utf8_lossy(&new_session_body).contains("codex_credential_draining"));
+    assert_eq!(captured.0.lock().unwrap().len(), 2);
+
+    repository
+        .persist_codex_quota(
+            credential.id,
+            CodexQuotaUpdate {
+                allowed: false,
+                limit_reached: true,
+                primary_used_percent: Some(100),
+                primary_window_seconds: Some(10_800),
+                primary_reset_at: Some(Utc::now() + chrono::Duration::hours(1)),
+                secondary_used_percent: None,
+                secondary_window_seconds: None,
+                secondary_reset_at: None,
+                checked_at: Utc::now(),
+            },
+        )
+        .await
+        .unwrap();
+    codex_connector.run_maintenance().await.unwrap();
+
+    for _ in 0..2 {
+        let sticky_unavailable = app
+            .clone()
+            .oneshot(request(
+                "session-123",
+                serde_json::json!({
+                    "model": client_model.clone(),
+                    "stream": true,
+                    "input": "continue"
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(sticky_unavailable.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let sticky_body = sticky_unavailable
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+        assert!(
+            String::from_utf8_lossy(&sticky_body).contains("codex_sticky_credential_unavailable")
+        );
+    }
+    assert_eq!(captured.0.lock().unwrap().len(), 2);
+
+    let view = codex_connector
+        .credential(credential.id)
+        .await
+        .unwrap()
+        .unwrap();
+    codex_connector
+        .update_credential(
+            seed.user,
+            credential.id,
+            CodexCredentialUpdateInput {
+                label: view.label,
+                enabled: false,
+                proxy_id: view.proxy_id,
+                weight: view.weight,
+                quota_threshold_percent: view.quota_threshold_percent,
+            },
+            view.updated_at,
+        )
+        .await
+        .unwrap();
+    let sticky_disabled = app
+        .clone()
+        .oneshot(request(
+            "session-123",
+            serde_json::json!({
+                "model": client_model.clone(),
+                "stream": true,
+                "input": "continue"
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(sticky_disabled.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let sticky_disabled_body = sticky_disabled
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    assert!(
+        String::from_utf8_lossy(&sticky_disabled_body)
+            .contains("codex_sticky_credential_unavailable")
+    );
+
+    let new_disabled = app
+        .clone()
+        .oneshot(request(
+            "session-disabled",
+            serde_json::json!({
+                "model": client_model,
+                "stream": true,
+                "input": "new"
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(new_disabled.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let new_disabled_body = new_disabled.into_body().collect().await.unwrap().to_bytes();
+    assert!(String::from_utf8_lossy(&new_disabled_body).contains("codex_credential_disabled"));
+    let channel_enabled: bool = sqlx::query_scalar("SELECT enabled FROM channels WHERE id=$1")
+        .bind(credential.id)
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    assert!(
+        channel_enabled,
+        "the provider runtime, not generic routing, owns managed credential enablement"
+    );
+    assert_eq!(captured.0.lock().unwrap().len(), 2);
+
+    drop(upstream);
+    database.cleanup().await;
+}
+
+async fn runtime_channel_connector(pool: &PgPool, channel_id: Uuid) -> String {
+    sqlx::query_scalar(
+        "SELECT g.connector_kind \
+         FROM channels c JOIN channel_groups g ON g.id=c.channel_group_id \
+         WHERE c.id=$1",
+    )
+    .bind(channel_id)
+    .fetch_one(pool)
+    .await
+    .unwrap()
 }
 
 #[tokio::test]
@@ -1623,10 +2360,19 @@ async fn admin_app_with_models_dev(
         compile_runtime_config(repository.load_runtime().await.unwrap()).unwrap(),
     ));
     let coordinator = ControlPlaneCoordinator::new(
-        repository,
+        repository.clone(),
         Arc::clone(&runtime),
         RoutingRuntime::new(PassiveHealthPolicy::default()),
     );
+    let upstream_clients = Arc::new(UpstreamClientRegistry::new());
+    let codex_connector = CodexConnectorService::new(
+        repository,
+        coordinator.clone(),
+        Arc::clone(&runtime),
+        Arc::clone(&upstream_clients),
+    )
+    .await
+    .unwrap();
     let model_sync = ModelSyncService::new(coordinator.clone(), models_dev, 100);
     let auth = ConsoleAuthService::from_pem(
         AuthRepository::new(pool.clone()),
@@ -1646,9 +2392,10 @@ async fn admin_app_with_models_dev(
         ConsoleTestApp {
             router: console::router(ConsoleState {
                 coordinator,
+                codex_connector,
                 channel_models: ChannelModelDiscoveryService::new(
                     Arc::clone(&runtime),
-                    Arc::new(UpstreamClientRegistry::new()),
+                    upstream_clients,
                 ),
                 model_sync,
                 auth,

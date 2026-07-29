@@ -7,6 +7,17 @@ Versioning.
 
 ## [Unreleased]
 
+### Added
+
+- A statically linked in-process upstream connector registry and the first
+  provider implementation, Codex OAuth Connect, with PKCE/token import,
+  provider-managed Responses channels, per-credential proxies, serialized
+  token refresh, in-place account reauthorization, quota-aware draining, and
+  fail-closed Session-affinity credential continuity.
+- Administrator Console APIs and a dedicated Codex credential page for
+  connecting accounts, importing tokens, editing routing settings, refreshing
+  tokens/quota, and reviewing account and rate-limit state.
+
 ### Fixed
 
 - Allow Console proxy records to persist the already-supported `socks4a` and

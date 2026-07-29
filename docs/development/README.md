@@ -5,6 +5,8 @@
 ## 当前架构与设计
 
 - [当前架构](architecture.md)：运行拓扑、请求链路、模块边界和来源优先级。
+- [Codex OAuth Connector 设计记录](codex-oauth-connector.md)：进程内 Connector、
+  managed channel、凭证快照、quota 与粘性边界。
 - [产品与架构蓝图](product-blueprint.md)：未来方向和设计背景；不能替代当前实现。
 - [数据库设计](database-design.md)
 - [Console 认证与授权设计记录](console-auth.md)

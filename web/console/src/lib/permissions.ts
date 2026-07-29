@@ -1,5 +1,6 @@
 import type {
   ApiFormat,
+  ConnectorKind,
   SelectionStrategy,
   UpstreamAuthKind,
   UserRole,
@@ -14,6 +15,11 @@ export const API_FORMATS: readonly ApiFormat[] = [
 export const SELECTION_STRATEGIES: readonly SelectionStrategy[] = [
   "weighted_random",
   "weighted_round_robin",
+];
+
+export const CONNECTOR_KINDS: readonly ConnectorKind[] = [
+  "openai_compatible",
+  "codex_oauth",
 ];
 
 export const UPSTREAM_AUTH_KINDS: readonly UpstreamAuthKind[] = ["none", "bearer", "header"];
@@ -53,6 +59,12 @@ export function selectionStrategyLabel(value: SelectionStrategy): string {
   return value === "weighted_random"
     ? translate("Weighted random")
     : translate("Weighted round-robin");
+}
+
+export function connectorKindLabel(value: ConnectorKind): string {
+  return value === "openai_compatible"
+    ? translate("OpenAI-compatible")
+    : translate("Codex OAuth");
 }
 
 export function upstreamAuthKindLabel(value: UpstreamAuthKind): string {

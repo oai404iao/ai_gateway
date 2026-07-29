@@ -279,6 +279,11 @@ impl SessionAffinityMatch {
             ttl,
         }
     }
+
+    #[must_use]
+    pub(crate) const fn session_hash(&self) -> [u8; 32] {
+        self.session_hash
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1537,6 +1542,7 @@ mod tests {
                     id: *id,
                     name: id.to_string(),
                     api_format: "open_ai_chat_completions".into(),
+                    connector_kind: "openai_compatible".into(),
                     priority: *priority,
                     selection_strategy: (*group_strategy).into(),
                     enabled: true,
@@ -1684,6 +1690,7 @@ mod tests {
                 id: group_id,
                 name: "group".into(),
                 api_format: "open_ai_chat_completions".into(),
+                connector_kind: "openai_compatible".into(),
                 priority: 0,
                 selection_strategy: "weighted_random".into(),
                 enabled: true,

@@ -13,7 +13,7 @@ use axum::{
     Json,
     body::{Body, Bytes, to_bytes},
     http::{
-        HeaderMap, HeaderName, HeaderValue, Request, Response, StatusCode, Uri,
+        HeaderMap, HeaderName, HeaderValue, Request, Response, StatusCode,
         header::{
             ACCEPT_ENCODING, AUTHORIZATION, CONNECTION, CONTENT_ENCODING, CONTENT_LENGTH, HOST,
             PROXY_AUTHORIZATION,
@@ -32,14 +32,14 @@ use uuid::Uuid;
 use crate::{
     admission::{AdmissionError, AdmissionLease, AdmissionRuntime},
     application::{
-        AutomaticDisableService, ErrorKeywordMatcher, NoopRequestLogSink, RequestLogSink,
+        AutomaticDisableService, ConnectorAttemptError, ConnectorUnavailable, ErrorKeywordMatcher,
+        NoopRequestLogSink, RequestLogSink, UpstreamConnectorRegistry,
     },
     domain::{
         ApiFormat, ApiKeyPermission, AutomaticDisableSettings, AutomaticDisableTrigger,
         CompiledAdvancedBilling, CompiledApiKey, CompiledChannel, CompiledModelRule,
         MAX_REQUEST_RETRIES, ModelPriceSnapshot, RequestLogEvent, RequestLogOutcome,
         RequestLogSource, RequestProtocol, SessionAffinityKeySource, SessionAffinitySettings,
-        UpstreamAuth,
     },
     routing::{
         ChannelLease, RoutingRuntime, SelectionResult, SessionAffinityMatch,
@@ -69,6 +69,7 @@ pub struct ProxyService {
     routing: RoutingRuntime,
     admission: AdmissionRuntime,
     automatic_disable: Option<AutomaticDisableService>,
+    connectors: UpstreamConnectorRegistry,
     websocket_lifecycle: websocket::WebSocketLifecycle,
 }
 
@@ -185,8 +186,15 @@ impl ProxyService {
             routing,
             admission,
             automatic_disable,
+            connectors: UpstreamConnectorRegistry::default(),
             websocket_lifecycle: websocket::WebSocketLifecycle::new(),
         })
+    }
+
+    #[must_use]
+    pub fn with_connector_registry(mut self, connectors: UpstreamConnectorRegistry) -> Self {
+        self.connectors = connectors;
+        self
     }
 
     pub async fn proxy(
@@ -297,7 +305,7 @@ impl ProxyService {
         let mut current_rule = rule;
         let mut current_channel = channel;
         let mut current_channel_slot = channel_slot;
-        let current_session_affinity = selected_session_affinity;
+        let mut current_session_affinity = selected_session_affinity;
         let request_multiplier =
             request_billing_multiplier(current_rule.advanced_billing(), &original_body);
         let mut completion = CompletionGuard::new(
@@ -325,12 +333,67 @@ impl ProxyService {
         };
         let max_attempts = max_retries.saturating_add(1);
         let mut attempt = 1_u32;
-        let mut attempted_channel_slots = [usize::MAX; MAX_REQUEST_RETRIES as usize + 1];
-        let mut attempted_channel_count = 0_usize;
+        let mut attempted_channel_slots = AttemptedChannelSlots::new();
 
         loop {
-            attempted_channel_slots[attempted_channel_count] = current_channel_slot;
-            attempted_channel_count += 1;
+            attempted_channel_slots.push(current_channel_slot);
+            let affinity_hit = current_session_affinity
+                .as_ref()
+                .is_some_and(SessionAffinitySelection::cache_hit);
+            let prepared_attempt = match self.connectors.prepare(
+                &current_channel,
+                affinity_hit,
+                &parts.headers,
+                session_affinity
+                    .as_ref()
+                    .map(SessionAffinityMatch::session_hash),
+            ) {
+                Ok(attempt) => attempt,
+                Err(error) => {
+                    if affinity_hit {
+                        completion.set_preserve_affinity_on_failure(true);
+                        completion.finish(RequestOutcome::UpstreamUnavailable);
+                        return Err(ProxyError::sticky_connector_unavailable(error));
+                    }
+                    let retry_route = self.routing.select_with_affinity_excluding(
+                        &snapshot,
+                        &api_key,
+                        api_format,
+                        &parsed.model,
+                        session_affinity.clone(),
+                        attempted_channel_slots.as_slice(),
+                    );
+                    let SelectionResult::Selected(route) = retry_route else {
+                        completion.finish(RequestOutcome::UpstreamUnavailable);
+                        return Err(ProxyError::connector_unavailable(error));
+                    };
+                    let crate::routing::SelectedRoute {
+                        rule,
+                        channel,
+                        channel_slot,
+                        session_affinity: selected_session_affinity,
+                        lease,
+                    } = route;
+                    let request_billing_multiplier =
+                        request_billing_multiplier(rule.advanced_billing(), &original_body);
+                    completion.replace_route_before_dispatch(
+                        &rule,
+                        &channel,
+                        lease,
+                        self.automatic_disable.clone(),
+                        snapshot.system_settings().automatic_disable().clone(),
+                        selected_session_affinity.as_ref(),
+                        request_billing_multiplier,
+                    );
+                    current_rule = rule;
+                    current_channel = channel;
+                    current_channel_slot = channel_slot;
+                    current_session_affinity = selected_session_affinity;
+                    continue;
+                }
+            };
+            completion
+                .set_preserve_affinity_on_failure(prepared_attempt.preserves_affinity_on_failure());
             let transforms = current_channel.upstream_policy().effective_transforms();
             let body =
                 match rewrite_model_alias(original_body.clone(), &parsed.model, &current_rule) {
@@ -345,6 +408,18 @@ impl ProxyService {
                 Err(_) => {
                     completion.finish(RequestOutcome::ClientRequestError);
                     return Err(ProxyError::transform_failed());
+                }
+            };
+            let body = match prepared_attempt.adapt_body(body, parsed.request_protocol) {
+                Ok(body) => body,
+                Err(error) => {
+                    let error = ProxyError::connector_attempt(error);
+                    completion.finish(if error.status.is_client_error() {
+                        RequestOutcome::ClientRequestError
+                    } else {
+                        RequestOutcome::UpstreamUnavailable
+                    });
+                    return Err(error);
                 }
             };
 
@@ -362,16 +437,16 @@ impl ProxyService {
                 headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("identity"));
             }
 
-            let url = match upstream_url(&current_channel, &parts.uri) {
+            let url = match prepared_attempt.upstream_url(&current_channel, &parts.uri) {
                 Ok(value) => value,
                 Err(error) => {
                     completion.finish(RequestOutcome::UpstreamUnavailable);
-                    return Err(error);
+                    return Err(ProxyError::connector_attempt(error));
                 }
             };
-            if let Err(error) = inject_upstream_auth(&mut headers, &current_channel) {
+            if let Err(error) = prepared_attempt.inject_headers(&mut headers, &current_channel) {
                 completion.finish(RequestOutcome::UpstreamUnavailable);
-                return Err(error);
+                return Err(ProxyError::connector_attempt(error));
             }
             let upstream_policy = match ResolvedUpstreamPolicy::try_resolve(
                 &snapshot.system_settings().upstream_timeouts(),
@@ -423,16 +498,18 @@ impl ProxyService {
                 }
                 Err(failure) => {
                     failure.record_health(&mut completion);
-                    let retry_route = (attempt < max_attempts).then(|| {
-                        self.routing.select_with_affinity_excluding(
-                            &snapshot,
-                            &api_key,
-                            api_format,
-                            &parsed.model,
-                            session_affinity.clone(),
-                            &attempted_channel_slots[..attempted_channel_count],
-                        )
-                    });
+                    let retry_route = (prepared_attempt.allows_automatic_retry()
+                        && attempt < max_attempts)
+                        .then(|| {
+                            self.routing.select_with_affinity_excluding(
+                                &snapshot,
+                                &api_key,
+                                api_format,
+                                &parsed.model,
+                                session_affinity.clone(),
+                                attempted_channel_slots.as_slice(),
+                            )
+                        });
                     let Some(SelectionResult::Selected(route)) = retry_route else {
                         completion.finish(failure.outcome());
                         return Err(failure.proxy_error());
@@ -460,6 +537,7 @@ impl ProxyService {
                     current_rule = rule;
                     current_channel = channel;
                     current_channel_slot = channel_slot;
+                    current_session_affinity = selected_session_affinity;
                     attempt = attempt.saturating_add(1);
                     tracing::warn!(
                         event = "proxy_request_retry",
@@ -475,6 +553,8 @@ impl ProxyService {
                     continue;
                 }
             };
+
+            prepared_attempt.observe_response(upstream_response.status());
 
             return response_from_upstream(
                 upstream_response,
@@ -724,6 +804,62 @@ impl ProxyError {
             authenticate: false,
             retry_after: None,
         }
+    }
+
+    fn connector_attempt(error: ConnectorAttemptError) -> Self {
+        match error {
+            ConnectorAttemptError::ClientRequest {
+                message,
+                param,
+                code,
+            } => Self {
+                status: StatusCode::BAD_REQUEST,
+                message: message.to_owned(),
+                error_type: "invalid_request_error",
+                param: Some(param),
+                code: Some(code),
+                authenticate: false,
+                retry_after: None,
+            },
+            ConnectorAttemptError::InvalidTarget => Self {
+                status: StatusCode::BAD_GATEWAY,
+                message: "The selected upstream channel has an invalid target URL.".to_owned(),
+                error_type: "api_error",
+                param: None,
+                code: Some("invalid_upstream_url"),
+                authenticate: false,
+                retry_after: None,
+            },
+            ConnectorAttemptError::InvalidCredentials => Self {
+                status: StatusCode::BAD_GATEWAY,
+                message: "The selected upstream connector has invalid credentials.".to_owned(),
+                error_type: "api_error",
+                param: None,
+                code: Some("invalid_upstream_credentials"),
+                authenticate: false,
+                retry_after: None,
+            },
+        }
+    }
+
+    fn connector_unavailable(reason: ConnectorUnavailable) -> Self {
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message: "The selected upstream connector is currently unavailable.".to_owned(),
+            error_type: "api_error",
+            param: None,
+            code: Some(reason.code()),
+            authenticate: false,
+            retry_after: None,
+        }
+    }
+
+    fn sticky_connector_unavailable(reason: ConnectorUnavailable) -> Self {
+        let mut error = Self::connector_unavailable(reason);
+        error.message =
+            "The upstream connector pinned to this session is currently unavailable.".to_owned();
+        error.code = Some(reason.sticky_code());
+        error
     }
 
     fn response_header_timeout() -> Self {
@@ -999,52 +1135,18 @@ fn parse_bearer_token(headers: &HeaderMap) -> Result<&str, ProxyError> {
     Ok(token)
 }
 
-fn upstream_url(channel: &CompiledChannel, uri: &Uri) -> Result<reqwest::Url, ProxyError> {
-    let base = channel.base_url().as_str().trim_end_matches('/');
-    let query = uri
-        .query()
-        .map_or_else(String::new, |query| format!("?{query}"));
-    let target = format!("{base}{}{query}", uri.path());
-    reqwest::Url::parse(&target).map_err(|_| ProxyError {
-        status: StatusCode::BAD_GATEWAY,
-        message: "The selected upstream channel has an invalid target URL.".to_owned(),
-        error_type: "api_error",
-        param: None,
-        code: "invalid_upstream_url".into(),
-        authenticate: false,
-        retry_after: None,
-    })
+fn upstream_url(
+    channel: &CompiledChannel,
+    uri: &axum::http::Uri,
+) -> Result<reqwest::Url, ProxyError> {
+    super::connector::standard_upstream_url(channel, uri).map_err(ProxyError::connector_attempt)
 }
 
 fn inject_upstream_auth(
     headers: &mut HeaderMap,
     channel: &CompiledChannel,
 ) -> Result<(), ProxyError> {
-    let invalid = || ProxyError {
-        status: StatusCode::BAD_GATEWAY,
-        message: "The selected upstream channel has invalid credentials.".to_owned(),
-        error_type: "api_error",
-        param: None,
-        code: "invalid_upstream_credentials".into(),
-        authenticate: false,
-        retry_after: None,
-    };
-    match channel.upstream_auth() {
-        UpstreamAuth::None => {}
-        UpstreamAuth::Bearer(token) => {
-            headers.insert(
-                AUTHORIZATION,
-                HeaderValue::from_str(&format!("Bearer {token}")).map_err(|_| invalid())?,
-            );
-        }
-        UpstreamAuth::Header { name, value } => {
-            headers.insert(
-                name.clone(),
-                HeaderValue::from_str(value).map_err(|_| invalid())?,
-            );
-        }
-    }
-    Ok(())
+    super::connector::inject_standard_auth(headers, channel).map_err(ProxyError::connector_attempt)
 }
 
 fn forward_request_headers(headers: &HeaderMap) -> HeaderMap {
@@ -1375,6 +1477,44 @@ enum PreHeaderFailure {
     ResponseHeaderTimeout,
 }
 
+const INLINE_ATTEMPTED_CHANNELS: usize = MAX_REQUEST_RETRIES as usize + 1;
+
+struct AttemptedChannelSlots {
+    inline: [usize; INLINE_ATTEMPTED_CHANNELS],
+    len: usize,
+    overflow: Option<Vec<usize>>,
+}
+
+impl AttemptedChannelSlots {
+    const fn new() -> Self {
+        Self {
+            inline: [usize::MAX; INLINE_ATTEMPTED_CHANNELS],
+            len: 0,
+            overflow: None,
+        }
+    }
+
+    fn push(&mut self, channel_slot: usize) {
+        if let Some(slots) = &mut self.overflow {
+            slots.push(channel_slot);
+            return;
+        }
+        if self.len < self.inline.len() {
+            self.inline[self.len] = channel_slot;
+            self.len += 1;
+            return;
+        }
+        let mut slots = Vec::with_capacity(self.inline.len().saturating_mul(2));
+        slots.extend_from_slice(&self.inline);
+        slots.push(channel_slot);
+        self.overflow = Some(slots);
+    }
+
+    fn as_slice(&self) -> &[usize] {
+        self.overflow.as_deref().unwrap_or(&self.inline[..self.len])
+    }
+}
+
 impl PreHeaderFailure {
     const fn outcome(self) -> RequestOutcome {
         match self {
@@ -1528,6 +1668,7 @@ struct CompletionContext {
     sink: Arc<dyn RequestLogSink>,
     session_affinity_rule: Option<Arc<str>>,
     session_affinity_hit: Option<bool>,
+    preserve_affinity_on_failure: bool,
     attempts: u32,
 }
 
@@ -1593,6 +1734,7 @@ impl CompletionGuard {
                 session_affinity_rule: session_affinity
                     .map(|selection| Arc::from(selection.rule_name())),
                 session_affinity_hit: session_affinity.map(SessionAffinitySelection::cache_hit),
+                preserve_affinity_on_failure: false,
                 attempts: 1,
             }),
             lease: Some(lease),
@@ -1637,7 +1779,50 @@ impl CompletionGuard {
                 session_affinity.map(|selection| Arc::from(selection.rule_name()));
             context.session_affinity_hit =
                 session_affinity.map(SessionAffinitySelection::cache_hit);
+            context.preserve_affinity_on_failure = false;
             context.attempts = context.attempts.saturating_add(1);
+        }
+        self.lease = Some(lease);
+        self.automatic_disable = automatic_disable_context(
+            channel,
+            automatic_disable_service,
+            automatic_disable_settings,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn replace_route_before_dispatch(
+        &mut self,
+        rule: &CompiledModelRule,
+        channel: &CompiledChannel,
+        lease: ChannelLease,
+        automatic_disable_service: Option<AutomaticDisableService>,
+        automatic_disable_settings: AutomaticDisableSettings,
+        session_affinity: Option<&SessionAffinitySelection>,
+        request_billing_multiplier: Decimal,
+    ) {
+        if let Some(mut previous) = self.lease.take() {
+            previous.request_failed();
+        }
+        if let Some(context) = &mut self.context {
+            context.upstream_model = rule.upstream_model().to_owned();
+            context.model_rule_id = rule.id();
+            context.channel_group_id = channel.group_id();
+            context.channel_id = channel.id();
+            context.model_id = rule.upstream_model_id();
+            context.first_byte_at = None;
+            context.upstream_status = None;
+            context.client_visible_status = None;
+            context.usage = UsageCollector::new(context.api_format, false);
+            context.price_snapshot = rule.price_snapshot().clone();
+            context.advanced_billing = rule.advanced_billing().clone();
+            context.billing_multiplier = channel.billing_multiplier();
+            context.request_billing_multiplier = request_billing_multiplier;
+            context.session_affinity_rule =
+                session_affinity.map(|selection| Arc::from(selection.rule_name()));
+            context.session_affinity_hit =
+                session_affinity.map(SessionAffinitySelection::cache_hit);
+            context.preserve_affinity_on_failure = false;
         }
         self.lease = Some(lease);
         self.automatic_disable = automatic_disable_context(
@@ -1669,6 +1854,12 @@ impl CompletionGuard {
     fn set_client_visible_status(&mut self, status: u16) {
         if let Some(context) = &mut self.context {
             context.client_visible_status = Some(status);
+        }
+    }
+
+    fn set_preserve_affinity_on_failure(&mut self, preserve: bool) {
+        if let Some(context) = &mut self.context {
+            context.preserve_affinity_on_failure = preserve;
         }
     }
 
@@ -1750,7 +1941,7 @@ impl CompletionGuard {
         if let Some(lease) = &mut self.lease {
             if matches!(outcome, RequestOutcome::Succeeded) {
                 lease.request_succeeded();
-            } else if outcome.evicts_session_affinity() {
+            } else if outcome.evicts_session_affinity() && !context.preserve_affinity_on_failure {
                 lease.request_failed();
             }
         }
@@ -1859,24 +2050,23 @@ impl Drop for CompletionGuard {
 #[cfg(test)]
 mod tests {
     use axum::http::{HeaderMap, HeaderValue, StatusCode, header::CONNECTION};
-    use std::{collections::HashSet, sync::Arc, time::Duration};
+    use std::{sync::Arc, time::Duration};
 
     use regex::Regex;
-    use reqwest::{Url, header::HeaderName};
+    use reqwest::header::HeaderName;
     use rust_decimal::Decimal;
-    use uuid::Uuid;
 
     use super::{
-        forward_request_headers, forward_response_headers, inject_upstream_auth,
+        AttemptedChannelSlots, forward_request_headers, forward_response_headers,
         match_session_affinity, parse_bearer_token, response_has_no_body,
     };
     use crate::{
         application::billing::{calculate_cost, request_billing},
         application::usage::ResponseUsage,
         domain::{
-            AdvancedBilling, ApiFormat, CompiledAdvancedBilling, CompiledChannel, LongContextTier,
+            AdvancedBilling, ApiFormat, CompiledAdvancedBilling, LongContextTier,
             ModelPriceSnapshot, RequestBillingMultiplier, RequestPriceSnapshot, RequestUsage,
-            SessionAffinityKeySource, SessionAffinityRule, SessionAffinitySettings, UpstreamAuth,
+            SessionAffinityKeySource, SessionAffinityRule, SessionAffinitySettings,
         },
     };
     use serde_json::json;
@@ -1908,6 +2098,15 @@ mod tests {
         );
 
         assert!(parse_bearer_token(&headers).is_err());
+    }
+
+    #[test]
+    fn attempted_channel_slots_spill_only_after_the_inline_retry_capacity() {
+        let mut slots = AttemptedChannelSlots::new();
+        for slot in 0..20 {
+            slots.push(slot);
+        }
+        assert_eq!(slots.as_slice(), (0..20).collect::<Vec<_>>());
     }
 
     #[test]
@@ -2007,26 +2206,6 @@ mod tests {
         assert!(response_has_no_body(StatusCode::NOT_MODIFIED));
         assert!(response_has_no_body(StatusCode::CONTINUE));
         assert!(!response_has_no_body(StatusCode::OK));
-    }
-
-    #[test]
-    fn injects_a_configured_custom_upstream_auth_header() {
-        let channel = CompiledChannel::new(
-            Uuid::new_v4(),
-            Uuid::new_v4(),
-            ApiFormat::OpenAiChatCompletions,
-            Url::parse("https://example.test").unwrap(),
-            1,
-            UpstreamAuth::Header {
-                name: HeaderName::from_static("x-api-key"),
-                value: Arc::from("upstream-secret"),
-            },
-            HashSet::new(),
-        );
-        let mut headers = HeaderMap::new();
-        inject_upstream_auth(&mut headers, &channel).unwrap();
-        assert_eq!(headers.get("x-api-key").unwrap(), "upstream-secret");
-        assert!(headers.get("authorization").is_none());
     }
 
     #[test]

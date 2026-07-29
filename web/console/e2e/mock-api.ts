@@ -119,6 +119,51 @@ const E2E_SESSIONS = [
 ];
 
 export const E2E_API_KEY_SECRET = "sk-e2e-retrievable-api-key";
+export const E2E_CODEX_GROUP_ID = "00000000-0000-0000-0000-00000000c001";
+export const E2E_CODEX_CREDENTIAL_ID =
+  "00000000-0000-0000-0000-00000000c002";
+
+const E2E_CODEX_GROUP = {
+  id: E2E_CODEX_GROUP_ID,
+  name: "Codex subscriptions",
+  api_format: "open_ai_responses",
+  connector_kind: "codex_oauth",
+  priority: 0,
+  selection_strategy: "weighted_random",
+  enabled: true,
+  updated_at: "2026-07-29T12:00:00.000Z",
+};
+
+const E2E_CODEX_CREDENTIAL = {
+  id: E2E_CODEX_CREDENTIAL_ID,
+  channel_group_id: E2E_CODEX_GROUP_ID,
+  label: "Personal Plus",
+  email: "codex@example.test",
+  account_id: "account-123",
+  plan_type: "plus",
+  is_fedramp: false,
+  access_token_expires_at: "2026-07-29T15:00:00.000Z",
+  last_refreshed_at: "2026-07-29T12:00:00.000Z",
+  quota_threshold_percent: 95,
+  runtime_status: "draining",
+  quota_allowed: true,
+  quota_limit_reached: false,
+  primary_used_percent: 96,
+  primary_window_seconds: 10_800,
+  primary_reset_at: "2026-07-29T15:00:00.000Z",
+  secondary_used_percent: null,
+  secondary_window_seconds: null,
+  secondary_reset_at: null,
+  quota_checked_at: "2026-07-29T12:00:00.000Z",
+  last_error_code: null,
+  last_error_summary: null,
+  proxy_id: null,
+  weight: 100,
+  enabled: true,
+  available_models: ["gpt-5-codex"],
+  created_at: "2026-07-29T12:00:00.000Z",
+  updated_at: "2026-07-29T12:00:00.000Z",
+};
 
 const E2E_COST_STATISTICS = {
   started_at: "2026-07-01T00:00:00.000Z",
@@ -343,23 +388,28 @@ const E2E_SYSTEM_REQUEST_LOG = {
 
 export async function mockConsoleApi(page: Page): Promise<void> {
   let websocketEnabled = false;
+  let authenticated = false;
   await page.route("**/console/v1/**", (route: Route) => {
     const url = new URL(route.request().url());
     const method = route.request().method();
     const path = url.pathname.replace(/^.*console\/v1/, "/console/v1");
 
     if (path === "/console/v1/auth/login" && method === "POST") {
-      // The SPA stores the access_token from the response body; the HttpOnly
-      // refresh cookie is irrelevant here because we fulfill the refresh route
-      // below unconditionally.
+      // The SPA stores the access token from the response body. This in-memory
+      // flag stands in for the HttpOnly refresh cookie after a full reload.
+      authenticated = true;
       return route.fulfill({ status: 200, json: ADMIN_PROFILE });
     }
     if (path === "/console/v1/auth/register" && method === "POST") {
+      authenticated = true;
       return route.fulfill({ status: 200, json: ADMIN_PROFILE });
     }
     if (path === "/console/v1/auth/refresh" && method === "POST") {
-      // Start unauthenticated so the login page renders; the login POST
-      // below establishes the session.
+      if (authenticated) {
+        return route.fulfill({ status: 200, json: ADMIN_PROFILE });
+      }
+      // Start unauthenticated so the login page renders; the login or
+      // registration POST above establishes the mocked refresh session.
       return route.fulfill({
         status: 401,
         json: { error: "Unauthorized" },
@@ -466,6 +516,15 @@ export async function mockConsoleApi(page: Page): Promise<void> {
     if (path === "/console/v1/api-key-policies" && method === "GET") {
       return route.fulfill({ status: 200, json: [E2E_API_KEY_POLICY] });
     }
+    if (path === "/console/v1/models" && method === "GET") {
+      return route.fulfill({ status: 200, json: [] });
+    }
+    if (path === "/console/v1/network/proxies" && method === "GET") {
+      return route.fulfill({ status: 200, json: [] });
+    }
+    if (path === "/console/v1/transforms/templates" && method === "GET") {
+      return route.fulfill({ status: 200, json: [] });
+    }
     if (path === "/console/v1/users/batch" && method === "POST") {
       return route.fulfill({
         status: 200,
@@ -529,6 +588,33 @@ export async function mockConsoleApi(page: Page): Promise<void> {
     }
     if (path === "/console/v1/system/load" && method === "GET") {
       return route.fulfill({ status: 200, json: E2E_SYSTEM_LOAD });
+    }
+    if (
+      path === `/console/v1/routing/channel-groups/${E2E_CODEX_GROUP_ID}` &&
+      method === "GET"
+    ) {
+      return route.fulfill({
+        status: 200,
+        headers: { ETag: `"${E2E_CODEX_GROUP.updated_at}"` },
+        json: E2E_CODEX_GROUP,
+      });
+    }
+    if (
+      path ===
+        `/console/v1/providers/codex-oauth/channel-groups/${E2E_CODEX_GROUP_ID}/credentials` &&
+      method === "GET"
+    ) {
+      return route.fulfill({
+        status: 200,
+        json: [E2E_CODEX_CREDENTIAL],
+      });
+    }
+    if (
+      path ===
+        `/console/v1/providers/codex-oauth/credentials/${E2E_CODEX_CREDENTIAL_ID}/quota/refresh` &&
+      method === "POST"
+    ) {
+      return route.fulfill({ status: 204 });
     }
     if (path === "/console/v1/routing/channel-groups" && method === "GET") {
       return route.fulfill({ status: 200, json: [] });

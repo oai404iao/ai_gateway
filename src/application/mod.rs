@@ -4,6 +4,8 @@ mod auth;
 mod billing;
 mod channel_automation;
 mod channel_models;
+mod codex;
+mod connector;
 mod control_plane;
 mod model_sync;
 mod proxy;
@@ -24,6 +26,13 @@ pub use channel_models::{
     ChannelModelDiscoveryError, ChannelModelDiscoveryInput, ChannelModelDiscoveryResponse,
     ChannelModelDiscoveryService,
 };
+pub use codex::{
+    CODEX_ORIGINATOR, CodexConnectorError, CodexConnectorService, CodexCredentialRuntime,
+    CodexCredentialUnavailable, CodexOauthCompleteInput, CodexOauthStartResponse,
+    CompiledCodexCredential, codex_user_agent,
+};
+pub use connector::UpstreamConnectorRegistry;
+pub(crate) use connector::{ConnectorAttemptError, ConnectorUnavailable};
 pub use control_plane::{
     ChannelBatchUpdateResult, ControlPlaneCoordinator, ControlPlaneError, ModelSyncResult,
     UserBatchUpdateResult,

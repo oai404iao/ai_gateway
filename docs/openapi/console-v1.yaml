@@ -44,6 +44,7 @@ tags:
   - name: ChannelGroups
   - name: Channels
   - name: ModelRules
+  - name: CodexOAuth
   - name: Proxies
   - name: Templates
   - name: RequestLogs
@@ -1433,6 +1434,183 @@ paths:
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/Unprocessable" }
 
+  /providers/codex-oauth/channel-groups/{id}/credentials:
+    get:
+      tags: [CodexOAuth]
+      operationId: listCodexOAuthCredentials
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "200":
+          description: Codex OAuth credentials managed as channels in this connector group.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/CodexCredentialView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      tags: [CodexOAuth]
+      operationId: importCodexOAuthCredential
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CodexCredentialImportInput" }
+      responses:
+        "200":
+          description: Existing managed credential reauthorized in place.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "201":
+          description: Credential validated and its managed channel created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+        "502": { $ref: "#/components/responses/BadGateway" }
+        "504": { $ref: "#/components/responses/GatewayTimeout" }
+
+  /providers/codex-oauth/channel-groups/{id}/oauth/flows:
+    post:
+      tags: [CodexOAuth]
+      operationId: startCodexOAuthFlow
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CodexOauthStartInput" }
+      responses:
+        "201":
+          description: One-time PKCE flow created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CodexOauthStartResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /providers/codex-oauth/oauth/flows/{id}/complete:
+    post:
+      tags: [CodexOAuth]
+      operationId: completeCodexOAuthFlow
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CodexOauthCompleteInput" }
+      responses:
+        "200":
+          description: Existing managed credential reauthorized in place.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "201":
+          description: Authorization code exchanged and managed credential created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "410":
+          description: OAuth flow expired or was already consumed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorBody" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+        "502": { $ref: "#/components/responses/BadGateway" }
+        "504": { $ref: "#/components/responses/GatewayTimeout" }
+
+  /providers/codex-oauth/credentials/{id}:
+    get:
+      tags: [CodexOAuth]
+      operationId: getCodexOAuthCredential
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "200":
+          description: Codex OAuth credential metadata and current quota snapshot.
+          headers:
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CodexCredentialView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [CodexOAuth]
+      operationId: updateCodexOAuthCredential
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CodexCredentialUpdateInput" }
+      responses:
+        "200":
+          description: Credential routing settings updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /providers/codex-oauth/credentials/{id}/refresh:
+    post:
+      tags: [CodexOAuth]
+      operationId: refreshCodexOAuthCredential
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "204": { description: Credential refresh completed. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+        "502": { $ref: "#/components/responses/BadGateway" }
+        "504": { $ref: "#/components/responses/GatewayTimeout" }
+
+  /providers/codex-oauth/credentials/{id}/quota/refresh:
+    post:
+      tags: [CodexOAuth]
+      operationId: refreshCodexOAuthQuota
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "204": { description: Quota snapshot refreshed. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+        "502": { $ref: "#/components/responses/BadGateway" }
+        "504": { $ref: "#/components/responses/GatewayTimeout" }
+
   /network/proxies:
     get:
       tags: [Proxies]
@@ -2010,6 +2188,11 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/ErrorBody" }
+    GatewayTimeout:
+      description: Upstream operation timed out.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorBody" }
 
   schemas:
     ErrorBody:
@@ -2027,6 +2210,9 @@ components:
     SelectionStrategy:
       type: string
       enum: [weighted_random, weighted_round_robin]
+    ConnectorKind:
+      type: string
+      enum: [openai_compatible, codex_oauth]
     UpstreamAuthKind:
       type: string
       enum: [none, bearer, header]
@@ -2830,11 +3016,12 @@ components:
 
     ChannelGroupView:
       type: object
-      required: [id, name, api_format, priority, selection_strategy, enabled, updated_at]
+      required: [id, name, api_format, connector_kind, priority, selection_strategy, enabled, updated_at]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
         api_format: { $ref: "#/components/schemas/ApiFormat" }
+        connector_kind: { $ref: "#/components/schemas/ConnectorKind" }
         priority: { type: integer }
         selection_strategy: { $ref: "#/components/schemas/SelectionStrategy" }
         enabled: { type: boolean }
@@ -2843,7 +3030,7 @@ components:
     ChannelView:
       type: object
       required:
-        [id, channel_group_id, api_format, name, base_url, enabled, supports_websocket,
+        [id, channel_group_id, api_format, connector_kind, provider_managed, name, base_url, enabled, supports_websocket,
          status_statistics_enabled, auto_disabled, auto_disabled_reason, auto_disable_allowed,
          weight, billing_multiplier, proxy_id,
          config_template_id, connect_timeout_ms, response_header_timeout_ms,
@@ -2853,6 +3040,10 @@ components:
         id: { type: string, format: uuid }
         channel_group_id: { type: string, format: uuid }
         api_format: { $ref: "#/components/schemas/ApiFormat" }
+        connector_kind: { $ref: "#/components/schemas/ConnectorKind" }
+        provider_managed:
+          type: boolean
+          description: Whether this channel is created and edited through a connector-specific management API.
         name: { type: string }
         base_url: { type: string }
         enabled: { type: boolean }
@@ -2902,6 +3093,111 @@ components:
               type: string
               nullable: true
               description: Stored upstream credential returned for administrator review and editing.
+
+    CodexCredentialStatus:
+      type: string
+      enum: [active, draining, unavailable, disabled]
+
+    CodexCredentialView:
+      type: object
+      required:
+        [id, channel_group_id, label, email, account_id, plan_type, is_fedramp,
+         access_token_expires_at, last_refreshed_at, quota_threshold_percent,
+         runtime_status, quota_allowed, quota_limit_reached, primary_used_percent,
+         primary_window_seconds, primary_reset_at, secondary_used_percent,
+         secondary_window_seconds, secondary_reset_at, quota_checked_at,
+         last_error_code, last_error_summary, proxy_id, weight, enabled,
+         available_models, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        channel_group_id: { type: string, format: uuid }
+        label: { type: string }
+        email: { type: string, nullable: true }
+        account_id: { type: string }
+        plan_type: { type: string, nullable: true }
+        is_fedramp: { type: boolean }
+        access_token_expires_at: { $ref: "#/components/schemas/DateTimeNullable" }
+        last_refreshed_at: { $ref: "#/components/schemas/DateTime" }
+        quota_threshold_percent: { type: integer, minimum: 1, maximum: 100 }
+        runtime_status: { $ref: "#/components/schemas/CodexCredentialStatus" }
+        quota_allowed: { type: boolean, nullable: true }
+        quota_limit_reached: { type: boolean, nullable: true }
+        primary_used_percent: { type: integer, minimum: 0, maximum: 100, nullable: true }
+        primary_window_seconds: { type: integer, minimum: 1, nullable: true }
+        primary_reset_at: { $ref: "#/components/schemas/DateTimeNullable" }
+        secondary_used_percent: { type: integer, minimum: 0, maximum: 100, nullable: true }
+        secondary_window_seconds: { type: integer, minimum: 1, nullable: true }
+        secondary_reset_at: { $ref: "#/components/schemas/DateTimeNullable" }
+        quota_checked_at: { $ref: "#/components/schemas/DateTimeNullable" }
+        last_error_code: { type: string, nullable: true }
+        last_error_summary: { type: string, nullable: true }
+        proxy_id: { type: string, format: uuid, nullable: true }
+        weight: { type: integer, minimum: 1 }
+        enabled: { type: boolean }
+        available_models:
+          type: array
+          items: { type: string }
+        created_at: { $ref: "#/components/schemas/DateTime" }
+        updated_at: { $ref: "#/components/schemas/DateTime" }
+
+    CodexCredentialSettings:
+      type: object
+      required: [label]
+      properties:
+        label: { type: string, minLength: 1, maxLength: 100 }
+        proxy_id: { type: string, format: uuid, nullable: true }
+        weight: { type: integer, minimum: 1, default: 100 }
+        quota_threshold_percent:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 95
+
+    CodexOauthStartInput:
+      allOf:
+        - $ref: "#/components/schemas/CodexCredentialSettings"
+
+    CodexOauthStartResponse:
+      type: object
+      required: [flow_id, authorization_url, expires_at]
+      properties:
+        flow_id: { type: string, format: uuid }
+        authorization_url: { type: string, format: uri }
+        expires_at: { $ref: "#/components/schemas/DateTime" }
+
+    CodexOauthCompleteInput:
+      type: object
+      required: [callback_url]
+      properties:
+        callback_url:
+          type: string
+          format: uri
+          description: Full `http://localhost:1455/auth/callback?...` URL copied after browser authorization.
+
+    CodexCredentialImportInput:
+      allOf:
+        - $ref: "#/components/schemas/CodexCredentialSettings"
+        - type: object
+          required: [id_token, access_token, refresh_token]
+          properties:
+            id_token: { type: string, minLength: 1, writeOnly: true }
+            access_token: { type: string, minLength: 1, writeOnly: true }
+            refresh_token: { type: string, minLength: 1, writeOnly: true }
+            account_id:
+              type: string
+              maxLength: 300
+              nullable: true
+              description: Optional fallback when the ID token has no account claim; mismatches are rejected.
+
+    CodexCredentialUpdateInput:
+      type: object
+      required: [label, enabled, proxy_id, weight, quota_threshold_percent]
+      properties:
+        label: { type: string, minLength: 1, maxLength: 100 }
+        enabled: { type: boolean }
+        proxy_id: { type: string, format: uuid, nullable: true }
+        weight: { type: integer, minimum: 1 }
+        quota_threshold_percent: { type: integer, minimum: 1, maximum: 100 }
 
     ModelRuleView:
       type: object
@@ -3841,10 +4137,11 @@ components:
 
     ChannelGroupInput:
       type: object
-      required: [name, api_format, priority, selection_strategy, enabled]
+      required: [name, api_format, connector_kind, priority, selection_strategy, enabled]
       properties:
         name: { type: string }
         api_format: { $ref: "#/components/schemas/ApiFormat" }
+        connector_kind: { $ref: "#/components/schemas/ConnectorKind" }
         priority: { type: integer, minimum: 0 }
         selection_strategy: { $ref: "#/components/schemas/SelectionStrategy" }
         enabled: { type: boolean }

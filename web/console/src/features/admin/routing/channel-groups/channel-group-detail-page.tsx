@@ -25,13 +25,26 @@ import {
   useUpdateChannelGroup,
 } from "@/features/admin/api";
 import { ApiError, controlPlaneMutationErrorMessage } from "@/api/errors";
-import type { ApiFormat, ChannelGroupInput, SelectionStrategy } from "@/api/types";
-import { API_FORMATS, SELECTION_STRATEGIES, apiFormatLabel, selectionStrategyLabel } from "@/lib/permissions";
+import type {
+  ApiFormat,
+  ChannelGroupInput,
+  ConnectorKind,
+  SelectionStrategy,
+} from "@/api/types";
+import {
+  API_FORMATS,
+  CONNECTOR_KINDS,
+  SELECTION_STRATEGIES,
+  apiFormatLabel,
+  connectorKindLabel,
+  selectionStrategyLabel,
+} from "@/lib/permissions";
 import { useI18n } from "@/app/i18n";
 
 const schema = z.object({
   name: z.string().min(1, "Name is required.").max(100),
   api_format: z.enum(["open_ai_chat_completions", "open_ai_responses"]),
+  connector_kind: z.enum(["openai_compatible", "codex_oauth"]),
   priority: z.number().int().min(0, "Priority must be zero or greater."),
   selection_strategy: z.enum(["weighted_random", "weighted_round_robin"]),
   enabled: z.boolean(),
@@ -42,6 +55,7 @@ type FormState = z.infer<typeof schema>;
 const empty: FormState = {
   name: "",
   api_format: "open_ai_chat_completions",
+  connector_kind: "openai_compatible",
   priority: 1,
   selection_strategy: "weighted_random",
   enabled: true,
@@ -64,6 +78,7 @@ export function ChannelGroupDetailPage() {
       setState({
         name: data.data.name,
         api_format: data.data.api_format,
+        connector_kind: data.data.connector_kind,
         priority: data.data.priority,
         selection_strategy: data.data.selection_strategy,
         enabled: data.data.enabled,
@@ -84,6 +99,7 @@ export function ChannelGroupDetailPage() {
     const input: ChannelGroupInput = {
       name: parsed.data.name,
       api_format: parsed.data.api_format as ApiFormat,
+      connector_kind: parsed.data.connector_kind as ConnectorKind,
       priority: parsed.data.priority,
       selection_strategy: parsed.data.selection_strategy as SelectionStrategy,
       enabled: parsed.data.enabled,
@@ -133,6 +149,10 @@ export function ChannelGroupDetailPage() {
               <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <DetailField label={t("Priority")} value={data.data.priority} />
                 <DetailField
+                  label={t("Connector")}
+                  value={connectorKindLabel(data.data.connector_kind)}
+                />
+                <DetailField
                   label={t("Strategy")}
                   value={selectionStrategyLabel(data.data.selection_strategy)}
                 />
@@ -164,9 +184,40 @@ export function ChannelGroupDetailPage() {
                   {fieldError("name") ? <FieldError>{fieldError("name")}</FieldError> : null}
                 </Field>
                 <Field>
+                  <FieldLabel>{t("Connector")}</FieldLabel>
+                  <Select
+                    value={state.connector_kind}
+                    disabled={!isNew}
+                    onValueChange={(value) => {
+                      const connector = value as ConnectorKind;
+                      patch({
+                        connector_kind: connector,
+                        api_format:
+                          connector === "codex_oauth"
+                            ? "open_ai_responses"
+                            : state.api_format,
+                      });
+                    }}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectGroup>
+                        {CONNECTOR_KINDS.map((connector) => (
+                          <SelectItem key={connector} value={connector}>
+                            {connectorKindLabel(connector)}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                </Field>
+                <Field>
                   <FieldLabel>{t("API format")}</FieldLabel>
                   <Select
                     value={state.api_format}
+                    disabled={state.connector_kind === "codex_oauth"}
                     onValueChange={(value) => patch({ api_format: value as ApiFormat })}
                   >
                     <SelectTrigger>
@@ -234,6 +285,15 @@ export function ChannelGroupDetailPage() {
                 {submitting ? <Spinner data-icon="inline-start" /> : null}
                 {isNew ? t("Create group") : t("Save group")}
               </Button>
+              {!isNew && data?.data.connector_kind === "codex_oauth" ? (
+                <Button
+                  className="self-start"
+                  variant="outline"
+                  onClick={() => navigate(`/admin/providers/codex-oauth/${data.data.id}`)}
+                >
+                  {t("Manage Codex credentials")}
+                </Button>
+              ) : null}
             </div>
           </CardContent>
         </Card>

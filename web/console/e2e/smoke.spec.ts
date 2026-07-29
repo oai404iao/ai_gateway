@@ -1,5 +1,10 @@
 import { expect, test } from "@playwright/test";
-import { E2E_API_KEY_SECRET, mockConsoleApi } from "./mock-api";
+import {
+  E2E_API_KEY_SECRET,
+  E2E_CODEX_CREDENTIAL_ID,
+  E2E_CODEX_GROUP_ID,
+  mockConsoleApi,
+} from "./mock-api";
 
 test.describe("Console SPA smoke", () => {
   test("login page renders and a successful login reaches the account shell", async ({
@@ -149,6 +154,43 @@ test.describe("Console SPA smoke", () => {
     const request = await requestPromise;
     expect(request.postDataJSON()).toEqual({ websocket_enabled: true });
     await expect(page.getByText("Personal settings saved.")).toBeVisible();
+  });
+
+  test("administrators can inspect and refresh a Codex OAuth credential", async ({
+    page,
+  }) => {
+    await mockConsoleApi(page);
+    await page.goto("/login");
+    await page.getByLabel(/email/i).fill("admin@example.com");
+    await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
+    await page.getByRole("button", { name: /sign in/i }).click();
+    await expect(page).toHaveURL(/\/account/);
+    await page.evaluate((path) => {
+      window.history.pushState({}, "", path);
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    }, `/admin/providers/codex-oauth/${E2E_CODEX_GROUP_ID}`);
+    await expect(page).toHaveURL(
+      new RegExp(`/admin/providers/codex-oauth/${E2E_CODEX_GROUP_ID}$`),
+    );
+
+    await expect(
+      page.getByRole("heading", { name: "Codex subscriptions" }),
+    ).toBeVisible();
+    await expect(page.getByText("Personal Plus")).toBeVisible();
+    await expect(page.getByText("96% used")).toBeVisible();
+    await expect(page.getByText("Draining", { exact: true })).toBeVisible();
+
+    const refresh = page.waitForRequest(
+      (request) =>
+        request.url().endsWith(
+          `/console/v1/providers/codex-oauth/credentials/${E2E_CODEX_CREDENTIAL_ID}/quota/refresh`,
+        ) && request.method() === "POST",
+    );
+    await page
+      .getByRole("button", { name: "Refresh quota for Personal Plus" })
+      .click();
+    await refresh;
+    await expect(page.getByText("Quota refreshed.")).toBeVisible();
   });
 
   test("all users can open the Channel status page", async ({ page }) => {

@@ -106,6 +106,69 @@ verification_key_path = "./config/console-jwt-public.pem"
 
 数据面在认证后、读取请求体前执行 RPM、并发与已结算软额度预检查。请求体只有在模型别名或 JSON 变换启用时才重新序列化；响应默认逐块流式转发，SSE 变换按事件边界执行且不缓冲整条流。连接失败、连接超时或等待响应头超时时，可以按系统设置在尚未尝试过的其他健康渠道上故障转移；一旦收到上游响应头或向客户端发送任何响应字节，绝不重试或切换渠道。
 
+### Codex OAuth Connect
+
+管理员可以把 ChatGPT Codex 订阅凭证作为 Responses 渠道池接入，而不增加 sidecar 或第二个
+转发服务。客户端仍调用标准 `POST /v1/responses`；控制面用
+`connector_kind = codex_oauth` 区分特殊上游方式，`api_format` 仍是
+`open_ai_responses`。
+
+配置步骤：
+
+1. 在“渠道”页新建 Channel Group，Connector 选择 **Codex OAuth**。该选择会固定
+   Responses 格式，保存后 Connector 类型不可修改。
+2. 从渠道组详情或渠道列表进入
+   `/admin/providers/codex-oauth/<channel-group-id>`。
+3. 选择一种凭证添加方式：
+   - **Connect account**：填写 label、可选 outbound proxy、weight 和 quota threshold，
+     打开 PKCE Authorization URL；授权后浏览器会落到不可达的
+     `http://localhost:1455/auth/callback?...`，复制完整地址回 Console 完成交换。
+   - **Import tokens**：提交 ID token、access token、refresh token 和可选
+     account ID。网关先调用 Codex models 接口验证凭证，再创建 managed channel。
+     同一 Channel Group 中再次连接或导入相同 account ID 会原位重新授权已有凭证，
+     不会创建第二个 channel。
+4. 为返回的 Codex model slug 创建或启用本地 model，并创建 Responses model rule，
+   将该 Channel Group 作为候选。
+5. 确保调用方 API Key 允许 Responses、`proxy` 权限和这个 Channel Group。
+6. 需要跨请求固定同一订阅账户时，在系统设置中启用 Session affinity，并为目标模型配置稳定
+   key source，例如请求 Header `session-id` 或 JSON Pointer `/prompt_cache_key`。
+
+每个凭证自动创建一个 provider-managed channel。普通 Channel 详情、批量编辑和 model discovery
+接口不能修改该 channel；label、enable、proxy、weight 和 quota threshold 必须在 Codex 凭证页维护。
+每个凭证的 outbound proxy 独立生效，并由现有 reqwest client registry 按网络与超时策略复用。
+凭证 enable 状态由 Connector 运行时持有；底层 managed channel 保留为路由壳，使已绑定 Session
+在凭证关闭后仍能命中原账户并 fail closed，而不是静默切换到另一个账户。
+
+凭证状态含义：
+
+- `active`：可接收新 Session；
+- `draining`：primary/secondary quota 用量达到 threshold；只允许已命中 affinity 的既有
+  Session；
+- `unavailable`：quota 不允许、额度耗尽或 refresh token 永久失效；
+- `disabled`：管理员关闭。
+
+永久 refresh 失败会设置持久的重新授权状态；后续 quota 成功或普通设置编辑不会把该凭证重新置为
+`active`。重新执行 OAuth 或导入同一 account ID 的新 Token 会复用原 managed channel 并清除该状态。
+
+后台 worker 每分钟检查凭证；access token 接近过期时刷新，quota 默认每 5 分钟重新读取。手动
+refresh token / quota 也可从凭证页执行。同一凭证的 refresh 在实例内和 PostgreSQL 行锁层面串行，
+并核对 generation，避免 rotating refresh token 被并发重复使用。上游请求返回 `401` 时会触发一次
+generation 去重的后台刷新。
+
+Codex HTTP Connector 当前只接受 `stream: true` 的 Responses SSE 请求，强制上游
+`store: false`，并拒绝非空 `previous_response_id`。它不支持 Responses WebSocket；普通
+Responses WebSocket 选路会自动排除这些 managed channels。首次派发前凭证不可用时，未命中
+affinity 的请求可以换到同组其他凭证；请求一旦发送到 Codex，不做跨凭证自动重试。
+已命中 affinity 的凭证处于 `unavailable`、`disabled` 或 Token 过期时，会在 affinity TTL
+内持续 fail closed，不会因一次失败删除绑定后改用其他订阅账户。
+
+客户端已有的合法 `session-id` / `thread-id` 会转发。缺少时，匹配 Session affinity 的请求会从
+不可逆 session hash 派生稳定 opaque UUID；未匹配 affinity 时仅为本次请求生成 opaque UUID。
+
+OAuth token 不会由 Console API 返回，也不会进入 audit/debug 输出；当前仍与普通 upstream API key
+一样依赖受保护的 PostgreSQL、备份和主机访问边界，未额外实施列级静态加密。外部接口与限制见
+[Codex OAuth 与订阅后端接入参考](../reference/codex-oauth-connect.md)。
+
 ### Responses WebSocket
 
 WebSocket Upgrade 在 HTTP 握手阶段验证 Gateway API Key 和 Responses `proxy`

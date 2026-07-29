@@ -9,11 +9,12 @@ use uuid::Uuid;
 use crate::{
     domain::AutomaticDisableTrigger,
     persistence::{
-        ApiHostsView, ChannelBatchUpdateInput, ConsoleApiKey, ConsoleAuditLog,
-        ControlPlaneChannelDetail, ControlPlaneConfigTemplateDetail, ControlPlaneLists,
-        ControlPlaneMutation, ControlPlaneRepository, MutationResult, RepositoryError,
-        SelfApiKeyCreate, SelfApiKeyOptions, SelfApiKeyUpdate, SyncedModelInput,
-        SystemSettingsView, UserBatchUpdateInput, UserSettingsInput, UserSettingsView,
+        ApiHostsView, ChannelBatchUpdateInput, CodexCredentialCreate, CodexCredentialUpdateInput,
+        ConsoleApiKey, ConsoleAuditLog, ControlPlaneChannelDetail,
+        ControlPlaneConfigTemplateDetail, ControlPlaneLists, ControlPlaneMutation,
+        ControlPlaneRepository, MutationResult, RepositoryError, SelfApiKeyCreate,
+        SelfApiKeyOptions, SelfApiKeyUpdate, SyncedModelInput, SystemSettingsView,
+        UserBatchUpdateInput, UserSettingsInput, UserSettingsView,
     },
     routing::{
         PassiveHealthPolicy, RoutingRuntime, SessionAffinityCacheClearResult,
@@ -262,6 +263,73 @@ impl ControlPlaneCoordinator {
         Ok(ChannelBatchUpdateResult {
             updated_ids: mutations.into_iter().map(|mutation| mutation.id).collect(),
             correlation_id,
+        })
+    }
+
+    pub async fn create_codex_credential(
+        &self,
+        actor: Uuid,
+        input: CodexCredentialCreate,
+        oauth_flow_id: Option<Uuid>,
+    ) -> Result<MutationResult, ControlPlaneError> {
+        let _guard = self.serial.lock().await;
+        let mut transaction = self.repository.begin_serializable().await?;
+        if !self
+            .repository
+            .active_admin_exists(&mut transaction, actor)
+            .await?
+        {
+            return Err(ControlPlaneError::InvalidActor);
+        }
+        let result = self
+            .repository
+            .insert_codex_credential(&mut transaction, input, oauth_flow_id)
+            .await?;
+        let candidate = self.compile_transaction(&mut transaction).await?;
+        self.validate_candidate(&candidate)?;
+        let correlation_id = Uuid::new_v4();
+        self.repository
+            .insert_audit(&mut transaction, actor, &result, correlation_id)
+            .await?;
+        transaction.commit().await.map_err(RepositoryError::from)?;
+        self.publish(candidate);
+        Ok(MutationResult {
+            correlation_id: Some(correlation_id),
+            ..result
+        })
+    }
+
+    pub async fn update_codex_credential(
+        &self,
+        actor: Uuid,
+        channel_id: Uuid,
+        input: CodexCredentialUpdateInput,
+        expected_updated_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<MutationResult, ControlPlaneError> {
+        let _guard = self.serial.lock().await;
+        let mut transaction = self.repository.begin_serializable().await?;
+        if !self
+            .repository
+            .active_admin_exists(&mut transaction, actor)
+            .await?
+        {
+            return Err(ControlPlaneError::InvalidActor);
+        }
+        let result = self
+            .repository
+            .update_codex_credential(&mut transaction, channel_id, input, expected_updated_at)
+            .await?;
+        let candidate = self.compile_transaction(&mut transaction).await?;
+        self.validate_candidate(&candidate)?;
+        let correlation_id = Uuid::new_v4();
+        self.repository
+            .insert_audit(&mut transaction, actor, &result, correlation_id)
+            .await?;
+        transaction.commit().await.map_err(RepositoryError::from)?;
+        self.publish(candidate);
+        Ok(MutationResult {
+            correlation_id: Some(correlation_id),
+            ..result
         })
     }
 

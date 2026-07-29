@@ -37,6 +37,10 @@ separate management Console for users and administrators.
   HTTP, SSE, and Responses WebSocket.
 - **Priority and weighted routing** with passive health, optional session
   affinity, and controlled failover before upstream response headers arrive.
+- **In-process upstream connectors** keep provider-specific authentication and
+  request preparation inside the single Rust service. The first connector,
+  Codex OAuth, adds subscription credentials, per-account proxies, token
+  refresh, quota-aware draining, and provider-managed Responses channels.
 - **Database-backed control plane** compiled into immutable runtime snapshots;
   proxy requests do not query PostgreSQL on the hot path.
 - **Constrained transforms** for request JSON, headers, normal responses, and
@@ -175,7 +179,8 @@ available at `http://127.0.0.1:3000` and the Console API at
 Use the Console UI or API to create:
 
 1. A priced model.
-2. A channel group for the required API format.
+2. A channel group for the required API format and connector. Codex
+   subscription accounts use a Responses group with the Codex OAuth connector.
 3. A channel with its upstream URL, credentials, and available models.
 4. A model rule mapping the client model to the upstream model and route.
 5. A client API key with `proxy` permission; add `models.read` for

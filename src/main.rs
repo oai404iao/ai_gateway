@@ -10,9 +10,9 @@ use std::{
 use ai_gateway::{
     admission::AdmissionRuntime,
     application::{
-        AutomaticDisableWorker, ChannelModelDiscoveryService, ConsoleAuthService,
-        ControlPlaneCoordinator, ModelSyncService, ProxyService, RequestLogSink,
-        SystemMetricsService, hash_console_password,
+        AutomaticDisableWorker, ChannelModelDiscoveryService, CodexConnectorService,
+        ConsoleAuthService, ControlPlaneCoordinator, ModelSyncService, ProxyService,
+        RequestLogSink, SystemMetricsService, UpstreamConnectorRegistry, hash_console_password,
     },
     http,
     models_dev::ModelsDevClient,
@@ -28,7 +28,8 @@ use ai_gateway::{
     runtime_config::{AppConfig, RuntimeConfig, compile_runtime_config},
     upstream::UpstreamClientRegistry,
     workers::{
-        ChannelProbeWorker, ControlPlaneReloader, DurableRequestLogWorker, SpendLeaderboardWorker,
+        ChannelProbeWorker, CodexCredentialWorker, ControlPlaneReloader, DurableRequestLogWorker,
+        SpendLeaderboardWorker,
     },
 };
 use axum::{Router, body::Body};
@@ -153,13 +154,22 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
     routing.reconcile(&runtime.snapshot());
     let upstream_clients = Arc::new(UpstreamClientRegistry::new());
     let coordinator = ControlPlaneCoordinator::new_with_upstream_registry(
-        repository,
+        repository.clone(),
         Arc::clone(&runtime),
         routing.clone(),
         Arc::clone(&upstream_clients),
     )?;
     let (automatic_disable_service, automatic_disable_worker) =
         AutomaticDisableWorker::start(coordinator.clone());
+    let codex_connector = CodexConnectorService::new(
+        repository,
+        coordinator.clone(),
+        Arc::clone(&runtime),
+        Arc::clone(&upstream_clients),
+    )
+    .await?;
+    let codex_credential_worker = CodexCredentialWorker::start(codex_connector.clone());
+    let connectors = UpstreamConnectorRegistry::default().with_codex(codex_connector.clone());
     let proxy = ProxyService::with_dependencies_and_registry_and_automation(
         Arc::clone(&runtime),
         config.request_limits.proxy_body_bytes,
@@ -168,7 +178,8 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
         routing.clone(),
         admission.clone(),
         Some(automatic_disable_service.clone()),
-    )?;
+    )?
+    .with_connector_registry(connectors);
     let system_metrics = SystemMetricsService::new_at(
         pool.clone(),
         config.database.max_connections,
@@ -214,6 +225,7 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
         tracing::info!(address = %console.address, "AI gateway Console listener enabled");
         let api_router = http::console::router(http::console::ConsoleState {
             coordinator: coordinator.clone(),
+            codex_connector,
             channel_models,
             model_sync,
             auth,
@@ -248,6 +260,7 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
     )
     .await;
     channel_probe_worker.shutdown().await;
+    codex_credential_worker.shutdown().await;
     automatic_disable_worker.shutdown().await;
     if let Some(worker) = spend_leaderboard_worker {
         worker.shutdown().await;

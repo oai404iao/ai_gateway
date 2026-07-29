@@ -251,6 +251,7 @@ const zhCN: Record<string, string> = {
   "Elevated": "偏高",
   "Critical": "严重",
   "Unavailable": "不可用",
+  "{count} available models": "{count} 个可用模型",
   "Live": "实时",
   "{count} logical CPUs · load {one} / {five} / {fifteen}":
     "{count} 个逻辑 CPU · 1/5/15 分钟负载 {one} / {five} / {fifteen}",
@@ -1458,6 +1459,95 @@ const zhCN: Record<string, string> = {
     "已关闭、过期、被替换或其他不可复用的连接。",
   "Pool policy": "连接池策略",
   "Idle timeout / maximum connection age.": "空闲超时 / 连接最长寿命。",
+  "Connector": "连接器",
+  "OpenAI-compatible": "OpenAI 兼容",
+  "Codex OAuth": "Codex OAuth",
+  "Manage Codex credentials": "管理 Codex 凭证",
+  "Manage credentials": "管理凭证",
+  "Provider-managed credentials": "Provider 托管凭证",
+  "Use the Codex credential manager to add OAuth accounts, proxies, and quota thresholds.":
+    "请使用 Codex 凭证管理器添加 OAuth 账户、代理和额度阈值。",
+  "Resets {time}": "{time} 重置",
+  "Outbound proxy": "出站代理",
+  "Direct": "直连",
+  "Label": "标签",
+  "Personal Codex account": "个人 Codex 账户",
+  "Quota threshold (%)": "额度阈值（%）",
+  "New sessions stop using this credential at the threshold.":
+    "达到阈值后，新会话将停止使用该凭证。",
+  "Enter a label, positive weight, and quota threshold from 1 to 100.":
+    "请输入标签、正数权重和 1 至 100 的额度阈值。",
+  "Paste the complete callback URL.": "请粘贴完整的回调 URL。",
+  "Codex credential connected.": "Codex 凭证已连接。",
+  "Complete all required credential fields.": "请填写所有必填凭证字段。",
+  "Codex credential imported.": "Codex 凭证已导入。",
+  "Token refreshed.": "Token 已刷新。",
+  "Quota refreshed.": "额度已刷新。",
+  "This channel group is not a Codex OAuth connector.":
+    "该渠道组不是 Codex OAuth Connector。",
+  "Connect ChatGPT Codex subscriptions, assign per-account proxies, and monitor quota.":
+    "连接 ChatGPT Codex 订阅，为每个账户分配代理并监控额度。",
+  "Import tokens": "导入 Token",
+  "Connect account": "连接账户",
+  "Credentials": "凭证",
+  "Ready for new sessions": "可接收新会话",
+  "Draining or unavailable": "Draining 或不可用",
+  "Managed credentials": "托管凭证",
+  "Each credential is a provider-managed channel. Existing sticky sessions may continue while quota is draining.":
+    "每个凭证都是 Provider 托管渠道；额度进入 draining 后，已有粘性会话仍可继续。",
+  "No Codex credentials": "暂无 Codex 凭证",
+  "Connect an account with OAuth or import an existing token set.":
+    "通过 OAuth 连接账户，或导入现有 Token 集合。",
+  "Quota": "额度",
+  "Token": "Token",
+  "Limit reached": "已达到上限",
+  "Not checked": "尚未检查",
+  "{percent}% used": "已使用 {percent}%",
+  "Primary window": "主窗口",
+  "Secondary window": "次窗口",
+  "Threshold: {percent}%": "阈值：{percent}%",
+  "Refreshed {time}": "刷新于 {time}",
+  "Weight {weight}": "权重 {weight}",
+  "Proxy assigned": "已分配代理",
+  "Refresh token for {label}": "刷新 {label} 的 Token",
+  "Refresh quota for {label}": "刷新 {label} 的额度",
+  "Edit {label}": "编辑 {label}",
+  "Connect Codex account": "连接 Codex 账户",
+  "The gateway creates a short-lived PKCE flow. Authorize in a browser, then paste the complete localhost callback URL.":
+    "网关会创建短期 PKCE 流程。请在浏览器中授权，然后粘贴完整的 localhost 回调 URL。",
+  "Authorization opened": "授权页面已打开",
+  "This flow expires at {time}.": "该流程将于 {time} 过期。",
+  "Authorization URL": "授权 URL",
+  "Open authorization page": "打开授权页面",
+  "Callback URL": "回调 URL",
+  "Complete connection": "完成连接",
+  "Start authorization": "开始授权",
+  "Import Codex tokens": "导入 Codex Token",
+  "Tokens are validated against Codex before the managed channel is created. They are not returned by the Console API.":
+    "创建托管渠道前会通过 Codex 验证 Token；Console API 不会返回已保存的 Token。",
+  "ID token": "ID Token",
+  "Access token": "Access Token",
+  "Refresh token": "Refresh Token",
+  "Account ID override (optional)": "Account ID 覆盖值（可选）",
+  "Validate and import": "验证并导入",
+  "Enter valid credential settings.": "请输入有效的凭证设置。",
+  "Credential updated.": "凭证已更新。",
+  "Edit Codex credential": "编辑 Codex 凭证",
+  "Change routing settings without exposing stored OAuth tokens.":
+    "修改路由设置，不暴露已保存的 OAuth Token。",
+  "Draining": "正在排空",
+  "This Codex account is already connected or changed elsewhere.":
+    "该 Codex 账户已连接，或数据已被其他管理员修改。",
+  "The OAuth callback state did not match. Start a new authorization.":
+    "OAuth 回调 state 不匹配，请重新开始授权。",
+  "The OAuth flow expired. Start a new authorization.":
+    "OAuth 流程已过期，请重新开始授权。",
+  "The refresh token is no longer valid. Connect the account again.":
+    "Refresh Token 已失效，请重新连接账户。",
+  "The refreshed token belongs to a different Codex account.":
+    "刷新后的 Token 属于另一个 Codex 账户。",
+  "The selected outbound proxy is unavailable.": "所选出站代理不可用。",
+  "Credential changed elsewhere. Reloading.": "凭证已被其他管理员修改，正在重新加载。",
 };
 
 let activeLocale: ConsoleLocale = "en-US";

@@ -15,8 +15,8 @@ use std::sync::Arc;
 
 use ai_gateway::{
     application::{
-        AuthError, ChannelModelDiscoveryService, ConsoleAuthService, ControlPlaneCoordinator,
-        ModelSyncService, SystemMetricsService, hash_console_password,
+        AuthError, ChannelModelDiscoveryService, CodexConnectorService, ConsoleAuthService,
+        ControlPlaneCoordinator, ModelSyncService, SystemMetricsService, hash_console_password,
     },
     http::console::{self, ConsoleState},
     models_dev::ModelsDevClient,
@@ -182,10 +182,19 @@ async fn app(pool: PgPool) -> App {
         compile_runtime_config(repository.load_runtime().await.unwrap()).unwrap(),
     ));
     let coordinator = ControlPlaneCoordinator::new(
-        repository,
+        repository.clone(),
         Arc::clone(&runtime),
         RoutingRuntime::new(PassiveHealthPolicy::default()),
     );
+    let upstream_clients = Arc::new(UpstreamClientRegistry::new());
+    let codex_connector = CodexConnectorService::new(
+        repository,
+        coordinator.clone(),
+        Arc::clone(&runtime),
+        Arc::clone(&upstream_clients),
+    )
+    .await
+    .unwrap();
     let model_sync = ModelSyncService::new(
         coordinator.clone(),
         ModelsDevClient::new(&ModelsSyncConfig::default()).unwrap(),
@@ -211,10 +220,8 @@ async fn app(pool: PgPool) -> App {
         .expect("issued access token must authenticate");
     let router = console::router(ConsoleState {
         coordinator,
-        channel_models: ChannelModelDiscoveryService::new(
-            Arc::clone(&runtime),
-            Arc::new(UpstreamClientRegistry::new()),
-        ),
+        codex_connector,
+        channel_models: ChannelModelDiscoveryService::new(Arc::clone(&runtime), upstream_clients),
         model_sync,
         auth: auth.clone(),
         request_logs: RequestLogRepository::new(pool.clone()),
@@ -1795,6 +1802,107 @@ async fn etag_if_match_optimistic_concurrency_matches_spec() {
         conflict_body.contains("\"error\""),
         "conflict body is an error body"
     );
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn codex_oauth_flow_contract_uses_pkce_and_actor_scoped_completion() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+
+    let create_group = request(
+        &app,
+        "POST",
+        "/console/v1/routing/channel-groups",
+        serde_json::json!({
+            "name": "spec-codex",
+            "api_format": "open_ai_responses",
+            "connector_kind": "codex_oauth",
+            "priority": 1,
+            "selection_strategy": "weighted_random",
+            "enabled": true,
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(create_group.status(), StatusCode::CREATED);
+    let group_id = body_json(create_group).await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let start = request(
+        &app,
+        "POST",
+        &format!("/console/v1/providers/codex-oauth/channel-groups/{group_id}/oauth/flows"),
+        serde_json::json!({
+            "label": "spec-account",
+            "weight": 100,
+            "quota_threshold_percent": 95
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(start.status(), StatusCode::CREATED);
+    let start = body_json(start).await;
+    let flow_id = start["flow_id"].as_str().unwrap();
+    let authorization_url = reqwest::Url::parse(start["authorization_url"].as_str().unwrap())
+        .expect("authorization URL is valid");
+    let query = authorization_url
+        .query_pairs()
+        .collect::<std::collections::HashMap<_, _>>();
+    assert_eq!(authorization_url.host_str(), Some("auth.openai.com"));
+    assert_eq!(
+        query.get("redirect_uri").map(|value| value.as_ref()),
+        Some("http://localhost:1455/auth/callback")
+    );
+    assert_eq!(
+        query
+            .get("code_challenge_method")
+            .map(|value| value.as_ref()),
+        Some("S256")
+    );
+    assert!(query.contains_key("state"));
+    assert!(!query.contains_key("code_verifier"));
+
+    let stored: (i32, bool) = sqlx::query_as(
+        "SELECT octet_length(state_hash), length(code_verifier) >= 43 \
+         FROM codex_oauth_flows WHERE id=$1",
+    )
+    .bind(Uuid::parse_str(flow_id).unwrap())
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(stored, (32, true));
+
+    let list = request(
+        &app,
+        "GET",
+        &format!("/console/v1/providers/codex-oauth/channel-groups/{group_id}/credentials"),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(list.status(), StatusCode::OK);
+    assert_eq!(body_json(list).await, serde_json::json!([]));
+
+    let mismatched = request(
+        &app,
+        "POST",
+        &format!("/console/v1/providers/codex-oauth/oauth/flows/{flow_id}/complete"),
+        serde_json::json!({
+            "callback_url":
+                "http://localhost:1455/auth/callback?code=spec-code&state=wrong-state"
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(mismatched.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        body_json(mismatched).await,
+        serde_json::json!({"error": "codex_oauth_state_mismatch"})
+    );
+
     database.cleanup().await;
 }
 

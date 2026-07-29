@@ -200,6 +200,7 @@ fn gateway(
             id: group_id,
             name: "real-upstream-smoke".into(),
             api_format: format.api_format_name().into(),
+            connector_kind: "openai_compatible".into(),
             priority: 0,
             selection_strategy: "weighted_random".into(),
             enabled: true,

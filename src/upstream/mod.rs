@@ -614,6 +614,7 @@ mod tests {
                     id: group_id,
                     name: "group".into(),
                     api_format: "open_ai_chat_completions".into(),
+                    connector_kind: "openai_compatible".into(),
                     priority: 0,
                     selection_strategy: "weighted_random".into(),
                     enabled: true,
