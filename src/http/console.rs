@@ -916,11 +916,7 @@ async fn list_own_request_logs(
     Ok(Json(
         state
             .request_logs
-            .list_for_user(
-                principal.user_id(),
-                query.into_filter(),
-                principal.role().is_admin(),
-            )
+            .list_for_user(principal.user_id(), query.into_filter())
             .await?,
     ))
 }
@@ -932,7 +928,7 @@ async fn get_own_request_log(
 ) -> Result<Json<crate::persistence::ConsoleRequestLog>, ConsoleError> {
     state
         .request_logs
-        .get_for_user(principal.user_id(), id, principal.role().is_admin())
+        .get_for_user(principal.user_id(), id)
         .await?
         .map(Json)
         .ok_or(ConsoleError::NotFound)

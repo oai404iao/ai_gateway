@@ -27,6 +27,13 @@ Versioning.
   settings page; channel capability controls; and current-process pool/session
   metrics on the administrator system-load page.
 
+### Changed
+
+- Unified Console request-log visibility: self-service views remain
+  owner-scoped and redact user/channel identity for every role, while the
+  administrator Operations view adds user and channel names without showing
+  internal IDs. List and detail fields now use the same reduced presentation.
+
 ## [0.4.0] - 2026-07-27
 
 ### Added

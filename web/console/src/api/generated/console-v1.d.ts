@@ -259,6 +259,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /**
+         * @description Returns only request logs owned by the authenticated user. Concrete
+         *     channel identity and the user display name are redacted for every
+         *     self-service caller, including administrators.
+         */
         get: operations["listOwnRequestLogs"];
         put?: never;
         post?: never;
@@ -275,6 +280,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /**
+         * @description Returns an owner-scoped request log. Concrete channel identity and the
+         *     user display name are redacted for every self-service caller,
+         *     including administrators.
+         */
         get: operations["getOwnRequestLog"];
         put?: never;
         post?: never;
@@ -840,6 +850,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /**
+         * @description Administrator-only global request logs, including current user and
+         *     channel display names.
+         */
         get: operations["listAllRequestLogs"];
         put?: never;
         post?: never;
@@ -856,6 +870,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /**
+         * @description Administrator-only global request-log detail, including current user
+         *     and channel display names.
+         */
         get: operations["getRequestLog"];
         put?: never;
         post?: never;
@@ -1698,6 +1716,8 @@ export interface components {
             completed_at: components["schemas"]["DateTime"];
             /** Format: uuid */
             user_id: string;
+            /** @description Administrator-only current display name; self-service responses return null. */
+            user_name: string | null;
             /** Format: uuid */
             api_key_id: string;
             request_source: components["schemas"]["RequestLogSource"];
@@ -1713,10 +1733,10 @@ export interface components {
             channel_group_name: string | null;
             /**
              * Format: uuid
-             * @description Administrator-only; regular-user self-service responses return null.
+             * @description Administrator-only; all self-service responses return null.
              */
             channel_id: string | null;
-            /** @description Administrator-only current display name; regular-user self-service responses return null. */
+            /** @description Administrator-only current display name; all self-service responses return null. */
             channel_name: string | null;
             outcome: string;
             response_status_code: number | null;
@@ -3105,7 +3125,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Own request logs. */
+            /** @description Owner-scoped request logs with self-service redaction. */
             200: {
                 headers: {
                     [name: string]: unknown;

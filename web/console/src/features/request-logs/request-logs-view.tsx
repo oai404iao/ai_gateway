@@ -24,7 +24,6 @@ import { PageHeader } from "@/components/shared/page-header";
 import { AsyncResource } from "@/components/shared/async-resource";
 import { DetailField } from "@/components/shared/detail-field";
 import { ResourceTable, type Column } from "@/components/shared/resource-table";
-import { StatusBadge } from "@/components/shared/status-badge";
 import { useRequestLog } from "@/features/request-logs/api";
 import type {
   ApiKeyView,
@@ -85,11 +84,10 @@ interface RequestLogsViewProps {
   description: string;
   basePath: string;
   useLogs: UseRequestLogs;
-  allowOwnerFilter?: boolean;
+  scope: "own" | "system";
   users?: ControlPlaneUser[];
   apiKeys?: RequestLogApiKeyOption[];
   modelOptions?: string[];
-  showChannelDetails?: boolean;
 }
 
 function optionalText(value: string): string | undefined {
@@ -105,10 +103,6 @@ function tokenRemainder(
   return Math.max(0, total - (subset ?? 0));
 }
 
-function requestSourceLabel(source: RequestLogView["request_source"], t: (value: string) => string) {
-  return source === "scheduled_test" ? t("Scheduled test") : t("Client request");
-}
-
 function requestProtocolLabel(
   protocol: RequestLogView["request_protocol"],
   t: (value: string) => string,
@@ -121,6 +115,51 @@ function requestProtocolLabel(
     case "websocket":
       return t("WebSocket");
   }
+}
+
+function TokenUsage({ log }: { log: RequestLogView }) {
+  const { t } = useI18n();
+  const uncachedInput = tokenRemainder(log.input_tokens, log.cached_input_tokens);
+  const nonReasoningOutput = tokenRemainder(log.output_tokens, log.reasoning_tokens);
+  const uncachedInputLabel = `${t("Uncached input")}: ${formatTokens(uncachedInput)}`;
+  const cachedInputLabel = `${t("Cached input")}: ${formatTokens(log.cached_input_tokens)}`;
+  const nonReasoningOutputLabel = `${t("Non-reasoning output")}: ${formatTokens(nonReasoningOutput)}`;
+  const reasoningLabel = `${t("Reasoning tokens")}: ${formatTokens(log.reasoning_tokens)}`;
+
+  return (
+    <span className="flex flex-col gap-1.5 tabular-nums">
+      <span className="flex items-center gap-2">
+        <span
+          className="flex min-w-20 items-center gap-1.5"
+          aria-label={uncachedInputLabel}
+          title={uncachedInputLabel}
+        >
+          <ArrowUp className="size-4 shrink-0 text-success" aria-hidden />
+          <span>{formatTokens(uncachedInput)}</span>
+        </span>
+        {log.cached_input_tokens !== null && log.cached_input_tokens > 0 ? (
+          <Badge variant="success" aria-label={cachedInputLabel} title={cachedInputLabel}>
+            {formatTokens(log.cached_input_tokens)}
+          </Badge>
+        ) : null}
+      </span>
+      <span className="flex items-center gap-2">
+        <span
+          className="flex min-w-20 items-center gap-1.5"
+          aria-label={nonReasoningOutputLabel}
+          title={nonReasoningOutputLabel}
+        >
+          <ArrowDown className="size-4 shrink-0 text-info" aria-hidden />
+          <span>{formatTokens(nonReasoningOutput)}</span>
+        </span>
+        {log.reasoning_tokens !== null && log.reasoning_tokens > 0 ? (
+          <Badge variant="info" aria-label={reasoningLabel} title={reasoningLabel}>
+            {formatTokens(log.reasoning_tokens)}
+          </Badge>
+        ) : null}
+      </span>
+    </span>
+  );
 }
 
 function toQuery(draft: RequestLogFilterDraft): ListQuery {
@@ -142,13 +181,13 @@ export function RequestLogsView({
   description,
   basePath,
   useLogs,
-  allowOwnerFilter = false,
+  scope,
   users = [],
   apiKeys = [],
   modelOptions = [],
-  showChannelDetails = false,
 }: RequestLogsViewProps) {
   const { t } = useI18n();
+  const isSystemView = scope === "system";
   const [draft, setDraft] = useState<RequestLogFilterDraft>(emptyFilters);
   const [filters, setFilters] = useState<ListQuery>(() => toQuery(emptyFilters));
   const query = useLogs(filters);
@@ -184,6 +223,14 @@ export function RequestLogsView({
         .sort((left, right) => left.localeCompare(right)),
     [discoveredModels, draft.model, modelOptions],
   );
+  const userNamesById = useMemo(
+    () => new Map(users.map((user) => [user.id, user.display_name])),
+    [users],
+  );
+  const apiKeyLabel = (key: RequestLogApiKeyOption) => {
+    const ownerName = key.user_id ? userNamesById.get(key.user_id) : undefined;
+    return isSystemView && ownerName ? `${key.name} · ${ownerName}` : key.name;
+  };
 
   const updateDraft = (partial: Partial<RequestLogFilterDraft>) => {
     setDraft((previous) => ({ ...previous, ...partial }));
@@ -208,17 +255,7 @@ export function RequestLogsView({
     {
       key: "model",
       header: t("Model"),
-      render: (log) => (
-        <span className="flex flex-col">
-          <span className="font-medium">{log.client_model}</span>
-          <StatusBadge
-            value={log.api_format}
-            label={apiFormatLabel(log.api_format)}
-            variant="info"
-            className="mt-1"
-          />
-        </span>
-      ),
+      render: (log) => <span className="font-medium">{log.client_model}</span>,
     },
     {
       key: "protocol",
@@ -232,12 +269,17 @@ export function RequestLogsView({
       header: t("Channel group"),
       render: (log) => log.channel_group_name ?? "—",
     },
-    ...(showChannelDetails
+    ...(isSystemView
       ? [
           {
             key: "channel",
             header: t("Channel"),
             render: (log: RequestLogView) => log.channel_name ?? "—",
+          },
+          {
+            key: "user",
+            header: t("User"),
+            render: (log: RequestLogView) => log.user_name ?? "—",
           },
         ]
       : []),
@@ -249,66 +291,10 @@ export function RequestLogsView({
       ),
     },
     {
-      key: "source",
-      header: t("Source"),
-      render: (log) => <Badge variant="secondary">{requestSourceLabel(log.request_source, t)}</Badge>,
-    },
-    {
-      key: "status",
-      header: t("HTTP"),
-      render: (log) => log.response_status_code ?? "—",
-    },
-    {
       key: "tokens",
       header: t("Tokens"),
       className: "min-w-44",
-      render: (log) => {
-        const uncachedInput = tokenRemainder(log.input_tokens, log.cached_input_tokens);
-        const nonReasoningOutput = tokenRemainder(log.output_tokens, log.reasoning_tokens);
-        const uncachedInputLabel = `${t("Uncached input")}: ${formatTokens(uncachedInput)}`;
-        const cachedInputLabel = `${t("Cached input")}: ${formatTokens(log.cached_input_tokens)}`;
-        const nonReasoningOutputLabel = `${t("Non-reasoning output")}: ${formatTokens(nonReasoningOutput)}`;
-        const reasoningLabel = `${t("Reasoning tokens")}: ${formatTokens(log.reasoning_tokens)}`;
-
-        return (
-          <span className="flex flex-col gap-1.5 tabular-nums">
-            <span className="flex items-center gap-2">
-              <span
-                className="flex min-w-20 items-center gap-1.5"
-                aria-label={uncachedInputLabel}
-                title={uncachedInputLabel}
-              >
-                <ArrowUp className="size-4 shrink-0 text-success" aria-hidden />
-                <span>{formatTokens(uncachedInput)}</span>
-              </span>
-              {log.cached_input_tokens !== null && log.cached_input_tokens > 0 ? (
-                <Badge
-                  variant="success"
-                  aria-label={cachedInputLabel}
-                  title={cachedInputLabel}
-                >
-                  {formatTokens(log.cached_input_tokens)}
-                </Badge>
-              ) : null}
-            </span>
-            <span className="flex items-center gap-2">
-              <span
-                className="flex min-w-20 items-center gap-1.5"
-                aria-label={nonReasoningOutputLabel}
-                title={nonReasoningOutputLabel}
-              >
-                <ArrowDown className="size-4 shrink-0 text-info" aria-hidden />
-                <span>{formatTokens(nonReasoningOutput)}</span>
-              </span>
-              {log.reasoning_tokens !== null && log.reasoning_tokens > 0 ? (
-                <Badge variant="info" aria-label={reasoningLabel} title={reasoningLabel}>
-                  {formatTokens(log.reasoning_tokens)}
-                </Badge>
-              ) : null}
-            </span>
-          </span>
-        );
-      },
+      render: (log) => <TokenUsage log={log} />,
     },
     {
       key: "cost",
@@ -341,7 +327,7 @@ export function RequestLogsView({
             }}
           >
             <FieldGroup className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
-              {allowOwnerFilter ? (
+              {isSystemView ? (
                 <Field>
                   <FieldLabel htmlFor="request-log-user">{t("User")}</FieldLabel>
                   <Select
@@ -396,14 +382,14 @@ export function RequestLogsView({
                       <SelectItem value="__all__">{t("All API keys")}</SelectItem>
                       {availableApiKeys.map((key) => (
                         <SelectItem key={key.id} value={key.id}>
-                          {key.name} · {key.id.slice(0, 8)}
+                          {apiKeyLabel(key)}
                         </SelectItem>
                       ))}
                     </SelectGroup>
                   </SelectContent>
                 </Select>
               </Field>
-              <Field className={cn(!allowOwnerFilter && "xl:col-span-2")}>
+              <Field className={cn(!isSystemView && "xl:col-span-2")}>
                 <FieldLabel htmlFor="request-log-model">{t("Model")}</FieldLabel>
                 <Select
                   value={draft.model || "__all__"}
@@ -599,6 +585,22 @@ export function RequestLogsView({
           </SheetHeader>
           {detail.data ? (
             <dl className="grid grid-cols-1 gap-3 p-4">
+              <DetailField label={t("Started")} value={formatDateTime(detail.data.started_at)} />
+              <DetailField label={t("Model")} value={detail.data.client_model} mono />
+              <DetailField
+                label={t("Protocol")}
+                value={requestProtocolLabel(detail.data.request_protocol, t)}
+              />
+              <DetailField
+                label={t("Channel group")}
+                value={detail.data.channel_group_name ?? "—"}
+              />
+              {isSystemView ? (
+                <>
+                  <DetailField label={t("Channel")} value={detail.data.channel_name ?? "—"} />
+                  <DetailField label={t("User")} value={detail.data.user_name ?? "—"} />
+                </>
+              ) : null}
               <DetailField
                 label={t("Outcome")}
                 value={
@@ -607,55 +609,13 @@ export function RequestLogsView({
                   </Badge>
                 }
               />
+              <DetailField label={t("Tokens")} value={<TokenUsage log={detail.data} />} />
+              <DetailField label={t("Cost")} value={formatUsd(detail.data.cost_amount)} />
               <DetailField
-                label={t("Source")}
-                value={requestSourceLabel(detail.data.request_source, t)}
-              />
-              <DetailField label={t("HTTP status")} value={detail.data.response_status_code ?? "—"} />
-              <DetailField
-                label={t("Protocol")}
-                value={requestProtocolLabel(detail.data.request_protocol, t)}
-              />
-              <DetailField label={t("Client model")} value={detail.data.client_model} mono />
-              <DetailField
-                label={t("Upstream model")}
-                value={detail.data.upstream_model ?? "—"}
-                mono
-              />
-              <DetailField
-                label={t("API format")}
-                value={
-                  <StatusBadge
-                    value={detail.data.api_format}
-                    label={apiFormatLabel(detail.data.api_format)}
-                    variant="info"
-                  />
-                }
-              />
-              <DetailField label={t("TTFT")} value={formatDurationMs(detail.data.ttft_ms)} />
-              <DetailField
-                label={t("Total duration")}
+                label={t("Duration")}
                 value={formatDurationMs(detail.data.total_duration_ms)}
               />
-              <DetailField label={t("Input tokens")} value={formatTokens(detail.data.input_tokens)} />
-              <DetailField
-                label={t("Cached input")}
-                value={formatTokens(detail.data.cached_input_tokens)}
-              />
-              <DetailField
-                label={t("Cache write")}
-                value={formatTokens(detail.data.cache_write_tokens)}
-              />
-              <DetailField label={t("Output tokens")} value={formatTokens(detail.data.output_tokens)} />
-              <DetailField
-                label={t("Reasoning tokens")}
-                value={formatTokens(detail.data.reasoning_tokens)}
-              />
-              <DetailField
-                label={t("Cost")}
-                value={formatUsd(detail.data.cost_amount)}
-              />
-              <DetailField label={t("Billed at")} value={formatDateTime(detail.data.billed_at)} />
+              <DetailField label={t("HTTP")} value={detail.data.response_status_code ?? "—"} />
               <DetailField label={t("Error code")} value={detail.data.error_code ?? "—"} mono />
               <DetailField
                 label={t("Error message")}
@@ -665,23 +625,6 @@ export function RequestLogsView({
                   </span>
                 }
               />
-              <DetailField
-                label={t("Channel group")}
-                value={detail.data.channel_group_name ?? "—"}
-              />
-              {showChannelDetails ? (
-                <>
-                  <DetailField
-                    label={t("Channel")}
-                    value={detail.data.channel_name ?? "—"}
-                  />
-                  <DetailField
-                    label={t("Channel ID")}
-                    value={detail.data.channel_id ?? "—"}
-                    mono
-                  />
-                </>
-              ) : null}
               <DetailField label={t("Completed")} value={formatDateTime(detail.data.completed_at)} />
             </dl>
           ) : null}

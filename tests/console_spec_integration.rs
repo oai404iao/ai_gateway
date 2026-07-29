@@ -3315,6 +3315,7 @@ async fn request_log_filters_match_the_console_contract() {
     let body = body_json(response).await;
     assert_eq!(body.as_array().unwrap().len(), 1);
     assert_eq!(body[0]["id"], matching_log_id.to_string());
+    assert_eq!(body[0]["user_name"], format!("spec-{}", app.user_id));
     assert_eq!(body[0]["request_protocol"], "non_stream");
     assert_eq!(body[0]["input_tokens"], 12);
     assert_eq!(body[0]["cached_input_tokens"], 2);
@@ -3334,6 +3335,7 @@ async fn request_log_filters_match_the_console_contract() {
     assert_eq!(detail.status(), StatusCode::OK);
     let detail = body_json(detail).await;
     assert_eq!(detail["id"], matching_log_id.to_string());
+    assert_eq!(detail["user_name"], format!("spec-{}", app.user_id));
     assert_eq!(detail["request_protocol"], "non_stream");
     assert_eq!(detail["reasoning_tokens"], 1);
     assert_eq!(detail["error_code"], "provider_error");
@@ -3633,6 +3635,7 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
     let regular_user_id = Uuid::new_v4();
     let regular_api_key_id = Uuid::new_v4();
     let regular_email = format!("statistics-user-{regular_user_id}@example.test");
+    let regular_display_name = format!("statistics-user-{regular_user_id}");
     let regular_password_hash = hash_console_password(TEST_PASSWORD.to_owned())
         .await
         .unwrap();
@@ -3642,7 +3645,7 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
     )
     .bind(regular_user_id)
     .bind(&regular_email)
-    .bind(format!("statistics-user-{regular_user_id}"))
+    .bind(&regular_display_name)
     .bind(regular_password_hash)
     .execute(&database.pool)
     .await
@@ -3707,6 +3710,7 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
         admin_logs[0]["channel_name"],
         format!("statistics-channel-{group_id}")
     );
+    assert_eq!(admin_logs[0]["user_name"], regular_display_name);
     assert_eq!(admin_logs[0]["request_protocol"], "non_stream");
 
     let admin_own_logs = request(
@@ -3719,13 +3723,11 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
     .await;
     assert_eq!(admin_own_logs.status(), StatusCode::OK);
     let admin_own_logs = body_json(admin_own_logs).await;
-    assert_eq!(admin_own_logs[0]["channel_id"], channel_id.to_string());
-    assert_eq!(
-        admin_own_logs[0]["channel_name"],
-        format!("statistics-channel-{group_id}")
-    );
+    assert!(admin_own_logs[0]["user_name"].is_null());
+    assert!(admin_own_logs[0]["channel_id"].is_null());
+    assert!(admin_own_logs[0]["channel_name"].is_null());
     assert_eq!(admin_own_logs[0]["request_protocol"], "non_stream");
-    let admin_own_log_id = admin_own_logs[0]["id"].as_str().unwrap();
+    let admin_own_log_id = admin_own_logs[0]["id"].as_str().unwrap().to_owned();
     let admin_own_log = request(
         &app,
         "GET",
@@ -3736,11 +3738,9 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
     .await;
     assert_eq!(admin_own_log.status(), StatusCode::OK);
     let admin_own_log = body_json(admin_own_log).await;
-    assert_eq!(admin_own_log["channel_id"], channel_id.to_string());
-    assert_eq!(
-        admin_own_log["channel_name"],
-        format!("statistics-channel-{group_id}")
-    );
+    assert!(admin_own_log["user_name"].is_null());
+    assert!(admin_own_log["channel_id"].is_null());
+    assert!(admin_own_log["channel_name"].is_null());
     assert_eq!(admin_own_log["request_protocol"], "non_stream");
 
     let user_logs = request_with_token(
@@ -3758,6 +3758,7 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
         user_logs[0]["channel_group_name"],
         format!("statistics-group-{group_id}")
     );
+    assert!(user_logs[0]["user_name"].is_null());
     assert!(user_logs[0]["channel_id"].is_null());
     assert!(user_logs[0]["channel_name"].is_null());
     assert_eq!(user_logs[0]["request_protocol"], "non_stream");
@@ -3773,9 +3774,32 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
     .await;
     assert_eq!(user_log.status(), StatusCode::OK);
     let user_log = body_json(user_log).await;
+    assert!(user_log["user_name"].is_null());
     assert!(user_log["channel_id"].is_null());
     assert!(user_log["channel_name"].is_null());
     assert_eq!(user_log["request_protocol"], "non_stream");
+
+    let other_user_log = request_with_token(
+        &app,
+        &regular_session.access_token,
+        "GET",
+        &format!("/console/v1/me/request-logs/{admin_own_log_id}"),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(other_user_log.status(), StatusCode::NOT_FOUND);
+
+    let global_logs = request_with_token(
+        &app,
+        &regular_session.access_token,
+        "GET",
+        "/console/v1/request-logs",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(global_logs.status(), StatusCode::FORBIDDEN);
 
     let user_channel_status = request_with_token(
         &app,

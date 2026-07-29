@@ -15,10 +15,9 @@ export function AdminRequestLogsPage() {
       description={t("All proxied requests across every user and API key.")}
       basePath="/request-logs"
       useLogs={useAllRequestLogs}
-      allowOwnerFilter
+      scope="system"
       users={users.data ?? []}
       apiKeys={apiKeys.data ?? []}
-      showChannelDetails
       modelOptions={
         modelRules.data?.flatMap((rule) => [rule.client_model, rule.upstream_model]) ?? []
       }

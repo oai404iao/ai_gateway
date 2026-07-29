@@ -300,6 +300,47 @@ const E2E_SPEND_LEADERBOARD = {
   ],
 };
 
+const E2E_PERSONAL_REQUEST_LOG = {
+  id: "00000000-0000-0000-0000-0000000000f1",
+  started_at: "2026-07-28T10:00:00.000Z",
+  completed_at: "2026-07-28T10:00:01.000Z",
+  user_id: ADMIN_PROFILE.user.id,
+  user_name: null,
+  api_key_id: "00000000-0000-0000-0000-000000000011",
+  request_source: "client",
+  api_format: "open_ai_responses",
+  request_protocol: "sse",
+  client_model: "gateway-e2e-model",
+  upstream_model: "upstream-e2e-model",
+  model_rule_id: "00000000-0000-0000-0000-0000000000f2",
+  channel_group_id: "00000000-0000-0000-0000-000000000021",
+  channel_group_name: "chat-primary",
+  channel_id: null,
+  channel_name: null,
+  outcome: "failed",
+  response_status_code: 429,
+  streamed: true,
+  ttft_ms: 120,
+  total_duration_ms: 1_000,
+  input_tokens: 12,
+  cached_input_tokens: 2,
+  cache_write_tokens: 0,
+  output_tokens: 4,
+  reasoning_tokens: 1,
+  cost_amount: "0.00010000",
+  error_code: "rate_limit_exceeded",
+  error_summary: "Upstream rate limit exceeded.",
+  billed_at: "2026-07-28T10:00:02.000Z",
+};
+
+const E2E_SYSTEM_REQUEST_LOG = {
+  ...E2E_PERSONAL_REQUEST_LOG,
+  user_id: E2E_USER.id,
+  user_name: E2E_USER.display_name,
+  channel_id: "00000000-0000-0000-0000-000000000022",
+  channel_name: "upstream-a",
+};
+
 export async function mockConsoleApi(page: Page): Promise<void> {
   let websocketEnabled = false;
   await page.route("**/console/v1/**", (route: Route) => {
@@ -360,6 +401,15 @@ export async function mockConsoleApi(page: Page): Promise<void> {
     }
     if (path === "/console/v1/me/usage" && method === "GET") {
       return route.fulfill({ status: 200, json: E2E_PERSONAL_USAGE });
+    }
+    if (path === "/console/v1/me/request-logs" && method === "GET") {
+      return route.fulfill({ status: 200, json: [E2E_PERSONAL_REQUEST_LOG] });
+    }
+    if (
+      path === `/console/v1/me/request-logs/${E2E_PERSONAL_REQUEST_LOG.id}` &&
+      method === "GET"
+    ) {
+      return route.fulfill({ status: 200, json: E2E_PERSONAL_REQUEST_LOG });
     }
     if (path === "/console/v1/users" && method === "GET") {
       return route.fulfill({ status: 200, json: [E2E_USER] });
@@ -485,6 +535,18 @@ export async function mockConsoleApi(page: Page): Promise<void> {
     }
     if (path === "/console/v1/routing/channels" && method === "GET") {
       return route.fulfill({ status: 200, json: [] });
+    }
+    if (path === "/console/v1/routing/model-rules" && method === "GET") {
+      return route.fulfill({ status: 200, json: [] });
+    }
+    if (path === "/console/v1/request-logs" && method === "GET") {
+      return route.fulfill({ status: 200, json: [E2E_SYSTEM_REQUEST_LOG] });
+    }
+    if (
+      path === `/console/v1/request-logs/${E2E_SYSTEM_REQUEST_LOG.id}` &&
+      method === "GET"
+    ) {
+      return route.fulfill({ status: 200, json: E2E_SYSTEM_REQUEST_LOG });
     }
     if (path === "/console/v1/me/api-key-options" && method === "GET") {
       return route.fulfill({
