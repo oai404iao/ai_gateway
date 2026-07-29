@@ -61,6 +61,10 @@ describe("RequestLogsView", () => {
     expect(screen.getByLabelText("Cached input: 2")).toHaveTextContent("2");
     expect(screen.getByLabelText("Non-reasoning output: 3")).toHaveTextContent("3");
     expect(screen.getByLabelText("Reasoning tokens: 1")).toHaveTextContent("1");
+    const ttft = screen.getByLabelText("TTFT: 100 ms");
+    const totalDuration = screen.getByLabelText("Total duration: 1 s");
+    expect(ttft.parentElement).toContainElement(totalDuration);
+    expect(ttft).toHaveClass("text-muted-foreground");
 
     const apiKey = await screen.findByRole("combobox", { name: "API key" });
     await user.click(apiKey);

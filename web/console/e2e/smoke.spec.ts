@@ -211,6 +211,8 @@ test.describe("Console SPA smoke", () => {
       "Duration",
     ]);
     await expect(page.getByText("upstream-a", { exact: true })).toHaveCount(0);
+    await expect(page.getByLabel("TTFT: 120 ms")).toBeVisible();
+    await expect(page.getByLabel("Total duration: 1 s")).toBeVisible();
     await page.getByRole("cell", { name: "gateway-e2e-model" }).click();
     const personalDetail = page.getByRole("dialog");
     await expect(personalDetail).toBeVisible();

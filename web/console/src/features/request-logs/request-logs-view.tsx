@@ -162,6 +162,29 @@ function TokenUsage({ log }: { log: RequestLogView }) {
   );
 }
 
+function RequestDuration({ log }: { log: RequestLogView }) {
+  const { t } = useI18n();
+  const ttft = formatDurationMs(log.ttft_ms);
+  const total = formatDurationMs(log.total_duration_ms);
+  const ttftLabel = `${t("TTFT")}: ${ttft}`;
+  const totalLabel = `${t("Total duration")}: ${total}`;
+
+  return (
+    <span className="flex flex-col gap-0.5 whitespace-nowrap tabular-nums">
+      <span
+        className="text-xs text-muted-foreground"
+        aria-label={ttftLabel}
+        title={ttftLabel}
+      >
+        {ttft}
+      </span>
+      <span aria-label={totalLabel} title={totalLabel}>
+        {total}
+      </span>
+    </span>
+  );
+}
+
 function toQuery(draft: RequestLogFilterDraft): ListQuery {
   return {
     limit: draft.limit,
@@ -304,7 +327,7 @@ export function RequestLogsView({
     {
       key: "duration",
       header: t("Duration"),
-      render: (log) => formatDurationMs(log.total_duration_ms),
+      render: (log) => <RequestDuration log={log} />,
     },
   ];
 
