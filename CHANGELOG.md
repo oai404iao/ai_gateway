@@ -7,6 +7,21 @@ Versioning.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-07-29
+
+### Added
+
+- Time to first token (TTFT) in Console request-log duration cells, displayed
+  above total request duration with accessible labels.
+- An apply-ready transform reference template that removes common reverse
+  proxy and CDN forwarding metadata before requests reach the upstream.
+
+### Changed
+
+- Reworked the project README into a concise GitHub-facing overview with
+  badges, a clearer quick start, improved documentation navigation, and a
+  dedicated project logo.
+
 ## [0.5.0] - 2026-07-29
 
 ### Added
