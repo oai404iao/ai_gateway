@@ -1,6 +1,9 @@
 //! Bounded client and parser for the externally maintained models.dev catalog.
 
-use std::{collections::HashSet, time::Duration};
+use std::{
+    collections::{BTreeMap, HashSet},
+    time::Duration,
+};
 
 use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
@@ -11,7 +14,7 @@ use serde_json::{Map, Value, json};
 use thiserror::Error;
 
 use crate::{
-    domain::{AdvancedBilling, LongContextTier},
+    domain::{AdvancedBilling, LongContextTier, RequestBillingMultiplier},
     runtime_config::ModelsSyncConfig,
 };
 
@@ -214,7 +217,7 @@ fn parse_catalog(
                 excluded_invalid_models += 1;
                 continue;
             }
-            let advanced_billing = match parse_advanced_billing(cost) {
+            let advanced_billing = match parse_advanced_billing(model_object, cost) {
                 Ok(value) => value,
                 Err(()) => {
                     excluded_invalid_models += 1;
@@ -259,7 +262,10 @@ fn parse_catalog(
     })
 }
 
-fn parse_advanced_billing(cost: &Map<String, Value>) -> Result<AdvancedBilling, ()> {
+fn parse_advanced_billing(
+    model: &Map<String, Value>,
+    cost: &Map<String, Value>,
+) -> Result<AdvancedBilling, ()> {
     let long_context_tiers = match cost.get("tiers") {
         Some(Value::Array(tiers)) if !tiers.is_empty() => {
             let mut parsed = tiers
@@ -285,8 +291,105 @@ fn parse_advanced_billing(cost: &Map<String, Value>) -> Result<AdvancedBilling, 
     };
     Ok(AdvancedBilling {
         long_context_tiers,
-        request_multipliers: Vec::new(),
+        request_multipliers: parse_service_tier_multipliers(model, cost),
     })
+}
+
+/// Converts models.dev modes such as OpenAI's `fast` mode into the existing
+/// whole-request multiplier representation when every token price supported
+/// by the gateway changes by one uniform ratio. Optional, malformed, or
+/// non-uniform mode pricing is ignored without excluding the base model.
+fn parse_service_tier_multipliers(
+    model: &Map<String, Value>,
+    base_cost: &Map<String, Value>,
+) -> Vec<RequestBillingMultiplier> {
+    let Some(modes) = model
+        .get("experimental")
+        .and_then(Value::as_object)
+        .and_then(|experimental| experimental.get("modes"))
+        .and_then(Value::as_object)
+    else {
+        return Vec::new();
+    };
+
+    let mut service_tiers = BTreeMap::<String, Option<Decimal>>::new();
+    for mode in modes.values() {
+        let Some(mode) = mode.as_object() else {
+            continue;
+        };
+        let Some(service_tier) = mode
+            .get("provider")
+            .and_then(Value::as_object)
+            .and_then(|provider| provider.get("body"))
+            .and_then(Value::as_object)
+            .and_then(|body| body.get("service_tier"))
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty() && value.len() <= 200)
+        else {
+            continue;
+        };
+        let Some(mode_cost) = mode.get("cost").and_then(Value::as_object) else {
+            continue;
+        };
+        let Some(multiplier) = uniform_billing_multiplier(base_cost, mode_cost) else {
+            continue;
+        };
+
+        service_tiers
+            .entry(service_tier.to_owned())
+            .and_modify(|existing| {
+                if existing.is_some_and(|value| value != multiplier) {
+                    *existing = None;
+                }
+            })
+            .or_insert(Some(multiplier));
+    }
+
+    service_tiers
+        .into_iter()
+        .filter_map(|(service_tier, multiplier)| {
+            multiplier.map(|multiplier| RequestBillingMultiplier {
+                json_pointer: "/service_tier".into(),
+                value: Value::String(service_tier),
+                multiplier,
+            })
+        })
+        .collect()
+}
+
+fn uniform_billing_multiplier(
+    base_cost: &Map<String, Value>,
+    mode_cost: &Map<String, Value>,
+) -> Option<Decimal> {
+    let mut multiplier = None;
+    for key in ["input", "output", "cache_read", "cache_write"] {
+        let required = matches!(key, "input" | "output");
+        let base_price = if required {
+            decimal(base_cost.get(key))?
+        } else {
+            decimal(base_cost.get(key)).unwrap_or(Decimal::ZERO)
+        };
+        let mode_price = if required {
+            decimal(mode_cost.get(key))?
+        } else {
+            decimal(mode_cost.get(key)).unwrap_or(Decimal::ZERO)
+        };
+        if base_price.is_sign_negative() || mode_price.is_sign_negative() {
+            return None;
+        }
+        if base_price == Decimal::ZERO {
+            if mode_price != Decimal::ZERO {
+                return None;
+            }
+            continue;
+        }
+        let ratio = mode_price.checked_div(base_price)?;
+        if multiplier.is_some_and(|value| value != ratio) {
+            return None;
+        }
+        multiplier = Some(ratio);
+    }
+    multiplier
 }
 
 fn parse_context_tier(value: &Value) -> Result<LongContextTier, ()> {
@@ -403,6 +506,21 @@ mod tests {
                                     "input": 99,
                                     "output": 99
                                 }
+                            },
+                            "experimental": {
+                                "modes": {
+                                    "fast": {
+                                        "cost": {
+                                            "input": 2,
+                                            "output": 4
+                                        },
+                                        "provider": {
+                                            "body": {
+                                                "service_tier": "priority"
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         },
                         "missing": {
@@ -417,7 +535,7 @@ mod tests {
                 }
             }),
             &HashSet::new(),
-            1_024,
+            4_096,
         )
         .unwrap();
 
@@ -451,8 +569,156 @@ mod tests {
             catalog.models[0].advanced_billing.long_context_tiers[1].cache_write_unit_price,
             rust_decimal::Decimal::ZERO
         );
+        assert_eq!(
+            catalog.models[0].advanced_billing.request_multipliers,
+            vec![crate::domain::RequestBillingMultiplier {
+                json_pointer: "/service_tier".into(),
+                value: json!("priority"),
+                multiplier: rust_decimal::Decimal::from(2),
+            }]
+        );
+        let compiled = crate::domain::CompiledAdvancedBilling::compile(
+            catalog.models[0].advanced_billing.clone(),
+        )
+        .unwrap();
+        assert_eq!(
+            compiled.request_multiplier(&json!({"service_tier": "priority"})),
+            rust_decimal::Decimal::from(2)
+        );
         assert_eq!(catalog.excluded_missing_prices, 1);
         assert_eq!(catalog.excluded_invalid_models, 1);
+    }
+
+    #[test]
+    fn parser_ignores_nonuniform_or_ambiguous_service_tier_modes() {
+        let catalog = parse_catalog(
+            json!({
+                "provider": {
+                    "models": {
+                        "nonuniform": {
+                            "id": "nonuniform",
+                            "cost": {
+                                "input": 1,
+                                "output": 2,
+                                "cache_read": 0.1
+                            },
+                            "experimental": {
+                                "modes": {
+                                    "fast": {
+                                        "cost": {
+                                            "input": 2,
+                                            "output": 5,
+                                            "cache_read": 0.2
+                                        },
+                                        "provider": {
+                                            "body": {
+                                                "service_tier": "priority"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "ambiguous": {
+                            "id": "ambiguous",
+                            "cost": {
+                                "input": 1,
+                                "output": 2,
+                                "cache_read": 0.1
+                            },
+                            "experimental": {
+                                "modes": {
+                                    "fast": {
+                                        "cost": {
+                                            "input": 2,
+                                            "output": 4,
+                                            "cache_read": 0.2
+                                        },
+                                        "provider": {
+                                            "body": {
+                                                "service_tier": "priority"
+                                            }
+                                        }
+                                    },
+                                    "other-fast": {
+                                        "cost": {
+                                            "input": 3,
+                                            "output": 6,
+                                            "cache_read": 0.3
+                                        },
+                                        "provider": {
+                                            "body": {
+                                                "service_tier": "priority"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }),
+            &HashSet::new(),
+            4_096,
+        )
+        .unwrap();
+
+        assert_eq!(catalog.models.len(), 2);
+        assert!(
+            catalog
+                .models
+                .iter()
+                .all(|model| model.advanced_billing.request_multipliers.is_empty())
+        );
+    }
+
+    #[test]
+    fn parser_derives_gpt5_priority_multiplier_from_fast_mode_cost() {
+        let catalog = parse_catalog(
+            json!({
+                "openai": {
+                    "id": "openai",
+                    "models": {
+                        "gpt-5.5": {
+                            "id": "gpt-5.5",
+                            "cost": {
+                                "input": 5,
+                                "output": 30,
+                                "cache_read": 0.5
+                            },
+                            "experimental": {
+                                "modes": {
+                                    "fast": {
+                                        "cost": {
+                                            "input": 12.5,
+                                            "output": 75,
+                                            "cache_read": 1.25
+                                        },
+                                        "provider": {
+                                            "body": {
+                                                "service_tier": "priority"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }),
+            &HashSet::new(),
+            4_096,
+        )
+        .unwrap();
+
+        assert_eq!(
+            catalog.models[0].advanced_billing.request_multipliers,
+            vec![crate::domain::RequestBillingMultiplier {
+                json_pointer: "/service_tier".into(),
+                value: json!("priority"),
+                multiplier: rust_decimal::Decimal::new(25, 1),
+            }]
+        );
     }
 
     #[test]

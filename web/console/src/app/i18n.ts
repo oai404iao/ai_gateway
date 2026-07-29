@@ -718,8 +718,8 @@ const zhCN: Record<string, string> = {
   "No groups for this format.": "该格式没有可用渠道组。",
   "No channels for this format.": "该格式没有可用渠道。",
   "priority {priority}": "优先级 {priority}",
-  "Preview, import, or explicitly update models.dev prices and long-context tiers.":
-    "预览、导入或显式更新 models.dev 价格和长上下文价格档位。",
+  "Preview, import, or explicitly update models.dev prices and catalog billing rules.":
+    "预览、导入或显式更新 models.dev 价格和目录计费规则。",
   "Preview": "预览",
   "Fetch the models.dev catalog, optionally filtered by provider ids.":
     "获取 models.dev 目录，可按提供商 ID 筛选。",
@@ -730,8 +730,8 @@ const zhCN: Record<string, string> = {
   "{count} catalog models.": "{count} 个目录模型。",
   "No catalog models": "没有目录模型",
   "No models matched the preview request.": "没有模型匹配此预览请求。",
-  "Select rows to import new models or update existing model prices and long-context tiers.":
-    "选择行以导入新模型，或更新已有模型的价格和长上下文价格档位。",
+  "Select rows to import new models or update existing model prices and catalog billing rules.":
+    "选择行以导入新模型，或更新已有模型的价格和目录计费规则。",
   "{importable} new, {updatable} updatable, {selected} selected.":
     "{importable} 个新模型，{updatable} 个可更新，已选择 {selected} 个。",
   "Preview failed": "预览失败",

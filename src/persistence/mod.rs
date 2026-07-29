@@ -6346,9 +6346,10 @@ async fn import_model(
         correlation_id: None,
     })
 }
-/// Refreshes catalog-owned price facts and long-context tiers for a local
-/// source model. Display name, provider label, enabled state, and local
-/// request-multiplier rules remain administrator-managed.
+/// Refreshes catalog-owned price facts, long-context tiers, and any available
+/// request multipliers for a local source model. Display name, provider label,
+/// enabled state, and unmatched local request-multiplier rules remain
+/// administrator-managed.
 async fn sync_model_price(
     transaction: &mut Transaction<'_, Postgres>,
     id: Uuid,
@@ -6358,9 +6359,20 @@ async fn sync_model_price(
     if input.source_payload.as_object().is_none() {
         return Err(RepositoryError::Validation);
     }
+    let current_advanced_billing: Value = sqlx::query_scalar(
+        "SELECT advanced_billing
+         FROM models
+         WHERE id=$1 AND source_model_id=$2
+         FOR UPDATE",
+    )
+    .bind(id)
+    .bind(&input.source_model_id)
+    .fetch_optional(&mut **transaction)
+    .await?
+    .ok_or(RepositoryError::Conflict)?;
     let before = model_audit(transaction, id).await?;
     let advanced_billing =
-        serde_json::to_value(&input.advanced_billing).expect("advanced billing serializes");
+        merge_synced_advanced_billing(current_advanced_billing, input.advanced_billing)?;
     let updated_at = sqlx::query_scalar(
         "UPDATE models
          SET currency='USD',
@@ -6370,12 +6382,7 @@ async fn sync_model_price(
              cache_write_unit_price=$5,
              output_unit_price=$6,
              price_effective_at=$7,
-             advanced_billing=jsonb_set(
-                 advanced_billing,
-                 '{long_context_tiers}',
-                 $8::jsonb->'long_context_tiers',
-                 true
-             ),
+             advanced_billing=$8,
              source_payload=$9,
              last_synced_at=$7
          WHERE id=$1 AND source_model_id=$2
@@ -6405,6 +6412,73 @@ async fn sync_model_price(
         correlation_id: None,
     })
 }
+
+fn merge_synced_advanced_billing(
+    current: Value,
+    synced: crate::domain::AdvancedBilling,
+) -> Result<Value, RepositoryError> {
+    let mut merged = serde_json::from_value::<crate::domain::AdvancedBilling>(current)
+        .map_err(|_| RepositoryError::Validation)?;
+    merged.long_context_tiers = synced.long_context_tiers;
+    if !synced.request_multipliers.is_empty() {
+        merged.request_multipliers.retain(|current| {
+            !synced.request_multipliers.iter().any(|catalog| {
+                current.json_pointer == catalog.json_pointer && current.value == catalog.value
+            })
+        });
+        merged
+            .request_multipliers
+            .extend(synced.request_multipliers);
+    }
+    crate::domain::CompiledAdvancedBilling::compile(merged.clone())
+        .map_err(|_| RepositoryError::Validation)?;
+    serde_json::to_value(merged).map_err(|_| RepositoryError::Validation)
+}
+
+#[cfg(test)]
+mod synced_advanced_billing_tests {
+    use rust_decimal::Decimal;
+    use serde_json::json;
+
+    use super::merge_synced_advanced_billing;
+    use crate::domain::{AdvancedBilling, LongContextTier, RequestBillingMultiplier};
+
+    #[test]
+    fn sync_without_catalog_request_rules_preserves_local_multipliers() {
+        let current = serde_json::to_value(AdvancedBilling {
+            long_context_tiers: vec![],
+            request_multipliers: vec![RequestBillingMultiplier {
+                json_pointer: "/reasoning/effort".into(),
+                value: json!("high"),
+                multiplier: Decimal::from(2),
+            }],
+        })
+        .unwrap();
+        let merged = merge_synced_advanced_billing(
+            current,
+            AdvancedBilling {
+                long_context_tiers: vec![LongContextTier {
+                    input_tokens_threshold: 128_000,
+                    input_unit_price: Decimal::from(3),
+                    cached_input_unit_price: Decimal::new(3, 1),
+                    cache_write_unit_price: Decimal::ZERO,
+                    output_unit_price: Some(Decimal::from(6)),
+                }],
+                request_multipliers: vec![],
+            },
+        )
+        .unwrap();
+        let merged: AdvancedBilling = serde_json::from_value(merged).unwrap();
+
+        assert_eq!(merged.long_context_tiers[0].input_tokens_threshold, 128_000);
+        assert_eq!(merged.request_multipliers.len(), 1);
+        assert_eq!(
+            merged.request_multipliers[0].json_pointer,
+            "/reasoning/effort"
+        );
+    }
+}
+
 async fn channel_insert(
     transaction: &mut Transaction<'_, Postgres>,
     id: Uuid,

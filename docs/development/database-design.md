@@ -168,11 +168,18 @@ CHECK (quota_limit_amount IS NULL OR quota_limit_amount >= 0);
 | `cache_write_unit_price` | `numeric(24,12)` | 非空、非负；不单独收费时为 `0`。 |
 | `output_unit_price` | `numeric(24,12)` | 非空、非负。 |
 | `price_effective_at` | `timestamptz` | 非空；当前价格生效时间。 |
+| `advanced_billing` | `jsonb` | 非空对象；保存长上下文价格档位和基于原始请求体的整次请求计费倍率。 |
 | `source_payload` | `jsonb` | 非空，默认 `{}`；不透明来源元数据。models.dev 导入时保存已限制大小的远端元数据。 |
 | `last_synced_at` | `timestamptz` | 可空；最近一次 models.dev 同步时间。 |
 | `created_at` / `updated_at` | `timestamptz` | 通用时间列。 |
 
 管理员同步价格时更新同一行。每次可计费请求在 `request_logs` 复制币种、计价单位、四类单价和 `price_effective_at`，所以价格被更新后，已有日志仍可精确解释费用。缓存读/写没有单独价格时存 `0`，不使用 `NULL` 表示“未知”。
+
+models.dev 的长上下文价格档位会替换 `advanced_billing.long_context_tiers`。当目录模式同时提供
+`provider.body.service_tier`，且网关支持的基础输入、缓存读、缓存写和输出价格都按同一比例变化时，
+同步器会生成 `/service_tier` 精确匹配的 `request_multipliers` 规则。可选模式缺失、无效或不是统一
+倍率时会被忽略。已有模型同步时，相同 JSON Pointer 与匹配值的规则由目录值更新，其他管理员维护的
+请求倍率保持不变。
 
 ### 4.4 `model_rules`
 

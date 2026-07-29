@@ -537,6 +537,23 @@ async fn models_dev_catalog() -> axum::Json<serde_json::Value> {
                             "tier": {"type": "context", "size": 128000}
                         }]
                     },
+                    "experimental": {
+                        "modes": {
+                            "fast": {
+                                "cost": {
+                                    "input": 2.50,
+                                    "output": 5.00,
+                                    "cache_read": 0.50,
+                                    "cache_write": 1.00
+                                },
+                                "provider": {
+                                    "body": {
+                                        "service_tier": "priority"
+                                    }
+                                }
+                            }
+                        }
+                    },
                     "metadata": {"safe": true}
                 },
                 "missing-price": {
@@ -2112,6 +2129,14 @@ async fn models_dev_catalog_apply_is_explicit_and_updates_selected_existing_pric
         preview["models"][0]["advanced_billing"]["long_context_tiers"][0]["output_unit_price"],
         "5.0"
     );
+    assert_eq!(
+        preview["models"][0]["advanced_billing"]["request_multipliers"][0],
+        serde_json::json!({
+            "json_pointer": "/service_tier",
+            "value": "priority",
+            "multiplier": "2"
+        })
+    );
     assert_eq!(preview["excluded_missing_prices"], 1);
     assert!(preview["models"][0].get("source_payload").is_none());
 
@@ -2191,6 +2216,14 @@ async fn models_dev_catalog_apply_is_explicit_and_updates_selected_existing_pric
     assert_eq!(
         imported_billing["long_context_tiers"][0]["output_unit_price"],
         "5.0"
+    );
+    assert_eq!(
+        imported_billing["request_multipliers"][0],
+        serde_json::json!({
+            "json_pointer": "/service_tier",
+            "value": "priority",
+            "multiplier": "2"
+        })
     );
 
     let model_id: Uuid =
@@ -2317,6 +2350,14 @@ async fn models_dev_catalog_apply_is_explicit_and_updates_selected_existing_pric
     assert_eq!(
         updated_billing["request_multipliers"][0]["json_pointer"],
         "/reasoning/effort"
+    );
+    assert_eq!(
+        updated_billing["request_multipliers"][1],
+        serde_json::json!({
+            "json_pointer": "/service_tier",
+            "value": "priority",
+            "multiplier": "2"
+        })
     );
 
     let missing_price_import = admin_request(
