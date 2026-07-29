@@ -118,6 +118,11 @@ export function CatalogPage() {
       render: (model) => model.advanced_billing.long_context_tiers.length,
     },
     {
+      key: "multipliers",
+      header: t("Request multipliers"),
+      render: (model) => model.advanced_billing.request_multipliers.length,
+    },
+    {
       key: "action",
       header: t("Action"),
       render: (model) => (
@@ -136,7 +141,7 @@ export function CatalogPage() {
       <PageHeader
         title={t("Price sync")}
         description={t(
-          "Preview, import, or explicitly update models.dev prices and long-context tiers.",
+          "Preview, import, or explicitly update models.dev prices and catalog billing rules.",
         )}
       />
       <Card>
@@ -201,7 +206,7 @@ export function CatalogPage() {
               />
               <p className="mt-2 text-xs text-muted-foreground">
                 {t(
-                  "Select rows to import new models or update existing model prices and long-context tiers.",
+                  "Select rows to import new models or update existing model prices and catalog billing rules.",
                 )}{" "}
                 {t("{importable} new, {updatable} updatable, {selected} selected.", {
                   importable: importable.length,

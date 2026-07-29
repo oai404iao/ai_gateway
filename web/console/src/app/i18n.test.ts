@@ -23,8 +23,8 @@ describe("Console i18n", () => {
     expect(
       translateFor(
         "zh-CN",
-        "Preview, import, or explicitly update models.dev prices and long-context tiers.",
+        "Preview, import, or explicitly update models.dev prices and catalog billing rules.",
       ),
-    ).toBe("预览、导入或显式更新 models.dev 价格和长上下文价格档位。");
+    ).toBe("预览、导入或显式更新 models.dev 价格和目录计费规则。");
   });
 });

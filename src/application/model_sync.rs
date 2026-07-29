@@ -48,9 +48,9 @@ impl ModelSyncService {
     }
 
     /// Applies administrator-selected catalog entries. A selected local
-    /// `source_model_id` refreshes its models.dev USD prices and long-context
-    /// tiers; a new identifier creates a model. No catalog billing changes
-    /// without an explicit selection.
+    /// `source_model_id` refreshes its models.dev USD prices, long-context
+    /// tiers, and any supported request multipliers; a new identifier creates
+    /// a model. No catalog billing changes without an explicit selection.
     pub async fn apply(
         &self,
         actor: Uuid,

@@ -304,6 +304,13 @@ Policy 不再保存额度、RPM、并发、格式、权限或最大活动 Key �
 可统一修改启用状态、状态统计、自动禁用授权、权重和计费倍率。任一版本过期或候选路由
 配置无效时，整批修改、审计和运行时发布都会回滚。
 
+模型的 `advanced_billing.request_multipliers` 会在请求变换前，对原始客户端 JSON
+请求体执行 JSON Pointer 精确匹配；所有命中的倍率与渠道倍率相乘，并应用到整次请求费用。
+从 models.dev 导入或更新模型时，网关会尽力把
+`experimental.modes.*.provider.body.service_tier` 及其统一缩放的输入、缓存和输出价格转换为
+`/service_tier` 请求倍率。目录没有该信息、价格不是统一倍率或结构无效时，只跳过该可选规则，
+不会排除基础模型；显式价格更新会更新相同匹配条件的目录倍率，同时保留其他本地请求倍率。
+
 渠道与变换模板的列表接口只返回摘要字段；管理员读取单条详情时，渠道响应还会返回
 `upstream_api_key` 与 `override_document`，模板响应会返回 `document`，供 Console
 编辑页回显和直接修改。上述详情响应仍使用 `Cache-Control: no-store`，审计日志继续排除

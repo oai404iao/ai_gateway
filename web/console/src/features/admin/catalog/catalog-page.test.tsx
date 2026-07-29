@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { AppProviders } from "@/app/providers";
@@ -34,7 +34,13 @@ describe("CatalogPage", () => {
                     output_unit_price: "0.9",
                   },
                 ],
-                request_multipliers: [],
+                request_multipliers: [
+                  {
+                    json_pointer: "/service_tier",
+                    value: "priority",
+                    multiplier: "2",
+                  },
+                ],
               },
               action: "price_update",
             },
@@ -64,10 +70,12 @@ describe("CatalogPage", () => {
 
     expect(screen.getByRole("heading", { name: "Price sync" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Fetch preview" }));
+    const modelRow = await screen.findByRole("row", { name: /GPT-4o mini/ });
+    expect(screen.getByRole("columnheader", { name: "Request multipliers" })).toBeInTheDocument();
+    expect(within(modelRow).getAllByRole("cell")[5]).toHaveTextContent("1");
     await user.click(
       await screen.findByRole("checkbox", { name: "Select openai/gpt-4o-mini" }),
     );
-    expect(screen.getByText("1")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Apply selected (1)" }));
 
     await waitFor(() => {
