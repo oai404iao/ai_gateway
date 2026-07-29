@@ -23,6 +23,7 @@ export type SelectionStrategy = S["SelectionStrategy"];
 export type UpstreamAuthKind = S["UpstreamAuthKind"];
 export type ScheduledTestingMode = S["ScheduledTestingMode"];
 export type RequestLogSource = S["RequestLogSource"];
+export type RequestProtocol = S["RequestProtocol"];
 export type ModelSyncAction = S["ModelSyncAction"];
 export type ChannelStatusWindow = S["ChannelStatusWindow"];
 export type StatisticsGranularity = S["StatisticsGranularity"];

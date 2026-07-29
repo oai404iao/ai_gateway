@@ -7,8 +7,8 @@ use std::{env, net::SocketAddr, sync::Arc, time::Duration};
 use ai_gateway::{
     application::{ProxyService, RecordingRequestLogSink},
     domain::{
-        ApiFormat, PassiveHealthSettings, RequestLogEvent, RequestLogOutcome, RequestUsage,
-        ResponsesWebSocketSettings, SystemRuntimeSettings, UpstreamTimeoutDefaults,
+        ApiFormat, PassiveHealthSettings, RequestLogEvent, RequestLogOutcome, RequestProtocol,
+        RequestUsage, ResponsesWebSocketSettings, SystemRuntimeSettings, UpstreamTimeoutDefaults,
     },
     http,
     persistence::{
@@ -327,7 +327,7 @@ pub(super) async fn smoke_nonstreaming_format(
         "the real upstream response JSON must be an object"
     );
     assert_response_has_usage(format, &value);
-    assert_usage_was_logged(&gateway.logs.events(), format, false);
+    assert_usage_was_logged(&gateway.logs.events(), format, RequestProtocol::NonStream);
 }
 
 /// Makes one small, paid SSE request for one API format and fully consumes the
@@ -380,7 +380,7 @@ pub(super) async fn smoke_streaming_format(
         .to_bytes();
     raw_sse.extend_from_slice(&remainder);
     let events = gateway.logs.events();
-    assert_usage_was_logged(&events, format, true);
+    assert_usage_was_logged(&events, format, RequestProtocol::Sse);
     assert_streaming_usage_matches_terminal_sse_event(&events, format, &raw_sse);
 }
 
@@ -422,6 +422,7 @@ pub(super) async fn smoke_responses_websocket(settings: &SmokeSettings, upstream
     );
     for event in &events[..attempts - 1] {
         assert_eq!(event.api_format, SmokeFormat::Responses.api_format());
+        assert_eq!(event.request_protocol, RequestProtocol::WebSocket);
         assert!(event.streamed);
         assert_eq!(event.outcome, RequestLogOutcome::Failed);
         assert!(
@@ -440,7 +441,7 @@ pub(super) async fn smoke_responses_websocket(settings: &SmokeSettings, upstream
     assert_usage_was_logged(
         std::slice::from_ref(successful_event),
         SmokeFormat::Responses,
-        true,
+        RequestProtocol::WebSocket,
     );
     let expected = usage_from_sse_value(SmokeFormat::Responses, &completed)
         .expect("real-upstream websocket response.completed must include usage");
@@ -592,7 +593,11 @@ fn assert_response_has_usage(format: SmokeFormat, value: &Value) {
     );
 }
 
-fn assert_usage_was_logged(events: &[RequestLogEvent], format: SmokeFormat, streamed: bool) {
+fn assert_usage_was_logged(
+    events: &[RequestLogEvent],
+    format: SmokeFormat,
+    request_protocol: RequestProtocol,
+) {
     assert_eq!(
         events.len(),
         1,
@@ -600,7 +605,8 @@ fn assert_usage_was_logged(events: &[RequestLogEvent], format: SmokeFormat, stre
     );
     let event = &events[0];
     assert_eq!(event.api_format, format.api_format());
-    assert_eq!(event.streamed, streamed);
+    assert_eq!(event.request_protocol, request_protocol);
+    assert_eq!(event.streamed, request_protocol.is_streamed());
     assert_eq!(event.outcome, RequestLogOutcome::Succeeded);
     assert!(
         event

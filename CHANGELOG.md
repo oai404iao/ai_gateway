@@ -9,6 +9,8 @@ Versioning.
 
 ### Added
 
+- Request protocol classification on user and administrator request logs,
+  distinguishing non-streaming HTTP, SSE, and Responses WebSocket requests.
 - Device-aware Console login-session management with current-device markers,
   per-session sign-out, sign-out-all-other-devices, explicit active/expired/
   revoked states, and collapsible session history.

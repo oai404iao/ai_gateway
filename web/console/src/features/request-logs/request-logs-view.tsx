@@ -101,6 +101,20 @@ function requestSourceLabel(source: RequestLogView["request_source"], t: (value:
   return source === "scheduled_test" ? t("Scheduled test") : t("Client request");
 }
 
+function requestProtocolLabel(
+  protocol: RequestLogView["request_protocol"],
+  t: (value: string) => string,
+) {
+  switch (protocol) {
+    case "non_stream":
+      return t("Non-stream");
+    case "sse":
+      return "SSE";
+    case "websocket":
+      return t("WebSocket");
+  }
+}
+
 function toQuery(draft: RequestLogFilterDraft): ListQuery {
   return {
     limit: draft.limit,
@@ -196,6 +210,13 @@ export function RequestLogsView({
             className="mt-1"
           />
         </span>
+      ),
+    },
+    {
+      key: "protocol",
+      header: t("Protocol"),
+      render: (log) => (
+        <Badge variant="outline">{requestProtocolLabel(log.request_protocol, t)}</Badge>
       ),
     },
     {
@@ -536,7 +557,10 @@ export function RequestLogsView({
                 value={requestSourceLabel(detail.data.request_source, t)}
               />
               <DetailField label={t("HTTP status")} value={detail.data.response_status_code ?? "—"} />
-              <DetailField label={t("Streamed")} value={detail.data.streamed ? t("yes") : t("no")} />
+              <DetailField
+                label={t("Protocol")}
+                value={requestProtocolLabel(detail.data.request_protocol, t)}
+              />
               <DetailField label={t("Client model")} value={detail.data.client_model} mono />
               <DetailField
                 label={t("Upstream model")}

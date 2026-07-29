@@ -15,7 +15,7 @@ use ai_gateway::{
     },
     domain::{
         ApiFormat, ApiKeyPermission, AutomaticDisableTrigger, RequestBilling, RequestLogEvent,
-        RequestLogOutcome, RequestLogSource, RequestPriceSnapshot, RequestUsage,
+        RequestLogOutcome, RequestLogSource, RequestPriceSnapshot, RequestProtocol, RequestUsage,
     },
     http::console::{self, ConsoleState},
     models_dev::ModelsDevClient,
@@ -364,6 +364,7 @@ async fn system_probe_identity_is_an_internal_active_administrator() {
         api_key_id: first.api_key_id,
         request_source: RequestLogSource::ScheduledTest,
         api_format: ApiFormat::OpenAiChatCompletions,
+        request_protocol: RequestProtocol::NonStream,
         client_model: "scheduled-test-model".into(),
         upstream_model: Some("scheduled-test-model".into()),
         model_rule_id: None,
@@ -555,6 +556,7 @@ struct PersistedLog {
     user_id: Uuid,
     api_key_id: Uuid,
     api_format: String,
+    request_protocol: String,
     client_model: String,
     upstream_model: Option<String>,
     model_rule_id: Option<Uuid>,
@@ -619,7 +621,7 @@ fn assert_log_timing(log: &PersistedLog) {
 async fn wait_for_log(pool: &PgPool, api_key_id: Uuid, client_model: &str) -> PersistedLog {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
     loop {
-        let rows = sqlx::query_as::<_, PersistedLog>("SELECT started_at, completed_at, user_id, api_key_id, api_format::text AS api_format, client_model, upstream_model, model_rule_id, channel_group_id, channel_id, model_id, outcome, response_status_code, streamed, ttft_ms, total_duration_ms, error_code, error_summary FROM request_logs WHERE api_key_id = $1 AND client_model = $2")
+        let rows = sqlx::query_as::<_, PersistedLog>("SELECT started_at, completed_at, user_id, api_key_id, api_format::text AS api_format, request_protocol, client_model, upstream_model, model_rule_id, channel_group_id, channel_id, model_id, outcome, response_status_code, streamed, ttft_ms, total_duration_ms, error_code, error_summary FROM request_logs WHERE api_key_id = $1 AND client_model = $2")
             .bind(api_key_id)
             .bind(client_model)
             .fetch_all(pool)
@@ -647,7 +649,7 @@ async fn wait_for_terminal_log(
 ) -> PersistedLog {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
     loop {
-        let rows = sqlx::query_as::<_, PersistedLog>("SELECT started_at, completed_at, user_id, api_key_id, api_format::text AS api_format, client_model, upstream_model, model_rule_id, channel_group_id, channel_id, model_id, outcome, response_status_code, streamed, ttft_ms, total_duration_ms, error_code, error_summary FROM request_logs WHERE api_key_id = $1 AND client_model = $2 AND outcome = $3 AND error_code IS NOT DISTINCT FROM $4")
+        let rows = sqlx::query_as::<_, PersistedLog>("SELECT started_at, completed_at, user_id, api_key_id, api_format::text AS api_format, request_protocol, client_model, upstream_model, model_rule_id, channel_group_id, channel_id, model_id, outcome, response_status_code, streamed, ttft_ms, total_duration_ms, error_code, error_summary FROM request_logs WHERE api_key_id = $1 AND client_model = $2 AND outcome = $3 AND error_code IS NOT DISTINCT FROM $4")
             .bind(api_key_id)
             .bind(client_model)
             .bind(outcome)
@@ -845,6 +847,7 @@ fn request_log_event(seed: &Seed, outcome: RequestLogOutcome) -> RequestLogEvent
         api_key_id: seed.key,
         request_source: ai_gateway::domain::RequestLogSource::Client,
         api_format: ApiFormat::OpenAiChatCompletions,
+        request_protocol: RequestProtocol::Sse,
         client_model: seed.client_model.clone(),
         upstream_model: Some("upstream-v1".into()),
         model_rule_id: Some(seed.rule),
@@ -3843,6 +3846,7 @@ async fn proxy_request_logs_reach_postgres_for_terminal_and_rejected_requests() 
     assert_eq!(success.channel_id, Some(seed.channel));
     assert_eq!(success.model_id, Some(seed.model));
     assert_eq!(success.response_status_code, Some(200));
+    assert_eq!(success.request_protocol, "sse");
     assert!(success.streamed);
     assert!(success.ttft_ms.is_some());
     assert_eq!(success.error_code, None);
@@ -3871,6 +3875,7 @@ async fn proxy_request_logs_reach_postgres_for_terminal_and_rejected_requests() 
     )
     .await;
     assert_eq!(sse_error.response_status_code, Some(200));
+    assert_eq!(sse_error.request_protocol, "sse");
     assert_eq!(
         sse_error.error_summary.as_deref(),
         Some("upstream quota exhausted")
@@ -3892,6 +3897,7 @@ async fn proxy_request_logs_reach_postgres_for_terminal_and_rejected_requests() 
     )
     .await;
     assert_eq!(upstream_failure.response_status_code, Some(429));
+    assert_eq!(upstream_failure.request_protocol, "non_stream");
 
     *state.0.lock().unwrap() = UpstreamMode::HeaderDelay;
     let response = request(&seed.secret, &seed.client_model, false)

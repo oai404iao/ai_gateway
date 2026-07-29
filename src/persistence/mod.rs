@@ -1249,6 +1249,7 @@ pub struct ConsoleRequestLog {
     pub api_key_id: Uuid,
     pub request_source: String,
     pub api_format: String,
+    pub request_protocol: String,
     pub client_model: String,
     pub upstream_model: Option<String>,
     pub model_rule_id: Option<Uuid>,
@@ -2805,34 +2806,35 @@ impl RequestLogRepository {
             let inserted_ids = sqlx::query_scalar::<_, Uuid>(
                 "INSERT INTO request_logs \
                  (id,started_at,completed_at,user_id,api_key_id,request_source,api_format,\
-                  client_model,upstream_model,model_rule_id,channel_group_id,channel_id,outcome,\
-                  response_status_code,streamed,ttft_ms,total_duration_ms,\
+                  request_protocol,client_model,upstream_model,model_rule_id,channel_group_id,\
+                  channel_id,outcome,response_status_code,streamed,ttft_ms,total_duration_ms,\
                   output_tokens_per_second,input_tokens,cached_input_tokens,cache_write_tokens,\
                   output_tokens,model_id,currency,price_unit_tokens,price_effective_at,\
                   input_unit_price,cached_input_unit_price,cache_write_unit_price,\
                   output_unit_price,cost_amount,error_code,error_summary) \
                  SELECT input.id,input.started_at,input.completed_at,input.user_id,input.api_key_id,\
-                        input.request_source,input.api_format::api_format,input.client_model,\
-                        input.upstream_model,input.model_rule_id,input.channel_group_id,\
-                        input.channel_id,input.outcome,input.response_status_code,input.streamed,\
-                        input.ttft_ms,input.total_duration_ms,input.output_tokens_per_second,\
-                        input.input_tokens,input.cached_input_tokens,input.cache_write_tokens,\
-                        input.output_tokens,input.model_id,input.currency::char(3),\
-                        input.price_unit_tokens,input.price_effective_at,input.input_unit_price,\
+                        input.request_source,input.api_format::api_format,input.request_protocol,\
+                        input.client_model,input.upstream_model,input.model_rule_id,\
+                        input.channel_group_id,input.channel_id,input.outcome,\
+                        input.response_status_code,input.streamed,input.ttft_ms,\
+                        input.total_duration_ms,input.output_tokens_per_second,input.input_tokens,\
+                        input.cached_input_tokens,input.cache_write_tokens,input.output_tokens,\
+                        input.model_id,input.currency::char(3),input.price_unit_tokens,\
+                        input.price_effective_at,input.input_unit_price,\
                         input.cached_input_unit_price,input.cache_write_unit_price,\
-                        input.output_unit_price,input.cost_amount,input.error_code,\
-                        input.error_summary \
+                        input.output_unit_price,input.cost_amount,input.error_code,input.error_summary \
                  FROM UNNEST(\
                     $1::uuid[],$2::timestamptz[],$3::timestamptz[],$4::uuid[],$5::uuid[],\
-                    $6::text[],$7::text[],$8::text[],$9::text[],$10::uuid[],$11::uuid[],\
-                    $12::uuid[],$13::text[],$14::int2[],$15::bool[],$16::int4[],$17::int4[],\
-                    $18::numeric[],$19::int8[],$20::int8[],$21::int8[],$22::int8[],$23::uuid[],\
-                    $24::text[],$25::int8[],$26::timestamptz[],$27::numeric[],$28::numeric[],\
-                    $29::numeric[],$30::numeric[],$31::numeric[],$32::text[],$33::text[]\
+                    $6::text[],$7::text[],$8::text[],$9::text[],$10::text[],$11::uuid[],\
+                    $12::uuid[],$13::uuid[],$14::text[],$15::int2[],$16::bool[],$17::int4[],\
+                    $18::int4[],$19::numeric[],$20::int8[],$21::int8[],$22::int8[],$23::int8[],\
+                    $24::uuid[],$25::text[],$26::int8[],$27::timestamptz[],$28::numeric[],\
+                    $29::numeric[],$30::numeric[],$31::numeric[],$32::numeric[],$33::text[],\
+                    $34::text[]\
                  ) AS input(\
                     id,started_at,completed_at,user_id,api_key_id,request_source,api_format,\
-                    client_model,upstream_model,model_rule_id,channel_group_id,channel_id,outcome,\
-                    response_status_code,streamed,ttft_ms,total_duration_ms,\
+                    request_protocol,client_model,upstream_model,model_rule_id,channel_group_id,\
+                    channel_id,outcome,response_status_code,streamed,ttft_ms,total_duration_ms,\
                     output_tokens_per_second,input_tokens,cached_input_tokens,cache_write_tokens,\
                     output_tokens,model_id,currency,price_unit_tokens,price_effective_at,\
                     input_unit_price,cached_input_unit_price,cache_write_unit_price,\
@@ -2848,6 +2850,7 @@ impl RequestLogRepository {
                 .bind(&batch.api_key_ids)
                 .bind(&batch.request_sources)
                 .bind(&batch.api_formats)
+                .bind(&batch.request_protocols)
                 .bind(&batch.client_models)
                 .bind(&batch.upstream_models)
                 .bind(&batch.model_rule_ids)
@@ -2895,13 +2898,14 @@ impl RequestLogRepository {
                 let ids = needs_existing.iter().copied().collect::<Vec<_>>();
                 let existing = sqlx::query_as::<_, StoredRequestLog>(
                     "SELECT id,started_at,completed_at,user_id,api_key_id,request_source,\
-                            api_format::text AS api_format,client_model,upstream_model,\
-                            model_rule_id,channel_group_id,channel_id,outcome,response_status_code,\
-                            streamed,ttft_ms,total_duration_ms,output_tokens_per_second,input_tokens,\
-                            cached_input_tokens,cache_write_tokens,output_tokens,model_id,currency,\
-                            price_unit_tokens,price_effective_at,input_unit_price,\
-                            cached_input_unit_price,cache_write_unit_price,output_unit_price,\
-                            cost_amount,error_code,error_summary \
+                            api_format::text AS api_format,request_protocol,client_model,\
+                            upstream_model,model_rule_id,channel_group_id,channel_id,outcome,\
+                            response_status_code,streamed,ttft_ms,total_duration_ms,\
+                            output_tokens_per_second,input_tokens,cached_input_tokens,\
+                            cache_write_tokens,output_tokens,model_id,currency,price_unit_tokens,\
+                            price_effective_at,input_unit_price,cached_input_unit_price,\
+                            cache_write_unit_price,output_unit_price,cost_amount,error_code,\
+                            error_summary \
                      FROM request_logs WHERE id = ANY($1)",
                 )
                 .bind(&ids)
@@ -3165,7 +3169,7 @@ impl RequestLogRepository {
     }
 }
 
-const CONSOLE_REQUEST_LOG_COLUMNS: &str = "log.id,log.started_at,log.completed_at,log.user_id,log.api_key_id,log.request_source,log.api_format::text AS api_format,log.client_model,log.upstream_model,log.model_rule_id,log.channel_group_id,channel_group.name AS channel_group_name,log.channel_id,channel.name AS channel_name,log.outcome,log.response_status_code,log.streamed,log.ttft_ms,log.total_duration_ms,log.input_tokens,log.cached_input_tokens,log.cache_write_tokens,log.output_tokens,log.cost_amount,log.error_code,log.error_summary,log.billed_at";
+const CONSOLE_REQUEST_LOG_COLUMNS: &str = "log.id,log.started_at,log.completed_at,log.user_id,log.api_key_id,log.request_source,log.api_format::text AS api_format,log.request_protocol,log.client_model,log.upstream_model,log.model_rule_id,log.channel_group_id,channel_group.name AS channel_group_name,log.channel_id,channel.name AS channel_name,log.outcome,log.response_status_code,log.streamed,log.ttft_ms,log.total_duration_ms,log.input_tokens,log.cached_input_tokens,log.cache_write_tokens,log.output_tokens,log.cost_amount,log.error_code,log.error_summary,log.billed_at";
 
 async fn query_console_request_log(
     pool: &PgPool,
@@ -3784,6 +3788,7 @@ struct RequestLogInsertBatch {
     api_key_ids: Vec<Uuid>,
     request_sources: Vec<String>,
     api_formats: Vec<String>,
+    request_protocols: Vec<String>,
     client_models: Vec<String>,
     upstream_models: Vec<Option<String>>,
     model_rule_ids: Vec<Option<Uuid>>,
@@ -3822,6 +3827,7 @@ impl RequestLogInsertBatch {
             api_key_ids: Vec::with_capacity(capacity),
             request_sources: Vec::with_capacity(capacity),
             api_formats: Vec::with_capacity(capacity),
+            request_protocols: Vec::with_capacity(capacity),
             client_models: Vec::with_capacity(capacity),
             upstream_models: Vec::with_capacity(capacity),
             model_rule_ids: Vec::with_capacity(capacity),
@@ -3864,6 +3870,8 @@ impl RequestLogInsertBatch {
         self.request_sources
             .push(event.request_source.as_str().into());
         self.api_formats.push(api_format_name(event).into());
+        self.request_protocols
+            .push(event.request_protocol.as_str().into());
         self.client_models.push(event.client_model.clone());
         self.upstream_models.push(event.upstream_model.clone());
         self.model_rule_ids.push(event.model_rule_id);
@@ -3924,6 +3932,7 @@ struct StoredRequestLog {
     api_key_id: Uuid,
     request_source: String,
     api_format: String,
+    request_protocol: String,
     client_model: String,
     upstream_model: Option<String>,
     model_rule_id: Option<Uuid>,
@@ -3966,6 +3975,7 @@ impl StoredRequestLog {
             && self.api_key_id == event.api_key_id
             && self.request_source == event.request_source.as_str()
             && self.api_format == api_format_name(event)
+            && self.request_protocol == event.request_protocol.as_str()
             && self.client_model == event.client_model
             && self.upstream_model == event.upstream_model
             && self.model_rule_id == event.model_rule_id

@@ -29,9 +29,12 @@ spool 目录必须可写，并且同一台主机上的每个 Gateway 进程必�
 
 ## 升级边界
 
-Journal v2 的每条事件都必须显式包含 `error_summary`，即使其值为
-`null`。升级自可能省略该字段的旧二进制前，必须先排空本地 spool 和
-`request_log_ingest`；新二进制会拒绝缺少该字段的积压 payload。
+Journal v3 的每条事件都显式包含 `request_protocol`，取值为
+`non_stream`、`sse` 或 `websocket`。读取器仍兼容 v2，并根据旧事件的
+`streamed` 推导 `non_stream` 或 `sse`；旧格式没有足够信息区分已经记录的
+WebSocket 与 SSE，因此 v2 中所有 `streamed = true` 的积压事件都会按 SSE
+投影。v1 仍因缺少必需的 `error_summary` 而不受支持；从会写入 v1 payload
+的旧二进制升级前，必须先排空本地 spool 和 `request_log_ingest`。
 
 ## 独立数据库连接池
 

@@ -11,7 +11,7 @@ use ai_gateway::{
     admission::AdmissionRuntime,
     application::{ProxyService, RecordingRequestLogSink, SystemMetricsService},
     domain::{
-        PassiveHealthSettings, ResponsesWebSocketSettings, SystemRuntimeSettings,
+        PassiveHealthSettings, RequestProtocol, ResponsesWebSocketSettings, SystemRuntimeSettings,
         UpstreamTimeoutDefaults,
     },
     http,
@@ -746,6 +746,7 @@ async fn responses_websocket_forwards_transforms_reuses_connection_and_logs_requ
     assert_eq!(logs.len(), 4);
     for event in logs {
         assert_eq!(event.response_status_code, Some(200));
+        assert_eq!(event.request_protocol, RequestProtocol::WebSocket);
         assert!(event.streamed);
         let usage = event.billing.unwrap().usage.unwrap();
         assert_eq!(usage.input_tokens, 5);

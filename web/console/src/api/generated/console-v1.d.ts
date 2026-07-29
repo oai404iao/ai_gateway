@@ -1702,6 +1702,7 @@ export interface components {
             api_key_id: string;
             request_source: components["schemas"]["RequestLogSource"];
             api_format: components["schemas"]["ApiFormat"];
+            request_protocol: components["schemas"]["RequestProtocol"];
             client_model: string;
             upstream_model: string | null;
             /** Format: uuid */
@@ -1719,6 +1720,7 @@ export interface components {
             channel_name: string | null;
             outcome: string;
             response_status_code: number | null;
+            /** @description Compatibility flag; true for SSE and WebSocket requests. */
             streamed: boolean;
             ttft_ms: number | null;
             total_duration_ms: number | null;
@@ -1735,6 +1737,8 @@ export interface components {
         };
         /** @enum {string} */
         RequestLogSource: "client" | "scheduled_test";
+        /** @enum {string} */
+        RequestProtocol: "non_stream" | "sse" | "websocket";
         PersonalUsageReport: {
             /**
              * Format: date

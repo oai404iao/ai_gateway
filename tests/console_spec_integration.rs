@@ -3315,6 +3315,7 @@ async fn request_log_filters_match_the_console_contract() {
     let body = body_json(response).await;
     assert_eq!(body.as_array().unwrap().len(), 1);
     assert_eq!(body[0]["id"], matching_log_id.to_string());
+    assert_eq!(body[0]["request_protocol"], "non_stream");
     assert_eq!(body[0]["error_code"], "provider_error");
     assert_eq!(body[0]["error_summary"], "upstream quota exhausted");
 
@@ -3329,6 +3330,7 @@ async fn request_log_filters_match_the_console_contract() {
     assert_eq!(detail.status(), StatusCode::OK);
     let detail = body_json(detail).await;
     assert_eq!(detail["id"], matching_log_id.to_string());
+    assert_eq!(detail["request_protocol"], "non_stream");
     assert_eq!(detail["error_code"], "provider_error");
     assert_eq!(detail["error_summary"], "upstream quota exhausted");
 
@@ -3700,6 +3702,7 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
         admin_logs[0]["channel_name"],
         format!("statistics-channel-{group_id}")
     );
+    assert_eq!(admin_logs[0]["request_protocol"], "non_stream");
 
     let admin_own_logs = request(
         &app,
@@ -3716,6 +3719,7 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
         admin_own_logs[0]["channel_name"],
         format!("statistics-channel-{group_id}")
     );
+    assert_eq!(admin_own_logs[0]["request_protocol"], "non_stream");
     let admin_own_log_id = admin_own_logs[0]["id"].as_str().unwrap();
     let admin_own_log = request(
         &app,
@@ -3732,6 +3736,7 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
         admin_own_log["channel_name"],
         format!("statistics-channel-{group_id}")
     );
+    assert_eq!(admin_own_log["request_protocol"], "non_stream");
 
     let user_logs = request_with_token(
         &app,
@@ -3750,6 +3755,7 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
     );
     assert!(user_logs[0]["channel_id"].is_null());
     assert!(user_logs[0]["channel_name"].is_null());
+    assert_eq!(user_logs[0]["request_protocol"], "non_stream");
 
     let user_log = request_with_token(
         &app,
@@ -3764,6 +3770,7 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
     let user_log = body_json(user_log).await;
     assert!(user_log["channel_id"].is_null());
     assert!(user_log["channel_name"].is_null());
+    assert_eq!(user_log["request_protocol"], "non_stream");
 
     let user_channel_status = request_with_token(
         &app,

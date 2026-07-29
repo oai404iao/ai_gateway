@@ -44,6 +44,8 @@ describe("RequestLogsView", () => {
     expect(
       await screen.findByRole("columnheader", { name: "Channel" }),
     ).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Protocol" })).toBeInTheDocument();
+    expect(screen.getByText("SSE")).toBeInTheDocument();
     expect(
       screen.queryByRole("columnheader", { name: "Channel ID" }),
     ).not.toBeInTheDocument();
@@ -92,6 +94,7 @@ describe("RequestLogsView", () => {
     expect(
       await screen.findByRole("columnheader", { name: "Channel group" }),
     ).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Protocol" })).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: "Channel" })).toBeInTheDocument();
     expect(
       screen.queryByRole("columnheader", { name: "Channel ID" }),
@@ -141,6 +144,7 @@ describe("RequestLogsView", () => {
       ...REQUEST_LOG,
       request_source: "scheduled_test",
       api_format: "open_ai_responses",
+      request_protocol: "websocket",
       client_model: "detail-model",
       upstream_model: "upstream-detail-model",
       model_rule_id: null,
@@ -183,6 +187,7 @@ describe("RequestLogsView", () => {
     expect(
       await screen.findByText("provider_error", { selector: "dd" }),
     ).toBeInTheDocument();
+    expect(await screen.findByText("WebSocket", { selector: "dd" })).toBeInTheDocument();
     const channelLabel = await screen.findByText("Channel", { selector: "dt" });
     expect(channelLabel.parentElement).toHaveTextContent(CHANNEL.name);
     const channelIdLabel = await screen.findByText("Channel ID", { selector: "dt" });

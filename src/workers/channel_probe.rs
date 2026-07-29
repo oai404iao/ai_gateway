@@ -25,7 +25,8 @@ use crate::{
     },
     domain::{
         ApiFormat, AutomaticDisableTrigger, CompiledChannel, CompiledScheduledTestModel,
-        RequestLogEvent, RequestLogOutcome, RequestLogSource, ScheduledTestingMode, UpstreamAuth,
+        RequestLogEvent, RequestLogOutcome, RequestLogSource, RequestProtocol,
+        ScheduledTestingMode, UpstreamAuth,
     },
     persistence::SystemProbeIdentity,
     runtime_config::RuntimeConfig,
@@ -452,6 +453,7 @@ fn finished_probe(
             api_key_id: context.identity.api_key_id,
             request_source: RequestLogSource::ScheduledTest,
             api_format: context.channel.api_format(),
+            request_protocol: RequestProtocol::NonStream,
             client_model: model.to_owned(),
             upstream_model: Some(model.to_owned()),
             model_rule_id: None,
