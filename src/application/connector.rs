@@ -110,6 +110,13 @@ impl PreparedUpstreamAttempt {
         matches!(self, Self::Codex { .. })
     }
 
+    /// Codex's successful Responses endpoint is an SSE protocol even if an
+    /// intermediary omits or rewrites the response Content-Type.
+    #[must_use]
+    pub(crate) const fn successful_response_is_sse(&self) -> bool {
+        matches!(self, Self::Codex { .. })
+    }
+
     pub(crate) fn observe_response(&self, status: StatusCode) {
         if status != StatusCode::UNAUTHORIZED {
             return;

@@ -104,13 +104,19 @@ Chat Completions 与 Responses 之间转换。
 2. 拒绝非空 `previous_response_id`；
 3. 强制写入 `stream=true`、`store=false`；
 4. 将目标改为 `/backend-api/codex/responses`；
-5. 最后注入当前凭证的 Bearer、account、FedRAMP 和 Codex 会话 Header；
-6. 逐块转发上游 SSE，不在 Connector 中缓冲整条响应。
+5. 强制上游 `Accept-Encoding: identity`，使网关能直接观察终态 SSE 与 usage；
+6. 最后注入当前凭证的 Bearer、account、FedRAMP 和 Codex 会话 Header；
+7. 逐块转发上游 SSE，不在 Connector 中缓冲整条响应。
 
 客户端提供的合法 `session-id` / `thread-id` 会被保留。缺少时，如果请求匹配已配置的
 Session affinity 规则，网关从该规则的不可逆 session hash 派生稳定、opaque 的 UUID；
 若请求没有匹配 affinity，则为本次请求生成新的 opaque UUID。缺失的
 `x-client-request-id` 使用最终 `thread-id`。
+
+Codex 成功响应按 Connector 契约视为 SSE，而不只依赖上游
+`Content-Type`。网关在转发 `response.completed` / `response.failed` 的同时完成
+usage 与请求终态记录；客户端随后立即停止读取时，不会把已经完整结束的请求覆盖成
+`client_cancelled`。
 
 网关有意使用 `ai-gateway/<gateway-version>` User-Agent 和 `originator: ai_gateway`，而不是
 冒充 Codex CLI 的 `codex_cli_rs` 标识；Codex `client_version`/`version` 则报告独立维护的

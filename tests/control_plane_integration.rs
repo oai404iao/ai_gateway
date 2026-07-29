@@ -11,8 +11,8 @@ use ai_gateway::{
     application::{
         AutomaticDisableWorker, ChannelModelDiscoveryService, CodexConnectorService,
         ConsoleAuthService, ControlPlaneCoordinator, ModelSyncService, NoopRequestLogSink,
-        ProxyService, QueueRequestLogSink, RequestLogSink, SystemMetricsService,
-        UpstreamConnectorRegistry, hash_console_password,
+        ProxyService, QueueRequestLogSink, RecordingRequestLogSink, RequestLogSink,
+        SystemMetricsService, UpstreamConnectorRegistry, hash_console_password,
     },
     domain::{
         ApiFormat, ApiKeyPermission, AutomaticDisableTrigger, ConnectorKind, RequestBilling,
@@ -488,6 +488,7 @@ struct UpstreamState(Arc<Mutex<UpstreamMode>>);
 #[derive(Clone, Debug)]
 struct CapturedCodexRequest {
     authorization: Option<String>,
+    accept_encoding: Option<String>,
     account_id: Option<String>,
     originator: Option<String>,
     session_id: Option<String>,
@@ -510,22 +511,41 @@ async fn codex_responses_upstream(
             .and_then(|value| value.to_str().ok())
             .map(str::to_owned)
     };
-    state.0.lock().unwrap().push(CapturedCodexRequest {
-        authorization: header("authorization"),
-        account_id: header("chatgpt-account-id"),
-        originator: header("originator"),
-        session_id: header("session-id"),
-        thread_id: header("thread-id"),
-        client_request_id: header("x-client-request-id"),
-        body: serde_json::from_slice(&body).unwrap(),
-    });
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "text/event-stream")
-        .body(Body::from(
-            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_codex\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n",
-        ))
-        .unwrap()
+    let request_index = {
+        let mut requests = state.0.lock().unwrap();
+        let request_index = requests.len();
+        requests.push(CapturedCodexRequest {
+            authorization: header("authorization"),
+            accept_encoding: header("accept-encoding"),
+            account_id: header("chatgpt-account-id"),
+            originator: header("originator"),
+            session_id: header("session-id"),
+            thread_id: header("thread-id"),
+            client_request_id: header("x-client-request-id"),
+            body: serde_json::from_slice(&body).unwrap(),
+        });
+        request_index
+    };
+    let terminal = Bytes::from_static(
+        b"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_codex\",\"usage\":{\"input_tokens\":100,\"input_tokens_details\":{\"cached_tokens\":40,\"cache_write_tokens\":60},\"output_tokens\":10,\"output_tokens_details\":{\"reasoning_tokens\":5},\"total_tokens\":110}}}\n\n",
+    );
+    let response = Response::builder().status(StatusCode::OK).header(
+        "content-type",
+        if request_index == 0 {
+            "application/octet-stream"
+        } else {
+            "text/event-stream"
+        },
+    );
+    if request_index == 0 {
+        let first = stream::once(async move { Ok::<Bytes, io::Error>(terminal) });
+        let pending = stream::pending::<Result<Bytes, io::Error>>();
+        response
+            .body(Body::from_stream(first.chain(pending)))
+            .unwrap()
+    } else {
+        response.body(Body::from(terminal)).unwrap()
+    }
 }
 
 async fn upstream(State(state): State<UpstreamState>) -> Response {
@@ -1357,11 +1377,12 @@ async fn codex_connector_forwards_responses_with_managed_credentials_and_headers
     .await
     .unwrap();
     let connectors = UpstreamConnectorRegistry::default().with_codex(codex_connector.clone());
+    let logs = RecordingRequestLogSink::default();
     let proxy = ProxyService::with_dependencies_and_registry(
         runtime,
         1_048_576,
         upstream_clients,
-        Arc::new(NoopRequestLogSink),
+        Arc::new(logs.clone()),
         routing,
         AdmissionRuntime::new(),
     )
@@ -1374,6 +1395,7 @@ async fn codex_connector_forwards_responses_with_managed_credentials_and_headers
             .uri("/v1/responses")
             .header("authorization", format!("Bearer {}", seed.secret))
             .header("content-type", "application/json")
+            .header("accept-encoding", "gzip, br")
             .header("session-id", session_id)
             .header("thread-id", "thread-456")
             .body(Body::from(serde_json::to_vec(&body).unwrap()))
@@ -1394,8 +1416,30 @@ async fn codex_connector_forwards_responses_with_managed_credentials_and_headers
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let response_body = response.into_body().collect().await.unwrap().to_bytes();
-    assert!(String::from_utf8_lossy(&response_body).contains("response.completed"));
+    let mut response_body = response.into_body();
+    let terminal_frame = response_body
+        .frame()
+        .await
+        .expect("Codex terminal event was not forwarded")
+        .unwrap()
+        .into_data()
+        .expect("Codex terminal frame must contain data");
+    assert!(String::from_utf8_lossy(&terminal_frame).contains("response.completed"));
+    let events = logs.events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].outcome, RequestLogOutcome::Succeeded);
+    assert_eq!(events[0].error_code, None);
+    assert_eq!(
+        events[0].billing.as_ref().unwrap().usage,
+        Some(RequestUsage {
+            input_tokens: 100,
+            cached_input_tokens: 40,
+            cache_write_tokens: 60,
+            output_tokens: 10,
+            reasoning_tokens: 5,
+        })
+    );
+    drop(response_body);
 
     let requests = captured.0.lock().unwrap().clone();
     assert_eq!(requests.len(), 1);
@@ -1404,6 +1448,7 @@ async fn codex_connector_forwards_responses_with_managed_credentials_and_headers
         forwarded.authorization.as_deref(),
         Some("Bearer access-token")
     );
+    assert_eq!(forwarded.accept_encoding.as_deref(), Some("identity"));
     assert_eq!(forwarded.account_id.as_deref(), Some("account-123"));
     assert_eq!(forwarded.originator.as_deref(), Some("ai_gateway"));
     assert_eq!(forwarded.session_id.as_deref(), Some("session-123"));
