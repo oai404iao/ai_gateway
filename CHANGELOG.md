@@ -7,6 +7,8 @@ Versioning.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-29
+
 ### Added
 
 - Request protocol classification on user and administrator request logs,
