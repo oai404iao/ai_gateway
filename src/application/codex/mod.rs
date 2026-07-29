@@ -33,7 +33,7 @@ use protocol::{
 };
 
 pub(crate) use attempt::{CodexAttemptError, PreparedCodexAttempt};
-pub use protocol::{CODEX_ORIGINATOR, codex_user_agent};
+pub use protocol::{CODEX_CLIENT_VERSION, CODEX_ORIGINATOR, codex_user_agent};
 pub use runtime::{CodexCredentialRuntime, CodexCredentialUnavailable, CompiledCodexCredential};
 
 const OAUTH_FLOW_TTL: chrono::Duration = chrono::Duration::minutes(15);
