@@ -7,6 +7,11 @@ Versioning.
 
 ## [Unreleased]
 
+### Fixed
+
+- Allow Console proxy records to persist the already-supported `socks4a` and
+  `socks5h` remote-DNS schemes.
+
 ## [0.5.1] - 2026-07-29
 
 ### Added
