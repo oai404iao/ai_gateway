@@ -1316,8 +1316,11 @@ const zhCN: Record<string, string> = {
   "Request body example": "请求体示例",
   "Response header example": "响应头示例",
   "Streaming response example": "流式响应示例",
+  "Proxy and CDN header filter template": "代理与 CDN 请求头过滤模板",
   "Add an upstream marker without touching protected credentials.":
     "添加上游标记，而不触碰受保护的凭据。",
+  "Remove forwarding metadata commonly added by CDNs, Caddy, and nginx. Review the list if your upstream relies on proxy headers.":
+    "移除 CDN、Caddy 和 nginx 常见的转发元数据；若上游依赖代理请求头，请先调整列表。",
   "Replace a value that the client request already contains.": "替换客户端请求中已存在的值。",
   "Expose a safe marker to clients in the upstream response.": "在上游响应中向客户端暴露一个安全标记。",
   "Add a non-envelope field to a supported streaming event.":
