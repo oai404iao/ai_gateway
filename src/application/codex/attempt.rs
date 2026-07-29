@@ -11,8 +11,8 @@ use uuid::Uuid;
 use crate::domain::{CompiledChannel, RequestProtocol};
 
 use super::{
-    CODEX_ORIGINATOR, CodexCredentialRuntime, CodexCredentialUnavailable, CompiledCodexCredential,
-    codex_user_agent,
+    CODEX_CLIENT_VERSION, CODEX_ORIGINATOR, CodexCredentialRuntime, CodexCredentialUnavailable,
+    CompiledCodexCredential, codex_user_agent,
 };
 
 #[derive(Clone)]
@@ -101,10 +101,7 @@ impl PreparedCodexAttempt {
             HeaderValue::from_str(&codex_user_agent()).map_err(invalid)?,
         );
         headers.insert("originator", HeaderValue::from_static(CODEX_ORIGINATOR));
-        headers.insert(
-            "version",
-            HeaderValue::from_static(env!("CARGO_PKG_VERSION")),
-        );
+        headers.insert("version", HeaderValue::from_static(CODEX_CLIENT_VERSION));
         headers.insert(
             "session-id",
             HeaderValue::from_str(&self.identity.session_id).map_err(invalid)?,
@@ -326,6 +323,32 @@ mod tests {
         assert_ne!(first.session_id, first.thread_id);
         assert!(Uuid::parse_str(&first.session_id).is_ok());
         assert!(Uuid::parse_str(&first.thread_id).is_ok());
+    }
+
+    #[test]
+    fn request_headers_report_the_pinned_codex_client_version() {
+        let attempt = PreparedCodexAttempt::prepare(
+            &runtime(),
+            Uuid::from_u128(1),
+            false,
+            &HeaderMap::new(),
+            None,
+        )
+        .unwrap();
+        let mut headers = HeaderMap::new();
+
+        attempt.inject_headers(&mut headers).unwrap();
+
+        assert_eq!(
+            headers.get("version").and_then(|value| value.to_str().ok()),
+            Some(CODEX_CLIENT_VERSION)
+        );
+        assert_eq!(
+            headers
+                .get(USER_AGENT)
+                .and_then(|value| value.to_str().ok()),
+            Some(codex_user_agent().as_str())
+        );
     }
 
     #[test]

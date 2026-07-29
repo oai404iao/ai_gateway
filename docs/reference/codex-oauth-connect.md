@@ -3,14 +3,16 @@
 > 类型：外部参考
 > 最近核对：2026-07-29
 > 权威来源：
-> [`openai/codex` OAuth server](https://github.com/openai/codex/blob/fbe65995bbcd4da249cfdafe0300ac3cb2cb3b3c/codex-rs/login/src/server.rs)、
-> [token refresh manager](https://github.com/openai/codex/blob/fbe65995bbcd4da249cfdafe0300ac3cb2cb3b3c/codex-rs/login/src/auth/manager.rs)、
-> [default HTTP client](https://github.com/openai/codex/blob/fbe65995bbcd4da249cfdafe0300ac3cb2cb3b3c/codex-rs/login/src/auth/default_client.rs)、
-> [ChatGPT Codex provider](https://github.com/openai/codex/blob/fbe65995bbcd4da249cfdafe0300ac3cb2cb3b3c/codex-rs/model-provider-info/src/lib.rs)、
-> [Bearer auth provider](https://github.com/openai/codex/blob/fbe65995bbcd4da249cfdafe0300ac3cb2cb3b3c/codex-rs/model-provider/src/bearer_auth_provider.rs)、
-> [Responses endpoint](https://github.com/openai/codex/blob/fbe65995bbcd4da249cfdafe0300ac3cb2cb3b3c/codex-rs/codex-api/src/endpoint/responses.rs)、
-> [session headers](https://github.com/openai/codex/blob/fbe65995bbcd4da249cfdafe0300ac3cb2cb3b3c/codex-rs/codex-api/src/requests/headers.rs) 和
-> [usage endpoint client](https://github.com/openai/codex/blob/fbe65995bbcd4da249cfdafe0300ac3cb2cb3b3c/codex-rs/backend-client/src/client/rate_limit_resets.rs)。
+> [`openai/codex` 0.146.0 release](https://github.com/openai/codex/releases/tag/rust-v0.146.0)、
+> [OAuth server](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/login/src/server.rs)、
+> [token refresh manager](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/login/src/auth/manager.rs)、
+> [default HTTP client](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/login/src/auth/default_client.rs)、
+> [ChatGPT Codex provider](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/model-provider-info/src/lib.rs)、
+> [Bearer auth provider](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/model-provider/src/bearer_auth_provider.rs)、
+> [Models endpoint](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/codex-api/src/endpoint/models.rs)、
+> [Responses endpoint](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/codex-api/src/endpoint/responses.rs)、
+> [session headers](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/codex-api/src/requests/headers.rs) 和
+> [usage endpoint client](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/backend-client/src/client/rate_limit_resets.rs)。
 
 本文记录 `ai-gateway` 的 Codex OAuth Connector 所依赖的外部行为。这里的
 `chatgpt.com/backend-api/*` 是 Codex 客户端使用的 ChatGPT 后端接口，不是公开的
@@ -78,6 +80,10 @@ Models 响应是带 `models` 数组的 envelope；网关只保留非空且未显
 `limit_reached`、primary/secondary window 的 `used_percent`、
 `limit_window_seconds` 和 Unix `reset_at`。
 
+Models 查询参数 `client_version` 和请求 Header `version` 固定报告当前核对的 Codex
+客户端版本 `0.146.0`。该版本独立于 `ai-gateway` 自身版本，因为 Codex 后端会根据客户端
+版本过滤模型；误用较小的网关版本可能得到成功但为空的 `models` 数组。
+
 ## ai-gateway 兼容行为
 
 ### 协议与 Connector 分离
@@ -106,9 +112,9 @@ Session affinity 规则，网关从该规则的不可逆 session hash 派生稳�
 若请求没有匹配 affinity，则为本次请求生成新的 opaque UUID。缺失的
 `x-client-request-id` 使用最终 `thread-id`。
 
-网关有意使用 `ai-gateway/<version>` User-Agent 和 `originator: ai_gateway`，而不是冒充
-Codex CLI 的 `codex_cli_rs` 标识；OAuth 公共 client ID、scope、redirect URI 和后端路径则
-与核对版本保持一致。
+网关有意使用 `ai-gateway/<gateway-version>` User-Agent 和 `originator: ai_gateway`，而不是
+冒充 Codex CLI 的 `codex_cli_rs` 标识；Codex `client_version`/`version` 则报告独立维护的
+兼容版本。OAuth 公共 client ID、scope、redirect URI 和后端路径与核对版本保持一致。
 
 ### 凭证运行时与维护
 

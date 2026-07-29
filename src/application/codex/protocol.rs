@@ -24,6 +24,7 @@ pub const CODEX_OAUTH_REDIRECT_URI: &str = "http://localhost:1455/auth/callback"
 pub const CODEX_OAUTH_SCOPE: &str =
     "openid profile email offline_access api.connectors.read api.connectors.invoke";
 pub const CODEX_ORIGINATOR: &str = "ai_gateway";
+pub const CODEX_CLIENT_VERSION: &str = "0.146.0";
 
 const MAX_TOKEN_RESPONSE_BYTES: usize = 1024 * 1024;
 const MAX_MODELS_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
@@ -59,7 +60,7 @@ impl CodexEndpoints {
         ))
         .map_err(|_| CodexConnectorError::InvalidEndpoint)?;
         url.query_pairs_mut()
-            .append_pair("client_version", env!("CARGO_PKG_VERSION"));
+            .append_pair("client_version", CODEX_CLIENT_VERSION);
         Ok(url)
     }
 
@@ -567,10 +568,7 @@ fn codex_headers(
             .map_err(|_| CodexConnectorError::InvalidCredential)?,
     );
     headers.insert("originator", HeaderValue::from_static(CODEX_ORIGINATOR));
-    headers.insert(
-        "version",
-        HeaderValue::from_static(env!("CARGO_PKG_VERSION")),
-    );
+    headers.insert("version", HeaderValue::from_static(CODEX_CLIENT_VERSION));
     if is_fedramp {
         headers.insert("X-OpenAI-Fedramp", HeaderValue::from_static("true"));
     }
@@ -669,6 +667,15 @@ mod tests {
         assert_eq!(
             endpoints.models_url().unwrap().path(),
             "/backend-api/codex/models"
+        );
+        assert_eq!(
+            endpoints
+                .models_url()
+                .unwrap()
+                .query_pairs()
+                .find(|(name, _)| name == "client_version")
+                .map(|(_, value)| value.into_owned()),
+            Some(CODEX_CLIENT_VERSION.to_owned())
         );
         assert_eq!(
             endpoints.quota_url().unwrap().path(),
@@ -864,7 +871,7 @@ mod tests {
             ("authorization", "Bearer access-token"),
             ("chatgpt-account-id", "account-123"),
             ("originator", CODEX_ORIGINATOR),
-            ("version", env!("CARGO_PKG_VERSION")),
+            ("version", CODEX_CLIENT_VERSION),
             ("x-openai-fedramp", "true"),
         ];
         if expected.iter().any(|(name, value)| {

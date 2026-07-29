@@ -20,6 +20,9 @@ Versioning.
 
 ### Fixed
 
+- Report Codex client version `0.146.0` independently from the Gateway package
+  version so model discovery does not return an empty catalog for otherwise
+  valid OAuth credentials.
 - Allow Console proxy records to persist the already-supported `socks4a` and
   `socks5h` remote-DNS schemes.
 
