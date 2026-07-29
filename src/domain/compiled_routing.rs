@@ -15,7 +15,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 use uuid::Uuid;
 
-use super::{ApiFormat, ApiKeyHash, CompiledAdvancedBilling, SystemRuntimeSettings};
+use super::{ApiFormat, ApiKeyHash, CompiledAdvancedBilling, ConnectorKind, SystemRuntimeSettings};
 use crate::transforms::TransformPlan;
 
 /// A normalized `no_proxy_hosts` pattern.
@@ -696,6 +696,7 @@ pub struct CompiledChannel {
     id: Uuid,
     group_id: Uuid,
     api_format: ApiFormat,
+    connector_kind: ConnectorKind,
     base_url: Url,
     connectivity_fingerprint: Arc<str>,
     supports_websocket: bool,
@@ -720,6 +721,10 @@ impl CompiledChannel {
     #[must_use]
     pub fn api_format(&self) -> ApiFormat {
         self.api_format
+    }
+    #[must_use]
+    pub const fn connector_kind(&self) -> ConnectorKind {
+        self.connector_kind
     }
     #[must_use]
     pub fn base_url(&self) -> &Url {
@@ -858,11 +863,46 @@ impl CompiledChannel {
         test_model: Option<Arc<str>>,
         upstream_policy: CompiledChannelUpstreamPolicy,
     ) -> Self {
+        Self::new_with_connector_policy_automation_and_billing(
+            id,
+            group_id,
+            api_format,
+            ConnectorKind::OpenAiCompatible,
+            base_url,
+            weight,
+            billing_multiplier,
+            upstream_auth,
+            available_models,
+            supports_websocket,
+            auto_disable_allowed,
+            auto_disabled,
+            test_model,
+            upstream_policy,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_with_connector_policy_automation_and_billing(
+        id: Uuid,
+        group_id: Uuid,
+        api_format: ApiFormat,
+        connector_kind: ConnectorKind,
+        base_url: Url,
+        weight: i32,
+        billing_multiplier: Decimal,
+        upstream_auth: UpstreamAuth,
+        available_models: HashSet<Arc<str>>,
+        supports_websocket: bool,
+        auto_disable_allowed: bool,
+        auto_disabled: bool,
+        test_model: Option<Arc<str>>,
+        upstream_policy: CompiledChannelUpstreamPolicy,
+    ) -> Self {
         let connectivity_fingerprint = Arc::from(base_url.as_str());
         Self {
             id,
             group_id,
             api_format,
+            connector_kind,
             base_url,
             connectivity_fingerprint,
             supports_websocket,
@@ -897,6 +937,7 @@ impl SelectionStrategy {
 pub struct CompiledChannelGroup {
     id: Uuid,
     api_format: ApiFormat,
+    connector_kind: ConnectorKind,
     priority: i32,
     selection_strategy: SelectionStrategy,
 }
@@ -910,6 +951,10 @@ impl CompiledChannelGroup {
         self.api_format
     }
     #[must_use]
+    pub const fn connector_kind(&self) -> ConnectorKind {
+        self.connector_kind
+    }
+    #[must_use]
     pub fn priority(&self) -> i32 {
         self.priority
     }
@@ -917,15 +962,17 @@ impl CompiledChannelGroup {
     pub fn selection_strategy(&self) -> SelectionStrategy {
         self.selection_strategy
     }
-    pub(crate) fn new(
+    pub(crate) fn new_with_connector(
         id: Uuid,
         api_format: ApiFormat,
+        connector_kind: ConnectorKind,
         priority: i32,
         selection_strategy: SelectionStrategy,
     ) -> Self {
         Self {
             id,
             api_format,
+            connector_kind,
             priority,
             selection_strategy,
         }

@@ -4,6 +4,7 @@ mod api_format;
 mod api_key;
 mod billing;
 mod compiled_routing;
+mod connector;
 mod console_auth;
 mod request_log;
 mod system_settings;
@@ -22,6 +23,7 @@ pub use compiled_routing::{
     ModelPriceSnapshot, ModelRouteKey, NoProxyHost, NoProxyHostError,
     OutboundNetworkPolicyFingerprint, SelectionStrategy, UpstreamAuth,
 };
+pub use connector::ConnectorKind;
 pub use console_auth::{ConsolePrincipal, UserRole};
 pub use request_log::{
     RequestBilling, RequestLogEvent, RequestLogOutcome, RequestLogSource, RequestPriceSnapshot,

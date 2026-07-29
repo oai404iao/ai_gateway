@@ -779,6 +779,102 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/providers/codex-oauth/channel-groups/{id}/credentials": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listCodexOAuthCredentials"];
+        put?: never;
+        post: operations["importCodexOAuthCredential"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/providers/codex-oauth/channel-groups/{id}/oauth/flows": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["startCodexOAuthFlow"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/providers/codex-oauth/oauth/flows/{id}/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["completeCodexOAuthFlow"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/providers/codex-oauth/credentials/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getCodexOAuthCredential"];
+        put: operations["updateCodexOAuthCredential"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/providers/codex-oauth/credentials/{id}/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["refreshCodexOAuthCredential"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/providers/codex-oauth/credentials/{id}/quota/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["refreshCodexOAuthQuota"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/network/proxies": {
         parameters: {
             query?: never;
@@ -1071,6 +1167,8 @@ export interface components {
         ApiFormat: "open_ai_chat_completions" | "open_ai_responses";
         /** @enum {string} */
         SelectionStrategy: "weighted_random" | "weighted_round_robin";
+        /** @enum {string} */
+        ConnectorKind: "openai_compatible" | "codex_oauth";
         /** @enum {string} */
         UpstreamAuthKind: "none" | "bearer" | "header";
         /** @enum {string} */
@@ -1621,6 +1719,7 @@ export interface components {
             id: string;
             name: string;
             api_format: components["schemas"]["ApiFormat"];
+            connector_kind: components["schemas"]["ConnectorKind"];
             priority: number;
             selection_strategy: components["schemas"]["SelectionStrategy"];
             enabled: boolean;
@@ -1632,6 +1731,9 @@ export interface components {
             /** Format: uuid */
             channel_group_id: string;
             api_format: components["schemas"]["ApiFormat"];
+            connector_kind: components["schemas"]["ConnectorKind"];
+            /** @description Whether this channel is created and edited through a connector-specific management API. */
+            provider_managed: boolean;
             name: string;
             base_url: string;
             enabled: boolean;
@@ -1667,6 +1769,80 @@ export interface components {
             override_document: components["schemas"]["JsonValue"];
             /** @description Stored upstream credential returned for administrator review and editing. */
             upstream_api_key: string | null;
+        };
+        /** @enum {string} */
+        CodexCredentialStatus: "active" | "draining" | "unavailable" | "disabled";
+        CodexCredentialView: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            channel_group_id: string;
+            label: string;
+            email: string | null;
+            account_id: string;
+            plan_type: string | null;
+            is_fedramp: boolean;
+            access_token_expires_at: components["schemas"]["DateTimeNullable"];
+            last_refreshed_at: components["schemas"]["DateTime"];
+            quota_threshold_percent: number;
+            runtime_status: components["schemas"]["CodexCredentialStatus"];
+            quota_allowed: boolean | null;
+            quota_limit_reached: boolean | null;
+            primary_used_percent: number | null;
+            primary_window_seconds: number | null;
+            primary_reset_at: components["schemas"]["DateTimeNullable"];
+            secondary_used_percent: number | null;
+            secondary_window_seconds: number | null;
+            secondary_reset_at: components["schemas"]["DateTimeNullable"];
+            quota_checked_at: components["schemas"]["DateTimeNullable"];
+            last_error_code: string | null;
+            last_error_summary: string | null;
+            /** Format: uuid */
+            proxy_id: string | null;
+            weight: number;
+            enabled: boolean;
+            available_models: string[];
+            created_at: components["schemas"]["DateTime"];
+            updated_at: components["schemas"]["DateTime"];
+        };
+        CodexCredentialSettings: {
+            label: string;
+            /** Format: uuid */
+            proxy_id?: string | null;
+            /** @default 100 */
+            weight: number;
+            /** @default 95 */
+            quota_threshold_percent: number;
+        };
+        CodexOauthStartInput: components["schemas"]["CodexCredentialSettings"];
+        CodexOauthStartResponse: {
+            /** Format: uuid */
+            flow_id: string;
+            /** Format: uri */
+            authorization_url: string;
+            expires_at: components["schemas"]["DateTime"];
+        };
+        CodexOauthCompleteInput: {
+            /**
+             * Format: uri
+             * @description Full `http://localhost:1455/auth/callback?...` URL copied after browser authorization.
+             */
+            callback_url: string;
+        };
+        CodexCredentialImportInput: components["schemas"]["CodexCredentialSettings"] & {
+            id_token: string;
+            access_token: string;
+            refresh_token: string;
+            /** @description Optional fallback when the ID token has no account claim; mismatches are rejected. */
+            account_id?: string | null;
+        };
+        CodexCredentialUpdateInput: {
+            label: string;
+            enabled: boolean;
+            /** Format: uuid */
+            proxy_id: string | null;
+            weight: number;
+            quota_threshold_percent: number;
         };
         ModelRuleView: {
             /** Format: uuid */
@@ -2262,6 +2438,7 @@ export interface components {
         ChannelGroupInput: {
             name: string;
             api_format: components["schemas"]["ApiFormat"];
+            connector_kind: components["schemas"]["ConnectorKind"];
             priority: number;
             selection_strategy: components["schemas"]["SelectionStrategy"];
             enabled: boolean;
@@ -2530,6 +2707,15 @@ export interface components {
         };
         /** @description Upstream catalog operation rejected. */
         BadGateway: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ErrorBody"];
+            };
+        };
+        /** @description Upstream operation timed out. */
+        GatewayTimeout: {
             headers: {
                 [name: string]: unknown;
             };
@@ -4482,6 +4668,262 @@ export interface operations {
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
             422: components["responses"]["Unprocessable"];
+        };
+    };
+    listCodexOAuthCredentials: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Codex OAuth credentials managed as channels in this connector group. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CodexCredentialView"][];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    importCodexOAuthCredential: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CodexCredentialImportInput"];
+            };
+        };
+        responses: {
+            /** @description Existing managed credential reauthorized in place. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MutationResponse"];
+                };
+            };
+            /** @description Credential validated and its managed channel created. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MutationResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
+            502: components["responses"]["BadGateway"];
+            504: components["responses"]["GatewayTimeout"];
+        };
+    };
+    startCodexOAuthFlow: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CodexOauthStartInput"];
+            };
+        };
+        responses: {
+            /** @description One-time PKCE flow created. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CodexOauthStartResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            422: components["responses"]["Unprocessable"];
+        };
+    };
+    completeCodexOAuthFlow: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CodexOauthCompleteInput"];
+            };
+        };
+        responses: {
+            /** @description Existing managed credential reauthorized in place. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MutationResponse"];
+                };
+            };
+            /** @description Authorization code exchanged and managed credential created. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MutationResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            /** @description OAuth flow expired or was already consumed. */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            422: components["responses"]["Unprocessable"];
+            502: components["responses"]["BadGateway"];
+            504: components["responses"]["GatewayTimeout"];
+        };
+    };
+    getCodexOAuthCredential: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Codex OAuth credential metadata and current quota snapshot. */
+            200: {
+                headers: {
+                    ETag: components["headers"]["ETag"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CodexCredentialView"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    updateCodexOAuthCredential: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description ETag from the preceding GET; stale values yield `409`. */
+                "If-Match": components["parameters"]["IfMatch"];
+            };
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CodexCredentialUpdateInput"];
+            };
+        };
+        responses: {
+            /** @description Credential routing settings updated. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MutationResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
+        };
+    };
+    refreshCodexOAuthCredential: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Credential refresh completed. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["Unprocessable"];
+            502: components["responses"]["BadGateway"];
+            504: components["responses"]["GatewayTimeout"];
+        };
+    };
+    refreshCodexOAuthQuota: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Quota snapshot refreshed. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["Unprocessable"];
+            502: components["responses"]["BadGateway"];
+            504: components["responses"]["GatewayTimeout"];
         };
     };
     listProxies: {

@@ -19,8 +19,9 @@ use uuid::Uuid;
 use crate::{
     application::{
         AuthError, ChannelModelDiscoveryError, ChannelModelDiscoveryInput,
-        ChannelModelDiscoveryResponse, ChannelModelDiscoveryService, ConsoleAuthService,
-        ControlPlaneCoordinator, ControlPlaneError, IssuedInvitation,
+        ChannelModelDiscoveryResponse, ChannelModelDiscoveryService, CodexConnectorError,
+        CodexConnectorService, CodexOauthCompleteInput, CodexOauthStartResponse,
+        ConsoleAuthService, ControlPlaneCoordinator, ControlPlaneError, IssuedInvitation,
         IssuedRegistrationInvitationCode, IssuedSession, ModelImportRequest, ModelSyncError,
         ModelSyncPreview, ModelSyncPreviewRequest, ModelSyncResponse, ModelSyncService,
         RegistrationInvitationCodeCreateInput, RegistrationInvitationCodeUpdateInput,
@@ -30,11 +31,13 @@ use crate::{
     persistence::{
         ApiKeyCreate, ApiKeyPolicyInput, ApiKeyUpdate, ChannelBatchUpdateInput, ChannelCreateInput,
         ChannelGroupInput, ChannelInput, ChannelRecoverInput, ChannelStatusWindow,
-        ConfigTemplateCreateInput, ConfigTemplateInput, ConsoleApiKey, ControlPlaneMutation,
-        CostStatisticsFilter, InviteUserInput, ModelInput, ModelRuleInput, ProxyCreateInput,
-        ProxyInput, RequestLogFilter, RequestLogRepository, SelfApiKeyCreate, SelfApiKeyUpdate,
-        SpendLeaderboardFilter, SpendLeaderboardPeriod, StatisticsGranularity, SystemSettingsInput,
-        UserBatchUpdateInput, UserGroupInput, UserInput, UserSettingsInput, UserUpdateInput,
+        CodexCredentialImportInput, CodexCredentialUpdateInput, CodexCredentialView,
+        CodexOauthStartInput, ConfigTemplateCreateInput, ConfigTemplateInput, ConsoleApiKey,
+        ControlPlaneMutation, CostStatisticsFilter, InviteUserInput, ModelInput, ModelRuleInput,
+        ProxyCreateInput, ProxyInput, RequestLogFilter, RequestLogRepository, SelfApiKeyCreate,
+        SelfApiKeyUpdate, SpendLeaderboardFilter, SpendLeaderboardPeriod, StatisticsGranularity,
+        SystemSettingsInput, UserBatchUpdateInput, UserGroupInput, UserInput, UserSettingsInput,
+        UserUpdateInput,
     },
     runtime_config::ConfigError,
 };
@@ -44,6 +47,7 @@ const REFRESH_COOKIE_NAME: &str = "__Host-ai_gateway_refresh";
 #[derive(Clone)]
 pub struct ConsoleState {
     pub coordinator: ControlPlaneCoordinator,
+    pub codex_connector: CodexConnectorService,
     pub channel_models: ChannelModelDiscoveryService,
     pub model_sync: ModelSyncService,
     pub auth: ConsoleAuthService,
@@ -207,6 +211,30 @@ pub fn router(state: ConsoleState) -> Router {
         .route(
             "/console/v1/routing/model-rules/{id}",
             get(get_rule).put(update_rule),
+        )
+        .route(
+            "/console/v1/providers/codex-oauth/channel-groups/{id}/credentials",
+            get(list_codex_credentials).post(import_codex_credential),
+        )
+        .route(
+            "/console/v1/providers/codex-oauth/channel-groups/{id}/oauth/flows",
+            post(start_codex_oauth),
+        )
+        .route(
+            "/console/v1/providers/codex-oauth/oauth/flows/{id}/complete",
+            post(complete_codex_oauth),
+        )
+        .route(
+            "/console/v1/providers/codex-oauth/credentials/{id}",
+            get(get_codex_credential).put(update_codex_credential),
+        )
+        .route(
+            "/console/v1/providers/codex-oauth/credentials/{id}/refresh",
+            post(refresh_codex_credential),
+        )
+        .route(
+            "/console/v1/providers/codex-oauth/credentials/{id}/quota/refresh",
+            post(refresh_codex_quota),
         )
         .route(
             "/console/v1/network/proxies",
@@ -1528,6 +1556,118 @@ async fn update_channel(
     .await
 }
 
+async fn list_codex_credentials(
+    State(state): State<ConsoleState>,
+    Path(channel_group_id): Path<Uuid>,
+) -> Result<Json<Vec<CodexCredentialView>>, ConsoleError> {
+    Ok(Json(
+        state
+            .codex_connector
+            .list_credentials(channel_group_id)
+            .await?,
+    ))
+}
+
+async fn start_codex_oauth(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Path(channel_group_id): Path<Uuid>,
+    Json(input): Json<CodexOauthStartInput>,
+) -> Result<(StatusCode, Json<CodexOauthStartResponse>), ConsoleError> {
+    let response = state
+        .codex_connector
+        .start_oauth(principal.user_id(), channel_group_id, input)
+        .await?;
+    Ok((StatusCode::CREATED, Json(response)))
+}
+
+async fn complete_codex_oauth(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Path(flow_id): Path<Uuid>,
+    Json(input): Json<CodexOauthCompleteInput>,
+) -> Result<(StatusCode, Json<MutationResponse>), ConsoleError> {
+    let result = state
+        .codex_connector
+        .complete_oauth(principal.user_id(), flow_id, input)
+        .await?;
+    let status = if result.action == "create" {
+        StatusCode::CREATED
+    } else {
+        StatusCode::OK
+    };
+    Ok((status, Json(mutation_response(result))))
+}
+
+async fn import_codex_credential(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Path(channel_group_id): Path<Uuid>,
+    Json(input): Json<CodexCredentialImportInput>,
+) -> Result<(StatusCode, Json<MutationResponse>), ConsoleError> {
+    let result = state
+        .codex_connector
+        .import_credential(principal.user_id(), channel_group_id, input)
+        .await?;
+    let status = if result.action == "create" {
+        StatusCode::CREATED
+    } else {
+        StatusCode::OK
+    };
+    Ok((status, Json(mutation_response(result))))
+}
+
+async fn update_codex_credential(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Path(channel_id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(input): Json<CodexCredentialUpdateInput>,
+) -> Result<Json<MutationResponse>, ConsoleError> {
+    let result = state
+        .codex_connector
+        .update_credential(principal.user_id(), channel_id, input, if_match(&headers)?)
+        .await?;
+    Ok(Json(mutation_response(result)))
+}
+
+async fn get_codex_credential(
+    State(state): State<ConsoleState>,
+    Path(channel_id): Path<Uuid>,
+) -> Result<Response, ConsoleError> {
+    let value = state
+        .codex_connector
+        .credential(channel_id)
+        .await?
+        .map(to_json)
+        .ok_or(ConsoleError::NotFound)?;
+    resource_response(value)
+}
+
+async fn refresh_codex_credential(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Path(channel_id): Path<Uuid>,
+) -> Result<StatusCode, ConsoleError> {
+    state
+        .codex_connector
+        .refresh_credential(principal.user_id(), channel_id)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn refresh_codex_quota(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Path(channel_id): Path<Uuid>,
+) -> Result<StatusCode, ConsoleError> {
+    state
+        .codex_connector
+        .refresh_quota(principal.user_id(), channel_id)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn recover_channel(
     State(state): State<ConsoleState>,
     Extension(principal): Extension<ConsolePrincipal>,
@@ -2013,6 +2153,7 @@ fn mutation_response(result: crate::persistence::MutationResult) -> MutationResp
 enum ConsoleError {
     Auth(AuthError),
     ChannelModels(ChannelModelDiscoveryError),
+    Codex(CodexConnectorError),
     ControlPlane(ControlPlaneError),
     ModelSync(ModelSyncError),
     Repository(crate::persistence::RepositoryError),
@@ -2030,6 +2171,11 @@ impl From<AuthError> for ConsoleError {
 impl From<ChannelModelDiscoveryError> for ConsoleError {
     fn from(value: ChannelModelDiscoveryError) -> Self {
         Self::ChannelModels(value)
+    }
+}
+impl From<CodexConnectorError> for ConsoleError {
+    fn from(value: CodexConnectorError) -> Self {
+        Self::Codex(value)
     }
 }
 impl From<ControlPlaneError> for ConsoleError {
@@ -2096,6 +2242,7 @@ impl IntoResponse for ConsoleError {
                 | ChannelModelDiscoveryError::ResponseTooLarge
                 | ChannelModelDiscoveryError::InvalidResponse,
             ) => (StatusCode::BAD_GATEWAY, "upstream_models_unavailable"),
+            Self::Codex(error) => codex_error_response(&error),
             Self::ControlPlane(error) => (
                 control_plane_status(&error),
                 control_plane_error_message(&error),
@@ -2140,6 +2287,51 @@ fn control_plane_status(error: &ControlPlaneError) -> StatusCode {
         ControlPlaneError::InvalidActor => StatusCode::FORBIDDEN,
         ControlPlaneError::Repository(error) => repository_status(error),
     }
+}
+
+fn codex_error_response(error: &CodexConnectorError) -> (StatusCode, &'static str) {
+    match error {
+        CodexConnectorError::ControlPlane(error) => {
+            return (
+                control_plane_status(error),
+                control_plane_error_message(error),
+            );
+        }
+        CodexConnectorError::Repository(error) => {
+            return (repository_status(error), repository_error_message(error));
+        }
+        _ => {}
+    }
+    let status = match error {
+        CodexConnectorError::ControlPlane(_) | CodexConnectorError::Repository(_) => {
+            unreachable!("nested Codex errors returned above")
+        }
+        CodexConnectorError::CredentialNotFound => StatusCode::NOT_FOUND,
+        CodexConnectorError::OauthFlowExpired => StatusCode::GONE,
+        CodexConnectorError::OauthStateMismatch
+        | CodexConnectorError::InvalidCallback
+        | CodexConnectorError::OauthDenied
+        | CodexConnectorError::InvalidCredential
+        | CodexConnectorError::MissingAccountId
+        | CodexConnectorError::AccountChanged
+        | CodexConnectorError::InvalidJwt
+        | CodexConnectorError::InvalidTokenResponse
+        | CodexConnectorError::InvalidModelsResponse
+        | CodexConnectorError::NoModels
+        | CodexConnectorError::InvalidQuotaResponse
+        | CodexConnectorError::CredentialDisabled
+        | CodexConnectorError::CredentialReauthenticationRequired
+        | CodexConnectorError::RefreshTokenInvalid => StatusCode::UNPROCESSABLE_ENTITY,
+        CodexConnectorError::UpstreamTimeout => StatusCode::GATEWAY_TIMEOUT,
+        CodexConnectorError::UpstreamClient(_)
+        | CodexConnectorError::InvalidEndpoint
+        | CodexConnectorError::InvalidProxy
+        | CodexConnectorError::TokenEndpointStatus(_)
+        | CodexConnectorError::CodexBackendStatus(_)
+        | CodexConnectorError::UpstreamUnavailable
+        | CodexConnectorError::UpstreamResponseTooLarge => StatusCode::BAD_GATEWAY,
+    };
+    (status, error.code())
 }
 
 fn control_plane_error_message(error: &ControlPlaneError) -> &'static str {

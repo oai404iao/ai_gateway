@@ -27,11 +27,11 @@ use crate::{
         AutomaticDisableSettings, ChannelTimeoutPolicy, CompiledApiKey, CompiledCandidate,
         CompiledChannel, CompiledChannelGroup, CompiledChannelUpstreamPolicy,
         CompiledConfigTemplate, CompiledModelRule, CompiledProxy, CompiledRouteTier,
-        CompiledRuntimeConfig, CompiledScheduledTestModel, MAX_REQUEST_RETRIES, ModelPriceSnapshot,
-        ModelRouteKey, NoProxyHost, PassiveHealthSettings, RequestRetrySettings,
-        ResponsesWebSocketSettings, ScheduledTestingMode, ScheduledTestingSettings,
-        SelectionStrategy, SessionAffinityKeySource, SessionAffinityRule, SessionAffinitySettings,
-        SystemRuntimeSettings, UpstreamAuth, UpstreamTimeoutDefaults,
+        CompiledRuntimeConfig, CompiledScheduledTestModel, ConnectorKind, MAX_REQUEST_RETRIES,
+        ModelPriceSnapshot, ModelRouteKey, NoProxyHost, PassiveHealthSettings,
+        RequestRetrySettings, ResponsesWebSocketSettings, ScheduledTestingMode,
+        ScheduledTestingSettings, SelectionStrategy, SessionAffinityKeySource, SessionAffinityRule,
+        SessionAffinitySettings, SystemRuntimeSettings, UpstreamAuth, UpstreamTimeoutDefaults,
     },
     persistence::{
         ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ConfigTemplateRecord, ControlPlaneRecords,
@@ -653,9 +653,10 @@ pub fn compile_control_plane_with_system_settings(
         if group.enabled {
             groups.insert(
                 group.id,
-                Arc::new(CompiledChannelGroup::new(
+                Arc::new(CompiledChannelGroup::new_with_connector(
                     group.id,
                     parse_format(&group.api_format)?,
+                    parse_connector_kind(&group.connector_kind)?,
                     group.priority,
                     parse_strategy(&group.selection_strategy)?,
                 )),
@@ -735,25 +736,30 @@ pub fn compile_control_plane_with_system_settings(
                 compile_timeouts(&channel)?,
                 system_settings.upstream_timeouts().connect(),
             );
-            let compiled = Arc::new(CompiledChannel::new_with_policy_automation_and_billing(
-                channel.id,
-                channel.channel_group_id,
-                api_format,
-                parse_url(channel.id, &channel.base_url)?,
-                channel.weight,
-                channel.billing_multiplier,
-                auth,
-                channel
-                    .available_models
-                    .iter()
-                    .map(|model| Arc::<str>::from(model.as_str()))
-                    .collect(),
-                channel.supports_websocket,
-                channel.auto_disable_allowed,
-                channel.auto_disabled,
-                channel.test_model.as_deref().map(Arc::<str>::from),
-                upstream_policy,
-            ));
+            let connector_kind =
+                parse_connector_kind(&all_groups[&channel.channel_group_id].connector_kind)?;
+            let compiled = Arc::new(
+                CompiledChannel::new_with_connector_policy_automation_and_billing(
+                    channel.id,
+                    channel.channel_group_id,
+                    api_format,
+                    connector_kind,
+                    parse_url(channel.id, &channel.base_url)?,
+                    channel.weight,
+                    channel.billing_multiplier,
+                    auth,
+                    channel
+                        .available_models
+                        .iter()
+                        .map(|model| Arc::<str>::from(model.as_str()))
+                        .collect(),
+                    channel.supports_websocket,
+                    channel.auto_disable_allowed,
+                    channel.auto_disabled,
+                    channel.test_model.as_deref().map(Arc::<str>::from),
+                    upstream_policy,
+                ),
+            );
             probe_channels.insert(channel.id, Arc::clone(&compiled));
             if !channel.auto_disabled && all_groups[&channel.channel_group_id].enabled {
                 channels.insert(channel.id, compiled);
@@ -1867,13 +1873,23 @@ fn validate_rule_references(
 
 fn validate_group(record: &ChannelGroupRecord) -> Result<(), ConfigError> {
     require("channel group name", &record.name)?;
-    parse_format(&record.api_format)?;
+    let api_format = parse_format(&record.api_format)?;
+    let connector_kind = parse_connector_kind(&record.connector_kind)?;
+    if connector_kind == ConnectorKind::CodexOauth && api_format != ApiFormat::OpenAiResponses {
+        return Err(ConfigError::Compile(
+            "Codex OAuth channel groups must use the Responses API format".into(),
+        ));
+    }
     if record.priority < 0 || SelectionStrategy::parse(&record.selection_strategy).is_none() {
         return Err(ConfigError::Compile(
             "invalid channel group selection metadata".into(),
         ));
     }
     Ok(())
+}
+fn parse_connector_kind(value: &str) -> Result<ConnectorKind, ConfigError> {
+    ConnectorKind::parse(value)
+        .ok_or_else(|| ConfigError::Compile("unsupported upstream connector kind".into()))
 }
 fn parse_strategy(value: &str) -> Result<SelectionStrategy, ConfigError> {
     SelectionStrategy::parse(value)
@@ -1933,6 +1949,19 @@ fn validate_channel(
     if parse_format(&group.api_format)? != format {
         return Err(ConfigError::Compile(
             "channel and group use different API formats".into(),
+        ));
+    }
+    let connector_kind = parse_connector_kind(&group.connector_kind)?;
+    if connector_kind == ConnectorKind::CodexOauth
+        && (format != ApiFormat::OpenAiResponses
+            || record.supports_websocket
+            || record.upstream_auth_kind != "none"
+            || record.upstream_auth_header_name.is_some()
+            || record.upstream_api_key.is_some()
+            || record.test_model.is_some())
+    {
+        return Err(ConfigError::Compile(
+            "invalid Codex OAuth managed channel configuration".into(),
         ));
     }
     if record.enabled {
@@ -2452,6 +2481,7 @@ mod tests {
             id,
             name: id.to_string(),
             api_format: "open_ai_chat_completions".into(),
+            connector_kind: "openai_compatible".into(),
             priority,
             selection_strategy: strategy.into(),
             enabled: true,

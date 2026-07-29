@@ -443,6 +443,7 @@ async fn gateway_harness_with_controls(
             id: group_id,
             name: "responses".into(),
             api_format: "open_ai_responses".into(),
+            connector_kind: "openai_compatible".into(),
             priority: 0,
             selection_strategy: "weighted_random".into(),
             enabled: true,

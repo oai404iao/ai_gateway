@@ -1,6 +1,7 @@
 //! Background control-plane snapshot reloading and request-log persistence.
 
 mod channel_probe;
+mod codex;
 mod durable_request_log;
 mod spend_leaderboard;
 
@@ -27,6 +28,7 @@ use crate::{
 };
 
 pub use channel_probe::ChannelProbeWorker;
+pub use codex::CodexCredentialWorker;
 pub use durable_request_log::{DurableRequestLogWorker, DurableRequestLogWorkerStartError};
 pub use spend_leaderboard::SpendLeaderboardWorker;
 

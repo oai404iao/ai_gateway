@@ -36,7 +36,11 @@ import {
 import { ChannelBatchEditDialog } from "@/features/admin/routing/channels/channel-batch-edit-dialog";
 import { formatRelative } from "@/lib/dates";
 import { formatDecimal } from "@/lib/formatters";
-import { apiFormatLabel, selectionStrategyLabel } from "@/lib/permissions";
+import {
+  apiFormatLabel,
+  connectorKindLabel,
+  selectionStrategyLabel,
+} from "@/lib/permissions";
 import { useI18n } from "@/app/i18n";
 import type { ChannelView } from "@/api/types";
 
@@ -51,14 +55,18 @@ export function ChannelsPage() {
   const quickUpdate = useBatchUpdateChannels();
   const recoverChannel = useRecoverChannel();
   const batchDialogTriggerId = "channel-batch-edit-trigger";
+  const ordinaryChannels = useMemo(
+    () => (channels.data ?? []).filter((channel) => !channel.provider_managed),
+    [channels.data],
+  );
 
   useEffect(() => {
-    const available = new Set((channels.data ?? []).map((channel) => channel.id));
+    const available = new Set(ordinaryChannels.map((channel) => channel.id));
     setSelected((current) => {
       const next = new Set([...current].filter((id) => available.has(id)));
       return next.size === current.size ? current : next;
     });
-  }, [channels.data]);
+  }, [ordinaryChannels]);
 
   const channelsByGroup = useMemo(() => {
     const grouped = new Map<string, ChannelView[]>();
@@ -74,15 +82,15 @@ export function ChannelsPage() {
     [groups.data],
   );
   const unavailableGroupChannels = (channels.data ?? []).filter(
-    (channel) => !knownGroupIds.has(channel.channel_group_id),
+    (channel) => !channel.provider_managed && !knownGroupIds.has(channel.channel_group_id),
   );
   const selectedChannels = useMemo(
-    () => (channels.data ?? []).filter((channel) => selected.has(channel.id)),
-    [channels.data, selected],
+    () => ordinaryChannels.filter((channel) => selected.has(channel.id)),
+    [ordinaryChannels, selected],
   );
   const allSelected =
-    (channels.data?.length ?? 0) > 0 &&
-    selectedChannels.length === channels.data?.length;
+    ordinaryChannels.length > 0 &&
+    selectedChannels.length === ordinaryChannels.length;
 
   const toggleChannel = (channel: ChannelView) => {
     setSelected((current) => {
@@ -250,10 +258,10 @@ export function ChannelsPage() {
           <>
             <Button
               variant="outline"
-              disabled={(channels.data?.length ?? 0) === 0}
+              disabled={ordinaryChannels.length === 0}
               onClick={() => {
                 if (allSelected) setSelected(new Set());
-                else setSelected(new Set((channels.data ?? []).map((channel) => channel.id)));
+                else setSelected(new Set(ordinaryChannels.map((channel) => channel.id)));
               }}
             >
               <CheckCheck data-icon="inline-start" />
@@ -291,6 +299,9 @@ export function ChannelsPage() {
         <div className="flex flex-col gap-4">
           {(groups.data ?? []).map((group) => {
             const groupedChannels = channelsByGroup.get(group.id) ?? [];
+            const ordinaryGroupedChannels = groupedChannels.filter(
+              (channel) => !channel.provider_managed,
+            );
             const titleId = `channel-group-${group.id}`;
             return (
               <Card key={group.id} role="region" aria-labelledby={titleId}>
@@ -305,6 +316,9 @@ export function ChannelsPage() {
                       />
                       <StatusBadge value={group.enabled} />
                       <Badge variant="secondary">
+                        {connectorKindLabel(group.connector_kind)}
+                      </Badge>
+                      <Badge variant="secondary">
                         {t("Channels ({count})", { count: groupedChannels.length })}
                       </Badge>
                       <Badge variant="outline">
@@ -316,18 +330,42 @@ export function ChannelsPage() {
                     </span>
                   </CardDescription>
                   <CardAction>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() =>
-                        navigate(`/admin/routing/channel-groups/${group.id}`)
-                      }
-                    >
-                      <Pencil data-icon="inline-start" /> {t("Edit group")}
-                    </Button>
+                    <div className="flex gap-2">
+                      {group.connector_kind === "codex_oauth" ? (
+                        <Button
+                          size="sm"
+                          onClick={() =>
+                            navigate(`/admin/providers/codex-oauth/${group.id}`)
+                          }
+                        >
+                          {t("Manage credentials")}
+                        </Button>
+                      ) : null}
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() =>
+                          navigate(`/admin/routing/channel-groups/${group.id}`)
+                        }
+                      >
+                        <Pencil data-icon="inline-start" /> {t("Edit group")}
+                      </Button>
+                    </div>
                   </CardAction>
                 </CardHeader>
-                <CardContent>{channelTable(groupedChannels)}</CardContent>
+                <CardContent>
+                  {group.connector_kind === "codex_oauth" ? (
+                    <EmptyState
+                      title={t("Provider-managed credentials")}
+                      description={t(
+                        "Use the Codex credential manager to add OAuth accounts, proxies, and quota thresholds.",
+                      )}
+                      className="min-h-32 border"
+                    />
+                  ) : (
+                    channelTable(ordinaryGroupedChannels)
+                  )}
+                </CardContent>
               </Card>
             );
           })}

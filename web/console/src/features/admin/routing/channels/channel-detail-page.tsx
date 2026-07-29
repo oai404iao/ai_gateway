@@ -196,6 +196,12 @@ export function ChannelDetailPage() {
 
   useEffect(() => {
     if (data) {
+      if (data.data.provider_managed) {
+        navigate(`/admin/providers/codex-oauth/${data.data.channel_group_id}`, {
+          replace: true,
+        });
+        return;
+      }
       setState({
         channel_group_id: data.data.channel_group_id,
         api_format: data.data.api_format,
@@ -221,7 +227,7 @@ export function ChannelDetailPage() {
       });
       setOverrideDocumentValidation(null);
     }
-  }, [data]);
+  }, [data, navigate]);
 
   const patch = (partial: Partial<FormState>) => setState((prev) => ({ ...prev, ...partial }));
 
@@ -586,7 +592,9 @@ export function ChannelDetailPage() {
                       <SelectContent>
                         <SelectGroup>
                           <SelectItem value="__none__">{t("None")}</SelectItem>
-                          {groups.data?.map((group) => (
+                          {groups.data
+                            ?.filter((group) => group.connector_kind === "openai_compatible")
+                            .map((group) => (
                             <SelectItem
                               key={group.id}
                               value={group.id}
@@ -594,7 +602,7 @@ export function ChannelDetailPage() {
                             >
                               {group.name} ({apiFormatLabel(group.api_format)})
                             </SelectItem>
-                          ))}
+                            ))}
                         </SelectGroup>
                       </SelectContent>
                     </Select>

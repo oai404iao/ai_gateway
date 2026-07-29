@@ -138,6 +138,9 @@ const ModelRuleDetailPage = lazy(() =>
     default: m.ModelRuleDetailPage,
   })),
 );
+const CodexOauthPage = lazy(
+  () => import("@/features/admin/providers/codex-oauth/codex-oauth-page"),
+);
 const ProxiesPage = lazy(() =>
   import("@/features/admin/network/proxies-page").then((m) => ({ default: m.ProxiesPage })),
 );
@@ -247,6 +250,10 @@ export function AppRouter() {
             <Route path="/admin/routing/channels/:id" element={<ChannelDetailPage />} />
             <Route path="/admin/routing/model-rules" element={<ModelRulesPage />} />
             <Route path="/admin/routing/model-rules/:id" element={<ModelRuleDetailPage />} />
+            <Route
+              path="/admin/providers/codex-oauth/:id"
+              element={<CodexOauthPage />}
+            />
             <Route path="/admin/network/proxies" element={<ProxiesPage />} />
             <Route path="/admin/network/proxies/:id" element={<ProxyDetailPage />} />
             <Route path="/admin/transforms/templates" element={<ConfigTemplatesPage />} />

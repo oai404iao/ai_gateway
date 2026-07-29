@@ -126,6 +126,7 @@ fn proxy_fixture_with_retry(
                 id: *id,
                 name: id.to_string(),
                 api_format: "open_ai_chat_completions".into(),
+                connector_kind: "openai_compatible".into(),
                 priority: *priority,
                 selection_strategy: "weighted_random".into(),
                 enabled: true,

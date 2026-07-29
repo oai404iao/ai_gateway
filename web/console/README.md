@@ -45,7 +45,8 @@ pnpm e2e:install            # install Playwright Chromium + OS deps (first run)
 - `src/features/` — feature modules (auth, profile, sessions, api-keys,
   request-logs, personal/cost statistics, channel status, spend leaderboard,
   self-registration, user/user-group/registration-code management, system
-  load, and the remaining admin control plane).
+  load, Codex OAuth credential/quota management, and the remaining admin
+  control plane).
 - `src/components/` — shadcn/ui primitives (`ui/`) and shared app components.
 - `src/test/` — vitest setup, MSW server, deterministic fixtures.
 - `e2e/` — Playwright browser smoke tests (API mocked at the network layer).
