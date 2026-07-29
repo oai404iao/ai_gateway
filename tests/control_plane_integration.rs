@@ -2805,7 +2805,7 @@ async fn proxy_template_management_exposes_editable_documents_and_keeps_audits_r
         &proxy_path,
         serde_json::json!({
             "name": "managed-proxy-updated",
-            "proxy_url": "https://managed-proxy.test:9443",
+            "proxy_url": "socks5h://managed-proxy.test:1080",
             "password": "updated-proxy-password",
             "no_proxy_hosts": ["internal.test", "metadata.test"],
             "enabled": true
@@ -2814,6 +2814,14 @@ async fn proxy_template_management_exposes_editable_documents_and_keeps_audits_r
     )
     .await;
     assert_eq!(updated_proxy.status(), StatusCode::OK);
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT proxy_url FROM proxies WHERE id=$1")
+            .bind(proxy_id)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap(),
+        "socks5h://managed-proxy.test:1080"
+    );
 
     let template_list = admin_request(
         app.clone(),
