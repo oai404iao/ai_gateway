@@ -111,6 +111,10 @@ pub struct RequestUsage {
     pub cached_input_tokens: i64,
     pub cache_write_tokens: i64,
     pub output_tokens: i64,
+    /// Subset of `output_tokens` spent on model reasoning. Older journal v2
+    /// payloads omit this field and decode it as zero.
+    #[serde(default)]
+    pub reasoning_tokens: i64,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

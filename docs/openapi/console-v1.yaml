@@ -2958,7 +2958,7 @@ components:
          request_source, request_protocol, client_model, upstream_model, model_rule_id, channel_group_id,
          channel_group_name, channel_id, channel_name, outcome, response_status_code, streamed, ttft_ms,
          total_duration_ms, input_tokens, cached_input_tokens,
-         cache_write_tokens, output_tokens, cost_amount, error_code, error_summary,
+         cache_write_tokens, output_tokens, reasoning_tokens, cost_amount, error_code, error_summary,
          billed_at]
       properties:
         id: { type: string, format: uuid }
@@ -2997,6 +2997,10 @@ components:
         cached_input_tokens: { type: integer, nullable: true }
         cache_write_tokens: { type: integer, nullable: true }
         output_tokens: { type: integer, nullable: true }
+        reasoning_tokens:
+          type: integer
+          nullable: true
+          description: Subset of output_tokens spent on model reasoning, or null when usage is unavailable.
         cost_amount:
           allOf: [{ $ref: "#/components/schemas/DecimalNullable" }]
           description: Final request cost in USD, or null when not priced.

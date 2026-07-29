@@ -36,6 +36,10 @@ WebSocket 与 SSE，因此 v2 中所有 `streamed = true` 的积压事件都会�
 投影。v1 仍因缺少必需的 `error_summary` 而不受支持；从会写入 v1 payload
 的旧二进制升级前，必须先排空本地 spool 和 `request_log_ingest`。
 
+`billing.usage.reasoning_tokens` 是 Journal v2/v3 的向后兼容扩展。已有
+payload 缺少该字段时按 `0` 解码，因此这一扩展不要求排空现有 spool 或
+`request_log_ingest`。
+
 ## 独立数据库连接池
 
 日志流水线使用独立的 SQLx PostgreSQL 连接池：

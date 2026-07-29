@@ -51,6 +51,14 @@ describe("RequestLogsView", () => {
     ).not.toBeInTheDocument();
     expect(screen.getByText(CHANNEL.name)).toBeInTheDocument();
     expect(screen.queryByText(CHANNEL.id)).not.toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Tokens" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("columnheader", { name: "Output tokens" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Uncached input: 10")).toHaveTextContent("10");
+    expect(screen.getByLabelText("Cached input: 2")).toHaveTextContent("2");
+    expect(screen.getByLabelText("Non-reasoning output: 3")).toHaveTextContent("3");
+    expect(screen.getByLabelText("Reasoning tokens: 1")).toHaveTextContent("1");
 
     const apiKey = await screen.findByRole("combobox", { name: "API key" });
     await user.click(apiKey);
@@ -161,6 +169,7 @@ describe("RequestLogsView", () => {
       cached_input_tokens: 2,
       cache_write_tokens: 0,
       output_tokens: 4,
+      reasoning_tokens: 1,
       cost_amount: "0.0001",
       error_code: "provider_error",
       error_summary: "Upstream quota exhausted.\nTry another channel.",
@@ -192,6 +201,8 @@ describe("RequestLogsView", () => {
     expect(channelLabel.parentElement).toHaveTextContent(CHANNEL.name);
     const channelIdLabel = await screen.findByText("Channel ID", { selector: "dt" });
     expect(channelIdLabel.parentElement).toHaveTextContent(CHANNEL.id);
+    const reasoningLabel = await screen.findByText("Reasoning tokens", { selector: "dt" });
+    expect(reasoningLabel.parentElement).toHaveTextContent("1");
     const errorMessageLabel = await screen.findByText("Error message", { selector: "dt" });
     expect(errorMessageLabel.parentElement).toHaveTextContent(
       "Upstream quota exhausted. Try another channel.",

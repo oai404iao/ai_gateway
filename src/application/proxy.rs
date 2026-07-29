@@ -2045,6 +2045,7 @@ mod tests {
             cached_input_tokens: 2,
             cache_write_tokens: 1,
             output_tokens: 4,
+            reasoning_tokens: 1,
         };
         assert_eq!(calculate_cost(&usage, &price), Decimal::new(1725, 2));
 
@@ -2067,6 +2068,7 @@ mod tests {
                 cached_input_tokens: 2,
                 cache_write_tokens: 1,
                 output_tokens: 4,
+                reasoning_tokens: 1,
             }),
             2_000,
             Some(500),
@@ -2099,6 +2101,7 @@ mod tests {
                 cached_input_tokens: 2,
                 cache_write_tokens: 1,
                 output_tokens: 4,
+                reasoning_tokens: 1,
             }),
             2_000,
             Some(500),
@@ -2147,6 +2150,7 @@ mod tests {
                 cached_input_tokens: 2,
                 cache_write_tokens: 1,
                 output_tokens: 4,
+                reasoning_tokens: 1,
             }),
             2_000,
             Some(500),

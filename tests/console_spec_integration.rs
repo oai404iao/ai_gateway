@@ -3286,8 +3286,8 @@ async fn request_log_filters_match_the_console_contract() {
     ] {
         sqlx::query(
             "INSERT INTO request_logs \
-             (id,started_at,completed_at,user_id,api_key_id,api_format,client_model,upstream_model,outcome,streamed,total_duration_ms,error_code,error_summary) \
-             VALUES ($1,$2,$2,$3,$4,'open_ai_chat_completions',$5,$6,$7,false,1,$8,$9)",
+             (id,started_at,completed_at,user_id,api_key_id,api_format,client_model,upstream_model,outcome,streamed,total_duration_ms,input_tokens,cached_input_tokens,cache_write_tokens,output_tokens,reasoning_tokens,error_code,error_summary) \
+             VALUES ($1,$2,$2,$3,$4,'open_ai_chat_completions',$5,$6,$7,false,1,12,2,1,5,1,$8,$9)",
         )
         .bind(id)
         .bind(now)
@@ -3316,6 +3316,10 @@ async fn request_log_filters_match_the_console_contract() {
     assert_eq!(body.as_array().unwrap().len(), 1);
     assert_eq!(body[0]["id"], matching_log_id.to_string());
     assert_eq!(body[0]["request_protocol"], "non_stream");
+    assert_eq!(body[0]["input_tokens"], 12);
+    assert_eq!(body[0]["cached_input_tokens"], 2);
+    assert_eq!(body[0]["output_tokens"], 5);
+    assert_eq!(body[0]["reasoning_tokens"], 1);
     assert_eq!(body[0]["error_code"], "provider_error");
     assert_eq!(body[0]["error_summary"], "upstream quota exhausted");
 
@@ -3331,6 +3335,7 @@ async fn request_log_filters_match_the_console_contract() {
     let detail = body_json(detail).await;
     assert_eq!(detail["id"], matching_log_id.to_string());
     assert_eq!(detail["request_protocol"], "non_stream");
+    assert_eq!(detail["reasoning_tokens"], 1);
     assert_eq!(detail["error_code"], "provider_error");
     assert_eq!(detail["error_summary"], "upstream quota exhausted");
 

@@ -306,6 +306,7 @@ mod tests {
                     cached_input_tokens: 1,
                     cache_write_tokens: 0,
                     output_tokens: 2,
+                    reasoning_tokens: 1,
                 }),
                 price: RequestPriceSnapshot {
                     currency: "USD".into(),

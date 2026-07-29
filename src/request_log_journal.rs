@@ -80,6 +80,57 @@ mod tests {
     use super::{EncodedRequestLog, JournalCodecError};
     use crate::domain::RequestProtocol;
 
+    fn usage_payload(id: Uuid, request_protocol: Option<&str>, streamed: bool) -> Vec<u8> {
+        let mut value = serde_json::json!({
+            "id": id,
+            "started_at": "2026-07-22T00:00:00Z",
+            "completed_at": "2026-07-22T00:00:01Z",
+            "user_id": Uuid::new_v4(),
+            "api_key_id": Uuid::new_v4(),
+            "request_source": "client",
+            "api_format": "open_ai_chat_completions",
+            "client_model": "model",
+            "upstream_model": "upstream-model",
+            "model_rule_id": null,
+            "channel_group_id": null,
+            "channel_id": null,
+            "model_id": null,
+            "outcome": "succeeded",
+            "response_status_code": 200,
+            "streamed": streamed,
+            "ttft_ms": 1,
+            "total_duration_ms": 2,
+            "billing": {
+                "usage": {
+                    "input_tokens": 10,
+                    "cached_input_tokens": 2,
+                    "cache_write_tokens": 1,
+                    "output_tokens": 4
+                },
+                "price": {
+                    "currency": "USD",
+                    "price_unit_tokens": 1000000,
+                    "price_effective_at": "2026-07-22T00:00:00Z",
+                    "input_unit_price": "0",
+                    "cached_input_unit_price": "0",
+                    "cache_write_unit_price": "0",
+                    "output_unit_price": "0"
+                },
+                "cost_amount": "0",
+                "output_tokens_per_second": "1"
+            },
+            "error_code": null,
+            "error_summary": null
+        });
+        if let Some(request_protocol) = request_protocol {
+            value.as_object_mut().unwrap().insert(
+                "request_protocol".into(),
+                serde_json::Value::String(request_protocol.into()),
+            );
+        }
+        serde_json::to_vec(&value).unwrap()
+    }
+
     #[test]
     fn rejects_prior_schema_versions() {
         let error = EncodedRequestLog {
@@ -97,74 +148,42 @@ mod tests {
     }
 
     #[test]
-    fn decodes_v2_payloads_with_an_inferred_protocol() {
+    fn decodes_v2_payloads_with_an_inferred_protocol_and_default_reasoning_tokens() {
         let id = Uuid::new_v4();
-        let payload = serde_json::to_vec(&serde_json::json!({
-            "id": id,
-            "started_at": "2026-07-22T00:00:00Z",
-            "completed_at": "2026-07-22T00:00:01Z",
-            "user_id": Uuid::new_v4(),
-            "api_key_id": Uuid::new_v4(),
-            "request_source": "client",
-            "api_format": "open_ai_chat_completions",
-            "client_model": "model",
-            "upstream_model": "upstream-model",
-            "model_rule_id": null,
-            "channel_group_id": null,
-            "channel_id": null,
-            "model_id": null,
-            "outcome": "cancelled",
-            "response_status_code": 200,
-            "streamed": true,
-            "ttft_ms": 1,
-            "total_duration_ms": 2,
-            "billing": null,
-            "error_code": "client_cancelled",
-            "error_summary": null
-        }))
-        .unwrap();
         let event = EncodedRequestLog {
             request_log_id: id,
             schema_version: 2,
-            payload,
+            payload: usage_payload(id, None, true),
         }
         .decode()
         .unwrap();
 
         assert_eq!(event.request_protocol, RequestProtocol::Sse);
+        assert_eq!(event.billing.unwrap().usage.unwrap().reasoning_tokens, 0);
+    }
+
+    #[test]
+    fn defaults_reasoning_tokens_for_existing_v3_payloads() {
+        let id = Uuid::new_v4();
+        let event = EncodedRequestLog {
+            request_log_id: id,
+            schema_version: super::REQUEST_LOG_SCHEMA_VERSION,
+            payload: usage_payload(id, Some("non_stream"), false),
+        }
+        .decode()
+        .unwrap();
+
+        assert_eq!(event.request_protocol, RequestProtocol::NonStream);
+        assert_eq!(event.billing.unwrap().usage.unwrap().reasoning_tokens, 0);
     }
 
     #[test]
     fn rejects_current_schema_payloads_without_a_request_protocol() {
         let id = Uuid::new_v4();
-        let payload = serde_json::to_vec(&serde_json::json!({
-            "id": id,
-            "started_at": "2026-07-22T00:00:00Z",
-            "completed_at": "2026-07-22T00:00:01Z",
-            "user_id": Uuid::new_v4(),
-            "api_key_id": Uuid::new_v4(),
-            "request_source": "client",
-            "api_format": "open_ai_chat_completions",
-            "client_model": "model",
-            "upstream_model": "upstream-model",
-            "model_rule_id": null,
-            "channel_group_id": null,
-            "channel_id": null,
-            "model_id": null,
-            "outcome": "cancelled",
-            "response_status_code": 200,
-            "streamed": true,
-            "ttft_ms": 1,
-            "total_duration_ms": 2,
-            "billing": null,
-            "error_code": "client_cancelled",
-            "error_summary": null
-        }))
-        .unwrap();
         let error = EncodedRequestLog {
             request_log_id: id,
             schema_version: super::REQUEST_LOG_SCHEMA_VERSION,
-            payload,
+            payload: usage_payload(id, None, true),
         }
         .decode()
         .unwrap_err();

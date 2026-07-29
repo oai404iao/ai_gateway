@@ -630,6 +630,7 @@ fn assert_usage_was_logged(
     assert!(usage.output_tokens > 0);
     assert!(usage.cached_input_tokens <= usage.input_tokens);
     assert!(usage.cache_write_tokens <= usage.input_tokens);
+    assert!(usage.reasoning_tokens <= usage.output_tokens);
 
     assert_eq!(billing.price.currency, "USD");
     assert_eq!(billing.price.price_unit_tokens, 1_000_000);
@@ -733,38 +734,50 @@ fn usage_from_sse_value(format: SmokeFormat, value: &Value) -> Option<RequestUsa
                 .and_then(|response| response.get("usage"))
         })
         .unwrap_or(value);
-    let (input_field, output_field, details_field) = match format {
+    let (input_field, output_field, input_details_field, output_details_field) = match format {
         SmokeFormat::ChatCompletions => (
             "prompt_tokens",
             "completion_tokens",
             "prompt_tokens_details",
+            "completion_tokens_details",
         ),
-        SmokeFormat::Responses => ("input_tokens", "output_tokens", "input_tokens_details"),
+        SmokeFormat::Responses => (
+            "input_tokens",
+            "output_tokens",
+            "input_tokens_details",
+            "output_tokens_details",
+        ),
     };
     let input_tokens = nonnegative_token(usage.get(input_field))?;
     let output_tokens = nonnegative_token(usage.get(output_field))?;
-    let details = usage.get(details_field);
-    let cached_input_tokens = details
+    let input_details = usage.get(input_details_field);
+    let cached_input_tokens = input_details
         .and_then(|details| nonnegative_token(details.get("cached_tokens")))
         .or_else(|| match format {
             SmokeFormat::ChatCompletions => nonnegative_token(usage.get("prompt_cache_hit_tokens")),
             SmokeFormat::Responses => None,
         })
         .unwrap_or(0);
-    let cache_write_tokens = details
+    let cache_write_tokens = input_details
         .and_then(|details| {
             nonnegative_token(details.get("cache_write_tokens"))
                 .or_else(|| nonnegative_token(details.get("cache_creation_tokens")))
         })
         .unwrap_or(0);
-    (cached_input_tokens <= input_tokens && cache_write_tokens <= input_tokens).then_some(
-        RequestUsage {
+    let reasoning_tokens = usage
+        .get(output_details_field)
+        .and_then(|details| nonnegative_token(details.get("reasoning_tokens")))
+        .unwrap_or(0);
+    (cached_input_tokens <= input_tokens
+        && cache_write_tokens <= input_tokens
+        && reasoning_tokens <= output_tokens)
+        .then_some(RequestUsage {
             input_tokens,
             cached_input_tokens,
             cache_write_tokens,
             output_tokens,
-        },
-    )
+            reasoning_tokens,
+        })
 }
 
 fn nonnegative_token(value: Option<&Value>) -> Option<i64> {

@@ -382,6 +382,7 @@ async fn system_probe_identity_is_an_internal_active_administrator() {
                 cached_input_tokens: 0,
                 cache_write_tokens: 0,
                 output_tokens: 5,
+                reasoning_tokens: 0,
             }),
             price: RequestPriceSnapshot {
                 currency: "USD".into(),
@@ -604,6 +605,7 @@ struct PersistedBilling {
     cached_input_tokens: Option<i64>,
     cache_write_tokens: Option<i64>,
     output_tokens: Option<i64>,
+    reasoning_tokens: Option<i64>,
     cost_amount: Option<rust_decimal::Decimal>,
     currency: Option<String>,
 }
@@ -882,6 +884,7 @@ fn request_log_event(seed: &Seed, outcome: RequestLogOutcome) -> RequestLogEvent
                 cached_input_tokens: 2,
                 cache_write_tokens: 1,
                 output_tokens: 4,
+                reasoning_tokens: 1,
             }),
             price: RequestPriceSnapshot {
                 currency: "USD".into(),
@@ -963,7 +966,7 @@ async fn request_log_insert_is_idempotent_and_worker_continues_after_failure() {
         .unwrap();
     assert_eq!(count, 1);
     let persisted_billing: PersistedBilling = sqlx::query_as(
-        "SELECT input_tokens,cached_input_tokens,cache_write_tokens,output_tokens,cost_amount,currency FROM request_logs WHERE id=$1",
+        "SELECT input_tokens,cached_input_tokens,cache_write_tokens,output_tokens,reasoning_tokens,cost_amount,currency FROM request_logs WHERE id=$1",
     )
     .bind(event.id)
     .fetch_one(&database.pool)
@@ -973,6 +976,7 @@ async fn request_log_insert_is_idempotent_and_worker_continues_after_failure() {
     assert_eq!(persisted_billing.cached_input_tokens, Some(2));
     assert_eq!(persisted_billing.cache_write_tokens, Some(1));
     assert_eq!(persisted_billing.output_tokens, Some(4));
+    assert_eq!(persisted_billing.reasoning_tokens, Some(1));
     assert_eq!(
         persisted_billing.cost_amount,
         Some(rust_decimal::Decimal::new(999, 8))
@@ -989,6 +993,19 @@ async fn request_log_insert_is_idempotent_and_worker_continues_after_failure() {
     conflicting_summary.error_summary = Some("different upstream detail".into());
     assert!(matches!(
         repository.insert(&conflicting_summary).await,
+        Err(ai_gateway::persistence::RepositoryError::DuplicateConflict { .. })
+    ));
+    let mut conflicting_reasoning = event.clone();
+    conflicting_reasoning
+        .billing
+        .as_mut()
+        .unwrap()
+        .usage
+        .as_mut()
+        .unwrap()
+        .reasoning_tokens = 0;
+    assert!(matches!(
+        repository.insert(&conflicting_reasoning).await,
         Err(ai_gateway::persistence::RepositoryError::DuplicateConflict { .. })
     ));
     let mut invalid_status = request_log_event(&seed, RequestLogOutcome::Failed);

@@ -38,6 +38,7 @@ pub(crate) fn request_billing(
         cached_input_tokens: usage.cached_input_tokens,
         cache_write_tokens: usage.cache_write_tokens,
         output_tokens: usage.output_tokens,
+        reasoning_tokens: usage.reasoning_tokens,
     });
     let (input_unit_price, cached_input_unit_price, cache_write_unit_price, output_unit_price) =
         usage.as_ref().map_or(

@@ -106,7 +106,7 @@ async fn chat_done_then_hangs() -> Response {
 
 async fn responses_completed_then_hangs() -> Response {
     terminal_sse_then_hangs(
-        b"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":9,\"output_tokens\":3,\"input_tokens_details\":{\"cached_tokens\":2}}}}\n\n",
+        b"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":9,\"output_tokens\":3,\"input_tokens_details\":{\"cached_tokens\":2},\"output_tokens_details\":{\"reasoning_tokens\":1}}}}\n\n",
     )
 }
 
@@ -1212,7 +1212,7 @@ async fn matching_chat_model_preserves_body_and_forwards_response_safely() {
 
 #[tokio::test]
 async fn responses_nonstream_usage_is_collected_without_buffering_the_response() {
-    let upstream_body = br#"{"id":"response-id","usage":{"input_tokens":9,"output_tokens":3,"input_tokens_details":{"cached_tokens":2}}}"#.to_vec();
+    let upstream_body = br#"{"id":"response-id","usage":{"input_tokens":9,"output_tokens":3,"input_tokens_details":{"cached_tokens":2},"output_tokens_details":{"reasoning_tokens":1}}}"#.to_vec();
     let harness = harness(StatusCode::OK, upstream_body.clone()).await;
 
     let response = authorized_post(
@@ -1236,6 +1236,7 @@ async fn responses_nonstream_usage_is_collected_without_buffering_the_response()
             cached_input_tokens: 2,
             cache_write_tokens: 0,
             output_tokens: 3,
+            reasoning_tokens: 1,
         })
     );
 }
@@ -1310,6 +1311,7 @@ async fn protocol_terminal_sse_events_complete_logs_before_transport_eof() {
             cached_input_tokens: 2,
             cache_write_tokens: 0,
             output_tokens: 3,
+            reasoning_tokens: 1,
         })
     );
     drop(responses);

@@ -21,6 +21,7 @@ pub struct ResponseUsage {
     pub cached_input_tokens: i64,
     pub cache_write_tokens: i64,
     pub output_tokens: i64,
+    pub reasoning_tokens: i64,
 }
 
 impl ResponseUsage {
@@ -33,38 +34,51 @@ impl ResponseUsage {
                     .and_then(|response| response.get("usage"))
             })
             .unwrap_or(value);
-        let (input_field, output_field, details_field) = match api_format {
-            ApiFormat::OpenAiChatCompletions => (
-                "prompt_tokens",
-                "completion_tokens",
-                "prompt_tokens_details",
-            ),
-            ApiFormat::OpenAiResponses => ("input_tokens", "output_tokens", "input_tokens_details"),
-        };
+        let (input_field, output_field, input_details_field, output_details_field) =
+            match api_format {
+                ApiFormat::OpenAiChatCompletions => (
+                    "prompt_tokens",
+                    "completion_tokens",
+                    "prompt_tokens_details",
+                    "completion_tokens_details",
+                ),
+                ApiFormat::OpenAiResponses => (
+                    "input_tokens",
+                    "output_tokens",
+                    "input_tokens_details",
+                    "output_tokens_details",
+                ),
+            };
         let input_tokens = token(usage.get(input_field))?;
         let output_tokens = token(usage.get(output_field))?;
-        let details = usage.get(details_field);
-        let cached_input_tokens = details
+        let input_details = usage.get(input_details_field);
+        let cached_input_tokens = input_details
             .and_then(|details| token(details.get("cached_tokens")))
             .or_else(|| match api_format {
                 ApiFormat::OpenAiChatCompletions => token(usage.get("prompt_cache_hit_tokens")),
                 ApiFormat::OpenAiResponses => None,
             })
             .unwrap_or(0);
-        let cache_write_tokens = details
+        let cache_write_tokens = input_details
             .and_then(|details| {
                 token(details.get("cache_write_tokens"))
                     .or_else(|| token(details.get("cache_creation_tokens")))
             })
             .unwrap_or(0);
-        (cached_input_tokens <= input_tokens && cache_write_tokens <= input_tokens).then_some(
-            Self {
+        let reasoning_tokens = usage
+            .get(output_details_field)
+            .and_then(|details| token(details.get("reasoning_tokens")))
+            .unwrap_or(0);
+        (cached_input_tokens <= input_tokens
+            && cache_write_tokens <= input_tokens
+            && reasoning_tokens <= output_tokens)
+            .then_some(Self {
                 input_tokens,
                 cached_input_tokens,
                 cache_write_tokens,
                 output_tokens,
-            },
-        )
+                reasoning_tokens,
+            })
     }
 }
 
@@ -664,7 +678,7 @@ mod tests {
         collector.observe(&Bytes::from_static(br#"{"id":"x","usage":{"prompt_"#));
         assert_eq!(collector.latest(), None);
         collector.observe(&Bytes::from_static(
-            br#"tokens":10,"completion_tokens":4,"prompt_tokens_details":{"cached_tokens":3}}}"#,
+            br#"tokens":10,"completion_tokens":4,"prompt_tokens_details":{"cached_tokens":3},"completion_tokens_details":{"reasoning_tokens":1}}}"#,
         ));
         assert_eq!(
             collector.latest(),
@@ -673,6 +687,7 @@ mod tests {
                 cached_input_tokens: 3,
                 cache_write_tokens: 0,
                 output_tokens: 4,
+                reasoning_tokens: 1,
             })
         );
     }
@@ -681,7 +696,7 @@ mod tests {
     fn extracts_responses_usage_from_completed_sse_event() {
         let mut collector = UsageCollector::new(ApiFormat::OpenAiResponses, true);
         collector.observe(&Bytes::from_static(
-            b"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":9,\"output_tokens\":2,\"input_tokens_details\":{\"cached_tokens\":1}}}}\n\n",
+            b"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":9,\"output_tokens\":2,\"input_tokens_details\":{\"cached_tokens\":1},\"output_tokens_details\":{\"reasoning_tokens\":1}}}}\n\n",
         ));
         assert_eq!(
             collector.sse_terminal_outcome(),
@@ -694,6 +709,7 @@ mod tests {
                 cached_input_tokens: 1,
                 cache_write_tokens: 0,
                 output_tokens: 2,
+                reasoning_tokens: 1,
             })
         );
     }
@@ -702,7 +718,7 @@ mod tests {
     fn extracts_responses_usage_and_terminal_state_from_websocket_event() {
         let mut collector = UsageCollector::new(ApiFormat::OpenAiResponses, false);
         let terminal = collector.observe_websocket_event(&Bytes::from_static(
-            br#"{"type":"response.completed","response":{"usage":{"input_tokens":9,"output_tokens":2,"input_tokens_details":{"cached_tokens":1}}}}"#,
+            br#"{"type":"response.completed","response":{"usage":{"input_tokens":9,"output_tokens":2,"input_tokens_details":{"cached_tokens":1},"output_tokens_details":{"reasoning_tokens":1}}}}"#,
         ));
         assert_eq!(terminal, Some(SseTerminalOutcome::Completed));
         assert_eq!(
@@ -712,6 +728,7 @@ mod tests {
                 cached_input_tokens: 1,
                 cache_write_tokens: 0,
                 output_tokens: 2,
+                reasoning_tokens: 1,
             })
         );
     }
@@ -784,6 +801,7 @@ mod tests {
                 cached_input_tokens: 2,
                 cache_write_tokens: 0,
                 output_tokens: 1,
+                reasoning_tokens: 0,
             })
         );
         assert_eq!(
@@ -863,6 +881,7 @@ mod tests {
                 cached_input_tokens: 43,
                 cache_write_tokens: 0,
                 output_tokens: 4,
+                reasoning_tokens: 0,
             })
         );
     }
@@ -882,6 +901,7 @@ data: {"object":"chat.completion.chunk","choices":[{"delta":{"content":""},"fini
                 cached_input_tokens: 0,
                 cache_write_tokens: 0,
                 output_tokens: 1928,
+                reasoning_tokens: 0,
             })
         );
 
@@ -894,6 +914,7 @@ data: {"object":"chat.completion.chunk","choices":[{"delta":{"content":""},"fini
                 cached_input_tokens: 0,
                 cache_write_tokens: 0,
                 output_tokens: 1361,
+                reasoning_tokens: 0,
             })
         );
     }
@@ -916,7 +937,26 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":0,
                 cached_input_tokens: 0,
                 cache_write_tokens: 0,
                 output_tokens: 721,
+                reasoning_tokens: 0,
             })
+        );
+    }
+
+    #[test]
+    fn rejects_reasoning_tokens_larger_than_total_output() {
+        let value = serde_json::json!({
+            "usage": {
+                "input_tokens": 1,
+                "output_tokens": 2,
+                "output_tokens_details": {
+                    "reasoning_tokens": 3
+                }
+            }
+        });
+
+        assert_eq!(
+            ResponseUsage::from_value(ApiFormat::OpenAiResponses, &value),
+            None
         );
     }
 }
