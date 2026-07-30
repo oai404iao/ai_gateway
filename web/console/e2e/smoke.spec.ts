@@ -180,15 +180,42 @@ test.describe("Console SPA smoke", () => {
     await expect(page.getByText("96% used")).toBeVisible();
     await expect(page.getByText("Draining", { exact: true })).toBeVisible();
 
+    const editButton = page.getByRole("button", {
+      name: "Edit Personal Plus",
+    });
+    const quotaButton = page.getByRole("button", {
+      name: "Refresh quota for Personal Plus",
+    });
+    const tokenButton = page.getByRole("button", {
+      name: "Refresh token for Personal Plus",
+    });
+    for (const [button, label] of [
+      [editButton, "Edit Personal Plus"],
+      [quotaButton, "Refresh quota for Personal Plus"],
+      [tokenButton, "Refresh token for Personal Plus"],
+    ] as const) {
+      await button.hover();
+      await expect(page.getByText(label, { exact: true })).toBeVisible();
+    }
+
+    const [editBox, quotaBox, tokenBox] = await Promise.all([
+      editButton.boundingBox(),
+      quotaButton.boundingBox(),
+      tokenButton.boundingBox(),
+    ]);
+    expect(editBox).not.toBeNull();
+    expect(quotaBox).not.toBeNull();
+    expect(tokenBox).not.toBeNull();
+    expect(editBox!.y).toBeLessThan(quotaBox!.y);
+    expect(Math.abs(quotaBox!.y - tokenBox!.y)).toBeLessThan(2);
+
     const refresh = page.waitForRequest(
       (request) =>
         request.url().endsWith(
           `/console/v1/providers/codex-oauth/credentials/${E2E_CODEX_CREDENTIAL_ID}/quota/refresh`,
         ) && request.method() === "POST",
     );
-    await page
-      .getByRole("button", { name: "Refresh quota for Personal Plus" })
-      .click();
+    await quotaButton.click();
     await refresh;
     await expect(page.getByText("Quota refreshed.")).toBeVisible();
   });

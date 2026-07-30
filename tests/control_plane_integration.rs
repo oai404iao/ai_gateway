@@ -9,10 +9,11 @@ use std::{
 use ai_gateway::{
     admission::AdmissionRuntime,
     application::{
-        AutomaticDisableWorker, ChannelModelDiscoveryService, CodexConnectorService,
-        ConsoleAuthService, ControlPlaneCoordinator, ModelSyncService, NoopRequestLogSink,
-        ProxyService, QueueRequestLogSink, RecordingRequestLogSink, RequestLogSink,
-        SystemMetricsService, UpstreamConnectorRegistry, hash_console_password,
+        AutomaticDisableWorker, CODEX_ORIGINATOR, ChannelModelDiscoveryService,
+        CodexConnectorService, ConsoleAuthService, ControlPlaneCoordinator, ModelSyncService,
+        NoopRequestLogSink, ProxyService, QueueRequestLogSink, RecordingRequestLogSink,
+        RequestLogSink, SystemMetricsService, UpstreamConnectorRegistry, codex_user_agent,
+        hash_console_password,
     },
     domain::{
         ApiFormat, ApiKeyPermission, AutomaticDisableTrigger, ConnectorKind, RequestBilling,
@@ -491,6 +492,7 @@ struct CapturedCodexRequest {
     accept_encoding: Option<String>,
     account_id: Option<String>,
     originator: Option<String>,
+    user_agent: Option<String>,
     session_id: Option<String>,
     thread_id: Option<String>,
     client_request_id: Option<String>,
@@ -519,6 +521,7 @@ async fn codex_responses_upstream(
             accept_encoding: header("accept-encoding"),
             account_id: header("chatgpt-account-id"),
             originator: header("originator"),
+            user_agent: header("user-agent"),
             session_id: header("session-id"),
             thread_id: header("thread-id"),
             client_request_id: header("x-client-request-id"),
@@ -1450,7 +1453,11 @@ async fn codex_connector_forwards_responses_with_managed_credentials_and_headers
     );
     assert_eq!(forwarded.accept_encoding.as_deref(), Some("identity"));
     assert_eq!(forwarded.account_id.as_deref(), Some("account-123"));
-    assert_eq!(forwarded.originator.as_deref(), Some("ai_gateway"));
+    assert_eq!(forwarded.originator.as_deref(), Some(CODEX_ORIGINATOR));
+    assert_eq!(
+        forwarded.user_agent.as_deref(),
+        Some(codex_user_agent().as_str())
+    );
     assert_eq!(forwarded.session_id.as_deref(), Some("session-123"));
     assert_eq!(forwarded.thread_id.as_deref(), Some("thread-456"));
     assert_eq!(forwarded.client_request_id.as_deref(), Some("thread-456"));

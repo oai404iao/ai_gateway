@@ -57,6 +57,11 @@ import {
 } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
   useChannelGroup,
   useControlPlaneLists,
 } from "@/features/admin/api";
@@ -605,39 +610,74 @@ export default function CodexOauthPage() {
                         </p>
                       </TableCell>
                       <TableCell className="align-top">
-                        <div className="flex justify-end gap-1">
-                          <Button
-                            variant="ghost"
-                            size="icon-sm"
-                            aria-label={t("Refresh token for {label}", {
-                              label: credential.label,
-                            })}
-                            disabled={refreshCredential.isPending}
-                            onClick={() => void runRefresh("token", credential)}
-                          >
-                            <RefreshCw />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon-sm"
-                            aria-label={t("Refresh quota for {label}", {
-                              label: credential.label,
-                            })}
-                            disabled={refreshQuota.isPending}
-                            onClick={() => void runRefresh("quota", credential)}
-                          >
-                            <RefreshCw className="text-info" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon-sm"
-                            aria-label={t("Edit {label}", {
-                              label: credential.label,
-                            })}
-                            onClick={() => setEditingId(credential.id)}
-                          >
-                            <Pencil />
-                          </Button>
+                        <div className="flex flex-col items-end gap-1">
+                          <Tooltip disableHoverablePopup>
+                            <TooltipTrigger
+                              render={
+                                <Button
+                                  variant="ghost"
+                                  size="icon-sm"
+                                  aria-label={t("Edit {label}", {
+                                    label: credential.label,
+                                  })}
+                                  onClick={() => setEditingId(credential.id)}
+                                />
+                              }
+                            >
+                              <Pencil />
+                            </TooltipTrigger>
+                            <TooltipContent side="left">
+                              {t("Edit {label}", {
+                                label: credential.label,
+                              })}
+                            </TooltipContent>
+                          </Tooltip>
+                          <div className="flex gap-1">
+                            <Tooltip disableHoverablePopup>
+                              <TooltipTrigger
+                                render={
+                                  <Button
+                                    variant="ghost"
+                                    size="icon-sm"
+                                    aria-label={t("Refresh quota for {label}", {
+                                      label: credential.label,
+                                    })}
+                                    disabled={refreshQuota.isPending}
+                                    onClick={() => void runRefresh("quota", credential)}
+                                  />
+                                }
+                              >
+                                <RefreshCw className="text-info" />
+                              </TooltipTrigger>
+                              <TooltipContent side="left">
+                                {t("Refresh quota for {label}", {
+                                  label: credential.label,
+                                })}
+                              </TooltipContent>
+                            </Tooltip>
+                            <Tooltip disableHoverablePopup>
+                              <TooltipTrigger
+                                render={
+                                  <Button
+                                    variant="ghost"
+                                    size="icon-sm"
+                                    aria-label={t("Refresh token for {label}", {
+                                      label: credential.label,
+                                    })}
+                                    disabled={refreshCredential.isPending}
+                                    onClick={() => void runRefresh("token", credential)}
+                                  />
+                                }
+                              >
+                                <RefreshCw />
+                              </TooltipTrigger>
+                              <TooltipContent side="left">
+                                {t("Refresh token for {label}", {
+                                  label: credential.label,
+                                })}
+                              </TooltipContent>
+                            </Tooltip>
+                          </div>
                         </div>
                       </TableCell>
                     </TableRow>

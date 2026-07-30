@@ -329,7 +329,7 @@ mod tests {
     }
 
     #[test]
-    fn request_headers_report_the_pinned_codex_client_version() {
+    fn request_headers_report_the_pinned_codex_client_identity() {
         let attempt = PreparedCodexAttempt::prepare(
             &runtime(),
             Uuid::from_u128(1),
@@ -352,6 +352,12 @@ mod tests {
         assert_eq!(
             headers.get("version").and_then(|value| value.to_str().ok()),
             Some(CODEX_CLIENT_VERSION)
+        );
+        assert_eq!(
+            headers
+                .get("originator")
+                .and_then(|value| value.to_str().ok()),
+            Some(CODEX_ORIGINATOR)
         );
         assert_eq!(
             headers
