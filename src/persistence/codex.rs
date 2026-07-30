@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -25,17 +27,68 @@ pub struct CodexOauthStartInput {
 #[serde(deny_unknown_fields)]
 pub struct CodexCredentialImportInput {
     pub label: String,
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
     #[serde(default)]
     pub proxy_id: Option<Uuid>,
     #[serde(default = "default_weight")]
     pub weight: i32,
     #[serde(default = "default_quota_threshold_percent")]
     pub quota_threshold_percent: i16,
-    pub id_token: String,
+    #[serde(default)]
+    pub id_token: Option<String>,
     pub access_token: String,
     pub refresh_token: String,
     #[serde(default)]
     pub account_id: Option<String>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CodexCredentialExportInput {
+    #[serde(default)]
+    pub credential_ids: Vec<Uuid>,
+    #[serde(default = "default_include_proxies")]
+    pub include_proxies: bool,
+}
+
+#[derive(Clone, Serialize)]
+pub struct CodexCredentialExportBundle {
+    #[serde(rename = "type")]
+    pub export_type: &'static str,
+    pub version: u8,
+    pub exported_at: DateTime<Utc>,
+    pub channel_group_id: Uuid,
+    pub channel_group_name: String,
+    pub proxies: Vec<CodexCredentialExportProxy>,
+    pub credentials: Vec<CodexCredentialExportItem>,
+}
+
+#[derive(Clone, Serialize, FromRow)]
+pub struct CodexCredentialExportProxy {
+    pub proxy_key: Uuid,
+    pub name: String,
+    pub proxy_url: String,
+    pub username: Option<String>,
+    pub password: Option<String>,
+    pub no_proxy_hosts: Vec<String>,
+    pub enabled: bool,
+}
+
+#[derive(Clone, Serialize)]
+pub struct CodexCredentialExportItem {
+    pub label: String,
+    pub email: Option<String>,
+    pub account_id: String,
+    pub plan_type: Option<String>,
+    pub is_fedramp: bool,
+    pub id_token: String,
+    pub access_token: String,
+    pub refresh_token: String,
+    pub proxy_key: Option<Uuid>,
+    pub weight: i32,
+    pub quota_threshold_percent: i16,
+    pub enabled: bool,
 }
 
 #[derive(Clone, Deserialize)]
@@ -53,6 +106,7 @@ pub struct CodexCredentialUpdateInput {
 pub struct CodexCredentialCreate {
     pub channel_group_id: Uuid,
     pub label: String,
+    pub enabled: bool,
     pub proxy_id: Option<Uuid>,
     pub weight: i32,
     pub quota_threshold_percent: i16,
@@ -303,6 +357,104 @@ impl ControlPlaneRepository {
             .map_err(RepositoryError::from)
     }
 
+    pub async fn export_codex_credentials(
+        &self,
+        channel_group_id: Uuid,
+        input: CodexCredentialExportInput,
+    ) -> Result<CodexCredentialExportBundle, RepositoryError> {
+        const MAX_SELECTED_CREDENTIALS: usize = 1_000;
+
+        if input.credential_ids.len() > MAX_SELECTED_CREDENTIALS {
+            return Err(RepositoryError::Validation);
+        }
+        let selected_ids = input
+            .credential_ids
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        if selected_ids.len() != input.credential_ids.len() {
+            return Err(RepositoryError::Validation);
+        }
+
+        let channel_group_name = sqlx::query_scalar::<_, String>(
+            "SELECT name FROM channel_groups \
+             WHERE id=$1 AND connector_kind=$2 AND api_format=$3::api_format",
+        )
+        .bind(channel_group_id)
+        .bind(CODEX_CONNECTOR_KIND)
+        .bind(CODEX_API_FORMAT)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or(RepositoryError::NotFound)?;
+
+        let records = if selected_ids.is_empty() {
+            sqlx::query_as::<_, CodexCredentialRecord>(&credential_select(
+                "WHERE c.channel_group_id=$1 ORDER BY c.label,c.channel_id",
+            ))
+            .bind(channel_group_id)
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            let selected_ids = selected_ids.into_iter().collect::<Vec<_>>();
+            let records = sqlx::query_as::<_, CodexCredentialRecord>(&credential_select(
+                "WHERE c.channel_group_id=$1 AND c.channel_id=ANY($2) \
+                 ORDER BY c.label,c.channel_id",
+            ))
+            .bind(channel_group_id)
+            .bind(&selected_ids)
+            .fetch_all(&self.pool)
+            .await?;
+            if records.len() != selected_ids.len() {
+                return Err(RepositoryError::NotFound);
+            }
+            records
+        };
+
+        let proxy_ids = records
+            .iter()
+            .filter_map(|record| record.proxy_id)
+            .collect::<BTreeSet<_>>();
+        let proxies = if input.include_proxies && !proxy_ids.is_empty() {
+            let proxy_ids = proxy_ids.into_iter().collect::<Vec<_>>();
+            sqlx::query_as::<_, CodexCredentialExportProxy>(
+                "SELECT id AS proxy_key,name,proxy_url,username,password,no_proxy_hosts,enabled \
+                 FROM proxies WHERE id=ANY($1) ORDER BY name,id",
+            )
+            .bind(&proxy_ids)
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            Vec::new()
+        };
+        let credentials = records
+            .into_iter()
+            .map(|record| CodexCredentialExportItem {
+                label: record.label,
+                email: record.email,
+                account_id: record.account_id,
+                plan_type: record.plan_type,
+                is_fedramp: record.is_fedramp,
+                id_token: record.id_token,
+                access_token: record.access_token,
+                refresh_token: record.refresh_token,
+                proxy_key: record.proxy_id.filter(|_| input.include_proxies),
+                weight: record.weight,
+                quota_threshold_percent: record.quota_threshold_percent,
+                enabled: record.enabled,
+            })
+            .collect();
+
+        Ok(CodexCredentialExportBundle {
+            export_type: "ai-gateway-codex-credentials",
+            version: 1,
+            exported_at: Utc::now(),
+            channel_group_id,
+            channel_group_name,
+            proxies,
+            credentials,
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub async fn create_codex_oauth_flow(
         &self,
@@ -426,11 +578,12 @@ impl ControlPlaneRepository {
                 "UPDATE codex_oauth_credentials SET \
                  label=$2,email=$3,plan_type=$4,is_fedramp=$5,id_token=$6,access_token=$7, \
                  refresh_token=$8,access_token_expires_at=$9,last_refreshed_at=$10, \
-                 refresh_generation=refresh_generation+1,reauth_required=false,enabled=true, \
+                 refresh_generation=refresh_generation+1,reauth_required=false,enabled=$12, \
                  quota_threshold_percent=$11,runtime_status=CASE \
-                     WHEN $12 THEN CASE \
-                         WHEN NOT $13 OR $14 THEN 'unavailable' \
-                         WHEN GREATEST(COALESCE($15,0),COALESCE($18,0)) >= $11 \
+                     WHEN NOT $12 THEN 'disabled' \
+                     WHEN $13 THEN CASE \
+                         WHEN NOT $14 OR $15 THEN 'unavailable' \
+                         WHEN GREATEST(COALESCE($16,0),COALESCE($19,0)) >= $11 \
                              THEN 'draining' \
                          ELSE 'active' END \
                      WHEN quota_allowed=false OR quota_limit_reached=true THEN 'unavailable' \
@@ -438,15 +591,15 @@ impl ControlPlaneRepository {
                                    COALESCE(secondary_used_percent,0)) >= $11 \
                          THEN 'draining' \
                      ELSE 'active' END, \
-                 quota_allowed=CASE WHEN $12 THEN $13 ELSE quota_allowed END, \
-                 quota_limit_reached=CASE WHEN $12 THEN $14 ELSE quota_limit_reached END, \
-                 primary_used_percent=CASE WHEN $12 THEN $15 ELSE primary_used_percent END, \
-                 primary_window_seconds=CASE WHEN $12 THEN $16 ELSE primary_window_seconds END, \
-                 primary_reset_at=CASE WHEN $12 THEN $17 ELSE primary_reset_at END, \
-                 secondary_used_percent=CASE WHEN $12 THEN $18 ELSE secondary_used_percent END, \
-                 secondary_window_seconds=CASE WHEN $12 THEN $19 ELSE secondary_window_seconds END, \
-                 secondary_reset_at=CASE WHEN $12 THEN $20 ELSE secondary_reset_at END, \
-                 quota_checked_at=CASE WHEN $12 THEN $21 ELSE quota_checked_at END, \
+                 quota_allowed=CASE WHEN $13 THEN $14 ELSE quota_allowed END, \
+                 quota_limit_reached=CASE WHEN $13 THEN $15 ELSE quota_limit_reached END, \
+                 primary_used_percent=CASE WHEN $13 THEN $16 ELSE primary_used_percent END, \
+                 primary_window_seconds=CASE WHEN $13 THEN $17 ELSE primary_window_seconds END, \
+                 primary_reset_at=CASE WHEN $13 THEN $18 ELSE primary_reset_at END, \
+                 secondary_used_percent=CASE WHEN $13 THEN $19 ELSE secondary_used_percent END, \
+                 secondary_window_seconds=CASE WHEN $13 THEN $20 ELSE secondary_window_seconds END, \
+                 secondary_reset_at=CASE WHEN $13 THEN $21 ELSE secondary_reset_at END, \
+                 quota_checked_at=CASE WHEN $13 THEN $22 ELSE quota_checked_at END, \
                  last_error_code=NULL,last_error_summary=NULL \
                  WHERE channel_id=$1 \
                  RETURNING updated_at",
@@ -462,6 +615,7 @@ impl ControlPlaneRepository {
             .bind(input.access_token_expires_at)
             .bind(Utc::now())
             .bind(input.quota_threshold_percent)
+            .bind(input.enabled)
             .bind(has_quota)
             .bind(quota.map(|quota| quota.allowed))
             .bind(quota.map(|quota| quota.limit_reached))
@@ -509,17 +663,21 @@ impl ControlPlaneRepository {
         .await?;
 
         let quota = input.quota.as_ref();
-        let runtime_status = quota.map_or("active", |quota| {
-            runtime_status_for_quota(quota, input.quota_threshold_percent)
-        });
+        let runtime_status = if input.enabled {
+            quota.map_or("active", |quota| {
+                runtime_status_for_quota(quota, input.quota_threshold_percent)
+            })
+        } else {
+            "disabled"
+        };
         sqlx::query(
             "INSERT INTO codex_oauth_credentials \
              (channel_id,channel_group_id,label,email,account_id,plan_type,is_fedramp,id_token, \
               access_token,refresh_token,access_token_expires_at,last_refreshed_at, \
-              quota_threshold_percent,runtime_status,quota_allowed,quota_limit_reached, \
+              enabled,quota_threshold_percent,runtime_status,quota_allowed,quota_limit_reached, \
               primary_used_percent,primary_window_seconds,primary_reset_at, \
               secondary_used_percent,secondary_window_seconds,secondary_reset_at,quota_checked_at) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)",
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)",
         )
         .bind(channel_id)
         .bind(input.channel_group_id)
@@ -533,6 +691,7 @@ impl ControlPlaneRepository {
         .bind(input.refresh_token)
         .bind(input.access_token_expires_at)
         .bind(Utc::now())
+        .bind(input.enabled)
         .bind(input.quota_threshold_percent)
         .bind(runtime_status)
         .bind(quota.map(|quota| quota.allowed))
@@ -877,4 +1036,12 @@ const fn default_weight() -> i32 {
 
 const fn default_quota_threshold_percent() -> i16 {
     95
+}
+
+const fn default_include_proxies() -> bool {
+    true
+}
+
+const fn default_enabled() -> bool {
+    true
 }

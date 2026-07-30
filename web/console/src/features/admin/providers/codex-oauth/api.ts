@@ -1,6 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiGetDetail, apiPost, apiPut } from "@/api/client";
 import type {
+  CodexCredentialExportBundle,
+  CodexCredentialExportInput,
   CodexCredentialImportInput,
   CodexCredentialUpdateInput,
   CodexCredentialView,
@@ -94,6 +96,16 @@ export function useImportCodexCredential(groupId: string) {
         queryKey: ["console", "control-plane-lists"],
       });
     },
+  });
+}
+
+export function useExportCodexCredentials(groupId: string) {
+  return useMutation({
+    mutationFn: (input: CodexCredentialExportInput) =>
+      apiPost<CodexCredentialExportBundle>(
+        `/providers/codex-oauth/channel-groups/${groupId}/credentials/export`,
+        input,
+      ),
   });
 }
 

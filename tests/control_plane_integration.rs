@@ -23,9 +23,10 @@ use ai_gateway::{
     http::console::{self, ConsoleState},
     models_dev::ModelsDevClient,
     persistence::{
-        AuthRepository, ChannelGroupInput, CodexCredentialCreate, CodexCredentialUpdateInput,
-        CodexQuotaUpdate, CodexTokenRefreshUpdate, ControlPlaneMutation, ControlPlaneRepository,
-        MIGRATOR, RequestLogBatchInsertOutcome, RequestLogInsertOutcome, RequestLogRepository,
+        AuthRepository, ChannelGroupInput, CodexCredentialCreate, CodexCredentialExportInput,
+        CodexCredentialUpdateInput, CodexQuotaUpdate, CodexTokenRefreshUpdate,
+        ControlPlaneMutation, ControlPlaneRepository, MIGRATOR, ProxyCreateInput,
+        RequestLogBatchInsertOutcome, RequestLogInsertOutcome, RequestLogRepository,
         RequestLogSettlementOutcome, SystemAutomaticDisableSettingsInput,
         SystemPassiveHealthSettingsInput, SystemSessionAffinityKeySourceInput,
         SystemSessionAffinityRuleInput, SystemSessionAffinitySettingsInput, SystemSettingsInput,
@@ -1004,6 +1005,7 @@ async fn codex_credentials_create_managed_channels_and_recompute_quota_state() {
             CodexCredentialCreate {
                 channel_group_id: codex_group,
                 label: "plus-account".into(),
+                enabled: true,
                 proxy_id: None,
                 weight: 100,
                 quota_threshold_percent: 95,
@@ -1178,6 +1180,7 @@ async fn codex_credentials_create_managed_channels_and_recompute_quota_state() {
             CodexCredentialCreate {
                 channel_group_id: codex_group,
                 label: "plus-reauthorized".into(),
+                enabled: true,
                 proxy_id: None,
                 weight: 80,
                 quota_threshold_percent: 98,
@@ -1243,6 +1246,160 @@ async fn codex_credentials_create_managed_channels_and_recompute_quota_state() {
         )
         .await;
     assert!(connector_change.is_err());
+
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn codex_credentials_export_secrets_and_protect_assigned_proxies_from_deletion() {
+    let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
+    let codex_group = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO channel_groups \
+         (id,name,api_format,connector_kind,priority,selection_strategy,enabled) \
+         VALUES ($1,'codex-portable','open_ai_responses','codex_oauth',0,'weighted_random',true)",
+    )
+    .bind(codex_group)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let repository = ControlPlaneRepository::new(database.pool.clone());
+    let runtime = Arc::new(RuntimeConfig::new(
+        compile_runtime_config(repository.load_runtime().await.unwrap()).unwrap(),
+    ));
+    let coordinator = ControlPlaneCoordinator::new(
+        repository.clone(),
+        Arc::clone(&runtime),
+        RoutingRuntime::new(PassiveHealthPolicy::default()),
+    );
+    let proxy = coordinator
+        .mutate(
+            seed.user,
+            ControlPlaneMutation::CreateProxy(ProxyCreateInput {
+                name: "codex-egress".into(),
+                proxy_url: "socks5h://127.0.0.1:1080".into(),
+                username: Some("proxy-user".into()),
+                password: Some("proxy-password".into()),
+                no_proxy_hosts: Vec::new(),
+                enabled: true,
+            }),
+        )
+        .await
+        .unwrap();
+    let now = Utc::now();
+    let credential = coordinator
+        .create_codex_credential(
+            seed.user,
+            CodexCredentialCreate {
+                channel_group_id: codex_group,
+                label: "portable-account".into(),
+                enabled: true,
+                proxy_id: Some(proxy.id),
+                weight: 70,
+                quota_threshold_percent: 91,
+                base_url: "https://chatgpt.com/backend-api/codex".into(),
+                email: Some("portable@example.test".into()),
+                account_id: "portable-account-id".into(),
+                plan_type: Some("plus".into()),
+                is_fedramp: false,
+                id_token: "portable-id-token".into(),
+                access_token: "portable-access-token".into(),
+                refresh_token: "portable-refresh-token".into(),
+                access_token_expires_at: Some(now + chrono::Duration::hours(1)),
+                available_models: vec!["gpt-5-codex".into()],
+                quota: None,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+    let exported = repository
+        .export_codex_credentials(
+            codex_group,
+            CodexCredentialExportInput {
+                credential_ids: vec![credential.id],
+                include_proxies: true,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(exported.export_type, "ai-gateway-codex-credentials");
+    assert_eq!(exported.channel_group_name, "codex-portable");
+    assert_eq!(exported.credentials.len(), 1);
+    assert_eq!(exported.credentials[0].id_token, "portable-id-token");
+    assert_eq!(
+        exported.credentials[0].access_token,
+        "portable-access-token"
+    );
+    assert_eq!(
+        exported.credentials[0].refresh_token,
+        "portable-refresh-token"
+    );
+    assert_eq!(exported.credentials[0].proxy_key, Some(proxy.id));
+    assert_eq!(exported.proxies.len(), 1);
+    assert_eq!(exported.proxies[0].username.as_deref(), Some("proxy-user"));
+    assert_eq!(
+        exported.proxies[0].password.as_deref(),
+        Some("proxy-password")
+    );
+
+    let delete_in_use = coordinator
+        .mutate(
+            seed.user,
+            ControlPlaneMutation::DeleteProxy {
+                id: proxy.id,
+                expected_updated_at: proxy.updated_at,
+            },
+        )
+        .await;
+    assert!(matches!(
+        delete_in_use,
+        Err(ai_gateway::application::ControlPlaneError::Repository(
+            ai_gateway::persistence::RepositoryError::ProxyInUse
+        ))
+    ));
+
+    let credential_view = repository
+        .codex_credential_view(credential.id)
+        .await
+        .unwrap()
+        .unwrap();
+    coordinator
+        .update_codex_credential(
+            seed.user,
+            credential.id,
+            CodexCredentialUpdateInput {
+                label: credential_view.label,
+                enabled: credential_view.enabled,
+                proxy_id: None,
+                weight: credential_view.weight,
+                quota_threshold_percent: credential_view.quota_threshold_percent,
+            },
+            credential_view.updated_at,
+        )
+        .await
+        .unwrap();
+    coordinator
+        .mutate(
+            seed.user,
+            ControlPlaneMutation::DeleteProxy {
+                id: proxy.id,
+                expected_updated_at: proxy.updated_at,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        coordinator
+            .lists()
+            .await
+            .unwrap()
+            .proxies
+            .iter()
+            .all(|item| item.id != proxy.id)
+    );
 
     database.cleanup().await;
 }
@@ -1315,6 +1472,7 @@ async fn codex_connector_forwards_responses_with_managed_credentials_and_headers
             CodexCredentialCreate {
                 channel_group_id: codex_group,
                 label: "forwarding-account".into(),
+                enabled: true,
                 proxy_id: None,
                 weight: 100,
                 quota_threshold_percent: 95,

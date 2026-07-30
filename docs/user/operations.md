@@ -127,6 +127,12 @@ verification_key_path = "./config/console-jwt-public.pem"
      account ID。网关先调用 Codex models 接口验证凭证，再创建 managed channel。
      同一 Channel Group 中再次连接或导入相同 account ID 会原位重新授权已有凭证，
      不会创建第二个 channel。
+   - **Advanced import**：进入独立检查页，粘贴 JSON 或上传一个或多个 JSON 文件。
+     Console 会自动识别 ai-gateway 原生导出、CLIProxyAPI（CPA）Codex Token 和
+     Sub2API 数据导出，把内容先转换成只保存在当前页面内存中的草稿。提交前可以编辑
+     label、enable、account ID、Token、weight、quota threshold 和逐凭证代理分配；还可以
+     在同一页面新增、编辑或删除代理，并把导入文件中的代理映射到现有代理。最终仍逐条调用
+     服务端凭证验证与导入接口，因此失败条目可在保留其他草稿的情况下修正和重试。
 4. 为返回的 Codex model slug 创建或启用本地 model，并创建 Responses model rule，
    将该 Channel Group 作为候选。
 5. 确保调用方 API Key 允许 Responses、`proxy` 权限和这个 Channel Group。
@@ -150,6 +156,15 @@ verification_key_path = "./config/console-jwt-public.pem"
 永久 refresh 失败会设置持久的重新授权状态；后续 quota 成功或普通设置编辑不会把该凭证重新置为
 `active`。重新执行 OAuth 或导入同一 account ID 的新 Token 会复用原 managed channel 并清除该状态。
 
+凭证页的 **Export credentials** 需要显式确认，并下载 ai-gateway 原生 JSON Bundle。Bundle 包含
+原始 ID/access/refresh token、凭证路由设置，以及被这些凭证引用的代理定义和代理认证信息；它必须
+按密钥或未加密备份处理。常规凭证列表和详情接口仍不会返回已保存 Token，只有管理员显式调用导出
+接口时才会读取这些敏感字段。高级导入会保留 Bundle 中的 enable 状态；如果 `id_token` 缺失，则
+验证阶段从 `access_token` 读取身份声明。
+
+高级导入页允许删除代理，但服务端要求 `If-Match`，并且只有当代理未被普通渠道或未完成的 Codex
+OAuth 流引用时才会删除；否则返回 `proxy_in_use`。已分配给导入草稿的代理还必须存在且已启用。
+
 后台 worker 每分钟检查凭证；access token 接近过期时刷新，quota 默认每 5 分钟重新读取。手动
 refresh token / quota 也可从凭证页执行。同一凭证的 refresh 在实例内和 PostgreSQL 行锁层面串行，
 并核对 generation，避免 rotating refresh token 被并发重复使用。上游请求返回 `401` 时会触发一次
@@ -165,9 +180,11 @@ affinity 的请求可以换到同组其他凭证；请求一旦发送到 Codex�
 客户端已有的合法 `session-id` / `thread-id` 会转发。缺少时，匹配 Session affinity 的请求会从
 不可逆 session hash 派生稳定 opaque UUID；未匹配 affinity 时仅为本次请求生成 opaque UUID。
 
-OAuth token 不会由 Console API 返回，也不会进入 audit/debug 输出；当前仍与普通 upstream API key
-一样依赖受保护的 PostgreSQL、备份和主机访问边界，未额外实施列级静态加密。外部接口与限制见
-[Codex OAuth 与订阅后端接入参考](../reference/codex-oauth-connect.md)。
+OAuth token 不会进入 audit/debug 输出；除显式管理员导出接口外，也不会由常规 Console API 返回。
+当前仍与普通 upstream API key 一样依赖受保护的 PostgreSQL、备份和主机访问边界，未额外实施列级
+静态加密。外部接口与限制见
+[Codex OAuth 与订阅后端接入参考](../reference/codex-oauth-connect.md)和
+[Codex 凭证导入格式兼容性](../reference/codex-credential-portability.md)。
 
 ### Responses WebSocket
 

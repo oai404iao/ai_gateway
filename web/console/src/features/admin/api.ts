@@ -365,15 +365,49 @@ const PROXIES_KEY = ["console", "proxies"] as const;
 const proxyDetailKey = (id: string) => ["console", "proxies", id] as const;
 export const useProxies = makeList<ProxyView>("/network/proxies", PROXIES_KEY);
 export const useProxy = makeDetail<ProxyView>("/network/proxies", proxyDetailKey);
-export const useCreateProxy = makeCreate<ProxyCreateInput, MutationResponse>(
-  "/network/proxies",
-  PROXIES_KEY,
-);
-export const useUpdateProxy = makeUpdate<ProxyInput>(
-  "/network/proxies",
-  PROXIES_KEY,
-  proxyDetailKey,
-);
+export function useCreateProxy() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: ProxyCreateInput) =>
+      apiPost<MutationResponse>("/network/proxies", input),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: PROXIES_KEY });
+      void queryClient.invalidateQueries({
+        queryKey: ["console", "control-plane-lists"],
+      });
+    },
+  });
+}
+export function useUpdateProxy(id: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ input, ifMatch }: { input: ProxyInput; ifMatch: string }) =>
+      apiPut<MutationResponse>(`/network/proxies/${id}`, input, ifMatch),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: PROXIES_KEY });
+      void queryClient.invalidateQueries({ queryKey: proxyDetailKey(id) });
+      void queryClient.invalidateQueries({
+        queryKey: ["console", "control-plane-lists"],
+      });
+    },
+  });
+}
+export function useDeleteProxy(id: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ ifMatch }: { ifMatch: string }) =>
+      apiSend<MutationResponse>(`/network/proxies/${id}`, "DELETE", undefined, {
+        ifMatch,
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: PROXIES_KEY });
+      void queryClient.removeQueries({ queryKey: proxyDetailKey(id) });
+      void queryClient.invalidateQueries({
+        queryKey: ["console", "control-plane-lists"],
+      });
+    },
+  });
+}
 export function useTestProxy() {
   return useMutation({
     mutationFn: (input: ProxyTestInput) =>

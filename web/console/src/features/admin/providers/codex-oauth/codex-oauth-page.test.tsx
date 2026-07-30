@@ -7,6 +7,7 @@ import { AppProviders } from "@/app/providers";
 import { AppRouter } from "@/app/router";
 import type {
   ChannelGroupView,
+  CodexCredentialExportInput,
   CodexCredentialView,
   CodexOauthCompleteInput,
   CodexOauthStartInput,
@@ -209,5 +210,70 @@ describe("CodexOauthPage", () => {
     await waitFor(() =>
       expect(completeInput).toEqual({ callback_url: callbackUrl }),
     );
+  });
+
+  it("confirms and downloads a sensitive native credential export", async () => {
+    seedAuthenticatedSession();
+    let exportInput: CodexCredentialExportInput | undefined;
+    const createObjectUrl = vi
+      .spyOn(URL, "createObjectURL")
+      .mockReturnValue("blob:codex-export");
+    const revokeObjectUrl = vi
+      .spyOn(URL, "revokeObjectURL")
+      .mockImplementation(() => undefined);
+    const click = vi
+      .spyOn(HTMLAnchorElement.prototype, "click")
+      .mockImplementation(() => undefined);
+    server.use(
+      ...baseHandlers([CREDENTIAL]),
+      http.post(
+        "/console/v1/providers/codex-oauth/channel-groups/:id/credentials/export",
+        async ({ request }) => {
+          exportInput =
+            (await request.json()) as CodexCredentialExportInput;
+          return HttpResponse.json({
+            type: "ai-gateway-codex-credentials",
+            version: 1,
+            exported_at: "2026-07-30T12:00:00.000Z",
+            channel_group_id: GROUP_ID,
+            channel_group_name: CODEX_GROUP.name,
+            proxies: [],
+            credentials: [
+              {
+                label: CREDENTIAL.label,
+                email: CREDENTIAL.email,
+                account_id: CREDENTIAL.account_id,
+                plan_type: CREDENTIAL.plan_type,
+                is_fedramp: false,
+                id_token: "secret-id",
+                access_token: "secret-access",
+                refresh_token: "secret-refresh",
+                proxy_key: null,
+                weight: 100,
+                quota_threshold_percent: 95,
+                enabled: true,
+              },
+            ],
+          });
+        },
+      ),
+    );
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(
+      await screen.findByRole("button", { name: "Export credentials" }),
+    );
+    await user.click(screen.getByRole("button", { name: "Export all" }));
+
+    await waitFor(() =>
+      expect(exportInput).toEqual({
+        credential_ids: [],
+        include_proxies: true,
+      }),
+    );
+    expect(createObjectUrl).toHaveBeenCalled();
+    expect(click).toHaveBeenCalled();
+    expect(revokeObjectUrl).toHaveBeenCalledWith("blob:codex-export");
   });
 });

@@ -1480,6 +1480,33 @@ paths:
         "502": { $ref: "#/components/responses/BadGateway" }
         "504": { $ref: "#/components/responses/GatewayTimeout" }
 
+  /providers/codex-oauth/channel-groups/{id}/credentials/export:
+    post:
+      tags: [CodexOAuth]
+      operationId: exportCodexOAuthCredentials
+      description: >
+        Exports selected or all credentials in the channel group, including
+        raw OAuth tokens and optionally the assigned proxy definitions. The
+        response is a sensitive portable backup and is never cached.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CodexCredentialExportInput" }
+      responses:
+        "200":
+          description: Sensitive Codex credential bundle.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CodexCredentialExportBundle" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
   /providers/codex-oauth/channel-groups/{id}/oauth/flows:
     post:
       tags: [CodexOAuth]
@@ -1715,6 +1742,28 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+    delete:
+      tags: [Proxies]
+      operationId: deleteProxy
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+        - $ref: "#/components/parameters/IfMatch"
+      responses:
+        "200":
+          description: Deleted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: The proxy changed or is still assigned.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorBody" }
         "422": { $ref: "#/components/responses/Unprocessable" }
 
   /transforms/templates:
@@ -3208,9 +3257,16 @@ components:
       allOf:
         - $ref: "#/components/schemas/CodexCredentialSettings"
         - type: object
-          required: [id_token, access_token, refresh_token]
+          required: [access_token, refresh_token]
           properties:
-            id_token: { type: string, minLength: 1, writeOnly: true }
+            enabled:
+              type: boolean
+              default: true
+            id_token:
+              type: string
+              minLength: 1
+              writeOnly: true
+              description: Optional ID token. When omitted, identity claims are read from the access token.
             access_token: { type: string, minLength: 1, writeOnly: true }
             refresh_token: { type: string, minLength: 1, writeOnly: true }
             account_id:
@@ -3218,6 +3274,75 @@ components:
               maxLength: 300
               nullable: true
               description: Optional fallback when the ID token has no account claim; mismatches are rejected.
+
+    CodexCredentialExportInput:
+      type: object
+      properties:
+        credential_ids:
+          type: array
+          maxItems: 1000
+          uniqueItems: true
+          default: []
+          description: Empty exports every credential in the connector group.
+          items: { type: string, format: uuid }
+        include_proxies:
+          type: boolean
+          default: true
+
+    CodexCredentialExportBundle:
+      type: object
+      required:
+        [type, version, exported_at, channel_group_id, channel_group_name,
+         proxies, credentials]
+      properties:
+        type:
+          type: string
+          enum: [ai-gateway-codex-credentials]
+        version: { type: integer, enum: [1] }
+        exported_at: { $ref: "#/components/schemas/DateTime" }
+        channel_group_id: { type: string, format: uuid }
+        channel_group_name: { type: string }
+        proxies:
+          type: array
+          items: { $ref: "#/components/schemas/CodexCredentialExportProxy" }
+        credentials:
+          type: array
+          items: { $ref: "#/components/schemas/CodexCredentialExportItem" }
+
+    CodexCredentialExportProxy:
+      type: object
+      required:
+        [proxy_key, name, proxy_url, username, password, no_proxy_hosts, enabled]
+      properties:
+        proxy_key: { type: string, format: uuid }
+        name: { type: string }
+        proxy_url: { type: string }
+        username: { type: string, nullable: true }
+        password: { type: string, nullable: true }
+        no_proxy_hosts:
+          type: array
+          items: { type: string }
+        enabled: { type: boolean }
+
+    CodexCredentialExportItem:
+      type: object
+      required:
+        [label, email, account_id, plan_type, is_fedramp, id_token,
+         access_token, refresh_token, proxy_key, weight,
+         quota_threshold_percent, enabled]
+      properties:
+        label: { type: string }
+        email: { type: string, nullable: true }
+        account_id: { type: string }
+        plan_type: { type: string, nullable: true }
+        is_fedramp: { type: boolean }
+        id_token: { type: string }
+        access_token: { type: string }
+        refresh_token: { type: string }
+        proxy_key: { type: string, format: uuid, nullable: true }
+        weight: { type: integer, minimum: 1 }
+        quota_threshold_percent: { type: integer, minimum: 1, maximum: 100 }
+        enabled: { type: boolean }
 
     CodexCredentialUpdateInput:
       type: object

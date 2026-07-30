@@ -2055,6 +2055,153 @@ async fn codex_oauth_flow_contract_uses_pkce_and_actor_scoped_completion() {
     database.cleanup().await;
 }
 
+#[tokio::test]
+async fn codex_export_and_proxy_delete_contracts_preserve_secrets_and_references() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+    let group_id = Uuid::new_v4();
+    let assigned_proxy_id = Uuid::new_v4();
+    let removable_proxy_id = Uuid::new_v4();
+    let channel_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO channel_groups \
+         (id,name,api_format,connector_kind,priority,selection_strategy,enabled) \
+         VALUES ($1,'spec-portable','open_ai_responses','codex_oauth',1,'weighted_random',true)",
+    )
+    .bind(group_id)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO proxies \
+         (id,name,proxy_url,username,password,no_proxy_hosts,enabled) \
+         VALUES \
+         ($1,'assigned','socks5h://127.0.0.1:1080','proxy-user','proxy-password','{}',true), \
+         ($2,'removable','http://127.0.0.1:8080',NULL,NULL,'{}',true)",
+    )
+    .bind(assigned_proxy_id)
+    .bind(removable_proxy_id)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO channels \
+         (id,channel_group_id,api_format,name,base_url,enabled,weight,proxy_id, \
+          upstream_auth_kind,available_models,status_statistics_enabled, \
+          auto_disable_allowed,supports_websocket) \
+         VALUES ($1,$2,'open_ai_responses','spec-portable', \
+                 'https://chatgpt.com/backend-api/codex',true,100,$3,'none', \
+                 ARRAY['gpt-5-codex'],false,false,false)",
+    )
+    .bind(channel_id)
+    .bind(group_id)
+    .bind(assigned_proxy_id)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO codex_oauth_credentials \
+         (channel_id,channel_group_id,label,email,account_id,plan_type,is_fedramp, \
+          id_token,access_token,refresh_token,last_refreshed_at,enabled, \
+          quota_threshold_percent,runtime_status) \
+         VALUES ($1,$2,'spec-account','portable@example.test','spec-account-id', \
+                 'plus',false,'secret-id','secret-access','secret-refresh',now(), \
+                 true,95,'active')",
+    )
+    .bind(channel_id)
+    .bind(group_id)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+
+    let exported = request(
+        &app,
+        "POST",
+        &format!("/console/v1/providers/codex-oauth/channel-groups/{group_id}/credentials/export"),
+        serde_json::json!({
+            "credential_ids": [channel_id],
+            "include_proxies": true
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(exported.status(), StatusCode::OK);
+    let exported = body_json(exported).await;
+    assert_eq!(exported["type"], "ai-gateway-codex-credentials");
+    assert_eq!(exported["version"], 1);
+    assert_eq!(exported["credentials"][0]["id_token"], "secret-id");
+    assert_eq!(exported["credentials"][0]["access_token"], "secret-access");
+    assert_eq!(
+        exported["credentials"][0]["refresh_token"],
+        "secret-refresh"
+    );
+    assert_eq!(
+        exported["credentials"][0]["proxy_key"],
+        assigned_proxy_id.to_string()
+    );
+    assert_eq!(exported["proxies"][0]["password"], "proxy-password");
+
+    let assigned = request(
+        &app,
+        "GET",
+        &format!("/console/v1/network/proxies/{assigned_proxy_id}"),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    let assigned_etag = assigned
+        .headers()
+        .get(header::ETAG)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let blocked = request(
+        &app,
+        "DELETE",
+        &format!("/console/v1/network/proxies/{assigned_proxy_id}"),
+        serde_json::json!({}),
+        &[("if-match", &assigned_etag)],
+    )
+    .await;
+    assert_eq!(blocked.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        body_json(blocked).await,
+        serde_json::json!({"error": "proxy_in_use"})
+    );
+
+    let removable = request(
+        &app,
+        "GET",
+        &format!("/console/v1/network/proxies/{removable_proxy_id}"),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    let removable_etag = removable
+        .headers()
+        .get(header::ETAG)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let deleted = request(
+        &app,
+        "DELETE",
+        &format!("/console/v1/network/proxies/{removable_proxy_id}"),
+        serde_json::json!({}),
+        &[("if-match", &removable_etag)],
+    )
+    .await;
+    assert_eq!(deleted.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(deleted).await["id"],
+        removable_proxy_id.to_string()
+    );
+
+    database.cleanup().await;
+}
+
 /// The admin-only load endpoint exposes the current instance's resource,
 /// runtime, queue, backlog, and database-pool pressure shape.
 #[tokio::test]

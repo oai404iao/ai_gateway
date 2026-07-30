@@ -10,6 +10,7 @@
 - [Chat Completions](chat-completions.md)
 - [Responses](responses.md)
 - [Codex OAuth 与订阅后端接入参考](codex-oauth-connect.md)
+- [Codex 凭证导入格式兼容性](codex-credential-portability.md)
 - [Codex Responses WebSocket 实现参考](codex-responses-websocket.md)
 
 ## 其他外部服务

@@ -10,9 +10,10 @@ pub use auth::{
     RegistrationInvitationCodeMutation, SessionRotation, SessionUser,
 };
 pub use codex::{
-    CodexCredentialCreate, CodexCredentialImportInput, CodexCredentialRecord,
-    CodexCredentialUpdateInput, CodexCredentialView, CodexOauthFlowRecord, CodexOauthStartInput,
-    CodexQuotaUpdate, CodexTokenRefreshUpdate,
+    CodexCredentialCreate, CodexCredentialExportBundle, CodexCredentialExportInput,
+    CodexCredentialExportItem, CodexCredentialExportProxy, CodexCredentialImportInput,
+    CodexCredentialRecord, CodexCredentialUpdateInput, CodexCredentialView, CodexOauthFlowRecord,
+    CodexOauthStartInput, CodexQuotaUpdate, CodexTokenRefreshUpdate,
 };
 
 use std::{
@@ -1112,6 +1113,10 @@ pub enum ControlPlaneMutation {
     UpdateProxy {
         id: Uuid,
         input: ProxyInput,
+        expected_updated_at: DateTime<Utc>,
+    },
+    DeleteProxy {
+        id: Uuid,
         expected_updated_at: DateTime<Utc>,
     },
     CreateConfigTemplate(ConfigTemplateCreateInput),
@@ -5196,6 +5201,10 @@ impl ControlPlaneRepository {
                 input,
                 expected_updated_at,
             } => proxy_update(transaction, id, input, expected_updated_at).await,
+            ControlPlaneMutation::DeleteProxy {
+                id,
+                expected_updated_at,
+            } => proxy_delete(transaction, id, expected_updated_at).await,
             ControlPlaneMutation::CreateConfigTemplate(input) => {
                 config_template_insert(transaction, Uuid::new_v4(), input, true, None).await
             }
@@ -6777,6 +6786,47 @@ async fn proxy_update(
         correlation_id: None,
     })
 }
+async fn proxy_delete(
+    transaction: &mut Transaction<'_, Postgres>,
+    id: Uuid,
+    expected_updated_at: DateTime<Utc>,
+) -> Result<MutationResult, RepositoryError> {
+    let before = proxy_audit(transaction, id).await?;
+    let current_updated_at: DateTime<Utc> = serde_json::from_value(before["updated_at"].clone())
+        .map_err(|_| RepositoryError::Validation)?;
+    if current_updated_at != expected_updated_at {
+        return Err(RepositoryError::Conflict);
+    }
+    let in_use = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM channels WHERE proxy_id=$1) \
+             OR EXISTS(SELECT 1 FROM codex_oauth_flows WHERE proxy_id=$1)",
+    )
+    .bind(id)
+    .fetch_one(&mut **transaction)
+    .await?;
+    if in_use {
+        return Err(RepositoryError::ProxyInUse);
+    }
+    let deleted = sqlx::query("DELETE FROM proxies WHERE id=$1 AND updated_at=$2")
+        .bind(id)
+        .bind(expected_updated_at)
+        .execute(&mut **transaction)
+        .await?;
+    if deleted.rows_affected() != 1 {
+        return Err(RepositoryError::Conflict);
+    }
+    Ok(MutationResult {
+        id,
+        object_type: "proxy",
+        action: "delete",
+        before_redacted: before,
+        after_redacted: json!({}),
+        created_secret: None,
+        reason: None,
+        updated_at: expected_updated_at,
+        correlation_id: None,
+    })
+}
 async fn config_template_insert(
     transaction: &mut Transaction<'_, Postgres>,
     id: Uuid,
@@ -7128,6 +7178,8 @@ pub enum RepositoryError {
     ProtectedUserGroup,
     #[error("the user group still has members")]
     UserGroupInUse,
+    #[error("the proxy is still assigned to a channel or pending OAuth flow")]
+    ProxyInUse,
     #[error("an administrator cannot delete their own account")]
     CannotDeleteSelf,
     #[error("the last active administrator cannot be deleted")]

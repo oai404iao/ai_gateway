@@ -795,6 +795,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/providers/codex-oauth/channel-groups/{id}/credentials/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Exports selected or all credentials in the channel group, including raw OAuth tokens and optionally the assigned proxy definitions. The response is a sensitive portable backup and is never cached. */
+        post: operations["exportCodexOAuthCredentials"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/providers/codex-oauth/channel-groups/{id}/oauth/flows": {
         parameters: {
             query?: never;
@@ -918,7 +935,7 @@ export interface paths {
         get: operations["getProxy"];
         put: operations["updateProxy"];
         post?: never;
-        delete?: never;
+        delete: operations["deleteProxy"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1847,11 +1864,60 @@ export interface components {
             callback_url: string;
         };
         CodexCredentialImportInput: components["schemas"]["CodexCredentialSettings"] & {
-            id_token: string;
+            /** @default true */
+            enabled: boolean;
+            /** @description Optional ID token. When omitted, identity claims are read from the access token. */
+            id_token?: string;
             access_token: string;
             refresh_token: string;
             /** @description Optional fallback when the ID token has no account claim; mismatches are rejected. */
             account_id?: string | null;
+        };
+        CodexCredentialExportInput: {
+            /**
+             * @description Empty exports every credential in the connector group.
+             * @default []
+             */
+            credential_ids: string[];
+            /** @default true */
+            include_proxies: boolean;
+        };
+        CodexCredentialExportBundle: {
+            /** @enum {string} */
+            type: "ai-gateway-codex-credentials";
+            /** @enum {integer} */
+            version: 1;
+            exported_at: components["schemas"]["DateTime"];
+            /** Format: uuid */
+            channel_group_id: string;
+            channel_group_name: string;
+            proxies: components["schemas"]["CodexCredentialExportProxy"][];
+            credentials: components["schemas"]["CodexCredentialExportItem"][];
+        };
+        CodexCredentialExportProxy: {
+            /** Format: uuid */
+            proxy_key: string;
+            name: string;
+            proxy_url: string;
+            username: string | null;
+            password: string | null;
+            no_proxy_hosts: string[];
+            enabled: boolean;
+        };
+        CodexCredentialExportItem: {
+            label: string;
+            email: string | null;
+            account_id: string;
+            plan_type: string | null;
+            is_fedramp: boolean;
+            id_token: string;
+            access_token: string;
+            refresh_token: string;
+            /** Format: uuid */
+            proxy_key: string | null;
+            weight: number;
+            quota_threshold_percent: number;
+            enabled: boolean;
         };
         CodexCredentialUpdateInput: {
             label: string;
@@ -4795,6 +4861,36 @@ export interface operations {
             504: components["responses"]["GatewayTimeout"];
         };
     };
+    exportCodexOAuthCredentials: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CodexCredentialExportInput"];
+            };
+        };
+        responses: {
+            /** @description Sensitive Codex credential bundle. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CodexCredentialExportBundle"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["Unprocessable"];
+        };
+    };
     startCodexOAuthFlow: {
         parameters: {
             query?: never;
@@ -5123,6 +5219,44 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
+        };
+    };
+    deleteProxy: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description ETag from the preceding GET; stale values yield `409`. */
+                "If-Match": components["parameters"]["IfMatch"];
+            };
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MutationResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description The proxy changed or is still assigned. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             422: components["responses"]["Unprocessable"];
         };
     };
