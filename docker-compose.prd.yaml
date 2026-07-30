@@ -129,13 +129,13 @@ services:
         max-file: "5"
 
   gateway:
-    image: "${AI_GATEWAY_IMAGE:-ghcr.io/oai404iao/ai_gateway}:${AI_GATEWAY_VERSION:-0.6.0}"
+    image: "${AI_GATEWAY_IMAGE:-ghcr.io/oai404iao/ai_gateway}:${AI_GATEWAY_VERSION:-0.6.1}"
     pull_policy: ${AI_GATEWAY_PULL_POLICY:-missing}
     build:
       context: .
       dockerfile: Dockerfile
       args:
-        VERSION: ${AI_GATEWAY_VERSION:-0.6.0}
+        VERSION: ${AI_GATEWAY_VERSION:-0.6.1}
         REVISION: ${AI_GATEWAY_REVISION:-local}
         SOURCE_URL: ${AI_GATEWAY_SOURCE_URL:-https://github.com/oai404iao/ai_gateway}
     restart: unless-stopped
