@@ -7,7 +7,7 @@ cd "$repo_root"
 requested="${1:-}"
 version="${requested#v}"
 output_dir="${2:-target/release-package}"
-binary="target/release/ai-gateway"
+binary="${RELEASE_BINARY:-target/release/ai-gateway}"
 
 if [[ -z "$version" ]]; then
     echo "usage: $0 <version-or-v-tag> [output-directory]" >&2
@@ -20,11 +20,22 @@ if [[ ! -x "$binary" ]]; then
     exit 1
 fi
 
-license_materials="target/third-party-licenses"
-python3 "$repo_root/scripts/generate-third-party-notices.py" \
-    --output "$license_materials"
+license_materials="${RELEASE_LICENSE_MATERIALS:-target/third-party-licenses}"
+if [[ -z "${RELEASE_LICENSE_MATERIALS:-}" ]]; then
+    python3 "$repo_root/scripts/generate-third-party-notices.py" \
+        --output "$license_materials"
+fi
+if [[ ! -s "$license_materials/THIRD_PARTY_NOTICES.md" ]] \
+    || [[ ! -d "$license_materials/LICENSES" ]]; then
+    echo "invalid release license materials: $license_materials" >&2
+    exit 1
+fi
 
-target="$(rustc -vV | awk '/^host:/ { print $2 }')"
+target="${RELEASE_TARGET:-$(rustc -vV | awk '/^host:/ { print $2 }')}"
+if [[ ! "$target" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    echo "invalid release target: $target" >&2
+    exit 1
+fi
 archive_base="ai-gateway-v${version}-${target}"
 stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT

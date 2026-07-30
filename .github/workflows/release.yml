@@ -6,6 +6,7 @@ on:
       - "v*.*.*"
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -13,25 +14,56 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  quality:
-    name: quality
-    uses: ./.github/workflows/reusable-quality.yml
-    with:
-      run_docs: false
-      run_rust: true
-      run_msrv: false
-      run_console: true
-      run_e2e: true
-      save_cache: true
-
-  verify:
-    needs: quality
+  preflight:
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+
+      - name: Verify tag target
+        shell: bash
+        run: |
+          if [[ "$(git cat-file -t "$GITHUB_REF_NAME")" != tag ]]; then
+            echo "::error::Release refs must be annotated tags"
+            exit 1
+          fi
+          tag_target="$(git rev-list -n 1 "$GITHUB_REF_NAME")"
+          if [[ "$tag_target" != "$GITHUB_SHA" ]]; then
+            echo "::error::Tag target $tag_target does not match workflow SHA $GITHUB_SHA"
+            exit 1
+          fi
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor \
+            "$GITHUB_SHA" refs/remotes/origin/main
+          then
+            echo "::error::Release tag target is not part of main"
+            exit 1
+          fi
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Validate release version
+        run: ./scripts/check-release-version.sh "$GITHUB_REF_NAME"
+
+      - name: Require successful main CI
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: ./scripts/require-successful-main-ci.sh "$GITHUB_SHA" --wait-seconds 300
+
+  verify:
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
           version: 11.17.0
@@ -58,32 +90,14 @@ jobs:
           shared-key: stable
           save-if: false
 
-      - name: Validate release version
-        run: ./scripts/check-release-version.sh "${GITHUB_REF_NAME}"
       - run: pnpm --dir web/console install --frozen-lockfile
       - run: pnpm --dir web/console build
       - run: cargo clippy --locked --all-targets --features embedded-console-ui
       - run: cargo test --locked --features embedded-console-ui --lib console_ui
-      - run: cargo build --locked --release --features embedded-console-ui
-
-      - name: Package release assets
-        run: |
-          version="${GITHUB_REF_NAME#v}"
-          ./scripts/package-release.sh "$version"
-          ./scripts/release-notes.sh "$version" > target/release-package/RELEASE_NOTES.md
-
-      - name: Upload release assets
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: release-assets
-          path: target/release-package/
-          if-no-files-found: error
-          retention-days: 1
-          compression-level: 0
 
   publish-platform-images:
     name: publish-platform-image (${{ matrix.arch }})
-    needs: verify
+    needs: preflight
     strategy:
       fail-fast: false
       matrix:
@@ -91,9 +105,11 @@ jobs:
           - arch: amd64
             platform: linux/amd64
             runner: ubuntu-24.04
+            cache_scope: ci-image-amd64
           - arch: arm64
             platform: linux/arm64
             runner: ubuntu-24.04-arm
+            cache_scope: release-image-arm64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     permissions:
@@ -101,6 +117,7 @@ jobs:
       packages: write
     env:
       IMAGE_NAME: ghcr.io/oai404iao/ai_gateway
+      VERSION: ${{ needs.preflight.outputs.version }}
       DOCKER_BUILD_RECORD_UPLOAD: "false"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -134,12 +151,9 @@ jobs:
           platforms: ${{ matrix.platform }}
           outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
           labels: ${{ steps.metadata.outputs.labels }}
-          cache-from: |
-            type=gha,scope=ci-image-${{ matrix.arch }}
-            type=gha,scope=release-image-${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=release-image-${{ matrix.arch }}
+          cache-from: type=gha,scope=${{ matrix.cache_scope }}
           build-args: |
-            VERSION=${{ steps.metadata.outputs.version }}
+            VERSION=${{ env.VERSION }}
             REVISION=${{ github.sha }}
             SOURCE_URL=${{ github.server_url }}/${{ github.repository }}
 
@@ -163,8 +177,66 @@ jobs:
           retention-days: 1
           compression-level: 0
 
+      - name: Extract and verify release binary
+        if: ${{ matrix.arch == 'amd64' }}
+        shell: bash
+        run: |
+          digest="${{ steps.image.outputs.digest }}"
+          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::Unexpected AMD64 image digest: $digest"
+            exit 1
+          fi
+          image="${IMAGE_NAME}@${digest}"
+          docker pull --platform linux/amd64 "$image"
+          docker run --rm "$image" --version | grep -Fx "ai-gateway ${VERSION}"
+          docker image inspect \
+            --format '{{ index .Config.Labels "org.opencontainers.image.licenses" }}' \
+            "$image" \
+            | grep -Fx "AGPL-3.0-only"
+
+          container="$(docker create "$image")"
+          cleanup() {
+            docker rm -f "$container" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          mkdir -p target/release target/image-license-materials
+          docker cp "$container:/usr/local/bin/ai-gateway" target/release/ai-gateway
+          docker cp \
+            "$container:/usr/share/doc/ai-gateway/." \
+            target/image-license-materials
+          cleanup
+          trap - EXIT
+
+          chmod 0755 target/release/ai-gateway
+          test -s target/image-license-materials/THIRD_PARTY_NOTICES.md
+          test -d target/image-license-materials/LICENSES
+
+      - name: Package release assets
+        if: ${{ matrix.arch == 'amd64' }}
+        shell: bash
+        run: |
+          RELEASE_BINARY=target/release/ai-gateway \
+          RELEASE_LICENSE_MATERIALS=target/image-license-materials \
+          RELEASE_TARGET=x86_64-unknown-linux-gnu \
+            ./scripts/package-release.sh "$VERSION"
+          ./scripts/release-notes.sh "$VERSION" \
+            > target/release-package/RELEASE_NOTES.md
+
+      - name: Upload release assets
+        if: ${{ matrix.arch == 'amd64' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-assets
+          path: target/release-package/
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
   publish-image:
-    needs: publish-platform-images
+    needs:
+      - preflight
+      - verify
+      - publish-platform-images
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -253,9 +325,7 @@ jobs:
           push-to-registry: true
 
   publish-release:
-    needs:
-      - verify
-      - publish-image
+    needs: publish-image
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

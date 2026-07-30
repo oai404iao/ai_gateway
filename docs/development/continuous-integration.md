@@ -31,8 +31,7 @@ Docker image job 只依赖快速的路径分类，与 Rust、Console 和 E2E 并
 
 ## 可复用质量门禁
 
-`.github/workflows/reusable-quality.yml` 是普通 CI 与 Release 共用的质量门禁，
-包含：
+`.github/workflows/reusable-quality.yml` 是普通 CI 的可复用质量门禁，包含：
 
 - 文档检查；
 - Rust 1.97.1 format、Clippy 与 workspace 测试；
@@ -40,9 +39,12 @@ Docker image job 只依赖快速的路径分类，与 Rust、Console 和 E2E 并
 - Console API 类型漂移、TypeScript、lint、组件测试和生产构建；
 - Chromium Playwright E2E，并在失败时上传 trace/test results。
 
-普通 CI 按路径传入启用项。Release 调用相同 workflow 执行 Rust、Console 和
-E2E，再由 `.github/workflows/release.yml` 的 `verify` job 完成版本检查、
-embedded Console 构建测试和发布资产打包。
+普通 CI 按路径传入启用项。Release tag 必须解析到属于 `main` 的提交，并通过
+GitHub Actions API 验证相同 SHA 已成功完成 `main` `ci-gate`；本地 tag 创建脚本
+还要求当时的 `HEAD` 与 `origin/main` 完全一致。因此 Tag workflow 不再重复运行
+普通 Rust、Console 和 E2E，只并行执行 embedded Console 发布验证、双架构镜像
+构建、从 AMD64 镜像提取发布二进制和许可证、manifest/provenance 与 GitHub
+Release 发布。
 
 ## Cache 写入策略
 
@@ -53,9 +55,14 @@ Pull Request 只能恢复默认分支或 Release 已有 cache，不能创建 cac
   `actions/cache/save`。
 - PR Docker 构建只设置 `cache-from`，`cache-to` 为空。
 
-只有 `main` 普通 CI 和 tag-triggered Release 可以写入 cache。稳定 Rust 与
-MSRV 使用独立 shared key；Docker 使用 `ci-image-<arch>` 和
-`release-image-<arch>` scope。
+只有 `main` 相关 workflow 可以写入 cache。稳定 Rust 与 MSRV 使用独立 shared
+key；普通 CI 写入 `ci-image-amd64`，独立的
+`.github/workflows/release-image-cache.yml` 对 image 相关的 `main` 变更异步写入
+`release-image-arm64`。Tag-triggered Release 只恢复这些 cache，避免在发布关键
+路径上传大型 `mode=max` cache。Pull Request 仍然只能恢复 cache。
+
+Docker planner 在 cargo-chef recipe 生成前将 workspace 自身版本规范化为固定值；
+发布版本号变化不会再使完整 Rust 依赖层失效。
 
 ## 依赖与代码扫描
 
@@ -93,6 +100,7 @@ bypass；正常变更仍必须走 CI 和项目合并策略。
 ```bash
 shellcheck scripts/ci-changed-areas.sh scripts/test-ci-changed-areas.sh
 scripts/test-ci-changed-areas.sh
+scripts/test-release-automation.sh
 git diff --check
 python3 scripts/check-docs.py
 pnpm --dir web/console e2e
