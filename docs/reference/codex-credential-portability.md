@@ -33,16 +33,18 @@ Sub2API 管理员数据导出使用 `type = "sub2api-data"`、`version = 1`、`p
 - 仅含 Token 字段的单个通用对象。
 
 解析发生在浏览器内，结果必须先进入可检查和修改的草稿态。管理员可以修改 label、enable、
-account ID、Token、weight、quota threshold 和代理分配；导入文件中的代理必须先映射到现有代理，
-或在同一页面检查并创建。最终每条凭证仍由 ai-gateway 服务端验证 Token、account ID 和 Codex
-models 后写入。
+account ID、user ID、Token、weight、quota threshold 和代理分配；导入文件中的代理必须先映射到
+现有代理，或在同一页面检查并创建。最终每条凭证仍由 ai-gateway 服务端验证 Token、
+workspace/member 身份和 Codex models 后写入。
 
 `id_token` 可缺失；此时服务端从 `access_token` 读取身份声明。`access_token` 和
-`refresh_token` 必须存在。重复草稿按 account ID、refresh token 指纹或 access token 指纹检测，
-不会因为来自不同文件而静默重复加入。
+`refresh_token` 必须存在。浏览器优先按 `(account ID, user ID)`，其次按
+`(account ID, email)` 或完全相同的 Token 检测重复草稿；不会仅因两个 Business 成员共享同一
+workspace account ID 就把后者标成重复。
 
 ai-gateway 的导出只生成自己的 versioned Bundle，不尝试生成 CLIProxyAPI 或 Sub2API 文件。Bundle
-可包含凭证引用的代理定义和代理认证信息，并保留凭证的 enable、weight 和 quota threshold。
+可包含凭证引用的代理定义和代理认证信息，并保留 account/user ID、enable、weight 和 quota
+threshold。
 
 ## 差异与限制
 

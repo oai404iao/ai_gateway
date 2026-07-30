@@ -1,6 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiGet, apiGetDetail, apiPost, apiPut } from "@/api/client";
+import { apiGet, apiGetDetail, apiPost, apiPut, apiSend } from "@/api/client";
 import type {
+  CodexCredentialBatchInput,
+  CodexCredentialBatchResponse,
   CodexCredentialExportBundle,
   CodexCredentialExportInput,
   CodexCredentialImportInput,
@@ -127,6 +129,48 @@ export function useUpdateCodexCredential(groupId: string, id: string) {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: credentialsKey(groupId) });
       void queryClient.invalidateQueries({ queryKey: credentialKey(id) });
+      void queryClient.invalidateQueries({ queryKey: ["console", "channels"] });
+      void queryClient.invalidateQueries({
+        queryKey: ["console", "control-plane-lists"],
+      });
+    },
+  });
+}
+
+export function useDeleteCodexCredential(groupId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ifMatch }: { id: string; ifMatch: string }) =>
+      apiSend<MutationResponse>(
+        `/providers/codex-oauth/credentials/${id}`,
+        "DELETE",
+        undefined,
+        { ifMatch },
+      ),
+    onSuccess: (_data, { id }) => {
+      void queryClient.invalidateQueries({ queryKey: credentialsKey(groupId) });
+      void queryClient.removeQueries({ queryKey: credentialKey(id) });
+      void queryClient.invalidateQueries({ queryKey: ["console", "channels"] });
+      void queryClient.invalidateQueries({
+        queryKey: ["console", "control-plane-lists"],
+      });
+    },
+  });
+}
+
+export function useBatchUpdateCodexCredentials(groupId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CodexCredentialBatchInput) =>
+      apiPost<CodexCredentialBatchResponse>(
+        `/providers/codex-oauth/channel-groups/${groupId}/credentials/batch`,
+        input,
+      ),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: credentialsKey(groupId) });
+      void queryClient.invalidateQueries({
+        queryKey: ["console", "codex-oauth", "credential"],
+      });
       void queryClient.invalidateQueries({ queryKey: ["console", "channels"] });
       void queryClient.invalidateQueries({
         queryKey: ["console", "control-plane-lists"],

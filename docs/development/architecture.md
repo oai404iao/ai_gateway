@@ -81,6 +81,8 @@ observation 接口，不包含 provider 的 OAuth claim、路径或 Header 细�
 Codex 的每个凭证是一个 provider-managed Channel，Channel Group 是凭证池。普通 Channel CRUD
 和批量修改在 repository 层拒绝 managed channel；provider API 在 serializable 控制面事务中同时
 创建/修改凭证和对应 Channel，再编译并发布统一路由快照。
+凭证身份由 workspace account ID 与 member user ID 共同确定，因此同一 Business workspace
+可以包含多个独立凭证；单条/批量删除会清除 Token 并保留不含敏感信息的历史 channel tombstone。
 managed channel 保留为统一路由中的稳定壳，credential 的 enable/quota/重新授权状态由独立
 Connector 快照判定；这样新 Session 可在发送前排除不可用账户，而 affinity hit 会持续命中原
 channel 并 fail closed，不会因一次失败静默改绑账户。
@@ -93,7 +95,7 @@ Codex token 与 quota 使用独立 `ArcSwap` 凭证快照，避免每次 token �
 Codex 凭证可移植性仍沿用相同 provider 边界：服务端显式导出 API 从 repository 读取敏感 Token
 及实际引用的代理，生成带版本的原生 Bundle；高级导入页在浏览器内把原生、CLIProxyAPI 和
 Sub2API JSON 标准化成可编辑草稿，完成代理 CRUD/映射后再逐条调用既有服务端验证导入事务。导入
-格式解析不是数据面职责，也不会绕过 account ID、models、代理 enable 或 managed channel 的现有
+格式解析不是数据面职责，也不会绕过 account/user ID、models、代理 enable 或 managed channel 的现有
 不变量。代理删除使用 optimistic concurrency，并在 repository 层拒绝仍被渠道或待完成 OAuth
 授权流引用的记录。
 

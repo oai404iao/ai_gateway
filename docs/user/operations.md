@@ -123,14 +123,14 @@ verification_key_path = "./config/console-jwt-public.pem"
    - **Connect account**：填写 label、可选 outbound proxy、weight 和 quota threshold，
      打开 PKCE Authorization URL；授权后浏览器会落到不可达的
      `http://localhost:1455/auth/callback?...`，复制完整地址回 Console 完成交换。
-   - **Import tokens**：提交 ID token、access token、refresh token 和可选
-     account ID。网关先调用 Codex models 接口验证凭证，再创建 managed channel。
-     同一 Channel Group 中再次连接或导入相同 account ID 会原位重新授权已有凭证，
-     不会创建第二个 channel。
+   - **Import tokens**：提交 access token、refresh token，以及可选 ID token、account ID
+     和 user ID。网关先调用 Codex models 接口验证凭证，再创建 managed channel。
+     凭证身份按 workspace `account_id` 与成员 `user_id` 组合识别；同一 Business workspace
+     的不同成员可以分别接入，而同一成员再次连接或导入会原位重新授权已有凭证。
    - **Advanced import**：进入独立检查页，粘贴 JSON 或上传一个或多个 JSON 文件。
      Console 会自动识别 ai-gateway 原生导出、CLIProxyAPI（CPA）Codex Token 和
      Sub2API 数据导出，把内容先转换成只保存在当前页面内存中的草稿。提交前可以编辑
-     label、enable、account ID、Token、weight、quota threshold 和逐凭证代理分配；还可以
+     label、enable、account ID、user ID、Token、weight、quota threshold 和逐凭证代理分配；还可以
      在同一页面新增、编辑或删除代理，并把导入文件中的代理映射到现有代理。最终仍逐条调用
      服务端凭证验证与导入接口，因此失败条目可在保留其他草稿的情况下修正和重试。
 4. 为返回的 Codex model slug 创建或启用本地 model，并创建 Responses model rule，
@@ -154,10 +154,16 @@ verification_key_path = "./config/console-jwt-public.pem"
 - `disabled`：管理员关闭。
 
 永久 refresh 失败会设置持久的重新授权状态；后续 quota 成功或普通设置编辑不会把该凭证重新置为
-`active`。重新执行 OAuth 或导入同一 account ID 的新 Token 会复用原 managed channel 并清除该状态。
+`active`。重新执行 OAuth 或导入同一 workspace/member 身份的新 Token 会复用原 managed channel
+并清除该状态。
+
+凭证列表支持多选后批量启用、停用、删除和导出选中项。单条和批量删除都使用乐观并发版本：
+删除成功后凭证立即从列表消失，保存的 ID/access/refresh token 被清除，代理引用被释放；为保留
+请求日志等历史引用，底层 managed channel 只保留不含敏感信息的 tombstone。该删除不会调用
+OpenAI token revocation endpoint，若还需要使外部 Token 失效，应在账户侧另行撤销授权。
 
 凭证页的 **Export credentials** 需要显式确认，并下载 ai-gateway 原生 JSON Bundle。Bundle 包含
-原始 ID/access/refresh token、凭证路由设置，以及被这些凭证引用的代理定义和代理认证信息；它必须
+原始 ID/access/refresh token、workspace/member 身份、凭证路由设置，以及被这些凭证引用的代理定义和代理认证信息；它必须
 按密钥或未加密备份处理。常规凭证列表和详情接口仍不会返回已保存 Token，只有管理员显式调用导出
 接口时才会读取这些敏感字段。高级导入会保留 Bundle 中的 enable 状态；如果 `id_token` 缺失，则
 验证阶段从 `access_token` 读取身份声明。

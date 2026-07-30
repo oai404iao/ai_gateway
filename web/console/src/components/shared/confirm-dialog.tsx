@@ -19,6 +19,7 @@ interface ConfirmDialogProps {
   confirmLabel?: string;
   cancelLabel?: string;
   destructive?: boolean;
+  confirmDisabled?: boolean;
   onConfirm: () => void;
 }
 
@@ -31,6 +32,7 @@ export function ConfirmDialog({
   confirmLabel,
   cancelLabel,
   destructive,
+  confirmDisabled,
   onConfirm,
 }: ConfirmDialogProps) {
   const { t } = useI18n();
@@ -47,6 +49,7 @@ export function ConfirmDialog({
           <AlertDialogAction
             onClick={onConfirm}
             variant={destructive ? "destructive" : "default"}
+            disabled={confirmDisabled}
           >
             {confirmLabel ?? t("Confirm")}
           </AlertDialogAction>

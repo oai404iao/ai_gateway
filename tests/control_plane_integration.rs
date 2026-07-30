@@ -23,11 +23,12 @@ use ai_gateway::{
     http::console::{self, ConsoleState},
     models_dev::ModelsDevClient,
     persistence::{
-        AuthRepository, ChannelGroupInput, CodexCredentialCreate, CodexCredentialExportInput,
-        CodexCredentialUpdateInput, CodexQuotaUpdate, CodexTokenRefreshUpdate,
-        ControlPlaneMutation, ControlPlaneRepository, MIGRATOR, ProxyCreateInput,
-        RequestLogBatchInsertOutcome, RequestLogInsertOutcome, RequestLogRepository,
-        RequestLogSettlementOutcome, SystemAutomaticDisableSettingsInput,
+        AuthRepository, ChannelGroupInput, CodexCredentialBatchInput,
+        CodexCredentialBatchOperation, CodexCredentialBatchTarget, CodexCredentialCreate,
+        CodexCredentialExportInput, CodexCredentialUpdateInput, CodexQuotaUpdate,
+        CodexTokenRefreshUpdate, ControlPlaneMutation, ControlPlaneRepository, MIGRATOR,
+        ProxyCreateInput, RequestLogBatchInsertOutcome, RequestLogInsertOutcome,
+        RequestLogRepository, RequestLogSettlementOutcome, SystemAutomaticDisableSettingsInput,
         SystemPassiveHealthSettingsInput, SystemSessionAffinityKeySourceInput,
         SystemSessionAffinityRuleInput, SystemSessionAffinitySettingsInput, SystemSettingsInput,
         SystemUpstreamSettingsInput,
@@ -981,6 +982,378 @@ fn request_log_event(seed: &Seed, outcome: RequestLogOutcome) -> RequestLogEvent
     }
 }
 
+fn business_codex_credential(
+    channel_group_id: Uuid,
+    label: &str,
+    email: &str,
+    user_id: &str,
+) -> CodexCredentialCreate {
+    let now = Utc::now();
+    CodexCredentialCreate {
+        channel_group_id,
+        label: label.into(),
+        enabled: true,
+        proxy_id: None,
+        weight: 100,
+        quota_threshold_percent: 95,
+        base_url: "https://chatgpt.com/backend-api/codex".into(),
+        email: Some(email.into()),
+        account_id: "business-workspace".into(),
+        user_id: Some(user_id.into()),
+        plan_type: Some("business".into()),
+        is_fedramp: false,
+        id_token: format!("{label}-id-token"),
+        access_token: format!("{label}-access-token"),
+        refresh_token: format!("{label}-refresh-token"),
+        access_token_expires_at: Some(now + chrono::Duration::hours(1)),
+        available_models: vec!["gpt-5-codex".into()],
+        quota: None,
+    }
+}
+
+#[derive(FromRow)]
+struct DeletedCodexCredentialState {
+    id_token: String,
+    access_token: String,
+    refresh_token: String,
+    deleted_at: Option<DateTime<Utc>>,
+    channel_name: String,
+    proxy_id: Option<Uuid>,
+    quota_allowed: Option<bool>,
+    primary_used_percent: Option<i32>,
+}
+
+#[tokio::test]
+async fn codex_business_credentials_are_unique_per_workspace_member() {
+    let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
+    let codex_group = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO channel_groups \
+         (id,name,api_format,connector_kind,priority,selection_strategy,enabled) \
+         VALUES ($1,'codex-business','open_ai_responses','codex_oauth',0,'weighted_random',true)",
+    )
+    .bind(codex_group)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let repository = ControlPlaneRepository::new(database.pool.clone());
+    let runtime = Arc::new(RuntimeConfig::new(
+        compile_runtime_config(repository.load_runtime().await.unwrap()).unwrap(),
+    ));
+    let coordinator = ControlPlaneCoordinator::new(
+        repository.clone(),
+        runtime,
+        RoutingRuntime::new(PassiveHealthPolicy::default()),
+    );
+
+    let mut legacy_member_a =
+        business_codex_credential(codex_group, "member-a", "member-a@example.test", "user-a");
+    legacy_member_a.user_id = None;
+    let member_a = coordinator
+        .create_codex_credential(seed.user, legacy_member_a, None)
+        .await
+        .unwrap();
+    let migrated_member_a = coordinator
+        .create_codex_credential(
+            seed.user,
+            business_codex_credential(codex_group, "member-a", "member-a@example.test", "user-a"),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(migrated_member_a.id, member_a.id);
+    assert_eq!(migrated_member_a.action, "update");
+
+    let member_b = coordinator
+        .create_codex_credential(
+            seed.user,
+            business_codex_credential(codex_group, "member-b", "member-b@example.test", "user-b"),
+            None,
+        )
+        .await
+        .unwrap();
+    let member_c = coordinator
+        .create_codex_credential(
+            seed.user,
+            business_codex_credential(codex_group, "member-c", "member-a@example.test", "user-c"),
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert_ne!(member_a.id, member_b.id);
+    assert_ne!(member_a.id, member_c.id);
+    assert_eq!(member_a.action, "create");
+    assert_eq!(member_b.action, "create");
+    assert_eq!(member_c.action, "create");
+
+    let reauthorized_a = coordinator
+        .create_codex_credential(
+            seed.user,
+            business_codex_credential(
+                codex_group,
+                "member-a-new",
+                "member-a-renamed@example.test",
+                "user-a",
+            ),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(reauthorized_a.id, member_a.id);
+    assert_eq!(reauthorized_a.action, "update");
+
+    let credentials = repository.codex_credentials(codex_group).await.unwrap();
+    assert_eq!(credentials.len(), 3);
+    assert_eq!(
+        credentials
+            .iter()
+            .map(|credential| credential.user_id.as_deref().unwrap())
+            .collect::<std::collections::BTreeSet<_>>(),
+        std::collections::BTreeSet::from(["user-a", "user-b", "user-c"])
+    );
+
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn codex_credentials_support_atomic_batch_state_changes_and_token_scrubbing_delete() {
+    let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
+    let codex_group = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO channel_groups \
+         (id,name,api_format,connector_kind,priority,selection_strategy,enabled) \
+         VALUES ($1,'codex-batch','open_ai_responses','codex_oauth',0,'weighted_random',true)",
+    )
+    .bind(codex_group)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let repository = ControlPlaneRepository::new(database.pool.clone());
+    let runtime = Arc::new(RuntimeConfig::new(
+        compile_runtime_config(repository.load_runtime().await.unwrap()).unwrap(),
+    ));
+    let coordinator = ControlPlaneCoordinator::new(
+        repository.clone(),
+        runtime,
+        RoutingRuntime::new(PassiveHealthPolicy::default()),
+    );
+    let delete_proxy = coordinator
+        .mutate(
+            seed.user,
+            ControlPlaneMutation::CreateProxy(ProxyCreateInput {
+                name: "codex-delete-egress".into(),
+                proxy_url: "http://127.0.0.1:18080".into(),
+                username: Some("delete-user".into()),
+                password: Some("delete-password".into()),
+                no_proxy_hosts: Vec::new(),
+                enabled: true,
+            }),
+        )
+        .await
+        .unwrap();
+    let mut member_a_input = business_codex_credential(
+        codex_group,
+        "delete-a",
+        "delete-a@example.test",
+        "delete-user-a",
+    );
+    member_a_input.proxy_id = Some(delete_proxy.id);
+    member_a_input.quota = Some(CodexQuotaUpdate {
+        allowed: true,
+        limit_reached: false,
+        primary_used_percent: Some(42),
+        primary_window_seconds: Some(10_800),
+        primary_reset_at: Some(Utc::now() + chrono::Duration::hours(1)),
+        secondary_used_percent: None,
+        secondary_window_seconds: None,
+        secondary_reset_at: None,
+        checked_at: Utc::now(),
+    });
+    let member_a = coordinator
+        .create_codex_credential(seed.user, member_a_input, None)
+        .await
+        .unwrap();
+    let member_b = coordinator
+        .create_codex_credential(
+            seed.user,
+            business_codex_credential(
+                codex_group,
+                "delete-b",
+                "delete-b@example.test",
+                "delete-user-b",
+            ),
+            None,
+        )
+        .await
+        .unwrap();
+    let views = repository.codex_credentials(codex_group).await.unwrap();
+
+    let disabled = coordinator
+        .update_codex_credentials_batch(
+            seed.user,
+            codex_group,
+            CodexCredentialBatchInput {
+                items: views
+                    .iter()
+                    .map(|credential| CodexCredentialBatchTarget {
+                        id: credential.id,
+                        updated_at: credential.updated_at,
+                    })
+                    .collect(),
+                operation: CodexCredentialBatchOperation::Disable,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(disabled.updated_ids.len(), 2);
+    assert!(
+        repository
+            .codex_credentials(codex_group)
+            .await
+            .unwrap()
+            .iter()
+            .all(|credential| !credential.enabled && credential.runtime_status == "disabled")
+    );
+    let current_views = repository.codex_credentials(codex_group).await.unwrap();
+    let current_member_a = current_views
+        .iter()
+        .find(|credential| credential.id == member_a.id)
+        .unwrap();
+    let stale_member_b = views
+        .iter()
+        .find(|credential| credential.id == member_b.id)
+        .unwrap();
+    let stale = coordinator
+        .update_codex_credentials_batch(
+            seed.user,
+            codex_group,
+            CodexCredentialBatchInput {
+                items: vec![
+                    CodexCredentialBatchTarget {
+                        id: current_member_a.id,
+                        updated_at: current_member_a.updated_at,
+                    },
+                    CodexCredentialBatchTarget {
+                        id: stale_member_b.id,
+                        updated_at: stale_member_b.updated_at,
+                    },
+                ],
+                operation: CodexCredentialBatchOperation::Enable,
+            },
+        )
+        .await;
+    assert!(matches!(
+        stale,
+        Err(ai_gateway::application::ControlPlaneError::Repository(
+            ai_gateway::persistence::RepositoryError::Conflict
+        ))
+    ));
+    assert!(
+        repository
+            .codex_credentials(codex_group)
+            .await
+            .unwrap()
+            .iter()
+            .all(|credential| !credential.enabled)
+    );
+
+    let member_a_view = repository
+        .codex_credential_view(member_a.id)
+        .await
+        .unwrap()
+        .unwrap();
+    coordinator
+        .delete_codex_credential(seed.user, member_a.id, member_a_view.updated_at)
+        .await
+        .unwrap();
+    assert!(
+        repository
+            .codex_credential_view(member_a.id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let deleted = sqlx::query_as::<_, DeletedCodexCredentialState>(
+        "SELECT c.id_token,c.access_token,c.refresh_token,c.deleted_at, \
+                ch.name AS channel_name, \
+                ch.proxy_id,c.quota_allowed,c.primary_used_percent \
+         FROM codex_oauth_credentials c JOIN channels ch ON ch.id=c.channel_id \
+         WHERE c.channel_id=$1",
+    )
+    .bind(member_a.id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(deleted.id_token, "deleted");
+    assert_eq!(deleted.access_token, "deleted");
+    assert_eq!(deleted.refresh_token, "deleted");
+    assert!(deleted.deleted_at.is_some());
+    assert_eq!(
+        deleted.channel_name,
+        format!("deleted-codex-{}", member_a.id)
+    );
+    assert!(deleted.proxy_id.is_none());
+    assert!(deleted.quota_allowed.is_none());
+    assert!(deleted.primary_used_percent.is_none());
+    coordinator
+        .mutate(
+            seed.user,
+            ControlPlaneMutation::DeleteProxy {
+                id: delete_proxy.id,
+                expected_updated_at: delete_proxy.updated_at,
+            },
+        )
+        .await
+        .unwrap();
+
+    let member_b_view = repository
+        .codex_credential_view(member_b.id)
+        .await
+        .unwrap()
+        .unwrap();
+    coordinator
+        .update_codex_credentials_batch(
+            seed.user,
+            codex_group,
+            CodexCredentialBatchInput {
+                items: vec![CodexCredentialBatchTarget {
+                    id: member_b.id,
+                    updated_at: member_b_view.updated_at,
+                }],
+                operation: CodexCredentialBatchOperation::Delete,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        repository
+            .codex_credentials(codex_group)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    let reimported = coordinator
+        .create_codex_credential(
+            seed.user,
+            business_codex_credential(
+                codex_group,
+                "delete-a",
+                "delete-a@example.test",
+                "delete-user-a",
+            ),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_ne!(reimported.id, member_a.id);
+
+    database.cleanup().await;
+}
+
 #[tokio::test]
 async fn codex_credentials_create_managed_channels_and_recompute_quota_state() {
     let database = TestDatabase::new().await;
@@ -1018,6 +1391,7 @@ async fn codex_credentials_create_managed_channels_and_recompute_quota_state() {
                 base_url: "https://chatgpt.com/backend-api/codex".into(),
                 email: Some("codex@example.test".into()),
                 account_id: "account-123".into(),
+                user_id: Some("user-123".into()),
                 plan_type: Some("plus".into()),
                 is_fedramp: false,
                 id_token: "secret-id-token".into(),
@@ -1161,6 +1535,7 @@ async fn codex_credentials_create_managed_channels_and_recompute_quota_state() {
                     refresh_token: Some("replacement-refresh-token".into()),
                     email: None,
                     account_id: None,
+                    user_id: None,
                     plan_type: None,
                     is_fedramp: None,
                     access_token_expires_at: Some(now + chrono::Duration::hours(2)),
@@ -1193,6 +1568,7 @@ async fn codex_credentials_create_managed_channels_and_recompute_quota_state() {
                 base_url: "https://chatgpt.com/backend-api/codex".into(),
                 email: Some("codex-updated@example.test".into()),
                 account_id: "account-123".into(),
+                user_id: Some("user-123".into()),
                 plan_type: Some("pro".into()),
                 is_fedramp: false,
                 id_token: "reauthorized-id-token".into(),
@@ -1307,6 +1683,7 @@ async fn codex_credentials_export_secrets_and_protect_assigned_proxies_from_dele
                 base_url: "https://chatgpt.com/backend-api/codex".into(),
                 email: Some("portable@example.test".into()),
                 account_id: "portable-account-id".into(),
+                user_id: Some("portable-user-id".into()),
                 plan_type: Some("plus".into()),
                 is_fedramp: false,
                 id_token: "portable-id-token".into(),
@@ -1342,6 +1719,10 @@ async fn codex_credentials_export_secrets_and_protect_assigned_proxies_from_dele
     assert_eq!(
         exported.credentials[0].refresh_token,
         "portable-refresh-token"
+    );
+    assert_eq!(
+        exported.credentials[0].user_id.as_deref(),
+        Some("portable-user-id")
     );
     assert_eq!(exported.credentials[0].proxy_key, Some(proxy.id));
     assert_eq!(exported.proxies.len(), 1);
@@ -1485,6 +1866,7 @@ async fn codex_connector_forwards_responses_with_managed_credentials_and_headers
                 base_url: format!("http://{}/backend-api/codex", upstream.address),
                 email: Some("codex@example.test".into()),
                 account_id: "account-123".into(),
+                user_id: Some("user-123".into()),
                 plan_type: Some("plus".into()),
                 is_fedramp: false,
                 id_token: "id-token".into(),

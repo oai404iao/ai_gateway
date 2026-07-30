@@ -1548,8 +1548,8 @@ const zhCN: Record<string, string> = {
   "Quota refreshed.": "额度已刷新。",
   "This channel group is not a Codex OAuth connector.":
     "该渠道组不是 Codex OAuth Connector。",
-  "Connect ChatGPT Codex subscriptions, assign per-account proxies, and monitor quota.":
-    "连接 ChatGPT Codex 订阅，为每个账户分配代理并监控额度。",
+  "Connect ChatGPT Codex subscriptions, assign per-credential proxies, and monitor quota.":
+    "连接 ChatGPT Codex 订阅，为每个凭证分配代理并监控额度。",
   "Export credentials": "导出凭证",
   "Advanced import": "高级导入",
   "Import tokens": "导入 Token",
@@ -1574,9 +1574,13 @@ const zhCN: Record<string, string> = {
   "Refreshed {time}": "刷新于 {time}",
   "Weight {weight}": "权重 {weight}",
   "Proxy assigned": "已分配代理",
+  "Workspace {id}": "工作区 {id}",
+  "Member {id}": "成员 {id}",
   "Refresh token for {label}": "刷新 {label} 的 Token",
   "Refresh quota for {label}": "刷新 {label} 的额度",
   "Edit {label}": "编辑 {label}",
+  "Delete {label}": "删除 {label}",
+  "Select {label}": "选择 {label}",
   "Connect Codex account": "连接 Codex 账户",
   "The gateway creates a short-lived PKCE flow. Authorize in a browser, then paste the complete localhost callback URL.":
     "网关会创建短期 PKCE 流程。请在浏览器中授权，然后粘贴完整的 localhost 回调 URL。",
@@ -1594,12 +1598,31 @@ const zhCN: Record<string, string> = {
   "Access token": "Access Token",
   "Refresh token": "Refresh Token",
   "Account ID override (optional)": "Account ID 覆盖值（可选）",
+  "User ID override (optional)": "User ID 覆盖值（可选）",
   "Validate and import": "验证并导入",
   "Codex credentials exported.": "Codex 凭证已导出。",
   "Export Codex credentials?": "确认导出 Codex 凭证？",
   "The downloaded JSON contains raw ID, access, refresh, and proxy credentials. Store it as a secret and delete it when no longer needed.":
     "下载的 JSON 包含原始 ID Token、Access Token、Refresh Token 和代理凭据。请按密钥保护，并在不再需要时删除。",
   "Export all": "全部导出",
+  "Export selected": "导出所选项",
+  "Export selected ({count})": "导出所选项（{count}）",
+  "{count} selected": "已选择 {count} 项",
+  "Batch actions support up to {count} selected credentials.":
+    "批量操作最多支持选择 {count} 个凭证。",
+  "Enable": "启用",
+  "Delete selected": "删除所选项",
+  "Enabled {count} credentials.": "已启用 {count} 个凭证。",
+  "Disabled {count} credentials.": "已停用 {count} 个凭证。",
+  "Deleted {count} credentials.": "已删除 {count} 个凭证。",
+  "Deleted {label}.": "已删除 {label}。",
+  "Delete Codex credential?": "确认删除 Codex 凭证？",
+  "Delete credential": "删除凭证",
+  "{label} will stop receiving requests and its stored OAuth tokens will be cleared. This cannot be undone.":
+    "{label} 将停止接收请求，已保存的 OAuth Token 也会被清除。此操作无法撤销。",
+  "Delete selected Codex credentials?": "确认删除所选 Codex 凭证？",
+  "{count} credentials will stop receiving requests and their stored OAuth tokens will be cleared. This cannot be undone.":
+    "{count} 个凭证将停止接收请求，已保存的 OAuth Token 也会被清除。此操作无法撤销。",
   "Advanced Codex import": "Codex 高级导入",
   "Parse native, CLIProxyAPI, and Sub2API JSON into editable drafts, configure proxies, then import.":
     "将原生、CLIProxyAPI 和 Sub2API JSON 解析为可编辑草稿，配置代理后再导入。",
@@ -1629,8 +1652,8 @@ const zhCN: Record<string, string> = {
   "Selected": "已选择",
   "Imported": "已导入",
   "2. Review credentials": "2. 检查凭证",
-  "Edit labels, routing values, tokens, and per-account proxy assignments before the server validates each credential.":
-    "服务器验证每个凭证前，可编辑标签、路由参数、Token 和逐账户代理分配。",
+  "Edit labels, routing values, tokens, and per-credential proxy assignments before the server validates each credential.":
+    "服务器验证每个凭证前，可编辑标签、路由参数、Token 和逐凭证代理分配。",
   "Bulk proxy assignment": "批量代理分配",
   "Apply to selected": "应用到所选项",
   "Round-robin selected": "轮询分配所选项",
@@ -1671,8 +1694,8 @@ const zhCN: Record<string, string> = {
   "The assigned proxy is missing or disabled.": "已分配的代理不存在或已禁用。",
   "The source proxy is not mapped; this credential will use a direct connection.":
     "源代理尚未映射；该凭证将使用直连。",
-  "The supplied account ID does not match the token.":
-    "提供的 Account ID 与 Token 不匹配。",
+  "The supplied workspace or user ID does not match the token.":
+    "提供的工作区或 User ID 与 Token 不匹配。",
   "The refresh token is no longer valid.": "Refresh Token 已失效。",
   "The account returned no supported Codex models.":
     "该账户未返回受支持的 Codex 模型。",
@@ -1688,16 +1711,16 @@ const zhCN: Record<string, string> = {
   "Change routing settings without exposing stored OAuth tokens.":
     "修改路由设置，不暴露已保存的 OAuth Token。",
   "Draining": "正在排空",
-  "This Codex account is already connected or changed elsewhere.":
-    "该 Codex 账户已连接，或数据已被其他管理员修改。",
+  "This Codex credential is already connected or changed elsewhere.":
+    "该 Codex 凭证已连接，或数据已被其他管理员修改。",
   "The OAuth callback state did not match. Start a new authorization.":
     "OAuth 回调 state 不匹配，请重新开始授权。",
   "The OAuth flow expired. Start a new authorization.":
     "OAuth 流程已过期，请重新开始授权。",
   "The refresh token is no longer valid. Connect the account again.":
     "Refresh Token 已失效，请重新连接账户。",
-  "The refreshed token belongs to a different Codex account.":
-    "刷新后的 Token 属于另一个 Codex 账户。",
+  "The refreshed token belongs to a different Codex workspace or member.":
+    "刷新后的 Token 属于另一个 Codex 工作区或成员。",
   "The selected outbound proxy is unavailable.": "所选出站代理不可用。",
   "Credential changed elsewhere. Reloading.": "凭证已被其他管理员修改，正在重新加载。",
 };

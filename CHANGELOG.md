@@ -13,9 +13,15 @@ Versioning.
   OpenAI Priority processing into durable request logs, show ordered reasoning
   and Fast badges beside the model, and expose per-request output TPS as the
   third line of the Console duration cell.
+- Add single and atomic batch Codex credential enable, disable, delete, and
+  selected-export controls; deletion clears stored OAuth tokens while keeping
+  a non-secret channel tombstone for historical references.
 
 ### Fixed
 
+- Identify Codex Business credentials by workspace and member so multiple
+  users in the same Business workspace no longer overwrite one another during
+  OAuth connection or token import.
 - Restrict Pull Request CI and Security activity to open, update, and reopen
   events so merging and deleting the source branch cannot create a false
   failed `ci-gate`.

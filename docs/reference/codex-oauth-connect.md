@@ -5,6 +5,7 @@
 > 权威来源：
 > [`openai/codex` 0.146.0 release](https://github.com/openai/codex/releases/tag/rust-v0.146.0)、
 > [OAuth server](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/login/src/server.rs)、
+> [ID Token claim parser](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/login/src/token_data.rs)、
 > [token refresh manager](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/login/src/auth/manager.rs)、
 > [default HTTP client](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/login/src/auth/default_client.rs)、
 > [ChatGPT Codex provider](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/model-provider-info/src/lib.rs)、
@@ -45,12 +46,15 @@ ID token / access token 的 JWT payload 中，本接入使用：
 
 - `email` 或 `https://api.openai.com/profile.email`；
 - `https://api.openai.com/auth.chatgpt_account_id`；
+- `https://api.openai.com/auth.chatgpt_user_id`，缺失时兼容同一 namespace 下的 `user_id`；
 - `https://api.openai.com/auth.chatgpt_plan_type`；
 - `https://api.openai.com/auth.chatgpt_account_is_fedramp`；
 - access token 顶层 `exp`。
 
 JWT payload 解析只用于提取元数据和过期时间；真正的凭证有效性由后续 Codex models
-请求验证。管理员导入凭证时，如果显式 `account_id` 与 token claim 不同，网关拒绝导入。
+请求验证。`chatgpt_account_id` 表示所选 workspace，`chatgpt_user_id` 表示该 workspace 中的
+成员；Business plan 的多个成员可以共享 account ID。管理员导入凭证时，如果显式
+`account_id`/`user_id` 与 token claim 不同，网关拒绝导入。
 
 ## Codex HTTP 接口
 
@@ -138,8 +142,8 @@ PostgreSQL row lock，并在锁内再次核对 `refresh_generation`，避免同�
 rotating refresh token。
 
 永久 refresh 失败会留下持久的重新授权标记，后续 quota 成功或普通设置编辑不会自动恢复凭证。
-在同一 Channel Group 再次 OAuth 或导入相同 account ID 会原位更新 Token 和 managed channel，
-清除该标记而不创建重复账户记录。
+在同一 Channel Group 再次 OAuth 或导入相同 workspace/member 身份会原位更新 Token 和 managed
+channel；同一 Business workspace 的不同 `user_id` 会创建独立凭证，不会互相覆盖。
 
 Quota 状态映射为：
 
@@ -158,7 +162,8 @@ Quota 状态映射为：
 - 第一版只支持 HTTP Responses SSE；不支持 non-streaming、Codex Responses WebSocket 或
   非空 `previous_response_id`。
 - Connector 不实现 Chat Completions↔Responses 转换。
-- 当前 Console 可以禁用凭证，但没有调用 OpenAI token revocation endpoint 的删除/撤销操作。
+- Console 删除会清除数据库中的 OAuth Token 并保留非敏感 managed-channel tombstone，但不会调用
+  OpenAI token revocation endpoint；外部撤销仍需在账户侧完成。
 - Models catalog 在首次连接、重新授权或 Token 导入时验证并写入；当前不单独周期轮询 models。
 - Quota threshold 是路由保护，不是计费或账户侧硬额度；已有 affinity Session 在
   `draining` 时仍可继续使用。

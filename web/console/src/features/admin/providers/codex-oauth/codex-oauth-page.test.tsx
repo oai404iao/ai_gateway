@@ -7,6 +7,7 @@ import { AppProviders } from "@/app/providers";
 import { AppRouter } from "@/app/router";
 import type {
   ChannelGroupView,
+  CodexCredentialBatchInput,
   CodexCredentialExportInput,
   CodexCredentialView,
   CodexOauthCompleteInput,
@@ -33,6 +34,7 @@ const CREDENTIAL: CodexCredentialView = {
   label: "Personal Plus",
   email: "codex@example.test",
   account_id: "account-123",
+  user_id: "user-123",
   plan_type: "plus",
   is_fedramp: false,
   access_token_expires_at: "2026-07-29T15:00:00.000Z",
@@ -127,6 +129,7 @@ describe("CodexOauthPage", () => {
       "Edit Personal Plus",
       "Refresh quota for Personal Plus",
       "Refresh token for Personal Plus",
+      "Delete Personal Plus",
     ]) {
       const button = screen.getByRole("button", { name: label });
       fireEvent.focus(button);
@@ -243,6 +246,7 @@ describe("CodexOauthPage", () => {
                 label: CREDENTIAL.label,
                 email: CREDENTIAL.email,
                 account_id: CREDENTIAL.account_id,
+                user_id: CREDENTIAL.user_id,
                 plan_type: CREDENTIAL.plan_type,
                 is_fedramp: false,
                 id_token: "secret-id",
@@ -275,5 +279,73 @@ describe("CodexOauthPage", () => {
     expect(createObjectUrl).toHaveBeenCalled();
     expect(click).toHaveBeenCalled();
     expect(revokeObjectUrl).toHaveBeenCalledWith("blob:codex-export");
+  });
+
+  it("batch-disables selected credentials with their list versions", async () => {
+    seedAuthenticatedSession();
+    let batchInput: CodexCredentialBatchInput | undefined;
+    server.use(
+      ...baseHandlers([CREDENTIAL]),
+      http.post(
+        "/console/v1/providers/codex-oauth/channel-groups/:id/credentials/batch",
+        async ({ request }) => {
+          batchInput = (await request.json()) as CodexCredentialBatchInput;
+          return HttpResponse.json({
+            updated_ids: [CREDENTIAL_ID],
+            correlation_id: "00000000-0000-0000-0000-00000000c005",
+          });
+        },
+      ),
+    );
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(
+      await screen.findByRole("checkbox", { name: "Select Personal Plus" }),
+    );
+    await user.click(screen.getByRole("button", { name: "Disable" }));
+
+    await waitFor(() =>
+      expect(batchInput).toEqual({
+        items: [
+          {
+            id: CREDENTIAL_ID,
+            updated_at: CREDENTIAL.updated_at,
+          },
+        ],
+        operation: "disable",
+      }),
+    );
+  });
+
+  it("confirms credential deletion and sends If-Match", async () => {
+    seedAuthenticatedSession();
+    let ifMatch = "";
+    server.use(
+      ...baseHandlers([CREDENTIAL]),
+      http.delete(
+        "/console/v1/providers/codex-oauth/credentials/:id",
+        ({ request }) => {
+          ifMatch = request.headers.get("if-match") ?? "";
+          return HttpResponse.json({
+            id: CREDENTIAL_ID,
+            correlation_id: "00000000-0000-0000-0000-00000000c006",
+          });
+        },
+      ),
+    );
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(
+      await screen.findByRole("button", { name: "Delete Personal Plus" }),
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Delete credential" }),
+    );
+
+    await waitFor(() =>
+      expect(ifMatch).toBe(`"${CREDENTIAL.updated_at}"`),
+    );
   });
 });
