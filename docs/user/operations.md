@@ -480,6 +480,13 @@ JWT 主体推导用户 ID，管理员也只能在个人使用情况标签中看�
 reasoning token。Console 请求日志的 `Tokens` 列将未缓存输入和非 reasoning 输出作为主数字，
 并用紧凑标记分别展示缓存命中与 reasoning token。
 
+对于客户端原始请求，日志还会在不改变转发校验或请求字节的前提下提取显式模式元数据：
+OpenAI Responses 的 `reasoning.effort`、DeepSeek/OpenAI Chat Completions 兼容的
+`reasoning_effort`，以及表示 OpenAI Priority processing 的
+`service_tier = "priority"`。Console 模型列按顺序显示思考等级和绿色 `Fast` 标记；未显式提供
+对应字段时不显示。耗时列第三行显示输出 TPS，计算为
+`output_tokens / ((total_duration_ms - ttft_ms) / 1000)`；usage 或 TTFT 不可用时显示空值。
+
 额度是软预检查：不预留金额，已结算额度达到上限后才拒绝后续请求；余额可以为负。
 终态请求日志先同步追加到本地 durable spool，后台通知队列饱和只会合并唤醒，不会丢弃
 spool 中的事件。spool 写入失败和磁盘空间耗尽仍是必须告警的耐久边界。
@@ -487,7 +494,8 @@ spool 中的事件。spool 写入失败和磁盘空间耗尽仍是必须告警�
 Console 请求日志会显示请求协议，将请求区分为非流式 HTTP、SSE 或 Responses
 WebSocket，并显示渠道组名称。个人“请求日志”始终只查询当前 JWT 用户；即使当前用户是管理员，
 服务端也会将用户名称、具体 `channel_id` 和渠道名称置空。个人列表固定显示开始时间、模型、
-请求协议、渠道组、结果、Token、成本和耗时；详情再显示 HTTP 状态、错误代码、错误消息和完成时间。
+请求协议、渠道组、结果、Token、成本和耗时；模型旁可显示思考等级和 `Fast` 标记，耗时同时包含
+TTFT、总耗时和 TPS。详情再显示 HTTP 状态、错误代码、错误消息和完成时间。
 
 只有管理员“运维”栏下的全局“请求日志”可以读取所有用户的日志。该页面在上述字段基础上额外显示
 当前用户名称和渠道名称；Console 列表与详情不显示用户、渠道或请求日志 ID。

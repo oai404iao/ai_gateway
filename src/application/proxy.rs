@@ -249,7 +249,7 @@ impl ProxyService {
                 return Err(request_body_error(error));
             }
         };
-        let parsed = match parse_request(&original_body) {
+        let parsed = match parse_request(api_format, &original_body) {
             Ok(value) => value,
             Err(error) => {
                 trace_unlogged("malformed_or_overlength_model");
@@ -276,6 +276,7 @@ impl ProxyService {
                     &api_key,
                     api_format,
                     &parsed.model,
+                    &parsed.log_metadata,
                     parsed.request_protocol,
                     started_wall_at,
                     started_at,
@@ -287,6 +288,7 @@ impl ProxyService {
                     &api_key,
                     api_format,
                     &parsed.model,
+                    &parsed.log_metadata,
                     parsed.request_protocol,
                     &rule,
                     started_wall_at,
@@ -312,6 +314,7 @@ impl ProxyService {
             Arc::clone(&self.request_log_sink),
             &api_key,
             &parsed.model,
+            &parsed.log_metadata,
             parsed.request_protocol,
             api_format,
             &current_rule,
@@ -568,11 +571,13 @@ impl ProxyService {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn record_rejected(
         &self,
         api_key: &CompiledApiKey,
         api_format: ApiFormat,
         client_model: &str,
+        log_metadata: &RequestLogMetadata,
         request_protocol: RequestProtocol,
         started_at: chrono::DateTime<chrono::Utc>,
         started: Instant,
@@ -588,6 +593,8 @@ impl ProxyService {
             api_format,
             request_protocol,
             client_model: client_model.to_owned(),
+            reasoning_effort: log_metadata.reasoning_effort.clone(),
+            fast_mode: log_metadata.fast_mode,
             upstream_model: None,
             model_rule_id: None,
             channel_group_id: None,
@@ -612,6 +619,7 @@ impl ProxyService {
         api_key: &CompiledApiKey,
         api_format: ApiFormat,
         client_model: &str,
+        log_metadata: &RequestLogMetadata,
         request_protocol: RequestProtocol,
         rule: &CompiledModelRule,
         started_at: chrono::DateTime<chrono::Utc>,
@@ -627,6 +635,8 @@ impl ProxyService {
             api_format,
             request_protocol,
             client_model: client_model.to_owned(),
+            reasoning_effort: log_metadata.reasoning_effort.clone(),
+            fast_mode: log_metadata.fast_mode,
             upstream_model: Some(rule.upstream_model().to_owned()),
             model_rule_id: Some(rule.id()),
             channel_group_id: None,
@@ -982,14 +992,27 @@ struct RequestProbe {
     model: String,
     #[serde(default)]
     stream: bool,
+    #[serde(default)]
+    reasoning_effort: Value,
+    #[serde(default)]
+    reasoning: Value,
+    #[serde(default)]
+    service_tier: Value,
 }
 
 struct ParsedRequest {
     model: String,
+    log_metadata: RequestLogMetadata,
     request_protocol: RequestProtocol,
 }
 
-fn parse_request(body: &[u8]) -> Result<ParsedRequest, ProxyError> {
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct RequestLogMetadata {
+    reasoning_effort: Option<String>,
+    fast_mode: bool,
+}
+
+fn parse_request(api_format: ApiFormat, body: &[u8]) -> Result<ParsedRequest, ProxyError> {
     let probe = serde_json::from_slice::<RequestProbe>(body).map_err(|_| {
         ProxyError::invalid_request("Request body must contain a string model.", "model")
     })?;
@@ -1007,8 +1030,44 @@ fn parse_request(body: &[u8]) -> Result<ParsedRequest, ProxyError> {
     }
     Ok(ParsedRequest {
         model: probe.model,
+        log_metadata: request_log_metadata(
+            api_format,
+            &probe.reasoning_effort,
+            &probe.reasoning,
+            &probe.service_tier,
+        ),
         request_protocol: RequestProtocol::from_http_streamed(probe.stream),
     })
+}
+
+fn request_log_metadata(
+    api_format: ApiFormat,
+    reasoning_effort: &Value,
+    reasoning: &Value,
+    service_tier: &Value,
+) -> RequestLogMetadata {
+    let top_level_effort = normalized_request_label(reasoning_effort);
+    let nested_effort = reasoning.get("effort").and_then(normalized_request_label);
+    let reasoning_effort = match api_format {
+        ApiFormat::OpenAiChatCompletions => top_level_effort.or(nested_effort),
+        ApiFormat::OpenAiResponses => nested_effort.or(top_level_effort),
+    };
+    RequestLogMetadata {
+        reasoning_effort,
+        fast_mode: normalized_request_label(service_tier).as_deref() == Some("priority"),
+    }
+}
+
+fn normalized_request_label(value: &Value) -> Option<String> {
+    const MAX_LABEL_CHARS: usize = 32;
+
+    let value = value.as_str()?.trim();
+    (!value.is_empty()
+        && value.chars().count() <= MAX_LABEL_CHARS
+        && value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-')))
+    .then(|| value.to_ascii_lowercase())
 }
 
 const MAX_SESSION_AFFINITY_VALUE_BYTES: usize = 512;
@@ -1652,6 +1711,8 @@ struct CompletionContext {
     user_id: Uuid,
     api_key_id: Uuid,
     client_model: String,
+    reasoning_effort: Option<String>,
+    fast_mode: bool,
     upstream_model: String,
     model_rule_id: Uuid,
     channel_group_id: Uuid,
@@ -1698,6 +1759,7 @@ impl CompletionGuard {
         sink: Arc<dyn RequestLogSink>,
         api_key: &CompiledApiKey,
         client_model: &str,
+        log_metadata: &RequestLogMetadata,
         request_protocol: RequestProtocol,
         api_format: ApiFormat,
         rule: &CompiledModelRule,
@@ -1717,6 +1779,8 @@ impl CompletionGuard {
                 user_id: api_key.user_id(),
                 api_key_id: api_key.id(),
                 client_model: client_model.to_owned(),
+                reasoning_effort: log_metadata.reasoning_effort.clone(),
+                fast_mode: log_metadata.fast_mode,
                 upstream_model: rule.upstream_model().to_owned(),
                 model_rule_id: rule.id(),
                 channel_group_id: channel.group_id(),
@@ -1990,6 +2054,8 @@ impl CompletionGuard {
             api_format: context.api_format,
             request_protocol: context.request_protocol,
             client_model: context.client_model,
+            reasoning_effort: context.reasoning_effort,
+            fast_mode: context.fast_mode,
             upstream_model: Some(context.upstream_model),
             model_rule_id: Some(context.model_rule_id),
             channel_group_id: Some(context.channel_group_id),
@@ -2062,7 +2128,7 @@ mod tests {
 
     use super::{
         AttemptedChannelSlots, forward_request_headers, forward_response_headers,
-        match_session_affinity, parse_bearer_token, response_has_no_body,
+        match_session_affinity, parse_bearer_token, parse_request, response_has_no_body,
     };
     use crate::{
         application::billing::{calculate_cost, request_billing},
@@ -2102,6 +2168,59 @@ mod tests {
         );
 
         assert!(parse_bearer_token(&headers).is_err());
+    }
+
+    #[test]
+    fn parses_deepseek_reasoning_effort_and_openai_fast_mode_from_chat_requests() {
+        let parsed = parse_request(
+            ApiFormat::OpenAiChatCompletions,
+            br#"{
+                "model":"deepseek-v4",
+                "reasoning_effort":"MAX",
+                "service_tier":"priority"
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(parsed.log_metadata.reasoning_effort.as_deref(), Some("max"));
+        assert!(parsed.log_metadata.fast_mode);
+    }
+
+    #[test]
+    fn parses_openai_nested_reasoning_effort_before_the_compatible_fallback() {
+        let parsed = parse_request(
+            ApiFormat::OpenAiResponses,
+            br#"{
+                "model":"gpt-5",
+                "reasoning":{"effort":"xhigh"},
+                "reasoning_effort":"low",
+                "service_tier":"default"
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            parsed.log_metadata.reasoning_effort.as_deref(),
+            Some("xhigh")
+        );
+        assert!(!parsed.log_metadata.fast_mode);
+    }
+
+    #[test]
+    fn ignores_unbounded_or_non_string_request_mode_metadata_without_rejecting() {
+        let parsed = parse_request(
+            ApiFormat::OpenAiResponses,
+            br#"{
+                "model":"gpt-5",
+                "reasoning":{"effort":{"unexpected":true}},
+                "reasoning_effort":"this-label-is-longer-than-thirty-two-characters",
+                "service_tier":42
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(parsed.log_metadata.reasoning_effort, None);
+        assert!(!parsed.log_metadata.fast_mode);
     }
 
     #[test]
@@ -2261,6 +2380,23 @@ mod tests {
             billing.output_tokens_per_second,
             Some(Decimal::new(26667, 4))
         );
+
+        let missing_ttft = request_billing(
+            &snapshot,
+            &CompiledAdvancedBilling::default(),
+            Decimal::ONE,
+            Decimal::ONE,
+            Some(ResponseUsage {
+                input_tokens: 10,
+                cached_input_tokens: 2,
+                cache_write_tokens: 1,
+                output_tokens: 4,
+                reasoning_tokens: 1,
+            }),
+            2_000,
+            None,
+        );
+        assert_eq!(missing_ttft.output_tokens_per_second, None);
     }
 
     #[test]

@@ -72,10 +72,9 @@ pub(crate) fn request_billing(
     };
     let cost_amount = usage.as_ref().map(|usage| calculate_cost(usage, &price));
     let output_tokens_per_second = usage.and_then(|usage| {
+        let ttft_ms = ttft_ms?;
         (usage.output_tokens > 0).then(|| {
-            let generation_ms = total_duration_ms
-                .saturating_sub(ttft_ms.unwrap_or(0))
-                .max(1);
+            let generation_ms = total_duration_ms.saturating_sub(ttft_ms).max(1);
             (Decimal::from(usage.output_tokens) * Decimal::from(1_000_i64)
                 / Decimal::from(generation_ms))
             .round_dp(4)

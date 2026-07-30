@@ -48,7 +48,8 @@ Browser or Console client
 2. 从一次性获取的不可变快照完成鉴权和格式权限判断。
 3. 在读取 body 前执行进程内 RPM、并发和软额度准入。
 4. 在大小限制内读取 JSON，要求顶层 `model` 为非空字符串；可选 `stream` 必须
-   为布尔值。
+   为布尔值。请求日志还会宽松提取客户端显式提供的 `reasoning.effort`、
+   `reasoning_effort` 和 `service_tier = "priority"`，但这些元数据不会增加转发校验。
 5. 从分 API 格式索引按 `(api_format, client_model)` 取得预编译模型路由；渠道组
    成员已经按规则 `upstream_model` 与 `channels.available_models` 求交并划分
    优先级 tier。

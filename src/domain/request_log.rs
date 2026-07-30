@@ -21,6 +21,14 @@ pub struct RequestLogEvent {
     pub api_format: ApiFormat,
     pub request_protocol: RequestProtocol,
     pub client_model: String,
+    /// Explicit reasoning effort requested by the client. Missing and
+    /// unrecognized request shapes remain `None`.
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
+    /// Whether the client explicitly requested OpenAI Priority processing via
+    /// `service_tier = "priority"`.
+    #[serde(default)]
+    pub fast_mode: bool,
     pub upstream_model: Option<String>,
     pub model_rule_id: Option<Uuid>,
     pub channel_group_id: Option<Uuid>,

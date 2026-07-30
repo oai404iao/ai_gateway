@@ -373,6 +373,8 @@ async fn system_probe_identity_is_an_internal_active_administrator() {
         api_format: ApiFormat::OpenAiChatCompletions,
         request_protocol: RequestProtocol::NonStream,
         client_model: "scheduled-test-model".into(),
+        reasoning_effort: None,
+        fast_mode: false,
         upstream_model: Some("scheduled-test-model".into()),
         model_rule_id: None,
         channel_group_id: None,
@@ -648,6 +650,8 @@ struct PersistedLog {
     api_format: String,
     request_protocol: String,
     client_model: String,
+    reasoning_effort: Option<String>,
+    fast_mode: bool,
     upstream_model: Option<String>,
     model_rule_id: Option<Uuid>,
     channel_group_id: Option<Uuid>,
@@ -712,7 +716,7 @@ fn assert_log_timing(log: &PersistedLog) {
 async fn wait_for_log(pool: &PgPool, api_key_id: Uuid, client_model: &str) -> PersistedLog {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
     loop {
-        let rows = sqlx::query_as::<_, PersistedLog>("SELECT started_at, completed_at, user_id, api_key_id, api_format::text AS api_format, request_protocol, client_model, upstream_model, model_rule_id, channel_group_id, channel_id, model_id, outcome, response_status_code, streamed, ttft_ms, total_duration_ms, error_code, error_summary FROM request_logs WHERE api_key_id = $1 AND client_model = $2")
+        let rows = sqlx::query_as::<_, PersistedLog>("SELECT started_at, completed_at, user_id, api_key_id, api_format::text AS api_format, request_protocol, client_model, reasoning_effort, fast_mode, upstream_model, model_rule_id, channel_group_id, channel_id, model_id, outcome, response_status_code, streamed, ttft_ms, total_duration_ms, error_code, error_summary FROM request_logs WHERE api_key_id = $1 AND client_model = $2")
             .bind(api_key_id)
             .bind(client_model)
             .fetch_all(pool)
@@ -740,7 +744,7 @@ async fn wait_for_terminal_log(
 ) -> PersistedLog {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
     loop {
-        let rows = sqlx::query_as::<_, PersistedLog>("SELECT started_at, completed_at, user_id, api_key_id, api_format::text AS api_format, request_protocol, client_model, upstream_model, model_rule_id, channel_group_id, channel_id, model_id, outcome, response_status_code, streamed, ttft_ms, total_duration_ms, error_code, error_summary FROM request_logs WHERE api_key_id = $1 AND client_model = $2 AND outcome = $3 AND error_code IS NOT DISTINCT FROM $4")
+        let rows = sqlx::query_as::<_, PersistedLog>("SELECT started_at, completed_at, user_id, api_key_id, api_format::text AS api_format, request_protocol, client_model, reasoning_effort, fast_mode, upstream_model, model_rule_id, channel_group_id, channel_id, model_id, outcome, response_status_code, streamed, ttft_ms, total_duration_ms, error_code, error_summary FROM request_logs WHERE api_key_id = $1 AND client_model = $2 AND outcome = $3 AND error_code IS NOT DISTINCT FROM $4")
             .bind(api_key_id)
             .bind(client_model)
             .bind(outcome)
@@ -940,6 +944,8 @@ fn request_log_event(seed: &Seed, outcome: RequestLogOutcome) -> RequestLogEvent
         api_format: ApiFormat::OpenAiChatCompletions,
         request_protocol: RequestProtocol::Sse,
         client_model: seed.client_model.clone(),
+        reasoning_effort: Some("high".into()),
+        fast_mode: true,
         upstream_model: Some("upstream-v1".into()),
         model_rule_id: Some(seed.rule),
         channel_group_id: Some(seed.group),
@@ -1929,6 +1935,14 @@ async fn request_log_insert_is_idempotent_and_worker_continues_after_failure() {
         Some(rust_decimal::Decimal::new(999, 8))
     );
     assert_eq!(persisted_billing.currency.as_deref(), Some("USD"));
+    let persisted_modes: (Option<String>, bool) =
+        sqlx::query_as("SELECT reasoning_effort,fast_mode FROM request_logs WHERE id=$1")
+            .bind(event.id)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert_eq!(persisted_modes.0.as_deref(), Some("high"));
+    assert!(persisted_modes.1);
 
     let mut conflicting = event.clone();
     conflicting.error_code = Some("different_terminal_fact".into());
@@ -1940,6 +1954,12 @@ async fn request_log_insert_is_idempotent_and_worker_continues_after_failure() {
     conflicting_summary.error_summary = Some("different upstream detail".into());
     assert!(matches!(
         repository.insert(&conflicting_summary).await,
+        Err(ai_gateway::persistence::RepositoryError::DuplicateConflict { .. })
+    ));
+    let mut conflicting_fast_mode = event.clone();
+    conflicting_fast_mode.fast_mode = false;
+    assert!(matches!(
+        repository.insert(&conflicting_fast_mode).await,
         Err(ai_gateway::persistence::RepositoryError::DuplicateConflict { .. })
     ));
     let mut conflicting_reasoning = event.clone();
@@ -4871,8 +4891,13 @@ async fn proxy_request_logs_reach_postgres_for_terminal_and_rejected_requests() 
             .header("authorization", format!("Bearer {key}"))
             .header("content-type", "application/json")
             .body(
-                serde_json::to_vec(&serde_json::json!({ "model": model, "stream": stream }))
-                    .unwrap(),
+                serde_json::to_vec(&serde_json::json!({
+                    "model": model,
+                    "stream": stream,
+                    "reasoning_effort": "high",
+                    "service_tier": "priority"
+                }))
+                .unwrap(),
             )
     };
 
@@ -4889,6 +4914,8 @@ async fn proxy_request_logs_reach_postgres_for_terminal_and_rejected_requests() 
     assert_eq!(success.api_key_id, seed.key);
     assert_eq!(success.api_format, "open_ai_chat_completions");
     assert_eq!(success.client_model, seed.client_model);
+    assert_eq!(success.reasoning_effort.as_deref(), Some("high"));
+    assert!(success.fast_mode);
     assert_eq!(success.upstream_model.as_deref(), Some("upstream-v1"));
     assert_eq!(success.model_rule_id, Some(seed.rule));
     assert_eq!(success.channel_group_id, Some(seed.group));
@@ -5010,6 +5037,8 @@ async fn proxy_request_logs_reach_postgres_for_terminal_and_rejected_requests() 
     let rejected = wait_for_log(&database.pool, seed.key, &unknown).await;
     assert_eq!(rejected.outcome, "rejected");
     assert_eq!(rejected.response_status_code, Some(404));
+    assert_eq!(rejected.reasoning_effort.as_deref(), Some("high"));
+    assert!(rejected.fast_mode);
     assert_eq!(rejected.upstream_model, None);
     assert_eq!(rejected.model_rule_id, None);
     assert_eq!(rejected.channel_id, None);

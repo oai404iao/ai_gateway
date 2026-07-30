@@ -316,8 +316,11 @@ test.describe("Console SPA smoke", () => {
       "Duration",
     ]);
     await expect(page.getByText("upstream-a", { exact: true })).toHaveCount(0);
+    await expect(page.getByLabel("Reasoning effort: High")).toBeVisible();
+    await expect(page.getByLabel("Fast mode")).toBeVisible();
     await expect(page.getByLabel("TTFT: 120 ms")).toBeVisible();
     await expect(page.getByLabel("Total duration: 1 s")).toBeVisible();
+    await expect(page.getByLabel("TPS: 4.5 tok/s")).toBeVisible();
 
     const waitForPersonalLogQuery = () =>
       page.waitForRequest((request) => {

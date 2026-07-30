@@ -594,6 +594,8 @@ async fn response_create_with_residual(
         "type": "response.create",
         "model": CLIENT_MODEL,
         "input": [{"role": "user", "content": "hello"}],
+        "reasoning": {"effort": "high"},
+        "service_tier": "priority",
     });
     if let Some(previous_response_id) = previous_response_id {
         body["previous_response_id"] = json!(previous_response_id);
@@ -749,6 +751,8 @@ async fn responses_websocket_forwards_transforms_reuses_connection_and_logs_requ
     for event in logs {
         assert_eq!(event.response_status_code, Some(200));
         assert_eq!(event.request_protocol, RequestProtocol::WebSocket);
+        assert_eq!(event.reasoning_effort.as_deref(), Some("high"));
+        assert!(event.fast_mode);
         assert!(event.streamed);
         let usage = event.billing.unwrap().usage.unwrap();
         assert_eq!(usage.input_tokens, 5);

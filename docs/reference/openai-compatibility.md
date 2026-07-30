@@ -2,9 +2,13 @@
 
 > 类型：外部参考与项目兼容契约。
 >
-> 最近核对：2026-07-27。
+> 最近核对：2026-07-30。
 >
 > 权威来源：[OpenAI API Reference](https://developers.openai.com/api/reference/overview)。
+>
+> 相关字段来源：[OpenAI Reasoning](https://developers.openai.com/api/docs/guides/reasoning)、
+> [OpenAI Priority processing](https://developers.openai.com/api/docs/guides/priority-processing)、
+> [DeepSeek Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode)。
 
 ## 支持范围
 
@@ -24,6 +28,9 @@
 - 网关只做路由所需的最小 JSON 校验：body 必须是可解析的 JSON 对象，顶层
   `model` 必须是非空字符串且不超过 300 个字符；可选 `stream` 必须是布尔值。
 - 除 `model`、`stream` 和已配置变换涉及的字段外，其余字段语义由上游决定。
+- 仅为请求日志元数据，网关会宽松识别 Responses 的 `reasoning.effort`、兼容
+  Chat Completions 的 `reasoning_effort`，以及 `service_tier = "priority"`；非字符串、
+  过长或未知形状不会增加本地拒绝条件。
 - 没有模型别名或 body 变换时，网关保留原始请求字节，不重新序列化。
 - 模型别名只改写顶层 `model`。
 - 查询字符串和原 API 路径会拼接到渠道 `base_url`。

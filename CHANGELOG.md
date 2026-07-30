@@ -7,6 +7,13 @@ Versioning.
 
 ## [Unreleased]
 
+### Added
+
+- Parse explicit OpenAI and DeepSeek reasoning-effort request fields plus
+  OpenAI Priority processing into durable request logs, show ordered reasoning
+  and Fast badges beside the model, and expose per-request output TPS as the
+  third line of the Console duration cell.
+
 ### Fixed
 
 - Restrict Pull Request CI and Security activity to open, update, and reopen

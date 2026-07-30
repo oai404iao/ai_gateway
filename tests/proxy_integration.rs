@@ -1068,7 +1068,8 @@ async fn unknown_model_returns_not_found_without_upstream_contact() {
         &client(),
         harness.url("/v1/chat/completions"),
         CLIENT_KEY,
-        br#"{"model":"unknown-model"}"#.to_vec(),
+        br#"{"model":"unknown-model","reasoning_effort":"high","service_tier":"priority"}"#
+            .to_vec(),
     )
     .send()
     .await
@@ -1080,6 +1081,8 @@ async fn unknown_model_returns_not_found_without_upstream_contact() {
     assert_eq!(logs.len(), 1);
     assert_eq!(logs[0].outcome.as_str(), "rejected");
     assert_eq!(logs[0].response_status_code, Some(404));
+    assert_eq!(logs[0].reasoning_effort.as_deref(), Some("high"));
+    assert!(logs[0].fast_mode);
 }
 
 #[tokio::test]
@@ -1176,7 +1179,7 @@ async fn api_key_and_model_rules_do_not_fall_back_between_formats() {
 async fn matching_chat_model_preserves_body_and_forwards_response_safely() {
     let upstream_body = br#"{"id":"upstream-result","ok":true}"#.to_vec();
     let harness = harness(StatusCode::CREATED, upstream_body.clone()).await;
-    let request_body = br#"{ "z": [3, 2], "model" : "same-model", "nested": { "a": 1 } }"#.to_vec();
+    let request_body = br#"{ "z": [3, 2], "model" : "same-model", "reasoning_effort": "high", "service_tier": "priority", "nested": { "a": 1 } }"#.to_vec();
 
     let response = authorized_post(
         &client(),
@@ -1198,6 +1201,8 @@ async fn matching_chat_model_preserves_body_and_forwards_response_safely() {
     assert_eq!(logs.len(), 1);
     assert_eq!(logs[0].outcome.as_str(), "succeeded");
     assert_eq!(logs[0].response_status_code, Some(201));
+    assert_eq!(logs[0].reasoning_effort.as_deref(), Some("high"));
+    assert!(logs[0].fast_mode);
 
     let requests = harness.upstream_requests();
     assert_eq!(requests.len(), 1);
@@ -1221,7 +1226,8 @@ async fn responses_nonstream_usage_is_collected_without_buffering_the_response()
         &client(),
         harness.url("/v1/responses"),
         CLIENT_KEY,
-        br#"{"model":"responses-model"}"#.to_vec(),
+        br#"{"model":"responses-model","reasoning":{"effort":"xhigh"},"service_tier":"priority"}"#
+            .to_vec(),
     )
     .send()
     .await
@@ -1231,6 +1237,8 @@ async fn responses_nonstream_usage_is_collected_without_buffering_the_response()
     assert_eq!(response.bytes().await.unwrap().as_ref(), upstream_body);
     let logs = harness.logs();
     assert_eq!(logs.len(), 1);
+    assert_eq!(logs[0].reasoning_effort.as_deref(), Some("xhigh"));
+    assert!(logs[0].fast_mode);
     assert_eq!(
         logs[0].billing.as_ref().unwrap().usage,
         Some(ai_gateway::domain::RequestUsage {

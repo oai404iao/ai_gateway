@@ -159,6 +159,8 @@ mod tests {
         .unwrap();
 
         assert_eq!(event.request_protocol, RequestProtocol::Sse);
+        assert_eq!(event.reasoning_effort, None);
+        assert!(!event.fast_mode);
         assert_eq!(event.billing.unwrap().usage.unwrap().reasoning_tokens, 0);
     }
 
@@ -174,6 +176,8 @@ mod tests {
         .unwrap();
 
         assert_eq!(event.request_protocol, RequestProtocol::NonStream);
+        assert_eq!(event.reasoning_effort, None);
+        assert!(!event.fast_mode);
         assert_eq!(event.billing.unwrap().usage.unwrap().reasoning_tokens, 0);
     }
 

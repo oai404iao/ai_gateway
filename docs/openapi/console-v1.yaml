@@ -3456,7 +3456,7 @@ components:
         [id, started_at, completed_at, user_id, user_name, api_key_id, api_format,
          request_source, request_protocol, client_model, upstream_model, model_rule_id, channel_group_id,
          channel_group_name, channel_id, channel_name, outcome, response_status_code, streamed, ttft_ms,
-         total_duration_ms, input_tokens, cached_input_tokens,
+         total_duration_ms, output_tokens_per_second, reasoning_effort, fast_mode, input_tokens, cached_input_tokens,
          cache_write_tokens, output_tokens, reasoning_tokens, cost_amount, error_code, error_summary,
          billed_at]
       properties:
@@ -3473,6 +3473,14 @@ components:
         api_format: { $ref: "#/components/schemas/ApiFormat" }
         request_protocol: { $ref: "#/components/schemas/RequestProtocol" }
         client_model: { type: string }
+        reasoning_effort:
+          type: string
+          maxLength: 32
+          nullable: true
+          description: Normalized explicit client reasoning effort parsed from reasoning.effort or reasoning_effort.
+        fast_mode:
+          type: boolean
+          description: True when the client explicitly requested service_tier=priority.
         upstream_model: { type: string, nullable: true }
         model_rule_id: { type: string, format: uuid, nullable: true }
         channel_group_id: { type: string, format: uuid, nullable: true }
@@ -3496,6 +3504,9 @@ components:
           description: Compatibility flag; true for SSE and WebSocket requests.
         ttft_ms: { type: integer, nullable: true }
         total_duration_ms: { type: integer, nullable: true }
+        output_tokens_per_second:
+          allOf: [{ $ref: "#/components/schemas/DecimalNullable" }]
+          description: Output tokens divided by generation time in seconds (total duration minus TTFT).
         input_tokens: { type: integer, nullable: true }
         cached_input_tokens: { type: integer, nullable: true }
         cache_write_tokens: { type: integer, nullable: true }
