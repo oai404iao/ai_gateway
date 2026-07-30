@@ -1002,6 +1002,9 @@ const zhCN: Record<string, string> = {
   "The channel format must match its group's format.": "渠道格式必须与所属渠道组的格式一致。",
   "Pick a group": "选择渠道组",
   "Config template": "配置模板",
+  "Only enabled templates matching this channel's API format can be selected.":
+    "只能选择已启用且与当前渠道 API 格式一致的模板。",
+  "Incompatible format": "格式不兼容",
   "Upstream auth kind": "上游认证方式",
   "Header name": "请求头名称",
   "Upstream API key": "上游 API 密钥",

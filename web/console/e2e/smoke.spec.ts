@@ -255,6 +255,23 @@ test.describe("Console SPA smoke", () => {
     await expect(page.getByText("upstream-a", { exact: true })).toHaveCount(0);
     await expect(page.getByLabel("TTFT: 120 ms")).toBeVisible();
     await expect(page.getByLabel("Total duration: 1 s")).toBeVisible();
+
+    const waitForPersonalLogQuery = () =>
+      page.waitForRequest((request) => {
+        const url = new URL(request.url());
+        return (
+          url.pathname === "/console/v1/me/request-logs" &&
+          request.method() === "GET"
+        );
+      });
+    const applyFilters = page.getByRole("button", { name: "Apply" });
+    let repeatedQuery = waitForPersonalLogQuery();
+    await applyFilters.click();
+    await repeatedQuery;
+    repeatedQuery = waitForPersonalLogQuery();
+    await applyFilters.click();
+    await repeatedQuery;
+
     await page.getByRole("cell", { name: "gateway-e2e-model" }).click();
     const personalDetail = page.getByRole("dialog");
     await expect(personalDetail).toBeVisible();

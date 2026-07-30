@@ -6,7 +6,12 @@ import { BrowserRouter } from "react-router";
 import { AppProviders } from "@/app/providers";
 import { AppRouter } from "@/app/router";
 import { server, seedAuthenticatedSession } from "@/test/msw";
-import { CHANNEL, CHANNEL_DETAIL, CHANNEL_GROUP } from "@/test/fixtures";
+import {
+  CHANNEL,
+  CHANNEL_DETAIL,
+  CHANNEL_GROUP,
+  CONFIG_TEMPLATE,
+} from "@/test/fixtures";
 import type {
   ChannelDetailView,
   ChannelGroupView,
@@ -26,6 +31,87 @@ function renderAppAt(path: string) {
 }
 
 describe("ChannelDetailPage", () => {
+  it("selects an existing compatible config template", async () => {
+    seedAuthenticatedSession();
+    let submitted: ChannelInput | undefined;
+    server.use(
+      http.put("/console/v1/routing/channels/:id", async ({ request }) => {
+        submitted = (await request.json()) as ChannelInput;
+        return HttpResponse.json({
+          id: CHANNEL.id,
+          correlation_id: "22222222-0000-0000-0000-000000000000",
+        });
+      }),
+    );
+    const user = userEvent.setup();
+    renderAppAt(`/admin/routing/channels/${CHANNEL.id}`);
+
+    expect(await screen.findByDisplayValue(CHANNEL.name)).toBeInTheDocument();
+    const templateSelect = screen.getByRole("combobox", { name: "Config template" });
+    await user.click(templateSelect);
+    await user.click(
+      await screen.findByRole("option", {
+        name: `${CONFIG_TEMPLATE.name} · Chat Completions`,
+      }),
+    );
+    await user.click(screen.getByRole("button", { name: /save channel/i }));
+
+    await waitFor(() => {
+      expect(submitted?.config_template_id).toBe(CONFIG_TEMPLATE.id);
+    });
+  });
+
+  it("shows existing cross-format templates with an incompatibility reason", async () => {
+    seedAuthenticatedSession();
+    const responsesGroup: ChannelGroupView = {
+      ...CHANNEL_GROUP,
+      id: "00000000-0000-0000-0000-000000000125",
+      name: "responses-template-target",
+      api_format: "open_ai_responses",
+    };
+    const responsesChannel: ChannelDetailView = {
+      ...CHANNEL_DETAIL,
+      id: "00000000-0000-0000-0000-000000000126",
+      channel_group_id: responsesGroup.id,
+      api_format: "open_ai_responses",
+      name: "responses-template-target",
+      override_document: {
+        version: 1,
+        api_format: "open_ai_responses",
+      },
+    };
+    server.use(
+      http.get("/console/v1/routing/channel-groups", () =>
+        HttpResponse.json([responsesGroup]),
+      ),
+      http.get("/console/v1/routing/channels", () =>
+        HttpResponse.json([responsesChannel]),
+      ),
+      http.get("/console/v1/routing/channels/:id", () =>
+        HttpResponse.json(responsesChannel, {
+          headers: { ETag: `"${responsesChannel.updated_at}"` },
+        }),
+      ),
+      http.get("/console/v1/routing/model-rules", () => HttpResponse.json([])),
+    );
+    const user = userEvent.setup();
+    renderAppAt(`/admin/routing/channels/${responsesChannel.id}`);
+
+    expect(await screen.findByDisplayValue(responsesChannel.name)).toBeInTheDocument();
+    const templateSelect = screen.getByRole("combobox", { name: "Config template" });
+    await user.click(templateSelect);
+
+    const incompatibleTemplate = await screen.findByRole("option", {
+      name: `${CONFIG_TEMPLATE.name} · Chat Completions · Incompatible format`,
+    });
+    expect(incompatibleTemplate).toHaveAttribute("aria-disabled", "true");
+    expect(
+      screen.getByText(
+        "Only enabled templates matching this channel's API format can be selected.",
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("loads and resubmits the stored upstream key and override document", async () => {
     seedAuthenticatedSession();
     let submitted: ChannelInput | undefined;

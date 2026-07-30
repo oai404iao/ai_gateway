@@ -9,6 +9,7 @@ import {
 import { Bar, BarChart, CartesianGrid, XAxis, YAxis } from "recharts";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
 import {
   Card,
   CardAction,
@@ -140,6 +141,20 @@ function toFilters(draft: CostFilterDraft): CostStatisticsFilters | null {
   };
 }
 
+function sameCostStatisticsFilters(
+  left: CostStatisticsFilters,
+  right: CostStatisticsFilters,
+): boolean {
+  return (
+    left.started_after === right.started_after &&
+    left.started_before === right.started_before &&
+    left.granularity === right.granularity &&
+    left.user_id === right.user_id &&
+    left.api_key_id === right.api_key_id &&
+    left.channel_id === right.channel_id
+  );
+}
+
 function numericAmount(value: string): number {
   const amount = Number(value);
   return Number.isFinite(amount) ? amount : 0;
@@ -199,7 +214,7 @@ export function CostStatisticsPanel() {
     () => toFilters(initialDraft) as CostStatisticsFilters,
   );
   const [quickRange, setQuickRange] = useState<QuickRange | null>("today");
-  const { data, isLoading, error } = useCostStatistics(filters);
+  const { data, isLoading, isFetching, error, refetch } = useCostStatistics(filters);
   const { user } = useSession();
   const isAdmin = user?.role === "admin";
   const users = useUsers(isAdmin);
@@ -208,6 +223,14 @@ export function CostStatisticsPanel() {
   const channelGroups = useChannelGroups(isAdmin);
   const ownApiKeys = useOwnApiKeys(!isAdmin);
   const { t } = useI18n();
+
+  const runQuery = (next: CostStatisticsFilters) => {
+    if (sameCostStatisticsFilters(filters, next)) {
+      void refetch();
+      return;
+    }
+    setFilters(next);
+  };
 
   const filteredKeys = isAdmin
     ? (adminApiKeys.data ?? [])
@@ -252,20 +275,20 @@ export function CostStatisticsPanel() {
       );
       return;
     }
-    setFilters(next);
+    runQuery(next);
   };
 
   const clear = () => {
     const next = defaultDraft();
     setDraft(next);
-    setFilters(toFilters(next) as CostStatisticsFilters);
+    runQuery(toFilters(next) as CostStatisticsFilters);
     setQuickRange("today");
   };
 
   const applyQuickRange = (range: QuickRange) => {
     const next = quickRangeDraft(range, draft);
     setDraft(next);
-    setFilters(toFilters(next) as CostStatisticsFilters);
+    runQuery(toFilters(next) as CostStatisticsFilters);
     setQuickRange(range);
   };
 
@@ -673,7 +696,10 @@ export function CostStatisticsPanel() {
             <Field className="justify-end">
               <FieldLabel className="sr-only">{t("Filter actions")}</FieldLabel>
               <div className="flex gap-2">
-                <Button onClick={apply}>{t("Apply")}</Button>
+                <Button onClick={apply} disabled={isFetching}>
+                  {isFetching ? <Spinner data-icon="inline-start" /> : null}
+                  {t("Apply")}
+                </Button>
                 <Button variant="outline" onClick={clear}>
                   {t("Clear")}
                 </Button>

@@ -236,6 +236,25 @@ export function ChannelDetailPage() {
     () => groups.data?.find((group) => group.id === state.channel_group_id),
     [groups.data, state.channel_group_id],
   );
+  const configTemplateOptions = useMemo(
+    () =>
+      (templates.data ?? [])
+        .map((template) => {
+          const formatCompatible =
+            template.api_format === null || template.api_format === state.api_format;
+          return {
+            ...template,
+            formatCompatible,
+            selectable: template.enabled && formatCompatible,
+          };
+        })
+        .sort(
+          (left, right) =>
+            Number(right.selectable) - Number(left.selectable) ||
+            left.name.localeCompare(right.name),
+        ),
+    [state.api_format, templates.data],
+  );
 
   const discoverUpstreamModels = async () => {
     if (overrideDocumentValidation) {
@@ -698,34 +717,44 @@ export function ChannelDetailPage() {
                     </Select>
                   </Field>
                   <Field>
-                    <FieldLabel>{t("Config template")}</FieldLabel>
+                    <FieldLabel htmlFor="config_template_id">
+                      {t("Config template")}
+                    </FieldLabel>
                     <Select
                       value={state.config_template_id ?? "__none__"}
                       onValueChange={(value) =>
                         patch({ config_template_id: value === "__none__" ? null : value })
                       }
                     >
-                      <SelectTrigger>
+                      <SelectTrigger id="config_template_id">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
                         <SelectGroup>
                           <SelectItem value="__none__">{t("None")}</SelectItem>
-                          {templates.data
-                            ?.filter(
-                              (template) =>
-                                template.enabled &&
-                                (template.api_format === null ||
-                                  template.api_format === state.api_format),
-                            )
-                            .map((template) => (
-                              <SelectItem key={template.id} value={template.id}>
-                                {template.name}
-                              </SelectItem>
-                            ))}
+                          {configTemplateOptions.map((template) => (
+                            <SelectItem
+                              key={template.id}
+                              value={template.id}
+                              disabled={!template.selectable}
+                            >
+                              {template.name} · {template.api_format === null
+                                ? t("All formats")
+                                : apiFormatLabel(template.api_format)}
+                              {!template.enabled ? ` · ${t("Disabled")}` : ""}
+                              {!template.formatCompatible
+                                ? ` · ${t("Incompatible format")}`
+                                : ""}
+                            </SelectItem>
+                          ))}
                         </SelectGroup>
                       </SelectContent>
                     </Select>
+                    <FieldDescription>
+                      {t(
+                        "Only enabled templates matching this channel's API format can be selected.",
+                      )}
+                    </FieldDescription>
                   </Field>
                   <Field>
                     <FieldLabel>{t("Upstream auth kind")}</FieldLabel>

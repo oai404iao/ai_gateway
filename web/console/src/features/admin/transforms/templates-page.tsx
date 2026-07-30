@@ -3,6 +3,7 @@ import { AdminListPage } from "@/features/admin/components/admin-list-page";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { useConfigTemplates } from "@/features/admin/api";
 import { formatRelative } from "@/lib/dates";
+import { apiFormatLabel } from "@/lib/permissions";
 import { useI18n } from "@/app/i18n";
 
 export function ConfigTemplatesPage() {
@@ -28,6 +29,14 @@ export function ConfigTemplatesPage() {
           key: "description",
           header: t("Description"),
           render: (template) => template.description ?? "—",
+        },
+        {
+          key: "format",
+          header: t("API format"),
+          render: (template) =>
+            template.api_format === null
+              ? t("All formats")
+              : apiFormatLabel(template.api_format),
         },
         {
           key: "enabled",

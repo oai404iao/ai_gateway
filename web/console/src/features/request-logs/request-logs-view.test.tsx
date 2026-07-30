@@ -28,6 +28,31 @@ function renderAppAt(path: string) {
 }
 
 describe("RequestLogsView", () => {
+  it("refetches when the same request-log filters are applied again", async () => {
+    seedAuthenticatedSession();
+    let requests = 0;
+    server.use(
+      http.get("/console/v1/me/request-logs", () => {
+        requests += 1;
+        return HttpResponse.json([REQUEST_LOG]);
+      }),
+    );
+
+    const user = userEvent.setup();
+    renderAppAt("/usage/request-logs");
+
+    await screen.findByRole("columnheader", { name: "Started" });
+    await waitFor(() => expect(requests).toBe(1));
+
+    const apply = screen.getByRole("button", { name: "Apply" });
+    await user.click(apply);
+    await waitFor(() => expect(requests).toBe(2));
+    await waitFor(() => expect(apply).toBeEnabled());
+
+    await user.click(apply);
+    await waitFor(() => expect(requests).toBe(3));
+  });
+
   it("keeps the personal request-log table owner-scoped even for administrators", async () => {
     seedAuthenticatedSession();
     const queries: URLSearchParams[] = [];
