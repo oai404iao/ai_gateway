@@ -16,6 +16,10 @@ Versioning.
 - Add single and atomic batch Codex credential enable, disable, delete, and
   selected-export controls; deletion clears stored OAuth tokens while keeping
   a non-secret channel tombstone for historical references.
+- Add Responses WebSocket forwarding to Codex OAuth Connect, including
+  managed-channel capability migration, Codex handshake/body adaptation,
+  sequential `previous_response_id` reuse, and credential-aware fail-closed
+  routing.
 
 ### Fixed
 

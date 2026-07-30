@@ -1964,7 +1964,7 @@ fn validate_channel(
     let connector_kind = parse_connector_kind(&group.connector_kind)?;
     if connector_kind == ConnectorKind::CodexOauth
         && (format != ApiFormat::OpenAiResponses
-            || record.supports_websocket
+            || !record.supports_websocket
             || record.upstream_auth_kind != "none"
             || record.upstream_auth_header_name.is_some()
             || record.upstream_api_key.is_some()

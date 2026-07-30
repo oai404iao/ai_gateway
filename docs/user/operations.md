@@ -109,7 +109,8 @@ verification_key_path = "./config/console-jwt-public.pem"
 ### Codex OAuth Connect
 
 管理员可以把 ChatGPT Codex 订阅凭证作为 Responses 渠道池接入，而不增加 sidecar 或第二个
-转发服务。客户端仍调用标准 `POST /v1/responses`；控制面用
+转发服务。客户端可以调用标准 `POST /v1/responses`，也可以使用带 WebSocket Upgrade 的
+`GET /v1/responses`；控制面用
 `connector_kind = codex_oauth` 区分特殊上游方式，`api_format` 仍是
 `open_ai_responses`。
 
@@ -176,15 +177,18 @@ refresh token / quota 也可从凭证页执行。同一凭证的 refresh 在实�
 并核对 generation，避免 rotating refresh token 被并发重复使用。上游请求返回 `401` 时会触发一次
 generation 去重的后台刷新。
 
-Codex HTTP Connector 当前只接受 `stream: true` 的 Responses SSE 请求，强制上游
-`store: false`，并拒绝非空 `previous_response_id`。它不支持 Responses WebSocket；普通
-Responses WebSocket 选路会自动排除这些 managed channels。首次派发前凭证不可用时，未命中
-affinity 的请求可以换到同组其他凭证；请求一旦发送到 Codex，不做跨凭证自动重试。
+Codex HTTP Connector 只接受 `stream: true` 的 Responses SSE 请求，强制上游
+`store: false`，并拒绝非空 `previous_response_id`。Codex managed channel 会自动启用
+Responses WebSocket 能力；WebSocket `response.create` 同样强制 `stream: true` 和
+`store: false`，但保留 `previous_response_id`、`generate` 与 `client_metadata`，使同一条
+上游连接可以使用 Codex 增量状态。首次派发前凭证不可用时，未命中 affinity 或 WebSocket pin
+的请求可以换到同组其他凭证；HTTP 请求或 WebSocket 消息一旦发送到 Codex，不做跨凭证自动重试。
 已命中 affinity 的凭证处于 `unavailable`、`disabled` 或 Token 过期时，会在 affinity TTL
-内持续 fail closed，不会因一次失败删除绑定后改用其他订阅账户。
+内持续 fail closed；已经固定到 managed channel 的 WebSocket Session 也不会改用其他订阅账户。
 
-客户端已有的合法 `session-id` / `thread-id` 会转发。缺少时，匹配 Session affinity 的请求会从
-不可逆 session hash 派生稳定 opaque UUID；未匹配 affinity 时仅为本次请求生成 opaque UUID。
+客户端已有的合法 `session-id` / `thread-id` 会转发。缺少时，HTTP 请求若匹配 Session affinity，
+会从不可逆 session hash 派生稳定 opaque UUID；未匹配 affinity 的 HTTP 请求仅使用本次请求
+UUID。WebSocket Session 从下游握手身份派生稳定 seed，使顺序请求和池化重连使用一致身份。
 
 OAuth token 不会进入 audit/debug 输出；除显式管理员导出接口外，也不会由常规 Console API 返回。
 当前仍与普通 upstream API key 一样依赖受保护的 PostgreSQL、备份和主机访问边界，未额外实施列级
@@ -200,10 +204,12 @@ WebSocket Upgrade 在 HTTP 握手阶段验证 Gateway API Key 和 Responses `pro
 1. 管理员在 `/console/v1/system/settings` 中设置 `websocket.enabled = true`；
 2. 用户在个人设置页 `/account/settings` 中开启 WebSocket，对应
    `GET/PUT /console/v1/me/settings` 的 `websocket_enabled`；
-3. 管理员在 OpenAI Responses 渠道上设置 `supports_websocket = true`。
+3. 管理员在普通 OpenAI Responses 渠道上设置 `supports_websocket = true`；Codex OAuth
+   managed channel 在创建时自动设置，不提供普通 Channel 编辑入口。
 
-migration 后的现有系统、用户和渠道以及所有新记录都保持关闭，必须显式启用。Chat Completions
-渠道不能声明 WebSocket 支持。系统或用户未开启时，HTTP Upgrade 返回
+migration 后的现有系统、用户和普通渠道以及所有新普通渠道都保持关闭，必须显式启用。现有和新建
+Codex OAuth managed channel 会自动声明 WebSocket 能力，但系统与用户开关仍默认关闭。
+Chat Completions 渠道不能声明 WebSocket 支持。系统或用户未开启时，HTTP Upgrade 返回
 `403 websocket_disabled`；没有可用且声明支持的 Responses 渠道时，首条
 `response.create` 返回 `503 no_healthy_channel`。
 

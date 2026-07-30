@@ -91,11 +91,12 @@ impl PreparedUpstreamAttempt {
         &self,
         headers: &mut HeaderMap,
         channel: &CompiledChannel,
+        request_protocol: RequestProtocol,
     ) -> Result<(), ConnectorAttemptError> {
         match self {
             Self::OpenAiCompatible => inject_standard_auth(headers, channel),
             Self::Codex { attempt, .. } => attempt
-                .inject_headers(headers)
+                .inject_headers(headers, request_protocol)
                 .map_err(ConnectorAttemptError::from),
         }
     }
@@ -187,7 +188,7 @@ impl From<CodexAttemptError> for ConnectorAttemptError {
                 code: "codex_streaming_required",
             },
             CodexAttemptError::PreviousResponseUnsupported => Self::ClientRequest {
-                message: "Codex OAuth channels do not support `previous_response_id`.",
+                message: "Codex OAuth HTTP requests do not support `previous_response_id`.",
                 param: "previous_response_id",
                 code: "codex_previous_response_unsupported",
             },
@@ -276,7 +277,9 @@ mod tests {
         );
 
         let mut headers = HeaderMap::new();
-        attempt.inject_headers(&mut headers, &channel).unwrap();
+        attempt
+            .inject_headers(&mut headers, &channel, RequestProtocol::NonStream)
+            .unwrap();
         assert_eq!(headers.get("x-api-key").unwrap(), "upstream-secret");
         assert!(attempt.allows_automatic_retry());
     }

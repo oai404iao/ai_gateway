@@ -14,6 +14,10 @@
 > [Responses endpoint](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/codex-api/src/endpoint/responses.rs)、
 > [session headers](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/codex-api/src/requests/headers.rs) 和
 > [usage endpoint client](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/backend-client/src/client/rate_limit_resets.rs)。
+> Responses WebSocket 行为另外核对本地
+> [`openai/codex@aa064463458adbef10400c74174107fc4b3550f0`](https://github.com/openai/codex/tree/aa064463458adbef10400c74174107fc4b3550f0)：
+> [WebSocket endpoint](https://github.com/openai/codex/blob/aa064463458adbef10400c74174107fc4b3550f0/codex-rs/codex-api/src/endpoint/responses_websocket.rs)
+> 和 [turn client](https://github.com/openai/codex/blob/aa064463458adbef10400c74174107fc4b3550f0/codex-rs/core/src/client.rs)。
 
 本文记录 `ai-gateway` 的 Codex OAuth Connector 所依赖的外部行为。这里的
 `chatgpt.com/backend-api/*` 是 Codex 客户端使用的 ChatGPT 后端接口，不是公开的
@@ -56,7 +60,7 @@ JWT payload 解析只用于提取元数据和过期时间；真正的凭证有�
 成员；Business plan 的多个成员可以共享 account ID。管理员导入凭证时，如果显式
 `account_id`/`user_id` 与 token claim 不同，网关拒绝导入。
 
-## Codex HTTP 接口
+## Codex 接口
 
 核对版本的 ChatGPT Codex base URL 是
 `https://chatgpt.com/backend-api/codex`：
@@ -64,6 +68,7 @@ JWT payload 解析只用于提取元数据和过期时间；真正的凭证有�
 | 操作 | 方法与路径 |
 | --- | --- |
 | Responses | `POST /backend-api/codex/responses` |
+| Responses WebSocket | `GET wss://chatgpt.com/backend-api/codex/responses` Upgrade |
 | Models | `GET /backend-api/codex/models?client_version=...` |
 | Quota / rate limit | `GET /backend-api/wham/usage` |
 
@@ -103,7 +108,8 @@ Chat Completions 与 Responses 之间转换。
 
 ### 请求准备
 
-客户端仍调用 `POST /v1/responses`。选中 Codex managed channel 后，网关：
+客户端可以调用 `POST /v1/responses` 或带 WebSocket Upgrade 的
+`GET /v1/responses`。选中 Codex managed channel 后，HTTP 路径：
 
 1. 要求请求本身为 SSE streaming；
 2. 拒绝非空 `previous_response_id`；
@@ -113,9 +119,23 @@ Chat Completions 与 Responses 之间转换。
 6. 最后注入当前凭证的 Bearer、account、FedRAMP 和 Codex 会话 Header；
 7. 逐块转发上游 SSE，不在 Connector 中缓冲整条响应。
 
-客户端提供的合法 `session-id` / `thread-id` 会被保留。缺少时，如果请求匹配已配置的
+WebSocket 路径：
+
+1. 要求消息 `type = "response.create"` 并取得顶层 `model`；
+2. 强制 `stream=true`、`store=false`，但保留
+   `previous_response_id`、`generate` 和 `client_metadata`；
+3. 把目标改为 managed channel base URL 下的 `/responses`，再将
+   `http`/`https` 转成 `ws`/`wss`；
+4. 注入 `OpenAI-Beta: responses_websockets=2026-02-06`、Bearer/account、
+   FedRAMP、session/thread、User-Agent、`originator` 和版本 Header；
+5. 不发送 HTTP SSE 专用的 `Accept`、`Accept-Encoding` 和 `Content-Type`；
+6. 顺序转发事件，并把成功、无残留的连接放回 Session 隔离池，使后续请求可以继续使用
+   connection-local `previous_response_id`。
+
+客户端提供的合法 `session-id` / `thread-id` 会被保留。缺少时，HTTP 请求如果匹配已配置的
 Session affinity 规则，网关从该规则的不可逆 session hash 派生稳定、opaque 的 UUID；
-若请求没有匹配 affinity，则为本次请求生成新的 opaque UUID。缺失的
+没有匹配 affinity 的 HTTP 请求使用本次请求 UUID。WebSocket Session 从下游握手身份派生稳定
+seed，使顺序请求和池化重连保持一致的身份。缺失的
 `x-client-request-id` 使用最终 `thread-id`。
 
 Codex 成功响应按 Connector 契约视为 SSE，而不只依赖上游
@@ -153,14 +173,16 @@ Quota 状态映射为：
 - `disabled`：管理员关闭。
 
 首次派发前发现凭证不可用时，非 affinity hit 请求可以排除该 channel 后重新选路；已经粘到该
-凭证的 Session 默认在 affinity TTL 内持续 fail closed，失败本身不会删除 affinity 后改绑其他
-账户。请求一旦向 Codex 上游发出，不做跨凭证自动重试。上游 `401` 会触发按 refresh generation
-去重的后台 token refresh。
+凭证的 HTTP Session，或已经由下游 WebSocket/空闲池固定到该 channel 的 WebSocket Session，
+持续 fail closed，失败本身不会删除 affinity 或改绑其他账户。HTTP 请求一旦发出，或 WebSocket
+`response.create` 一旦发送，不做跨凭证自动重试。HTTP/握手 `401` 和带 `status = 401` 的
+WebSocket 错误会触发按 refresh generation 去重的后台 token refresh。
 
 ## 差异与限制
 
-- 第一版只支持 HTTP Responses SSE；不支持 non-streaming、Codex Responses WebSocket 或
-  非空 `previous_response_id`。
+- Codex Connector 支持 Responses HTTP SSE 与 Responses WebSocket，但不支持 HTTP
+  non-streaming。HTTP 仍拒绝非空 `previous_response_id`；WebSocket 保留该字段并依赖同一条
+  上游连接的增量状态。
 - Connector 不实现 Chat Completions↔Responses 转换。
 - Console 删除会清除数据库中的 OAuth Token 并保留非敏感 managed-channel tombstone，但不会调用
   OpenAI token revocation endpoint；外部撤销仍需在账户侧完成。
@@ -180,6 +202,7 @@ Quota 状态映射为：
 2. refresh error code 与 token rotation 语义；
 3. ChatGPT Codex base URL、Responses/models/quota 路径；
 4. Bearer/account/FedRAMP/session Header；
-5. Responses 的 `stream`、`store` 和 `previous_response_id` 边界；
+5. HTTP 与 WebSocket Responses 的 `stream`、`store`、`previous_response_id`、
+   `generate` 和 `client_metadata` 边界；
 6. models 与 quota JSON shape；
 7. User-Agent/originator 变化是否会影响授权或后端兼容性。

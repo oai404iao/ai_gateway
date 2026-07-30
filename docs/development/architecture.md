@@ -74,7 +74,8 @@ observation 接口，不包含 provider 的 OAuth claim、路径或 Header 细�
 - `OpenAiCompatible` attempt 是无状态路径：保留现有请求字节、API 路径和
   `UpstreamAuth` 注入。
 - `CodexOauth` attempt 的实现位于 `src/application/codex/attempt.rs`：读取独立凭证快照、
-  强制 Codex Responses 请求约束、生成会话身份、改写目标并注入 OAuth/account Header。
+  按 HTTP SSE 或 WebSocket 强制 Codex Responses 请求约束、生成会话身份、改写目标并注入
+  OAuth/account Header。
 - `ConnectorKind` 编译进 group/channel 快照。新增 provider 时扩展 registry 和独立 provider
   模块，不能在标准 Chat Completions/Responses 逻辑中再建一套路由器。
 
@@ -101,8 +102,10 @@ Sub2API JSON 标准化成可编辑草稿，完成代理 CRUD/映射后再逐条�
 
 Responses WebSocket 使用同一个 `/v1/responses` 路径的 `GET` Upgrade。握手先验证 API Key
 认证与 Responses `proxy` 权限，再要求数据库系统设置、API Key 所属用户和最终候选渠道三层均显式
-允许 WebSocket；migration 和新记录均默认关闭。每条顺序的 `response.create` 重新读取当前快照并
-独立执行鉴权、准入、选路、变换、usage 和日志。由于
+允许 WebSocket；系统、用户和普通 channel 默认关闭。每条顺序的 `response.create` 重新读取当前快照并
+独立执行鉴权、准入、选路、变换、Connector 凭证准备、usage 和日志。普通 Responses channel
+由管理员显式声明能力；Codex OAuth managed channel 在创建和 migration 时自动声明该能力，但仍受
+系统与用户开关限制。由于
 `previous_response_id` 的增量缓存属于具体上游连接，下游连接会固定到一个仍可用的上游渠道和
 WebSocket 身份，不做请求多路复用。每个成功请求结束后，上游连接立即回到按 API Key、Session
 握手身份、渠道网络配置、目标和最终 Header 精确隔离的有界空闲池；下一条消息优先取回同一连接。
