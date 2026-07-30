@@ -64,6 +64,12 @@ The path-aware CI workflow runs for every PR:
 3. The image job runs in parallel when production artifacts are affected.
 4. The always-present `ci-gate` succeeds only when every selected job succeeds.
 
+CI and Security explicitly handle only Pull Request `opened`, `synchronize`,
+and `reopened` activity. Do not run the path planner for `closed`: after a
+squash merge and branch cleanup, the event payload may still identify a head
+commit that is no longer fetchable. Post-merge authority comes from the
+merged SHA's `main` push workflows.
+
 Require only the exact `ci-gate` context in the default-branch ruleset.
 Markdown-only PRs run `scripts/check-docs.py` and therefore satisfy the same
 stable check without running unrelated build jobs.

@@ -67,6 +67,11 @@ push 同时推送 `main` 与 tag。发布准备阶段已经运行完整本地发
 不会在打 tag 前重复执行；需要人工再次验证时可显式增加 `--verify`。没有
 `--push` 时只创建本地 tag。查询 `ci-gate` 需要已认证的 GitHub CLI。
 
+发布准备 PR 合并后，应先观察相同 `main` SHA 的 CI 与 Security 成功。为了稳定
+获得 warm-cache 的发布耗时，还应等待 `Release image cache` 完成再推送 tag。
+Cache 预热失败不会改变产物正确性，Release 会回退为正常冷构建，但耗时会增加；
+`release.sh` 当前只强制检查 `ci-gate`，Security 和 cache 状态仍需发布者确认。
+
 已发布 tag 不得移动、覆盖或复用。发现问题时发布新的 patch 版本；不要强推旧 tag。
 
 ## GitHub Actions 发布产物
