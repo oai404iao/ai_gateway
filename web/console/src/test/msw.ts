@@ -27,6 +27,7 @@ import {
   OWN_API_KEY,
   PERSONAL_USAGE_REPORT,
   PROXY,
+  PROXY_TEST_RESULT,
   REGISTRATION_INVITATION_CODE,
   REVOKED_SESSION,
   SESSION_AFFINITY_CACHE_REPORT,
@@ -198,6 +199,9 @@ export const handlers = [
     HttpResponse.json(PROXY, {
       headers: { ETag: `"${PROXY.updated_at}"` },
     }),
+  ),
+  http.post("/console/v1/network/proxies/test", () =>
+    HttpResponse.json(PROXY_TEST_RESULT),
   ),
   http.get("/console/v1/transforms/templates", () => HttpResponse.json([CONFIG_TEMPLATE])),
   http.get("/console/v1/transforms/templates/:id", () =>

@@ -11,9 +11,9 @@ use ai_gateway::{
     application::{
         AutomaticDisableWorker, CODEX_ORIGINATOR, ChannelModelDiscoveryService,
         CodexConnectorService, ConsoleAuthService, ControlPlaneCoordinator, ModelSyncService,
-        NoopRequestLogSink, ProxyService, QueueRequestLogSink, RecordingRequestLogSink,
-        RequestLogSink, SystemMetricsService, UpstreamConnectorRegistry, codex_user_agent,
-        hash_console_password,
+        NoopRequestLogSink, ProxyService, ProxyTestService, QueueRequestLogSink,
+        RecordingRequestLogSink, RequestLogSink, SystemMetricsService, UpstreamConnectorRegistry,
+        codex_user_agent, hash_console_password,
     },
     domain::{
         ApiFormat, ApiKeyPermission, AutomaticDisableTrigger, ConnectorKind, RequestBilling,
@@ -2418,7 +2418,7 @@ async fn admin_app_with_models_dev(
     );
     let upstream_clients = Arc::new(UpstreamClientRegistry::new());
     let codex_connector = CodexConnectorService::new(
-        repository,
+        repository.clone(),
         coordinator.clone(),
         Arc::clone(&runtime),
         Arc::clone(&upstream_clients),
@@ -2446,6 +2446,11 @@ async fn admin_app_with_models_dev(
                 coordinator,
                 codex_connector,
                 channel_models: ChannelModelDiscoveryService::new(
+                    Arc::clone(&runtime),
+                    Arc::clone(&upstream_clients),
+                ),
+                proxy_tests: ProxyTestService::new(
+                    repository,
                     Arc::clone(&runtime),
                     upstream_clients,
                 ),

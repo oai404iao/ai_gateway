@@ -12,7 +12,8 @@ use ai_gateway::{
     application::{
         AutomaticDisableWorker, ChannelModelDiscoveryService, CodexConnectorService,
         ConsoleAuthService, ControlPlaneCoordinator, ModelSyncService, ProxyService,
-        RequestLogSink, SystemMetricsService, UpstreamConnectorRegistry, hash_console_password,
+        ProxyTestService, RequestLogSink, SystemMetricsService, UpstreamConnectorRegistry,
+        hash_console_password,
     },
     http,
     models_dev::ModelsDevClient,
@@ -162,7 +163,7 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
     let (automatic_disable_service, automatic_disable_worker) =
         AutomaticDisableWorker::start(coordinator.clone());
     let codex_connector = CodexConnectorService::new(
-        repository,
+        repository.clone(),
         coordinator.clone(),
         Arc::clone(&runtime),
         Arc::clone(&upstream_clients),
@@ -216,6 +217,11 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
             ConsoleAuthService::from_config(AuthRepository::new(pool.clone()), &console.auth)?;
         let channel_models =
             ChannelModelDiscoveryService::new(Arc::clone(&runtime), Arc::clone(&upstream_clients));
+        let proxy_tests = ProxyTestService::new(
+            repository.clone(),
+            Arc::clone(&runtime),
+            Arc::clone(&upstream_clients),
+        );
         let model_sync = ModelSyncService::new(
             coordinator.clone(),
             ModelsDevClient::new(&config.models_sync)?,
@@ -227,6 +233,7 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
             coordinator: coordinator.clone(),
             codex_connector,
             channel_models,
+            proxy_tests,
             model_sync,
             auth,
             request_logs: RequestLogRepository::new(pool.clone()),

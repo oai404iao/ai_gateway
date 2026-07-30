@@ -5,7 +5,7 @@
 //! response shapes the SPA depends on: the auth/session flow, error body
 //! shape `{"error": ...}`, ETag/`If-Match` optimistic concurrency (success
 //! then `409` on a stale tag), retrievable masked-by-default API key values,
-//! and `limit` clamping on log endpoints.
+//! proxy-draft IP diagnostics, and `limit` clamping on log endpoints.
 //!
 //! They follow the same PostgreSQL integration-test convention as
 //! `tests/control_plane_integration.rs`: `TestDatabase::new()` creates a
@@ -16,7 +16,8 @@ use std::sync::Arc;
 use ai_gateway::{
     application::{
         AuthError, ChannelModelDiscoveryService, CodexConnectorService, ConsoleAuthService,
-        ControlPlaneCoordinator, ModelSyncService, SystemMetricsService, hash_console_password,
+        ControlPlaneCoordinator, ModelSyncService, ProxyTestService, SystemMetricsService,
+        hash_console_password,
     },
     http::console::{self, ConsoleState},
     models_dev::ModelsDevClient,
@@ -33,8 +34,9 @@ use axum::{
     Json, Router,
     body::Body,
     http::{HeaderMap, StatusCode, header},
-    routing::get,
+    routing::{any, get},
 };
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use http_body_util::BodyExt;
 use sqlx::{PgPool, postgres::PgPoolOptions};
 use tokio::net::TcpListener;
@@ -157,6 +159,13 @@ struct App {
 }
 
 async fn app(pool: PgPool) -> App {
+    app_with_proxy_test_endpoint(pool, None).await
+}
+
+async fn app_with_proxy_test_endpoint(
+    pool: PgPool,
+    proxy_test_endpoint: Option<reqwest::Url>,
+) -> App {
     let user_id = Uuid::new_v4();
     let password_hash = hash_console_password(TEST_PASSWORD.to_owned())
         .await
@@ -188,7 +197,7 @@ async fn app(pool: PgPool) -> App {
     );
     let upstream_clients = Arc::new(UpstreamClientRegistry::new());
     let codex_connector = CodexConnectorService::new(
-        repository,
+        repository.clone(),
         coordinator.clone(),
         Arc::clone(&runtime),
         Arc::clone(&upstream_clients),
@@ -218,10 +227,27 @@ async fn app(pool: PgPool) -> App {
     auth.authenticate_access_token(&session.access_token)
         .await
         .expect("issued access token must authenticate");
+    let proxy_tests = match proxy_test_endpoint {
+        Some(endpoint) => ProxyTestService::new_with_endpoint(
+            repository.clone(),
+            Arc::clone(&runtime),
+            Arc::clone(&upstream_clients),
+            endpoint,
+        ),
+        None => ProxyTestService::new(
+            repository.clone(),
+            Arc::clone(&runtime),
+            Arc::clone(&upstream_clients),
+        ),
+    };
     let router = console::router(ConsoleState {
         coordinator,
         codex_connector,
-        channel_models: ChannelModelDiscoveryService::new(Arc::clone(&runtime), upstream_clients),
+        channel_models: ChannelModelDiscoveryService::new(
+            Arc::clone(&runtime),
+            Arc::clone(&upstream_clients),
+        ),
+        proxy_tests,
         model_sync,
         auth: auth.clone(),
         request_logs: RequestLogRepository::new(pool.clone()),
@@ -237,6 +263,129 @@ async fn app(pool: PgPool) -> App {
         runtime,
         auth,
     }
+}
+
+async fn proxy_test_ip_api(
+    headers: HeaderMap,
+) -> Result<(HeaderMap, Json<serde_json::Value>), StatusCode> {
+    let expected = format!(
+        "Basic {}",
+        BASE64_STANDARD.encode("spec-proxy-user:spec-proxy-pass")
+    );
+    if headers
+        .get("proxy-authorization")
+        .and_then(|value| value.to_str().ok())
+        != Some(expected.as_str())
+    {
+        return Err(StatusCode::PROXY_AUTHENTICATION_REQUIRED);
+    }
+    let mut response_headers = HeaderMap::new();
+    response_headers.insert("x-rl", "44".parse().unwrap());
+    response_headers.insert("x-ttl", "60".parse().unwrap());
+    Ok((
+        response_headers,
+        Json(serde_json::json!({
+            "status": "success",
+            "continent": "North America",
+            "continentCode": "NA",
+            "country": "United States",
+            "countryCode": "US",
+            "region": "CA",
+            "regionName": "California",
+            "city": "Los Angeles",
+            "district": "",
+            "zip": "90001",
+            "lat": 34.0522,
+            "lon": -118.2437,
+            "timezone": "America/Los_Angeles",
+            "offset": -25200,
+            "currency": "USD",
+            "isp": "Spec ISP",
+            "org": "Spec Organization",
+            "as": "AS64500 Spec",
+            "asname": "SPEC",
+            "mobile": false,
+            "proxy": true,
+            "hosting": false,
+            "query": "203.0.113.10"
+        })),
+    ))
+}
+
+#[tokio::test]
+async fn proxy_test_uses_saved_credentials_and_returns_ip_metadata() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_address = listener.local_addr().unwrap();
+    let proxy_task = tokio::spawn(async move {
+        axum::serve(listener, Router::new().fallback(any(proxy_test_ip_api)))
+            .await
+            .unwrap();
+    });
+    let database = TestDatabase::new().await;
+    let app = app_with_proxy_test_endpoint(
+        database.pool.clone(),
+        Some(reqwest::Url::parse("http://ip-api.test/json/").unwrap()),
+    )
+    .await;
+    let proxy_url = format!("http://{proxy_address}");
+    let created = request(
+        &app,
+        "POST",
+        "/console/v1/network/proxies",
+        serde_json::json!({
+            "name": "spec-proxy-test",
+            "proxy_url": proxy_url,
+            "username": "spec-proxy-user",
+            "password": "spec-proxy-pass",
+            "no_proxy_hosts": ["ip-api.test"],
+            "enabled": false
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let proxy_id = body_json(created).await["id"].as_str().unwrap().to_owned();
+
+    let tested = request(
+        &app,
+        "POST",
+        "/console/v1/network/proxies/test",
+        serde_json::json!({
+            "proxy_id": proxy_id,
+            "proxy_url": proxy_url
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(tested.status(), StatusCode::OK);
+    let tested = body_json(tested).await;
+    assert_eq!(tested["ip"], "203.0.113.10");
+    assert_eq!(tested["country_code"], "US");
+    assert_eq!(tested["region_name"], "California");
+    assert_eq!(tested["isp"], "Spec ISP");
+    assert_eq!(tested["proxy"], true);
+    assert_eq!(tested["rate_limit_remaining"], 44);
+    assert!(tested["latency_ms"].is_u64());
+
+    let changed_endpoint = request(
+        &app,
+        "POST",
+        "/console/v1/network/proxies/test",
+        serde_json::json!({
+            "proxy_id": proxy_id,
+            "proxy_url": "http://127.0.0.1:9"
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(changed_endpoint.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        body_json(changed_endpoint).await["error"],
+        "proxy_test_credentials_required"
+    );
+
+    proxy_task.abort();
+    database.cleanup().await;
 }
 
 #[tokio::test]

@@ -35,7 +35,10 @@ import type {
   ModelSyncPreview,
   ModelSyncPreviewRequest,
   MutationResponse,
+  ProxyCreateInput,
   ProxyInput,
+  ProxyTestInput,
+  ProxyTestResponse,
   ProxyView,
   RegistrationInvitationCodeCreateInput,
   RegistrationInvitationCodeCreateResponse,
@@ -362,12 +365,21 @@ const PROXIES_KEY = ["console", "proxies"] as const;
 const proxyDetailKey = (id: string) => ["console", "proxies", id] as const;
 export const useProxies = makeList<ProxyView>("/network/proxies", PROXIES_KEY);
 export const useProxy = makeDetail<ProxyView>("/network/proxies", proxyDetailKey);
-export const useCreateProxy = makeCreate<ProxyInput, MutationResponse>("/network/proxies", PROXIES_KEY);
+export const useCreateProxy = makeCreate<ProxyCreateInput, MutationResponse>(
+  "/network/proxies",
+  PROXIES_KEY,
+);
 export const useUpdateProxy = makeUpdate<ProxyInput>(
   "/network/proxies",
   PROXIES_KEY,
   proxyDetailKey,
 );
+export function useTestProxy() {
+  return useMutation({
+    mutationFn: (input: ProxyTestInput) =>
+      apiPost<ProxyTestResponse>("/network/proxies/test", input),
+  });
+}
 
 // ---- Config Templates ----
 const TEMPLATES_KEY = ["console", "config-templates"] as const;

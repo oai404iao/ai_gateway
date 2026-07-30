@@ -4526,6 +4526,20 @@ impl ControlPlaneRepository {
         })
     }
 
+    pub(crate) async fn proxy_record(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<ProxyRecord>, RepositoryError> {
+        sqlx::query_as::<_, ProxyRecord>(
+            "SELECT id,name,proxy_url,username,password,no_proxy_hosts,enabled \
+             FROM proxies WHERE id=$1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(RepositoryError::from)
+    }
+
     pub async fn control_plane_channel_detail(
         &self,
         id: Uuid,

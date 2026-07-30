@@ -21,6 +21,7 @@ import type {
   LoginResponse,
   ModelRuleView,
   PersonalUsageReport,
+  ProxyTestResponse,
   ProxyView,
   RegistrationInvitationCodeView,
   RequestLogView,
@@ -348,6 +349,34 @@ export const PROXY: ProxyView = {
   credential_configured: false,
   created_at: "2026-01-01T00:00:00.000Z",
   updated_at: "2026-01-01T00:00:00.000Z",
+};
+
+export const PROXY_TEST_RESULT: ProxyTestResponse = {
+  ip: "203.0.113.10",
+  continent: "North America",
+  continent_code: "NA",
+  country: "United States",
+  country_code: "US",
+  region_code: "CA",
+  region_name: "California",
+  city: "Los Angeles",
+  district: null,
+  postal_code: "90001",
+  latitude: 34.0522,
+  longitude: -118.2437,
+  timezone: "America/Los_Angeles",
+  utc_offset_seconds: -25_200,
+  currency: "USD",
+  isp: "Example ISP",
+  organization: "Example Organization",
+  autonomous_system: "AS64500 Example",
+  autonomous_system_name: "EXAMPLE",
+  mobile: false,
+  proxy: true,
+  hosting: false,
+  latency_ms: 42,
+  rate_limit_remaining: 44,
+  rate_limit_reset_seconds: 60,
 };
 
 export const CONFIG_TEMPLATE: ConfigTemplateView = {

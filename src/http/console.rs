@@ -24,6 +24,7 @@ use crate::{
         ConsoleAuthService, ControlPlaneCoordinator, ControlPlaneError, IssuedInvitation,
         IssuedRegistrationInvitationCode, IssuedSession, ModelImportRequest, ModelSyncError,
         ModelSyncPreview, ModelSyncPreviewRequest, ModelSyncResponse, ModelSyncService,
+        ProxyTestError, ProxyTestInput, ProxyTestResponse, ProxyTestService,
         RegistrationInvitationCodeCreateInput, RegistrationInvitationCodeUpdateInput,
         SelfRegistrationInput, SystemLoadReport, SystemMetricsService,
     },
@@ -49,6 +50,7 @@ pub struct ConsoleState {
     pub coordinator: ControlPlaneCoordinator,
     pub codex_connector: CodexConnectorService,
     pub channel_models: ChannelModelDiscoveryService,
+    pub proxy_tests: ProxyTestService,
     pub model_sync: ModelSyncService,
     pub auth: ConsoleAuthService,
     pub request_logs: RequestLogRepository,
@@ -240,6 +242,7 @@ pub fn router(state: ConsoleState) -> Router {
             "/console/v1/network/proxies",
             get(list_proxies).post(create_proxy),
         )
+        .route("/console/v1/network/proxies/test", post(test_proxy))
         .route(
             "/console/v1/network/proxies/{id}",
             get(get_proxy).put(update_proxy),
@@ -1745,6 +1748,13 @@ async fn create_proxy(
     mutate_created(&state, principal, ControlPlaneMutation::CreateProxy(input)).await
 }
 
+async fn test_proxy(
+    State(state): State<ConsoleState>,
+    Json(input): Json<ProxyTestInput>,
+) -> Result<Json<ProxyTestResponse>, ConsoleError> {
+    Ok(Json(state.proxy_tests.test(input).await?))
+}
+
 async fn get_proxy(
     State(state): State<ConsoleState>,
     Path(id): Path<Uuid>,
@@ -2156,6 +2166,7 @@ enum ConsoleError {
     Codex(CodexConnectorError),
     ControlPlane(ControlPlaneError),
     ModelSync(ModelSyncError),
+    ProxyTest(ProxyTestError),
     Repository(crate::persistence::RepositoryError),
     NotFound,
     Validation,
@@ -2186,6 +2197,11 @@ impl From<ControlPlaneError> for ConsoleError {
 impl From<ModelSyncError> for ConsoleError {
     fn from(value: ModelSyncError) -> Self {
         Self::ModelSync(value)
+    }
+}
+impl From<ProxyTestError> for ConsoleError {
+    fn from(value: ProxyTestError) -> Self {
+        Self::ProxyTest(value)
     }
 }
 impl From<crate::persistence::RepositoryError> for ConsoleError {
@@ -2259,6 +2275,31 @@ impl IntoResponse for ConsoleError {
                 control_plane_status(&error),
                 control_plane_error_message(&error),
             ),
+            Self::ProxyTest(ProxyTestError::InvalidConfiguration) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "proxy_test_invalid_configuration",
+            ),
+            Self::ProxyTest(ProxyTestError::CredentialsRequired) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "proxy_test_credentials_required",
+            ),
+            Self::ProxyTest(ProxyTestError::NotFound) => (StatusCode::NOT_FOUND, "not found"),
+            Self::ProxyTest(ProxyTestError::RateLimited) => {
+                (StatusCode::TOO_MANY_REQUESTS, "proxy_test_rate_limited")
+            }
+            Self::ProxyTest(
+                ProxyTestError::ResponseHeaderTimeout | ProxyTestError::ResponseBodyTimeout,
+            ) => (StatusCode::GATEWAY_TIMEOUT, "proxy_test_timeout"),
+            Self::ProxyTest(
+                ProxyTestError::RequestFailed
+                | ProxyTestError::ProviderUnavailable
+                | ProxyTestError::ResponseBodyFailed
+                | ProxyTestError::ResponseTooLarge
+                | ProxyTestError::InvalidResponse,
+            ) => (StatusCode::BAD_GATEWAY, "proxy_test_unavailable"),
+            Self::ProxyTest(ProxyTestError::Repository(error)) => {
+                (repository_status(&error), repository_error_message(&error))
+            }
             Self::Repository(error) => {
                 (repository_status(&error), repository_error_message(&error))
             }

@@ -306,6 +306,34 @@ const E2E_SYSTEM_LOAD = {
   },
 };
 
+const E2E_PROXY_TEST_RESULT = {
+  ip: "203.0.113.10",
+  continent: "North America",
+  continent_code: "NA",
+  country: "United States",
+  country_code: "US",
+  region_code: "CA",
+  region_name: "California",
+  city: "Los Angeles",
+  district: null,
+  postal_code: "90001",
+  latitude: 34.0522,
+  longitude: -118.2437,
+  timezone: "America/Los_Angeles",
+  utc_offset_seconds: -25_200,
+  currency: "USD",
+  isp: "E2E ISP",
+  organization: "E2E Organization",
+  autonomous_system: "AS64500 E2E",
+  autonomous_system_name: "E2E",
+  mobile: false,
+  proxy: true,
+  hosting: false,
+  latency_ms: 42,
+  rate_limit_remaining: 44,
+  rate_limit_reset_seconds: 60,
+};
+
 const E2E_SPEND_LEADERBOARD = {
   period: "day",
   period_start: "2026-07-24",
@@ -624,6 +652,9 @@ export async function mockConsoleApi(page: Page): Promise<void> {
     }
     if (path === "/console/v1/routing/model-rules" && method === "GET") {
       return route.fulfill({ status: 200, json: [] });
+    }
+    if (path === "/console/v1/network/proxies/test" && method === "POST") {
+      return route.fulfill({ status: 200, json: E2E_PROXY_TEST_RESULT });
     }
     if (path === "/console/v1/request-logs" && method === "GET") {
       return route.fulfill({ status: 200, json: [E2E_SYSTEM_REQUEST_LOG] });

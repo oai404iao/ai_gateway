@@ -891,6 +891,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/network/proxies/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Sends a fixed IP lookup to ip-api.com through the unsaved proxy draft and returns the observed egress IP metadata. The test always uses the proxy, ignoring `enabled` and saved no-proxy hosts. When `proxy_id` identifies an existing proxy, omitted credential fields reuse saved values only if the proxy endpoint is unchanged. */
+        post: operations["testProxy"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/network/proxies/{id}": {
         parameters: {
             query?: never;
@@ -1870,6 +1887,37 @@ export interface components {
             created_at: components["schemas"]["DateTime"];
             updated_at: components["schemas"]["DateTime"];
         };
+        ProxyTestResponse: {
+            ip: string;
+            continent: string | null;
+            continent_code: string | null;
+            country: string | null;
+            country_code: string | null;
+            region_code: string | null;
+            region_name: string | null;
+            city: string | null;
+            district: string | null;
+            postal_code: string | null;
+            /** Format: double */
+            latitude: number | null;
+            /** Format: double */
+            longitude: number | null;
+            timezone: string | null;
+            utc_offset_seconds: number | null;
+            currency: string | null;
+            isp: string | null;
+            organization: string | null;
+            autonomous_system: string | null;
+            autonomous_system_name: string | null;
+            mobile: boolean | null;
+            proxy: boolean | null;
+            hosting: boolean | null;
+            /** Format: int64 */
+            latency_ms: number;
+            rate_limit_remaining: number | null;
+            /** Format: int64 */
+            rate_limit_reset_seconds: number | null;
+        };
         ConfigTemplateView: {
             /** Format: uuid */
             id: string;
@@ -2611,6 +2659,18 @@ export interface components {
             password?: string | null;
             no_proxy_hosts?: string[];
             enabled: boolean;
+        };
+        ProxyTestInput: {
+            /**
+             * Format: uuid
+             * @description Existing proxy whose hidden credentials may be reused.
+             */
+            proxy_id?: string | null;
+            proxy_url: string;
+            /** @description Omit to reuse the saved username when `proxy_id` points at the same endpoint; send null to test without a username. */
+            username?: string | null;
+            /** @description Omit to reuse the saved password when `proxy_id` points at the same endpoint; send null to test without a password. */
+            password?: string | null;
         };
         ConfigTemplateCreateInput: {
             name: string;
@@ -4973,6 +5033,37 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             422: components["responses"]["Unprocessable"];
+        };
+    };
+    testProxy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProxyTestInput"];
+            };
+        };
+        responses: {
+            /** @description Proxy connection succeeded and IP metadata was returned. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProxyTestResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["Unprocessable"];
+            429: components["responses"]["RateLimited"];
+            502: components["responses"]["BadGateway"];
+            504: components["responses"]["GatewayTimeout"];
         };
     };
     getProxy: {

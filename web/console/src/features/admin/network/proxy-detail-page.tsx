@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import { z } from "zod";
 import { toast } from "sonner";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Field, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
@@ -12,10 +13,16 @@ import { AdminDetailShell } from "@/features/admin/components/admin-detail-shell
 import { DetailField } from "@/components/shared/detail-field";
 import { StringListField } from "@/components/shared/string-list-field";
 import { StatusBadge } from "@/components/shared/status-badge";
-import { useCreateProxy, useProxy, useUpdateProxy } from "@/features/admin/api";
+import { useCreateProxy, useProxy, useTestProxy, useUpdateProxy } from "@/features/admin/api";
 import { ApiError, controlPlaneMutationErrorMessage } from "@/api/errors";
-import type { ProxyCreateInput, ProxyInput } from "@/api/types";
+import type {
+  ProxyCreateInput,
+  ProxyInput,
+  ProxyTestInput,
+  ProxyTestResponse,
+} from "@/api/types";
 import { useI18n } from "@/app/i18n";
+import { formatBoolean, formatDurationMs } from "@/lib/formatters";
 
 function isAllowedProxyUrl(value: string): boolean {
   try {
@@ -48,6 +55,7 @@ const schema = z.object({
   no_proxy_hosts: z.array(z.string()),
   enabled: z.boolean(),
 });
+const testSchema = schema.pick({ proxy_url: true });
 
 type FormState = z.infer<typeof schema>;
 
@@ -67,8 +75,10 @@ export function ProxyDetailPage() {
   const { data, etag, isLoading, error } = useProxy(id);
   const create = useCreateProxy();
   const update = useUpdateProxy(id);
+  const testProxy = useTestProxy();
   const { t } = useI18n();
   const [state, setState] = useState<FormState>(empty);
+  const [testResult, setTestResult] = useState<ProxyTestResponse | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [validation, setValidation] = useState<z.ZodError | null>(null);
 
@@ -85,7 +95,47 @@ export function ProxyDetailPage() {
     }
   }, [data]);
 
-  const patch = (partial: Partial<FormState>) => setState((prev) => ({ ...prev, ...partial }));
+  const patch = (partial: Partial<FormState>) => {
+    setState((prev) => ({ ...prev, ...partial }));
+    setTestResult(null);
+  };
+
+  const runTest = async () => {
+    const parsed = testSchema.safeParse(state);
+    if (!parsed.success) {
+      setValidation(parsed.error);
+      return;
+    }
+    setValidation(null);
+    const input: ProxyTestInput = {
+      proxy_url: parsed.data.proxy_url,
+    };
+    if (!isNew) input.proxy_id = id;
+    if (state.username !== null) input.username = state.username;
+    if (state.password !== null) input.password = state.password;
+
+    try {
+      const result = await testProxy.mutateAsync(input);
+      setTestResult(result);
+      toast.success(t("Proxy test succeeded"));
+    } catch (error) {
+      setTestResult(null);
+      if (error instanceof ApiError && error.code === "proxy_test_invalid_configuration") {
+        toast.error(t("The proxy settings are invalid."));
+      } else if (
+        error instanceof ApiError &&
+        error.code === "proxy_test_credentials_required"
+      ) {
+        toast.error(t("Re-enter credentials before testing a changed proxy endpoint."));
+      } else if (error instanceof ApiError && error.code === "proxy_test_rate_limited") {
+        toast.error(t("ip-api.com rate limit reached. Try again after the reset window."));
+      } else if (error instanceof ApiError && error.code === "proxy_test_timeout") {
+        toast.error(t("The proxy test timed out."));
+      } else {
+        toast.error(t("Proxy test failed. Verify the proxy endpoint and credentials."));
+      }
+    }
+  };
 
   const submit = async () => {
     const parsed = schema.safeParse(state);
@@ -147,26 +197,29 @@ export function ProxyDetailPage() {
       error={error}
       hasData={isNew || Boolean(data)}
       detailCard={
-        !isNew && data ? (
-          <Card>
-            <CardHeader>
-              <CardTitle>{data.data.name}</CardTitle>
-              <CardDescription className="font-mono">{data.data.proxy_url}</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <DetailField
-                  label={t("Enabled")}
-                  value={<StatusBadge value={data.data.enabled} />}
-                />
-                <DetailField
-                  label={t("Credential configured")}
-                  value={data.data.credential_configured ? t("yes") : t("no")}
-                />
-              </dl>
-            </CardContent>
-          </Card>
-        ) : null
+        <>
+          {!isNew && data ? (
+            <Card>
+              <CardHeader>
+                <CardTitle>{data.data.name}</CardTitle>
+                <CardDescription className="font-mono">{data.data.proxy_url}</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <DetailField
+                    label={t("Enabled")}
+                    value={<StatusBadge value={data.data.enabled} />}
+                  />
+                  <DetailField
+                    label={t("Credential configured")}
+                    value={data.data.credential_configured ? t("yes") : t("no")}
+                  />
+                </dl>
+              </CardContent>
+            </Card>
+          ) : null}
+          {testResult ? <ProxyTestResultCard result={testResult} /> : null}
+        </>
       }
       editCard={
         <Card>
@@ -235,14 +288,106 @@ export function ProxyDetailPage() {
                   />
                 </Field>
               </FieldGroup>
-              <Button className="self-start" onClick={submit} disabled={submitting}>
-                {submitting ? <Spinner data-icon="inline-start" /> : null}
-                {isNew ? t("Create proxy") : t("Save proxy")}
-              </Button>
+              <Alert>
+                <AlertTitle>{t("ip-api.com diagnostic")}</AlertTitle>
+                <AlertDescription>
+                  {t(
+                    "The test sends a fixed IP lookup through this proxy. The free ip-api.com endpoint is HTTP-only and restricted to non-commercial use; treat the result as diagnostic information.",
+                  )}
+                </AlertDescription>
+              </Alert>
+              <div className="flex flex-wrap gap-2 self-start">
+                <Button
+                  onClick={submit}
+                  disabled={submitting || testProxy.isPending}
+                >
+                  {submitting ? <Spinner data-icon="inline-start" /> : null}
+                  {isNew ? t("Create proxy") : t("Save proxy")}
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={runTest}
+                  disabled={submitting || testProxy.isPending}
+                >
+                  {testProxy.isPending ? <Spinner data-icon="inline-start" /> : null}
+                  {t("Test proxy")}
+                </Button>
+              </div>
             </div>
           </CardContent>
         </Card>
       }
     />
   );
+}
+
+function ProxyTestResultCard({ result }: { result: ProxyTestResponse }) {
+  const { t } = useI18n();
+  const location =
+    joinPresent([
+      result.city,
+      result.district,
+      result.region_name,
+      result.country_code ? `${result.country ?? ""} (${result.country_code})`.trim() : result.country,
+    ]) || "—";
+  const coordinates =
+    result.latitude !== null && result.longitude !== null
+      ? `${result.latitude}, ${result.longitude}`
+      : "—";
+  const timezone = joinPresent([
+    result.timezone,
+    formatUtcOffset(result.utc_offset_seconds),
+  ]) || "—";
+  const autonomousSystem =
+    joinPresent([result.autonomous_system, result.autonomous_system_name]) || "—";
+  const providerQuota =
+    result.rate_limit_remaining === null
+      ? "—"
+      : result.rate_limit_reset_seconds === null
+        ? String(result.rate_limit_remaining)
+        : t("{remaining} remaining; reset in {seconds}s", {
+            remaining: result.rate_limit_remaining,
+            seconds: result.rate_limit_reset_seconds,
+          });
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>{t("Proxy test result")}</CardTitle>
+        <CardDescription>
+          {t("Observed through ip-api.com in {duration}.", {
+            duration: formatDurationMs(result.latency_ms),
+          })}
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          <DetailField label={t("IP address")} value={result.ip} mono />
+          <DetailField label={t("Location")} value={location} />
+          <DetailField label={t("Coordinates")} value={coordinates} mono />
+          <DetailField label={t("Timezone")} value={timezone} />
+          <DetailField label={t("ISP")} value={result.isp ?? "—"} />
+          <DetailField label={t("Organization")} value={result.organization ?? "—"} />
+          <DetailField label={t("Autonomous system")} value={autonomousSystem} />
+          <DetailField label={t("Mobile network")} value={formatBoolean(result.mobile)} />
+          <DetailField label={t("Proxy detected")} value={formatBoolean(result.proxy)} />
+          <DetailField label={t("Hosting network")} value={formatBoolean(result.hosting)} />
+          <DetailField label={t("Provider quota")} value={providerQuota} />
+        </dl>
+      </CardContent>
+    </Card>
+  );
+}
+
+function joinPresent(values: Array<string | null>): string {
+  return values.filter((value): value is string => Boolean(value)).join(", ");
+}
+
+function formatUtcOffset(seconds: number | null): string | null {
+  if (seconds === null) return null;
+  const sign = seconds < 0 ? "-" : "+";
+  const absolute = Math.abs(seconds);
+  const hours = Math.floor(absolute / 3_600);
+  const minutes = Math.floor((absolute % 3_600) / 60);
+  return `UTC${sign}${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
 }
