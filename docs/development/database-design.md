@@ -300,13 +300,15 @@ CHECK (jsonb_typeof(override_document) = 'object');
 | `api_format` | `api_format` | 本次请求格式。 |
 | `request_protocol` | `text` | `non_stream`、`sse` 或 `websocket`；表示客户端请求使用的传输方式。 |
 | `client_model` / `upstream_model` | `varchar(300)` | 客户端与实际发送模型名。 |
+| `reasoning_effort` | `varchar(32)` | 可空；从客户端原始请求的 `reasoning.effort` 或 `reasoning_effort` 提取并规范化。 |
+| `fast_mode` | `boolean` | 客户端是否显式请求 `service_tier = "priority"`；历史和定时测试日志默认为 `false`。 |
 | `model_rule_id` | `uuid` | 使用的模型规则。 |
 | `channel_group_id` / `channel_id` | `uuid` | 最终命中的组和渠道；拒绝请求时可空。 |
 | `outcome` | `text` | `succeeded`、`failed`、`rejected` 或 `cancelled`。 |
 | `response_status_code` | `smallint` | 可空。 |
 | `streamed` | `boolean` | 兼容字段；SSE 与 WebSocket 为 `true`，非流式请求为 `false`。 |
 | `ttft_ms` / `total_duration_ms` | `integer` | 可空、非负。 |
-| `output_tokens_per_second` | `numeric(14,4)` | 可空、非负。 |
+| `output_tokens_per_second` | `numeric(14,4)` | 可空、非负；按输出 Token 除以总耗时减 TTFT 后的生成时间计算。 |
 | `input_tokens` / `cached_input_tokens` / `cache_write_tokens` / `output_tokens` / `reasoning_tokens` | `bigint` | 可空、非负；`reasoning_tokens` 是 `output_tokens` 中用于推理的子集；未知保持 `NULL`。 |
 | `model_id` | `uuid` | 实际计价模型。 |
 | `currency` / `price_unit_tokens` / `price_effective_at` | 币种、整数、时间 | 本次价格快照上下文；币种固定为 `USD`。 |

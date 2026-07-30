@@ -42,7 +42,8 @@ use crate::{
 use super::{
     CompletionGuard, ProxyError, ProxyService, RequestOutcome, WebSocketRuntimeSnapshot,
     forward_request_headers, inject_upstream_auth, match_session_affinity, parse_bearer_token,
-    request_billing_multiplier, rewrite_model_alias, sse_terminal_request_outcome, upstream_url,
+    request_billing_multiplier, request_log_metadata, rewrite_model_alias,
+    sse_terminal_request_outcome, upstream_url,
 };
 pub(super) use lifecycle::WebSocketLifecycle;
 use lifecycle::WebSocketSessionGuard;
@@ -380,6 +381,7 @@ impl ResponsesWebSocketSession {
                     &api_key,
                     OPENAI_RESPONSES_FORMAT,
                     &parsed.model,
+                    &parsed.log_metadata,
                     RequestProtocol::WebSocket,
                     started_wall_at,
                     started_at,
@@ -400,6 +402,7 @@ impl ResponsesWebSocketSession {
                     &api_key,
                     OPENAI_RESPONSES_FORMAT,
                     &parsed.model,
+                    &parsed.log_metadata,
                     RequestProtocol::WebSocket,
                     &rule,
                     started_wall_at,
@@ -424,6 +427,7 @@ impl ResponsesWebSocketSession {
             Arc::clone(&self.proxy.request_log_sink),
             &api_key,
             &parsed.model,
+            &parsed.log_metadata,
             RequestProtocol::WebSocket,
             OPENAI_RESPONSES_FORMAT,
             &rule,
@@ -768,10 +772,17 @@ struct WebSocketRequestProbe<'a> {
     model: Option<&'a str>,
     #[serde(default)]
     previous_response_id: Option<&'a str>,
+    #[serde(default)]
+    reasoning_effort: serde_json::Value,
+    #[serde(default)]
+    reasoning: serde_json::Value,
+    #[serde(default)]
+    service_tier: serde_json::Value,
 }
 
 struct ParsedWebSocketRequest {
     model: String,
+    log_metadata: super::RequestLogMetadata,
     previous_response_id: bool,
 }
 
@@ -803,6 +814,12 @@ fn parse_websocket_request(body: &[u8]) -> Result<ParsedWebSocketRequest, ProxyE
     }
     Ok(ParsedWebSocketRequest {
         model: model.to_owned(),
+        log_metadata: request_log_metadata(
+            OPENAI_RESPONSES_FORMAT,
+            &probe.reasoning_effort,
+            &probe.reasoning,
+            &probe.service_tier,
+        ),
         previous_response_id: probe
             .previous_response_id
             .is_some_and(|value| !value.is_empty()),

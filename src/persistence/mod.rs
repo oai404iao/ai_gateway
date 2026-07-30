@@ -1269,6 +1269,8 @@ pub struct ConsoleRequestLog {
     pub api_format: String,
     pub request_protocol: String,
     pub client_model: String,
+    pub reasoning_effort: Option<String>,
+    pub fast_mode: bool,
     pub upstream_model: Option<String>,
     pub model_rule_id: Option<Uuid>,
     pub channel_group_id: Option<Uuid>,
@@ -1280,6 +1282,7 @@ pub struct ConsoleRequestLog {
     pub streamed: bool,
     pub ttft_ms: Option<i32>,
     pub total_duration_ms: Option<i32>,
+    pub output_tokens_per_second: Option<rust_decimal::Decimal>,
     pub input_tokens: Option<i64>,
     pub cached_input_tokens: Option<i64>,
     pub cache_write_tokens: Option<i64>,
@@ -2833,7 +2836,8 @@ impl RequestLogRepository {
                   output_tokens_per_second,input_tokens,cached_input_tokens,cache_write_tokens,\
                   output_tokens,model_id,currency,price_unit_tokens,price_effective_at,\
                   input_unit_price,cached_input_unit_price,cache_write_unit_price,\
-                  output_unit_price,cost_amount,error_code,error_summary,reasoning_tokens) \
+                  output_unit_price,cost_amount,error_code,error_summary,reasoning_tokens,\
+                  reasoning_effort,fast_mode) \
                  SELECT input.id,input.started_at,input.completed_at,input.user_id,input.api_key_id,\
                         input.request_source,input.api_format::api_format,input.request_protocol,\
                         input.client_model,input.upstream_model,input.model_rule_id,\
@@ -2845,7 +2849,8 @@ impl RequestLogRepository {
                         input.price_effective_at,input.input_unit_price,\
                         input.cached_input_unit_price,input.cache_write_unit_price,\
                         input.output_unit_price,input.cost_amount,input.error_code,\
-                        input.error_summary,input.reasoning_tokens \
+                        input.error_summary,input.reasoning_tokens,input.reasoning_effort,\
+                        input.fast_mode \
                  FROM UNNEST(\
                     $1::uuid[],$2::timestamptz[],$3::timestamptz[],$4::uuid[],$5::uuid[],\
                     $6::text[],$7::text[],$8::text[],$9::text[],$10::text[],$11::uuid[],\
@@ -2853,7 +2858,7 @@ impl RequestLogRepository {
                     $18::int4[],$19::numeric[],$20::int8[],$21::int8[],$22::int8[],$23::int8[],\
                     $24::uuid[],$25::text[],$26::int8[],$27::timestamptz[],$28::numeric[],\
                     $29::numeric[],$30::numeric[],$31::numeric[],$32::numeric[],$33::text[],\
-                    $34::text[],$35::int8[]\
+                    $34::text[],$35::int8[],$36::text[],$37::bool[]\
                  ) AS input(\
                     id,started_at,completed_at,user_id,api_key_id,request_source,api_format,\
                     request_protocol,client_model,upstream_model,model_rule_id,channel_group_id,\
@@ -2861,7 +2866,8 @@ impl RequestLogRepository {
                     output_tokens_per_second,input_tokens,cached_input_tokens,cache_write_tokens,\
                     output_tokens,model_id,currency,price_unit_tokens,price_effective_at,\
                     input_unit_price,cached_input_unit_price,cache_write_unit_price,\
-                    output_unit_price,cost_amount,error_code,error_summary,reasoning_tokens\
+                    output_unit_price,cost_amount,error_code,error_summary,reasoning_tokens,\
+                    reasoning_effort,fast_mode\
                  ) \
                  ON CONFLICT (id) DO NOTHING \
                  RETURNING id",
@@ -2901,6 +2907,8 @@ impl RequestLogRepository {
                 .bind(&batch.error_codes)
                 .bind(&batch.error_summaries)
                 .bind(&batch.reasoning_tokens)
+                .bind(&batch.reasoning_efforts)
+                .bind(&batch.fast_modes)
                 .fetch_all(&self.pool)
                 .await?
                 .into_iter()
@@ -2929,7 +2937,7 @@ impl RequestLogRepository {
                             cache_write_tokens,output_tokens,reasoning_tokens,\
                             model_id,currency,price_unit_tokens,price_effective_at,input_unit_price,\
                             cached_input_unit_price,cache_write_unit_price,output_unit_price,\
-                            cost_amount,error_code,error_summary \
+                            cost_amount,error_code,error_summary,reasoning_effort,fast_mode \
                      FROM request_logs WHERE id = ANY($1)",
                 )
                 .bind(&ids)
@@ -3199,7 +3207,7 @@ fn redact_self_service_request_log(log: &mut ConsoleRequestLog) {
     log.channel_name = None;
 }
 
-const CONSOLE_REQUEST_LOG_COLUMNS: &str = "log.id,log.started_at,log.completed_at,log.user_id,request_user.display_name AS user_name,log.api_key_id,log.request_source,log.api_format::text AS api_format,log.request_protocol,log.client_model,log.upstream_model,log.model_rule_id,log.channel_group_id,channel_group.name AS channel_group_name,log.channel_id,channel.name AS channel_name,log.outcome,log.response_status_code,log.streamed,log.ttft_ms,log.total_duration_ms,log.input_tokens,log.cached_input_tokens,log.cache_write_tokens,log.output_tokens,log.reasoning_tokens,log.cost_amount,log.error_code,log.error_summary,log.billed_at";
+const CONSOLE_REQUEST_LOG_COLUMNS: &str = "log.id,log.started_at,log.completed_at,log.user_id,request_user.display_name AS user_name,log.api_key_id,log.request_source,log.api_format::text AS api_format,log.request_protocol,log.client_model,log.reasoning_effort,log.fast_mode,log.upstream_model,log.model_rule_id,log.channel_group_id,channel_group.name AS channel_group_name,log.channel_id,channel.name AS channel_name,log.outcome,log.response_status_code,log.streamed,log.ttft_ms,log.total_duration_ms,log.output_tokens_per_second,log.input_tokens,log.cached_input_tokens,log.cache_write_tokens,log.output_tokens,log.reasoning_tokens,log.cost_amount,log.error_code,log.error_summary,log.billed_at";
 
 async fn query_console_request_log(
     pool: &PgPool,
@@ -3848,6 +3856,8 @@ struct RequestLogInsertBatch {
     cost_amount: Vec<Option<rust_decimal::Decimal>>,
     error_codes: Vec<Option<String>>,
     error_summaries: Vec<Option<String>>,
+    reasoning_efforts: Vec<Option<String>>,
+    fast_modes: Vec<bool>,
 }
 
 impl RequestLogInsertBatch {
@@ -3888,6 +3898,8 @@ impl RequestLogInsertBatch {
             cost_amount: Vec::with_capacity(capacity),
             error_codes: Vec::with_capacity(capacity),
             error_summaries: Vec::with_capacity(capacity),
+            reasoning_efforts: Vec::with_capacity(capacity),
+            fast_modes: Vec::with_capacity(capacity),
         }
     }
 
@@ -3947,6 +3959,8 @@ impl RequestLogInsertBatch {
             .push(billing.and_then(|billing| billing.cost_amount));
         self.error_codes.push(event.error_code.clone());
         self.error_summaries.push(event.error_summary.clone());
+        self.reasoning_efforts.push(event.reasoning_effort.clone());
+        self.fast_modes.push(event.fast_mode);
     }
 }
 
@@ -3996,6 +4010,8 @@ struct StoredRequestLog {
     cost_amount: Option<rust_decimal::Decimal>,
     error_code: Option<String>,
     error_summary: Option<String>,
+    reasoning_effort: Option<String>,
+    fast_mode: bool,
 }
 
 impl StoredRequestLog {
@@ -4097,6 +4113,8 @@ impl StoredRequestLog {
                     .and_then(|billing| billing.cost_amount)
             && self.error_code == event.error_code
             && self.error_summary == event.error_summary
+            && self.reasoning_effort == event.reasoning_effort
+            && self.fast_mode == event.fast_mode
     }
 }
 

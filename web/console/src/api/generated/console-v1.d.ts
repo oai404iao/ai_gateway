@@ -2014,6 +2014,10 @@ export interface components {
             api_format: components["schemas"]["ApiFormat"];
             request_protocol: components["schemas"]["RequestProtocol"];
             client_model: string;
+            /** @description Normalized explicit client reasoning effort parsed from reasoning.effort or reasoning_effort. */
+            reasoning_effort: string | null;
+            /** @description True when the client explicitly requested service_tier=priority. */
+            fast_mode: boolean;
             upstream_model: string | null;
             /** Format: uuid */
             model_rule_id: string | null;
@@ -2034,6 +2038,8 @@ export interface components {
             streamed: boolean;
             ttft_ms: number | null;
             total_duration_ms: number | null;
+            /** @description Output tokens divided by generation time in seconds (total duration minus TTFT). */
+            output_tokens_per_second: components["schemas"]["DecimalNullable"];
             input_tokens: number | null;
             cached_input_tokens: number | null;
             cache_write_tokens: number | null;

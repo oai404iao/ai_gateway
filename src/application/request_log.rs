@@ -290,6 +290,8 @@ mod tests {
             api_format: ApiFormat::OpenAiChatCompletions,
             request_protocol: RequestProtocol::NonStream,
             client_model: "test".into(),
+            reasoning_effort: None,
+            fast_mode: false,
             upstream_model: None,
             model_rule_id: None,
             channel_group_id: None,

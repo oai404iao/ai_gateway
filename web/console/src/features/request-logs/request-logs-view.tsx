@@ -33,7 +33,7 @@ import type {
   RequestLogView,
 } from "@/api/types";
 import { dateTimeLocalToIso, formatDateTime, formatRelative } from "@/lib/dates";
-import { formatDurationMs, formatTokens, formatUsd } from "@/lib/formatters";
+import { formatDecimal, formatDurationMs, formatTokens, formatUsd } from "@/lib/formatters";
 import { API_FORMATS, apiFormatLabel, outcomeLabel, outcomeVariant } from "@/lib/permissions";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/app/i18n";
@@ -181,12 +181,51 @@ function TokenUsage({ log }: { log: RequestLogView }) {
   );
 }
 
+function reasoningEffortLabel(value: string): string {
+  if (value === "xhigh") return "XHigh";
+  return `${value.charAt(0).toUpperCase()}${value.slice(1)}`;
+}
+
+function RequestModel({ log }: { log: RequestLogView }) {
+  const { t } = useI18n();
+  const effort = log.reasoning_effort
+    ? reasoningEffortLabel(log.reasoning_effort)
+    : null;
+
+  return (
+    <span className="flex flex-wrap items-center gap-1.5">
+      <span className="font-medium">{log.client_model}</span>
+      {effort ? (
+        <Badge
+          variant="warning"
+          aria-label={`${t("Reasoning effort")}: ${effort}`}
+          title={`${t("Reasoning effort")}: ${effort}`}
+        >
+          {effort}
+        </Badge>
+      ) : null}
+      {log.fast_mode ? (
+        <Badge variant="success" aria-label={t("Fast mode")} title={t("Fast mode")}>
+          Fast
+        </Badge>
+      ) : null}
+    </span>
+  );
+}
+
+function formatOutputTps(value: string | null): string {
+  const formatted = formatDecimal(value, 1);
+  return formatted === "—" ? formatted : `${formatted} tok/s`;
+}
+
 function RequestDuration({ log }: { log: RequestLogView }) {
   const { t } = useI18n();
   const ttft = formatDurationMs(log.ttft_ms);
   const total = formatDurationMs(log.total_duration_ms);
+  const tps = formatOutputTps(log.output_tokens_per_second);
   const ttftLabel = `${t("TTFT")}: ${ttft}`;
   const totalLabel = `${t("Total duration")}: ${total}`;
+  const tpsLabel = `${t("TPS")}: ${tps}`;
 
   return (
     <span className="flex flex-col gap-0.5 whitespace-nowrap tabular-nums">
@@ -199,6 +238,13 @@ function RequestDuration({ log }: { log: RequestLogView }) {
       </span>
       <span aria-label={totalLabel} title={totalLabel}>
         {total}
+      </span>
+      <span
+        className="text-xs text-muted-foreground"
+        aria-label={tpsLabel}
+        title={tpsLabel}
+      >
+        {tps}
       </span>
     </span>
   );
@@ -304,7 +350,7 @@ export function RequestLogsView({
     {
       key: "model",
       header: t("Model"),
-      render: (log) => <span className="font-medium">{log.client_model}</span>,
+      render: (log) => <RequestModel log={log} />,
     },
     {
       key: "protocol",
@@ -643,7 +689,7 @@ export function RequestLogsView({
           {detail.data ? (
             <dl className="grid grid-cols-1 gap-3 p-4">
               <DetailField label={t("Started")} value={formatDateTime(detail.data.started_at)} />
-              <DetailField label={t("Model")} value={detail.data.client_model} mono />
+              <DetailField label={t("Model")} value={<RequestModel log={detail.data} />} />
               <DetailField
                 label={t("Protocol")}
                 value={requestProtocolLabel(detail.data.request_protocol, t)}
@@ -670,7 +716,7 @@ export function RequestLogsView({
               <DetailField label={t("Cost")} value={formatUsd(detail.data.cost_amount)} />
               <DetailField
                 label={t("Duration")}
-                value={formatDurationMs(detail.data.total_duration_ms)}
+                value={<RequestDuration log={detail.data} />}
               />
               <DetailField label={t("HTTP")} value={detail.data.response_status_code ?? "—"} />
               <DetailField label={t("Error code")} value={detail.data.error_code ?? "—"} mono />

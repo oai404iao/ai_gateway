@@ -40,6 +40,10 @@ WebSocket 与 SSE，因此 v2 中所有 `streamed = true` 的积压事件都会�
 payload 缺少该字段时按 `0` 解码，因此这一扩展不要求排空现有 spool 或
 `request_log_ingest`。
 
+`reasoning_effort` 和 `fast_mode` 同样是 Journal v2/v3 的向后兼容扩展。旧 payload
+分别按 `None` 和 `false` 解码，因此升级不要求排空已有 spool 或
+`request_log_ingest`。
+
 ## 独立数据库连接池
 
 日志流水线使用独立的 SQLx PostgreSQL 连接池：

@@ -86,10 +86,15 @@ describe("RequestLogsView", () => {
     expect(screen.getByLabelText("Cached input: 2")).toHaveTextContent("2");
     expect(screen.getByLabelText("Non-reasoning output: 3")).toHaveTextContent("3");
     expect(screen.getByLabelText("Reasoning tokens: 1")).toHaveTextContent("1");
+    expect(screen.getByLabelText("Reasoning effort: High")).toHaveTextContent("High");
+    expect(screen.getByLabelText("Fast mode")).toHaveTextContent("Fast");
     const ttft = screen.getByLabelText("TTFT: 100 ms");
     const totalDuration = screen.getByLabelText("Total duration: 1 s");
+    const tps = screen.getByLabelText("TPS: 4.4 tok/s");
     expect(ttft.parentElement).toContainElement(totalDuration);
+    expect(ttft.parentElement).toContainElement(tps);
     expect(ttft).toHaveClass("text-muted-foreground");
+    expect(tps).toHaveClass("text-muted-foreground");
 
     const apiKey = await screen.findByRole("combobox", { name: "API key" });
     await user.click(apiKey);
@@ -115,6 +120,27 @@ describe("RequestLogsView", () => {
         ),
       ).toBe(true);
     });
+  });
+
+  it("hides request-mode badges when the client did not enable them", async () => {
+    seedAuthenticatedSession();
+    server.use(
+      http.get("/console/v1/me/request-logs", () =>
+        HttpResponse.json([
+          {
+            ...REQUEST_LOG,
+            reasoning_effort: null,
+            fast_mode: false,
+          },
+        ]),
+      ),
+    );
+
+    renderAppAt("/usage/request-logs");
+
+    await screen.findByText(REQUEST_LOG.client_model);
+    expect(screen.queryByLabelText(/Reasoning effort:/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Fast mode")).not.toBeInTheDocument();
   });
 
   it("adds user and channel names only to the system request-log table", async () => {

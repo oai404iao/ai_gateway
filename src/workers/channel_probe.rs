@@ -455,6 +455,8 @@ fn finished_probe(
             api_format: context.channel.api_format(),
             request_protocol: RequestProtocol::NonStream,
             client_model: model.to_owned(),
+            reasoning_effort: None,
+            fast_mode: false,
             upstream_model: Some(model.to_owned()),
             model_rule_id: None,
             channel_group_id: Some(context.channel.group_id()),

@@ -3690,8 +3690,8 @@ async fn request_log_filters_match_the_console_contract() {
     ] {
         sqlx::query(
             "INSERT INTO request_logs \
-             (id,started_at,completed_at,user_id,api_key_id,api_format,client_model,upstream_model,outcome,streamed,total_duration_ms,input_tokens,cached_input_tokens,cache_write_tokens,output_tokens,reasoning_tokens,error_code,error_summary) \
-             VALUES ($1,$2,$2,$3,$4,'open_ai_chat_completions',$5,$6,$7,false,1,12,2,1,5,1,$8,$9)",
+             (id,started_at,completed_at,user_id,api_key_id,api_format,client_model,upstream_model,outcome,streamed,ttft_ms,total_duration_ms,output_tokens_per_second,reasoning_effort,fast_mode,input_tokens,cached_input_tokens,cache_write_tokens,output_tokens,reasoning_tokens,error_code,error_summary) \
+             VALUES ($1,$2,$2,$3,$4,'open_ai_chat_completions',$5,$6,$7,false,100,1000,5.5556,'high',true,12,2,1,5,1,$8,$9)",
         )
         .bind(id)
         .bind(now)
@@ -3721,6 +3721,11 @@ async fn request_log_filters_match_the_console_contract() {
     assert_eq!(body[0]["id"], matching_log_id.to_string());
     assert_eq!(body[0]["user_name"], format!("spec-{}", app.user_id));
     assert_eq!(body[0]["request_protocol"], "non_stream");
+    assert_eq!(body[0]["reasoning_effort"], "high");
+    assert_eq!(body[0]["fast_mode"], true);
+    assert_eq!(body[0]["ttft_ms"], 100);
+    assert_eq!(body[0]["total_duration_ms"], 1000);
+    assert_eq!(body[0]["output_tokens_per_second"], "5.5556");
     assert_eq!(body[0]["input_tokens"], 12);
     assert_eq!(body[0]["cached_input_tokens"], 2);
     assert_eq!(body[0]["output_tokens"], 5);
@@ -3741,6 +3746,9 @@ async fn request_log_filters_match_the_console_contract() {
     assert_eq!(detail["id"], matching_log_id.to_string());
     assert_eq!(detail["user_name"], format!("spec-{}", app.user_id));
     assert_eq!(detail["request_protocol"], "non_stream");
+    assert_eq!(detail["reasoning_effort"], "high");
+    assert_eq!(detail["fast_mode"], true);
+    assert_eq!(detail["output_tokens_per_second"], "5.5556");
     assert_eq!(detail["reasoning_tokens"], 1);
     assert_eq!(detail["error_code"], "provider_error");
     assert_eq!(detail["error_summary"], "upstream quota exhausted");
