@@ -7,11 +7,15 @@ Versioning.
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-07-30
+
 ### Changed
 
 - Parallelize release-specific verification and native image builds, reuse the
   AMD64 container binary for release archives, trust the exact `main`
   `ci-gate`, and move ARM64 cache uploads out of the publishing critical path.
+- Upgrade the SHA-pinned Docker login Action from v4.4.0 to v4.6.0 for GHCR
+  publishing.
 
 ## [0.6.1] - 2026-07-30
 
