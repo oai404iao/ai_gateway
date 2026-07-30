@@ -1,6 +1,6 @@
 use axum::http::{
     HeaderMap, HeaderValue, Uri,
-    header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, USER_AGENT},
+    header::{ACCEPT, ACCEPT_ENCODING, AUTHORIZATION, CONTENT_TYPE, USER_AGENT},
 };
 use bytes::Bytes;
 use reqwest::Url;
@@ -95,6 +95,9 @@ impl PreparedCodexAttempt {
             HeaderValue::from_str(self.credential.account_id()).map_err(invalid)?,
         );
         headers.insert(ACCEPT, HeaderValue::from_static("text/event-stream"));
+        // The Gateway must inspect Codex's terminal SSE event for usage and
+        // completion before clients stop polling the response body.
+        headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("identity"));
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         headers.insert(
             USER_AGENT,
@@ -336,9 +339,16 @@ mod tests {
         )
         .unwrap();
         let mut headers = HeaderMap::new();
+        headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("gzip, br"));
 
         attempt.inject_headers(&mut headers).unwrap();
 
+        assert_eq!(
+            headers
+                .get(ACCEPT_ENCODING)
+                .and_then(|value| value.to_str().ok()),
+            Some("identity")
+        );
         assert_eq!(
             headers.get("version").and_then(|value| value.to_str().ok()),
             Some(CODEX_CLIENT_VERSION)

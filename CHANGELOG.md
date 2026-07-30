@@ -23,6 +23,9 @@ Versioning.
 - Report Codex client version `0.146.0` independently from the Gateway package
   version so model discovery does not return an empty catalog for otherwise
   valid OAuth credentials.
+- Force identity-encoded Codex SSE responses and classify successful Codex
+  responses by the Connector contract, so terminal usage is parsed and
+  completed client requests are not misreported as cancelled.
 - Allow Console proxy records to persist the already-supported `socks4a` and
   `socks5h` remote-DNS schemes.
 

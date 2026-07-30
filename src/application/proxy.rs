@@ -554,12 +554,14 @@ impl ProxyService {
                 }
             };
 
+            let connector_success_response_is_sse = prepared_attempt.successful_response_is_sse();
             prepared_attempt.observe_response(upstream_response.status());
 
             return response_from_upstream(
                 upstream_response,
                 upstream_policy.timeouts().stream_idle(),
                 completion,
+                connector_success_response_is_sse,
                 transforms.response_headers(),
                 transforms.sse_event_patches().clone(),
             );
@@ -1202,6 +1204,7 @@ fn response_from_upstream(
     upstream_response: reqwest::Response,
     stream_idle_timeout: Duration,
     mut completion: CompletionGuard,
+    connector_success_response_is_sse: bool,
     response_headers: &crate::transforms::HeaderPlan,
     sse_event_patches: SseEventPatchPlan,
 ) -> Result<AxumResponse, ProxyError> {
@@ -1213,9 +1216,10 @@ fn response_from_upstream(
     // presentation headers. Response plans are also forbidden from touching
     // these headers, but classify first to keep that invariant explicit.
     let original_upstream_headers = upstream_response.headers();
-    let transform_sse =
-        sse_event_patches.has_operations() && is_sse_response(original_upstream_headers);
-    completion.configure_usage_collector(is_sse_response(original_upstream_headers));
+    let response_is_sse = is_sse_response(original_upstream_headers)
+        || (connector_success_response_is_sse && upstream_status.is_success());
+    let transform_sse = sse_event_patches.has_operations() && response_is_sse;
+    completion.configure_usage_collector(response_is_sse);
     let sse_has_identity_encoding = has_identity_content_encoding(original_upstream_headers);
     let mut upstream_headers = original_upstream_headers.clone();
     if apply_response_header_plan(&mut upstream_headers, response_headers).is_err() {

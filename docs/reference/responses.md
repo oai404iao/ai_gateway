@@ -29,7 +29,9 @@
 - 普通 JSON 和 SSE 响应默认流式透传。
 - SSE 变换按 Responses 事件类型匹配，不能使用 Chat Completions 事件规则。
 - WebSocket 事件使用同一套 Responses 事件选择器和 JSON patch 规则，但没有 SSE 文本 envelope。
-- usage 采集识别 `input_tokens`、`output_tokens` 和 `input_tokens_details.cached_tokens`。
+- usage 采集识别 `input_tokens`、`output_tokens`、
+  `input_tokens_details.cached_tokens`、`input_tokens_details.cache_write_tokens`
+  和 `output_tokens_details.reasoning_tokens`。
 - 日志识别 `response.completed` 和 `response.failed` 作为应用层终态；终态可在底层连接 EOF 前完成日志结果判断。
 - WebSocket Upgrade 使用 Gateway Bearer Key；每个 `response.create` 重新鉴权、独立准入、选路、
   usage、计费和日志。

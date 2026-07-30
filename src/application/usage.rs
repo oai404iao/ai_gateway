@@ -693,10 +693,10 @@ mod tests {
     }
 
     #[test]
-    fn extracts_responses_usage_from_completed_sse_event() {
+    fn extracts_codex_responses_usage_from_completed_sse_event() {
         let mut collector = UsageCollector::new(ApiFormat::OpenAiResponses, true);
         collector.observe(&Bytes::from_static(
-            b"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":9,\"output_tokens\":2,\"input_tokens_details\":{\"cached_tokens\":1},\"output_tokens_details\":{\"reasoning_tokens\":1}}}}\n\n",
+            b"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp1\",\"usage\":{\"input_tokens\":100,\"input_tokens_details\":{\"cached_tokens\":40,\"cache_write_tokens\":60},\"output_tokens\":10,\"output_tokens_details\":{\"reasoning_tokens\":5},\"total_tokens\":110}}}\n\n",
         ));
         assert_eq!(
             collector.sse_terminal_outcome(),
@@ -705,11 +705,11 @@ mod tests {
         assert_eq!(
             collector.latest(),
             Some(ResponseUsage {
-                input_tokens: 9,
-                cached_input_tokens: 1,
-                cache_write_tokens: 0,
-                output_tokens: 2,
-                reasoning_tokens: 1,
+                input_tokens: 100,
+                cached_input_tokens: 40,
+                cache_write_tokens: 60,
+                output_tokens: 10,
+                reasoning_tokens: 5,
             })
         );
     }
