@@ -73,7 +73,7 @@ repo/
 |   |-- reference/               # External OpenAI semantics and gateway compatibility boundaries
 |   |-- archive/                 # Historical MVP plans; never current behavior
 |   `-- openapi/console-v1.yaml  # Authoritative Console API spec; drives generated TS types
-|-- .github/                    # SHA-pinned GitHub Actions CI/release workflows plus Dependabot updates
+|-- .github/                    # SHA-pinned path-aware CI, reusable quality, security, release workflows, and Dependabot updates
 |-- config/                     # Ignored runtime config, DB password, JWT keys
 |-- config.example.toml         # Canonical configuration template
 |-- deploy/compose/             # Container-specific TOML and Compose environment templates
@@ -156,8 +156,10 @@ tests. `cargo test` is the baseline Rust verification. The ignored
 **Any change to the forwarding path must also run this real-upstream script
 before completion.** It serially verifies both `/v1/chat/completions` and
 `/v1/responses`, with non-streaming and SSE requests plus Responses WebSocket.
-GitHub Actions workflows
-under `.github/workflows/` run the ordinary CI and tag release paths.
+GitHub Actions workflows under `.github/workflows/` run path-aware ordinary
+CI, reusable Rust/Console/E2E quality gates, CodeQL security scanning, and the
+tag release path. Every PR emits the stable `ci-gate`; Markdown-only changes
+run documentation validation instead of skipping CI.
 `docker-compose.yml` remains the PostgreSQL-only development/baseline stack;
 `docker-compose.prd.yaml` adds the containerized Gateway. Neither stack
 provides HA, PITR, or backups.
@@ -334,8 +336,10 @@ pool isolation, transforms, and configured outbound proxies.
 13. **Container secrets are copied before privilege drop.** Local Compose file-backed secrets may retain host ownership/mode. `deploy/docker/entrypoint.sh` starts as root, copies config and secrets into a private tmpfs, fixes the persistent spool ownership, then executes the Gateway as UID/GID 10001. Do not bypass that entrypoint in production.
 14. **Release tags are deployment inputs.** `.github/workflows/release.yml` is tag-triggered. Version drift or a missing dated Changelog entry fails the release. Verification runs read-only, GHCR publication has only package write permission, and GitHub Release publication has only contents write permission. Public repositories also publish image provenance attestations; private repositories skip that step.
 15. **GitHub Actions references are immutable.** External Actions are pinned to full commit SHAs; version-tagged Actions are updated through `.github/dependabot.yml`. Do not replace them with mutable major tags or branches. The Rust toolchain Action is pinned to a reviewed `stable` branch commit and requires periodic manual refresh.
-16. **License metadata and redistribution notices move together.** The project license is `AGPL-3.0-only`; keep both Cargo package manifests, `web/console/package.json`, README license sections, Docker OCI labels, and release archives synchronized. The embedded Geist font remains OFL-1.1 and its committed license plus `web/console/NOTICES.md` must stay in binary distributions.
-17. **Responses WebSocket state is connection-local.** Do not build a
+16. **PR workflows must not write caches.** `.github/workflows/reusable-quality.yml` and `.github/workflows/ci.yml` allow cache writes only for `main` or tag-triggered Release runs. PR jobs may restore default-branch/Release caches but must not add `cache-to`, `actions/cache/save`, or an unconditional Rust cache save.
+17. **`ci-gate` is the required stable check.** Keep ordinary CI triggered for every PR, route Markdown-only changes through `scripts/check-docs.py`, and make the final `ci-gate` fail for every selected job result other than `success`/`skipped`. The default-branch ruleset requires this exact check name.
+18. **License metadata and redistribution notices move together.** The project license is `AGPL-3.0-only`; keep both Cargo package manifests, `web/console/package.json`, README license sections, Docker OCI labels, and release archives synchronized. The embedded Geist font remains OFL-1.1 and its committed license plus `web/console/NOTICES.md` must stay in binary distributions.
+19. **Responses WebSocket state is connection-local.** Do not build a
     multiplexing pool that moves sequential `response.create` messages between
     arbitrary upstream sockets. Keep one request in flight, prefer the same
     session-isolated connection for `previous_response_id`, and discard any
@@ -379,7 +383,7 @@ pool isolation, transforms, and configured outbound proxies.
 | Container configuration template | `deploy/compose/config.example.toml` |
 | Full production Compose | `docker-compose.prd.yaml` and `docs/user/production-deployment.md` |
 | Release process/version checks | `docs/development/releasing.md`, `scripts/release.sh`, and `scripts/check-release-version.sh` |
-| CI/release automation | `.github/workflows/ci.yml`, `.github/workflows/release.yml`, and `.github/dependabot.yml` |
+| CI, security, cache, and release automation | `docs/development/continuous-integration.md`, `.github/workflows/`, and `.github/dependabot.yml` |
 | Project and third-party licensing | `LICENSE`, `LICENSES/`, and `web/console/NOTICES.md` |
 | Console API contract (request/response shapes) | `docs/openapi/console-v1.yaml` |
 | Console UI generated TypeScript types | `web/console/src/api/generated/console-v1.d.ts` (regenerate via `pnpm --dir web/console generate:api`) |

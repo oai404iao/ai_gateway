@@ -54,33 +54,19 @@ checks are still required. Security, authentication, billing, persistence,
 release, and forwarding changes should receive another human review whenever
 possible.
 
-## Required-check caveat
+## Required check
 
-The current CI workflow uses:
+The path-aware CI workflow runs for every PR:
 
-```yaml
-pull_request:
-  paths-ignore:
-    - "**/*.md"
-```
+1. `changes` detects the affected areas and validates patch whitespace.
+2. The reusable quality workflow runs or skips docs, Rust, MSRV, Console, and
+   Playwright jobs.
+3. The image job runs in parallel when production artifacts are affected.
+4. The always-present `ci-gate` succeeds only when every selected job succeeds.
 
-Therefore Markdown-only PRs do not create the `rust`, `console`, or `image`
-checks. Making those names unconditional required checks can leave
-documentation PRs blocked waiting for checks that never start.
-
-Before requiring status checks, change CI so every PR emits one stable final
-check, for example `ci-gate`:
-
-1. Trigger the workflow for every PR.
-2. Detect which areas changed.
-3. Run or skip the heavy Rust, Console, and image jobs as appropriate.
-4. Run an always-present final gate that succeeds only when every required
-   selected job succeeded.
-5. Require only that stable gate in the ruleset.
-
-Until that gate exists, do not configure unconditional required checks that
-are absent on Markdown-only changes. Agents must still run the verification
-matrix locally and wait for every check that does appear.
+Require only the exact `ci-gate` context in the default-branch ruleset.
+Markdown-only PRs run `scripts/check-docs.py` and therefore satisfy the same
+stable check without running unrelated build jobs.
 
 ## Suggested verification commands
 

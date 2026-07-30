@@ -47,6 +47,7 @@ MSRV 采用约 **N-5** 个稳定版本、约半年的兼容窗口，而不是长
 | --- | --- |
 | 默认开发工具链 | `rust-toolchain.toml` |
 | 源码 MSRV | `Cargo.toml`、`tools/forwarding-perf/Cargo.toml` |
-| 普通与 MSRV 门禁 | `.github/workflows/ci.yml` |
-| Release 工具链 | `.github/workflows/release.yml` |
+| 普通、MSRV 与 Release 共用门禁 | `.github/workflows/reusable-quality.yml` |
+| CI 路径选择与最终 gate | `.github/workflows/ci.yml` |
+| Release 构建与发布 | `.github/workflows/release.yml` |
 | 容器构建工具链 | `Dockerfile` |

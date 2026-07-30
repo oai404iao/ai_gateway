@@ -13,8 +13,8 @@ python3 scripts/check-docs.py
 
 - Verify command examples against the current scripts and package manifests.
 - Confirm links and referenced paths exist.
-- `.github/workflows/ci.yml` currently ignores Markdown-only changes, so a PR
-  may legitimately have no CI checks.
+- `.github/workflows/ci.yml` selects the documentation job for Markdown-only
+  changes and still emits the required `ci-gate`.
 
 ## Rust backend or shared workspace
 
