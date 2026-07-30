@@ -16,6 +16,9 @@ while IFS= read -r path; do
     seen=true
 
     case "$path" in
+        .gitignore)
+            docs=true
+            ;;
         .github/* | scripts/*)
             docs=true
             rust=true
