@@ -2091,7 +2091,7 @@ async fn codex_export_and_proxy_delete_contracts_preserve_secrets_and_references
           auto_disable_allowed,supports_websocket) \
          VALUES ($1,$2,'open_ai_responses','spec-portable', \
                  'https://chatgpt.com/backend-api/codex',true,100,$3,'none', \
-                 ARRAY['gpt-5-codex'],false,false,false)",
+                 ARRAY['gpt-5-codex'],false,false,true)",
     )
     .bind(channel_id)
     .bind(group_id)
@@ -2239,7 +2239,7 @@ async fn codex_business_batch_and_delete_contracts_are_versioned() {
               auto_disable_allowed,supports_websocket) \
              VALUES ($1,$2,'open_ai_responses',$3, \
                      'https://chatgpt.com/backend-api/codex',true,100,'none', \
-                     ARRAY['gpt-5-codex'],false,false,false)",
+                     ARRAY['gpt-5-codex'],false,false,true)",
         )
         .bind(channel_id)
         .bind(group_id)

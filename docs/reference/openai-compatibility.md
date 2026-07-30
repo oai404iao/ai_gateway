@@ -53,6 +53,10 @@ Responses WebSocket 的上游事件以 JSON 文本消息透传；配置的 Respo
 上游 WebSocket Upgrade 在首条消息之后发生，因此上游握手响应 Header 不会出现在已经完成的下游
 Upgrade 响应中。
 
+Codex OAuth managed channel 也走同一 Responses WebSocket 路径，但由 Connector 改写
+`/responses` 目标、强制 `stream=true`/`store=false` 并注入订阅凭证与 Codex Header；
+`previous_response_id` 仍只在同一条可复用上游连接上有效。
+
 ## 格式隔离
 
 模型规则、渠道组和渠道都绑定一个 `api_format`。同一个客户端模型名若需要同时支持两个接口，必须分别配置 Chat Completions 和 Responses 路由。网关不会：

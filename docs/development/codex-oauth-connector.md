@@ -5,8 +5,8 @@
 ## 决策
 
 特殊上游使用**静态链接、进程内 Connector**，不增加 sidecar、Unix Socket RPC、动态
-`.so` 或 WASM。客户端仍使用标准 `POST /v1/responses`；Connector 只改变选中 channel
-之后的上游准备过程。
+`.so` 或 WASM。客户端仍使用标准 `POST /v1/responses`，也可以使用带 Upgrade 的
+`GET /v1/responses`；Connector 只改变选中 channel 之后的上游准备过程。
 
 `ApiFormat` 与 `ConnectorKind` 必须分离：
 
@@ -24,7 +24,7 @@ upstream connector: CodexOauth
 统一 attempt 接口：
 
 1. `prepare`：在发送前验证动态凭证与 affinity 状态；
-2. `adapt_body`：应用 provider 请求约束；
+2. `adapt_body`：按 HTTP SSE 或 Responses WebSocket 应用 provider 请求约束；
 3. `upstream_url`：解析最终目标；
 4. `inject_headers`：在通用变换和 hop-by-hop 清理之后注入最终认证；
 5. `allows_automatic_retry`：声明 pre-header transport failure 是否可跨 channel 重试；
@@ -34,7 +34,8 @@ upstream connector: CodexOauth
 `src/application/codex/attempt.rs`；`src/application/proxy.rs` 不引用 Codex 类型、路径、
 Header 或错误分类。
 
-正式请求直接通过共享 reqwest client streaming 转发。worker 只维护凭证状态，不承载代理流量。
+正式 HTTP 请求直接通过共享 reqwest client streaming 转发；WebSocket 使用共享的上游拨号、代理
+和有界连接池。worker 只维护凭证状态，不承载代理流量。
 
 ## 持久化模型
 
@@ -47,7 +48,7 @@ Header 或错误分类。
 - channel `weight`、`proxy_id` 和 `available_models` 继续进入统一路由快照；
 - credential 的逻辑 `enabled` 和动态状态由 Connector 快照持有；底层 managed channel
   始终保留为可选择的路由壳，Connector prepare 再排除新 Session 或让 affinity hit fail closed；
-- channel 固定 `upstream_auth_kind = none`、`supports_websocket = false`、
+- channel 固定 `upstream_auth_kind = none`、`supports_websocket = true`、
   `status_statistics_enabled = false`、`auto_disable_allowed = false`；
 - 普通 channel create/update/batch API 在 repository 层拒绝 provider-managed channel；
 - provider mutation 在同一控制面事务中更新凭证与 channel、写 audit、编译候选快照并发布。
@@ -112,12 +113,14 @@ Affinity binding 只在成功终态后写入。首次选择后若凭证进入 `d
 账户，也不会因本次失败删除 affinity；绑定会保留到正常 TTL/清理边界，以免后续请求静默切换
 provider 账户。
 
-客户端 `session-id` / `thread-id` 优先保留。缺失时，匹配 affinity 的请求从 session hash 加
-domain separation 派生稳定 opaque UUID；无 affinity 时生成本次请求 UUID。
+客户端 `session-id` / `thread-id` 优先保留。缺失时，HTTP 请求若匹配 affinity，则从 session
+hash 加 domain separation 派生稳定 opaque UUID；没有 affinity 的 HTTP 请求生成本次请求 UUID。
+WebSocket Session 从下游握手身份派生稳定 seed，使同一条下游连接及其可复用上游连接始终使用
+一致的 Codex Session/thread identity。
 
 ## 请求与重试边界
 
-Codex attempt：
+Codex HTTP attempt：
 
 - 要求 SSE streaming；
 - 强制 `stream=true`、`store=false`；
@@ -126,9 +129,22 @@ Codex attempt：
 - 注入 Bearer、`ChatGPT-Account-ID`、可选 FedRAMP、session/thread、User-Agent、
   `originator` 和版本 Header。
 
-preparation 失败可以在发送前换凭证。Codex attempt 不启用普通 transport retry，因为 reqwest
-返回 pre-header error 时不能证明请求体未被上游接收。收到任何上游响应头后同样不切换 channel。
-`401` 响应原样返回，同时异步触发 generation 去重 refresh。
+Codex WebSocket attempt：
+
+- 只接受 `response.create` 文本消息，并同样强制 `stream=true`、`store=false`；
+- 保留客户端的 `previous_response_id`、`generate` 和 `client_metadata`；
+- 把 managed channel base URL 转成 `/responses` 的 `ws`/`wss` 目标；
+- 使用 Codex 同源的 WebSocket Beta、Bearer/account、FedRAMP、session/thread、
+  User-Agent、`originator` 和版本 Header，不发送 HTTP SSE 专用的 `Accept`、
+  `Accept-Encoding` 或 `Content-Type`；
+- 成功终态后只复用无残留的同一上游连接，保留 connection-local
+  `previous_response_id` 状态。
+
+preparation 失败可以在发送前换凭证。HTTP Codex attempt 不启用普通 transport retry，因为
+reqwest 返回 pre-header error 时不能证明请求体未被上游接收。WebSocket 只允许在上游 Upgrade
+完成且尚未发送 `response.create` 前按全局重试策略换 channel；已经命中 affinity 或下游
+WebSocket pin 的 Codex Session fail closed，不换账户。消息发出后不重试。HTTP `401`、WebSocket
+握手 `401` 或带 `status = 401` 的终态错误会异步触发 generation 去重 refresh。
 
 ## 安全边界
 

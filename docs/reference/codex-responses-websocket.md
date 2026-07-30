@@ -2,11 +2,11 @@
 
 > 类型：外部实现参考，不是 `ai-gateway` 行为契约。
 >
-> 最近核对：2026-07-28。
+> 最近核对：2026-07-30。
 >
-> 参考版本：[`openai/codex@fbe65995bbcd4da249cfdafe0300ac3cb2cb3b3c`](https://github.com/openai/codex/tree/fbe65995bbcd4da249cfdafe0300ac3cb2cb3b3c)。
+> 参考版本：[`openai/codex@aa064463458adbef10400c74174107fc4b3550f0`](https://github.com/openai/codex/tree/aa064463458adbef10400c74174107fc4b3550f0)。
 >
-> 权威来源：[OpenAI WebSocket mode](https://developers.openai.com/api/docs/guides/websocket-mode)、[Codex Responses WebSocket endpoint](https://github.com/openai/codex/blob/fbe65995bbcd4da249cfdafe0300ac3cb2cb3b3c/codex-rs/codex-api/src/endpoint/responses_websocket.rs)、[Codex turn client](https://github.com/openai/codex/blob/fbe65995bbcd4da249cfdafe0300ac3cb2cb3b3c/codex-rs/core/src/client.rs) 和 [Codex WebSocket dialer](https://github.com/openai/codex/blob/fbe65995bbcd4da249cfdafe0300ac3cb2cb3b3c/codex-rs/websocket-client/src/dialer.rs)。
+> 权威来源：[OpenAI WebSocket mode](https://developers.openai.com/api/docs/guides/websocket-mode)、[Codex Responses WebSocket endpoint](https://github.com/openai/codex/blob/aa064463458adbef10400c74174107fc4b3550f0/codex-rs/codex-api/src/endpoint/responses_websocket.rs)、[Codex turn client](https://github.com/openai/codex/blob/aa064463458adbef10400c74174107fc4b3550f0/codex-rs/core/src/client.rs) 和 [Codex WebSocket dialer](https://github.com/openai/codex/tree/aa064463458adbef10400c74174107fc4b3550f0/codex-rs/websocket-client/src)。
 
 ## 适用范围
 
@@ -183,6 +183,13 @@ Codex WebSocket 测试至少覆盖：
 | 失败恢复 | 客户端重连，预算耗尽后切 HTTP | 只允许上游 Upgrade 前故障转移；消息发送后不重试 |
 | Header | Codex主动构造 Session 和内部 Header | 转发下游 Header，并按渠道变换/认证；缺省补 WebSocket Beta Header |
 | 能力开关 | provider 声明支持后由 Codex 使用 | 网关要求系统、用户和 Responses 渠道三层均显式启用；默认关闭 |
+
+对于 `connector_kind = codex_oauth`，managed channel 在创建和 migration 时自动设置
+`supports_websocket = true`，但系统和用户开关仍默认关闭。Connector 在通用 JSON/Header
+变换之后强制 `stream=true`、`store=false`，保留 `previous_response_id`、`generate` 和
+`client_metadata`，把目标改为 Codex base URL 下的 `/responses`，并最后注入当前
+Bearer/account、FedRAMP、Codex Session/thread、User-Agent、`originator` 和版本 Header。
+HTTP SSE 专用的 `Accept`、`Accept-Encoding` 与 `Content-Type` 不进入上游 WebSocket 握手。
 
 因此，`ai-gateway` 不应为了某个兼容上游而全局删除 `max_output_tokens` 或伪造全部 Codex
 metadata。真实上游 smoke 使用一个最小且可审阅的手写 `response.create` fixture 验证 WebSocket

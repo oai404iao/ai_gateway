@@ -12,7 +12,7 @@ use axum::{
         CloseFrame, Message as ClientMessage, Utf8Bytes as ClientUtf8Bytes, WebSocket, close_code,
     },
     http::{
-        HeaderMap, HeaderName, HeaderValue, Uri,
+        HeaderMap, HeaderName, HeaderValue, StatusCode, Uri,
         header::{AUTHORIZATION, CONTENT_LENGTH, HOST, PROXY_AUTHORIZATION},
     },
 };
@@ -28,7 +28,7 @@ use crate::{
     admission::AdmissionError,
     domain::{
         ApiFormat, ApiKeyPermission, CompiledApiKey, CompiledChannel, CompiledModelRule,
-        MAX_REQUEST_RETRIES, RequestProtocol,
+        RequestProtocol,
     },
     routing::{SelectionResult, SessionAffinityMatch},
     transforms::{apply_header_plan, apply_json_patch_plan, apply_websocket_event_plan},
@@ -39,11 +39,12 @@ use crate::{
     },
 };
 
+use super::super::connector::PreparedUpstreamAttempt as PreparedConnectorAttempt;
 use super::{
-    CompletionGuard, ProxyError, ProxyService, RequestOutcome, WebSocketRuntimeSnapshot,
-    forward_request_headers, inject_upstream_auth, match_session_affinity, parse_bearer_token,
+    AttemptedChannelSlots, CompletionGuard, ProxyError, ProxyService, RequestOutcome,
+    WebSocketRuntimeSnapshot, forward_request_headers, match_session_affinity, parse_bearer_token,
     request_billing_multiplier, request_log_metadata, rewrite_model_alias,
-    sse_terminal_request_outcome, upstream_url,
+    sse_terminal_request_outcome,
 };
 pub(super) use lifecycle::WebSocketLifecycle;
 use lifecycle::WebSocketSessionGuard;
@@ -448,16 +449,86 @@ impl ResponsesWebSocketSession {
             0
         };
         let max_attempts = max_retries.saturating_add(1);
-        let mut attempted_channel_slots = [usize::MAX; MAX_REQUEST_RETRIES as usize + 1];
-        let mut attempted_channel_count = 0_usize;
         let mut attempt = 1_u32;
         let mut current_rule = rule;
         let mut current_channel = channel;
         let mut current_channel_slot = channel_slot;
+        let mut current_session_affinity = session_affinity;
+        let mut current_preferred_channel_hit = preferred_channel == Some(current_channel.id());
+        let connector_seed = affinity
+            .as_ref()
+            .map(SessionAffinityMatch::session_hash)
+            .unwrap_or_else(|| self.client_identity.connector_seed());
+        let mut attempted_channel_slots = AttemptedChannelSlots::new();
 
         loop {
-            attempted_channel_slots[attempted_channel_count] = current_channel_slot;
-            attempted_channel_count += 1;
+            attempted_channel_slots.push(current_channel_slot);
+            let connector_affinity_hit = current_preferred_channel_hit
+                || current_session_affinity
+                    .as_ref()
+                    .is_some_and(crate::routing::SessionAffinitySelection::cache_hit);
+            let connector = match self.proxy.connectors.prepare(
+                &current_channel,
+                connector_affinity_hit,
+                &self.request_headers,
+                Some(connector_seed),
+            ) {
+                Ok(connector) => connector,
+                Err(error) => {
+                    if let Some(active) = pinned
+                        .as_mut()
+                        .filter(|active| active.key.channel_id() == current_channel.id())
+                    {
+                        active.reusable = false;
+                    }
+                    if connector_affinity_hit {
+                        completion.set_preserve_affinity_on_failure(true);
+                        completion.finish(RequestOutcome::UpstreamUnavailable);
+                        send_proxy_error(client, ProxyError::sticky_connector_unavailable(error))
+                            .await;
+                        return SessionAction::Close;
+                    }
+                    let retry_route = select_websocket_route(
+                        &self.proxy,
+                        &snapshot,
+                        &api_key,
+                        &parsed.model,
+                        affinity.clone(),
+                        None,
+                        attempted_channel_slots.as_slice(),
+                    );
+                    let SelectionResult::Selected(route) = retry_route else {
+                        completion.finish(RequestOutcome::UpstreamUnavailable);
+                        send_proxy_error(client, ProxyError::connector_unavailable(error)).await;
+                        return SessionAction::Close;
+                    };
+                    let crate::routing::SelectedRoute {
+                        rule,
+                        channel,
+                        channel_slot,
+                        session_affinity,
+                        lease,
+                    } = route;
+                    let request_multiplier =
+                        request_billing_multiplier(rule.advanced_billing(), &original_body);
+                    completion.replace_route_before_dispatch(
+                        &rule,
+                        &channel,
+                        lease,
+                        self.proxy.automatic_disable.clone(),
+                        snapshot.system_settings().automatic_disable().clone(),
+                        session_affinity.as_ref(),
+                        request_multiplier,
+                    );
+                    current_rule = rule;
+                    current_channel = channel;
+                    current_channel_slot = channel_slot;
+                    current_session_affinity = session_affinity;
+                    current_preferred_channel_hit = false;
+                    continue;
+                }
+            };
+            completion.set_preserve_affinity_on_failure(connector.preserves_affinity_on_failure());
             let prepared = match self.prepare_upstream_attempt(
                 &original_body,
                 &parsed,
@@ -465,10 +536,16 @@ impl ResponsesWebSocketSession {
                 &current_rule,
                 &current_channel,
                 &snapshot,
+                connector,
+                connector_affinity_hit,
             ) {
                 Ok(prepared) => prepared,
                 Err(error) => {
-                    completion.finish(RequestOutcome::ClientRequestError);
+                    completion.finish(if error.status.is_client_error() {
+                        RequestOutcome::ClientRequestError
+                    } else {
+                        RequestOutcome::UpstreamUnavailable
+                    });
                     send_proxy_error(client, error).await;
                     return SessionAction::Close;
                 }
@@ -520,6 +597,9 @@ impl ResponsesWebSocketSession {
                         }
                         Err(error) => {
                             if let UpstreamWebSocketError::Http { status } = error {
+                                if let Ok(status_code) = StatusCode::from_u16(status) {
+                                    prepared.connector.observe_response(status_code);
+                                }
                                 completion.set_upstream_status(status);
                                 completion.response_headers_received();
                                 completion.finish(RequestOutcome::UpstreamHttpError);
@@ -535,17 +615,19 @@ impl ResponsesWebSocketSession {
                                 return SessionAction::Close;
                             }
                             record_connection_failure(error, &mut completion);
-                            let next = (attempt < max_attempts).then(|| {
-                                select_websocket_route(
-                                    &self.proxy,
-                                    &snapshot,
-                                    &api_key,
-                                    &parsed.model,
-                                    affinity.clone(),
-                                    None,
-                                    &attempted_channel_slots[..attempted_channel_count],
-                                )
-                            });
+                            let next = (attempt < max_attempts
+                                && !prepared.preserve_channel_on_failure)
+                                .then(|| {
+                                    select_websocket_route(
+                                        &self.proxy,
+                                        &snapshot,
+                                        &api_key,
+                                        &parsed.model,
+                                        affinity.clone(),
+                                        None,
+                                        attempted_channel_slots.as_slice(),
+                                    )
+                                });
                             let Some(SelectionResult::Selected(route)) = next else {
                                 let (outcome, status, code) = connection_failure_response(error);
                                 completion.finish(outcome);
@@ -591,6 +673,8 @@ impl ResponsesWebSocketSession {
                             current_rule = rule;
                             current_channel = channel;
                             current_channel_slot = channel_slot;
+                            current_session_affinity = session_affinity;
+                            current_preferred_channel_hit = false;
                             attempt = attempt.saturating_add(1);
                             continue;
                         }
@@ -669,6 +753,7 @@ impl ResponsesWebSocketSession {
                     .upstream_policy()
                     .effective_transforms()
                     .sse_event_patches(),
+                &prepared.connector,
             )
             .await;
             self.release_pinned(pinned.take());
@@ -685,11 +770,16 @@ impl ResponsesWebSocketSession {
         rule: &CompiledModelRule,
         channel: &CompiledChannel,
         snapshot: &crate::domain::CompiledRuntimeConfig,
-    ) -> Result<PreparedUpstreamAttempt, ProxyError> {
+        connector: PreparedConnectorAttempt,
+        connector_affinity_hit: bool,
+    ) -> Result<PreparedWebSocketAttempt, ProxyError> {
         let transforms = channel.upstream_policy().effective_transforms();
         let body = rewrite_model_alias(original_body.clone(), &parsed.model, rule)?;
         let body = apply_json_patch_plan(body, transforms.request_json())
             .map_err(|_| ProxyError::transform_failed())?;
+        let body = connector
+            .adapt_body(body, RequestProtocol::WebSocket)
+            .map_err(ProxyError::connector_attempt)?;
         let mut headers = self.request_headers.clone();
         apply_header_plan(&mut headers, transforms.request_headers())
             .map_err(|_| ProxyError::transform_failed())?;
@@ -697,8 +787,13 @@ impl ResponsesWebSocketSession {
         headers
             .entry("openai-beta")
             .or_insert(HeaderValue::from_static(OPENAI_RESPONSES_WEBSOCKET_BETA));
-        inject_upstream_auth(&mut headers, channel)?;
-        let target = websocket_upstream_url(channel, &self.request_uri)?;
+        connector
+            .inject_headers(&mut headers, channel, RequestProtocol::WebSocket)
+            .map_err(ProxyError::connector_attempt)?;
+        let target = connector
+            .upstream_url(channel, &self.request_uri)
+            .map_err(ProxyError::connector_attempt)?;
+        let target = websocket_upstream_url(target)?;
         let policy = ResolvedUpstreamPolicy::try_resolve(
             &snapshot.system_settings().upstream_timeouts(),
             channel.upstream_policy(),
@@ -712,12 +807,15 @@ impl ResponsesWebSocketSession {
             &headers,
             MAX_UPSTREAM_MESSAGE_BYTES,
         );
-        Ok(PreparedUpstreamAttempt {
+        Ok(PreparedWebSocketAttempt {
             body,
             headers,
             target,
             policy,
             key,
+            preserve_channel_on_failure: connector_affinity_hit
+                && connector.preserves_affinity_on_failure(),
+            connector,
         })
     }
 
@@ -735,12 +833,14 @@ impl ResponsesWebSocketSession {
     }
 }
 
-struct PreparedUpstreamAttempt {
+struct PreparedWebSocketAttempt {
     body: Bytes,
     headers: HeaderMap,
     target: reqwest::Url,
     policy: ResolvedUpstreamPolicy,
     key: UpstreamWebSocketKey,
+    preserve_channel_on_failure: bool,
+    connector: PreparedConnectorAttempt,
 }
 
 struct PinnedUpstream {
@@ -858,11 +958,7 @@ fn select_websocket_route(
     )
 }
 
-fn websocket_upstream_url(
-    channel: &CompiledChannel,
-    uri: &Uri,
-) -> Result<reqwest::Url, ProxyError> {
-    let mut target = upstream_url(channel, uri)?;
+fn websocket_upstream_url(mut target: reqwest::Url) -> Result<reqwest::Url, ProxyError> {
     let scheme = match target.scheme() {
         "http" => "ws",
         "https" => "wss",
@@ -897,6 +993,7 @@ async fn relay_upstream_response(
     mut completion: CompletionGuard,
     idle_timeout: Duration,
     response_plan: &crate::transforms::SseEventPatchPlan,
+    connector: &PreparedConnectorAttempt,
 ) -> SessionAction {
     let idle = tokio::time::sleep(idle_timeout);
     tokio::pin!(idle);
@@ -934,6 +1031,9 @@ async fn relay_upstream_response(
                             })
                         {
                             completion.set_client_visible_status(status);
+                            if let Ok(status_code) = StatusCode::from_u16(status) {
+                                connector.observe_response(status_code);
+                            }
                         }
                         if !event.connection_limit_reached {
                             completion.observe_upstream_error_body(&original);

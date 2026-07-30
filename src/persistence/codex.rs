@@ -628,7 +628,8 @@ impl ControlPlaneRepository {
             let before = codex_credential_audit(transaction, channel_id).await?;
             sqlx::query(
                 "UPDATE channels SET \
-                 name=$2,base_url=$3,enabled=true,weight=$4,proxy_id=$5,available_models=$6 \
+                 name=$2,base_url=$3,enabled=true,weight=$4,proxy_id=$5,available_models=$6, \
+                 supports_websocket=true \
                  WHERE id=$1",
             )
             .bind(channel_id)
@@ -718,7 +719,7 @@ impl ControlPlaneRepository {
              (id,channel_group_id,api_format,name,base_url,enabled,weight,billing_multiplier, \
               proxy_id,override_document,upstream_auth_kind,available_models, \
               status_statistics_enabled,auto_disable_allowed,supports_websocket) \
-             VALUES ($1,$2,$3::api_format,$4,$5,true,$6,1,$7,'{}','none',$8,false,false,false) \
+             VALUES ($1,$2,$3::api_format,$4,$5,true,$6,1,$7,'{}','none',$8,false,false,true) \
              RETURNING updated_at",
         )
         .bind(channel_id)

@@ -57,12 +57,14 @@ impl PreparedCodexAttempt {
         let object = value
             .as_object_mut()
             .ok_or(CodexAttemptError::InvalidRequestBody)?;
-        if object.get("previous_response_id").is_some_and(|value| {
-            !value.is_null() && !matches!(value, Value::String(value) if value.is_empty())
-        }) {
-            return Err(CodexAttemptError::PreviousResponseUnsupported);
+        if request_protocol != RequestProtocol::WebSocket {
+            if object.get("previous_response_id").is_some_and(|value| {
+                !value.is_null() && !matches!(value, Value::String(value) if value.is_empty())
+            }) {
+                return Err(CodexAttemptError::PreviousResponseUnsupported);
+            }
+            object.remove("previous_response_id");
         }
-        object.remove("previous_response_id");
         object.insert("store".to_owned(), Value::Bool(false));
         object.insert("stream".to_owned(), Value::Bool(true));
         serde_json::to_vec(&value)
@@ -83,7 +85,11 @@ impl PreparedCodexAttempt {
             .map_err(|_| CodexAttemptError::InvalidTarget)
     }
 
-    pub(crate) fn inject_headers(&self, headers: &mut HeaderMap) -> Result<(), CodexAttemptError> {
+    pub(crate) fn inject_headers(
+        &self,
+        headers: &mut HeaderMap,
+        request_protocol: RequestProtocol,
+    ) -> Result<(), CodexAttemptError> {
         let invalid = |_| CodexAttemptError::InvalidCredentials;
         headers.insert(
             AUTHORIZATION,
@@ -94,11 +100,17 @@ impl PreparedCodexAttempt {
             "ChatGPT-Account-ID",
             HeaderValue::from_str(self.credential.account_id()).map_err(invalid)?,
         );
-        headers.insert(ACCEPT, HeaderValue::from_static("text/event-stream"));
-        // The Gateway must inspect Codex's terminal SSE event for usage and
-        // completion before clients stop polling the response body.
-        headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("identity"));
-        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        if request_protocol == RequestProtocol::WebSocket {
+            headers.remove(ACCEPT);
+            headers.remove(ACCEPT_ENCODING);
+            headers.remove(CONTENT_TYPE);
+        } else {
+            headers.insert(ACCEPT, HeaderValue::from_static("text/event-stream"));
+            // The Gateway must inspect Codex's terminal SSE event for usage and
+            // completion before clients stop polling the response body.
+            headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("identity"));
+            headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        }
         headers.insert(
             USER_AGENT,
             HeaderValue::from_str(&codex_user_agent()).map_err(invalid)?,
@@ -342,7 +354,9 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("gzip, br"));
 
-        attempt.inject_headers(&mut headers).unwrap();
+        attempt
+            .inject_headers(&mut headers, RequestProtocol::Sse)
+            .unwrap();
 
         assert_eq!(
             headers
@@ -365,6 +379,54 @@ mod tests {
                 .get(USER_AGENT)
                 .and_then(|value| value.to_str().ok()),
             Some(codex_user_agent().as_str())
+        );
+    }
+
+    #[test]
+    fn websocket_requests_preserve_incremental_state_and_use_handshake_headers() {
+        let attempt = PreparedCodexAttempt::prepare(
+            &runtime(),
+            Uuid::from_u128(1),
+            false,
+            &HeaderMap::new(),
+            None,
+        )
+        .unwrap();
+        let body = attempt
+            .adapt_body(
+                Bytes::from_static(
+                    br#"{"type":"response.create","model":"gpt-5-codex","stream":false,"store":true,"previous_response_id":"resp_1"}"#,
+                ),
+                RequestProtocol::WebSocket,
+            )
+            .unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["previous_response_id"], "resp_1");
+        assert_eq!(value["stream"], true);
+        assert_eq!(value["store"], false);
+
+        let mut headers = HeaderMap::new();
+        headers.insert(ACCEPT, HeaderValue::from_static("text/event-stream"));
+        headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("gzip, br"));
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        attempt
+            .inject_headers(&mut headers, RequestProtocol::WebSocket)
+            .unwrap();
+
+        assert!(!headers.contains_key(ACCEPT));
+        assert!(!headers.contains_key(ACCEPT_ENCODING));
+        assert!(!headers.contains_key(CONTENT_TYPE));
+        assert_eq!(
+            headers
+                .get(AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer access-token")
+        );
+        assert_eq!(
+            headers
+                .get("chatgpt-account-id")
+                .and_then(|value| value.to_str().ok()),
+            Some("account-123")
         );
     }
 

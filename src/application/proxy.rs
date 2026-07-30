@@ -447,7 +447,11 @@ impl ProxyService {
                     return Err(ProxyError::connector_attempt(error));
                 }
             };
-            if let Err(error) = prepared_attempt.inject_headers(&mut headers, &current_channel) {
+            if let Err(error) = prepared_attempt.inject_headers(
+                &mut headers,
+                &current_channel,
+                parsed.request_protocol,
+            ) {
                 completion.finish(RequestOutcome::UpstreamUnavailable);
                 return Err(ProxyError::connector_attempt(error));
             }
@@ -1194,20 +1198,6 @@ fn parse_bearer_token(headers: &HeaderMap) -> Result<&str, ProxyError> {
         return Err(ProxyError::invalid_api_key());
     }
     Ok(token)
-}
-
-fn upstream_url(
-    channel: &CompiledChannel,
-    uri: &axum::http::Uri,
-) -> Result<reqwest::Url, ProxyError> {
-    super::connector::standard_upstream_url(channel, uri).map_err(ProxyError::connector_attempt)
-}
-
-fn inject_upstream_auth(
-    headers: &mut HeaderMap,
-    channel: &CompiledChannel,
-) -> Result<(), ProxyError> {
-    super::connector::inject_standard_auth(headers, channel).map_err(ProxyError::connector_attempt)
 }
 
 fn forward_request_headers(headers: &HeaderMap) -> HeaderMap {

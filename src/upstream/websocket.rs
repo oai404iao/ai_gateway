@@ -49,6 +49,11 @@ impl WebSocketClientIdentity {
         hash_headers(&mut hasher, headers);
         Self(hasher.finalize().into())
     }
+
+    #[must_use]
+    pub(crate) const fn connector_seed(self) -> [u8; 32] {
+        self.0
+    }
 }
 
 impl fmt::Debug for WebSocketClientIdentity {

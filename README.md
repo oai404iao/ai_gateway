@@ -40,7 +40,8 @@ separate management Console for users and administrators.
 - **In-process upstream connectors** keep provider-specific authentication and
   request preparation inside the single Rust service. The first connector,
   Codex OAuth, adds subscription credentials, per-account proxies, token
-  refresh, quota-aware draining, and provider-managed Responses channels.
+  refresh, quota-aware draining, and provider-managed Responses HTTP, SSE, and
+  WebSocket channels.
 - **Database-backed control plane** compiled into immutable runtime snapshots;
   proxy requests do not query PostgreSQL on the hot path.
 - **Constrained transforms** for request JSON, headers, normal responses, and

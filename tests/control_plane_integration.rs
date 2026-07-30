@@ -44,17 +44,27 @@ use ai_gateway::{
 use axum::{
     Router,
     body::{Body, Bytes},
-    extract::State,
-    http::{HeaderMap, StatusCode},
-    response::Response,
+    extract::{
+        State,
+        ws::{Message as UpstreamWebSocketMessage, WebSocket, WebSocketUpgrade},
+    },
+    http::{
+        HeaderMap, HeaderValue, StatusCode,
+        header::{ACCEPT_ENCODING, AUTHORIZATION},
+    },
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
 use chrono::{DateTime, Utc};
-use futures_util::{StreamExt, stream};
+use futures_util::{SinkExt, StreamExt, stream};
 use http_body_util::BodyExt;
 use reqwest::Url;
 use sqlx::{FromRow, PgPool, postgres::PgPoolOptions};
-use tokio::{net::TcpListener, task::JoinHandle};
+use tokio::{net::TcpListener, task::JoinHandle, time::timeout};
+use tokio_tungstenite::{
+    connect_async,
+    tungstenite::{Message as ClientWebSocketMessage, client::IntoClientRequest},
+};
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -503,8 +513,26 @@ struct CapturedCodexRequest {
     body: serde_json::Value,
 }
 
+#[derive(Clone, Debug)]
+struct CapturedCodexWebSocketHandshake {
+    authorization: Option<String>,
+    account_id: Option<String>,
+    originator: Option<String>,
+    user_agent: Option<String>,
+    version: Option<String>,
+    session_id: Option<String>,
+    thread_id: Option<String>,
+    client_request_id: Option<String>,
+    openai_beta: Option<String>,
+    accept_encoding: Option<String>,
+}
+
 #[derive(Clone, Default)]
-struct CodexUpstreamState(Arc<Mutex<Vec<CapturedCodexRequest>>>);
+struct CodexUpstreamState {
+    http_requests: Arc<Mutex<Vec<CapturedCodexRequest>>>,
+    websocket_handshakes: Arc<Mutex<Vec<CapturedCodexWebSocketHandshake>>>,
+    websocket_requests: Arc<Mutex<Vec<serde_json::Value>>>,
+}
 
 async fn codex_responses_upstream(
     State(state): State<CodexUpstreamState>,
@@ -518,7 +546,7 @@ async fn codex_responses_upstream(
             .map(str::to_owned)
     };
     let request_index = {
-        let mut requests = state.0.lock().unwrap();
+        let mut requests = state.http_requests.lock().unwrap();
         let request_index = requests.len();
         requests.push(CapturedCodexRequest {
             authorization: header("authorization"),
@@ -552,6 +580,137 @@ async fn codex_responses_upstream(
             .unwrap()
     } else {
         response.body(Body::from(terminal)).unwrap()
+    }
+}
+
+async fn codex_responses_websocket_upstream(
+    websocket: WebSocketUpgrade,
+    State(state): State<CodexUpstreamState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let header = |name: &'static str| {
+        headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned)
+    };
+    state
+        .websocket_handshakes
+        .lock()
+        .unwrap()
+        .push(CapturedCodexWebSocketHandshake {
+            authorization: header("authorization"),
+            account_id: header("chatgpt-account-id"),
+            originator: header("originator"),
+            user_agent: header("user-agent"),
+            version: header("version"),
+            session_id: header("session-id"),
+            thread_id: header("thread-id"),
+            client_request_id: header("x-client-request-id"),
+            openai_beta: header("openai-beta"),
+            accept_encoding: header("accept-encoding"),
+        });
+    websocket.on_upgrade(move |socket| codex_websocket_connection(socket, state))
+}
+
+async fn codex_websocket_connection(mut websocket: WebSocket, state: CodexUpstreamState) {
+    let mut previous_response_id = None::<String>;
+    let mut response_number = 1_u32;
+    while let Some(Ok(UpstreamWebSocketMessage::Text(text))) = websocket.next().await {
+        let body: serde_json::Value = serde_json::from_str(&text).unwrap();
+        state.websocket_requests.lock().unwrap().push(body.clone());
+        let requested_previous = body
+            .get("previous_response_id")
+            .and_then(serde_json::Value::as_str);
+        if requested_previous.is_some() && requested_previous != previous_response_id.as_deref() {
+            websocket
+                .send(UpstreamWebSocketMessage::Text(
+                    serde_json::json!({
+                        "type": "error",
+                        "status": 400,
+                        "error": {
+                            "type": "invalid_request_error",
+                            "code": "previous_response_not_found",
+                            "message": "previous response was not on this connection"
+                        }
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await
+                .unwrap();
+            continue;
+        }
+
+        let response_id = format!("resp_codex_ws_{response_number}");
+        response_number = response_number.saturating_add(1);
+        websocket
+            .send(UpstreamWebSocketMessage::Text(
+                serde_json::json!({
+                    "type": "response.created",
+                    "response": {"id": response_id}
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        websocket
+            .send(UpstreamWebSocketMessage::Text(
+                serde_json::json!({
+                    "type": "response.completed",
+                    "response": {
+                        "id": response_id,
+                        "usage": {
+                            "input_tokens": 100,
+                            "input_tokens_details": {
+                                "cached_tokens": 40,
+                                "cache_write_tokens": 60
+                            },
+                            "output_tokens": 10,
+                            "output_tokens_details": {"reasoning_tokens": 5},
+                            "total_tokens": 110
+                        }
+                    }
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        previous_response_id = Some(response_id);
+    }
+}
+
+async fn codex_websocket_response_create(
+    websocket: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+    body: serde_json::Value,
+) -> Vec<serde_json::Value> {
+    websocket
+        .send(ClientWebSocketMessage::Text(body.to_string().into()))
+        .await
+        .unwrap();
+    let mut events = Vec::new();
+    loop {
+        let message = timeout(Duration::from_secs(2), websocket.next())
+            .await
+            .expect("Codex WebSocket response timed out")
+            .expect("Codex WebSocket closed before a terminal event")
+            .expect("Codex WebSocket response failed");
+        let ClientWebSocketMessage::Text(text) = message else {
+            continue;
+        };
+        let event: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let terminal = matches!(
+            event.get("type").and_then(serde_json::Value::as_str),
+            Some("response.completed" | "response.failed" | "error")
+        );
+        events.push(event);
+        if terminal {
+            return events;
+        }
     }
 }
 
@@ -1426,7 +1585,7 @@ async fn codex_credentials_create_managed_channels_and_recompute_quota_state() {
         .channel(created.id)
         .expect("managed channel compiled");
     assert_eq!(channel.connector_kind(), ConnectorKind::CodexOauth);
-    assert!(!channel.supports_websocket());
+    assert!(channel.supports_websocket());
 
     let before = repository
         .codex_credential_view(created.id)
@@ -1800,7 +1959,7 @@ async fn codex_connector_forwards_responses_with_managed_credentials_and_headers
         Router::new()
             .route(
                 "/backend-api/codex/responses",
-                post(codex_responses_upstream),
+                get(codex_responses_websocket_upstream).post(codex_responses_upstream),
             )
             .with_state(captured.clone()),
     )
@@ -1832,9 +1991,15 @@ async fn codex_connector_forwards_responses_with_managed_credentials_and_headers
             ttl_seconds: Some(3_600),
         }],
     };
+    settings.websocket.enabled = true;
     sqlx::query("UPDATE system_settings SET value=$2 WHERE setting_key=$1")
         .bind("forwarding_policy")
         .bind(serde_json::to_value(settings).unwrap())
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE users SET websocket_enabled=true WHERE id=$1")
+        .bind(seed.user)
         .execute(&database.pool)
         .await
         .unwrap();
@@ -1990,7 +2155,7 @@ async fn codex_connector_forwards_responses_with_managed_credentials_and_headers
     );
     drop(response_body);
 
-    let requests = captured.0.lock().unwrap().clone();
+    let requests = captured.http_requests.lock().unwrap().clone();
     assert_eq!(requests.len(), 1);
     let forwarded = &requests[0];
     assert_eq!(
@@ -2054,7 +2219,143 @@ async fn codex_connector_forwards_responses_with_managed_credentials_and_headers
     assert!(
         String::from_utf8_lossy(&previous_body).contains("codex_previous_response_unsupported")
     );
-    assert_eq!(captured.0.lock().unwrap().len(), 1);
+    assert_eq!(captured.http_requests.lock().unwrap().len(), 1);
+
+    let gateway = start_server(app.clone()).await;
+    let websocket_request = || {
+        let mut request = format!("ws://{}/v1/responses", gateway.address)
+            .into_client_request()
+            .unwrap();
+        request.headers_mut().insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {}", seed.secret)).unwrap(),
+        );
+        request
+            .headers_mut()
+            .insert("session-id", HeaderValue::from_static("session-123"));
+        request
+            .headers_mut()
+            .insert("thread-id", HeaderValue::from_static("thread-456"));
+        request
+            .headers_mut()
+            .insert(ACCEPT_ENCODING, HeaderValue::from_static("gzip, br"));
+        request
+    };
+    let (mut websocket, response) = connect_async(websocket_request()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+
+    let first_websocket_events = codex_websocket_response_create(
+        &mut websocket,
+        serde_json::json!({
+            "type": "response.create",
+            "model": client_model.clone(),
+            "stream": false,
+            "store": true,
+            "generate": false,
+            "input": [{"type": "message", "role": "user", "content": []}]
+        }),
+    )
+    .await;
+    assert_eq!(
+        first_websocket_events
+            .last()
+            .and_then(|event| event["response"]["id"].as_str()),
+        Some("resp_codex_ws_1")
+    );
+    let second_websocket_events = codex_websocket_response_create(
+        &mut websocket,
+        serde_json::json!({
+            "type": "response.create",
+            "model": client_model.clone(),
+            "stream": true,
+            "store": true,
+            "previous_response_id": "resp_codex_ws_1",
+            "input": [{"type": "message", "role": "user", "content": []}]
+        }),
+    )
+    .await;
+    assert_eq!(
+        second_websocket_events
+            .last()
+            .and_then(|event| event["response"]["id"].as_str()),
+        Some("resp_codex_ws_2")
+    );
+    websocket.close(None).await.unwrap();
+    let _ = timeout(Duration::from_secs(1), websocket.next()).await;
+
+    let (mut reconnected_websocket, response) = connect_async(websocket_request()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+    let reconnected_events = codex_websocket_response_create(
+        &mut reconnected_websocket,
+        serde_json::json!({
+            "type": "response.create",
+            "model": client_model.clone(),
+            "stream": true,
+            "store": true,
+            "previous_response_id": "resp_codex_ws_2",
+            "input": [{"type": "message", "role": "user", "content": []}]
+        }),
+    )
+    .await;
+    assert_eq!(
+        reconnected_events
+            .last()
+            .and_then(|event| event["response"]["id"].as_str()),
+        Some("resp_codex_ws_3")
+    );
+    reconnected_websocket.close(None).await.unwrap();
+    let _ = timeout(Duration::from_secs(1), reconnected_websocket.next()).await;
+
+    let websocket_handshakes = captured.websocket_handshakes.lock().unwrap().clone();
+    assert_eq!(websocket_handshakes.len(), 1);
+    let handshake = &websocket_handshakes[0];
+    assert_eq!(
+        handshake.authorization.as_deref(),
+        Some("Bearer access-token")
+    );
+    assert_eq!(handshake.account_id.as_deref(), Some("account-123"));
+    assert_eq!(handshake.originator.as_deref(), Some(CODEX_ORIGINATOR));
+    assert_eq!(
+        handshake.user_agent.as_deref(),
+        Some(codex_user_agent().as_str())
+    );
+    assert_eq!(
+        handshake.version.as_deref(),
+        codex_user_agent()
+            .split_once('/')
+            .map(|(_, version)| version)
+    );
+    assert_eq!(handshake.session_id.as_deref(), Some("session-123"));
+    assert_eq!(handshake.thread_id.as_deref(), Some("thread-456"));
+    assert_eq!(handshake.client_request_id.as_deref(), Some("thread-456"));
+    assert_eq!(
+        handshake.openai_beta.as_deref(),
+        Some("responses_websockets=2026-02-06")
+    );
+    assert_eq!(handshake.accept_encoding, None);
+
+    let websocket_requests = captured.websocket_requests.lock().unwrap().clone();
+    assert_eq!(websocket_requests.len(), 3);
+    assert_eq!(websocket_requests[0]["type"], "response.create");
+    assert_eq!(websocket_requests[0]["model"], "upstream-v1");
+    assert_eq!(websocket_requests[0]["stream"], true);
+    assert_eq!(websocket_requests[0]["store"], false);
+    assert_eq!(websocket_requests[0]["generate"], false);
+    assert_eq!(
+        websocket_requests[1]["previous_response_id"],
+        "resp_codex_ws_1"
+    );
+    assert_eq!(
+        websocket_requests[2]["previous_response_id"],
+        "resp_codex_ws_2"
+    );
+    assert_eq!(
+        logs.events()
+            .iter()
+            .filter(|event| event.request_protocol == RequestProtocol::WebSocket)
+            .count(),
+        3
+    );
 
     repository
         .persist_codex_quota(
@@ -2105,7 +2406,7 @@ async fn codex_connector_forwards_responses_with_managed_credentials_and_headers
     assert_eq!(new_session.status(), StatusCode::SERVICE_UNAVAILABLE);
     let new_session_body = new_session.into_body().collect().await.unwrap().to_bytes();
     assert!(String::from_utf8_lossy(&new_session_body).contains("codex_credential_draining"));
-    assert_eq!(captured.0.lock().unwrap().len(), 2);
+    assert_eq!(captured.http_requests.lock().unwrap().len(), 2);
 
     repository
         .persist_codex_quota(
@@ -2150,7 +2451,7 @@ async fn codex_connector_forwards_responses_with_managed_credentials_and_headers
             String::from_utf8_lossy(&sticky_body).contains("codex_sticky_credential_unavailable")
         );
     }
-    assert_eq!(captured.0.lock().unwrap().len(), 2);
+    assert_eq!(captured.http_requests.lock().unwrap().len(), 2);
 
     let view = codex_connector
         .credential(credential.id)
@@ -2220,7 +2521,7 @@ async fn codex_connector_forwards_responses_with_managed_credentials_and_headers
         channel_enabled,
         "the provider runtime, not generic routing, owns managed credential enablement"
     );
-    assert_eq!(captured.0.lock().unwrap().len(), 2);
+    assert_eq!(captured.http_requests.lock().unwrap().len(), 2);
 
     drop(upstream);
     database.cleanup().await;

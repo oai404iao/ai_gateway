@@ -18,7 +18,7 @@
 - 按 `(客户端模型名, API 格式)` 路由，支持渠道组优先级和渠道权重选择。
 - 特殊上游通过单进程内 Connector 接入，不增加 sidecar 或第二次网络跳转。首个
   Codex OAuth Connector 支持订阅凭证、每账户代理、Token 刷新、额度感知 draining
-  和 provider-managed Responses 渠道。
+  以及 provider-managed Responses HTTP/SSE/WebSocket 渠道。
 - 将 PostgreSQL 控制面记录编译为不可变内存快照，因此代理请求不需要逐次查询数据库。
 - 可按配置执行模型别名、受限 JSON/Header/响应/SSE 变换。
 - 转发前会移除客户端凭据和 hop-by-hop Header，再注入渠道专属的上游鉴权。
@@ -36,7 +36,7 @@ OpenAI 兼容客户端
   → 鉴权与准入
   → 不可变路由快照
   → 渠道选择与可选变换
-  → 可复用 reqwest 上游客户端
+  → 可复用 reqwest 上游客户端或固定的 Responses WebSocket
   → 流式上游响应
   → 异步请求日志 / 用量 / 结算
 
