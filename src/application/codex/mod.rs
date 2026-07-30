@@ -16,9 +16,10 @@ use uuid::Uuid;
 use crate::{
     domain::{ApiFormat, ChannelTimeoutPolicy, CompiledChannelUpstreamPolicy},
     persistence::{
-        CodexCredentialCreate, CodexCredentialImportInput, CodexCredentialRecord,
-        CodexCredentialUpdateInput, CodexCredentialView, CodexOauthStartInput,
-        CodexTokenRefreshUpdate, ControlPlaneRepository, MutationResult, RepositoryError,
+        CodexCredentialCreate, CodexCredentialExportBundle, CodexCredentialExportInput,
+        CodexCredentialImportInput, CodexCredentialRecord, CodexCredentialUpdateInput,
+        CodexCredentialView, CodexOauthStartInput, CodexTokenRefreshUpdate, ControlPlaneRepository,
+        MutationResult, RepositoryError,
     },
     runtime_config::RuntimeConfig,
     transforms::TransformPlan,
@@ -124,6 +125,27 @@ impl CodexConnectorService {
         Ok(self.repository.codex_credential_view(channel_id).await?)
     }
 
+    pub async fn export_credentials(
+        &self,
+        actor: Uuid,
+        channel_group_id: Uuid,
+        input: CodexCredentialExportInput,
+    ) -> Result<CodexCredentialExportBundle, CodexConnectorError> {
+        self.coordinator.verify_active_admin(actor).await?;
+        let bundle = self
+            .repository
+            .export_codex_credentials(channel_group_id, input)
+            .await?;
+        tracing::warn!(
+            actor_user_id = %actor,
+            %channel_group_id,
+            credential_count = bundle.credentials.len(),
+            proxy_count = bundle.proxies.len(),
+            "Codex credentials exported"
+        );
+        Ok(bundle)
+    }
+
     pub async fn start_oauth(
         &self,
         actor: Uuid,
@@ -184,10 +206,11 @@ impl CodexConnectorService {
             .prepare_credential(
                 flow.channel_group_id,
                 flow.label,
+                true,
                 flow.proxy_id,
                 flow.weight,
                 flow.quota_threshold_percent,
-                tokens.id_token,
+                Some(tokens.id_token),
                 tokens.access_token,
                 tokens.refresh_token,
                 None,
@@ -215,6 +238,7 @@ impl CodexConnectorService {
             .prepare_credential(
                 channel_group_id,
                 input.label,
+                input.enabled,
                 input.proxy_id,
                 input.weight,
                 input.quota_threshold_percent,
@@ -327,23 +351,26 @@ impl CodexConnectorService {
         &self,
         channel_group_id: Uuid,
         label: String,
+        enabled: bool,
         proxy_id: Option<Uuid>,
         weight: i32,
         quota_threshold_percent: i16,
-        id_token: String,
+        id_token: Option<String>,
         access_token: String,
         refresh_token: String,
         supplied_account_id: Option<String>,
         client: &Client,
         policy: ResolvedUpstreamPolicy,
     ) -> Result<CodexCredentialCreate, CodexConnectorError> {
-        if id_token.trim().is_empty()
-            || access_token.trim().is_empty()
-            || refresh_token.trim().is_empty()
-        {
+        let id_token = id_token
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty());
+        let access_token = access_token.trim().to_owned();
+        let refresh_token = refresh_token.trim().to_owned();
+        if access_token.is_empty() || refresh_token.is_empty() {
             return Err(CodexConnectorError::InvalidCredential);
         }
-        let identity = parse_identity(&id_token)?;
+        let identity = parse_identity(id_token.as_deref().unwrap_or(&access_token))?;
         let account_id = resolve_account_id(identity.account_id, supplied_account_id)?;
         let access_token_expires_at = parse_jwt_expiration(&access_token)?;
         let models = fetch_models(
@@ -379,6 +406,7 @@ impl CodexConnectorService {
         Ok(CodexCredentialCreate {
             channel_group_id,
             label,
+            enabled,
             proxy_id,
             weight,
             quota_threshold_percent,
@@ -387,7 +415,7 @@ impl CodexConnectorService {
             account_id,
             plan_type: identity.plan_type,
             is_fedramp: identity.is_fedramp,
-            id_token,
+            id_token: id_token.unwrap_or_else(|| access_token.clone()),
             access_token,
             refresh_token,
             access_token_expires_at,

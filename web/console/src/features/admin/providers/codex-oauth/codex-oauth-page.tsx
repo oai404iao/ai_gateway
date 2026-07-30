@@ -1,6 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
-import { ExternalLink, KeyRound, Pencil, Plus, RefreshCw } from "lucide-react";
-import { useParams } from "react-router";
+import {
+  Download,
+  ExternalLink,
+  FileUp,
+  KeyRound,
+  Pencil,
+  Plus,
+  RefreshCw,
+} from "lucide-react";
+import { useNavigate, useParams } from "react-router";
 import { toast } from "sonner";
 import type {
   CodexCredentialImportInput,
@@ -13,6 +21,16 @@ import { AsyncResource, ErrorAlert } from "@/components/shared/async-resource";
 import { PageHeader } from "@/components/shared/page-header";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -70,6 +88,7 @@ import {
   useCodexCredential,
   useCodexCredentials,
   useCompleteCodexOauth,
+  useExportCodexCredentials,
   useImportCodexCredential,
   useRefreshCodexCredential,
   useRefreshCodexQuota,
@@ -312,12 +331,14 @@ function SettingsFields({
 export default function CodexOauthPage() {
   const { t } = useI18n();
   const { id: groupId = "" } = useParams();
+  const navigate = useNavigate();
   const group = useChannelGroup(groupId);
   const lists = useControlPlaneLists();
   const credentials = useCodexCredentials(groupId);
   const startOauth = useStartCodexOauth(groupId);
   const completeOauth = useCompleteCodexOauth(groupId);
   const importCredential = useImportCodexCredential(groupId);
+  const exportCredentials = useExportCodexCredentials(groupId);
   const refreshCredential = useRefreshCodexCredential(groupId);
   const refreshQuota = useRefreshCodexQuota(groupId);
 
@@ -331,6 +352,7 @@ export default function CodexOauthPage() {
   } | null>(null);
   const [callbackUrl, setCallbackUrl] = useState("");
   const [importOpen, setImportOpen] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
   const [importState, setImportState] = useState<ImportState>(EMPTY_IMPORT);
   const [editingId, setEditingId] = useState<string | null>(null);
 
@@ -399,6 +421,7 @@ export default function CodexOauthPage() {
     }
     const input: CodexCredentialImportInput = {
       ...settings,
+      enabled: true,
       id_token: importState.id_token.trim(),
       access_token: importState.access_token.trim(),
       refresh_token: importState.refresh_token.trim(),
@@ -409,6 +432,25 @@ export default function CodexOauthPage() {
       toast.success(t("Codex credential imported."));
       setImportOpen(false);
       setImportState(EMPTY_IMPORT);
+    } catch (error) {
+      toast.error(errorMessage(error));
+    }
+  };
+
+  const exportAllCredentials = async () => {
+    try {
+      const bundle = await exportCredentials.mutateAsync({
+        credential_ids: [],
+        include_proxies: true,
+      });
+      downloadJson(
+        bundle,
+        `codex-credentials-${safeFilename(
+          group.data?.data.name ?? "export",
+        )}-${new Date().toISOString().slice(0, 10)}.json`,
+      );
+      toast.success(t("Codex credentials exported."));
+      setExportOpen(false);
     } catch (error) {
       toast.error(errorMessage(error));
     }
@@ -447,6 +489,24 @@ export default function CodexOauthPage() {
         )}
         actions={
           <>
+            <Button
+              variant="outline"
+              disabled={!managementEnabled || exportCredentials.isPending}
+              onClick={() => setExportOpen(true)}
+            >
+              <Download data-icon="inline-start" />
+              {t("Export credentials")}
+            </Button>
+            <Button
+              variant="outline"
+              disabled={!managementEnabled}
+              onClick={() =>
+                navigate(`/admin/providers/codex-oauth/${groupId}/import`)
+              }
+            >
+              <FileUp data-icon="inline-start" />
+              {t("Advanced import")}
+            </Button>
             <Button
               variant="outline"
               disabled={!managementEnabled}
@@ -880,6 +940,33 @@ export default function CodexOauthPage() {
         proxies={proxies}
         onClose={() => setEditingId(null)}
       />
+
+      <AlertDialog
+        open={exportOpen}
+        onOpenChange={(open) => setExportOpen(open)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {t("Export Codex credentials?")}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {t(
+                "The downloaded JSON contains raw ID, access, refresh, and proxy credentials. Store it as a secret and delete it when no longer needed.",
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("Cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => void exportAllCredentials()}
+              disabled={exportCredentials.isPending}
+            >
+              {t("Export all")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
@@ -986,4 +1073,26 @@ function EditCredentialDialog({
       </DialogContent>
     </Dialog>
   );
+}
+
+function safeFilename(value: string): string {
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return normalized || "export";
+}
+
+function downloadJson(value: unknown, filename: string) {
+  const url = URL.createObjectURL(
+    new Blob([JSON.stringify(value, null, 2)], {
+      type: "application/json",
+    }),
+  );
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  URL.revokeObjectURL(url);
 }

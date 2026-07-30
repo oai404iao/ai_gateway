@@ -141,6 +141,9 @@ const ModelRuleDetailPage = lazy(() =>
 const CodexOauthPage = lazy(
   () => import("@/features/admin/providers/codex-oauth/codex-oauth-page"),
 );
+const CodexImportPage = lazy(
+  () => import("@/features/admin/providers/codex-oauth/codex-import-page"),
+);
 const ProxiesPage = lazy(() =>
   import("@/features/admin/network/proxies-page").then((m) => ({ default: m.ProxiesPage })),
 );
@@ -253,6 +256,10 @@ export function AppRouter() {
             <Route
               path="/admin/providers/codex-oauth/:id"
               element={<CodexOauthPage />}
+            />
+            <Route
+              path="/admin/providers/codex-oauth/:id/import"
+              element={<CodexImportPage />}
             />
             <Route path="/admin/network/proxies" element={<ProxiesPage />} />
             <Route path="/admin/network/proxies/:id" element={<ProxyDetailPage />} />

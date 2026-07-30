@@ -89,6 +89,13 @@ Codex token 与 quota 使用独立 `ArcSwap` 凭证快照，避免每次 token �
 同时使用进程内 mutex、PostgreSQL row lock 和 `refresh_generation`，防止 rotating refresh token
 并发重用。正式代理请求仍直接通过 reqwest streaming path，不经过 worker actor。
 
+Codex 凭证可移植性仍沿用相同 provider 边界：服务端显式导出 API 从 repository 读取敏感 Token
+及实际引用的代理，生成带版本的原生 Bundle；高级导入页在浏览器内把原生、CLIProxyAPI 和
+Sub2API JSON 标准化成可编辑草稿，完成代理 CRUD/映射后再逐条调用既有服务端验证导入事务。导入
+格式解析不是数据面职责，也不会绕过 account ID、models、代理 enable 或 managed channel 的现有
+不变量。代理删除使用 optimistic concurrency，并在 repository 层拒绝仍被渠道或待完成 OAuth
+授权流引用的记录。
+
 Responses WebSocket 使用同一个 `/v1/responses` 路径的 `GET` Upgrade。握手先验证 API Key
 认证与 Responses `proxy` 权限，再要求数据库系统设置、API Key 所属用户和最终候选渠道三层均显式
 允许 WebSocket；migration 和新记录均默认关闭。每条顺序的 `response.create` 重新读取当前快照并

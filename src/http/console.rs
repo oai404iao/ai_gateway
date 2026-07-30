@@ -32,13 +32,13 @@ use crate::{
     persistence::{
         ApiKeyCreate, ApiKeyPolicyInput, ApiKeyUpdate, ChannelBatchUpdateInput, ChannelCreateInput,
         ChannelGroupInput, ChannelInput, ChannelRecoverInput, ChannelStatusWindow,
-        CodexCredentialImportInput, CodexCredentialUpdateInput, CodexCredentialView,
-        CodexOauthStartInput, ConfigTemplateCreateInput, ConfigTemplateInput, ConsoleApiKey,
-        ControlPlaneMutation, CostStatisticsFilter, InviteUserInput, ModelInput, ModelRuleInput,
-        ProxyCreateInput, ProxyInput, RequestLogFilter, RequestLogRepository, SelfApiKeyCreate,
-        SelfApiKeyUpdate, SpendLeaderboardFilter, SpendLeaderboardPeriod, StatisticsGranularity,
-        SystemSettingsInput, UserBatchUpdateInput, UserGroupInput, UserInput, UserSettingsInput,
-        UserUpdateInput,
+        CodexCredentialExportBundle, CodexCredentialExportInput, CodexCredentialImportInput,
+        CodexCredentialUpdateInput, CodexCredentialView, CodexOauthStartInput,
+        ConfigTemplateCreateInput, ConfigTemplateInput, ConsoleApiKey, ControlPlaneMutation,
+        CostStatisticsFilter, InviteUserInput, ModelInput, ModelRuleInput, ProxyCreateInput,
+        ProxyInput, RequestLogFilter, RequestLogRepository, SelfApiKeyCreate, SelfApiKeyUpdate,
+        SpendLeaderboardFilter, SpendLeaderboardPeriod, StatisticsGranularity, SystemSettingsInput,
+        UserBatchUpdateInput, UserGroupInput, UserInput, UserSettingsInput, UserUpdateInput,
     },
     runtime_config::ConfigError,
 };
@@ -223,6 +223,10 @@ pub fn router(state: ConsoleState) -> Router {
             post(start_codex_oauth),
         )
         .route(
+            "/console/v1/providers/codex-oauth/channel-groups/{id}/credentials/export",
+            post(export_codex_credentials),
+        )
+        .route(
             "/console/v1/providers/codex-oauth/oauth/flows/{id}/complete",
             post(complete_codex_oauth),
         )
@@ -245,7 +249,7 @@ pub fn router(state: ConsoleState) -> Router {
         .route("/console/v1/network/proxies/test", post(test_proxy))
         .route(
             "/console/v1/network/proxies/{id}",
-            get(get_proxy).put(update_proxy),
+            get(get_proxy).put(update_proxy).delete(delete_proxy),
         )
         .route(
             "/console/v1/transforms/templates",
@@ -1620,6 +1624,20 @@ async fn import_codex_credential(
     Ok((status, Json(mutation_response(result))))
 }
 
+async fn export_codex_credentials(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Path(channel_group_id): Path<Uuid>,
+    Json(input): Json<CodexCredentialExportInput>,
+) -> Result<Json<CodexCredentialExportBundle>, ConsoleError> {
+    Ok(Json(
+        state
+            .codex_connector
+            .export_credentials(principal.user_id(), channel_group_id, input)
+            .await?,
+    ))
+}
+
 async fn update_codex_credential(
     State(state): State<ConsoleState>,
     Extension(principal): Extension<ConsolePrincipal>,
@@ -1775,6 +1793,23 @@ async fn update_proxy(
         ControlPlaneMutation::UpdateProxy {
             id,
             input,
+            expected_updated_at: if_match(&headers)?,
+        },
+    )
+    .await
+}
+
+async fn delete_proxy(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Json<MutationResponse>, ConsoleError> {
+    mutate(
+        &state,
+        principal,
+        ControlPlaneMutation::DeleteProxy {
+            id,
             expected_updated_at: if_match(&headers)?,
         },
     )
@@ -2421,6 +2456,7 @@ fn repository_error_message(error: &crate::persistence::RepositoryError) -> &'st
         crate::persistence::RepositoryError::ApiKeyTargetNotAllowed => "api_key_target_not_allowed",
         crate::persistence::RepositoryError::ProtectedUserGroup => "protected_user_group",
         crate::persistence::RepositoryError::UserGroupInUse => "user_group_in_use",
+        crate::persistence::RepositoryError::ProxyInUse => "proxy_in_use",
         crate::persistence::RepositoryError::CannotDeleteSelf => "cannot_delete_self",
         crate::persistence::RepositoryError::LastAdministrator => "last_administrator",
         crate::persistence::RepositoryError::CannotDisableSelf => "cannot_disable_self",
@@ -2437,6 +2473,7 @@ fn repository_status(error: &crate::persistence::RepositoryError) -> StatusCode 
         crate::persistence::RepositoryError::Conflict
         | crate::persistence::RepositoryError::ProtectedUserGroup
         | crate::persistence::RepositoryError::UserGroupInUse
+        | crate::persistence::RepositoryError::ProxyInUse
         | crate::persistence::RepositoryError::CannotDeleteSelf
         | crate::persistence::RepositoryError::LastAdministrator
         | crate::persistence::RepositoryError::CannotDisableSelf
