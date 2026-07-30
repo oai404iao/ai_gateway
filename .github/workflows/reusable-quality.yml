@@ -1,0 +1,223 @@
+name: Reusable quality checks
+
+on:
+  workflow_call:
+    inputs:
+      run_docs:
+        description: Run documentation validation.
+        required: true
+        type: boolean
+      run_rust:
+        description: Run the default Rust toolchain gate.
+        required: true
+        type: boolean
+      run_msrv:
+        description: Run the MSRV compile and test gate.
+        required: true
+        type: boolean
+      run_console:
+        description: Run Console type, lint, component, and build checks.
+        required: true
+        type: boolean
+      run_e2e:
+        description: Run the browser-based Console smoke tests.
+        required: true
+        type: boolean
+      save_cache:
+        description: Allow this run to create or update dependency caches.
+        required: true
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  docs:
+    if: ${{ inputs.run_docs }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: python3 scripts/check-docs.py
+
+  rust:
+    if: ${{ inputs.run_rust }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:18.4-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
+        env:
+          POSTGRES_DB: postgres
+          POSTGRES_USER: ai_gateway
+          POSTGRES_PASSWORD: ci-test-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ai_gateway -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      TEST_DATABASE_ADMIN_URL: postgres://ai_gateway:ci-test-password@127.0.0.1:5432/postgres
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: 1.97.1
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          shared-key: stable
+          save-if: ${{ inputs.save_cache }}
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --workspace --all-targets
+      - run: cargo test --locked --workspace
+
+  msrv:
+    if: ${{ inputs.run_msrv }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:18.4-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
+        env:
+          POSTGRES_DB: postgres
+          POSTGRES_USER: ai_gateway
+          POSTGRES_PASSWORD: ci-test-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ai_gateway -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      RUSTUP_TOOLCHAIN: 1.92.0
+      TEST_DATABASE_ADMIN_URL: postgres://ai_gateway:ci-test-password@127.0.0.1:5432/postgres
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: 1.92.0
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          shared-key: msrv
+          save-if: ${{ inputs.save_cache }}
+      - run: cargo +1.92.0 check --locked --workspace --all-targets
+      - run: cargo +1.92.0 test --locked --workspace
+
+  console:
+    if: ${{ inputs.run_console }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11.17.0
+          run_install: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: Resolve pnpm store
+        id: pnpm_store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+      - name: Restore pnpm store
+        id: pnpm_cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.pnpm_store.outputs.path }}
+          key: pnpm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('web/console/pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-${{ runner.os }}-${{ runner.arch }}-
+      - run: pnpm --dir web/console install --frozen-lockfile
+      - run: pnpm --dir web/console generate:api:check
+      - run: pnpm --dir web/console typecheck
+      - run: pnpm --dir web/console lint
+      - run: pnpm --dir web/console test
+      - run: pnpm --dir web/console build
+      - name: Save pnpm store
+        if: ${{ inputs.save_cache && steps.pnpm_cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.pnpm_store.outputs.path }}
+          key: ${{ steps.pnpm_cache.outputs.cache-primary-key }}
+
+  e2e:
+    if: ${{ inputs.run_e2e }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11.17.0
+          run_install: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: Resolve pnpm store
+        id: pnpm_store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+      - name: Restore pnpm store
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.pnpm_store.outputs.path }}
+          key: pnpm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('web/console/pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-${{ runner.os }}-${{ runner.arch }}-
+      - run: pnpm --dir web/console install --frozen-lockfile
+      - run: pnpm --dir web/console exec playwright install --with-deps chromium
+      - run: pnpm --dir web/console e2e
+      - name: Upload Playwright failure artifacts
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-results
+          path: web/console/test-results/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  gate:
+    name: quality-gate
+    if: ${{ always() }}
+    needs:
+      - docs
+      - rust
+      - msrv
+      - console
+      - e2e
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      DOCS_RESULT: ${{ needs.docs.result }}
+      RUST_RESULT: ${{ needs.rust.result }}
+      MSRV_RESULT: ${{ needs.msrv.result }}
+      CONSOLE_RESULT: ${{ needs.console.result }}
+      E2E_RESULT: ${{ needs.e2e.result }}
+    steps:
+      - name: Evaluate selected quality checks
+        shell: bash
+        run: |
+          failed=false
+          for result in \
+            "$DOCS_RESULT" \
+            "$RUST_RESULT" \
+            "$MSRV_RESULT" \
+            "$CONSOLE_RESULT" \
+            "$E2E_RESULT"
+          do
+            case "$result" in
+              success | skipped)
+                ;;
+              *)
+                failed=true
+                ;;
+            esac
+          done
+
+          if [[ "$failed" == true ]]; then
+            echo "::error::One or more selected quality checks did not succeed"
+            exit 1
+          fi

@@ -108,9 +108,10 @@ git status --short
 Run the narrowest relevant tests while iterating, then the full required gate
 for every affected area before requesting review.
 
-Documentation-only PRs currently do not start the repository CI workflow
-because `.github/workflows/ci.yml` ignores `**/*.md`. For those PRs, explicitly
-record local validation instead of claiming that absent CI checks passed.
+Every PR starts the repository CI workflow and emits the stable `ci-gate`.
+Documentation-only changes select the documentation job and skip unrelated
+Rust, Console, and image work. Record local validation as usual and wait for
+`ci-gate` before merging.
 
 ### 5. Commit
 

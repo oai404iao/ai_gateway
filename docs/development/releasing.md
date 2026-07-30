@@ -70,9 +70,10 @@ PostgreSQL 集成测试要求先启动 `docker compose up -d`。性能 Harness �
 
 `.github/workflows/release.yml` 在 `v*.*.*` tag 推送后：
 
-1. 只读权限的 `verify` job 再次校验 tag、代码版本与 Changelog，并执行完整
-   Rust workspace、Console 和 embedded UI 门禁。
-2. 构建 release 二进制，生成包含项目许可证和第三方声明的 Linux tarball、
+1. 通过 `.github/workflows/reusable-quality.yml` 执行普通 Rust、Console、
+   Playwright E2E 门禁；随后只读权限的 `verify` job 再次校验 tag、代码版本与
+   Changelog，并执行 embedded UI 门禁。
+2. `verify` 构建 release 二进制，生成包含项目许可证和第三方声明的 Linux tarball、
    完整 `docs/` 文档树、`SHA256SUMS` 与 release notes，并以一天保留期暂存为
    Actions artifact。
 3. `publish-platform-images` matrix 分别在原生 `ubuntu-24.04`
@@ -80,8 +81,8 @@ PostgreSQL 集成测试要求先启动 `docker compose up -d`。性能 Harness �
    以平台 digest 推送镜像，避免使用 QEMU 编译 Rust；Dockerfile 中与架构无关的
    Console 构建和 `cargo-chef prepare` 阶段固定在 `$BUILDPLATFORM`。
 4. 平台构建使用独立的 `ci-image-<arch>` / `release-image-<arch>` GitHub
-   Actions cache scope；普通 CI 预热 AMD64 cache，成功的 Release 构建分别
-   持久化两个架构的 cache。
+   Actions cache scope；Pull Request 只恢复 cache，普通 `main` CI 预热 AMD64
+   cache，成功的 Release 构建分别持久化两个架构的 cache。
 5. `publish-image` job 下载两个平台 digest，生成稳定版或预发布版 tag，并将
    它们合并为一个 multi-platform manifest。
 6. Public 仓库额外为最终 multi-platform 镜像生成并推送 GitHub artifact

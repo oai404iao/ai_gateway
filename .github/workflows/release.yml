@@ -13,25 +13,21 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  quality:
+    name: quality
+    uses: ./.github/workflows/reusable-quality.yml
+    with:
+      run_docs: false
+      run_rust: true
+      run_msrv: false
+      run_console: true
+      run_e2e: true
+      save_cache: true
+
   verify:
-    runs-on: ubuntu-latest
+    needs: quality
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
-    services:
-      postgres:
-        image: postgres:18.4-alpine
-        env:
-          POSTGRES_DB: postgres
-          POSTGRES_USER: ai_gateway
-          POSTGRES_PASSWORD: release-test-password
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U ai_gateway -d postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 20
-    env:
-      TEST_DATABASE_ADMIN_URL: postgres://ai_gateway:release-test-password@127.0.0.1:5432/postgres
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -43,24 +39,28 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
-          cache: pnpm
-          cache-dependency-path: web/console/pnpm-lock.yaml
+      - name: Resolve pnpm store
+        id: pnpm_store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+      - name: Restore pnpm store
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.pnpm_store.outputs.path }}
+          key: pnpm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('web/console/pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-${{ runner.os }}-${{ runner.arch }}-
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           toolchain: 1.97.1
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          shared-key: stable
+          save-if: false
 
       - name: Validate release version
         run: ./scripts/check-release-version.sh "${GITHUB_REF_NAME}"
-      - run: cargo fmt --check
-      - run: cargo clippy --locked --workspace --all-targets
-      - run: cargo test --locked --workspace
       - run: pnpm --dir web/console install --frozen-lockfile
-      - run: pnpm --dir web/console generate:api:check
-      - run: pnpm --dir web/console typecheck
-      - run: pnpm --dir web/console lint
-      - run: pnpm --dir web/console test
       - run: pnpm --dir web/console build
       - run: cargo clippy --locked --all-targets --features embedded-console-ui
       - run: cargo test --locked --features embedded-console-ui --lib console_ui

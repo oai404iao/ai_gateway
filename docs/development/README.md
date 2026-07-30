@@ -17,6 +17,8 @@
 
 ## 测试、性能与发布
 
+- [持续集成与安全扫描](continuous-integration.md)：路径感知门禁、稳定
+  `ci-gate`、cache 写入边界、Playwright、CodeQL 与默认分支 ruleset。
 - [Rust 工具链与 MSRV 策略](rust-toolchain-policy.md)：区分默认构建工具链与
   最低支持版本，并定义兼容窗口和升级门禁。
 - [真实上游 smoke test](real-upstream-smoke.md)：付费、显式执行的转发验证。

@@ -4,109 +4,95 @@ on:
   push:
     branches:
       - main
-    paths-ignore:
-      - "**/*.md"
   pull_request:
-    paths-ignore:
-      - "**/*.md"
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  rust:
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    services:
-      postgres:
-        image: postgres:18.4-alpine
+  changes:
+    name: changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      docs: ${{ steps.areas.outputs.docs }}
+      rust: ${{ steps.areas.outputs.rust }}
+      console: ${{ steps.areas.outputs.console }}
+      image: ${{ steps.areas.outputs.image }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Resolve changed files
+        id: areas
+        shell: bash
         env:
-          POSTGRES_DB: postgres
-          POSTGRES_USER: ai_gateway
-          POSTGRES_PASSWORD: ci-test-password
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U ai_gateway -d postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 20
-    env:
-      TEST_DATABASE_ADMIN_URL: postgres://ai_gateway:ci-test-password@127.0.0.1:5432/postgres
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
-        with:
-          toolchain: 1.97.1
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-      - run: cargo fmt --check
-      - run: cargo clippy --locked --workspace --all-targets
-      - run: cargo test --locked --workspace
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BASE_SHA: ${{ github.event.before }}
+          PUSH_HEAD_SHA: ${{ github.sha }}
+        run: |
+          if [[ "$EVENT_NAME" == pull_request ]]; then
+            base="$PR_BASE_SHA"
+            head="$PR_HEAD_SHA"
+          else
+            base="$PUSH_BASE_SHA"
+            head="$PUSH_HEAD_SHA"
+          fi
 
-  msrv:
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    services:
-      postgres:
-        image: postgres:18.4-alpine
-        env:
-          POSTGRES_DB: postgres
-          POSTGRES_USER: ai_gateway
-          POSTGRES_PASSWORD: ci-test-password
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U ai_gateway -d postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 20
-    env:
-      RUSTUP_TOOLCHAIN: 1.92.0
-      TEST_DATABASE_ADMIN_URL: postgres://ai_gateway:ci-test-password@127.0.0.1:5432/postgres
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
-        with:
-          toolchain: 1.92.0
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-      - run: cargo +1.92.0 check --locked --workspace --all-targets
-      - run: cargo +1.92.0 test --locked --workspace
+          if [[ -z "$base" || "$base" =~ ^0+$ ]] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            git ls-files > /tmp/changed-files
+          else
+            git diff --check "$base" "$head" --
+            git diff --name-only "$base" "$head" -- > /tmp/changed-files
+          fi
 
-  console:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+          scripts/ci-changed-areas.sh < /tmp/changed-files | tee -a "$GITHUB_OUTPUT"
+
+          {
+            echo "### Changed files"
+            echo
+            sed 's/^/- `/' /tmp/changed-files | sed 's/$/`/'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  quality:
+    name: quality
+    needs: changes
+    uses: ./.github/workflows/reusable-quality.yml
+    with:
+      run_docs: ${{ needs.changes.outputs.docs == 'true' }}
+      run_rust: ${{ needs.changes.outputs.rust == 'true' }}
+      run_msrv: ${{ needs.changes.outputs.rust == 'true' }}
+      run_console: ${{ needs.changes.outputs.console == 'true' }}
+      run_e2e: ${{ needs.changes.outputs.console == 'true' }}
+      save_cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
+  dependency-review:
+    name: dependency-review
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
-          version: 11.17.0
-          run_install: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 24
-          cache: pnpm
-          cache-dependency-path: web/console/pnpm-lock.yaml
-      - run: pnpm --dir web/console install --frozen-lockfile
-      - run: pnpm --dir web/console generate:api:check
-      - run: pnpm --dir web/console typecheck
-      - run: pnpm --dir web/console lint
-      - run: pnpm --dir web/console test
-      - run: pnpm --dir web/console build
+          fail-on-severity: high
+          retry-on-snapshot-warnings: true
+          show-patched-versions: true
 
   image:
-    runs-on: ubuntu-latest
+    name: image
+    if: ${{ needs.changes.outputs.image == 'true' }}
+    needs: changes
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
       DOCKER_BUILD_RECORD_UPLOAD: "false"
-    needs:
-      - rust
-      - msrv
-      - console
+      CACHE_TO: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'type=gha,mode=max,scope=ci-image-amd64' || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
@@ -120,9 +106,49 @@ jobs:
           cache-from: |
             type=gha,scope=ci-image-amd64
             type=gha,scope=release-image-amd64
-          cache-to: type=gha,mode=max,scope=ci-image-amd64
+          cache-to: ${{ env.CACHE_TO }}
           build-args: |
             VERSION=ci
             REVISION=${{ github.sha }}
             SOURCE_URL=${{ github.server_url }}/${{ github.repository }}
       - run: docker run --rm ai-gateway:ci --version
+
+  ci-gate:
+    name: ci-gate
+    if: ${{ always() }}
+    needs:
+      - changes
+      - quality
+      - dependency-review
+      - image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      CHANGES_RESULT: ${{ needs.changes.result }}
+      QUALITY_RESULT: ${{ needs.quality.result }}
+      DEPENDENCY_REVIEW_RESULT: ${{ needs.dependency-review.result }}
+      IMAGE_RESULT: ${{ needs.image.result }}
+    steps:
+      - name: Evaluate CI
+        shell: bash
+        run: |
+          failed=false
+          for result in \
+            "$CHANGES_RESULT" \
+            "$QUALITY_RESULT" \
+            "$DEPENDENCY_REVIEW_RESULT" \
+            "$IMAGE_RESULT"
+          do
+            case "$result" in
+              success | skipped)
+                ;;
+              *)
+                failed=true
+                ;;
+            esac
+          done
+
+          if [[ "$failed" == true ]]; then
+            echo "::error::One or more required CI jobs did not succeed"
+            exit 1
+          fi
