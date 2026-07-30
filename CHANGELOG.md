@@ -7,6 +7,8 @@ Versioning.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-30
+
 ### Added
 
 - A statically linked in-process upstream connector registry and the first
@@ -17,6 +19,19 @@ Versioning.
 - Administrator Console APIs and a dedicated Codex credential page for
   connecting accounts, importing tokens, editing routing settings, refreshing
   tokens/quota, and reviewing account and rate-limit state.
+- Administrator-initiated proxy diagnostics for unsaved proxy drafts,
+  including observed egress IP, location, ISP/ASN, proxy and hosting flags,
+  latency, and provider rate-limit state.
+
+### Changed
+
+- Identify Codex OAuth authorization, model/quota discovery, and Responses
+  forwarding with the pinned `codex_cli_rs/0.146.0` client identity, and
+  reorganize credential actions with accessible quota/token refresh controls.
+- Harden GitHub development and release automation with a stable path-aware
+  `ci-gate`, reusable Rust/Console/Playwright checks, dependency review,
+  CodeQL scanning, write-restricted PR caches, protected `main`, and
+  worktree-isolated development.
 
 ### Fixed
 
@@ -28,6 +43,11 @@ Versioning.
   completed client requests are not misreported as cancelled.
 - Allow Console proxy records to persist the already-supported `socks4a` and
   `socks5h` remote-DNS schemes.
+- Refetch Console request logs and cost statistics when users intentionally
+  submit the same filters more than once.
+- Keep existing channel transform templates visible while disabling inactive
+  or API-incompatible choices with an explicit reason, and show each
+  template's API format in the list.
 
 ## [0.5.1] - 2026-07-29
 
