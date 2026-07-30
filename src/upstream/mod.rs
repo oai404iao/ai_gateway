@@ -240,6 +240,8 @@ pub enum UpstreamClientError {
 
 /// Maximum number of distinct outbound client configurations retained per process.
 pub const UPSTREAM_CLIENT_REGISTRY_CAPACITY: usize = 64;
+/// Maximum number of manual Console diagnostic client configurations retained per process.
+pub const DIAGNOSTIC_CLIENT_REGISTRY_CAPACITY: usize = 16;
 
 /// Process-lifetime, bounded LRU cache of reusable reqwest clients.
 ///
@@ -247,6 +249,7 @@ pub const UPSTREAM_CLIENT_REGISTRY_CAPACITY: usize = 64;
 /// already cloned by an in-flight request remains valid.
 pub struct UpstreamClientRegistry {
     entries: Mutex<RegistryEntries>,
+    diagnostic_entries: Mutex<RegistryEntries>,
     websockets: websocket::UpstreamWebSocketPool,
 }
 
@@ -267,6 +270,11 @@ impl UpstreamClientRegistry {
     pub fn new() -> Self {
         Self {
             entries: Mutex::new(RegistryEntries {
+                clients: HashMap::new(),
+                least_to_most_recent: VecDeque::new(),
+                active_keys: None,
+            }),
+            diagnostic_entries: Mutex::new(RegistryEntries {
                 clients: HashMap::new(),
                 least_to_most_recent: VecDeque::new(),
                 active_keys: None,
@@ -304,6 +312,39 @@ impl UpstreamClientRegistry {
 
         let client = build_client(channel, policy)?;
         if entries.clients.len() == UPSTREAM_CLIENT_REGISTRY_CAPACITY
+            && let Some(evicted) = entries.least_to_most_recent.pop_front()
+        {
+            entries.clients.remove(&evicted);
+        }
+        entries.least_to_most_recent.push_back(key.clone());
+        entries.clients.insert(key, client.clone());
+        Ok(client)
+    }
+
+    /// Returns a bounded, reusable client for administrator-triggered
+    /// diagnostics. Diagnostic drafts are intentionally kept separate from
+    /// the forwarding cache so repeated tests reuse connections without
+    /// evicting active data-plane clients.
+    pub fn diagnostic_client_for(
+        &self,
+        channel: &CompiledChannelUpstreamPolicy,
+        policy: ResolvedUpstreamPolicy,
+    ) -> Result<Client, UpstreamClientError> {
+        policy
+            .validate()
+            .map_err(|_| UpstreamClientError::InvalidPolicy)?;
+        let key = UpstreamClientKey::resolve(channel, policy);
+        let mut entries = self
+            .diagnostic_entries
+            .lock()
+            .map_err(|_| UpstreamClientError::RegistryUnavailable)?;
+        if let Some(client) = entries.clients.get(&key).cloned() {
+            touch(&mut entries.least_to_most_recent, &key);
+            return Ok(client);
+        }
+
+        let client = build_client(channel, policy)?;
+        if entries.clients.len() == DIAGNOSTIC_CLIENT_REGISTRY_CAPACITY
             && let Some(evicted) = entries.least_to_most_recent.pop_front()
         {
             entries.clients.remove(&evicted);
@@ -403,6 +444,14 @@ impl UpstreamClientRegistry {
     #[cfg(test)]
     fn len(&self) -> Result<usize, UpstreamClientError> {
         self.entries
+            .lock()
+            .map(|entries| entries.clients.len())
+            .map_err(|_| UpstreamClientError::RegistryUnavailable)
+    }
+
+    #[cfg(test)]
+    fn diagnostic_len(&self) -> Result<usize, UpstreamClientError> {
+        self.diagnostic_entries
             .lock()
             .map(|entries| entries.clients.len())
             .map_err(|_| UpstreamClientError::RegistryUnavailable)
@@ -872,6 +921,26 @@ mod tests {
                 .unwrap();
         }
         assert_eq!(registry.len().unwrap(), UPSTREAM_CLIENT_REGISTRY_CAPACITY);
+    }
+
+    #[test]
+    fn diagnostic_registry_reuses_clients_without_populating_forwarding_entries() {
+        let registry = UpstreamClientRegistry::new();
+        let diagnostic = policy(
+            Some(proxy("http://diagnostic-proxy.test:8080", None, None, &[])),
+            ChannelTimeoutPolicy::default(),
+        );
+        let resolved = ResolvedUpstreamPolicy::resolve(&upstream(), &diagnostic);
+
+        registry
+            .diagnostic_client_for(&diagnostic, resolved)
+            .unwrap();
+        registry
+            .diagnostic_client_for(&diagnostic, resolved)
+            .unwrap();
+
+        assert_eq!(registry.diagnostic_len().unwrap(), 1);
+        assert_eq!(registry.len().unwrap(), 0);
     }
 
     #[test]

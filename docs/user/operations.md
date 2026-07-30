@@ -317,7 +317,7 @@ Policy 不再保存额度、RPM、并发、格式、权限或最大活动 Key �
 - models.dev：`/console/v1/catalog/models/sync/preview`、`/sync`、`/import`
 - 路由：`/console/v1/routing/channel-groups`、`/channels`、`/model-rules`
 - 渠道批量修改：`POST /console/v1/routing/channels/batch`
-- 网络：`/console/v1/network/proxies`
+- 网络：`/console/v1/network/proxies`、`POST /console/v1/network/proxies/test`
 - 变换模板：`/console/v1/transforms/templates`
 - 观测事实：`GET /console/v1/request-logs`、`GET /console/v1/audit-logs`
 - 花费排行榜：`GET /console/v1/statistics/spend-leaderboard`
@@ -360,6 +360,13 @@ Policy 不再保存额度、RPM、并发、格式、权限或最大活动 Key �
 其他大多数可更新资源遵循 `GET` 返回 `ETag`、`PUT` 携带 `If-Match` 的乐观并发模型。控制面
 写入在 serializable 事务中再次确认 actor 仍为 active admin，校验完整候选快照、写入脱敏
 审计记录，并在提交后立即发布运行时快照。
+
+代理编辑页可以在保存前测试当前 HTTP、HTTPS 或 SOCKS 代理草稿。测试接口固定通过该代理请求
+ip-api.com，并显示观察到的出口 IP、位置、ISP、自治系统、网络类型和请求耗时；它刻意忽略
+`enabled` 与 `no_proxy_hosts`，也不会修改渠道健康或运行时快照。已有代理的隐藏凭据只会在代理
+端点未改变时复用；更换 scheme、host 或有效 port 后必须重新输入凭据。免费 ip-api.com 接口使用
+HTTP、仅允许非商业用途并带独立限流，因此结果只适合作为人工诊断信息。外部语义和限制见
+[ip-api.com 代理出口 IP 查询](../reference/ip-api-proxy-test.md)。
 
 渠道的 `billing_multiplier` 为非负十进制数，默认 `1`。最终选定渠道的倍率会乘到模型
 输入、缓存输入、缓存写入和输出单价上；请求日志保存乘算后的有效价格快照，因此历史费用

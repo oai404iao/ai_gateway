@@ -88,6 +88,7 @@ export type CodexCredentialView = S["CodexCredentialView"];
 export type CodexOauthStartResponse = S["CodexOauthStartResponse"];
 export type ModelRuleView = S["ModelRuleView"];
 export type ProxyView = S["ProxyView"];
+export type ProxyTestResponse = S["ProxyTestResponse"];
 export type ConfigTemplateView = S["ConfigTemplateView"];
 export type ConfigTemplateDetailView = S["ConfigTemplateDetailView"];
 
@@ -154,6 +155,7 @@ export type CodexCredentialUpdateInput = S["CodexCredentialUpdateInput"];
 export type ModelRuleInput = S["ModelRuleInput"];
 export type ProxyCreateInput = S["ProxyCreateInput"];
 export type ProxyInput = S["ProxyInput"];
+export type ProxyTestInput = S["ProxyTestInput"];
 export type ConfigTemplateCreateInput = S["ConfigTemplateCreateInput"];
 export type ConfigTemplateInput = S["ConfigTemplateInput"];
 export type ModelSyncSelection = S["ModelSyncSelection"];

@@ -1109,55 +1109,65 @@ fn compile_proxies(
         if !ids.insert(record.id) {
             return Err(dup("proxy id"));
         }
-        require("proxy name", &record.name)?;
-        let url = Url::parse(&record.proxy_url)
-            .map_err(|_| ConfigError::Compile("proxy has an invalid URL".into()))?;
-        if !matches!(
-            url.scheme(),
-            "http" | "https" | "socks4" | "socks4a" | "socks5" | "socks5h"
-        ) || url.host().is_none()
-            || url.query().is_some()
-            || url.fragment().is_some()
-            || !matches!(url.path(), "" | "/")
-            || !url.username().is_empty()
-            || url.password().is_some()
-        {
-            return Err(ConfigError::Compile(
-                "proxy URL must use http, https, socks4, socks4a, socks5, or socks5h with a root path and without embedded credentials, query, or fragment".into(),
-            ));
-        }
-        let no_proxy_hosts = record
-            .no_proxy_hosts
-            .iter()
-            .map(|host| NoProxyHost::parse(host).map_err(|_| invalid_no_proxy_host()))
-            .collect::<Result<Vec<_>, ConfigError>>()?;
-        unique(&no_proxy_hosts, "proxy no_proxy_hosts")?;
-        if let Some(username) = &record.username {
-            require("proxy username", username)?;
-        }
-        if let Some(password) = &record.password {
-            require("proxy password", password)?;
-        }
-        validate_proxy_credentials(
-            url.scheme(),
-            record.username.as_deref(),
-            record.password.as_deref(),
-        )?;
-        if record.enabled {
-            result.insert(
-                record.id,
-                Arc::new(CompiledProxy::new(
-                    record.id,
-                    Arc::from(record.name),
-                    url,
-                    record.username.map(Arc::from),
-                    record.password.map(Arc::from),
-                    no_proxy_hosts.into(),
-                )),
-            );
+        let id = record.id;
+        let enabled = record.enabled;
+        let proxy = compile_proxy_record(record)?;
+        if enabled {
+            result.insert(id, proxy);
         }
     }
     Ok(result)
+}
+
+pub(crate) fn compile_proxy_test_target(
+    record: ProxyRecord,
+) -> Result<Arc<CompiledProxy>, ConfigError> {
+    compile_proxy_record(record)
+}
+
+fn compile_proxy_record(record: ProxyRecord) -> Result<Arc<CompiledProxy>, ConfigError> {
+    require("proxy name", &record.name)?;
+    let url = Url::parse(&record.proxy_url)
+        .map_err(|_| ConfigError::Compile("proxy has an invalid URL".into()))?;
+    if !matches!(
+        url.scheme(),
+        "http" | "https" | "socks4" | "socks4a" | "socks5" | "socks5h"
+    ) || url.host().is_none()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || !matches!(url.path(), "" | "/")
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return Err(ConfigError::Compile(
+            "proxy URL must use http, https, socks4, socks4a, socks5, or socks5h with a root path and without embedded credentials, query, or fragment".into(),
+        ));
+    }
+    let no_proxy_hosts = record
+        .no_proxy_hosts
+        .iter()
+        .map(|host| NoProxyHost::parse(host).map_err(|_| invalid_no_proxy_host()))
+        .collect::<Result<Vec<_>, ConfigError>>()?;
+    unique(&no_proxy_hosts, "proxy no_proxy_hosts")?;
+    if let Some(username) = &record.username {
+        require("proxy username", username)?;
+    }
+    if let Some(password) = &record.password {
+        require("proxy password", password)?;
+    }
+    validate_proxy_credentials(
+        url.scheme(),
+        record.username.as_deref(),
+        record.password.as_deref(),
+    )?;
+    Ok(Arc::new(CompiledProxy::new(
+        record.id,
+        Arc::from(record.name),
+        url,
+        record.username.map(Arc::from),
+        record.password.map(Arc::from),
+        no_proxy_hosts.into(),
+    )))
 }
 
 fn validate_proxy_credentials(

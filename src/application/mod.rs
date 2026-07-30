@@ -9,6 +9,7 @@ mod connector;
 mod control_plane;
 mod model_sync;
 mod proxy;
+mod proxy_test;
 mod request_log;
 mod system_metrics;
 mod usage;
@@ -42,6 +43,7 @@ pub use model_sync::{
     ModelSyncResponse, ModelSyncService,
 };
 pub use proxy::{ModelsResponse, ProxyError, ProxyService};
+pub use proxy_test::{ProxyTestError, ProxyTestInput, ProxyTestResponse, ProxyTestService};
 pub use request_log::{
     DurableRequestLogSink, NoopRequestLogSink, QueueRequestLogSink, RecordingRequestLogSink,
     RequestLogPipelineMonitor, RequestLogSink,

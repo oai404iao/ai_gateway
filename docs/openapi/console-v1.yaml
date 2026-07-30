@@ -1645,6 +1645,36 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/Unprocessable" }
 
+  /network/proxies/test:
+    post:
+      tags: [Proxies]
+      operationId: testProxy
+      description: >
+        Sends a fixed IP lookup to ip-api.com through the unsaved proxy draft
+        and returns the observed egress IP metadata. The test always uses the
+        proxy, ignoring `enabled` and saved no-proxy hosts. When `proxy_id`
+        identifies an existing proxy, omitted credential fields reuse saved
+        values only if the proxy endpoint is unchanged.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProxyTestInput" }
+      responses:
+        "200":
+          description: Proxy connection succeeded and IP metadata was returned.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProxyTestResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "502": { $ref: "#/components/responses/BadGateway" }
+        "504": { $ref: "#/components/responses/GatewayTimeout" }
+
   /network/proxies/{id}:
     get:
       tags: [Proxies]
@@ -3236,6 +3266,40 @@ components:
         created_at: { $ref: "#/components/schemas/DateTime" }
         updated_at: { $ref: "#/components/schemas/DateTime" }
 
+    ProxyTestResponse:
+      type: object
+      required:
+        [ip, continent, continent_code, country, country_code, region_code, region_name,
+         city, district, postal_code, latitude, longitude, timezone, utc_offset_seconds,
+         currency, isp, organization, autonomous_system, autonomous_system_name, mobile,
+         proxy, hosting, latency_ms, rate_limit_remaining, rate_limit_reset_seconds]
+      properties:
+        ip: { type: string }
+        continent: { type: string, nullable: true }
+        continent_code: { type: string, nullable: true }
+        country: { type: string, nullable: true }
+        country_code: { type: string, nullable: true }
+        region_code: { type: string, nullable: true }
+        region_name: { type: string, nullable: true }
+        city: { type: string, nullable: true }
+        district: { type: string, nullable: true }
+        postal_code: { type: string, nullable: true }
+        latitude: { type: number, format: double, nullable: true }
+        longitude: { type: number, format: double, nullable: true }
+        timezone: { type: string, nullable: true }
+        utc_offset_seconds: { type: integer, nullable: true }
+        currency: { type: string, nullable: true }
+        isp: { type: string, nullable: true }
+        organization: { type: string, nullable: true }
+        autonomous_system: { type: string, nullable: true }
+        autonomous_system_name: { type: string, nullable: true }
+        mobile: { type: boolean, nullable: true }
+        proxy: { type: boolean, nullable: true }
+        hosting: { type: boolean, nullable: true }
+        latency_ms: { type: integer, format: int64, minimum: 0 }
+        rate_limit_remaining: { type: integer, minimum: 0, nullable: true }
+        rate_limit_reset_seconds: { type: integer, format: int64, minimum: 0, nullable: true }
+
     ConfigTemplateView:
       type: object
       required: [id, name, description, api_format, enabled, created_at, updated_at]
@@ -4360,6 +4424,29 @@ components:
           type: array
           items: { type: string }
         enabled: { type: boolean }
+
+    ProxyTestInput:
+      type: object
+      required: [proxy_url]
+      properties:
+        proxy_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Existing proxy whose hidden credentials may be reused.
+        proxy_url: { type: string }
+        username:
+          type: string
+          nullable: true
+          description: >
+            Omit to reuse the saved username when `proxy_id` points at the same
+            endpoint; send null to test without a username.
+        password:
+          type: string
+          nullable: true
+          description: >
+            Omit to reuse the saved password when `proxy_id` points at the same
+            endpoint; send null to test without a password.
 
     ConfigTemplateCreateInput:
       type: object

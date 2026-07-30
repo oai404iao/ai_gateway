@@ -12,6 +12,10 @@
 - [Codex OAuth 与订阅后端接入参考](codex-oauth-connect.md)
 - [Codex Responses WebSocket 实现参考](codex-responses-websocket.md)
 
+## 其他外部服务
+
+- [ip-api.com 代理出口 IP 查询](ip-api-proxy-test.md)
+
 ## 使用原则
 
 1. OpenAI 官方文档定义外部 API 语义。

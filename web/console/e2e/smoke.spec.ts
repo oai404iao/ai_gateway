@@ -156,6 +156,42 @@ test.describe("Console SPA smoke", () => {
     await expect(page.getByText("Personal settings saved.")).toBeVisible();
   });
 
+  test("administrators can test a proxy draft and inspect its egress IP", async ({
+    page,
+  }) => {
+    await mockConsoleApi(page);
+    await page.goto("/login");
+    await page.getByLabel(/email/i).fill("admin@example.com");
+    await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
+    await page.getByRole("button", { name: /sign in/i }).click();
+    await expect(page).toHaveURL(/\/account/);
+    await page.evaluate((path) => {
+      window.history.pushState({}, "", path);
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    }, "/admin/network/proxies/new");
+    await expect(page).toHaveURL(/\/admin\/network\/proxies\/new$/);
+
+    await page.getByLabel("Proxy URL").fill("http://127.0.0.1:8080");
+    await page.getByLabel("Username").fill("proxy-user");
+    await page.getByLabel("Password").fill("proxy-password");
+    const requestPromise = page.waitForRequest(
+      (request) =>
+        request.url().endsWith("/console/v1/network/proxies/test") &&
+        request.method() === "POST",
+    );
+    await page.getByRole("button", { name: "Test proxy" }).click();
+    const request = await requestPromise;
+
+    expect(request.postDataJSON()).toEqual({
+      proxy_url: "http://127.0.0.1:8080",
+      username: "proxy-user",
+      password: "proxy-password",
+    });
+    await expect(page.getByText("Proxy test result")).toBeVisible();
+    await expect(page.getByText("203.0.113.10")).toBeVisible();
+    await expect(page.getByText("E2E ISP")).toBeVisible();
+  });
+
   test("administrators can inspect and refresh a Codex OAuth credential", async ({
     page,
   }) => {
