@@ -14,6 +14,11 @@
 - 生产源码、Console、Docker 和部署材料变更运行容器构建与 `--version` smoke。
 - `.github/`、`scripts/` 或未知路径采用保守策略，运行全部门禁。
 
+CI 和 Security 的 Pull Request 触发器显式只接受 `opened`、`synchronize` 和
+`reopened`。合并产生的 `closed` 事件不运行 PR 门禁：Squash merge 后源分支可能
+已经删除，事件中记录的 head commit 无法再由 checkout 获取。合并后的权威结果
+始终是合并提交 SHA 对应的 `main` push workflow，而不是 PR close workflow。
+
 `changes` job 先执行 `scripts/test-ci-changed-areas.sh` 固定分类边界，再对完整
 变更范围执行 `git diff --check`。文档 job 执行
 `python3 scripts/check-docs.py`，因此纯文档、Agent 指令或仅 `.gitignore` 的 PR

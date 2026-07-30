@@ -7,6 +7,12 @@ Versioning.
 
 ## [Unreleased]
 
+### Fixed
+
+- Restrict Pull Request CI and Security activity to open, update, and reopen
+  events so merging and deleting the source branch cannot create a false
+  failed `ci-gate`.
+
 ## [0.6.2] - 2026-07-30
 
 ### Changed

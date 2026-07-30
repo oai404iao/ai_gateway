@@ -198,6 +198,14 @@ gh pr view <number> --repo oai404iao/ai_gateway
 gh pr checks <number> --repo oai404iao/ai_gateway --watch --interval 10
 ```
 
+- The CI and Security workflows intentionally accept only the
+  `opened`, `synchronize`, and `reopened` Pull Request activity types. Do not
+  add `closed` unless every job explicitly handles a merged PR whose head
+  branch and commit may already be unavailable.
+- If no checks appear shortly after opening a PR, inspect the Actions page and
+  wait briefly before using close/reopen as a recovery trigger. Close/reopen
+  is not a routine refresh mechanism, and delayed or duplicate PR events must
+  not be confused with the authoritative `main` push checks after merge.
 - Do not merge with pending or failing checks.
 - Fix failures on the PR branch and push normally.
 - Re-run local checks when a fix changes the affected area.
@@ -243,6 +251,11 @@ gh pr view <number> \
 
 For code, configuration, dependency, CI, Docker, or release-related changes,
 also watch the new `main` push workflow and report its final result.
+
+Classify any red run by event and SHA before reacting. A `pull_request` run
+created after the PR was merged is not a substitute for, and must not be
+reported as, the merged commit's `main` push result. Investigate why it ran,
+but use the exact merged SHA's push workflows for the post-merge decision.
 
 ```bash
 run_id="$(
@@ -301,13 +314,21 @@ git -C "$primary" status --short
    ```
 
 4. Open a release-preparation PR and use **Squash and merge**.
-5. Synchronize local `main`, confirm a clean worktree, and run:
+5. Synchronize local `main` and confirm that the exact merged SHA has
+   successful `CI` and `Security` push workflows. For predictable tag-to-
+   release latency, also wait for the same SHA's `Release image cache`
+   workflow. Cache warming is a performance optimization rather than a
+   correctness gate, but tagging before it finishes can turn a warm release
+   into a cold image build. `release.sh` currently enforces only the successful
+   `main` `ci-gate`, so the Security and cache observations remain an explicit
+   operator responsibility.
+6. Confirm a clean worktree, and run:
 
    ```bash
    ./scripts/release.sh <version> --push
    ```
 
-6. Watch the tag-triggered Release workflow through completion.
+7. Watch the tag-triggered Release workflow through completion.
 
 Never move, overwrite, or reuse a published tag. Fix release problems with a
 new patch version.

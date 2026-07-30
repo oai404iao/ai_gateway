@@ -7,6 +7,48 @@ cd "$repo_root"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
+python3 - <<'PY'
+from pathlib import Path
+
+expected_types = ["opened", "synchronize", "reopened"]
+
+for relative in (
+    ".github/workflows/ci.yml",
+    ".github/workflows/security.yml",
+):
+    lines = Path(relative).read_text(encoding="utf-8").splitlines()
+    try:
+        start = lines.index("  pull_request:")
+    except ValueError as error:
+        raise AssertionError(f"{relative} has no pull_request event") from error
+
+    block: list[str] = []
+    for line in lines[start + 1 :]:
+        if line and not line.startswith("    "):
+            break
+        block.append(line)
+
+    try:
+        types_start = block.index("    types:")
+    except ValueError as error:
+        raise AssertionError(
+            f"{relative} must explicitly declare pull_request activity types"
+        ) from error
+
+    actual_types: list[str] = []
+    for line in block[types_start + 1 :]:
+        if not line.startswith("      - "):
+            break
+        actual_types.append(line.removeprefix("      - "))
+
+    assert actual_types == expected_types, (
+        f"{relative} pull_request types must be {expected_types}, "
+        f"found {actual_types}"
+    )
+
+print("workflow pull-request event contracts passed")
+PY
+
 mkdir -p "$tmp/normalize/tools/forwarding-perf"
 cp Cargo.toml Cargo.lock "$tmp/normalize/"
 cp tools/forwarding-perf/Cargo.toml "$tmp/normalize/tools/forwarding-perf/"
