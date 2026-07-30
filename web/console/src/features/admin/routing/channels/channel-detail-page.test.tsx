@@ -19,6 +19,8 @@ import type {
   ChannelModelDiscoveryInput,
 } from "@/api/types";
 
+const CHANNEL_FORM_READY_TIMEOUT_MS = 3_000;
+
 function renderAppAt(path: string) {
   window.history.replaceState({}, "", path);
   render(
@@ -27,6 +29,18 @@ function renderAppAt(path: string) {
         <AppRouter />
       </BrowserRouter>
     </AppProviders>,
+  );
+}
+
+async function waitForHydratedChannelForm(name: string) {
+  // The lazy route renders before the detail query hydrates its controlled
+  // form state, so wait for the stable user-visible value instead of relying
+  // on Testing Library's one-second default async-query window.
+  await waitFor(
+    () => {
+      expect(screen.getByRole("textbox", { name: "Name" })).toHaveValue(name);
+    },
+    { timeout: CHANNEL_FORM_READY_TIMEOUT_MS },
   );
 }
 
@@ -46,7 +60,7 @@ describe("ChannelDetailPage", () => {
     const user = userEvent.setup();
     renderAppAt(`/admin/routing/channels/${CHANNEL.id}`);
 
-    expect(await screen.findByDisplayValue(CHANNEL.name)).toBeInTheDocument();
+    await waitForHydratedChannelForm(CHANNEL.name);
     const templateSelect = screen.getByRole("combobox", { name: "Config template" });
     await user.click(templateSelect);
     await user.click(
@@ -97,7 +111,7 @@ describe("ChannelDetailPage", () => {
     const user = userEvent.setup();
     renderAppAt(`/admin/routing/channels/${responsesChannel.id}`);
 
-    expect(await screen.findByDisplayValue(responsesChannel.name)).toBeInTheDocument();
+    await waitForHydratedChannelForm(responsesChannel.name);
     const templateSelect = screen.getByRole("combobox", { name: "Config template" });
     await user.click(templateSelect);
 
@@ -127,7 +141,7 @@ describe("ChannelDetailPage", () => {
     const user = userEvent.setup();
     renderAppAt(`/admin/routing/channels/${CHANNEL.id}`);
 
-    expect(await screen.findByDisplayValue(CHANNEL.name)).toBeInTheDocument();
+    await waitForHydratedChannelForm(CHANNEL.name);
     expect(
       screen.getByLabelText("Name").closest('[data-slot="channel-edit-layout"]'),
     ).toHaveClass("xl:grid-cols-2");
@@ -223,7 +237,7 @@ describe("ChannelDetailPage", () => {
     const user = userEvent.setup();
     renderAppAt(`/admin/routing/channels/${CHANNEL.id}`);
 
-    expect(await screen.findByDisplayValue(CHANNEL.name)).toBeInTheDocument();
+    await waitForHydratedChannelForm(CHANNEL.name);
     await user.click(screen.getByRole("button", { name: /save channel/i }));
 
     expect(
@@ -246,7 +260,7 @@ describe("ChannelDetailPage", () => {
     const user = userEvent.setup();
     renderAppAt(`/admin/routing/channels/${CHANNEL.id}`);
 
-    expect(await screen.findByDisplayValue(CHANNEL.name)).toBeInTheDocument();
+    await waitForHydratedChannelForm(CHANNEL.name);
     await user.click(screen.getByRole("switch", { name: /^enabled$/i }));
     await user.click(screen.getByRole("button", { name: /save channel/i }));
 
@@ -327,7 +341,7 @@ describe("ChannelDetailPage", () => {
     const user = userEvent.setup();
     renderAppAt(`/admin/routing/channels/${CHANNEL.id}`);
 
-    expect(await screen.findByDisplayValue(CHANNEL.name)).toBeInTheDocument();
+    await waitForHydratedChannelForm(CHANNEL.name);
     await user.click(screen.getByRole("button", { name: /fetch models/i }));
 
     expect(
