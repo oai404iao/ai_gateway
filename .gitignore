@@ -6,6 +6,7 @@
 /.sqlx/
 
 # Local tooling and editor state
+/.worktrees/
 .idea/
 .vscode/
 *.swp

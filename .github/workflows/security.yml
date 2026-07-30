@@ -7,10 +7,12 @@ on:
     paths-ignore:
       - "**/*.md"
       - "docs/**"
+      - ".gitignore"
   pull_request:
     paths-ignore:
       - "**/*.md"
       - "docs/**"
+      - ".gitignore"
   schedule:
     - cron: "17 5 * * 1"
   workflow_dispatch:

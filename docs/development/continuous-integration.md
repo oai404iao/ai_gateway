@@ -7,16 +7,18 @@
 `.github/workflows/ci.yml` 对每个 Pull Request 和 `main` push 运行，并始终
 生成稳定的 `ci-gate` 检查。`scripts/ci-changed-areas.sh` 根据变更路径选择门禁：
 
-- Markdown、`docs/` 和 Agent 指令运行文档检查。
+- Markdown、`docs/`、Agent 指令和 `.gitignore` 等安全仓库元数据运行文档检查。
 - Rust、migration、测试和 workspace 文件运行默认工具链与 MSRV 门禁。
 - `web/console/` 和 Console OpenAPI 变更运行类型检查、lint、组件测试、构建与
   Playwright E2E。
 - 生产源码、Console、Docker 和部署材料变更运行容器构建与 `--version` smoke。
 - `.github/`、`scripts/` 或未知路径采用保守策略，运行全部门禁。
 
-`changes` job 同时对完整变更范围执行 `git diff --check`。文档 job 执行
-`python3 scripts/check-docs.py`，因此纯文档 PR 也拥有可作为分支规则必需检查的
-`ci-gate`。
+`changes` job 先执行 `scripts/test-ci-changed-areas.sh` 固定分类边界，再对完整
+变更范围执行 `git diff --check`。文档 job 执行
+`python3 scripts/check-docs.py`，因此纯文档、Agent 指令或仅 `.gitignore` 的 PR
+也拥有可作为分支规则必需检查的 `ci-gate`，但不会启动 Rust、Console、E2E 或
+image job。
 
 Docker image job 只依赖快速的路径分类，与 Rust、Console 和 E2E 并行运行。
 最终 `ci-gate` 只接受 `success` 或因路径无关而产生的 `skipped` 结果。
@@ -61,7 +63,8 @@ MSRV 使用独立 shared key；Docker 使用 `ci-image-<arch>` 和
 依赖，并显示可用修复版本。
 
 `.github/workflows/security.yml` 在代码 PR、`main` push、每周定时任务和手动
-触发时运行 CodeQL `security-extended` 查询：
+触发时运行 CodeQL `security-extended` 查询。Markdown、`docs/` 和 `.gitignore`
+等不改变可执行代码的路径不会触发 PR/push CodeQL：
 
 - GitHub Actions workflow；
 - JavaScript/TypeScript Console；
@@ -88,7 +91,8 @@ bypass；正常变更仍必须走 CI 和项目合并策略。
 修改 workflow、缓存策略或 CI 脚本时至少执行：
 
 ```bash
-shellcheck scripts/ci-changed-areas.sh
+shellcheck scripts/ci-changed-areas.sh scripts/test-ci-changed-areas.sh
+scripts/test-ci-changed-areas.sh
 git diff --check
 python3 scripts/check-docs.py
 pnpm --dir web/console e2e
