@@ -1,23 +1,25 @@
 ---
 name: ai-gateway-development-workflow
-description: Project-specific Git and GitHub workflow for ai-gateway. Use when starting or finishing repository changes, creating branches or commits, opening or reviewing pull requests, choosing a merge method, handling CI failures, cleaning up merged branches, preparing hotfixes or releases, or configuring protection for main.
+description: Project-specific Git, linked-worktree, and GitHub workflow for ai-gateway. Use when starting or finishing repository changes, creating or removing worktrees, creating branches or commits, opening or reviewing pull requests, choosing a merge method, handling CI failures, cleaning up merged branches, preparing hotfixes or releases, or configuring protection for main.
 compatibility: Requires git. GitHub operations require an authenticated gh CLI. Run commands from the ai-gateway repository root.
 ---
 
 # ai-gateway development workflow
 
-Use a pull-request-first workflow that protects `main`, runs the checks that
-match the change, and preserves intentional history without using GitHub's
-rebase-and-merge mode.
+Use a worktree-isolated, pull-request-first workflow that protects `main`, runs
+the checks that match the change, and preserves intentional history without
+using GitHub's rebase-and-merge mode.
 
 ## Sources of truth
 
 1. Read the repository `AGENTS.md` before making changes.
-2. Read [verification-matrix.md](references/verification-matrix.md) before
+2. Read [worktrees.md](references/worktrees.md) before starting a mutable task,
+   reusing a branch, or removing a linked worktree.
+3. Read [verification-matrix.md](references/verification-matrix.md) before
    declaring a branch or pull request ready.
-3. Read [github-settings.md](references/github-settings.md) when changing
+4. Read [github-settings.md](references/github-settings.md) when changing
    repository settings or explaining the merge policy.
-4. For releases, also read `docs/development/releasing.md`.
+5. For releases, also read `docs/development/releasing.md`.
 
 Repository instructions override this skill if they become more specific.
 
@@ -62,13 +64,22 @@ git fetch origin --prune
 - Never run the paid real-upstream smoke test or the forwarding performance
   harness without the explicit authorization required by `AGENTS.md`.
 
-### 2. Synchronize `main` and create a branch
+### 2. Synchronize `main` and create a dedicated worktree
 
 ```bash
 git switch main
 git pull --ff-only origin main
-git switch -c <type>/<short-description>
+
+branch="<type>/<short-description>"
+worktree=".worktrees/${branch//\//-}"
+git worktree add -b "$branch" "$worktree" main
+cd "$worktree"
 ```
+
+Use one dedicated linked worktree per mutable task. Keep the primary checkout
+on a clean `main`; do not implement the change there. Read
+[worktrees.md](references/worktrees.md) for naming, existing-branch handling,
+parallel-task safety, shared development services, and cleanup.
 
 Use one of:
 
@@ -86,6 +97,8 @@ Do not develop directly on `main`.
 
 ### 3. Implement in reviewable slices
 
+- Run editing, generation, build, test, commit, and PR commands from the task
+  worktree. Confirm the path before destructive or expensive commands.
 - Verify the current implementation before relying on plans or the PRD.
 - Keep each commit focused on one logical concern.
 - Update tests, configuration examples, generated artifacts, notices, and
@@ -249,13 +262,24 @@ gh run watch "$run_id" \
 ### 9. Synchronize and clean up locally
 
 ```bash
-git fetch origin --prune
-git switch main
-git pull --ff-only origin main
-git status --short
+primary="/absolute/path/to/ai_gateway"
+worktree="$primary/.worktrees/<branch-slug>"
+branch="<type>/<short-description>"
+
+git -C "$worktree" status --short
+cd "$primary"
+git -C "$primary" fetch origin --prune
+git -C "$primary" worktree remove "$worktree"
+git -C "$primary" switch main
+git -C "$primary" pull --ff-only origin main
+git -C "$primary" status --short
 ```
 
-- Delete the local topic branch only after GitHub reports the PR as merged.
+- Stop task-owned processes and verify the task worktree is clean before
+  leaving it. Change to the primary checkout before removing the task
+  directory. Never use `git worktree remove --force` to bypass unknown changes.
+- Delete the local topic branch only after GitHub reports the PR as merged and
+  the linked worktree has been removed.
 - After a squash merge, the topic commits are not ancestors of `main`, so
   `git branch -d` may refuse. Verify the merged PR first, then use
   `git branch -D <branch>` if needed.
@@ -265,7 +289,8 @@ git status --short
 
 ## Release workflow
 
-1. Create `release/<version>` from current `main`.
+1. Create a dedicated `.worktrees/release-<version>` worktree and
+   `release/<version>` branch from current `main`.
 2. Update every version source and the dated changelog entry listed in
    `docs/development/releasing.md`.
 3. Run:
@@ -291,13 +316,13 @@ new patch version.
 
 Report:
 
-- branch and final commit
+- task worktree path, branch, and final commit
 - PR number and state, if created
 - merge method and resulting `main` commit, if merged
 - checks run and their results
 - known warnings, skipped checks, or required manual validation
 - whether local `main` matches `origin/main`
-- whether topic branches were deleted
+- whether the task worktree, local branch, and remote branch were deleted
 
 Do not describe a PR as merged, a check as passed, or a branch as deleted
 without verifying it.
