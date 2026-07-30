@@ -65,7 +65,7 @@ MSRV 使用独立 shared key；Docker 使用 `ci-image-<arch>` 和
 
 - GitHub Actions workflow；
 - JavaScript/TypeScript Console；
-- 手工构建的 Rust workspace。
+- 使用 CodeQL `none` build mode 提取的 Rust workspace。
 
 GitHub 仓库设置同时启用 Dependabot alerts/security updates、secret scanning
 和 push protection。所有外部 Action 必须继续固定到完整 commit SHA。
