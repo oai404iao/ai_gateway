@@ -30,7 +30,7 @@ dependencies = [
 
 [[package]]
 name = "ai-gateway"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "arc-swap",
  "argon2",
@@ -81,7 +81,7 @@ dependencies = [
 
 [[package]]
 name = "ai-gateway-perf"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "ai-gateway",
  "arc-swap",
