@@ -16,6 +16,8 @@ Versioning.
   ports.
 - Stabilize Console channel-detail tests by waiting for lazy-loaded forms to
   finish hydrating before assertions and interaction.
+- Stabilize durable request-log recovery coverage by waiting for replay and
+  settlement to finish before shutting down the restarted worker.
 
 ## [0.6.0] - 2026-07-30
 

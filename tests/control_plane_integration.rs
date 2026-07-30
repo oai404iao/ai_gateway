@@ -1935,9 +1935,30 @@ async fn durable_request_log_pipeline_replays_spool_after_an_ingress_outage() {
             .await
             .unwrap();
     drop(sink);
+    let ids = events.iter().map(|event| event.id).collect::<Vec<_>>();
+    let expected_rows = i64::try_from(ids.len()).unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let settled_rows: i64 = sqlx::query_scalar(
+                "SELECT count(*)::bigint
+                 FROM request_logs
+                 WHERE id = ANY($1)
+                   AND billed_at IS NOT NULL",
+            )
+            .bind(&ids)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+            if settled_rows == expected_rows {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("replayed request logs did not settle before the timeout");
     worker.shutdown().await;
 
-    let ids = events.iter().map(|event| event.id).collect::<Vec<_>>();
     let persisted: Vec<DurablePersistedLog> = sqlx::query_as(
         "SELECT id,client_model,upstream_model,billed_at
          FROM request_logs
