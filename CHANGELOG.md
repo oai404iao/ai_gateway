@@ -7,6 +7,8 @@ Versioning.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-30
+
 ### Added
 
 - Parse explicit OpenAI and DeepSeek reasoning-effort request fields plus
