@@ -7,6 +7,16 @@ Versioning.
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-07-30
+
+### Fixed
+
+- Stabilize passive-health integration tests by keeping refused TCP endpoints
+  reserved so concurrently started test servers cannot reuse unavailable
+  ports.
+- Stabilize Console channel-detail tests by waiting for lazy-loaded forms to
+  finish hydrating before assertions and interaction.
+
 ## [0.6.0] - 2026-07-30
 
 ### Added
