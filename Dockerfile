@@ -36,10 +36,14 @@ WORKDIR /workspace
 # repository toolchain file from requesting development-only components.
 ENV RUSTUP_TOOLCHAIN=${RUST_VERSION}
 COPY --from=cargo-chef-planner /usr/local/cargo/bin/cargo-chef /usr/local/cargo/bin/cargo-chef
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends python3 \
+    && rm -rf /var/lib/apt/lists/*
 COPY . .
-RUN cargo chef prepare --recipe-path recipe.json
+RUN python3 scripts/normalize-cargo-chef-version.py \
+    && cargo chef prepare --recipe-path recipe.json
 
-FROM rust:${RUST_VERSION}-bookworm@${RUST_IMAGE_DIGEST} AS builder
+FROM rust:${RUST_VERSION}-bookworm@${RUST_IMAGE_DIGEST} AS rust-dependencies
 WORKDIR /workspace
 # See the planner-stage note above.
 ENV RUSTUP_TOOLCHAIN=${RUST_VERSION}
@@ -55,6 +59,7 @@ RUN cargo chef cook \
       --package ai-gateway \
       --recipe-path recipe.json
 
+FROM rust-dependencies AS builder
 COPY . .
 COPY --from=console-builder /workspace/web/console/dist ./web/console/dist
 COPY --from=console-builder /workspace/web/console/node_modules ./web/console/node_modules

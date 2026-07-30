@@ -6,9 +6,27 @@ cd "$repo_root"
 
 requested="${1:-}"
 version="${requested#v}"
-mode="${2:-}"
-if [[ -z "$version" || ( -n "$mode" && "$mode" != "--push" ) ]]; then
-    echo "usage: $0 <version> [--push]" >&2
+shift || true
+
+push=false
+verify=false
+while (($# > 0)); do
+    case "$1" in
+        --push)
+            push=true
+            ;;
+        --verify)
+            verify=true
+            ;;
+        *)
+            echo "usage: $0 <version> [--push] [--verify]" >&2
+            exit 2
+            ;;
+    esac
+    shift
+done
+if [[ -z "$version" ]]; then
+    echo "usage: $0 <version> [--push] [--verify]" >&2
     exit 2
 fi
 
@@ -22,8 +40,8 @@ if [[ -n "$(git status --porcelain)" ]]; then
 fi
 
 git fetch origin main --tags
-if ! git merge-base --is-ancestor origin/main HEAD; then
-    echo "local main does not contain origin/main" >&2
+if [[ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]]; then
+    echo "local main must exactly match origin/main" >&2
     exit 1
 fi
 
@@ -34,14 +52,19 @@ if git rev-parse --verify --quiet "refs/tags/${tag}" >/dev/null \
     exit 1
 fi
 
-"$repo_root/scripts/verify-release.sh" "$version"
+"$repo_root/scripts/check-release-version.sh" "$version"
+GH_REPO="${GH_REPO:-oai404iao/ai_gateway}" \
+    "$repo_root/scripts/require-successful-main-ci.sh" "$(git rev-parse HEAD)"
+if [[ "$verify" == true ]]; then
+    "$repo_root/scripts/verify-release.sh" "$version"
+fi
 if [[ -n "$(git status --porcelain)" ]]; then
     echo "release verification changed the working tree" >&2
     exit 1
 fi
 git tag --annotate "$tag" --message "ai-gateway ${version}"
 
-if [[ "$mode" == "--push" ]]; then
+if [[ "$push" == true ]]; then
     git push --atomic origin main "$tag"
     echo "published release tag: $tag"
 else

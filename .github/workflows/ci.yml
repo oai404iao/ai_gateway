@@ -29,6 +29,8 @@ jobs:
           fetch-depth: 0
       - name: Test changed-area classifier
         run: scripts/test-ci-changed-areas.sh
+      - name: Test release automation
+        run: scripts/test-release-automation.sh
       - name: Resolve changed files
         id: areas
         shell: bash

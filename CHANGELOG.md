@@ -7,6 +7,12 @@ Versioning.
 
 ## [Unreleased]
 
+### Changed
+
+- Parallelize release-specific verification and native image builds, reuse the
+  AMD64 container binary for release archives, trust the exact `main`
+  `ci-gate`, and move ARM64 cache uploads out of the publishing critical path.
+
 ## [0.6.1] - 2026-07-30
 
 ### Fixed

@@ -61,8 +61,11 @@ PostgreSQL 集成测试要求先启动 `docker compose up -d`。性能 Harness �
 ./scripts/release.sh 0.1.0 --push
 ```
 
-该命令会重新运行发布门禁，创建 annotated tag `v0.1.0`，然后通过 atomic push
-同时推送 `main` 与 tag。没有 `--push` 时只创建本地 tag。
+该命令要求本地 `main` 与 `origin/main` 完全一致，验证目标 SHA 的 `main`
+push 已有成功的 `ci-gate`，再创建 annotated tag `v0.1.0`，然后通过 atomic
+push 同时推送 `main` 与 tag。发布准备阶段已经运行完整本地发布门禁，因此默认
+不会在打 tag 前重复执行；需要人工再次验证时可显式增加 `--verify`。没有
+`--push` 时只创建本地 tag。查询 `ci-gate` 需要已认证的 GitHub CLI。
 
 已发布 tag 不得移动、覆盖或复用。发现问题时发布新的 patch 版本；不要强推旧 tag。
 
@@ -70,25 +73,37 @@ PostgreSQL 集成测试要求先启动 `docker compose up -d`。性能 Harness �
 
 `.github/workflows/release.yml` 在 `v*.*.*` tag 推送后：
 
-1. 通过 `.github/workflows/reusable-quality.yml` 执行普通 Rust、Console、
-   Playwright E2E 门禁；随后只读权限的 `verify` job 再次校验 tag、代码版本与
-   Changelog，并执行 embedded UI 门禁。
-2. `verify` 构建 release 二进制，生成包含项目许可证和第三方声明的 Linux tarball、
-   完整 `docs/` 文档树、`SHA256SUMS` 与 release notes，并以一天保留期暂存为
-   Actions artifact。
-3. `publish-platform-images` matrix 分别在原生 `ubuntu-24.04`
+1. `preflight` 要求 annotated tag 精确解析到 workflow SHA，且该提交属于
+   `main`，校验代码版本与 Changelog，并通过 GitHub Actions API 固定目标 SHA
+   已成功完成 `main` `ci-gate`。本地 `release.sh` 在创建 tag 时进一步要求
+   `HEAD` 与 `origin/main` 完全一致。Tag workflow 不再重复运行相同 SHA 已通过
+   的普通 Rust、Console 与 Playwright 门禁。
+2. `verify` 与两个平台镜像构建在 `preflight` 后并行。`verify` 只执行发布专属的
+   embedded Console 构建、Clippy 和 serving tests。
+3. `publish-platform-images` 分别在原生 `ubuntu-24.04`
    (`linux/amd64`) 与 `ubuntu-24.04-arm` (`linux/arm64`) runner 上并行构建，
    以平台 digest 推送镜像，避免使用 QEMU 编译 Rust；Dockerfile 中与架构无关的
-   Console 构建和 `cargo-chef prepare` 阶段固定在 `$BUILDPLATFORM`。
-4. 平台构建使用独立的 `ci-image-<arch>` / `release-image-<arch>` GitHub
-   Actions cache scope；Pull Request 只恢复 cache，普通 `main` CI 预热 AMD64
-   cache，成功的 Release 构建分别持久化两个架构的 cache。
-5. `publish-image` job 下载两个平台 digest，生成稳定版或预发布版 tag，并将
+   Console 构建和 `cargo-chef prepare` 阶段固定在 `$BUILDPLATFORM`。平台 digest
+   在门禁结束前没有稳定 tag；失败运行最多留下不可发现的无标签 digest。
+4. Docker planner 在生成 cargo-chef recipe 前将 workspace 自身版本规范化为
+   固定占位值，因此单纯的 release version bump 不再使第三方依赖层失效。
+5. 普通 `main` CI 预热 AMD64 cache；独立的
+   `.github/workflows/release-image-cache.yml` 在 `main` 的 image 相关变更后
+   异步预热 ARM64 `release-image-arm64` cache。Tag Release 只恢复 cache，不在
+   发布关键路径上传 `mode=max` cache。
+6. AMD64 平台 lane 从刚推送的镜像中提取二进制和第三方许可证材料，生成包含
+   完整 `docs/` 文档树的 Linux tarball、`SHA256SUMS` 与 release notes。该打包
+   与 ARM64 构建重叠执行，且 GitHub tarball 与 AMD64 容器使用同一份已编译
+   二进制，不再分别编译。
+7. `publish-image` job 下载两个平台 digest，生成稳定版或预发布版 tag，并将
    它们合并为一个 multi-platform manifest。
-6. Public 仓库额外为最终 multi-platform 镜像生成并推送 GitHub artifact
+8. Public 仓库额外为最终 multi-platform 镜像生成并推送 GitHub artifact
    attestation；Private 仓库会跳过此步骤。
-7. 仅拥有 `contents: write` 的 `publish-release` job 创建 GitHub Release
+9. 仅拥有 `contents: write` 的 `publish-release` job 创建 GitHub Release
    并上传资产。
+
+最终 image tags、provenance 和 GitHub Release 仍然必须等待发布专属验证、两个
+平台构建及资产打包全部成功。并行化只提前执行无标签构建，不降低发布门禁。
 
 稳定版本会发布精确版本、`major.minor`、`major` 与 `latest`；预发布版本只发布
 精确 SemVer tag。镜像地址为 `ghcr.io/oai404iao/ai_gateway`，OCI
