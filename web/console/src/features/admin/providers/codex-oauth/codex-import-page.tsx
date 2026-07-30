@@ -302,6 +302,7 @@ export default function CodexImportPage() {
         access_token: target.access_token.trim(),
         refresh_token: target.refresh_token.trim(),
         account_id: target.account_id.trim() || null,
+        user_id: target.user_id.trim() || null,
       };
       if (target.id_token.trim()) input.id_token = target.id_token.trim();
       try {
@@ -532,7 +533,7 @@ export default function CodexImportPage() {
               <CardTitle>{t("2. Review credentials")}</CardTitle>
               <CardDescription>
                 {t(
-                  "Edit labels, routing values, tokens, and per-account proxy assignments before the server validates each credential.",
+                  "Edit labels, routing values, tokens, and per-credential proxy assignments before the server validates each credential.",
                 )}
               </CardDescription>
             </CardHeader>
@@ -652,6 +653,11 @@ export default function CodexImportPage() {
                               {credential.account_id ||
                                 t("Account ID pending validation")}
                             </p>
+                            {credential.user_id ? (
+                              <p className="mt-1 break-all text-xs text-muted-foreground">
+                                {t("Member {id}", { id: credential.user_id })}
+                              </p>
+                            ) : null}
                             {errors.map((error) => (
                               <p
                                 className="mt-1 text-xs text-destructive"
@@ -863,6 +869,16 @@ function CredentialEditorDialog({
               />
             </Field>
             <Field>
+              <FieldLabel htmlFor="codex-import-user-id">
+                {t("User ID override (optional)")}
+              </FieldLabel>
+              <Input
+                id="codex-import-user-id"
+                value={credential.user_id}
+                onChange={(event) => onChange({ user_id: event.target.value })}
+              />
+            </Field>
+            <Field>
               <FieldLabel htmlFor="codex-import-id-token">
                 {t("ID token (optional)")}
               </FieldLabel>
@@ -1022,7 +1038,7 @@ function codexImportError(
   if (error instanceof ApiError) {
     switch (error.code) {
       case "codex_account_changed":
-        return t("The supplied account ID does not match the token.");
+        return t("The supplied workspace or user ID does not match the token.");
       case "codex_network_policy_invalid":
         return t("The selected outbound proxy is unavailable.");
       case "codex_refresh_token_invalid":

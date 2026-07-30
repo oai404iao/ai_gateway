@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import {
   E2E_API_KEY_SECRET,
+  E2E_CODEX_CREDENTIAL,
   E2E_CODEX_CREDENTIAL_ID,
   E2E_CODEX_GROUP_ID,
   mockConsoleApi,
@@ -192,7 +193,7 @@ test.describe("Console SPA smoke", () => {
     await expect(page.getByText("E2E ISP")).toBeVisible();
   });
 
-  test("administrators can inspect and refresh a Codex OAuth credential", async ({
+  test("administrators can inspect and batch-update a Codex OAuth credential", async ({
     page,
   }) => {
     await mockConsoleApi(page);
@@ -225,25 +226,32 @@ test.describe("Console SPA smoke", () => {
     const tokenButton = page.getByRole("button", {
       name: "Refresh token for Personal Plus",
     });
+    const deleteButton = page.getByRole("button", {
+      name: "Delete Personal Plus",
+    });
     for (const [button, label] of [
       [editButton, "Edit Personal Plus"],
       [quotaButton, "Refresh quota for Personal Plus"],
       [tokenButton, "Refresh token for Personal Plus"],
+      [deleteButton, "Delete Personal Plus"],
     ] as const) {
       await button.hover();
       await expect(page.getByText(label, { exact: true })).toBeVisible();
     }
 
-    const [editBox, quotaBox, tokenBox] = await Promise.all([
+    const [editBox, quotaBox, tokenBox, deleteBox] = await Promise.all([
       editButton.boundingBox(),
       quotaButton.boundingBox(),
       tokenButton.boundingBox(),
+      deleteButton.boundingBox(),
     ]);
     expect(editBox).not.toBeNull();
     expect(quotaBox).not.toBeNull();
     expect(tokenBox).not.toBeNull();
+    expect(deleteBox).not.toBeNull();
     expect(editBox!.y).toBeLessThan(quotaBox!.y);
     expect(Math.abs(quotaBox!.y - tokenBox!.y)).toBeLessThan(2);
+    expect(Math.abs(quotaBox!.y - deleteBox!.y)).toBeLessThan(2);
 
     const refresh = page.waitForRequest(
       (request) =>
@@ -254,6 +262,26 @@ test.describe("Console SPA smoke", () => {
     await quotaButton.click();
     await refresh;
     await expect(page.getByText("Quota refreshed.")).toBeVisible();
+
+    await page
+      .getByRole("checkbox", { name: "Select Personal Plus" })
+      .click();
+    const batch = page.waitForRequest(
+      (request) =>
+        request.url().endsWith(
+          `/console/v1/providers/codex-oauth/channel-groups/${E2E_CODEX_GROUP_ID}/credentials/batch`,
+        ) && request.method() === "POST",
+    );
+    await page.getByRole("button", { name: "Disable" }).click();
+    expect((await batch).postDataJSON()).toEqual({
+      items: [
+        {
+          id: E2E_CODEX_CREDENTIAL_ID,
+          updated_at: E2E_CODEX_CREDENTIAL.updated_at,
+        },
+      ],
+      operation: "disable",
+    });
   });
 
   test("all users can open the Channel status page", async ({ page }) => {

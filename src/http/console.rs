@@ -32,13 +32,14 @@ use crate::{
     persistence::{
         ApiKeyCreate, ApiKeyPolicyInput, ApiKeyUpdate, ChannelBatchUpdateInput, ChannelCreateInput,
         ChannelGroupInput, ChannelInput, ChannelRecoverInput, ChannelStatusWindow,
-        CodexCredentialExportBundle, CodexCredentialExportInput, CodexCredentialImportInput,
-        CodexCredentialUpdateInput, CodexCredentialView, CodexOauthStartInput,
-        ConfigTemplateCreateInput, ConfigTemplateInput, ConsoleApiKey, ControlPlaneMutation,
-        CostStatisticsFilter, InviteUserInput, ModelInput, ModelRuleInput, ProxyCreateInput,
-        ProxyInput, RequestLogFilter, RequestLogRepository, SelfApiKeyCreate, SelfApiKeyUpdate,
-        SpendLeaderboardFilter, SpendLeaderboardPeriod, StatisticsGranularity, SystemSettingsInput,
-        UserBatchUpdateInput, UserGroupInput, UserInput, UserSettingsInput, UserUpdateInput,
+        CodexCredentialBatchInput, CodexCredentialExportBundle, CodexCredentialExportInput,
+        CodexCredentialImportInput, CodexCredentialUpdateInput, CodexCredentialView,
+        CodexOauthStartInput, ConfigTemplateCreateInput, ConfigTemplateInput, ConsoleApiKey,
+        ControlPlaneMutation, CostStatisticsFilter, InviteUserInput, ModelInput, ModelRuleInput,
+        ProxyCreateInput, ProxyInput, RequestLogFilter, RequestLogRepository, SelfApiKeyCreate,
+        SelfApiKeyUpdate, SpendLeaderboardFilter, SpendLeaderboardPeriod, StatisticsGranularity,
+        SystemSettingsInput, UserBatchUpdateInput, UserGroupInput, UserInput, UserSettingsInput,
+        UserUpdateInput,
     },
     runtime_config::ConfigError,
 };
@@ -227,12 +228,18 @@ pub fn router(state: ConsoleState) -> Router {
             post(export_codex_credentials),
         )
         .route(
+            "/console/v1/providers/codex-oauth/channel-groups/{id}/credentials/batch",
+            post(update_codex_credentials_batch),
+        )
+        .route(
             "/console/v1/providers/codex-oauth/oauth/flows/{id}/complete",
             post(complete_codex_oauth),
         )
         .route(
             "/console/v1/providers/codex-oauth/credentials/{id}",
-            get(get_codex_credential).put(update_codex_credential),
+            get(get_codex_credential)
+                .put(update_codex_credential)
+                .delete(delete_codex_credential),
         )
         .route(
             "/console/v1/providers/codex-oauth/credentials/{id}/refresh",
@@ -444,6 +451,12 @@ struct ChannelBatchUpdateResponse {
 
 #[derive(Serialize)]
 struct UserBatchUpdateResponse {
+    updated_ids: Vec<Uuid>,
+    correlation_id: Uuid,
+}
+
+#[derive(Serialize)]
+struct CodexCredentialBatchResponse {
     updated_ids: Vec<Uuid>,
     correlation_id: Uuid,
 }
@@ -1638,6 +1651,22 @@ async fn export_codex_credentials(
     ))
 }
 
+async fn update_codex_credentials_batch(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Path(channel_group_id): Path<Uuid>,
+    Json(input): Json<CodexCredentialBatchInput>,
+) -> Result<Json<CodexCredentialBatchResponse>, ConsoleError> {
+    let result = state
+        .codex_connector
+        .update_credentials_batch(principal.user_id(), channel_group_id, input)
+        .await?;
+    Ok(Json(CodexCredentialBatchResponse {
+        updated_ids: result.updated_ids,
+        correlation_id: result.correlation_id,
+    }))
+}
+
 async fn update_codex_credential(
     State(state): State<ConsoleState>,
     Extension(principal): Extension<ConsolePrincipal>,
@@ -1648,6 +1677,19 @@ async fn update_codex_credential(
     let result = state
         .codex_connector
         .update_credential(principal.user_id(), channel_id, input, if_match(&headers)?)
+        .await?;
+    Ok(Json(mutation_response(result)))
+}
+
+async fn delete_codex_credential(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Path(channel_id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Json<MutationResponse>, ConsoleError> {
+    let result = state
+        .codex_connector
+        .delete_credential(principal.user_id(), channel_id, if_match(&headers)?)
         .await?;
     Ok(Json(mutation_response(result)))
 }

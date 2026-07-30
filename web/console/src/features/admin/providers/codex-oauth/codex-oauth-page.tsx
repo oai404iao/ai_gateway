@@ -1,12 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  CheckCheck,
   Download,
   ExternalLink,
   FileUp,
   KeyRound,
   Pencil,
   Plus,
+  Power,
+  PowerOff,
   RefreshCw,
+  Trash2,
 } from "lucide-react";
 import { useNavigate, useParams } from "react-router";
 import { toast } from "sonner";
@@ -18,6 +22,7 @@ import type {
 import { ApiError } from "@/api/errors";
 import { translate, useI18n } from "@/app/i18n";
 import { AsyncResource, ErrorAlert } from "@/components/shared/async-resource";
+import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { PageHeader } from "@/components/shared/page-header";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -33,6 +38,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Card,
   CardContent,
@@ -85,9 +91,11 @@ import {
 } from "@/features/admin/api";
 import { formatDateTime } from "@/lib/dates";
 import {
+  useBatchUpdateCodexCredentials,
   useCodexCredential,
   useCodexCredentials,
   useCompleteCodexOauth,
+  useDeleteCodexCredential,
   useExportCodexCredentials,
   useImportCodexCredential,
   useRefreshCodexCredential,
@@ -97,11 +105,14 @@ import {
 } from "./api";
 
 const NO_PROXY = "__none__";
+const MAX_BATCH_SIZE = 100;
 
 function errorMessage(error: unknown): string {
   if (error instanceof ApiError) {
     if (error.isConflict) {
-      return translate("This Codex account is already connected or changed elsewhere.");
+      return translate(
+        "This Codex credential is already connected or changed elsewhere.",
+      );
     }
     switch (error.code) {
       case "codex_oauth_state_mismatch":
@@ -111,7 +122,9 @@ function errorMessage(error: unknown): string {
       case "codex_refresh_token_invalid":
         return translate("The refresh token is no longer valid. Connect the account again.");
       case "codex_account_changed":
-        return translate("The refreshed token belongs to a different Codex account.");
+        return translate(
+          "The refreshed token belongs to a different Codex workspace or member.",
+        );
       case "codex_network_policy_invalid":
         return translate("The selected outbound proxy is unavailable.");
     }
@@ -131,6 +144,7 @@ interface ImportState extends CredentialSettingsState {
   access_token: string;
   refresh_token: string;
   account_id: string;
+  user_id: string;
 }
 
 interface EditState extends CredentialSettingsState {
@@ -150,6 +164,7 @@ const EMPTY_IMPORT: ImportState = {
   access_token: "",
   refresh_token: "",
   account_id: "",
+  user_id: "",
 };
 
 function parsePositiveInteger(value: string): number | null {
@@ -339,6 +354,8 @@ export default function CodexOauthPage() {
   const completeOauth = useCompleteCodexOauth(groupId);
   const importCredential = useImportCodexCredential(groupId);
   const exportCredentials = useExportCodexCredentials(groupId);
+  const batchUpdate = useBatchUpdateCodexCredentials(groupId);
+  const deleteCredential = useDeleteCodexCredential(groupId);
   const refreshCredential = useRefreshCodexCredential(groupId);
   const refreshQuota = useRefreshCodexQuota(groupId);
 
@@ -352,9 +369,13 @@ export default function CodexOauthPage() {
   } | null>(null);
   const [callbackUrl, setCallbackUrl] = useState("");
   const [importOpen, setImportOpen] = useState(false);
-  const [exportOpen, setExportOpen] = useState(false);
+  const [exportIds, setExportIds] = useState<string[] | null>(null);
   const [importState, setImportState] = useState<ImportState>(EMPTY_IMPORT);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [deleteTarget, setDeleteTarget] =
+    useState<CodexCredentialView | null>(null);
+  const [batchDeleteOpen, setBatchDeleteOpen] = useState(false);
 
   const proxies = useMemo(
     () =>
@@ -364,6 +385,39 @@ export default function CodexOauthPage() {
       })),
     [lists.data?.proxies],
   );
+  const selectedCredentials = useMemo(
+    () =>
+      (credentials.data ?? []).filter((credential) =>
+        selected.has(credential.id),
+      ),
+    [credentials.data, selected],
+  );
+  const allSelected =
+    (credentials.data?.length ?? 0) > 0 &&
+    selectedCredentials.length === credentials.data?.length;
+  const exceedsBatchLimit = selectedCredentials.length > MAX_BATCH_SIZE;
+
+  useEffect(() => {
+    const available = new Set(
+      (credentials.data ?? []).map((credential) => credential.id),
+    );
+    setSelected((current) => {
+      const next = new Set([...current].filter((id) => available.has(id)));
+      return next.size === current.size &&
+        [...next].every((id) => current.has(id))
+        ? current
+        : next;
+    });
+  }, [credentials.data]);
+
+  const toggleCredential = (credential: CodexCredentialView) => {
+    setSelected((current) => {
+      const next = new Set(current);
+      if (next.has(credential.id)) next.delete(credential.id);
+      else next.add(credential.id);
+      return next;
+    });
+  };
 
   const closeOauth = () => {
     setOauthOpen(false);
@@ -412,7 +466,6 @@ export default function CodexOauthPage() {
     const settings = parseSettings(importState);
     if (
       !settings ||
-      !importState.id_token.trim() ||
       !importState.access_token.trim() ||
       !importState.refresh_token.trim()
     ) {
@@ -422,11 +475,14 @@ export default function CodexOauthPage() {
     const input: CodexCredentialImportInput = {
       ...settings,
       enabled: true,
-      id_token: importState.id_token.trim(),
       access_token: importState.access_token.trim(),
       refresh_token: importState.refresh_token.trim(),
       account_id: importState.account_id.trim() || null,
+      user_id: importState.user_id.trim() || null,
     };
+    if (importState.id_token.trim()) {
+      input.id_token = importState.id_token.trim();
+    }
     try {
       await importCredential.mutateAsync(input);
       toast.success(t("Codex credential imported."));
@@ -437,10 +493,11 @@ export default function CodexOauthPage() {
     }
   };
 
-  const exportAllCredentials = async () => {
+  const exportSelectedCredentials = async () => {
+    if (exportIds === null) return;
     try {
       const bundle = await exportCredentials.mutateAsync({
-        credential_ids: [],
+        credential_ids: exportIds,
         include_proxies: true,
       });
       downloadJson(
@@ -450,8 +507,61 @@ export default function CodexOauthPage() {
         )}-${new Date().toISOString().slice(0, 10)}.json`,
       );
       toast.success(t("Codex credentials exported."));
-      setExportOpen(false);
+      setExportIds(null);
     } catch (error) {
+      toast.error(errorMessage(error));
+    }
+  };
+
+  const runBatch = async (operation: "enable" | "disable" | "delete") => {
+    if (selectedCredentials.length === 0) return;
+    if (exceedsBatchLimit) {
+      toast.error(
+        t("Batch actions support up to {count} selected credentials.", {
+          count: MAX_BATCH_SIZE,
+        }),
+      );
+      return;
+    }
+    try {
+      const result = await batchUpdate.mutateAsync({
+        items: selectedCredentials.map((credential) => ({
+          id: credential.id,
+          updated_at: credential.updated_at,
+        })),
+        operation,
+      });
+      const message =
+        operation === "enable"
+          ? "Enabled {count} credentials."
+          : operation === "disable"
+            ? "Disabled {count} credentials."
+            : "Deleted {count} credentials.";
+      toast.success(t(message, { count: result.updated_ids.length }));
+      setSelected(new Set());
+      setBatchDeleteOpen(false);
+    } catch (error) {
+      if (error instanceof ApiError && error.isConflict) {
+        await credentials.refetch();
+      }
+      toast.error(errorMessage(error));
+    }
+  };
+
+  const deleteSingleCredential = async () => {
+    const target = deleteTarget;
+    if (!target) return;
+    try {
+      await deleteCredential.mutateAsync({
+        id: target.id,
+        ifMatch: `"${target.updated_at}"`,
+      });
+      toast.success(t("Deleted {label}.", { label: target.label }));
+      setDeleteTarget(null);
+    } catch (error) {
+      if (error instanceof ApiError && error.isConflict) {
+        await credentials.refetch();
+      }
       toast.error(errorMessage(error));
     }
   };
@@ -485,14 +595,14 @@ export default function CodexOauthPage() {
       <PageHeader
         title={group.data?.data.name ?? t("Codex OAuth")}
         description={t(
-          "Connect ChatGPT Codex subscriptions, assign per-account proxies, and monitor quota.",
+          "Connect ChatGPT Codex subscriptions, assign per-credential proxies, and monitor quota.",
         )}
         actions={
           <>
             <Button
               variant="outline"
               disabled={!managementEnabled || exportCredentials.isPending}
-              onClick={() => setExportOpen(true)}
+              onClick={() => setExportIds([])}
             >
               <Download data-icon="inline-start" />
               {t("Export credentials")}
@@ -575,10 +685,116 @@ export default function CodexOauthPage() {
             emptyTitle={t("No Codex credentials")}
             emptyDescription={t("Connect an account with OAuth or import an existing token set.")}
           >
+            <div className="mb-4 flex flex-wrap items-center gap-2">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  if (allSelected) setSelected(new Set());
+                  else {
+                    setSelected(
+                      new Set(
+                        (credentials.data ?? []).map(
+                          (credential) => credential.id,
+                        ),
+                      ),
+                    );
+                  }
+                }}
+              >
+                <CheckCheck data-icon="inline-start" />
+                {allSelected ? t("Clear selection") : t("Select all")}
+              </Button>
+              <Button
+                variant="outline"
+                disabled={
+                  selectedCredentials.length === 0 ||
+                  exportCredentials.isPending
+                }
+                onClick={() =>
+                  setExportIds(
+                    selectedCredentials.map((credential) => credential.id),
+                  )
+                }
+              >
+                <Download data-icon="inline-start" />
+                {t("Export selected ({count})", {
+                  count: selectedCredentials.length,
+                })}
+              </Button>
+              <Button
+                variant="outline"
+                disabled={
+                  selectedCredentials.length === 0 ||
+                  exceedsBatchLimit ||
+                  batchUpdate.isPending
+                }
+                onClick={() => void runBatch("enable")}
+              >
+                <Power data-icon="inline-start" />
+                {t("Enable")}
+              </Button>
+              <Button
+                variant="outline"
+                disabled={
+                  selectedCredentials.length === 0 ||
+                  exceedsBatchLimit ||
+                  batchUpdate.isPending
+                }
+                onClick={() => void runBatch("disable")}
+              >
+                <PowerOff data-icon="inline-start" />
+                {t("Disable")}
+              </Button>
+              <Button
+                variant="destructive"
+                disabled={
+                  selectedCredentials.length === 0 ||
+                  exceedsBatchLimit ||
+                  batchUpdate.isPending
+                }
+                onClick={() => setBatchDeleteOpen(true)}
+              >
+                <Trash2 data-icon="inline-start" />
+                {t("Delete selected")}
+              </Button>
+              <span
+                className={
+                  exceedsBatchLimit
+                    ? "text-sm text-destructive"
+                    : "text-sm text-muted-foreground"
+                }
+              >
+                {t("{count} selected", { count: selectedCredentials.length })}
+                {exceedsBatchLimit
+                  ? ` · ${t(
+                      "Batch actions support up to {count} selected credentials.",
+                      { count: MAX_BATCH_SIZE },
+                    )}`
+                  : ""}
+              </span>
+            </div>
             <div className="overflow-x-auto rounded-xl border">
               <Table>
                 <TableHeader>
                   <TableRow>
+                    <TableHead className="w-12">
+                      <Checkbox
+                        aria-label={t("Select all credentials")}
+                        checked={allSelected}
+                        onCheckedChange={() => {
+                          if (allSelected) setSelected(new Set());
+                          else {
+                            setSelected(
+                              new Set(
+                                (credentials.data ?? []).map(
+                                  (credential) => credential.id,
+                                ),
+                              ),
+                            );
+                          }
+                        }}
+                      />
+                    </TableHead>
                     <TableHead>{t("Credential")}</TableHead>
                     <TableHead>{t("Status")}</TableHead>
                     <TableHead>{t("Quota")}</TableHead>
@@ -590,11 +806,28 @@ export default function CodexOauthPage() {
                 <TableBody>
                   {credentials.data?.map((credential) => (
                     <TableRow key={credential.id}>
+                      <TableCell className="align-top">
+                        <Checkbox
+                          aria-label={t("Select {label}", {
+                            label: credential.label,
+                          })}
+                          checked={selected.has(credential.id)}
+                          onCheckedChange={() => toggleCredential(credential)}
+                        />
+                      </TableCell>
                       <TableCell className="min-w-52 align-top">
                         <div className="font-medium">{credential.label}</div>
                         <div className="text-xs text-muted-foreground">
                           {credential.email ?? credential.account_id}
                         </div>
+                        <p className="mt-1 break-all text-xs text-muted-foreground">
+                          {t("Workspace {id}", { id: credential.account_id })}
+                        </p>
+                        {credential.user_id ? (
+                          <p className="mt-1 break-all text-xs text-muted-foreground">
+                            {t("Member {id}", { id: credential.user_id })}
+                          </p>
+                        ) : null}
                         <div className="mt-2 flex flex-wrap gap-1">
                           {credential.plan_type ? (
                             <Badge variant="secondary">{credential.plan_type}</Badge>
@@ -737,6 +970,28 @@ export default function CodexOauthPage() {
                                 })}
                               </TooltipContent>
                             </Tooltip>
+                            <Tooltip disableHoverablePopup>
+                              <TooltipTrigger
+                                render={
+                                  <Button
+                                    variant="ghost"
+                                    size="icon-sm"
+                                    aria-label={t("Delete {label}", {
+                                      label: credential.label,
+                                    })}
+                                    disabled={deleteCredential.isPending}
+                                    onClick={() => setDeleteTarget(credential)}
+                                  />
+                                }
+                              >
+                                <Trash2 />
+                              </TooltipTrigger>
+                              <TooltipContent side="left">
+                                {t("Delete {label}", {
+                                  label: credential.label,
+                                })}
+                              </TooltipContent>
+                            </Tooltip>
                           </div>
                         </div>
                       </TableCell>
@@ -856,7 +1111,9 @@ export default function CodexOauthPage() {
           />
           <FieldGroup>
             <Field>
-              <FieldLabel htmlFor="codex-id-token">{t("ID token")}</FieldLabel>
+              <FieldLabel htmlFor="codex-id-token">
+                {t("ID token (optional)")}
+              </FieldLabel>
               <Input
                 id="codex-id-token"
                 type="password"
@@ -919,6 +1176,21 @@ export default function CodexOauthPage() {
                 }
               />
             </Field>
+            <Field>
+              <FieldLabel htmlFor="codex-user-id">
+                {t("User ID override (optional)")}
+              </FieldLabel>
+              <Input
+                id="codex-user-id"
+                value={importState.user_id}
+                onChange={(event) =>
+                  setImportState((current) => ({
+                    ...current,
+                    user_id: event.target.value,
+                  }))
+                }
+              />
+            </Field>
           </FieldGroup>
           <DialogFooter>
             <Button variant="outline" onClick={() => setImportOpen(false)}>
@@ -942,8 +1214,10 @@ export default function CodexOauthPage() {
       />
 
       <AlertDialog
-        open={exportOpen}
-        onOpenChange={(open) => setExportOpen(open)}
+        open={exportIds !== null}
+        onOpenChange={(open) => {
+          if (!open) setExportIds(null);
+        }}
       >
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -959,14 +1233,50 @@ export default function CodexOauthPage() {
           <AlertDialogFooter>
             <AlertDialogCancel>{t("Cancel")}</AlertDialogCancel>
             <AlertDialogAction
-              onClick={() => void exportAllCredentials()}
+              onClick={() => void exportSelectedCredentials()}
               disabled={exportCredentials.isPending}
             >
-              {t("Export all")}
+              {exportIds?.length
+                ? t("Export selected")
+                : t("Export all")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setDeleteTarget(null);
+        }}
+        title={t("Delete Codex credential?")}
+        description={
+          deleteTarget
+            ? t(
+                "{label} will stop receiving requests and its stored OAuth tokens will be cleared. This cannot be undone.",
+                { label: deleteTarget.label },
+              )
+            : ""
+        }
+        confirmLabel={t("Delete credential")}
+        destructive
+        confirmDisabled={deleteCredential.isPending}
+        onConfirm={() => void deleteSingleCredential()}
+      />
+
+      <ConfirmDialog
+        open={batchDeleteOpen}
+        onOpenChange={setBatchDeleteOpen}
+        title={t("Delete selected Codex credentials?")}
+        description={t(
+          "{count} credentials will stop receiving requests and their stored OAuth tokens will be cleared. This cannot be undone.",
+          { count: selectedCredentials.length },
+        )}
+        confirmLabel={t("Delete selected")}
+        destructive
+        confirmDisabled={batchUpdate.isPending}
+        onConfirm={() => void runBatch("delete")}
+      />
     </div>
   );
 }

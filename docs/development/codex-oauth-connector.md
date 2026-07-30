@@ -52,6 +52,16 @@ Header 或错误分类。
 - 普通 channel create/update/batch API 在 repository 层拒绝 provider-managed channel；
 - provider mutation 在同一控制面事务中更新凭证与 channel、写 audit、编译候选快照并发布。
 
+凭证的持久身份不是单独的 workspace account ID，而是
+`(channel_group_id, account_id, user_id)`；`user_id` 来自
+`chatgpt_user_id`，并兼容 Codex 使用的 `user_id` fallback。这样同一 Business workspace
+中的多个成员可以分别成为路由凭证。缺少 user claim 的旧 Token 仍按 account/email 回退匹配，
+服务启动时会从已保存 Token 尽力补齐旧记录的 user ID。
+
+删除使用软删除凭证记录加 managed-channel tombstone：事务内关闭凭证、清除三个 OAuth Token、
+释放 proxy、记录 `deleted_at` 并把 channel 改成唯一 tombstone 名称。列表、导出、刷新和后续
+身份匹配忽略已删除记录，但 channel 壳继续保留，使请求日志和显式 channel 引用不失去历史主键。
+
 OAuth PKCE 临时状态单独保存在 `codex_oauth_flows`，按 actor、group、过期时间和
 `completed_at` 限定。数据库只保存 `state` 的 SHA-256；`code_verifier` 在一次性 flow
 完成或清理前保存。
@@ -78,8 +88,9 @@ worker、上游 `401` 恢复和多实例并发均传递 observed generation；�
 因此表示一次强制刷新。
 
 永久 refresh 失败设置持久的 `reauth_required`，maintenance 不再自动重复消费该 Token，quota
-成功和普通设置更新也不能清除状态。再次 OAuth 或导入相同 group/account 的新 Token 会事务内更新
-原 credential/channel、递增 generation 并清除 `reauth_required`，不会创建重复 channel。
+成功和普通设置更新也不能清除状态。再次 OAuth 或导入相同 group/workspace/member 的新 Token
+会事务内更新原 credential/channel、递增 generation 并清除 `reauth_required`，不会创建重复
+channel。
 
 ## Quota 与 Session 粘性
 
@@ -123,6 +134,7 @@ preparation 失败可以在发送前换凭证。Codex attempt 不启用普通 tr
 
 - Console 只返回 token 元数据，不返回保存的 ID/access/refresh token。
 - credential `Debug`、audit before/after 和错误摘要必须脱敏。
+- 删除必须在提交前清除持久化 OAuth Token；tombstone 不得继续引用 proxy 或出现在凭证列表/导出。
 - callback URL、authorization code 和导入 token 不进入日志或浏览器持久化状态。
 - 当前 token 与普通 upstream API key 一样以数据库明文列保存；部署者必须保护 PostgreSQL、备份、
   主机和 Console 管理权限。若未来增加列级加密，应使用明确的进程主密钥配置和轮换设计，不能在

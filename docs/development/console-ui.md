@@ -293,8 +293,9 @@ Dialog state；管理员粘贴 callback URL 后立即提交，不能进入 URL�
 导入使用独立路由，在浏览器内解析粘贴内容和多文件 JSON，并把原生、CLIProxyAPI、Sub2API 输入
 标准化成可修改草稿；代理新增、编辑、删除、外部代理映射和逐凭证分配都在提交前完成。草稿与明文
 Token 只存在于页面 state，不写入 URL、Web Storage 或 React Query cache。凭证列表只展示账户元数据、
-状态、quota、proxy、weight 和时间戳；只有管理员确认敏感导出时，专用 API 才会返回已保存 Token
-并立即生成浏览器下载。普通 Channel 详情遇到 `provider_managed=true` 时跳转到该 provider 页面，
+workspace/member 身份、状态、quota、proxy、weight 和时间戳；支持基于列表版本的单条删除，以及
+批量启用、停用、删除和选中导出。只有管理员确认敏感导出时，专用 API 才会返回已保存 Token 并
+立即生成浏览器下载。普通 Channel 详情遇到 `provider_managed=true` 时跳转到该 provider 页面，
 避免用标准渠道表单覆盖 connector 状态。
 
 `/account/sessions` 当前按“活跃会话”和可折叠历史分组，使用后端返回的 `is_current` 与明确

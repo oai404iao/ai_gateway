@@ -35,8 +35,8 @@ pub use codex::{
 pub use connector::UpstreamConnectorRegistry;
 pub(crate) use connector::{ConnectorAttemptError, ConnectorUnavailable};
 pub use control_plane::{
-    ChannelBatchUpdateResult, ControlPlaneCoordinator, ControlPlaneError, ModelSyncResult,
-    UserBatchUpdateResult,
+    ChannelBatchUpdateResult, CodexCredentialBatchResult, ControlPlaneCoordinator,
+    ControlPlaneError, ModelSyncResult, UserBatchUpdateResult,
 };
 pub use model_sync::{
     ModelImportRequest, ModelSyncError, ModelSyncPreview, ModelSyncPreviewRequest,

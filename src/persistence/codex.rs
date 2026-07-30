@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -41,6 +41,8 @@ pub struct CodexCredentialImportInput {
     pub refresh_token: String,
     #[serde(default)]
     pub account_id: Option<String>,
+    #[serde(default)]
+    pub user_id: Option<String>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -80,6 +82,7 @@ pub struct CodexCredentialExportItem {
     pub label: String,
     pub email: Option<String>,
     pub account_id: String,
+    pub user_id: Option<String>,
     pub plan_type: Option<String>,
     pub is_fedramp: bool,
     pub id_token: String,
@@ -102,6 +105,28 @@ pub struct CodexCredentialUpdateInput {
     pub quota_threshold_percent: i16,
 }
 
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CodexCredentialBatchInput {
+    pub items: Vec<CodexCredentialBatchTarget>,
+    pub operation: CodexCredentialBatchOperation,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CodexCredentialBatchTarget {
+    pub id: Uuid,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CodexCredentialBatchOperation {
+    Enable,
+    Disable,
+    Delete,
+}
+
 #[derive(Clone)]
 pub struct CodexCredentialCreate {
     pub channel_group_id: Uuid,
@@ -113,6 +138,7 @@ pub struct CodexCredentialCreate {
     pub base_url: String,
     pub email: Option<String>,
     pub account_id: String,
+    pub user_id: Option<String>,
     pub plan_type: Option<String>,
     pub is_fedramp: bool,
     pub id_token: String,
@@ -145,6 +171,7 @@ pub struct CodexCredentialRecord {
     pub label: String,
     pub email: Option<String>,
     pub account_id: String,
+    pub user_id: Option<String>,
     pub plan_type: Option<String>,
     pub is_fedramp: bool,
     pub id_token: String,
@@ -184,6 +211,7 @@ impl std::fmt::Debug for CodexCredentialRecord {
             .field("label", &self.label)
             .field("email", &self.email)
             .field("account_id", &self.account_id)
+            .field("user_id", &self.user_id)
             .field("plan_type", &self.plan_type)
             .field("is_fedramp", &self.is_fedramp)
             .field("id_token", &"REDACTED")
@@ -219,6 +247,7 @@ pub struct CodexCredentialView {
     pub label: String,
     pub email: Option<String>,
     pub account_id: String,
+    pub user_id: Option<String>,
     pub plan_type: Option<String>,
     pub is_fedramp: bool,
     pub access_token_expires_at: Option<DateTime<Utc>>,
@@ -265,6 +294,7 @@ pub struct CodexTokenRefreshUpdate {
     pub refresh_token: Option<String>,
     pub email: Option<String>,
     pub account_id: Option<String>,
+    pub user_id: Option<String>,
     pub plan_type: Option<String>,
     pub is_fedramp: Option<bool>,
     pub access_token_expires_at: Option<DateTime<Utc>>,
@@ -281,7 +311,7 @@ impl ControlPlaneRepository {
         channel_group_id: Uuid,
     ) -> Result<Vec<CodexCredentialView>, RepositoryError> {
         sqlx::query_as::<_, CodexCredentialView>(
-            "SELECT c.channel_id AS id,c.channel_group_id,c.label,c.email,c.account_id,c.plan_type, \
+            "SELECT c.channel_id AS id,c.channel_group_id,c.label,c.email,c.account_id,c.user_id,c.plan_type, \
                     c.is_fedramp,c.access_token_expires_at,c.last_refreshed_at, \
                     c.quota_threshold_percent,c.runtime_status,c.quota_allowed, \
                     c.quota_limit_reached,c.primary_used_percent,c.primary_window_seconds, \
@@ -291,7 +321,7 @@ impl ControlPlaneRepository {
                     c.created_at,c.updated_at \
              FROM codex_oauth_credentials c \
              JOIN channels ch ON ch.id=c.channel_id \
-             WHERE c.channel_group_id=$1 \
+             WHERE c.channel_group_id=$1 AND c.deleted_at IS NULL \
              ORDER BY c.label,c.channel_id",
         )
         .bind(channel_group_id)
@@ -305,7 +335,7 @@ impl ControlPlaneRepository {
         channel_id: Uuid,
     ) -> Result<Option<CodexCredentialView>, RepositoryError> {
         sqlx::query_as::<_, CodexCredentialView>(
-            "SELECT c.channel_id AS id,c.channel_group_id,c.label,c.email,c.account_id,c.plan_type, \
+            "SELECT c.channel_id AS id,c.channel_group_id,c.label,c.email,c.account_id,c.user_id,c.plan_type, \
                     c.is_fedramp,c.access_token_expires_at,c.last_refreshed_at, \
                     c.quota_threshold_percent,c.runtime_status,c.quota_allowed, \
                     c.quota_limit_reached,c.primary_used_percent,c.primary_window_seconds, \
@@ -315,7 +345,7 @@ impl ControlPlaneRepository {
                     c.created_at,c.updated_at \
              FROM codex_oauth_credentials c \
              JOIN channels ch ON ch.id=c.channel_id \
-             WHERE c.channel_id=$1",
+             WHERE c.channel_id=$1 AND c.deleted_at IS NULL",
         )
         .bind(channel_id)
         .fetch_optional(&self.pool)
@@ -327,11 +357,13 @@ impl ControlPlaneRepository {
         &self,
         channel_id: Uuid,
     ) -> Result<Option<CodexCredentialRecord>, RepositoryError> {
-        sqlx::query_as::<_, CodexCredentialRecord>(&credential_select("WHERE c.channel_id=$1"))
-            .bind(channel_id)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(RepositoryError::from)
+        sqlx::query_as::<_, CodexCredentialRecord>(&credential_select(
+            "WHERE c.channel_id=$1 AND c.deleted_at IS NULL",
+        ))
+        .bind(channel_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(RepositoryError::from)
     }
 
     pub async fn codex_credential_for_update(
@@ -340,7 +372,7 @@ impl ControlPlaneRepository {
         channel_id: Uuid,
     ) -> Result<Option<CodexCredentialRecord>, RepositoryError> {
         sqlx::query_as::<_, CodexCredentialRecord>(&credential_select(
-            "WHERE c.channel_id=$1 FOR UPDATE OF c,ch",
+            "WHERE c.channel_id=$1 AND c.deleted_at IS NULL FOR UPDATE OF c,ch",
         ))
         .bind(channel_id)
         .fetch_optional(&mut **transaction)
@@ -351,10 +383,40 @@ impl ControlPlaneRepository {
     pub async fn load_codex_credentials(
         &self,
     ) -> Result<Vec<CodexCredentialRecord>, RepositoryError> {
-        sqlx::query_as::<_, CodexCredentialRecord>(&credential_select("ORDER BY c.channel_id"))
-            .fetch_all(&self.pool)
-            .await
-            .map_err(RepositoryError::from)
+        sqlx::query_as::<_, CodexCredentialRecord>(&credential_select(
+            "WHERE c.deleted_at IS NULL ORDER BY c.channel_id",
+        ))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(RepositoryError::from)
+    }
+
+    pub async fn set_codex_user_id_if_missing(
+        &self,
+        channel_id: Uuid,
+        user_id: &str,
+    ) -> Result<bool, RepositoryError> {
+        if user_id.trim().is_empty() || user_id.len() > 300 {
+            return Err(RepositoryError::Validation);
+        }
+        let updated = sqlx::query(
+            "UPDATE codex_oauth_credentials AS target \
+             SET user_id=$2 \
+             WHERE target.channel_id=$1 AND target.user_id IS NULL \
+               AND target.deleted_at IS NULL \
+               AND NOT EXISTS( \
+                   SELECT 1 FROM codex_oauth_credentials AS existing \
+                   WHERE existing.channel_group_id=target.channel_group_id \
+                     AND existing.account_id=target.account_id \
+                     AND existing.user_id=$2 \
+                     AND existing.deleted_at IS NULL \
+               )",
+        )
+        .bind(channel_id)
+        .bind(user_id.trim())
+        .execute(&self.pool)
+        .await?;
+        Ok(updated.rows_affected() == 1)
     }
 
     pub async fn export_codex_credentials(
@@ -389,7 +451,8 @@ impl ControlPlaneRepository {
 
         let records = if selected_ids.is_empty() {
             sqlx::query_as::<_, CodexCredentialRecord>(&credential_select(
-                "WHERE c.channel_group_id=$1 ORDER BY c.label,c.channel_id",
+                "WHERE c.channel_group_id=$1 AND c.deleted_at IS NULL \
+                 ORDER BY c.label,c.channel_id",
             ))
             .bind(channel_group_id)
             .fetch_all(&self.pool)
@@ -398,6 +461,7 @@ impl ControlPlaneRepository {
             let selected_ids = selected_ids.into_iter().collect::<Vec<_>>();
             let records = sqlx::query_as::<_, CodexCredentialRecord>(&credential_select(
                 "WHERE c.channel_group_id=$1 AND c.channel_id=ANY($2) \
+                 AND c.deleted_at IS NULL \
                  ORDER BY c.label,c.channel_id",
             ))
             .bind(channel_group_id)
@@ -432,6 +496,7 @@ impl ControlPlaneRepository {
                 label: record.label,
                 email: record.email,
                 account_id: record.account_id,
+                user_id: record.user_id,
                 plan_type: record.plan_type,
                 is_fedramp: record.is_fedramp,
                 id_token: record.id_token,
@@ -526,6 +591,10 @@ impl ControlPlaneRepository {
         .await?;
         if input.account_id.trim().is_empty()
             || input.account_id.len() > 300
+            || input
+                .user_id
+                .as_ref()
+                .is_some_and(|value| value.trim().is_empty() || value.len() > 300)
             || input.id_token.is_empty()
             || input.access_token.is_empty()
             || input.refresh_token.is_empty()
@@ -533,14 +602,13 @@ impl ControlPlaneRepository {
         {
             return Err(RepositoryError::Validation);
         }
-        let existing_channel_id = sqlx::query_scalar::<_, Uuid>(
-            "SELECT channel_id FROM codex_oauth_credentials \
-             WHERE channel_group_id=$1 AND account_id=$2 \
-             FOR UPDATE",
+        let existing_channel_id = existing_codex_channel_id(
+            transaction,
+            input.channel_group_id,
+            &input.account_id,
+            input.user_id.as_deref(),
+            input.email.as_deref(),
         )
-        .bind(input.channel_group_id)
-        .bind(&input.account_id)
-        .fetch_optional(&mut **transaction)
         .await?;
         if let Some(flow_id) = oauth_flow_id {
             let updated = sqlx::query(
@@ -600,8 +668,9 @@ impl ControlPlaneRepository {
                  secondary_window_seconds=CASE WHEN $13 THEN $20 ELSE secondary_window_seconds END, \
                  secondary_reset_at=CASE WHEN $13 THEN $21 ELSE secondary_reset_at END, \
                  quota_checked_at=CASE WHEN $13 THEN $22 ELSE quota_checked_at END, \
-                 last_error_code=NULL,last_error_summary=NULL \
-                 WHERE channel_id=$1 \
+                 last_error_code=NULL,last_error_summary=NULL, \
+                 user_id=COALESCE($23,user_id) \
+                 WHERE channel_id=$1 AND deleted_at IS NULL \
                  RETURNING updated_at",
             )
             .bind(channel_id)
@@ -626,6 +695,7 @@ impl ControlPlaneRepository {
             .bind(quota.and_then(|quota| quota.secondary_window_seconds))
             .bind(quota.and_then(|quota| quota.secondary_reset_at))
             .bind(quota.map(|quota| quota.checked_at))
+            .bind(input.user_id)
             .fetch_one(&mut **transaction)
             .await?;
 
@@ -672,18 +742,19 @@ impl ControlPlaneRepository {
         };
         sqlx::query(
             "INSERT INTO codex_oauth_credentials \
-             (channel_id,channel_group_id,label,email,account_id,plan_type,is_fedramp,id_token, \
+             (channel_id,channel_group_id,label,email,account_id,user_id,plan_type,is_fedramp,id_token, \
               access_token,refresh_token,access_token_expires_at,last_refreshed_at, \
               enabled,quota_threshold_percent,runtime_status,quota_allowed,quota_limit_reached, \
               primary_used_percent,primary_window_seconds,primary_reset_at, \
               secondary_used_percent,secondary_window_seconds,secondary_reset_at,quota_checked_at) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)",
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)",
         )
         .bind(channel_id)
         .bind(input.channel_group_id)
         .bind(input.label.trim())
         .bind(input.email)
         .bind(input.account_id)
+        .bind(input.user_id)
         .bind(input.plan_type)
         .bind(input.is_fedramp)
         .bind(input.id_token)
@@ -743,7 +814,7 @@ impl ControlPlaneRepository {
                                COALESCE(secondary_used_percent,0)) >= $3 \
                      THEN 'draining' \
                  ELSE 'active' END \
-             WHERE channel_id=$1 AND updated_at=$5 \
+             WHERE channel_id=$1 AND updated_at=$5 AND deleted_at IS NULL \
              RETURNING updated_at",
         )
         .bind(channel_id)
@@ -775,6 +846,70 @@ impl ControlPlaneRepository {
         })
     }
 
+    pub async fn delete_codex_credential(
+        &self,
+        transaction: &mut Transaction<'_, Postgres>,
+        channel_id: Uuid,
+        expected_updated_at: DateTime<Utc>,
+    ) -> Result<MutationResult, RepositoryError> {
+        delete_codex_credential(transaction, channel_id, None, expected_updated_at).await
+    }
+
+    pub async fn update_codex_credentials_batch(
+        &self,
+        transaction: &mut Transaction<'_, Postgres>,
+        channel_group_id: Uuid,
+        input: CodexCredentialBatchInput,
+    ) -> Result<Vec<MutationResult>, RepositoryError> {
+        const MAX_BATCH_SIZE: usize = 100;
+
+        if input.items.is_empty() || input.items.len() > MAX_BATCH_SIZE {
+            return Err(RepositoryError::Validation);
+        }
+        validate_codex_group_and_proxy_transaction(transaction, channel_group_id, None).await?;
+        let mut ids = HashSet::with_capacity(input.items.len());
+        if input.items.iter().any(|item| !ids.insert(item.id)) {
+            return Err(RepositoryError::Validation);
+        }
+
+        let mut results = Vec::with_capacity(input.items.len());
+        for item in input.items {
+            let result = match input.operation {
+                CodexCredentialBatchOperation::Enable => {
+                    set_codex_credential_enabled(
+                        transaction,
+                        item.id,
+                        channel_group_id,
+                        item.updated_at,
+                        true,
+                    )
+                    .await?
+                }
+                CodexCredentialBatchOperation::Disable => {
+                    set_codex_credential_enabled(
+                        transaction,
+                        item.id,
+                        channel_group_id,
+                        item.updated_at,
+                        false,
+                    )
+                    .await?
+                }
+                CodexCredentialBatchOperation::Delete => {
+                    delete_codex_credential(
+                        transaction,
+                        item.id,
+                        Some(channel_group_id),
+                        item.updated_at,
+                    )
+                    .await?
+                }
+            };
+            results.push(result);
+        }
+        Ok(results)
+    }
+
     pub async fn persist_codex_token_refresh_transaction(
         &self,
         transaction: &mut Transaction<'_, Postgres>,
@@ -788,6 +923,7 @@ impl ControlPlaneRepository {
              account_id=COALESCE($7,account_id),plan_type=COALESCE($8,plan_type), \
              is_fedramp=COALESCE($9,is_fedramp),access_token_expires_at=$10, \
              last_refreshed_at=$11,refresh_generation=refresh_generation+1, \
+             user_id=COALESCE($12,user_id), \
              reauth_required=false, \
              runtime_status=CASE \
                  WHEN NOT enabled THEN 'disabled' \
@@ -797,7 +933,7 @@ impl ControlPlaneRepository {
                      THEN 'draining' \
                  ELSE 'active' END, \
              last_error_code=NULL,last_error_summary=NULL \
-             WHERE channel_id=$1 AND refresh_generation=$2",
+             WHERE channel_id=$1 AND refresh_generation=$2 AND deleted_at IS NULL",
         )
         .bind(channel_id)
         .bind(update.expected_generation)
@@ -810,6 +946,7 @@ impl ControlPlaneRepository {
         .bind(update.is_fedramp)
         .bind(update.access_token_expires_at)
         .bind(update.refreshed_at)
+        .bind(update.user_id)
         .execute(&mut **transaction)
         .await?;
         Ok(updated.rows_affected() == 1)
@@ -835,7 +972,7 @@ impl ControlPlaneRepository {
              quota_checked_at=$10, \
              last_error_code=CASE WHEN reauth_required THEN last_error_code ELSE NULL END, \
              last_error_summary=CASE WHEN reauth_required THEN last_error_summary ELSE NULL END \
-             WHERE channel_id=$1",
+             WHERE channel_id=$1 AND deleted_at IS NULL",
         )
         .bind(channel_id)
         .bind(quota.allowed)
@@ -865,7 +1002,7 @@ impl ControlPlaneRepository {
              runtime_status=CASE WHEN $2 THEN 'unavailable' ELSE runtime_status END, \
              last_error_code=CASE WHEN reauth_required AND NOT $2 THEN last_error_code ELSE $3 END, \
              last_error_summary=CASE WHEN reauth_required AND NOT $2 THEN last_error_summary ELSE $4 END \
-             WHERE channel_id=$1",
+             WHERE channel_id=$1 AND deleted_at IS NULL",
         )
         .bind(channel_id)
         .bind(permanent)
@@ -890,7 +1027,7 @@ impl ControlPlaneRepository {
              runtime_status=CASE WHEN $2 THEN 'unavailable' ELSE runtime_status END, \
              last_error_code=CASE WHEN reauth_required AND NOT $2 THEN last_error_code ELSE $3 END, \
              last_error_summary=CASE WHEN reauth_required AND NOT $2 THEN last_error_summary ELSE $4 END \
-             WHERE channel_id=$1",
+             WHERE channel_id=$1 AND deleted_at IS NULL",
         )
         .bind(channel_id)
         .bind(permanent)
@@ -914,7 +1051,7 @@ impl ControlPlaneRepository {
 
 fn credential_select(suffix: &str) -> String {
     format!(
-        "SELECT c.channel_id,c.channel_group_id,c.label,c.email,c.account_id,c.plan_type, \
+        "SELECT c.channel_id,c.channel_group_id,c.label,c.email,c.account_id,c.user_id,c.plan_type, \
                 c.is_fedramp,c.id_token,c.access_token,c.refresh_token, \
                 c.access_token_expires_at,c.last_refreshed_at,c.refresh_generation, \
                 c.reauth_required, \
@@ -925,6 +1062,166 @@ fn credential_select(suffix: &str) -> String {
                 ch.proxy_id,ch.weight,c.enabled,ch.available_models,c.created_at,c.updated_at \
          FROM codex_oauth_credentials c JOIN channels ch ON ch.id=c.channel_id {suffix}"
     )
+}
+
+async fn existing_codex_channel_id(
+    transaction: &mut Transaction<'_, Postgres>,
+    channel_group_id: Uuid,
+    account_id: &str,
+    user_id: Option<&str>,
+    email: Option<&str>,
+) -> Result<Option<Uuid>, RepositoryError> {
+    if let Some(user_id) = user_id {
+        let exact = sqlx::query_scalar::<_, Uuid>(
+            "SELECT channel_id FROM codex_oauth_credentials \
+             WHERE channel_group_id=$1 AND account_id=$2 AND user_id=$3 \
+               AND deleted_at IS NULL \
+             FOR UPDATE",
+        )
+        .bind(channel_group_id)
+        .bind(account_id)
+        .bind(user_id)
+        .fetch_optional(&mut **transaction)
+        .await?;
+        if exact.is_some() {
+            return Ok(exact);
+        }
+    }
+
+    if let Some(email) = email.map(str::trim).filter(|value| !value.is_empty()) {
+        // Once the token carries a member ID, email is only a migration bridge
+        // for legacy rows that have not been backfilled yet.
+        let matches = sqlx::query_scalar::<_, Uuid>(
+            "SELECT channel_id FROM codex_oauth_credentials \
+             WHERE channel_group_id=$1 AND account_id=$2 \
+               AND lower(email)=lower($3) AND deleted_at IS NULL \
+               AND ($4 OR user_id IS NULL) \
+             ORDER BY channel_id \
+             FOR UPDATE",
+        )
+        .bind(channel_group_id)
+        .bind(account_id)
+        .bind(email)
+        .bind(user_id.is_none())
+        .fetch_all(&mut **transaction)
+        .await?;
+        return match matches.as_slice() {
+            [] => Ok(None),
+            [channel_id] => Ok(Some(*channel_id)),
+            _ => Err(RepositoryError::Conflict),
+        };
+    }
+
+    if user_id.is_none() {
+        return sqlx::query_scalar::<_, Uuid>(
+            "SELECT channel_id FROM codex_oauth_credentials \
+             WHERE channel_group_id=$1 AND account_id=$2 AND user_id IS NULL \
+               AND deleted_at IS NULL \
+             FOR UPDATE",
+        )
+        .bind(channel_group_id)
+        .bind(account_id)
+        .fetch_optional(&mut **transaction)
+        .await
+        .map_err(RepositoryError::from);
+    }
+
+    Ok(None)
+}
+
+async fn set_codex_credential_enabled(
+    transaction: &mut Transaction<'_, Postgres>,
+    channel_id: Uuid,
+    channel_group_id: Uuid,
+    expected_updated_at: DateTime<Utc>,
+    enabled: bool,
+) -> Result<MutationResult, RepositoryError> {
+    let before = codex_credential_audit(transaction, channel_id).await?;
+    let actual_channel_group_id = before["channel_group_id"]
+        .as_str()
+        .and_then(|value| Uuid::parse_str(value).ok())
+        .ok_or(RepositoryError::Validation)?;
+    if actual_channel_group_id != channel_group_id {
+        return Err(RepositoryError::NotFound);
+    }
+    let updated_at = sqlx::query_scalar::<_, DateTime<Utc>>(
+        "UPDATE codex_oauth_credentials SET \
+         enabled=$3,runtime_status=CASE \
+             WHEN NOT $3 THEN 'disabled' \
+             WHEN reauth_required THEN 'unavailable' \
+             WHEN quota_allowed=false OR quota_limit_reached=true THEN 'unavailable' \
+             WHEN GREATEST(COALESCE(primary_used_percent,0), \
+                           COALESCE(secondary_used_percent,0)) >= quota_threshold_percent \
+                 THEN 'draining' \
+             ELSE 'active' END \
+         WHERE channel_id=$1 AND updated_at=$2 AND deleted_at IS NULL \
+         RETURNING updated_at",
+    )
+    .bind(channel_id)
+    .bind(expected_updated_at)
+    .bind(enabled)
+    .fetch_optional(&mut **transaction)
+    .await?
+    .ok_or(RepositoryError::Conflict)?;
+    Ok(MutationResult {
+        id: channel_id,
+        object_type: "codex_oauth_credential",
+        action: "batch_update",
+        before_redacted: before,
+        after_redacted: codex_credential_audit(transaction, channel_id).await?,
+        created_secret: None,
+        reason: None,
+        updated_at,
+        correlation_id: None,
+    })
+}
+
+async fn delete_codex_credential(
+    transaction: &mut Transaction<'_, Postgres>,
+    channel_id: Uuid,
+    expected_channel_group_id: Option<Uuid>,
+    expected_updated_at: DateTime<Utc>,
+) -> Result<MutationResult, RepositoryError> {
+    let before = codex_credential_audit(transaction, channel_id).await?;
+    let actual_channel_group_id = before["channel_group_id"]
+        .as_str()
+        .and_then(|value| Uuid::parse_str(value).ok())
+        .ok_or(RepositoryError::Validation)?;
+    if expected_channel_group_id.is_some_and(|expected| expected != actual_channel_group_id) {
+        return Err(RepositoryError::NotFound);
+    }
+    let updated_at = sqlx::query_scalar::<_, DateTime<Utc>>(
+        "UPDATE codex_oauth_credentials SET \
+         enabled=false,runtime_status='disabled',reauth_required=false, \
+         id_token='deleted',access_token='deleted',refresh_token='deleted', \
+         access_token_expires_at=NULL,quota_allowed=NULL,quota_limit_reached=NULL, \
+         primary_used_percent=NULL,primary_window_seconds=NULL,primary_reset_at=NULL, \
+         secondary_used_percent=NULL,secondary_window_seconds=NULL,secondary_reset_at=NULL, \
+         quota_checked_at=NULL,last_error_code=NULL,last_error_summary=NULL,deleted_at=now() \
+         WHERE channel_id=$1 AND updated_at=$2 AND deleted_at IS NULL \
+         RETURNING updated_at",
+    )
+    .bind(channel_id)
+    .bind(expected_updated_at)
+    .fetch_optional(&mut **transaction)
+    .await?
+    .ok_or(RepositoryError::Conflict)?;
+    sqlx::query("UPDATE channels SET name=$2,proxy_id=NULL WHERE id=$1")
+        .bind(channel_id)
+        .bind(format!("deleted-codex-{channel_id}"))
+        .execute(&mut **transaction)
+        .await?;
+    Ok(MutationResult {
+        id: channel_id,
+        object_type: "codex_oauth_credential",
+        action: "delete",
+        before_redacted: before,
+        after_redacted: json!({}),
+        created_secret: None,
+        reason: None,
+        updated_at,
+        correlation_id: None,
+    })
 }
 
 async fn validate_codex_group_and_proxy_pool(
@@ -984,7 +1281,8 @@ async fn codex_credential_audit(
     sqlx::query_scalar::<_, Value>(
         "SELECT json_build_object( \
              'id',c.channel_id,'channel_group_id',c.channel_group_id,'label',c.label, \
-             'email',c.email,'account_id',c.account_id,'plan_type',c.plan_type, \
+             'email',c.email,'account_id',c.account_id,'user_id',c.user_id, \
+             'plan_type',c.plan_type, \
              'is_fedramp',c.is_fedramp,'access_token_expires_at',c.access_token_expires_at, \
              'last_refreshed_at',c.last_refreshed_at, \
              'quota_threshold_percent',c.quota_threshold_percent, \
@@ -992,7 +1290,7 @@ async fn codex_credential_audit(
              'enabled',c.enabled,'available_models',ch.available_models, \
              'created_at',c.created_at,'updated_at',c.updated_at) \
          FROM codex_oauth_credentials c JOIN channels ch ON ch.id=c.channel_id \
-         WHERE c.channel_id=$1 FOR UPDATE OF c,ch",
+         WHERE c.channel_id=$1 AND c.deleted_at IS NULL FOR UPDATE OF c,ch",
     )
     .bind(channel_id)
     .fetch_optional(&mut **transaction)

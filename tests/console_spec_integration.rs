@@ -2202,6 +2202,171 @@ async fn codex_export_and_proxy_delete_contracts_preserve_secrets_and_references
     database.cleanup().await;
 }
 
+#[tokio::test]
+async fn codex_business_batch_and_delete_contracts_are_versioned() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+    let group_id = Uuid::new_v4();
+    let member_a = Uuid::new_v4();
+    let member_b = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO channel_groups \
+         (id,name,api_format,connector_kind,priority,selection_strategy,enabled) \
+         VALUES ($1,'spec-business','open_ai_responses','codex_oauth',1,'weighted_random',true)",
+    )
+    .bind(group_id)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    for (channel_id, label, email, user_id) in [
+        (
+            member_a,
+            "business-member-a",
+            "member-a@example.test",
+            "user-a",
+        ),
+        (
+            member_b,
+            "business-member-b",
+            "member-b@example.test",
+            "user-b",
+        ),
+    ] {
+        sqlx::query(
+            "INSERT INTO channels \
+             (id,channel_group_id,api_format,name,base_url,enabled,weight, \
+              upstream_auth_kind,available_models,status_statistics_enabled, \
+              auto_disable_allowed,supports_websocket) \
+             VALUES ($1,$2,'open_ai_responses',$3, \
+                     'https://chatgpt.com/backend-api/codex',true,100,'none', \
+                     ARRAY['gpt-5-codex'],false,false,false)",
+        )
+        .bind(channel_id)
+        .bind(group_id)
+        .bind(label)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO codex_oauth_credentials \
+             (channel_id,channel_group_id,label,email,account_id,user_id,plan_type,is_fedramp, \
+              id_token,access_token,refresh_token,last_refreshed_at,enabled, \
+              quota_threshold_percent,runtime_status) \
+             VALUES ($1,$2,$3,$4,'business-workspace',$5,'business',false, \
+                     $6,$7,$8,now(),true,95,'active')",
+        )
+        .bind(channel_id)
+        .bind(group_id)
+        .bind(label)
+        .bind(email)
+        .bind(user_id)
+        .bind(format!("{label}-id"))
+        .bind(format!("{label}-access"))
+        .bind(format!("{label}-refresh"))
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    }
+
+    let list = request(
+        &app,
+        "GET",
+        &format!("/console/v1/providers/codex-oauth/channel-groups/{group_id}/credentials"),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(list.status(), StatusCode::OK);
+    let list = body_json(list).await;
+    assert_eq!(list.as_array().unwrap().len(), 2);
+    assert_eq!(list[0]["account_id"], "business-workspace");
+    assert_ne!(list[0]["user_id"], list[1]["user_id"]);
+
+    let items = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|credential| {
+            serde_json::json!({
+                "id": credential["id"],
+                "updated_at": credential["updated_at"],
+            })
+        })
+        .collect::<Vec<_>>();
+    let disabled = request(
+        &app,
+        "POST",
+        &format!("/console/v1/providers/codex-oauth/channel-groups/{group_id}/credentials/batch"),
+        serde_json::json!({
+            "items": items,
+            "operation": "disable",
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(disabled.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(disabled).await["updated_ids"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+
+    let detail = request(
+        &app,
+        "GET",
+        &format!("/console/v1/providers/codex-oauth/credentials/{member_a}"),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(detail.status(), StatusCode::OK);
+    let etag = detail
+        .headers()
+        .get(header::ETAG)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(body_json(detail).await["enabled"], false);
+
+    let deleted = request(
+        &app,
+        "DELETE",
+        &format!("/console/v1/providers/codex-oauth/credentials/{member_a}"),
+        serde_json::json!({}),
+        &[("if-match", &etag)],
+    )
+    .await;
+    assert_eq!(deleted.status(), StatusCode::OK);
+    assert_eq!(body_json(deleted).await["id"], member_a.to_string());
+
+    let remaining = request(
+        &app,
+        "GET",
+        &format!("/console/v1/providers/codex-oauth/channel-groups/{group_id}/credentials"),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(body_json(remaining).await.as_array().unwrap().len(), 1);
+    let scrubbed: (String, String, String, bool) = sqlx::query_as(
+        "SELECT id_token,access_token,refresh_token,deleted_at IS NOT NULL \
+         FROM codex_oauth_credentials WHERE channel_id=$1",
+    )
+    .bind(member_a)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        scrubbed,
+        ("deleted".into(), "deleted".into(), "deleted".into(), true)
+    );
+
+    database.cleanup().await;
+}
+
 /// The admin-only load endpoint exposes the current instance's resource,
 /// runtime, queue, backlog, and database-pool pressure shape.
 #[tokio::test]

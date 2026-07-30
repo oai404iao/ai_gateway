@@ -16,17 +16,17 @@ use uuid::Uuid;
 use crate::{
     domain::{ApiFormat, ChannelTimeoutPolicy, CompiledChannelUpstreamPolicy},
     persistence::{
-        CodexCredentialCreate, CodexCredentialExportBundle, CodexCredentialExportInput,
-        CodexCredentialImportInput, CodexCredentialRecord, CodexCredentialUpdateInput,
-        CodexCredentialView, CodexOauthStartInput, CodexTokenRefreshUpdate, ControlPlaneRepository,
-        MutationResult, RepositoryError,
+        CodexCredentialBatchInput, CodexCredentialCreate, CodexCredentialExportBundle,
+        CodexCredentialExportInput, CodexCredentialImportInput, CodexCredentialRecord,
+        CodexCredentialUpdateInput, CodexCredentialView, CodexOauthStartInput,
+        CodexTokenRefreshUpdate, ControlPlaneRepository, MutationResult, RepositoryError,
     },
     runtime_config::RuntimeConfig,
     transforms::TransformPlan,
     upstream::{ResolvedUpstreamPolicy, UpstreamClientError, UpstreamClientRegistry},
 };
 
-use super::{ControlPlaneCoordinator, ControlPlaneError};
+use super::{CodexCredentialBatchResult, ControlPlaneCoordinator, ControlPlaneError};
 use protocol::{
     CodexEndpoints, build_authorize_url, exchange_code, fetch_models, fetch_quota,
     generate_oauth_state, generate_pkce, parse_callback_url, parse_identity, parse_jwt_expiration,
@@ -102,6 +102,7 @@ impl CodexConnectorService {
             endpoints: Arc::new(endpoints),
             refresh_locks: Arc::new(Mutex::new(HashMap::new())),
         };
+        service.backfill_missing_user_ids().await?;
         service.reload_runtime().await?;
         Ok(service)
     }
@@ -214,6 +215,7 @@ impl CodexConnectorService {
                 tokens.access_token,
                 tokens.refresh_token,
                 None,
+                None,
                 &client,
                 policy,
             )
@@ -246,6 +248,7 @@ impl CodexConnectorService {
                 input.access_token,
                 input.refresh_token,
                 input.account_id,
+                input.user_id,
                 &client,
                 policy,
             )
@@ -268,6 +271,34 @@ impl CodexConnectorService {
         let result = self
             .coordinator
             .update_codex_credential(actor, channel_id, input, expected_updated_at)
+            .await?;
+        self.reload_runtime().await?;
+        Ok(result)
+    }
+
+    pub async fn delete_credential(
+        &self,
+        actor: Uuid,
+        channel_id: Uuid,
+        expected_updated_at: DateTime<Utc>,
+    ) -> Result<MutationResult, CodexConnectorError> {
+        let result = self
+            .coordinator
+            .delete_codex_credential(actor, channel_id, expected_updated_at)
+            .await?;
+        self.reload_runtime().await?;
+        Ok(result)
+    }
+
+    pub async fn update_credentials_batch(
+        &self,
+        actor: Uuid,
+        channel_group_id: Uuid,
+        input: CodexCredentialBatchInput,
+    ) -> Result<CodexCredentialBatchResult, CodexConnectorError> {
+        let result = self
+            .coordinator
+            .update_codex_credentials_batch(actor, channel_group_id, input)
             .await?;
         self.reload_runtime().await?;
         Ok(result)
@@ -359,6 +390,7 @@ impl CodexConnectorService {
         access_token: String,
         refresh_token: String,
         supplied_account_id: Option<String>,
+        supplied_user_id: Option<String>,
         client: &Client,
         policy: ResolvedUpstreamPolicy,
     ) -> Result<CodexCredentialCreate, CodexConnectorError> {
@@ -372,6 +404,7 @@ impl CodexConnectorService {
         }
         let identity = parse_identity(id_token.as_deref().unwrap_or(&access_token))?;
         let account_id = resolve_account_id(identity.account_id, supplied_account_id)?;
+        let user_id = resolve_user_id(identity.user_id, supplied_user_id)?;
         let access_token_expires_at = parse_jwt_expiration(&access_token)?;
         let models = fetch_models(
             client,
@@ -413,6 +446,7 @@ impl CodexConnectorService {
             base_url: self.endpoints.responses_base_url.to_string(),
             email: identity.email,
             account_id,
+            user_id,
             plan_type: identity.plan_type,
             is_fedramp: identity.is_fedramp,
             id_token: id_token.unwrap_or_else(|| access_token.clone()),
@@ -502,6 +536,11 @@ impl CodexConnectorService {
             .as_ref()
             .and_then(|identity| identity.account_id.as_deref())
             .is_some_and(|account_id| account_id != record.account_id)
+            || identity
+                .as_ref()
+                .and_then(|identity| identity.user_id.as_deref())
+                .zip(record.user_id.as_deref())
+                .is_some_and(|(user_id, current_user_id)| user_id != current_user_id)
         {
             let error = CodexConnectorError::AccountChanged;
             self.commit_refresh_failure(transaction, channel_id, true, &error)
@@ -535,6 +574,9 @@ impl CodexConnectorService {
                     account_id: identity
                         .as_ref()
                         .and_then(|identity| identity.account_id.clone()),
+                    user_id: identity
+                        .as_ref()
+                        .and_then(|identity| identity.user_id.clone()),
                     plan_type: identity
                         .as_ref()
                         .and_then(|identity| identity.plan_type.clone()),
@@ -675,6 +717,32 @@ impl CodexConnectorService {
             .replace(self.repository.load_codex_credentials().await?);
         Ok(())
     }
+
+    async fn backfill_missing_user_ids(&self) -> Result<(), CodexConnectorError> {
+        for record in self.repository.load_codex_credentials().await? {
+            if record.user_id.is_some() {
+                continue;
+            }
+            let user_id = [&record.id_token, &record.access_token]
+                .into_iter()
+                .filter_map(|token| parse_identity(token).ok())
+                .filter(|identity| {
+                    identity
+                        .account_id
+                        .as_deref()
+                        .is_none_or(|account_id| account_id == record.account_id)
+                })
+                .find_map(|identity| identity.user_id);
+            let Some(user_id) = user_id else {
+                continue;
+            };
+            let _ = self
+                .repository
+                .set_codex_user_id_if_missing(record.channel_id, &user_id)
+                .await?;
+        }
+        Ok(())
+    }
 }
 
 fn resolve_account_id(
@@ -694,6 +762,25 @@ fn resolve_account_id(
         (Some(token), _) => Ok(token),
         (None, Some(supplied)) => Ok(supplied),
         _ => Err(CodexConnectorError::MissingAccountId),
+    }
+}
+
+fn resolve_user_id(
+    token_user_id: Option<String>,
+    supplied_user_id: Option<String>,
+) -> Result<Option<String>, CodexConnectorError> {
+    let token_user_id = token_user_id
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
+    let supplied_user_id = supplied_user_id
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
+    match (token_user_id, supplied_user_id) {
+        (Some(token), Some(supplied)) if token != supplied => {
+            Err(CodexConnectorError::AccountChanged)
+        }
+        (Some(token), _) => Ok(Some(token)),
+        (None, supplied) => Ok(supplied),
     }
 }
 
@@ -734,7 +821,7 @@ pub enum CodexConnectorError {
     InvalidCredential,
     #[error("Codex credential does not contain an account id")]
     MissingAccountId,
-    #[error("Codex account changed while refreshing the credential")]
+    #[error("Codex workspace or member changed while refreshing the credential")]
     AccountChanged,
     #[error("invalid JWT")]
     InvalidJwt,

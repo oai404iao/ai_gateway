@@ -1507,6 +1507,33 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/Unprocessable" }
 
+  /providers/codex-oauth/channel-groups/{id}/credentials/batch:
+    post:
+      tags: [CodexOAuth]
+      operationId: updateCodexOAuthCredentialsBatch
+      description: >
+        Atomically enables, disables, or deletes up to 100 selected
+        credentials in one Codex connector group.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CodexCredentialBatchInput" }
+      responses:
+        "200":
+          description: Selected credentials were updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CodexCredentialBatchResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
   /providers/codex-oauth/channel-groups/{id}/oauth/flows:
     post:
       tags: [CodexOAuth]
@@ -1597,6 +1624,28 @@ paths:
       responses:
         "200":
           description: Credential routing settings updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+    delete:
+      tags: [CodexOAuth]
+      operationId: deleteCodexOAuthCredential
+      description: >
+        Removes the credential from management and routing, clears its stored
+        OAuth tokens, and retains a non-secret managed-channel tombstone for
+        historical references.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+        - $ref: "#/components/parameters/IfMatch"
+      responses:
+        "200":
+          description: Credential deleted.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/MutationResponse" }
@@ -3180,7 +3229,7 @@ components:
     CodexCredentialView:
       type: object
       required:
-        [id, channel_group_id, label, email, account_id, plan_type, is_fedramp,
+        [id, channel_group_id, label, email, account_id, user_id, plan_type, is_fedramp,
          access_token_expires_at, last_refreshed_at, quota_threshold_percent,
          runtime_status, quota_allowed, quota_limit_reached, primary_used_percent,
          primary_window_seconds, primary_reset_at, secondary_used_percent,
@@ -3193,6 +3242,10 @@ components:
         label: { type: string }
         email: { type: string, nullable: true }
         account_id: { type: string }
+        user_id:
+          type: string
+          nullable: true
+          description: ChatGPT workspace member identifier from `chatgpt_user_id` or `user_id`.
         plan_type: { type: string, nullable: true }
         is_fedramp: { type: boolean }
         access_token_expires_at: { $ref: "#/components/schemas/DateTimeNullable" }
@@ -3274,6 +3327,11 @@ components:
               maxLength: 300
               nullable: true
               description: Optional fallback when the ID token has no account claim; mismatches are rejected.
+            user_id:
+              type: string
+              maxLength: 300
+              nullable: true
+              description: Optional member fallback when the token has no user claim; mismatches are rejected.
 
     CodexCredentialExportInput:
       type: object
@@ -3327,13 +3385,14 @@ components:
     CodexCredentialExportItem:
       type: object
       required:
-        [label, email, account_id, plan_type, is_fedramp, id_token,
+        [label, email, account_id, user_id, plan_type, is_fedramp, id_token,
          access_token, refresh_token, proxy_key, weight,
          quota_threshold_percent, enabled]
       properties:
         label: { type: string }
         email: { type: string, nullable: true }
         account_id: { type: string }
+        user_id: { type: string, nullable: true }
         plan_type: { type: string, nullable: true }
         is_fedramp: { type: boolean }
         id_token: { type: string }
@@ -3353,6 +3412,40 @@ components:
         proxy_id: { type: string, format: uuid, nullable: true }
         weight: { type: integer, minimum: 1 }
         quota_threshold_percent: { type: integer, minimum: 1, maximum: 100 }
+
+    CodexCredentialBatchOperation:
+      type: string
+      enum: [enable, disable, delete]
+
+    CodexCredentialBatchTarget:
+      type: object
+      required: [id, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        updated_at:
+          allOf: [{ $ref: "#/components/schemas/DateTime" }]
+          description: Version copied from the credential list response.
+
+    CodexCredentialBatchInput:
+      type: object
+      required: [items, operation]
+      properties:
+        items:
+          type: array
+          minItems: 1
+          maxItems: 100
+          uniqueItems: true
+          items: { $ref: "#/components/schemas/CodexCredentialBatchTarget" }
+        operation: { $ref: "#/components/schemas/CodexCredentialBatchOperation" }
+
+    CodexCredentialBatchResponse:
+      type: object
+      required: [updated_ids, correlation_id]
+      properties:
+        updated_ids:
+          type: array
+          items: { type: string, format: uuid }
+        correlation_id: { type: string, format: uuid }
 
     ModelRuleView:
       type: object

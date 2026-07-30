@@ -37,6 +37,7 @@ describe("Codex import parser", () => {
                 email: "codex@example.test",
                 "https://api.openai.com/auth": {
                   chatgpt_account_id: "account-1",
+                  chatgpt_user_id: "user-1",
                 },
               }),
               access_token: jwt({ exp: 1_900_000_000 }),
@@ -62,6 +63,7 @@ describe("Codex import parser", () => {
       source: "ai_gateway",
       label: "Personal Plus",
       account_id: "account-1",
+      user_id: "user-1",
       weight: "80",
       quota_threshold_percent: "90",
       source_proxy_key: parsed.proxies[0]?.source_key,
@@ -190,6 +192,48 @@ describe("Codex import parser", () => {
     expect(parsed.credentials[1]?.errors).toContain("Duplicate of import row 1.");
     expect(parsed.errors).toContain(
       "unsupported.json: No Codex token fields were found.",
+    );
+  });
+
+  it("keeps different Business members in the same workspace importable", () => {
+    const credential = (email: string, userId: string) => ({
+      type: "codex",
+      account_id: "business-workspace",
+      id_token: jwt({
+        email,
+        "https://api.openai.com/auth": {
+          chatgpt_account_id: "business-workspace",
+          chatgpt_user_id: userId,
+          chatgpt_plan_type: "business",
+        },
+      }),
+      access_token: jwt({ exp: 1_900_000_000 }),
+      refresh_token: `refresh-${userId}`,
+    });
+    const parsed = parseCodexImportDocuments([
+      {
+        name: "business-members.json",
+        content: JSON.stringify([
+          credential("shared@example.test", "user-a"),
+          credential("shared@example.test", "user-b"),
+        ]),
+      },
+    ]);
+
+    expect(parsed.credentials).toHaveLength(2);
+    expect(parsed.credentials).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          account_id: "business-workspace",
+          user_id: "user-a",
+          selected: true,
+        }),
+        expect.objectContaining({
+          account_id: "business-workspace",
+          user_id: "user-b",
+          selected: true,
+        }),
+      ]),
     );
   });
 });

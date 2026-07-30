@@ -176,6 +176,7 @@ mod tests {
             label: "credential".into(),
             email: Some("codex@example.test".into()),
             account_id: "account-123".into(),
+            user_id: Some("user-123".into()),
             plan_type: Some("plus".into()),
             is_fedramp: false,
             id_token: "id-token".into(),

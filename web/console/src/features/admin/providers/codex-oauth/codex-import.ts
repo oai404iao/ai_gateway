@@ -30,6 +30,7 @@ export interface CodexCredentialImportDraft {
   label: string;
   email: string;
   account_id: string;
+  user_id: string;
   id_token: string;
   access_token: string;
   refresh_token: string;
@@ -399,6 +400,16 @@ function normalizeCredential({
       ["account", "account_id"],
       ["account", "chatgpt_account_id"],
     ]) || claimAccountId(claims);
+  const userId =
+    firstString(value, [
+      ["chatgpt_user_id"],
+      ["chatgptUserId"],
+      ["user_id"],
+      ["userId"],
+      ["user", "id"],
+      ["account", "user_id"],
+      ["account", "chatgpt_user_id"],
+    ]) || claimUserId(claims);
   const label =
     firstString(value, [["label"], ["name"], ["user", "name"]]) ||
     email ||
@@ -423,6 +434,7 @@ function normalizeCredential({
     label: label.slice(0, 100),
     email,
     account_id: accountId,
+    user_id: userId,
     id_token: idToken,
     access_token: accessToken,
     refresh_token: refreshToken,
@@ -481,13 +493,24 @@ function parseProxyUrl(value: string): ParsedProxyUrl {
 function markDuplicateCredentials(credentials: CodexCredentialImportDraft[]): void {
   const seen = new Map<string, number>();
   credentials.forEach((credential, index) => {
-    const key = credential.account_id
-      ? `account:${credential.account_id}`
-      : credential.refresh_token
-        ? `refresh:${credential.refresh_token}`
-        : credential.access_token
-          ? `access:${credential.access_token}`
-          : "";
+    const key =
+      credential.account_id && credential.user_id
+        ? JSON.stringify([
+            "member",
+            credential.account_id,
+            credential.user_id,
+          ])
+        : credential.account_id && credential.email
+          ? JSON.stringify([
+              "email",
+              credential.account_id,
+              credential.email.toLowerCase(),
+            ])
+          : credential.refresh_token
+            ? `refresh:${credential.refresh_token}`
+            : credential.access_token
+              ? `access:${credential.access_token}`
+              : "";
     if (!key) return;
     const prior = seen.get(key);
     if (prior === undefined) {
@@ -562,6 +585,14 @@ function claimAccountId(claims: JsonRecord | null): string {
   if (!claims) return "";
   return firstString(claims, [
     ["https://api.openai.com/auth", "chatgpt_account_id"],
+  ]);
+}
+
+function claimUserId(claims: JsonRecord | null): string {
+  if (!claims) return "";
+  return firstString(claims, [
+    ["https://api.openai.com/auth", "chatgpt_user_id"],
+    ["https://api.openai.com/auth", "user_id"],
   ]);
 }
 

@@ -9,8 +9,8 @@ use uuid::Uuid;
 use crate::{
     domain::AutomaticDisableTrigger,
     persistence::{
-        ApiHostsView, ChannelBatchUpdateInput, CodexCredentialCreate, CodexCredentialUpdateInput,
-        ConsoleApiKey, ConsoleAuditLog, ControlPlaneChannelDetail,
+        ApiHostsView, ChannelBatchUpdateInput, CodexCredentialBatchInput, CodexCredentialCreate,
+        CodexCredentialUpdateInput, ConsoleApiKey, ConsoleAuditLog, ControlPlaneChannelDetail,
         ControlPlaneConfigTemplateDetail, ControlPlaneLists, ControlPlaneMutation,
         ControlPlaneRepository, MutationResult, RepositoryError, SelfApiKeyCreate,
         SelfApiKeyOptions, SelfApiKeyUpdate, SyncedModelInput, SystemSettingsView,
@@ -330,6 +330,74 @@ impl ControlPlaneCoordinator {
         Ok(MutationResult {
             correlation_id: Some(correlation_id),
             ..result
+        })
+    }
+
+    pub async fn delete_codex_credential(
+        &self,
+        actor: Uuid,
+        channel_id: Uuid,
+        expected_updated_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<MutationResult, ControlPlaneError> {
+        let _guard = self.serial.lock().await;
+        let mut transaction = self.repository.begin_serializable().await?;
+        if !self
+            .repository
+            .active_admin_exists(&mut transaction, actor)
+            .await?
+        {
+            return Err(ControlPlaneError::InvalidActor);
+        }
+        let result = self
+            .repository
+            .delete_codex_credential(&mut transaction, channel_id, expected_updated_at)
+            .await?;
+        let candidate = self.compile_transaction(&mut transaction).await?;
+        self.validate_candidate(&candidate)?;
+        let correlation_id = Uuid::new_v4();
+        self.repository
+            .insert_audit(&mut transaction, actor, &result, correlation_id)
+            .await?;
+        transaction.commit().await.map_err(RepositoryError::from)?;
+        self.publish(candidate);
+        Ok(MutationResult {
+            correlation_id: Some(correlation_id),
+            ..result
+        })
+    }
+
+    pub async fn update_codex_credentials_batch(
+        &self,
+        actor: Uuid,
+        channel_group_id: Uuid,
+        input: CodexCredentialBatchInput,
+    ) -> Result<CodexCredentialBatchResult, ControlPlaneError> {
+        let _guard = self.serial.lock().await;
+        let mut transaction = self.repository.begin_serializable().await?;
+        if !self
+            .repository
+            .active_admin_exists(&mut transaction, actor)
+            .await?
+        {
+            return Err(ControlPlaneError::InvalidActor);
+        }
+        let mutations = self
+            .repository
+            .update_codex_credentials_batch(&mut transaction, channel_group_id, input)
+            .await?;
+        let candidate = self.compile_transaction(&mut transaction).await?;
+        self.validate_candidate(&candidate)?;
+        let correlation_id = Uuid::new_v4();
+        for mutation in &mutations {
+            self.repository
+                .insert_audit(&mut transaction, actor, mutation, correlation_id)
+                .await?;
+        }
+        transaction.commit().await.map_err(RepositoryError::from)?;
+        self.publish(candidate);
+        Ok(CodexCredentialBatchResult {
+            updated_ids: mutations.into_iter().map(|mutation| mutation.id).collect(),
+            correlation_id,
         })
     }
 
@@ -685,6 +753,12 @@ pub struct ModelSyncResult {
 
 #[derive(Clone, Debug)]
 pub struct ChannelBatchUpdateResult {
+    pub updated_ids: Vec<Uuid>,
+    pub correlation_id: Uuid,
+}
+
+#[derive(Clone, Debug)]
+pub struct CodexCredentialBatchResult {
     pub updated_ids: Vec<Uuid>,
     pub correlation_id: Uuid,
 }

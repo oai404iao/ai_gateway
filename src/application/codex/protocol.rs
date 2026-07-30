@@ -84,6 +84,7 @@ pub struct PkceCodes {
 pub struct CodexIdentity {
     pub email: Option<String>,
     pub account_id: Option<String>,
+    pub user_id: Option<String>,
     pub plan_type: Option<String>,
     pub is_fedramp: bool,
 }
@@ -464,6 +465,10 @@ pub fn parse_identity(jwt: &str) -> Result<CodexIdentity, CodexConnectorError> {
         #[serde(default)]
         chatgpt_account_id: Option<String>,
         #[serde(default)]
+        chatgpt_user_id: Option<String>,
+        #[serde(default)]
+        user_id: Option<String>,
+        #[serde(default)]
         chatgpt_account_is_fedramp: bool,
     }
 
@@ -480,6 +485,14 @@ pub fn parse_identity(jwt: &str) -> Result<CodexIdentity, CodexConnectorError> {
             .and_then(|auth| auth.chatgpt_account_id.clone()),
         300,
     )?;
+    let user_id = normalize_claim(
+        auth.as_ref().and_then(|auth| {
+            auth.chatgpt_user_id
+                .clone()
+                .or_else(|| auth.user_id.clone())
+        }),
+        300,
+    )?;
     let plan_type = match auth
         .as_ref()
         .and_then(|auth| auth.chatgpt_plan_type.as_ref())
@@ -491,6 +504,7 @@ pub fn parse_identity(jwt: &str) -> Result<CodexIdentity, CodexConnectorError> {
     Ok(CodexIdentity {
         email,
         account_id,
+        user_id,
         plan_type,
         is_fedramp: auth
             .as_ref()
@@ -782,6 +796,7 @@ mod tests {
             "https://api.openai.com/profile": {"email": "codex@example.test"},
             "https://api.openai.com/auth": {
                 "chatgpt_account_id": "account-123",
+                "chatgpt_user_id": "user-456",
                 "chatgpt_plan_type": "plus",
                 "chatgpt_account_is_fedramp": true
             }
@@ -789,8 +804,18 @@ mod tests {
         .unwrap();
         assert_eq!(identity.email.as_deref(), Some("codex@example.test"));
         assert_eq!(identity.account_id.as_deref(), Some("account-123"));
+        assert_eq!(identity.user_id.as_deref(), Some("user-456"));
         assert_eq!(identity.plan_type.as_deref(), Some("plus"));
         assert!(identity.is_fedramp);
+
+        let fallback_identity = parse_identity(&jwt(json!({
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "business-workspace",
+                "user_id": "fallback-user"
+            }
+        })))
+        .unwrap();
+        assert_eq!(fallback_identity.user_id.as_deref(), Some("fallback-user"));
 
         let expires_at = parse_jwt_expiration(&jwt(json!({"exp": 1_800_000_000})))
             .unwrap()

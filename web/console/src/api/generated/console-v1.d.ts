@@ -812,6 +812,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/providers/codex-oauth/channel-groups/{id}/credentials/batch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Atomically enables, disables, or deletes up to 100 selected credentials in one Codex connector group. */
+        post: operations["updateCodexOAuthCredentialsBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/providers/codex-oauth/channel-groups/{id}/oauth/flows": {
         parameters: {
             query?: never;
@@ -854,7 +871,8 @@ export interface paths {
         get: operations["getCodexOAuthCredential"];
         put: operations["updateCodexOAuthCredential"];
         post?: never;
-        delete?: never;
+        /** @description Removes the credential from management and routing, clears its stored OAuth tokens, and retains a non-secret managed-channel tombstone for historical references. */
+        delete: operations["deleteCodexOAuthCredential"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1814,6 +1832,8 @@ export interface components {
             label: string;
             email: string | null;
             account_id: string;
+            /** @description ChatGPT workspace member identifier from `chatgpt_user_id` or `user_id`. */
+            user_id: string | null;
             plan_type: string | null;
             is_fedramp: boolean;
             access_token_expires_at: components["schemas"]["DateTimeNullable"];
@@ -1872,6 +1892,8 @@ export interface components {
             refresh_token: string;
             /** @description Optional fallback when the ID token has no account claim; mismatches are rejected. */
             account_id?: string | null;
+            /** @description Optional member fallback when the token has no user claim; mismatches are rejected. */
+            user_id?: string | null;
         };
         CodexCredentialExportInput: {
             /**
@@ -1908,6 +1930,7 @@ export interface components {
             label: string;
             email: string | null;
             account_id: string;
+            user_id: string | null;
             plan_type: string | null;
             is_fedramp: boolean;
             id_token: string;
@@ -1926,6 +1949,23 @@ export interface components {
             proxy_id: string | null;
             weight: number;
             quota_threshold_percent: number;
+        };
+        /** @enum {string} */
+        CodexCredentialBatchOperation: "enable" | "disable" | "delete";
+        CodexCredentialBatchTarget: {
+            /** Format: uuid */
+            id: string;
+            /** @description Version copied from the credential list response. */
+            updated_at: components["schemas"]["DateTime"];
+        };
+        CodexCredentialBatchInput: {
+            items: components["schemas"]["CodexCredentialBatchTarget"][];
+            operation: components["schemas"]["CodexCredentialBatchOperation"];
+        };
+        CodexCredentialBatchResponse: {
+            updated_ids: string[];
+            /** Format: uuid */
+            correlation_id: string;
         };
         ModelRuleView: {
             /** Format: uuid */
@@ -4897,6 +4937,37 @@ export interface operations {
             422: components["responses"]["Unprocessable"];
         };
     };
+    updateCodexOAuthCredentialsBatch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CodexCredentialBatchInput"];
+            };
+        };
+        responses: {
+            /** @description Selected credentials were updated. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CodexCredentialBatchResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
+        };
+    };
     startCodexOAuthFlow: {
         parameters: {
             query?: never;
@@ -5021,6 +5092,36 @@ export interface operations {
         };
         responses: {
             /** @description Credential routing settings updated. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MutationResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
+        };
+    };
+    deleteCodexOAuthCredential: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description ETag from the preceding GET; stale values yield `409`. */
+                "If-Match": components["parameters"]["IfMatch"];
+            };
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Credential deleted. */
             200: {
                 headers: {
                     [name: string]: unknown;

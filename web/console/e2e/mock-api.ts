@@ -134,12 +134,13 @@ const E2E_CODEX_GROUP = {
   updated_at: "2026-07-29T12:00:00.000Z",
 };
 
-const E2E_CODEX_CREDENTIAL = {
+export const E2E_CODEX_CREDENTIAL = {
   id: E2E_CODEX_CREDENTIAL_ID,
   channel_group_id: E2E_CODEX_GROUP_ID,
   label: "Personal Plus",
   email: "codex@example.test",
   account_id: "account-123",
+  user_id: "user-123",
   plan_type: "plus",
   is_fedramp: false,
   access_token_expires_at: "2026-07-29T15:00:00.000Z",
@@ -646,6 +647,19 @@ export async function mockConsoleApi(page: Page): Promise<void> {
       method === "POST"
     ) {
       return route.fulfill({ status: 204 });
+    }
+    if (
+      path ===
+        `/console/v1/providers/codex-oauth/channel-groups/${E2E_CODEX_GROUP_ID}/credentials/batch` &&
+      method === "POST"
+    ) {
+      return route.fulfill({
+        status: 200,
+        json: {
+          updated_ids: [E2E_CODEX_CREDENTIAL_ID],
+          correlation_id: "00000000-0000-0000-0000-00000000c003",
+        },
+      });
     }
     if (path === "/console/v1/routing/channel-groups" && method === "GET") {
       return route.fulfill({ status: 200, json: [] });
