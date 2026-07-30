@@ -32,7 +32,12 @@ use axum::{
     routing::post,
 };
 use futures_util::{StreamExt, stream};
-use tokio::{net::TcpListener, sync::oneshot, task::JoinHandle, time::timeout};
+use tokio::{
+    net::{TcpListener, TcpSocket},
+    sync::oneshot,
+    task::JoinHandle,
+    time::timeout,
+};
 use uuid::Uuid;
 
 const CLIENT_KEY: &str = "passive-health-client-key";
@@ -46,6 +51,25 @@ struct TestServer {
 impl Drop for TestServer {
     fn drop(&mut self) {
         self.task.abort();
+    }
+}
+
+struct RefusedTcpEndpoint {
+    address: SocketAddr,
+    _socket: TcpSocket,
+}
+
+impl RefusedTcpEndpoint {
+    fn bind() -> Self {
+        // A bound, non-listening socket deterministically rejects connections
+        // while keeping the port unavailable to concurrently running tests.
+        let socket = TcpSocket::new_v4().unwrap();
+        socket.bind(SocketAddr::from(([127, 0, 0, 1], 0))).unwrap();
+        let address = socket.local_addr().unwrap();
+        Self {
+            address,
+            _socket: socket,
+        }
     }
 }
 
@@ -382,9 +406,7 @@ async fn disabled_retry_returns_the_first_header_timeout() {
 
 #[tokio::test]
 async fn connection_failure_retries_the_lower_priority_channel() {
-    let unused = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let unavailable_address = unused.local_addr().unwrap();
-    drop(unused);
+    let unavailable = RefusedTcpEndpoint::bind();
     let fallback_attempts = Arc::new(AtomicUsize::new(0));
     let fallback = start_server(
         Router::new()
@@ -394,7 +416,7 @@ async fn connection_failure_retries_the_lower_priority_channel() {
     .await;
     let fixture = proxy_fixture(
         &[
-            format!("http://{unavailable_address}"),
+            format!("http://{}", unavailable.address),
             format!("http://{}", fallback.address),
         ],
         &[0, 1],
@@ -414,9 +436,7 @@ async fn connection_failure_retries_the_lower_priority_channel() {
 
 #[tokio::test]
 async fn successful_failover_logs_one_terminal_event_for_the_final_channel() {
-    let unused = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let unavailable_address = unused.local_addr().unwrap();
-    drop(unused);
+    let unavailable = RefusedTcpEndpoint::bind();
     let fallback_attempts = Arc::new(AtomicUsize::new(0));
     let fallback = start_server(
         Router::new()
@@ -426,7 +446,7 @@ async fn successful_failover_logs_one_terminal_event_for_the_final_channel() {
     .await;
     let fixture = proxy_fixture(
         &[
-            format!("http://{unavailable_address}"),
+            format!("http://{}", unavailable.address),
             format!("http://{}", fallback.address),
         ],
         &[0, 1],
@@ -496,12 +516,8 @@ async fn connect_timeout_retries_the_lower_priority_channel() {
 
 #[tokio::test]
 async fn max_retries_excludes_the_initial_channel() {
-    let first = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let first_address = first.local_addr().unwrap();
-    drop(first);
-    let second = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let second_address = second.local_addr().unwrap();
-    drop(second);
+    let first = RefusedTcpEndpoint::bind();
+    let second = RefusedTcpEndpoint::bind();
     let fallback_attempts = Arc::new(AtomicUsize::new(0));
     let fallback = start_server(
         Router::new()
@@ -511,8 +527,8 @@ async fn max_retries_excludes_the_initial_channel() {
     .await;
     let fixture = proxy_fixture_with_retry(
         &[
-            format!("http://{first_address}"),
-            format!("http://{second_address}"),
+            format!("http://{}", first.address),
+            format!("http://{}", second.address),
             format!("http://{}", fallback.address),
         ],
         &[0, 1, 2],
@@ -533,9 +549,8 @@ async fn max_retries_excludes_the_initial_channel() {
 
 #[tokio::test]
 async fn connection_failures_trip_breaker_without_a_third_upstream_contact() {
-    let unused = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = unused.local_addr().unwrap();
-    drop(unused);
+    let unavailable = RefusedTcpEndpoint::bind();
+    let address = unavailable.address;
     let fixture = proxy_fixture(
         &[format!("http://{address}")],
         &[0],
@@ -556,6 +571,7 @@ async fn connection_failures_trip_breaker_without_a_third_upstream_contact() {
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
     }
+    drop(unavailable);
     let listener = TcpListener::bind(address).await.unwrap();
     let response = request(&client, gateway.address).send().await.unwrap();
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
