@@ -1,7 +1,7 @@
 # Codex OAuth 与订阅后端接入参考
 
 > 类型：外部参考
-> 最近核对：2026-07-29
+> 最近核对：2026-07-30
 > 权威来源：
 > [`openai/codex` 0.146.0 release](https://github.com/openai/codex/releases/tag/rust-v0.146.0)、
 > [OAuth server](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/login/src/server.rs)、
@@ -68,7 +68,8 @@ JWT payload 解析只用于提取元数据和过期时间；真正的凭证有�
 - `Authorization: Bearer <access_token>`；
 - `ChatGPT-Account-ID: <account_id>`；
 - FedRAMP 账户附加 `X-OpenAI-Fedramp: true`；
-- `User-Agent`、`originator` 和版本标识；
+- `originator: codex_cli_rs`；
+- 以 `codex_cli_rs/0.146.0` 为基础值的 `User-Agent` 和独立的版本标识；
 - Responses 请求的 `session-id`、`thread-id` 与 `x-client-request-id`。
 
 Codex Responses HTTP 客户端使用 Responses wire format。当前直连接口按流式方式工作，
@@ -118,8 +119,10 @@ Codex 成功响应按 Connector 契约视为 SSE，而不只依赖上游
 usage 与请求终态记录；客户端随后立即停止读取时，不会把已经完整结束的请求覆盖成
 `client_cancelled`。
 
-网关有意使用 `ai-gateway/<gateway-version>` User-Agent 和 `originator: ai_gateway`，而不是
-冒充 Codex CLI 的 `codex_cli_rs` 标识；Codex `client_version`/`version` 则报告独立维护的
+为提高 ChatGPT Codex 后端兼容性，网关使用 Codex 默认的
+`originator: codex_cli_rs`，并发送稳定的基础 User-Agent
+`codex_cli_rs/0.146.0`。原生 Codex 还会在该基础值后附加操作系统和终端信息；网关不伪造这些
+不属于服务进程的交互式客户端元数据。Codex `client_version`/`version` 同样报告独立维护的
 兼容版本。OAuth 公共 client ID、scope、redirect URI 和后端路径与核对版本保持一致。
 
 ### 凭证运行时与维护

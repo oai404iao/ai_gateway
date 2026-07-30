@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { BrowserRouter } from "react-router";
@@ -113,6 +113,36 @@ describe("CodexOauthPage", () => {
       }),
     );
     await waitFor(() => expect(refreshedId).toBe(CREDENTIAL_ID));
+  });
+
+  it("exposes tooltip descriptions for credential actions", async () => {
+    seedAuthenticatedSession();
+    server.use(...baseHandlers([CREDENTIAL]));
+    renderPage();
+
+    expect(await screen.findByText("Personal Plus")).toBeInTheDocument();
+
+    for (const label of [
+      "Edit Personal Plus",
+      "Refresh quota for Personal Plus",
+      "Refresh token for Personal Plus",
+    ]) {
+      const button = screen.getByRole("button", { name: label });
+      fireEvent.focus(button);
+      expect(
+        await screen.findByText(label, {
+          selector: '[data-slot="tooltip-content"]',
+        }),
+      ).toBeVisible();
+      fireEvent.blur(button);
+      await waitFor(() =>
+        expect(
+          screen.queryByText(label, {
+            selector: '[data-slot="tooltip-content"]',
+          }),
+        ).not.toBeInTheDocument(),
+      );
+    }
   });
 
   it("starts PKCE authorization and submits the copied callback URL", async () => {

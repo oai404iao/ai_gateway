@@ -23,7 +23,7 @@ pub const CODEX_OAUTH_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 pub const CODEX_OAUTH_REDIRECT_URI: &str = "http://localhost:1455/auth/callback";
 pub const CODEX_OAUTH_SCOPE: &str =
     "openid profile email offline_access api.connectors.read api.connectors.invoke";
-pub const CODEX_ORIGINATOR: &str = "ai_gateway";
+pub const CODEX_ORIGINATOR: &str = "codex_cli_rs";
 pub const CODEX_CLIENT_VERSION: &str = "0.146.0";
 
 const MAX_TOKEN_RESPONSE_BYTES: usize = 1024 * 1024;
@@ -576,12 +576,7 @@ fn codex_headers(
 }
 
 pub fn codex_user_agent() -> String {
-    format!(
-        "ai-gateway/{} ({}; {})",
-        env!("CARGO_PKG_VERSION"),
-        std::env::consts::OS,
-        std::env::consts::ARCH,
-    )
+    format!("{CODEX_ORIGINATOR}/{CODEX_CLIENT_VERSION}")
 }
 
 async fn read_body(
@@ -724,6 +719,19 @@ mod tests {
         assert_eq!(
             query.get("state").map(|value| value.as_ref()),
             Some("state-value")
+        );
+        assert_eq!(
+            query.get("originator").map(|value| value.as_ref()),
+            Some(CODEX_ORIGINATOR)
+        );
+    }
+
+    #[test]
+    fn reports_the_pinned_codex_client_identity() {
+        assert_eq!(CODEX_ORIGINATOR, "codex_cli_rs");
+        assert_eq!(
+            codex_user_agent(),
+            format!("{CODEX_ORIGINATOR}/{CODEX_CLIENT_VERSION}")
         );
     }
 
