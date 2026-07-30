@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { ArrowDown, ArrowUp, Search, X } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import {
@@ -46,7 +47,9 @@ type OutcomeFilter = NonNullable<ListQuery["outcome"]>;
 interface RequestLogListResult {
   data: RequestLogView[] | undefined;
   isLoading: boolean;
+  isFetching: boolean;
   error: unknown;
+  refetch: () => Promise<unknown>;
 }
 
 type UseRequestLogs = (filters: ListQuery) => RequestLogListResult;
@@ -78,6 +81,22 @@ const emptyFilters: RequestLogFilterDraft = {
   started_before: "",
   billed: "",
 };
+
+const REQUEST_LOG_FILTER_KEYS = [
+  "limit",
+  "user_id",
+  "api_key_id",
+  "model",
+  "api_format",
+  "outcome",
+  "started_after",
+  "started_before",
+  "billed",
+] as const satisfies readonly (keyof ListQuery)[];
+
+function sameRequestLogQuery(left: ListQuery, right: ListQuery): boolean {
+  return REQUEST_LOG_FILTER_KEYS.every((key) => left[key] === right[key]);
+}
 
 interface RequestLogsViewProps {
   title: string;
@@ -258,10 +277,17 @@ export function RequestLogsView({
   const updateDraft = (partial: Partial<RequestLogFilterDraft>) => {
     setDraft((previous) => ({ ...previous, ...partial }));
   };
-  const applyFilters = () => setFilters(toQuery(draft));
+  const runQuery = (next: ListQuery) => {
+    if (sameRequestLogQuery(filters, next)) {
+      void query.refetch();
+      return;
+    }
+    setFilters(next);
+  };
+  const applyFilters = () => runQuery(toQuery(draft));
   const clearFilters = () => {
     setDraft(emptyFilters);
-    setFilters(toQuery(emptyFilters));
+    runQuery(toQuery(emptyFilters));
   };
 
   const columns: Column<RequestLogView>[] = [
@@ -552,8 +578,16 @@ export function RequestLogsView({
               <Field className="justify-end">
                 <FieldLabel className="sr-only">{t("Filter actions")}</FieldLabel>
                 <div className="flex gap-2">
-                  <Button type="submit" className="flex-1">
-                    <Search data-icon="inline-start" />
+                  <Button
+                    type="submit"
+                    className="flex-1"
+                    disabled={query.isFetching}
+                  >
+                    {query.isFetching ? (
+                      <Spinner data-icon="inline-start" />
+                    ) : (
+                      <Search data-icon="inline-start" />
+                    )}
                     {t("Apply")}
                   </Button>
                   <Button

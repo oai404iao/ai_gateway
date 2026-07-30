@@ -187,6 +187,14 @@ describe("StatisticsPage", () => {
       "true",
     );
 
+    const apply = screen.getByRole("button", { name: "Apply" });
+    const initialQueryCount = queries.length;
+    await user.click(apply);
+    await waitFor(() => expect(queries).toHaveLength(initialQueryCount + 1));
+    await waitFor(() => expect(apply).toBeEnabled());
+    await user.click(apply);
+    await waitFor(() => expect(queries).toHaveLength(initialQueryCount + 2));
+
     const channelSelect = screen.getByRole("combobox", { name: "Channel" });
     await user.click(channelSelect);
     await user.click(
