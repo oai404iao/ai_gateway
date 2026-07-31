@@ -2334,7 +2334,10 @@ components:
       enum: [user, admin]
     ApiFormat:
       type: string
-      enum: [open_ai_chat_completions, open_ai_responses]
+      enum: [open_ai_chat_completions, open_ai_responses, open_ai_images]
+    ApiOperation:
+      type: string
+      enum: [chat_completions, responses, images_generation, images_edit]
     SelectionStrategy:
       type: string
       enum: [weighted_random, weighted_round_robin]
@@ -2632,7 +2635,9 @@ components:
           type: array
           minItems: 1
           uniqueItems: true
-          items: { $ref: "#/components/schemas/ApiFormat" }
+          items:
+            type: string
+            enum: [open_ai_chat_completions, open_ai_responses]
         model_regex:
           type: array
           maxItems: 8
@@ -3527,7 +3532,7 @@ components:
         description: { type: string, nullable: true }
         api_format:
           type: string
-          enum: [open_ai_chat_completions, open_ai_responses]
+          enum: [open_ai_chat_completions, open_ai_responses, open_ai_images]
           nullable: true
         enabled: { type: boolean }
         created_at: { $ref: "#/components/schemas/DateTime" }
@@ -3547,7 +3552,7 @@ components:
       type: object
       required:
         [id, started_at, completed_at, user_id, user_name, api_key_id, api_format,
-         request_source, request_protocol, client_model, upstream_model, model_rule_id, channel_group_id,
+         api_operation, request_source, request_protocol, client_model, upstream_model, model_rule_id, channel_group_id,
          channel_group_name, channel_id, channel_name, outcome, response_status_code, streamed, ttft_ms,
          total_duration_ms, output_tokens_per_second, reasoning_effort, fast_mode, input_tokens, cached_input_tokens,
          cache_write_tokens, output_tokens, reasoning_tokens, cost_amount, error_code, error_summary,
@@ -3564,6 +3569,7 @@ components:
         api_key_id: { type: string, format: uuid }
         request_source: { $ref: "#/components/schemas/RequestLogSource" }
         api_format: { $ref: "#/components/schemas/ApiFormat" }
+        api_operation: { $ref: "#/components/schemas/ApiOperation" }
         request_protocol: { $ref: "#/components/schemas/RequestProtocol" }
         client_model: { type: string }
         reasoning_effort:

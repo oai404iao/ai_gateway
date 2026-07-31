@@ -955,6 +955,11 @@ fn compile_session_affinity_settings(
             .iter()
             .map(|value| parse_format(value))
             .collect::<Result<Vec<_>, _>>()?;
+        if api_formats.contains(&ApiFormat::OpenAiImages) {
+            return Err(ConfigError::Compile(
+                "Images requests do not support session affinity".into(),
+            ));
+        }
         let model_regex = rule
             .model_regex
             .iter()
@@ -1222,6 +1227,12 @@ fn compile_templates(
         } else {
             TransformPlan::noop(ApiFormat::OpenAiResponses)
         };
+        let images = if declared.is_none() || declared == Some(ApiFormat::OpenAiImages) {
+            compile_document(&record.document, ApiFormat::OpenAiImages)
+                .map_err(transform_error("config template document"))?
+        } else {
+            TransformPlan::noop(ApiFormat::OpenAiImages)
+        };
         if record.enabled {
             result.insert(
                 record.id,
@@ -1232,6 +1243,7 @@ fn compile_templates(
                     declared,
                     chat,
                     responses,
+                    images,
                 )),
             );
         }
@@ -1934,6 +1946,11 @@ fn validate_channel(
         require("channel available model", model)?;
     }
     if let Some(test_model) = &record.test_model {
+        if format == ApiFormat::OpenAiImages {
+            return Err(ConfigError::Compile(
+                "Images channels do not support scheduled test models".into(),
+            ));
+        }
         require("channel test model", test_model)?;
         if !record
             .available_models
@@ -2157,11 +2174,7 @@ fn secret_header(value: Option<&str>) -> Result<Arc<str>, ConfigError> {
     Ok(Arc::from(value))
 }
 fn parse_format(value: &str) -> Result<ApiFormat, ConfigError> {
-    match value {
-        "open_ai_chat_completions" => Ok(ApiFormat::OpenAiChatCompletions),
-        "open_ai_responses" => Ok(ApiFormat::OpenAiResponses),
-        _ => Err(ConfigError::Compile("unsupported API format".into())),
-    }
+    ApiFormat::parse(value).ok_or_else(|| ConfigError::Compile("unsupported API format".into()))
 }
 fn parse_permission(value: &str) -> Result<ApiKeyPermission, ConfigError> {
     match value {
@@ -2604,6 +2617,23 @@ mod tests {
     }
 
     #[test]
+    fn compiler_rejects_scheduled_test_models_for_images_channels() {
+        let mut records = route_records(0, "weighted_random", 1, "weighted_random", false);
+        for group in &mut records.groups {
+            group.api_format = "open_ai_images".into();
+        }
+        for channel in &mut records.channels {
+            channel.api_format = "open_ai_images".into();
+        }
+        records.model_rules[0].api_format = "open_ai_images".into();
+        records.channels[0].test_model = Some("upstream".into());
+
+        let error = compile_control_plane(records).unwrap_err().to_string();
+
+        assert!(error.contains("Images channels do not support scheduled test models"));
+    }
+
+    #[test]
     fn bootstrap_rejects_dynamic_toml() {
         let value = "[server]\nhost='x'\nport=1\nshutdown_grace_period_seconds=1\n[database]\nurl='postgres://x'\nmax_connections=1\nconnect_timeout_seconds=1\n[upstream]\nconnect_timeout_seconds=1\nresponse_header_timeout_seconds=2\nstream_idle_timeout_seconds=1\n[runtime_config]\nreload_interval_seconds=1\n[request_logging]\nqueue_capacity=1\n[observability]\nfilter='info'\n[[api_keys]]\nid='bad'";
         assert!(toml::from_str::<AppConfig>(value).is_err());
@@ -2782,6 +2812,32 @@ mod tests {
         };
 
         assert!(compile_session_affinity_settings(&input).is_err());
+    }
+
+    #[test]
+    fn compiler_rejects_images_session_affinity_rules() {
+        let input = SystemSessionAffinitySettingsInput {
+            enabled: true,
+            max_entries: 100,
+            default_ttl_seconds: 60,
+            rules: vec![SystemSessionAffinityRuleInput {
+                name: "images".into(),
+                enabled: true,
+                api_formats: vec!["open_ai_images".into()],
+                model_regex: vec![],
+                key_sources: vec![SystemSessionAffinityKeySourceInput::RequestHeader {
+                    name: "x-session-id".into(),
+                }],
+                value_regex: None,
+                ttl_seconds: None,
+            }],
+        };
+
+        let error = compile_session_affinity_settings(&input)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("Images requests do not support session affinity"));
     }
 
     #[test]

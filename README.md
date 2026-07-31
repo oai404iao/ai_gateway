@@ -24,7 +24,8 @@
 </p>
 
 > **Status:** Current implementation, under active development. The public
-> data plane intentionally supports only Chat Completions and Responses.
+> data plane supports Chat Completions, Responses, and non-streaming JSON
+> Images generation.
 
 `ai-gateway` is a self-hosted LLM request gateway built with Rust, Axum,
 Tokio, SQLx, and PostgreSQL. It keeps routing on an immutable in-memory
@@ -33,8 +34,8 @@ separate management Console for users and administrators.
 
 ## ✨ Features
 
-- **OpenAI-compatible data plane** for Chat Completions and Responses over
-  HTTP, SSE, and Responses WebSocket.
+- **OpenAI-compatible data plane** for Chat Completions, Responses, and Images
+  generation over HTTP, SSE, and Responses WebSocket where applicable.
 - **Priority and weighted routing** with passive health, optional session
   affinity, and controlled failover before upstream response headers arrive.
 - **In-process upstream connectors** keep provider-specific authentication and
@@ -64,10 +65,12 @@ separate management Console for users and administrators.
 | `POST /v1/chat/completions` | Client API key | Proxies Chat Completions requests. |
 | `POST /v1/responses` | Client API key | Proxies Responses requests over HTTP or SSE. |
 | `GET /v1/responses` + Upgrade | Client API key | Proxies sequential Responses requests over WebSocket. |
+| `POST /v1/images/generations` | Client API key | Proxies non-streaming JSON Images generation requests. |
 
-Chat Completions and Responses use separate routing rules and never fall back
-or transform into one another. Embeddings, images, audio, files, batches,
-assistants, and fine-tuning APIs are outside the current scope. See the
+Each API format uses separate routing rules and never falls back or transforms
+into another format. Images edits, multipart image bodies, image streaming,
+embeddings, audio, files, batches, assistants, and fine-tuning APIs are
+outside the current scope. See the
 [OpenAI compatibility reference](docs/reference/openai-compatibility.md) for
 the exact validation, streaming, retry, and pass-through boundaries.
 
@@ -187,8 +190,8 @@ Use the Console UI or API to create:
 5. A client API key with `proxy` permission; add `models.read` for
    `/v1/models`.
 
-Create separate model rules for Chat Completions and Responses, even when both
-use the same provider. The
+Create separate model rules for Chat Completions, Responses, and Images, even
+when they use the same provider. The
 [operations guide](docs/user/operations.md) documents the full Console route
 inventory and control-plane behavior.
 

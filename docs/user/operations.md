@@ -101,10 +101,24 @@ verification_key_path = "./config/console-jwt-public.pem"
 - `POST /v1/responses`：仅匹配 Responses 路由规则。
 - 带 WebSocket Upgrade 的 `GET /v1/responses`：接受顺序的 Responses
   `response.create` 文本消息，仅匹配 Responses 路由规则。
+- `POST /v1/images/generations`：接受带顶层 `model` 的 JSON 请求，仅匹配 Images
+  路由规则；当前只支持非流式 generation。
 
-两个 OpenAI 格式绝不互相回退。客户端 `Authorization` 不会转发给上游；网关清理 hop-by-hop headers 后，按渠道配置最后注入上游认证。
+三个 OpenAI 格式绝不互相回退。客户端 `Authorization` 不会转发给上游；网关清理
+hop-by-hop headers 后，按渠道配置最后注入上游认证。
 
 数据面在认证后、读取请求体前执行 RPM、并发与已结算软额度预检查。请求体只有在模型别名或 JSON 变换启用时才重新序列化；响应默认逐块流式转发，SSE 变换按事件边界执行且不缓冲整条流。连接失败、连接超时或等待响应头超时时，可以按系统设置在尚未尝试过的其他健康渠道上故障转移；一旦收到上游响应头或向客户端发送任何响应字节，绝不重试或切换渠道。
+
+Images generation 是例外：请求一旦开始尝试上游，就不会自动切换渠道或重试，即使失败发生在
+响应头之前，以避免重复生成和重复计费。`stream: true` 返回
+`400 image_streaming_unsupported`，且不会联系上游。当前也不挂载
+`/v1/images/edits`，不接受 multipart 图片上传。generation JSON 与其他数据面请求共享
+`request_limits.proxy_body_bytes`；首期实现没有为图片场景提高全局内存 body limit。
+
+配置 Images 路由时，渠道组、渠道、模型规则和 API Key 的格式均使用
+`open_ai_images`。Images 渠道不支持 `test_model`，不会进入定时付费探测；Session
+粘性、SSE 变换和 WebSocket 也不适用于该格式。普通 Header 变换、请求 JSON 变换、模型别名、
+被动健康、准入、请求日志和结算仍沿用统一数据面基础设施。
 
 ### Codex OAuth Connect
 
@@ -454,7 +468,8 @@ JWT 主体推导用户 ID，管理员也只能在个人使用情况标签中看�
 
 渠道的 `auto_disable_allowed` 必须为 true 才会被自动禁用；`test_model` 必须从该渠道的
 `available_models` 中选择，并匹配已配置模型的 `source_model_id`，以便保存价格快照。定时测试按渠道 API 格式发出非流式 Chat Completions 或 Responses 请求，
-并复用该渠道的代理、超时、变换和上游鉴权配置。手工禁用的渠道与禁用渠道组不会被测试。
+并复用该渠道的代理、超时、变换和上游鉴权配置。Images 渠道不能配置 `test_model`，
+不会被定时测试。手工禁用的渠道与禁用渠道组不会被测试。
 
 定时测试日志写入 `request_logs`，`request_source` 为 `scheduled_test`。它们使用系统内置、
 管理员角色的内部 API Key。网关会解析响应中的 token 用量，并按该模型的不可变价格快照、模型高级计费规则和渠道计费倍率计算成本；结算会扣减该系统管理员账户余额并累计其内部 API Key 的额度用量，不会归属到任何普通用户。系统内部身份不会出现在用户和 API Key 管理列表中。自动禁用和自动恢复都会写入系统审计日志并立即发布新的路由快照。
@@ -486,8 +501,8 @@ JWT 主体推导用户 ID，管理员也只能在个人使用情况标签中看�
 ## 日志、用量与结算
 
 每次故障转移会产生 `proxy_request_retry` tracing 事件；每个客户端请求仍只产生一个终态 tracing
-事件和一条 `request_logs`，其中渠道、结果和计费快照对应最终尝试。worker 从两种格式的普通 JSON
-或 SSE 事件增量提取 usage，在选路时绑定价格快照，并在可结算时以 `billed_at` 条件幂等更新用户余额
+事件和一条 `request_logs`，其中渠道、结果和计费快照对应最终尝试。worker 从三种格式的普通 JSON
+以及 Chat Completions/Responses 的 SSE 事件增量提取 usage，在选路时绑定价格快照，并在可结算时以 `billed_at` 条件幂等更新用户余额
 和 API Key 已用额度。usage 同时保留输入、缓存命中、缓存写入、输出总量，以及输出中包含的
 reasoning token。Console 请求日志的 `Tokens` 列将未缓存输入和非 reasoning 输出作为主数字，
 并用紧凑标记分别展示缓存命中与 reasoning token。
@@ -504,16 +519,23 @@ OpenAI Responses 的 `reasoning.effort`、DeepSeek/OpenAI Chat Completions 兼�
 spool 中的事件。spool 写入失败和磁盘空间耗尽仍是必须告警的耐久边界。
 
 Console 请求日志会显示请求协议，将请求区分为非流式 HTTP、SSE 或 Responses
-WebSocket，并显示渠道组名称。个人“请求日志”始终只查询当前 JWT 用户；即使当前用户是管理员，
+WebSocket，并在 API 响应中返回独立的 `api_operation`，区分 Chat Completions、
+Responses、Images generation 与未来的 Images edit；同时显示渠道组名称。个人“请求日志”
+始终只查询当前 JWT 用户；即使当前用户是管理员，
 服务端也会将用户名称、具体 `channel_id` 和渠道名称置空。个人列表固定显示开始时间、模型、
 请求协议、渠道组、结果、Token、成本和耗时；模型旁可显示思考等级和 `Fast` 标记，耗时同时包含
-TTFT、总耗时和 TPS。详情再显示 HTTP 状态、错误代码、错误消息和完成时间。
+TTFT、总耗时和 TPS。详情再显示 API operation、HTTP 状态、错误代码、错误消息和完成时间。
 
 只有管理员“运维”栏下的全局“请求日志”可以读取所有用户的日志。该页面在上述字段基础上额外显示
 当前用户名称和渠道名称；Console 列表与详情不显示用户、渠道或请求日志 ID。
 
 ## 已知边界
 
-- 仅支持 Chat Completions 与 Responses，不提供 OpenAI 的 embeddings、images、audio、files、batches、assistants 或 fine-tuning API。
-- 所有余额、额度、模型价格和请求费用统一使用 USD；没有跨实例限流、健康状态或 Session 粘性协调。自动重试仅覆盖收到响应头前的连接失败、连接超时和响应头超时，不覆盖 HTTP 错误、SSE 流中断或流空闲超时；也没有独立财务账本、充值/退款或货币兑换。
+- 支持 Chat Completions、Responses 与非流式 JSON Images generation；不提供 Images
+  edits、multipart 图片请求、图片流式响应、embeddings、audio、files、batches、assistants
+  或 fine-tuning API。
+- 所有余额、额度、模型价格和请求费用统一使用 USD；没有跨实例限流、健康状态或 Session
+  粘性协调。Chat Completions 与 Responses 的自动重试仅覆盖收到响应头前的连接失败、连接超时
+  和响应头超时，不覆盖 HTTP 错误、SSE 流中断或流空闲超时；Images generation 不自动重试。
+  系统也没有独立财务账本、充值/退款或货币兑换。
 - 服务本身不终止 TLS；Console 必须部署在正确配置的 HTTPS 反向代理后。

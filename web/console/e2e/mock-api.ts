@@ -383,6 +383,7 @@ const E2E_PERSONAL_REQUEST_LOG = {
   api_key_id: "00000000-0000-0000-0000-000000000011",
   request_source: "client",
   api_format: "open_ai_responses",
+  api_operation: "responses",
   request_protocol: "sse",
   client_model: "gateway-e2e-model",
   reasoning_effort: "high",

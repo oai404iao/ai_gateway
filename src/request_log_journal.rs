@@ -3,9 +3,9 @@
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::domain::{RequestLogEvent, RequestProtocol};
+use crate::domain::{ApiFormat, ApiOperation, RequestLogEvent, RequestProtocol};
 
-pub(crate) const REQUEST_LOG_SCHEMA_VERSION: i16 = 3;
+pub(crate) const REQUEST_LOG_SCHEMA_VERSION: i16 = 4;
 
 #[derive(Clone, Debug)]
 pub(crate) struct EncodedRequestLog {
@@ -26,6 +26,7 @@ impl EncodedRequestLog {
     pub(crate) fn decode(&self) -> Result<RequestLogEvent, JournalCodecError> {
         let event = match self.schema_version {
             2 => decode_v2(&self.payload)?,
+            3 => decode_v3(&self.payload)?,
             REQUEST_LOG_SCHEMA_VERSION => serde_json::from_slice::<RequestLogEvent>(&self.payload)
                 .map_err(JournalCodecError::Deserialize)?,
             version => return Err(JournalCodecError::UnsupportedVersion { version }),
@@ -58,7 +59,38 @@ fn decode_v2(payload: &[u8]) -> Result<RequestLogEvent, JournalCodecError> {
                 .into(),
         ),
     );
+    insert_legacy_operation(object)?;
     serde_json::from_value(value).map_err(JournalCodecError::Deserialize)
+}
+
+fn decode_v3(payload: &[u8]) -> Result<RequestLogEvent, JournalCodecError> {
+    let mut value = serde_json::from_slice::<serde_json::Value>(payload)
+        .map_err(JournalCodecError::Deserialize)?;
+    let object = value
+        .as_object_mut()
+        .expect("a successfully decoded request-log payload is an object");
+    insert_legacy_operation(object)?;
+    serde_json::from_value(value).map_err(JournalCodecError::Deserialize)
+}
+
+fn insert_legacy_operation(
+    object: &mut serde_json::Map<String, serde_json::Value>,
+) -> Result<(), JournalCodecError> {
+    let api_format = object
+        .get("api_format")
+        .cloned()
+        .ok_or_else(|| JournalCodecError::Deserialize(missing_field("api_format")))?;
+    let api_format =
+        serde_json::from_value::<ApiFormat>(api_format).map_err(JournalCodecError::Deserialize)?;
+    object.insert(
+        "api_operation".into(),
+        serde_json::Value::String(ApiOperation::legacy_default(api_format).as_str().into()),
+    );
+    Ok(())
+}
+
+fn missing_field(field: &'static str) -> serde_json::Error {
+    <serde_json::Error as serde::de::Error>::missing_field(field)
 }
 
 #[derive(Debug, Error)]
@@ -80,7 +112,12 @@ mod tests {
     use super::{EncodedRequestLog, JournalCodecError};
     use crate::domain::RequestProtocol;
 
-    fn usage_payload(id: Uuid, request_protocol: Option<&str>, streamed: bool) -> Vec<u8> {
+    fn usage_payload(
+        id: Uuid,
+        request_protocol: Option<&str>,
+        api_operation: Option<&str>,
+        streamed: bool,
+    ) -> Vec<u8> {
         let mut value = serde_json::json!({
             "id": id,
             "started_at": "2026-07-22T00:00:00Z",
@@ -128,6 +165,12 @@ mod tests {
                 serde_json::Value::String(request_protocol.into()),
             );
         }
+        if let Some(api_operation) = api_operation {
+            value.as_object_mut().unwrap().insert(
+                "api_operation".into(),
+                serde_json::Value::String(api_operation.into()),
+            );
+        }
         serde_json::to_vec(&value).unwrap()
     }
 
@@ -153,7 +196,7 @@ mod tests {
         let event = EncodedRequestLog {
             request_log_id: id,
             schema_version: 2,
-            payload: usage_payload(id, None, true),
+            payload: usage_payload(id, None, None, true),
         }
         .decode()
         .unwrap();
@@ -165,17 +208,21 @@ mod tests {
     }
 
     #[test]
-    fn defaults_reasoning_tokens_for_existing_v3_payloads() {
+    fn decodes_v3_payloads_with_an_inferred_operation() {
         let id = Uuid::new_v4();
         let event = EncodedRequestLog {
             request_log_id: id,
-            schema_version: super::REQUEST_LOG_SCHEMA_VERSION,
-            payload: usage_payload(id, Some("non_stream"), false),
+            schema_version: 3,
+            payload: usage_payload(id, Some("non_stream"), None, false),
         }
         .decode()
         .unwrap();
 
         assert_eq!(event.request_protocol, RequestProtocol::NonStream);
+        assert_eq!(
+            event.api_operation,
+            crate::domain::ApiOperation::ChatCompletions
+        );
         assert_eq!(event.reasoning_effort, None);
         assert!(!event.fast_mode);
         assert_eq!(event.billing.unwrap().usage.unwrap().reasoning_tokens, 0);
@@ -187,7 +234,7 @@ mod tests {
         let error = EncodedRequestLog {
             request_log_id: id,
             schema_version: super::REQUEST_LOG_SCHEMA_VERSION,
-            payload: usage_payload(id, None, true),
+            payload: usage_payload(id, None, Some("chat_completions"), true),
         }
         .decode()
         .unwrap_err();
@@ -206,6 +253,7 @@ mod tests {
             "api_key_id": Uuid::new_v4(),
             "request_source": "client",
             "api_format": "open_ai_chat_completions",
+            "api_operation": "chat_completions",
             "request_protocol": "sse",
             "client_model": "model",
             "upstream_model": "upstream-model",

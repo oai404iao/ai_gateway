@@ -66,7 +66,6 @@ import {
 } from "@/features/admin/api";
 import { useI18n } from "@/app/i18n";
 import type {
-  ApiFormat,
   SystemSessionAffinityKeySource,
   SystemSessionAffinityRule,
   SystemSessionAffinitySettings,
@@ -624,7 +623,7 @@ export function SessionAffinityCard({
                   onValueChange={(formats) =>
                     setDraft((current) => ({
                       ...current,
-                      api_formats: formats as ApiFormat[],
+                      api_formats: formats as SystemSessionAffinityRule["api_formats"],
                     }))
                   }
                 >

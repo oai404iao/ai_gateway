@@ -496,7 +496,8 @@ mod tests {
 
     use super::RequestLogSpool;
     use crate::domain::{
-        ApiFormat, RequestLogEvent, RequestLogOutcome, RequestLogSource, RequestProtocol,
+        ApiFormat, ApiOperation, RequestLogEvent, RequestLogOutcome, RequestLogSource,
+        RequestProtocol,
     };
 
     fn directory() -> std::path::PathBuf {
@@ -513,6 +514,7 @@ mod tests {
             api_key_id: Uuid::new_v4(),
             request_source: RequestLogSource::Client,
             api_format: ApiFormat::OpenAiResponses,
+            api_operation: ApiOperation::Responses,
             request_protocol: RequestProtocol::NonStream,
             client_model: "spool-test".into(),
             reasoning_effort: None,

@@ -43,7 +43,7 @@ import { useI18n } from "@/app/i18n";
 
 const schema = z.object({
   name: z.string().min(1, "Name is required.").max(100),
-  api_format: z.enum(["open_ai_chat_completions", "open_ai_responses"]),
+  api_format: z.enum(["open_ai_chat_completions", "open_ai_responses", "open_ai_images"]),
   connector_kind: z.enum(["openai_compatible", "codex_oauth"]),
   priority: z.number().int().min(0, "Priority must be zero or greater."),
   selection_strategy: z.enum(["weighted_random", "weighted_round_robin"]),

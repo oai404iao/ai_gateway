@@ -10,6 +10,7 @@ import { translate } from "@/app/i18n";
 export const API_FORMATS: readonly ApiFormat[] = [
   "open_ai_chat_completions",
   "open_ai_responses",
+  "open_ai_images",
 ];
 
 export const SELECTION_STRATEGIES: readonly SelectionStrategy[] = [
@@ -35,7 +36,14 @@ export const API_KEY_STATUSES = ["active", "disabled", "revoked"] as const;
 
 /** OpenAI API-format product terms intentionally remain in English. */
 export function apiFormatLabel(value: ApiFormat): string {
-  return value === "open_ai_chat_completions" ? "Chat Completions" : "Responses";
+  switch (value) {
+    case "open_ai_chat_completions":
+      return "Chat Completions";
+    case "open_ai_responses":
+      return "Responses";
+    case "open_ai_images":
+      return "Images";
+  }
 }
 
 export function roleLabel(value: UserRole): string {

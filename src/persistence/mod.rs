@@ -32,7 +32,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::{
-    domain::{AutomaticDisableTrigger, MAX_REQUEST_RETRIES, RequestLogEvent},
+    domain::{ApiFormat, AutomaticDisableTrigger, MAX_REQUEST_RETRIES, RequestLogEvent},
     request_log_journal::EncodedRequestLog,
 };
 
@@ -1268,6 +1268,7 @@ pub struct ConsoleRequestLog {
     pub api_key_id: Uuid,
     pub request_source: String,
     pub api_format: String,
+    pub api_operation: String,
     pub request_protocol: String,
     pub client_model: String,
     pub reasoning_effort: Option<String>,
@@ -2832,43 +2833,42 @@ impl RequestLogRepository {
             let inserted_ids = sqlx::query_scalar::<_, Uuid>(
                 "INSERT INTO request_logs \
                  (id,started_at,completed_at,user_id,api_key_id,request_source,api_format,\
-                  request_protocol,client_model,upstream_model,model_rule_id,channel_group_id,\
-                  channel_id,outcome,response_status_code,streamed,ttft_ms,total_duration_ms,\
-                  output_tokens_per_second,input_tokens,cached_input_tokens,cache_write_tokens,\
-                  output_tokens,model_id,currency,price_unit_tokens,price_effective_at,\
-                  input_unit_price,cached_input_unit_price,cache_write_unit_price,\
-                  output_unit_price,cost_amount,error_code,error_summary,reasoning_tokens,\
-                  reasoning_effort,fast_mode) \
+                  api_operation,request_protocol,client_model,upstream_model,model_rule_id,\
+                  channel_group_id,channel_id,outcome,response_status_code,streamed,ttft_ms,\
+                  total_duration_ms,output_tokens_per_second,input_tokens,cached_input_tokens,\
+                  cache_write_tokens,output_tokens,model_id,currency,price_unit_tokens,\
+                  price_effective_at,input_unit_price,cached_input_unit_price,\
+                  cache_write_unit_price,output_unit_price,cost_amount,error_code,error_summary,\
+                  reasoning_tokens,reasoning_effort,fast_mode) \
                  SELECT input.id,input.started_at,input.completed_at,input.user_id,input.api_key_id,\
-                        input.request_source,input.api_format::api_format,input.request_protocol,\
-                        input.client_model,input.upstream_model,input.model_rule_id,\
-                        input.channel_group_id,input.channel_id,input.outcome,\
-                        input.response_status_code,input.streamed,input.ttft_ms,\
-                        input.total_duration_ms,input.output_tokens_per_second,input.input_tokens,\
-                        input.cached_input_tokens,input.cache_write_tokens,input.output_tokens,\
-                        input.model_id,input.currency::char(3),input.price_unit_tokens,\
-                        input.price_effective_at,input.input_unit_price,\
-                        input.cached_input_unit_price,input.cache_write_unit_price,\
-                        input.output_unit_price,input.cost_amount,input.error_code,\
-                        input.error_summary,input.reasoning_tokens,input.reasoning_effort,\
-                        input.fast_mode \
+                        input.request_source,input.api_format::api_format,input.api_operation,\
+                        input.request_protocol,input.client_model,input.upstream_model,\
+                        input.model_rule_id,input.channel_group_id,input.channel_id,input.outcome,\
+                        input.response_status_code,input.streamed,input.ttft_ms,input.total_duration_ms,\
+                        input.output_tokens_per_second,input.input_tokens,input.cached_input_tokens,\
+                        input.cache_write_tokens,input.output_tokens,input.model_id,\
+                        input.currency::char(3),input.price_unit_tokens,input.price_effective_at,\
+                        input.input_unit_price,input.cached_input_unit_price,\
+                        input.cache_write_unit_price,input.output_unit_price,input.cost_amount,\
+                        input.error_code,input.error_summary,input.reasoning_tokens,\
+                        input.reasoning_effort,input.fast_mode \
                  FROM UNNEST(\
                     $1::uuid[],$2::timestamptz[],$3::timestamptz[],$4::uuid[],$5::uuid[],\
-                    $6::text[],$7::text[],$8::text[],$9::text[],$10::text[],$11::uuid[],\
-                    $12::uuid[],$13::uuid[],$14::text[],$15::int2[],$16::bool[],$17::int4[],\
-                    $18::int4[],$19::numeric[],$20::int8[],$21::int8[],$22::int8[],$23::int8[],\
-                    $24::uuid[],$25::text[],$26::int8[],$27::timestamptz[],$28::numeric[],\
-                    $29::numeric[],$30::numeric[],$31::numeric[],$32::numeric[],$33::text[],\
-                    $34::text[],$35::int8[],$36::text[],$37::bool[]\
+                    $6::text[],$7::text[],$8::text[],$9::text[],$10::text[],$11::text[],\
+                    $12::uuid[],$13::uuid[],$14::uuid[],$15::text[],$16::int2[],$17::bool[],\
+                    $18::int4[],$19::int4[],$20::numeric[],$21::int8[],$22::int8[],$23::int8[],\
+                    $24::int8[],$25::uuid[],$26::text[],$27::int8[],$28::timestamptz[],\
+                    $29::numeric[],$30::numeric[],$31::numeric[],$32::numeric[],$33::numeric[],\
+                    $34::text[],$35::text[],$36::int8[],$37::text[],$38::bool[]\
                  ) AS input(\
                     id,started_at,completed_at,user_id,api_key_id,request_source,api_format,\
-                    request_protocol,client_model,upstream_model,model_rule_id,channel_group_id,\
-                    channel_id,outcome,response_status_code,streamed,ttft_ms,total_duration_ms,\
-                    output_tokens_per_second,input_tokens,cached_input_tokens,cache_write_tokens,\
-                    output_tokens,model_id,currency,price_unit_tokens,price_effective_at,\
-                    input_unit_price,cached_input_unit_price,cache_write_unit_price,\
-                    output_unit_price,cost_amount,error_code,error_summary,reasoning_tokens,\
-                    reasoning_effort,fast_mode\
+                    api_operation,request_protocol,client_model,upstream_model,model_rule_id,\
+                    channel_group_id,channel_id,outcome,response_status_code,streamed,ttft_ms,\
+                    total_duration_ms,output_tokens_per_second,input_tokens,cached_input_tokens,\
+                    cache_write_tokens,output_tokens,model_id,currency,price_unit_tokens,\
+                    price_effective_at,input_unit_price,cached_input_unit_price,\
+                    cache_write_unit_price,output_unit_price,cost_amount,error_code,error_summary,\
+                    reasoning_tokens,reasoning_effort,fast_mode\
                  ) \
                  ON CONFLICT (id) DO NOTHING \
                  RETURNING id",
@@ -2880,6 +2880,7 @@ impl RequestLogRepository {
                 .bind(&batch.api_key_ids)
                 .bind(&batch.request_sources)
                 .bind(&batch.api_formats)
+                .bind(&batch.api_operations)
                 .bind(&batch.request_protocols)
                 .bind(&batch.client_models)
                 .bind(&batch.upstream_models)
@@ -2931,8 +2932,8 @@ impl RequestLogRepository {
                 let ids = needs_existing.iter().copied().collect::<Vec<_>>();
                 let existing = sqlx::query_as::<_, StoredRequestLog>(
                     "SELECT id,started_at,completed_at,user_id,api_key_id,request_source,\
-                            api_format::text AS api_format,request_protocol,client_model,\
-                            upstream_model,model_rule_id,channel_group_id,channel_id,outcome,\
+                            api_format::text AS api_format,api_operation,request_protocol,\
+                            client_model,upstream_model,model_rule_id,channel_group_id,channel_id,outcome,\
                             response_status_code,streamed,ttft_ms,total_duration_ms,\
                             output_tokens_per_second,input_tokens,cached_input_tokens,\
                             cache_write_tokens,output_tokens,reasoning_tokens,\
@@ -3208,7 +3209,7 @@ fn redact_self_service_request_log(log: &mut ConsoleRequestLog) {
     log.channel_name = None;
 }
 
-const CONSOLE_REQUEST_LOG_COLUMNS: &str = "log.id,log.started_at,log.completed_at,log.user_id,request_user.display_name AS user_name,log.api_key_id,log.request_source,log.api_format::text AS api_format,log.request_protocol,log.client_model,log.reasoning_effort,log.fast_mode,log.upstream_model,log.model_rule_id,log.channel_group_id,channel_group.name AS channel_group_name,log.channel_id,channel.name AS channel_name,log.outcome,log.response_status_code,log.streamed,log.ttft_ms,log.total_duration_ms,log.output_tokens_per_second,log.input_tokens,log.cached_input_tokens,log.cache_write_tokens,log.output_tokens,log.reasoning_tokens,log.cost_amount,log.error_code,log.error_summary,log.billed_at";
+const CONSOLE_REQUEST_LOG_COLUMNS: &str = "log.id,log.started_at,log.completed_at,log.user_id,request_user.display_name AS user_name,log.api_key_id,log.request_source,log.api_format::text AS api_format,log.api_operation,log.request_protocol,log.client_model,log.reasoning_effort,log.fast_mode,log.upstream_model,log.model_rule_id,log.channel_group_id,channel_group.name AS channel_group_name,log.channel_id,channel.name AS channel_name,log.outcome,log.response_status_code,log.streamed,log.ttft_ms,log.total_duration_ms,log.output_tokens_per_second,log.input_tokens,log.cached_input_tokens,log.cache_write_tokens,log.output_tokens,log.reasoning_tokens,log.cost_amount,log.error_code,log.error_summary,log.billed_at";
 
 async fn query_console_request_log(
     pool: &PgPool,
@@ -3242,7 +3243,7 @@ async fn query_console_request_logs(
     if filter
         .api_format
         .as_deref()
-        .is_some_and(|value| !matches!(value, "open_ai_chat_completions" | "open_ai_responses"))
+        .is_some_and(|value| ApiFormat::parse(value).is_none())
         || filter.outcome.as_deref().is_some_and(|value| {
             !matches!(value, "succeeded" | "failed" | "rejected" | "cancelled")
         })
@@ -3829,6 +3830,7 @@ struct RequestLogInsertBatch {
     api_key_ids: Vec<Uuid>,
     request_sources: Vec<String>,
     api_formats: Vec<String>,
+    api_operations: Vec<String>,
     request_protocols: Vec<String>,
     client_models: Vec<String>,
     upstream_models: Vec<Option<String>>,
@@ -3871,6 +3873,7 @@ impl RequestLogInsertBatch {
             api_key_ids: Vec::with_capacity(capacity),
             request_sources: Vec::with_capacity(capacity),
             api_formats: Vec::with_capacity(capacity),
+            api_operations: Vec::with_capacity(capacity),
             request_protocols: Vec::with_capacity(capacity),
             client_models: Vec::with_capacity(capacity),
             upstream_models: Vec::with_capacity(capacity),
@@ -3916,7 +3919,9 @@ impl RequestLogInsertBatch {
         self.api_key_ids.push(event.api_key_id);
         self.request_sources
             .push(event.request_source.as_str().into());
-        self.api_formats.push(api_format_name(event).into());
+        self.api_formats.push(event.api_format.as_str().into());
+        self.api_operations
+            .push(event.api_operation.as_str().into());
         self.request_protocols
             .push(event.request_protocol.as_str().into());
         self.client_models.push(event.client_model.clone());
@@ -3983,6 +3988,7 @@ struct StoredRequestLog {
     api_key_id: Uuid,
     request_source: String,
     api_format: String,
+    api_operation: String,
     request_protocol: String,
     client_model: String,
     upstream_model: Option<String>,
@@ -4028,7 +4034,8 @@ impl StoredRequestLog {
             && self.user_id == event.user_id
             && self.api_key_id == event.api_key_id
             && self.request_source == event.request_source.as_str()
-            && self.api_format == api_format_name(event)
+            && self.api_format == event.api_format.as_str()
+            && self.api_operation == event.api_operation.as_str()
             && self.request_protocol == event.request_protocol.as_str()
             && self.client_model == event.client_model
             && self.upstream_model == event.upstream_model
@@ -4116,13 +4123,6 @@ impl StoredRequestLog {
             && self.error_summary == event.error_summary
             && self.reasoning_effort == event.reasoning_effort
             && self.fast_mode == event.fast_mode
-    }
-}
-
-fn api_format_name(event: &RequestLogEvent) -> &'static str {
-    match event.api_format {
-        crate::domain::ApiFormat::OpenAiChatCompletions => "open_ai_chat_completions",
-        crate::domain::ApiFormat::OpenAiResponses => "open_ai_responses",
     }
 }
 
@@ -5825,6 +5825,7 @@ async fn group_insert(
 ) -> Result<MutationResult, RepositoryError> {
     if input.name.trim().is_empty()
         || input.priority < 0
+        || ApiFormat::parse(&input.api_format).is_none()
         || !matches!(
             input.selection_strategy.as_str(),
             "weighted_random" | "weighted_round_robin"
@@ -6605,6 +6606,9 @@ async fn channel_insert(
     {
         return Err(RepositoryError::Validation);
     }
+    if ApiFormat::parse(&input.api_format).is_none() {
+        return Err(RepositoryError::Validation);
+    }
     if matches!(input.upstream_api_key, Some(None)) && input.upstream_auth_kind != "none" {
         return Err(RepositoryError::Validation);
     }
@@ -6615,6 +6619,9 @@ async fn channel_insert(
         return Err(RepositoryError::Validation);
     }
     if input.supports_websocket && input.api_format != "open_ai_responses" {
+        return Err(RepositoryError::Validation);
+    }
+    if input.api_format == "open_ai_images" && input.test_model.is_some() {
         return Err(RepositoryError::Validation);
     }
     if input.test_model.as_ref().is_some_and(|model| {
@@ -6721,6 +6728,9 @@ async fn rule_insert(
     create: bool,
     expected_updated_at: Option<DateTime<Utc>>,
 ) -> Result<MutationResult, RepositoryError> {
+    if ApiFormat::parse(&input.api_format).is_none() {
+        return Err(RepositoryError::Validation);
+    }
     let before = if create {
         json!({})
     } else {

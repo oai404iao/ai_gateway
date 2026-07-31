@@ -8,6 +8,10 @@ OpenAI-compatible upstream. It is deliberately ignored by normal `cargo test`
 runs: it has separate Chat Completions and Responses tests for non-streaming
 and streaming requests, plus a Responses WebSocket request.
 
+The current paid smoke does not issue an Images request. OpenAI Images
+generation is covered by deterministic proxy integration tests until a
+dedicated low-budget image model and explicit paid test case are added.
+
 The test constructs an in-memory control-plane snapshot and drives the public
 Axum router. It verifies the production forwarding path—model aliasing,
 replacement of the synthetic client Bearer credential with the configured
@@ -79,4 +83,6 @@ then runs the ignored test with `RUN_REAL_UPSTREAM_SMOKE=1`.
   logs.
 - The existing local and PostgreSQL integration tests remain the coverage for
   control-plane persistence, management APIs, failure injection, and
-  deterministic edge cases.
+  deterministic edge cases, including Images generation routing, usage
+  extraction, pre-upstream streaming rejection, and the no-automatic-retry
+  boundary.

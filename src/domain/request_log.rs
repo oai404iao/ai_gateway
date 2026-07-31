@@ -5,7 +5,7 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::ApiFormat;
+use super::{ApiFormat, ApiOperation};
 
 /// A single idempotent request-log row. It deliberately excludes request and
 /// response bodies, headers, credentials, and raw transport errors. A bounded,
@@ -19,6 +19,7 @@ pub struct RequestLogEvent {
     pub api_key_id: Uuid,
     pub request_source: RequestLogSource,
     pub api_format: ApiFormat,
+    pub api_operation: ApiOperation,
     pub request_protocol: RequestProtocol,
     pub client_model: String,
     /// Explicit reasoning effort requested by the client. Missing and

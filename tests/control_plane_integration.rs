@@ -16,8 +16,8 @@ use ai_gateway::{
         codex_user_agent, hash_console_password,
     },
     domain::{
-        ApiFormat, ApiKeyPermission, AutomaticDisableTrigger, ConnectorKind, RequestBilling,
-        RequestLogEvent, RequestLogOutcome, RequestLogSource, RequestPriceSnapshot,
+        ApiFormat, ApiKeyPermission, ApiOperation, AutomaticDisableTrigger, ConnectorKind,
+        RequestBilling, RequestLogEvent, RequestLogOutcome, RequestLogSource, RequestPriceSnapshot,
         RequestProtocol, RequestUsage,
     },
     http::console::{self, ConsoleState},
@@ -382,6 +382,7 @@ async fn system_probe_identity_is_an_internal_active_administrator() {
         api_key_id: first.api_key_id,
         request_source: RequestLogSource::ScheduledTest,
         api_format: ApiFormat::OpenAiChatCompletions,
+        api_operation: ApiOperation::ChatCompletions,
         request_protocol: RequestProtocol::NonStream,
         client_model: "scheduled-test-model".into(),
         reasoning_effort: None,
@@ -1102,6 +1103,7 @@ fn request_log_event(seed: &Seed, outcome: RequestLogOutcome) -> RequestLogEvent
         api_key_id: seed.key,
         request_source: ai_gateway::domain::RequestLogSource::Client,
         api_format: ApiFormat::OpenAiChatCompletions,
+        api_operation: ApiOperation::ChatCompletions,
         request_protocol: RequestProtocol::Sse,
         client_model: seed.client_model.clone(),
         reasoning_effort: Some("high".into()),
@@ -2626,6 +2628,22 @@ async fn request_log_insert_is_idempotent_and_worker_continues_after_failure() {
             .unwrap();
     assert_eq!(persisted_modes.0.as_deref(), Some("high"));
     assert!(persisted_modes.1);
+    let persisted_protocol: (String, String, String) = sqlx::query_as(
+        "SELECT api_format::text,api_operation,request_protocol \
+         FROM request_logs WHERE id=$1",
+    )
+    .bind(event.id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        persisted_protocol,
+        (
+            "open_ai_chat_completions".into(),
+            "chat_completions".into(),
+            "sse".into(),
+        )
+    );
 
     let mut conflicting = event.clone();
     conflicting.error_code = Some("different_terminal_fact".into());
@@ -2643,6 +2661,13 @@ async fn request_log_insert_is_idempotent_and_worker_continues_after_failure() {
     conflicting_fast_mode.fast_mode = false;
     assert!(matches!(
         repository.insert(&conflicting_fast_mode).await,
+        Err(ai_gateway::persistence::RepositoryError::DuplicateConflict { .. })
+    ));
+    let mut conflicting_operation = event.clone();
+    conflicting_operation.api_format = ApiFormat::OpenAiImages;
+    conflicting_operation.api_operation = ApiOperation::ImagesGeneration;
+    assert!(matches!(
+        repository.insert(&conflicting_operation).await,
         Err(ai_gateway::persistence::RepositoryError::DuplicateConflict { .. })
     ));
     let mut conflicting_reasoning = event.clone();

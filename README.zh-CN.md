@@ -2,7 +2,9 @@
 
 中文 | [English](README.md)
 
-`ai-gateway` 是一个单二进制 Rust 网关，用于转发 OpenAI 兼容的 LLM 请求。它向客户端提供 Chat Completions 与 Responses API，根据 PostgreSQL 控制面完成路由，并将请求转发到已配置的上游提供商。
+`ai-gateway` 是一个单二进制 Rust 网关，用于转发 OpenAI 兼容请求。它向客户端提供
+Chat Completions、Responses 与非流式 JSON Images generation API，根据 PostgreSQL
+控制面完成路由，并将请求转发到已配置的上游提供商。
 
 文档已按读者分类整理，统一入口见[文档中心](docs/README.md)：用户文档、开发与
 设计文档、OpenAI 外部参考和历史归档。
@@ -14,7 +16,8 @@
 
 ## 特性
 
-- **仅支持** OpenAI Chat Completions 和 Responses；两种格式绝不相互回退。
+- 支持 OpenAI Chat Completions、Responses 和非流式 JSON Images generation；
+  三种格式绝不相互回退。
 - 按 `(客户端模型名, API 格式)` 路由，支持渠道组优先级和渠道权重选择。
 - 特殊上游通过单进程内 Connector 接入，不增加 sidecar 或第二次网络跳转。首个
   Codex OAuth Connector 支持订阅凭证、每账户代理、Token 刷新、额度感知 draining
@@ -151,7 +154,8 @@ curl --request POST http://127.0.0.1:3001/console/v1/auth/login \
 4. 一个**模型规则**：将客户端模型名映射到计价模型、上游模型名和路由目标。
 5. 一个客户端 **API Key**：至少授予 `proxy` 权限；如需调用 `/v1/models`，还要授予 `models.read`。
 
-即使使用同一个上游提供商或模型名，Chat Completions 路由与 Responses 路由仍是两套独立配置。请使用 Console API 管理控制面，不要直接编辑控制面数据表。
+即使使用同一个上游提供商或模型名，Chat Completions、Responses 与 Images 路由仍是
+三套独立配置。请使用 Console API 管理控制面，不要直接编辑控制面数据表。
 
 Console 路由覆盖与运行行为详见[运行与接口说明](docs/user/operations.md)。
 
@@ -212,6 +216,7 @@ docker compose up -d
 | `POST /v1/chat/completions` | 仅代理 Chat Completions 请求。 |
 | `POST /v1/responses` | 仅代理 Responses 请求。 |
 | 带 WebSocket Upgrade 的 `GET /v1/responses` | 通过 WebSocket 顺序代理 Responses `response.create` 消息。 |
+| `POST /v1/images/generations` | 仅代理非流式 JSON Images generation 请求。 |
 
 在创建匹配的模型规则和 API Key 后：
 
@@ -243,7 +248,23 @@ curl --request POST "$GATEWAY_URL/v1/responses" \
   }'
 ```
 
-网关会转发上游状态码和响应体，并保持流式行为；如客户端需要 SSE，请使用对应 OpenAI 请求中的流式字段。
+对于 Images generation，请配置独立的 `open_ai_images` 渠道组、渠道、模型规则与 API Key
+权限，然后发送 JSON 请求：
+
+```bash
+curl --request POST "$GATEWAY_URL/v1/images/generations" \
+  --header "Authorization: Bearer $AI_GATEWAY_API_KEY" \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "model": "gateway-image-model",
+    "prompt": "A blue whale in watercolor"
+  }'
+```
+
+当前 Images 路径不接受 `stream: true`，也不支持 `/v1/images/edits` 或 multipart body。
+
+网关会转发上游状态码和响应体；Chat Completions 与 Responses 会保持流式行为，如客户端需要
+SSE，请使用对应 OpenAI 请求中的流式字段。
 Responses WebSocket 客户端使用同一个 Gateway Bearer Key 连接
 `ws://<gateway>/v1/responses`（或通过终止 TLS 的反向代理使用 `wss://`）。网关对每个顺序到达的
 `response.create` 独立执行准入和日志记录，在可用时取回同一 Session 隔离的上游 WebSocket 以保持
@@ -371,7 +392,8 @@ pnpm --dir web/console generate:api:check   # OpenAPI spec/类型漂移门禁
   已结算用量的软预检查，不会在转发前预留本次成本。
 - 请求日志不保存 prompt、completion、完整 Header、API Key、Cookie 或未经脱敏的上游错误内容。
 
-当前范围不包含 embeddings、images、audio、files、batches、assistants、fine-tuning、通用自动重试、TLS 终止、独立财务账本、充值/退款或多币种兑换。
+当前范围不包含 Images edits、multipart 图片请求、图片流式响应、embeddings、audio、files、
+batches、assistants、fine-tuning、通用自动重试、TLS 终止、独立财务账本、充值/退款或多币种兑换。
 
 ## 开发与验证
 

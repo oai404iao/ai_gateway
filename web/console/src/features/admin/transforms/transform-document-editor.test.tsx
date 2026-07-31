@@ -121,6 +121,35 @@ describe("TransformDocumentEditor", () => {
     });
   });
 
+  it("allows Images request transforms but disables SSE rules", async () => {
+    const user = userEvent.setup();
+    renderEditor({
+      initialValue: "",
+      defaultApiFormat: "open_ai_images",
+    });
+
+    expect(
+      screen.getByRole("button", { name: "Add streaming response rule" }),
+    ).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Add request body rule" }));
+    await user.type(screen.getByLabelText("JSON pointer"), "/quality");
+    fireEvent.change(screen.getByLabelText("Value (JSON)"), {
+      target: { value: '"high"' },
+    });
+
+    expect(JSON.parse(screen.getByTestId("transform-document").textContent ?? "")).toEqual({
+      version: 1,
+      api_format: "open_ai_images",
+      request_json: [
+        {
+          op: "add",
+          path: "/quality",
+          value: "high",
+        },
+      ],
+    });
+  });
+
   it("applies the proxy and CDN request-header filter template", async () => {
     const user = userEvent.setup();
     renderEditor();
