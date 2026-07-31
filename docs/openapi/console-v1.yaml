@@ -1443,7 +1443,9 @@ paths:
         - $ref: "#/components/parameters/PathId"
       responses:
         "200":
-          description: Codex OAuth credentials managed as channels in this connector group.
+          description: >
+            Codex OAuth credentials in the shared connector pool selected by
+            this format-specific channel group.
           content:
             application/json:
               schema:
@@ -1469,7 +1471,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/MutationResponse" }
         "201":
-          description: Credential validated and its managed channel created.
+          description: Credential validated and its format-specific managed channels created.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/MutationResponse" }
@@ -1485,7 +1487,8 @@ paths:
       tags: [CodexOAuth]
       operationId: exportCodexOAuthCredentials
       description: >
-        Exports selected or all credentials in the channel group, including
+        Exports selected or all credentials in the shared connector pool,
+        selected through this format-specific channel group, including
         raw OAuth tokens and optionally the assigned proxy definitions. The
         response is a sensitive portable backup and is never cached.
       security: [{ bearerAuth: [] }]
@@ -1513,7 +1516,7 @@ paths:
       operationId: updateCodexOAuthCredentialsBatch
       description: >
         Atomically enables, disables, or deletes up to 100 selected
-        credentials in one Codex connector group.
+        credentials in one shared Codex connector pool.
       security: [{ bearerAuth: [] }]
       parameters:
         - $ref: "#/components/parameters/PathId"
@@ -1575,7 +1578,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/MutationResponse" }
         "201":
-          description: Authorization code exchanged and managed credential created.
+          description: Authorization code exchanged and format-specific managed channels created.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/MutationResponse" }
@@ -1637,7 +1640,7 @@ paths:
       operationId: deleteCodexOAuthCredential
       description: >
         Removes the credential from management and routing, clears its stored
-        OAuth tokens, and retains a non-secret managed-channel tombstone for
+        OAuth tokens, and retains non-secret managed-channel tombstones for
         historical references.
       security: [{ bearerAuth: [] }]
       parameters:
@@ -3243,7 +3246,10 @@ components:
          available_models, created_at, updated_at]
       properties:
         id: { type: string, format: uuid }
-        channel_group_id: { type: string, format: uuid }
+        channel_group_id:
+          type: string
+          format: uuid
+          description: Stable primary Responses group retained for credential-management compatibility.
         label: { type: string }
         email: { type: string, nullable: true }
         account_id: { type: string }
@@ -3273,6 +3279,7 @@ components:
         enabled: { type: boolean }
         available_models:
           type: array
+          description: Models exposed by the credential's Responses projection.
           items: { type: string }
         created_at: { $ref: "#/components/schemas/DateTime" }
         updated_at: { $ref: "#/components/schemas/DateTime" }
@@ -4439,7 +4446,11 @@ components:
       required: [name, api_format, connector_kind, priority, selection_strategy, enabled]
       properties:
         name: { type: string }
-        api_format: { $ref: "#/components/schemas/ApiFormat" }
+        api_format:
+          allOf: [{ $ref: "#/components/schemas/ApiFormat" }]
+          description: >
+            New codex_oauth pools start with open_ai_responses; the server also
+            creates a disabled open_ai_images group in the same credential pool.
         connector_kind: { $ref: "#/components/schemas/ConnectorKind" }
         priority: { type: integer, minimum: 0 }
         selection_strategy: { $ref: "#/components/schemas/SelectionStrategy" }

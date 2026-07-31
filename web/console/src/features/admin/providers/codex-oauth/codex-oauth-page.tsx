@@ -335,7 +335,9 @@ function SettingsFields({
             }
           />
           <FieldDescription>
-            {t("New sessions stop using this credential at the threshold.")}
+            {t(
+              "New requests stop using this credential at the threshold; existing sticky Responses sessions may continue.",
+            )}
           </FieldDescription>
         </Field>
       </div>
@@ -595,7 +597,7 @@ export default function CodexOauthPage() {
       <PageHeader
         title={group.data?.data.name ?? t("Codex OAuth")}
         description={t(
-          "Connect ChatGPT Codex subscriptions, assign per-credential proxies, and monitor quota.",
+          "Connect ChatGPT Codex subscriptions, share credentials across Responses and Images channels, assign proxies, and monitor quota.",
         )}
         actions={
           <>
@@ -648,7 +650,7 @@ export default function CodexOauthPage() {
         </Card>
         <Card>
           <CardHeader>
-            <CardDescription>{t("Ready for new sessions")}</CardDescription>
+            <CardDescription>{t("Ready for new requests")}</CardDescription>
             <CardTitle className="text-2xl">
               {credentials.data?.filter(
                 (credential) => credential.runtime_status === "active",
@@ -673,7 +675,7 @@ export default function CodexOauthPage() {
           <CardTitle>{t("Managed credentials")}</CardTitle>
           <CardDescription>
             {t(
-              "Each credential is a provider-managed channel. Existing sticky sessions may continue while quota is draining.",
+              "Each credential projects to separate Responses and Images managed channels. Existing sticky Responses sessions may continue while quota is draining.",
             )}
           </CardDescription>
         </CardHeader>
@@ -837,7 +839,7 @@ export default function CodexOauthPage() {
                           ) : null}
                         </div>
                         <p className="mt-2 text-xs text-muted-foreground">
-                          {t("{count} available models", {
+                          {t("Responses models: {count}", {
                             count: credential.available_models.length,
                           })}
                         </p>
@@ -1098,7 +1100,7 @@ export default function CodexOauthPage() {
             <DialogTitle>{t("Import Codex tokens")}</DialogTitle>
             <DialogDescription>
               {t(
-                "Tokens are validated against Codex before the managed channel is created. They are not returned by the Console API.",
+                "Tokens are validated against Codex before format-specific managed channels are created. They are not returned by the Console API.",
               )}
             </DialogDescription>
           </DialogHeader>

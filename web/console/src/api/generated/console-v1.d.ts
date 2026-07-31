@@ -804,7 +804,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description Exports selected or all credentials in the channel group, including raw OAuth tokens and optionally the assigned proxy definitions. The response is a sensitive portable backup and is never cached. */
+        /** @description Exports selected or all credentials in the shared connector pool, selected through this format-specific channel group, including raw OAuth tokens and optionally the assigned proxy definitions. The response is a sensitive portable backup and is never cached. */
         post: operations["exportCodexOAuthCredentials"];
         delete?: never;
         options?: never;
@@ -821,7 +821,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description Atomically enables, disables, or deletes up to 100 selected credentials in one Codex connector group. */
+        /** @description Atomically enables, disables, or deletes up to 100 selected credentials in one shared Codex connector pool. */
         post: operations["updateCodexOAuthCredentialsBatch"];
         delete?: never;
         options?: never;
@@ -871,7 +871,7 @@ export interface paths {
         get: operations["getCodexOAuthCredential"];
         put: operations["updateCodexOAuthCredential"];
         post?: never;
-        /** @description Removes the credential from management and routing, clears its stored OAuth tokens, and retains a non-secret managed-channel tombstone for historical references. */
+        /** @description Removes the credential from management and routing, clears its stored OAuth tokens, and retains non-secret managed-channel tombstones for historical references. */
         delete: operations["deleteCodexOAuthCredential"];
         options?: never;
         head?: never;
@@ -1829,7 +1829,10 @@ export interface components {
         CodexCredentialView: {
             /** Format: uuid */
             id: string;
-            /** Format: uuid */
+            /**
+             * Format: uuid
+             * @description Stable primary Responses group retained for credential-management compatibility.
+             */
             channel_group_id: string;
             label: string;
             email: string | null;
@@ -1857,6 +1860,7 @@ export interface components {
             proxy_id: string | null;
             weight: number;
             enabled: boolean;
+            /** @description Models exposed by the credential's Responses projection. */
             available_models: string[];
             created_at: components["schemas"]["DateTime"];
             updated_at: components["schemas"]["DateTime"];
@@ -2600,6 +2604,7 @@ export interface components {
         };
         ChannelGroupInput: {
             name: string;
+            /** @description New codex_oauth pools start with open_ai_responses; the server also creates a disabled open_ai_images group in the same credential pool. */
             api_format: components["schemas"]["ApiFormat"];
             connector_kind: components["schemas"]["ConnectorKind"];
             priority: number;
@@ -4856,7 +4861,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Codex OAuth credentials managed as channels in this connector group. */
+            /** @description Codex OAuth credentials in the shared connector pool selected by this format-specific channel group. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -4893,7 +4898,7 @@ export interface operations {
                     "application/json": components["schemas"]["MutationResponse"];
                 };
             };
-            /** @description Credential validated and its managed channel created. */
+            /** @description Credential validated and its format-specific managed channels created. */
             201: {
                 headers: {
                     [name: string]: unknown;
@@ -5024,7 +5029,7 @@ export interface operations {
                     "application/json": components["schemas"]["MutationResponse"];
                 };
             };
-            /** @description Authorization code exchanged and managed credential created. */
+            /** @description Authorization code exchanged and format-specific managed channels created. */
             201: {
                 headers: {
                     [name: string]: unknown;

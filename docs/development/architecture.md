@@ -19,7 +19,8 @@ generation。
 
 客户端 API 格式与上游接入方式是两个维度。Channel Group 另有
 `ConnectorKind`：普通渠道使用 `openai_compatible`，Codex 订阅凭证使用
-`codex_oauth`；后者仍属于 `OpenAiResponses`，不是第三种客户端格式。
+`codex_oauth`；后者可投影为 `OpenAiResponses` 与 `OpenAiImages` 渠道，但不会新增
+provider-specific 客户端格式。
 
 ## 运行拓扑
 
@@ -77,22 +78,26 @@ observation 接口，不包含 provider 的 OAuth claim、路径或 Header 细�
 
 - `OpenAiCompatible` attempt 是无状态路径：保留现有请求字节、API 路径和
   `UpstreamAuth` 注入。
-- `CodexOauth` attempt 的实现位于 `src/application/codex/attempt.rs`：读取独立凭证快照、
-  按 HTTP SSE 或 WebSocket 强制 Codex Responses 请求约束、生成会话身份、改写目标并注入
-  OAuth/account Header。
+- `CodexOauth` attempt 的实现位于 `src/application/codex/attempt.rs`：读取独立凭证快照，
+  按操作分派 Responses HTTP SSE、Responses WebSocket 或 Images generation 约束，改写目标并
+  注入 OAuth/account 与协议专用 Header。
 - `ConnectorKind` 编译进 group/channel 快照。新增 provider 时扩展 registry 和独立 provider
   模块，不能在标准 Chat Completions/Responses/Images 逻辑中再建一套路由器。
 
-Codex 的每个凭证是一个 provider-managed Channel，Channel Group 是凭证池。普通 Channel CRUD
-和批量修改在 repository 层拒绝 managed channel；provider API 在 serializable 控制面事务中同时
-创建/修改凭证和对应 Channel，再编译并发布统一路由快照。
+Codex 的每个逻辑凭证属于一个 `connector_pools` 记录，并通过
+`codex_oauth_credential_channels` 投影为独立的 Responses 与 Images provider-managed Channel；
+同一 pool 有两个格式隔离的 Channel Group。普通 Channel CRUD 和批量修改在 repository 层拒绝
+managed channel；provider API 在 serializable 控制面事务中同时创建/修改共享凭证和对应
+projections，再编译并发布统一路由快照。
 凭证身份由 workspace account ID 与 member user ID 共同确定，因此同一 Business workspace
-可以包含多个独立凭证；单条/批量删除会清除 Token 并保留不含敏感信息的历史 channel tombstone。
-managed channel 保留为统一路由中的稳定壳，credential 的 enable/quota/重新授权状态由独立
-Connector 快照判定；这样新 Session 可在发送前排除不可用账户，而 affinity hit 会持续命中原
-channel 并 fail closed，不会因一次失败静默改绑账户。
+可以包含多个独立凭证；单条/批量删除会清除 Token 并保留不含敏感信息的两个历史 channel
+tombstone。
+managed channels 保留为统一路由中的稳定壳，credential 的 enable/quota/重新授权状态由独立
+Connector 快照判定；这样 Responses 新 Session 和 Images 请求可在发送前排除不可用账户，
+Responses affinity hit 会持续命中原 channel 并 fail closed，不会因一次失败静默改绑账户。
 
-Codex token 与 quota 使用独立 `ArcSwap` 凭证快照，避免每次 token 轮换都重编译整个控制面。
+Codex token 与 quota 使用独立 `ArcSwap` 凭证快照；两个 projection channel ID 指向同一份
+credential，避免每次 token 轮换都重编译整个控制面。
 维护 worker 从 PostgreSQL 周期收敛多实例更新，并以有界并发处理各凭证；单凭证 token refresh
 同时使用进程内 mutex、PostgreSQL row lock 和 `refresh_generation`，防止 rotating refresh token
 并发重用。正式代理请求仍直接通过 reqwest streaming path，不经过 worker actor。
@@ -108,8 +113,8 @@ Responses WebSocket 使用同一个 `/v1/responses` 路径的 `GET` Upgrade。�
 认证与 Responses `proxy` 权限，再要求数据库系统设置、API Key 所属用户和最终候选渠道三层均显式
 允许 WebSocket；系统、用户和普通 channel 默认关闭。每条顺序的 `response.create` 重新读取当前快照并
 独立执行鉴权、准入、选路、变换、Connector 凭证准备、usage 和日志。普通 Responses channel
-由管理员显式声明能力；Codex OAuth managed channel 在创建和 migration 时自动声明该能力，但仍受
-系统与用户开关限制。由于
+由管理员显式声明能力；Codex OAuth Responses projection 在创建和 migration 时自动声明该能力，
+Images projection 永不声明，并且 Responses 仍受系统与用户开关限制。由于
 `previous_response_id` 的增量缓存属于具体上游连接，下游连接会固定到一个仍可用的上游渠道和
 WebSocket 身份，不做请求多路复用。每个成功请求结束后，上游连接立即回到按 API Key、Session
 握手身份、渠道网络配置、目标和最终 Header 精确隔离的有界空闲池；下一条消息优先取回同一连接。

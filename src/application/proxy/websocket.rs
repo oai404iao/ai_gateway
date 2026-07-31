@@ -472,6 +472,7 @@ impl ResponsesWebSocketSession {
                     .is_some_and(crate::routing::SessionAffinitySelection::cache_hit);
             let connector = match self.proxy.connectors.prepare(
                 &current_channel,
+                ApiOperation::Responses,
                 connector_affinity_hit,
                 &self.request_headers,
                 Some(connector_seed),

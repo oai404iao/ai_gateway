@@ -1897,9 +1897,14 @@ fn validate_group(record: &ChannelGroupRecord) -> Result<(), ConfigError> {
     require("channel group name", &record.name)?;
     let api_format = parse_format(&record.api_format)?;
     let connector_kind = parse_connector_kind(&record.connector_kind)?;
-    if connector_kind == ConnectorKind::CodexOauth && api_format != ApiFormat::OpenAiResponses {
+    if connector_kind == ConnectorKind::CodexOauth
+        && !matches!(
+            api_format,
+            ApiFormat::OpenAiResponses | ApiFormat::OpenAiImages
+        )
+    {
         return Err(ConfigError::Compile(
-            "Codex OAuth channel groups must use the Responses API format".into(),
+            "Codex OAuth channel groups must use Responses or Images".into(),
         ));
     }
     if record.priority < 0 || SelectionStrategy::parse(&record.selection_strategy).is_none() {
@@ -1979,9 +1984,13 @@ fn validate_channel(
         ));
     }
     let connector_kind = parse_connector_kind(&group.connector_kind)?;
+    let codex_protocol_valid = match format {
+        ApiFormat::OpenAiResponses => record.supports_websocket,
+        ApiFormat::OpenAiImages => !record.supports_websocket,
+        ApiFormat::OpenAiChatCompletions => false,
+    };
     if connector_kind == ConnectorKind::CodexOauth
-        && (format != ApiFormat::OpenAiResponses
-            || !record.supports_websocket
+        && (!codex_protocol_valid
             || record.upstream_auth_kind != "none"
             || record.upstream_auth_header_name.is_some()
             || record.upstream_api_key.is_some()

@@ -515,6 +515,21 @@ struct CapturedCodexRequest {
 }
 
 #[derive(Clone, Debug)]
+struct CapturedCodexImageRequest {
+    authorization: Option<String>,
+    account_id: Option<String>,
+    originator: Option<String>,
+    user_agent: Option<String>,
+    version: Option<String>,
+    image_turn_id: Option<String>,
+    session_id: Option<String>,
+    thread_id: Option<String>,
+    client_request_id: Option<String>,
+    content_type: Option<String>,
+    body: Bytes,
+}
+
+#[derive(Clone, Debug)]
 struct CapturedCodexWebSocketHandshake {
     authorization: Option<String>,
     account_id: Option<String>,
@@ -531,6 +546,7 @@ struct CapturedCodexWebSocketHandshake {
 #[derive(Clone, Default)]
 struct CodexUpstreamState {
     http_requests: Arc<Mutex<Vec<CapturedCodexRequest>>>,
+    image_requests: Arc<Mutex<Vec<CapturedCodexImageRequest>>>,
     websocket_handshakes: Arc<Mutex<Vec<CapturedCodexWebSocketHandshake>>>,
     websocket_requests: Arc<Mutex<Vec<serde_json::Value>>>,
 }
@@ -582,6 +598,44 @@ async fn codex_responses_upstream(
     } else {
         response.body(Body::from(terminal)).unwrap()
     }
+}
+
+async fn codex_images_upstream(
+    State(state): State<CodexUpstreamState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let header = |name: &'static str| {
+        headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned)
+    };
+    state
+        .image_requests
+        .lock()
+        .unwrap()
+        .push(CapturedCodexImageRequest {
+            authorization: header("authorization"),
+            account_id: header("chatgpt-account-id"),
+            originator: header("originator"),
+            user_agent: header("user-agent"),
+            version: header("version"),
+            image_turn_id: header("x-codex-image-turn-id"),
+            session_id: header("session-id"),
+            thread_id: header("thread-id"),
+            client_request_id: header("x-client-request-id"),
+            content_type: header("content-type"),
+            body,
+        });
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "application/json")
+        .body(Body::from(
+            br#"{"created":1,"data":[{"b64_json":"aW1hZ2U="}],"usage":{"input_tokens":7,"output_tokens":11,"input_tokens_details":{"image_tokens":0,"text_tokens":7},"output_tokens_details":{"image_tokens":11,"text_tokens":0}}}"#
+                .as_slice(),
+        ))
+        .unwrap()
 }
 
 async fn codex_responses_websocket_upstream(
@@ -948,6 +1002,19 @@ async fn wait_for_blocked_request_log_insert(pool: &PgPool) {
 
 impl TestDatabase {
     async fn new() -> Self {
+        let database = Self::new_unmigrated().await;
+        MIGRATOR
+            .run(&database.pool)
+            .await
+            .expect("migrations must apply to the temporary database");
+        ControlPlaneRepository::new(database.pool.clone())
+            .ensure_system_settings(system_settings())
+            .await
+            .expect("system settings must initialize");
+        database
+    }
+
+    async fn new_unmigrated() -> Self {
         let admin_url = env::var("TEST_DATABASE_ADMIN_URL").unwrap_or_else(|_| default_admin_url());
         let mut database_url =
             Url::parse(&admin_url).expect("TEST_DATABASE_ADMIN_URL must be a valid PostgreSQL URL");
@@ -973,14 +1040,6 @@ impl TestDatabase {
             .connect(database_url.as_str())
             .await
             .expect("temporary integration-test database must be connectable");
-        MIGRATOR
-            .run(&pool)
-            .await
-            .expect("migrations must apply to the temporary database");
-        ControlPlaneRepository::new(pool.clone())
-            .ensure_system_settings(system_settings())
-            .await
-            .expect("system settings must initialize");
 
         Self { pool, admin, name }
     }
@@ -1198,6 +1257,39 @@ async fn codex_business_credentials_are_unique_per_workspace_member() {
     .execute(&database.pool)
     .await
     .unwrap();
+    let images_group: Uuid = sqlx::query_scalar(
+        "SELECT id FROM channel_groups \
+         WHERE connector_pool_id=$1 AND api_format='open_ai_images'::api_format",
+    )
+    .bind(codex_group)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert!(
+        !sqlx::query_scalar::<_, bool>("SELECT enabled FROM channel_groups WHERE id=$1")
+            .bind(images_group)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap()
+    );
+    let existing_key_formats: Vec<String> =
+        sqlx::query_scalar("SELECT allowed_api_formats::text[] FROM api_keys WHERE id=$1")
+            .bind(seed.key)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert!(
+        !existing_key_formats
+            .iter()
+            .any(|format| format == "open_ai_images")
+    );
+    let image_rules: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM model_rules WHERE api_format='open_ai_images'::api_format",
+    )
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(image_rules, 0);
     let repository = ControlPlaneRepository::new(database.pool.clone());
     let runtime = Arc::new(RuntimeConfig::new(
         compile_runtime_config(repository.load_runtime().await.unwrap()).unwrap(),
@@ -1229,7 +1321,7 @@ async fn codex_business_credentials_are_unique_per_workspace_member() {
     let member_b = coordinator
         .create_codex_credential(
             seed.user,
-            business_codex_credential(codex_group, "member-b", "member-b@example.test", "user-b"),
+            business_codex_credential(images_group, "member-b", "member-b@example.test", "user-b"),
             None,
         )
         .await
@@ -1292,6 +1384,14 @@ async fn codex_credentials_support_atomic_batch_state_changes_and_token_scrubbin
     .execute(&database.pool)
     .await
     .unwrap();
+    let images_group: Uuid = sqlx::query_scalar(
+        "SELECT id FROM channel_groups \
+         WHERE connector_pool_id=$1 AND api_format='open_ai_images'::api_format",
+    )
+    .bind(codex_group)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
     let repository = ControlPlaneRepository::new(database.pool.clone());
     let runtime = Arc::new(RuntimeConfig::new(
         compile_runtime_config(repository.load_runtime().await.unwrap()).unwrap(),
@@ -1337,6 +1437,14 @@ async fn codex_credentials_support_atomic_batch_state_changes_and_token_scrubbin
         .create_codex_credential(seed.user, member_a_input, None)
         .await
         .unwrap();
+    let member_a_images_channel: Uuid = sqlx::query_scalar(
+        "SELECT channel_id FROM codex_oauth_credential_channels \
+         WHERE credential_id=$1 AND api_format='open_ai_images'::api_format",
+    )
+    .bind(member_a.id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
     let member_b = coordinator
         .create_codex_credential(
             seed.user,
@@ -1355,7 +1463,7 @@ async fn codex_credentials_support_atomic_batch_state_changes_and_token_scrubbin
     let disabled = coordinator
         .update_codex_credentials_batch(
             seed.user,
-            codex_group,
+            images_group,
             CodexCredentialBatchInput {
                 items: views
                     .iter()
@@ -1459,6 +1567,18 @@ async fn codex_credentials_support_atomic_batch_state_changes_and_token_scrubbin
     assert!(deleted.proxy_id.is_none());
     assert!(deleted.quota_allowed.is_none());
     assert!(deleted.primary_used_percent.is_none());
+    let deleted_images_channel: (String, bool, Option<Uuid>) =
+        sqlx::query_as("SELECT name,enabled,proxy_id FROM channels WHERE id=$1")
+            .bind(member_a_images_channel)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        deleted_images_channel.0,
+        format!("deleted-codex-images-{member_a_images_channel}")
+    );
+    assert!(!deleted_images_channel.1);
+    assert!(deleted_images_channel.2.is_none());
     coordinator
         .mutate(
             seed.user,
@@ -1529,6 +1649,21 @@ async fn codex_credentials_create_managed_channels_and_recompute_quota_state() {
     .execute(&database.pool)
     .await
     .unwrap();
+    let images_group: Uuid = sqlx::query_scalar(
+        "SELECT id FROM channel_groups \
+         WHERE connector_pool_id=$1 AND api_format='open_ai_images'::api_format",
+    )
+    .bind(codex_group)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert!(
+        !sqlx::query_scalar::<_, bool>("SELECT enabled FROM channel_groups WHERE id=$1")
+            .bind(images_group)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap()
+    );
     let repository = ControlPlaneRepository::new(database.pool.clone());
     let runtime = Arc::new(RuntimeConfig::new(
         compile_runtime_config(repository.load_runtime().await.unwrap()).unwrap(),
@@ -1588,6 +1723,60 @@ async fn codex_credentials_create_managed_channels_and_recompute_quota_state() {
         .expect("managed channel compiled");
     assert_eq!(channel.connector_kind(), ConnectorKind::CodexOauth);
     assert!(channel.supports_websocket());
+    let projections = sqlx::query_as::<_, (String, Uuid)>(
+        "SELECT api_format::text,channel_id \
+         FROM codex_oauth_credential_channels \
+         WHERE credential_id=$1 ORDER BY api_format",
+    )
+    .bind(created.id)
+    .fetch_all(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(projections.len(), 2);
+    assert_eq!(
+        projections
+            .iter()
+            .find(|(format, _)| format == "open_ai_responses")
+            .map(|(_, channel_id)| *channel_id),
+        Some(created.id)
+    );
+    let images_channel = projections
+        .iter()
+        .find(|(format, _)| format == "open_ai_images")
+        .map(|(_, channel_id)| *channel_id)
+        .unwrap();
+    let images_channel_before: (Uuid, String, Vec<String>, bool) = sqlx::query_as(
+        "SELECT channel_group_id,name,available_models,supports_websocket \
+         FROM channels WHERE id=$1",
+    )
+    .bind(images_channel)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(images_channel_before.0, images_group);
+    assert_eq!(images_channel_before.1, "plus-account");
+    assert_eq!(images_channel_before.2, vec!["gpt-image-2"]);
+    assert!(!images_channel_before.3);
+    sqlx::query(
+        "UPDATE channels SET connect_timeout_ms=101,response_header_timeout_ms=202, \
+         stream_idle_timeout_ms=303 WHERE id=$1",
+    )
+    .bind(created.id)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let images_timeouts: (Option<i32>, Option<i32>, Option<i32>) = sqlx::query_as(
+        "SELECT connect_timeout_ms,response_header_timeout_ms,stream_idle_timeout_ms \
+         FROM channels WHERE id=$1",
+    )
+    .bind(images_channel)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(images_timeouts, (Some(101), Some(202), Some(303)));
+    let credentials_from_images_group = repository.codex_credentials(images_group).await.unwrap();
+    assert_eq!(credentials_from_images_group.len(), 1);
+    assert_eq!(credentials_from_images_group[0].id, created.id);
 
     let before = repository
         .codex_credential_view(created.id)
@@ -1618,6 +1807,13 @@ async fn codex_credentials_create_managed_channels_and_recompute_quota_state() {
         .unwrap();
     assert_eq!(after.runtime_status, "active");
     assert_eq!(after.weight, 50);
+    let images_channel_after_update: (String, i32) =
+        sqlx::query_as("SELECT name,weight FROM channels WHERE id=$1")
+            .bind(images_channel)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert_eq!(images_channel_after_update, ("plus-account".into(), 50));
 
     repository
         .mark_codex_credential_error(
@@ -1764,6 +1960,16 @@ async fn codex_credentials_create_managed_channels_and_recompute_quota_state() {
         reauthorized_record.available_models,
         vec!["gpt-5-codex", "gpt-5.1-codex"]
     );
+    let images_channel_after_reauthorization: (String, i32, Vec<String>) =
+        sqlx::query_as("SELECT name,weight,available_models FROM channels WHERE id=$1")
+            .bind(images_channel)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        images_channel_after_reauthorization,
+        ("plus-reauthorized".into(), 80, vec!["gpt-image-2".into()])
+    );
 
     let group_updated_at: DateTime<Utc> =
         sqlx::query_scalar("SELECT updated_at FROM channel_groups WHERE id=$1")
@@ -1805,6 +2011,14 @@ async fn codex_credentials_export_secrets_and_protect_assigned_proxies_from_dele
     )
     .bind(codex_group)
     .execute(&database.pool)
+    .await
+    .unwrap();
+    let images_group: Uuid = sqlx::query_scalar(
+        "SELECT id FROM channel_groups \
+         WHERE connector_pool_id=$1 AND api_format='open_ai_images'::api_format",
+    )
+    .bind(codex_group)
+    .fetch_one(&database.pool)
     .await
     .unwrap();
     let repository = ControlPlaneRepository::new(database.pool.clone());
@@ -1892,6 +2106,19 @@ async fn codex_credentials_export_secrets_and_protect_assigned_proxies_from_dele
         exported.proxies[0].password.as_deref(),
         Some("proxy-password")
     );
+    let exported_from_images = repository
+        .export_codex_credentials(
+            images_group,
+            CodexCredentialExportInput {
+                credential_ids: vec![credential.id],
+                include_proxies: false,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(exported_from_images.channel_group_id, images_group);
+    assert_eq!(exported_from_images.credentials.len(), 1);
+    assert!(exported_from_images.proxies.is_empty());
 
     let delete_in_use = coordinator
         .mutate(
@@ -1953,7 +2180,7 @@ async fn codex_credentials_export_secrets_and_protect_assigned_proxies_from_dele
 }
 
 #[tokio::test]
-async fn codex_connector_forwards_responses_with_managed_credentials_and_headers() {
+async fn codex_connector_forwards_responses_and_images_with_shared_credentials() {
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
     let captured = CodexUpstreamState::default();
@@ -1962,6 +2189,10 @@ async fn codex_connector_forwards_responses_with_managed_credentials_and_headers
             .route(
                 "/backend-api/codex/responses",
                 get(codex_responses_websocket_upstream).post(codex_responses_upstream),
+            )
+            .route(
+                "/backend-api/codex/images/generations",
+                post(codex_images_upstream),
             )
             .with_state(captured.clone()),
     )
@@ -1976,6 +2207,21 @@ async fn codex_connector_forwards_responses_with_managed_credentials_and_headers
     .execute(&database.pool)
     .await
     .unwrap();
+    let images_group: Uuid = sqlx::query_scalar(
+        "SELECT id FROM channel_groups \
+         WHERE connector_pool_id=$1 AND api_format='open_ai_images'::api_format",
+    )
+    .bind(codex_group)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    let images_group_enabled: bool =
+        sqlx::query_scalar("SELECT enabled FROM channel_groups WHERE id=$1")
+            .bind(images_group)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert!(!images_group_enabled);
     let mut settings = system_settings();
     settings.session_affinity = SystemSessionAffinitySettingsInput {
         enabled: true,
@@ -2057,6 +2303,25 @@ async fn codex_connector_forwards_responses_with_managed_credentials_and_headers
         )
         .await
         .unwrap();
+    let images_channel: Uuid = sqlx::query_scalar(
+        "SELECT channel_id FROM codex_oauth_credential_channels \
+         WHERE credential_id=$1 AND api_format='open_ai_images'::api_format",
+    )
+    .bind(credential.id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    let images_channel_shape: (Vec<String>, bool, bool) = sqlx::query_as(
+        "SELECT available_models,supports_websocket,status_statistics_enabled \
+         FROM channels WHERE id=$1",
+    )
+    .bind(images_channel)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(images_channel_shape.0, vec!["gpt-image-2"]);
+    assert!(!images_channel_shape.1);
+    assert!(!images_channel_shape.2);
     let client_model = format!("codex-client-{}", Uuid::new_v4());
     sqlx::query(
         "INSERT INTO model_rules \
@@ -2070,15 +2335,44 @@ async fn codex_connector_forwards_responses_with_managed_credentials_and_headers
     .execute(&database.pool)
     .await
     .unwrap();
+    let images_model = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO models \
+         (id,source_model_id,display_name,enabled,currency,price_unit_tokens, \
+          input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price, \
+          price_effective_at) \
+         VALUES ($1,'gpt-image-2','Codex Images',true,'USD',1,0,0,0,0,now())",
+    )
+    .bind(images_model)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO model_rules \
+         (id,client_model,api_format,upstream_model_id,channel_group_ids,enabled) \
+         VALUES ($1,'gpt-image-2','open_ai_images',$2,ARRAY[$3]::uuid[],true)",
+    )
+    .bind(Uuid::new_v4())
+    .bind(images_model)
+    .bind(images_group)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE channel_groups SET enabled=true WHERE id=$1")
+        .bind(images_group)
+        .execute(&database.pool)
+        .await
+        .unwrap();
     sqlx::query(
         "UPDATE api_keys SET \
-         allowed_api_formats=ARRAY['open_ai_chat_completions','open_ai_responses']::api_format[], \
-         allowed_group_ids=ARRAY[$2,$3]::uuid[] \
+         allowed_api_formats=ARRAY['open_ai_chat_completions','open_ai_responses','open_ai_images']::api_format[], \
+         allowed_group_ids=ARRAY[$2,$3,$4]::uuid[] \
          WHERE id=$1",
     )
     .bind(seed.key)
     .bind(seed.group)
     .bind(codex_group)
+    .bind(images_group)
     .execute(&database.pool)
     .await
     .unwrap();
@@ -2222,6 +2516,91 @@ async fn codex_connector_forwards_responses_with_managed_credentials_and_headers
         String::from_utf8_lossy(&previous_body).contains("codex_previous_response_unsupported")
     );
     assert_eq!(captured.http_requests.lock().unwrap().len(), 1);
+
+    let image_request_body =
+        Bytes::from_static(br#"{ "model" : "gpt-image-2", "prompt" : "a red fox in a field" }"#);
+    let image_response = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/v1/images/generations")
+                .header("authorization", format!("Bearer {}", seed.secret))
+                .header("content-type", "application/json")
+                .header("session-id", "client-image-session")
+                .header("thread-id", "client-image-thread")
+                .header("x-client-request-id", "client-image-request")
+                .header("x-codex-image-turn-id", "client-controlled")
+                .body(Body::from(image_request_body.clone()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(image_response.status(), StatusCode::OK);
+    let image_response_body = image_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    assert_eq!(
+        image_response_body,
+        Bytes::from_static(
+            br#"{"created":1,"data":[{"b64_json":"aW1hZ2U="}],"usage":{"input_tokens":7,"output_tokens":11,"input_tokens_details":{"image_tokens":0,"text_tokens":7},"output_tokens_details":{"image_tokens":11,"text_tokens":0}}}"#
+        )
+    );
+
+    let image_requests = captured.image_requests.lock().unwrap().clone();
+    assert_eq!(image_requests.len(), 1);
+    let image_request = &image_requests[0];
+    assert_eq!(
+        image_request.authorization.as_deref(),
+        Some("Bearer access-token")
+    );
+    assert_eq!(image_request.account_id.as_deref(), Some("account-123"));
+    assert_eq!(image_request.originator.as_deref(), Some(CODEX_ORIGINATOR));
+    assert_eq!(
+        image_request.user_agent.as_deref(),
+        Some(codex_user_agent().as_str())
+    );
+    assert_eq!(
+        image_request.version.as_deref(),
+        codex_user_agent()
+            .split_once('/')
+            .map(|(_, version)| version)
+    );
+    assert_eq!(
+        image_request.content_type.as_deref(),
+        Some("application/json")
+    );
+    assert!(image_request.session_id.is_none());
+    assert!(image_request.thread_id.is_none());
+    assert!(image_request.client_request_id.is_none());
+    let image_turn_id = image_request.image_turn_id.as_deref().unwrap();
+    assert_ne!(image_turn_id, "client-controlled");
+    assert!(Uuid::parse_str(image_turn_id).is_ok());
+    assert_eq!(image_request.body, image_request_body);
+
+    let events = logs.events();
+    let image_events = events
+        .iter()
+        .filter(|event| event.api_operation == ApiOperation::ImagesGeneration)
+        .collect::<Vec<_>>();
+    assert_eq!(image_events.len(), 1);
+    let image_event = image_events[0];
+    assert_eq!(image_event.channel_id, Some(images_channel));
+    assert_eq!(image_event.channel_group_id, Some(images_group));
+    assert_eq!(image_event.outcome, RequestLogOutcome::Succeeded);
+    assert_eq!(
+        image_event.billing.as_ref().unwrap().usage,
+        Some(RequestUsage {
+            input_tokens: 7,
+            cached_input_tokens: 0,
+            cache_write_tokens: 0,
+            output_tokens: 11,
+            reasoning_tokens: 0,
+        })
+    );
 
     let gateway = start_server(app.clone()).await;
     let websocket_request = || {
@@ -2409,6 +2788,28 @@ async fn codex_connector_forwards_responses_with_managed_credentials_and_headers
     let new_session_body = new_session.into_body().collect().await.unwrap().to_bytes();
     assert!(String::from_utf8_lossy(&new_session_body).contains("codex_credential_draining"));
     assert_eq!(captured.http_requests.lock().unwrap().len(), 2);
+    let draining_image = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/v1/images/generations")
+                .header("authorization", format!("Bearer {}", seed.secret))
+                .header("content-type", "application/json")
+                .body(Body::from(image_request_body.clone()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(draining_image.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let draining_image_body = draining_image
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    assert!(String::from_utf8_lossy(&draining_image_body).contains("codex_credential_draining"));
+    assert_eq!(captured.image_requests.lock().unwrap().len(), 1);
 
     repository
         .persist_codex_quota(
@@ -5176,6 +5577,153 @@ async fn repository_migrates_compiles_seeded_snapshot_and_authenticates() {
         "upstream-v1"
     );
     assert!(!format!("{snapshot:?}").contains("upstream-secret"));
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn codex_images_migration_backfills_existing_credentials_without_replacing_responses() {
+    let database = TestDatabase::new_unmigrated().await;
+    for migration in MIGRATOR.iter().filter(|migration| migration.version <= 35) {
+        sqlx::raw_sql(migration.sql.as_ref())
+            .execute(&database.pool)
+            .await
+            .unwrap_or_else(|error| panic!("migration {} failed: {error}", migration.version));
+    }
+
+    let responses_group = Uuid::new_v4();
+    let responses_channel = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO channel_groups \
+         (id,name,api_format,connector_kind,priority,selection_strategy,enabled) \
+         VALUES ($1,'legacy-codex','open_ai_responses','codex_oauth',2, \
+                 'weighted_round_robin',true)",
+    )
+    .bind(responses_group)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO channels \
+         (id,channel_group_id,api_format,name,base_url,enabled,weight,billing_multiplier, \
+          upstream_auth_kind,available_models,status_statistics_enabled,auto_disable_allowed, \
+          supports_websocket) \
+         VALUES ($1,$2,'open_ai_responses','legacy-account', \
+                 'https://chatgpt.com/backend-api/codex',true,77,1,'none', \
+                 ARRAY['gpt-5-codex'],false,false,true)",
+    )
+    .bind(responses_channel)
+    .bind(responses_group)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO codex_oauth_credentials \
+         (channel_id,channel_group_id,label,email,account_id,user_id,plan_type,is_fedramp, \
+          id_token,access_token,refresh_token,last_refreshed_at,enabled, \
+          quota_threshold_percent,runtime_status) \
+         VALUES ($1,$2,'legacy-account','legacy@example.test','legacy-workspace', \
+                 'legacy-member','plus',false,'legacy-id','legacy-access','legacy-refresh', \
+                 now(),true,95,'active')",
+    )
+    .bind(responses_channel)
+    .bind(responses_group)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+
+    sqlx::raw_sql(include_str!(
+        "../migrations/0036_codex_images_projection.sql"
+    ))
+    .execute(&database.pool)
+    .await
+    .expect("Codex Images projection migration must apply");
+
+    let connector_pool: Uuid =
+        sqlx::query_scalar("SELECT connector_pool_id FROM channel_groups WHERE id=$1")
+            .bind(responses_group)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert_eq!(connector_pool, responses_group);
+    let images_group: (Uuid, bool, i32, String) = sqlx::query_as(
+        "SELECT id,enabled,priority,selection_strategy \
+         FROM channel_groups \
+         WHERE connector_pool_id=$1 AND api_format='open_ai_images'::api_format",
+    )
+    .bind(connector_pool)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert!(!images_group.1);
+    assert_eq!(images_group.2, 2);
+    assert_eq!(images_group.3, "weighted_round_robin");
+
+    let projections = sqlx::query_as::<_, (String, Uuid)>(
+        "SELECT api_format::text,channel_id \
+         FROM codex_oauth_credential_channels WHERE credential_id=$1",
+    )
+    .bind(responses_channel)
+    .fetch_all(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(projections.len(), 2);
+    assert!(projections.iter().any(|(format, channel_id)| {
+        format == "open_ai_responses" && *channel_id == responses_channel
+    }));
+    let images_channel = projections
+        .iter()
+        .find(|(format, _)| format == "open_ai_images")
+        .map(|(_, channel_id)| *channel_id)
+        .unwrap();
+    let responses_shape: (String, i32, Vec<String>, bool) = sqlx::query_as(
+        "SELECT name,weight,available_models,supports_websocket FROM channels WHERE id=$1",
+    )
+    .bind(responses_channel)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        responses_shape,
+        (
+            "legacy-account".into(),
+            77,
+            vec!["gpt-5-codex".into()],
+            true
+        )
+    );
+    let images_shape: (Uuid, String, i32, Vec<String>, bool) = sqlx::query_as(
+        "SELECT channel_group_id,name,weight,available_models,supports_websocket \
+         FROM channels WHERE id=$1",
+    )
+    .bind(images_channel)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        images_shape,
+        (
+            images_group.0,
+            "legacy-account".into(),
+            77,
+            vec!["gpt-image-2".into()],
+            false
+        )
+    );
+    let credential_pool: Uuid = sqlx::query_scalar(
+        "SELECT connector_pool_id FROM codex_oauth_credentials WHERE channel_id=$1",
+    )
+    .bind(responses_channel)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(credential_pool, connector_pool);
+
+    let repository = ControlPlaneRepository::new(database.pool.clone());
+    repository
+        .ensure_system_settings(system_settings())
+        .await
+        .unwrap();
+    compile_runtime_config(repository.load_runtime().await.unwrap()).unwrap();
     database.cleanup().await;
 }
 

@@ -1,7 +1,8 @@
 # OpenAI Images 转发设计与分阶段实施
 
-> 状态：部分实现。本文固化 Images 的长期设计；“PR 1”章节描述当前已实现行为，后续阶段仍是
-> 提案，不能替代代码、migration 或 OpenAPI 契约。
+> 状态：部分实现。PR 1 的普通 OpenAI-compatible generation 与 PR 2 的 Codex OAuth
+> generation 已实现；edit、大 body 和 streaming 阶段仍是提案，不能替代代码、migration
+> 或 OpenAPI 契约。
 
 ## 目标
 
@@ -105,57 +106,76 @@ POST /v1/images/generations
 - `POST /v1/images/edits`
 - multipart/form-data
 - Images streaming
-- Codex OAuth Images
+- PR 1 本身不含 Codex OAuth Images；当前该能力由下述 PR 2 实现
 - Images Session affinity、WebSocket、scheduled probe
 - Images 专用 body limit 或临时文件 spool
 - 付费真实上游 Images smoke；当前由 deterministic mock integration test 覆盖
 
-## PR 2：Codex OAuth 非流式 generation
+## PR 2：当前实现的 Codex OAuth 非流式 generation
 
-Codex OAuth 仍使用 `ConnectorKind::CodexOauth`，不新增
-`codex_images_oauth`。Connector 根据 `ApiFormat` 与 `ApiOperation` 选择 Responses 或 Images
-目标、请求约束和 Header。
+Codex OAuth 仍使用 `ConnectorKind::CodexOauth`，没有新增
+`codex_images_oauth`。Connector 根据 `ApiOperation` 选择 Responses 或 Images 目标、请求约束、
+Header 和成功响应协议；客户端路由格式仍由选中 Channel 的 `ApiFormat` 隔离。
 
 ### 凭证池与 Channel 投影
 
-当前“一条 Codex 凭证对应一个 Responses managed channel”的模型需要规范化为共享逻辑凭证池：
+一条 Codex 逻辑凭证现在属于共享 Connector pool，并投影为格式隔离的 managed channels：
 
 ```text
 connector_pools
-  -> format-specific channel_groups
+  -> open_ai_responses channel_group
+  -> open_ai_images channel_group
 
 codex_oauth_credentials
   -> codex_oauth_credential_channels
        (credential_id, api_format, channel_id)
 ```
 
-每个 OAuth 账户可以投影为：
+为兼容既有 Console URL、日志引用和 Responses affinity，旧
+`codex_oauth_credentials.channel_id` 保留为稳定的凭证 ID 和 Responses Channel ID；
+`connector_pool_id` 与 projection 表承担新的共享关系。每个 OAuth 账户投影为：
 
 - 一个 `open_ai_responses` managed channel；
 - 一个 `open_ai_images` managed channel。
 
 两个 Channel 共享 Token、account/member 身份、refresh generation、quota 与 outbound proxy
-来源，但拥有独立的模型列表、格式能力、健康状态、超时和路由授权。
+来源；label、weight、proxy 和超时初始同步。它们拥有独立的 ID、模型列表、格式能力、被动健康
+状态和路由授权。Responses projection 继续使用 models endpoint 返回的 slug 并声明 WebSocket；
+Images projection 当前固定声明经核对的 `gpt-image-2`，不声明 WebSocket、scheduled probe 或
+状态统计。
 
 ### 安全迁移
 
-- 保留现有 Responses Channel Group、Channel 和凭证 ID，避免破坏模型规则、日志引用和
-  Session affinity。
-- 新建 Images Channel Group 和 credential projection，但默认关闭。
+- `migrations/0036_codex_images_projection.sql` 保留现有 Responses Channel Group、Channel 和
+  凭证 ID，避免破坏模型规则、日志引用和 Session affinity。
+- migration 为既有 Codex group 建立 Connector pool，回填 projection 关系，并新建停用的
+  Images Channel Group 与 Images managed channel。
+- 该 schema 会使旧二进制无法编译新的 Codex Images group，因此多实例升级使用协调停机切换，
+  不能在 migration 应用后继续把 Console 或数据面流量发往旧版本。
+- 新建 Codex Responses group 时，数据库约束和 trigger 会在同一事务创建停用的 Images group；
+  新凭证也会在同一事务创建两个 projection。
 - 不自动把 `open_ai_images` 添加到任何现有 API Key、Policy 或模型规则。
 - 不自动创建可访问的客户端 Images 路由。
-- 只有管理员显式启用 Images group、模型和权限后才产生新流量。
+- 只有管理员显式启用 Images group，并配置本地 `gpt-image-2` 模型、Images model rule、
+  API Key format 和 group/channel 权限后才产生新流量。
+- credential 删除会清除共享 Token，并把 Responses 与 Images Channel 都保留为不含敏感信息的
+  tombstone。
 
 ### Codex attempt
 
 Images generation attempt 需要：
 
-- 将目标改写为 Codex subscription backend 的 Images generation 路径；
-- 使用同一 credential snapshot 和预发送 token refresh 边界；
-- 注入 Codex account、originator、version、User-Agent 和 image turn identity Header；
-- 保留 JSON 请求并执行受限模型别名/变换；
+- 将目标改写为 Codex subscription backend 的 `/images/generations`；
+- 使用与 Responses projection 相同的 credential snapshot 和预发送 token refresh 边界；
+- 最后注入 Bearer、`ChatGPT-Account-ID`、FedRAMP、`originator`、`version`、
+  `User-Agent` 和 Gateway 生成的 `x-codex-image-turn-id`；
+- 移除客户端 `session-id`、`thread-id` 与 `x-client-request-id`，Images 不借用 Responses
+  Session identity；
+- 在模型别名和受限 JSON/Header 变换后保留 generation JSON 字节，不强制加入 Responses 的
+  `stream`/`store` 字段；
+- 把成功响应按非流式 JSON 而不是 SSE 处理，继续使用增量 Images usage collector；
 - 发送后不跨 credential 或 Channel 自动重试；
-- 对 `401` 继续触发现有 generation 去重的后台 refresh，但不重放已发送的图片请求。
+- 对 `401` 继续触发现有 refresh-generation 去重的后台 refresh，但不重放已发送的图片请求。
 
 ## PR 3：Images edit 与大 body
 
@@ -197,8 +217,19 @@ PR 1 的最低覆盖：
 - request-log journal v2/v3 兼容、v4 operation、数据库批量投影和 Console API；
 - OpenAPI 生成类型、Console 表单和文档门禁。
 
+PR 2 另外覆盖：
+
+- 已应用到 0035 的数据库中，既有 Responses group/channel/credential 原 ID 在 migration 后
+  保持不变；
+- 新旧凭证都产生 Responses 与 Images projection，Images group 默认停用；
+- credential 更新同步 projection 的 label、weight、proxy 和 timeout，重新授权不会把 Responses
+  model catalog 写入 Images projection；
+- credential 删除清理共享 Token 并 tombstone 两个 projection；
+- Codex generation 的路径、认证、image turn Header、原始 JSON、JSON 响应、usage 和请求日志；
+- 同一凭证可通过 Responses SSE/WebSocket 与 Images generation 使用。
+
 任何后续 Images 转发改动仍须运行普通 Rust/Console 检查和现有付费真实上游 smoke；在引入专用
-Images smoke 前，必须保留 deterministic Images mock integration test。
+Images smoke 前，必须保留 deterministic Codex Images mock integration test。
 
 ## 权威实现位置
 
@@ -210,7 +241,7 @@ Images smoke 前，必须保留 deterministic Images mock integration test。
 | usage | `src/application/usage.rs` |
 | Transform | `src/transforms/mod.rs` |
 | 运行时编译 | `src/runtime_config/mod.rs` |
-| 数据库 | `migrations/0034_open_ai_images_api_format.sql`、`migrations/0035_request_log_api_operation.sql` |
+| 数据库 | `migrations/0034_open_ai_images_api_format.sql`、`migrations/0035_request_log_api_operation.sql`、`migrations/0036_codex_images_projection.sql` |
 | Console 契约 | `docs/openapi/console-v1.yaml` |
 | 用户可观察行为 | `docs/user/operations.md` |
 | 外部 API 边界 | `docs/reference/openai-images.md` |

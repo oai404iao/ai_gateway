@@ -1,7 +1,7 @@
 # Codex OAuth 与订阅后端接入参考
 
 > 类型：外部参考
-> 最近核对：2026-07-30
+> 最近核对：2026-07-31
 > 权威来源：
 > [`openai/codex` 0.146.0 release](https://github.com/openai/codex/releases/tag/rust-v0.146.0)、
 > [OAuth server](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/login/src/server.rs)、
@@ -18,6 +18,11 @@
 > [`openai/codex@aa064463458adbef10400c74174107fc4b3550f0`](https://github.com/openai/codex/tree/aa064463458adbef10400c74174107fc4b3550f0)：
 > [WebSocket endpoint](https://github.com/openai/codex/blob/aa064463458adbef10400c74174107fc4b3550f0/codex-rs/codex-api/src/endpoint/responses_websocket.rs)
 > 和 [turn client](https://github.com/openai/codex/blob/aa064463458adbef10400c74174107fc4b3550f0/codex-rs/core/src/client.rs)。
+> Images 行为核对同一提交的
+> [Images endpoint](https://github.com/openai/codex/blob/aa064463458adbef10400c74174107fc4b3550f0/codex-rs/codex-api/src/endpoint/images.rs)、
+> [Images wire types](https://github.com/openai/codex/blob/aa064463458adbef10400c74174107fc4b3550f0/codex-rs/codex-api/src/images.rs)、
+> [image backend](https://github.com/openai/codex/blob/aa064463458adbef10400c74174107fc4b3550f0/codex-rs/ext/image-generation/src/backend.rs)
+> 和 [image tool](https://github.com/openai/codex/blob/aa064463458adbef10400c74174107fc4b3550f0/codex-rs/ext/image-generation/src/tool.rs)。
 
 本文记录 `ai-gateway` 的 Codex OAuth Connector 所依赖的外部行为。这里的
 `chatgpt.com/backend-api/*` 是 Codex 客户端使用的 ChatGPT 后端接口，不是公开的
@@ -69,6 +74,8 @@ JWT payload 解析只用于提取元数据和过期时间；真正的凭证有�
 | --- | --- |
 | Responses | `POST /backend-api/codex/responses` |
 | Responses WebSocket | `GET wss://chatgpt.com/backend-api/codex/responses` Upgrade |
+| Images generation | `POST /backend-api/codex/images/generations` |
+| Images edit | `POST /backend-api/codex/images/edits` |
 | Models | `GET /backend-api/codex/models?client_version=...` |
 | Quota / rate limit | `GET /backend-api/wham/usage` |
 
@@ -80,6 +87,13 @@ JWT payload 解析只用于提取元数据和过期时间；真正的凭证有�
 - `originator: codex_cli_rs`；
 - 以 `codex_cli_rs/0.146.0` 为基础值的 `User-Agent` 和独立的版本标识；
 - Responses 请求的 `session-id`、`thread-id` 与 `x-client-request-id`。
+
+Codex 的 image tool 当前对 generation 使用 `gpt-image-2`，请求字段包含
+`prompt`、`background`、`model`、可选 `n`、`quality` 与 `size`。Images 请求额外发送
+`x-codex-image-turn-id`，但不复用 Responses 的 session/thread identity。Images 响应是非流式
+JSON，`data[].b64_json` 可能很大，并可在顶层包含 usage。Codex edit 使用 JSON
+`images[].image_url` data URL，而不是公开 OpenAI API 常见的 multipart 形状；该差异只属于
+provider adapter。
 
 Codex Responses HTTP 客户端使用 Responses wire format。当前直连接口按流式方式工作，
 请求强制 `stream=true`、`store=false`，且不会用 HTTP
@@ -98,13 +112,14 @@ Models 查询参数 `client_version` 和请求 Header `version` 固定报告当�
 
 ### 协议与 Connector 分离
 
-客户端协议仍是 `api_format = open_ai_responses`，特殊上游方式由
-`connector_kind = codex_oauth` 表示。网关没有新增第三种客户端 API 格式，也不会在
-Chat Completions 与 Responses 之间转换。
+客户端协议仍是 `api_format = open_ai_responses` 或 `open_ai_images`，特殊上游方式由
+`connector_kind = codex_oauth` 表示。网关没有新增 provider-specific 客户端 API 格式，也不会在
+Chat Completions、Responses 与 Images 之间转换。
 
-每个 Codex OAuth 凭证对应一个 provider-managed `channels` 记录；Channel Group 是凭证池。
-因此普通优先级、权重、API Key 授权、独立 outbound proxy、请求日志和 Session affinity
-继续使用统一路由系统。普通 Channel CRUD 和批量编辑不能修改这些 managed channels。
+每个 Codex OAuth 凭证属于一个共享 Connector pool，并对应独立的 Responses 与 Images
+provider-managed `channels` 记录。因此普通优先级、权重、API Key 授权、独立 outbound proxy、
+请求日志和 Responses Session affinity 继续使用统一路由系统。普通 Channel CRUD 和批量编辑不能
+修改这些 managed channels。
 
 ### 请求准备
 
@@ -131,6 +146,15 @@ WebSocket 路径：
 5. 不发送 HTTP SSE 专用的 `Accept`、`Accept-Encoding` 和 `Content-Type`；
 6. 顺序转发事件，并把成功、无残留的连接放回 Session 隔离池，使后续请求可以继续使用
    connection-local `previous_response_id`。
+
+客户端也可以调用非流式 JSON `POST /v1/images/generations`。选中 Codex Images projection 后：
+
+1. 保留模型别名和受限变换后的 JSON，不加入 Responses 的 `stream` / `store` 字段；
+2. 将目标改为 `/backend-api/codex/images/generations`；
+3. 注入共享 credential 的 Bearer/account/FedRAMP，以及 `originator`、版本、User-Agent 和
+   Gateway 生成的 `x-codex-image-turn-id`；
+4. 删除客户端 `session-id`、`thread-id` 与 `x-client-request-id`；
+5. 按普通 JSON 逐块转发响应，并增量提取顶层 usage，不缓冲完整 base64 图片。
 
 客户端提供的合法 `session-id` / `thread-id` 会被保留。缺少时，HTTP 请求如果匹配已配置的
 Session affinity 规则，网关从该规则的不可逆 session hash 派生稳定、opaque 的 UUID；
@@ -162,17 +186,20 @@ PostgreSQL row lock，并在锁内再次核对 `refresh_generation`，避免同�
 rotating refresh token。
 
 永久 refresh 失败会留下持久的重新授权标记，后续 quota 成功或普通设置编辑不会自动恢复凭证。
-在同一 Channel Group 再次 OAuth 或导入相同 workspace/member 身份会原位更新 Token 和 managed
-channel；同一 Business workspace 的不同 `user_id` 会创建独立凭证，不会互相覆盖。
+在同一 Connector pool 的任一格式 Channel Group 再次 OAuth 或导入相同 workspace/member 身份，
+会原位更新 Token 和两个 managed channels；同一 Business workspace 的不同 `user_id` 会创建
+独立凭证，不会互相覆盖。
 
-Quota 状态映射为：
+Quota 状态由两个 projection 共享，并映射为：
 
-- `active`：可接收新 Session；
-- `draining`：达到管理员阈值，只允许已命中 affinity 的既有 Session；
+- `active`：可接收新的 Responses Session 或 Images generation；
+- `draining`：达到管理员阈值，只允许已命中 affinity 的既有 Responses Session；Images
+  projection 在发送前被排除；
 - `unavailable`：quota 不允许、额度耗尽或永久 refresh 失败；
 - `disabled`：管理员关闭。
 
-首次派发前发现凭证不可用时，非 affinity hit 请求可以排除该 channel 后重新选路；已经粘到该
+首次派发前发现凭证不可用时，非 affinity hit 请求可以排除该 channel 后重新选路；Images 不使用
+affinity，因此只能在发送前排除不可用 projection。已经粘到该
 凭证的 HTTP Session，或已经由下游 WebSocket/空闲池固定到该 channel 的 WebSocket Session，
 持续 fail closed，失败本身不会删除 affinity 或改绑其他账户。HTTP 请求一旦发出，或 WebSocket
 `response.create` 一旦发送，不做跨凭证自动重试。HTTP/握手 `401` 和带 `status = 401` 的
@@ -180,12 +207,14 @@ WebSocket 错误会触发按 refresh generation 去重的后台 token refresh。
 
 ## 差异与限制
 
-- Codex Connector 支持 Responses HTTP SSE 与 Responses WebSocket，但不支持 HTTP
-  non-streaming。HTTP 仍拒绝非空 `previous_response_id`；WebSocket 保留该字段并依赖同一条
-  上游连接的增量状态。
-- Connector 不实现 Chat Completions↔Responses 转换。
-- Console 删除会清除数据库中的 OAuth Token 并保留非敏感 managed-channel tombstone，但不会调用
-  OpenAI token revocation endpoint；外部撤销仍需在账户侧完成。
+- Codex Connector 支持 Responses HTTP SSE、Responses WebSocket 与非流式 Images generation；
+  Responses HTTP 仍拒绝非空 `previous_response_id`，WebSocket 保留该字段并依赖同一条上游连接
+  的增量状态。
+- 网关尚未挂载 Images edit，也未实现公开 multipart 与 Codex JSON
+  `images[].image_url` 之间的 adapter。
+- Connector 不实现 Chat Completions、Responses 与 Images 之间的转换。
+- Console 删除会清除数据库中的 OAuth Token 并保留两个非敏感 managed-channel tombstone，但
+  不会调用 OpenAI token revocation endpoint；外部撤销仍需在账户侧完成。
 - Models catalog 在首次连接、重新授权或 Token 导入时验证并写入；当前不单独周期轮询 models。
 - Quota threshold 是路由保护，不是计费或账户侧硬额度；已有 affinity Session 在
   `draining` 时仍可继续使用。
@@ -200,9 +229,10 @@ WebSocket 错误会触发按 refresh generation 去重的后台 token refresh。
 
 1. OAuth client ID、scope、redirect URI、PKCE 参数和 token request encoding；
 2. refresh error code 与 token rotation 语义；
-3. ChatGPT Codex base URL、Responses/models/quota 路径；
-4. Bearer/account/FedRAMP/session Header；
+3. ChatGPT Codex base URL、Responses/Images/models/quota 路径；
+4. Bearer/account/FedRAMP/session 与 `x-codex-image-turn-id` Header；
 5. HTTP 与 WebSocket Responses 的 `stream`、`store`、`previous_response_id`、
    `generate` 和 `client_metadata` 边界；
 6. models 与 quota JSON shape；
-7. User-Agent/originator 变化是否会影响授权或后端兼容性。
+7. Images generation/edit JSON shape、当前 image model 和 usage 响应；
+8. User-Agent/originator 变化是否会影响授权或后端兼容性。

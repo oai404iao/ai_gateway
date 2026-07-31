@@ -4,7 +4,7 @@ use axum::http::{HeaderMap, HeaderValue, Uri, header::AUTHORIZATION};
 use bytes::Bytes;
 use reqwest::{StatusCode, Url};
 
-use crate::domain::{CompiledChannel, ConnectorKind, RequestProtocol, UpstreamAuth};
+use crate::domain::{ApiOperation, CompiledChannel, ConnectorKind, RequestProtocol, UpstreamAuth};
 
 use super::codex::{
     CodexAttemptError, CodexConnectorService, CodexCredentialUnavailable, PreparedCodexAttempt,
@@ -25,6 +25,7 @@ impl UpstreamConnectorRegistry {
     pub(crate) fn prepare(
         &self,
         channel: &CompiledChannel,
+        api_operation: ApiOperation,
         affinity_cache_hit: bool,
         client_headers: &HeaderMap,
         affinity_hash: Option<[u8; 32]>,
@@ -36,6 +37,7 @@ impl UpstreamConnectorRegistry {
                 let attempt = PreparedCodexAttempt::prepare(
                     &service.runtime(),
                     channel.id(),
+                    api_operation,
                     affinity_cache_hit,
                     client_headers,
                     affinity_hash,
@@ -44,7 +46,6 @@ impl UpstreamConnectorRegistry {
                 Ok(PreparedUpstreamAttempt::Codex {
                     attempt,
                     service: service.clone(),
-                    channel_id: channel.id(),
                 })
             }
         }
@@ -56,7 +57,6 @@ pub(crate) enum PreparedUpstreamAttempt {
     Codex {
         attempt: PreparedCodexAttempt,
         service: CodexConnectorService,
-        channel_id: uuid::Uuid,
     },
 }
 
@@ -107,33 +107,34 @@ impl PreparedUpstreamAttempt {
     }
 
     #[must_use]
-    pub(crate) const fn preserves_affinity_on_failure(&self) -> bool {
-        matches!(self, Self::Codex { .. })
+    pub(crate) fn preserves_affinity_on_failure(&self) -> bool {
+        match self {
+            Self::OpenAiCompatible => false,
+            Self::Codex { attempt, .. } => attempt.preserves_affinity_on_failure(),
+        }
     }
 
     /// Codex's successful Responses endpoint is an SSE protocol even if an
     /// intermediary omits or rewrites the response Content-Type.
     #[must_use]
-    pub(crate) const fn successful_response_is_sse(&self) -> bool {
-        matches!(self, Self::Codex { .. })
+    pub(crate) fn successful_response_is_sse(&self) -> bool {
+        match self {
+            Self::OpenAiCompatible => false,
+            Self::Codex { attempt, .. } => attempt.successful_response_is_sse(),
+        }
     }
 
     pub(crate) fn observe_response(&self, status: StatusCode) {
         if status != StatusCode::UNAUTHORIZED {
             return;
         }
-        if let Self::Codex {
-            attempt,
-            service,
-            channel_id,
-        } = self
-        {
+        if let Self::Codex { attempt, service } = self {
             let service = service.clone();
-            let channel_id = *channel_id;
+            let credential_id = attempt.credential_id();
             let refresh_generation = attempt.refresh_generation();
             tokio::spawn(async move {
                 service
-                    .report_unauthorized(channel_id, refresh_generation)
+                    .report_unauthorized(credential_id, refresh_generation)
                     .await;
             });
         }
@@ -192,6 +193,17 @@ impl From<CodexAttemptError> for ConnectorAttemptError {
                 param: "previous_response_id",
                 code: "codex_previous_response_unsupported",
             },
+            CodexAttemptError::ImageStreamingUnsupported => Self::ClientRequest {
+                message: "Codex OAuth Images generation does not support streaming.",
+                param: "stream",
+                code: "image_streaming_unsupported",
+            },
+            CodexAttemptError::ImageEditUnsupported => Self::ClientRequest {
+                message: "Codex OAuth Images edits are not supported yet.",
+                param: "body",
+                code: "codex_image_edit_unsupported",
+            },
+            CodexAttemptError::UnsupportedOperation => Self::InvalidTarget,
             CodexAttemptError::InvalidRequestBody => Self::ClientRequest {
                 message: "Request body must be a JSON object.",
                 param: "body",

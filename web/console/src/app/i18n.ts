@@ -973,6 +973,8 @@ const zhCN: Record<string, string> = {
   "New channel group": "新建渠道组",
   "A same-format pool of channels selected by priority and weight.":
     "按优先级和权重选择的同格式渠道池。",
+  "A disabled Images group is created with the Responses group so credentials can be shared without granting Images access.":
+    "创建 Responses 组时会同时创建一个停用的 Images 组，以便共享凭证且不会自动授予 Images 访问权限。",
   "Back to groups": "返回渠道组",
   "Channel group created": "渠道组已创建",
   "Channel group updated": "渠道组已更新",
@@ -1543,8 +1545,8 @@ const zhCN: Record<string, string> = {
   "Label": "标签",
   "Personal Codex account": "个人 Codex 账户",
   "Quota threshold (%)": "额度阈值（%）",
-  "New sessions stop using this credential at the threshold.":
-    "达到阈值后，新会话将停止使用该凭证。",
+  "New requests stop using this credential at the threshold; existing sticky Responses sessions may continue.":
+    "达到阈值后，新请求将停止使用该凭证；已有的 Responses 粘性会话仍可继续。",
   "Enter a label, positive weight, and quota threshold from 1 to 100.":
     "请输入标签、正数权重和 1 至 100 的额度阈值。",
   "Paste the complete callback URL.": "请粘贴完整的回调 URL。",
@@ -1555,18 +1557,19 @@ const zhCN: Record<string, string> = {
   "Quota refreshed.": "额度已刷新。",
   "This channel group is not a Codex OAuth connector.":
     "该渠道组不是 Codex OAuth Connector。",
-  "Connect ChatGPT Codex subscriptions, assign per-credential proxies, and monitor quota.":
-    "连接 ChatGPT Codex 订阅，为每个凭证分配代理并监控额度。",
+  "Connect ChatGPT Codex subscriptions, share credentials across Responses and Images channels, assign proxies, and monitor quota.":
+    "连接 ChatGPT Codex 订阅，在 Responses 与 Images 渠道间共享凭证、分配代理并监控额度。",
   "Export credentials": "导出凭证",
   "Advanced import": "高级导入",
   "Import tokens": "导入 Token",
   "Connect account": "连接账户",
   "Credentials": "凭证",
-  "Ready for new sessions": "可接收新会话",
+  "Ready for new requests": "可接收新请求",
   "Draining or unavailable": "Draining 或不可用",
   "Managed credentials": "托管凭证",
-  "Each credential is a provider-managed channel. Existing sticky sessions may continue while quota is draining.":
-    "每个凭证都是 Provider 托管渠道；额度进入 draining 后，已有粘性会话仍可继续。",
+  "Each credential projects to separate Responses and Images managed channels. Existing sticky Responses sessions may continue while quota is draining.":
+    "每个凭证会投影为独立的 Responses 与 Images 托管渠道；额度进入 draining 后，已有 Responses 粘性会话仍可继续。",
+  "Responses models: {count}": "Responses 模型：{count}",
   "No Codex credentials": "暂无 Codex 凭证",
   "Connect an account with OAuth or import an existing token set.":
     "通过 OAuth 连接账户，或导入现有 Token 集合。",
@@ -1599,8 +1602,8 @@ const zhCN: Record<string, string> = {
   "Complete connection": "完成连接",
   "Start authorization": "开始授权",
   "Import Codex tokens": "导入 Codex Token",
-  "Tokens are validated against Codex before the managed channel is created. They are not returned by the Console API.":
-    "创建托管渠道前会通过 Codex 验证 Token；Console API 不会返回已保存的 Token。",
+  "Tokens are validated against Codex before format-specific managed channels are created. They are not returned by the Console API.":
+    "创建各格式托管渠道前会通过 Codex 验证 Token；Console API 不会返回已保存的 Token。",
   "ID token": "ID Token",
   "Access token": "Access Token",
   "Refresh token": "Refresh Token",

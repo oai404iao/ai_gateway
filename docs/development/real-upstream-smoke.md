@@ -9,7 +9,8 @@ runs: it has separate Chat Completions and Responses tests for non-streaming
 and streaming requests, plus a Responses WebSocket request.
 
 The current paid smoke does not issue an Images request. OpenAI Images
-generation is covered by deterministic proxy integration tests until a
+generation, including Codex OAuth path/header adaptation and shared credential
+projection, is covered by deterministic proxy integration tests until a
 dedicated low-budget image model and explicit paid test case are added.
 
 The test constructs an in-memory control-plane snapshot and drives the public
@@ -84,5 +85,5 @@ then runs the ignored test with `RUN_REAL_UPSTREAM_SMOKE=1`.
 - The existing local and PostgreSQL integration tests remain the coverage for
   control-plane persistence, management APIs, failure injection, and
   deterministic edge cases, including Images generation routing, usage
-  extraction, pre-upstream streaming rejection, and the no-automatic-retry
-  boundary.
+  extraction, Codex OAuth image-turn headers, pre-upstream streaming rejection,
+  and the no-automatic-retry boundary.

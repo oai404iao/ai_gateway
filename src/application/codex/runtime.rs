@@ -29,7 +29,7 @@ impl CodexCredentialStatus {
 
 #[derive(Clone)]
 pub struct CompiledCodexCredential {
-    channel_id: Uuid,
+    credential_id: Uuid,
     account_id: Arc<str>,
     access_token: Arc<SecretString>,
     is_fedramp: bool,
@@ -42,7 +42,7 @@ impl std::fmt::Debug for CompiledCodexCredential {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("CompiledCodexCredential")
-            .field("channel_id", &self.channel_id)
+            .field("credential_id", &self.credential_id)
             .field("account_id", &self.account_id)
             .field("access_token", &"REDACTED")
             .field("is_fedramp", &self.is_fedramp)
@@ -55,8 +55,8 @@ impl std::fmt::Debug for CompiledCodexCredential {
 
 impl CompiledCodexCredential {
     #[must_use]
-    pub fn channel_id(&self) -> Uuid {
-        self.channel_id
+    pub fn credential_id(&self) -> Uuid {
+        self.credential_id
     }
 
     #[must_use]
@@ -115,24 +115,29 @@ impl CodexCredentialRuntime {
     }
 
     pub fn replace(&self, records: Vec<CodexCredentialRecord>) {
-        let credentials = records
-            .into_iter()
-            .filter_map(|record| {
-                let status = CodexCredentialStatus::parse(&record.runtime_status)?;
-                Some((
-                    record.channel_id,
-                    Arc::new(CompiledCodexCredential {
-                        channel_id: record.channel_id,
-                        account_id: Arc::from(record.account_id),
-                        access_token: Arc::new(SecretString::from(record.access_token)),
-                        is_fedramp: record.is_fedramp,
-                        access_token_expires_at: record.access_token_expires_at,
-                        refresh_generation: record.refresh_generation,
-                        status,
-                    }),
-                ))
-            })
-            .collect();
+        let mut credentials = HashMap::new();
+        for record in records {
+            let Some(status) = CodexCredentialStatus::parse(&record.runtime_status) else {
+                continue;
+            };
+            let projection_channel_ids = if record.projection_channel_ids.is_empty() {
+                vec![record.channel_id]
+            } else {
+                record.projection_channel_ids.clone()
+            };
+            let credential = Arc::new(CompiledCodexCredential {
+                credential_id: record.channel_id,
+                account_id: Arc::from(record.account_id),
+                access_token: Arc::new(SecretString::from(record.access_token)),
+                is_fedramp: record.is_fedramp,
+                access_token_expires_at: record.access_token_expires_at,
+                refresh_generation: record.refresh_generation,
+                status,
+            });
+            for channel_id in projection_channel_ids {
+                credentials.insert(channel_id, Arc::clone(&credential));
+            }
+        }
         self.snapshot.store(Arc::new(credentials));
     }
 
@@ -173,6 +178,8 @@ mod tests {
         CodexCredentialRecord {
             channel_id: Uuid::from_u128(1),
             channel_group_id: Uuid::from_u128(2),
+            connector_pool_id: Uuid::from_u128(2),
+            projection_channel_ids: vec![Uuid::from_u128(1), Uuid::from_u128(3)],
             label: "credential".into(),
             email: Some("codex@example.test".into()),
             account_id: "account-123".into(),
@@ -258,8 +265,10 @@ mod tests {
         let runtime = CodexCredentialRuntime::new();
         runtime.replace(vec![record("active", None)]);
         let credential = runtime.credential(Uuid::from_u128(1), false).unwrap();
+        let images_projection = runtime.credential(Uuid::from_u128(3), false).unwrap();
         let debug = format!("{credential:?}");
 
+        assert_eq!(images_projection.credential_id(), Uuid::from_u128(1));
         assert!(debug.contains("REDACTED"));
         assert!(!debug.contains("access-token"));
     }

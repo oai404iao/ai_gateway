@@ -9,7 +9,13 @@ use uuid::Uuid;
 use super::{ControlPlaneRepository, MutationResult, RepositoryError};
 
 const CODEX_CONNECTOR_KIND: &str = "codex_oauth";
-const CODEX_API_FORMAT: &str = "open_ai_responses";
+const CODEX_RESPONSES_API_FORMAT: &str = "open_ai_responses";
+
+#[derive(Clone, Copy, FromRow)]
+struct CodexPoolContext {
+    connector_pool_id: Uuid,
+    responses_channel_group_id: Uuid,
+}
 
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -168,6 +174,8 @@ pub struct CodexOauthFlowRecord {
 pub struct CodexCredentialRecord {
     pub channel_id: Uuid,
     pub channel_group_id: Uuid,
+    pub connector_pool_id: Uuid,
+    pub projection_channel_ids: Vec<Uuid>,
     pub label: String,
     pub email: Option<String>,
     pub account_id: String,
@@ -208,6 +216,8 @@ impl std::fmt::Debug for CodexCredentialRecord {
             .debug_struct("CodexCredentialRecord")
             .field("channel_id", &self.channel_id)
             .field("channel_group_id", &self.channel_group_id)
+            .field("connector_pool_id", &self.connector_pool_id)
+            .field("projection_channel_ids", &self.projection_channel_ids)
             .field("label", &self.label)
             .field("email", &self.email)
             .field("account_id", &self.account_id)
@@ -321,10 +331,15 @@ impl ControlPlaneRepository {
                     c.created_at,c.updated_at \
              FROM codex_oauth_credentials c \
              JOIN channels ch ON ch.id=c.channel_id \
-             WHERE c.channel_group_id=$1 AND c.deleted_at IS NULL \
+             WHERE c.connector_pool_id=( \
+                       SELECT connector_pool_id FROM channel_groups \
+                       WHERE id=$1 AND connector_kind=$2 \
+                   ) \
+               AND c.deleted_at IS NULL \
              ORDER BY c.label,c.channel_id",
         )
         .bind(channel_group_id)
+        .bind(CODEX_CONNECTOR_KIND)
         .fetch_all(&self.pool)
         .await
         .map_err(RepositoryError::from)
@@ -406,7 +421,7 @@ impl ControlPlaneRepository {
                AND target.deleted_at IS NULL \
                AND NOT EXISTS( \
                    SELECT 1 FROM codex_oauth_credentials AS existing \
-                   WHERE existing.channel_group_id=target.channel_group_id \
+                   WHERE existing.connector_pool_id=target.connector_pool_id \
                      AND existing.account_id=target.account_id \
                      AND existing.user_id=$2 \
                      AND existing.deleted_at IS NULL \
@@ -438,33 +453,33 @@ impl ControlPlaneRepository {
             return Err(RepositoryError::Validation);
         }
 
+        let pool = codex_pool_context_pool(&self.pool, channel_group_id).await?;
         let channel_group_name = sqlx::query_scalar::<_, String>(
             "SELECT name FROM channel_groups \
-             WHERE id=$1 AND connector_kind=$2 AND api_format=$3::api_format",
+             WHERE id=$1 AND connector_kind=$2",
         )
         .bind(channel_group_id)
         .bind(CODEX_CONNECTOR_KIND)
-        .bind(CODEX_API_FORMAT)
         .fetch_optional(&self.pool)
         .await?
         .ok_or(RepositoryError::NotFound)?;
 
         let records = if selected_ids.is_empty() {
             sqlx::query_as::<_, CodexCredentialRecord>(&credential_select(
-                "WHERE c.channel_group_id=$1 AND c.deleted_at IS NULL \
+                "WHERE c.connector_pool_id=$1 AND c.deleted_at IS NULL \
                  ORDER BY c.label,c.channel_id",
             ))
-            .bind(channel_group_id)
+            .bind(pool.connector_pool_id)
             .fetch_all(&self.pool)
             .await?
         } else {
             let selected_ids = selected_ids.into_iter().collect::<Vec<_>>();
             let records = sqlx::query_as::<_, CodexCredentialRecord>(&credential_select(
-                "WHERE c.channel_group_id=$1 AND c.channel_id=ANY($2) \
+                "WHERE c.connector_pool_id=$1 AND c.channel_id=ANY($2) \
                  AND c.deleted_at IS NULL \
                  ORDER BY c.label,c.channel_id",
             ))
-            .bind(channel_group_id)
+            .bind(pool.connector_pool_id)
             .bind(&selected_ids)
             .fetch_all(&self.pool)
             .await?;
@@ -532,7 +547,8 @@ impl ControlPlaneRepository {
         expires_at: DateTime<Utc>,
     ) -> Result<CodexOauthFlowRecord, RepositoryError> {
         validate_credential_settings(&input.label, input.weight, input.quota_threshold_percent)?;
-        validate_codex_group_and_proxy_pool(&self.pool, channel_group_id, input.proxy_id).await?;
+        let _ = validate_codex_group_and_proxy_pool(&self.pool, channel_group_id, input.proxy_id)
+            .await?;
         let id = Uuid::new_v4();
         sqlx::query_as::<_, CodexOauthFlowRecord>(
             "INSERT INTO codex_oauth_flows \
@@ -583,12 +599,17 @@ impl ControlPlaneRepository {
         oauth_flow_id: Option<Uuid>,
     ) -> Result<MutationResult, RepositoryError> {
         validate_credential_settings(&input.label, input.weight, input.quota_threshold_percent)?;
-        validate_codex_group_and_proxy_transaction(
+        let requested_channel_group_id = input.channel_group_id;
+        let pool = validate_codex_group_and_proxy_transaction(
             transaction,
-            input.channel_group_id,
+            requested_channel_group_id,
             input.proxy_id,
         )
         .await?;
+        let input = CodexCredentialCreate {
+            channel_group_id: pool.responses_channel_group_id,
+            ..input
+        };
         if input.account_id.trim().is_empty()
             || input.account_id.len() > 300
             || input
@@ -604,7 +625,7 @@ impl ControlPlaneRepository {
         }
         let existing_channel_id = existing_codex_channel_id(
             transaction,
-            input.channel_group_id,
+            pool.connector_pool_id,
             &input.account_id,
             input.user_id.as_deref(),
             input.email.as_deref(),
@@ -616,7 +637,7 @@ impl ControlPlaneRepository {
                  WHERE id=$1 AND channel_group_id=$2 AND completed_at IS NULL AND expires_at>now()",
             )
             .bind(flow_id)
-            .bind(input.channel_group_id)
+            .bind(requested_channel_group_id)
             .execute(&mut **transaction)
             .await?;
             if updated.rows_affected() != 1 {
@@ -724,7 +745,7 @@ impl ControlPlaneRepository {
         )
         .bind(channel_id)
         .bind(input.channel_group_id)
-        .bind(CODEX_API_FORMAT)
+        .bind(CODEX_RESPONSES_API_FORMAT)
         .bind(input.label.trim())
         .bind(input.base_url)
         .bind(input.weight)
@@ -743,15 +764,16 @@ impl ControlPlaneRepository {
         };
         sqlx::query(
             "INSERT INTO codex_oauth_credentials \
-             (channel_id,channel_group_id,label,email,account_id,user_id,plan_type,is_fedramp,id_token, \
+             (channel_id,channel_group_id,connector_pool_id,label,email,account_id,user_id,plan_type,is_fedramp,id_token, \
               access_token,refresh_token,access_token_expires_at,last_refreshed_at, \
               enabled,quota_threshold_percent,runtime_status,quota_allowed,quota_limit_reached, \
               primary_used_percent,primary_window_seconds,primary_reset_at, \
               secondary_used_percent,secondary_window_seconds,secondary_reset_at,quota_checked_at) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)",
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)",
         )
         .bind(channel_id)
         .bind(input.channel_group_id)
+        .bind(pool.connector_pool_id)
         .bind(input.label.trim())
         .bind(input.email)
         .bind(input.account_id)
@@ -867,7 +889,8 @@ impl ControlPlaneRepository {
         if input.items.is_empty() || input.items.len() > MAX_BATCH_SIZE {
             return Err(RepositoryError::Validation);
         }
-        validate_codex_group_and_proxy_transaction(transaction, channel_group_id, None).await?;
+        let pool =
+            validate_codex_group_and_proxy_transaction(transaction, channel_group_id, None).await?;
         let mut ids = HashSet::with_capacity(input.items.len());
         if input.items.iter().any(|item| !ids.insert(item.id)) {
             return Err(RepositoryError::Validation);
@@ -880,7 +903,7 @@ impl ControlPlaneRepository {
                     set_codex_credential_enabled(
                         transaction,
                         item.id,
-                        channel_group_id,
+                        pool.connector_pool_id,
                         item.updated_at,
                         true,
                     )
@@ -890,7 +913,7 @@ impl ControlPlaneRepository {
                     set_codex_credential_enabled(
                         transaction,
                         item.id,
-                        channel_group_id,
+                        pool.connector_pool_id,
                         item.updated_at,
                         false,
                     )
@@ -900,7 +923,7 @@ impl ControlPlaneRepository {
                     delete_codex_credential(
                         transaction,
                         item.id,
-                        Some(channel_group_id),
+                        Some(pool.connector_pool_id),
                         item.updated_at,
                     )
                     .await?
@@ -1052,7 +1075,14 @@ impl ControlPlaneRepository {
 
 fn credential_select(suffix: &str) -> String {
     format!(
-        "SELECT c.channel_id,c.channel_group_id,c.label,c.email,c.account_id,c.user_id,c.plan_type, \
+        "SELECT c.channel_id,c.channel_group_id,c.connector_pool_id, \
+                ARRAY( \
+                    SELECT projection.channel_id \
+                    FROM codex_oauth_credential_channels AS projection \
+                    WHERE projection.credential_id=c.channel_id \
+                    ORDER BY projection.api_format \
+                ) AS projection_channel_ids, \
+                c.label,c.email,c.account_id,c.user_id,c.plan_type, \
                 c.is_fedramp,c.id_token,c.access_token,c.refresh_token, \
                 c.access_token_expires_at,c.last_refreshed_at,c.refresh_generation, \
                 c.reauth_required, \
@@ -1067,7 +1097,7 @@ fn credential_select(suffix: &str) -> String {
 
 async fn existing_codex_channel_id(
     transaction: &mut Transaction<'_, Postgres>,
-    channel_group_id: Uuid,
+    connector_pool_id: Uuid,
     account_id: &str,
     user_id: Option<&str>,
     email: Option<&str>,
@@ -1075,11 +1105,11 @@ async fn existing_codex_channel_id(
     if let Some(user_id) = user_id {
         let exact = sqlx::query_scalar::<_, Uuid>(
             "SELECT channel_id FROM codex_oauth_credentials \
-             WHERE channel_group_id=$1 AND account_id=$2 AND user_id=$3 \
+             WHERE connector_pool_id=$1 AND account_id=$2 AND user_id=$3 \
                AND deleted_at IS NULL \
              FOR UPDATE",
         )
-        .bind(channel_group_id)
+        .bind(connector_pool_id)
         .bind(account_id)
         .bind(user_id)
         .fetch_optional(&mut **transaction)
@@ -1094,13 +1124,13 @@ async fn existing_codex_channel_id(
         // for legacy rows that have not been backfilled yet.
         let matches = sqlx::query_scalar::<_, Uuid>(
             "SELECT channel_id FROM codex_oauth_credentials \
-             WHERE channel_group_id=$1 AND account_id=$2 \
+             WHERE connector_pool_id=$1 AND account_id=$2 \
                AND lower(email)=lower($3) AND deleted_at IS NULL \
                AND ($4 OR user_id IS NULL) \
              ORDER BY channel_id \
              FOR UPDATE",
         )
-        .bind(channel_group_id)
+        .bind(connector_pool_id)
         .bind(account_id)
         .bind(email)
         .bind(user_id.is_none())
@@ -1116,11 +1146,11 @@ async fn existing_codex_channel_id(
     if user_id.is_none() {
         return sqlx::query_scalar::<_, Uuid>(
             "SELECT channel_id FROM codex_oauth_credentials \
-             WHERE channel_group_id=$1 AND account_id=$2 AND user_id IS NULL \
+             WHERE connector_pool_id=$1 AND account_id=$2 AND user_id IS NULL \
                AND deleted_at IS NULL \
              FOR UPDATE",
         )
-        .bind(channel_group_id)
+        .bind(connector_pool_id)
         .bind(account_id)
         .fetch_optional(&mut **transaction)
         .await
@@ -1133,16 +1163,16 @@ async fn existing_codex_channel_id(
 async fn set_codex_credential_enabled(
     transaction: &mut Transaction<'_, Postgres>,
     channel_id: Uuid,
-    channel_group_id: Uuid,
+    connector_pool_id: Uuid,
     expected_updated_at: DateTime<Utc>,
     enabled: bool,
 ) -> Result<MutationResult, RepositoryError> {
     let before = codex_credential_audit(transaction, channel_id).await?;
-    let actual_channel_group_id = before["channel_group_id"]
+    let actual_connector_pool_id = before["connector_pool_id"]
         .as_str()
         .and_then(|value| Uuid::parse_str(value).ok())
         .ok_or(RepositoryError::Validation)?;
-    if actual_channel_group_id != channel_group_id {
+    if actual_connector_pool_id != connector_pool_id {
         return Err(RepositoryError::NotFound);
     }
     let updated_at = sqlx::query_scalar::<_, DateTime<Utc>>(
@@ -1180,15 +1210,15 @@ async fn set_codex_credential_enabled(
 async fn delete_codex_credential(
     transaction: &mut Transaction<'_, Postgres>,
     channel_id: Uuid,
-    expected_channel_group_id: Option<Uuid>,
+    expected_connector_pool_id: Option<Uuid>,
     expected_updated_at: DateTime<Utc>,
 ) -> Result<MutationResult, RepositoryError> {
     let before = codex_credential_audit(transaction, channel_id).await?;
-    let actual_channel_group_id = before["channel_group_id"]
+    let actual_connector_pool_id = before["connector_pool_id"]
         .as_str()
         .and_then(|value| Uuid::parse_str(value).ok())
         .ok_or(RepositoryError::Validation)?;
-    if expected_channel_group_id.is_some_and(|expected| expected != actual_channel_group_id) {
+    if expected_connector_pool_id.is_some_and(|expected| expected != actual_connector_pool_id) {
         return Err(RepositoryError::NotFound);
     }
     let updated_at = sqlx::query_scalar::<_, DateTime<Utc>>(
@@ -1229,16 +1259,24 @@ async fn validate_codex_group_and_proxy_pool(
     pool: &PgPool,
     channel_group_id: Uuid,
     proxy_id: Option<Uuid>,
-) -> Result<(), RepositoryError> {
+) -> Result<CodexPoolContext, RepositoryError> {
     let mut connection = pool.acquire().await?;
     validate_codex_group_and_proxy_connection(&mut connection, channel_group_id, proxy_id).await
+}
+
+async fn codex_pool_context_pool(
+    pool: &PgPool,
+    channel_group_id: Uuid,
+) -> Result<CodexPoolContext, RepositoryError> {
+    let mut connection = pool.acquire().await?;
+    codex_pool_context_connection(&mut connection, channel_group_id).await
 }
 
 async fn validate_codex_group_and_proxy_transaction(
     transaction: &mut Transaction<'_, Postgres>,
     channel_group_id: Uuid,
     proxy_id: Option<Uuid>,
-) -> Result<(), RepositoryError> {
+) -> Result<CodexPoolContext, RepositoryError> {
     validate_codex_group_and_proxy_connection(transaction, channel_group_id, proxy_id).await
 }
 
@@ -1246,21 +1284,8 @@ async fn validate_codex_group_and_proxy_connection(
     connection: &mut PgConnection,
     channel_group_id: Uuid,
     proxy_id: Option<Uuid>,
-) -> Result<(), RepositoryError> {
-    let valid_group = sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS( \
-             SELECT 1 FROM channel_groups \
-             WHERE id=$1 AND connector_kind=$2 AND api_format=$3::api_format \
-         )",
-    )
-    .bind(channel_group_id)
-    .bind(CODEX_CONNECTOR_KIND)
-    .bind(CODEX_API_FORMAT)
-    .fetch_one(&mut *connection)
-    .await?;
-    if !valid_group {
-        return Err(RepositoryError::Validation);
-    }
+) -> Result<CodexPoolContext, RepositoryError> {
+    let context = codex_pool_context_connection(&mut *connection, channel_group_id).await?;
     if let Some(proxy_id) = proxy_id {
         let valid_proxy = sqlx::query_scalar::<_, bool>(
             "SELECT EXISTS(SELECT 1 FROM proxies WHERE id=$1 AND enabled)",
@@ -1272,7 +1297,30 @@ async fn validate_codex_group_and_proxy_connection(
             return Err(RepositoryError::Validation);
         }
     }
-    Ok(())
+    Ok(context)
+}
+
+async fn codex_pool_context_connection(
+    connection: &mut PgConnection,
+    channel_group_id: Uuid,
+) -> Result<CodexPoolContext, RepositoryError> {
+    sqlx::query_as::<_, CodexPoolContext>(
+        "SELECT selected.connector_pool_id, \
+                responses.id AS responses_channel_group_id \
+         FROM channel_groups AS selected \
+         JOIN channel_groups AS responses \
+           ON responses.connector_pool_id=selected.connector_pool_id \
+          AND responses.api_format='open_ai_responses'::api_format \
+         JOIN channel_groups AS images \
+           ON images.connector_pool_id=selected.connector_pool_id \
+          AND images.api_format='open_ai_images'::api_format \
+         WHERE selected.id=$1 AND selected.connector_kind=$2",
+    )
+    .bind(channel_group_id)
+    .bind(CODEX_CONNECTOR_KIND)
+    .fetch_optional(&mut *connection)
+    .await?
+    .ok_or(RepositoryError::Validation)
 }
 
 async fn codex_credential_audit(
@@ -1281,7 +1329,8 @@ async fn codex_credential_audit(
 ) -> Result<Value, RepositoryError> {
     sqlx::query_scalar::<_, Value>(
         "SELECT json_build_object( \
-             'id',c.channel_id,'channel_group_id',c.channel_group_id,'label',c.label, \
+             'id',c.channel_id,'channel_group_id',c.channel_group_id, \
+             'connector_pool_id',c.connector_pool_id,'label',c.label, \
              'email',c.email,'account_id',c.account_id,'user_id',c.user_id, \
              'plan_type',c.plan_type, \
              'is_fedramp',c.is_fedramp,'access_token_expires_at',c.access_token_expires_at, \
@@ -1289,6 +1338,20 @@ async fn codex_credential_audit(
              'quota_threshold_percent',c.quota_threshold_percent, \
              'runtime_status',c.runtime_status,'proxy_id',ch.proxy_id,'weight',ch.weight, \
              'enabled',c.enabled,'available_models',ch.available_models, \
+             'projections',( \
+                 SELECT json_agg( \
+                     json_build_object( \
+                         'api_format',projection.api_format, \
+                         'channel_id',projection.channel_id, \
+                         'channel_group_id',projection_channel.channel_group_id, \
+                         'available_models',projection_channel.available_models, \
+                         'supports_websocket',projection_channel.supports_websocket \
+                     ) ORDER BY projection.api_format \
+                 ) \
+                 FROM codex_oauth_credential_channels AS projection \
+                 JOIN channels AS projection_channel ON projection_channel.id=projection.channel_id \
+                 WHERE projection.credential_id=c.channel_id \
+             ), \
              'created_at',c.created_at,'updated_at',c.updated_at) \
          FROM codex_oauth_credentials c JOIN channels ch ON ch.id=c.channel_id \
          WHERE c.channel_id=$1 AND c.deleted_at IS NULL FOR UPDATE OF c,ch",
