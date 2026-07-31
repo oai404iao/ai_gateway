@@ -99,4 +99,5 @@ Codex 外部路径、Header 和当前 image model 的核对来源见
    全局内存；
 4. usage、请求日志、计费与重复生成风险；
 5. Transform DSL 是否仍拒绝 Images SSE 规则；
-6. deterministic proxy integration tests，以及付费真实上游 smoke 是否具备专用低额度图片模型。
+6. deterministic proxy integration tests，以及可选付费真实上游 generation/edit smoke
+   是否使用独立 URL、凭证和专用低额度图片模型。

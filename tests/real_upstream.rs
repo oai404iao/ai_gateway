@@ -1,4 +1,5 @@
-//! Credential-backed integration tests against configured real upstreams.
+//! Credential-backed integration tests against explicitly configured real
+//! upstreams.
 //!
 //! Run every ignored test in this target through
 //! `scripts/run-real-upstream-smoke.sh`.
