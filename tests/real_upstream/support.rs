@@ -2,7 +2,12 @@
 //! upstream. This test is ignored by default and must be started through
 //! `scripts/run-real-upstream-smoke.sh`.
 
-use std::{env, net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    env,
+    net::SocketAddr,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use ai_gateway::{
     application::{ProxyService, RecordingRequestLogSink},
@@ -226,6 +231,11 @@ struct SmokeGateway {
     logs: RecordingRequestLogSink,
 }
 
+struct NonStreamingResult {
+    value: Value,
+    elapsed: Duration,
+}
+
 struct SmokeServer {
     address: SocketAddr,
     task: JoinHandle<()>,
@@ -393,7 +403,7 @@ pub(super) async fn smoke_nonstreaming_format(
         CLIENT_MODEL,
         upstream_model,
     );
-    complete_nonstreaming_request(
+    let _ = complete_nonstreaming_request(
         settings,
         gateway,
         request(format, false),
@@ -409,7 +419,8 @@ async fn complete_nonstreaming_request(
     request: Request<Body>,
     format: SmokeFormat,
     operation: ApiOperation,
-) {
+) -> NonStreamingResult {
+    let started = Instant::now();
     let response = timeout(settings.timeout, gateway.app.oneshot(request))
         .await
         .expect("non-streaming gateway request timed out")
@@ -437,6 +448,10 @@ async fn complete_nonstreaming_request(
         operation,
         RequestProtocol::NonStream,
     );
+    NonStreamingResult {
+        value,
+        elapsed: started.elapsed(),
+    }
 }
 
 /// Makes one small, paid SSE request for one API format and fully consumes the
@@ -516,7 +531,7 @@ pub(super) async fn smoke_images_generation(settings: &SmokeSettings) {
         CLIENT_MODEL,
         &images.model,
     );
-    complete_nonstreaming_request(
+    let result = complete_nonstreaming_request(
         settings,
         gateway,
         request(SmokeFormat::Images, false),
@@ -524,6 +539,7 @@ pub(super) async fn smoke_images_generation(settings: &SmokeSettings) {
         ApiOperation::ImagesGeneration,
     )
     .await;
+    report_images_result("generation", &result);
 }
 
 pub(super) async fn smoke_images_edit(settings: &SmokeSettings) {
@@ -538,7 +554,7 @@ pub(super) async fn smoke_images_edit(settings: &SmokeSettings) {
         CLIENT_MODEL,
         &images.model,
     );
-    complete_nonstreaming_request(
+    let result = complete_nonstreaming_request(
         settings,
         gateway,
         images_edit_request(),
@@ -546,6 +562,52 @@ pub(super) async fn smoke_images_edit(settings: &SmokeSettings) {
         ApiOperation::ImagesEdit,
     )
     .await;
+    report_images_result("edit", &result);
+}
+
+fn report_images_result(operation: &str, result: &NonStreamingResult) {
+    let outputs = assert_images_response_has_output(&result.value);
+    let usage = result
+        .value
+        .get("usage")
+        .expect("Images smoke response usage was already validated");
+    let input_tokens = usage
+        .get("input_tokens")
+        .and_then(Value::as_i64)
+        .expect("Images smoke input_tokens was already validated");
+    let output_tokens = usage
+        .get("output_tokens")
+        .and_then(Value::as_i64)
+        .expect("Images smoke output_tokens was already validated");
+    println!(
+        "Images {operation} completed in {} ms with {outputs} output(s), input_tokens={input_tokens}, output_tokens={output_tokens}",
+        result.elapsed.as_millis()
+    );
+}
+
+fn assert_images_response_has_output(value: &Value) -> usize {
+    let data = value
+        .get("data")
+        .and_then(Value::as_array)
+        .filter(|data| !data.is_empty())
+        .expect("the real Images response must include a nonempty data array");
+    for item in data {
+        let has_base64 = item
+            .get("b64_json")
+            .and_then(Value::as_str)
+            .is_some_and(|value| value.len() >= 128);
+        let has_url = item
+            .get("url")
+            .and_then(Value::as_str)
+            .is_some_and(|value| {
+                value.len() >= 16 && (value.starts_with("https://") || value.starts_with("http://"))
+            });
+        assert!(
+            has_base64 || has_url,
+            "each real Images output must contain a nontrivial b64_json payload or HTTP(S) URL"
+        );
+    }
+    data.len()
 }
 
 fn images_edit_request() -> Request<Body> {
@@ -1076,7 +1138,7 @@ mod tests {
         });
         Json(json!({
             "created": 1,
-            "data": [{"b64_json": "aW1hZ2U="}],
+            "data": [{"b64_json": BASE64_STANDARD.encode([0_u8; 96])}],
             "usage": {
                 "input_tokens": 7,
                 "output_tokens": 11,

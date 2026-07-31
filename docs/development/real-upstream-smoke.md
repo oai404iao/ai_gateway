@@ -54,6 +54,14 @@ Run:
 ./scripts/run-real-upstream-smoke.sh
 ```
 
+The default `--all` mode runs the five baseline tests and both Images tests
+when Images settings are present. For an explicitly authorized, lower-cost
+diagnostic rerun of only the paid Images edit case:
+
+```bash
+./scripts/run-real-upstream-smoke.sh --images-edit-only
+```
+
 To use a differently named local secrets file, keep it ignored and specify:
 
 ```bash
@@ -91,10 +99,13 @@ overrides fail before Cargo starts.
 - When Images settings are present, generation requests one `1024x1024`,
   low-quality image and edit uploads one small compressed `1024x1024` PNG while
   requesting one low-quality `1024x1024` result. Both requests assert top-level
-  Images usage, price-snapshot binding, and a successful terminal
-  `images_generation` or `images_edit` request log. Provider minimum pricing
-  and output behavior still apply, so use a credential with an Images-specific
-  spending cap.
+  Images usage, a nonempty `data` array whose entries contain a nontrivial
+  `b64_json` payload or HTTP(S) URL, price-snapshot binding, and a successful
+  terminal `images_generation` or `images_edit` request log. The script prints
+  only sanitized elapsed milliseconds, output count, and token counts for
+  these two tests; it never prints image data or credentials. Provider minimum
+  pricing and output behavior still apply, so use a credential with an
+  Images-specific spending cap.
 - Do not run it in ordinary PR checks. CI automation is intentionally not part
   of this change.
 - Do not add real credentials to `./config/*`, test source, shell history, or
