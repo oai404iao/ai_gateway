@@ -30,6 +30,7 @@ http-body-util = "0.1"
 jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto", "use_pem"] }
 json-patch = "4.2"
 jsonptr = "0.7"
+multer = "3.1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "socks", "stream"] }
 regex = "1.11"
 rand = "0.9"
@@ -41,6 +42,7 @@ serde_json = "1.0"
 sha2 = "0.11"
 sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio-rustls", "migrate", "chrono", "uuid", "json", "rust_decimal", "macros"] }
 subtle = "2.6"
+tempfile = "3.20"
 thiserror = "2.0"
 time = "=0.3.54"
 tokio = { version = "1.43", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }

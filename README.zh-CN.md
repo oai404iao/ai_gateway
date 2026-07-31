@@ -3,8 +3,8 @@
 中文 | [English](README.md)
 
 `ai-gateway` 是一个单二进制 Rust 网关，用于转发 OpenAI 兼容请求。它向客户端提供
-Chat Completions、Responses 与非流式 JSON Images generation API，根据 PostgreSQL
-控制面完成路由，并将请求转发到已配置的上游提供商。
+Chat Completions、Responses、非流式 JSON Images generation 与 multipart Images edit API，
+根据 PostgreSQL 控制面完成路由，并将请求转发到已配置的上游提供商。
 
 文档已按读者分类整理，统一入口见[文档中心](docs/README.md)：用户文档、开发与
 设计文档、OpenAI 外部参考和历史归档。
@@ -16,12 +16,16 @@ Chat Completions、Responses 与非流式 JSON Images generation API，根据 Po
 
 ## 特性
 
-- 支持 OpenAI Chat Completions、Responses 和非流式 JSON Images generation；
+- 支持 OpenAI Chat Completions、Responses、非流式 JSON Images generation 和 multipart
+  Images edit；
   三种格式绝不相互回退。
 - 按 `(客户端模型名, API 格式)` 路由，支持渠道组优先级和渠道权重选择。
 - 特殊上游通过单进程内 Connector 接入，不增加 sidecar 或第二次网络跳转。首个
   Codex OAuth Connector 支持订阅凭证、每账户代理、Token 刷新、额度感知 draining
-  以及共享凭证的 provider-managed Responses HTTP/SSE/WebSocket 与 Images generation 渠道。
+  以及共享凭证的 provider-managed Responses HTTP/SSE/WebSocket 与 Images
+  generation/edit 渠道。
+- multipart edit 超过内存阈值后写入受限匿名临时文件，不提高全局 JSON body 上限；Console
+  系统负载页显示活跃落盘字节、可用容量和失败次数。
 - 将 PostgreSQL 控制面记录编译为不可变内存快照，因此代理请求不需要逐次查询数据库。
 - 可按配置执行模型别名、受限 JSON/Header/响应/SSE 变换。
 - 转发前会移除客户端凭据和 hop-by-hop Header，再注入渠道专属的上游鉴权。
@@ -163,7 +167,7 @@ Console 路由覆盖与运行行为详见[运行与接口说明](docs/user/opera
 
 发布镜像包含 Rust 二进制与嵌入式 Console UI。完整生产 Compose 默认不向宿主机
 暴露 PostgreSQL，数据面与 Console 只绑定宿主机 loopback，并使用独立持久卷保存
-request-log spool。
+request-log spool 和短生命周期 Images edit scratch body。
 
 先准备已被 Git 忽略的配置与密钥：
 
@@ -217,6 +221,7 @@ docker compose up -d
 | `POST /v1/responses` | 仅代理 Responses 请求。 |
 | 带 WebSocket Upgrade 的 `GET /v1/responses` | 通过 WebSocket 顺序代理 Responses `response.create` 消息。 |
 | `POST /v1/images/generations` | 仅代理非流式 JSON Images generation 请求。 |
+| `POST /v1/images/edits` | 仅代理非流式 multipart Images edit 请求。 |
 
 在创建匹配的模型规则和 API Key 后：
 
@@ -261,7 +266,19 @@ curl --request POST "$GATEWAY_URL/v1/images/generations" \
   }'
 ```
 
-当前 Images 路径不接受 `stream: true`，也不支持 `/v1/images/edits` 或 multipart body。
+Images edit 使用同一 `open_ai_images` 路由：
+
+```bash
+curl --request POST "$GATEWAY_URL/v1/images/edits" \
+  --header "Authorization: Bearer $AI_GATEWAY_API_KEY" \
+  --form 'model=gateway-image-model' \
+  --form 'prompt=Add a red hat' \
+  --form 'image=@./input.png;type=image/png'
+```
+
+Images generation/edit 都不接受 `stream: true`。edit 当前只接受 multipart，不接受公开客户端
+JSON/data URL body；总大小、单文件大小、内存阈值和临时目录由 `[request_limits]` 中的
+`image_edit_*` 设置控制。
 
 网关会转发上游状态码和响应体；Chat Completions 与 Responses 会保持流式行为，如客户端需要
 SSE，请使用对应 OpenAI 请求中的流式字段。
@@ -392,8 +409,8 @@ pnpm --dir web/console generate:api:check   # OpenAPI spec/类型漂移门禁
   已结算用量的软预检查，不会在转发前预留本次成本。
 - 请求日志不保存 prompt、completion、完整 Header、API Key、Cookie 或未经脱敏的上游错误内容。
 
-当前范围不包含 Images edits、multipart 图片请求、图片流式响应、embeddings、audio、files、
-batches、assistants、fine-tuning、通用自动重试、TLS 终止、独立财务账本、充值/退款或多币种兑换。
+当前范围不包含 JSON/data URL Images edit、图片流式响应、embeddings、audio、files、batches、
+assistants、fine-tuning、通用自动重试、TLS 终止、独立财务账本、充值/退款或多币种兑换。
 
 ## 开发与验证
 

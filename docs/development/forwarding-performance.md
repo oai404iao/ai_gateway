@@ -347,8 +347,8 @@ request-log-spool/
 - JSON/Markdown 报告。
 - 请求日志持久化率。
 
-当前 Harness 不生成 Images 请求；Images generation 由 deterministic proxy integration
-tests 覆盖，不能把本工具的 Chat/Responses 结果外推为图片吞吐或内存结论。
+当前 Harness 不生成 Images 请求；Images generation/edit 由 deterministic proxy integration
+tests 覆盖，不能把本工具的 Chat/Responses 结果外推为图片吞吐、base64 CPU 或磁盘 spool 结论。
 
 后续阶段计划：
 

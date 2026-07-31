@@ -70,6 +70,10 @@ Compose 将 PostgreSQL 端口默认绑定到 `127.0.0.1`。只有 Gateway 位于
 | `settlement_interval_milliseconds` | 500 | 默认软额度更新延迟 |
 | `spool_sync_interval_milliseconds` | 10 | 主机掉电时的默认 group-sync 窗口 |
 | `spool_compaction_threshold_bytes` | 256 MiB | 降低高流量下的截断与同步频率 |
+| `request_limits.image_edit_body_bytes` | 64 MiB | 单个 multipart edit 总 body 上限 |
+| `request_limits.image_edit_file_bytes` | 50 MiB | 单个 image/mask part 上限 |
+| `request_limits.image_edit_memory_bytes` | 1 MiB | edit 转入匿名临时文件前的内存阈值 |
+| `request_limits.image_edit_spool_directory` | `/var/lib/ai-gateway/image-edit-spool` | Compose 的独立本地 scratch volume |
 
 PostgreSQL 的连接预算至少应满足：
 
@@ -218,7 +222,16 @@ LIMIT 20;
 - NOCOW 会同时失去 Btrfs 数据 checksum 与压缩，需要结合 PostgreSQL checksum、备份和底层冗余评估。
 - 继续使用 CoW 时，可分别 A/B 测试 `wal_init_zero=off` 与 `wal_recycle=off`，不要和其他大项同时切换。
 
-spool 应位于本地持久磁盘，而不是容器临时层。必须监控剩余空间；磁盘写满是本地耐久入口的硬失败边界。
+request-log spool 应位于本地持久磁盘，而不是容器临时层。必须监控剩余空间；磁盘写满是本地耐久
+入口的硬失败边界。
+
+Images edit body spool 是独立的短生命周期 scratch 存储，不需要备份，也不能与 request-log
+durability 混为一谈。它仍应位于本地磁盘而不是 RAM-backed `/tmp`，否则大 multipart 会重新变成
+内存压力。每个文件在打开后保持匿名并随请求引用释放；Console 系统负载的
+`image_body_spool.available_bytes`、`active_bytes` 和 `storage_failures_total` 应纳入容量告警。
+模型别名重建会短暂同时保留原始与重建 body，Codex data URL 适配还会发生 base64 膨胀；因此应
+保守地至少预留并发 edit 上限乘以三倍 `image_edit_body_bytes` 的空间，并额外保留文件系统和
+其他服务余量。
 
 ## PostgreSQL 18 异步 I/O
 
@@ -251,7 +264,7 @@ docker compose up -d
 - PostgreSQL 流复制或自动故障转移。
 - WAL 归档与时间点恢复。
 - 跨主机 spool 复制。
-- 数据库、JWT 密钥和本地 spool 的备份。
+- 数据库、JWT 密钥和 request-log spool 的备份。Images edit scratch spool 不需要备份。
 
 正式生产应优先采用受管理 PostgreSQL，或独立设计 base backup、WAL 归档、恢复演练、监控告警和故障切换。备份必须覆盖 PostgreSQL；spool 主要用于数据库短暂不可用和进程恢复，不能替代数据库备份。
 

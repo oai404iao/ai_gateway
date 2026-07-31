@@ -14,8 +14,8 @@
 
 三种格式共享鉴权、选路、上游客户端和日志基础设施，但路由、变换、协议操作和 usage
 解析保持隔离，禁止跨格式回退或转换。`ApiOperation` 进一步区分 Chat Completions、
-Responses、Images generation 与未来的 Images edit；当前 Images 只实现非流式 JSON
-generation。
+Responses、Images generation 与 Images edit；当前 Images 实现非流式 JSON generation 和
+非流式 multipart edit。
 
 客户端 API 格式与上游接入方式是两个维度。Channel Group 另有
 `ConnectorKind`：普通渠道使用 `openai_compatible`，Codex 订阅凭证使用
@@ -52,15 +52,21 @@ Browser or Console client
 1. 从请求头读取客户端 Bearer API Key。
 2. 从一次性获取的不可变快照完成鉴权和格式权限判断。
 3. 在读取 body 前执行进程内 RPM、并发和软额度准入。
-4. 在大小限制内读取 JSON，要求顶层 `model` 为非空字符串；可选 `stream` 必须
-   为布尔值。请求日志还会宽松提取客户端显式提供的 `reasoning.effort`、
-   `reasoning_effort` 和 `service_tier = "priority"`，但这些元数据不会增加转发校验。
+4. 按操作和 Content-Type 读取请求体。Chat Completions、Responses 与 Images generation
+   在 `proxy_body_bytes` 内读取 JSON；Images edit 在独立总大小/单文件限制内接收 multipart，
+   超过内存阈值后写入匿名临时文件。两者都要求路由用 `model` 为非空、最多 300 字符；
+   Images streaming fail closed。请求日志还会宽松提取客户端显式提供的
+   `reasoning.effort`、`reasoning_effort` 和 `service_tier = "priority"`，但这些元数据不会
+   增加转发校验。
 5. 从分 API 格式索引按 `(api_format, client_model)` 取得预编译模型路由；渠道组
    成员已经按规则 `upstream_model` 与 `channels.available_models` 求交并划分
    优先级 tier。
 6. 先用 API Key 的 `accessible_routes` 位图完成 O(1) 模型可达性判断，再使用渠道
    授权位图过滤候选，并依次应用 Session 粘性、最低优先级、权重策略和被动健康过滤。
-7. 必要时改写顶层模型别名，并按“模板默认值 → 渠道覆盖”应用受限变换。
+7. 必要时改写顶层模型别名，并按“模板默认值 → 渠道覆盖”应用受限变换。普通 JSON 沿用
+   JSON Patch；multipart edit 在无需别名时原样回放，需要别名时流式等价重建，只执行 Header
+   变换而不执行请求 JSON Transform。只要 body 被别名、JSON Transform 或 provider adapter
+   改变，客户端完整性 Header 会先被移除，随后 Header Transform 才能设置与新 body 匹配的值。
 8. 由进程内 Connector 的 `PreparedUpstreamAttempt` 完成 provider 特定 body、目标路径和最终
    Header/鉴权准备；普通 Connector 保持相同 API 路径和现有认证行为。
 9. 清理客户端鉴权与 hop-by-hop headers，使用按代理、TLS 和超时策略复用的 reqwest client
@@ -69,6 +75,30 @@ Browser or Console client
 11. 将终态事件写入本地 spool，并异步投影、提取 usage 和结算。
 
 没有 body 变换或模型别名时，原始请求字节保持不变。普通响应不会为了 usage 采集而整体缓冲。
+
+### Images edit replayable body
+
+`src/application/request_body.rs` 把 multipart edit 与普通 JSON 的内存生命周期隔离：
+
+```text
+downstream Body
+  -> Memory(Bytes) until image_edit_memory_bytes
+  -> anonymous TempFile after threshold
+  -> multipart inspection for model/count/size
+  -> exact replay or streamed adapter
+  -> reqwest Body stream
+  -> Drop closes and removes the anonymous file
+```
+
+Unix 目录与文件权限分别收紧为 `0700` 与 `0600`。实现不保留用户文件名对应的磁盘路径，不把
+multipart 字段值或图片字节写入 tracing、请求日志、audit 或错误响应。普通
+OpenAI-compatible edit 直接回放，或在模型别名存在时使用原 boundary 重建。Codex adapter
+在第二次顺序读取中增量 base64 编码最多五张图片并写入另一个 replayable body；原始 multipart
+和适配后的 JSON 都不需要完整驻留内存。
+
+`GET /console/v1/system/load` 暴露当前活跃临时文件/字节、文件系统可用容量、累计落盘量和写入
+失败。目录创建、写入或初始回放 seek 失败返回 `image_body_spool_unavailable`，并在任何上游
+派发之前失败；发送期间的文件读取错误同样不会触发 Images 自动重试，并计入存储失败指标。
 
 ## 进程内 Upstream Connector
 
@@ -79,8 +109,8 @@ observation 接口，不包含 provider 的 OAuth claim、路径或 Header 细�
 - `OpenAiCompatible` attempt 是无状态路径：保留现有请求字节、API 路径和
   `UpstreamAuth` 注入。
 - `CodexOauth` attempt 的实现位于 `src/application/codex/attempt.rs`：读取独立凭证快照，
-  按操作分派 Responses HTTP SSE、Responses WebSocket 或 Images generation 约束，改写目标并
-  注入 OAuth/account 与协议专用 Header。
+  按操作分派 Responses HTTP SSE、Responses WebSocket、Images generation 或 Images edit
+  约束，改写目标并注入 OAuth/account 与协议专用 Header。
 - `ConnectorKind` 编译进 group/channel 快照。新增 provider 时扩展 registry 和独立 provider
   模块，不能在标准 Chat Completions/Responses/Images 逻辑中再建一套路由器。
 
@@ -130,7 +160,7 @@ grace period 内完成，截止时强制取消，避免 Upgrade 脱离 Hyper con
 ## 重试与 Streaming 边界
 
 - 自动故障转移只覆盖收到响应头前的连接失败、建连超时和响应头超时。
-- Images generation 不使用自动故障转移；上游尝试一旦开始即只返回该尝试结果。
+- Images generation/edit 不使用自动故障转移；上游尝试一旦开始即只返回该尝试结果。
 - Responses WebSocket 只在上游 Upgrade/建连完成前故障转移；`response.create`
   一旦发送就不再切换连接或渠道。
 - 每次后续尝试排除已经尝试过的渠道，并重新遵守授权、优先级、健康和权重规则。
@@ -188,7 +218,7 @@ generation/edit 可以保持独立观测和迁移兼容性。
 | 模块 | 职责 |
 | --- | --- |
 | `src/http/` | Axum 路由、中间件、传输层错误映射 |
-| `src/application/` | 代理、进程内 Connector registry、Console、控制面发布、日志编排 |
+| `src/application/` | 代理、replayable request body、进程内 Connector registry、Console、控制面发布、日志编排 |
 | `src/domain/` | API 格式、编译路由、凭据和值对象 |
 | `src/routing/` | 渠道选择、被动健康、Session 粘性 |
 | `src/transforms/` | 受限 JSON/Header/SSE DSL |
@@ -204,6 +234,7 @@ generation/edit 可以保持独立观测和迁移兼容性。
 | --- | --- |
 | 支持的 API 格式 | `src/domain/api_format.rs` |
 | 公共路由 | `src/http/mod.rs` |
+| Images multipart/replay | `src/application/request_body.rs` |
 | Responses WebSocket 转发与连接池 | `src/application/proxy/websocket.rs`、`src/upstream/websocket.rs` |
 | Upstream Connector registry | `src/application/connector.rs` |
 | Codex OAuth Connector | `src/application/codex/`、`src/persistence/codex.rs` |

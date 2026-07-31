@@ -316,6 +316,7 @@ test.describe("Console SPA smoke", () => {
     await page.getByRole("link", { name: "System load" }).click();
     await expect(page).toHaveURL(/\/admin\/system-load/);
     await expect(page.getByRole("heading", { name: "System load" })).toBeVisible();
+    await expect(page.getByText("Images edit body spool")).toBeVisible();
     await expect(page.getByText("Host CPU", { exact: true })).toBeVisible();
   });
 

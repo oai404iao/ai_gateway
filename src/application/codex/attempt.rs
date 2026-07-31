@@ -26,7 +26,6 @@ pub(crate) enum CodexAttemptError {
     StreamingRequired,
     PreviousResponseUnsupported,
     ImageStreamingUnsupported,
-    ImageEditUnsupported,
     UnsupportedOperation,
     InvalidRequestBody,
     InvalidTarget,
@@ -37,7 +36,7 @@ pub(crate) enum CodexAttemptError {
 enum CodexRequestContext {
     Responses(CodexRequestIdentity),
     ImagesGeneration { turn_id: String },
-    ImagesEdit,
+    ImagesEdit { turn_id: String },
     Unsupported,
 }
 
@@ -58,7 +57,9 @@ impl PreparedCodexAttempt {
             ApiOperation::ImagesGeneration => CodexRequestContext::ImagesGeneration {
                 turn_id: Uuid::new_v4().to_string(),
             },
-            ApiOperation::ImagesEdit => CodexRequestContext::ImagesEdit,
+            ApiOperation::ImagesEdit => CodexRequestContext::ImagesEdit {
+                turn_id: Uuid::new_v4().to_string(),
+            },
             ApiOperation::ChatCompletions => CodexRequestContext::Unsupported,
         };
         Ok(Self {
@@ -80,8 +81,8 @@ impl PreparedCodexAttempt {
                     Err(CodexAttemptError::ImageStreamingUnsupported)
                 };
             }
-            CodexRequestContext::ImagesEdit => {
-                return Err(CodexAttemptError::ImageEditUnsupported);
+            CodexRequestContext::ImagesEdit { .. } => {
+                return Err(CodexAttemptError::InvalidRequestBody);
             }
             CodexRequestContext::Unsupported => {
                 return Err(CodexAttemptError::UnsupportedOperation);
@@ -123,7 +124,7 @@ impl PreparedCodexAttempt {
         let path = match &self.request {
             CodexRequestContext::Responses(_) => "responses",
             CodexRequestContext::ImagesGeneration { .. } => "images/generations",
-            CodexRequestContext::ImagesEdit => return Err(CodexAttemptError::ImageEditUnsupported),
+            CodexRequestContext::ImagesEdit { .. } => "images/edits",
             CodexRequestContext::Unsupported => {
                 return Err(CodexAttemptError::UnsupportedOperation);
             }
@@ -186,7 +187,8 @@ impl PreparedCodexAttempt {
                 }
                 headers.remove("x-codex-image-turn-id");
             }
-            CodexRequestContext::ImagesGeneration { turn_id } => {
+            CodexRequestContext::ImagesGeneration { turn_id }
+            | CodexRequestContext::ImagesEdit { turn_id } => {
                 headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
                 headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
                 headers.remove("session-id");
@@ -196,9 +198,6 @@ impl PreparedCodexAttempt {
                     "x-codex-image-turn-id",
                     HeaderValue::from_str(turn_id).map_err(invalid)?,
                 );
-            }
-            CodexRequestContext::ImagesEdit => {
-                return Err(CodexAttemptError::ImageEditUnsupported);
             }
             CodexRequestContext::Unsupported => {
                 return Err(CodexAttemptError::UnsupportedOperation);
@@ -221,6 +220,17 @@ impl PreparedCodexAttempt {
 
     pub(crate) fn successful_response_is_sse(&self) -> bool {
         matches!(self.request, CodexRequestContext::Responses(_))
+    }
+
+    pub(crate) fn is_image_edit(&self) -> bool {
+        matches!(self.request, CodexRequestContext::ImagesEdit { .. })
+    }
+
+    pub(crate) fn changes_request_body(&self) -> bool {
+        matches!(
+            self.request,
+            CodexRequestContext::Responses(_) | CodexRequestContext::ImagesEdit { .. }
+        )
     }
 }
 

@@ -136,6 +136,10 @@ impl SystemMetricsService {
             .websocket_proxy
             .as_ref()
             .map_or_else(Default::default, ProxyService::websocket_runtime_snapshot);
+        let image_body_spool = match &self.websocket_proxy {
+            Some(proxy) => proxy.image_body_spool_snapshot().await,
+            None => Default::default(),
+        };
 
         SystemLoadReport {
             sampled_at: Utc::now(),
@@ -217,6 +221,14 @@ impl SystemMetricsService {
                 idle_timeout_seconds: websocket.idle_timeout_seconds,
                 max_connection_age_seconds: websocket.max_connection_age_seconds,
             },
+            image_body_spool: SystemImageBodySpoolLoad {
+                active_files: image_body_spool.active_files,
+                active_bytes: image_body_spool.active_bytes,
+                available_bytes: image_body_spool.available_bytes,
+                spooled_total: image_body_spool.spooled_total,
+                spooled_bytes_total: image_body_spool.spooled_bytes_total,
+                storage_failures_total: image_body_spool.storage_failures_total,
+            },
             database: SystemDatabaseLoad {
                 control_plane: control_plane_pool,
                 request_log: request_log_pool,
@@ -236,6 +248,7 @@ pub struct SystemLoadReport {
     pub queues: SystemQueuesLoad,
     pub request_log: SystemRequestLogLoad,
     pub websocket: SystemWebSocketLoad,
+    pub image_body_spool: SystemImageBodySpoolLoad,
     pub database: SystemDatabaseLoad,
 }
 
@@ -331,6 +344,16 @@ pub struct SystemWebSocketLoad {
     pub pool_discarded_total: u64,
     pub idle_timeout_seconds: u64,
     pub max_connection_age_seconds: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct SystemImageBodySpoolLoad {
+    pub active_files: u64,
+    pub active_bytes: u64,
+    pub available_bytes: Option<u64>,
+    pub spooled_total: u64,
+    pub spooled_bytes_total: u64,
+    pub storage_failures_total: u64,
 }
 
 #[derive(Clone, Debug, Serialize)]

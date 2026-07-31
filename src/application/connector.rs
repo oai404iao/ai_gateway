@@ -9,6 +9,7 @@ use crate::domain::{ApiOperation, CompiledChannel, ConnectorKind, RequestProtoco
 use super::codex::{
     CodexAttemptError, CodexConnectorService, CodexCredentialUnavailable, PreparedCodexAttempt,
 };
+use super::request_body::{ImageEditBodyError, PreparedRequestBody, ReplayableRequestBody};
 
 #[derive(Clone, Default)]
 pub struct UpstreamConnectorRegistry {
@@ -61,7 +62,32 @@ pub(crate) enum PreparedUpstreamAttempt {
 }
 
 impl PreparedUpstreamAttempt {
-    pub(crate) fn adapt_body(
+    pub(crate) async fn adapt_body(
+        &self,
+        body: PreparedRequestBody,
+        request_protocol: RequestProtocol,
+    ) -> Result<ReplayableRequestBody, ConnectorAttemptError> {
+        match self {
+            Self::OpenAiCompatible => body
+                .into_openai_replayable()
+                .await
+                .map_err(ConnectorAttemptError::RequestBody),
+            Self::Codex { attempt, .. } => match body {
+                PreparedRequestBody::Json(body) => self
+                    .adapt_json_body(body, request_protocol)
+                    .map(ReplayableRequestBody::Memory),
+                PreparedRequestBody::ImageEdit(body) if attempt.is_image_edit() => body
+                    .to_codex_json()
+                    .await
+                    .map_err(ConnectorAttemptError::RequestBody),
+                PreparedRequestBody::ImageEdit(_) => Err(ConnectorAttemptError::from(
+                    CodexAttemptError::UnsupportedOperation,
+                )),
+            },
+        }
+    }
+
+    pub(crate) fn adapt_json_body(
         &self,
         body: Bytes,
         request_protocol: RequestProtocol,
@@ -124,6 +150,14 @@ impl PreparedUpstreamAttempt {
         }
     }
 
+    #[must_use]
+    pub(crate) fn changes_request_body(&self) -> bool {
+        match self {
+            Self::OpenAiCompatible => false,
+            Self::Codex { attempt, .. } => attempt.changes_request_body(),
+        }
+    }
+
     pub(crate) fn observe_response(&self, status: StatusCode) {
         if status != StatusCode::UNAUTHORIZED {
             return;
@@ -176,6 +210,7 @@ pub(crate) enum ConnectorAttemptError {
         param: &'static str,
         code: &'static str,
     },
+    RequestBody(ImageEditBodyError),
     InvalidTarget,
     InvalidCredentials,
 }
@@ -197,11 +232,6 @@ impl From<CodexAttemptError> for ConnectorAttemptError {
                 message: "Codex OAuth Images generation does not support streaming.",
                 param: "stream",
                 code: "image_streaming_unsupported",
-            },
-            CodexAttemptError::ImageEditUnsupported => Self::ClientRequest {
-                message: "Codex OAuth Images edits are not supported yet.",
-                param: "body",
-                code: "codex_image_edit_unsupported",
             },
             CodexAttemptError::UnsupportedOperation => Self::InvalidTarget,
             CodexAttemptError::InvalidRequestBody => Self::ClientRequest {

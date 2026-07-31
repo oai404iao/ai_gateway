@@ -6,6 +6,7 @@ secret_dir="$runtime_dir/secrets"
 config_source=/run/config/ai-gateway.toml
 config_target="$runtime_dir/config.toml"
 spool_dir=/var/lib/ai-gateway/request-log-spool
+image_edit_spool_dir=/var/lib/ai-gateway/image-edit-spool
 
 case "${1:-}" in
     --version|-V)
@@ -15,6 +16,7 @@ esac
 
 install -d -m 0700 -o ai-gateway -g ai-gateway "$runtime_dir" "$secret_dir"
 install -d -m 0750 -o ai-gateway -g ai-gateway "$spool_dir"
+install -d -m 0700 -o ai-gateway -g ai-gateway "$image_edit_spool_dir"
 
 if [ ! -f "$config_source" ]; then
     echo "ai-gateway: missing configuration mount at $config_source" >&2

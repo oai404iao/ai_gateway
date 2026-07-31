@@ -17,6 +17,8 @@ OpenAI Images API 将图片生成和图片编辑作为独立操作。请求与�
 本项目只依赖以下稳定边界：
 
 - generation 使用独立的 Images 路径，而不是 Chat Completions 或 Responses 路径；
+- edit 使用独立的 Images edit 路径，并接收一个或多个输入图片；公开客户端通常使用
+  `multipart/form-data` 上传 `image`/`image[]` 和可选 `mask`；
 - 请求包含顶层模型名，其他 generation 字段由上游解释；
 - 响应是上游定义的 JSON；图片数据可能很大，网关不能为了检查输出而整体缓冲；
 - 支持 usage 的上游可以在顶层返回输入和输出 token 统计；
@@ -24,13 +26,14 @@ OpenAI Images API 将图片生成和图片编辑作为独立操作。请求与�
 
 ## ai-gateway 当前兼容行为
 
-当前实现只挂载：
+当前实现挂载：
 
 ```text
 POST /v1/images/generations
+POST /v1/images/edits
 ```
 
-该路径：
+generation 路径：
 
 - 使用独立的 `open_ai_images` 路由格式和 `images_generation` 请求操作；
 - 只接受 JSON body，并执行与其他数据面相同的 Gateway API Key 鉴权、准入、模型路由、
@@ -42,26 +45,46 @@ POST /v1/images/generations
 - 将请求日志记录为 `api_format = open_ai_images`、
   `api_operation = images_generation` 和 `request_protocol = non_stream`。
 
+edit 路径：
+
+- 使用相同的 `open_ai_images` 路由格式，但请求日志操作为 `images_edit`；
+- 只接受带合法 boundary 的 `multipart/form-data`，要求一个非空 `model` 和至少一个
+  `image`/`image[]` part；
+- 最多接受 16 张输入图片、一个 `mask` 和 64 个 part；每个文本字段最多 `64 KiB`，文本字段
+  合计最多 `1 MiB`；
+- boundary 最多 70 bytes；preamble、单个 part Header block 和 boundary padding 分别最多
+  `8 KiB`、`16 KiB` 与 `1 KiB`，防止畸形 multipart framing 重新造成大内存缓冲；
+- 默认总 body 上限为 `64 MiB`，单文件上限为 `50 MiB`。前 `1 MiB` 保存在内存，超过后写入
+  受限目录中的匿名临时文件；
+- 普通 OpenAI-compatible 渠道在模型不需要别名时原样回放 multipart；需要别名时流式等价重建
+  multipart 并只替换 model part；
+- 响应仍逐块转发，并使用相同 Images usage collector。
+
 普通 OpenAI-compatible 渠道的模型名不在代码中硬编码；管理员必须配置 Images 渠道、可用上游
 模型、计价模型和模型规则。Codex OAuth projection 是 provider-specific 例外，当前按核对的
 Codex image tool 声明 `gpt-image-2`，管理员仍须创建对应本地模型与 Images model rule。
 
 ## 差异与限制
 
-- 不挂载 `POST /v1/images/edits`。
-- 不接受 multipart body 或客户端图片上传。
-- `stream: true` 返回本地 `400 image_streaming_unsupported`，不会发送上游请求。
+- edit 当前只接受 multipart，不接受 JSON/data URL 形式的公开客户端 edit 请求。
+- generation JSON 和 edit multipart 中的 `stream: true` 都返回本地
+  `400 image_streaming_unsupported`，不会发送上游请求。
 - Images generation 不使用自动上游重试或跨渠道故障转移；一次上游尝试开始后直接返回该尝试
-  的结果，避免重复生成和重复计费。
+  的结果，避免重复生成和重复计费；edit 使用相同边界。
 - Images 渠道不能配置定时测试模型，不参与 paid scheduled probe。
 - Images 不支持 Session 粘性、SSE 事件变换或 WebSocket。
-- generation JSON 仍受全局 `request_limits.proxy_body_bytes` 限制；首期没有提高默认
-  `1 MiB` 内存 body limit。
-- 普通 `openai_compatible` 与 Codex OAuth Images generation 均已支持。Codex 凭证共享 Token、
-  workspace/member、quota 和 outbound proxy，但使用独立的 Responses/Images group 与 channel；
-  Codex Images group 默认关闭，不会自动加入 API Key、Policy 或模型规则。
+- generation JSON 仍受全局 `request_limits.proxy_body_bytes` 限制；edit 使用独立的
+  `image_edit_*` 限制和磁盘 spool，不提高默认 `1 MiB` JSON 内存 body limit。
+- 普通 `openai_compatible` 与 Codex OAuth Images generation/edit 均已支持。Codex 凭证共享
+  Token、workspace/member、quota 和 outbound proxy，但使用独立的 Responses/Images group 与
+  channel；Codex Images group 默认关闭，不会自动加入 API Key、Policy 或模型规则。
 - Codex Images generation 会把目标改为 `/backend-api/codex/images/generations`，注入
   `x-codex-image-turn-id`，并删除 Responses 专用 session/thread Header。
+- Codex Images edit 会把公共 multipart 流式转换为
+  `/backend-api/codex/images/edits` 的 JSON `images[].image_url` data URL。该 provider
+  仅接受最多五张图片、不接受 mask，并拒绝未核对的 edit 字段。
+- multipart edit 不执行请求 JSON Transform；配置了该类规则的选中渠道返回
+  `image_edit_json_transform_unsupported`。Header 和响应 Header Transform 仍可使用。
 
 Codex 外部路径、Header 和当前 image model 的核对来源见
 [Codex OAuth 与订阅后端接入参考](codex-oauth-connect.md)。
@@ -72,7 +95,8 @@ Codex 外部路径、Header 和当前 image model 的核对来源见
 
 1. OpenAI generation、edit 和 streaming 官方契约是否变化；
 2. `src/domain/api_format.rs`、`src/domain/api_operation.rs` 与公共路由；
-3. Images body 大小和 replay 策略，避免把 multipart/base64 请求整体放大到全局内存；
+3. Images body 大小、临时目录容量和 replay 策略，避免把 multipart/base64 请求整体放大到
+   全局内存；
 4. usage、请求日志、计费与重复生成风险；
 5. Transform DSL 是否仍拒绝 Images SSE 规则；
 6. deterministic proxy integration tests，以及付费真实上游 smoke 是否具备专用低额度图片模型。

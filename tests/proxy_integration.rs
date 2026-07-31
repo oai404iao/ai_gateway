@@ -399,6 +399,7 @@ async fn harness_with_policy(
             .route("/v1/chat/completions", post(capture_upstream))
             .route("/v1/responses", post(capture_upstream))
             .route("/v1/images/generations", post(capture_upstream))
+            .route("/v1/images/edits", post(capture_upstream))
             .with_state(MockUpstream {
                 requests: Arc::clone(&requests),
                 status,
@@ -432,6 +433,7 @@ async fn harness_with_transforms(transforms: TransformDocuments) -> Harness {
             .route("/v1/chat/completions", post(capture_upstream))
             .route("/v1/responses", post(capture_upstream))
             .route("/v1/images/generations", post(capture_upstream))
+            .route("/v1/images/edits", post(capture_upstream))
             .with_state(MockUpstream {
                 requests: Arc::clone(&requests),
                 status: StatusCode::OK,
@@ -758,6 +760,11 @@ fn configured_proxy_with_policy_and_transforms(
                 rule.channel_ids.push(images_alt);
                 rule
             },
+            {
+                let mut rule = rule("image-alias", "gpt-image-2", "open_ai_images", images);
+                rule.channel_ids.push(images_alt);
+                rule
+            },
         ],
         proxies: vec![],
         templates: template_id
@@ -841,6 +848,68 @@ fn authorized_post(
         .header("authorization", format!("Bearer {key}"))
         .header("content-type", "application/json")
         .body(body.into())
+}
+
+fn multipart_edit_body(
+    boundary: &str,
+    model: &str,
+    extra_fields: &[(&str, &str)],
+    image: &[u8],
+) -> Vec<u8> {
+    let mut body = Vec::new();
+    let text_field = |body: &mut Vec<u8>, name: &str, value: &str| {
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        body.extend_from_slice(
+            format!("Content-Disposition: form-data; name=\"{name}\"\r\n\r\n").as_bytes(),
+        );
+        body.extend_from_slice(value.as_bytes());
+        body.extend_from_slice(b"\r\n");
+    };
+    text_field(&mut body, "model", model);
+    for (name, value) in extra_fields {
+        text_field(&mut body, name, value);
+    }
+    body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+    body.extend_from_slice(
+        b"Content-Disposition: form-data; name=\"image\"; filename=\"input.png\"\r\nContent-Type: image/png\r\n\r\n",
+    );
+    body.extend_from_slice(image);
+    body.extend_from_slice(b"\r\n");
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    body
+}
+
+fn authorized_multipart_post(
+    client: &reqwest::Client,
+    url: String,
+    key: &str,
+    boundary: &str,
+    body: Vec<u8>,
+) -> reqwest::RequestBuilder {
+    client
+        .post(url)
+        .header("authorization", format!("Bearer {key}"))
+        .header(
+            "content-type",
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .body(body)
+}
+
+async fn parse_captured_edit(body: &[u8], boundary: &str) -> (String, Vec<u8>) {
+    let bytes = Bytes::copy_from_slice(body);
+    let stream = futures_util::stream::once(async move { Ok::<Bytes, std::io::Error>(bytes) });
+    let mut multipart = multer::Multipart::new(stream, boundary.to_owned());
+    let mut model = None;
+    let mut image = None;
+    while let Some(field) = multipart.next_field().await.unwrap() {
+        match field.name() {
+            Some("model") => model = Some(field.text().await.unwrap()),
+            Some("image" | "image[]") => image = Some(field.bytes().await.unwrap().to_vec()),
+            _ => {}
+        }
+    }
+    (model.unwrap(), image.unwrap())
 }
 
 fn proxy_request(model: &str) -> axum::http::Request<Body> {
@@ -1393,6 +1462,288 @@ async fn images_generation_does_not_retry_after_an_upstream_attempt_starts() {
         format!("http://{}/v1/images/generations", gateway.address),
         CLIENT_KEY,
         br#"{"model":"gpt-image-2","prompt":"test"}"#.to_vec(),
+    )
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+    assert_eq!(requests.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn images_edit_preserves_multipart_spools_large_input_and_collects_usage() {
+    let upstream_body = br#"{"created":1,"data":[{"b64_json":"aW1hZ2U="}],"usage":{"input_tokens":17,"output_tokens":23}}"#.to_vec();
+    let harness = harness(StatusCode::OK, upstream_body.clone()).await;
+    let boundary = "gateway-edit-boundary";
+    let image = vec![5_u8; 128 * 1_024];
+    let request_body = multipart_edit_body(
+        boundary,
+        "gpt-image-2",
+        &[("prompt", "add a red hat"), ("quality", "high")],
+        &image,
+    );
+
+    let response = authorized_multipart_post(
+        &client(),
+        harness.url("/v1/images/edits"),
+        CLIENT_KEY,
+        boundary,
+        request_body.clone(),
+    )
+    .header("content-md5", "stale")
+    .header("digest", "sha-256=stale")
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.bytes().await.unwrap().as_ref(), upstream_body);
+    let requests = harness.upstream_requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].body, request_body);
+    let expected_content_type = format!("multipart/form-data; boundary={boundary}");
+    assert_eq!(
+        requests[0]
+            .headers
+            .get("content-type")
+            .and_then(|value| value.to_str().ok()),
+        Some(expected_content_type.as_str())
+    );
+    assert_eq!(
+        requests[0].headers.get("authorization").unwrap(),
+        "Bearer upstream-key"
+    );
+    assert_eq!(requests[0].headers.get("content-md5").unwrap(), "stale");
+    assert_eq!(requests[0].headers.get("digest").unwrap(), "sha-256=stale");
+
+    let logs = harness.logs();
+    assert_eq!(logs.len(), 1);
+    assert_eq!(logs[0].api_format, ApiFormat::OpenAiImages);
+    assert_eq!(
+        logs[0].api_operation,
+        ai_gateway::domain::ApiOperation::ImagesEdit
+    );
+    assert_eq!(logs[0].request_protocol.as_str(), "non_stream");
+    assert_eq!(
+        logs[0].billing.as_ref().unwrap().usage,
+        Some(ai_gateway::domain::RequestUsage {
+            input_tokens: 17,
+            cached_input_tokens: 0,
+            cache_write_tokens: 0,
+            output_tokens: 23,
+            reasoning_tokens: 0,
+        })
+    );
+}
+
+#[tokio::test]
+async fn images_edit_rebuilds_multipart_only_when_model_aliasing_is_required() {
+    let harness = harness(StatusCode::OK, br#"{"data":[]}"#.to_vec()).await;
+    let boundary = "gateway-edit-alias-boundary";
+    let image = b"alias-image-bytes";
+    let request_body = multipart_edit_body(
+        boundary,
+        "image-alias",
+        &[("prompt", "keep the composition")],
+        image,
+    );
+
+    let response = authorized_multipart_post(
+        &client(),
+        harness.url("/v1/images/edits"),
+        CLIENT_KEY,
+        boundary,
+        request_body.clone(),
+    )
+    .header("content-md5", "stale")
+    .header("digest", "sha-256=stale")
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let requests = harness.upstream_requests();
+    assert_eq!(requests.len(), 1);
+    assert_ne!(requests[0].body, request_body);
+    assert!(requests[0].headers.get("content-md5").is_none());
+    assert!(requests[0].headers.get("digest").is_none());
+    let (model, forwarded_image) = parse_captured_edit(&requests[0].body, boundary).await;
+    assert_eq!(model, "gpt-image-2");
+    assert_eq!(forwarded_image, image);
+}
+
+#[tokio::test]
+async fn images_edit_applies_header_transforms_without_rewriting_the_multipart() {
+    let harness = harness_with_transforms(TransformDocuments {
+        images_override: serde_json::json!({
+            "version": 1,
+            "api_format": "open_ai_images",
+            "request_headers": {"set": {"x-image-route": "edit"}}
+        }),
+        ..Default::default()
+    })
+    .await;
+    let boundary = "gateway-edit-header-transform-boundary";
+    let request_body = multipart_edit_body(
+        boundary,
+        "gpt-image-2",
+        &[("prompt", "keep the bytes")],
+        b"image",
+    );
+
+    let response = authorized_multipart_post(
+        &client(),
+        harness.url("/v1/images/edits"),
+        CLIENT_KEY,
+        boundary,
+        request_body.clone(),
+    )
+    .header("digest", "sha-256=preserved")
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let requests = harness.upstream_requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].body, request_body);
+    assert_eq!(requests[0].headers.get("x-image-route").unwrap(), "edit");
+    assert_eq!(
+        requests[0].headers.get("digest").unwrap(),
+        "sha-256=preserved"
+    );
+}
+
+#[tokio::test]
+async fn images_edit_rejects_non_multipart_and_oversized_bodies_without_upstream_contact() {
+    let harness = harness(StatusCode::OK, Vec::new()).await;
+
+    let unsupported = authorized_post(
+        &client(),
+        harness.url("/v1/images/edits"),
+        CLIENT_KEY,
+        br#"{"model":"gpt-image-2"}"#.to_vec(),
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(unsupported.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    let body: Value = serde_json::from_slice(&unsupported.bytes().await.unwrap()).unwrap();
+    assert_eq!(body["error"]["code"], "image_edit_content_type_unsupported");
+
+    let boundary = "gateway-edit-oversized-boundary";
+    let oversized = multipart_edit_body(
+        boundary,
+        "gpt-image-2",
+        &[("prompt", "oversized")],
+        &vec![8_u8; 1_048_576],
+    );
+    let response = authorized_multipart_post(
+        &client(),
+        harness.url("/v1/images/edits"),
+        CLIENT_KEY,
+        boundary,
+        oversized,
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert!(harness.upstream_requests().is_empty());
+    assert!(harness.logs().is_empty());
+}
+
+#[tokio::test]
+async fn images_edit_rejects_json_transforms_after_routing_without_forwarding_sensitive_body() {
+    let harness = harness_with_transforms(TransformDocuments {
+        images_override: serde_json::json!({
+            "version": 1,
+            "api_format": "open_ai_images",
+            "request_json": [{"op": "add", "path": "/quality", "value": "high"}]
+        }),
+        ..Default::default()
+    })
+    .await;
+    let boundary = "gateway-edit-transform-boundary";
+    let request_body = multipart_edit_body(
+        boundary,
+        "gpt-image-2",
+        &[("prompt", "do not log this")],
+        b"sensitive-image",
+    );
+
+    let response = authorized_multipart_post(
+        &client(),
+        harness.url("/v1/images/edits"),
+        CLIENT_KEY,
+        boundary,
+        request_body,
+    )
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let response_bytes = response.bytes().await.unwrap();
+    let rendered = String::from_utf8_lossy(&response_bytes);
+    assert!(!rendered.contains("do not log this"));
+    assert!(!rendered.contains("sensitive-image"));
+    let body: Value = serde_json::from_slice(&response_bytes).unwrap();
+    assert_eq!(
+        body["error"]["code"],
+        "image_edit_json_transform_unsupported"
+    );
+    assert!(harness.upstream_requests().is_empty());
+    let logs = harness.logs();
+    assert_eq!(logs.len(), 1);
+    assert_eq!(
+        logs[0].api_operation,
+        ai_gateway::domain::ApiOperation::ImagesEdit
+    );
+    assert_eq!(logs[0].error_summary, None);
+}
+
+#[tokio::test]
+async fn images_edit_does_not_retry_after_an_upstream_attempt_starts() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let upstream = start_server(
+        Router::new()
+            .route("/v1/images/edits", post(first_response_header_hangs))
+            .with_state(MockUpstream {
+                requests: Arc::clone(&requests),
+                status: StatusCode::OK,
+                body: br#"{"data":[]}"#.to_vec(),
+            }),
+    )
+    .await;
+    let configured = proxy_service_with_policy(
+        &format!("http://{}", upstream.address),
+        RecordingRequestLogSink::default(),
+        None,
+        None,
+        None,
+        Default::default(),
+    );
+    let gateway = start_server(http::router(configured.proxy)).await;
+    let boundary = "gateway-edit-retry-boundary";
+    let request_body = multipart_edit_body(
+        boundary,
+        "gpt-image-2",
+        &[("prompt", "single attempt")],
+        b"image",
+    );
+    let timeout_client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    let response = authorized_multipart_post(
+        &timeout_client,
+        format!("http://{}/v1/images/edits", gateway.address),
+        CLIENT_KEY,
+        boundary,
+        request_body,
     )
     .send()
     .await

@@ -10,6 +10,7 @@ mod control_plane;
 mod model_sync;
 mod proxy;
 mod proxy_test;
+mod request_body;
 mod request_log;
 mod system_metrics;
 mod usage;
@@ -19,7 +20,9 @@ pub use auth::{
     IssuedSession, RegistrationInvitationCodeCreateInput, RegistrationInvitationCodeMutation,
     RegistrationInvitationCodeUpdateInput, SelfRegistrationInput, hash_console_password,
 };
-pub(crate) use billing::{request_billing, request_billing_multiplier};
+pub(crate) use billing::{
+    request_billing, request_billing_multiplier, request_billing_multiplier_for_value,
+};
 pub use channel_automation::{
     AutomaticDisableService, AutomaticDisableWorker, ErrorKeywordMatcher,
 };
@@ -44,6 +47,7 @@ pub use model_sync::{
 };
 pub use proxy::{ModelsResponse, ProxyError, ProxyService};
 pub use proxy_test::{ProxyTestError, ProxyTestInput, ProxyTestResponse, ProxyTestService};
+pub use request_body::ProxyRequestBodyLimits;
 pub use request_log::{
     DurableRequestLogSink, NoopRequestLogSink, QueueRequestLogSink, RecordingRequestLogSink,
     RequestLogPipelineMonitor, RequestLogSink,

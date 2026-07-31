@@ -20,7 +20,17 @@ pub(crate) fn request_billing_multiplier(
     }
     let request =
         serde_json::from_slice::<Value>(body).expect("caller supplies a validated JSON body");
-    advanced_billing.request_multiplier(&request)
+    request_billing_multiplier_for_value(advanced_billing, &request)
+}
+
+pub(crate) fn request_billing_multiplier_for_value(
+    advanced_billing: &CompiledAdvancedBilling,
+    request: &Value,
+) -> Decimal {
+    if !advanced_billing.has_request_multipliers() {
+        return Decimal::ONE;
+    }
+    advanced_billing.request_multiplier(request)
 }
 
 /// Captures immutable price facts, parsed usage, and the derived request cost.

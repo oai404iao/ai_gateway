@@ -38,6 +38,9 @@ chmod 644 ./config/console-jwt-public.pem
 - 数据库密码与 JWT 密钥路径指向 `/run/ai-gateway/secrets/*`。
 - request-log spool 位于持久卷
   `/var/lib/ai-gateway/request-log-spool`。
+- Images edit 临时 body 位于独立本地卷
+  `/var/lib/ai-gateway/image-edit-spool`；该卷不需要备份，但必须有足够容量且不能改成 RAM-backed
+  `/tmp`。
 - 如浏览器不是从 Console listener 同源访问，配置准确的
   `allowed_origins`；不要使用 `*`。
 
@@ -129,13 +132,21 @@ Migration `0036_codex_images_projection.sql` 会新增旧版 Gateway 无法编�
 `open_ai_images` groups。多实例部署必须先排空并停止所有未包含该 migration 对应代码的旧实例，
 再由新版本执行 migration 并整体切换；migration 应用后不得把流量或 Console 请求切回旧二进制。
 
-不要删除 `postgres-data` 或 `gateway-spool` volume 来完成升级。回滚应用版本前，
+Images edit 不增加数据库 migration，新二进制可以用未包含 `image_edit_*` 的旧 TOML 启动并采用
+默认值。但旧二进制的 TOML schema 使用 `deny_unknown_fields`，不能读取新增的
+`request_limits.image_edit_*` 设置；滚动升级或应用回滚时，必须让旧实例继续使用旧配置，或先从
+其配置中移除这些字段。所有实例完成升级前，也不要把 `/v1/images/edits` 流量发送到混合版本
+负载均衡池，否则旧实例会返回 404。
+
+不要删除 `postgres-data`、`gateway-spool` 或正在服务请求的
+`gateway-image-edit-spool` volume 来完成升级。后者只保存匿名短生命周期文件，正常停止 Gateway
+后可以重建，但删除正在使用的 mount 会使 in-flight edit 失败。回滚应用版本前，
 先确认新 migration 是否向后兼容；数据库回滚必须依赖经过演练的备份恢复方案。
 
 ## 安全与耐久边界
 
 - 配置与密钥不会烤入镜像。容器 entrypoint 以 root 读取只读 mount，复制到私有
   tmpfs 后降权为 UID/GID `10001` 运行 Gateway。
-- 根文件系统只读；request-log spool 使用独立持久卷。
+- 根文件系统只读；request-log spool 与 Images edit scratch spool 使用两个独立本地卷。
 - Compose 的 PostgreSQL 参数与 `docker-compose.yml` 使用相同的单节点基线。
 - 生产必须另行设计 TLS、备份、PITR、监控、告警和高可用。

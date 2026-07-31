@@ -195,6 +195,7 @@ export function SystemLoadPanel() {
       data.request_log.projection_failures_total +
       data.request_log.settlement_failures_total
     : 0;
+  const imageSpoolFailures = data?.image_body_spool?.storage_failures_total ?? 0;
   const queues = data
     ? [
         {
@@ -474,6 +475,53 @@ export function SystemLoadPanel() {
                   </dl>
                 </CardContent>
               </Card>
+
+              {data.image_body_spool ? (
+                <Card>
+                  <CardHeader>
+                    <CardTitle>{t("Images edit body spool")}</CardTitle>
+                    <CardDescription>
+                      {t("Temporary disk-backed request bodies for multipart Images edits.")}
+                    </CardDescription>
+                    <CardAction>
+                      <Badge variant={imageSpoolFailures > 0 ? "destructive" : "success"}>
+                        {t(imageSpoolFailures > 0 ? "Failures recorded" : "No failures")}
+                      </Badge>
+                    </CardAction>
+                  </CardHeader>
+                  <CardContent className="flex flex-col gap-4">
+                    <BacklogRow
+                      label={t("Active temporary files")}
+                      value={data.image_body_spool.active_files.toLocaleString()}
+                      description={t("{bytes} currently held by in-flight edits.", {
+                        bytes: formatBytes(data.image_body_spool.active_bytes),
+                      })}
+                    />
+                    <Separator />
+                    <BacklogRow
+                      label={t("Available spool capacity")}
+                      value={formatBytes(data.image_body_spool.available_bytes)}
+                      description={t("Free bytes reported by the configured spool filesystem.")}
+                    />
+                    <Separator />
+                    <BacklogRow
+                      label={t("Cumulative spooled bodies")}
+                      value={data.image_body_spool.spooled_total.toLocaleString()}
+                      description={t("{bytes} written since this process started.", {
+                        bytes: formatBytes(data.image_body_spool.spooled_bytes_total),
+                      })}
+                    />
+                    <Separator />
+                    <BacklogRow
+                      label={t("Spool storage failures")}
+                      value={imageSpoolFailures.toLocaleString()}
+                      description={t(
+                        "Failures while capturing or replaying temporary edit bodies.",
+                      )}
+                    />
+                  </CardContent>
+                </Card>
+              ) : null}
 
               <Card>
                 <CardHeader>

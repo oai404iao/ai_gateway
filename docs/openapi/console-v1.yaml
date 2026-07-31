@@ -2055,8 +2055,9 @@ paths:
         null. CPU percentages are deltas between samples, so the first sample
         after process start may be null. Queue depth, durable request-log
         backlog, runtime in-flight state, Responses WebSocket sessions and
-        pool counters, and database pool pressure are process-local except for
-        PostgreSQL-backed backlog counts.
+        pool counters, Images edit temporary-body spool capacity/counters, and
+        database pool pressure are process-local except for PostgreSQL-backed
+        backlog counts.
       security: [{ bearerAuth: [] }]
       responses:
         "200":
@@ -2795,6 +2796,9 @@ components:
         queues: { $ref: "#/components/schemas/SystemQueuesLoad" }
         request_log: { $ref: "#/components/schemas/SystemRequestLogLoad" }
         websocket: { $ref: "#/components/schemas/SystemWebSocketLoad" }
+        image_body_spool:
+          description: Present on binaries with multipart Images edit support.
+          allOf: [{ $ref: "#/components/schemas/SystemImageBodySpoolLoad" }]
         database: { $ref: "#/components/schemas/SystemDatabaseLoad" }
 
     SystemHostLoad:
@@ -2949,6 +2953,23 @@ components:
         pool_discarded_total: { type: integer, format: int64, minimum: 0 }
         idle_timeout_seconds: { type: integer, format: int64, minimum: 0 }
         max_connection_age_seconds: { type: integer, format: int64, minimum: 0 }
+
+    SystemImageBodySpoolLoad:
+      type: object
+      required:
+        [active_files, active_bytes, available_bytes, spooled_total,
+         spooled_bytes_total, storage_failures_total]
+      properties:
+        active_files: { type: integer, format: int64, minimum: 0 }
+        active_bytes: { type: integer, format: int64, minimum: 0 }
+        available_bytes:
+          type: integer
+          format: int64
+          minimum: 0
+          nullable: true
+        spooled_total: { type: integer, format: int64, minimum: 0 }
+        spooled_bytes_total: { type: integer, format: int64, minimum: 0 }
+        storage_failures_total: { type: integer, format: int64, minimum: 0 }
 
     SystemDatabaseLoad:
       type: object

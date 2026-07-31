@@ -156,6 +156,16 @@ WebSocket 路径：
 4. 删除客户端 `session-id`、`thread-id` 与 `x-client-request-id`；
 5. 按普通 JSON 逐块转发响应，并增量提取顶层 usage，不缓冲完整 base64 图片。
 
+客户端还可以调用 multipart `POST /v1/images/edits`。选中相同 Images projection 后：
+
+1. 网关先在专用限制内捕获 replayable multipart，并完成模型路由；
+2. 最多五个 `image`/`image[]` part 被增量 base64 编码为
+   `images[].image_url = data:<mime>;base64,...`；
+3. 只保留 Codex wire type 已核对的 `prompt`、`background`、`model`、`n`、`quality` 与
+   `size`；mask 和其他字段在联系上游前拒绝；
+4. 将目标改为 `/backend-api/codex/images/edits`；
+5. 注入与 generation 相同的 credential 和 image-turn Header，并按非流式 JSON 处理响应。
+
 客户端提供的合法 `session-id` / `thread-id` 会被保留。缺少时，HTTP 请求如果匹配已配置的
 Session affinity 规则，网关从该规则的不可逆 session hash 派生稳定、opaque 的 UUID；
 没有匹配 affinity 的 HTTP 请求使用本次请求 UUID。WebSocket Session 从下游握手身份派生稳定
@@ -192,7 +202,7 @@ rotating refresh token。
 
 Quota 状态由两个 projection 共享，并映射为：
 
-- `active`：可接收新的 Responses Session 或 Images generation；
+- `active`：可接收新的 Responses Session 或 Images generation/edit；
 - `draining`：达到管理员阈值，只允许已命中 affinity 的既有 Responses Session；Images
   projection 在发送前被排除；
 - `unavailable`：quota 不允许、额度耗尽或永久 refresh 失败；
@@ -207,11 +217,12 @@ WebSocket 错误会触发按 refresh generation 去重的后台 token refresh。
 
 ## 差异与限制
 
-- Codex Connector 支持 Responses HTTP SSE、Responses WebSocket 与非流式 Images generation；
+- Codex Connector 支持 Responses HTTP SSE、Responses WebSocket、非流式 Images generation
+  与 multipart Images edit；
   Responses HTTP 仍拒绝非空 `previous_response_id`，WebSocket 保留该字段并依赖同一条上游连接
   的增量状态。
-- 网关尚未挂载 Images edit，也未实现公开 multipart 与 Codex JSON
-  `images[].image_url` 之间的 adapter。
+- edit adapter 最多接受五张图片，不接受 mask 或 Codex wire type 未声明的字段；这些
+  provider-specific 限制不改变普通 OpenAI-compatible edit 的最多 16 张图片边界。
 - Connector 不实现 Chat Completions、Responses 与 Images 之间的转换。
 - Console 删除会清除数据库中的 OAuth Token 并保留两个非敏感 managed-channel tombstone，但
   不会调用 OpenAI token revocation endpoint；外部撤销仍需在账户侧完成。

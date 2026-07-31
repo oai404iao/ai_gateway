@@ -55,6 +55,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use chrono::{DateTime, Utc};
 use futures_util::{SinkExt, StreamExt, stream};
 use http_body_util::BodyExt;
@@ -2194,6 +2195,10 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
                 "/backend-api/codex/images/generations",
                 post(codex_images_upstream),
             )
+            .route(
+                "/backend-api/codex/images/edits",
+                post(codex_images_upstream),
+            )
             .with_state(captured.clone()),
     )
     .await;
@@ -2602,6 +2607,114 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
         })
     );
 
+    let edit_boundary = "codex-edit-boundary";
+    let mut edit_body = Vec::new();
+    for (name, value) in [
+        ("model", "gpt-image-2"),
+        ("prompt", "add a red hat"),
+        ("background", "auto"),
+        ("quality", "high"),
+        ("size", "1024x1024"),
+    ] {
+        edit_body.extend_from_slice(format!("--{edit_boundary}\r\n").as_bytes());
+        edit_body.extend_from_slice(
+            format!("Content-Disposition: form-data; name=\"{name}\"\r\n\r\n").as_bytes(),
+        );
+        edit_body.extend_from_slice(value.as_bytes());
+        edit_body.extend_from_slice(b"\r\n");
+    }
+    for (index, image) in [
+        b"first-edit-image".as_slice(),
+        b"second-edit-image".as_slice(),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        edit_body.extend_from_slice(format!("--{edit_boundary}\r\n").as_bytes());
+        edit_body.extend_from_slice(
+            format!(
+                "Content-Disposition: form-data; name=\"image[]\"; filename=\"edit-{index}.png\"\r\nContent-Type: image/png\r\n\r\n"
+            )
+            .as_bytes(),
+        );
+        edit_body.extend_from_slice(image);
+        edit_body.extend_from_slice(b"\r\n");
+    }
+    edit_body.extend_from_slice(format!("--{edit_boundary}--\r\n").as_bytes());
+    let edit_body = Bytes::from(edit_body);
+    let edit_response = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/v1/images/edits")
+                .header("authorization", format!("Bearer {}", seed.secret))
+                .header(
+                    "content-type",
+                    format!("multipart/form-data; boundary={edit_boundary}"),
+                )
+                .header("session-id", "client-edit-session")
+                .header("thread-id", "client-edit-thread")
+                .header("x-client-request-id", "client-edit-request")
+                .header("x-codex-image-turn-id", "client-edit-controlled")
+                .body(Body::from(edit_body.clone()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(edit_response.status(), StatusCode::OK);
+    edit_response.into_body().collect().await.unwrap();
+
+    let image_requests = captured.image_requests.lock().unwrap().clone();
+    assert_eq!(image_requests.len(), 2);
+    let edit_request = &image_requests[1];
+    assert_eq!(
+        edit_request.authorization.as_deref(),
+        Some("Bearer access-token")
+    );
+    assert_eq!(edit_request.account_id.as_deref(), Some("account-123"));
+    assert_eq!(
+        edit_request.content_type.as_deref(),
+        Some("application/json")
+    );
+    assert!(edit_request.session_id.is_none());
+    assert!(edit_request.thread_id.is_none());
+    assert!(edit_request.client_request_id.is_none());
+    let edit_turn_id = edit_request.image_turn_id.as_deref().unwrap();
+    assert_ne!(edit_turn_id, "client-edit-controlled");
+    assert_ne!(edit_turn_id, image_turn_id);
+    assert!(Uuid::parse_str(edit_turn_id).is_ok());
+    let edit_json: serde_json::Value = serde_json::from_slice(&edit_request.body).unwrap();
+    assert_eq!(edit_json["model"], "gpt-image-2");
+    assert_eq!(edit_json["prompt"], "add a red hat");
+    assert_eq!(edit_json["background"], "auto");
+    assert_eq!(edit_json["quality"], "high");
+    assert_eq!(edit_json["size"], "1024x1024");
+    assert_eq!(
+        edit_json["images"][0]["image_url"],
+        format!(
+            "data:image/png;base64,{}",
+            BASE64_STANDARD.encode(b"first-edit-image")
+        )
+    );
+    assert_eq!(
+        edit_json["images"][1]["image_url"],
+        format!(
+            "data:image/png;base64,{}",
+            BASE64_STANDARD.encode(b"second-edit-image")
+        )
+    );
+
+    let events = logs.events();
+    let edit_events = events
+        .iter()
+        .filter(|event| event.api_operation == ApiOperation::ImagesEdit)
+        .collect::<Vec<_>>();
+    assert_eq!(edit_events.len(), 1);
+    assert_eq!(edit_events[0].channel_id, Some(images_channel));
+    assert_eq!(edit_events[0].channel_group_id, Some(images_group));
+    assert_eq!(edit_events[0].outcome, RequestLogOutcome::Succeeded);
+
     let gateway = start_server(app.clone()).await;
     let websocket_request = || {
         let mut request = format!("ws://{}/v1/responses", gateway.address)
@@ -2809,7 +2922,31 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
         .unwrap()
         .to_bytes();
     assert!(String::from_utf8_lossy(&draining_image_body).contains("codex_credential_draining"));
-    assert_eq!(captured.image_requests.lock().unwrap().len(), 1);
+    let draining_edit = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/v1/images/edits")
+                .header("authorization", format!("Bearer {}", seed.secret))
+                .header(
+                    "content-type",
+                    format!("multipart/form-data; boundary={edit_boundary}"),
+                )
+                .body(Body::from(edit_body.clone()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(draining_edit.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let draining_edit_body = draining_edit
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    assert!(String::from_utf8_lossy(&draining_edit_body).contains("codex_credential_draining"));
+    assert_eq!(captured.image_requests.lock().unwrap().len(), 2);
 
     repository
         .persist_codex_quota(

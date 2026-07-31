@@ -283,6 +283,19 @@ const zhCN: Record<string, string> = {
   "Pipeline failures": "流水线失败",
   "Cumulative spool, ingress, projection, and settlement failures.":
     "累计的 spool、入口、投影与结算失败次数。",
+  "Images edit body spool": "图片编辑请求体 Spool",
+  "Temporary disk-backed request bodies for multipart Images edits.":
+    "multipart 图片编辑请求使用的临时磁盘请求体。",
+  "Active temporary files": "活跃临时文件",
+  "{bytes} currently held by in-flight edits.": "处理中编辑当前占用 {bytes}。",
+  "Available spool capacity": "可用 Spool 容量",
+  "Free bytes reported by the configured spool filesystem.":
+    "配置的 spool 文件系统报告的可用字节数。",
+  "Cumulative spooled bodies": "累计落盘请求体",
+  "{bytes} written since this process started.": "本进程启动后累计写入 {bytes}。",
+  "Spool storage failures": "Spool 存储失败",
+  "Failures while capturing or replaying temporary edit bodies.":
+    "捕获或回放临时 edit 请求体时发生的失败。",
   "Runtime state": "运行时状态",
   "Process-local admission, routing, and operating-system counters.":
     "进程内准入、路由与操作系统计数。",

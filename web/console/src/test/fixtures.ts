@@ -759,6 +759,14 @@ export const SYSTEM_LOAD_REPORT: SystemLoadReport = {
     idle_timeout_seconds: 300,
     max_connection_age_seconds: 3_300,
   },
+  image_body_spool: {
+    active_files: 2,
+    active_bytes: 67_108_864,
+    available_bytes: 536_870_912_000,
+    spooled_total: 48,
+    spooled_bytes_total: 1_610_612_736,
+    storage_failures_total: 0,
+  },
   database: {
     control_plane: {
       size: 5,
