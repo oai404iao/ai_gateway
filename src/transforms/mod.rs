@@ -755,6 +755,7 @@ pub enum SseEventPatchPlan {
     OpenAiResponses {
         entries: Arc<[ResponsesSsePatchEntry]>,
     },
+    OpenAiImages,
 }
 impl fmt::Debug for SseEventPatchPlan {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -767,6 +768,7 @@ impl fmt::Debug for SseEventPatchPlan {
                 .debug_struct("SseEventPatchPlan::OpenAiResponses")
                 .field("entry_count", &entries.len())
                 .finish(),
+            Self::OpenAiImages => formatter.write_str("SseEventPatchPlan::OpenAiImages"),
         }
     }
 }
@@ -779,6 +781,7 @@ impl SseEventPatchPlan {
             ApiFormat::OpenAiResponses => Self::OpenAiResponses {
                 entries: Arc::default(),
             },
+            ApiFormat::OpenAiImages => Self::OpenAiImages,
         }
     }
 
@@ -786,14 +789,14 @@ impl SseEventPatchPlan {
     pub fn chat_completions_entries(&self) -> Option<&[ChatCompletionsSsePatchEntry]> {
         match self {
             Self::OpenAiChatCompletions { entries } => Some(entries),
-            Self::OpenAiResponses { .. } => None,
+            Self::OpenAiResponses { .. } | Self::OpenAiImages => None,
         }
     }
 
     #[must_use]
     pub fn responses_entries(&self) -> Option<&[ResponsesSsePatchEntry]> {
         match self {
-            Self::OpenAiChatCompletions { .. } => None,
+            Self::OpenAiChatCompletions { .. } | Self::OpenAiImages => None,
             Self::OpenAiResponses { entries } => Some(entries),
         }
     }
@@ -811,6 +814,7 @@ impl SseEventPatchPlan {
                 entries.iter().any(|entry| !entry.json.is_empty())
             }
             Self::OpenAiResponses { entries } => entries.iter().any(|entry| !entry.json.is_empty()),
+            Self::OpenAiImages => false,
         }
     }
 
@@ -827,6 +831,7 @@ impl SseEventPatchPlan {
                     entries: append_entries(left, right),
                 }
             }
+            (Self::OpenAiImages, Self::OpenAiImages) => Self::OpenAiImages,
             _ => unreachable!("transform plans were format-checked before composition"),
         }
     }
@@ -1056,6 +1061,7 @@ fn transform_sse_frame(
                 apply_matching_response_entries(&mut value, entries, selector)?
             }
         }
+        SseEventPatchPlan::OpenAiImages => false,
     };
     if !changed {
         return Ok(frame);
@@ -1210,6 +1216,7 @@ fn reject_sse_removed_ancestors(
                 }
             }
         }
+        (SseEventPatchPlan::OpenAiImages, SseEventPatchPlan::OpenAiImages) => {}
         _ => unreachable!("transform plans were format-checked before composition"),
     }
     Ok(())
@@ -1803,6 +1810,8 @@ fn compile_sse_event_patches(
                 entries: compiled.into(),
             })
         }
+        ApiFormat::OpenAiImages if entries.is_empty() => Ok(SseEventPatchPlan::OpenAiImages),
+        ApiFormat::OpenAiImages => Err(TransformCompileError::UnsupportedSseEvent),
     }
 }
 
@@ -1930,6 +1939,7 @@ fn is_immutable_sse_path(pointer: &JsonPointer, api_format: ApiFormat) -> bool {
                     )
                 })
         }
+        ApiFormat::OpenAiImages => true,
     }
 }
 
@@ -1997,6 +2007,7 @@ fn parse_format(value: Option<&str>) -> Result<ApiFormat, TransformCompileError>
     match value {
         Some("open_ai_chat_completions") => Ok(ApiFormat::OpenAiChatCompletions),
         Some("open_ai_responses") => Ok(ApiFormat::OpenAiResponses),
+        Some("open_ai_images") => Ok(ApiFormat::OpenAiImages),
         _ => Err(TransformCompileError::InvalidApiFormat),
     }
 }
@@ -2134,6 +2145,7 @@ mod tests {
 
     const CHAT: ApiFormat = ApiFormat::OpenAiChatCompletions;
     const RESPONSES: ApiFormat = ApiFormat::OpenAiResponses;
+    const IMAGES: ApiFormat = ApiFormat::OpenAiImages;
 
     fn document(format: &str) -> Value {
         json!({"version": 1, "api_format": format})
@@ -2168,6 +2180,16 @@ mod tests {
             Err(TransformCompileError::UnsupportedSseEvent)
         ));
 
+        let images_selector = json!({
+            "version": 1,
+            "api_format": "open_ai_images",
+            "sse": [{"event": "image_generation.partial_image", "json": []}]
+        });
+        assert!(matches!(
+            compile_document(&images_selector, IMAGES),
+            Err(TransformCompileError::UnsupportedSseEvent)
+        ));
+
         let immutable = json!({
             "version": 1,
             "api_format": "open_ai_responses",
@@ -2179,6 +2201,19 @@ mod tests {
         let error = compile_document(&immutable, RESPONSES).unwrap_err();
         assert!(matches!(error, TransformCompileError::ProtectedSseJsonPath));
         assert!(!error.to_string().contains("secret-document-value"));
+    }
+
+    #[test]
+    fn image_noop_transform_layers_compose_without_sse_state() {
+        let plan = compile_document(
+            &json!({"version": 1, "api_format": "open_ai_images"}),
+            IMAGES,
+        )
+        .unwrap();
+
+        let composed = TransformPlan::compose(&plan, &plan).unwrap();
+
+        assert!(composed.sse_event_patches().is_empty());
     }
 
     #[test]

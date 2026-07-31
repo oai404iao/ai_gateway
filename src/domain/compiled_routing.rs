@@ -203,6 +203,7 @@ pub struct CompiledConfigTemplate {
     api_format: Option<ApiFormat>,
     chat_completions_plan: TransformPlan,
     responses_plan: TransformPlan,
+    images_plan: TransformPlan,
 }
 impl CompiledConfigTemplate {
     #[must_use]
@@ -226,6 +227,7 @@ impl CompiledConfigTemplate {
         match api_format {
             ApiFormat::OpenAiChatCompletions => &self.chat_completions_plan,
             ApiFormat::OpenAiResponses => &self.responses_plan,
+            ApiFormat::OpenAiImages => &self.images_plan,
         }
     }
     pub(crate) fn new(
@@ -235,6 +237,7 @@ impl CompiledConfigTemplate {
         api_format: Option<ApiFormat>,
         chat_completions_plan: TransformPlan,
         responses_plan: TransformPlan,
+        images_plan: TransformPlan,
     ) -> Self {
         Self {
             id,
@@ -243,6 +246,7 @@ impl CompiledConfigTemplate {
             api_format,
             chat_completions_plan,
             responses_plan,
+            images_plan,
         }
     }
 }
@@ -1310,6 +1314,7 @@ impl ModelRouteKey {
 struct CompiledModelRoutes {
     chat_completions: HashMap<Arc<str>, Arc<CompiledModelRule>>,
     responses: HashMap<Arc<str>, Arc<CompiledModelRule>>,
+    images: HashMap<Arc<str>, Arc<CompiledModelRule>>,
 }
 impl CompiledModelRoutes {
     fn from_flat(routes: HashMap<ModelRouteKey, Arc<CompiledModelRule>>) -> Self {
@@ -1318,6 +1323,7 @@ impl CompiledModelRoutes {
             let target = match key.api_format {
                 ApiFormat::OpenAiChatCompletions => &mut compiled.chat_completions,
                 ApiFormat::OpenAiResponses => &mut compiled.responses,
+                ApiFormat::OpenAiImages => &mut compiled.images,
             };
             target.insert(key.client_model, rule);
         }
@@ -1328,6 +1334,7 @@ impl CompiledModelRoutes {
         match format {
             ApiFormat::OpenAiChatCompletions => self.chat_completions.get(model),
             ApiFormat::OpenAiResponses => self.responses.get(model),
+            ApiFormat::OpenAiImages => self.images.get(model),
         }
     }
 
@@ -1335,6 +1342,7 @@ impl CompiledModelRoutes {
         self.chat_completions
             .values()
             .chain(self.responses.values())
+            .chain(self.images.values())
     }
 }
 

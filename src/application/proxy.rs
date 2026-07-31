@@ -36,10 +36,11 @@ use crate::{
         NoopRequestLogSink, RequestLogSink, UpstreamConnectorRegistry,
     },
     domain::{
-        ApiFormat, ApiKeyPermission, AutomaticDisableSettings, AutomaticDisableTrigger,
-        CompiledAdvancedBilling, CompiledApiKey, CompiledChannel, CompiledModelRule,
-        MAX_REQUEST_RETRIES, ModelPriceSnapshot, RequestLogEvent, RequestLogOutcome,
-        RequestLogSource, RequestProtocol, SessionAffinityKeySource, SessionAffinitySettings,
+        ApiFormat, ApiKeyPermission, ApiOperation, AutomaticDisableSettings,
+        AutomaticDisableTrigger, CompiledAdvancedBilling, CompiledApiKey, CompiledChannel,
+        CompiledModelRule, MAX_REQUEST_RETRIES, ModelPriceSnapshot, RequestLogEvent,
+        RequestLogOutcome, RequestLogSource, RequestProtocol, SessionAffinityKeySource,
+        SessionAffinitySettings,
     },
     routing::{
         ChannelLease, RoutingRuntime, SelectionResult, SessionAffinityMatch,
@@ -199,9 +200,10 @@ impl ProxyService {
 
     pub async fn proxy(
         &self,
-        api_format: ApiFormat,
+        api_operation: ApiOperation,
         request: Request<Body>,
     ) -> Result<AxumResponse, ProxyError> {
+        let api_format = api_operation.api_format();
         let started_at = Instant::now();
         let started_wall_at = chrono::Utc::now();
         let (parts, body) = request.into_parts();
@@ -249,7 +251,7 @@ impl ProxyService {
                 return Err(request_body_error(error));
             }
         };
-        let parsed = match parse_request(api_format, &original_body) {
+        let parsed = match parse_request(api_operation, &original_body) {
             Ok(value) => value,
             Err(error) => {
                 trace_unlogged("malformed_or_overlength_model");
@@ -275,6 +277,7 @@ impl ProxyService {
                 self.record_rejected(
                     &api_key,
                     api_format,
+                    api_operation,
                     &parsed.model,
                     &parsed.log_metadata,
                     parsed.request_protocol,
@@ -287,6 +290,7 @@ impl ProxyService {
                 self.record_no_healthy_channel(
                     &api_key,
                     api_format,
+                    api_operation,
                     &parsed.model,
                     &parsed.log_metadata,
                     parsed.request_protocol,
@@ -317,6 +321,7 @@ impl ProxyService {
             &parsed.log_metadata,
             parsed.request_protocol,
             api_format,
+            api_operation,
             &current_rule,
             &current_channel,
             lease,
@@ -506,6 +511,7 @@ impl ProxyService {
                 Err(failure) => {
                     failure.record_health(&mut completion);
                     let retry_route = (prepared_attempt.allows_automatic_retry()
+                        && api_operation.permits_automatic_retry()
                         && attempt < max_attempts)
                         .then(|| {
                             self.routing.select_with_affinity_excluding(
@@ -580,6 +586,7 @@ impl ProxyService {
         &self,
         api_key: &CompiledApiKey,
         api_format: ApiFormat,
+        api_operation: ApiOperation,
         client_model: &str,
         log_metadata: &RequestLogMetadata,
         request_protocol: RequestProtocol,
@@ -595,6 +602,7 @@ impl ProxyService {
             api_key_id: api_key.id(),
             request_source: RequestLogSource::Client,
             api_format,
+            api_operation,
             request_protocol,
             client_model: client_model.to_owned(),
             reasoning_effort: log_metadata.reasoning_effort.clone(),
@@ -622,6 +630,7 @@ impl ProxyService {
         &self,
         api_key: &CompiledApiKey,
         api_format: ApiFormat,
+        api_operation: ApiOperation,
         client_model: &str,
         log_metadata: &RequestLogMetadata,
         request_protocol: RequestProtocol,
@@ -637,6 +646,7 @@ impl ProxyService {
             api_key_id: api_key.id(),
             request_source: RequestLogSource::Client,
             api_format,
+            api_operation,
             request_protocol,
             client_model: client_model.to_owned(),
             reasoning_effort: log_metadata.reasoning_effort.clone(),
@@ -666,19 +676,17 @@ impl ProxyService {
             .authenticate(client_key)
             .ok_or_else(ProxyError::invalid_api_key)?;
 
-        let can_list_models = [ApiFormat::OpenAiChatCompletions, ApiFormat::OpenAiResponses]
-            .into_iter()
-            .any(|api_format| {
-                api_key.permits(api_format, ApiKeyPermission::Proxy)
-                    && api_key.permits(api_format, ApiKeyPermission::ModelsRead)
-            });
+        let can_list_models = ApiFormat::ALL.into_iter().any(|api_format| {
+            api_key.permits(api_format, ApiKeyPermission::Proxy)
+                && api_key.permits(api_format, ApiKeyPermission::ModelsRead)
+        });
         if !can_list_models {
             return Err(ProxyError::forbidden(
                 "This API key cannot list models in any API format.",
             ));
         }
 
-        let models = [ApiFormat::OpenAiChatCompletions, ApiFormat::OpenAiResponses]
+        let models = ApiFormat::ALL
             .into_iter()
             .flat_map(|api_format| snapshot.models_for(&api_key, api_format))
             .collect::<BTreeSet<_>>();
@@ -771,12 +779,20 @@ impl ProxyError {
     }
 
     fn invalid_request(message: &'static str, param: &'static str) -> Self {
+        Self::invalid_request_with_code(message, param, "invalid_request")
+    }
+
+    fn invalid_request_with_code(
+        message: &'static str,
+        param: &'static str,
+        code: &'static str,
+    ) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
             message: message.to_owned(),
             error_type: "invalid_request_error",
             param: Some(param),
-            code: "invalid_request".into(),
+            code: Some(code),
             authenticate: false,
             retry_after: None,
         }
@@ -1016,7 +1032,8 @@ struct RequestLogMetadata {
     fast_mode: bool,
 }
 
-fn parse_request(api_format: ApiFormat, body: &[u8]) -> Result<ParsedRequest, ProxyError> {
+fn parse_request(api_operation: ApiOperation, body: &[u8]) -> Result<ParsedRequest, ProxyError> {
+    let api_format = api_operation.api_format();
     let probe = serde_json::from_slice::<RequestProbe>(body).map_err(|_| {
         ProxyError::invalid_request("Request body must contain a string model.", "model")
     })?;
@@ -1030,6 +1047,13 @@ fn parse_request(api_format: ApiFormat, body: &[u8]) -> Result<ParsedRequest, Pr
         return Err(ProxyError::invalid_request(
             "Request model exceeds the supported length.",
             "model",
+        ));
+    }
+    if api_operation.is_images() && probe.stream {
+        return Err(ProxyError::invalid_request_with_code(
+            "Image API streaming is not supported yet.",
+            "stream",
+            "image_streaming_unsupported",
         ));
     }
     Ok(ParsedRequest {
@@ -1055,10 +1079,12 @@ fn request_log_metadata(
     let reasoning_effort = match api_format {
         ApiFormat::OpenAiChatCompletions => top_level_effort.or(nested_effort),
         ApiFormat::OpenAiResponses => nested_effort.or(top_level_effort),
+        ApiFormat::OpenAiImages => None,
     };
     RequestLogMetadata {
         reasoning_effort,
-        fast_mode: normalized_request_label(service_tier).as_deref() == Some("priority"),
+        fast_mode: api_format != ApiFormat::OpenAiImages
+            && normalized_request_label(service_tier).as_deref() == Some("priority"),
     }
 }
 
@@ -1709,6 +1735,7 @@ struct CompletionContext {
     channel_id: Uuid,
     model_id: Uuid,
     api_format: ApiFormat,
+    api_operation: ApiOperation,
     request_protocol: RequestProtocol,
     started_wall_at: chrono::DateTime<chrono::Utc>,
     started_at: Instant,
@@ -1752,6 +1779,7 @@ impl CompletionGuard {
         log_metadata: &RequestLogMetadata,
         request_protocol: RequestProtocol,
         api_format: ApiFormat,
+        api_operation: ApiOperation,
         rule: &CompiledModelRule,
         channel: &CompiledChannel,
         lease: ChannelLease,
@@ -1777,6 +1805,7 @@ impl CompletionGuard {
                 channel_id: channel.id(),
                 model_id: rule.upstream_model_id(),
                 api_format,
+                api_operation,
                 request_protocol,
                 started_wall_at,
                 started_at,
@@ -2006,6 +2035,9 @@ impl CompletionGuard {
         let usage = context.usage.latest();
         let upstream_error = context.usage.sse_error().cloned();
         let total_duration_ms = clamp_duration_ms(context.started_at.elapsed());
+        let billing_ttft_ms = (!context.api_operation.is_images())
+            .then(|| context.first_byte_at.map(clamp_duration_ms))
+            .flatten();
         let billing = request_billing(
             &context.price_snapshot,
             &context.advanced_billing,
@@ -2013,7 +2045,7 @@ impl CompletionGuard {
             context.request_billing_multiplier,
             usage,
             total_duration_ms,
-            context.first_byte_at.map(clamp_duration_ms),
+            billing_ttft_ms,
         );
         tracing::info!(
             event = "proxy_request_completed",
@@ -2022,6 +2054,7 @@ impl CompletionGuard {
             upstream_model = %context.upstream_model,
             channel_id = %context.channel_id,
             api_format = ?context.api_format,
+            api_operation = context.api_operation.as_str(),
             request_protocol = context.request_protocol.as_str(),
             upstream_status = ?context.upstream_status,
             latency_ms = context.started_at.elapsed().as_millis(),
@@ -2042,6 +2075,7 @@ impl CompletionGuard {
             api_key_id: context.api_key_id,
             request_source: RequestLogSource::Client,
             api_format: context.api_format,
+            api_operation: context.api_operation,
             request_protocol: context.request_protocol,
             client_model: context.client_model,
             reasoning_effort: context.reasoning_effort,
@@ -2124,7 +2158,7 @@ mod tests {
         application::billing::{calculate_cost, request_billing},
         application::usage::ResponseUsage,
         domain::{
-            AdvancedBilling, ApiFormat, CompiledAdvancedBilling, LongContextTier,
+            AdvancedBilling, ApiFormat, ApiOperation, CompiledAdvancedBilling, LongContextTier,
             ModelPriceSnapshot, RequestBillingMultiplier, RequestPriceSnapshot, RequestUsage,
             SessionAffinityKeySource, SessionAffinityRule, SessionAffinitySettings,
         },
@@ -2163,7 +2197,7 @@ mod tests {
     #[test]
     fn parses_deepseek_reasoning_effort_and_openai_fast_mode_from_chat_requests() {
         let parsed = parse_request(
-            ApiFormat::OpenAiChatCompletions,
+            ApiOperation::ChatCompletions,
             br#"{
                 "model":"deepseek-v4",
                 "reasoning_effort":"MAX",
@@ -2179,7 +2213,7 @@ mod tests {
     #[test]
     fn parses_openai_nested_reasoning_effort_before_the_compatible_fallback() {
         let parsed = parse_request(
-            ApiFormat::OpenAiResponses,
+            ApiOperation::Responses,
             br#"{
                 "model":"gpt-5",
                 "reasoning":{"effort":"xhigh"},
@@ -2199,7 +2233,7 @@ mod tests {
     #[test]
     fn ignores_unbounded_or_non_string_request_mode_metadata_without_rejecting() {
         let parsed = parse_request(
-            ApiFormat::OpenAiResponses,
+            ApiOperation::Responses,
             br#"{
                 "model":"gpt-5",
                 "reasoning":{"effort":{"unexpected":true}},
@@ -2211,6 +2245,18 @@ mod tests {
 
         assert_eq!(parsed.log_metadata.reasoning_effort, None);
         assert!(!parsed.log_metadata.fast_mode);
+    }
+
+    #[test]
+    fn rejects_image_streaming_until_the_protocol_is_supported() {
+        let Err(error) = parse_request(
+            ApiOperation::ImagesGeneration,
+            br#"{"model":"gpt-image-2","prompt":"test","stream":true}"#,
+        ) else {
+            panic!("streaming Images request should be rejected");
+        };
+
+        assert_eq!(error.code, Some("image_streaming_unsupported"));
     }
 
     #[test]

@@ -7,6 +7,14 @@ Versioning.
 
 ## [Unreleased]
 
+### Added
+
+- Add the isolated `open_ai_images` format and non-streaming JSON
+  `POST /v1/images/generations` forwarding for ordinary OpenAI-compatible
+  channels, including format-scoped routing and permissions, top-level usage
+  extraction, durable request-operation logging, Console configuration, and
+  explicit no-retry/no-scheduled-probe safety boundaries.
+
 ## [0.7.0] - 2026-07-30
 
 ### Added

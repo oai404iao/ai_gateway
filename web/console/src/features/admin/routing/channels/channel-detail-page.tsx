@@ -81,7 +81,7 @@ function isNonNegativeDecimal(value: string): boolean {
 
 const schema = z.object({
   channel_group_id: z.string().min(1, "Pick a channel group."),
-  api_format: z.enum(["open_ai_chat_completions", "open_ai_responses"]),
+  api_format: z.enum(["open_ai_chat_completions", "open_ai_responses", "open_ai_images"]),
   name: z.string().trim().min(1, "Name is required.").max(100),
   base_url: z
     .string()
@@ -133,6 +133,13 @@ const schema = z.object({
       code: z.ZodIssueCode.custom,
       path: ["test_model"],
       message: "Choose a test model from the available upstream models.",
+    });
+  }
+  if (value.api_format === "open_ai_images" && value.test_model) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["test_model"],
+      message: "Images channels do not support scheduled test models.",
     });
   }
   if (value.supports_websocket && value.api_format !== "open_ai_responses") {
@@ -602,6 +609,8 @@ export function ChannelDetailPage() {
                             group?.api_format === "open_ai_responses"
                               ? state.supports_websocket
                               : false,
+                          test_model:
+                            group?.api_format === "open_ai_images" ? null : state.test_model,
                         });
                       }}
                     >
@@ -887,6 +896,7 @@ export function ChannelDetailPage() {
                     <FieldLabel>{t("Scheduled test model")}</FieldLabel>
                     <Select
                       value={state.test_model ?? "__none__"}
+                      disabled={state.api_format === "open_ai_images"}
                       onValueChange={(value) =>
                         patch({ test_model: value === "__none__" ? null : value })
                       }
@@ -906,9 +916,11 @@ export function ChannelDetailPage() {
                       </SelectContent>
                     </Select>
                     <FieldDescription>
-                      {t(
-                        "Periodic scheduled tests use this model. It must be one of the available upstream models and have a configured price.",
-                      )}
+                      {state.api_format === "open_ai_images"
+                        ? t("Images channels are excluded from scheduled paid probes.")
+                        : t(
+                            "Periodic scheduled tests use this model. It must be one of the available upstream models and have a configured price.",
+                          )}
                     </FieldDescription>
                     {fieldError("test_model") ? <FieldError>{fieldError("test_model")}</FieldError> : null}
                   </Field>

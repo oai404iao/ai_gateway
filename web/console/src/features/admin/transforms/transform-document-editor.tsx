@@ -179,7 +179,8 @@ function newPatchRule(): PatchRule {
 }
 
 function sseEvents(apiFormat: ApiFormat): readonly string[] {
-  return apiFormat === "open_ai_chat_completions" ? CHAT_SSE_EVENTS : RESPONSES_SSE_EVENTS;
+  if (apiFormat === "open_ai_chat_completions") return CHAT_SSE_EVENTS;
+  return apiFormat === "open_ai_responses" ? RESPONSES_SSE_EVENTS : [];
 }
 
 function patchNeedsValue(kind: PatchRuleKind): boolean {
@@ -394,7 +395,8 @@ function parseVisualDocument(
     ]) ||
     (decoded.version !== 1 && decoded.version !== 2) ||
     (decoded.api_format !== "open_ai_chat_completions" &&
-      decoded.api_format !== "open_ai_responses")
+      decoded.api_format !== "open_ai_responses" &&
+      decoded.api_format !== "open_ai_images")
   ) {
     return {
       error:
@@ -474,6 +476,7 @@ function protectedSsePointer(tokens: string[], apiFormat: ApiFormat): boolean {
       tokens.some((token) => ["id", "index", "item_id"].includes(token))
     );
   }
+  if (apiFormat === "open_ai_images") return true;
   const responseIndex = tokens.indexOf("response");
   const outputIndex = tokens.indexOf("output");
   return (
@@ -1264,29 +1267,32 @@ export function TransformDocumentEditor({
   const responseBodyExample = {
     version: 1,
     api_format: apiFormat,
-    sse: [
-      apiFormat === "open_ai_chat_completions"
-        ? {
-            event: "chat.completion.chunk",
-            json: [
-              {
-                op: "add",
-                path: "/choices/0/delta/gateway_trace",
-                value: "proxied",
-              },
-            ],
-          }
-        : {
-            event: "response.output_text.delta",
-            json: [
-              {
-                op: "add",
-                path: "/gateway_trace",
-                value: "proxied",
-              },
-            ],
-          },
-    ],
+    sse:
+      apiFormat === "open_ai_images"
+        ? []
+        : [
+            apiFormat === "open_ai_chat_completions"
+              ? {
+                  event: "chat.completion.chunk",
+                  json: [
+                    {
+                      op: "add",
+                      path: "/choices/0/delta/gateway_trace",
+                      value: "proxied",
+                    },
+                  ],
+                }
+              : {
+                  event: "response.output_text.delta",
+                  json: [
+                    {
+                      op: "add",
+                      path: "/gateway_trace",
+                      value: "proxied",
+                    },
+                  ],
+                },
+          ],
   };
 
   return (

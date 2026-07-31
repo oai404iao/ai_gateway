@@ -375,6 +375,7 @@ test.describe("Console SPA smoke", () => {
     expect(await personalDetail.locator("dt").allTextContents()).toEqual([
       "Started",
       "Model",
+      "Operation",
       "Protocol",
       "Channel group",
       "Outcome",
@@ -386,6 +387,9 @@ test.describe("Console SPA smoke", () => {
       "Error message",
       "Completed",
     ]);
+    await expect(
+      personalDetail.getByText("Responses", { exact: true }),
+    ).toBeVisible();
     await expect(page.getByText("upstream-a", { exact: true })).toHaveCount(0);
     await page.keyboard.press("Escape");
     await expect(personalDetail).toBeHidden();
@@ -418,6 +422,7 @@ test.describe("Console SPA smoke", () => {
     expect(await systemDetail.locator("dt").allTextContents()).toEqual([
       "Started",
       "Model",
+      "Operation",
       "Protocol",
       "Channel group",
       "Channel",

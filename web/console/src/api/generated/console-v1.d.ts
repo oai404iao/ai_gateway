@@ -1216,7 +1216,9 @@ export interface components {
         /** @enum {string} */
         UserRole: "user" | "admin";
         /** @enum {string} */
-        ApiFormat: "open_ai_chat_completions" | "open_ai_responses";
+        ApiFormat: "open_ai_chat_completions" | "open_ai_responses" | "open_ai_images";
+        /** @enum {string} */
+        ApiOperation: "chat_completions" | "responses" | "images_generation" | "images_edit";
         /** @enum {string} */
         SelectionStrategy: "weighted_random" | "weighted_round_robin";
         /** @enum {string} */
@@ -1414,7 +1416,7 @@ export interface components {
         SystemSessionAffinityRule: {
             name: string;
             enabled: boolean;
-            api_formats: components["schemas"]["ApiFormat"][];
+            api_formats: ("open_ai_chat_completions" | "open_ai_responses")[];
             /** @description Empty means every model in the selected API formats. */
             model_regex: string[];
             key_sources: components["schemas"]["SystemSessionAffinityKeySource"][];
@@ -2030,7 +2032,7 @@ export interface components {
             name: string;
             description: string | null;
             /** @enum {string|null} */
-            api_format: "open_ai_chat_completions" | "open_ai_responses" | null;
+            api_format: "open_ai_chat_completions" | "open_ai_responses" | "open_ai_images" | null;
             enabled: boolean;
             created_at: components["schemas"]["DateTime"];
             updated_at: components["schemas"]["DateTime"];
@@ -2052,6 +2054,7 @@ export interface components {
             api_key_id: string;
             request_source: components["schemas"]["RequestLogSource"];
             api_format: components["schemas"]["ApiFormat"];
+            api_operation: components["schemas"]["ApiOperation"];
             request_protocol: components["schemas"]["RequestProtocol"];
             client_model: string;
             /** @description Normalized explicit client reasoning effort parsed from reasoning.effort or reasoning_effort. */

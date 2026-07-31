@@ -15,7 +15,7 @@ use axum::{
 
 use crate::{
     application::{ModelsResponse, ProxyError, ProxyService},
-    domain::ApiFormat,
+    domain::ApiOperation,
     upstream::MAX_UPSTREAM_MESSAGE_BYTES,
 };
 
@@ -26,6 +26,7 @@ pub fn router(proxy: ProxyService) -> Router {
         .route("/v1/models", get(models))
         .route("/v1/chat/completions", post(chat_completions))
         .route("/v1/responses", post(responses).get(responses_websocket))
+        .route("/v1/images/generations", post(images_generations))
         .with_state(proxy)
 }
 
@@ -44,14 +45,21 @@ async fn chat_completions(
     State(proxy): State<ProxyService>,
     request: Request,
 ) -> Result<Response, ProxyError> {
-    proxy.proxy(ApiFormat::OpenAiChatCompletions, request).await
+    proxy.proxy(ApiOperation::ChatCompletions, request).await
 }
 
 async fn responses(
     State(proxy): State<ProxyService>,
     request: Request,
 ) -> Result<Response, ProxyError> {
-    proxy.proxy(ApiFormat::OpenAiResponses, request).await
+    proxy.proxy(ApiOperation::Responses, request).await
+}
+
+async fn images_generations(
+    State(proxy): State<ProxyService>,
+    request: Request,
+) -> Result<Response, ProxyError> {
+    proxy.proxy(ApiOperation::ImagesGeneration, request).await
 }
 
 async fn responses_websocket(

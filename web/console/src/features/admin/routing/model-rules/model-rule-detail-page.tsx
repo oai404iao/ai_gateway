@@ -45,7 +45,7 @@ import { useI18n } from "@/app/i18n";
 
 const schema = z.object({
   client_model: z.string().min(1, "Client model is required."),
-  api_format: z.enum(["open_ai_chat_completions", "open_ai_responses"]),
+  api_format: z.enum(["open_ai_chat_completions", "open_ai_responses", "open_ai_images"]),
   upstream_model_id: z.string().min(1, "Pick an upstream model."),
   description: z.string().nullable(),
   channel_group_ids: z.array(z.string()),

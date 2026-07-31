@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { BrowserRouter } from "react-router";
@@ -225,6 +225,70 @@ describe("ChannelDetailPage", () => {
     await user.click(screen.getByRole("button", { name: /save channel/i }));
 
     await waitFor(() => expect(submitted?.supports_websocket).toBe(true));
+  });
+
+  it("disables scheduled probes for an Images channel", async () => {
+    seedAuthenticatedSession();
+    const imagesGroup: ChannelGroupView = {
+      ...CHANNEL_GROUP,
+      id: "00000000-0000-0000-0000-000000000127",
+      name: "images-generation",
+      api_format: "open_ai_images",
+    };
+    const imagesChannel: ChannelDetailView = {
+      ...CHANNEL_DETAIL,
+      id: "00000000-0000-0000-0000-000000000128",
+      channel_group_id: imagesGroup.id,
+      api_format: "open_ai_images",
+      name: "images-generation",
+      test_model: null,
+      supports_websocket: false,
+      override_document: {
+        version: 1,
+        api_format: "open_ai_images",
+      },
+    };
+    let submitted: ChannelInput | undefined;
+    server.use(
+      http.get("/console/v1/routing/channel-groups", () =>
+        HttpResponse.json([imagesGroup]),
+      ),
+      http.get("/console/v1/routing/channels", () =>
+        HttpResponse.json([imagesChannel]),
+      ),
+      http.get("/console/v1/routing/channels/:id", () =>
+        HttpResponse.json(imagesChannel, {
+          headers: { ETag: `"${imagesChannel.updated_at}"` },
+        }),
+      ),
+      http.get("/console/v1/routing/model-rules", () => HttpResponse.json([])),
+      http.put("/console/v1/routing/channels/:id", async ({ request }) => {
+        submitted = (await request.json()) as ChannelInput;
+        return HttpResponse.json({
+          id: imagesChannel.id,
+          correlation_id: "88888888-0000-0000-0000-000000000000",
+        });
+      }),
+    );
+    const user = userEvent.setup();
+    renderAppAt(`/admin/routing/channels/${imagesChannel.id}`);
+
+    await waitForHydratedChannelForm(imagesChannel.name);
+    const scheduledProbeDescription = screen.getByText(
+      "Images channels are excluded from scheduled paid probes.",
+    );
+    expect(scheduledProbeDescription).toBeInTheDocument();
+    const scheduledProbeField = scheduledProbeDescription.closest('[data-slot="field"]');
+    expect(scheduledProbeField).not.toBeNull();
+    expect(
+      within(scheduledProbeField as HTMLElement).getByRole("combobox"),
+    ).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: /save channel/i }));
+
+    await waitFor(() => expect(submitted).toBeDefined());
+    expect(submitted?.api_format).toBe("open_ai_images");
+    expect(submitted?.test_model).toBeNull();
+    expect(submitted?.supports_websocket).toBe(false);
   });
 
   it("explains a routing dependency rejection instead of showing an opaque error", async () => {

@@ -61,7 +61,7 @@ Console 的“统计”页面默认打开“个人使用情况”标签；贡献
 ## 指标定义
 
 渠道状态统一以 `COALESCE(request_logs.upstream_model, client_model)` 作为模型标识，
-并保留 `api_format` 维度，避免混合 Chat Completions 与 Responses。
+并保留 `api_format` 维度，避免混合 Chat Completions、Responses 与 Images。
 
 - **TTFT**：成功请求且 `ttft_ms IS NOT NULL` 的 P90。
 - **TPS**：成功请求且 `output_tokens_per_second IS NOT NULL` 的 P50。

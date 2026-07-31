@@ -815,6 +815,9 @@ const zhCN: Record<string, string> = {
   "Started": "开始时间",
   "HTTP": "HTTP",
   "Protocol": "请求协议",
+  "Operation": "操作",
+  "Image generation": "图片生成",
+  "Image edit": "图片编辑",
   "Non-stream": "非流式",
   "Tokens": "Token",
   "Output tokens": "输出 Token",
@@ -997,6 +1000,10 @@ const zhCN: Record<string, string> = {
   "Select a test model": "选择测试模型",
   "Periodic scheduled tests use this model. It must be one of the available upstream models and have a configured price.":
     "定时测试会使用此模型。它必须是可用上游模型之一，并且已配置价格。",
+  "Images channels do not support scheduled test models.":
+    "Images 渠道不支持配置定时测试模型。",
+  "Images channels are excluded from scheduled paid probes.":
+    "Images 渠道不会参与定时付费探测。",
   "Allow matching system automatic-disable rules to temporarily remove this channel from routing.":
     "允许匹配的系统自动禁用规则暂时将此渠道移出路由。",
   "Choose a test model from the available upstream models.":

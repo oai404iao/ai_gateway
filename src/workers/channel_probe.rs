@@ -24,9 +24,9 @@ use crate::{
         ResponseUsage, UsageCollector, request_billing, request_billing_multiplier,
     },
     domain::{
-        ApiFormat, AutomaticDisableTrigger, CompiledChannel, CompiledScheduledTestModel,
-        RequestLogEvent, RequestLogOutcome, RequestLogSource, RequestProtocol,
-        ScheduledTestingMode, UpstreamAuth,
+        ApiFormat, ApiOperation, AutomaticDisableTrigger, CompiledChannel,
+        CompiledScheduledTestModel, RequestLogEvent, RequestLogOutcome, RequestLogSource,
+        RequestProtocol, ScheduledTestingMode, UpstreamAuth,
     },
     persistence::SystemProbeIdentity,
     runtime_config::RuntimeConfig,
@@ -453,6 +453,7 @@ fn finished_probe(
             api_key_id: context.identity.api_key_id,
             request_source: RequestLogSource::ScheduledTest,
             api_format: context.channel.api_format(),
+            api_operation: ApiOperation::legacy_default(context.channel.api_format()),
             request_protocol: RequestProtocol::NonStream,
             client_model: model.to_owned(),
             reasoning_effort: None,
@@ -487,6 +488,7 @@ fn build_probe_body(api_format: ApiFormat, model: &str, prompt: &str) -> Result<
             "input": prompt,
             "stream": false,
         }),
+        ApiFormat::OpenAiImages => return Err(()),
     };
     serde_json::to_vec(&value).map(Bytes::from).map_err(|_| ())
 }
@@ -495,6 +497,7 @@ fn probe_url(channel: &CompiledChannel) -> Result<reqwest::Url, ()> {
     let path = match channel.api_format() {
         ApiFormat::OpenAiChatCompletions => "/v1/chat/completions",
         ApiFormat::OpenAiResponses => "/v1/responses",
+        ApiFormat::OpenAiImages => return Err(()),
     };
     reqwest::Url::parse(&format!(
         "{}{path}",

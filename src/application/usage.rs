@@ -42,7 +42,7 @@ impl ResponseUsage {
                     "prompt_tokens_details",
                     "completion_tokens_details",
                 ),
-                ApiFormat::OpenAiResponses => (
+                ApiFormat::OpenAiResponses | ApiFormat::OpenAiImages => (
                     "input_tokens",
                     "output_tokens",
                     "input_tokens_details",
@@ -56,7 +56,7 @@ impl ResponseUsage {
             .and_then(|details| token(details.get("cached_tokens")))
             .or_else(|| match api_format {
                 ApiFormat::OpenAiChatCompletions => token(usage.get("prompt_cache_hit_tokens")),
-                ApiFormat::OpenAiResponses => None,
+                ApiFormat::OpenAiResponses | ApiFormat::OpenAiImages => None,
             })
             .unwrap_or(0);
         let cache_write_tokens = input_details
@@ -245,6 +245,7 @@ fn is_terminal_usage_event(api_format: ApiFormat, value: &Value) -> bool {
                 Some("response.completed" | "response.failed")
             )
         }
+        ApiFormat::OpenAiImages => false,
     }
 }
 
@@ -729,6 +730,28 @@ mod tests {
                 cache_write_tokens: 0,
                 output_tokens: 2,
                 reasoning_tokens: 1,
+            })
+        );
+    }
+
+    #[test]
+    fn extracts_images_usage_without_buffering_base64_output() {
+        let mut collector = UsageCollector::new(ApiFormat::OpenAiImages, false);
+        collector.observe(&Bytes::from_static(
+            br#"{"created":1,"data":[{"b64_json":"aW1h"#,
+        ));
+        collector.observe(&Bytes::from_static(
+            br#"Z2U="}],"usage":{"input_tokens":7,"output_tokens":11,"input_tokens_details":{"image_tokens":0,"text_tokens":7},"output_tokens_details":{"image_tokens":11,"text_tokens":0}}}"#,
+        ));
+
+        assert_eq!(
+            collector.latest(),
+            Some(ResponseUsage {
+                input_tokens: 7,
+                cached_input_tokens: 0,
+                cache_write_tokens: 0,
+                output_tokens: 11,
+                reasoning_tokens: 0,
             })
         );
     }

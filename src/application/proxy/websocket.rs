@@ -27,8 +27,8 @@ use zeroize::Zeroizing;
 use crate::{
     admission::AdmissionError,
     domain::{
-        ApiFormat, ApiKeyPermission, CompiledApiKey, CompiledChannel, CompiledModelRule,
-        RequestProtocol,
+        ApiFormat, ApiKeyPermission, ApiOperation, CompiledApiKey, CompiledChannel,
+        CompiledModelRule, RequestProtocol,
     },
     routing::{SelectionResult, SessionAffinityMatch},
     transforms::{apply_header_plan, apply_json_patch_plan, apply_websocket_event_plan},
@@ -381,6 +381,7 @@ impl ResponsesWebSocketSession {
                 self.proxy.record_rejected(
                     &api_key,
                     OPENAI_RESPONSES_FORMAT,
+                    ApiOperation::Responses,
                     &parsed.model,
                     &parsed.log_metadata,
                     RequestProtocol::WebSocket,
@@ -402,6 +403,7 @@ impl ResponsesWebSocketSession {
                 self.proxy.record_no_healthy_channel(
                     &api_key,
                     OPENAI_RESPONSES_FORMAT,
+                    ApiOperation::Responses,
                     &parsed.model,
                     &parsed.log_metadata,
                     RequestProtocol::WebSocket,
@@ -431,6 +433,7 @@ impl ResponsesWebSocketSession {
             &parsed.log_metadata,
             RequestProtocol::WebSocket,
             OPENAI_RESPONSES_FORMAT,
+            ApiOperation::Responses,
             &rule,
             &channel,
             lease,

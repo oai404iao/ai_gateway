@@ -6,14 +6,14 @@
 
 ## What is ai-gateway?
 
-`ai-gateway` is a single-binary Rust production service intended to forward LLM requests in the OpenAI Chat Completions and Responses formats. It uses Axum/Tokio for HTTP, reqwest for upstream requests, PostgreSQL/SQLx for persistence, and `ArcSwap` for immutable runtime configuration snapshots. Rust 2024 with MSRV 1.92 is required (`Cargo.toml`); `rust-toolchain.toml` pins Rust 1.97.1 for normal development and release builds. The Cargo workspace also contains the development-only `ai-gateway-perf` package under `tools/forwarding-perf/`; it is never linked into the production binary.
+`ai-gateway` is a single-binary Rust production service intended to forward LLM requests in the OpenAI Chat Completions, Responses, and Images formats. It uses Axum/Tokio for HTTP, reqwest for upstream requests, PostgreSQL/SQLx for persistence, and `ArcSwap` for immutable runtime configuration snapshots. Rust 2024 with MSRV 1.92 is required (`Cargo.toml`); `rust-toolchain.toml` pins Rust 1.97.1 for normal development and release builds. The Cargo workspace also contains the development-only `ai-gateway-perf` package under `tools/forwarding-perf/`; it is never linked into the production binary.
 
 The project is licensed under `AGPL-3.0-only`. Third-party license texts and
 attributions that must accompany binary redistribution live in `LICENSES/`
 and `web/console/NOTICES.md`.
 
 The implemented backend includes OpenAI-compatible Chat Completions, HTTP
-Responses, and Responses WebSocket proxy routes, PostgreSQL-backed
+Responses, Responses WebSocket, and non-streaming JSON Images generation proxy routes, PostgreSQL-backed
 control-plane snapshots, a separate JWT-authenticated Console API with
 `user`/`admin` roles, constrained transforms, streaming/SSE/WebSocket
 forwarding, passive health, admission controls, durable spooled request logs,
@@ -154,8 +154,10 @@ tests. `cargo test` is the baseline Rust verification. The ignored
 `tests/real_upstream/` contains paid external calls and must only run via
 `./scripts/run-real-upstream-smoke.sh`; see `docs/development/real-upstream-smoke.md`.
 **Any change to the forwarding path must also run this real-upstream script
-before completion.** It serially verifies both `/v1/chat/completions` and
+before completion.** It serially verifies `/v1/chat/completions` and
 `/v1/responses`, with non-streaming and SSE requests plus Responses WebSocket.
+Images generation currently relies on deterministic proxy integration tests;
+the paid smoke does not issue an image request.
 GitHub Actions workflows under `.github/workflows/` run path-aware ordinary
 CI, reusable Rust/Console/E2E quality gates, CodeQL security scanning, and the
 tag release path. Every PR emits the stable `ci-gate`; Markdown-only changes
@@ -219,7 +221,7 @@ Axum HTTP
 
 ### Load-bearing rules
 
-- Support only `OpenAiChatCompletions` and `OpenAiResponses` (`src/domain/api_format.rs`). Keep their validation and routing paths separate: never fall back or transform between formats.
+- Support `OpenAiChatCompletions`, `OpenAiResponses`, and `OpenAiImages` (`src/domain/api_format.rs`). Keep their validation and routing paths separate: never fall back or transform between formats. `OpenAiImages` currently exposes only JSON `POST /v1/images/generations`; edits, multipart bodies, and image streaming are not implemented.
 - `model_rules`, channel groups, and channels must agree on `api_format`; a model rule is unique by `(client_model, api_format)`.
 - Parse a request only as far as necessary to obtain `model`; absent an enabled transform or model alias, forward the original request bytes without reserialization.
 - Keep the fixed transform order: template defaults → channel overrides → upstream authentication. Configurable transforms must not alter protected or hop-by-hop headers.
@@ -291,7 +293,7 @@ Axum HTTP
 
 1. Add or update deterministic local and PostgreSQL tests as appropriate.
 2. Run `cargo fmt --check`, `cargo clippy --all-targets`, and `cargo test`.
-3. Run `./scripts/run-real-upstream-smoke.sh` before considering the change complete. It requires the ignored `.env.real-upstream` file and makes paid calls to both configured upstream formats.
+3. Run `./scripts/run-real-upstream-smoke.sh` before considering the change complete. It requires the ignored `.env.real-upstream` file and makes paid Chat Completions and Responses calls; Images changes also require deterministic proxy integration coverage because the paid smoke does not yet issue image requests.
 4. Do not print, commit, or copy credentials from `.env.real-upstream` into TOML, source, tests, or logs.
 
 For Responses WebSocket changes, also run

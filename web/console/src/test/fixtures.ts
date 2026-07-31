@@ -316,6 +316,7 @@ export const REQUEST_LOG: RequestLogView = {
   api_key_id: OWN_API_KEY.id,
   request_source: "client",
   api_format: "open_ai_chat_completions",
+  api_operation: "chat_completions",
   request_protocol: "sse",
   client_model: MODEL_RULE.client_model,
   reasoning_effort: "high",

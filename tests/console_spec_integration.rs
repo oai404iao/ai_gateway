@@ -3072,6 +3072,92 @@ async fn channel_websocket_support_is_responses_only_and_defaults_to_opt_in() {
     database.cleanup().await;
 }
 
+#[tokio::test]
+async fn images_control_plane_rejects_scheduled_probes_and_sse_transforms() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+
+    let group = request(
+        &app,
+        "POST",
+        "/console/v1/routing/channel-groups",
+        serde_json::json!({
+            "name": "images-group",
+            "api_format": "open_ai_images",
+            "priority": 1,
+            "selection_strategy": "weighted_random",
+            "enabled": true,
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(group.status(), StatusCode::CREATED);
+    let group_id = body_json(group).await["id"].as_str().unwrap().to_owned();
+
+    let scheduled_probe = request(
+        &app,
+        "POST",
+        "/console/v1/routing/channels",
+        serde_json::json!({
+            "channel_group_id": group_id,
+            "api_format": "open_ai_images",
+            "name": "invalid-images-probe",
+            "base_url": "https://images.example.test",
+            "enabled": true,
+            "weight": 1,
+            "upstream_auth_kind": "none",
+            "available_models": ["gpt-image-2"],
+            "test_model": "gpt-image-2",
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(scheduled_probe.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let channel = request(
+        &app,
+        "POST",
+        "/console/v1/routing/channels",
+        serde_json::json!({
+            "channel_group_id": group_id,
+            "api_format": "open_ai_images",
+            "name": "images-generation",
+            "base_url": "https://images.example.test",
+            "enabled": true,
+            "weight": 1,
+            "upstream_auth_kind": "none",
+            "available_models": ["gpt-image-2"],
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(channel.status(), StatusCode::CREATED);
+
+    let sse_template = request(
+        &app,
+        "POST",
+        "/console/v1/transforms/templates",
+        serde_json::json!({
+            "name": "invalid-images-sse",
+            "api_format": "open_ai_images",
+            "document": {
+                "version": 1,
+                "api_format": "open_ai_images",
+                "sse": [{
+                    "event": "image_generation.partial_image",
+                    "json": []
+                }]
+            },
+            "enabled": true,
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(sse_template.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    database.cleanup().await;
+}
+
 /// Draft channel model discovery is admin-only, does not persist changes, and
 /// returns unique IDs from an OpenAI-compatible `GET /v1/models` response.
 #[tokio::test]
@@ -3855,8 +3941,8 @@ async fn request_log_filters_match_the_console_contract() {
     ] {
         sqlx::query(
             "INSERT INTO request_logs \
-             (id,started_at,completed_at,user_id,api_key_id,api_format,client_model,upstream_model,outcome,streamed,ttft_ms,total_duration_ms,output_tokens_per_second,reasoning_effort,fast_mode,input_tokens,cached_input_tokens,cache_write_tokens,output_tokens,reasoning_tokens,error_code,error_summary) \
-             VALUES ($1,$2,$2,$3,$4,'open_ai_chat_completions',$5,$6,$7,false,100,1000,5.5556,'high',true,12,2,1,5,1,$8,$9)",
+             (id,started_at,completed_at,user_id,api_key_id,api_format,api_operation,client_model,upstream_model,outcome,streamed,ttft_ms,total_duration_ms,output_tokens_per_second,reasoning_effort,fast_mode,input_tokens,cached_input_tokens,cache_write_tokens,output_tokens,reasoning_tokens,error_code,error_summary) \
+             VALUES ($1,$2,$2,$3,$4,'open_ai_chat_completions','chat_completions',$5,$6,$7,false,100,1000,5.5556,'high',true,12,2,1,5,1,$8,$9)",
         )
         .bind(id)
         .bind(now)
@@ -3885,6 +3971,7 @@ async fn request_log_filters_match_the_console_contract() {
     assert_eq!(body.as_array().unwrap().len(), 1);
     assert_eq!(body[0]["id"], matching_log_id.to_string());
     assert_eq!(body[0]["user_name"], format!("spec-{}", app.user_id));
+    assert_eq!(body[0]["api_operation"], "chat_completions");
     assert_eq!(body[0]["request_protocol"], "non_stream");
     assert_eq!(body[0]["reasoning_effort"], "high");
     assert_eq!(body[0]["fast_mode"], true);
@@ -3910,6 +3997,7 @@ async fn request_log_filters_match_the_console_contract() {
     let detail = body_json(detail).await;
     assert_eq!(detail["id"], matching_log_id.to_string());
     assert_eq!(detail["user_name"], format!("spec-{}", app.user_id));
+    assert_eq!(detail["api_operation"], "chat_completions");
     assert_eq!(detail["request_protocol"], "non_stream");
     assert_eq!(detail["reasoning_effort"], "high");
     assert_eq!(detail["fast_mode"], true);
@@ -3917,6 +4005,65 @@ async fn request_log_filters_match_the_console_contract() {
     assert_eq!(detail["reasoning_tokens"], 1);
     assert_eq!(detail["error_code"], "provider_error");
     assert_eq!(detail["error_summary"], "upstream quota exhausted");
+
+    let image_log_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO request_logs \
+         (id,started_at,completed_at,user_id,api_key_id,api_format,api_operation,client_model,outcome) \
+         VALUES ($1,$2,$2,$3,$4,'open_ai_images','images_generation','gpt-image-2','succeeded')",
+    )
+    .bind(image_log_id)
+    .bind(now)
+    .bind(app.user_id)
+    .bind(api_key_id)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let images = request(
+        &app,
+        "GET",
+        "/console/v1/request-logs?api_format=open_ai_images",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(images.status(), StatusCode::OK);
+    let images = body_json(images).await;
+    assert_eq!(images.as_array().unwrap().len(), 1);
+    assert_eq!(images[0]["id"], image_log_id.to_string());
+    assert_eq!(images[0]["api_operation"], "images_generation");
+    let mismatched_operation = sqlx::query(
+        "INSERT INTO request_logs \
+         (id,started_at,completed_at,user_id,api_key_id,api_format,api_operation,client_model,outcome) \
+         VALUES ($1,$2,$2,$3,$4,'open_ai_images','responses','invalid-images-log','failed')",
+    )
+    .bind(Uuid::new_v4())
+    .bind(now)
+    .bind(app.user_id)
+    .bind(api_key_id)
+    .execute(&database.pool)
+    .await;
+    assert!(mismatched_operation.is_err());
+    let legacy_log_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO request_logs \
+         (id,started_at,completed_at,user_id,api_key_id,api_format,client_model,outcome) \
+         VALUES ($1,$2,$2,$3,$4,'open_ai_responses','legacy-response','succeeded')",
+    )
+    .bind(legacy_log_id)
+    .bind(now)
+    .bind(app.user_id)
+    .bind(api_key_id)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let inferred_operation: String =
+        sqlx::query_scalar("SELECT api_operation FROM request_logs WHERE id=$1")
+            .bind(legacy_log_id)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert_eq!(inferred_operation, "responses");
 
     let missing = request(
         &app,
@@ -4038,13 +4185,13 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
     ] {
         sqlx::query(
             "INSERT INTO request_logs \
-             (id,started_at,completed_at,user_id,api_key_id,api_format,client_model, \
+             (id,started_at,completed_at,user_id,api_key_id,api_format,api_operation,client_model, \
               upstream_model,channel_group_id,channel_id,outcome,response_status_code, \
               streamed,ttft_ms,total_duration_ms,output_tokens_per_second,input_tokens, \
               cached_input_tokens,cache_write_tokens,output_tokens,currency,price_unit_tokens, \
               price_effective_at,input_unit_price,cached_input_unit_price, \
               cache_write_unit_price,output_unit_price,cost_amount) \
-             VALUES ($1,$2,$2,$3,$4,'open_ai_chat_completions','statistics-client-model', \
+             VALUES ($1,$2,$2,$3,$4,'open_ai_chat_completions','chat_completions','statistics-client-model', \
                      'statistics-model',$5,$6,$7,$8,false,$9,1000,$10,$11,$12,$13,$14, \
                      'USD',1000000,$2,1,0,0,1,$15)",
         )
@@ -4071,13 +4218,13 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
     let scheduled_test_at = started_at - chrono::Duration::days(2);
     sqlx::query(
         "INSERT INTO request_logs \
-         (id,started_at,completed_at,user_id,api_key_id,request_source,api_format,client_model, \
+         (id,started_at,completed_at,user_id,api_key_id,request_source,api_format,api_operation,client_model, \
           upstream_model,channel_group_id,channel_id,outcome,response_status_code, \
           streamed,ttft_ms,total_duration_ms,input_tokens,cached_input_tokens, \
           cache_write_tokens,output_tokens,currency,price_unit_tokens,price_effective_at, \
           input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price, \
           cost_amount) \
-         VALUES ($1,$2,$2,$3,$4,'scheduled_test','open_ai_chat_completions', \
+         VALUES ($1,$2,$2,$3,$4,'scheduled_test','open_ai_chat_completions','chat_completions', \
                  'statistics-scheduled-client-model','statistics-model',$5,$6,'succeeded',200, \
                  false,100,200,1,0,0,1,'USD',1000000,$2,1,0,0,1,0.01)",
     )
@@ -4243,13 +4390,13 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
     let regular_request_log_id = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO request_logs \
-         (id,started_at,completed_at,user_id,api_key_id,api_format,client_model, \
+         (id,started_at,completed_at,user_id,api_key_id,api_format,api_operation,client_model, \
           upstream_model,channel_group_id,channel_id,outcome,response_status_code, \
           streamed,ttft_ms,total_duration_ms,output_tokens_per_second,input_tokens, \
           cached_input_tokens,cache_write_tokens,output_tokens,currency,price_unit_tokens, \
           price_effective_at,input_unit_price,cached_input_unit_price, \
           cache_write_unit_price,output_unit_price,cost_amount) \
-         VALUES ($1,$2,$2,$3,$4,'open_ai_chat_completions','statistics-user-client-model', \
+         VALUES ($1,$2,$2,$3,$4,'open_ai_chat_completions','chat_completions','statistics-user-client-model', \
                  'statistics-user-model',$5,$6,'succeeded',200,false,250,500,25,40,0,0,10, \
                  'USD',1000000,$2,1,0,0,1,1)",
     )
@@ -4672,11 +4819,11 @@ async fn spend_leaderboard_uses_shanghai_periods_and_serves_snapshots() {
     ] {
         sqlx::query(
             "INSERT INTO request_logs \
-             (id,started_at,completed_at,user_id,api_key_id,api_format,client_model, \
+             (id,started_at,completed_at,user_id,api_key_id,api_format,api_operation,client_model, \
               outcome,response_status_code,streamed,input_tokens,output_tokens,currency, \
               price_unit_tokens,price_effective_at,input_unit_price,cached_input_unit_price, \
               cache_write_unit_price,output_unit_price,cost_amount) \
-             VALUES ($1,$2,$2,$3,$4,'open_ai_chat_completions','leaderboard-model', \
+             VALUES ($1,$2,$2,$3,$4,'open_ai_chat_completions','chat_completions','leaderboard-model', \
                      'succeeded',200,false,10,5,'USD',1000000,$2,1,0,0,1,$5)",
         )
         .bind(Uuid::new_v4())
@@ -4834,11 +4981,11 @@ async fn spend_leaderboard_uses_shanghai_periods_and_serves_snapshots() {
 
     sqlx::query(
         "INSERT INTO request_logs \
-         (id,started_at,completed_at,user_id,api_key_id,api_format,client_model, \
+         (id,started_at,completed_at,user_id,api_key_id,api_format,api_operation,client_model, \
           outcome,response_status_code,streamed,input_tokens,output_tokens,currency, \
           price_unit_tokens,price_effective_at,input_unit_price,cached_input_unit_price, \
           cache_write_unit_price,output_unit_price,cost_amount) \
-         VALUES ($1,$2,$2,$3,$4,'open_ai_chat_completions','leaderboard-model', \
+         VALUES ($1,$2,$2,$3,$4,'open_ai_chat_completions','chat_completions','leaderboard-model', \
                  'succeeded',200,false,10,5,'USD',1000000,$2,1,0,0,1,1)",
     )
     .bind(Uuid::new_v4())

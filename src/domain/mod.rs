@@ -2,6 +2,7 @@
 
 mod api_format;
 mod api_key;
+mod api_operation;
 mod billing;
 mod compiled_routing;
 mod connector;
@@ -11,6 +12,7 @@ mod system_settings;
 
 pub use api_format::ApiFormat;
 pub use api_key::ApiKeyHash;
+pub use api_operation::ApiOperation;
 pub use billing::{
     AdvancedBilling, AdvancedBillingError, CompiledAdvancedBilling, LongContextTier,
     RequestBillingMultiplier,

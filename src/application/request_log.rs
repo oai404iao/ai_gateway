@@ -274,8 +274,8 @@ mod tests {
 
     use super::{QueueRequestLogSink, RequestLogSink};
     use crate::domain::{
-        ApiFormat, RequestBilling, RequestLogEvent, RequestLogOutcome, RequestLogSource,
-        RequestPriceSnapshot, RequestProtocol, RequestUsage,
+        ApiFormat, ApiOperation, RequestBilling, RequestLogEvent, RequestLogOutcome,
+        RequestLogSource, RequestPriceSnapshot, RequestProtocol, RequestUsage,
     };
 
     fn event() -> RequestLogEvent {
@@ -288,6 +288,7 @@ mod tests {
             api_key_id: Uuid::new_v4(),
             request_source: RequestLogSource::Client,
             api_format: ApiFormat::OpenAiChatCompletions,
+            api_operation: ApiOperation::ChatCompletions,
             request_protocol: RequestProtocol::NonStream,
             client_model: "test".into(),
             reasoning_effort: None,

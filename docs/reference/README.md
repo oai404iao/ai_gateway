@@ -9,6 +9,7 @@
 - [兼容性总览](openai-compatibility.md)
 - [Chat Completions](chat-completions.md)
 - [Responses](responses.md)
+- [Images](openai-images.md)
 - [Codex OAuth 与订阅后端接入参考](codex-oauth-connect.md)
 - [Codex 凭证导入格式兼容性](codex-credential-portability.md)
 - [Codex Responses WebSocket 实现参考](codex-responses-websocket.md)

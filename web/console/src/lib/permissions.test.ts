@@ -12,5 +12,6 @@ describe("apiFormatLabel", () => {
 
     expect(apiFormatLabel("open_ai_chat_completions")).toBe("Chat Completions");
     expect(apiFormatLabel("open_ai_responses")).toBe("Responses");
+    expect(apiFormatLabel("open_ai_images")).toBe("Images");
   });
 });

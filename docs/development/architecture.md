@@ -6,12 +6,16 @@
 
 `ai-gateway` 是 Rust 2024 单二进制服务。生产运行时由 Axum/Tokio、reqwest、PostgreSQL/SQLx 和 `ArcSwap` 组成；Console Web UI 可在构建时嵌入二进制，生产环境不需要常驻 Node 服务。
 
-系统只支持两种数据面格式：
+系统支持三种数据面格式：
 
 - `OpenAiChatCompletions`
 - `OpenAiResponses`
+- `OpenAiImages`
 
-两种格式共享鉴权、选路、上游客户端和日志基础设施，但路由、变换、SSE 识别和 usage 解析保持隔离，禁止跨格式回退或转换。
+三种格式共享鉴权、选路、上游客户端和日志基础设施，但路由、变换、协议操作和 usage
+解析保持隔离，禁止跨格式回退或转换。`ApiOperation` 进一步区分 Chat Completions、
+Responses、Images generation 与未来的 Images edit；当前 Images 只实现非流式 JSON
+generation。
 
 客户端 API 格式与上游接入方式是两个维度。Channel Group 另有
 `ConnectorKind`：普通渠道使用 `openai_compatible`，Codex 订阅凭证使用
@@ -77,7 +81,7 @@ observation 接口，不包含 provider 的 OAuth claim、路径或 Header 细�
   按 HTTP SSE 或 WebSocket 强制 Codex Responses 请求约束、生成会话身份、改写目标并注入
   OAuth/account Header。
 - `ConnectorKind` 编译进 group/channel 快照。新增 provider 时扩展 registry 和独立 provider
-  模块，不能在标准 Chat Completions/Responses 逻辑中再建一套路由器。
+  模块，不能在标准 Chat Completions/Responses/Images 逻辑中再建一套路由器。
 
 Codex 的每个凭证是一个 provider-managed Channel，Channel Group 是凭证池。普通 Channel CRUD
 和批量修改在 repository 层拒绝 managed channel；provider API 在 serializable 控制面事务中同时
@@ -121,6 +125,7 @@ grace period 内完成，截止时强制取消，避免 Upgrade 脱离 Hyper con
 ## 重试与 Streaming 边界
 
 - 自动故障转移只覆盖收到响应头前的连接失败、建连超时和响应头超时。
+- Images generation 不使用自动故障转移；上游尝试一旦开始即只返回该尝试结果。
 - Responses WebSocket 只在上游 Upgrade/建连完成前故障转移；`response.create`
   一旦发送就不再切换连接或渠道。
 - 每次后续尝试排除已经尝试过的渠道，并重新遵守授权、优先级、健康和权重规则。
@@ -170,6 +175,8 @@ terminal request event
 ```
 
 spool 和 ingress 分别形成两层可恢复 backlog。不得在数据库 COPY 提交前 checkpoint，也不得在最终投影成功前删除 ingress 记录。
+日志同时保存路由维度 `api_format` 和公共操作维度 `api_operation`，使同一 Images 格式中的
+generation/edit 可以保持独立观测和迁移兼容性。
 
 ## 代码边界
 

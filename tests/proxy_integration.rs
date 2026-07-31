@@ -398,6 +398,7 @@ async fn harness_with_policy(
         Router::new()
             .route("/v1/chat/completions", post(capture_upstream))
             .route("/v1/responses", post(capture_upstream))
+            .route("/v1/images/generations", post(capture_upstream))
             .with_state(MockUpstream {
                 requests: Arc::clone(&requests),
                 status,
@@ -430,6 +431,7 @@ async fn harness_with_transforms(transforms: TransformDocuments) -> Harness {
         Router::new()
             .route("/v1/chat/completions", post(capture_upstream))
             .route("/v1/responses", post(capture_upstream))
+            .route("/v1/images/generations", post(capture_upstream))
             .with_state(MockUpstream {
                 requests: Arc::clone(&requests),
                 status: StatusCode::OK,
@@ -475,6 +477,7 @@ struct TransformDocuments {
     template: Option<Value>,
     chat_override: Value,
     responses_override: Value,
+    images_override: Value,
     upstream_auth_kind: &'static str,
     upstream_auth_header_name: Option<&'static str>,
     upstream_api_key: Option<&'static str>,
@@ -494,6 +497,7 @@ impl Default for TransformDocuments {
             template: None,
             chat_override: serde_json::json!({}),
             responses_override: serde_json::json!({}),
+            images_override: serde_json::json!({}),
             upstream_auth_kind: "bearer",
             upstream_auth_header_name: None,
             upstream_api_key: Some(UPSTREAM_KEY),
@@ -588,9 +592,12 @@ fn configured_proxy_with_policy_and_transforms(
 ) -> ConfiguredProxy {
     let chat_group = Uuid::new_v4();
     let responses_group = Uuid::new_v4();
+    let images_group = Uuid::new_v4();
     let empty_chat_group = Uuid::new_v4();
     let chat = Uuid::new_v4();
     let responses = Uuid::new_v4();
+    let images = Uuid::new_v4();
+    let images_alt = Uuid::new_v4();
     let group = |id: Uuid, api_format: &str| ChannelGroupRecord {
         id,
         name: id.to_string(),
@@ -620,6 +627,7 @@ fn configured_proxy_with_policy_and_transforms(
         override_document: match api_format {
             "open_ai_chat_completions" => transforms.chat_override.clone(),
             "open_ai_responses" => transforms.responses_override.clone(),
+            "open_ai_images" => transforms.images_override.clone(),
             _ => serde_json::json!({}),
         },
         connect_timeout_ms: None,
@@ -635,6 +643,7 @@ fn configured_proxy_with_policy_and_transforms(
                 "chat-only-model".into(),
             ],
             "open_ai_responses" => vec!["responses-model".into()],
+            "open_ai_images" => vec!["gpt-image-2".into()],
             _ => vec![],
         },
         test_model: None,
@@ -684,8 +693,12 @@ fn configured_proxy_with_policy_and_transforms(
         api_keys: vec![
             key(
                 CLIENT_KEY,
-                vec!["open_ai_chat_completions", "open_ai_responses"],
-                vec![chat_group, responses_group],
+                vec![
+                    "open_ai_chat_completions",
+                    "open_ai_responses",
+                    "open_ai_images",
+                ],
+                vec![chat_group, responses_group, images_group],
                 vec!["proxy", "models.read"],
             ),
             key(
@@ -710,11 +723,14 @@ fn configured_proxy_with_policy_and_transforms(
         groups: vec![
             group(chat_group, "open_ai_chat_completions"),
             group(responses_group, "open_ai_responses"),
+            group(images_group, "open_ai_images"),
             group(empty_chat_group, "open_ai_chat_completions"),
         ],
         channels: vec![
             channel(chat, chat_group, "open_ai_chat_completions"),
             channel(responses, responses_group, "open_ai_responses"),
+            channel(images, images_group, "open_ai_images"),
+            channel(images_alt, images_group, "open_ai_images"),
         ],
         models: vec![],
         model_rules: vec![
@@ -737,6 +753,11 @@ fn configured_proxy_with_policy_and_transforms(
                 "open_ai_responses",
                 responses,
             ),
+            {
+                let mut rule = rule("gpt-image-2", "gpt-image-2", "open_ai_images", images);
+                rule.channel_ids.push(images_alt);
+                rule
+            },
         ],
         proxies: vec![],
         templates: template_id
@@ -1173,6 +1194,18 @@ async fn api_key_and_model_rules_do_not_fall_back_between_formats() {
     .unwrap();
     assert_eq!(missing_route.status(), StatusCode::NOT_FOUND);
     assert!(harness.upstream_requests().is_empty());
+
+    let images_forbidden = authorized_post(
+        &client,
+        harness.url("/v1/images/generations"),
+        CHAT_ONLY_KEY,
+        br#"{"model":"gpt-image-2","prompt":"test"}"#.to_vec(),
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(images_forbidden.status(), StatusCode::FORBIDDEN);
+    assert!(harness.upstream_requests().is_empty());
 }
 
 #[tokio::test]
@@ -1200,6 +1233,10 @@ async fn matching_chat_model_preserves_body_and_forwards_response_safely() {
     let logs = harness.logs();
     assert_eq!(logs.len(), 1);
     assert_eq!(logs[0].outcome.as_str(), "succeeded");
+    assert_eq!(
+        logs[0].api_operation,
+        ai_gateway::domain::ApiOperation::ChatCompletions
+    );
     assert_eq!(logs[0].response_status_code, Some(201));
     assert_eq!(logs[0].reasoning_effort.as_deref(), Some("high"));
     assert!(logs[0].fast_mode);
@@ -1215,6 +1252,154 @@ async fn matching_chat_model_preserves_body_and_forwards_response_safely() {
     assert!(request.headers.get("connection").is_none());
     assert!(request.headers.get("x-internal-hop").is_none());
     assert_eq!(request.headers.get("x-request-id").unwrap(), "forward-me");
+}
+
+#[tokio::test]
+async fn images_generation_preserves_json_and_collects_top_level_usage() {
+    let upstream_body = br#"{"created":1,"data":[{"b64_json":"aW1hZ2U="}],"usage":{"input_tokens":7,"output_tokens":11,"input_tokens_details":{"image_tokens":0,"text_tokens":7},"output_tokens_details":{"image_tokens":11,"text_tokens":0}}}"#.to_vec();
+    let harness = harness(StatusCode::OK, upstream_body.clone()).await;
+    let request_body =
+        br#"{ "model" : "gpt-image-2", "prompt":"draw a blue whale", "size":"auto" }"#.to_vec();
+
+    let response = authorized_post(
+        &client(),
+        harness.url("/v1/images/generations"),
+        CLIENT_KEY,
+        request_body.clone(),
+    )
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.bytes().await.unwrap().as_ref(), upstream_body);
+    let requests = harness.upstream_requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].body, request_body);
+    assert_eq!(
+        requests[0].headers.get("authorization").unwrap(),
+        "Bearer upstream-key"
+    );
+
+    let logs = harness.logs();
+    assert_eq!(logs.len(), 1);
+    assert_eq!(logs[0].api_format, ApiFormat::OpenAiImages);
+    assert_eq!(
+        logs[0].api_operation,
+        ai_gateway::domain::ApiOperation::ImagesGeneration
+    );
+    assert_eq!(logs[0].request_protocol.as_str(), "non_stream");
+    assert_eq!(
+        logs[0].billing.as_ref().unwrap().usage,
+        Some(ai_gateway::domain::RequestUsage {
+            input_tokens: 7,
+            cached_input_tokens: 0,
+            cache_write_tokens: 0,
+            output_tokens: 11,
+            reasoning_tokens: 0,
+        })
+    );
+    assert_eq!(
+        logs[0].billing.as_ref().unwrap().output_tokens_per_second,
+        None
+    );
+}
+
+#[tokio::test]
+async fn images_generation_applies_images_scoped_header_and_json_transforms() {
+    let harness = harness_with_transforms(TransformDocuments {
+        images_override: serde_json::json!({
+            "version": 1,
+            "api_format": "open_ai_images",
+            "request_headers": {"set": {"x-image-route": "generation"}},
+            "request_json": [{"op": "add", "path": "/quality", "value": "high"}]
+        }),
+        ..Default::default()
+    })
+    .await;
+
+    let response = authorized_post(
+        &client(),
+        harness.url("/v1/images/generations"),
+        CLIENT_KEY,
+        br#"{"model":"gpt-image-2","prompt":"test"}"#.to_vec(),
+    )
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let requests = harness.upstream_requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0].headers.get("x-image-route").unwrap(),
+        "generation"
+    );
+    let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(body["quality"], "high");
+}
+
+#[tokio::test]
+async fn images_generation_rejects_streaming_without_upstream_contact() {
+    let harness = harness(StatusCode::OK, Vec::new()).await;
+
+    let response = authorized_post(
+        &client(),
+        harness.url("/v1/images/generations"),
+        CLIENT_KEY,
+        br#"{"model":"gpt-image-2","prompt":"test","stream":true}"#.to_vec(),
+    )
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+    assert_eq!(body["error"]["code"], "image_streaming_unsupported");
+    assert_eq!(body["error"]["param"], "stream");
+    assert!(harness.upstream_requests().is_empty());
+    assert!(harness.logs().is_empty());
+}
+
+#[tokio::test]
+async fn images_generation_does_not_retry_after_an_upstream_attempt_starts() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let upstream = start_server(
+        Router::new()
+            .route("/v1/images/generations", post(first_response_header_hangs))
+            .with_state(MockUpstream {
+                requests: Arc::clone(&requests),
+                status: StatusCode::OK,
+                body: br#"{"data":[]}"#.to_vec(),
+            }),
+    )
+    .await;
+    let configured = proxy_service_with_policy(
+        &format!("http://{}", upstream.address),
+        RecordingRequestLogSink::default(),
+        None,
+        None,
+        None,
+        Default::default(),
+    );
+    let gateway = start_server(http::router(configured.proxy)).await;
+
+    let timeout_client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+    let response = authorized_post(
+        &timeout_client,
+        format!("http://{}/v1/images/generations", gateway.address),
+        CLIENT_KEY,
+        br#"{"model":"gpt-image-2","prompt":"test"}"#.to_vec(),
+    )
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+    assert_eq!(requests.lock().unwrap().len(), 1);
 }
 
 #[tokio::test]
@@ -1744,6 +1929,23 @@ async fn models_endpoint_filters_by_api_format_and_requires_authentication() {
         ])
     );
     assert!(!models.contains("responses-model"));
+
+    let all_formats = client
+        .get(harness.url("/v1/models"))
+        .header("authorization", format!("Bearer {CLIENT_KEY}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(all_formats.status(), StatusCode::OK);
+    let all_formats: Value = serde_json::from_slice(&all_formats.bytes().await.unwrap()).unwrap();
+    let all_models = all_formats["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|model| model["id"].as_str().unwrap())
+        .collect::<BTreeSet<_>>();
+    assert!(all_models.contains("responses-model"));
+    assert!(all_models.contains("gpt-image-2"));
 
     let unauthenticated = client.get(harness.url("/v1/models")).send().await.unwrap();
     assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);

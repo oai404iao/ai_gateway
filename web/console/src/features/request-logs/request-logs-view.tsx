@@ -136,6 +136,22 @@ function requestProtocolLabel(
   }
 }
 
+function requestOperationLabel(
+  operation: RequestLogView["api_operation"],
+  t: (value: string) => string,
+) {
+  switch (operation) {
+    case "chat_completions":
+      return t("Chat Completions");
+    case "responses":
+      return t("Responses");
+    case "images_generation":
+      return t("Image generation");
+    case "images_edit":
+      return t("Image edit");
+  }
+}
+
 function TokenUsage({ log }: { log: RequestLogView }) {
   const { t } = useI18n();
   const uncachedInput = tokenRemainder(log.input_tokens, log.cached_input_tokens);
@@ -690,6 +706,10 @@ export function RequestLogsView({
             <dl className="grid grid-cols-1 gap-3 p-4">
               <DetailField label={t("Started")} value={formatDateTime(detail.data.started_at)} />
               <DetailField label={t("Model")} value={<RequestModel log={detail.data} />} />
+              <DetailField
+                label={t("Operation")}
+                value={requestOperationLabel(detail.data.api_operation, t)}
+              />
               <DetailField
                 label={t("Protocol")}
                 value={requestProtocolLabel(detail.data.request_protocol, t)}

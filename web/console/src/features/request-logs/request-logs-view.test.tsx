@@ -221,6 +221,7 @@ describe("RequestLogsView", () => {
       user_name: "System Request Owner",
       request_source: "scheduled_test",
       api_format: "open_ai_responses",
+      api_operation: "responses",
       request_protocol: "websocket",
       client_model: "detail-model",
       upstream_model: "upstream-detail-model",
@@ -262,6 +263,7 @@ describe("RequestLogsView", () => {
     expect([...document.querySelectorAll("dt")].map((label) => label.textContent)).toEqual([
       "Started",
       "Model",
+      "Operation",
       "Protocol",
       "Channel group",
       "Channel",
@@ -278,6 +280,7 @@ describe("RequestLogsView", () => {
     expect(
       await screen.findByText("provider_error", { selector: "dd" }),
     ).toBeInTheDocument();
+    expect(await screen.findByText("Responses", { selector: "dd" })).toBeInTheDocument();
     expect(await screen.findByText("WebSocket", { selector: "dd" })).toBeInTheDocument();
     const channelLabel = await screen.findByText("Channel", { selector: "dt" });
     expect(channelLabel.parentElement).toHaveTextContent(CHANNEL.name);
@@ -332,6 +335,7 @@ describe("RequestLogsView", () => {
     expect([...document.querySelectorAll("dt")].map((label) => label.textContent)).toEqual([
       "Started",
       "Model",
+      "Operation",
       "Protocol",
       "Channel group",
       "Outcome",
