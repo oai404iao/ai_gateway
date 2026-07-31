@@ -1959,6 +1959,26 @@ async fn codex_oauth_flow_contract_uses_pkce_and_actor_scoped_completion() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
 
+    let direct_images_group = request(
+        &app,
+        "POST",
+        "/console/v1/routing/channel-groups",
+        serde_json::json!({
+            "name": "spec-codex-images-orphan",
+            "api_format": "open_ai_images",
+            "connector_kind": "codex_oauth",
+            "priority": 1,
+            "selection_strategy": "weighted_random",
+            "enabled": false,
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(
+        direct_images_group.status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+
     let create_group = request(
         &app,
         "POST",
@@ -1979,6 +1999,60 @@ async fn codex_oauth_flow_contract_uses_pkce_and_actor_scoped_completion() {
         .as_str()
         .unwrap()
         .to_owned();
+    let group_uuid = Uuid::parse_str(&group_id).unwrap();
+    let (images_group_id, images_group_enabled): (Uuid, bool) = sqlx::query_as(
+        "SELECT id,enabled FROM channel_groups \
+         WHERE connector_pool_id=$1 AND api_format='open_ai_images'::api_format",
+    )
+    .bind(group_uuid)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert!(!images_group_enabled);
+    let group_audit: serde_json::Value = sqlx::query_scalar(
+        "SELECT after_redacted FROM audit_logs \
+         WHERE object_type='channel_group' AND object_id=$1 AND action='create'",
+    )
+    .bind(group_uuid)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        group_audit["connector_pool_groups"]
+            .as_array()
+            .map(Vec::len),
+        Some(2)
+    );
+    let images_group_path = format!("/console/v1/routing/channel-groups/{images_group_id}");
+    let images_group_detail =
+        request(&app, "GET", &images_group_path, serde_json::json!({}), &[]).await;
+    assert_eq!(images_group_detail.status(), StatusCode::OK);
+    let images_group_etag = images_group_detail
+        .headers()
+        .get(header::ETAG)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let mut images_group_update = body_json(images_group_detail).await;
+    assert_eq!(images_group_update["api_format"], "open_ai_images");
+    assert_eq!(images_group_update["connector_kind"], "codex_oauth");
+    assert_eq!(images_group_update["enabled"], false);
+    images_group_update["enabled"] = serde_json::json!(true);
+    images_group_update.as_object_mut().unwrap().remove("id");
+    images_group_update
+        .as_object_mut()
+        .unwrap()
+        .remove("updated_at");
+    let enabled_images_group = request(
+        &app,
+        "PUT",
+        &images_group_path,
+        images_group_update,
+        &[("if-match", &images_group_etag)],
+    )
+    .await;
+    assert_eq!(enabled_images_group.status(), StatusCode::OK);
 
     let start = request(
         &app,
@@ -2034,6 +2108,29 @@ async fn codex_oauth_flow_contract_uses_pkce_and_actor_scoped_completion() {
     .await;
     assert_eq!(list.status(), StatusCode::OK);
     assert_eq!(body_json(list).await, serde_json::json!([]));
+    let images_list = request(
+        &app,
+        "GET",
+        &format!("/console/v1/providers/codex-oauth/channel-groups/{images_group_id}/credentials"),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(images_list.status(), StatusCode::OK);
+    assert_eq!(body_json(images_list).await, serde_json::json!([]));
+    let images_start = request(
+        &app,
+        "POST",
+        &format!("/console/v1/providers/codex-oauth/channel-groups/{images_group_id}/oauth/flows"),
+        serde_json::json!({
+            "label": "spec-images-account",
+            "weight": 100,
+            "quota_threshold_percent": 95
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(images_start.status(), StatusCode::CREATED);
 
     let mismatched = request(
         &app,

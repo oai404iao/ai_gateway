@@ -8,7 +8,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::domain::{CompiledChannel, RequestProtocol};
+use crate::domain::{ApiOperation, CompiledChannel, RequestProtocol};
 
 use super::{
     CODEX_CLIENT_VERSION, CODEX_ORIGINATOR, CodexCredentialRuntime, CodexCredentialUnavailable,
@@ -18,29 +18,52 @@ use super::{
 #[derive(Clone)]
 pub(crate) struct PreparedCodexAttempt {
     credential: std::sync::Arc<CompiledCodexCredential>,
-    identity: CodexRequestIdentity,
+    request: CodexRequestContext,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CodexAttemptError {
     StreamingRequired,
     PreviousResponseUnsupported,
+    ImageStreamingUnsupported,
+    ImageEditUnsupported,
+    UnsupportedOperation,
     InvalidRequestBody,
     InvalidTarget,
     InvalidCredentials,
+}
+
+#[derive(Clone)]
+enum CodexRequestContext {
+    Responses(CodexRequestIdentity),
+    ImagesGeneration { turn_id: String },
+    ImagesEdit,
+    Unsupported,
 }
 
 impl PreparedCodexAttempt {
     pub(crate) fn prepare(
         runtime: &CodexCredentialRuntime,
         channel_id: Uuid,
+        api_operation: ApiOperation,
         affinity_cache_hit: bool,
         client_headers: &HeaderMap,
         affinity_hash: Option<[u8; 32]>,
     ) -> Result<Self, CodexCredentialUnavailable> {
+        let request = match api_operation {
+            ApiOperation::Responses => CodexRequestContext::Responses(CodexRequestIdentity::new(
+                client_headers,
+                affinity_hash,
+            )),
+            ApiOperation::ImagesGeneration => CodexRequestContext::ImagesGeneration {
+                turn_id: Uuid::new_v4().to_string(),
+            },
+            ApiOperation::ImagesEdit => CodexRequestContext::ImagesEdit,
+            ApiOperation::ChatCompletions => CodexRequestContext::Unsupported,
+        };
         Ok(Self {
             credential: runtime.credential(channel_id, affinity_cache_hit)?,
-            identity: CodexRequestIdentity::new(client_headers, affinity_hash),
+            request,
         })
     }
 
@@ -49,6 +72,22 @@ impl PreparedCodexAttempt {
         body: Bytes,
         request_protocol: RequestProtocol,
     ) -> Result<Bytes, CodexAttemptError> {
+        match &self.request {
+            CodexRequestContext::ImagesGeneration { .. } => {
+                return if request_protocol == RequestProtocol::NonStream {
+                    Ok(body)
+                } else {
+                    Err(CodexAttemptError::ImageStreamingUnsupported)
+                };
+            }
+            CodexRequestContext::ImagesEdit => {
+                return Err(CodexAttemptError::ImageEditUnsupported);
+            }
+            CodexRequestContext::Unsupported => {
+                return Err(CodexAttemptError::UnsupportedOperation);
+            }
+            CodexRequestContext::Responses(_) => {}
+        }
         if !request_protocol.is_streamed() {
             return Err(CodexAttemptError::StreamingRequired);
         }
@@ -81,8 +120,15 @@ impl PreparedCodexAttempt {
         let query = uri
             .query()
             .map_or_else(String::new, |query| format!("?{query}"));
-        Url::parse(&format!("{base}/responses{query}"))
-            .map_err(|_| CodexAttemptError::InvalidTarget)
+        let path = match &self.request {
+            CodexRequestContext::Responses(_) => "responses",
+            CodexRequestContext::ImagesGeneration { .. } => "images/generations",
+            CodexRequestContext::ImagesEdit => return Err(CodexAttemptError::ImageEditUnsupported),
+            CodexRequestContext::Unsupported => {
+                return Err(CodexAttemptError::UnsupportedOperation);
+            }
+        };
+        Url::parse(&format!("{base}/{path}{query}")).map_err(|_| CodexAttemptError::InvalidTarget)
     }
 
     pub(crate) fn inject_headers(
@@ -100,47 +146,81 @@ impl PreparedCodexAttempt {
             "ChatGPT-Account-ID",
             HeaderValue::from_str(self.credential.account_id()).map_err(invalid)?,
         );
-        if request_protocol == RequestProtocol::WebSocket {
-            headers.remove(ACCEPT);
-            headers.remove(ACCEPT_ENCODING);
-            headers.remove(CONTENT_TYPE);
-        } else {
-            headers.insert(ACCEPT, HeaderValue::from_static("text/event-stream"));
-            // The Gateway must inspect Codex's terminal SSE event for usage and
-            // completion before clients stop polling the response body.
-            headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("identity"));
-            headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        }
         headers.insert(
             USER_AGENT,
             HeaderValue::from_str(&codex_user_agent()).map_err(invalid)?,
         );
         headers.insert("originator", HeaderValue::from_static(CODEX_ORIGINATOR));
         headers.insert("version", HeaderValue::from_static(CODEX_CLIENT_VERSION));
-        headers.insert(
-            "session-id",
-            HeaderValue::from_str(&self.identity.session_id).map_err(invalid)?,
-        );
-        headers.insert(
-            "thread-id",
-            HeaderValue::from_str(&self.identity.thread_id).map_err(invalid)?,
-        );
         if self.credential.is_fedramp() {
             headers.insert("X-OpenAI-Fedramp", HeaderValue::from_static("true"));
         } else {
             headers.remove("X-OpenAI-Fedramp");
         }
-        if !headers.contains_key("x-client-request-id") {
-            headers.insert(
-                "x-client-request-id",
-                HeaderValue::from_str(&self.identity.thread_id).map_err(invalid)?,
-            );
+        match &self.request {
+            CodexRequestContext::Responses(identity) => {
+                if request_protocol == RequestProtocol::WebSocket {
+                    headers.remove(ACCEPT);
+                    headers.remove(ACCEPT_ENCODING);
+                    headers.remove(CONTENT_TYPE);
+                } else {
+                    headers.insert(ACCEPT, HeaderValue::from_static("text/event-stream"));
+                    // The Gateway must inspect Codex's terminal SSE event for usage and
+                    // completion before clients stop polling the response body.
+                    headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("identity"));
+                    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+                }
+                headers.insert(
+                    "session-id",
+                    HeaderValue::from_str(&identity.session_id).map_err(invalid)?,
+                );
+                headers.insert(
+                    "thread-id",
+                    HeaderValue::from_str(&identity.thread_id).map_err(invalid)?,
+                );
+                if !headers.contains_key("x-client-request-id") {
+                    headers.insert(
+                        "x-client-request-id",
+                        HeaderValue::from_str(&identity.thread_id).map_err(invalid)?,
+                    );
+                }
+                headers.remove("x-codex-image-turn-id");
+            }
+            CodexRequestContext::ImagesGeneration { turn_id } => {
+                headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
+                headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+                headers.remove("session-id");
+                headers.remove("thread-id");
+                headers.remove("x-client-request-id");
+                headers.insert(
+                    "x-codex-image-turn-id",
+                    HeaderValue::from_str(turn_id).map_err(invalid)?,
+                );
+            }
+            CodexRequestContext::ImagesEdit => {
+                return Err(CodexAttemptError::ImageEditUnsupported);
+            }
+            CodexRequestContext::Unsupported => {
+                return Err(CodexAttemptError::UnsupportedOperation);
+            }
         }
         Ok(())
     }
 
+    pub(crate) fn credential_id(&self) -> Uuid {
+        self.credential.credential_id()
+    }
+
     pub(crate) fn refresh_generation(&self) -> i64 {
         self.credential.refresh_generation()
+    }
+
+    pub(crate) fn preserves_affinity_on_failure(&self) -> bool {
+        matches!(self.request, CodexRequestContext::Responses(_))
+    }
+
+    pub(crate) fn successful_response_is_sse(&self) -> bool {
+        matches!(self.request, CodexRequestContext::Responses(_))
     }
 }
 
@@ -222,6 +302,8 @@ mod tests {
         runtime.replace(vec![CodexCredentialRecord {
             channel_id: Uuid::from_u128(1),
             channel_group_id: Uuid::from_u128(2),
+            connector_pool_id: Uuid::from_u128(2),
+            projection_channel_ids: vec![Uuid::from_u128(1), Uuid::from_u128(3)],
             label: "credential".into(),
             email: None,
             account_id: "account-123".into(),
@@ -263,6 +345,7 @@ mod tests {
         let attempt = PreparedCodexAttempt::prepare(
             &runtime(),
             Uuid::from_u128(1),
+            ApiOperation::Responses,
             false,
             &HeaderMap::new(),
             None,
@@ -286,6 +369,7 @@ mod tests {
         let attempt = PreparedCodexAttempt::prepare(
             &runtime(),
             Uuid::from_u128(1),
+            ApiOperation::Responses,
             false,
             &HeaderMap::new(),
             None,
@@ -346,6 +430,7 @@ mod tests {
         let attempt = PreparedCodexAttempt::prepare(
             &runtime(),
             Uuid::from_u128(1),
+            ApiOperation::Responses,
             false,
             &HeaderMap::new(),
             None,
@@ -383,10 +468,111 @@ mod tests {
     }
 
     #[test]
+    fn image_generation_preserves_json_and_uses_image_specific_target_and_headers() {
+        let attempt = PreparedCodexAttempt::prepare(
+            &runtime(),
+            Uuid::from_u128(3),
+            ApiOperation::ImagesGeneration,
+            false,
+            &HeaderMap::new(),
+            None,
+        )
+        .unwrap();
+        let original =
+            Bytes::from_static(br#"{ "model" : "gpt-image-2", "prompt" : "a red fox" }"#);
+        assert_eq!(
+            attempt
+                .adapt_body(original.clone(), RequestProtocol::NonStream)
+                .unwrap(),
+            original
+        );
+        assert_eq!(
+            attempt
+                .adapt_body(
+                    Bytes::from_static(br#"{"model":"gpt-image-2","stream":true}"#),
+                    RequestProtocol::Sse,
+                )
+                .unwrap_err(),
+            CodexAttemptError::ImageStreamingUnsupported
+        );
+
+        let channel = CompiledChannel::new(
+            Uuid::from_u128(3),
+            Uuid::from_u128(4),
+            crate::domain::ApiFormat::OpenAiImages,
+            Url::parse("https://chatgpt.example/backend-api/codex").unwrap(),
+            100,
+            crate::domain::UpstreamAuth::None,
+            std::collections::HashSet::new(),
+        );
+        let target = attempt
+            .upstream_url(
+                &channel,
+                &"/v1/images/generations?trace=1".parse::<Uri>().unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            target.as_str(),
+            "https://chatgpt.example/backend-api/codex/images/generations?trace=1"
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert("session-id", HeaderValue::from_static("client-session"));
+        headers.insert("thread-id", HeaderValue::from_static("client-thread"));
+        headers.insert(
+            "x-client-request-id",
+            HeaderValue::from_static("client-request"),
+        );
+        headers.insert(
+            "x-codex-image-turn-id",
+            HeaderValue::from_static("client-controlled"),
+        );
+        attempt
+            .inject_headers(&mut headers, RequestProtocol::NonStream)
+            .unwrap();
+
+        assert_eq!(
+            headers
+                .get(AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer access-token")
+        );
+        assert_eq!(
+            headers
+                .get("chatgpt-account-id")
+                .and_then(|value| value.to_str().ok()),
+            Some("account-123")
+        );
+        assert_eq!(
+            headers.get(ACCEPT).and_then(|value| value.to_str().ok()),
+            Some("application/json")
+        );
+        assert_eq!(
+            headers
+                .get(CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("application/json")
+        );
+        assert!(!headers.contains_key("session-id"));
+        assert!(!headers.contains_key("thread-id"));
+        assert!(!headers.contains_key("x-client-request-id"));
+        let turn_id = headers
+            .get("x-codex-image-turn-id")
+            .and_then(|value| value.to_str().ok())
+            .unwrap();
+        assert_ne!(turn_id, "client-controlled");
+        assert!(Uuid::parse_str(turn_id).is_ok());
+        assert_eq!(attempt.credential_id(), Uuid::from_u128(1));
+        assert!(!attempt.preserves_affinity_on_failure());
+        assert!(!attempt.successful_response_is_sse());
+    }
+
+    #[test]
     fn websocket_requests_preserve_incremental_state_and_use_handshake_headers() {
         let attempt = PreparedCodexAttempt::prepare(
             &runtime(),
             Uuid::from_u128(1),
+            ApiOperation::Responses,
             false,
             &HeaderMap::new(),
             None,
@@ -442,6 +628,7 @@ mod tests {
             PreparedCodexAttempt::prepare(
                 &runtime,
                 Uuid::from_u128(1),
+                ApiOperation::Responses,
                 false,
                 &HeaderMap::new(),
                 Some([1; 32]),
@@ -452,6 +639,7 @@ mod tests {
             PreparedCodexAttempt::prepare(
                 &runtime,
                 Uuid::from_u128(1),
+                ApiOperation::Responses,
                 true,
                 &HeaderMap::new(),
                 Some([1; 32]),
@@ -464,6 +652,8 @@ mod tests {
         CodexCredentialRecord {
             channel_id: Uuid::from_u128(1),
             channel_group_id: Uuid::from_u128(2),
+            connector_pool_id: Uuid::from_u128(2),
+            projection_channel_ids: vec![Uuid::from_u128(1), Uuid::from_u128(3)],
             label: "credential".into(),
             email: None,
             account_id: "account-123".into(),

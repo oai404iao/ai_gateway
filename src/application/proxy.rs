@@ -350,6 +350,7 @@ impl ProxyService {
                 .is_some_and(SessionAffinitySelection::cache_hit);
             let prepared_attempt = match self.connectors.prepare(
                 &current_channel,
+                api_operation,
                 affinity_hit,
                 &parts.headers,
                 session_affinity

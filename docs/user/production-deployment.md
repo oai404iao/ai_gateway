@@ -125,6 +125,10 @@ docker compose \
 Migration `0017_remove_legacy_compatibility.sql` 会永久删除
 `api_keys.tokens_per_minute` 与 `channels.health_check` 的值；升级前备份必须可用。
 
+Migration `0036_codex_images_projection.sql` 会新增旧版 Gateway 无法编译的 Codex
+`open_ai_images` groups。多实例部署必须先排空并停止所有未包含该 migration 对应代码的旧实例，
+再由新版本执行 migration 并整体切换；migration 应用后不得把流量或 Console 请求切回旧二进制。
+
 不要删除 `postgres-data` 或 `gateway-spool` volume 来完成升级。回滚应用版本前，
 先确认新 migration 是否向后兼容；数据库回滚必须依赖经过演练的备份恢复方案。
 

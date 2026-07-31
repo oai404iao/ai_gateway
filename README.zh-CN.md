@@ -21,7 +21,7 @@ Chat Completions、Responses 与非流式 JSON Images generation API，根据 Po
 - 按 `(客户端模型名, API 格式)` 路由，支持渠道组优先级和渠道权重选择。
 - 特殊上游通过单进程内 Connector 接入，不增加 sidecar 或第二次网络跳转。首个
   Codex OAuth Connector 支持订阅凭证、每账户代理、Token 刷新、额度感知 draining
-  以及 provider-managed Responses HTTP/SSE/WebSocket 渠道。
+  以及共享凭证的 provider-managed Responses HTTP/SSE/WebSocket 与 Images generation 渠道。
 - 将 PostgreSQL 控制面记录编译为不可变内存快照，因此代理请求不需要逐次查询数据库。
 - 可按配置执行模型别名、受限 JSON/Header/响应/SSE 变换。
 - 转发前会移除客户端凭据和 hop-by-hop Header，再注入渠道专属的上游鉴权。
@@ -148,8 +148,8 @@ curl --request POST http://127.0.0.1:3001/console/v1/auth/login \
 要让数据面路由可用，请按以下顺序创建格式兼容的记录：
 
 1. 一个带价格的**模型**。
-2. 所需 API 格式与 Connector 的**渠道组**。Codex 订阅账户使用 Responses 格式的
-   Codex OAuth Connector。
+2. 所需 API 格式与 Connector 的**渠道组**。新建 Codex OAuth Responses 组时会同时创建一个
+   共享凭证池、默认停用的 Images 组。
 3. 该渠道组内的**渠道**：配置上游 URL、上游凭据和支持的上游模型名。
 4. 一个**模型规则**：将客户端模型名映射到计价模型、上游模型名和路由目标。
 5. 一个客户端 **API Key**：至少授予 `proxy` 权限；如需调用 `/v1/models`，还要授予 `models.read`。

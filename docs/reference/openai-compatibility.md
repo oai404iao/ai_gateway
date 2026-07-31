@@ -38,7 +38,8 @@ batches、assistants、fine-tuning 等其他 OpenAI 路径。
 - 模型别名只改写顶层 `model`。
 - Images generation 的 `stream: true` 在本地返回
   `400 image_streaming_unsupported`；当前不会联系上游。
-- 查询字符串和原 API 路径会拼接到渠道 `base_url`。
+- 普通 `openai_compatible` Connector 会把查询字符串和原 API 路径拼接到渠道 `base_url`；
+  provider Connector 可以按操作改写目标路径。
 - 客户端 `Authorization`、`Host`、`Content-Length`、代理鉴权和 hop-by-hop headers 不会直接转发；上游鉴权最后注入。
 
 因此，“网关接受某字段”不代表所有上游都支持该字段；同样，上游新增字段通常不需要网关先升级，只要该字段不触发本地变换限制。
@@ -62,6 +63,10 @@ Upgrade 响应中。
 Codex OAuth managed channel 也走同一 Responses WebSocket 路径，但由 Connector 改写
 `/responses` 目标、强制 `stream=true`/`store=false` 并注入订阅凭证与 Codex Header；
 `previous_response_id` 仍只在同一条可复用上游连接上有效。
+
+Codex OAuth Images projection 仍使用标准客户端 `/v1/images/generations`，Connector 将上游目标
+改为 `/images/generations`，注入共享订阅凭证和 `x-codex-image-turn-id`，并按非流式 JSON
+而不是 SSE 处理响应。它不会把 Responses 输入转换成 Images。
 
 ## 格式隔离
 

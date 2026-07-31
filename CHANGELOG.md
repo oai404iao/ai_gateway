@@ -14,6 +14,17 @@ Versioning.
   channels, including format-scoped routing and permissions, top-level usage
   extraction, durable request-operation logging, Console configuration, and
   explicit no-retry/no-scheduled-probe safety boundaries.
+- Project each Codex OAuth credential into separate Responses and Images
+  managed channels in a shared connector pool, preserving existing Responses
+  IDs while adding disabled-by-default Codex `gpt-image-2` generation routing,
+  image-turn headers, shared token/quota refresh, and format-isolated health
+  and authorization.
+
+### Changed
+
+- Require a coordinated old-binary shutdown before migration
+  `0036_codex_images_projection.sql`; older binaries cannot compile the new
+  Codex Images groups after that schema is applied.
 
 ## [0.7.0] - 2026-07-30
 

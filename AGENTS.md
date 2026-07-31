@@ -13,7 +13,8 @@ attributions that must accompany binary redistribution live in `LICENSES/`
 and `web/console/NOTICES.md`.
 
 The implemented backend includes OpenAI-compatible Chat Completions, HTTP
-Responses, Responses WebSocket, and non-streaming JSON Images generation proxy routes, PostgreSQL-backed
+Responses, Responses WebSocket, and non-streaming JSON Images generation proxy routes, including
+ordinary OpenAI-compatible and Codex OAuth Images channels, plus PostgreSQL-backed
 control-plane snapshots, a separate JWT-authenticated Console API with
 `user`/`admin` roles, constrained transforms, streaming/SSE/WebSocket
 forwarding, passive health, admission controls, durable spooled request logs,
@@ -225,6 +226,10 @@ Axum HTTP
 - `model_rules`, channel groups, and channels must agree on `api_format`; a model rule is unique by `(client_model, api_format)`.
 - Parse a request only as far as necessary to obtain `model`; absent an enabled transform or model alias, forward the original request bytes without reserialization.
 - Keep the fixed transform order: template defaults → channel overrides → upstream authentication. Configurable transforms must not alter protected or hop-by-hop headers.
+- A Codex OAuth logical credential belongs to one `connector_pools` record and projects through
+  `codex_oauth_credential_channels` to separate Responses and Images managed channels. Preserve the
+  legacy Responses channel/credential ID, share token/quota/proxy state, keep format health and
+  authorization isolated, and never auto-enable the paired Images group or grant Images access.
 - Stream upstream responses instead of buffering them. Do not retry or switch channels after sending response headers or any response byte to the client.
 - Responses WebSocket accepts `GET /v1/responses` upgrades only. Authenticate
   the upgrade, then treat each sequential `response.create` as its own
@@ -393,6 +398,8 @@ pool isolation, transforms, and configured outbound proxies.
 | Console/JWT design and execution plan | `docs/development/console-auth.md` |
 | Current operational API documentation | `docs/user/operations.md` |
 | OpenAI compatibility and external semantics | `docs/reference/` |
+| Images staged design and Codex projection | `docs/development/openai-images.md` |
+| Codex OAuth connector architecture | `docs/development/codex-oauth-connector.md` |
 | Codex Responses WebSocket source study | `docs/reference/codex-responses-websocket.md` |
 | Console spec/implementation drift tests | `tests/console_spec_integration.rs` |
 | Frontend package/scripts | `web/console/package.json` |

@@ -5,18 +5,19 @@
 ## 决策
 
 特殊上游使用**静态链接、进程内 Connector**，不增加 sidecar、Unix Socket RPC、动态
-`.so` 或 WASM。客户端仍使用标准 `POST /v1/responses`，也可以使用带 Upgrade 的
-`GET /v1/responses`；Connector 只改变选中 channel 之后的上游准备过程。
+`.so` 或 WASM。客户端使用标准 `POST /v1/responses`、带 Upgrade 的
+`GET /v1/responses` 或非流式 JSON `POST /v1/images/generations`；Connector 只改变选中
+format-specific channel 之后的上游准备过程。
 
 `ApiFormat` 与 `ConnectorKind` 必须分离：
 
 ```text
-client protocol: OpenAiResponses
+client protocol: OpenAiResponses | OpenAiImages
 upstream connector: CodexOauth
 ```
 
-因此模型规则、API Key format 权限和 usage 解析仍使用 Responses，不新增
-`ApiFormat::CodexResponses`，也不允许 Chat Completions↔Responses 转换。
+因此模型规则、API Key format 权限和 usage 解析仍使用对应的 Responses 或 Images 格式，不新增
+`ApiFormat::CodexResponses` / `CodexImages`，也不允许格式间转换。
 
 ## 运行时边界
 
@@ -39,29 +40,37 @@ Header 或错误分类。
 
 ## 持久化模型
 
-`channel_groups.connector_kind` 决定该组使用的 Connector。Codex group 必须使用
-`open_ai_responses`，保存后 Connector 类型不可修改。
+`channel_groups.connector_kind` 决定该组使用的 Connector。Codex group 可以使用
+`open_ai_responses` 或 `open_ai_images`，保存后 Connector 类型和格式不可修改。
 
-每个 `codex_oauth_credentials` 记录与一个 managed `channels` 记录一一对应：
+`connector_pools` 把一个 Responses group 与一个 Images group 组成共享凭证池；
+`codex_oauth_credential_channels` 把每条凭证投影到两个 managed `channels` 记录：
 
-- group 仍是凭证池；
-- channel `weight`、`proxy_id` 和 `available_models` 继续进入统一路由快照；
+- 既有 `codex_oauth_credentials.channel_id` 保留为稳定凭证 ID 与 Responses Channel ID；
+- Responses 与 Images channel 的 `weight`、`proxy_id` 和各自 `available_models` 继续进入统一
+  路由快照；
 - credential 的逻辑 `enabled` 和动态状态由 Connector 快照持有；底层 managed channel
   始终保留为可选择的路由壳，Connector prepare 再排除新 Session 或让 affinity hit fail closed；
-- channel 固定 `upstream_auth_kind = none`、`supports_websocket = true`、
-  `status_statistics_enabled = false`、`auto_disable_allowed = false`；
+- 两种 channel 都固定 `upstream_auth_kind = none`、
+  `status_statistics_enabled = false`、`auto_disable_allowed = false`；Responses 声明
+  `supports_websocket = true`，Images 必须为 false；
 - 普通 channel create/update/batch API 在 repository 层拒绝 provider-managed channel；
 - provider mutation 在同一控制面事务中更新凭证与 channel、写 audit、编译候选快照并发布。
 
+新建 Codex Responses group 时会同时创建一个默认关闭的 Images group。migration 对现有 group 和
+凭证执行同样投影，但不会增加 API Key format、Policy、模型规则或可访问路由。管理员必须显式启用
+Images group，并配置 `gpt-image-2` 的本地模型、Images rule 和权限。
+
 凭证的持久身份不是单独的 workspace account ID，而是
-`(channel_group_id, account_id, user_id)`；`user_id` 来自
+`(connector_pool_id, account_id, user_id)`；`user_id` 来自
 `chatgpt_user_id`，并兼容 Codex 使用的 `user_id` fallback。这样同一 Business workspace
 中的多个成员可以分别成为路由凭证。缺少 user claim 的旧 Token 仍按 account/email 回退匹配，
 服务启动时会从已保存 Token 尽力补齐旧记录的 user ID。
 
 删除使用软删除凭证记录加 managed-channel tombstone：事务内关闭凭证、清除三个 OAuth Token、
-释放 proxy、记录 `deleted_at` 并把 channel 改成唯一 tombstone 名称。列表、导出、刷新和后续
-身份匹配忽略已删除记录，但 channel 壳继续保留，使请求日志和显式 channel 引用不失去历史主键。
+释放 proxy、记录 `deleted_at` 并把 Responses 与 Images channel 改成唯一 tombstone 名称。列表、
+导出、刷新和后续身份匹配忽略已删除记录，但 channel 壳继续保留，使请求日志和显式 channel 引用
+不失去历史主键。
 
 OAuth PKCE 临时状态单独保存在 `codex_oauth_flows`，按 actor、group、过期时间和
 `completed_at` 限定。数据库只保存 `state` 的 SHA-256；`code_verifier` 在一次性 flow
@@ -70,8 +79,8 @@ OAuth PKCE 临时状态单独保存在 `codex_oauth_flows`，按 actor、group�
 ## 凭证快照与维护
 
 Access token 不编入完整 `CompiledRuntimeConfig`，而是保存在独立
-`CodexCredentialRuntime` / `ArcSwap<HashMap<channel_id, credential>>` 中。数据面每次 attempt
-只执行内存读取。
+`CodexCredentialRuntime` / `ArcSwap<HashMap<projection_channel_id, credential>>` 中。
+Responses 与 Images projection 指向同一个不可变 credential，数据面每次 attempt 只执行内存读取。
 
 worker 每分钟加载数据库记录并先替换本地凭证快照，使其他实例完成的 enable、quota 或 token
 更新最终收敛。需要维护的凭证以有界并发执行：
@@ -89,7 +98,8 @@ worker、上游 `401` 恢复和多实例并发均传递 observed generation；�
 因此表示一次强制刷新。
 
 永久 refresh 失败设置持久的 `reauth_required`，maintenance 不再自动重复消费该 Token，quota
-成功和普通设置更新也不能清除状态。再次 OAuth 或导入相同 group/workspace/member 的新 Token
+成功和普通设置更新也不能清除状态。再次 OAuth 或导入相同 Connector pool/workspace/member
+的新 Token
 会事务内更新原 credential/channel、递增 generation 并清除 `reauth_required`，不会创建重复
 channel。
 
@@ -112,6 +122,9 @@ Affinity binding 只在成功终态后写入。首次选择后若凭证进入 `d
 新 Session 不会绑定到 draining 凭证。若已绑定凭证变为 unavailable/disabled/expired，不自动换
 账户，也不会因本次失败删除 affinity；绑定会保留到正常 TTL/清理边界，以免后续请求静默切换
 provider 账户。
+
+Images 不使用 Session affinity。Images 请求在发送前遇到 draining/unavailable/disabled 凭证时，
+可以排除当前 projection 并选择同一 Images group 的其他凭证；一旦发送则不再换账户。
 
 客户端 `session-id` / `thread-id` 优先保留。缺失时，HTTP 请求若匹配 affinity，则从 session
 hash 加 domain separation 派生稳定 opaque UUID；没有 affinity 的 HTTP 请求生成本次请求 UUID。
@@ -140,11 +153,22 @@ Codex WebSocket attempt：
 - 成功终态后只复用无残留的同一上游连接，保留 connection-local
   `previous_response_id` 状态。
 
+Codex Images generation attempt：
+
+- 只接受 `ApiOperation::ImagesGeneration` 的非流式 JSON；
+- 保留模型别名和受限变换之后的 JSON 字节，不注入 Responses 的 `stream` 或 `store`；
+- 目标固定为 managed channel base URL 下的 `/images/generations`；
+- 注入 Bearer/account、FedRAMP、User-Agent、`originator`、版本和 Gateway 生成的
+  `x-codex-image-turn-id`；
+- 删除客户端 `session-id`、`thread-id` 与 `x-client-request-id`；
+- 把成功响应按普通 JSON 交给 Images usage collector，不按 SSE 解释。
+
 preparation 失败可以在发送前换凭证。HTTP Codex attempt 不启用普通 transport retry，因为
 reqwest 返回 pre-header error 时不能证明请求体未被上游接收。WebSocket 只允许在上游 Upgrade
 完成且尚未发送 `response.create` 前按全局重试策略换 channel；已经命中 affinity 或下游
-WebSocket pin 的 Codex Session fail closed，不换账户。消息发出后不重试。HTTP `401`、WebSocket
-握手 `401` 或带 `status = 401` 的终态错误会异步触发 generation 去重 refresh。
+WebSocket pin 的 Codex Session fail closed，不换账户。消息发出后不重试。Responses 或 Images
+HTTP `401`、WebSocket 握手 `401` 或带 `status = 401` 的终态错误会按共享 credential ID 异步触发
+generation 去重 refresh；已经发送的图片请求不会重放。
 
 ## 安全边界
 

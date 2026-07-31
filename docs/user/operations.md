@@ -122,16 +122,17 @@ Images generation 是例外：请求一旦开始尝试上游，就不会自动�
 
 ### Codex OAuth Connect
 
-管理员可以把 ChatGPT Codex 订阅凭证作为 Responses 渠道池接入，而不增加 sidecar 或第二个
-转发服务。客户端可以调用标准 `POST /v1/responses`，也可以使用带 WebSocket Upgrade 的
-`GET /v1/responses`；控制面用
-`connector_kind = codex_oauth` 区分特殊上游方式，`api_format` 仍是
-`open_ai_responses`。
+管理员可以把 ChatGPT Codex 订阅凭证作为共享 Connector pool 接入，而不增加 sidecar 或第二个
+转发服务。同一凭证会投影为独立的 Responses 与 Images managed channels。客户端可以调用标准
+`POST /v1/responses`、带 WebSocket Upgrade 的 `GET /v1/responses`，或非流式 JSON
+`POST /v1/images/generations`；控制面用 `connector_kind = codex_oauth` 区分特殊上游方式，
+各 projection 的 `api_format` 仍分别是 `open_ai_responses` 与 `open_ai_images`。
 
 配置步骤：
 
-1. 在“渠道”页新建 Channel Group，Connector 选择 **Codex OAuth**。该选择会固定
-   Responses 格式，保存后 Connector 类型不可修改。
+1. 在“渠道”页新建 Channel Group，Connector 选择 **Codex OAuth**。创建请求使用
+   Responses 格式；保存时服务会在同一 Connector pool 自动创建一个**默认停用**的 Images
+   Channel Group。两个 group 的 Connector 类型和格式保存后不可修改。
 2. 从渠道组详情或渠道列表进入
    `/admin/providers/codex-oauth/<channel-group-id>`。
 3. 选择一种凭证添加方式：
@@ -139,7 +140,8 @@ Images generation 是例外：请求一旦开始尝试上游，就不会自动�
      打开 PKCE Authorization URL；授权后浏览器会落到不可达的
      `http://localhost:1455/auth/callback?...`，复制完整地址回 Console 完成交换。
    - **Import tokens**：提交 access token、refresh token，以及可选 ID token、account ID
-     和 user ID。网关先调用 Codex models 接口验证凭证，再创建 managed channel。
+     和 user ID。网关先调用 Codex models 接口验证凭证，再创建 Responses 与 Images managed
+     channels。
      凭证身份按 workspace `account_id` 与成员 `user_id` 组合识别；同一 Business workspace
      的不同成员可以分别接入，而同一成员再次连接或导入会原位重新授权已有凭证。
    - **Advanced import**：进入独立检查页，粘贴 JSON 或上传一个或多个 JSON 文件。
@@ -149,32 +151,39 @@ Images generation 是例外：请求一旦开始尝试上游，就不会自动�
      在同一页面新增、编辑或删除代理，并把导入文件中的代理映射到现有代理。最终仍逐条调用
      服务端凭证验证与导入接口，因此失败条目可在保留其他草稿的情况下修正和重试。
 4. 为返回的 Codex model slug 创建或启用本地 model，并创建 Responses model rule，
-   将该 Channel Group 作为候选。
-5. 确保调用方 API Key 允许 Responses、`proxy` 权限和这个 Channel Group。
-6. 需要跨请求固定同一订阅账户时，在系统设置中启用 Session affinity，并为目标模型配置稳定
+   将 Responses Channel Group 作为候选。
+5. 如需图片生成，为 `gpt-image-2` 创建或启用本地 model，创建 `open_ai_images` model rule，
+   选择自动创建的 Images Channel Group，并显式启用该 group。
+6. 确保调用方 API Key 允许所需格式、`proxy` 权限和对应格式的 Channel Group。服务不会自动把
+   Images format、group 或 channel 加入现有 API Key、Policy 或规则。
+7. 需要跨 Responses 请求固定同一订阅账户时，在系统设置中启用 Session affinity，并为目标模型配置稳定
    key source，例如请求 Header `session-id` 或 JSON Pointer `/prompt_cache_key`。
 
-每个凭证自动创建一个 provider-managed channel。普通 Channel 详情、批量编辑和 model discovery
-接口不能修改该 channel；label、enable、proxy、weight 和 quota threshold 必须在 Codex 凭证页维护。
+每个凭证自动创建 Responses 与 Images 两个 provider-managed channels。既有 Responses Channel ID
+继续作为稳定的凭证 ID；Images 使用独立 Channel ID，因此两个格式的被动健康和日志不会混合。
+普通 Channel 详情、批量编辑和 model discovery 接口不能修改这些 channels；label、enable、
+proxy、weight 和 quota threshold 必须在 Codex 凭证页维护。
 每个凭证的 outbound proxy 独立生效，并由现有 reqwest client registry 按网络与超时策略复用。
-凭证 enable 状态由 Connector 运行时持有；底层 managed channel 保留为路由壳，使已绑定 Session
+凭证 enable、quota 和 refresh 状态由两个 projection 共享的 Connector 运行时持有；底层 managed
+channels 保留为路由壳，使已绑定 Responses Session
 在凭证关闭后仍能命中原账户并 fail closed，而不是静默切换到另一个账户。
 
 凭证状态含义：
 
-- `active`：可接收新 Session；
+- `active`：可接收新的 Responses Session 或 Images generation；
 - `draining`：primary/secondary quota 用量达到 threshold；只允许已命中 affinity 的既有
-  Session；
+  Responses Session，Images projection 在发送前被排除；
 - `unavailable`：quota 不允许、额度耗尽或 refresh token 永久失效；
 - `disabled`：管理员关闭。
 
 永久 refresh 失败会设置持久的重新授权状态；后续 quota 成功或普通设置编辑不会把该凭证重新置为
 `active`。重新执行 OAuth 或导入同一 workspace/member 身份的新 Token 会复用原 managed channel
-并清除该状态。
+IDs 并清除该状态。
 
 凭证列表支持多选后批量启用、停用、删除和导出选中项。单条和批量删除都使用乐观并发版本：
 删除成功后凭证立即从列表消失，保存的 ID/access/refresh token 被清除，代理引用被释放；为保留
-请求日志等历史引用，底层 managed channel 只保留不含敏感信息的 tombstone。该删除不会调用
+请求日志等历史引用，Responses 与 Images managed channels 都只保留不含敏感信息的 tombstone。
+该删除不会调用
 OpenAI token revocation endpoint，若还需要使外部 Token 失效，应在账户侧另行撤销授权。
 
 凭证页的 **Export credentials** 需要显式确认，并下载 ai-gateway 原生 JSON Bundle。Bundle 包含
@@ -191,7 +200,7 @@ refresh token / quota 也可从凭证页执行。同一凭证的 refresh 在实�
 并核对 generation，避免 rotating refresh token 被并发重复使用。上游请求返回 `401` 时会触发一次
 generation 去重的后台刷新。
 
-Codex HTTP Connector 只接受 `stream: true` 的 Responses SSE 请求，强制上游
+Codex Responses HTTP Connector 只接受 `stream: true` 的 SSE 请求，强制上游
 `store: false`，并拒绝非空 `previous_response_id`。Codex managed channel 会自动启用
 Responses WebSocket 能力；WebSocket `response.create` 同样强制 `stream: true` 和
 `store: false`，但保留 `previous_response_id`、`generate` 与 `client_metadata`，使同一条
@@ -199,6 +208,13 @@ Responses WebSocket 能力；WebSocket `response.create` 同样强制 `stream: t
 的请求可以换到同组其他凭证；HTTP 请求或 WebSocket 消息一旦发送到 Codex，不做跨凭证自动重试。
 已命中 affinity 的凭证处于 `unavailable`、`disabled` 或 Token 过期时，会在 affinity TTL
 内持续 fail closed；已经固定到 managed channel 的 WebSocket Session 也不会改用其他订阅账户。
+
+Codex Images generation 保留模型别名和受限变换后的 JSON，请求目标改为
+`/backend-api/codex/images/generations`。Connector 注入共享凭证的 Bearer/account/FedRAMP、
+`originator`、版本、User-Agent 和新生成的 `x-codex-image-turn-id`，并删除客户端
+`session-id`、`thread-id` 与 `x-client-request-id`。Images 不使用 Session affinity；发送前若凭证
+不可用可以选择同一 Images group 的其他 projection，但请求一旦发送就不会自动换账户或重试。
+成功响应按非流式 JSON 转发并增量提取顶层 usage，不会为 `data[].b64_json` 缓冲完整响应。
 
 客户端已有的合法 `session-id` / `thread-id` 会转发。缺少时，HTTP 请求若匹配 Session affinity，
 会从不可逆 session hash 派生稳定 opaque UUID；未匹配 affinity 的 HTTP 请求仅使用本次请求
@@ -219,10 +235,11 @@ WebSocket Upgrade 在 HTTP 握手阶段验证 Gateway API Key 和 Responses `pro
 2. 用户在个人设置页 `/account/settings` 中开启 WebSocket，对应
    `GET/PUT /console/v1/me/settings` 的 `websocket_enabled`；
 3. 管理员在普通 OpenAI Responses 渠道上设置 `supports_websocket = true`；Codex OAuth
-   managed channel 在创建时自动设置，不提供普通 Channel 编辑入口。
+   Responses projection 在创建时自动设置，不提供普通 Channel 编辑入口。
 
 migration 后的现有系统、用户和普通渠道以及所有新普通渠道都保持关闭，必须显式启用。现有和新建
-Codex OAuth managed channel 会自动声明 WebSocket 能力，但系统与用户开关仍默认关闭。
+Codex OAuth Responses projection 会自动声明 WebSocket 能力，但 Images projection 永不声明；
+系统与用户开关仍默认关闭。
 Chat Completions 渠道不能声明 WebSocket 支持。系统或用户未开启时，HTTP Upgrade 返回
 `403 websocket_disabled`；没有可用且声明支持的 Responses 渠道时，首条
 `response.create` 返回 `503 no_healthy_channel`。

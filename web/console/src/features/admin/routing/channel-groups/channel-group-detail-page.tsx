@@ -4,7 +4,13 @@ import { z } from "zod";
 import { toast } from "sonner";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Field, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
+import {
+  Field,
+  FieldDescription,
+  FieldError,
+  FieldGroup,
+  FieldLabel,
+} from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -233,6 +239,13 @@ export function ChannelGroupDetailPage() {
                       </SelectGroup>
                     </SelectContent>
                   </Select>
+                  {isNew && state.connector_kind === "codex_oauth" ? (
+                    <FieldDescription>
+                      {t(
+                        "A disabled Images group is created with the Responses group so credentials can be shared without granting Images access.",
+                      )}
+                    </FieldDescription>
+                  ) : null}
                 </Field>
                 <Field data-invalid={Boolean(fieldError("priority"))}>
                   <FieldLabel htmlFor="priority">{t("Priority")}</FieldLabel>

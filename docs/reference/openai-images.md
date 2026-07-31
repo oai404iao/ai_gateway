@@ -42,7 +42,9 @@ POST /v1/images/generations
 - 将请求日志记录为 `api_format = open_ai_images`、
   `api_operation = images_generation` 和 `request_protocol = non_stream`。
 
-模型名不在代码中硬编码；管理员必须配置 Images 渠道、可用上游模型、计价模型和模型规则。
+普通 OpenAI-compatible 渠道的模型名不在代码中硬编码；管理员必须配置 Images 渠道、可用上游
+模型、计价模型和模型规则。Codex OAuth projection 是 provider-specific 例外，当前按核对的
+Codex image tool 声明 `gpt-image-2`，管理员仍须创建对应本地模型与 Images model rule。
 
 ## 差异与限制
 
@@ -55,8 +57,14 @@ POST /v1/images/generations
 - Images 不支持 Session 粘性、SSE 事件变换或 WebSocket。
 - generation JSON 仍受全局 `request_limits.proxy_body_bytes` 限制；首期没有提高默认
   `1 MiB` 内存 body limit。
-- 当前仅支持普通 `openai_compatible` 渠道。Codex OAuth Images 接入属于后续阶段；
-  现有 Codex OAuth managed channel 仍只支持 Responses。
+- 普通 `openai_compatible` 与 Codex OAuth Images generation 均已支持。Codex 凭证共享 Token、
+  workspace/member、quota 和 outbound proxy，但使用独立的 Responses/Images group 与 channel；
+  Codex Images group 默认关闭，不会自动加入 API Key、Policy 或模型规则。
+- Codex Images generation 会把目标改为 `/backend-api/codex/images/generations`，注入
+  `x-codex-image-turn-id`，并删除 Responses 专用 session/thread Header。
+
+Codex 外部路径、Header 和当前 image model 的核对来源见
+[Codex OAuth 与订阅后端接入参考](codex-oauth-connect.md)。
 
 ## 维护检查项
 
