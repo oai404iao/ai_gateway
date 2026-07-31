@@ -19,6 +19,10 @@ Versioning.
   IDs while adding disabled-by-default Codex `gpt-image-2` generation routing,
   image-turn headers, shared token/quota refresh, and format-isolated health
   and authorization.
+- Add non-streaming multipart `POST /v1/images/edits` forwarding with
+  operation-specific limits, memory-to-anonymous-file replay, ordinary
+  OpenAI-compatible passthrough/model-alias rebuilding, Codex data-URL JSON
+  adaptation, no-retry safety, and Console spool-capacity metrics.
 
 ### Changed
 

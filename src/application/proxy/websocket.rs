@@ -782,7 +782,7 @@ impl ResponsesWebSocketSession {
         let body = apply_json_patch_plan(body, transforms.request_json())
             .map_err(|_| ProxyError::transform_failed())?;
         let body = connector
-            .adapt_body(body, RequestProtocol::WebSocket)
+            .adapt_json_body(body, RequestProtocol::WebSocket)
             .map_err(ProxyError::connector_attempt)?;
         let mut headers = self.request_headers.clone();
         apply_header_plan(&mut headers, transforms.request_headers())

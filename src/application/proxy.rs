@@ -48,14 +48,18 @@ use crate::{
     },
     runtime_config::RuntimeConfig,
     transforms::{
-        SseEventPatchPlan, SseTransformer, apply_header_plan, apply_json_patch_plan,
+        JsonPatchPlan, SseEventPatchPlan, SseTransformer, apply_header_plan, apply_json_patch_plan,
         apply_response_header_plan, parse_connection_header_names,
     },
     upstream::{ResolvedUpstreamPolicy, UpstreamClientRegistry},
 };
 
 use super::{
-    request_billing, request_billing_multiplier,
+    request_billing, request_billing_multiplier, request_billing_multiplier_for_value,
+    request_body::{
+        ImageBodySpoolSnapshot, ImageEditBodyError, ImageEditBodyPolicy, PreparedRequestBody,
+        ProxyRequestBodyLimits,
+    },
     usage::{SseTerminalOutcome, UsageCollector},
 };
 
@@ -66,6 +70,7 @@ pub struct ProxyService {
     runtime: Arc<RuntimeConfig>,
     upstream_clients: Arc<UpstreamClientRegistry>,
     max_request_body_bytes: usize,
+    image_edit_body: ImageEditBodyPolicy,
     request_log_sink: Arc<dyn RequestLogSink>,
     routing: RoutingRuntime,
     admission: AdmissionRuntime,
@@ -89,55 +94,63 @@ pub(crate) struct WebSocketRuntimeSnapshot {
 }
 
 impl ProxyService {
-    pub fn new(
+    pub fn new<L>(
         runtime: Arc<RuntimeConfig>,
-        max_request_body_bytes: usize,
-    ) -> Result<Self, reqwest::Error> {
-        Self::with_log_sink(
-            runtime,
-            max_request_body_bytes,
-            Arc::new(NoopRequestLogSink),
-        )
+        request_body_limits: L,
+    ) -> Result<Self, reqwest::Error>
+    where
+        L: Into<ProxyRequestBodyLimits>,
+    {
+        Self::with_log_sink(runtime, request_body_limits, Arc::new(NoopRequestLogSink))
     }
 
-    pub fn with_log_sink(
+    pub fn with_log_sink<L>(
         runtime: Arc<RuntimeConfig>,
-        max_request_body_bytes: usize,
+        request_body_limits: L,
         request_log_sink: Arc<dyn RequestLogSink>,
-    ) -> Result<Self, reqwest::Error> {
+    ) -> Result<Self, reqwest::Error>
+    where
+        L: Into<ProxyRequestBodyLimits>,
+    {
         Self::with_log_sink_and_routing(
             runtime,
-            max_request_body_bytes,
+            request_body_limits,
             request_log_sink,
             RoutingRuntime::new(crate::routing::PassiveHealthPolicy::default()),
         )
     }
 
-    pub fn with_log_sink_and_routing(
+    pub fn with_log_sink_and_routing<L>(
         runtime: Arc<RuntimeConfig>,
-        max_request_body_bytes: usize,
+        request_body_limits: L,
         request_log_sink: Arc<dyn RequestLogSink>,
         routing: RoutingRuntime,
-    ) -> Result<Self, reqwest::Error> {
+    ) -> Result<Self, reqwest::Error>
+    where
+        L: Into<ProxyRequestBodyLimits>,
+    {
         Self::with_dependencies(
             runtime,
-            max_request_body_bytes,
+            request_body_limits,
             request_log_sink,
             routing,
             AdmissionRuntime::new(),
         )
     }
 
-    pub fn with_dependencies(
+    pub fn with_dependencies<L>(
         runtime: Arc<RuntimeConfig>,
-        max_request_body_bytes: usize,
+        request_body_limits: L,
         request_log_sink: Arc<dyn RequestLogSink>,
         routing: RoutingRuntime,
         admission: AdmissionRuntime,
-    ) -> Result<Self, reqwest::Error> {
+    ) -> Result<Self, reqwest::Error>
+    where
+        L: Into<ProxyRequestBodyLimits>,
+    {
         Self::with_dependencies_and_registry(
             runtime,
-            max_request_body_bytes,
+            request_body_limits,
             Arc::new(UpstreamClientRegistry::new()),
             request_log_sink,
             routing,
@@ -146,17 +159,20 @@ impl ProxyService {
     }
 
     /// Constructs a proxy with a process-shared registry supplied by the host.
-    pub fn with_dependencies_and_registry(
+    pub fn with_dependencies_and_registry<L>(
         runtime: Arc<RuntimeConfig>,
-        max_request_body_bytes: usize,
+        request_body_limits: L,
         upstream_clients: Arc<UpstreamClientRegistry>,
         request_log_sink: Arc<dyn RequestLogSink>,
         routing: RoutingRuntime,
         admission: AdmissionRuntime,
-    ) -> Result<Self, reqwest::Error> {
+    ) -> Result<Self, reqwest::Error>
+    where
+        L: Into<ProxyRequestBodyLimits>,
+    {
         Self::with_dependencies_and_registry_and_automation(
             runtime,
-            max_request_body_bytes,
+            request_body_limits,
             upstream_clients,
             request_log_sink,
             routing,
@@ -167,22 +183,27 @@ impl ProxyService {
 
     /// Adds asynchronous automatic-disable reporting to the proxy without
     /// allowing persistence to delay client-visible forwarding.
-    pub fn with_dependencies_and_registry_and_automation(
+    pub fn with_dependencies_and_registry_and_automation<L>(
         runtime: Arc<RuntimeConfig>,
-        max_request_body_bytes: usize,
+        request_body_limits: L,
         upstream_clients: Arc<UpstreamClientRegistry>,
         request_log_sink: Arc<dyn RequestLogSink>,
         routing: RoutingRuntime,
         admission: AdmissionRuntime,
         automatic_disable: Option<AutomaticDisableService>,
-    ) -> Result<Self, reqwest::Error> {
+    ) -> Result<Self, reqwest::Error>
+    where
+        L: Into<ProxyRequestBodyLimits>,
+    {
+        let request_body_limits = request_body_limits.into();
         let snapshot = runtime.snapshot();
         routing.reconcile(&snapshot);
         upstream_clients.configure_websockets(snapshot.system_settings().websocket());
         Ok(Self {
             runtime,
             upstream_clients,
-            max_request_body_bytes,
+            max_request_body_bytes: request_body_limits.proxy_body_bytes,
+            image_edit_body: request_body_limits.image_edit().clone(),
             request_log_sink,
             routing,
             admission,
@@ -196,6 +217,10 @@ impl ProxyService {
     pub fn with_connector_registry(mut self, connectors: UpstreamConnectorRegistry) -> Self {
         self.connectors = connectors;
         self
+    }
+
+    pub(crate) async fn image_body_spool_snapshot(&self) -> ImageBodySpoolSnapshot {
+        self.image_edit_body.spool_snapshot().await
     }
 
     pub async fn proxy(
@@ -244,11 +269,21 @@ impl ProxyService {
             }
         };
 
-        let original_body = match to_bytes(body, self.max_request_body_bytes).await {
-            Ok(value) => value,
-            Err(error) => {
-                trace_unlogged("unreadable_or_oversized_body");
-                return Err(request_body_error(error));
+        let original_body = if api_operation == ApiOperation::ImagesEdit {
+            match self.image_edit_body.capture(&parts.headers, body).await {
+                Ok(value) => PreparedRequestBody::ImageEdit(value),
+                Err(error) => {
+                    trace_unlogged("invalid_image_edit_body");
+                    return Err(ProxyError::image_edit_body(error));
+                }
+            }
+        } else {
+            match to_bytes(body, self.max_request_body_bytes).await {
+                Ok(value) => PreparedRequestBody::Json(value),
+                Err(error) => {
+                    trace_unlogged("unreadable_or_oversized_body");
+                    return Err(request_body_error(error));
+                }
             }
         };
         let parsed = match parse_request(api_operation, &original_body) {
@@ -263,7 +298,10 @@ impl ProxyService {
             api_format,
             &parsed.model,
             &parts.headers,
-            &original_body,
+            original_body
+                .json_bytes()
+                .map(Bytes::as_ref)
+                .unwrap_or_default(),
         );
         let route = match self.routing.select_with_affinity(
             &snapshot,
@@ -313,7 +351,7 @@ impl ProxyService {
         let mut current_channel_slot = channel_slot;
         let mut current_session_affinity = selected_session_affinity;
         let request_multiplier =
-            request_billing_multiplier(current_rule.advanced_billing(), &original_body);
+            request_billing_multiplier_for_body(current_rule.advanced_billing(), &original_body);
         let mut completion = CompletionGuard::new(
             Arc::clone(&self.request_log_sink),
             &api_key,
@@ -383,8 +421,10 @@ impl ProxyService {
                         session_affinity: selected_session_affinity,
                         lease,
                     } = route;
-                    let request_billing_multiplier =
-                        request_billing_multiplier(rule.advanced_billing(), &original_body);
+                    let request_billing_multiplier = request_billing_multiplier_for_body(
+                        rule.advanced_billing(),
+                        &original_body,
+                    );
                     completion.replace_route_before_dispatch(
                         &rule,
                         &channel,
@@ -404,25 +444,33 @@ impl ProxyService {
             completion
                 .set_preserve_affinity_on_failure(prepared_attempt.preserves_affinity_on_failure());
             let transforms = current_channel.upstream_policy().effective_transforms();
-            let body =
-                match rewrite_model_alias(original_body.clone(), &parsed.model, &current_rule) {
-                    Ok(value) => value,
-                    Err(error) => {
-                        completion.finish(RequestOutcome::ClientRequestError);
-                        return Err(error);
-                    }
-                };
-            let body = match apply_json_patch_plan(body, transforms.request_json()) {
+            let model_rewritten = parsed.model != current_rule.upstream_model();
+            let body = match original_body
+                .clone()
+                .rewrite_model(&parsed.model, current_rule.upstream_model())
+                .await
+            {
                 Ok(value) => value,
-                Err(_) => {
+                Err(error) => {
                     completion.finish(RequestOutcome::ClientRequestError);
-                    return Err(ProxyError::transform_failed());
+                    return Err(ProxyError::image_edit_body(error));
                 }
             };
-            let body = match prepared_attempt.adapt_body(body, parsed.request_protocol) {
+            let body = match apply_request_json_transform(body, transforms.request_json()) {
+                Ok(body) => body,
+                Err(error) => {
+                    completion.finish(RequestOutcome::ClientRequestError);
+                    return Err(error);
+                }
+            };
+            let body = match prepared_attempt
+                .adapt_body(body, parsed.request_protocol)
+                .await
+            {
                 Ok(body) => body,
                 Err(error) => {
                     let error = ProxyError::connector_attempt(error);
+                    completion.set_client_visible_status(error.status.as_u16());
                     completion.finish(if error.status.is_client_error() {
                         RequestOutcome::ClientRequestError
                     } else {
@@ -431,11 +479,19 @@ impl ProxyService {
                     return Err(error);
                 }
             };
+            let request_body_changed = model_rewritten
+                || !transforms.request_json().is_empty()
+                || prepared_attempt.changes_request_body();
 
             // Apply the plan before hop-by-hop cleanup so `HeaderPlan` can
             // reject dynamically protected names declared by the client
-            // `Connection` header. Cleanup then removes those names again.
+            // `Connection` header. Stale client entity metadata is removed
+            // first so the plan may explicitly supply values for the final
+            // body. Cleanup then removes hop-by-hop names again.
             let mut headers = parts.headers.clone();
+            if request_body_changed {
+                remove_rewritten_request_entity_headers(&mut headers);
+            }
             if apply_header_plan(&mut headers, transforms.request_headers()).is_err() {
                 completion.finish(RequestOutcome::ClientRequestError);
                 return Err(ProxyError::transform_failed());
@@ -479,6 +535,20 @@ impl ProxyService {
                 Err(_) => {
                     completion.finish(RequestOutcome::UpstreamUnavailable);
                     return Err(ProxyError::upstream_unavailable());
+                }
+            };
+            headers.insert(
+                CONTENT_LENGTH,
+                HeaderValue::from_str(&body.len().to_string())
+                    .expect("request body length is a valid header value"),
+            );
+            let body = match body.reqwest_body().await {
+                Ok(body) => body,
+                Err(error) => {
+                    let error = ProxyError::image_edit_body(error);
+                    completion.set_client_visible_status(error.status.as_u16());
+                    completion.finish(RequestOutcome::UpstreamUnavailable);
+                    return Err(error);
                 }
             };
 
@@ -537,8 +607,10 @@ impl ProxyService {
                     } = route;
                     let failed_channel_id = current_channel.id();
                     let next_channel_id = channel.id();
-                    let request_billing_multiplier =
-                        request_billing_multiplier(rule.advanced_billing(), &original_body);
+                    let request_billing_multiplier = request_billing_multiplier_for_body(
+                        rule.advanced_billing(),
+                        &original_body,
+                    );
                     completion.retry_with_route(
                         &rule,
                         &channel,
@@ -779,6 +851,188 @@ impl ProxyError {
         }
     }
 
+    fn image_edit_body(error: ImageEditBodyError) -> Self {
+        let (status, message, param, code) = match error {
+            ImageEditBodyError::BodyTooLarge => (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "Images edit request body exceeds the configured size limit.",
+                "body",
+                "request_too_large",
+            ),
+            ImageEditBodyError::FileTooLarge => (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "An Images edit file exceeds the configured size limit.",
+                "image",
+                "image_edit_file_too_large",
+            ),
+            ImageEditBodyError::TextFieldTooLarge => (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "Images edit text fields exceed the supported size limits.",
+                "body",
+                "image_edit_field_too_large",
+            ),
+            ImageEditBodyError::UnsupportedContentType => (
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "Images edits require multipart/form-data with a valid boundary.",
+                "content_type",
+                "image_edit_content_type_unsupported",
+            ),
+            ImageEditBodyError::UnsupportedContentEncoding => (
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "Images edits do not support encoded request bodies.",
+                "content_encoding",
+                "image_edit_content_encoding_unsupported",
+            ),
+            ImageEditBodyError::TooManyFields => (
+                StatusCode::BAD_REQUEST,
+                "Images edit multipart body contains too many fields.",
+                "body",
+                "image_edit_too_many_fields",
+            ),
+            ImageEditBodyError::FieldNameTooLong => (
+                StatusCode::BAD_REQUEST,
+                "Images edit multipart field name is too long.",
+                "body",
+                "image_edit_field_name_too_long",
+            ),
+            ImageEditBodyError::FileNameTooLong => (
+                StatusCode::BAD_REQUEST,
+                "Images edit multipart file name is too long.",
+                "image",
+                "image_edit_file_name_too_long",
+            ),
+            ImageEditBodyError::UnexpectedFileField => (
+                StatusCode::BAD_REQUEST,
+                "Images edit file fields must be named image, image[], or mask.",
+                "body",
+                "image_edit_file_field_unsupported",
+            ),
+            ImageEditBodyError::TooManyImages => (
+                StatusCode::BAD_REQUEST,
+                "Images edits support at most 16 input images.",
+                "image",
+                "image_edit_too_many_images",
+            ),
+            ImageEditBodyError::TooManyMasks => (
+                StatusCode::BAD_REQUEST,
+                "Images edits support at most one mask.",
+                "mask",
+                "image_edit_too_many_masks",
+            ),
+            ImageEditBodyError::MissingImage => (
+                StatusCode::BAD_REQUEST,
+                "Images edit request must contain at least one image.",
+                "image",
+                "image_edit_image_required",
+            ),
+            ImageEditBodyError::MissingModel
+            | ImageEditBodyError::InvalidModel
+            | ImageEditBodyError::InvalidJson => (
+                StatusCode::BAD_REQUEST,
+                "Request body must contain a string model.",
+                "model",
+                "invalid_request",
+            ),
+            ImageEditBodyError::DuplicateModel => (
+                StatusCode::BAD_REQUEST,
+                "Images edit request must contain exactly one model field.",
+                "model",
+                "image_edit_duplicate_model",
+            ),
+            ImageEditBodyError::EmptyModel => (
+                StatusCode::BAD_REQUEST,
+                "Request body must contain a non-empty model.",
+                "model",
+                "invalid_request",
+            ),
+            ImageEditBodyError::ModelTooLong => (
+                StatusCode::BAD_REQUEST,
+                "Request model exceeds the supported length.",
+                "model",
+                "invalid_request",
+            ),
+            ImageEditBodyError::StreamingUnsupported => (
+                StatusCode::BAD_REQUEST,
+                "Image API streaming is not supported yet.",
+                "stream",
+                "image_streaming_unsupported",
+            ),
+            ImageEditBodyError::JsonTransformUnsupported => (
+                StatusCode::BAD_REQUEST,
+                "Images edit multipart bodies do not support request JSON transforms.",
+                "body",
+                "image_edit_json_transform_unsupported",
+            ),
+            ImageEditBodyError::CodexTooManyImages => (
+                StatusCode::BAD_REQUEST,
+                "Codex OAuth Images edits support at most five input images.",
+                "image",
+                "codex_image_edit_too_many_images",
+            ),
+            ImageEditBodyError::CodexMaskUnsupported => (
+                StatusCode::BAD_REQUEST,
+                "Codex OAuth Images edits do not support masks.",
+                "mask",
+                "codex_image_edit_mask_unsupported",
+            ),
+            ImageEditBodyError::CodexUnsupportedField => (
+                StatusCode::BAD_REQUEST,
+                "Codex OAuth Images edit request contains an unsupported field.",
+                "body",
+                "codex_image_edit_field_unsupported",
+            ),
+            ImageEditBodyError::CodexMissingField => (
+                StatusCode::BAD_REQUEST,
+                "Codex OAuth Images edit request is missing a required field.",
+                "body",
+                "codex_image_edit_field_required",
+            ),
+            ImageEditBodyError::CodexDuplicateField => (
+                StatusCode::BAD_REQUEST,
+                "Codex OAuth Images edit request contains a duplicate field.",
+                "body",
+                "codex_image_edit_duplicate_field",
+            ),
+            ImageEditBodyError::CodexInvalidField => (
+                StatusCode::BAD_REQUEST,
+                "Codex OAuth Images edit request contains an invalid field value.",
+                "body",
+                "codex_image_edit_field_invalid",
+            ),
+            ImageEditBodyError::CodexImageContentType => (
+                StatusCode::BAD_REQUEST,
+                "Codex OAuth Images edit inputs require a recognized image content type.",
+                "image",
+                "codex_image_edit_content_type_required",
+            ),
+            ImageEditBodyError::Unreadable | ImageEditBodyError::MalformedMultipart => (
+                StatusCode::BAD_REQUEST,
+                "Images edit multipart body could not be read.",
+                "body",
+                "image_edit_multipart_invalid",
+            ),
+            ImageEditBodyError::StorageUnavailable => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Images edit request storage is temporarily unavailable.",
+                "body",
+                "image_body_spool_unavailable",
+            ),
+        };
+        Self {
+            status,
+            message: message.to_owned(),
+            error_type: if status.is_server_error() {
+                "api_error"
+            } else {
+                "invalid_request_error"
+            },
+            param: Some(param),
+            code: Some(code),
+            authenticate: false,
+            retry_after: None,
+        }
+    }
+
     fn invalid_request(message: &'static str, param: &'static str) -> Self {
         Self::invalid_request_with_code(message, param, "invalid_request")
     }
@@ -854,6 +1108,7 @@ impl ProxyError {
                 authenticate: false,
                 retry_after: None,
             },
+            ConnectorAttemptError::RequestBody(error) => Self::image_edit_body(error),
             ConnectorAttemptError::InvalidTarget => Self {
                 status: StatusCode::BAD_GATEWAY,
                 message: "The selected upstream channel has an invalid target URL.".to_owned(),
@@ -1033,8 +1288,26 @@ struct RequestLogMetadata {
     fast_mode: bool,
 }
 
-fn parse_request(api_operation: ApiOperation, body: &[u8]) -> Result<ParsedRequest, ProxyError> {
+fn parse_request(
+    api_operation: ApiOperation,
+    body: &PreparedRequestBody,
+) -> Result<ParsedRequest, ProxyError> {
     let api_format = api_operation.api_format();
+    if let Some(edit) = body.image_edit() {
+        if edit.stream_requested() {
+            return Err(ProxyError::image_edit_body(
+                ImageEditBodyError::StreamingUnsupported,
+            ));
+        }
+        return Ok(ParsedRequest {
+            model: edit.model().to_owned(),
+            log_metadata: RequestLogMetadata::default(),
+            request_protocol: RequestProtocol::NonStream,
+        });
+    }
+    let body = body
+        .json_bytes()
+        .expect("non-edit requests use validated JSON bodies");
     let probe = serde_json::from_slice::<RequestProbe>(body).map_err(|_| {
         ProxyError::invalid_request("Request body must contain a string model.", "model")
     })?;
@@ -1067,6 +1340,36 @@ fn parse_request(api_operation: ApiOperation, body: &[u8]) -> Result<ParsedReque
         ),
         request_protocol: RequestProtocol::from_http_streamed(probe.stream),
     })
+}
+
+fn request_billing_multiplier_for_body(
+    advanced_billing: &CompiledAdvancedBilling,
+    body: &PreparedRequestBody,
+) -> Decimal {
+    if !advanced_billing.has_request_multipliers() {
+        return Decimal::ONE;
+    }
+    match body.json_bytes() {
+        Some(body) => request_billing_multiplier(advanced_billing, body),
+        None => request_billing_multiplier_for_value(advanced_billing, &body.request_value()),
+    }
+}
+
+fn apply_request_json_transform(
+    body: PreparedRequestBody,
+    plan: &JsonPatchPlan,
+) -> Result<PreparedRequestBody, ProxyError> {
+    match body {
+        PreparedRequestBody::Json(body) => apply_json_patch_plan(body, plan)
+            .map(PreparedRequestBody::Json)
+            .map_err(|_| ProxyError::transform_failed()),
+        PreparedRequestBody::ImageEdit(body) if plan.is_empty() => {
+            Ok(PreparedRequestBody::ImageEdit(body))
+        }
+        PreparedRequestBody::ImageEdit(_) => Err(ProxyError::image_edit_body(
+            ImageEditBodyError::JsonTransformUnsupported,
+        )),
+    }
 }
 
 fn request_log_metadata(
@@ -1233,6 +1536,19 @@ fn forward_request_headers(headers: &HeaderMap) -> HeaderMap {
 
 fn forward_response_headers(headers: &HeaderMap) -> HeaderMap {
     forward_headers(headers, false)
+}
+
+fn remove_rewritten_request_entity_headers(headers: &mut HeaderMap) {
+    for name in [
+        HeaderName::from_static("content-md5"),
+        HeaderName::from_static("digest"),
+        HeaderName::from_static("content-digest"),
+        HeaderName::from_static("repr-digest"),
+        HeaderName::from_static("etag"),
+        HeaderName::from_static("last-modified"),
+    ] {
+        headers.remove(name);
+    }
 }
 
 fn forward_headers(headers: &HeaderMap, request: bool) -> HeaderMap {
@@ -2144,7 +2460,10 @@ impl Drop for CompletionGuard {
 
 #[cfg(test)]
 mod tests {
-    use axum::http::{HeaderMap, HeaderValue, StatusCode, header::CONNECTION};
+    use axum::{
+        body::Bytes,
+        http::{HeaderMap, HeaderValue, StatusCode, header::CONNECTION},
+    };
     use std::{sync::Arc, time::Duration};
 
     use regex::Regex;
@@ -2152,8 +2471,9 @@ mod tests {
     use rust_decimal::Decimal;
 
     use super::{
-        AttemptedChannelSlots, forward_request_headers, forward_response_headers,
-        match_session_affinity, parse_bearer_token, parse_request, response_has_no_body,
+        AttemptedChannelSlots, PreparedRequestBody, forward_request_headers,
+        forward_response_headers, match_session_affinity, parse_bearer_token, parse_request,
+        response_has_no_body,
     };
     use crate::{
         application::billing::{calculate_cost, request_billing},
@@ -2199,11 +2519,13 @@ mod tests {
     fn parses_deepseek_reasoning_effort_and_openai_fast_mode_from_chat_requests() {
         let parsed = parse_request(
             ApiOperation::ChatCompletions,
-            br#"{
+            &PreparedRequestBody::Json(Bytes::from_static(
+                br#"{
                 "model":"deepseek-v4",
                 "reasoning_effort":"MAX",
                 "service_tier":"priority"
             }"#,
+            )),
         )
         .unwrap();
 
@@ -2215,12 +2537,14 @@ mod tests {
     fn parses_openai_nested_reasoning_effort_before_the_compatible_fallback() {
         let parsed = parse_request(
             ApiOperation::Responses,
-            br#"{
+            &PreparedRequestBody::Json(Bytes::from_static(
+                br#"{
                 "model":"gpt-5",
                 "reasoning":{"effort":"xhigh"},
                 "reasoning_effort":"low",
                 "service_tier":"default"
             }"#,
+            )),
         )
         .unwrap();
 
@@ -2235,12 +2559,14 @@ mod tests {
     fn ignores_unbounded_or_non_string_request_mode_metadata_without_rejecting() {
         let parsed = parse_request(
             ApiOperation::Responses,
-            br#"{
+            &PreparedRequestBody::Json(Bytes::from_static(
+                br#"{
                 "model":"gpt-5",
                 "reasoning":{"effort":{"unexpected":true}},
                 "reasoning_effort":"this-label-is-longer-than-thirty-two-characters",
                 "service_tier":42
             }"#,
+            )),
         )
         .unwrap();
 
@@ -2252,7 +2578,9 @@ mod tests {
     fn rejects_image_streaming_until_the_protocol_is_supported() {
         let Err(error) = parse_request(
             ApiOperation::ImagesGeneration,
-            br#"{"model":"gpt-image-2","prompt":"test","stream":true}"#,
+            &PreparedRequestBody::Json(Bytes::from_static(
+                br#"{"model":"gpt-image-2","prompt":"test","stream":true}"#,
+            )),
         ) else {
             panic!("streaming Images request should be rejected");
         };

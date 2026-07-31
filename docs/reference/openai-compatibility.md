@@ -21,9 +21,10 @@
 | `POST /v1/responses` | 仅按 Responses 格式选路并转发。 |
 | 带 WebSocket Upgrade 的 `GET /v1/responses` | 顺序转发 Responses WebSocket `response.create`；不做并发多路复用。 |
 | `POST /v1/images/generations` | 仅按 Images 格式转发非流式 JSON generation 请求。 |
+| `POST /v1/images/edits` | 仅按 Images 格式转发非流式 multipart edit 请求。 |
 
-不支持 `/v1/images/edits`、multipart 图片请求、图片流式响应、embeddings、audio、files、
-batches、assistants、fine-tuning 等其他 OpenAI 路径。
+不支持 Images JSON edit 请求、图片流式响应、embeddings、audio、files、batches、
+assistants、fine-tuning 等其他 OpenAI 路径。
 
 ## 请求兼容策略
 
@@ -36,11 +37,22 @@ batches、assistants、fine-tuning 等其他 OpenAI 路径。
   过长或未知形状不会增加本地拒绝条件。
 - 没有模型别名或 body 变换时，网关保留原始请求字节，不重新序列化。
 - 模型别名只改写顶层 `model`。
-- Images generation 的 `stream: true` 在本地返回
+- Images generation/edit 的 `stream: true` 在本地返回
   `400 image_streaming_unsupported`；当前不会联系上游。
+- Images edit 要求带合法 boundary 的 `multipart/form-data`，最多接受 16 张
+  `image`/`image[]`、一个 `mask` 和 64 个 part；文本字段单项最多 `64 KiB`、合计最多
+  `1 MiB`。总 body、单文件和内存阈值由独立 `image_edit_*` 配置控制；超过内存阈值后使用
+  匿名临时文件。为保持 parser 内存有界，boundary 最多 70 bytes，preamble、单个 part Header
+  block 和 boundary padding 分别最多 `8 KiB`、`16 KiB` 与 `1 KiB`。
+- multipart edit 不应用请求 JSON Transform。模型别名需要变更时，网关流式等价重建 multipart；
+  否则原始字节保持不变。
 - 普通 `openai_compatible` Connector 会把查询字符串和原 API 路径拼接到渠道 `base_url`；
   provider Connector 可以按操作改写目标路径。
 - 客户端 `Authorization`、`Host`、`Content-Length`、代理鉴权和 hop-by-hop headers 不会直接转发；上游鉴权最后注入。
+- 模型别名、请求 JSON Transform 或 provider adapter 改变 body 时，客户端提供的
+  `Content-MD5`、`Digest`、`Content-Digest`、`Repr-Digest`、`ETag` 和 `Last-Modified`
+  会在 Header Transform 之前移除，避免把失效的完整性/表示元数据带到上游；Header
+  Transform 仍可显式设置新的值。
 
 因此，“网关接受某字段”不代表所有上游都支持该字段；同样，上游新增字段通常不需要网关先升级，只要该字段不触发本地变换限制。
 
@@ -51,7 +63,7 @@ batches、assistants、fine-tuning 等其他 OpenAI 路径。
 - SSE 默认按字节流转发；只有启用 SSE 变换时才按事件边界解析和重写。
 - 上游 HTTP 错误不会触发自动重试。
 - Chat Completions 与 Responses 的自动故障转移仅发生在响应头前的连接失败、建连超时或
-  响应头超时。Images generation 一旦开始上游尝试就不自动重试或切换渠道。
+  响应头超时。Images generation/edit 一旦开始上游尝试就不自动重试或切换渠道。
 - 网关生成的本地错误使用 OpenAI 风格的 `{ "error": { ... } }` JSON 结构，但错误代码是本项目契约。
 
 Responses WebSocket 的上游事件以 JSON 文本消息透传；配置的 Responses SSE 事件规则会应用到
@@ -67,6 +79,11 @@ Codex OAuth managed channel 也走同一 Responses WebSocket 路径，但由 Con
 Codex OAuth Images projection 仍使用标准客户端 `/v1/images/generations`，Connector 将上游目标
 改为 `/images/generations`，注入共享订阅凭证和 `x-codex-image-turn-id`，并按非流式 JSON
 而不是 SSE 处理响应。它不会把 Responses 输入转换成 Images。
+
+同一 projection 也接受客户端 `/v1/images/edits` multipart。Connector 流式读取 replayable
+body，把最多五张输入图片编码为 Codex JSON `images[].image_url` data URL，再将目标改为
+`/images/edits`。Codex adapter 不接受 mask 或未核对字段；这些限制不改变普通
+OpenAI-compatible edit 的最多 16 张输入边界。
 
 ## 格式隔离
 
@@ -94,14 +111,18 @@ Codex OAuth Images projection 仍使用标准客户端 `/v1/images/generations`�
 | HTTP | `code` | 含义 |
 | --- | --- | --- |
 | `400` | `invalid_request` | body、`model` 或请求变换无效。 |
-| `400` | `image_streaming_unsupported` | Images generation 请求设置了 `stream: true`。 |
+| `400` | `image_streaming_unsupported` | Images generation/edit 请求设置了 `stream: true`。 |
+| `400` | `image_edit_json_transform_unsupported` | multipart edit 选中了请求 JSON Transform。 |
+| `400` | `codex_image_edit_*` | Codex edit 的图片数量、mask、字段或 MIME 不符合 adapter 契约。 |
 | `401` | `invalid_api_key` | 缺少或无法认证 Gateway API Key。 |
 | `403` | `permission_denied` | API Key 没有当前格式或模型列表权限。 |
 | `404` | `model_not_found` | 模型不存在、未授权或当前格式没有路由。 |
 | `413` | `request_too_large` | 超过配置的代理 body 限制。 |
+| `415` | `image_edit_content_type_unsupported` | edit 不是合法 multipart/form-data。 |
 | `429` | `rate_limit_exceeded` / `concurrent_limit_exceeded` / `insufficient_quota` | 进程内准入或软额度拒绝。 |
 | `502` | `upstream_unavailable` / `response_transform_failed` | 上游连接或响应变换失败。 |
 | `503` | `no_healthy_channel` | 没有可选择的健康渠道。 |
+| `503` | `image_body_spool_unavailable` | edit 临时文件系统无法创建、写入或准备回放。 |
 | `504` | `connect_timeout` / `response_header_timeout` | 响应头前超时。 |
 
 上游已经返回的 HTTP 状态和 body 默认按上游内容传给客户端，不包装成本地错误。

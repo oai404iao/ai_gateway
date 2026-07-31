@@ -13,8 +13,9 @@ attributions that must accompany binary redistribution live in `LICENSES/`
 and `web/console/NOTICES.md`.
 
 The implemented backend includes OpenAI-compatible Chat Completions, HTTP
-Responses, Responses WebSocket, and non-streaming JSON Images generation proxy routes, including
-ordinary OpenAI-compatible and Codex OAuth Images channels, plus PostgreSQL-backed
+Responses, Responses WebSocket, non-streaming JSON Images generation, and
+non-streaming multipart Images edit proxy routes, including ordinary
+OpenAI-compatible and Codex OAuth Images channels, plus PostgreSQL-backed
 control-plane snapshots, a separate JWT-authenticated Console API with
 `user`/`admin` roles, constrained transforms, streaming/SSE/WebSocket
 forwarding, passive health, admission controls, durable spooled request logs,
@@ -157,8 +158,8 @@ tests. `cargo test` is the baseline Rust verification. The ignored
 **Any change to the forwarding path must also run this real-upstream script
 before completion.** It serially verifies `/v1/chat/completions` and
 `/v1/responses`, with non-streaming and SSE requests plus Responses WebSocket.
-Images generation currently relies on deterministic proxy integration tests;
-the paid smoke does not issue an image request.
+Images generation/edit currently rely on deterministic proxy integration
+tests; the paid smoke does not issue an image request.
 GitHub Actions workflows under `.github/workflows/` run path-aware ordinary
 CI, reusable Rust/Console/E2E quality gates, CodeQL security scanning, and the
 tag release path. Every PR emits the stable `ci-gate`; Markdown-only changes
@@ -222,9 +223,11 @@ Axum HTTP
 
 ### Load-bearing rules
 
-- Support `OpenAiChatCompletions`, `OpenAiResponses`, and `OpenAiImages` (`src/domain/api_format.rs`). Keep their validation and routing paths separate: never fall back or transform between formats. `OpenAiImages` currently exposes only JSON `POST /v1/images/generations`; edits, multipart bodies, and image streaming are not implemented.
+- Support `OpenAiChatCompletions`, `OpenAiResponses`, and `OpenAiImages` (`src/domain/api_format.rs`). Keep their validation and routing paths separate: never fall back or transform between formats. `OpenAiImages` exposes JSON `POST /v1/images/generations` and multipart `POST /v1/images/edits`; image streaming and public JSON/data-URL edits are not implemented.
 - `model_rules`, channel groups, and channels must agree on `api_format`; a model rule is unique by `(client_model, api_format)`.
 - Parse a request only as far as necessary to obtain `model`; absent an enabled transform or model alias, forward the original request bytes without reserialization.
+- Keep multipart Images edits behind `ReplayableRequestBody::{Memory, TempFile}` and the dedicated `image_edit_*` limits. Never raise the global JSON body limit to accommodate images, require complete input images/data-URL JSON to remain in memory beyond the configured threshold, retain named upload files, or put multipart values in logs/errors/audit.
+- Multipart edit request JSON transforms fail closed; ordinary connectors replay exact bytes or rebuild only the model field, while Codex adapts at most five images to streamed base64 data URLs and rejects masks/unverified fields.
 - Keep the fixed transform order: template defaults → channel overrides → upstream authentication. Configurable transforms must not alter protected or hop-by-hop headers.
 - A Codex OAuth logical credential belongs to one `connector_pools` record and projects through
   `codex_oauth_credential_channels` to separate Responses and Images managed channels. Preserve the
@@ -340,7 +343,7 @@ pool isolation, transforms, and configured outbound proxies.
 10. **Component tests vs. e2e are scoped.** vitest `include` is `src/**/*.{test,spec}.{ts,tsx}` and `exclude`s `e2e`, so Playwright specs (`e2e/*.spec.ts`) are not collected by vitest. e2e uses `vite.e2e.config.ts` (plain HTTP on `127.0.0.1:5174`) because Playwright's webServer readiness probe cannot ignore the dev server's self-signed HTTPS.
 11. **Performance runs are always opt-in.** `tools/forwarding-perf/` is a separate workspace package and its unit tests are lightweight, but `scripts/run-forwarding-perf.sh` starts release processes and generates sustained concurrent traffic. Do not invoke either the `quick` or `standard` profile without an explicit user request. The harness must keep using random `ai_gateway_perf_*` databases and must never point its admin URL at the normal `ai_gateway` database.
 12. **Request-log durability has two backlogs.** Production uses a process-unique local spool, then `request_log_ingest`, then the indexed `request_logs` table and settlement. Notification-queue fullness is harmless, but spool append errors are not. Never checkpoint before COPY commit or delete ingress rows before final-table persistence succeeds; both replay paths rely on UUID idempotency.
-13. **Container secrets are copied before privilege drop.** Local Compose file-backed secrets may retain host ownership/mode. `deploy/docker/entrypoint.sh` starts as root, copies config and secrets into a private tmpfs, fixes the persistent spool ownership, then executes the Gateway as UID/GID 10001. Do not bypass that entrypoint in production.
+13. **Container secrets and spool directories are prepared before privilege drop.** Local Compose file-backed secrets and named volumes may retain host ownership/mode. `deploy/docker/entrypoint.sh` starts as root, copies config and secrets into a private tmpfs, fixes the request-log and Images edit spool ownership/modes, then executes the Gateway as UID/GID 10001. Do not bypass that entrypoint in production.
 14. **Release tags are deployment inputs.** `.github/workflows/release.yml` is tag-triggered. Version drift or a missing dated Changelog entry fails the release. Verification runs read-only, GHCR publication has only package write permission, and GitHub Release publication has only contents write permission. Public repositories also publish image provenance attestations; private repositories skip that step.
 15. **GitHub Actions references are immutable.** External Actions are pinned to full commit SHAs; version-tagged Actions are updated through `.github/dependabot.yml`. Do not replace them with mutable major tags or branches. The Rust toolchain Action is pinned to a reviewed `stable` branch commit and requires periodic manual refresh.
 16. **PR workflows must not write caches.** `.github/workflows/reusable-quality.yml` and `.github/workflows/ci.yml` allow cache writes only for `main` or tag-triggered Release runs. PR jobs may restore default-branch/Release caches but must not add `cache-to`, `actions/cache/save`, or an unconditional Rust cache save.
@@ -381,6 +384,7 @@ pool isolation, transforms, and configured outbound proxies.
 | Product direction and design background | `docs/development/product-blueprint.md` |
 | Supported client formats | `src/domain/api_format.rs` |
 | Public data-plane route registry | `src/http/mod.rs` |
+| Images multipart capture/replay and Codex edit adaptation | `src/application/request_body.rs` |
 | Responses WebSocket proxy and pooling | `src/application/proxy/websocket.rs` and `src/upstream/websocket.rs` |
 | Console API route registry | `src/http/console.rs` |
 | Embedded UI serving/fallback/cache | `src/http/console_ui.rs` (feature-gated) |

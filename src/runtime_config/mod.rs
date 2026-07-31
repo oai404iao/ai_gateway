@@ -418,6 +418,14 @@ pub struct ObservabilityConfig {
 pub struct RequestLimitsFileConfig {
     #[serde(default)]
     pub proxy_body_bytes: Option<usize>,
+    #[serde(default = "default_image_edit_body_bytes")]
+    pub image_edit_body_bytes: usize,
+    #[serde(default = "default_image_edit_file_bytes")]
+    pub image_edit_file_bytes: usize,
+    #[serde(default = "default_image_edit_memory_bytes")]
+    pub image_edit_memory_bytes: usize,
+    #[serde(default = "default_image_edit_spool_directory")]
+    pub image_edit_spool_directory: PathBuf,
     #[serde(default = "default_console_body_bytes")]
     pub console_body_bytes: usize,
     #[serde(default = "default_auth_body_bytes")]
@@ -427,6 +435,10 @@ impl Default for RequestLimitsFileConfig {
     fn default() -> Self {
         Self {
             proxy_body_bytes: None,
+            image_edit_body_bytes: default_image_edit_body_bytes(),
+            image_edit_file_bytes: default_image_edit_file_bytes(),
+            image_edit_memory_bytes: default_image_edit_memory_bytes(),
+            image_edit_spool_directory: default_image_edit_spool_directory(),
             console_body_bytes: default_console_body_bytes(),
             auth_body_bytes: default_auth_body_bytes(),
         }
@@ -436,6 +448,10 @@ impl Default for RequestLimitsFileConfig {
 #[derive(Clone, Debug)]
 pub struct RequestLimitsConfig {
     pub proxy_body_bytes: usize,
+    pub image_edit_body_bytes: usize,
+    pub image_edit_file_bytes: usize,
+    pub image_edit_memory_bytes: usize,
+    pub image_edit_spool_directory: PathBuf,
     pub console_body_bytes: usize,
     pub auth_body_bytes: usize,
 }
@@ -444,13 +460,35 @@ impl RequestLimitsConfig {
         let proxy_body_bytes = file
             .proxy_body_bytes
             .unwrap_or_else(default_proxy_body_bytes);
-        if proxy_body_bytes == 0 || file.console_body_bytes == 0 || file.auth_body_bytes == 0 {
+        if proxy_body_bytes == 0
+            || file.image_edit_body_bytes == 0
+            || file.image_edit_file_bytes == 0
+            || file.image_edit_memory_bytes == 0
+            || file.console_body_bytes == 0
+            || file.auth_body_bytes == 0
+            || file.image_edit_spool_directory.as_os_str().is_empty()
+        {
             return Err(ConfigError::Compile(
-                "request body limits must be greater than zero".into(),
+                "request body limits must be greater than zero and the Images edit spool directory must be nonempty"
+                    .into(),
+            ));
+        }
+        if file.image_edit_memory_bytes > file.image_edit_body_bytes {
+            return Err(ConfigError::Compile(
+                "image_edit_memory_bytes must not exceed image_edit_body_bytes".into(),
+            ));
+        }
+        if file.image_edit_file_bytes > file.image_edit_body_bytes {
+            return Err(ConfigError::Compile(
+                "image_edit_file_bytes must not exceed image_edit_body_bytes".into(),
             ));
         }
         Ok(Self {
             proxy_body_bytes,
+            image_edit_body_bytes: file.image_edit_body_bytes,
+            image_edit_file_bytes: file.image_edit_file_bytes,
+            image_edit_memory_bytes: file.image_edit_memory_bytes,
+            image_edit_spool_directory: file.image_edit_spool_directory,
             console_body_bytes: file.console_body_bytes,
             auth_body_bytes: file.auth_body_bytes,
         })
@@ -512,6 +550,18 @@ const fn default_shutdown_grace_period_seconds() -> u64 {
 }
 const fn default_proxy_body_bytes() -> usize {
     1_048_576
+}
+const fn default_image_edit_body_bytes() -> usize {
+    64 * 1_024 * 1_024
+}
+const fn default_image_edit_file_bytes() -> usize {
+    50 * 1_024 * 1_024
+}
+const fn default_image_edit_memory_bytes() -> usize {
+    1_048_576
+}
+fn default_image_edit_spool_directory() -> PathBuf {
+    PathBuf::from("./data/image-edit-spool")
 }
 const fn default_console_body_bytes() -> usize {
     262_144
@@ -2683,6 +2733,10 @@ mod tests {
                 config.request_logging.spool_directory,
                 PathBuf::from("/var/lib/ai-gateway/request-log-spool")
             );
+            assert_eq!(
+                config.request_limits.image_edit_spool_directory,
+                PathBuf::from("/var/lib/ai-gateway/image-edit-spool")
+            );
             assert!(config.console.unwrap().ui_enabled);
         }
     }
@@ -2918,8 +2972,46 @@ mod tests {
         assert_eq!(config.session_affinity.default_ttl_seconds, 3_600);
         assert!(config.session_affinity.rules.is_empty());
         assert_eq!(config.request_limits.proxy_body_bytes, 1_048_576);
+        assert_eq!(
+            config.request_limits.image_edit_body_bytes,
+            64 * 1_024 * 1_024
+        );
+        assert_eq!(
+            config.request_limits.image_edit_file_bytes,
+            50 * 1_024 * 1_024
+        );
+        assert_eq!(config.request_limits.image_edit_memory_bytes, 1_048_576);
+        assert_eq!(
+            config.request_limits.image_edit_spool_directory,
+            PathBuf::from("./data/image-edit-spool")
+        );
         assert_eq!(config.request_limits.console_body_bytes, 262_144);
         assert_eq!(config.request_limits.auth_body_bytes, 16_384);
+    }
+
+    #[test]
+    fn bootstrap_rejects_incoherent_image_edit_body_limits() {
+        let invalid_memory = RequestLimitsFileConfig {
+            image_edit_body_bytes: 1_024,
+            image_edit_file_bytes: 1_024,
+            image_edit_memory_bytes: 2_048,
+            ..Default::default()
+        };
+        assert!(RequestLimitsConfig::resolve(invalid_memory).is_err());
+
+        let invalid_file = RequestLimitsFileConfig {
+            image_edit_body_bytes: 1_024,
+            image_edit_file_bytes: 2_048,
+            image_edit_memory_bytes: 1_024,
+            ..Default::default()
+        };
+        assert!(RequestLimitsConfig::resolve(invalid_file).is_err());
+
+        let empty_directory = RequestLimitsFileConfig {
+            image_edit_spool_directory: PathBuf::new(),
+            ..Default::default()
+        };
+        assert!(RequestLimitsConfig::resolve(empty_directory).is_err());
     }
 
     #[test]

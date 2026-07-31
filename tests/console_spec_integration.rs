@@ -2465,7 +2465,8 @@ async fn codex_business_batch_and_delete_contracts_are_versioned() {
 }
 
 /// The admin-only load endpoint exposes the current instance's resource,
-/// runtime, queue, backlog, and database-pool pressure shape.
+/// runtime, queue, request-body spool, backlog, and database-pool pressure
+/// shape.
 #[tokio::test]
 async fn system_load_reports_current_instance_pressure_shape() {
     let database = TestDatabase::new().await;
@@ -2494,6 +2495,13 @@ async fn system_load_reports_current_instance_pressure_shape() {
     assert!(body["request_log"]["spool_pending_bytes"].is_number());
     assert!(body["websocket"]["active_downstream_sessions"].is_number());
     assert!(body["websocket"]["pool_hits_total"].is_number());
+    assert!(body["image_body_spool"]["active_files"].is_number());
+    assert!(body["image_body_spool"]["active_bytes"].is_number());
+    assert!(
+        body["image_body_spool"]["available_bytes"].is_number()
+            || body["image_body_spool"]["available_bytes"].is_null()
+    );
+    assert!(body["image_body_spool"]["storage_failures_total"].is_number());
     assert!(body["database"]["control_plane"]["capacity"].is_number());
     database.cleanup().await;
 }

@@ -84,6 +84,6 @@ then runs the ignored test with `RUN_REAL_UPSTREAM_SMOKE=1`.
   logs.
 - The existing local and PostgreSQL integration tests remain the coverage for
   control-plane persistence, management APIs, failure injection, and
-  deterministic edge cases, including Images generation routing, usage
-  extraction, Codex OAuth image-turn headers, pre-upstream streaming rejection,
-  and the no-automatic-retry boundary.
+  deterministic edge cases, including Images generation/edit routing, multipart
+  spool/replay, Codex OAuth data-URL adaptation and image-turn headers,
+  pre-upstream streaming rejection, and the no-automatic-retry boundary.

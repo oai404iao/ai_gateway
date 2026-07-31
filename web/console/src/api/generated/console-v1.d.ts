@@ -1138,8 +1138,9 @@ export interface paths {
          *     null. CPU percentages are deltas between samples, so the first sample
          *     after process start may be null. Queue depth, durable request-log
          *     backlog, runtime in-flight state, Responses WebSocket sessions and
-         *     pool counters, and database pool pressure are process-local except for
-         *     PostgreSQL-backed backlog counts.
+         *     pool counters, Images edit temporary-body spool capacity/counters, and
+         *     database pool pressure are process-local except for PostgreSQL-backed
+         *     backlog counts.
          */
         get: operations["getSystemLoad"];
         put?: never;
@@ -1508,6 +1509,8 @@ export interface components {
             queues: components["schemas"]["SystemQueuesLoad"];
             request_log: components["schemas"]["SystemRequestLogLoad"];
             websocket: components["schemas"]["SystemWebSocketLoad"];
+            /** @description Present on binaries with multipart Images edit support. */
+            image_body_spool?: components["schemas"]["SystemImageBodySpoolLoad"];
             database: components["schemas"]["SystemDatabaseLoad"];
         };
         SystemHostLoad: {
@@ -1626,6 +1629,20 @@ export interface components {
             idle_timeout_seconds: number;
             /** Format: int64 */
             max_connection_age_seconds: number;
+        };
+        SystemImageBodySpoolLoad: {
+            /** Format: int64 */
+            active_files: number;
+            /** Format: int64 */
+            active_bytes: number;
+            /** Format: int64 */
+            available_bytes: number | null;
+            /** Format: int64 */
+            spooled_total: number;
+            /** Format: int64 */
+            spooled_bytes_total: number;
+            /** Format: int64 */
+            storage_failures_total: number;
         };
         SystemDatabaseLoad: {
             control_plane: components["schemas"]["SystemDatabasePoolLoad"];

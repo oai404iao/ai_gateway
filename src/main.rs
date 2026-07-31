@@ -173,7 +173,7 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
     let connectors = UpstreamConnectorRegistry::default().with_codex(codex_connector.clone());
     let proxy = ProxyService::with_dependencies_and_registry_and_automation(
         Arc::clone(&runtime),
-        config.request_limits.proxy_body_bytes,
+        &config.request_limits,
         Arc::clone(&upstream_clients),
         Arc::clone(&request_log_sink),
         routing.clone(),

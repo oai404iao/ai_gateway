@@ -24,8 +24,8 @@
 </p>
 
 > **Status:** Current implementation, under active development. The public
-> data plane supports Chat Completions, Responses, and non-streaming JSON
-> Images generation.
+> data plane supports Chat Completions, Responses, non-streaming JSON Images
+> generation, and multipart Images edits.
 
 `ai-gateway` is a self-hosted LLM request gateway built with Rust, Axum,
 Tokio, SQLx, and PostgreSQL. It keeps routing on an immutable in-memory
@@ -34,15 +34,19 @@ separate management Console for users and administrators.
 
 ## ✨ Features
 
-- **OpenAI-compatible data plane** for Chat Completions, Responses, and Images
-  generation over HTTP, SSE, and Responses WebSocket where applicable.
+- **OpenAI-compatible data plane** for Chat Completions, Responses, Images
+  generation, and multipart Images edits over HTTP, SSE, and Responses
+  WebSocket where applicable.
 - **Priority and weighted routing** with passive health, optional session
   affinity, and controlled failover before upstream response headers arrive.
 - **In-process upstream connectors** keep provider-specific authentication and
   request preparation inside the single Rust service. The first connector,
   Codex OAuth, adds subscription credentials, per-account proxies, token
   refresh, quota-aware draining, and shared provider-managed Responses
-  HTTP/SSE/WebSocket plus Images generation channels.
+  HTTP/SSE/WebSocket plus Images generation/edit channels.
+- **Bounded Images uploads** spill multipart edits from memory to anonymous
+  permission-restricted temporary files without raising the global JSON body
+  limit, and expose spool capacity/failure metrics in the Console.
 - **Database-backed control plane** compiled into immutable runtime snapshots;
   proxy requests do not query PostgreSQL on the hot path.
 - **Constrained transforms** for request JSON, headers, normal responses, and
@@ -66,11 +70,12 @@ separate management Console for users and administrators.
 | `POST /v1/responses` | Client API key | Proxies Responses requests over HTTP or SSE. |
 | `GET /v1/responses` + Upgrade | Client API key | Proxies sequential Responses requests over WebSocket. |
 | `POST /v1/images/generations` | Client API key | Proxies non-streaming JSON Images generation requests. |
+| `POST /v1/images/edits` | Client API key | Proxies non-streaming multipart Images edit requests. |
 
 Each API format uses separate routing rules and never falls back or transforms
-into another format. Images edits, multipart image bodies, image streaming,
-embeddings, audio, files, batches, assistants, and fine-tuning APIs are
-outside the current scope. See the
+into another format. JSON/data-URL Images edits, image streaming, embeddings,
+audio, files, batches, assistants, and fine-tuning APIs are outside the
+current scope. See the
 [OpenAI compatibility reference](docs/reference/openai-compatibility.md) for
 the exact validation, streaming, retry, and pass-through boundaries.
 
@@ -272,7 +277,7 @@ Tagged releases publish:
 Pin an immutable version in production instead of relying on `latest`.
 [`docker-compose.prd.yaml`](docker-compose.prd.yaml) provides a complete
 single-host Gateway and PostgreSQL stack with persistent database and
-request-log spool volumes.
+request-log spool volumes plus a separate local Images edit scratch volume.
 
 This Compose setup is a deployment baseline, not a high-availability platform:
 TLS termination, backups, PITR, monitoring, alerting, and PostgreSQL HA remain
@@ -285,6 +290,8 @@ starting the stack.
 - Requests are authenticated and admitted before their body is read.
 - Original request bytes are preserved unless a model alias or configured body
   transform requires reserialization.
+- Multipart Images edits use dedicated total/file limits and spill to
+  anonymous temporary files after the configured memory threshold.
 - Upstream responses are streamed; the gateway does not buffer the complete
   response for normal forwarding or usage collection.
 - Automatic failover is limited to connection failures and timeouts before

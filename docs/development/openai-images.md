@@ -1,8 +1,8 @@
 # OpenAI Images 转发设计与分阶段实施
 
-> 状态：部分实现。PR 1 的普通 OpenAI-compatible generation 与 PR 2 的 Codex OAuth
-> generation 已实现；edit、大 body 和 streaming 阶段仍是提案，不能替代代码、migration
-> 或 OpenAPI 契约。
+> 状态：部分实现。PR 1 的普通 OpenAI-compatible generation、PR 2 的 Codex OAuth
+> generation，以及 PR 3 的 multipart edit 与磁盘 request-body spool 已实现；Images
+> streaming 仍是提案，不能替代代码、migration 或 OpenAPI 契约。
 
 ## 目标
 
@@ -54,17 +54,18 @@ Images generation 或 edit 一旦开始上游尝试，就不自动切换渠道�
 
 ### 大 body 使用独立 replay 策略
 
-PR 1 只支持小型 JSON generation，继续使用当前 `proxy_body_bytes`。edit/multipart 阶段必须先
-引入类似以下抽象，再增加专用限制：
+JSON generation 继续使用 `proxy_body_bytes`。multipart edit 使用独立限制和以下抽象：
 
 ```text
 ReplayableRequestBody
   -> Memory(Bytes)
-  -> TempFile { path, length }
+  -> TempFile { anonymous_handle, length }
 ```
 
-不能仅把全局代理 body limit 提高到可容纳多张图片。临时文件必须使用受限目录和权限，流式写入，
-在取消、错误和正常结束时清理，并且敏感图片内容不得进入日志、错误摘要或 audit。
+不能仅把全局代理 body limit 提高到可容纳多张图片。实现从内存开始接收，超过
+`image_edit_memory_bytes` 后把已有和后续字节流式写入配置目录中的匿名临时文件；目录和文件在
+Unix 上分别收紧为 `0700` 与 `0600`。引用计数在取消、错误和正常结束时关闭文件，匿名 inode
+随最后一个句柄释放，不保留图片路径。敏感图片内容不得进入日志、错误摘要或 audit。
 
 ## PR 1：当前实现
 
@@ -101,14 +102,13 @@ POST /v1/images/generations
 - 格式中性的空 Config Template 会分别生成 Chat Completions、Responses 和 Images no-op
   plan；显式 Images 文档仅允许 Header 与请求 JSON 规则，SSE 规则在编译阶段拒绝。
 
-### 明确未实现
+### PR 1 交付时明确未实现
 
-- `POST /v1/images/edits`
-- multipart/form-data
+- `POST /v1/images/edits`、multipart/form-data 与 Images 专用 body spool；当前已由下述 PR 3
+  实现
 - Images streaming
 - PR 1 本身不含 Codex OAuth Images；当前该能力由下述 PR 2 实现
 - Images Session affinity、WebSocket、scheduled probe
-- Images 专用 body limit 或临时文件 spool
 - 付费真实上游 Images smoke；当前由 deterministic mock integration test 覆盖
 
 ## PR 2：当前实现的 Codex OAuth 非流式 generation
@@ -177,20 +177,49 @@ Images generation attempt 需要：
 - 发送后不跨 credential 或 Channel 自动重试；
 - 对 `401` 继续触发现有 refresh-generation 去重的后台 refresh，但不重放已发送的图片请求。
 
-## PR 3：Images edit 与大 body
+## PR 3：当前实现的 Images edit 与大 body
 
-增加 `POST /v1/images/edits` 和 `ApiOperation::ImagesEdit` 时需要先完成：
+公共数据面现在挂载：
 
-1. 路由级 Content-Type 分派和专用 Images body limits；
-2. multipart 流式接收、受限字段/文件数量和总大小；
-3. `ReplayableRequestBody::{Memory, TempFile}`；
-4. 普通 OpenAI-compatible multipart 原样或等价重建；
-5. Codex edit adapter，将受控数量的输入图片转换为其要求的 JSON/data URL 形状；
-6. 取消安全、临时文件清理和磁盘容量观测；
-7. 无自动重试和无敏感 body 日志的测试。
+```text
+POST /v1/images/edits
+```
 
-Codex 当前研究结果中的最多五张编辑输入是 provider-specific 约束，不应成为通用
-`OpenAiImages` 格式限制；它只在 Codex attempt 中执行。
+该路径只接受带合法 boundary 的 `multipart/form-data`，使用
+`ApiOperation::ImagesEdit` 和现有 `open_ai_images` 路由权限。当前实现：
+
+- 总 body 默认上限为 `64 MiB`，单个 image/mask part 默认上限为 `50 MiB`；
+- 前 `1 MiB` 保持内存，超过后使用
+  `ReplayableRequestBody::TempFile`，不会提高 generation、Chat Completions 或 Responses
+  的 `proxy_body_bytes`；
+- 最多接受 64 个 multipart part、16 个 `image`/`image[]` 输入和一个 `mask`，普通文本字段
+  单项最多 `64 KiB`、合计最多 `1 MiB`；boundary 最多 70 bytes，preamble、单个 part Header
+  block 和 boundary padding 还分别限制为 `8 KiB`、`16 KiB` 与 `1 KiB`，避免畸形 framing
+  绕过磁盘 spool 后重新放大 parser 内存；这些协议级界限在联系上游前执行；
+- 要求恰好一个非空、最多 300 字符的 `model` 字段，以及至少一个 image part；
+- `stream=true`、非 identity `Content-Encoding`、无效 multipart 和非 multipart
+  Content-Type 均 fail closed；
+- 普通 `openai_compatible` Connector 在无需模型别名时原样回放捕获的 multipart；需要别名时
+  使用同一 boundary 流式等价重建，只替换 `model` part；
+- multipart edit 不应用格式级请求 JSON Transform；若选中渠道配置了该类规则，返回
+  `400 image_edit_json_transform_unsupported`。Header 与响应 Header 变换仍照常执行；
+- Images edit 与 generation 一样，上游尝试开始后不自动重试或切换渠道。
+
+Codex OAuth edit adapter：
+
+- 把公共 multipart 输入转换为 Codex `/images/edits` 要求的非流式 JSON；
+- 流式 base64 编码 image parts，写入
+  `images[].image_url = data:<mime>;base64,...`，不会把完整输入图片或 JSON 放入单个内存缓冲；
+- 只转发经核对的 `prompt`、`background`、`model`、`n`、`quality` 与 `size` 字段；
+- provider-specific 地限制最多五张图片并拒绝 `mask` 与未核对字段；通用
+  `OpenAiImages` multipart 仍保留最多 16 张输入的独立上限；
+- 复用 generation 的 Bearer/account/FedRAMP、`originator`、版本、User-Agent 和新生成的
+  `x-codex-image-turn-id`，并删除 Responses Session Header。
+
+临时文件计数、活跃字节、累计写入、存储失败和文件系统可用容量出现在
+`GET /console/v1/system/load` 的 `image_body_spool` 中。容量低于三个最大 edit body 时，数据面
+另外发出 `ai_gateway::image_body_spool` warning。磁盘创建、写入或回放准备失败返回
+`503 image_body_spool_unavailable`，不会把文件名、字段值或图片字节写入错误响应。
 
 ## 后续：Streaming
 
@@ -226,7 +255,18 @@ PR 2 另外覆盖：
   model catalog 写入 Images projection；
 - credential 删除清理共享 Token 并 tombstone 两个 projection；
 - Codex generation 的路径、认证、image turn Header、原始 JSON、JSON 响应、usage 和请求日志；
-- 同一凭证可通过 Responses SSE/WebSocket 与 Images generation 使用。
+- 同一凭证可通过 Responses SSE/WebSocket 与 Images generation/edit 使用。
+
+PR 3 另外覆盖：
+
+- 普通 OpenAI-compatible multipart 原样转发、模型别名重建、usage 和
+  `images_edit` 请求日志；
+- 内存阈值以上落盘、可重复回放、Unix 权限、取消/Drop 清理和 spool 指标；
+- 总 body、单文件、part 数、图片数、mask、Content-Type/Encoding 与 streaming 拒绝；
+- request JSON Transform fail closed，且日志和错误中不出现 multipart 内容；
+- Codex edit 路径、Header、两张输入图片的流式 data URL 转换，以及最多五张、无 mask 的
+  provider 约束；
+- edit 响应头超时只发生一次上游尝试，draining Codex credential 在发送前拒绝。
 
 任何后续 Images 转发改动仍须运行普通 Rust/Console 检查和现有付费真实上游 smoke；在引入专用
 Images smoke 前，必须保留 deterministic Codex Images mock integration test。
@@ -238,6 +278,7 @@ Images smoke 前，必须保留 deterministic Codex Images mock integration test
 | 格式与操作 | `src/domain/api_format.rs`、`src/domain/api_operation.rs` |
 | 公共路径 | `src/http/mod.rs` |
 | 代理与无重试边界 | `src/application/proxy.rs` |
+| replayable body 与 multipart adapter | `src/application/request_body.rs` |
 | usage | `src/application/usage.rs` |
 | Transform | `src/transforms/mod.rs` |
 | 运行时编译 | `src/runtime_config/mod.rs` |

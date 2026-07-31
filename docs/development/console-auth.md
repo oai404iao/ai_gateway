@@ -47,6 +47,10 @@ Console listener 只应部署在 TLS 反向代理后。网关仅允许显式配�
 ```toml
 [request_limits]
 proxy_body_bytes = 1_048_576
+image_edit_body_bytes = 67_108_864
+image_edit_file_bytes = 52_428_800
+image_edit_memory_bytes = 1_048_576
+image_edit_spool_directory = "./data/image-edit-spool"
 console_body_bytes = 262_144
 auth_body_bytes = 16_384
 

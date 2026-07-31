@@ -27,6 +27,7 @@ pub fn router(proxy: ProxyService) -> Router {
         .route("/v1/chat/completions", post(chat_completions))
         .route("/v1/responses", post(responses).get(responses_websocket))
         .route("/v1/images/generations", post(images_generations))
+        .route("/v1/images/edits", post(images_edits))
         .with_state(proxy)
 }
 
@@ -60,6 +61,13 @@ async fn images_generations(
     request: Request,
 ) -> Result<Response, ProxyError> {
     proxy.proxy(ApiOperation::ImagesGeneration, request).await
+}
+
+async fn images_edits(
+    State(proxy): State<ProxyService>,
+    request: Request,
+) -> Result<Response, ProxyError> {
+    proxy.proxy(ApiOperation::ImagesEdit, request).await
 }
 
 async fn responses_websocket(

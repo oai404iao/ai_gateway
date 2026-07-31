@@ -6,8 +6,8 @@
 
 特殊上游使用**静态链接、进程内 Connector**，不增加 sidecar、Unix Socket RPC、动态
 `.so` 或 WASM。客户端使用标准 `POST /v1/responses`、带 Upgrade 的
-`GET /v1/responses` 或非流式 JSON `POST /v1/images/generations`；Connector 只改变选中
-format-specific channel 之后的上游准备过程。
+`GET /v1/responses`、非流式 JSON `POST /v1/images/generations` 或 multipart
+`POST /v1/images/edits`；Connector 只改变选中 format-specific channel 之后的上游准备过程。
 
 `ApiFormat` 与 `ConnectorKind` 必须分离：
 
@@ -25,7 +25,8 @@ upstream connector: CodexOauth
 统一 attempt 接口：
 
 1. `prepare`：在发送前验证动态凭证与 affinity 状态；
-2. `adapt_body`：按 HTTP SSE 或 Responses WebSocket 应用 provider 请求约束；
+2. `adapt_body`：按 HTTP SSE、Responses WebSocket、Images JSON 或 multipart edit 应用
+   provider 请求约束；
 3. `upstream_url`：解析最终目标；
 4. `inject_headers`：在通用变换和 hop-by-hop 清理之后注入最终认证；
 5. `allows_automatic_retry`：声明 pre-header transport failure 是否可跨 channel 重试；
@@ -162,6 +163,18 @@ Codex Images generation attempt：
   `x-codex-image-turn-id`；
 - 删除客户端 `session-id`、`thread-id` 与 `x-client-request-id`；
 - 把成功响应按普通 JSON 交给 Images usage collector，不按 SSE 解释。
+
+Codex Images edit attempt：
+
+- 只接受 `ApiOperation::ImagesEdit` 的非流式 multipart；
+- 复用 `ReplayableRequestBody` 顺序读取 image parts，并把最多五张图片增量 base64 编码为
+  JSON `images[].image_url` data URL；
+- provider-specific 地拒绝 `mask`、第六张图片和未核对字段，只保留
+  `prompt`、`background`、`model`、`n`、`quality` 与 `size`；
+- 目标固定为 managed channel base URL 下的 `/images/edits`；
+- 使用与 generation 相同的 Bearer/account/FedRAMP、User-Agent、`originator`、版本和新
+  `x-codex-image-turn-id`，不发送 Responses Session Header；
+- 成功响应继续按普通 JSON 与 Images usage collector 处理。
 
 preparation 失败可以在发送前换凭证。HTTP Codex attempt 不启用普通 transport retry，因为
 reqwest 返回 pre-header error 时不能证明请求体未被上游接收。WebSocket 只允许在上游 Upgrade

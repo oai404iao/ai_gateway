@@ -152,6 +152,7 @@ services:
         target: /run/config/ai-gateway.toml
         read_only: true
       - gateway-spool:/var/lib/ai-gateway/request-log-spool
+      - gateway-image-edit-spool:/var/lib/ai-gateway/image-edit-spool
     secrets:
       - postgres_password
       - console_jwt_private
@@ -197,3 +198,4 @@ secrets:
 volumes:
   postgres-data:
   gateway-spool:
+  gateway-image-edit-spool:

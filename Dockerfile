@@ -101,7 +101,9 @@ RUN apt-get update \
       ai-gateway \
     && install -d -m 0750 -o ai-gateway -g ai-gateway \
       /var/lib/ai-gateway/request-log-spool \
-      /run/config
+      /run/config \
+    && install -d -m 0700 -o ai-gateway -g ai-gateway \
+      /var/lib/ai-gateway/image-edit-spool
 
 COPY --from=builder /out/ai-gateway /usr/local/bin/ai-gateway
 COPY deploy/docker/entrypoint.sh /usr/local/bin/ai-gateway-entrypoint

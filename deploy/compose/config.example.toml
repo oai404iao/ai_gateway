@@ -20,8 +20,14 @@ port = 3000
 shutdown_grace_period_seconds = 60
 
 [request_limits]
-# OpenAI-compatible proxy request bodies.
+# JSON OpenAI-compatible proxy request bodies, including Images generation.
 proxy_body_bytes = 1_048_576
+# Multipart Images edits spill to the dedicated volume after this in-memory
+# threshold instead of increasing the process-wide JSON allocation limit.
+image_edit_body_bytes = 67_108_864
+image_edit_file_bytes = 52_428_800
+image_edit_memory_bytes = 1_048_576
+image_edit_spool_directory = "/var/lib/ai-gateway/image-edit-spool"
 # Console management payloads such as model and route updates.
 console_body_bytes = 262_144
 # Login, refresh, password, and invitation payloads.

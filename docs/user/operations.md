@@ -70,6 +70,10 @@ port = 3000
 
 [request_limits]
 proxy_body_bytes = 1_048_576
+image_edit_body_bytes = 67_108_864
+image_edit_file_bytes = 52_428_800
+image_edit_memory_bytes = 1_048_576
+image_edit_spool_directory = "./data/image-edit-spool"
 console_body_bytes = 262_144
 auth_body_bytes = 16_384
 
@@ -91,7 +95,12 @@ verification_key_path = "./config/console-jwt-public.pem"
 
 - 公共数据面默认监听 `127.0.0.1:3000`。
 - Console 是独立监听器；应仅通过 HTTPS 反向代理对外暴露。
-- `proxy_body_bytes` 限制 OpenAI 代理请求；`console_body_bytes` 限制已认证 Console 写操作；`auth_body_bytes` 限制登录、注册、刷新和邀请激活请求。
+- `proxy_body_bytes` 限制 JSON OpenAI 代理请求，包括 Images generation。
+- `image_edit_body_bytes` 与 `image_edit_file_bytes` 分别限制 multipart edit 总 body 和单个
+  image/mask part；`image_edit_memory_bytes` 是转为匿名临时文件前的内存阈值。
+- `image_edit_spool_directory` 必须位于容量足够的本地文件系统。Unix 上目录和临时文件分别使用
+  `0700` 与 `0600`；图片字节不会进入请求日志。
+- `console_body_bytes` 限制已认证 Console 写操作；`auth_body_bytes` 限制登录、注册、刷新和邀请激活请求。
 
 ## 公共数据面
 
@@ -103,17 +112,27 @@ verification_key_path = "./config/console-jwt-public.pem"
   `response.create` 文本消息，仅匹配 Responses 路由规则。
 - `POST /v1/images/generations`：接受带顶层 `model` 的 JSON 请求，仅匹配 Images
   路由规则；当前只支持非流式 generation。
+- `POST /v1/images/edits`：接受带 `model`、一个或多个 `image`/`image[]` 和可选
+  `mask` 的 `multipart/form-data`，仅匹配 Images 路由规则。
 
 三个 OpenAI 格式绝不互相回退。客户端 `Authorization` 不会转发给上游；网关清理
 hop-by-hop headers 后，按渠道配置最后注入上游认证。
 
 数据面在认证后、读取请求体前执行 RPM、并发与已结算软额度预检查。请求体只有在模型别名或 JSON 变换启用时才重新序列化；响应默认逐块流式转发，SSE 变换按事件边界执行且不缓冲整条流。连接失败、连接超时或等待响应头超时时，可以按系统设置在尚未尝试过的其他健康渠道上故障转移；一旦收到上游响应头或向客户端发送任何响应字节，绝不重试或切换渠道。
 
-Images generation 是例外：请求一旦开始尝试上游，就不会自动切换渠道或重试，即使失败发生在
-响应头之前，以避免重复生成和重复计费。`stream: true` 返回
-`400 image_streaming_unsupported`，且不会联系上游。当前也不挂载
-`/v1/images/edits`，不接受 multipart 图片上传。generation JSON 与其他数据面请求共享
-`request_limits.proxy_body_bytes`；首期实现没有为图片场景提高全局内存 body limit。
+Images generation/edit 是例外：请求一旦开始尝试上游，就不会自动切换渠道或重试，即使失败
+发生在响应头之前，以避免重复生成和重复计费。`stream: true` 返回
+`400 image_streaming_unsupported`，且不会联系上游。generation JSON 与其他数据面请求共享
+`request_limits.proxy_body_bytes`；edit 使用独立的总 body、单文件、内存阈值和 spool 目录，
+不会提高全局 JSON 内存上限。
+
+multipart edit 最多接受 64 个 part、16 张输入图片和一个 mask；普通文本字段最多
+单项 `64 KiB`、合计 `1 MiB`；boundary 最多 70 bytes，preamble、单个 part Header block 和
+boundary padding 分别最多 `8 KiB`、`16 KiB` 与 `1 KiB`，防止畸形 framing 放大 parser
+内存。不需要模型别名时，普通 OpenAI-compatible 渠道收到原始 multipart 字节；需要别名时，
+网关流式等价重建并只替换 `model` part。edit 不应用请求 JSON Transform；若选中渠道配置了该类规则，返回
+`400 image_edit_json_transform_unsupported`。Header 和响应 Header 变换仍照常执行。当前不接受
+JSON/data URL 形式的公开客户端 edit 请求。
 
 配置 Images 路由时，渠道组、渠道、模型规则和 API Key 的格式均使用
 `open_ai_images`。Images 渠道不支持 `test_model`，不会进入定时付费探测；Session
@@ -124,9 +143,10 @@ Images generation 是例外：请求一旦开始尝试上游，就不会自动�
 
 管理员可以把 ChatGPT Codex 订阅凭证作为共享 Connector pool 接入，而不增加 sidecar 或第二个
 转发服务。同一凭证会投影为独立的 Responses 与 Images managed channels。客户端可以调用标准
-`POST /v1/responses`、带 WebSocket Upgrade 的 `GET /v1/responses`，或非流式 JSON
-`POST /v1/images/generations`；控制面用 `connector_kind = codex_oauth` 区分特殊上游方式，
-各 projection 的 `api_format` 仍分别是 `open_ai_responses` 与 `open_ai_images`。
+`POST /v1/responses`、带 WebSocket Upgrade 的 `GET /v1/responses`、非流式 JSON
+`POST /v1/images/generations`，或 multipart `POST /v1/images/edits`；控制面用
+`connector_kind = codex_oauth` 区分特殊上游方式，各 projection 的 `api_format` 仍分别是
+`open_ai_responses` 与 `open_ai_images`。
 
 配置步骤：
 
@@ -152,8 +172,8 @@ Images generation 是例外：请求一旦开始尝试上游，就不会自动�
      服务端凭证验证与导入接口，因此失败条目可在保留其他草稿的情况下修正和重试。
 4. 为返回的 Codex model slug 创建或启用本地 model，并创建 Responses model rule，
    将 Responses Channel Group 作为候选。
-5. 如需图片生成，为 `gpt-image-2` 创建或启用本地 model，创建 `open_ai_images` model rule，
-   选择自动创建的 Images Channel Group，并显式启用该 group。
+5. 如需图片生成或编辑，为 `gpt-image-2` 创建或启用本地 model，创建
+   `open_ai_images` model rule，选择自动创建的 Images Channel Group，并显式启用该 group。
 6. 确保调用方 API Key 允许所需格式、`proxy` 权限和对应格式的 Channel Group。服务不会自动把
    Images format、group 或 channel 加入现有 API Key、Policy 或规则。
 7. 需要跨 Responses 请求固定同一订阅账户时，在系统设置中启用 Session affinity，并为目标模型配置稳定
@@ -170,7 +190,7 @@ channels 保留为路由壳，使已绑定 Responses Session
 
 凭证状态含义：
 
-- `active`：可接收新的 Responses Session 或 Images generation；
+- `active`：可接收新的 Responses Session 或 Images generation/edit；
 - `draining`：primary/secondary quota 用量达到 threshold；只允许已命中 affinity 的既有
   Responses Session，Images projection 在发送前被排除；
 - `unavailable`：quota 不允许、额度耗尽或 refresh token 永久失效；
@@ -215,6 +235,12 @@ Codex Images generation 保留模型别名和受限变换后的 JSON，请求目
 `session-id`、`thread-id` 与 `x-client-request-id`。Images 不使用 Session affinity；发送前若凭证
 不可用可以选择同一 Images group 的其他 projection，但请求一旦发送就不会自动换账户或重试。
 成功响应按非流式 JSON 转发并增量提取顶层 usage，不会为 `data[].b64_json` 缓冲完整响应。
+
+Codex Images edit 接收相同客户端模型的 multipart 请求，并在 replayable body 上流式读取图片，
+转换为 `/backend-api/codex/images/edits` 的 JSON `images[].image_url` data URL。该 adapter
+provider-specific 地限制最多五张输入图片、不接受 mask，并只转发 `prompt`、`background`、
+`model`、`n`、`quality` 和 `size`。未核对字段返回 `codex_image_edit_field_unsupported`，
+不会静默丢弃。认证、image turn Header、draining 和发送后不重试边界与 generation 相同。
 
 客户端已有的合法 `session-id` / `thread-id` 会转发。缺少时，HTTP 请求若匹配 Session affinity，
 会从不可逆 session hash 派生稳定 opaque UUID；未匹配 affinity 的 HTTP 请求仅使用本次请求
@@ -452,6 +478,9 @@ HTTP、仅允许非商业用途并带独立限流，因此结果只适合作为�
 本地 spool pending bytes、PostgreSQL ingress/settlement backlog 以及控制面和请求日志连接池占用。
 Responses WebSocket 部分返回全局启用状态、活跃下游 Session、空闲和借出的上游连接、空闲池容量/
 占用、命中/未命中/丢弃累计计数以及当前空闲超时和连接最长寿命。
+`image_body_spool` 另外返回 multipart edit 的活跃临时文件/字节、文件系统可用容量、累计落盘
+body/字节和存储失败次数。容量不足或捕获/回放存储失败必须按数据面硬失败告警；上游派发前发现的
+失败返回 `503 image_body_spool_unavailable`。
 CPU 百分比依赖相邻采样差值，因此进程启动后的首次采样可能为 `null`。这些数据不是多实例集群聚合；
 Console 的“系统负载”页默认每 5 秒重新获取一次。
 
@@ -537,7 +566,7 @@ spool 中的事件。spool 写入失败和磁盘空间耗尽仍是必须告警�
 
 Console 请求日志会显示请求协议，将请求区分为非流式 HTTP、SSE 或 Responses
 WebSocket，并在 API 响应中返回独立的 `api_operation`，区分 Chat Completions、
-Responses、Images generation 与未来的 Images edit；同时显示渠道组名称。个人“请求日志”
+Responses、Images generation 与 Images edit；同时显示渠道组名称。个人“请求日志”
 始终只查询当前 JWT 用户；即使当前用户是管理员，
 服务端也会将用户名称、具体 `channel_id` 和渠道名称置空。个人列表固定显示开始时间、模型、
 请求协议、渠道组、结果、Token、成本和耗时；模型旁可显示思考等级和 `Fast` 标记，耗时同时包含
@@ -548,11 +577,11 @@ TTFT、总耗时和 TPS。详情再显示 API operation、HTTP 状态、错误�
 
 ## 已知边界
 
-- 支持 Chat Completions、Responses 与非流式 JSON Images generation；不提供 Images
-  edits、multipart 图片请求、图片流式响应、embeddings、audio、files、batches、assistants
-  或 fine-tuning API。
+- 支持 Chat Completions、Responses、非流式 JSON Images generation 与非流式 multipart
+  Images edit；不提供 JSON/data URL Images edit、图片流式响应、embeddings、audio、files、
+  batches、assistants 或 fine-tuning API。
 - 所有余额、额度、模型价格和请求费用统一使用 USD；没有跨实例限流、健康状态或 Session
   粘性协调。Chat Completions 与 Responses 的自动重试仅覆盖收到响应头前的连接失败、连接超时
-  和响应头超时，不覆盖 HTTP 错误、SSE 流中断或流空闲超时；Images generation 不自动重试。
+  和响应头超时，不覆盖 HTTP 错误、SSE 流中断或流空闲超时；Images generation/edit 不自动重试。
   系统也没有独立财务账本、充值/退款或货币兑换。
 - 服务本身不终止 TLS；Console 必须部署在正确配置的 HTTPS 反向代理后。
