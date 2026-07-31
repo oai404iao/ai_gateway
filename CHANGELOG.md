@@ -7,6 +7,8 @@ Versioning.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-31
+
 ### Added
 
 - Add the isolated `open_ai_images` format and non-streaming JSON
