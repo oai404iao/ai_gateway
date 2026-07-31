@@ -31,5 +31,34 @@ for name in "${required[@]}"; do
   fi
 done
 
+websocket_base_set=0
+websocket_key_set=0
+[[ -n "${REAL_UPSTREAM_WEBSOCKET_BASE_URL:-}" ]] && websocket_base_set=1
+[[ -n "${REAL_UPSTREAM_WEBSOCKET_API_KEY:-}" ]] && websocket_key_set=1
+if (( websocket_base_set != websocket_key_set )); then
+  printf '%s\n' \
+    'REAL_UPSTREAM_WEBSOCKET_BASE_URL and REAL_UPSTREAM_WEBSOCKET_API_KEY must be set together.' >&2
+  exit 2
+fi
+
+images_settings=(
+  REAL_UPSTREAM_IMAGES_BASE_URL
+  REAL_UPSTREAM_IMAGES_API_KEY
+  REAL_UPSTREAM_IMAGES_MODEL
+)
+images_configured=0
+for name in "${images_settings[@]}"; do
+  [[ -n "${!name:-}" ]] && ((images_configured += 1))
+done
+if (( images_configured != 0 && images_configured != ${#images_settings[@]} )); then
+  printf '%s\n' \
+    'REAL_UPSTREAM_IMAGES_BASE_URL, REAL_UPSTREAM_IMAGES_API_KEY, and REAL_UPSTREAM_IMAGES_MODEL must be set together.' >&2
+  exit 2
+fi
+
 export RUN_REAL_UPSTREAM_SMOKE=1
-cargo test --test real_upstream -- --ignored --test-threads=1
+test_args=(--ignored --test-threads=1)
+if (( images_configured == 0 )); then
+  test_args+=(--skip suite::images)
+fi
+cargo test --test real_upstream -- "${test_args[@]}"

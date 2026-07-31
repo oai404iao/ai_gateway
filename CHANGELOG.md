@@ -29,6 +29,10 @@ Versioning.
 - Require a coordinated old-binary shutdown before migration
   `0036_codex_images_projection.sql`; older binaries cannot compile the new
   Codex Images groups after that schema is applied.
+- Extend the opt-in real-upstream smoke with message-array Responses inputs,
+  optional independent Responses WebSocket URL/key settings, and optional
+  Images generation/edit tests using a dedicated URL, key, and low-budget
+  model.
 
 ## [0.7.0] - 2026-07-30
 

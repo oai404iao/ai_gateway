@@ -158,8 +158,10 @@ tests. `cargo test` is the baseline Rust verification. The ignored
 **Any change to the forwarding path must also run this real-upstream script
 before completion.** It serially verifies `/v1/chat/completions` and
 `/v1/responses`, with non-streaming and SSE requests plus Responses WebSocket.
-Images generation/edit currently rely on deterministic proxy integration
-tests; the paid smoke does not issue an image request.
+Optional paired settings can isolate the Responses WebSocket URL/key, and a
+complete `REAL_UPSTREAM_IMAGES_*` group additionally enables paid Images
+generation/edit smoke. Images forwarding must retain deterministic proxy
+integration coverage even when the optional real Images tests are run.
 GitHub Actions workflows under `.github/workflows/` run path-aware ordinary
 CI, reusable Rust/Console/E2E quality gates, CodeQL security scanning, and the
 tag release path. Every PR emits the stable `ci-gate`; Markdown-only changes
@@ -301,7 +303,7 @@ Axum HTTP
 
 1. Add or update deterministic local and PostgreSQL tests as appropriate.
 2. Run `cargo fmt --check`, `cargo clippy --all-targets`, and `cargo test`.
-3. Run `./scripts/run-real-upstream-smoke.sh` before considering the change complete. It requires the ignored `.env.real-upstream` file and makes paid Chat Completions and Responses calls; Images changes also require deterministic proxy integration coverage because the paid smoke does not yet issue image requests.
+3. Run `./scripts/run-real-upstream-smoke.sh` before considering the change complete. It requires the ignored `.env.real-upstream` file and always makes paid Chat Completions and Responses calls. Optional paired WebSocket settings can select a separate Responses WebSocket URL/key, and a complete `REAL_UPSTREAM_IMAGES_*` setting group additionally enables paid Images generation/edit calls. Images changes still require deterministic proxy integration coverage.
 4. Do not print, commit, or copy credentials from `.env.real-upstream` into TOML, source, tests, or logs.
 
 For Responses WebSocket changes, also run

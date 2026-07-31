@@ -7,8 +7,9 @@ use std::{env, net::SocketAddr, sync::Arc, time::Duration};
 use ai_gateway::{
     application::{ProxyService, RecordingRequestLogSink},
     domain::{
-        ApiFormat, PassiveHealthSettings, RequestLogEvent, RequestLogOutcome, RequestProtocol,
-        RequestUsage, ResponsesWebSocketSettings, SystemRuntimeSettings, UpstreamTimeoutDefaults,
+        ApiFormat, ApiOperation, PassiveHealthSettings, RequestLogEvent, RequestLogOutcome,
+        RequestProtocol, RequestUsage, ResponsesWebSocketSettings, SystemRuntimeSettings,
+        UpstreamTimeoutDefaults,
     },
     http,
     persistence::{
@@ -20,6 +21,7 @@ use axum::{
     body::{Body, Bytes},
     http::{HeaderValue, Request, header},
 };
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use futures_util::{SinkExt, StreamExt};
 use http_body_util::BodyExt;
 use rust_decimal::Decimal;
@@ -39,11 +41,13 @@ use uuid::Uuid;
 const CLIENT_KEY: &str = "gateway-real-upstream-smoke-client-key";
 const CLIENT_MODEL: &str = "gateway-real-upstream-smoke-model";
 const MAX_WEBSOCKET_ATTEMPTS: usize = 3;
+const IMAGE_EDIT_PNG_BASE64: &str = include_str!("fixtures/solid-1024.png.b64");
 
 #[derive(Clone, Copy)]
 pub(super) enum SmokeFormat {
     ChatCompletions,
     Responses,
+    Images,
 }
 
 impl SmokeFormat {
@@ -51,6 +55,7 @@ impl SmokeFormat {
         match self {
             Self::ChatCompletions => ApiFormat::OpenAiChatCompletions,
             Self::Responses => ApiFormat::OpenAiResponses,
+            Self::Images => ApiFormat::OpenAiImages,
         }
     }
 
@@ -58,6 +63,7 @@ impl SmokeFormat {
         match self {
             Self::ChatCompletions => "open_ai_chat_completions",
             Self::Responses => "open_ai_responses",
+            Self::Images => "open_ai_images",
         }
     }
 
@@ -65,6 +71,15 @@ impl SmokeFormat {
         match self {
             Self::ChatCompletions => "/v1/chat/completions",
             Self::Responses => "/v1/responses",
+            Self::Images => "/v1/images/generations",
+        }
+    }
+
+    const fn api_operation(self) -> ApiOperation {
+        match self {
+            Self::ChatCompletions => ApiOperation::ChatCompletions,
+            Self::Responses => ApiOperation::Responses,
+            Self::Images => ApiOperation::ImagesGeneration,
         }
     }
 
@@ -86,19 +101,39 @@ impl SmokeFormat {
             Self::Responses => json!({
                 "model": CLIENT_MODEL,
                 "input": [{
+                    "type": "message",
                     "role": "user",
                     "content": [{"type": "input_text", "text": "Reply with OK."}],
                 }],
                 "max_output_tokens": 1,
                 "stream": streamed,
             }),
+            Self::Images => json!({
+                "model": CLIENT_MODEL,
+                "prompt": "Create a solid red square.",
+                "n": 1,
+                "quality": "low",
+                "size": "1024x1024",
+            }),
         }
     }
 }
 
-pub(super) struct SmokeSettings {
+#[derive(Clone)]
+struct SmokeUpstream {
     base_url: String,
-    upstream_api_key: String,
+    api_key: String,
+}
+
+struct ImagesSmokeSettings {
+    upstream: SmokeUpstream,
+    model: String,
+}
+
+pub(super) struct SmokeSettings {
+    default_upstream: SmokeUpstream,
+    websocket_upstream: SmokeUpstream,
+    images: Option<ImagesSmokeSettings>,
     pub(super) chat_completions_model: String,
     pub(super) responses_model: String,
     timeout: Duration,
@@ -120,9 +155,27 @@ impl SmokeSettings {
                     .expect("REAL_UPSTREAM_TIMEOUT_SECONDS must be an integer of at least 3")
             })
             .unwrap_or(60);
-        Self {
+        let default_upstream = SmokeUpstream {
             base_url: required_environment("REAL_UPSTREAM_BASE_URL"),
-            upstream_api_key: required_environment("REAL_UPSTREAM_API_KEY"),
+            api_key: required_environment("REAL_UPSTREAM_API_KEY"),
+        };
+        let websocket_upstream = paired_upstream_override(
+            optional_environment("REAL_UPSTREAM_WEBSOCKET_BASE_URL"),
+            optional_environment("REAL_UPSTREAM_WEBSOCKET_API_KEY"),
+            &default_upstream,
+            "REAL_UPSTREAM_WEBSOCKET_BASE_URL and REAL_UPSTREAM_WEBSOCKET_API_KEY must be set together",
+        )
+        .unwrap_or_else(|message| panic!("{message}"));
+        let images = optional_images_settings(
+            optional_environment("REAL_UPSTREAM_IMAGES_BASE_URL"),
+            optional_environment("REAL_UPSTREAM_IMAGES_API_KEY"),
+            optional_environment("REAL_UPSTREAM_IMAGES_MODEL"),
+        )
+        .unwrap_or_else(|message| panic!("{message}"));
+        Self {
+            default_upstream,
+            websocket_upstream,
+            images,
             chat_completions_model: required_environment("REAL_UPSTREAM_CHAT_COMPLETIONS_MODEL"),
             responses_model: required_environment("REAL_UPSTREAM_RESPONSES_MODEL"),
             timeout: Duration::from_secs(timeout_seconds),
@@ -136,6 +189,36 @@ fn required_environment(name: &str) -> String {
 
 fn optional_environment(name: &str) -> Option<String> {
     env::var(name).ok().filter(|value| !value.trim().is_empty())
+}
+
+fn paired_upstream_override(
+    base_url: Option<String>,
+    api_key: Option<String>,
+    fallback: &SmokeUpstream,
+    partial_error: &'static str,
+) -> Result<SmokeUpstream, &'static str> {
+    match (base_url, api_key) {
+        (None, None) => Ok(fallback.clone()),
+        (Some(base_url), Some(api_key)) => Ok(SmokeUpstream { base_url, api_key }),
+        _ => Err(partial_error),
+    }
+}
+
+fn optional_images_settings(
+    base_url: Option<String>,
+    api_key: Option<String>,
+    model: Option<String>,
+) -> Result<Option<ImagesSmokeSettings>, &'static str> {
+    match (base_url, api_key, model) {
+        (None, None, None) => Ok(None),
+        (Some(base_url), Some(api_key), Some(model)) => Ok(Some(ImagesSmokeSettings {
+            upstream: SmokeUpstream { base_url, api_key },
+            model,
+        })),
+        _ => Err(
+            "REAL_UPSTREAM_IMAGES_BASE_URL, REAL_UPSTREAM_IMAGES_API_KEY, and REAL_UPSTREAM_IMAGES_MODEL must be set together",
+        ),
+    }
 }
 
 struct SmokeGateway {
@@ -171,6 +254,7 @@ async fn start_gateway_server(app: axum::Router) -> SmokeServer {
 
 fn gateway(
     settings: &SmokeSettings,
+    upstream_settings: &SmokeUpstream,
     format: SmokeFormat,
     client_model: &str,
     upstream_model: &str,
@@ -210,7 +294,7 @@ fn gateway(
             channel_group_id: group_id,
             api_format: format.api_format_name().into(),
             name: "real-upstream-smoke".into(),
-            base_url: settings.base_url.clone(),
+            base_url: upstream_settings.base_url.clone(),
             enabled: true,
             supports_websocket: matches!(format, SmokeFormat::Responses),
             auto_disabled: false,
@@ -225,7 +309,7 @@ fn gateway(
             stream_idle_timeout_ms: None,
             upstream_auth_kind: "bearer".into(),
             upstream_auth_header_name: None,
-            upstream_api_key: Some(settings.upstream_api_key.clone()),
+            upstream_api_key: Some(upstream_settings.api_key.clone()),
             available_models: vec![upstream_model.into()],
             test_model: None,
         }],
@@ -302,15 +386,34 @@ pub(super) async fn smoke_nonstreaming_format(
     format: SmokeFormat,
     upstream_model: &str,
 ) {
-    let gateway = gateway(settings, format, CLIENT_MODEL, upstream_model);
-
-    let response = timeout(
-        settings.timeout,
-        gateway.app.oneshot(request(format, false)),
+    let gateway = gateway(
+        settings,
+        &settings.default_upstream,
+        format,
+        CLIENT_MODEL,
+        upstream_model,
+    );
+    complete_nonstreaming_request(
+        settings,
+        gateway,
+        request(format, false),
+        format,
+        format.api_operation(),
     )
-    .await
-    .expect("non-streaming gateway request timed out")
-    .expect("non-streaming gateway request completed");
+    .await;
+}
+
+async fn complete_nonstreaming_request(
+    settings: &SmokeSettings,
+    gateway: SmokeGateway,
+    request: Request<Body>,
+    format: SmokeFormat,
+    operation: ApiOperation,
+) {
+    let response = timeout(settings.timeout, gateway.app.oneshot(request))
+        .await
+        .expect("non-streaming gateway request timed out")
+        .expect("non-streaming gateway request completed");
     assert!(
         response.status().is_success(),
         "the real upstream returned non-success status {}",
@@ -328,7 +431,12 @@ pub(super) async fn smoke_nonstreaming_format(
         "the real upstream response JSON must be an object"
     );
     assert_response_has_usage(format, &value);
-    assert_usage_was_logged(&gateway.logs.events(), format, RequestProtocol::NonStream);
+    assert_usage_was_logged(
+        &gateway.logs.events(),
+        format,
+        operation,
+        RequestProtocol::NonStream,
+    );
 }
 
 /// Makes one small, paid SSE request for one API format and fully consumes the
@@ -338,7 +446,13 @@ pub(super) async fn smoke_streaming_format(
     format: SmokeFormat,
     upstream_model: &str,
 ) {
-    let gateway = gateway(settings, format, CLIENT_MODEL, upstream_model);
+    let gateway = gateway(
+        settings,
+        &settings.default_upstream,
+        format,
+        CLIENT_MODEL,
+        upstream_model,
+    );
     let response = timeout(settings.timeout, gateway.app.oneshot(request(format, true)))
         .await
         .expect("streaming gateway request timed out")
@@ -381,8 +495,97 @@ pub(super) async fn smoke_streaming_format(
         .to_bytes();
     raw_sse.extend_from_slice(&remainder);
     let events = gateway.logs.events();
-    assert_usage_was_logged(&events, format, RequestProtocol::Sse);
+    assert_usage_was_logged(
+        &events,
+        format,
+        format.api_operation(),
+        RequestProtocol::Sse,
+    );
     assert_streaming_usage_matches_terminal_sse_event(&events, format, &raw_sse);
+}
+
+pub(super) async fn smoke_images_generation(settings: &SmokeSettings) {
+    let images = settings
+        .images
+        .as_ref()
+        .expect("configure all REAL_UPSTREAM_IMAGES_* settings to run Images smoke tests");
+    let gateway = gateway(
+        settings,
+        &images.upstream,
+        SmokeFormat::Images,
+        CLIENT_MODEL,
+        &images.model,
+    );
+    complete_nonstreaming_request(
+        settings,
+        gateway,
+        request(SmokeFormat::Images, false),
+        SmokeFormat::Images,
+        ApiOperation::ImagesGeneration,
+    )
+    .await;
+}
+
+pub(super) async fn smoke_images_edit(settings: &SmokeSettings) {
+    let images = settings
+        .images
+        .as_ref()
+        .expect("configure all REAL_UPSTREAM_IMAGES_* settings to run Images smoke tests");
+    let gateway = gateway(
+        settings,
+        &images.upstream,
+        SmokeFormat::Images,
+        CLIENT_MODEL,
+        &images.model,
+    );
+    complete_nonstreaming_request(
+        settings,
+        gateway,
+        images_edit_request(),
+        SmokeFormat::Images,
+        ApiOperation::ImagesEdit,
+    )
+    .await;
+}
+
+fn images_edit_request() -> Request<Body> {
+    const BOUNDARY: &str = "ai-gateway-real-upstream-image-edit";
+
+    let image = BASE64_STANDARD
+        .decode(IMAGE_EDIT_PNG_BASE64.trim())
+        .expect("embedded Images edit PNG must decode");
+    let mut body = Vec::new();
+    for (name, value) in [
+        ("model", CLIENT_MODEL),
+        ("prompt", "Keep this image visually unchanged."),
+        ("n", "1"),
+        ("quality", "low"),
+        ("size", "1024x1024"),
+    ] {
+        body.extend_from_slice(format!("--{BOUNDARY}\r\n").as_bytes());
+        body.extend_from_slice(
+            format!("Content-Disposition: form-data; name=\"{name}\"\r\n\r\n").as_bytes(),
+        );
+        body.extend_from_slice(value.as_bytes());
+        body.extend_from_slice(b"\r\n");
+    }
+    body.extend_from_slice(format!("--{BOUNDARY}\r\n").as_bytes());
+    body.extend_from_slice(
+        b"Content-Disposition: form-data; name=\"image\"; filename=\"input.png\"\r\n",
+    );
+    body.extend_from_slice(b"Content-Type: image/png\r\n\r\n");
+    body.extend_from_slice(&image);
+    body.extend_from_slice(b"\r\n");
+    body.extend_from_slice(format!("--{BOUNDARY}--\r\n").as_bytes());
+
+    Request::post("/v1/images/edits")
+        .header(header::AUTHORIZATION, format!("Bearer {CLIENT_KEY}"))
+        .header(
+            header::CONTENT_TYPE,
+            format!("multipart/form-data; boundary={BOUNDARY}"),
+        )
+        .body(Body::from(body))
+        .expect("Images edit smoke-test request builds")
 }
 
 /// Sends one deterministic Responses WebSocket request through a real TCP
@@ -390,6 +593,7 @@ pub(super) async fn smoke_streaming_format(
 pub(super) async fn smoke_responses_websocket(settings: &SmokeSettings, upstream_model: &str) {
     let gateway = gateway(
         settings,
+        &settings.websocket_upstream,
         SmokeFormat::Responses,
         CLIENT_MODEL,
         upstream_model,
@@ -442,6 +646,7 @@ pub(super) async fn smoke_responses_websocket(settings: &SmokeSettings, upstream
     assert_usage_was_logged(
         std::slice::from_ref(successful_event),
         SmokeFormat::Responses,
+        ApiOperation::Responses,
         RequestProtocol::WebSocket,
     );
     let expected = usage_from_sse_value(SmokeFormat::Responses, &completed)
@@ -587,6 +792,7 @@ fn assert_response_has_usage(format: SmokeFormat, value: &Value) {
                 .get("response")
                 .and_then(|response| response.get("usage"))
         }),
+        SmokeFormat::Images => value.get("usage"),
     };
     assert!(
         usage.is_some_and(Value::is_object),
@@ -597,6 +803,7 @@ fn assert_response_has_usage(format: SmokeFormat, value: &Value) {
 fn assert_usage_was_logged(
     events: &[RequestLogEvent],
     format: SmokeFormat,
+    operation: ApiOperation,
     request_protocol: RequestProtocol,
 ) {
     assert_eq!(
@@ -606,6 +813,7 @@ fn assert_usage_was_logged(
     );
     let event = &events[0];
     assert_eq!(event.api_format, format.api_format());
+    assert_eq!(event.api_operation, operation);
     assert_eq!(event.request_protocol, request_protocol);
     assert_eq!(event.streamed, request_protocol.is_streamed());
     assert_eq!(event.outcome, RequestLogOutcome::Succeeded);
@@ -645,12 +853,22 @@ fn assert_usage_was_logged(
             .is_some_and(|amount| amount > Decimal::ZERO),
         "usage with the configured nonzero price snapshot must have a positive cost"
     );
-    assert!(
-        billing
-            .output_tokens_per_second
-            .is_some_and(|tps| tps > Decimal::ZERO),
-        "a nonempty response body with output tokens must have positive output TPS"
-    );
+    match format {
+        SmokeFormat::Images => {
+            assert_eq!(
+                billing.output_tokens_per_second, None,
+                "Images request logs do not derive output TPS"
+            );
+        }
+        SmokeFormat::ChatCompletions | SmokeFormat::Responses => {
+            assert!(
+                billing
+                    .output_tokens_per_second
+                    .is_some_and(|tps| tps > Decimal::ZERO),
+                "a nonempty text response with output tokens must have positive output TPS"
+            );
+        }
+    }
 }
 
 fn assert_streaming_usage_matches_terminal_sse_event(
@@ -748,6 +966,12 @@ fn usage_from_sse_value(format: SmokeFormat, value: &Value) -> Option<RequestUsa
             "input_tokens_details",
             "output_tokens_details",
         ),
+        SmokeFormat::Images => (
+            "input_tokens",
+            "output_tokens",
+            "input_tokens_details",
+            "output_tokens_details",
+        ),
     };
     let input_tokens = nonnegative_token(usage.get(input_field))?;
     let output_tokens = nonnegative_token(usage.get(output_field))?;
@@ -756,7 +980,7 @@ fn usage_from_sse_value(format: SmokeFormat, value: &Value) -> Option<RequestUsa
         .and_then(|details| nonnegative_token(details.get("cached_tokens")))
         .or_else(|| match format {
             SmokeFormat::ChatCompletions => nonnegative_token(usage.get("prompt_cache_hit_tokens")),
-            SmokeFormat::Responses => None,
+            SmokeFormat::Responses | SmokeFormat::Images => None,
         })
         .unwrap_or(0);
     let cache_write_tokens = input_details
@@ -802,5 +1026,206 @@ fn is_terminal_sse_usage(format: SmokeFormat, value: &Value) -> bool {
         SmokeFormat::Responses => {
             value.get("type").and_then(Value::as_str) == Some("response.completed")
         }
+        SmokeFormat::Images => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{
+        Json, Router,
+        extract::{OriginalUri, State},
+        http::HeaderMap,
+        routing::post,
+    };
+    use std::sync::Mutex;
+
+    #[derive(Clone, Debug)]
+    struct CapturedImagesRequest {
+        path: String,
+        authorization: Option<String>,
+        content_type: Option<String>,
+        body: Bytes,
+    }
+
+    fn fallback_upstream() -> SmokeUpstream {
+        SmokeUpstream {
+            base_url: "https://default.example.invalid".into(),
+            api_key: "default-key".into(),
+        }
+    }
+
+    async fn capture_images_request(
+        State(captured): State<Arc<Mutex<Vec<CapturedImagesRequest>>>>,
+        OriginalUri(uri): OriginalUri,
+        headers: HeaderMap,
+        body: Bytes,
+    ) -> Json<Value> {
+        captured.lock().unwrap().push(CapturedImagesRequest {
+            path: uri.path().into(),
+            authorization: headers
+                .get(header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned),
+            content_type: headers
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned),
+            body,
+        });
+        Json(json!({
+            "created": 1,
+            "data": [{"b64_json": "aW1hZ2U="}],
+            "usage": {
+                "input_tokens": 7,
+                "output_tokens": 11,
+                "input_tokens_details": {
+                    "cached_tokens": 0,
+                },
+                "output_tokens_details": {
+                    "reasoning_tokens": 0,
+                },
+            },
+        }))
+    }
+
+    #[test]
+    fn websocket_override_is_optional_but_must_be_complete() {
+        let fallback = fallback_upstream();
+        let inherited = paired_upstream_override(None, None, &fallback, "partial").unwrap();
+        assert_eq!(inherited.base_url, fallback.base_url);
+        assert_eq!(inherited.api_key, fallback.api_key);
+        let overridden = paired_upstream_override(
+            Some("https://websocket.example.invalid".into()),
+            Some("websocket-key".into()),
+            &fallback,
+            "partial",
+        )
+        .unwrap();
+        assert_eq!(overridden.base_url, "https://websocket.example.invalid");
+        assert_eq!(overridden.api_key, "websocket-key");
+        assert!(
+            paired_upstream_override(
+                Some("https://websocket.example.invalid".into()),
+                None,
+                &fallback,
+                "partial",
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn images_settings_are_optional_but_must_be_complete() {
+        assert!(
+            optional_images_settings(None, None, None)
+                .unwrap()
+                .is_none()
+        );
+        let configured = optional_images_settings(
+            Some("https://images.example.invalid".into()),
+            Some("images-key".into()),
+            Some("images-model".into()),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            configured.upstream.base_url,
+            "https://images.example.invalid"
+        );
+        assert_eq!(configured.upstream.api_key, "images-key");
+        assert_eq!(configured.model, "images-model");
+        assert!(
+            optional_images_settings(
+                Some("https://images.example.invalid".into()),
+                None,
+                Some("images-model".into()),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn responses_requests_use_explicit_message_arrays() {
+        let body = SmokeFormat::Responses.request_body(false);
+        assert_eq!(body["input"][0]["type"], "message");
+        assert_eq!(body["input"][0]["role"], "user");
+        assert_eq!(body["input"][0]["content"][0]["type"], "input_text");
+    }
+
+    #[test]
+    fn embedded_images_edit_fixture_is_a_1024_square_png() {
+        let image = BASE64_STANDARD
+            .decode(IMAGE_EDIT_PNG_BASE64.trim())
+            .unwrap();
+        assert_eq!(&image[..8], b"\x89PNG\r\n\x1a\n");
+        assert_eq!(u32::from_be_bytes(image[16..20].try_into().unwrap()), 1024);
+        assert_eq!(u32::from_be_bytes(image[20..24].try_into().unwrap()), 1024);
+    }
+
+    #[tokio::test]
+    async fn images_smoke_uses_dedicated_target_for_generation_and_edit() {
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let app = Router::new()
+            .route("/v1/images/generations", post(capture_images_request))
+            .route("/v1/images/edits", post(capture_images_request))
+            .with_state(Arc::clone(&captured));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let images_upstream = SmokeUpstream {
+            base_url: format!("http://{address}"),
+            api_key: "images-key".into(),
+        };
+        let settings = SmokeSettings {
+            default_upstream: fallback_upstream(),
+            websocket_upstream: fallback_upstream(),
+            images: Some(ImagesSmokeSettings {
+                upstream: images_upstream,
+                model: "images-upstream-model".into(),
+            }),
+            chat_completions_model: "unused-chat-model".into(),
+            responses_model: "unused-responses-model".into(),
+            timeout: Duration::from_secs(5),
+        };
+
+        smoke_images_generation(&settings).await;
+        smoke_images_edit(&settings).await;
+        server.abort();
+
+        let requests = captured.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].path, "/v1/images/generations");
+        assert_eq!(
+            requests[0].authorization.as_deref(),
+            Some("Bearer images-key")
+        );
+        assert_eq!(
+            requests[0].content_type.as_deref(),
+            Some("application/json")
+        );
+        let generation: Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(generation["model"], "images-upstream-model");
+
+        assert_eq!(requests[1].path, "/v1/images/edits");
+        assert_eq!(
+            requests[1].authorization.as_deref(),
+            Some("Bearer images-key")
+        );
+        assert!(
+            requests[1]
+                .content_type
+                .as_deref()
+                .is_some_and(|value| value.starts_with("multipart/form-data; boundary="))
+        );
+        assert!(
+            requests[1]
+                .body
+                .windows(b"images-upstream-model".len())
+                .any(|window| window == b"images-upstream-model")
+        );
     }
 }

@@ -108,6 +108,17 @@ fn system_settings() -> SystemSettingsInput {
     }
 }
 
+fn responses_message_input(text: &str) -> serde_json::Value {
+    serde_json::json!([{
+        "type": "message",
+        "role": "user",
+        "content": [{
+            "type": "input_text",
+            "text": text,
+        }],
+    }])
+}
+
 #[tokio::test]
 async fn request_log_tables_use_production_autovacuum_settings() {
     let database = TestDatabase::new().await;
@@ -2425,7 +2436,7 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
                 "model": client_model.clone(),
                 "stream": true,
                 "store": true,
-                "input": "hello"
+                "input": responses_message_input("hello")
             }),
         ))
         .await
@@ -2488,7 +2499,7 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
             serde_json::json!({
                 "model": client_model.clone(),
                 "stream": false,
-                "input": "hello"
+                "input": responses_message_input("hello")
             }),
         ))
         .await
@@ -2510,7 +2521,7 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
                 "model": client_model.clone(),
                 "stream": true,
                 "previous_response_id": "resp_previous",
-                "input": "hello"
+                "input": responses_message_input("hello")
             }),
         ))
         .await
@@ -2877,7 +2888,7 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
             serde_json::json!({
                 "model": client_model.clone(),
                 "stream": true,
-                "input": "continue"
+                "input": responses_message_input("continue")
             }),
         ))
         .await
@@ -2892,7 +2903,7 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
             serde_json::json!({
                 "model": client_model.clone(),
                 "stream": true,
-                "input": "new"
+                "input": responses_message_input("new")
             }),
         ))
         .await
@@ -2975,7 +2986,7 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
                 serde_json::json!({
                     "model": client_model.clone(),
                     "stream": true,
-                    "input": "continue"
+                    "input": responses_message_input("continue")
                 }),
             ))
             .await
@@ -3020,7 +3031,7 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
             serde_json::json!({
                 "model": client_model.clone(),
                 "stream": true,
-                "input": "continue"
+                "input": responses_message_input("continue")
             }),
         ))
         .await
@@ -3044,7 +3055,7 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
             serde_json::json!({
                 "model": client_model,
                 "stream": true,
-                "input": "new"
+                "input": responses_message_input("new")
             }),
         ))
         .await

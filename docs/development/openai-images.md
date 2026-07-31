@@ -109,7 +109,9 @@ POST /v1/images/generations
 - Images streaming
 - PR 1 本身不含 Codex OAuth Images；当前该能力由下述 PR 2 实现
 - Images Session affinity、WebSocket、scheduled probe
-- 付费真实上游 Images smoke；当前由 deterministic mock integration test 覆盖
+- PR 1 本身不含付费真实上游 Images smoke；当前脚本在完整配置
+  `REAL_UPSTREAM_IMAGES_*` 时可选执行 generation/edit，两项协议仍保留 deterministic mock
+  integration coverage
 
 ## PR 2：当前实现的 Codex OAuth 非流式 generation
 
@@ -268,8 +270,9 @@ PR 3 另外覆盖：
   provider 约束；
 - edit 响应头超时只发生一次上游尝试，draining Codex credential 在发送前拒绝。
 
-任何后续 Images 转发改动仍须运行普通 Rust/Console 检查和现有付费真实上游 smoke；在引入专用
-Images smoke 前，必须保留 deterministic Codex Images mock integration test。
+任何后续 Images 转发改动仍须运行普通 Rust/Console 检查和现有付费真实上游 smoke。提供完整
+`REAL_UPSTREAM_IMAGES_*` 配置时，脚本还会执行 generation/edit 付费 smoke；无论是否配置真实
+Images 上游，都必须保留 deterministic Codex Images mock integration test。
 
 ## 权威实现位置
 
