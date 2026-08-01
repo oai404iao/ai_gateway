@@ -40,6 +40,7 @@ export type UserSettings = S["UserSettings"];
 export type ConsoleSession = S["ConsoleSession"];
 export type ConsoleSessionState = S["ConsoleSessionState"];
 export type InvitationResponse = S["InvitationResponse"];
+export type TemporaryPasswordResponse = S["TemporaryPasswordResponse"];
 export type RegistrationInvitationCodeCreateResponse =
   S["RegistrationInvitationCodeCreateResponse"];
 export type MutationResponse = S["MutationResponse"];
@@ -126,6 +127,8 @@ export type ActivateInvitationInput = S["ActivateInvitationInput"];
 export type ProfileUpdateInput = S["ProfileUpdateInput"];
 export type UserSettingsInput = S["UserSettingsInput"];
 export type PasswordChangeInput = S["PasswordChangeInput"];
+export type CompletePasswordResetInput = S["CompletePasswordResetInput"];
+export type TemporaryPasswordInput = S["TemporaryPasswordInput"];
 export type RevokeInput = S["RevokeInput"];
 export type SelfApiKeyCreateInput = S["SelfApiKeyCreateInput"];
 export type SelfApiKeyUpdateInput = S["SelfApiKeyUpdateInput"];

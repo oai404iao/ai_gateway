@@ -517,6 +517,14 @@ async fn emergency_admin_password_reset_revokes_existing_sessions() {
         .login(email.clone(), old_password.to_owned())
         .await
         .unwrap();
+    sqlx::query(
+        "UPDATE users SET password_change_required=true,temporary_password_issued_at=now(), \
+         temporary_password_expires_at=now()+interval '1 day' WHERE id=$1",
+    )
+    .bind(user_id)
+    .execute(&database.pool)
+    .await
+    .unwrap();
     let new_hash = hash_console_password(new_password.to_owned())
         .await
         .unwrap();
@@ -539,6 +547,16 @@ async fn emergency_admin_password_reset_revokes_existing_sessions() {
     auth.login(email, new_password.to_owned())
         .await
         .expect("the replacement password must work");
+    let reset_state: (bool, Option<chrono::DateTime<chrono::Utc>>) = sqlx::query_as(
+        "SELECT password_change_required,temporary_password_expires_at \
+         FROM users WHERE id=$1",
+    )
+    .bind(user_id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert!(!reset_state.0);
+    assert!(reset_state.1.is_none());
 
     let audit_count = sqlx::query_scalar::<_, i64>(
         "SELECT count(*) FROM audit_logs \
@@ -549,6 +567,469 @@ async fn emergency_admin_password_reset_revokes_existing_sessions() {
     .await
     .unwrap();
     assert_eq!(audit_count, 1);
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn administrator_temporary_password_forces_and_completes_password_change() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+    let target_user_id = Uuid::new_v4();
+    let target_email = format!("temporary-password-{target_user_id}@example.test");
+    let old_password = "old-password-with-enough-length";
+    let new_password = "new-permanent-password-value";
+    let old_hash = hash_console_password(old_password.to_owned())
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO users (id,email,display_name,role,status,password_hash) \
+         VALUES ($1,$2,'Temporary Password Target','user','active',$3)",
+    )
+    .bind(target_user_id)
+    .bind(&target_email)
+    .bind(old_hash)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let api_key_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO api_keys \
+         (id,user_id,name,secret_value,status,allowed_api_formats,permissions) \
+         VALUES ($1,$2,'temporary-password-key',$3,'active', \
+                 ARRAY['open_ai_chat_completions']::api_format[], \
+                 ARRAY['proxy','models.read'])",
+    )
+    .bind(api_key_id)
+    .bind(target_user_id)
+    .bind(format!("sk-temporary-password-{api_key_id}"))
+    .execute(&database.pool)
+    .await
+    .unwrap();
+
+    let old_session = app
+        .auth
+        .login(target_email.clone(), old_password.to_owned())
+        .await
+        .unwrap();
+    let self_reset = request(
+        &app,
+        "POST",
+        &format!("/console/v1/users/{}/temporary-password", app.user_id),
+        serde_json::json!({"current_password":TEST_PASSWORD}),
+        &[],
+    )
+    .await;
+    assert_eq!(self_reset.status(), StatusCode::CONFLICT);
+    assert_eq!(body_json(self_reset).await["error"], "cannot_reset_self");
+
+    let wrong_reauthentication = request(
+        &app,
+        "POST",
+        &format!("/console/v1/users/{target_user_id}/temporary-password"),
+        serde_json::json!({"current_password":"wrong-administrator-password"}),
+        &[],
+    )
+    .await;
+    assert_eq!(wrong_reauthentication.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        body_json(wrong_reauthentication).await["error"],
+        "reauthentication_failed"
+    );
+
+    let first_issue = request(
+        &app,
+        "POST",
+        &format!("/console/v1/users/{target_user_id}/temporary-password"),
+        serde_json::json!({"current_password":TEST_PASSWORD}),
+        &[],
+    )
+    .await;
+    assert_eq!(first_issue.status(), StatusCode::CREATED);
+    let first_issue = body_json(first_issue).await;
+    let first_temporary_password = first_issue["temporary_password"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(first_temporary_password.starts_with("AGW-"));
+    assert_eq!(first_issue["user_id"], target_user_id.to_string());
+    let first_expiry = chrono::DateTime::parse_from_rfc3339(
+        first_issue["expires_at"]
+            .as_str()
+            .expect("expiry is a string"),
+    )
+    .unwrap()
+    .with_timezone(&chrono::Utc);
+    let remaining = first_expiry.signed_duration_since(chrono::Utc::now());
+    assert!(remaining > chrono::Duration::hours(23));
+    assert!(remaining <= chrono::Duration::hours(24));
+
+    assert!(matches!(
+        app.auth
+            .authenticate_access_token(&old_session.access_token)
+            .await,
+        Err(AuthError::InvalidToken)
+    ));
+    assert!(matches!(
+        app.auth
+            .login(target_email.clone(), old_password.to_owned())
+            .await,
+        Err(AuthError::InvalidCredentials)
+    ));
+
+    let replacement = request(
+        &app,
+        "POST",
+        &format!("/console/v1/users/{target_user_id}/temporary-password"),
+        serde_json::json!({"current_password":TEST_PASSWORD}),
+        &[],
+    )
+    .await;
+    assert_eq!(replacement.status(), StatusCode::CREATED);
+    let replacement = body_json(replacement).await;
+    let temporary_password = replacement["temporary_password"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(temporary_password, first_temporary_password);
+
+    let superseded_login = unauthenticated_request(
+        &app,
+        "POST",
+        "/console/v1/auth/login",
+        serde_json::json!({
+            "email": &target_email,
+            "password": first_temporary_password,
+        }),
+    )
+    .await;
+    assert_eq!(superseded_login.status(), StatusCode::UNAUTHORIZED);
+
+    let temporary_login = unauthenticated_request(
+        &app,
+        "POST",
+        "/console/v1/auth/login",
+        serde_json::json!({
+            "email": &target_email,
+            "password": &temporary_password,
+        }),
+    )
+    .await;
+    assert_eq!(temporary_login.status(), StatusCode::OK);
+    let refresh_token = temporary_login
+        .headers()
+        .get(header::SET_COOKIE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .split_once('=')
+        .unwrap()
+        .1
+        .to_owned();
+    let temporary_login = body_json(temporary_login).await;
+    assert_eq!(temporary_login["user"]["password_change_required"], true);
+    assert!(temporary_login["user"]["temporary_password_expires_at"].is_string());
+    let temporary_access_token = temporary_login["access_token"].as_str().unwrap();
+    let refreshed = app.auth.refresh(&refresh_token).await.unwrap();
+    assert!(refreshed.user.password_change_required);
+    assert!(refreshed.user.temporary_password_expires_at.is_some());
+    let session_purpose: String = sqlx::query_scalar(
+        "SELECT purpose FROM user_sessions \
+         WHERE user_id=$1 AND revoked_at IS NULL ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(target_user_id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(session_purpose, "password_change");
+
+    let blocked = request_with_token(
+        &app,
+        temporary_access_token,
+        "GET",
+        "/console/v1/me",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(blocked.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        body_json(blocked).await["error"],
+        "password_change_required"
+    );
+
+    let same_password = request_with_token(
+        &app,
+        temporary_access_token,
+        "POST",
+        "/console/v1/auth/complete-password-reset",
+        serde_json::json!({"new_password":&temporary_password}),
+        &[],
+    )
+    .await;
+    assert_eq!(same_password.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        body_json(same_password).await["error"],
+        "new_password_matches_temporary"
+    );
+
+    let completed = request_with_token(
+        &app,
+        temporary_access_token,
+        "POST",
+        "/console/v1/auth/complete-password-reset",
+        serde_json::json!({"new_password":new_password}),
+        &[("user-agent", "Completed Reset Browser/1.0")],
+    )
+    .await;
+    assert_eq!(completed.status(), StatusCode::OK);
+    assert!(completed.headers().contains_key(header::SET_COOKIE));
+    let completed = body_json(completed).await;
+    assert_eq!(completed["user"]["password_change_required"], false);
+    assert!(completed["user"]["temporary_password_expires_at"].is_null());
+    let normal_access_token = completed["access_token"].as_str().unwrap();
+    let profile = request_with_token(
+        &app,
+        normal_access_token,
+        "GET",
+        "/console/v1/me",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(profile.status(), StatusCode::OK);
+
+    assert!(matches!(
+        app.auth
+            .login(target_email.clone(), temporary_password.clone())
+            .await,
+        Err(AuthError::InvalidCredentials)
+    ));
+    app.auth
+        .login(target_email, new_password.to_owned())
+        .await
+        .expect("the permanent password must work");
+
+    let api_key_status: String = sqlx::query_scalar("SELECT status FROM api_keys WHERE id=$1")
+        .bind(api_key_id)
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    assert_eq!(api_key_status, "active");
+    let reset_state: (bool, Option<chrono::DateTime<chrono::Utc>>) = sqlx::query_as(
+        "SELECT password_change_required,temporary_password_expires_at \
+         FROM users WHERE id=$1",
+    )
+    .bind(target_user_id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert!(!reset_state.0);
+    assert!(reset_state.1.is_none());
+
+    let audit_payload: String = sqlx::query_scalar(
+        "SELECT string_agg(COALESCE(before_redacted,'{}')::text || \
+                           COALESCE(after_redacted,'{}')::text,'') \
+         FROM audit_logs \
+         WHERE object_id=$1 AND action IN \
+               ('issue_temporary_password','complete_password_reset')",
+    )
+    .bind(target_user_id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert!(!audit_payload.contains(&temporary_password));
+    assert!(!audit_payload.contains("password_hash"));
+    let issue_audits: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_logs \
+         WHERE object_id=$1 AND action='issue_temporary_password'",
+    )
+    .bind(target_user_id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(issue_audits, 2);
+
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn expired_temporary_password_rejects_login_refresh_and_completion() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+    let target_user_id = Uuid::new_v4();
+    let target_email = format!("expired-temporary-password-{target_user_id}@example.test");
+    let old_hash = hash_console_password("expired-old-password-value".to_owned())
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO users (id,email,display_name,role,status,password_hash) \
+         VALUES ($1,$2,'Expired Temporary Password','user','active',$3)",
+    )
+    .bind(target_user_id)
+    .bind(&target_email)
+    .bind(old_hash)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+
+    let issued = request(
+        &app,
+        "POST",
+        &format!("/console/v1/users/{target_user_id}/temporary-password"),
+        serde_json::json!({"current_password":TEST_PASSWORD}),
+        &[],
+    )
+    .await;
+    assert_eq!(issued.status(), StatusCode::CREATED);
+    let temporary_password = body_json(issued).await["temporary_password"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let session = app
+        .auth
+        .login(target_email.clone(), temporary_password.clone())
+        .await
+        .unwrap();
+    let principal = app
+        .auth
+        .authenticate_access_token(&session.access_token)
+        .await
+        .unwrap();
+
+    sqlx::query(
+        "UPDATE users SET temporary_password_issued_at=now()-interval '2 days', \
+         temporary_password_expires_at=now()-interval '1 day' WHERE id=$1",
+    )
+    .bind(target_user_id)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+
+    assert!(matches!(
+        app.auth.login(target_email, temporary_password).await,
+        Err(AuthError::InvalidCredentials)
+    ));
+    assert!(matches!(
+        app.auth
+            .authenticate_access_token(&session.access_token)
+            .await,
+        Err(AuthError::InvalidToken)
+    ));
+    assert!(matches!(
+        app.auth.refresh(&session.refresh_token).await,
+        Err(AuthError::InvalidToken)
+    ));
+    assert!(matches!(
+        app.auth
+            .complete_temporary_password(
+                principal,
+                "expired-reset-replacement-password".to_owned(),
+                None,
+            )
+            .await,
+        Err(AuthError::InvalidToken)
+    ));
+    let password_change_required: bool =
+        sqlx::query_scalar("SELECT password_change_required FROM users WHERE id=$1")
+            .bind(target_user_id)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert!(password_change_required);
+
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn concurrent_temporary_password_completion_allows_only_one_winner() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+    let target_user_id = Uuid::new_v4();
+    let target_email = format!("concurrent-temporary-password-{target_user_id}@example.test");
+    let old_hash = hash_console_password("concurrent-old-password-value".to_owned())
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO users (id,email,display_name,role,status,password_hash) \
+         VALUES ($1,$2,'Concurrent Temporary Password','user','active',$3)",
+    )
+    .bind(target_user_id)
+    .bind(&target_email)
+    .bind(old_hash)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+
+    let issued = request(
+        &app,
+        "POST",
+        &format!("/console/v1/users/{target_user_id}/temporary-password"),
+        serde_json::json!({"current_password":TEST_PASSWORD}),
+        &[],
+    )
+    .await;
+    assert_eq!(issued.status(), StatusCode::CREATED);
+    let temporary_password = body_json(issued).await["temporary_password"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let first_session = app
+        .auth
+        .login(target_email.clone(), temporary_password.clone())
+        .await
+        .unwrap();
+    let second_session = app
+        .auth
+        .login(target_email.clone(), temporary_password.clone())
+        .await
+        .unwrap();
+    let first_principal = app
+        .auth
+        .authenticate_access_token(&first_session.access_token)
+        .await
+        .unwrap();
+    let second_principal = app
+        .auth
+        .authenticate_access_token(&second_session.access_token)
+        .await
+        .unwrap();
+    let first_password = "first-concurrent-permanent-password";
+    let second_password = "second-concurrent-permanent-password";
+    let first_auth = app.auth.clone();
+    let second_auth = app.auth.clone();
+    let (first_result, second_result) = tokio::join!(
+        first_auth.complete_temporary_password(first_principal, first_password.to_owned(), None,),
+        second_auth
+            .complete_temporary_password(second_principal, second_password.to_owned(), None,),
+    );
+
+    let (winning_password, losing_password, losing_error) = match (first_result, second_result) {
+        (Ok(_), Err(error)) => (first_password, second_password, error),
+        (Err(error), Ok(_)) => (second_password, first_password, error),
+        (Ok(_), Ok(_)) => panic!("both concurrent password completions succeeded"),
+        (Err(first), Err(second)) => {
+            panic!("both concurrent password completions failed: {first}; {second}")
+        }
+    };
+    assert!(matches!(losing_error, AuthError::InvalidToken));
+    app.auth
+        .login(target_email.clone(), winning_password.to_owned())
+        .await
+        .expect("the winning permanent password must work");
+    assert!(matches!(
+        app.auth
+            .login(target_email.clone(), losing_password.to_owned())
+            .await,
+        Err(AuthError::InvalidCredentials)
+    ));
+    assert!(matches!(
+        app.auth.login(target_email, temporary_password).await,
+        Err(AuthError::InvalidCredentials)
+    ));
+
     database.cleanup().await;
 }
 
@@ -655,6 +1136,8 @@ async fn login_response_shape_matches_spec() {
     assert!(body["expires_in"].is_number());
     assert_eq!(body["user"]["role"], "admin");
     assert!(body["user"]["id"].is_string());
+    assert_eq!(body["user"]["password_change_required"], false);
+    assert!(body["user"]["temporary_password_expires_at"].is_null());
     database.cleanup().await;
 }
 

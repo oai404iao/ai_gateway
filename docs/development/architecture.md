@@ -188,6 +188,12 @@ Console 用户采用单用户组模型。内置默认用户组和默认管理员
 的引用完整性。Console session 保存 refresh token 哈希和浏览器 `User-Agent`；本人会话查询在响应中
 派生当前、活跃、过期和已撤销状态，撤销操作始终按 JWT 主体限定 user ID。
 
+管理员可在重新验证自己的当前密码后，为其他 active、已设置密码的用户生成 24 小时临时密码。
+签发事务会替换原密码哈希、递增 `auth_version`、撤销全部 Console Session，并把账户标记为必须改密；
+API Key 不受影响。临时密码登录只创建 `purpose = password_change` 的受限 Session，HTTP middleware
+除刷新、退出和完成密码重置外拒绝所有 Console 路由。用户提交不同于临时密码的新密码后，事务原子
+清除临时状态并撤销全部受限 Session，随后签发新的普通 Session。
+
 路由快照为渠道和模型路由分配进程内 dense slot。模型 tier 保存连续的
 `CompiledCandidate(slot, channel, weight)` 数组；相同授权范围的 API Key 共享
 `AuthorizationProfile`，其中包含允许渠道和可达路由两个位图。模型查找、模型可达性

@@ -13,12 +13,39 @@ const ADMIN_PROFILE = {
     email: "admin@example.com",
     display_name: "Initial Admin",
     role: "admin",
+    password_change_required: false,
+    temporary_password_expires_at: null,
     status: "active",
     default_api_key_policy_id: null,
     created_at: "2026-01-01T00:00:00.000Z",
     updated_at: "2026-01-01T00:00:00.000Z",
   },
   access_token: "e2e-mock-access-token",
+};
+
+const TEMPORARY_PASSWORD_PROFILE = {
+  user: {
+    id: "00000000-0000-0000-0000-000000000003",
+    email: "reset@example.com",
+    display_name: "Password Reset User",
+    role: "user",
+    password_change_required: true,
+    temporary_password_expires_at: "2099-08-02T00:00:00.000Z",
+    status: "active",
+    balance_amount: "0.00",
+    created_at: "2026-01-01T00:00:00.000Z",
+    updated_at: "2026-01-01T00:00:00.000Z",
+  },
+  access_token: "e2e-password-change-access-token",
+};
+
+const RESET_COMPLETED_PROFILE = {
+  user: {
+    ...TEMPORARY_PASSWORD_PROFILE.user,
+    password_change_required: false,
+    temporary_password_expires_at: null,
+  },
+  access_token: "e2e-reset-completed-access-token",
 };
 
 const E2E_USER = {
@@ -28,6 +55,8 @@ const E2E_USER = {
   role: "user",
   status: "active",
   can_reissue_invitation: false,
+  password_change_required: false,
+  temporary_password_expires_at: null,
   user_group_id: "00000000-0000-0000-0000-000000000101",
   default_api_key_policy_id: null,
   effective_api_key_policy_id: "00000000-0000-0000-0000-000000000031",
@@ -430,6 +459,7 @@ const E2E_SYSTEM_REQUEST_LOG = {
 export async function mockConsoleApi(page: Page): Promise<void> {
   let websocketEnabled = false;
   let authenticated = false;
+  let session = ADMIN_PROFILE;
   await page.route("**/console/v1/**", (route: Route) => {
     const url = new URL(route.request().url());
     const method = route.request().method();
@@ -439,7 +469,12 @@ export async function mockConsoleApi(page: Page): Promise<void> {
       // The SPA stores the access token from the response body. This in-memory
       // flag stands in for the HttpOnly refresh cookie after a full reload.
       authenticated = true;
-      return route.fulfill({ status: 200, json: ADMIN_PROFILE });
+      const input = route.request().postDataJSON() as { email?: string };
+      session =
+        input.email === TEMPORARY_PASSWORD_PROFILE.user.email
+          ? TEMPORARY_PASSWORD_PROFILE
+          : ADMIN_PROFILE;
+      return route.fulfill({ status: 200, json: session });
     }
     if (path === "/console/v1/auth/register" && method === "POST") {
       authenticated = true;
@@ -447,7 +482,7 @@ export async function mockConsoleApi(page: Page): Promise<void> {
     }
     if (path === "/console/v1/auth/refresh" && method === "POST") {
       if (authenticated) {
-        return route.fulfill({ status: 200, json: ADMIN_PROFILE });
+        return route.fulfill({ status: 200, json: session });
       }
       // Start unauthenticated so the login page renders; the login or
       // registration POST above establishes the mocked refresh session.
@@ -456,8 +491,16 @@ export async function mockConsoleApi(page: Page): Promise<void> {
         json: { error: "Unauthorized" },
       });
     }
+    if (
+      path === "/console/v1/auth/complete-password-reset" &&
+      method === "POST"
+    ) {
+      session = RESET_COMPLETED_PROFILE;
+      authenticated = true;
+      return route.fulfill({ status: 200, json: session });
+    }
     if (path === "/console/v1/me" && method === "GET") {
-      return route.fulfill({ status: 200, json: ADMIN_PROFILE.user });
+      return route.fulfill({ status: 200, json: session.user });
     }
     if (path === "/console/v1/me/settings" && method === "GET") {
       return route.fulfill({

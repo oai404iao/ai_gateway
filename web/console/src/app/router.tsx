@@ -20,6 +20,11 @@ const ActivateInvitationPage = lazy(() =>
     default: m.ActivateInvitationPage,
   })),
 );
+const CompletePasswordResetPage = lazy(() =>
+  import("@/features/auth/complete-password-reset-page").then((m) => ({
+    default: m.CompletePasswordResetPage,
+  })),
+);
 const ProfilePage = lazy(() =>
   import("@/features/profile/profile-page").then((m) => ({ default: m.ProfilePage })),
 );
@@ -182,6 +187,20 @@ function RequireAuth() {
   return <Outlet />;
 }
 
+function RequirePasswordChange() {
+  const { user } = useSession();
+  if (!user?.password_change_required) return <Navigate to="/account" replace />;
+  return <Outlet />;
+}
+
+function RequireFullSession() {
+  const { user } = useSession();
+  if (user?.password_change_required) {
+    return <Navigate to="/change-password" replace />;
+  }
+  return <Outlet />;
+}
+
 function RequireAdmin() {
   const { user } = useSession();
   if (user?.role !== "admin") return <Navigate to="/account" replace />;
@@ -214,71 +233,91 @@ export function AppRouter() {
       </Route>
 
       <Route element={<RequireAuth />}>
-        <Route element={<ConsoleLayout />}>
-          <Route index element={<Navigate to="/statistics" replace />} />
-          <Route path="/account" element={<ProfilePage />} />
-          <Route path="/account/settings" element={<PersonalSettingsPage />} />
-          <Route path="/account/sessions" element={<SessionsPage />} />
-          <Route path="/api-keys" element={<ApiKeysPage />} />
-          <Route path="/api-keys/:id" element={<ApiKeyDetailPage />} />
-          <Route path="/usage/request-logs" element={<OwnRequestLogsPage />} />
-          <Route path="/channel-status" element={<ChannelStatusPage />} />
-          <Route path="/statistics" element={<StatisticsPage />} />
-          <Route path="/leaderboard" element={<SpendLeaderboardPage />} />
-
-          <Route element={<RequireAdmin />}>
-            <Route path="/admin/users" element={<UsersPage />} />
-            <Route path="/admin/users/:id" element={<UserDetailPage />} />
-            <Route path="/admin/user-groups" element={<UserGroupsPage />} />
-            <Route path="/admin/user-groups/:id" element={<UserGroupDetailPage />} />
-            <Route
-              path="/admin/registration-invitation-codes"
-              element={<RegistrationInvitationCodesPage />}
-            />
-            <Route
-              path="/admin/registration-invitation-codes/:id"
-              element={<RegistrationInvitationCodeDetailPage />}
-            />
-            <Route path="/admin/api-key-policies" element={<ApiKeyPoliciesPage />} />
-            {/* Detail pages use the "new" path segment as their create-mode sentinel. */}
-            <Route path="/admin/api-key-policies/:id" element={<ApiKeyPolicyDetailPage />} />
-            <Route path="/admin/models" element={<ModelsPage />} />
-            <Route path="/admin/models/:id" element={<ModelDetailPage />} />
-            <Route path="/admin/catalog" element={<CatalogPage />} />
-            <Route
-              path="/admin/routing/channel-groups/:id"
-              element={<ChannelGroupDetailPage />}
-            />
-            <Route path="/admin/routing/channels" element={<ChannelsPage />} />
-            <Route path="/admin/routing/channels/:id" element={<ChannelDetailPage />} />
-            <Route path="/admin/routing/model-rules" element={<ModelRulesPage />} />
-            <Route path="/admin/routing/model-rules/:id" element={<ModelRuleDetailPage />} />
-            <Route
-              path="/admin/providers/codex-oauth/:id"
-              element={<CodexOauthPage />}
-            />
-            <Route
-              path="/admin/providers/codex-oauth/:id/import"
-              element={<CodexImportPage />}
-            />
-            <Route path="/admin/network/proxies" element={<ProxiesPage />} />
-            <Route path="/admin/network/proxies/:id" element={<ProxyDetailPage />} />
-            <Route path="/admin/transforms/templates" element={<ConfigTemplatesPage />} />
-            <Route
-              path="/admin/transforms/templates/:id"
-              element={<ConfigTemplateDetailPage />}
-            />
-            <Route
-              path="/admin/statistics"
-              element={<Navigate to="/statistics" replace />}
-            />
-            <Route path="/admin/request-logs" element={<AdminRequestLogsPage />} />
-            <Route path="/admin/audit-logs" element={<AuditLogsPage />} />
-            <Route path="/admin/system-load" element={<SystemLoadPage />} />
-            <Route path="/admin/system" element={<SystemPage />} />
+        <Route element={<RequirePasswordChange />}>
+          <Route element={<AuthLayout />}>
+            <Route path="/change-password" element={<CompletePasswordResetPage />} />
           </Route>
+        </Route>
 
-          <Route path="*" element={<NotFound />} />
+        <Route element={<RequireFullSession />}>
+          <Route element={<ConsoleLayout />}>
+            <Route index element={<Navigate to="/statistics" replace />} />
+            <Route path="/account" element={<ProfilePage />} />
+            <Route path="/account/settings" element={<PersonalSettingsPage />} />
+            <Route path="/account/sessions" element={<SessionsPage />} />
+            <Route path="/api-keys" element={<ApiKeysPage />} />
+            <Route path="/api-keys/:id" element={<ApiKeyDetailPage />} />
+            <Route path="/usage/request-logs" element={<OwnRequestLogsPage />} />
+            <Route path="/channel-status" element={<ChannelStatusPage />} />
+            <Route path="/statistics" element={<StatisticsPage />} />
+            <Route path="/leaderboard" element={<SpendLeaderboardPage />} />
+
+            <Route element={<RequireAdmin />}>
+              <Route path="/admin/users" element={<UsersPage />} />
+              <Route path="/admin/users/:id" element={<UserDetailPage />} />
+              <Route path="/admin/user-groups" element={<UserGroupsPage />} />
+              <Route path="/admin/user-groups/:id" element={<UserGroupDetailPage />} />
+              <Route
+                path="/admin/registration-invitation-codes"
+                element={<RegistrationInvitationCodesPage />}
+              />
+              <Route
+                path="/admin/registration-invitation-codes/:id"
+                element={<RegistrationInvitationCodeDetailPage />}
+              />
+              <Route path="/admin/api-key-policies" element={<ApiKeyPoliciesPage />} />
+              {/* Detail pages use the "new" path segment as their create-mode sentinel. */}
+              <Route
+                path="/admin/api-key-policies/:id"
+                element={<ApiKeyPolicyDetailPage />}
+              />
+              <Route path="/admin/models" element={<ModelsPage />} />
+              <Route path="/admin/models/:id" element={<ModelDetailPage />} />
+              <Route path="/admin/catalog" element={<CatalogPage />} />
+              <Route
+                path="/admin/routing/channel-groups/:id"
+                element={<ChannelGroupDetailPage />}
+              />
+              <Route path="/admin/routing/channels" element={<ChannelsPage />} />
+              <Route path="/admin/routing/channels/:id" element={<ChannelDetailPage />} />
+              <Route path="/admin/routing/model-rules" element={<ModelRulesPage />} />
+              <Route
+                path="/admin/routing/model-rules/:id"
+                element={<ModelRuleDetailPage />}
+              />
+              <Route
+                path="/admin/providers/codex-oauth/:id"
+                element={<CodexOauthPage />}
+              />
+              <Route
+                path="/admin/providers/codex-oauth/:id/import"
+                element={<CodexImportPage />}
+              />
+              <Route path="/admin/network/proxies" element={<ProxiesPage />} />
+              <Route
+                path="/admin/network/proxies/:id"
+                element={<ProxyDetailPage />}
+              />
+              <Route
+                path="/admin/transforms/templates"
+                element={<ConfigTemplatesPage />}
+              />
+              <Route
+                path="/admin/transforms/templates/:id"
+                element={<ConfigTemplateDetailPage />}
+              />
+              <Route
+                path="/admin/statistics"
+                element={<Navigate to="/statistics" replace />}
+              />
+              <Route path="/admin/request-logs" element={<AdminRequestLogsPage />} />
+              <Route path="/admin/audit-logs" element={<AuditLogsPage />} />
+              <Route path="/admin/system-load" element={<SystemLoadPage />} />
+              <Route path="/admin/system" element={<SystemPage />} />
+            </Route>
+
+            <Route path="*" element={<NotFound />} />
+          </Route>
         </Route>
       </Route>
     </Routes>

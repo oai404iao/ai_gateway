@@ -49,6 +49,8 @@ import type {
   SessionAffinityCacheReport,
   SystemSettings,
   SystemSettingsInput,
+  TemporaryPasswordInput,
+  TemporaryPasswordResponse,
   UserBatchUpdateInput,
   UserBatchUpdateResponse,
   UserGroupInput,
@@ -135,6 +137,17 @@ export function useReissueUserInvitation(id: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: () => apiPost<InvitationResponse>(`/users/${id}/invitation`),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: USERS_KEY });
+      void queryClient.invalidateQueries({ queryKey: userDetailKey(id) });
+    },
+  });
+}
+export function useIssueTemporaryPassword(id: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: TemporaryPasswordInput) =>
+      apiPost<TemporaryPasswordResponse>(`/users/${id}/temporary-password`, input),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: USERS_KEY });
       void queryClient.invalidateQueries({ queryKey: userDetailKey(id) });

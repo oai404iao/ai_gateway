@@ -14,7 +14,7 @@ import { useSession } from "@/lib/use-session";
 import { useI18n } from "@/app/i18n";
 
 export function LoginPage() {
-  const { isAuthenticated } = useSession();
+  const { isAuthenticated, user: sessionUser } = useSession();
   const navigate = useNavigate();
   const { t } = useI18n();
   const schema = z.object({
@@ -30,17 +30,32 @@ export function LoginPage() {
   } = useForm<FormValues>({ resolver: zodResolver(schema) });
 
   useEffect(() => {
-    if (isAuthenticated) navigate("/account", { replace: true });
-  }, [isAuthenticated, navigate]);
+    if (isAuthenticated) {
+      navigate(
+        sessionUser?.password_change_required ? "/change-password" : "/account",
+        { replace: true },
+      );
+    }
+  }, [isAuthenticated, navigate, sessionUser?.password_change_required]);
 
-  if (isAuthenticated) return <Navigate to="/account" replace />;
+  if (isAuthenticated) {
+    return (
+      <Navigate
+        to={sessionUser?.password_change_required ? "/change-password" : "/account"}
+        replace
+      />
+    );
+  }
 
   const onSubmit = async (values: FormValues) => {
     setSubmitting(true);
     try {
-      await login(values);
+      const session = await login(values);
       toast.success(t("Signed in"));
-      navigate("/account", { replace: true });
+      navigate(
+        session.user.password_change_required ? "/change-password" : "/account",
+        { replace: true },
+      );
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t("Sign in failed"));
     } finally {
@@ -86,6 +101,10 @@ export function LoginPage() {
           </Button>
         </form>
         <div className="mt-4 flex flex-col gap-1 text-center text-xs text-muted-foreground">
+          <p>
+            {t("Forgot your password?")}{" "}
+            {t("Ask an administrator to generate a temporary password.")}
+          </p>
           <p>
             {t("Have a registration code?")}{" "}
             <Button

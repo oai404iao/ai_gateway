@@ -31,6 +31,39 @@ test.describe("Console SPA smoke", () => {
     await expect(page).toHaveURL(/\/account/);
   });
 
+  test("a temporary password is restricted until the user chooses a new password", async ({
+    page,
+  }) => {
+    await mockConsoleApi(page);
+    await page.goto("/login");
+
+    await page.getByLabel(/email/i).fill("reset@example.com");
+    await page.getByLabel(/^password$/i).fill("AGW-temporary-password");
+    await page.getByRole("button", { name: /sign in/i }).click();
+
+    await expect(page).toHaveURL(/\/change-password/);
+    await expect(page.getByText("Set a new password")).toBeVisible();
+    await page
+      .getByLabel("New password", { exact: true })
+      .fill("new-permanent-password");
+    await page
+      .getByLabel("Confirm new password", { exact: true })
+      .fill("new-permanent-password");
+
+    const requestPromise = page.waitForRequest(
+      (request) =>
+        request.url().endsWith("/console/v1/auth/complete-password-reset") &&
+        request.method() === "POST",
+    );
+    await page.getByRole("button", { name: "Save new password" }).click();
+    expect((await requestPromise).postDataJSON()).toEqual({
+      new_password: "new-permanent-password",
+    });
+
+    await expect(page).toHaveURL(/\/account/);
+    await expect(page.getByRole("heading", { name: "Profile" })).toBeVisible();
+  });
+
   test("an unknown deep link behind auth redirects to login when unauthenticated", async ({
     page,
   }) => {

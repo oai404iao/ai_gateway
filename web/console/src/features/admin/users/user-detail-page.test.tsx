@@ -187,4 +187,58 @@ describe("UserDetailPage", () => {
 
     await waitFor(() => expect(deleted).toBe(true));
   });
+
+  it("reauthenticates the administrator and shows a temporary password once", async () => {
+    seedAuthenticatedSession();
+    const managedUser = {
+      ...CONTROL_PLANE_USER,
+      id: "00000000-0000-0000-0000-000000000095",
+      email: "password-reset@example.test",
+      display_name: "Password Reset Target",
+      role: "user" as const,
+    };
+    let submitted: unknown;
+    server.use(
+      http.get("/console/v1/users/:id", () =>
+        HttpResponse.json(managedUser, {
+          headers: { ETag: `"${managedUser.updated_at}"` },
+        }),
+      ),
+      http.post("/console/v1/users/:id/temporary-password", async ({ request }) => {
+        submitted = await request.json();
+        return HttpResponse.json(
+          {
+            user_id: managedUser.id,
+            temporary_password: "AGW-generated-temporary-password",
+            expires_at: "2099-08-02T00:00:00.000Z",
+            correlation_id: "00000000-0000-0000-0000-000000000054",
+          },
+          { status: 201 },
+        );
+      }),
+    );
+    const user = userEvent.setup();
+    renderAppAt(`/admin/users/${managedUser.id}`);
+
+    await user.click(
+      await screen.findByRole("button", { name: "Generate temporary password" }),
+    );
+    const confirmation = await screen.findByRole("alertdialog");
+    await user.type(
+      within(confirmation).getByLabelText("Your current password"),
+      "administrator-password",
+    );
+    await user.click(
+      within(confirmation).getByRole("button", {
+        name: "Generate temporary password",
+      }),
+    );
+
+    await waitFor(() => {
+      expect(submitted).toEqual({ current_password: "administrator-password" });
+    });
+    expect(
+      await screen.findByDisplayValue("AGW-generated-temporary-password"),
+    ).toBeInTheDocument();
+  });
 });

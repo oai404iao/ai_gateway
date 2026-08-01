@@ -1,12 +1,13 @@
 import { clearSession, setSession } from "@/api/session-store";
 import type {
   ActivateInvitationInput,
+  CompletePasswordResetInput,
   LoginInput,
   LoginResponse,
   RegisterInput,
 } from "@/api/types";
 import { ApiError, readApiError } from "@/api/errors";
-import { consoleFetch } from "@/api/client";
+import { apiSend, consoleFetch } from "@/api/client";
 
 const LOGIN_PATH = "/console/v1/auth/login";
 const REGISTER_PATH = "/console/v1/auth/register";
@@ -56,6 +57,17 @@ export async function activateInvitation(
   });
   if (!response.ok) throw await readApiError(response);
   return applyLogin((await response.json()) as LoginResponse);
+}
+
+export async function completePasswordReset(
+  input: CompletePasswordResetInput,
+): Promise<LoginResponse> {
+  const data = await apiSend<LoginResponse>(
+    "/auth/complete-password-reset",
+    "POST",
+    input,
+  );
+  return applyLogin(data);
 }
 
 export async function logout(): Promise<void> {
