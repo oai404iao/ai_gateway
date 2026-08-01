@@ -7,6 +7,8 @@ Versioning.
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-08-01
+
 ### Added
 
 - Add administrator-assisted Console password recovery with server-generated
