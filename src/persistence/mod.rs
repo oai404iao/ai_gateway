@@ -7,7 +7,7 @@ pub use auth::{
     AuthRepository, ConsoleProfile, ConsoleSession, ConsoleSessionState, InvitationCreated,
     InviteUserInput, LiveConsoleIdentity, LoginUser, PasswordUser, RegistrationAttempt,
     RegistrationInvitationCode, RegistrationInvitationCodeInput,
-    RegistrationInvitationCodeMutation, SessionRotation, SessionUser,
+    RegistrationInvitationCodeMutation, SessionRotation, SessionUser, TemporaryPasswordCreated,
 };
 pub use codex::{
     CodexCredentialBatchInput, CodexCredentialBatchOperation, CodexCredentialBatchTarget,
@@ -1165,6 +1165,8 @@ pub struct ControlPlaneUser {
     pub role: String,
     pub status: String,
     pub can_reissue_invitation: bool,
+    pub password_change_required: bool,
+    pub temporary_password_expires_at: Option<DateTime<Utc>>,
     pub user_group_id: Uuid,
     pub default_api_key_policy_id: Option<Uuid>,
     pub effective_api_key_policy_id: Option<Uuid>,
@@ -4508,6 +4510,7 @@ impl ControlPlaneRepository {
         let users = sqlx::query_as::<_, ControlPlaneUser>(
             "SELECT u.id,u.email,u.display_name,u.role,u.status, \
                     (u.password_hash IS NULL AND u.email IS NOT NULL AND u.status IN ('invited','suspended','disabled')) AS can_reissue_invitation, \
+                    u.password_change_required,u.temporary_password_expires_at, \
                     u.user_group_id,u.default_api_key_policy_id, \
                     COALESCE(u.default_api_key_policy_id,g.default_api_key_policy_id) AS effective_api_key_policy_id, \
                     u.balance_amount,u.created_at,u.updated_at \
@@ -5600,6 +5603,8 @@ async fn user_audit(
             'role',u.role, \
             'status',u.status, \
             'can_reissue_invitation',(u.password_hash IS NULL AND u.email IS NOT NULL AND u.status IN ('invited','suspended','disabled')), \
+            'password_change_required',u.password_change_required, \
+            'temporary_password_expires_at',u.temporary_password_expires_at, \
             'user_group_id',u.user_group_id, \
             'user_group_system_role',g.system_role, \
             'default_api_key_policy_id',u.default_api_key_policy_id, \
@@ -6299,6 +6304,8 @@ async fn user_soft_delete(
     let updated_at = sqlx::query_scalar(
         "UPDATE users SET \
          email=NULL,display_name=$2,role='user',status='disabled',password_hash=NULL, \
+         password_change_required=false,temporary_password_issued_at=NULL, \
+         temporary_password_expires_at=NULL, \
          auth_version=auth_version+1,user_group_id=$3,default_api_key_policy_id=NULL, \
          deleted_at=now(),deleted_by=$4 \
          WHERE id=$1 AND updated_at=$5 AND deleted_at IS NULL AND NOT is_system \
@@ -7233,6 +7240,10 @@ pub enum RepositoryError {
     LastAdministrator,
     #[error("an administrator cannot disable their own account in a batch")]
     CannotDisableSelf,
+    #[error("an administrator cannot reset their own password through the Console")]
+    CannotResetSelf,
+    #[error("the selected user cannot receive a temporary password")]
+    TemporaryPasswordUnavailable,
     #[error("the user has no default API key policy")]
     DefaultApiKeyPolicyRequired,
     #[error("the user's default API key policy is disabled")]

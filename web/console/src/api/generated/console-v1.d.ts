@@ -59,6 +59,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/auth/complete-password-reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * @description Replaces an unexpired administrator-issued temporary password with the
+         *     user's chosen permanent password. Only a password-change session may
+         *     call this endpoint. The temporary password and every restricted
+         *     session are invalidated atomically, then a normal session is issued.
+         */
+        post: operations["completePasswordReset"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/auth/activate-invitation": {
         parameters: {
             query?: never;
@@ -400,6 +422,31 @@ export interface paths {
          *     revoked, and a new one-time token is returned.
          */
         post: operations["reissueUserInvitation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/users/{id}/temporary-password": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * @description Generates a server-chosen temporary password, valid for 24 hours, for
+         *     an active user who already has a password. The administrator must
+         *     re-enter their own current password. Issuance immediately replaces the
+         *     target's previous password, revokes every Console session, and requires
+         *     a password change before any ordinary Console resource can be accessed.
+         *     Reissuing invalidates the previous temporary password. Invited users
+         *     must use the invitation recovery flow instead.
+         */
+        post: operations["issueTemporaryPassword"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1248,6 +1295,10 @@ export interface components {
             email: string;
             display_name: string;
             role: components["schemas"]["UserRole"];
+            /** @description True only for a password-change-only temporary-password session. */
+            password_change_required: boolean;
+            /** @description Expiry of the current temporary password, or null for a normal session. */
+            temporary_password_expires_at: components["schemas"]["DateTimeNullable"];
         };
         LoginResponse: {
             access_token: string;
@@ -1295,6 +1346,15 @@ export interface components {
             /** Format: uuid */
             user_id: string;
             invitation_token: string;
+            expires_at: components["schemas"]["DateTime"];
+            /** Format: uuid */
+            correlation_id: string;
+        };
+        TemporaryPasswordResponse: {
+            /** Format: uuid */
+            user_id: string;
+            /** @description One-time plaintext value; it cannot be retrieved later. */
+            temporary_password: string;
             expires_at: components["schemas"]["DateTime"];
             /** Format: uuid */
             correlation_id: string;
@@ -1731,6 +1791,10 @@ export interface components {
              *     safely replace its invitation.
              */
             can_reissue_invitation: boolean;
+            /** @description Whether an administrator-issued temporary password awaits replacement. */
+            password_change_required: boolean;
+            /** @description Current temporary-password expiry, including an already expired pending reset. */
+            temporary_password_expires_at: components["schemas"]["DateTimeNullable"];
             /** Format: uuid */
             user_group_id: string;
             /**
@@ -2402,6 +2466,13 @@ export interface components {
             current_password: string;
             new_password: string;
         };
+        CompletePasswordResetInput: {
+            new_password: string;
+        };
+        TemporaryPasswordInput: {
+            /** @description Current password of the administrator issuing the temporary credential. */
+            current_password: string;
+        };
         RevokeInput: {
             reason: string;
         };
@@ -2977,7 +3048,11 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Session issued. */
+            /**
+             * @description Session issued. An administrator-issued temporary password creates
+             *     a password-change-only session whose `user.password_change_required`
+             *     is true.
+             */
             200: {
                 headers: {
                     /** @description Rotating `__Host-ai_gateway_refresh` HttpOnly cookie. */
@@ -3058,6 +3133,43 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthorized"];
+        };
+    };
+    completePasswordReset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CompletePasswordResetInput"];
+            };
+        };
+        responses: {
+            /** @description Password reset completed and a normal session issued. */
+            200: {
+                headers: {
+                    /** @description New rotating `__Host-ai_gateway_refresh` HttpOnly cookie. */
+                    "Set-Cookie"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LoginResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description The current session is not a password-change session. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            422: components["responses"]["Unprocessable"];
         };
     };
     activateInvitation: {
@@ -3790,6 +3902,62 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             422: components["responses"]["Unprocessable"];
+        };
+    };
+    issueTemporaryPassword: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TemporaryPasswordInput"];
+            };
+        };
+        responses: {
+            /** @description Temporary password issued; plaintext is shown only once. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TemporaryPasswordResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description Administrator reauthentication failed or the actor is not an administrator. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            /** @description Administrators cannot issue a temporary password for their own account. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The target is not an eligible active, password-bearing account. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            429: components["responses"]["RateLimited"];
         };
     };
     listUserGroups: {

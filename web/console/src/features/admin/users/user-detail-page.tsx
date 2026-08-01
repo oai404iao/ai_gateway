@@ -4,7 +4,7 @@ import { Controller, useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { toast } from "sonner";
-import type { UserUpdateInput } from "@/api/types";
+import type { TemporaryPasswordResponse, UserUpdateInput } from "@/api/types";
 import { ApiError } from "@/api/errors";
 import { clearSession, setSession } from "@/api/session-store";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -30,6 +30,7 @@ import { AdminDetailShell } from "@/features/admin/components/admin-detail-shell
 import {
   useApiKeyPolicies,
   useDeleteUser,
+  useIssueTemporaryPassword,
   useReissueUserInvitation,
   useUpdateUser,
   useUserGroups,
@@ -99,14 +100,19 @@ export function UserDetailPage() {
   const update = useUpdateUser(id);
   const remove = useDeleteUser(id);
   const reissue = useReissueUserInvitation(id);
+  const issueTemporaryPassword = useIssueTemporaryPassword(id);
   const policies = useApiKeyPolicies();
   const groups = useUserGroups();
   const { user: currentUser } = useSession();
   const { t } = useI18n();
   const [submitting, setSubmitting] = useState<SubmittingAction | null>(null);
   const [reissueOpen, setReissueOpen] = useState(false);
+  const [temporaryPasswordOpen, setTemporaryPasswordOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [invitationToken, setInvitationToken] = useState<string | null>(null);
+  const [adminPassword, setAdminPassword] = useState("");
+  const [temporaryPassword, setTemporaryPassword] =
+    useState<TemporaryPasswordResponse | null>(null);
   const user = data?.data;
 
   const accountValues: AccountValues = user
@@ -257,6 +263,35 @@ export function UserDetailPage() {
       toast.success(t("Replacement invitation issued"));
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t("Invitation recovery failed"));
+    }
+  };
+
+  const generateTemporaryPassword = async () => {
+    setTemporaryPasswordOpen(false);
+    try {
+      const issued = await issueTemporaryPassword.mutateAsync({
+        current_password: adminPassword,
+      });
+      setTemporaryPassword(issued);
+      issueTemporaryPassword.reset();
+      toast.success(t("Temporary password generated"));
+    } catch (error) {
+      if (error instanceof ApiError && error.code === "reauthentication_failed") {
+        toast.error(t("Your administrator password is incorrect."));
+      } else if (
+        error instanceof ApiError &&
+        error.code === "temporary_password_unavailable"
+      ) {
+        toast.error(t("This account cannot receive a temporary password."));
+      } else {
+        toast.error(
+          error instanceof Error
+            ? error.message
+            : t("Temporary password generation failed"),
+        );
+      }
+    } finally {
+      setAdminPassword("");
     }
   };
 
@@ -488,6 +523,79 @@ export function UserDetailPage() {
               </CardContent>
             </Card>
 
+            {!user.can_reissue_invitation ? (
+              <Card>
+                <CardHeader>
+                  <CardTitle>{t("Password recovery")}</CardTitle>
+                  <CardDescription>
+                    {t(
+                      "Generate an expiring temporary password that forces the user to choose a new password.",
+                    )}
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="flex flex-col items-start gap-4">
+                  {user.password_change_required ? (
+                    <Alert>
+                      <AlertTitle>{t("Password change pending")}</AlertTitle>
+                      <AlertDescription>
+                        {user.temporary_password_expires_at
+                          ? t("The current temporary password expires at {time}.", {
+                              time: formatDateTime(
+                                user.temporary_password_expires_at,
+                              ),
+                            })
+                          : t("The user must replace the temporary password.")}
+                      </AlertDescription>
+                    </Alert>
+                  ) : null}
+                  {currentUser?.id === user.id ? (
+                    <Alert>
+                      <AlertTitle>{t("Current administrator account")}</AlertTitle>
+                      <AlertDescription>
+                        {t(
+                          "Use another administrator or the host recovery command to reset your own password.",
+                        )}
+                      </AlertDescription>
+                    </Alert>
+                  ) : user.status !== "active" ? (
+                    <Alert>
+                      <AlertTitle>{t("Active account required")}</AlertTitle>
+                      <AlertDescription>
+                        {t(
+                          "Restore this account to active status before generating a temporary password.",
+                        )}
+                      </AlertDescription>
+                    </Alert>
+                  ) : (
+                    <>
+                      <Alert>
+                        <AlertTitle>{t("Existing access will be revoked")}</AlertTitle>
+                        <AlertDescription>
+                          {t(
+                            "Generating a temporary password immediately invalidates the current password and every Console login session. API keys are unchanged.",
+                          )}
+                        </AlertDescription>
+                      </Alert>
+                      <Button
+                        type="button"
+                        onClick={() => setTemporaryPasswordOpen(true)}
+                        disabled={issueTemporaryPassword.isPending}
+                      >
+                        {issueTemporaryPassword.isPending ? (
+                          <Spinner data-icon="inline-start" />
+                        ) : null}
+                        {t(
+                          user.password_change_required
+                            ? "Generate replacement temporary password"
+                            : "Generate temporary password",
+                        )}
+                      </Button>
+                    </>
+                  )}
+                </CardContent>
+              </Card>
+            ) : null}
+
             <Card>
               <CardHeader>
                 <CardTitle>{t("Balance management")}</CardTitle>
@@ -672,12 +780,66 @@ export function UserDetailPage() {
         confirmLabel={t("Reissue invitation")}
         onConfirm={() => void reissueInvitation()}
       />
+      <ConfirmDialog
+        open={temporaryPasswordOpen}
+        onOpenChange={(open) => {
+          setTemporaryPasswordOpen(open);
+          if (!open) setAdminPassword("");
+        }}
+        title={t(
+          user?.password_change_required
+            ? "Generate replacement temporary password?"
+            : "Generate temporary password?",
+        )}
+        description={t(
+          "Re-enter your administrator password. The target user's current password and Console sessions will stop working immediately.",
+        )}
+        content={
+          <FieldGroup>
+            <Field>
+              <FieldLabel htmlFor="temporary-password-admin-confirmation">
+                {t("Your current password")}
+              </FieldLabel>
+              <Input
+                id="temporary-password-admin-confirmation"
+                type="password"
+                autoComplete="current-password"
+                value={adminPassword}
+                onChange={(event) => setAdminPassword(event.target.value)}
+              />
+            </Field>
+          </FieldGroup>
+        }
+        confirmLabel={t(
+          user?.password_change_required
+            ? "Generate replacement password"
+            : "Generate temporary password",
+        )}
+        confirmDisabled={
+          adminPassword.length < 12 || issueTemporaryPassword.isPending
+        }
+        onConfirm={() => void generateTemporaryPassword()}
+      />
       <SecretOnceDialog
         open={Boolean(invitationToken)}
         onOpenChange={(open) => !open && setInvitationToken(null)}
         title={t("Replacement invitation token")}
         description={t("Give this new token to the user to activate their account.")}
         secret={invitationToken}
+      />
+      <SecretOnceDialog
+        open={Boolean(temporaryPassword)}
+        onOpenChange={(open) => !open && setTemporaryPassword(null)}
+        title={t("Temporary password")}
+        description={
+          temporaryPassword
+            ? t(
+                "Give this password to the user through a secure channel. It expires at {time} and will stop working immediately after the user sets a new password.",
+                { time: formatDateTime(temporaryPassword.expires_at) },
+              )
+            : undefined
+        }
+        secret={temporaryPassword?.temporary_password ?? null}
       />
     </>
   );

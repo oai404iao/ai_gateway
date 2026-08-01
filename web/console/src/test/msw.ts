@@ -34,6 +34,8 @@ import {
   SPEND_LEADERBOARD_REPORT,
   SYSTEM_SETTINGS,
   SYSTEM_LOAD_REPORT,
+  TEMPORARY_PASSWORD_ACCESS_TOKEN,
+  TEMPORARY_PASSWORD_LOGIN_RESPONSE,
   USER_ACCESS_TOKEN,
   USER_GROUP,
   USER_SETTINGS,
@@ -59,6 +61,11 @@ export const handlers = [
     HttpResponse.json(ADMIN_LOGIN_RESPONSE, { headers: { "Set-Cookie": "refresh=rotated" } }),
   ),
   http.post("/console/v1/auth/logout", () => new HttpResponse(null, { status: 204 })),
+  http.post("/console/v1/auth/complete-password-reset", () =>
+    HttpResponse.json(ADMIN_LOGIN_RESPONSE, {
+      headers: { "Set-Cookie": "refresh=rotated" },
+    }),
+  ),
 
   http.get("/console/v1/me", () => HttpResponse.json(ADMIN_PROFILE)),
   http.patch("/console/v1/me", async ({ request }) => {
@@ -115,6 +122,17 @@ export const handlers = [
     HttpResponse.json(CONTROL_PLANE_USER, {
       headers: { ETag: `"${CONTROL_PLANE_USER.updated_at}"` },
     }),
+  ),
+  http.post("/console/v1/users/:id/temporary-password", ({ params }) =>
+    HttpResponse.json(
+      {
+        user_id: String(params.id),
+        temporary_password: "AGW-test-temporary-password",
+        expires_at: "2099-08-02T00:00:00.000Z",
+        correlation_id: "11111111-0000-0000-0000-0000000000d1",
+      },
+      { status: 201 },
+    ),
   ),
   http.get("/console/v1/user-groups", () =>
     HttpResponse.json([DEFAULT_USER_GROUP, USER_GROUP]),
@@ -283,5 +301,19 @@ export function seedUserSession() {
     status: "authenticated",
     accessToken: USER_ACCESS_TOKEN,
     user: USER_USER,
+  });
+}
+
+/** Pre-seeds a temporary-password session restricted to the reset flow. */
+export function seedPasswordChangeSession() {
+  server.use(
+    http.post("/console/v1/auth/refresh", () =>
+      HttpResponse.json(TEMPORARY_PASSWORD_LOGIN_RESPONSE),
+    ),
+  );
+  setSession({
+    status: "authenticated",
+    accessToken: TEMPORARY_PASSWORD_ACCESS_TOKEN,
+    user: TEMPORARY_PASSWORD_LOGIN_RESPONSE.user,
   });
 }

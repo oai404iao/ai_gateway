@@ -7,6 +7,14 @@ Versioning.
 
 ## [Unreleased]
 
+### Added
+
+- Add administrator-assisted Console password recovery with server-generated
+  24-hour temporary passwords, administrator reauthentication, immediate
+  revocation of the previous password and Console sessions, password-change-
+  only login sessions, and a forced browser flow that replaces the temporary
+  credential before granting normal Console access.
+
 ## [0.8.0] - 2026-07-31
 
 ### Added

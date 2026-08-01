@@ -39,6 +39,8 @@ export const ADMIN_USER: ConsoleUser = {
   email: "admin@example.com",
   display_name: "Initial Admin",
   role: "admin",
+  password_change_required: false,
+  temporary_password_expires_at: null,
 };
 
 export const ADMIN_PROFILE: ConsoleProfile = {
@@ -64,9 +66,29 @@ export const USER_USER: ConsoleUser = {
   email: "user@example.com",
   display_name: "Console User",
   role: "user",
+  password_change_required: false,
+  temporary_password_expires_at: null,
 };
 
 export const USER_ACCESS_TOKEN = "test-access-token-user";
+
+export const TEMPORARY_PASSWORD_USER: ConsoleUser = {
+  ...USER_USER,
+  id: "00000000-0000-0000-0000-000000000003",
+  email: "reset@example.com",
+  display_name: "Password Reset User",
+  password_change_required: true,
+  temporary_password_expires_at: "2099-08-02T00:00:00.000Z",
+};
+
+export const TEMPORARY_PASSWORD_ACCESS_TOKEN = "test-password-change-token";
+
+export const TEMPORARY_PASSWORD_LOGIN_RESPONSE: LoginResponse = {
+  access_token: TEMPORARY_PASSWORD_ACCESS_TOKEN,
+  token_type: "Bearer",
+  expires_in: 900,
+  user: TEMPORARY_PASSWORD_USER,
+};
 
 export const ADMIN_LOGIN_RESPONSE: LoginResponse = {
   access_token: ADMIN_ACCESS_TOKEN,
@@ -454,6 +476,8 @@ export const CONTROL_PLANE_USER: ControlPlaneUser = {
   role: "admin",
   status: "active",
   can_reissue_invitation: false,
+  password_change_required: false,
+  temporary_password_expires_at: null,
   user_group_id: USER_GROUP.id,
   default_api_key_policy_id: API_KEY_POLICY.id,
   effective_api_key_policy_id: API_KEY_POLICY.id,

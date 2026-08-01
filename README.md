@@ -55,8 +55,9 @@ separate management Console for users and administrators.
 - **Admission and accounting** with process-local RPM/concurrency limits, soft
   USD quotas, durable request-log spooling, usage extraction, and asynchronous
   settlement.
-- **Management Console** with JWT sessions, user/admin roles, API-key policy,
-  routing and channel management, audit logs, and optimistic concurrency.
+- **Management Console** with JWT sessions, user/admin roles, administrator-
+  assisted temporary-password recovery, API-key policy, routing and channel
+  management, audit logs, and optimistic concurrency.
 - **Single-binary deployment** with an optional embedded React Console UI; no
   Node.js process is required in production.
 

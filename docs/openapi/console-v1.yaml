@@ -17,9 +17,9 @@ info:
       `If-Match` on `PUT` for optimistic concurrency. A stale `If-Match`
       yields `409`.
     - API key values are retrievable by their owner and administrators; the
-      Console masks them by default. Per-user invitation tokens and reusable
-      registration invitation code plaintext are returned only at issuance
-      and are never retrievable again.
+      Console masks them by default. Per-user invitation tokens, temporary
+      passwords, and reusable registration invitation code plaintext are
+      returned only at issuance and are never retrievable again.
     - Every error body is `{"error":"<code>"}`.
     - `routing_dependency_invalid` means a mutation would make the routing
       graph structurally invalid (for example, by leaving an enabled model
@@ -64,7 +64,10 @@ paths:
             schema: { $ref: "#/components/schemas/LoginInput" }
       responses:
         "200":
-          description: Session issued.
+          description: |
+            Session issued. An administrator-issued temporary password creates
+            a password-change-only session whose `user.password_change_required`
+            is true.
           headers:
             Set-Cookie:
               description: Rotating `__Host-ai_gateway_refresh` HttpOnly cookie.
@@ -127,6 +130,39 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/LoginResponse" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /auth/complete-password-reset:
+    post:
+      tags: [Auth]
+      operationId: completePasswordReset
+      description: |
+        Replaces an unexpired administrator-issued temporary password with the
+        user's chosen permanent password. Only a password-change session may
+        call this endpoint. The temporary password and every restricted
+        session are invalidated atomically, then a normal session is issued.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CompletePasswordResetInput" }
+      responses:
+        "200":
+          description: Password reset completed and a normal session issued.
+          headers:
+            Set-Cookie:
+              description: New rotating `__Host-ai_gateway_refresh` HttpOnly cookie.
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LoginResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409":
+          description: The current session is not a password-change session.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorBody" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
 
   /auth/activate-invitation:
     post:
@@ -647,6 +683,51 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /users/{id}/temporary-password:
+    post:
+      tags: [Users]
+      operationId: issueTemporaryPassword
+      description: |
+        Generates a server-chosen temporary password, valid for 24 hours, for
+        an active user who already has a password. The administrator must
+        re-enter their own current password. Issuance immediately replaces the
+        target's previous password, revokes every Console session, and requires
+        a password change before any ordinary Console resource can be accessed.
+        Reissuing invalidates the previous temporary password. Invited users
+        must use the invitation recovery flow instead.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TemporaryPasswordInput" }
+      responses:
+        "201":
+          description: Temporary password issued; plaintext is shown only once.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TemporaryPasswordResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: Administrator reauthentication failed or the actor is not an administrator.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorBody" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Administrators cannot issue a temporary password for their own account.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorBody" }
+        "422":
+          description: The target is not an eligible active, password-bearing account.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorBody" }
+        "429": { $ref: "#/components/responses/RateLimited" }
 
   /user-groups:
     get:
@@ -2381,12 +2462,20 @@ components:
 
     ConsoleUser:
       type: object
-      required: [id, email, display_name, role]
+      required:
+        [id, email, display_name, role, password_change_required,
+         temporary_password_expires_at]
       properties:
         id: { type: string, format: uuid }
         email: { type: string }
         display_name: { type: string }
         role: { $ref: "#/components/schemas/UserRole" }
+        password_change_required:
+          type: boolean
+          description: True only for a password-change-only temporary-password session.
+        temporary_password_expires_at:
+          allOf: [{ $ref: "#/components/schemas/DateTimeNullable" }]
+          description: Expiry of the current temporary password, or null for a normal session.
 
     LoginResponse:
       type: object
@@ -2456,6 +2545,17 @@ components:
         id: { type: string, format: uuid }
         user_id: { type: string, format: uuid }
         invitation_token: { type: string }
+        expires_at: { $ref: "#/components/schemas/DateTime" }
+        correlation_id: { type: string, format: uuid }
+
+    TemporaryPasswordResponse:
+      type: object
+      required: [user_id, temporary_password, expires_at, correlation_id]
+      properties:
+        user_id: { type: string, format: uuid }
+        temporary_password:
+          type: string
+          description: One-time plaintext value; it cannot be retrieved later.
         expires_at: { $ref: "#/components/schemas/DateTime" }
         correlation_id: { type: string, format: uuid }
 
@@ -3091,6 +3191,7 @@ components:
       type: object
       required:
         [id, email, display_name, role, status, can_reissue_invitation,
+         password_change_required, temporary_password_expires_at,
          user_group_id, default_api_key_policy_id, effective_api_key_policy_id,
          balance_amount, created_at, updated_at]
       properties:
@@ -3104,6 +3205,12 @@ components:
           description: |
             True when the account has no password and an administrator may
             safely replace its invitation.
+        password_change_required:
+          type: boolean
+          description: Whether an administrator-issued temporary password awaits replacement.
+        temporary_password_expires_at:
+          allOf: [{ $ref: "#/components/schemas/DateTimeNullable" }]
+          description: Current temporary-password expiry, including an already expired pending reset.
         user_group_id: { type: string, format: uuid }
         default_api_key_policy_id:
           type: string
@@ -4115,6 +4222,22 @@ components:
       properties:
         current_password: { type: string }
         new_password: { type: string }
+
+    CompletePasswordResetInput:
+      type: object
+      required: [new_password]
+      properties:
+        new_password: { type: string, minLength: 12, maxLength: 1024 }
+
+    TemporaryPasswordInput:
+      type: object
+      required: [current_password]
+      properties:
+        current_password:
+          type: string
+          minLength: 12
+          maxLength: 1024
+          description: Current password of the administrator issuing the temporary credential.
 
     RevokeInput:
       type: object

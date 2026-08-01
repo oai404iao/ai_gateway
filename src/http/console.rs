@@ -22,11 +22,12 @@ use crate::{
         ChannelModelDiscoveryResponse, ChannelModelDiscoveryService, CodexConnectorError,
         CodexConnectorService, CodexOauthCompleteInput, CodexOauthStartResponse,
         ConsoleAuthService, ControlPlaneCoordinator, ControlPlaneError, IssuedInvitation,
-        IssuedRegistrationInvitationCode, IssuedSession, ModelImportRequest, ModelSyncError,
-        ModelSyncPreview, ModelSyncPreviewRequest, ModelSyncResponse, ModelSyncService,
-        ProxyTestError, ProxyTestInput, ProxyTestResponse, ProxyTestService,
-        RegistrationInvitationCodeCreateInput, RegistrationInvitationCodeUpdateInput,
-        SelfRegistrationInput, SystemLoadReport, SystemMetricsService,
+        IssuedRegistrationInvitationCode, IssuedSession, IssuedTemporaryPassword,
+        ModelImportRequest, ModelSyncError, ModelSyncPreview, ModelSyncPreviewRequest,
+        ModelSyncResponse, ModelSyncService, ProxyTestError, ProxyTestInput, ProxyTestResponse,
+        ProxyTestService, RegistrationInvitationCodeCreateInput,
+        RegistrationInvitationCodeUpdateInput, SelfRegistrationInput, SystemLoadReport,
+        SystemMetricsService,
     },
     domain::{ConsolePrincipal, UserRole},
     persistence::{
@@ -76,7 +77,6 @@ pub fn router(state: ConsoleState) -> Router {
         .layer(RequestBodyLimitLayer::new(state.auth_body_bytes));
 
     let self_routes = Router::new()
-        .route("/console/v1/auth/logout", post(logout))
         .route("/console/v1/me", get(get_me).patch(update_me))
         .route(
             "/console/v1/me/settings",
@@ -129,6 +129,10 @@ pub fn router(state: ConsoleState) -> Router {
         .route(
             "/console/v1/users/{id}/invitation",
             post(reissue_user_invitation),
+        )
+        .route(
+            "/console/v1/users/{id}/temporary-password",
+            post(issue_user_temporary_password),
         )
         .route(
             "/console/v1/users/{id}",
@@ -281,9 +285,22 @@ pub fn router(state: ConsoleState) -> Router {
         .route("/console/v1/system/reload", post(reload))
         .route_layer(middleware::from_fn(require_admin));
 
-    let authenticated = self_routes
+    let password_change_routes = Router::new()
+        .route("/console/v1/auth/logout", post(logout))
+        .route(
+            "/console/v1/auth/complete-password-reset",
+            post(complete_password_reset),
+        )
+        .layer(DefaultBodyLimit::disable())
+        .layer(RequestBodyLimitLayer::new(state.auth_body_bytes));
+
+    let full_session_routes = self_routes
         .merge(statistics_routes)
         .merge(control_routes)
+        .route_layer(middleware::from_fn(require_full_session));
+
+    let authenticated = password_change_routes
+        .merge(full_session_routes)
         .route_layer(middleware::from_fn_with_state(state.clone(), authenticate))
         .layer(DefaultBodyLimit::disable())
         .layer(RequestBodyLimitLayer::new(state.console_body_bytes));
@@ -322,6 +339,24 @@ async fn require_admin(request: Request, next: Next) -> Response {
         next.run(request).await
     } else {
         forbidden()
+    }
+}
+
+async fn require_full_session(request: Request, next: Next) -> Response {
+    if request
+        .extensions()
+        .get::<ConsolePrincipal>()
+        .is_some_and(|principal| !principal.session_purpose().requires_password_change())
+    {
+        next.run(request).await
+    } else {
+        (
+            StatusCode::FORBIDDEN,
+            Json(ErrorBody {
+                error: "password_change_required",
+            }),
+        )
+            .into_response()
     }
 }
 
@@ -479,6 +514,14 @@ struct InvitationResponse {
 }
 
 #[derive(Serialize)]
+struct TemporaryPasswordResponse {
+    user_id: Uuid,
+    temporary_password: String,
+    expires_at: DateTime<Utc>,
+    correlation_id: Uuid,
+}
+
+#[derive(Serialize)]
 struct RegistrationInvitationCodeCreateResponse {
     id: Uuid,
     invitation_code: String,
@@ -513,6 +556,18 @@ struct ActivateInvitationInput {
 struct PasswordChangeInput {
     current_password: String,
     new_password: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CompletePasswordResetInput {
+    new_password: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TemporaryPasswordInput {
+    current_password: String,
 }
 
 #[derive(Deserialize)]
@@ -725,6 +780,19 @@ async fn logout(
     let mut response = StatusCode::NO_CONTENT.into_response();
     clear_refresh_cookie(&mut response);
     Ok(response)
+}
+
+async fn complete_password_reset(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    headers: HeaderMap,
+    Json(input): Json<CompletePasswordResetInput>,
+) -> Result<Response, ConsoleError> {
+    let session = state
+        .auth
+        .complete_temporary_password(principal, input.new_password, session_user_agent(&headers))
+        .await?;
+    Ok(session_response(session))
 }
 
 fn session_response(session: IssuedSession) -> Response {
@@ -1049,6 +1117,31 @@ async fn reissue_user_invitation(
 ) -> Result<(StatusCode, Json<InvitationResponse>), ConsoleError> {
     let invitation = state.auth.reissue_invitation(principal, id).await?;
     Ok((StatusCode::CREATED, Json(invitation_response(invitation))))
+}
+
+async fn issue_user_temporary_password(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Path(id): Path<Uuid>,
+    Json(input): Json<TemporaryPasswordInput>,
+) -> Result<(StatusCode, Json<TemporaryPasswordResponse>), ConsoleError> {
+    let issued = state
+        .auth
+        .issue_temporary_password(principal, id, input.current_password)
+        .await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(temporary_password_response(issued)),
+    ))
+}
+
+fn temporary_password_response(issued: IssuedTemporaryPassword) -> TemporaryPasswordResponse {
+    TemporaryPasswordResponse {
+        user_id: issued.user_id,
+        temporary_password: issued.temporary_password,
+        expires_at: issued.expires_at,
+        correlation_id: issued.correlation_id,
+    }
 }
 
 async fn replace_user(
@@ -2302,6 +2395,20 @@ impl IntoResponse for ConsoleError {
             Self::Auth(AuthError::RegistrationConflict) => {
                 (StatusCode::CONFLICT, "registration_email_conflict")
             }
+            Self::Auth(AuthError::PasswordChangeRequired) => {
+                (StatusCode::FORBIDDEN, "password_change_required")
+            }
+            Self::Auth(AuthError::PasswordResetNotRequired) => {
+                (StatusCode::CONFLICT, "password_reset_not_required")
+            }
+            Self::Auth(AuthError::ReauthenticationFailed) => {
+                (StatusCode::FORBIDDEN, "reauthentication_failed")
+            }
+            Self::Auth(AuthError::NewPasswordMatchesTemporary) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "new_password_matches_temporary",
+            ),
+            Self::Auth(AuthError::CannotResetSelf) => (StatusCode::CONFLICT, "cannot_reset_self"),
             Self::Auth(AuthError::Forbidden) | Self::Forbidden => {
                 (StatusCode::FORBIDDEN, "forbidden")
             }
@@ -2502,6 +2609,10 @@ fn repository_error_message(error: &crate::persistence::RepositoryError) -> &'st
         crate::persistence::RepositoryError::CannotDeleteSelf => "cannot_delete_self",
         crate::persistence::RepositoryError::LastAdministrator => "last_administrator",
         crate::persistence::RepositoryError::CannotDisableSelf => "cannot_disable_self",
+        crate::persistence::RepositoryError::CannotResetSelf => "cannot_reset_self",
+        crate::persistence::RepositoryError::TemporaryPasswordUnavailable => {
+            "temporary_password_unavailable"
+        }
         crate::persistence::RepositoryError::RegistrationInvitationCodeConflict => {
             "registration_invitation_code_conflict"
         }
@@ -2519,10 +2630,14 @@ fn repository_status(error: &crate::persistence::RepositoryError) -> StatusCode 
         | crate::persistence::RepositoryError::CannotDeleteSelf
         | crate::persistence::RepositoryError::LastAdministrator
         | crate::persistence::RepositoryError::CannotDisableSelf
+        | crate::persistence::RepositoryError::CannotResetSelf
         | crate::persistence::RepositoryError::RegistrationInvitationCodeConflict => {
             StatusCode::CONFLICT
         }
         crate::persistence::RepositoryError::Validation => StatusCode::UNPROCESSABLE_ENTITY,
+        crate::persistence::RepositoryError::TemporaryPasswordUnavailable => {
+            StatusCode::UNPROCESSABLE_ENTITY
+        }
         crate::persistence::RepositoryError::DefaultApiKeyPolicyRequired
         | crate::persistence::RepositoryError::DefaultApiKeyPolicyDisabled
         | crate::persistence::RepositoryError::ApiKeyTargetNotAllowed => {

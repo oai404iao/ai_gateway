@@ -26,7 +26,7 @@ pub use compiled_routing::{
     OutboundNetworkPolicyFingerprint, SelectionStrategy, UpstreamAuth,
 };
 pub use connector::ConnectorKind;
-pub use console_auth::{ConsolePrincipal, UserRole};
+pub use console_auth::{ConsolePrincipal, ConsoleSessionPurpose, UserRole};
 pub use request_log::{
     RequestBilling, RequestLogEvent, RequestLogOutcome, RequestLogSource, RequestPriceSnapshot,
     RequestProtocol, RequestUsage,

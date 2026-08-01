@@ -10,7 +10,7 @@ use sqlx::{FromRow, PgPool, Postgres, Transaction};
 use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
-use crate::domain::UserRole;
+use crate::domain::{ConsoleSessionPurpose, UserRole};
 
 use super::{DEFAULT_ADMIN_GROUP_ID, DEFAULT_USER_GROUP_ID, RepositoryError};
 
@@ -27,7 +27,8 @@ impl AuthRepository {
 
     pub async fn find_login_user(&self, email: &str) -> Result<Option<LoginUser>, RepositoryError> {
         sqlx::query_as::<_, LoginUser>(
-            "SELECT id,email,display_name,role,status,password_hash,auth_version \
+            "SELECT id,email,display_name,role,status,password_hash,auth_version, \
+                    password_change_required,temporary_password_expires_at \
              FROM users WHERE lower(email) = lower($1)",
         )
         .bind(email)
@@ -44,11 +45,19 @@ impl AuthRepository {
     ) -> Result<Option<LiveConsoleIdentity>, RepositoryError> {
         sqlx::query_as::<_, LiveConsoleIdentity>(
             "SELECT u.id AS user_id,u.email,u.display_name,u.role,u.status,u.auth_version, \
-                    s.id AS session_id,s.expires_at,s.revoked_at \
+                    s.id AS session_id,s.expires_at,s.revoked_at,s.purpose AS session_purpose \
              FROM users AS u \
              JOIN user_sessions AS s ON s.user_id=u.id \
              WHERE u.id=$1 AND s.id=$2 AND u.auth_version=$3 \
-               AND u.status='active' AND s.revoked_at IS NULL AND s.expires_at > now()",
+               AND u.status='active' AND s.revoked_at IS NULL AND s.expires_at > now() \
+               AND ( \
+                    (s.purpose='normal' AND NOT u.password_change_required) \
+                    OR ( \
+                        s.purpose='password_change' \
+                        AND u.password_change_required \
+                        AND u.temporary_password_expires_at > now() \
+                    ) \
+               )",
         )
         .bind(user_id)
         .bind(session_id)
@@ -65,17 +74,19 @@ impl AuthRepository {
         refresh_token_hash: &[u8],
         expires_at: DateTime<Utc>,
         user_agent: Option<&str>,
+        purpose: ConsoleSessionPurpose,
     ) -> Result<(), RepositoryError> {
         sqlx::query(
             "INSERT INTO user_sessions \
-             (id,user_id,refresh_token_hash,expires_at,user_agent) \
-             VALUES ($1,$2,$3,$4,$5)",
+             (id,user_id,refresh_token_hash,expires_at,user_agent,purpose) \
+             VALUES ($1,$2,$3,$4,$5,$6)",
         )
         .bind(id)
         .bind(user_id)
         .bind(refresh_token_hash)
         .bind(expires_at)
         .bind(user_agent)
+        .bind(purpose.as_str())
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -85,11 +96,15 @@ impl AuthRepository {
         &self,
         user_id: Uuid,
     ) -> Result<Option<PasswordUser>, RepositoryError> {
-        sqlx::query_as::<_, PasswordUser>("SELECT id,password_hash,status FROM users WHERE id=$1")
-            .bind(user_id)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(RepositoryError::from)
+        sqlx::query_as::<_, PasswordUser>(
+            "SELECT id,password_hash,status,role,auth_version,password_change_required, \
+                    temporary_password_expires_at \
+             FROM users WHERE id=$1",
+        )
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(RepositoryError::from)
     }
 
     /// Rotates a refresh credential. A mismatched credential for an otherwise
@@ -104,8 +119,9 @@ impl AuthRepository {
     ) -> Result<SessionRotation, RepositoryError> {
         let mut transaction = self.pool.begin().await?;
         let session = sqlx::query_as::<_, SessionForRotation>(
-            "SELECT s.user_id,s.refresh_token_hash,s.expires_at,s.revoked_at, \
-                    u.email,u.display_name,u.role,u.status,u.auth_version \
+            "SELECT s.user_id,s.refresh_token_hash,s.expires_at,s.revoked_at,s.purpose, \
+                    u.email,u.display_name,u.role,u.status,u.auth_version, \
+                    u.password_change_required,u.temporary_password_expires_at \
              FROM user_sessions AS s \
              JOIN users AS u ON u.id=s.user_id \
              WHERE s.id=$1 FOR UPDATE",
@@ -117,9 +133,19 @@ impl AuthRepository {
             transaction.rollback().await?;
             return Ok(SessionRotation::Invalid);
         };
+        let purpose = parse_session_purpose(&session.purpose)?;
         if session.revoked_at.is_some()
             || session.expires_at <= Utc::now()
             || session.status != "active"
+            || match purpose {
+                ConsoleSessionPurpose::Normal => session.password_change_required,
+                ConsoleSessionPurpose::PasswordChange => {
+                    !session.password_change_required
+                        || session
+                            .temporary_password_expires_at
+                            .is_none_or(|expiry| expiry <= Utc::now())
+                }
+            }
         {
             transaction.rollback().await?;
             return Ok(SessionRotation::Invalid);
@@ -134,6 +160,14 @@ impl AuthRepository {
             transaction.commit().await?;
             return Ok(SessionRotation::Replayed);
         }
+        let next_expires_at = match purpose {
+            ConsoleSessionPurpose::Normal => next_expires_at,
+            ConsoleSessionPurpose::PasswordChange => next_expires_at.min(
+                session
+                    .temporary_password_expires_at
+                    .ok_or(RepositoryError::Validation)?,
+            ),
+        };
         sqlx::query(
             "UPDATE user_sessions \
              SET refresh_token_hash=$2,expires_at=$3,rotated_at=now(),last_seen_at=now(), \
@@ -147,13 +181,18 @@ impl AuthRepository {
         .execute(&mut *transaction)
         .await?;
         transaction.commit().await?;
-        Ok(SessionRotation::Rotated(SessionUser {
-            id: session.user_id,
-            email: session.email,
-            display_name: session.display_name,
-            role: parse_role(&session.role)?,
-            auth_version: session.auth_version,
-        }))
+        Ok(SessionRotation::Rotated {
+            user: SessionUser {
+                id: session.user_id,
+                email: session.email,
+                display_name: session.display_name,
+                role: parse_role(&session.role)?,
+                auth_version: session.auth_version,
+                session_purpose: purpose,
+                temporary_password_expires_at: session.temporary_password_expires_at,
+            },
+            refresh_expires_at: next_expires_at,
+        })
     }
 
     pub async fn revoke_session_for_user(
@@ -300,8 +339,10 @@ impl AuthRepository {
         let mut transaction = self.pool.begin().await?;
         let changed = sqlx::query(
             "UPDATE users \
-             SET password_hash=$2,password_changed_at=now(),auth_version=auth_version+1 \
-             WHERE id=$1 AND status='active'",
+             SET password_hash=$2,password_changed_at=now(),auth_version=auth_version+1, \
+                 password_change_required=false,temporary_password_issued_at=NULL, \
+                 temporary_password_expires_at=NULL \
+             WHERE id=$1 AND status='active' AND NOT password_change_required",
         )
         .bind(user_id)
         .bind(password_hash)
@@ -321,6 +362,197 @@ impl AuthRepository {
         Ok(true)
     }
 
+    /// Replaces an active user's Console password with an expiring,
+    /// administrator-issued temporary password. The plaintext is generated by
+    /// the application layer and never reaches persistence.
+    pub async fn issue_temporary_password(
+        &self,
+        actor_user_id: Uuid,
+        actor_auth_version: i64,
+        user_id: Uuid,
+        password_hash: &str,
+        temporary_password_ttl: Duration,
+    ) -> Result<TemporaryPasswordCreated, RepositoryError> {
+        if actor_user_id == user_id {
+            return Err(RepositoryError::CannotResetSelf);
+        }
+        let mut transaction = self.pool.begin().await?;
+        let actor_is_current_admin = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS( \
+                SELECT 1 FROM users \
+                WHERE id=$1 AND auth_version=$2 AND status='active' AND role='admin' \
+                  AND NOT password_change_required AND deleted_at IS NULL \
+            )",
+        )
+        .bind(actor_user_id)
+        .bind(actor_auth_version)
+        .fetch_one(&mut *transaction)
+        .await?;
+        if !actor_is_current_admin {
+            transaction.rollback().await?;
+            return Err(RepositoryError::NotFound);
+        }
+
+        let target = sqlx::query_as::<_, TemporaryPasswordTarget>(
+            "SELECT status,(password_hash IS NOT NULL) AS has_password,is_system,deleted_at \
+             FROM users WHERE id=$1 FOR UPDATE",
+        )
+        .bind(user_id)
+        .fetch_optional(&mut *transaction)
+        .await?
+        .ok_or(RepositoryError::NotFound)?;
+        if target.is_system || target.deleted_at.is_some() {
+            transaction.rollback().await?;
+            return Err(RepositoryError::NotFound);
+        }
+        if target.status != "active" || !target.has_password {
+            transaction.rollback().await?;
+            return Err(RepositoryError::TemporaryPasswordUnavailable);
+        }
+
+        let before = super::user_audit(&mut transaction, user_id).await?;
+        let expires_at = Utc::now()
+            .checked_add_signed(
+                chrono::Duration::from_std(temporary_password_ttl)
+                    .map_err(|_| RepositoryError::Validation)?,
+            )
+            .ok_or(RepositoryError::Validation)?;
+        sqlx::query(
+            "UPDATE users SET \
+             password_hash=$2,password_change_required=true, \
+             temporary_password_issued_at=now(),temporary_password_expires_at=$3, \
+             auth_version=auth_version+1 \
+             WHERE id=$1",
+        )
+        .bind(user_id)
+        .bind(password_hash)
+        .bind(expires_at)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "UPDATE user_sessions SET revoked_at=now() \
+             WHERE user_id=$1 AND revoked_at IS NULL",
+        )
+        .bind(user_id)
+        .execute(&mut *transaction)
+        .await?;
+
+        let correlation_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO audit_logs \
+             (id,actor_user_id,actor_type,actor_role,action,object_type,object_id, \
+              before_redacted,after_redacted,correlation_id) \
+             VALUES ($1,$2,'user','admin','issue_temporary_password','user',$3,$4,$5,$6)",
+        )
+        .bind(Uuid::new_v4())
+        .bind(actor_user_id)
+        .bind(user_id)
+        .bind(before)
+        .bind(super::user_audit(&mut transaction, user_id).await?)
+        .bind(correlation_id.to_string())
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(TemporaryPasswordCreated {
+            user_id,
+            expires_at,
+            correlation_id,
+        })
+    }
+
+    /// Replaces a temporary password with the user's chosen permanent
+    /// password. The current password-change session and every sibling
+    /// session are revoked before a fresh normal session is issued.
+    pub async fn complete_temporary_password(
+        &self,
+        user_id: Uuid,
+        session_id: Uuid,
+        expected_auth_version: i64,
+        password_hash: &str,
+    ) -> Result<Option<SessionUser>, RepositoryError> {
+        let mut transaction = self.pool.begin().await?;
+        let user = sqlx::query_as::<_, TemporaryPasswordCompletionUser>(
+            "SELECT u.email,u.display_name,u.role,u.status,u.auth_version, \
+                    u.password_change_required,u.temporary_password_expires_at, \
+                    s.purpose AS session_purpose,s.expires_at AS session_expires_at, \
+                    s.revoked_at AS session_revoked_at \
+             FROM users AS u \
+             JOIN user_sessions AS s ON s.user_id=u.id \
+             WHERE u.id=$1 AND s.id=$2 FOR UPDATE OF u,s",
+        )
+        .bind(user_id)
+        .bind(session_id)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let Some(user) = user else {
+            transaction.rollback().await?;
+            return Ok(None);
+        };
+        if user.status != "active"
+            || user.auth_version != expected_auth_version
+            || !user.password_change_required
+            || user
+                .temporary_password_expires_at
+                .is_none_or(|expiry| expiry <= Utc::now())
+            || parse_session_purpose(&user.session_purpose)?
+                != ConsoleSessionPurpose::PasswordChange
+            || user.session_revoked_at.is_some()
+            || user.session_expires_at <= Utc::now()
+        {
+            transaction.rollback().await?;
+            return Ok(None);
+        }
+
+        let before = super::user_audit(&mut transaction, user_id).await?;
+        let auth_version = sqlx::query_scalar::<_, i64>(
+            "UPDATE users SET \
+             password_hash=$2,password_changed_at=now(),auth_version=auth_version+1, \
+             password_change_required=false,temporary_password_issued_at=NULL, \
+             temporary_password_expires_at=NULL \
+             WHERE id=$1 AND auth_version=$3 RETURNING auth_version",
+        )
+        .bind(user_id)
+        .bind(password_hash)
+        .bind(expected_auth_version)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let Some(auth_version) = auth_version else {
+            transaction.rollback().await?;
+            return Ok(None);
+        };
+        sqlx::query(
+            "UPDATE user_sessions SET revoked_at=now() \
+             WHERE user_id=$1 AND revoked_at IS NULL",
+        )
+        .bind(user_id)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "INSERT INTO audit_logs \
+             (id,actor_user_id,actor_type,actor_role,action,object_type,object_id, \
+              before_redacted,after_redacted,correlation_id) \
+             VALUES ($1,$2,'user',$3,'complete_password_reset','user',$2,$4,$5,$6)",
+        )
+        .bind(Uuid::new_v4())
+        .bind(user_id)
+        .bind(&user.role)
+        .bind(before)
+        .bind(super::user_audit(&mut transaction, user_id).await?)
+        .bind(Uuid::new_v4().to_string())
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(Some(SessionUser {
+            id: user_id,
+            email: user.email,
+            display_name: user.display_name,
+            role: parse_role(&user.role)?,
+            auth_version,
+            session_purpose: ConsoleSessionPurpose::Normal,
+            temporary_password_expires_at: None,
+        }))
+    }
+
     /// Emergency operator recovery for an active Console administrator.
     ///
     /// The caller supplies an already validated Argon2 password hash. As with
@@ -333,7 +565,9 @@ impl AuthRepository {
         let mut transaction = self.pool.begin().await?;
         let admin = sqlx::query_as::<_, PasswordResetAdmin>(
             "UPDATE users \
-             SET password_hash=$2,password_changed_at=now(),auth_version=auth_version+1 \
+             SET password_hash=$2,password_changed_at=now(),auth_version=auth_version+1, \
+                 password_change_required=false,temporary_password_issued_at=NULL, \
+                 temporary_password_expires_at=NULL \
              WHERE lower(email)=lower($1) AND role='admin' AND status='active' \
              RETURNING id,email,auth_version",
         )
@@ -579,6 +813,8 @@ impl AuthRepository {
             display_name: display_name.to_owned(),
             role: UserRole::User,
             auth_version,
+            session_purpose: ConsoleSessionPurpose::Normal,
+            temporary_password_expires_at: None,
         }))
     }
 
@@ -831,7 +1067,9 @@ impl AuthRepository {
         }
         let auth_version = sqlx::query_scalar::<_, i64>(
             "UPDATE users \
-             SET password_hash=$2,password_changed_at=now(),status='active',auth_version=auth_version+1 \
+             SET password_hash=$2,password_changed_at=now(),status='active',auth_version=auth_version+1, \
+                 password_change_required=false,temporary_password_issued_at=NULL, \
+                 temporary_password_expires_at=NULL \
              WHERE id=$1 RETURNING auth_version",
         )
         .bind(invitation.user_id)
@@ -861,6 +1099,8 @@ impl AuthRepository {
             display_name: invitation.display_name,
             role: parse_role(&invitation.role)?,
             auth_version,
+            session_purpose: ConsoleSessionPurpose::Normal,
+            temporary_password_expires_at: None,
         }))
     }
 
@@ -1039,6 +1279,10 @@ fn parse_role(value: &str) -> Result<UserRole, RepositoryError> {
     UserRole::parse(value).ok_or(RepositoryError::Validation)
 }
 
+fn parse_session_purpose(value: &str) -> Result<ConsoleSessionPurpose, RepositoryError> {
+    ConsoleSessionPurpose::parse(value).ok_or(RepositoryError::Validation)
+}
+
 #[derive(Clone, FromRow)]
 pub struct LoginUser {
     pub id: Uuid,
@@ -1048,6 +1292,8 @@ pub struct LoginUser {
     pub status: String,
     pub password_hash: Option<String>,
     pub auth_version: i64,
+    pub password_change_required: bool,
+    pub temporary_password_expires_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Clone, FromRow)]
@@ -1061,6 +1307,7 @@ pub struct LiveConsoleIdentity {
     pub session_id: Uuid,
     pub expires_at: DateTime<Utc>,
     pub revoked_at: Option<DateTime<Utc>>,
+    pub session_purpose: String,
 }
 
 #[derive(FromRow)]
@@ -1068,6 +1315,10 @@ pub struct PasswordUser {
     pub id: Uuid,
     pub password_hash: Option<String>,
     pub status: String,
+    pub role: String,
+    pub auth_version: i64,
+    pub password_change_required: bool,
+    pub temporary_password_expires_at: Option<DateTime<Utc>>,
 }
 
 #[derive(FromRow)]
@@ -1084,6 +1335,8 @@ pub struct SessionUser {
     pub display_name: String,
     pub role: UserRole,
     pub auth_version: i64,
+    pub session_purpose: ConsoleSessionPurpose,
+    pub temporary_password_expires_at: Option<DateTime<Utc>>,
 }
 
 #[derive(FromRow)]
@@ -1092,17 +1345,52 @@ struct SessionForRotation {
     refresh_token_hash: Vec<u8>,
     expires_at: DateTime<Utc>,
     revoked_at: Option<DateTime<Utc>>,
+    purpose: String,
     email: Option<String>,
     display_name: String,
     role: String,
     status: String,
     auth_version: i64,
+    password_change_required: bool,
+    temporary_password_expires_at: Option<DateTime<Utc>>,
 }
 
 pub enum SessionRotation {
-    Rotated(SessionUser),
+    Rotated {
+        user: SessionUser,
+        refresh_expires_at: DateTime<Utc>,
+    },
     Invalid,
     Replayed,
+}
+
+#[derive(Clone, Debug)]
+pub struct TemporaryPasswordCreated {
+    pub user_id: Uuid,
+    pub expires_at: DateTime<Utc>,
+    pub correlation_id: Uuid,
+}
+
+#[derive(FromRow)]
+struct TemporaryPasswordTarget {
+    status: String,
+    has_password: bool,
+    is_system: bool,
+    deleted_at: Option<DateTime<Utc>>,
+}
+
+#[derive(FromRow)]
+struct TemporaryPasswordCompletionUser {
+    email: Option<String>,
+    display_name: String,
+    role: String,
+    status: String,
+    auth_version: i64,
+    password_change_required: bool,
+    temporary_password_expires_at: Option<DateTime<Utc>>,
+    session_purpose: String,
+    session_expires_at: DateTime<Utc>,
+    session_revoked_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Clone, Debug, Serialize)]

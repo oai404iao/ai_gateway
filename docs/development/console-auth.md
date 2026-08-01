@@ -6,6 +6,8 @@
 > migration `0022_user_groups_and_user_lifecycle.sql` 又加入单一用户组、组策略继承和匿名化删除。
 > migration `0024_registration_invitation_codes.sql` 新增可复用邀请码自助注册；因此下文“账户创建仅
 > 邀请制”的原始决策只保留历史意义。当前自助注册不做邮箱确认，邀请码明文只在创建时返回一次。
+> migration `0037_admin_temporary_password.sql` 又新增管理员辅助密码恢复：临时密码只能签发
+> password-change Session，完成改密前不能访问普通 Console 资源。
 > 当前行为以 `docs/user/operations.md` 和 Console OpenAPI 为准。
 
 ## 1. 目标

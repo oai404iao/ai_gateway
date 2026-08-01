@@ -59,7 +59,8 @@ cargo run -- reset-admin-password \
 
 也可在命令末尾加 `--config ./config/other-config.toml`。该命令只会重置匹配邮箱的
 `active admin`，新密码经 Argon2 哈希保存，并立即撤销该用户的所有 Console 会话；不会输出
-密码或哈希。请确保标准输入中的新密码至少为 12 个字节，并妥善保护或删除临时密码文件。
+密码或哈希。若该管理员正处于临时密码恢复状态，此命令也会清除强制改密标记。请确保标准输入中的
+新密码至少为 12 个字节，并妥善保护或删除临时密码文件。
 
 ## 监听器与请求体限制
 
@@ -324,6 +325,7 @@ Console 登录接口：
 - `POST /console/v1/auth/register`
 - `POST /console/v1/auth/refresh`
 - `POST /console/v1/auth/activate-invitation`
+- `POST /console/v1/auth/complete-password-reset`（仅限临时密码登录后的受限 Session）
 - `POST /console/v1/auth/logout`（需要 access JWT）
 
 登录、自助注册或邀请激活成功后：
@@ -334,6 +336,28 @@ Console 登录接口：
 - 每个 Console 请求都会验证 JWT 签名、issuer、audience、用户状态、session 状态和 `auth_version`。禁用用户、改密码、登出和角色变化会立即使旧 token 失效。
 - 新建或刷新 session 时会保存最长 512 字符的浏览器 `User-Agent`，供账户本人在登录设备页面识别会话。
   升级前已存在的 session 在下一次刷新后补齐该字段；网关不根据未经信任的转发 Header 推断客户端 IP。
+
+### 管理员辅助密码恢复
+
+已设置密码的 `active` 用户忘记密码时，管理员可在用户详情页生成临时密码，对应
+`POST /console/v1/users/{id}/temporary-password`。操作要求管理员重新输入自己的当前密码，
+且不能对当前登录的管理员本人执行；管理员自身的紧急恢复继续使用另一管理员或主机上的
+`reset-admin-password` 命令。`invited` 或从未设置密码的账户仍使用重新签发邀请流程，
+`suspended` / `disabled` 账户必须先恢复为 `active`。
+
+临时密码由服务端随机生成，固定有效 24 小时，只在创建响应中显示一次。签发或重新签发会立即：
+
+- 替换目标用户原有 Console 密码，使旧密码和上一个临时密码失效；
+- 递增 `auth_version` 并撤销该用户全部 Console 登录 Session；
+- 保持用户角色、状态、余额、用户组、Policy 和数据面 API Key 不变；
+- 写入不含密码或哈希的 `issue_temporary_password` 审计记录。
+
+用户用临时密码调用普通登录接口后会得到 `password_change_required = true` 的
+password-change Session。该 Session 的 access/refresh 有效期不会超过临时密码有效期，并且后端
+只允许刷新、退出和调用 `/auth/complete-password-reset`；直接请求个人、统计或管理员资源会返回
+`403 password_change_required`。完成接口只接收新密码，拒绝与临时密码相同的值。成功事务会替换为
+正式密码、清除临时状态、递增 `auth_version`、撤销全部受限 Session，并立即签发新的普通 Session。
+临时密码过期后不会恢复旧密码，必须由管理员重新生成。
 
 账户有两种创建方式，当前都不要求邮箱确认：
 

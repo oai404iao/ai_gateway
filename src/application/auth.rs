@@ -10,8 +10,12 @@ use std::{
 
 use argon2::{
     Argon2,
-    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng},
+    password_hash::{
+        PasswordHash, PasswordHasher, PasswordVerifier, SaltString,
+        rand_core::{OsRng, RngCore},
+    },
 };
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
 use jsonwebtoken::{
     Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, decode_header, encode,
@@ -24,12 +28,12 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 
 use crate::{
-    domain::{ConsolePrincipal, UserRole},
+    domain::{ConsolePrincipal, ConsoleSessionPurpose, UserRole},
     persistence::{
         AuthRepository, InvitationCreated, InviteUserInput, LoginUser, RegistrationAttempt,
         RegistrationInvitationCodeInput as PersistenceRegistrationCodeInput,
         RegistrationInvitationCodeMutation as PersistenceRegistrationCodeMutation, RepositoryError,
-        SessionRotation, SessionUser,
+        SessionRotation, SessionUser, TemporaryPasswordCreated,
     },
     runtime_config::AuthConfig,
 };
@@ -43,6 +47,7 @@ const MAX_REGISTRATION_CODE_BYTES: usize = 128;
 const MAX_REGISTRATION_CODE_NAME_BYTES: usize = 100;
 const MAX_SESSION_USER_AGENT_CHARS: usize = 512;
 const INVITATION_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+const TEMPORARY_PASSWORD_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 const AUTH_FAILURE_WINDOW: Duration = Duration::from_secs(60);
 const AUTH_FAILURE_LIMIT: u32 = 10;
 
@@ -140,7 +145,7 @@ impl ConsoleAuthService {
         let next = new_opaque_token(session_id);
         let next_hash = token_hash(&next);
         let next_expiry = self.refresh_expiry()?;
-        let user = match self
+        let rotation = match self
             .repository
             .rotate_session(
                 session_id,
@@ -151,12 +156,15 @@ impl ConsoleAuthService {
             )
             .await?
         {
-            SessionRotation::Rotated(user) => user,
+            SessionRotation::Rotated {
+                user,
+                refresh_expires_at,
+            } => (user, refresh_expires_at),
             SessionRotation::Invalid | SessionRotation::Replayed => {
                 return Err(AuthError::InvalidToken);
             }
         };
-        self.finish_issued_session(user, session_id, next, next_expiry)
+        self.finish_issued_session(rotation.0, session_id, next, rotation.1)
     }
 
     pub async fn authenticate_access_token(
@@ -177,7 +185,12 @@ impl ConsoleAuthService {
             .await?
             .ok_or(AuthError::InvalidToken)?;
         let role = UserRole::parse(&identity.role).ok_or(AuthError::InvalidToken)?;
-        if claims.role != role || identity.auth_version != claims.auth_version {
+        let session_purpose = ConsoleSessionPurpose::parse(&identity.session_purpose)
+            .ok_or(AuthError::InvalidToken)?;
+        if claims.role != role
+            || identity.auth_version != claims.auth_version
+            || claims.session_purpose != session_purpose
+        {
             return Err(AuthError::InvalidToken);
         }
         Ok(ConsolePrincipal::new(
@@ -185,6 +198,7 @@ impl ConsoleAuthService {
             identity.session_id,
             role,
             identity.auth_version,
+            session_purpose,
         ))
     }
 
@@ -284,6 +298,9 @@ impl ConsoleAuthService {
         current_password: String,
         next_password: String,
     ) -> Result<(), AuthError> {
+        if principal.session_purpose() != ConsoleSessionPurpose::Normal {
+            return Err(AuthError::PasswordChangeRequired);
+        }
         validate_password(&current_password)?;
         validate_password(&next_password)?;
         let limiter_key = format!("password:{}", principal.user_id());
@@ -293,7 +310,10 @@ impl ConsoleAuthService {
             .password_user(principal.user_id())
             .await?
             .ok_or(AuthError::InvalidCredentials)?;
-        if user.status != "active" || !verify_password(current_password, user.password_hash).await?
+        if user.status != "active"
+            || user.auth_version != principal.auth_version()
+            || user.password_change_required
+            || !verify_password(current_password, user.password_hash).await?
         {
             self.record_failed_attempt(&limiter_key).await;
             return Err(AuthError::InvalidCredentials);
@@ -309,6 +329,102 @@ impl ConsoleAuthService {
         }
         self.clear_failed_attempts(&limiter_key).await;
         Ok(())
+    }
+
+    pub async fn complete_temporary_password(
+        &self,
+        principal: ConsolePrincipal,
+        next_password: String,
+        user_agent: Option<String>,
+    ) -> Result<IssuedSession, AuthError> {
+        if principal.session_purpose() != ConsoleSessionPurpose::PasswordChange {
+            return Err(AuthError::PasswordResetNotRequired);
+        }
+        validate_password(&next_password)?;
+        let user = self
+            .repository
+            .password_user(principal.user_id())
+            .await?
+            .ok_or(AuthError::InvalidToken)?;
+        if user.status != "active"
+            || user.auth_version != principal.auth_version()
+            || !user.password_change_required
+            || user
+                .temporary_password_expires_at
+                .is_none_or(|expiry| expiry <= Utc::now())
+        {
+            return Err(AuthError::InvalidToken);
+        }
+        if verify_password(next_password.clone(), user.password_hash).await? {
+            return Err(AuthError::NewPasswordMatchesTemporary);
+        }
+        let password_hash = hash_console_password(next_password).await?;
+        let user = self
+            .repository
+            .complete_temporary_password(
+                principal.user_id(),
+                principal.session_id(),
+                principal.auth_version(),
+                &password_hash,
+            )
+            .await?
+            .ok_or(AuthError::InvalidToken)?;
+        self.issue_session(user, user_agent).await
+    }
+
+    pub async fn issue_temporary_password(
+        &self,
+        actor: ConsolePrincipal,
+        user_id: Uuid,
+        current_password: String,
+    ) -> Result<IssuedTemporaryPassword, AuthError> {
+        if !actor.role().is_admin() || actor.session_purpose() != ConsoleSessionPurpose::Normal {
+            return Err(AuthError::Forbidden);
+        }
+        if actor.user_id() == user_id {
+            return Err(AuthError::CannotResetSelf);
+        }
+        validate_password(&current_password)?;
+        let limiter_key = format!("temporary-password:{}", actor.user_id());
+        self.ensure_attempt_allowed(&limiter_key).await?;
+        let admin = self
+            .repository
+            .password_user(actor.user_id())
+            .await?
+            .ok_or(AuthError::ReauthenticationFailed)?;
+        if admin.status != "active"
+            || admin.role != "admin"
+            || admin.auth_version != actor.auth_version()
+            || admin.password_change_required
+            || !verify_password(current_password, admin.password_hash).await?
+        {
+            self.record_failed_attempt(&limiter_key).await;
+            return Err(AuthError::ReauthenticationFailed);
+        }
+        self.clear_failed_attempts(&limiter_key).await;
+
+        let temporary_password = new_temporary_password();
+        let password_hash = hash_console_password(temporary_password.clone()).await?;
+        let TemporaryPasswordCreated {
+            user_id,
+            expires_at,
+            correlation_id,
+        } = self
+            .repository
+            .issue_temporary_password(
+                actor.user_id(),
+                actor.auth_version(),
+                user_id,
+                &password_hash,
+                TEMPORARY_PASSWORD_TTL,
+            )
+            .await?;
+        Ok(IssuedTemporaryPassword {
+            user_id,
+            temporary_password,
+            expires_at,
+            correlation_id,
+        })
     }
 
     pub async fn invite_user(
@@ -486,7 +602,7 @@ impl ConsoleAuthService {
         let user_agent = normalize_session_user_agent(user_agent);
         let session_id = Uuid::new_v4();
         let refresh_token = new_opaque_token(session_id);
-        let refresh_expiry = self.refresh_expiry()?;
+        let refresh_expiry = self.refresh_expiry_for(&user)?;
         self.repository
             .create_session(
                 session_id,
@@ -494,6 +610,7 @@ impl ConsoleAuthService {
                 &token_hash(&refresh_token),
                 refresh_expiry,
                 user_agent.as_deref(),
+                user.session_purpose,
             )
             .await?;
         self.finish_issued_session(user, session_id, refresh_token, refresh_expiry)
@@ -506,10 +623,10 @@ impl ConsoleAuthService {
         refresh_token: String,
         refresh_expires_at: DateTime<Utc>,
     ) -> Result<IssuedSession, AuthError> {
-        let access_token = self.tokens.issue(&user, session_id)?;
+        let (access_token, expires_in_seconds) = self.tokens.issue(&user, session_id)?;
         Ok(IssuedSession {
             access_token,
-            expires_in_seconds: self.tokens.access_token_ttl_seconds,
+            expires_in_seconds,
             refresh_token,
             refresh_expires_at,
             user: ConsoleUser {
@@ -517,6 +634,8 @@ impl ConsoleAuthService {
                 email: user.email.unwrap_or_default(),
                 display_name: user.display_name,
                 role: user.role,
+                password_change_required: user.session_purpose.requires_password_change(),
+                temporary_password_expires_at: user.temporary_password_expires_at,
             },
         })
     }
@@ -530,6 +649,17 @@ impl ConsoleAuthService {
                 .map_err(|_| AuthError::Configuration)?,
             )
             .ok_or(AuthError::Configuration)
+    }
+
+    fn refresh_expiry_for(&self, user: &SessionUser) -> Result<DateTime<Utc>, AuthError> {
+        let configured = self.refresh_expiry()?;
+        Ok(match user.session_purpose {
+            ConsoleSessionPurpose::Normal => configured,
+            ConsoleSessionPurpose::PasswordChange => configured.min(
+                user.temporary_password_expires_at
+                    .ok_or(AuthError::InvalidToken)?,
+            ),
+        })
     }
 }
 
@@ -596,19 +726,33 @@ impl TokenCodec {
         })
     }
 
-    fn issue(&self, user: &SessionUser, session_id: Uuid) -> Result<String, AuthError> {
+    fn issue(&self, user: &SessionUser, session_id: Uuid) -> Result<(String, u64), AuthError> {
         let now = Utc::now().timestamp();
-        let exp = now
+        let configured_exp = now
             .checked_add(
                 i64::try_from(self.access_token_ttl_seconds)
                     .map_err(|_| AuthError::Configuration)?,
             )
             .ok_or(AuthError::Configuration)?;
+        let exp = match user.session_purpose {
+            ConsoleSessionPurpose::Normal => configured_exp,
+            ConsoleSessionPurpose::PasswordChange => configured_exp.min(
+                user.temporary_password_expires_at
+                    .ok_or(AuthError::InvalidToken)?
+                    .timestamp(),
+            ),
+        };
+        let expires_in_seconds =
+            u64::try_from(exp.saturating_sub(now)).map_err(|_| AuthError::InvalidToken)?;
+        if expires_in_seconds == 0 {
+            return Err(AuthError::InvalidToken);
+        }
         let claims = AccessClaims {
             sub: user.id,
             sid: session_id,
             role: user.role,
             auth_version: user.auth_version,
+            session_purpose: user.session_purpose,
             iss: self.issuer.clone(),
             aud: self.audience.clone(),
             iat: now,
@@ -617,7 +761,9 @@ impl TokenCodec {
         };
         let mut header = Header::new(Algorithm::EdDSA);
         header.kid = Some(self.key_id.clone());
-        encode(&header, &claims, &self.encoding_key).map_err(|_| AuthError::Configuration)
+        let token =
+            encode(&header, &claims, &self.encoding_key).map_err(|_| AuthError::Configuration)?;
+        Ok((token, expires_in_seconds))
     }
 }
 
@@ -627,6 +773,8 @@ struct AccessClaims {
     sid: Uuid,
     role: UserRole,
     auth_version: i64,
+    #[serde(default)]
+    session_purpose: ConsoleSessionPurpose,
     iss: String,
     aud: String,
     iat: i64,
@@ -640,6 +788,8 @@ pub struct ConsoleUser {
     pub email: String,
     pub display_name: String,
     pub role: UserRole,
+    pub password_change_required: bool,
+    pub temporary_password_expires_at: Option<DateTime<Utc>>,
 }
 
 pub struct IssuedSession {
@@ -653,6 +803,13 @@ pub struct IssuedSession {
 pub struct IssuedInvitation {
     pub created: InvitationCreated,
     pub token: String,
+}
+
+pub struct IssuedTemporaryPassword {
+    pub user_id: Uuid,
+    pub temporary_password: String,
+    pub expires_at: DateTime<Utc>,
+    pub correlation_id: Uuid,
 }
 
 pub struct SelfRegistrationInput {
@@ -705,6 +862,10 @@ fn active_login_user(user: LoginUser) -> Result<LoginUser, AuthError> {
     if user.status != "active"
         || user.password_hash.is_none()
         || UserRole::parse(&user.role).is_none()
+        || (user.password_change_required
+            && user
+                .temporary_password_expires_at
+                .is_none_or(|expiry| expiry <= Utc::now()))
     {
         return Err(AuthError::InvalidCredentials);
     }
@@ -719,6 +880,12 @@ impl LoginUser {
             display_name: self.display_name,
             role: UserRole::parse(&self.role).expect("active login role was validated"),
             auth_version: self.auth_version,
+            session_purpose: if self.password_change_required {
+                ConsoleSessionPurpose::PasswordChange
+            } else {
+                ConsoleSessionPurpose::Normal
+            },
+            temporary_password_expires_at: self.temporary_password_expires_at,
         }
     }
 }
@@ -834,6 +1001,12 @@ fn token_hash(value: &str) -> Vec<u8> {
     Sha256::digest(value.as_bytes()).to_vec()
 }
 
+fn new_temporary_password() -> String {
+    let mut random = [0_u8; 18];
+    OsRng.fill_bytes(&mut random);
+    format!("AGW-{}", URL_SAFE_NO_PAD.encode(random))
+}
+
 #[derive(Default)]
 struct AuthFailureLimiter {
     windows: HashMap<String, AuthFailureWindow>,
@@ -895,6 +1068,16 @@ pub enum AuthError {
     RegistrationConflict,
     #[error("invalid authentication input")]
     InvalidInput,
+    #[error("the current session must complete its password change")]
+    PasswordChangeRequired,
+    #[error("the current session does not require a password reset")]
+    PasswordResetNotRequired,
+    #[error("administrator reauthentication failed")]
+    ReauthenticationFailed,
+    #[error("the permanent password must differ from the temporary password")]
+    NewPasswordMatchesTemporary,
+    #[error("an administrator cannot issue a temporary password for their own account")]
+    CannotResetSelf,
     #[error("too many failed authentication attempts")]
     RateLimited,
     #[error("Console action is forbidden")]

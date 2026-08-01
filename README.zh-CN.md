@@ -31,7 +31,7 @@ Chat Completions、Responses、非流式 JSON Images generation 与 multipart Im
 - 转发前会移除客户端凭据和 hop-by-hop Header，再注入渠道专属的上游鉴权。
 - 上游响应以流式方式转发，不缓冲完整响应；一旦发送响应头或任何响应字节，绝不重试或切换渠道。
 - 提供进程内 RPM、并发和软额度准入控制、被动连接健康、异步请求日志、用量提取与结算。
-- 提供独立的 JWT Console API，包括按用户邀请、可复用邀请码自助注册、轮换 refresh session、用户/管理员角色、审计日志，以及大多数可变资源的乐观并发控制。
+- 提供独立的 JWT Console API，包括按用户邀请、可复用邀请码自助注册、管理员辅助临时密码恢复、轮换 refresh session、用户/管理员角色、审计日志，以及大多数可变资源的乐观并发控制。
 
 ## 架构
 

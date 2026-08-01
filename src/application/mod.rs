@@ -17,8 +17,9 @@ mod usage;
 
 pub use auth::{
     AuthError, ConsoleAuthService, ConsoleUser, IssuedInvitation, IssuedRegistrationInvitationCode,
-    IssuedSession, RegistrationInvitationCodeCreateInput, RegistrationInvitationCodeMutation,
-    RegistrationInvitationCodeUpdateInput, SelfRegistrationInput, hash_console_password,
+    IssuedSession, IssuedTemporaryPassword, RegistrationInvitationCodeCreateInput,
+    RegistrationInvitationCodeMutation, RegistrationInvitationCodeUpdateInput,
+    SelfRegistrationInput, hash_console_password,
 };
 pub(crate) use billing::{
     request_billing, request_billing_multiplier, request_billing_multiplier_for_value,

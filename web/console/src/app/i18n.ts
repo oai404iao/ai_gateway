@@ -359,6 +359,9 @@ const zhCN: Record<string, string> = {
   "Use your Console account to continue.": "使用您的控制台账户继续。",
   "Email": "邮箱",
   "Password": "密码",
+  "Forgot your password?": "忘记密码？",
+  "Ask an administrator to generate a temporary password.":
+    "请联系管理员生成临时密码。",
   "Have a registration code?": "已有注册邀请码？",
   "Received a personal invitation?": "收到个人邀请？",
   "Create account": "创建账户",
@@ -384,6 +387,16 @@ const zhCN: Record<string, string> = {
   "Activate account": "激活账户",
   "Already have an account?": "已有账户？",
   "Signed in": "已登录",
+  "Set a new password": "设置新密码",
+  "Your temporary password only grants access to this password-change flow.":
+    "临时密码只能用于完成本次密码修改流程。",
+  "Password updated": "密码已更新",
+  "Password change required": "必须修改密码",
+  "The temporary password expires at {time}.": "临时密码将于 {time} 过期。",
+  "Choose a permanent password before continuing.": "继续前请设置正式密码。",
+  "Save new password": "保存新密码",
+  "The new password must differ from the temporary password.":
+    "新密码不能与临时密码相同。",
   "Review the browsers signed in to your Console account and end sessions you do not recognize.":
     "查看已登录控制台账户的浏览器，并退出不认识的会话。",
   "Active sessions": "已登录设备",
@@ -522,6 +535,37 @@ const zhCN: Record<string, string> = {
   "Replacement invitation token": "新邀请令牌",
   "Give this new token to the user to activate their account.":
     "请将新令牌提供给用户以激活账户。",
+  "Password recovery": "密码恢复",
+  "Generate an expiring temporary password that forces the user to choose a new password.":
+    "生成具有有效期的临时密码，并强制用户设置新密码。",
+  "Password change pending": "等待用户修改密码",
+  "The current temporary password expires at {time}.":
+    "当前临时密码将于 {time} 过期。",
+  "The user must replace the temporary password.": "用户必须替换当前临时密码。",
+  "Use another administrator or the host recovery command to reset your own password.":
+    "请使用其他管理员账户或主机恢复命令重置自己的密码。",
+  "Active account required": "需要活跃账户",
+  "Restore this account to active status before generating a temporary password.":
+    "生成临时密码前，请先将此账户恢复为活跃状态。",
+  "Existing access will be revoked": "现有登录将被撤销",
+  "Generating a temporary password immediately invalidates the current password and every Console login session. API keys are unchanged.":
+    "生成临时密码后，当前密码和所有控制台登录会话会立即失效，API 密钥不受影响。",
+  "Generate replacement temporary password": "重新生成临时密码",
+  "Generate temporary password": "生成临时密码",
+  "Temporary password generated": "临时密码已生成",
+  "Temporary password generation failed": "临时密码生成失败",
+  "Your administrator password is incorrect.": "管理员密码不正确。",
+  "This account cannot receive a temporary password.":
+    "此账户当前不能生成临时密码。",
+  "Generate replacement temporary password?": "重新生成临时密码？",
+  "Generate temporary password?": "生成临时密码？",
+  "Re-enter your administrator password. The target user's current password and Console sessions will stop working immediately.":
+    "请重新输入管理员密码。目标用户的当前密码和控制台会话将立即失效。",
+  "Your current password": "您的当前密码",
+  "Generate replacement password": "生成替代密码",
+  "Temporary password": "临时密码",
+  "Give this password to the user through a secure channel. It expires at {time} and will stop working immediately after the user sets a new password.":
+    "请通过安全渠道将此密码提供给用户。密码将于 {time} 过期，并会在用户设置新密码后立即失效。",
   "Update status": "更新状态",
   "Access status updated": "访问状态已更新",
   "Status is unchanged.": "状态没有变化。",
