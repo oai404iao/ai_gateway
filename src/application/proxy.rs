@@ -15,8 +15,8 @@ use axum::{
     http::{
         HeaderMap, HeaderName, HeaderValue, Request, Response, StatusCode,
         header::{
-            ACCEPT_ENCODING, AUTHORIZATION, CONNECTION, CONTENT_ENCODING, CONTENT_LENGTH, HOST,
-            PROXY_AUTHORIZATION,
+            ACCEPT_ENCODING, AUTHORIZATION, CONNECTION, CONTENT_ENCODING, CONTENT_LENGTH,
+            CONTENT_TYPE, HOST, PROXY_AUTHORIZATION,
         },
     },
     response::{IntoResponse, Response as AxumResponse},
@@ -1618,6 +1618,9 @@ fn response_from_upstream(
         completion.set_client_visible_status(StatusCode::BAD_GATEWAY.as_u16());
         completion.finish(RequestOutcome::ResponseTransformFailed);
         return Err(ProxyError::response_transform_failed());
+    }
+    if connector_success_response_is_sse && upstream_status.is_success() {
+        upstream_headers.insert(CONTENT_TYPE, HeaderValue::from_static("text/event-stream"));
     }
     if transform_sse && !sse_has_identity_encoding {
         completion.set_client_visible_status(StatusCode::BAD_GATEWAY.as_u16());

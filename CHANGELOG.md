@@ -22,6 +22,14 @@ Versioning.
   fields and filters for users and administrators, and group administrator-
   specific request logs and cost analytics under the Console System section.
 
+### Fixed
+
+- Strip the unsupported `max_output_tokens` field only after a Responses
+  request selects a Codex OAuth channel, while preserving other unknown fields
+  and the existing streaming-only boundary; normalize successful Codex HTTP
+  responses to `text/event-stream`, and extend the opt-in real-upstream smoke
+  to cover these provider adaptations through another `ai-gateway` instance.
+
 ## [0.8.1] - 2026-08-01
 
 ### Added

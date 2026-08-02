@@ -163,14 +163,19 @@ Codex HTTP attempt：
 
 - 要求 SSE streaming；
 - 强制 `stream=true`、`store=false`；
+- 在通用变换之后删除 Codex 已确认不支持的顶层 `max_output_tokens`；不使用字段白名单，
+  其他未知字段继续透明转发；
 - 拒绝非空 `previous_response_id`；
 - 目标固定为 managed channel base URL 下的 `/responses`；
 - 注入 Bearer、`ChatGPT-Account-ID`、可选 FedRAMP、session/thread、User-Agent、
   `originator` 和版本 Header。
+- 成功响应无论上游如何声明 `Content-Type`，都按 SSE 处理并向客户端规范化为
+  `text/event-stream`；非成功响应不强制改写。
 
 Codex WebSocket attempt：
 
 - 只接受 `response.create` 文本消息，并同样强制 `stream=true`、`store=false`；
+- 同样删除 `max_output_tokens`，但不删除其他未列入显式 denylist 的字段；
 - 保留客户端的 `previous_response_id`、`generate` 和 `client_metadata`；
 - 把 managed channel base URL 转成 `/responses` 的 `ws`/`wss` 目标；
 - 使用 Codex 同源的 WebSocket Beta、Bearer/account、FedRAMP、session/thread、
