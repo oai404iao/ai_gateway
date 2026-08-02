@@ -662,6 +662,15 @@ export async function mockConsoleApi(page: Page): Promise<void> {
       });
     }
     if (path === "/console/v1/statistics/costs" && method === "GET") {
+      return route.fulfill({
+        status: 200,
+        json: { ...E2E_COST_STATISTICS, channels: [] },
+      });
+    }
+    if (
+      path === "/console/v1/system/statistics/costs" &&
+      method === "GET"
+    ) {
       return route.fulfill({ status: 200, json: E2E_COST_STATISTICS });
     }
     if (

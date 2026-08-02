@@ -51,6 +51,7 @@ import { useOwnApiKeys } from "@/features/api-keys/api";
 import {
   useCostStatistics,
   type CostStatisticsFilters,
+  type CostStatisticsScope,
 } from "@/features/statistics/api";
 import type {
   CostStatisticsChannel,
@@ -65,7 +66,6 @@ import {
 import { formatCompactTokens, formatUsd } from "@/lib/formatters";
 import { apiFormatLabel } from "@/lib/permissions";
 import { useI18n } from "@/app/i18n";
-import { useSession } from "@/lib/use-session";
 
 interface CostFilterDraft {
   started_after: string;
@@ -207,21 +207,27 @@ function SummaryCard({
   );
 }
 
-export function CostStatisticsPanel() {
+export function CostStatisticsPanel({
+  scope,
+}: {
+  scope: CostStatisticsScope;
+}) {
   const initialDraft = useMemo(defaultDraft, []);
   const [draft, setDraft] = useState<CostFilterDraft>(initialDraft);
   const [filters, setFilters] = useState<CostStatisticsFilters>(
     () => toFilters(initialDraft) as CostStatisticsFilters,
   );
   const [quickRange, setQuickRange] = useState<QuickRange | null>("today");
-  const { data, isLoading, isFetching, error, refetch } = useCostStatistics(filters);
-  const { user } = useSession();
-  const isAdmin = user?.role === "admin";
-  const users = useUsers(isAdmin);
-  const adminApiKeys = useAdminApiKeys(isAdmin);
-  const channels = useChannels(isAdmin);
-  const channelGroups = useChannelGroups(isAdmin);
-  const ownApiKeys = useOwnApiKeys(!isAdmin);
+  const { data, isLoading, isFetching, error, refetch } = useCostStatistics(
+    scope,
+    filters,
+  );
+  const isSystemView = scope === "system";
+  const users = useUsers(isSystemView);
+  const adminApiKeys = useAdminApiKeys(isSystemView);
+  const channels = useChannels(isSystemView);
+  const channelGroups = useChannelGroups(isSystemView);
+  const ownApiKeys = useOwnApiKeys(!isSystemView);
   const { t } = useI18n();
 
   const runQuery = (next: CostStatisticsFilters) => {
@@ -232,7 +238,7 @@ export function CostStatisticsPanel() {
     setFilters(next);
   };
 
-  const filteredKeys = isAdmin
+  const filteredKeys = isSystemView
     ? (adminApiKeys.data ?? [])
         .filter((key) => !draft.user_id || key.user_id === draft.user_id)
         .map((key) => ({ id: key.id, name: key.name }))
@@ -505,7 +511,7 @@ export function CostStatisticsPanel() {
           <CardTitle>{t("Filters")}</CardTitle>
           <CardDescription>
             {t(
-              isAdmin
+              isSystemView
                 ? "Filter by time range, user, API key, channel, and aggregation granularity."
                 : "Filter your own statistics by time range, API key, and aggregation granularity.",
             )}
@@ -600,7 +606,7 @@ export function CostStatisticsPanel() {
                 </ToggleGroupItem>
               </ToggleGroup>
             </Field>
-            {isAdmin ? (
+            {isSystemView ? (
               <Field>
                 <FieldLabel htmlFor="statistics_user">{t("User")}</FieldLabel>
                 <Select
@@ -665,7 +671,7 @@ export function CostStatisticsPanel() {
                 </SelectContent>
               </Select>
             </Field>
-            {isAdmin ? (
+            {isSystemView ? (
               <Field>
                 <FieldLabel htmlFor="statistics_channel">{t("Channel")}</FieldLabel>
                 <Select
@@ -864,7 +870,7 @@ export function CostStatisticsPanel() {
               </CardContent>
             </Card>
 
-            {isAdmin ? (
+            {isSystemView ? (
               <Card>
                 <CardHeader>
                   <CardTitle>{t("Channel details")}</CardTitle>

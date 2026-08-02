@@ -117,7 +117,7 @@ pub fn router(state: ConsoleState) -> Router {
             "/console/v1/statistics/channel-status",
             get(get_channel_status),
         )
-        .route("/console/v1/statistics/costs", get(get_cost_statistics))
+        .route("/console/v1/statistics/costs", get(get_own_cost_statistics))
         .route(
             "/console/v1/statistics/spend-leaderboard",
             get(get_spend_leaderboard),
@@ -280,6 +280,10 @@ pub fn router(state: ConsoleState) -> Router {
         .route(
             "/console/v1/system/session-affinity/cache",
             get(get_session_affinity_cache).delete(clear_session_affinity_cache),
+        )
+        .route(
+            "/console/v1/system/statistics/costs",
+            get(get_system_cost_statistics),
         )
         .route("/console/v1/system/load", get(get_system_load))
         .route("/console/v1/system/reload", post(reload))
@@ -2039,10 +2043,32 @@ async fn get_channel_status(
     Ok(Json(state.request_logs.channel_status(window).await?))
 }
 
-async fn get_cost_statistics(
+async fn get_own_cost_statistics(
     State(state): State<ConsoleState>,
     Extension(principal): Extension<ConsolePrincipal>,
     Query(query): Query<CostStatisticsQuery>,
+) -> Result<Json<crate::persistence::CostStatisticsReport>, ConsoleError> {
+    if query.user_id.is_some() || query.channel_id.is_some() {
+        return Err(ConsoleError::Validation);
+    }
+    cost_statistics(&state, query, Some(principal.user_id()), None, false).await
+}
+
+async fn get_system_cost_statistics(
+    State(state): State<ConsoleState>,
+    Query(query): Query<CostStatisticsQuery>,
+) -> Result<Json<crate::persistence::CostStatisticsReport>, ConsoleError> {
+    let user_id = query.user_id;
+    let channel_id = query.channel_id;
+    cost_statistics(&state, query, user_id, channel_id, true).await
+}
+
+async fn cost_statistics(
+    state: &ConsoleState,
+    query: CostStatisticsQuery,
+    user_id: Option<Uuid>,
+    channel_id: Option<Uuid>,
+    include_channel_details: bool,
 ) -> Result<Json<crate::persistence::CostStatisticsReport>, ConsoleError> {
     let ended_at = query.started_before.unwrap_or_else(Utc::now);
     let started_at = query
@@ -2053,20 +2079,6 @@ async fn get_cost_statistics(
         "day" => StatisticsGranularity::Day,
         _ => return Err(ConsoleError::Validation),
     };
-    let user_id = if principal.role().is_admin() {
-        query.user_id
-    } else {
-        if query
-            .user_id
-            .is_some_and(|user_id| user_id != principal.user_id())
-        {
-            return Err(ConsoleError::Forbidden);
-        }
-        Some(principal.user_id())
-    };
-    if !principal.role().is_admin() && query.channel_id.is_some() {
-        return Err(ConsoleError::Forbidden);
-    }
     Ok(Json(
         state
             .request_logs
@@ -2076,8 +2088,8 @@ async fn get_cost_statistics(
                 granularity,
                 user_id,
                 api_key_id: query.api_key_id,
-                channel_id: query.channel_id,
-                include_channel_details: principal.role().is_admin(),
+                channel_id,
+                include_channel_details,
             })
             .await?,
     ))

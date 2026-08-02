@@ -330,7 +330,7 @@ test.describe("Console SPA smoke", () => {
     await expect(page.getByText("Model overview")).toBeVisible();
   });
 
-  test("statistics shows personal activity and operations has system load", async ({
+  test("personal analytics stay owner-scoped and system analytics use system pages", async ({
     page,
   }) => {
     await mockConsoleApi(page);
@@ -339,12 +339,25 @@ test.describe("Console SPA smoke", () => {
     await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
     await page.getByRole("button", { name: /sign in/i }).click();
 
-    await page.getByRole("link", { name: "Statistics" }).click();
+    await page.getByRole("link", { name: "Statistics", exact: true }).click();
     await expect(page).toHaveURL(/\/statistics/);
     await expect(page.getByText("Request activity", { exact: true })).toBeVisible();
     await expect(
       page.getByLabel("6 requests on Jul 27, 2026"),
     ).toBeVisible();
+
+    await page.getByRole("tab", { name: "Cost statistics" }).click();
+    await expect(page.getByText("Total cost", { exact: true })).toBeVisible();
+    await expect(page.getByRole("combobox", { name: "Channel" })).toHaveCount(0);
+    await expect(page.getByText("Channel details", { exact: true })).toHaveCount(0);
+
+    await page.locator('a[href="/admin/cost-statistics"]').click();
+    await expect(page).toHaveURL(/\/admin\/cost-statistics/);
+    await expect(
+      page.getByRole("heading", { name: "Cost statistics" }),
+    ).toBeVisible();
+    await expect(page.getByRole("combobox", { name: "Channel" })).toBeVisible();
+    await expect(page.getByText("Channel details", { exact: true })).toBeVisible();
 
     await page.getByRole("link", { name: "System load" }).click();
     await expect(page).toHaveURL(/\/admin\/system-load/);

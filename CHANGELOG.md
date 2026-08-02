@@ -7,6 +7,17 @@ Versioning.
 
 ## [Unreleased]
 
+### Added
+
+- Add an administrator-only system cost-statistics API and Console page with
+  global user, API Key, and channel filters plus channel-level breakdowns.
+
+### Changed
+
+- Keep personal request logs and cost statistics owner-scoped with identical
+  fields and filters for users and administrators, and group administrator-
+  specific request logs and cost analytics under the Console System section.
+
 ## [0.8.1] - 2026-08-01
 
 ### Added

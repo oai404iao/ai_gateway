@@ -4867,7 +4867,7 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
         &app,
         "GET",
         &format!(
-            "/console/v1/statistics/costs?started_after={range_start}&started_before={range_end}&granularity=hour&user_id={}&api_key_id={api_key_id}",
+            "/console/v1/system/statistics/costs?started_after={range_start}&started_before={range_end}&granularity=hour&user_id={}&api_key_id={api_key_id}",
             app.user_id
         ),
         serde_json::json!({}),
@@ -4920,6 +4920,21 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
             .count(),
         1
     );
+
+    let admin_own_costs = request(
+        &app,
+        "GET",
+        &format!(
+            "/console/v1/statistics/costs?started_after={range_start}&started_before={range_end}&granularity=hour&api_key_id={api_key_id}"
+        ),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(admin_own_costs.status(), StatusCode::OK);
+    let admin_own_costs = body_json(admin_own_costs).await;
+    assert_eq!(admin_own_costs["summary"]["request_count"], 3);
+    assert_eq!(admin_own_costs["channels"], serde_json::json!([]));
 
     let admin_usage = request(
         &app,
@@ -5173,7 +5188,10 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
         &[],
     )
     .await;
-    assert_eq!(user_channel_filter.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        user_channel_filter.status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
 
     let other_user_costs = request_with_token(
         &app,
@@ -5187,7 +5205,7 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
         &[],
     )
     .await;
-    assert_eq!(other_user_costs.status(), StatusCode::FORBIDDEN);
+    assert_eq!(other_user_costs.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
     let other_user_key_costs = request_with_token(
         &app,
@@ -5217,11 +5235,39 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
     .await;
     assert_eq!(user_system_load.status(), StatusCode::FORBIDDEN);
 
-    let admin_user_costs = request(
+    let user_system_costs = request_with_token(
+        &app,
+        &regular_session.access_token,
+        "GET",
+        &format!(
+            "/console/v1/system/statistics/costs?started_after={range_start}&started_before={range_end}&granularity=hour"
+        ),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(user_system_costs.status(), StatusCode::FORBIDDEN);
+
+    let admin_personal_user_filter = request(
         &app,
         "GET",
         &format!(
             "/console/v1/statistics/costs?started_after={range_start}&started_before={range_end}&granularity=hour&user_id={regular_user_id}"
+        ),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(
+        admin_personal_user_filter.status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+
+    let admin_user_costs = request(
+        &app,
+        "GET",
+        &format!(
+            "/console/v1/system/statistics/costs?started_after={range_start}&started_before={range_end}&granularity=hour&user_id={regular_user_id}"
         ),
         serde_json::json!({}),
         &[],
@@ -5237,7 +5283,7 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
         &app,
         "GET",
         &format!(
-            "/console/v1/statistics/costs?started_after={range_start}&started_before={range_end}&granularity=hour&channel_id={channel_id}"
+            "/console/v1/system/statistics/costs?started_after={range_start}&started_before={range_end}&granularity=hour&channel_id={channel_id}"
         ),
         serde_json::json!({}),
         &[],

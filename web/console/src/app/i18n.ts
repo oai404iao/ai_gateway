@@ -206,6 +206,8 @@ const zhCN: Record<string, string> = {
   "Correlation id": "关联 ID",
   "Channel status": "渠道状态",
   "Personal request activity and cost analytics.": "个人请求活动与花费分析。",
+  "System-wide request activity, token usage, and cost analytics.":
+    "全系统请求活动、Token 用量与花费分析。",
   "Availability and performance for channels included in status statistics.":
     "已纳入状态统计的渠道可用性与性能。",
   "Personal usage": "个人使用情况",

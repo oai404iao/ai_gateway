@@ -22,7 +22,7 @@ export function StatisticsPage() {
           <PersonalUsagePanel />
         </TabsContent>
         <TabsContent value="costs">
-          <CostStatisticsPanel />
+          <CostStatisticsPanel scope="own" />
         </TabsContent>
       </Tabs>
     </div>
