@@ -14,7 +14,8 @@ pub use codex::{
     CodexCredentialCreate, CodexCredentialExportBundle, CodexCredentialExportInput,
     CodexCredentialExportItem, CodexCredentialExportProxy, CodexCredentialImportInput,
     CodexCredentialRecord, CodexCredentialUpdateInput, CodexCredentialView, CodexOauthFlowRecord,
-    CodexOauthStartInput, CodexQuotaUpdate, CodexTokenRefreshUpdate,
+    CodexOauthStartInput, CodexQuotaResetOutcome, CodexQuotaUpdate, CodexQuotaWindowHistory,
+    CodexQuotaWindowPeriodView, CodexTokenRefreshUpdate,
 };
 
 use std::{
@@ -1400,6 +1401,7 @@ pub struct CostStatisticsFilter {
     pub user_id: Option<Uuid>,
     pub api_key_id: Option<Uuid>,
     pub channel_id: Option<Uuid>,
+    pub codex_credential_id: Option<Uuid>,
     pub include_channel_details: bool,
 }
 
@@ -2297,7 +2299,10 @@ impl RequestLogRepository {
         filter: CostStatisticsFilter,
     ) -> Result<CostStatisticsReport, RepositoryError> {
         let duration = filter.ended_at.signed_duration_since(filter.started_at);
-        if duration <= chrono::Duration::zero() || duration > filter.granularity.max_range() {
+        if duration <= chrono::Duration::zero()
+            || duration > filter.granularity.max_range()
+            || (filter.channel_id.is_some() && filter.codex_credential_id.is_some())
+        {
             return Err(RepositoryError::Validation);
         }
 
@@ -2318,13 +2323,22 @@ impl RequestLogRepository {
                AND started_at < $2
                AND ($3::uuid IS NULL OR user_id = $3)
                AND ($4::uuid IS NULL OR api_key_id = $4)
-               AND ($5::uuid IS NULL OR channel_id = $5)",
+               AND ($5::uuid IS NULL OR channel_id = $5)
+               AND (
+                   $6::uuid IS NULL
+                   OR channel_id IN (
+                       SELECT projection.channel_id
+                       FROM codex_oauth_credential_channels AS projection
+                       WHERE projection.credential_id = $6
+                   )
+               )",
         )
         .bind(filter.started_at)
         .bind(filter.ended_at)
         .bind(filter.user_id)
         .bind(filter.api_key_id)
         .bind(filter.channel_id)
+        .bind(filter.codex_credential_id)
         .fetch_one(&self.pool)
         .await?;
 
@@ -2344,6 +2358,14 @@ impl RequestLogRepository {
                AND ($3::uuid IS NULL OR user_id = $3)
                AND ($4::uuid IS NULL OR api_key_id = $4)
                AND ($5::uuid IS NULL OR channel_id = $5)
+               AND (
+                   $6::uuid IS NULL
+                   OR channel_id IN (
+                       SELECT projection.channel_id
+                       FROM codex_oauth_credential_channels AS projection
+                       WHERE projection.credential_id = $6
+                   )
+               )
              GROUP BY bucket_started_at,
                       COALESCE(upstream_model, client_model),
                       api_format
@@ -2358,6 +2380,7 @@ impl RequestLogRepository {
             .bind(filter.user_id)
             .bind(filter.api_key_id)
             .bind(filter.channel_id)
+            .bind(filter.codex_credential_id)
             .fetch_all(&self.pool)
             .await?;
 
@@ -2383,6 +2406,14 @@ impl RequestLogRepository {
                AND ($3::uuid IS NULL OR user_id = $3)
                AND ($4::uuid IS NULL OR api_key_id = $4)
                AND ($5::uuid IS NULL OR channel_id = $5)
+               AND (
+                   $6::uuid IS NULL
+                   OR channel_id IN (
+                       SELECT projection.channel_id
+                       FROM codex_oauth_credential_channels AS projection
+                       WHERE projection.credential_id = $6
+                   )
+               )
              GROUP BY COALESCE(upstream_model, client_model), api_format
              ORDER BY COALESCE(upstream_model, client_model), api_format",
         )
@@ -2391,6 +2422,7 @@ impl RequestLogRepository {
         .bind(filter.user_id)
         .bind(filter.api_key_id)
         .bind(filter.channel_id)
+        .bind(filter.codex_credential_id)
         .fetch_all(&self.pool)
         .await?;
 
@@ -2426,6 +2458,14 @@ impl RequestLogRepository {
                    AND ($3::uuid IS NULL OR log.user_id = $3)
                    AND ($4::uuid IS NULL OR log.api_key_id = $4)
                    AND ($5::uuid IS NULL OR log.channel_id = $5)
+                   AND (
+                       $6::uuid IS NULL
+                       OR log.channel_id IN (
+                           SELECT projection.channel_id
+                           FROM codex_oauth_credential_channels AS projection
+                           WHERE projection.credential_id = $6
+                       )
+                   )
                  GROUP BY log.channel_id, log.channel_group_id, channel_group.name,
                           channel.name, log.api_format
                  ORDER BY channel_group.name, channel.name, log.api_format",
@@ -2435,6 +2475,7 @@ impl RequestLogRepository {
             .bind(filter.user_id)
             .bind(filter.api_key_id)
             .bind(filter.channel_id)
+            .bind(filter.codex_credential_id)
             .fetch_all(&self.pool)
             .await?
             .into_iter()

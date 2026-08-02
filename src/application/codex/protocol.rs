@@ -9,13 +9,13 @@ use reqwest::{
     Client, Response, StatusCode, Url,
     header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue, USER_AGENT},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use tokio::time::timeout;
 
-use crate::persistence::CodexQuotaUpdate;
+use crate::persistence::{CodexQuotaResetOutcome, CodexQuotaUpdate};
 
 use super::CodexConnectorError;
 
@@ -29,6 +29,7 @@ pub const CODEX_CLIENT_VERSION: &str = "0.146.0";
 const MAX_TOKEN_RESPONSE_BYTES: usize = 1024 * 1024;
 const MAX_MODELS_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_QUOTA_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
+const MAX_QUOTA_RESET_RESPONSE_BYTES: usize = 1024 * 1024;
 
 #[derive(Clone, Debug)]
 pub struct CodexEndpoints {
@@ -72,6 +73,15 @@ impl CodexEndpoints {
         Url::parse(&format!("{backend}/wham/usage"))
             .map_err(|_| CodexConnectorError::InvalidEndpoint)
     }
+
+    pub fn quota_reset_url(&self) -> Result<Url, CodexConnectorError> {
+        let base = self.responses_base_url.as_str().trim_end_matches('/');
+        let backend = base
+            .strip_suffix("/codex")
+            .ok_or(CodexConnectorError::InvalidEndpoint)?;
+        Url::parse(&format!("{backend}/wham/rate-limit-reset-credits/consume"))
+            .map_err(|_| CodexConnectorError::InvalidEndpoint)
+    }
 }
 
 #[derive(Clone)]
@@ -112,6 +122,8 @@ pub struct CallbackCode {
 #[derive(Deserialize)]
 struct QuotaUsageResponse {
     rate_limit: Option<QuotaRateLimit>,
+    #[serde(default)]
+    rate_limit_reset_credits: Option<QuotaResetCreditsSummary>,
 }
 
 #[derive(Deserialize)]
@@ -127,6 +139,38 @@ struct QuotaWindow {
     used_percent: i32,
     limit_window_seconds: i32,
     reset_at: i64,
+}
+
+#[derive(Deserialize)]
+struct QuotaResetCreditsSummary {
+    available_count: i64,
+}
+
+#[derive(Serialize)]
+struct ConsumeQuotaResetCreditRequest {
+    redeem_request_id: String,
+}
+
+#[derive(Deserialize)]
+struct ConsumeQuotaResetCreditResponse {
+    code: ConsumeQuotaResetCreditCode,
+    #[serde(default)]
+    windows_reset: i32,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ConsumeQuotaResetCreditCode {
+    Reset,
+    NothingToReset,
+    NoCredit,
+    AlreadyRedeemed,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct CodexQuotaResetResult {
+    pub outcome: CodexQuotaResetOutcome,
+    pub windows_reset: i32,
 }
 
 pub fn generate_pkce() -> PkceCodes {
@@ -384,6 +428,7 @@ pub async fn fetch_quota(
     response_header_timeout: Duration,
     stream_idle_timeout: Duration,
 ) -> Result<CodexQuotaUpdate, CodexConnectorError> {
+    let checked_at = Utc::now();
     let response = timeout(
         response_header_timeout,
         client
@@ -406,6 +451,17 @@ pub async fn fetch_quota(
         .ok_or(CodexConnectorError::InvalidQuotaResponse)?;
     let primary = validate_window(rate_limit.primary_window)?;
     let secondary = validate_window(rate_limit.secondary_window)?;
+    let reset_credits_available = response
+        .rate_limit_reset_credits
+        .map(|credits| credits.available_count)
+        .map(|count| {
+            if count < 0 {
+                Err(CodexConnectorError::InvalidQuotaResponse)
+            } else {
+                Ok(count)
+            }
+        })
+        .transpose()?;
     Ok(CodexQuotaUpdate {
         allowed: rate_limit.allowed,
         limit_reached: rate_limit.limit_reached,
@@ -415,7 +471,62 @@ pub async fn fetch_quota(
         secondary_used_percent: secondary.as_ref().map(|window| window.used_percent),
         secondary_window_seconds: secondary.as_ref().map(|window| window.window_seconds),
         secondary_reset_at: secondary.as_ref().and_then(|window| window.reset_at),
-        checked_at: Utc::now(),
+        reset_credits_available,
+        checked_at,
+    })
+}
+
+#[allow(clippy::too_many_arguments)] // mirrors the authenticated quota-fetch request surface
+pub async fn consume_quota_reset_credit(
+    client: &Client,
+    endpoints: &CodexEndpoints,
+    access_token: &str,
+    account_id: &str,
+    is_fedramp: bool,
+    redeem_request_id: &str,
+    response_header_timeout: Duration,
+    stream_idle_timeout: Duration,
+) -> Result<CodexQuotaResetResult, CodexConnectorError> {
+    let request_body = serde_json::to_vec(&ConsumeQuotaResetCreditRequest {
+        redeem_request_id: redeem_request_id.to_owned(),
+    })
+    .map_err(|_| CodexConnectorError::InvalidQuotaResponse)?;
+    let response = timeout(
+        response_header_timeout,
+        client
+            .post(endpoints.quota_reset_url()?)
+            .headers(codex_headers(access_token, account_id, is_fedramp)?)
+            .header(CONTENT_TYPE, "application/json")
+            .body(request_body)
+            .send(),
+    )
+    .await
+    .map_err(|_| CodexConnectorError::UpstreamTimeout)?
+    .map_err(|_| CodexConnectorError::UpstreamUnavailable)?;
+    let status = response.status();
+    let body = read_body(
+        response,
+        stream_idle_timeout,
+        MAX_QUOTA_RESET_RESPONSE_BYTES,
+    )
+    .await?;
+    if !status.is_success() {
+        return Err(CodexConnectorError::CodexBackendStatus(status.as_u16()));
+    }
+    let response: ConsumeQuotaResetCreditResponse =
+        serde_json::from_slice(&body).map_err(|_| CodexConnectorError::InvalidQuotaResponse)?;
+    if !(0..=2).contains(&response.windows_reset) {
+        return Err(CodexConnectorError::InvalidQuotaResponse);
+    }
+    let outcome = match response.code {
+        ConsumeQuotaResetCreditCode::Reset => CodexQuotaResetOutcome::Reset,
+        ConsumeQuotaResetCreditCode::NothingToReset => CodexQuotaResetOutcome::NothingToReset,
+        ConsumeQuotaResetCreditCode::NoCredit => CodexQuotaResetOutcome::NoCredit,
+        ConsumeQuotaResetCreditCode::AlreadyRedeemed => CodexQuotaResetOutcome::AlreadyRedeemed,
+    };
+    Ok(CodexQuotaResetResult {
+        outcome,
+        windows_reset: response.windows_reset,
     })
 }
 
@@ -657,7 +768,7 @@ mod tests {
     use axum::{
         Json, Router,
         http::{HeaderMap as AxumHeaderMap, StatusCode as AxumStatusCode},
-        routing::get,
+        routing::{get, post},
     };
     use serde_json::json;
     use tokio::net::TcpListener;
@@ -689,6 +800,10 @@ mod tests {
         assert_eq!(
             endpoints.quota_url().unwrap().path(),
             "/backend-api/wham/usage"
+        );
+        assert_eq!(
+            endpoints.quota_reset_url().unwrap().path(),
+            "/backend-api/wham/rate-limit-reset-credits/consume"
         );
     }
 
@@ -895,7 +1010,22 @@ mod tests {
                     "reset_at": 1800000000
                 },
                 "secondary_window": null
-            }
+            },
+            "rate_limit_reset_credits": {"available_count": 2}
+        })))
+    }
+
+    async fn mock_quota_reset(
+        headers: AxumHeaderMap,
+        Json(body): Json<Value>,
+    ) -> Result<Json<Value>, AxumStatusCode> {
+        validate_mock_codex_headers(&headers)?;
+        if body["redeem_request_id"] != "redeem-123" {
+            return Err(AxumStatusCode::BAD_REQUEST);
+        }
+        Ok(Json(json!({
+            "code": "reset",
+            "windows_reset": 2
         })))
     }
 
@@ -922,7 +1052,11 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let router = Router::new()
             .route("/backend-api/codex/models", get(mock_models))
-            .route("/backend-api/wham/usage", get(mock_quota));
+            .route("/backend-api/wham/usage", get(mock_quota))
+            .route(
+                "/backend-api/wham/rate-limit-reset-credits/consume",
+                post(mock_quota_reset),
+            );
         let server = tokio::spawn(async move {
             axum::serve(listener, router).await.unwrap();
         });
@@ -963,6 +1097,22 @@ mod tests {
             quota.primary_reset_at.map(|value| value.timestamp()),
             Some(1_800_000_000)
         );
+        assert_eq!(quota.reset_credits_available, Some(2));
+
+        let reset = consume_quota_reset_credit(
+            &client,
+            &endpoints,
+            "access-token",
+            "account-123",
+            true,
+            "redeem-123",
+            Duration::from_secs(2),
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+        assert_eq!(reset.outcome, CodexQuotaResetOutcome::Reset);
+        assert_eq!(reset.windows_reset, 2);
 
         server.abort();
     }

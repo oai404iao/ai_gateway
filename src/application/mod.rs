@@ -34,7 +34,7 @@ pub use channel_models::{
 pub use codex::{
     CODEX_ORIGINATOR, CodexConnectorError, CodexConnectorService, CodexCredentialRuntime,
     CodexCredentialUnavailable, CodexOauthCompleteInput, CodexOauthStartResponse,
-    CompiledCodexCredential, codex_user_agent,
+    CodexQuotaResetResponse, CompiledCodexCredential, codex_user_agent,
 };
 pub use connector::UpstreamConnectorRegistry;
 pub(crate) use connector::{ConnectorAttemptError, ConnectorUnavailable};

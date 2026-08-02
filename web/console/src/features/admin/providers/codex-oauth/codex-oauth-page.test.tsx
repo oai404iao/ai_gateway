@@ -49,6 +49,7 @@ const CREDENTIAL: CodexCredentialView = {
   secondary_used_percent: null,
   secondary_window_seconds: null,
   secondary_reset_at: null,
+  quota_reset_credits_available: 2,
   quota_checked_at: "2026-07-29T12:00:00.000Z",
   last_error_code: null,
   last_error_summary: null,
@@ -118,6 +119,140 @@ describe("CodexOauthPage", () => {
     await waitFor(() => expect(refreshedId).toBe(CREDENTIAL_ID));
   });
 
+  it("consumes an OpenAI reset credit with confirmation", async () => {
+    seedAuthenticatedSession();
+    let resetId: string | undefined;
+    server.use(
+      ...baseHandlers([CREDENTIAL]),
+      http.post(
+        "/console/v1/providers/codex-oauth/credentials/:id/quota/reset",
+        ({ params }) => {
+          resetId = String(params.id);
+          return HttpResponse.json({
+            outcome: "reset",
+            windows_reset: 2,
+            quota_refreshed: true,
+            correlation_id: "00000000-0000-0000-0000-00000000c010",
+          });
+        },
+      ),
+    );
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(
+      await screen.findByRole("button", {
+        name: "Reset quota with an OpenAI credit for Personal Plus",
+      }),
+    );
+    expect(
+      screen.getByRole("heading", {
+        name: "Consume an OpenAI reset credit?",
+      }),
+    ).toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", { name: "Consume reset credit" }),
+    );
+
+    await waitFor(() => expect(resetId).toBe(CREDENTIAL_ID));
+    expect(
+      await screen.findByText("OpenAI reset credit consumed. 2 windows reset."),
+    ).toBeInTheDocument();
+  });
+
+  it("opens quota-window history and jumps to system costs for both projections", async () => {
+    seedAuthenticatedSession();
+    const costQueries: URLSearchParams[] = [];
+    server.use(
+      ...baseHandlers([CREDENTIAL]),
+      http.get(
+        "/console/v1/providers/codex-oauth/credentials/:id/quota/windows",
+        () =>
+          HttpResponse.json({
+            credential_id: CREDENTIAL_ID,
+            periods: [
+              {
+                id: "00000000-0000-0000-0000-00000000c011",
+                credential_id: CREDENTIAL_ID,
+                window_kind: "primary",
+                window_seconds: 10_800,
+                started_at: "2026-07-29T09:00:17.000Z",
+                scheduled_reset_at: "2026-07-29T12:00:17.000Z",
+                ended_at: "2026-07-29T11:50:43.000Z",
+                reset_reason: "manual",
+                initial_used_percent: 12,
+                last_used_percent: 96,
+                first_observed_at: "2026-07-29T09:05:00.000Z",
+                last_observed_at: "2026-07-29T11:49:00.000Z",
+              },
+              {
+                id: "00000000-0000-0000-0000-00000000c012",
+                credential_id: CREDENTIAL_ID,
+                window_kind: "secondary",
+                window_seconds: 604_800,
+                started_at: "2026-07-22T12:00:00.000Z",
+                scheduled_reset_at: "2026-07-29T12:00:00.000Z",
+                ended_at: "2026-07-29T12:00:00.000Z",
+                reset_reason: "openai_official",
+                initial_used_percent: 1,
+                last_used_percent: 70,
+                first_observed_at: "2026-07-22T12:05:00.000Z",
+                last_observed_at: "2026-07-29T11:55:00.000Z",
+              },
+            ],
+          }),
+      ),
+      http.get("/console/v1/system/statistics/costs", ({ request }) => {
+        costQueries.push(new URL(request.url).searchParams);
+        return HttpResponse.json({
+          started_at: "2026-07-29T09:00:00.000Z",
+          ended_at: "2026-07-29T12:00:00.000Z",
+          granularity: "hour",
+          summary: {
+            request_count: 0,
+            priced_request_count: 0,
+            total_tokens: 0,
+            input_tokens: 0,
+            cached_input_tokens: 0,
+            cache_write_tokens: 0,
+            output_tokens: 0,
+            average_rpm: 0,
+            average_tpm: 0,
+            cost_amount: "0",
+          },
+          buckets: [],
+          models: [],
+          channels: [],
+        });
+      }),
+    );
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(
+      await screen.findByRole("button", {
+        name: "View quota history for Personal Plus",
+      }),
+    );
+    expect(
+      await screen.findByRole("heading", {
+        name: "Quota window history for Personal Plus",
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Manual reset credit")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "View costs" }));
+
+    await waitFor(() =>
+      expect(window.location.pathname).toBe("/admin/cost-statistics"),
+    );
+    await waitFor(() => expect(costQueries.length).toBeGreaterThan(0));
+    const query = costQueries.at(-1);
+    expect(query?.get("started_after")).toBe("2026-07-29T09:00:17.000Z");
+    expect(query?.get("started_before")).toBe("2026-07-29T11:50:43.000Z");
+    expect(query?.get("codex_credential_id")).toBe(CREDENTIAL_ID);
+    expect(query?.has("channel_id")).toBe(false);
+  });
+
   it("exposes tooltip descriptions for credential actions", async () => {
     seedAuthenticatedSession();
     server.use(...baseHandlers([CREDENTIAL]));
@@ -126,7 +261,9 @@ describe("CodexOauthPage", () => {
     expect(await screen.findByText("Personal Plus")).toBeInTheDocument();
 
     for (const label of [
+      "View quota history for Personal Plus",
       "Edit Personal Plus",
+      "Reset quota with an OpenAI credit for Personal Plus",
       "Refresh quota for Personal Plus",
       "Refresh token for Personal Plus",
       "Delete Personal Plus",

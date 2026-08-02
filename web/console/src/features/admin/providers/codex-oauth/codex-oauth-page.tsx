@@ -4,12 +4,14 @@ import {
   Download,
   ExternalLink,
   FileUp,
+  History,
   KeyRound,
   Pencil,
   Plus,
   Power,
   PowerOff,
   RefreshCw,
+  RotateCcw,
   Trash2,
 } from "lucide-react";
 import { useNavigate, useParams } from "react-router";
@@ -18,6 +20,8 @@ import type {
   CodexCredentialImportInput,
   CodexCredentialUpdateInput,
   CodexCredentialView,
+  CodexQuotaResetOutcome,
+  CodexQuotaWindowPeriod,
 } from "@/api/types";
 import { ApiError } from "@/api/errors";
 import { translate, useI18n } from "@/app/i18n";
@@ -25,6 +29,7 @@ import { AsyncResource, ErrorAlert } from "@/components/shared/async-resource";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { PageHeader } from "@/components/shared/page-header";
 import { StatusBadge } from "@/components/shared/status-badge";
+import { EmptyState } from "@/components/shared/empty-state";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   AlertDialog,
@@ -71,6 +76,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Table,
   TableBody,
@@ -94,12 +100,14 @@ import {
   useBatchUpdateCodexCredentials,
   useCodexCredential,
   useCodexCredentials,
+  useCodexQuotaWindowHistory,
   useCompleteCodexOauth,
   useDeleteCodexCredential,
   useExportCodexCredentials,
   useImportCodexCredential,
   useRefreshCodexCredential,
   useRefreshCodexQuota,
+  useResetCodexQuota,
   useStartCodexOauth,
   useUpdateCodexCredential,
 } from "./api";
@@ -220,6 +228,47 @@ function credentialStatusLabel(
   if (status === "draining") return translate("Draining");
   if (status === "unavailable") return translate("Unavailable");
   return translate("Disabled");
+}
+
+function quotaResetReasonLabel(
+  reason: CodexQuotaWindowPeriod["reset_reason"],
+): string {
+  if (reason === "natural") return translate("Natural reset");
+  if (reason === "manual") return translate("Manual reset credit");
+  if (reason === "openai_official") return translate("OpenAI official reset");
+  return translate("Current period");
+}
+
+function quotaResetReasonVariant(
+  reason: CodexQuotaWindowPeriod["reset_reason"],
+): "success" | "warning" | "info" | "secondary" {
+  if (reason === "manual") return "warning";
+  if (reason === "openai_official") return "info";
+  if (reason === "natural") return "secondary";
+  return "success";
+}
+
+function quotaWindowStatisticsEnd(period: CodexQuotaWindowPeriod): string {
+  if (period.ended_at) return period.ended_at;
+  const scheduled = new Date(period.scheduled_reset_at).getTime();
+  return new Date(Math.min(Date.now(), scheduled)).toISOString();
+}
+
+function quotaWindowGranularity(
+  period: CodexQuotaWindowPeriod,
+): "hour" | "day" {
+  return period.window_seconds <= 31 * 24 * 60 * 60 ? "hour" : "day";
+}
+
+function quotaResetOutcomeMessage(outcome: CodexQuotaResetOutcome): string {
+  if (outcome === "reset") return translate("OpenAI reset credit consumed.");
+  if (outcome === "nothing_to_reset") {
+    return translate("No active quota window needed a reset.");
+  }
+  if (outcome === "no_credit") {
+    return translate("No OpenAI reset credit is available.");
+  }
+  return translate("This reset request was already redeemed.");
 }
 
 function QuotaWindow({
@@ -360,6 +409,7 @@ export default function CodexOauthPage() {
   const deleteCredential = useDeleteCodexCredential(groupId);
   const refreshCredential = useRefreshCodexCredential(groupId);
   const refreshQuota = useRefreshCodexQuota(groupId);
+  const resetQuota = useResetCodexQuota(groupId);
 
   const [oauthOpen, setOauthOpen] = useState(false);
   const [oauthSettings, setOauthSettings] =
@@ -376,6 +426,10 @@ export default function CodexOauthPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [deleteTarget, setDeleteTarget] =
+    useState<CodexCredentialView | null>(null);
+  const [resetTarget, setResetTarget] =
+    useState<CodexCredentialView | null>(null);
+  const [historyTarget, setHistoryTarget] =
     useState<CodexCredentialView | null>(null);
   const [batchDeleteOpen, setBatchDeleteOpen] = useState(false);
 
@@ -580,6 +634,35 @@ export default function CodexOauthPage() {
         await refreshQuota.mutateAsync(credential.id);
         toast.success(t("Quota refreshed."));
       }
+    } catch (error) {
+      toast.error(errorMessage(error));
+    }
+  };
+
+  const runQuotaReset = async () => {
+    const target = resetTarget;
+    if (!target) return;
+    try {
+      const result = await resetQuota.mutateAsync(target.id);
+      const message = quotaResetOutcomeMessage(result.outcome);
+      if (!result.quota_refreshed) {
+        toast.warning(
+          t(
+            "{message} The follow-up quota refresh failed; automatic polling will retry.",
+            { message },
+          ),
+        );
+      } else if (result.outcome === "reset") {
+        toast.success(
+          t("{message} {count} windows reset.", {
+            message,
+            count: result.windows_reset,
+          }),
+        );
+      } else {
+        toast.info(message);
+      }
+      setResetTarget(null);
     } catch (error) {
       toast.error(errorMessage(error));
     }
@@ -889,6 +972,12 @@ export default function CodexOauthPage() {
                             percent: credential.quota_threshold_percent,
                           })}
                         </p>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          {t("OpenAI reset credits: {count}", {
+                            count:
+                              credential.quota_reset_credits_available ?? "—",
+                          })}
+                        </p>
                       </TableCell>
                       <TableCell className="min-w-44 align-top text-sm">
                         <p>{formatDateTime(credential.access_token_expires_at)}</p>
@@ -906,28 +995,78 @@ export default function CodexOauthPage() {
                       </TableCell>
                       <TableCell className="align-top">
                         <div className="flex flex-col items-end gap-1">
-                          <Tooltip disableHoverablePopup>
-                            <TooltipTrigger
-                              render={
-                                <Button
-                                  variant="ghost"
-                                  size="icon-sm"
-                                  aria-label={t("Edit {label}", {
-                                    label: credential.label,
-                                  })}
-                                  onClick={() => setEditingId(credential.id)}
-                                />
-                              }
-                            >
-                              <Pencil />
-                            </TooltipTrigger>
-                            <TooltipContent side="left">
-                              {t("Edit {label}", {
-                                label: credential.label,
-                              })}
-                            </TooltipContent>
-                          </Tooltip>
                           <div className="flex gap-1">
+                            <Tooltip disableHoverablePopup>
+                              <TooltipTrigger
+                                render={
+                                  <Button
+                                    variant="ghost"
+                                    size="icon-sm"
+                                    aria-label={t("View quota history for {label}", {
+                                      label: credential.label,
+                                    })}
+                                    onClick={() => setHistoryTarget(credential)}
+                                  />
+                                }
+                              >
+                                <History />
+                              </TooltipTrigger>
+                              <TooltipContent side="left">
+                                {t("View quota history for {label}", {
+                                  label: credential.label,
+                                })}
+                              </TooltipContent>
+                            </Tooltip>
+                            <Tooltip disableHoverablePopup>
+                              <TooltipTrigger
+                                render={
+                                  <Button
+                                    variant="ghost"
+                                    size="icon-sm"
+                                    aria-label={t("Edit {label}", {
+                                      label: credential.label,
+                                    })}
+                                    onClick={() => setEditingId(credential.id)}
+                                  />
+                                }
+                              >
+                                <Pencil />
+                              </TooltipTrigger>
+                              <TooltipContent side="left">
+                                {t("Edit {label}", {
+                                  label: credential.label,
+                                })}
+                              </TooltipContent>
+                            </Tooltip>
+                          </div>
+                          <div className="flex gap-1">
+                            <Tooltip disableHoverablePopup>
+                              <TooltipTrigger
+                                render={
+                                  <Button
+                                    variant="ghost"
+                                    size="icon-sm"
+                                    aria-label={t(
+                                      "Reset quota with an OpenAI credit for {label}",
+                                      { label: credential.label },
+                                    )}
+                                    disabled={
+                                      resetQuota.isPending ||
+                                      credential.quota_reset_credits_available === 0
+                                    }
+                                    onClick={() => setResetTarget(credential)}
+                                  />
+                                }
+                              >
+                                <RotateCcw />
+                              </TooltipTrigger>
+                              <TooltipContent side="left">
+                                {t(
+                                  "Reset quota with an OpenAI credit for {label}",
+                                  { label: credential.label },
+                                )}
+                              </TooltipContent>
+                            </Tooltip>
                             <Tooltip disableHoverablePopup>
                               <TooltipTrigger
                                 render={
@@ -1215,6 +1354,11 @@ export default function CodexOauthPage() {
         onClose={() => setEditingId(null)}
       />
 
+      <QuotaWindowHistoryDialog
+        credential={historyTarget}
+        onClose={() => setHistoryTarget(null)}
+      />
+
       <AlertDialog
         open={exportIds !== null}
         onOpenChange={(open) => {
@@ -1245,6 +1389,29 @@ export default function CodexOauthPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <ConfirmDialog
+        open={resetTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setResetTarget(null);
+        }}
+        title={t("Consume an OpenAI reset credit?")}
+        description={
+          resetTarget
+            ? t(
+                "This calls OpenAI's reset-credit endpoint for {label}. One available credit may be consumed and both quota windows may restart. Available credits: {count}.",
+                {
+                  label: resetTarget.label,
+                  count:
+                    resetTarget.quota_reset_credits_available ?? "unknown",
+                },
+              )
+            : ""
+        }
+        confirmLabel={t("Consume reset credit")}
+        confirmDisabled={resetQuota.isPending}
+        onConfirm={() => void runQuotaReset()}
+      />
 
       <ConfirmDialog
         open={deleteTarget !== null}
@@ -1279,6 +1446,166 @@ export default function CodexOauthPage() {
         confirmDisabled={batchUpdate.isPending}
         onConfirm={() => void runBatch("delete")}
       />
+    </div>
+  );
+}
+
+function QuotaWindowHistoryDialog({
+  credential,
+  onClose,
+}: {
+  credential: CodexCredentialView | null;
+  onClose: () => void;
+}) {
+  const { t } = useI18n();
+  const navigate = useNavigate();
+  const history = useCodexQuotaWindowHistory(credential?.id ?? "");
+  const primary = (history.data?.periods ?? []).filter(
+    (period) => period.window_kind === "primary",
+  );
+  const secondary = (history.data?.periods ?? []).filter(
+    (period) => period.window_kind === "secondary",
+  );
+
+  const viewCosts = (period: CodexQuotaWindowPeriod) => {
+    if (!credential) return;
+    const endedAt = quotaWindowStatisticsEnd(period);
+    if (new Date(endedAt).getTime() <= new Date(period.started_at).getTime()) {
+      toast.error(t("This quota period has no elapsed time to analyze."));
+      return;
+    }
+    const search = new URLSearchParams({
+      started_after: period.started_at,
+      started_before: endedAt,
+      granularity: quotaWindowGranularity(period),
+      codex_credential_id: credential.id,
+    });
+    onClose();
+    navigate(`/admin/cost-statistics?${search.toString()}`);
+  };
+
+  return (
+    <Dialog open={credential !== null} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-h-[calc(100svh-2rem)] overflow-y-auto sm:max-w-5xl">
+        <DialogHeader>
+          <DialogTitle>
+            {t("Quota window history for {label}", {
+              label: credential?.label ?? "",
+            })}
+          </DialogTitle>
+          <DialogDescription>
+            {t(
+              "Natural resets follow the scheduled boundary. Manual resets consume a reset credit through this Console. An earlier unmatched rollover is recorded as an OpenAI official reset.",
+            )}
+          </DialogDescription>
+        </DialogHeader>
+        <AsyncResource
+          isLoading={history.isLoading}
+          error={history.error}
+          isEmpty={(history.data?.periods.length ?? 0) === 0}
+          emptyTitle={t("No quota window history")}
+          emptyDescription={t("History begins with the first stored quota observation.")}
+        >
+          <Tabs defaultValue="primary">
+            <TabsList>
+              <TabsTrigger value="primary">
+                {t("Primary window")} ({primary.length})
+              </TabsTrigger>
+              <TabsTrigger value="secondary">
+                {t("Secondary window")} ({secondary.length})
+              </TabsTrigger>
+            </TabsList>
+            <TabsContent value="primary">
+              <QuotaWindowPeriodsTable periods={primary} onViewCosts={viewCosts} />
+            </TabsContent>
+            <TabsContent value="secondary">
+              <QuotaWindowPeriodsTable periods={secondary} onViewCosts={viewCosts} />
+            </TabsContent>
+          </Tabs>
+        </AsyncResource>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function QuotaWindowPeriodsTable({
+  periods,
+  onViewCosts,
+}: {
+  periods: CodexQuotaWindowPeriod[];
+  onViewCosts: (period: CodexQuotaWindowPeriod) => void;
+}) {
+  const { t } = useI18n();
+  if (periods.length === 0) {
+    return (
+      <EmptyState
+        title={t("No periods for this window")}
+        description={t("The provider has not reported this quota window yet.")}
+        className="py-10"
+      />
+    );
+  }
+  return (
+    <div className="overflow-x-auto rounded-xl border">
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>{t("Period")}</TableHead>
+            <TableHead>{t("Usage")}</TableHead>
+            <TableHead>{t("Ended by")}</TableHead>
+            <TableHead>{t("Last observed")}</TableHead>
+            <TableHead className="text-right">{t("Actions")}</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {periods.map((period) => (
+            <TableRow key={period.id}>
+              <TableCell className="min-w-64 align-top">
+                <div className="flex flex-col gap-1">
+                  <span className="font-medium">
+                    {formatDateTime(period.started_at)}
+                  </span>
+                  <span className="text-xs text-muted-foreground">
+                    {period.ended_at
+                      ? t("Ended {time}", {
+                          time: formatDateTime(period.ended_at),
+                        })
+                      : t("Scheduled reset {time}", {
+                          time: formatDateTime(period.scheduled_reset_at),
+                        })}
+                  </span>
+                  <Badge variant="outline" className="w-fit">
+                    {period.window_seconds % 86_400 === 0
+                      ? `${period.window_seconds / 86_400}d`
+                      : `${period.window_seconds / 3_600}h`}
+                  </Badge>
+                </div>
+              </TableCell>
+              <TableCell className="align-top tabular-nums">
+                {period.initial_used_percent}% → {period.last_used_percent}%
+              </TableCell>
+              <TableCell className="align-top">
+                <Badge variant={quotaResetReasonVariant(period.reset_reason)}>
+                  {quotaResetReasonLabel(period.reset_reason)}
+                </Badge>
+              </TableCell>
+              <TableCell className="align-top">
+                {formatDateTime(period.last_observed_at)}
+              </TableCell>
+              <TableCell className="align-top text-right">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => onViewCosts(period)}
+                >
+                  <ExternalLink data-icon="inline-start" />
+                  {t("View costs")}
+                </Button>
+              </TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
     </div>
   );
 }

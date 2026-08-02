@@ -15,6 +15,7 @@ export interface CostStatisticsFilters {
   user_id?: string;
   api_key_id?: string;
   channel_id?: string;
+  codex_credential_id?: string;
 }
 
 export type CostStatisticsScope = "own" | "system";
@@ -60,6 +61,9 @@ export function useCostStatistics(
           user_id: systemScope ? filters.user_id : undefined,
           api_key_id: filters.api_key_id,
           channel_id: systemScope ? filters.channel_id : undefined,
+          codex_credential_id: systemScope
+            ? filters.codex_credential_id
+            : undefined,
         })}`,
       ),
   });

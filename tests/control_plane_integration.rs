@@ -25,9 +25,9 @@ use ai_gateway::{
     persistence::{
         AuthRepository, ChannelGroupInput, CodexCredentialBatchInput,
         CodexCredentialBatchOperation, CodexCredentialBatchTarget, CodexCredentialCreate,
-        CodexCredentialExportInput, CodexCredentialUpdateInput, CodexQuotaUpdate,
-        CodexTokenRefreshUpdate, ControlPlaneMutation, ControlPlaneRepository, MIGRATOR,
-        ProxyCreateInput, RequestLogBatchInsertOutcome, RequestLogInsertOutcome,
+        CodexCredentialExportInput, CodexCredentialUpdateInput, CodexQuotaResetOutcome,
+        CodexQuotaUpdate, CodexTokenRefreshUpdate, ControlPlaneMutation, ControlPlaneRepository,
+        MIGRATOR, ProxyCreateInput, RequestLogBatchInsertOutcome, RequestLogInsertOutcome,
         RequestLogRepository, RequestLogSettlementOutcome, SystemAutomaticDisableSettingsInput,
         SystemPassiveHealthSettingsInput, SystemSessionAffinityKeySourceInput,
         SystemSessionAffinityRuleInput, SystemSessionAffinitySettingsInput, SystemSettingsInput,
@@ -1443,6 +1443,7 @@ async fn codex_credentials_support_atomic_batch_state_changes_and_token_scrubbin
         secondary_used_percent: None,
         secondary_window_seconds: None,
         secondary_reset_at: None,
+        reset_credits_available: None,
         checked_at: Utc::now(),
     });
     let member_a = coordinator
@@ -1716,6 +1717,7 @@ async fn codex_credentials_create_managed_channels_and_recompute_quota_state() {
                     secondary_used_percent: None,
                     secondary_window_seconds: None,
                     secondary_reset_at: None,
+                    reset_credits_available: None,
                     checked_at: now,
                 }),
             },
@@ -1869,6 +1871,7 @@ async fn codex_credentials_create_managed_channels_and_recompute_quota_state() {
                 secondary_used_percent: None,
                 secondary_window_seconds: None,
                 secondary_reset_at: None,
+                reset_credits_available: None,
                 checked_at: Utc::now(),
             },
         )
@@ -2007,6 +2010,255 @@ async fn codex_credentials_create_managed_channels_and_recompute_quota_state() {
         )
         .await;
     assert!(connector_change.is_err());
+
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn codex_quota_window_history_classifies_natural_manual_and_openai_resets() {
+    let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
+    let codex_group = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO channel_groups \
+         (id,name,api_format,connector_kind,priority,selection_strategy,enabled) \
+         VALUES ($1,'codex-window-history','open_ai_responses','codex_oauth',0, \
+                 'weighted_random',true)",
+    )
+    .bind(codex_group)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let repository = ControlPlaneRepository::new(database.pool.clone());
+    let runtime = Arc::new(RuntimeConfig::new(
+        compile_runtime_config(repository.load_runtime().await.unwrap()).unwrap(),
+    ));
+    let coordinator = ControlPlaneCoordinator::new(
+        repository.clone(),
+        runtime,
+        RoutingRuntime::new(PassiveHealthPolicy::default()),
+    );
+    let base = DateTime::parse_from_rfc3339("2026-07-01T00:00:00Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    let primary_seconds = 5 * 60 * 60;
+    let secondary_seconds = 7 * 24 * 60 * 60;
+    let mut input = business_codex_credential(
+        codex_group,
+        "window-history",
+        "window-history@example.test",
+        "window-history-user",
+    );
+    input.quota = Some(CodexQuotaUpdate {
+        allowed: true,
+        limit_reached: false,
+        primary_used_percent: Some(10),
+        primary_window_seconds: Some(primary_seconds),
+        primary_reset_at: Some(base + chrono::Duration::hours(5)),
+        secondary_used_percent: Some(20),
+        secondary_window_seconds: Some(secondary_seconds),
+        secondary_reset_at: Some(base + chrono::Duration::days(7)),
+        reset_credits_available: Some(2),
+        checked_at: base + chrono::Duration::hours(1),
+    });
+    let credential = coordinator
+        .create_codex_credential(seed.user, input, None)
+        .await
+        .unwrap();
+
+    repository
+        .persist_codex_quota(
+            credential.id,
+            CodexQuotaUpdate {
+                allowed: true,
+                limit_reached: false,
+                primary_used_percent: Some(1),
+                primary_window_seconds: Some(primary_seconds),
+                primary_reset_at: Some(base + chrono::Duration::hours(10)),
+                secondary_used_percent: Some(30),
+                secondary_window_seconds: Some(secondary_seconds),
+                secondary_reset_at: Some(base + chrono::Duration::days(7)),
+                reset_credits_available: Some(2),
+                checked_at: base + chrono::Duration::hours(5) + chrono::Duration::minutes(5),
+            },
+        )
+        .await
+        .unwrap();
+    repository
+        .persist_codex_quota(
+            credential.id,
+            CodexQuotaUpdate {
+                allowed: true,
+                limit_reached: false,
+                primary_used_percent: Some(5),
+                primary_window_seconds: Some(primary_seconds),
+                primary_reset_at: Some(base + chrono::Duration::hours(10)),
+                secondary_used_percent: Some(0),
+                secondary_window_seconds: Some(secondary_seconds),
+                secondary_reset_at: Some(
+                    base + chrono::Duration::days(7) + chrono::Duration::hours(6),
+                ),
+                reset_credits_available: Some(2),
+                checked_at: base + chrono::Duration::hours(6),
+            },
+        )
+        .await
+        .unwrap();
+
+    let event_id = Uuid::new_v4();
+    let correlation_id = repository
+        .record_codex_quota_reset(
+            seed.user,
+            credential.id,
+            event_id,
+            base + chrono::Duration::hours(7),
+            CodexQuotaResetOutcome::Reset,
+            2,
+        )
+        .await
+        .unwrap();
+    repository
+        .persist_codex_quota(
+            credential.id,
+            CodexQuotaUpdate {
+                allowed: true,
+                limit_reached: false,
+                primary_used_percent: Some(0),
+                primary_window_seconds: Some(primary_seconds),
+                primary_reset_at: Some(base + chrono::Duration::hours(12)),
+                secondary_used_percent: Some(0),
+                secondary_window_seconds: Some(secondary_seconds),
+                secondary_reset_at: Some(
+                    base + chrono::Duration::days(7) + chrono::Duration::hours(7),
+                ),
+                reset_credits_available: Some(1),
+                checked_at: base + chrono::Duration::hours(7) + chrono::Duration::minutes(1),
+            },
+        )
+        .await
+        .unwrap();
+
+    let boundary_event_id = Uuid::new_v4();
+    repository
+        .record_codex_quota_reset(
+            seed.user,
+            credential.id,
+            boundary_event_id,
+            base + chrono::Duration::hours(12),
+            CodexQuotaResetOutcome::Reset,
+            1,
+        )
+        .await
+        .unwrap();
+    repository
+        .persist_codex_quota(
+            credential.id,
+            CodexQuotaUpdate {
+                allowed: true,
+                limit_reached: false,
+                primary_used_percent: Some(0),
+                primary_window_seconds: Some(primary_seconds),
+                primary_reset_at: Some(base + chrono::Duration::hours(17)),
+                secondary_used_percent: Some(0),
+                secondary_window_seconds: Some(secondary_seconds),
+                secondary_reset_at: Some(
+                    base + chrono::Duration::days(7) + chrono::Duration::hours(12),
+                ),
+                reset_credits_available: Some(0),
+                checked_at: base + chrono::Duration::hours(13),
+            },
+        )
+        .await
+        .unwrap();
+
+    repository
+        .persist_codex_quota(
+            credential.id,
+            CodexQuotaUpdate {
+                allowed: true,
+                limit_reached: false,
+                primary_used_percent: Some(99),
+                primary_window_seconds: Some(primary_seconds),
+                primary_reset_at: Some(base + chrono::Duration::hours(12)),
+                secondary_used_percent: Some(99),
+                secondary_window_seconds: Some(secondary_seconds),
+                secondary_reset_at: Some(
+                    base + chrono::Duration::days(7) + chrono::Duration::hours(7),
+                ),
+                reset_credits_available: Some(1),
+                checked_at: base + chrono::Duration::hours(12) + chrono::Duration::minutes(30),
+            },
+        )
+        .await
+        .unwrap();
+    let persisted_quota: (DateTime<Utc>, i64, DateTime<Utc>) = sqlx::query_as(
+        "SELECT primary_reset_at,quota_reset_credits_available,quota_checked_at \
+         FROM codex_oauth_credentials WHERE channel_id=$1",
+    )
+    .bind(credential.id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(persisted_quota.0, base + chrono::Duration::hours(17));
+    assert_eq!(persisted_quota.1, 0);
+    assert_eq!(persisted_quota.2, base + chrono::Duration::hours(13));
+
+    let history = repository
+        .codex_quota_window_history(credential.id, 100)
+        .await
+        .unwrap();
+    let primary = history
+        .periods
+        .iter()
+        .filter(|period| period.window_kind == "primary")
+        .collect::<Vec<_>>();
+    let secondary = history
+        .periods
+        .iter()
+        .filter(|period| period.window_kind == "secondary")
+        .collect::<Vec<_>>();
+    assert_eq!(primary.len(), 4);
+    assert_eq!(secondary.len(), 4);
+    assert_eq!(primary[1].reset_reason.as_deref(), Some("natural"));
+    assert_eq!(primary[2].reset_reason.as_deref(), Some("manual"));
+    assert_eq!(primary[3].reset_reason.as_deref(), Some("natural"));
+    assert_eq!(secondary[1].reset_reason.as_deref(), Some("manual"));
+    assert_eq!(secondary[2].reset_reason.as_deref(), Some("manual"));
+    assert_eq!(
+        secondary[3].reset_reason.as_deref(),
+        Some("openai_official")
+    );
+    assert!(primary[0].reset_reason.is_none());
+    assert!(secondary[0].reset_reason.is_none());
+
+    let applied: (bool, bool) = sqlx::query_as(
+        "SELECT primary_applied_at IS NOT NULL,secondary_applied_at IS NOT NULL \
+         FROM codex_quota_reset_events WHERE id=$1",
+    )
+    .bind(event_id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(applied, (true, true));
+    let boundary_applied: (bool, bool) = sqlx::query_as(
+        "SELECT primary_applied_at IS NOT NULL,secondary_applied_at IS NOT NULL \
+         FROM codex_quota_reset_events WHERE id=$1",
+    )
+    .bind(boundary_event_id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(boundary_applied, (false, true));
+    let audit_correlation: String = sqlx::query_scalar(
+        "SELECT correlation_id FROM audit_logs \
+         WHERE action='reset_quota' AND object_id=$1 AND correlation_id=$2",
+    )
+    .bind(credential.id)
+    .bind(correlation_id.to_string())
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(audit_correlation, correlation_id.to_string());
 
     database.cleanup().await;
 }
@@ -2312,6 +2564,7 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
                     secondary_used_percent: None,
                     secondary_window_seconds: None,
                     secondary_reset_at: None,
+                    reset_credits_available: None,
                     checked_at: now,
                 }),
             },
@@ -2874,6 +3127,7 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
                 secondary_used_percent: None,
                 secondary_window_seconds: None,
                 secondary_reset_at: None,
+                reset_credits_available: None,
                 checked_at: Utc::now(),
             },
         )
@@ -2971,6 +3225,7 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
                 secondary_used_percent: None,
                 secondary_window_seconds: None,
                 secondary_reset_at: None,
+                reset_credits_available: None,
                 checked_at: Utc::now(),
             },
         )

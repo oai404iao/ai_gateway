@@ -253,6 +253,12 @@ test.describe("Console SPA smoke", () => {
     const editButton = page.getByRole("button", {
       name: "Edit Personal Plus",
     });
+    const historyButton = page.getByRole("button", {
+      name: "View quota history for Personal Plus",
+    });
+    const resetButton = page.getByRole("button", {
+      name: "Reset quota with an OpenAI credit for Personal Plus",
+    });
     const quotaButton = page.getByRole("button", {
       name: "Refresh quota for Personal Plus",
     });
@@ -263,7 +269,9 @@ test.describe("Console SPA smoke", () => {
       name: "Delete Personal Plus",
     });
     for (const [button, label] of [
+      [historyButton, "View quota history for Personal Plus"],
       [editButton, "Edit Personal Plus"],
+      [resetButton, "Reset quota with an OpenAI credit for Personal Plus"],
       [quotaButton, "Refresh quota for Personal Plus"],
       [tokenButton, "Refresh token for Personal Plus"],
       [deleteButton, "Delete Personal Plus"],
@@ -296,6 +304,19 @@ test.describe("Console SPA smoke", () => {
     await refresh;
     await expect(page.getByText("Quota refreshed.")).toBeVisible();
 
+    const reset = page.waitForRequest(
+      (request) =>
+        request.url().endsWith(
+          `/console/v1/providers/codex-oauth/credentials/${E2E_CODEX_CREDENTIAL_ID}/quota/reset`,
+        ) && request.method() === "POST",
+    );
+    await resetButton.click();
+    await page.getByRole("button", { name: "Consume reset credit" }).click();
+    await reset;
+    await expect(
+      page.getByText("OpenAI reset credit consumed. 2 windows reset."),
+    ).toBeVisible();
+
     await page
       .getByRole("checkbox", { name: "Select Personal Plus" })
       .click();
@@ -315,6 +336,19 @@ test.describe("Console SPA smoke", () => {
       ],
       operation: "disable",
     });
+
+    await historyButton.click();
+    await expect(
+      page.getByRole("heading", {
+        name: "Quota window history for Personal Plus",
+      }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "View costs" }).click();
+    await expect(page).toHaveURL(
+      new RegExp(
+        `/admin/cost-statistics\\?.*codex_credential_id=${E2E_CODEX_CREDENTIAL_ID}`,
+      ),
+    );
   });
 
   test("all users can open the Channel status page", async ({ page }) => {

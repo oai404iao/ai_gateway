@@ -19,7 +19,8 @@ use crate::{
         CodexCredentialBatchInput, CodexCredentialCreate, CodexCredentialExportBundle,
         CodexCredentialExportInput, CodexCredentialImportInput, CodexCredentialRecord,
         CodexCredentialUpdateInput, CodexCredentialView, CodexOauthStartInput,
-        CodexTokenRefreshUpdate, ControlPlaneRepository, MutationResult, RepositoryError,
+        CodexQuotaResetOutcome, CodexQuotaWindowHistory, CodexTokenRefreshUpdate,
+        ControlPlaneRepository, MutationResult, RepositoryError,
     },
     runtime_config::RuntimeConfig,
     transforms::TransformPlan,
@@ -28,9 +29,9 @@ use crate::{
 
 use super::{CodexCredentialBatchResult, ControlPlaneCoordinator, ControlPlaneError};
 use protocol::{
-    CodexEndpoints, build_authorize_url, exchange_code, fetch_models, fetch_quota,
-    generate_oauth_state, generate_pkce, parse_callback_url, parse_identity, parse_jwt_expiration,
-    refresh_tokens, state_hash, state_matches,
+    CodexEndpoints, build_authorize_url, consume_quota_reset_credit, exchange_code, fetch_models,
+    fetch_quota, generate_oauth_state, generate_pkce, parse_callback_url, parse_identity,
+    parse_jwt_expiration, refresh_tokens, state_hash, state_matches,
 };
 
 pub(crate) use attempt::{CodexAttemptError, PreparedCodexAttempt};
@@ -44,6 +45,7 @@ const QUOTA_REFRESH_INTERVAL: chrono::Duration = chrono::Duration::minutes(5);
 const MAINTENANCE_CONCURRENCY: usize = 8;
 
 type CredentialRefreshLocks = Arc<Mutex<HashMap<Uuid, Arc<Mutex<()>>>>>;
+type CredentialQuotaLocks = Arc<Mutex<HashMap<Uuid, Arc<Mutex<()>>>>>;
 
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -58,6 +60,14 @@ pub struct CodexOauthStartResponse {
     pub expires_at: DateTime<Utc>,
 }
 
+#[derive(Clone, Serialize)]
+pub struct CodexQuotaResetResponse {
+    pub outcome: CodexQuotaResetOutcome,
+    pub windows_reset: i32,
+    pub quota_refreshed: bool,
+    pub correlation_id: Uuid,
+}
+
 #[derive(Clone)]
 pub struct CodexConnectorService {
     repository: ControlPlaneRepository,
@@ -67,6 +77,7 @@ pub struct CodexConnectorService {
     credentials: CodexCredentialRuntime,
     endpoints: Arc<CodexEndpoints>,
     refresh_locks: CredentialRefreshLocks,
+    quota_locks: CredentialQuotaLocks,
 }
 
 impl CodexConnectorService {
@@ -101,6 +112,7 @@ impl CodexConnectorService {
             credentials: CodexCredentialRuntime::new(),
             endpoints: Arc::new(endpoints),
             refresh_locks: Arc::new(Mutex::new(HashMap::new())),
+            quota_locks: Arc::new(Mutex::new(HashMap::new())),
         };
         service.backfill_missing_user_ids().await?;
         service.reload_runtime().await?;
@@ -124,6 +136,17 @@ impl CodexConnectorService {
         channel_id: Uuid,
     ) -> Result<Option<CodexCredentialView>, CodexConnectorError> {
         Ok(self.repository.codex_credential_view(channel_id).await?)
+    }
+
+    pub async fn quota_window_history(
+        &self,
+        channel_id: Uuid,
+        limit_per_window: i64,
+    ) -> Result<CodexQuotaWindowHistory, CodexConnectorError> {
+        Ok(self
+            .repository
+            .codex_quota_window_history(channel_id, limit_per_window)
+            .await?)
     }
 
     pub async fn export_credentials(
@@ -320,6 +343,69 @@ impl CodexConnectorService {
     ) -> Result<(), CodexConnectorError> {
         self.coordinator.verify_active_admin(actor).await?;
         self.refresh_quota_system(channel_id).await
+    }
+
+    pub async fn reset_quota(
+        &self,
+        actor: Uuid,
+        channel_id: Uuid,
+    ) -> Result<CodexQuotaResetResponse, CodexConnectorError> {
+        self.coordinator.verify_active_admin(actor).await?;
+        let quota_lock = self.quota_lock(channel_id).await;
+        let _guard = quota_lock.lock().await;
+        let mut transaction = self.repository.begin_codex_quota_reset().await?;
+        let record = self
+            .repository
+            .codex_credential_for_update(&mut transaction, channel_id)
+            .await?
+            .ok_or(CodexConnectorError::CredentialNotFound)?;
+        validate_quota_credential(&record)?;
+        let (client, policy) = self.client_for_proxy(record.proxy_id)?;
+        let requested_at = Utc::now();
+        let redeem_request_id = Uuid::new_v4();
+        let reset = consume_quota_reset_credit(
+            &client,
+            &self.endpoints,
+            &record.access_token,
+            &record.account_id,
+            record.is_fedramp,
+            &redeem_request_id.to_string(),
+            policy.timeouts().response_header(),
+            policy.timeouts().stream_idle(),
+        )
+        .await?;
+        let correlation_id = self
+            .repository
+            .record_codex_quota_reset_transaction(
+                &mut transaction,
+                actor,
+                channel_id,
+                redeem_request_id,
+                requested_at,
+                reset.outcome,
+                reset.windows_reset,
+                record.quota_reset_credits_available,
+            )
+            .await?;
+        transaction.commit().await.map_err(RepositoryError::from)?;
+        let quota_refreshed = match self.refresh_quota_locked(record).await {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::warn!(
+                    %channel_id,
+                    %correlation_id,
+                    code = error.code(),
+                    "Codex quota reset completed but the follow-up quota refresh failed"
+                );
+                false
+            }
+        };
+        Ok(CodexQuotaResetResponse {
+            outcome: reset.outcome,
+            windows_reset: reset.windows_reset,
+            quota_refreshed,
+            correlation_id,
+        })
     }
 
     pub async fn run_maintenance(&self) -> Result<(), CodexConnectorError> {
@@ -604,6 +690,15 @@ impl CodexConnectorService {
         )
     }
 
+    async fn quota_lock(&self, channel_id: Uuid) -> Arc<Mutex<()>> {
+        let mut locks = self.quota_locks.lock().await;
+        Arc::clone(
+            locks
+                .entry(channel_id)
+                .or_insert_with(|| Arc::new(Mutex::new(()))),
+        )
+    }
+
     async fn commit_refresh_failure(
         &self,
         mut transaction: Transaction<'_, Postgres>,
@@ -625,17 +720,22 @@ impl CodexConnectorService {
     }
 
     async fn refresh_quota_system(&self, channel_id: Uuid) -> Result<(), CodexConnectorError> {
-        let mut record = self
+        let quota_lock = self.quota_lock(channel_id).await;
+        let _guard = quota_lock.lock().await;
+        let record = self
             .repository
             .codex_credential(channel_id)
             .await?
             .ok_or(CodexConnectorError::CredentialNotFound)?;
-        if !record.enabled || record.runtime_status == "disabled" {
-            return Err(CodexConnectorError::CredentialDisabled);
-        }
-        if record.reauth_required {
-            return Err(CodexConnectorError::CredentialReauthenticationRequired);
-        }
+        self.refresh_quota_locked(record).await
+    }
+
+    async fn refresh_quota_locked(
+        &self,
+        mut record: CodexCredentialRecord,
+    ) -> Result<(), CodexConnectorError> {
+        validate_quota_credential(&record)?;
+        let channel_id = record.channel_id;
         let mut refreshed_after_unauthorized = false;
         loop {
             let (client, policy) = self.client_for_proxy(record.proxy_id)?;
@@ -795,6 +895,16 @@ fn quota_due(record: &CodexCredentialRecord) -> bool {
     record
         .quota_checked_at
         .is_none_or(|checked_at| checked_at <= Utc::now() - QUOTA_REFRESH_INTERVAL)
+}
+
+fn validate_quota_credential(record: &CodexCredentialRecord) -> Result<(), CodexConnectorError> {
+    if !record.enabled || record.runtime_status == "disabled" {
+        return Err(CodexConnectorError::CredentialDisabled);
+    }
+    if record.reauth_required {
+        return Err(CodexConnectorError::CredentialReauthenticationRequired);
+    }
+    Ok(())
 }
 
 #[derive(Debug, Error)]

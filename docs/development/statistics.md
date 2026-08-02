@@ -24,7 +24,9 @@ Console 提供统计页面：
      时间趋势和模型明细；响应不包含渠道明细。
 4. **系统花费统计**
    - 仅管理员可查看，位于 Console“系统”分组。
-   - 支持日期时间区间、用户、API Key、渠道和聚合粒度过滤。
+   - 支持日期时间区间、用户、API Key、渠道、Codex 凭证和聚合粒度过滤。
+   - Codex 凭证筛选会合并该逻辑凭证的 Responses 与 Images 两个 managed channel；它与单一
+     `channel_id` 筛选互斥。
    - 展示与个人花费统计相同的汇总、趋势和模型明细，并额外返回渠道明细。
 5. **花费排行榜**
    - 所有已登录用户均可查看，作为独立的 Console 页面提供。
@@ -109,6 +111,10 @@ Console 的“统计”页面默认打开“个人使用情况”标签；贡献
 Console 提供“今天 / 本周 / 本月”快捷范围。“今天”使用小时粒度，“本周”和“本月”
 使用天粒度；范围边界按浏览器本地时间生成，再转换为 RFC 3339 传给 API。
 
+Codex 凭证页的主/次窗口历史可直接跳转到系统花费统计。跳转 URL 带上周期起止时间、适合该周期的
+小时/天粒度和 `codex_credential_id`，统计页从 URL 恢复筛选并同时覆盖两个 projection channel。
+当前尚未结束的窗口使用“周期起点到当前时间（不超过计划重置时间）”作为统计区间。
+
 聚合桶固定使用 UTC 边界；Console 按浏览器本地时区显示时间。
 
 为限制单次聚合规模：
@@ -172,7 +178,8 @@ Console 端点：
   - `user_id`（可选）
   - `api_key_id`（可选）
   - `channel_id`（可选）
-  - 可查看全局统计或按用户、API Key 和渠道筛选，并返回渠道明细。
+  - `codex_credential_id`（可选；与 `channel_id` 互斥）
+  - 可查看全局统计或按用户、API Key、单一渠道或 Codex 逻辑凭证筛选，并返回渠道明细。
 - `GET /console/v1/statistics/spend-leaderboard`
   - 任意已登录用户可访问。
   - `period=day|week|month`，默认 `day`。

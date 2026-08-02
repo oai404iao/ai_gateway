@@ -21,8 +21,8 @@ use crate::{
         AuthError, ChannelModelDiscoveryError, ChannelModelDiscoveryInput,
         ChannelModelDiscoveryResponse, ChannelModelDiscoveryService, CodexConnectorError,
         CodexConnectorService, CodexOauthCompleteInput, CodexOauthStartResponse,
-        ConsoleAuthService, ControlPlaneCoordinator, ControlPlaneError, IssuedInvitation,
-        IssuedRegistrationInvitationCode, IssuedSession, IssuedTemporaryPassword,
+        CodexQuotaResetResponse, ConsoleAuthService, ControlPlaneCoordinator, ControlPlaneError,
+        IssuedInvitation, IssuedRegistrationInvitationCode, IssuedSession, IssuedTemporaryPassword,
         ModelImportRequest, ModelSyncError, ModelSyncPreview, ModelSyncPreviewRequest,
         ModelSyncResponse, ModelSyncService, ProxyTestError, ProxyTestInput, ProxyTestResponse,
         ProxyTestService, RegistrationInvitationCodeCreateInput,
@@ -35,12 +35,12 @@ use crate::{
         ChannelGroupInput, ChannelInput, ChannelRecoverInput, ChannelStatusWindow,
         CodexCredentialBatchInput, CodexCredentialExportBundle, CodexCredentialExportInput,
         CodexCredentialImportInput, CodexCredentialUpdateInput, CodexCredentialView,
-        CodexOauthStartInput, ConfigTemplateCreateInput, ConfigTemplateInput, ConsoleApiKey,
-        ControlPlaneMutation, CostStatisticsFilter, InviteUserInput, ModelInput, ModelRuleInput,
-        ProxyCreateInput, ProxyInput, RequestLogFilter, RequestLogRepository, SelfApiKeyCreate,
-        SelfApiKeyUpdate, SpendLeaderboardFilter, SpendLeaderboardPeriod, StatisticsGranularity,
-        SystemSettingsInput, UserBatchUpdateInput, UserGroupInput, UserInput, UserSettingsInput,
-        UserUpdateInput,
+        CodexOauthStartInput, CodexQuotaWindowHistory, ConfigTemplateCreateInput,
+        ConfigTemplateInput, ConsoleApiKey, ControlPlaneMutation, CostStatisticsFilter,
+        InviteUserInput, ModelInput, ModelRuleInput, ProxyCreateInput, ProxyInput,
+        RequestLogFilter, RequestLogRepository, SelfApiKeyCreate, SelfApiKeyUpdate,
+        SpendLeaderboardFilter, SpendLeaderboardPeriod, StatisticsGranularity, SystemSettingsInput,
+        UserBatchUpdateInput, UserGroupInput, UserInput, UserSettingsInput, UserUpdateInput,
     },
     runtime_config::ConfigError,
 };
@@ -252,6 +252,14 @@ pub fn router(state: ConsoleState) -> Router {
         .route(
             "/console/v1/providers/codex-oauth/credentials/{id}/quota/refresh",
             post(refresh_codex_quota),
+        )
+        .route(
+            "/console/v1/providers/codex-oauth/credentials/{id}/quota/windows",
+            get(get_codex_quota_window_history),
+        )
+        .route(
+            "/console/v1/providers/codex-oauth/credentials/{id}/quota/reset",
+            post(reset_codex_quota),
         )
         .route(
             "/console/v1/network/proxies",
@@ -679,6 +687,15 @@ struct CostStatisticsQuery {
     api_key_id: Option<Uuid>,
     #[serde(default)]
     channel_id: Option<Uuid>,
+    #[serde(default)]
+    codex_credential_id: Option<Uuid>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CodexQuotaWindowHistoryQuery {
+    #[serde(default)]
+    limit: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -1828,6 +1845,32 @@ async fn refresh_codex_quota(
     Ok(StatusCode::NO_CONTENT)
 }
 
+async fn get_codex_quota_window_history(
+    State(state): State<ConsoleState>,
+    Path(channel_id): Path<Uuid>,
+    Query(query): Query<CodexQuotaWindowHistoryQuery>,
+) -> Result<Json<CodexQuotaWindowHistory>, ConsoleError> {
+    Ok(Json(
+        state
+            .codex_connector
+            .quota_window_history(channel_id, query.limit.unwrap_or(100))
+            .await?,
+    ))
+}
+
+async fn reset_codex_quota(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Path(channel_id): Path<Uuid>,
+) -> Result<Json<CodexQuotaResetResponse>, ConsoleError> {
+    Ok(Json(
+        state
+            .codex_connector
+            .reset_quota(principal.user_id(), channel_id)
+            .await?,
+    ))
+}
+
 async fn recover_channel(
     State(state): State<ConsoleState>,
     Extension(principal): Extension<ConsolePrincipal>,
@@ -2048,10 +2091,11 @@ async fn get_own_cost_statistics(
     Extension(principal): Extension<ConsolePrincipal>,
     Query(query): Query<CostStatisticsQuery>,
 ) -> Result<Json<crate::persistence::CostStatisticsReport>, ConsoleError> {
-    if query.user_id.is_some() || query.channel_id.is_some() {
+    if query.user_id.is_some() || query.channel_id.is_some() || query.codex_credential_id.is_some()
+    {
         return Err(ConsoleError::Validation);
     }
-    cost_statistics(&state, query, Some(principal.user_id()), None, false).await
+    cost_statistics(&state, query, Some(principal.user_id()), None, None, false).await
 }
 
 async fn get_system_cost_statistics(
@@ -2060,7 +2104,16 @@ async fn get_system_cost_statistics(
 ) -> Result<Json<crate::persistence::CostStatisticsReport>, ConsoleError> {
     let user_id = query.user_id;
     let channel_id = query.channel_id;
-    cost_statistics(&state, query, user_id, channel_id, true).await
+    let codex_credential_id = query.codex_credential_id;
+    cost_statistics(
+        &state,
+        query,
+        user_id,
+        channel_id,
+        codex_credential_id,
+        true,
+    )
+    .await
 }
 
 async fn cost_statistics(
@@ -2068,8 +2121,12 @@ async fn cost_statistics(
     query: CostStatisticsQuery,
     user_id: Option<Uuid>,
     channel_id: Option<Uuid>,
+    codex_credential_id: Option<Uuid>,
     include_channel_details: bool,
 ) -> Result<Json<crate::persistence::CostStatisticsReport>, ConsoleError> {
+    if channel_id.is_some() && codex_credential_id.is_some() {
+        return Err(ConsoleError::Validation);
+    }
     let ended_at = query.started_before.unwrap_or_else(Utc::now);
     let started_at = query
         .started_after
@@ -2089,6 +2146,7 @@ async fn cost_statistics(
                 user_id,
                 api_key_id: query.api_key_id,
                 channel_id,
+                codex_credential_id,
                 include_channel_details,
             })
             .await?,
