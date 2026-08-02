@@ -229,7 +229,14 @@ reset credit。手动 reset-credit 操作会写审计；如果调用成功但紧
 轮询会继续补齐当前状态和窗口历史。
 
 Codex Responses HTTP Connector 只接受 `stream: true` 的 SSE 请求，强制上游
-`store: false`，并拒绝非空 `previous_response_id`。Codex managed channel 会自动启用
+`store: false`，并拒绝非空 `previous_response_id`。客户端仍可发送
+`max_output_tokens`，但选中 Codex managed channel 后，Connector 会在最终上游请求中静默删除
+该字段，因为当前 Codex 订阅请求类型不支持它；该值因此不会限制 Codex 输出。这个兼容处理同时
+适用于 HTTP SSE 与 WebSocket `response.create`，普通 OpenAI-compatible channel 不受影响。
+当前只屏蔽这一项已确认字段，其他未知顶层字段仍保持透明转发。
+Codex HTTP 成功响应即使缺少或错误声明上游 `Content-Type`，Gateway 也会向客户端规范化为
+`text/event-stream`；非成功 JSON 错误响应仍保留原内容类型。
+Codex managed channel 会自动启用
 Responses WebSocket 能力；WebSocket `response.create` 同样强制 `stream: true` 和
 `store: false`，但保留 `previous_response_id`、`generate` 与 `client_metadata`，使同一条
 上游连接可以使用 Codex 增量状态。首次派发前凭证不可用时，未命中 affinity 或 WebSocket pin

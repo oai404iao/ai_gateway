@@ -40,6 +40,10 @@ enum CodexRequestContext {
     Unsupported,
 }
 
+// Keep this as an explicit denylist: unrecognized Responses fields remain
+// transparent until Codex incompatibility is confirmed.
+const CODEX_UNSUPPORTED_RESPONSES_FIELDS: &[&str] = &["max_output_tokens"];
+
 impl PreparedCodexAttempt {
     pub(crate) fn prepare(
         runtime: &CodexCredentialRuntime,
@@ -104,6 +108,9 @@ impl PreparedCodexAttempt {
                 return Err(CodexAttemptError::PreviousResponseUnsupported);
             }
             object.remove("previous_response_id");
+        }
+        for field in CODEX_UNSUPPORTED_RESPONSES_FIELDS {
+            object.remove(*field);
         }
         object.insert("store".to_owned(), Value::Bool(false));
         object.insert("stream".to_owned(), Value::Bool(true));
@@ -364,7 +371,9 @@ mod tests {
         .unwrap();
         let body = attempt
             .adapt_body(
-                Bytes::from_static(br#"{"model":"gpt-5-codex","stream":true,"store":true}"#),
+                Bytes::from_static(
+                    br#"{"model":"gpt-5-codex","stream":true,"store":true,"max_output_tokens":1,"future_responses_field":"kept"}"#,
+                ),
                 RequestProtocol::Sse,
             )
             .unwrap();
@@ -373,6 +382,8 @@ mod tests {
         assert_eq!(value["stream"], true);
         assert_eq!(value["store"], false);
         assert_eq!(value["model"], "gpt-5-codex");
+        assert!(value.get("max_output_tokens").is_none());
+        assert_eq!(value["future_responses_field"], "kept");
     }
 
     #[test]
@@ -592,7 +603,7 @@ mod tests {
         let body = attempt
             .adapt_body(
                 Bytes::from_static(
-                    br#"{"type":"response.create","model":"gpt-5-codex","stream":false,"store":true,"previous_response_id":"resp_1"}"#,
+                    br#"{"type":"response.create","model":"gpt-5-codex","stream":false,"store":true,"previous_response_id":"resp_1","max_output_tokens":1,"future_responses_field":"kept"}"#,
                 ),
                 RequestProtocol::WebSocket,
             )
@@ -601,6 +612,8 @@ mod tests {
         assert_eq!(value["previous_response_id"], "resp_1");
         assert_eq!(value["stream"], true);
         assert_eq!(value["store"], false);
+        assert!(value.get("max_output_tokens").is_none());
+        assert_eq!(value["future_responses_field"], "kept");
 
         let mut headers = HeaderMap::new();
         headers.insert(ACCEPT, HeaderValue::from_static("text/event-stream"));

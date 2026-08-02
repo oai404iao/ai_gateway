@@ -24,10 +24,11 @@ Versioning.
 
 ### Fixed
 
-- Allow the opt-in real-upstream smoke to target an `ai-gateway` instance
-  backed by a Codex OAuth Responses channel by using a Codex-compatible SSE
-  fixture and treating the documented non-streaming rejection as an expected
-  boundary.
+- Strip the unsupported `max_output_tokens` field only after a Responses
+  request selects a Codex OAuth channel, while preserving other unknown fields
+  and the existing streaming-only boundary; normalize successful Codex HTTP
+  responses to `text/event-stream`, and extend the opt-in real-upstream smoke
+  to cover these provider adaptations through another `ai-gateway` instance.
 
 ## [0.8.1] - 2026-08-01
 

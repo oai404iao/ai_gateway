@@ -2689,12 +2689,21 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
                 "model": client_model.clone(),
                 "stream": true,
                 "store": true,
+                "max_output_tokens": 1,
+                "future_responses_field": "kept",
                 "input": responses_message_input("hello")
             }),
         ))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok()),
+        Some("text/event-stream")
+    );
     let mut response_body = response.into_body();
     let terminal_frame = response_body
         .frame()
@@ -2740,6 +2749,8 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
     assert_eq!(forwarded.body["model"], "upstream-v1");
     assert_eq!(forwarded.body["stream"], true);
     assert_eq!(forwarded.body["store"], false);
+    assert!(forwarded.body.get("max_output_tokens").is_none());
+    assert_eq!(forwarded.body["future_responses_field"], "kept");
     assert_eq!(
         runtime_channel_connector(&database.pool, credential.id).await,
         "codex_oauth"
@@ -3010,6 +3021,8 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
             "stream": false,
             "store": true,
             "generate": false,
+            "max_output_tokens": 1,
+            "future_responses_field": "kept",
             "input": [{"type": "message", "role": "user", "content": []}]
         }),
     )
@@ -3099,6 +3112,8 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
     assert_eq!(websocket_requests[0]["stream"], true);
     assert_eq!(websocket_requests[0]["store"], false);
     assert_eq!(websocket_requests[0]["generate"], false);
+    assert!(websocket_requests[0].get("max_output_tokens").is_none());
+    assert_eq!(websocket_requests[0]["future_responses_field"], "kept");
     assert_eq!(
         websocket_requests[1]["previous_response_id"],
         "resp_codex_ws_1"

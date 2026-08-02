@@ -71,34 +71,6 @@ impl ResponsesUpstreamProfile {
             }
         }
     }
-
-    fn request_body(self, streamed: bool) -> Value {
-        let input = json!([{
-            "type": "message",
-            "role": "user",
-            "content": [{"type": "input_text", "text": "Reply exactly OK."}],
-        }]);
-        match self {
-            Self::OpenAiCompatible => json!({
-                "model": CLIENT_MODEL,
-                "input": input,
-                "max_output_tokens": 1,
-                "stream": streamed,
-            }),
-            Self::CodexOauth => json!({
-                "model": CLIENT_MODEL,
-                "instructions": "Reply exactly OK.",
-                "input": input,
-                "tools": [],
-                "tool_choice": "auto",
-                "parallel_tool_calls": false,
-                "reasoning": null,
-                "store": false,
-                "stream": streamed,
-                "include": [],
-            }),
-        }
-    }
 }
 
 impl SmokeFormat {
@@ -134,7 +106,7 @@ impl SmokeFormat {
         }
     }
 
-    fn request_body(self, streamed: bool, responses_profile: ResponsesUpstreamProfile) -> Value {
+    fn request_body(self, streamed: bool) -> Value {
         match self {
             Self::ChatCompletions if streamed => json!({
                 "model": CLIENT_MODEL,
@@ -149,7 +121,16 @@ impl SmokeFormat {
                 "max_tokens": 1,
                 "stream": false,
             }),
-            Self::Responses => responses_profile.request_body(streamed),
+            Self::Responses => json!({
+                "model": CLIENT_MODEL,
+                "input": [{
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "Reply exactly OK."}],
+                }],
+                "max_output_tokens": 1,
+                "stream": streamed,
+            }),
             Self::Images => json!({
                 "model": CLIENT_MODEL,
                 "prompt": "Create a solid red square.",
@@ -421,15 +402,47 @@ fn gateway(
     }
 }
 
-fn request(settings: &SmokeSettings, format: SmokeFormat, streamed: bool) -> Request<Body> {
+fn request(format: SmokeFormat, streamed: bool) -> Request<Body> {
     Request::post(format.path())
         .header(header::AUTHORIZATION, format!("Bearer {CLIENT_KEY}"))
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(
-            serde_json::to_vec(&format.request_body(streamed, settings.responses_profile))
+            serde_json::to_vec(&format.request_body(streamed))
                 .expect("smoke-test request JSON serializes"),
         ))
         .expect("smoke-test request builds")
+}
+
+fn responses_websocket_request_body(
+    profile: ResponsesUpstreamProfile,
+    session_id: &str,
+    thread_id: &str,
+) -> Value {
+    let mut body = json!({
+        "type": "response.create",
+        "model": CLIENT_MODEL,
+        "instructions": "Reply exactly OK.",
+        "input": [{
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "Reply exactly OK."}],
+        }],
+        "tools": [],
+        "tool_choice": "auto",
+        "parallel_tool_calls": false,
+        "reasoning": null,
+        "store": false,
+        "stream": true,
+        "include": [],
+        "client_metadata": {
+            "session_id": session_id,
+            "thread_id": thread_id,
+        },
+    });
+    if profile == ResponsesUpstreamProfile::CodexOauth {
+        body["max_output_tokens"] = json!(1);
+    }
+    body
 }
 
 /// Makes one small JSON request for one API format. The Codex profile verifies
@@ -447,7 +460,7 @@ pub(super) async fn smoke_nonstreaming_format(
         CLIENT_MODEL,
         upstream_model,
     );
-    let request = request(settings, format, false);
+    let request = request(format, false);
     if matches!(format, SmokeFormat::Responses)
         && settings.responses_profile == ResponsesUpstreamProfile::CodexOauth
     {
@@ -570,13 +583,10 @@ pub(super) async fn smoke_streaming_format(
         CLIENT_MODEL,
         upstream_model,
     );
-    let response = timeout(
-        settings.timeout,
-        gateway.app.oneshot(request(settings, format, true)),
-    )
-    .await
-    .expect("streaming gateway request timed out")
-    .expect("streaming gateway request completed");
+    let response = timeout(settings.timeout, gateway.app.oneshot(request(format, true)))
+        .await
+        .expect("streaming gateway request timed out")
+        .expect("streaming gateway request completed");
     let status = response.status();
     if !status.is_success() {
         let body = timeout(settings.timeout, response.into_body().collect())
@@ -589,17 +599,16 @@ pub(super) async fn smoke_streaming_format(
             sanitized_error_details(&body)
         );
     }
+    let content_type = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok());
     assert!(
-        response
-            .headers()
-            .get(header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .is_some_and(
-                |value| value.split(';').next().is_some_and(|media_type| media_type
-                    .trim()
-                    .eq_ignore_ascii_case("text/event-stream"))
-            ),
-        "the real upstream streaming response must use text/event-stream"
+        content_type.is_some_and(|value| value
+            .split(';')
+            .next()
+            .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("text/event-stream"))),
+        "the real upstream streaming response must use text/event-stream, got {content_type:?}"
     );
     let mut body = response.into_body();
     let first = timeout(settings.timeout, body.frame())
@@ -646,7 +655,7 @@ pub(super) async fn smoke_images_generation(settings: &SmokeSettings) {
     let result = complete_nonstreaming_request(
         settings,
         gateway,
-        request(settings, SmokeFormat::Images, false),
+        request(SmokeFormat::Images, false),
         SmokeFormat::Images,
         ApiOperation::ImagesGeneration,
     )
@@ -879,32 +888,9 @@ async fn send_responses_websocket_attempt(
         .expect("real-upstream websocket upgrade timed out")
         .expect("real-upstream websocket upgrade failed");
     assert_eq!(response.status(), 101);
+    let body = responses_websocket_request_body(settings.responses_profile, session_id, thread_id);
     websocket
-        .send(Message::Text(
-            json!({
-                "type": "response.create",
-                "model": CLIENT_MODEL,
-                "instructions": "Reply exactly OK.",
-                "input": [{
-                    "type": "message",
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": "Reply exactly OK."}],
-                }],
-                "tools": [],
-                "tool_choice": "auto",
-                "parallel_tool_calls": false,
-                "reasoning": null,
-                "store": false,
-                "stream": true,
-                "include": [],
-                "client_metadata": {
-                    "session_id": session_id,
-                    "thread_id": thread_id,
-                },
-            })
-            .to_string()
-            .into(),
-        ))
+        .send(Message::Text(body.to_string().into()))
         .await
         .expect("real-upstream websocket request send failed");
 
@@ -1385,15 +1371,15 @@ mod tests {
 
     #[test]
     fn responses_requests_use_explicit_message_arrays() {
-        let body =
-            SmokeFormat::Responses.request_body(false, ResponsesUpstreamProfile::OpenAiCompatible);
+        let body = SmokeFormat::Responses.request_body(false);
         assert_eq!(body["input"][0]["type"], "message");
         assert_eq!(body["input"][0]["role"], "user");
         assert_eq!(body["input"][0]["content"][0]["type"], "input_text");
+        assert_eq!(body["max_output_tokens"], 1);
     }
 
     #[test]
-    fn responses_profiles_validate_and_build_provider_compatible_http_bodies() {
+    fn responses_profile_defaults_and_validates_known_values() {
         assert_eq!(
             ResponsesUpstreamProfile::from_environment(None).unwrap(),
             ResponsesUpstreamProfile::OpenAiCompatible
@@ -1408,19 +1394,18 @@ mod tests {
         );
         assert!(ResponsesUpstreamProfile::from_environment(Some("unknown".into())).is_err());
 
-        let standard = ResponsesUpstreamProfile::OpenAiCompatible.request_body(true);
-        assert_eq!(standard["max_output_tokens"], 1);
-        assert!(standard.get("tools").is_none());
-
-        let codex = ResponsesUpstreamProfile::CodexOauth.request_body(true);
-        assert!(codex.get("max_output_tokens").is_none());
-        assert_eq!(codex["instructions"], "Reply exactly OK.");
-        assert_eq!(codex["tools"], json!([]));
-        assert_eq!(codex["tool_choice"], "auto");
-        assert_eq!(codex["parallel_tool_calls"], false);
-        assert_eq!(codex["store"], false);
-        assert_eq!(codex["stream"], true);
-        assert_eq!(codex["include"], json!([]));
+        let standard = responses_websocket_request_body(
+            ResponsesUpstreamProfile::OpenAiCompatible,
+            "session",
+            "thread",
+        );
+        assert!(standard.get("max_output_tokens").is_none());
+        let codex = responses_websocket_request_body(
+            ResponsesUpstreamProfile::CodexOauth,
+            "session",
+            "thread",
+        );
+        assert_eq!(codex["max_output_tokens"], 1);
     }
 
     #[test]
@@ -1500,7 +1485,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn codex_profile_accepts_the_streaming_only_responses_boundary() {
+    async fn codex_profile_keeps_the_client_shape_and_streaming_only_boundary() {
         let captured = Arc::new(Mutex::new(Vec::new()));
         let app = Router::new()
             .route("/v1/responses", post(mock_codex_responses))
@@ -1533,12 +1518,7 @@ mod tests {
         assert_eq!(requests.len(), 2);
         for body in requests.iter() {
             assert_eq!(body["model"], "gateway-codex-model");
-            assert!(body.get("max_output_tokens").is_none());
-            assert_eq!(body["tools"], json!([]));
-            assert_eq!(body["tool_choice"], "auto");
-            assert_eq!(body["parallel_tool_calls"], false);
-            assert_eq!(body["store"], false);
-            assert_eq!(body["include"], json!([]));
+            assert_eq!(body["max_output_tokens"], 1);
         }
         assert_eq!(requests[0]["stream"], false);
         assert_eq!(requests[1]["stream"], true);

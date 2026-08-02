@@ -2,11 +2,11 @@
 
 > 类型：外部实现参考，不是 `ai-gateway` 行为契约。
 >
-> 最近核对：2026-07-30。
+> 最近核对：2026-08-02。
 >
 > 参考版本：[`openai/codex@aa064463458adbef10400c74174107fc4b3550f0`](https://github.com/openai/codex/tree/aa064463458adbef10400c74174107fc4b3550f0)。
 >
-> 权威来源：[OpenAI WebSocket mode](https://developers.openai.com/api/docs/guides/websocket-mode)、[Codex Responses WebSocket endpoint](https://github.com/openai/codex/blob/aa064463458adbef10400c74174107fc4b3550f0/codex-rs/codex-api/src/endpoint/responses_websocket.rs)、[Codex turn client](https://github.com/openai/codex/blob/aa064463458adbef10400c74174107fc4b3550f0/codex-rs/core/src/client.rs) 和 [Codex WebSocket dialer](https://github.com/openai/codex/tree/aa064463458adbef10400c74174107fc4b3550f0/codex-rs/websocket-client/src)。
+> 权威来源：[OpenAI WebSocket mode](https://developers.openai.com/api/docs/guides/websocket-mode)、[Codex Responses request type](https://github.com/openai/codex/blob/aa064463458adbef10400c74174107fc4b3550f0/codex-rs/codex-api/src/common.rs)、[Codex Responses WebSocket endpoint](https://github.com/openai/codex/blob/aa064463458adbef10400c74174107fc4b3550f0/codex-rs/codex-api/src/endpoint/responses_websocket.rs)、[Codex turn client](https://github.com/openai/codex/blob/aa064463458adbef10400c74174107fc4b3550f0/codex-rs/core/src/client.rs) 和 [Codex WebSocket dialer](https://github.com/openai/codex/tree/aa064463458adbef10400c74174107fc4b3550f0/codex-rs/websocket-client/src)。
 
 ## 适用范围
 
@@ -191,10 +191,14 @@ Codex WebSocket 测试至少覆盖：
 Bearer/account、FedRAMP、Codex Session/thread、User-Agent、`originator` 和版本 Header。
 HTTP SSE 专用的 `Accept`、`Accept-Encoding` 与 `Content-Type` 不进入上游 WebSocket 握手。
 
-因此，`ai-gateway` 不应为了某个兼容上游而全局删除 `max_output_tokens` 或伪造全部 Codex
-metadata。真实上游 smoke 使用一个最小且可审阅的手写 `response.create` fixture 验证 WebSocket
-转发；Codex 特有行为继续由确定性集成测试和本参考文档覆盖。生产渠道的上游偏差仍应通过渠道变换
-或上游专属配置处理。
+因此，`ai-gateway` 不会为普通 OpenAI-compatible channel 全局删除
+`max_output_tokens`，也不会伪造全部 Codex metadata。只有选中
+`connector_kind = codex_oauth` 的 Responses attempt 才会通过显式 denylist 删除当前已确认不兼容
+的 `max_output_tokens`；其他未知字段仍透明转发。真实上游 smoke 在 Codex profile 中故意保留该
+客户端字段，以验证目标 Gateway 的 provider adapter，而不是要求 smoke 自己构造 Codex 专属
+请求。HTTP 成功响应还会把客户端可见 `Content-Type` 规范化为 `text/event-stream`，与既有
+“即使上游 Header 缺失或错误也按 SSE 解析”的 Connector 契约保持一致。Codex 特有行为继续由
+确定性集成测试和本参考文档覆盖。
 
 ## 维护检查项
 

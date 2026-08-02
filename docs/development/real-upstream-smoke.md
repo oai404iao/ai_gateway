@@ -79,9 +79,12 @@ optional setting groups, and then runs the ignored tests with
 skip filter for the Images module; partially configured WebSocket or Images
 overrides or an unknown Responses profile fail before Cargo starts.
 
-With `REAL_UPSTREAM_RESPONSES_PROFILE=codex_oauth`, the Responses SSE fixture
-uses the request fields documented for the Codex client shape and omits
-`max_output_tokens` to match that provider request type.
+With `REAL_UPSTREAM_RESPONSES_PROFILE=codex_oauth`, the Responses SSE and
+WebSocket fixtures keep the ordinary client field `max_output_tokens`. A
+target Gateway using a Codex OAuth Responses channel must remove that
+provider-unsupported field before forwarding, so successful streamed results
+cover the compatibility adapter rather than requiring provider-specific client
+bodies.
 The Responses non-streaming case remains part of the run but succeeds by
 asserting the target gateway's documented HTTP `400`
 `codex_streaming_required` boundary. The SSE and WebSocket cases must still
@@ -96,7 +99,8 @@ complete successfully and retain usage in their terminal request logs.
   requests ask for one output token; provider-specific minimum-output behavior
   may still incur a small charge. In the `codex_oauth` profile, the Responses
   non-streaming request is rejected before generation and the SSE request asks
-  for an exact `OK` response without sending the unsupported output-token cap.
+  for an exact `OK` response; the target Gateway removes the client-provided
+  output-token cap before contacting Codex.
   The Chat Completions streaming request includes
   `stream_options.include_usage=true` so its final SSE usage can be verified.
   The Responses WebSocket request sends one

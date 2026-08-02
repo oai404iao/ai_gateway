@@ -12,6 +12,7 @@
 > [Bearer auth provider](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/model-provider/src/bearer_auth_provider.rs)、
 > [Models endpoint](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/codex-api/src/endpoint/models.rs)、
 > [Responses endpoint](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/codex-api/src/endpoint/responses.rs)、
+> [Responses request type](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/codex-api/src/common.rs)、
 > [session headers](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/codex-api/src/requests/headers.rs) 和
 > [usage endpoint client](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/backend-client/src/client/rate_limit_resets.rs)。
 > Reset-credit 行为另外核对
@@ -104,7 +105,8 @@ provider adapter。
 
 Codex Responses HTTP 客户端使用 Responses wire format。当前直连接口按流式方式工作，
 请求强制 `stream=true`、`store=false`，且不会用 HTTP
-`previous_response_id` 恢复增量连接状态。
+`previous_response_id` 恢复增量连接状态。核对版本的 `ResponsesApiRequest` 不声明
+`max_output_tokens`。
 
 Models 响应是带 `models` 数组的 envelope；网关只保留非空且未显式声明
 `supported_in_api=false` 的 `slug`。Quota 响应使用 `rate_limit.allowed`、
@@ -142,23 +144,27 @@ provider-managed `channels` 记录。因此普通优先级、权重、API Key �
 
 1. 要求请求本身为 SSE streaming；
 2. 拒绝非空 `previous_response_id`；
-3. 强制写入 `stream=true`、`store=false`；
-4. 将目标改为 `/backend-api/codex/responses`；
-5. 强制上游 `Accept-Encoding: identity`，使网关能直接观察终态 SSE 与 usage；
-6. 最后注入当前凭证的 Bearer、account、FedRAMP 和 Codex 会话 Header；
-7. 逐块转发上游 SSE，不在 Connector 中缓冲整条响应。
+3. 删除当前 Codex request type 未声明的 `max_output_tokens`，但不使用字段白名单；
+4. 强制写入 `stream=true`、`store=false`；
+5. 将目标改为 `/backend-api/codex/responses`；
+6. 强制上游 `Accept-Encoding: identity`，使网关能直接观察终态 SSE 与 usage；
+7. 最后注入当前凭证的 Bearer、account、FedRAMP 和 Codex 会话 Header；
+8. 成功响应按 SSE 分类，并将客户端可见 `Content-Type` 规范化为
+   `text/event-stream`，即使 Codex 上游缺少或改写了该 Header；
+9. 逐块转发上游 SSE，不在 Connector 中缓冲整条响应。
 
 WebSocket 路径：
 
 1. 要求消息 `type = "response.create"` 并取得顶层 `model`；
-2. 强制 `stream=true`、`store=false`，但保留
+2. 删除 `max_output_tokens`，其他未进入显式 denylist 的未知字段继续转发；
+3. 强制 `stream=true`、`store=false`，但保留
    `previous_response_id`、`generate` 和 `client_metadata`；
-3. 把目标改为 managed channel base URL 下的 `/responses`，再将
+4. 把目标改为 managed channel base URL 下的 `/responses`，再将
    `http`/`https` 转成 `ws`/`wss`；
-4. 注入 `OpenAI-Beta: responses_websockets=2026-02-06`、Bearer/account、
+5. 注入 `OpenAI-Beta: responses_websockets=2026-02-06`、Bearer/account、
    FedRAMP、session/thread、User-Agent、`originator` 和版本 Header；
-5. 不发送 HTTP SSE 专用的 `Accept`、`Accept-Encoding` 和 `Content-Type`；
-6. 顺序转发事件，并把成功、无残留的连接放回 Session 隔离池，使后续请求可以继续使用
+6. 不发送 HTTP SSE 专用的 `Accept`、`Accept-Encoding` 和 `Content-Type`；
+7. 顺序转发事件，并把成功、无残留的连接放回 Session 隔离池，使后续请求可以继续使用
    connection-local `previous_response_id`。
 
 客户端也可以调用非流式 JSON `POST /v1/images/generations`。选中 Codex Images projection 后：
@@ -240,7 +246,8 @@ WebSocket 错误会触发按 refresh generation 去重的后台 token refresh。
 - Codex Connector 支持 Responses HTTP SSE、Responses WebSocket、非流式 Images generation
   与 multipart Images edit；
   Responses HTTP 仍拒绝非空 `previous_response_id`，WebSocket 保留该字段并依赖同一条上游连接
-  的增量状态。
+  的增量状态；两种传输都只显式屏蔽当前已确认不兼容的 `max_output_tokens`，而不是通过
+  allowlist 丢弃其他字段。
 - edit adapter 最多接受五张图片，不接受 mask 或 Codex wire type 未声明的字段；这些
   provider-specific 限制不改变普通 OpenAI-compatible edit 的最多 16 张图片边界。
 - Connector 不实现 Chat Completions、Responses 与 Images 之间的转换。
@@ -262,8 +269,8 @@ WebSocket 错误会触发按 refresh generation 去重的后台 token refresh。
 2. refresh error code 与 token rotation 语义；
 3. ChatGPT Codex base URL、Responses/Images/models/quota 路径；
 4. Bearer/account/FedRAMP/session 与 `x-codex-image-turn-id` Header；
-5. HTTP 与 WebSocket Responses 的 `stream`、`store`、`previous_response_id`、
-   `generate` 和 `client_metadata` 边界；
+5. HTTP 与 WebSocket Responses 的 `stream`、`store`、`max_output_tokens`、
+   `previous_response_id`、`generate` 和 `client_metadata` 边界；
 6. models 与 quota JSON shape；
 7. reset-credit available count、consume 路径、请求幂等键、结果 code 与 `windows_reset`；
 8. Images generation/edit JSON shape、当前 image model 和 usage 响应；
