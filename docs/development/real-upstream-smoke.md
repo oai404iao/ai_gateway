@@ -8,6 +8,8 @@ OpenAI-compatible upstreams. It is deliberately ignored by normal `cargo test`
 runs. The required baseline has separate Chat Completions and Responses tests
 for non-streaming and streaming requests, plus a Responses WebSocket request.
 Responses HTTP/SSE and WebSocket `input` values use explicit message arrays.
+An optional Responses profile allows the target to be another `ai-gateway`
+instance whose selected Responses channel uses `connector_kind = codex_oauth`.
 
 Responses WebSocket can optionally use a separate channel base URL and API key
 while retaining `REAL_UPSTREAM_RESPONSES_MODEL`. A complete optional Images
@@ -41,6 +43,7 @@ Fill these values in `.env.real-upstream`:
 | `REAL_UPSTREAM_API_KEY` | Required default credential for Chat Completions and Responses HTTP/SSE. |
 | `REAL_UPSTREAM_CHAT_COMPLETIONS_MODEL` | A low-cost model supported by `/v1/chat/completions`. |
 | `REAL_UPSTREAM_RESPONSES_MODEL` | A low-cost model supported by Responses HTTP/SSE and WebSocket. |
+| `REAL_UPSTREAM_RESPONSES_PROFILE` | Optional Responses behavior profile. Defaults to `openai_compatible`; set `codex_oauth` when the URL/key targets an `ai-gateway` instance backed by a Codex managed Responses channel. |
 | `REAL_UPSTREAM_WEBSOCKET_BASE_URL` | Optional Responses WebSocket channel base URL override. Must be paired with `REAL_UPSTREAM_WEBSOCKET_API_KEY`; otherwise WebSocket uses the default URL/key. |
 | `REAL_UPSTREAM_WEBSOCKET_API_KEY` | Optional Responses WebSocket credential override. Must be paired with `REAL_UPSTREAM_WEBSOCKET_BASE_URL`. |
 | `REAL_UPSTREAM_IMAGES_BASE_URL` | Optional Images channel base URL. Setting any Images value requires all three Images settings and enables both paid Images tests. |
@@ -74,18 +77,29 @@ prints its values, disables shell tracing, validates the required settings and
 optional setting groups, and then runs the ignored tests with
 `RUN_REAL_UPSTREAM_SMOKE=1`. With no Images settings it passes a test-harness
 skip filter for the Images module; partially configured WebSocket or Images
-overrides fail before Cargo starts.
+overrides or an unknown Responses profile fail before Cargo starts.
+
+With `REAL_UPSTREAM_RESPONSES_PROFILE=codex_oauth`, the Responses SSE fixture
+uses the request fields documented for the Codex client shape and omits
+`max_output_tokens` to match that provider request type.
+The Responses non-streaming case remains part of the run but succeeds by
+asserting the target gateway's documented HTTP `400`
+`codex_streaming_required` boundary. The SSE and WebSocket cases must still
+complete successfully and retain usage in their terminal request logs.
 
 ## Safety and scope
 
 - Use a dedicated credential with a strict spending cap, model allowlist, and
   rate limit. Never use a production credential.
-- The five baseline test cases run serially. The four Chat
-  Completions/Responses HTTP/SSE requests ask for one output token;
-  provider-specific
-  minimum-output behavior may still incur a small charge. The Chat Completions
-  streaming request includes `stream_options.include_usage=true` so its final
-  SSE usage can be verified. The Responses WebSocket request sends one
+- The five baseline test cases run serially. In the default
+  `openai_compatible` profile, the four Chat Completions/Responses HTTP/SSE
+  requests ask for one output token; provider-specific minimum-output behavior
+  may still incur a small charge. In the `codex_oauth` profile, the Responses
+  non-streaming request is rejected before generation and the SSE request asks
+  for an exact `OK` response without sending the unsupported output-token cap.
+  The Chat Completions streaming request includes
+  `stream_options.include_usage=true` so its final SSE usage can be verified.
+  The Responses WebSocket request sends one
   deliberately small, reviewable `response.create` frame and waits for
   `response.completed`. It validates the terminal event usage and the
   corresponding successful request log. If the Gateway reports the known

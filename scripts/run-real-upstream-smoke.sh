@@ -44,6 +44,16 @@ for name in "${required[@]}"; do
   fi
 done
 
+responses_profile="${REAL_UPSTREAM_RESPONSES_PROFILE:-openai_compatible}"
+case "$responses_profile" in
+  openai_compatible | codex_oauth) ;;
+  *)
+    printf '%s\n' \
+      'REAL_UPSTREAM_RESPONSES_PROFILE must be openai_compatible or codex_oauth.' >&2
+    exit 2
+    ;;
+esac
+
 websocket_base_set=0
 websocket_key_set=0
 [[ -n "${REAL_UPSTREAM_WEBSOCKET_BASE_URL:-}" ]] && websocket_base_set=1

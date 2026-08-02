@@ -24,7 +24,7 @@ use ai_gateway::{
 };
 use axum::{
     body::{Body, Bytes},
-    http::{HeaderValue, Request, header},
+    http::{HeaderValue, Request, StatusCode, header},
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use futures_util::{SinkExt, StreamExt};
@@ -53,6 +53,52 @@ pub(super) enum SmokeFormat {
     ChatCompletions,
     Responses,
     Images,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ResponsesUpstreamProfile {
+    OpenAiCompatible,
+    CodexOauth,
+}
+
+impl ResponsesUpstreamProfile {
+    fn from_environment(value: Option<String>) -> Result<Self, &'static str> {
+        match value.as_deref() {
+            None | Some("") | Some("openai_compatible") => Ok(Self::OpenAiCompatible),
+            Some("codex_oauth") => Ok(Self::CodexOauth),
+            Some(_) => {
+                Err("REAL_UPSTREAM_RESPONSES_PROFILE must be openai_compatible or codex_oauth")
+            }
+        }
+    }
+
+    fn request_body(self, streamed: bool) -> Value {
+        let input = json!([{
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "Reply exactly OK."}],
+        }]);
+        match self {
+            Self::OpenAiCompatible => json!({
+                "model": CLIENT_MODEL,
+                "input": input,
+                "max_output_tokens": 1,
+                "stream": streamed,
+            }),
+            Self::CodexOauth => json!({
+                "model": CLIENT_MODEL,
+                "instructions": "Reply exactly OK.",
+                "input": input,
+                "tools": [],
+                "tool_choice": "auto",
+                "parallel_tool_calls": false,
+                "reasoning": null,
+                "store": false,
+                "stream": streamed,
+                "include": [],
+            }),
+        }
+    }
 }
 
 impl SmokeFormat {
@@ -88,7 +134,7 @@ impl SmokeFormat {
         }
     }
 
-    fn request_body(self, streamed: bool) -> Value {
+    fn request_body(self, streamed: bool, responses_profile: ResponsesUpstreamProfile) -> Value {
         match self {
             Self::ChatCompletions if streamed => json!({
                 "model": CLIENT_MODEL,
@@ -103,16 +149,7 @@ impl SmokeFormat {
                 "max_tokens": 1,
                 "stream": false,
             }),
-            Self::Responses => json!({
-                "model": CLIENT_MODEL,
-                "input": [{
-                    "type": "message",
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": "Reply with OK."}],
-                }],
-                "max_output_tokens": 1,
-                "stream": streamed,
-            }),
+            Self::Responses => responses_profile.request_body(streamed),
             Self::Images => json!({
                 "model": CLIENT_MODEL,
                 "prompt": "Create a solid red square.",
@@ -141,6 +178,7 @@ pub(super) struct SmokeSettings {
     images: Option<ImagesSmokeSettings>,
     pub(super) chat_completions_model: String,
     pub(super) responses_model: String,
+    responses_profile: ResponsesUpstreamProfile,
     timeout: Duration,
 }
 
@@ -177,12 +215,17 @@ impl SmokeSettings {
             optional_environment("REAL_UPSTREAM_IMAGES_MODEL"),
         )
         .unwrap_or_else(|message| panic!("{message}"));
+        let responses_profile = ResponsesUpstreamProfile::from_environment(optional_environment(
+            "REAL_UPSTREAM_RESPONSES_PROFILE",
+        ))
+        .unwrap_or_else(|message| panic!("{message}"));
         Self {
             default_upstream,
             websocket_upstream,
             images,
             chat_completions_model: required_environment("REAL_UPSTREAM_CHAT_COMPLETIONS_MODEL"),
             responses_model: required_environment("REAL_UPSTREAM_RESPONSES_MODEL"),
+            responses_profile,
             timeout: Duration::from_secs(timeout_seconds),
         }
     }
@@ -378,19 +421,20 @@ fn gateway(
     }
 }
 
-fn request(format: SmokeFormat, streamed: bool) -> Request<Body> {
+fn request(settings: &SmokeSettings, format: SmokeFormat, streamed: bool) -> Request<Body> {
     Request::post(format.path())
         .header(header::AUTHORIZATION, format!("Bearer {CLIENT_KEY}"))
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(
-            serde_json::to_vec(&format.request_body(streamed))
+            serde_json::to_vec(&format.request_body(streamed, settings.responses_profile))
                 .expect("smoke-test request JSON serializes"),
         ))
         .expect("smoke-test request builds")
 }
 
-/// Makes one small, paid JSON request for one API format. It deliberately
-/// creates no database records and does not use the process TOML configuration.
+/// Makes one small JSON request for one API format. The Codex profile verifies
+/// its documented non-streaming rejection without reaching generation. The
+/// helper creates no database records and does not use process TOML.
 pub(super) async fn smoke_nonstreaming_format(
     settings: &SmokeSettings,
     format: SmokeFormat,
@@ -403,14 +447,16 @@ pub(super) async fn smoke_nonstreaming_format(
         CLIENT_MODEL,
         upstream_model,
     );
-    let _ = complete_nonstreaming_request(
-        settings,
-        gateway,
-        request(format, false),
-        format,
-        format.api_operation(),
-    )
-    .await;
+    let request = request(settings, format, false);
+    if matches!(format, SmokeFormat::Responses)
+        && settings.responses_profile == ResponsesUpstreamProfile::CodexOauth
+    {
+        assert_codex_nonstreaming_rejection(settings, gateway, request).await;
+        return;
+    }
+    let _ =
+        complete_nonstreaming_request(settings, gateway, request, format, format.api_operation())
+            .await;
 }
 
 async fn complete_nonstreaming_request(
@@ -425,16 +471,17 @@ async fn complete_nonstreaming_request(
         .await
         .expect("non-streaming gateway request timed out")
         .expect("non-streaming gateway request completed");
-    assert!(
-        response.status().is_success(),
-        "the real upstream returned non-success status {}",
-        response.status()
-    );
+    let status = response.status();
     let body = timeout(settings.timeout, response.into_body().collect())
         .await
         .expect("non-streaming upstream body timed out")
         .expect("non-streaming upstream body completed")
         .to_bytes();
+    assert!(
+        status.is_success(),
+        "the real upstream returned non-success status {status}; {}",
+        sanitized_error_details(&body)
+    );
     let value: Value =
         serde_json::from_slice(&body).expect("the real upstream response must be JSON");
     assert!(
@@ -454,6 +501,61 @@ async fn complete_nonstreaming_request(
     }
 }
 
+async fn assert_codex_nonstreaming_rejection(
+    settings: &SmokeSettings,
+    gateway: SmokeGateway,
+    request: Request<Body>,
+) {
+    let response = timeout(settings.timeout, gateway.app.oneshot(request))
+        .await
+        .expect("Codex non-streaming gateway request timed out")
+        .expect("Codex non-streaming gateway request completed");
+    let status = response.status();
+    let body = timeout(settings.timeout, response.into_body().collect())
+        .await
+        .expect("Codex non-streaming upstream body timed out")
+        .expect("Codex non-streaming upstream body completed")
+        .to_bytes();
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "Codex-backed Responses non-streaming must fail with HTTP 400; {}",
+        sanitized_error_details(&body)
+    );
+    let value: Value =
+        serde_json::from_slice(&body).expect("Codex non-streaming rejection must be JSON");
+    assert_eq!(
+        value.pointer("/error/code").and_then(Value::as_str),
+        Some("codex_streaming_required"),
+        "Codex non-streaming rejection must retain the gateway error code"
+    );
+
+    let events = gateway.logs.events();
+    assert_eq!(
+        events.len(),
+        1,
+        "the Codex non-streaming rejection must produce exactly one terminal log"
+    );
+    let event = &events[0];
+    assert_eq!(event.api_format, SmokeFormat::Responses.api_format());
+    assert_eq!(event.api_operation, ApiOperation::Responses);
+    assert_eq!(event.request_protocol, RequestProtocol::NonStream);
+    assert!(!event.streamed);
+    assert_eq!(event.outcome, RequestLogOutcome::Failed);
+    assert_eq!(
+        event.response_status_code,
+        Some(StatusCode::BAD_REQUEST.as_u16())
+    );
+    assert_eq!(event.error_code.as_deref(), Some("upstream_http_error"));
+    assert_eq!(
+        event.billing.as_ref().and_then(|billing| billing.usage),
+        None
+    );
+    println!(
+        "Responses non-streaming correctly returned 400 codex_streaming_required for the Codex profile"
+    );
+}
+
 /// Makes one small, paid SSE request for one API format and fully consumes the
 /// stream so the terminal request log includes the upstream's final usage.
 pub(super) async fn smoke_streaming_format(
@@ -468,15 +570,25 @@ pub(super) async fn smoke_streaming_format(
         CLIENT_MODEL,
         upstream_model,
     );
-    let response = timeout(settings.timeout, gateway.app.oneshot(request(format, true)))
-        .await
-        .expect("streaming gateway request timed out")
-        .expect("streaming gateway request completed");
-    assert!(
-        response.status().is_success(),
-        "the real upstream returned non-success status {} for a streaming request",
-        response.status()
-    );
+    let response = timeout(
+        settings.timeout,
+        gateway.app.oneshot(request(settings, format, true)),
+    )
+    .await
+    .expect("streaming gateway request timed out")
+    .expect("streaming gateway request completed");
+    let status = response.status();
+    if !status.is_success() {
+        let body = timeout(settings.timeout, response.into_body().collect())
+            .await
+            .expect("streaming upstream error body timed out")
+            .expect("streaming upstream error body completed")
+            .to_bytes();
+        panic!(
+            "the real upstream returned non-success status {status} for a streaming request; {}",
+            sanitized_error_details(&body)
+        );
+    }
     assert!(
         response
             .headers()
@@ -534,7 +646,7 @@ pub(super) async fn smoke_images_generation(settings: &SmokeSettings) {
     let result = complete_nonstreaming_request(
         settings,
         gateway,
-        request(SmokeFormat::Images, false),
+        request(settings, SmokeFormat::Images, false),
         SmokeFormat::Images,
         ApiOperation::ImagesGeneration,
     )
@@ -818,7 +930,7 @@ async fn send_responses_websocket_attempt(
                 let code = event
                     .pointer("/error/code")
                     .and_then(Value::as_str)
-                    .map(safe_error_code)
+                    .map(safe_error_label)
                     .unwrap_or_else(|| "<missing>".into());
                 if kind == "error" && status == Some(502) && code == "upstream_websocket_closed" {
                     break Err(());
@@ -834,7 +946,7 @@ async fn send_responses_websocket_attempt(
     completed
 }
 
-fn safe_error_code(value: &str) -> String {
+fn safe_error_label(value: &str) -> String {
     if value.len() <= 64
         && value
             .bytes()
@@ -843,6 +955,24 @@ fn safe_error_code(value: &str) -> String {
         value.to_owned()
     } else {
         "<redacted>".into()
+    }
+}
+
+fn sanitized_error_details(body: &[u8]) -> String {
+    let Ok(value) = serde_json::from_slice::<Value>(body) else {
+        return "error_body=non_json".into();
+    };
+    let error = value.get("error").unwrap_or(&value);
+    let mut fields = Vec::new();
+    for name in ["type", "code", "param"] {
+        if let Some(value) = error.get(name).and_then(Value::as_str) {
+            fields.push(format!("{name}={}", safe_error_label(value)));
+        }
+    }
+    if fields.is_empty() {
+        "error_body=json_without_safe_fields".into()
+    } else {
+        fields.join(" ")
     }
 }
 
@@ -1099,6 +1229,7 @@ mod tests {
         Json, Router,
         extract::{OriginalUri, State},
         http::HeaderMap,
+        response::IntoResponse,
         routing::post,
     };
     use std::sync::Mutex;
@@ -1150,6 +1281,50 @@ mod tests {
                 },
             },
         }))
+    }
+
+    async fn mock_codex_responses(
+        State(captured): State<Arc<Mutex<Vec<Value>>>>,
+        Json(body): Json<Value>,
+    ) -> axum::response::Response {
+        captured.lock().unwrap().push(body.clone());
+        if body.get("stream").and_then(Value::as_bool) != Some(true) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": {
+                        "message": "Codex OAuth channels currently require `stream: true`.",
+                        "type": "invalid_request_error",
+                        "param": "stream",
+                        "code": "codex_streaming_required",
+                    }
+                })),
+            )
+                .into_response();
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        let event = json!({
+            "type": "response.completed",
+            "response": {
+                "id": "resp_codex_smoke",
+                "usage": {
+                    "input_tokens": 3,
+                    "output_tokens": 1,
+                    "input_tokens_details": {
+                        "cached_tokens": 0,
+                    },
+                    "output_tokens_details": {
+                        "reasoning_tokens": 0,
+                    },
+                },
+            },
+        });
+        (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "text/event-stream")],
+            format!("data: {event}\n\n"),
+        )
+            .into_response()
     }
 
     #[test]
@@ -1210,10 +1385,42 @@ mod tests {
 
     #[test]
     fn responses_requests_use_explicit_message_arrays() {
-        let body = SmokeFormat::Responses.request_body(false);
+        let body =
+            SmokeFormat::Responses.request_body(false, ResponsesUpstreamProfile::OpenAiCompatible);
         assert_eq!(body["input"][0]["type"], "message");
         assert_eq!(body["input"][0]["role"], "user");
         assert_eq!(body["input"][0]["content"][0]["type"], "input_text");
+    }
+
+    #[test]
+    fn responses_profiles_validate_and_build_provider_compatible_http_bodies() {
+        assert_eq!(
+            ResponsesUpstreamProfile::from_environment(None).unwrap(),
+            ResponsesUpstreamProfile::OpenAiCompatible
+        );
+        assert_eq!(
+            ResponsesUpstreamProfile::from_environment(Some("openai_compatible".into())).unwrap(),
+            ResponsesUpstreamProfile::OpenAiCompatible
+        );
+        assert_eq!(
+            ResponsesUpstreamProfile::from_environment(Some("codex_oauth".into())).unwrap(),
+            ResponsesUpstreamProfile::CodexOauth
+        );
+        assert!(ResponsesUpstreamProfile::from_environment(Some("unknown".into())).is_err());
+
+        let standard = ResponsesUpstreamProfile::OpenAiCompatible.request_body(true);
+        assert_eq!(standard["max_output_tokens"], 1);
+        assert!(standard.get("tools").is_none());
+
+        let codex = ResponsesUpstreamProfile::CodexOauth.request_body(true);
+        assert!(codex.get("max_output_tokens").is_none());
+        assert_eq!(codex["instructions"], "Reply exactly OK.");
+        assert_eq!(codex["tools"], json!([]));
+        assert_eq!(codex["tool_choice"], "auto");
+        assert_eq!(codex["parallel_tool_calls"], false);
+        assert_eq!(codex["store"], false);
+        assert_eq!(codex["stream"], true);
+        assert_eq!(codex["include"], json!([]));
     }
 
     #[test]
@@ -1251,6 +1458,7 @@ mod tests {
             }),
             chat_completions_model: "unused-chat-model".into(),
             responses_model: "unused-responses-model".into(),
+            responses_profile: ResponsesUpstreamProfile::OpenAiCompatible,
             timeout: Duration::from_secs(5),
         };
 
@@ -1289,5 +1497,50 @@ mod tests {
                 .windows(b"images-upstream-model".len())
                 .any(|window| window == b"images-upstream-model")
         );
+    }
+
+    #[tokio::test]
+    async fn codex_profile_accepts_the_streaming_only_responses_boundary() {
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let app = Router::new()
+            .route("/v1/responses", post(mock_codex_responses))
+            .with_state(Arc::clone(&captured));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let upstream = SmokeUpstream {
+            base_url: format!("http://{address}"),
+            api_key: "codex-gateway-key".into(),
+        };
+        let settings = SmokeSettings {
+            default_upstream: upstream.clone(),
+            websocket_upstream: upstream,
+            images: None,
+            chat_completions_model: "unused-chat-model".into(),
+            responses_model: "gateway-codex-model".into(),
+            responses_profile: ResponsesUpstreamProfile::CodexOauth,
+            timeout: Duration::from_secs(5),
+        };
+
+        smoke_nonstreaming_format(&settings, SmokeFormat::Responses, &settings.responses_model)
+            .await;
+        smoke_streaming_format(&settings, SmokeFormat::Responses, &settings.responses_model).await;
+        server.abort();
+
+        let requests = captured.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        for body in requests.iter() {
+            assert_eq!(body["model"], "gateway-codex-model");
+            assert!(body.get("max_output_tokens").is_none());
+            assert_eq!(body["tools"], json!([]));
+            assert_eq!(body["tool_choice"], "auto");
+            assert_eq!(body["parallel_tool_calls"], false);
+            assert_eq!(body["store"], false);
+            assert_eq!(body["include"], json!([]));
+        }
+        assert_eq!(requests[0]["stream"], false);
+        assert_eq!(requests[1]["stream"], true);
     }
 }

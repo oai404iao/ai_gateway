@@ -22,6 +22,13 @@ Versioning.
   fields and filters for users and administrators, and group administrator-
   specific request logs and cost analytics under the Console System section.
 
+### Fixed
+
+- Allow the opt-in real-upstream smoke to target an `ai-gateway` instance
+  backed by a Codex OAuth Responses channel by using a Codex-compatible SSE
+  fixture and treating the documented non-streaming rejection as an expected
+  boundary.
+
 ## [0.8.1] - 2026-08-01
 
 ### Added
