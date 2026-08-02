@@ -43,15 +43,19 @@ export function formatDate(value: string | null | undefined): string {
 }
 
 /** RFC 3339 timestamp formatted for an HTML `datetime-local` input. */
-export function formatDateTimeLocalInput(value: string | null | undefined): string {
+export function formatDateTimeLocalInput(
+  value: string | null | undefined,
+  includeSeconds = false,
+): string {
   if (!value) return "";
   const date = parseISO(value);
   if (!date) return "";
   // `datetime-local` accepts only an ISO-like numeric value, irrespective of
   // the surrounding UI locale.
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(
+  const formatted = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(
     date.getHours(),
   )}:${pad(date.getMinutes())}`;
+  return includeSeconds ? `${formatted}:${pad(date.getSeconds())}` : formatted;
 }
 
 /** Browser-local `datetime-local` value converted to an RFC 3339 UTC timestamp. */

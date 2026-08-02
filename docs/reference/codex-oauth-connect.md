@@ -1,7 +1,7 @@
 # Codex OAuth 与订阅后端接入参考
 
 > 类型：外部参考
-> 最近核对：2026-07-31
+> 最近核对：2026-08-02
 > 权威来源：
 > [`openai/codex` 0.146.0 release](https://github.com/openai/codex/releases/tag/rust-v0.146.0)、
 > [OAuth server](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/login/src/server.rs)、
@@ -14,6 +14,12 @@
 > [Responses endpoint](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/codex-api/src/endpoint/responses.rs)、
 > [session headers](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/codex-api/src/requests/headers.rs) 和
 > [usage endpoint client](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/backend-client/src/client/rate_limit_resets.rs)。
+> Reset-credit 行为另外核对
+> [`openai/codex@2b5bdcf67547860f2e5c5a605009a70026796b2b`](https://github.com/openai/codex/tree/2b5bdcf67547860f2e5c5a605009a70026796b2b)：
+> [backend reset client](https://github.com/openai/codex/blob/2b5bdcf67547860f2e5c5a605009a70026796b2b/codex-rs/backend-client/src/client/rate_limit_resets.rs)、
+> [backend contract tests](https://github.com/openai/codex/blob/2b5bdcf67547860f2e5c5a605009a70026796b2b/codex-rs/backend-client/src/client/rate_limit_resets_tests.rs)
+> 和
+> [app-server account API](https://github.com/openai/codex/blob/2b5bdcf67547860f2e5c5a605009a70026796b2b/codex-rs/app-server/README.md)。
 > Responses WebSocket 行为另外核对本地
 > [`openai/codex@aa064463458adbef10400c74174107fc4b3550f0`](https://github.com/openai/codex/tree/aa064463458adbef10400c74174107fc4b3550f0)：
 > [WebSocket endpoint](https://github.com/openai/codex/blob/aa064463458adbef10400c74174107fc4b3550f0/codex-rs/codex-api/src/endpoint/responses_websocket.rs)
@@ -78,6 +84,7 @@ JWT payload 解析只用于提取元数据和过期时间；真正的凭证有�
 | Images edit | `POST /backend-api/codex/images/edits` |
 | Models | `GET /backend-api/codex/models?client_version=...` |
 | Quota / rate limit | `GET /backend-api/wham/usage` |
+| Consume reset credit | `POST /backend-api/wham/rate-limit-reset-credits/consume` |
 
 认证请求使用：
 
@@ -102,7 +109,14 @@ Codex Responses HTTP 客户端使用 Responses wire format。当前直连接口�
 Models 响应是带 `models` 数组的 envelope；网关只保留非空且未显式声明
 `supported_in_api=false` 的 `slug`。Quota 响应使用 `rate_limit.allowed`、
 `limit_reached`、primary/secondary window 的 `used_percent`、
-`limit_window_seconds` 和 Unix `reset_at`。
+`limit_window_seconds` 和 Unix `reset_at`，并可附带
+`rate_limit_reset_credits.available_count`。
+
+官方 reset-credit 请求 JSON 为
+`{"redeem_request_id":"<idempotency key>"}`，也支持可选 `credit_id`。Gateway 当前让 OpenAI
+选择可用 credit，不发送 `credit_id`。响应 `code` 为 `reset`、`nothing_to_reset`、
+`no_credit` 或 `already_redeemed`，并返回 `windows_reset`。Codex app-server 要求 ChatGPT
+认证，并建议 reset 后重新读取 rate limits。
 
 Models 查询参数 `client_version` 和请求 Header `version` 固定报告当前核对的 Codex
 客户端版本 `0.146.0`。该版本独立于 `ai-gateway` 自身版本，因为 Codex 后端会根据客户端
@@ -208,6 +222,12 @@ Quota 状态由两个 projection 共享，并映射为：
 - `unavailable`：quota 不允许、额度耗尽或永久 refresh 失败；
 - `disabled`：管理员关闭。
 
+Gateway 额外保存主/次窗口周期历史。计划边界后的换窗记为自然重置；通过 Console 调用上述
+reset-credit 接口并匹配到的换窗记为手动重置；未匹配手动事件且早于旧计划边界的换窗记为
+`openai_official`。最后一类用于记录 OpenAI 故障补偿等 provider-side 重置，但 usage 响应本身
+没有携带原因字段，因此该标签是 Gateway 根据提前换窗作出的推断。Gateway 不会自动消费
+reset credit，也不会为了检测官方补偿而调用 consume 接口。
+
 首次派发前发现凭证不可用时，非 affinity hit 请求可以排除该 channel 后重新选路；Images 不使用
 affinity，因此只能在发送前排除不可用 projection。已经粘到该
 凭证的 HTTP Session，或已经由下游 WebSocket/空闲池固定到该 channel 的 WebSocket Session，
@@ -245,5 +265,6 @@ WebSocket 错误会触发按 refresh generation 去重的后台 token refresh。
 5. HTTP 与 WebSocket Responses 的 `stream`、`store`、`previous_response_id`、
    `generate` 和 `client_metadata` 边界；
 6. models 与 quota JSON shape；
-7. Images generation/edit JSON shape、当前 image model 和 usage 响应；
-8. User-Agent/originator 变化是否会影响授权或后端兼容性。
+7. reset-credit available count、consume 路径、请求幂等键、结果 code 与 `windows_reset`；
+8. Images generation/edit JSON shape、当前 image model 和 usage 响应；
+9. User-Agent/originator 变化是否会影响授权或后端兼容性。

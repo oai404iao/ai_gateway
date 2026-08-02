@@ -5390,6 +5390,180 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
         StatusCode::UNPROCESSABLE_ENTITY
     );
 
+    let codex_group_id = Uuid::new_v4();
+    let codex_credential_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO channel_groups \
+         (id,name,api_format,connector_kind,priority,selection_strategy,enabled) \
+         VALUES ($1,'statistics-codex','open_ai_responses','codex_oauth',1, \
+                 'weighted_random',true)",
+    )
+    .bind(codex_group_id)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO channels \
+         (id,channel_group_id,api_format,name,base_url,enabled,weight, \
+          upstream_auth_kind,available_models,status_statistics_enabled, \
+          auto_disable_allowed,supports_websocket) \
+         VALUES ($1,$2,'open_ai_responses','statistics-codex', \
+                 'https://chatgpt.com/backend-api/codex',true,100,'none', \
+                 ARRAY['gpt-5-codex'],false,false,true)",
+    )
+    .bind(codex_credential_id)
+    .bind(codex_group_id)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO codex_oauth_credentials \
+         (channel_id,channel_group_id,label,email,account_id,user_id,plan_type,is_fedramp, \
+          id_token,access_token,refresh_token,last_refreshed_at,enabled, \
+          quota_threshold_percent,runtime_status) \
+         VALUES ($1,$2,'statistics-codex','statistics-codex@example.test', \
+                 'statistics-codex-account','statistics-codex-user','plus',false, \
+                 'id-token','access-token','refresh-token',now(),true,95,'active')",
+    )
+    .bind(codex_credential_id)
+    .bind(codex_group_id)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let codex_images_channel: (Uuid, Uuid) = sqlx::query_as(
+        "SELECT projection.channel_id,channel.channel_group_id \
+         FROM codex_oauth_credential_channels AS projection \
+         JOIN channels AS channel ON channel.id=projection.channel_id \
+         WHERE projection.credential_id=$1 \
+           AND projection.api_format='open_ai_images'::api_format",
+    )
+    .bind(codex_credential_id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    let history_period_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO codex_quota_window_periods \
+         (id,credential_id,window_kind,window_seconds,started_at,scheduled_reset_at, \
+          ended_at,reset_reason,initial_used_percent,last_used_percent, \
+          first_observed_at,last_observed_at) \
+         VALUES ($1,$2,'primary',18000,$3,$4,$4,'openai_official',5,70,$3,$4)",
+    )
+    .bind(history_period_id)
+    .bind(codex_credential_id)
+    .bind(started_at)
+    .bind(started_at + chrono::Duration::hours(5))
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let quota_history = request(
+        &app,
+        "GET",
+        &format!(
+            "/console/v1/providers/codex-oauth/credentials/{codex_credential_id}/quota/windows?limit=10"
+        ),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(quota_history.status(), StatusCode::OK);
+    let quota_history = body_json(quota_history).await;
+    assert_eq!(
+        quota_history["credential_id"],
+        codex_credential_id.to_string()
+    );
+    assert_eq!(
+        quota_history["periods"][0]["id"],
+        history_period_id.to_string()
+    );
+    assert_eq!(
+        quota_history["periods"][0]["reset_reason"],
+        "openai_official"
+    );
+    let codex_started_at = started_at + chrono::Duration::hours(3);
+    for (api_format, api_operation, group_id, channel_id) in [
+        (
+            "open_ai_responses",
+            "responses",
+            codex_group_id,
+            codex_credential_id,
+        ),
+        (
+            "open_ai_images",
+            "images_generation",
+            codex_images_channel.1,
+            codex_images_channel.0,
+        ),
+    ] {
+        sqlx::query(
+            "INSERT INTO request_logs \
+             (id,started_at,completed_at,user_id,api_key_id,api_format,api_operation, \
+              client_model,upstream_model,channel_group_id,channel_id,outcome, \
+              response_status_code,streamed,input_tokens,output_tokens) \
+             VALUES ($1,$2,$2,$3,$4,$5::api_format,$6, \
+                     'statistics-codex-model','statistics-codex-model',$7,$8, \
+                     'succeeded',200,false,10,5)",
+        )
+        .bind(Uuid::new_v4())
+        .bind(codex_started_at)
+        .bind(app.user_id)
+        .bind(api_key_id)
+        .bind(api_format)
+        .bind(api_operation)
+        .bind(group_id)
+        .bind(channel_id)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    }
+    let codex_range_start = (codex_started_at - chrono::Duration::minutes(5))
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let codex_range_end = (codex_started_at + chrono::Duration::minutes(5))
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let codex_costs = request(
+        &app,
+        "GET",
+        &format!(
+            "/console/v1/system/statistics/costs?started_after={codex_range_start}&started_before={codex_range_end}&granularity=hour&codex_credential_id={codex_credential_id}"
+        ),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(codex_costs.status(), StatusCode::OK);
+    let codex_costs = body_json(codex_costs).await;
+    assert_eq!(codex_costs["summary"]["request_count"], 2);
+    assert_eq!(codex_costs["channels"].as_array().unwrap().len(), 2);
+
+    let personal_codex_filter = request(
+        &app,
+        "GET",
+        &format!(
+            "/console/v1/statistics/costs?started_after={codex_range_start}&started_before={codex_range_end}&granularity=hour&codex_credential_id={codex_credential_id}"
+        ),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(
+        personal_codex_filter.status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let conflicting_channel_filters = request(
+        &app,
+        "GET",
+        &format!(
+            "/console/v1/system/statistics/costs?started_after={codex_range_start}&started_before={codex_range_end}&granularity=hour&channel_id={codex_credential_id}&codex_credential_id={codex_credential_id}"
+        ),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(
+        conflicting_channel_filters.status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+
     let invalid_start = (started_at - chrono::Duration::days(32))
         .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     let invalid = request(

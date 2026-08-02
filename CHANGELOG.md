@@ -11,6 +11,10 @@ Versioning.
 
 - Add an administrator-only system cost-statistics API and Console page with
   global user, API Key, and channel filters plus channel-level breakdowns.
+- Track primary and secondary Codex quota-window periods, distinguish natural,
+  administrator reset-credit, and inferred OpenAI provider resets, and add
+  Console reset controls plus period-to-cost drill-down across the credential's
+  Responses and Images channels.
 
 ### Changed
 

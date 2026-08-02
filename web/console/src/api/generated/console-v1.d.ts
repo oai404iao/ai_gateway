@@ -957,6 +957,49 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/providers/codex-oauth/credentials/{id}/quota/windows": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * @description Returns the most recent primary and secondary quota periods for one
+         *     managed credential. `limit` is applied independently to each window.
+         *     Completed periods identify natural rollover, a reset credit consumed
+         *     through this Console, or an early provider-side OpenAI reset.
+         */
+        get: operations["getCodexOAuthQuotaWindowHistory"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/providers/codex-oauth/credentials/{id}/quota/reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * @description Consumes one available OpenAI Codex rate-limit reset credit. The
+         *     operation is audited, then the gateway refreshes quota and attributes
+         *     any resulting primary or secondary window rollover to a manual reset.
+         */
+        post: operations["resetCodexOAuthQuota"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/network/proxies": {
         parameters: {
             query?: never;
@@ -1166,7 +1209,10 @@ export interface paths {
         /**
          * @description Administrator-only system-wide cost analytics. Administrators can
          *     aggregate all users or filter by `user_id`, `api_key_id`, and
-         *     `channel_id`; channel-level details are included in the response.
+         *     `channel_id`, or by one Codex credential across both of its managed
+         *     Responses and Images channels; channel-level details are included in
+         *     the response. `channel_id` and `codex_credential_id` are mutually
+         *     exclusive.
          *     Aggregates request counts, token totals and usage categories, RPM/TPM,
          *     and cost by UTC hour or day. All monetary amounts are settled in USD,
          *     and the response includes continuous zero-valued buckets across the
@@ -1962,6 +2008,11 @@ export interface components {
             secondary_used_percent: number | null;
             secondary_window_seconds: number | null;
             secondary_reset_at: components["schemas"]["DateTimeNullable"];
+            /**
+             * Format: int64
+             * @description Available OpenAI rate-limit reset credits reported by the usage endpoint.
+             */
+            quota_reset_credits_available: number | null;
             quota_checked_at: components["schemas"]["DateTimeNullable"];
             last_error_code: string | null;
             last_error_summary: string | null;
@@ -1973,6 +2024,49 @@ export interface components {
             available_models: string[];
             created_at: components["schemas"]["DateTime"];
             updated_at: components["schemas"]["DateTime"];
+        };
+        /** @enum {string} */
+        CodexQuotaWindowKind: "primary" | "secondary";
+        /**
+         * @description `natural` means the next observed period began at or after the prior
+         *     scheduled reset. `manual` means a reset credit consumed through this
+         *     Console was matched to the rollover. `openai_official` means the
+         *     provider began a new period before the scheduled reset without a
+         *     matching Console reset-credit event.
+         * @enum {string}
+         */
+        CodexQuotaResetReason: "natural" | "manual" | "openai_official";
+        CodexQuotaWindowPeriod: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            credential_id: string;
+            window_kind: components["schemas"]["CodexQuotaWindowKind"];
+            window_seconds: number;
+            started_at: components["schemas"]["DateTime"];
+            scheduled_reset_at: components["schemas"]["DateTime"];
+            ended_at: components["schemas"]["DateTimeNullable"];
+            /** @description Null only for the current observed period. */
+            reset_reason: components["schemas"]["CodexQuotaResetReason"] | null;
+            initial_used_percent: number;
+            last_used_percent: number;
+            first_observed_at: components["schemas"]["DateTime"];
+            last_observed_at: components["schemas"]["DateTime"];
+        };
+        CodexQuotaWindowHistory: {
+            /** Format: uuid */
+            credential_id: string;
+            periods: components["schemas"]["CodexQuotaWindowPeriod"][];
+        };
+        /** @enum {string} */
+        CodexQuotaResetOutcome: "reset" | "nothing_to_reset" | "no_credit" | "already_redeemed";
+        CodexQuotaResetResponse: {
+            outcome: components["schemas"]["CodexQuotaResetOutcome"];
+            windows_reset: number;
+            /** @description Whether the immediate follow-up usage refresh succeeded. */
+            quota_refreshed: boolean;
+            /** Format: uuid */
+            correlation_id: string;
         };
         CodexCredentialSettings: {
             label: string;
@@ -3051,6 +3145,10 @@ export interface components {
         StatisticsGranularity: components["schemas"]["StatisticsGranularity"];
         /** @description Administrator-only exact channel filter. */
         StatisticsChannelId: string;
+        /** @description Administrator-only Codex credential filter that includes both managed Responses and Images projection channels. Mutually exclusive with `channel_id`. */
+        StatisticsCodexCredentialId: string;
+        /** @description Maximum periods returned independently for each window. */
+        CodexQuotaHistoryLimit: number;
         /** @description Exact session-affinity rule name. Omit to clear the whole cache. */
         SessionAffinityRuleName: string;
     };
@@ -5410,6 +5508,63 @@ export interface operations {
             504: components["responses"]["GatewayTimeout"];
         };
     };
+    getCodexOAuthQuotaWindowHistory: {
+        parameters: {
+            query?: {
+                /** @description Maximum periods returned independently for each window. */
+                limit?: components["parameters"]["CodexQuotaHistoryLimit"];
+            };
+            header?: never;
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Quota window period history. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CodexQuotaWindowHistory"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["Unprocessable"];
+        };
+    };
+    resetCodexOAuthQuota: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Reset-credit outcome and follow-up refresh state. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CodexQuotaResetResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["Unprocessable"];
+            502: components["responses"]["BadGateway"];
+            504: components["responses"]["GatewayTimeout"];
+        };
+    };
     listProxies: {
         parameters: {
             query?: never;
@@ -5856,6 +6011,8 @@ export interface operations {
                 api_key_id?: components["parameters"]["RequestLogApiKeyId"];
                 /** @description Administrator-only exact channel filter. */
                 channel_id?: components["parameters"]["StatisticsChannelId"];
+                /** @description Administrator-only Codex credential filter that includes both managed Responses and Images projection channels. Mutually exclusive with `channel_id`. */
+                codex_credential_id?: components["parameters"]["StatisticsCodexCredentialId"];
             };
             header?: never;
             path?: never;

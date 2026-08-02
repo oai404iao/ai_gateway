@@ -11,6 +11,8 @@ import type {
   CodexOauthCompleteInput,
   CodexOauthStartInput,
   CodexOauthStartResponse,
+  CodexQuotaResetResponse,
+  CodexQuotaWindowHistory,
   MutationResponse,
 } from "@/api/types";
 
@@ -18,6 +20,8 @@ const credentialsKey = (groupId: string) =>
   ["console", "codex-oauth", groupId, "credentials"] as const;
 const credentialKey = (id: string) =>
   ["console", "codex-oauth", "credential", id] as const;
+const quotaWindowHistoryKey = (id: string) =>
+  ["console", "codex-oauth", "credential", id, "quota-windows"] as const;
 
 export function useCodexCredentials(groupId: string) {
   return useQuery({
@@ -47,6 +51,17 @@ export function useCodexCredential(id: string) {
     error: query.error,
     refetch: query.refetch,
   };
+}
+
+export function useCodexQuotaWindowHistory(id: string) {
+  return useQuery({
+    queryKey: quotaWindowHistoryKey(id),
+    queryFn: () =>
+      apiGet<CodexQuotaWindowHistory>(
+        `/providers/codex-oauth/credentials/${id}/quota/windows`,
+      ),
+    enabled: Boolean(id),
+  });
 }
 
 export function useStartCodexOauth(groupId: string) {
@@ -201,6 +216,23 @@ export function useRefreshCodexQuota(groupId: string) {
     onSuccess: (_data, id) => {
       void queryClient.invalidateQueries({ queryKey: credentialsKey(groupId) });
       void queryClient.invalidateQueries({ queryKey: credentialKey(id) });
+    },
+  });
+}
+
+export function useResetCodexQuota(groupId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiPost<CodexQuotaResetResponse>(
+        `/providers/codex-oauth/credentials/${id}/quota/reset`,
+      ),
+    onSuccess: (_data, id) => {
+      void queryClient.invalidateQueries({ queryKey: credentialsKey(groupId) });
+      void queryClient.invalidateQueries({ queryKey: credentialKey(id) });
+      void queryClient.invalidateQueries({
+        queryKey: quotaWindowHistoryKey(id),
+      });
     },
   });
 }

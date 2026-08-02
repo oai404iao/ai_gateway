@@ -1771,6 +1771,54 @@ paths:
         "502": { $ref: "#/components/responses/BadGateway" }
         "504": { $ref: "#/components/responses/GatewayTimeout" }
 
+  /providers/codex-oauth/credentials/{id}/quota/windows:
+    get:
+      tags: [CodexOAuth]
+      operationId: getCodexOAuthQuotaWindowHistory
+      description: |
+        Returns the most recent primary and secondary quota periods for one
+        managed credential. `limit` is applied independently to each window.
+        Completed periods identify natural rollover, a reset credit consumed
+        through this Console, or an early provider-side OpenAI reset.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+        - $ref: "#/components/parameters/CodexQuotaHistoryLimit"
+      responses:
+        "200":
+          description: Quota window period history.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CodexQuotaWindowHistory" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /providers/codex-oauth/credentials/{id}/quota/reset:
+    post:
+      tags: [CodexOAuth]
+      operationId: resetCodexOAuthQuota
+      description: |
+        Consumes one available OpenAI Codex rate-limit reset credit. The
+        operation is audited, then the gateway refreshes quota and attributes
+        any resulting primary or secondary window rollover to a manual reset.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "200":
+          description: Reset-credit outcome and follow-up refresh state.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CodexQuotaResetResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+        "502": { $ref: "#/components/responses/BadGateway" }
+        "504": { $ref: "#/components/responses/GatewayTimeout" }
+
   /network/proxies:
     get:
       tags: [Proxies]
@@ -2112,7 +2160,10 @@ paths:
       description: |
         Administrator-only system-wide cost analytics. Administrators can
         aggregate all users or filter by `user_id`, `api_key_id`, and
-        `channel_id`; channel-level details are included in the response.
+        `channel_id`, or by one Codex credential across both of its managed
+        Responses and Images channels; channel-level details are included in
+        the response. `channel_id` and `codex_credential_id` are mutually
+        exclusive.
         Aggregates request counts, token totals and usage categories, RPM/TPM,
         and cost by UTC hour or day. All monetary amounts are settled in USD,
         and the response includes continuous zero-valued buckets across the
@@ -2126,6 +2177,7 @@ paths:
         - $ref: "#/components/parameters/RequestLogUserId"
         - $ref: "#/components/parameters/RequestLogApiKeyId"
         - $ref: "#/components/parameters/StatisticsChannelId"
+        - $ref: "#/components/parameters/StatisticsCodexCredentialId"
       responses:
         "200":
           description: System-wide cost and usage statistics.
@@ -2383,6 +2435,21 @@ components:
       required: false
       description: Administrator-only exact channel filter.
       schema: { type: string, format: uuid }
+    StatisticsCodexCredentialId:
+      name: codex_credential_id
+      in: query
+      required: false
+      description: >
+        Administrator-only Codex credential filter that includes both managed
+        Responses and Images projection channels. Mutually exclusive with
+        `channel_id`.
+      schema: { type: string, format: uuid }
+    CodexQuotaHistoryLimit:
+      name: limit
+      in: query
+      required: false
+      description: Maximum periods returned independently for each window.
+      schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
     SessionAffinityRuleName:
       name: rule_name
       in: query
@@ -3399,9 +3466,10 @@ components:
          access_token_expires_at, last_refreshed_at, quota_threshold_percent,
          runtime_status, quota_allowed, quota_limit_reached, primary_used_percent,
          primary_window_seconds, primary_reset_at, secondary_used_percent,
-         secondary_window_seconds, secondary_reset_at, quota_checked_at,
-         last_error_code, last_error_summary, proxy_id, weight, enabled,
-         available_models, created_at, updated_at]
+         secondary_window_seconds, secondary_reset_at,
+         quota_reset_credits_available, quota_checked_at, last_error_code,
+         last_error_summary, proxy_id, weight, enabled, available_models,
+         created_at, updated_at]
       properties:
         id: { type: string, format: uuid }
         channel_group_id:
@@ -3429,6 +3497,12 @@ components:
         secondary_used_percent: { type: integer, minimum: 0, maximum: 100, nullable: true }
         secondary_window_seconds: { type: integer, minimum: 1, nullable: true }
         secondary_reset_at: { $ref: "#/components/schemas/DateTimeNullable" }
+        quota_reset_credits_available:
+          type: integer
+          format: int64
+          minimum: 0
+          nullable: true
+          description: Available OpenAI rate-limit reset credits reported by the usage endpoint.
         quota_checked_at: { $ref: "#/components/schemas/DateTimeNullable" }
         last_error_code: { type: string, nullable: true }
         last_error_summary: { type: string, nullable: true }
@@ -3441,6 +3515,70 @@ components:
           items: { type: string }
         created_at: { $ref: "#/components/schemas/DateTime" }
         updated_at: { $ref: "#/components/schemas/DateTime" }
+
+    CodexQuotaWindowKind:
+      type: string
+      enum: [primary, secondary]
+
+    CodexQuotaResetReason:
+      type: string
+      enum: [natural, manual, openai_official]
+      description: |
+        `natural` means the next observed period began at or after the prior
+        scheduled reset. `manual` means a reset credit consumed through this
+        Console was matched to the rollover. `openai_official` means the
+        provider began a new period before the scheduled reset without a
+        matching Console reset-credit event.
+
+    CodexQuotaWindowPeriod:
+      type: object
+      required:
+        [id, credential_id, window_kind, window_seconds, started_at,
+         scheduled_reset_at, ended_at, reset_reason, initial_used_percent,
+         last_used_percent, first_observed_at, last_observed_at]
+      properties:
+        id: { type: string, format: uuid }
+        credential_id: { type: string, format: uuid }
+        window_kind: { $ref: "#/components/schemas/CodexQuotaWindowKind" }
+        window_seconds: { type: integer, minimum: 1 }
+        started_at: { $ref: "#/components/schemas/DateTime" }
+        scheduled_reset_at: { $ref: "#/components/schemas/DateTime" }
+        ended_at: { $ref: "#/components/schemas/DateTimeNullable" }
+        reset_reason:
+          allOf: [{ $ref: "#/components/schemas/CodexQuotaResetReason" }]
+          nullable: true
+          description: Null only for the current observed period.
+        initial_used_percent: { type: integer, minimum: 0, maximum: 100 }
+        last_used_percent: { type: integer, minimum: 0, maximum: 100 }
+        first_observed_at: { $ref: "#/components/schemas/DateTime" }
+        last_observed_at: { $ref: "#/components/schemas/DateTime" }
+
+    CodexQuotaWindowHistory:
+      type: object
+      required: [credential_id, periods]
+      properties:
+        credential_id: { type: string, format: uuid }
+        periods:
+          type: array
+          items: { $ref: "#/components/schemas/CodexQuotaWindowPeriod" }
+
+    CodexQuotaResetOutcome:
+      type: string
+      enum: [reset, nothing_to_reset, no_credit, already_redeemed]
+
+    CodexQuotaResetResponse:
+      type: object
+      required: [outcome, windows_reset, quota_refreshed, correlation_id]
+      properties:
+        outcome: { $ref: "#/components/schemas/CodexQuotaResetOutcome" }
+        windows_reset:
+          type: integer
+          minimum: 0
+          maximum: 2
+        quota_refreshed:
+          type: boolean
+          description: Whether the immediate follow-up usage refresh succeeded.
+        correlation_id: { type: string, format: uuid }
 
     CodexCredentialSettings:
       type: object

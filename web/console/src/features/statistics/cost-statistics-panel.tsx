@@ -7,6 +7,7 @@ import {
   Zap,
 } from "lucide-react";
 import { Bar, BarChart, CartesianGrid, XAxis, YAxis } from "recharts";
+import { useSearchParams } from "react-router";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
@@ -74,6 +75,7 @@ interface CostFilterDraft {
   user_id: string;
   api_key_id: string;
   channel_id: string;
+  codex_credential_id: string;
 }
 
 type QuickRange = "today" | "this_week" | "this_month";
@@ -92,13 +94,41 @@ function defaultDraft(): CostFilterDraft {
   const startedAt = new Date(endedAt);
   startedAt.setHours(0, 0, 0, 0);
   return {
-    started_after: formatDateTimeLocalInput(startedAt.toISOString()),
-    started_before: formatDateTimeLocalInput(endedAt.toISOString()),
+    started_after: formatDateTimeLocalInput(startedAt.toISOString(), true),
+    started_before: formatDateTimeLocalInput(endedAt.toISOString(), true),
     granularity: "hour",
     user_id: "",
     api_key_id: "",
     channel_id: "",
+    codex_credential_id: "",
   };
+}
+
+function draftFromSearchParams(
+  search: URLSearchParams,
+  scope: CostStatisticsScope,
+): CostFilterDraft {
+  const draft = defaultDraft();
+  const startedAfter = search.get("started_after");
+  const startedBefore = search.get("started_before");
+  const granularity = search.get("granularity");
+  if (startedAfter && formatDateTimeLocalInput(startedAfter, true)) {
+    draft.started_after = formatDateTimeLocalInput(startedAfter, true);
+  }
+  if (startedBefore && formatDateTimeLocalInput(startedBefore, true)) {
+    draft.started_before = formatDateTimeLocalInput(startedBefore, true);
+  }
+  if (granularity === "hour" || granularity === "day") {
+    draft.granularity = granularity;
+  }
+  draft.api_key_id = search.get("api_key_id") ?? "";
+  if (scope === "system") {
+    draft.user_id = search.get("user_id") ?? "";
+    draft.channel_id = search.get("channel_id") ?? "";
+    draft.codex_credential_id = search.get("codex_credential_id") ?? "";
+    if (draft.codex_credential_id) draft.channel_id = "";
+  }
+  return draft;
 }
 
 function quickRangeDraft(
@@ -121,8 +151,8 @@ function quickRangeDraft(
   }
   return {
     ...current,
-    started_after: formatDateTimeLocalInput(startedAt.toISOString()),
-    started_before: formatDateTimeLocalInput(endedAt.toISOString()),
+    started_after: formatDateTimeLocalInput(startedAt.toISOString(), true),
+    started_before: formatDateTimeLocalInput(endedAt.toISOString(), true),
     granularity: range === "today" ? "hour" : "day",
   };
 }
@@ -138,6 +168,7 @@ function toFilters(draft: CostFilterDraft): CostStatisticsFilters | null {
     user_id: draft.user_id || undefined,
     api_key_id: draft.api_key_id || undefined,
     channel_id: draft.channel_id || undefined,
+    codex_credential_id: draft.codex_credential_id || undefined,
   };
 }
 
@@ -151,8 +182,29 @@ function sameCostStatisticsFilters(
     left.granularity === right.granularity &&
     left.user_id === right.user_id &&
     left.api_key_id === right.api_key_id &&
-    left.channel_id === right.channel_id
+    left.channel_id === right.channel_id &&
+    left.codex_credential_id === right.codex_credential_id
   );
+}
+
+function searchParamsForFilters(
+  filters: CostStatisticsFilters,
+  scope: CostStatisticsScope,
+): URLSearchParams {
+  const search = new URLSearchParams({
+    started_after: filters.started_after,
+    started_before: filters.started_before,
+    granularity: filters.granularity,
+  });
+  if (filters.api_key_id) search.set("api_key_id", filters.api_key_id);
+  if (scope === "system") {
+    if (filters.user_id) search.set("user_id", filters.user_id);
+    if (filters.channel_id) search.set("channel_id", filters.channel_id);
+    if (filters.codex_credential_id) {
+      search.set("codex_credential_id", filters.codex_credential_id);
+    }
+  }
+  return search;
 }
 
 function numericAmount(value: string): number {
@@ -212,12 +264,19 @@ export function CostStatisticsPanel({
 }: {
   scope: CostStatisticsScope;
 }) {
-  const initialDraft = useMemo(defaultDraft, []);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [initialDraft] = useState(() =>
+    draftFromSearchParams(searchParams, scope),
+  );
   const [draft, setDraft] = useState<CostFilterDraft>(initialDraft);
   const [filters, setFilters] = useState<CostStatisticsFilters>(
     () => toFilters(initialDraft) as CostStatisticsFilters,
   );
-  const [quickRange, setQuickRange] = useState<QuickRange | null>("today");
+  const [quickRange, setQuickRange] = useState<QuickRange | null>(() =>
+    searchParams.has("started_after") || searchParams.has("started_before")
+      ? null
+      : "today",
+  );
   const { data, isLoading, isFetching, error, refetch } = useCostStatistics(
     scope,
     filters,
@@ -231,6 +290,7 @@ export function CostStatisticsPanel({
   const { t } = useI18n();
 
   const runQuery = (next: CostStatisticsFilters) => {
+    setSearchParams(searchParamsForFilters(next, scope), { replace: true });
     if (sameCostStatisticsFilters(filters, next)) {
       void refetch();
       return;
@@ -258,6 +318,18 @@ export function CostStatisticsPanel({
         left.groupName.localeCompare(right.groupName) ||
         left.name.localeCompare(right.name),
     );
+  const codexCredentialOptions = (channels.data ?? [])
+    .filter(
+      (channel) =>
+        channel.provider_managed &&
+        channel.connector_kind === "codex_oauth" &&
+        channel.api_format === "open_ai_responses",
+    )
+    .map((channel) => ({
+      id: channel.id,
+      name: `${channel.name} · ${channel.id.slice(0, 8)}`,
+    }))
+    .sort((left, right) => left.name.localeCompare(right.name));
 
   const apply = () => {
     const next = toFilters(draft);
@@ -512,7 +584,7 @@ export function CostStatisticsPanel({
           <CardDescription>
             {t(
               isSystemView
-                ? "Filter by time range, user, API key, channel, and aggregation granularity."
+                ? "Filter by time range, user, API key, channel or Codex credential, and aggregation granularity."
                 : "Filter your own statistics by time range, API key, and aggregation granularity.",
             )}
           </CardDescription>
@@ -555,6 +627,7 @@ export function CostStatisticsPanel({
               <Input
                 id="statistics_started_after"
                 type="datetime-local"
+                step={1}
                 value={draft.started_after}
                 onChange={(event) => {
                   setQuickRange(null);
@@ -570,6 +643,7 @@ export function CostStatisticsPanel({
               <Input
                 id="statistics_started_before"
                 type="datetime-local"
+                step={1}
                 value={draft.started_before}
                 onChange={(event) => {
                   setQuickRange(null);
@@ -673,6 +747,40 @@ export function CostStatisticsPanel({
             </Field>
             {isSystemView ? (
               <Field>
+                <FieldLabel htmlFor="statistics_codex_credential">
+                  {t("Codex credential")}
+                </FieldLabel>
+                <Select
+                  value={draft.codex_credential_id || "__all__"}
+                  onValueChange={(value) =>
+                    setDraft((current) => ({
+                      ...current,
+                      codex_credential_id:
+                        value === "__all__" ? "" : value,
+                      channel_id: value === "__all__" ? current.channel_id : "",
+                    }))
+                  }
+                >
+                  <SelectTrigger id="statistics_codex_credential">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      <SelectItem value="__all__">
+                        {t("All Codex credentials")}
+                      </SelectItem>
+                      {codexCredentialOptions.map((credential) => (
+                        <SelectItem key={credential.id} value={credential.id}>
+                          {credential.name}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+              </Field>
+            ) : null}
+            {isSystemView ? (
+              <Field>
                 <FieldLabel htmlFor="statistics_channel">{t("Channel")}</FieldLabel>
                 <Select
                   value={draft.channel_id || "__all__"}
@@ -680,6 +788,10 @@ export function CostStatisticsPanel({
                     setDraft((current) => ({
                       ...current,
                       channel_id: value === "__all__" ? "" : value,
+                      codex_credential_id:
+                        value === "__all__"
+                          ? current.codex_credential_id
+                          : "",
                     }))
                   }
                 >

@@ -94,6 +94,14 @@ worker 每分钟加载数据库记录并先替换本地凭证快照，使其他�
 - refresh 事务提交前更新 rotating token、generation、identity 和错误状态；取消或失败时
   transaction drop 会释放 row lock。
 
+每次有效 quota 快照还会事务内维护
+`codex_quota_window_periods`。主窗口和次窗口各自最多有一个当前周期，周期起点由
+`reset_at - limit_window_seconds` 推导；每次观察更新末次使用率和观察时间，换窗时关闭旧周期并
+开启新周期。计划边界附近的换窗优先归类为自然重置；提前换窗再按推导出的实际周期起点匹配附近的
+手动 reset-credit 事件，因此即使 quota 观察延迟，仍可在恢复后补齐手动重置分类。quota
+请求发起时间同时作为快照版本，较晚返回的旧请求不能覆盖更新的凭证状态或窗口历史。历史不进入
+运行时凭证快照，也不参与数据面选路。
+
 worker、上游 `401` 恢复和多实例并发均传递 observed generation；如果其他执行者已经成功轮换，
 后续执行者直接结束，不能再次消费旧 refresh token。管理员显式手动刷新不带 observed generation，
 因此表示一次强制刷新。
@@ -114,6 +122,23 @@ Quota 状态：
 | `draining` | 拒绝并排除该 channel 后重选 | 允许 |
 | `unavailable` | 拒绝 | fail closed |
 | `disabled` | 拒绝并排除该 channel 后重选 | fail closed |
+
+窗口换窗原因记录为：
+
+- `natural`：新周期在旧周期计划重置边界附近或之后开始；
+- `manual`：管理员通过 Console 消费 OpenAI reset credit，随后观察到的换窗与该事件匹配；
+- `openai_official`：没有匹配的手动 reset-credit 事件，却在计划边界前观察到新周期。当前上游
+  usage 响应不返回“故障补偿重置”原因，因此这是基于提前换窗的明确推断，不是 OpenAI 提供的
+  原始枚举。
+
+管理员手动重置调用 OpenAI 的
+`/backend-api/wham/rate-limit-reset-credits/consume`，使用唯一
+`redeem_request_id`。返回的 `reset`、`nothing_to_reset`、`no_credit` 或
+`already_redeemed` 结果、重置窗口数和 correlation ID 会持久化并写审计；随后立即刷新 quota。
+调用期间持有该凭证的数据库行锁，使其他实例的 quota 持久化必须在 reset 事件提交后再分类换窗。
+若后续刷新失败，reset-credit 结果仍返回成功，后台 quota 轮询会继续补齐窗口历史。该操作不会被
+maintenance 自动触发；OpenAI 因故障主动补偿的重置也只做观察和记录，不消耗 Gateway 发起的
+reset credit。
 
 Connector prepare 发生在上游发送前。非 affinity hit 遇到不可用凭证时，代理把当前 dense
 channel slot 加入排除集合并重新使用统一路由器；排除集合先使用固定 inline 容量，只有凭证池超过
@@ -186,6 +211,7 @@ generation 去重 refresh；已经发送的图片请求不会重放。
 ## 安全边界
 
 - Console 只返回 token 元数据，不返回保存的 ID/access/refresh token。
+- reset-credit 操作只返回结果、窗口数和 correlation ID，不返回 credit 或 OAuth secret。
 - credential `Debug`、audit before/after 和错误摘要必须脱敏。
 - 删除必须在提交前清除持久化 OAuth Token；tombstone 不得继续引用 proxy 或出现在凭证列表/导出。
 - callback URL、authorization code 和导入 token 不进入日志或浏览器持久化状态。

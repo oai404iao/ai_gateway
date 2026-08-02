@@ -184,6 +184,7 @@ export const E2E_CODEX_CREDENTIAL = {
   secondary_used_percent: null,
   secondary_window_seconds: null,
   secondary_reset_at: null,
+  quota_reset_credits_available: 2,
   quota_checked_at: "2026-07-29T12:00:00.000Z",
   last_error_code: null,
   last_error_summary: null,
@@ -708,6 +709,49 @@ export async function mockConsoleApi(page: Page): Promise<void> {
       method === "POST"
     ) {
       return route.fulfill({ status: 204 });
+    }
+    if (
+      path ===
+        `/console/v1/providers/codex-oauth/credentials/${E2E_CODEX_CREDENTIAL_ID}/quota/reset` &&
+      method === "POST"
+    ) {
+      return route.fulfill({
+        status: 200,
+        json: {
+          outcome: "reset",
+          windows_reset: 2,
+          quota_refreshed: true,
+          correlation_id: "00000000-0000-0000-0000-00000000c004",
+        },
+      });
+    }
+    if (
+      path ===
+        `/console/v1/providers/codex-oauth/credentials/${E2E_CODEX_CREDENTIAL_ID}/quota/windows` &&
+      method === "GET"
+    ) {
+      return route.fulfill({
+        status: 200,
+        json: {
+          credential_id: E2E_CODEX_CREDENTIAL_ID,
+          periods: [
+            {
+              id: "00000000-0000-0000-0000-00000000c005",
+              credential_id: E2E_CODEX_CREDENTIAL_ID,
+              window_kind: "primary",
+              window_seconds: 10_800,
+              started_at: "2026-07-29T09:00:00.000Z",
+              scheduled_reset_at: "2026-07-29T12:00:00.000Z",
+              ended_at: "2026-07-29T12:00:00.000Z",
+              reset_reason: "manual",
+              initial_used_percent: 10,
+              last_used_percent: 96,
+              first_observed_at: "2026-07-29T09:01:00.000Z",
+              last_observed_at: "2026-07-29T11:59:00.000Z",
+            },
+          ],
+        },
+      });
     }
     if (
       path ===

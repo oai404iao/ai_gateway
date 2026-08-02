@@ -221,6 +221,13 @@ refresh token / quota 也可从凭证页执行。同一凭证的 refresh 在实�
 并核对 generation，避免 rotating refresh token 被并发重复使用。上游请求返回 `401` 时会触发一次
 generation 去重的后台刷新。
 
+凭证页同时记录主窗口和次窗口的周期历史。达到计划边界后的换窗显示为“自然重置”；管理员确认后
+调用 OpenAI reset-credit 接口并消费可用 credit，随后匹配到的换窗显示为“手动 reset credit”；
+没有对应手动事件却提前换窗时显示为“OpenAI 官方重置”。最后一种是根据提前换窗推断的故障补偿等
+provider-side 重置，因为 OpenAI usage 响应本身不返回重置原因。Gateway 不会自动消费
+reset credit。手动 reset-credit 操作会写审计；如果调用成功但紧随其后的 quota 刷新失败，后台
+轮询会继续补齐当前状态和窗口历史。
+
 Codex Responses HTTP Connector 只接受 `stream: true` 的 SSE 请求，强制上游
 `store: false`，并拒绝非空 `previous_response_id`。Codex managed channel 会自动启用
 Responses WebSocket 能力；WebSocket `response.create` 同样强制 `stream: true` 和
@@ -516,7 +523,10 @@ JWT 主体推导用户 ID，管理员也只能在个人使用情况标签中看�
 同一“统计”页面的“花费统计”标签也始终限定为当前 JWT 用户，包括管理员。它只支持时间区间、
 API Key 和小时/天聚合粒度，不提供用户或渠道筛选，响应中的渠道明细固定为空。
 管理员需要查看全局、指定用户或指定渠道的花费时，使用“系统”分组下独立的“花费统计”页面；
-该页面调用 `GET /console/v1/system/statistics/costs`，可按用户、API Key 和渠道筛选并显示渠道明细。
+该页面调用 `GET /console/v1/system/statistics/costs`，可按用户、API Key、单一渠道或 Codex
+逻辑凭证筛选并显示渠道明细。Codex 凭证筛选会同时覆盖其 Responses 与 Images managed channels，
+并与单一渠道筛选互斥。凭证页的任一主/次窗口周期都可以直接跳转到这里，自动带入周期时间范围和
+该 Codex 凭证筛选。
 
 所有已登录用户可在 Console 独立的“花费排行榜”页面查看用户花费排名。页面固定提供自然日、
 自然周和自然月榜，均按 `Asia/Shanghai` 时区切分：日榜为当日 00:00 至次日 00:00，周榜为周一至周日，

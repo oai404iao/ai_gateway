@@ -1,6 +1,6 @@
 use std::collections::{BTreeSet, HashSet};
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{FromRow, PgPool, Postgres, Transaction, postgres::PgConnection};
@@ -10,6 +10,8 @@ use super::{ControlPlaneRepository, MutationResult, RepositoryError};
 
 const CODEX_CONNECTOR_KIND: &str = "codex_oauth";
 const CODEX_RESPONSES_API_FORMAT: &str = "open_ai_responses";
+const QUOTA_WINDOW_IDENTITY_TOLERANCE: Duration = Duration::seconds(90);
+const MANUAL_RESET_MATCH_WINDOW: Duration = Duration::minutes(15);
 
 #[derive(Clone, Copy, FromRow)]
 struct CodexPoolContext {
@@ -199,6 +201,7 @@ pub struct CodexCredentialRecord {
     pub secondary_used_percent: Option<i32>,
     pub secondary_window_seconds: Option<i32>,
     pub secondary_reset_at: Option<DateTime<Utc>>,
+    pub quota_reset_credits_available: Option<i64>,
     pub quota_checked_at: Option<DateTime<Utc>>,
     pub last_error_code: Option<String>,
     pub last_error_summary: Option<String>,
@@ -237,6 +240,10 @@ impl std::fmt::Debug for CodexCredentialRecord {
             .field("quota_limit_reached", &self.quota_limit_reached)
             .field("primary_used_percent", &self.primary_used_percent)
             .field("secondary_used_percent", &self.secondary_used_percent)
+            .field(
+                "quota_reset_credits_available",
+                &self.quota_reset_credits_available,
+            )
             .field("quota_checked_at", &self.quota_checked_at)
             .field("last_error_code", &self.last_error_code)
             .field("last_error_summary", &self.last_error_summary)
@@ -272,6 +279,7 @@ pub struct CodexCredentialView {
     pub secondary_used_percent: Option<i32>,
     pub secondary_window_seconds: Option<i32>,
     pub secondary_reset_at: Option<DateTime<Utc>>,
+    pub quota_reset_credits_available: Option<i64>,
     pub quota_checked_at: Option<DateTime<Utc>>,
     pub last_error_code: Option<String>,
     pub last_error_summary: Option<String>,
@@ -293,7 +301,84 @@ pub struct CodexQuotaUpdate {
     pub secondary_used_percent: Option<i32>,
     pub secondary_window_seconds: Option<i32>,
     pub secondary_reset_at: Option<DateTime<Utc>>,
+    pub reset_credits_available: Option<i64>,
     pub checked_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, Serialize, FromRow)]
+pub struct CodexQuotaWindowPeriodView {
+    pub id: Uuid,
+    pub credential_id: Uuid,
+    pub window_kind: String,
+    pub window_seconds: i32,
+    pub started_at: DateTime<Utc>,
+    pub scheduled_reset_at: DateTime<Utc>,
+    pub ended_at: Option<DateTime<Utc>>,
+    pub reset_reason: Option<String>,
+    pub initial_used_percent: i32,
+    pub last_used_percent: i32,
+    pub first_observed_at: DateTime<Utc>,
+    pub last_observed_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct CodexQuotaWindowHistory {
+    pub credential_id: Uuid,
+    pub periods: Vec<CodexQuotaWindowPeriodView>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CodexQuotaResetOutcome {
+    Reset,
+    NothingToReset,
+    NoCredit,
+    AlreadyRedeemed,
+}
+
+impl CodexQuotaResetOutcome {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Reset => "reset",
+            Self::NothingToReset => "nothing_to_reset",
+            Self::NoCredit => "no_credit",
+            Self::AlreadyRedeemed => "already_redeemed",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CodexQuotaWindowKind {
+    Primary,
+    Secondary,
+}
+
+impl CodexQuotaWindowKind {
+    const ALL: [Self; 2] = [Self::Primary, Self::Secondary];
+
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Primary => "primary",
+            Self::Secondary => "secondary",
+        }
+    }
+}
+
+#[derive(Clone, FromRow)]
+struct CurrentCodexQuotaWindowPeriod {
+    id: Uuid,
+    window_seconds: i32,
+    started_at: DateTime<Utc>,
+    scheduled_reset_at: DateTime<Utc>,
+    last_observed_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Copy)]
+struct ObservedCodexQuotaWindow {
+    used_percent: i32,
+    window_seconds: i32,
+    reset_at: DateTime<Utc>,
 }
 
 #[derive(Clone)]
@@ -316,6 +401,12 @@ impl ControlPlaneRepository {
         self.pool.begin().await.map_err(RepositoryError::from)
     }
 
+    pub async fn begin_codex_quota_reset(
+        &self,
+    ) -> Result<Transaction<'_, Postgres>, RepositoryError> {
+        self.pool.begin().await.map_err(RepositoryError::from)
+    }
+
     pub async fn codex_credentials(
         &self,
         channel_group_id: Uuid,
@@ -326,7 +417,8 @@ impl ControlPlaneRepository {
                     c.quota_threshold_percent,c.runtime_status,c.quota_allowed, \
                     c.quota_limit_reached,c.primary_used_percent,c.primary_window_seconds, \
                     c.primary_reset_at,c.secondary_used_percent,c.secondary_window_seconds, \
-                    c.secondary_reset_at,c.quota_checked_at,c.last_error_code, \
+                    c.secondary_reset_at,c.quota_reset_credits_available, \
+                    c.quota_checked_at,c.last_error_code, \
                     c.last_error_summary,ch.proxy_id,ch.weight,c.enabled,ch.available_models, \
                     c.created_at,c.updated_at \
              FROM codex_oauth_credentials c \
@@ -355,7 +447,8 @@ impl ControlPlaneRepository {
                     c.quota_threshold_percent,c.runtime_status,c.quota_allowed, \
                     c.quota_limit_reached,c.primary_used_percent,c.primary_window_seconds, \
                     c.primary_reset_at,c.secondary_used_percent,c.secondary_window_seconds, \
-                    c.secondary_reset_at,c.quota_checked_at,c.last_error_code, \
+                    c.secondary_reset_at,c.quota_reset_credits_available, \
+                    c.quota_checked_at,c.last_error_code, \
                     c.last_error_summary,ch.proxy_id,ch.weight,c.enabled,ch.available_models, \
                     c.created_at,c.updated_at \
              FROM codex_oauth_credentials c \
@@ -366,6 +459,55 @@ impl ControlPlaneRepository {
         .fetch_optional(&self.pool)
         .await
         .map_err(RepositoryError::from)
+    }
+
+    pub async fn codex_quota_window_history(
+        &self,
+        channel_id: Uuid,
+        limit_per_window: i64,
+    ) -> Result<CodexQuotaWindowHistory, RepositoryError> {
+        if !(1..=500).contains(&limit_per_window) {
+            return Err(RepositoryError::Validation);
+        }
+        let exists = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS( \
+                 SELECT 1 FROM codex_oauth_credentials \
+                 WHERE channel_id=$1 AND deleted_at IS NULL \
+             )",
+        )
+        .bind(channel_id)
+        .fetch_one(&self.pool)
+        .await?;
+        if !exists {
+            return Err(RepositoryError::NotFound);
+        }
+        let periods = sqlx::query_as::<_, CodexQuotaWindowPeriodView>(
+            "WITH ranked AS ( \
+                 SELECT id,credential_id,window_kind,window_seconds,started_at, \
+                        scheduled_reset_at,ended_at,reset_reason,initial_used_percent, \
+                        last_used_percent,first_observed_at,last_observed_at, \
+                        row_number() OVER ( \
+                            PARTITION BY window_kind \
+                            ORDER BY started_at DESC,id DESC \
+                        ) AS window_rank \
+                 FROM codex_quota_window_periods \
+                 WHERE credential_id=$1 \
+             ) \
+             SELECT id,credential_id,window_kind,window_seconds,started_at, \
+                    scheduled_reset_at,ended_at,reset_reason,initial_used_percent, \
+                    last_used_percent,first_observed_at,last_observed_at \
+             FROM ranked \
+             WHERE window_rank <= $2 \
+             ORDER BY window_kind,started_at DESC,id DESC",
+        )
+        .bind(channel_id)
+        .bind(limit_per_window)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(CodexQuotaWindowHistory {
+            credential_id: channel_id,
+            periods,
+        })
     }
 
     pub async fn codex_credential(
@@ -647,6 +789,12 @@ impl ControlPlaneRepository {
 
         if let Some(channel_id) = existing_channel_id {
             let before = codex_credential_audit(transaction, channel_id).await?;
+            let existing_quota_checked_at = sqlx::query_scalar::<_, Option<DateTime<Utc>>>(
+                "SELECT quota_checked_at FROM codex_oauth_credentials WHERE channel_id=$1",
+            )
+            .bind(channel_id)
+            .fetch_one(&mut **transaction)
+            .await?;
             sqlx::query(
                 "UPDATE channels SET \
                  name=$2,base_url=$3,enabled=true,weight=$4,proxy_id=$5,available_models=$6, \
@@ -662,7 +810,9 @@ impl ControlPlaneRepository {
             .execute(&mut **transaction)
             .await?;
 
-            let quota = input.quota.as_ref();
+            let quota = input.quota.as_ref().filter(|quota| {
+                existing_quota_checked_at.is_none_or(|checked_at| quota.checked_at >= checked_at)
+            });
             let has_quota = quota.is_some();
             let updated_at = sqlx::query_scalar::<_, DateTime<Utc>>(
                 "UPDATE codex_oauth_credentials SET \
@@ -690,8 +840,10 @@ impl ControlPlaneRepository {
                  secondary_window_seconds=CASE WHEN $13 THEN $20 ELSE secondary_window_seconds END, \
                  secondary_reset_at=CASE WHEN $13 THEN $21 ELSE secondary_reset_at END, \
                  quota_checked_at=CASE WHEN $13 THEN $22 ELSE quota_checked_at END, \
+                 quota_reset_credits_available=CASE \
+                     WHEN $13 THEN $23 ELSE quota_reset_credits_available END, \
                  last_error_code=NULL,last_error_summary=NULL, \
-                 user_id=COALESCE($23,user_id) \
+                 user_id=COALESCE($24,user_id) \
                  WHERE channel_id=$1 AND deleted_at IS NULL \
                  RETURNING updated_at",
             )
@@ -717,9 +869,13 @@ impl ControlPlaneRepository {
             .bind(quota.and_then(|quota| quota.secondary_window_seconds))
             .bind(quota.and_then(|quota| quota.secondary_reset_at))
             .bind(quota.map(|quota| quota.checked_at))
+            .bind(quota.and_then(|quota| quota.reset_credits_available))
             .bind(input.user_id)
             .fetch_one(&mut **transaction)
             .await?;
+            if let Some(quota) = quota {
+                reconcile_codex_quota_windows(transaction, channel_id, quota).await?;
+            }
 
             return Ok(MutationResult {
                 id: channel_id,
@@ -768,8 +924,9 @@ impl ControlPlaneRepository {
               access_token,refresh_token,access_token_expires_at,last_refreshed_at, \
               enabled,quota_threshold_percent,runtime_status,quota_allowed,quota_limit_reached, \
               primary_used_percent,primary_window_seconds,primary_reset_at, \
-              secondary_used_percent,secondary_window_seconds,secondary_reset_at,quota_checked_at) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)",
+              secondary_used_percent,secondary_window_seconds,secondary_reset_at, \
+              quota_reset_credits_available,quota_checked_at) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)",
         )
         .bind(channel_id)
         .bind(input.channel_group_id)
@@ -796,9 +953,13 @@ impl ControlPlaneRepository {
         .bind(quota.and_then(|quota| quota.secondary_used_percent))
         .bind(quota.and_then(|quota| quota.secondary_window_seconds))
         .bind(quota.and_then(|quota| quota.secondary_reset_at))
+        .bind(quota.and_then(|quota| quota.reset_credits_available))
         .bind(quota.map(|quota| quota.checked_at))
         .execute(&mut **transaction)
         .await?;
+        if let Some(quota) = quota {
+            reconcile_codex_quota_windows(transaction, channel_id, quota).await?;
+        }
 
         Ok(MutationResult {
             id: channel_id,
@@ -981,6 +1142,18 @@ impl ControlPlaneRepository {
         channel_id: Uuid,
         quota: CodexQuotaUpdate,
     ) -> Result<(), RepositoryError> {
+        let mut transaction = self.pool.begin().await?;
+        let locked = sqlx::query_scalar::<_, Uuid>(
+            "SELECT channel_id FROM codex_oauth_credentials \
+             WHERE channel_id=$1 AND deleted_at IS NULL FOR UPDATE",
+        )
+        .bind(channel_id)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        if locked.is_none() {
+            return Err(RepositoryError::NotFound);
+        }
+        reconcile_codex_quota_windows(&mut transaction, channel_id, &quota).await?;
         sqlx::query(
             "UPDATE codex_oauth_credentials SET \
              runtime_status=CASE \
@@ -993,10 +1166,11 @@ impl ControlPlaneRepository {
              quota_allowed=$2,quota_limit_reached=$3, \
              primary_used_percent=$4,primary_window_seconds=$5,primary_reset_at=$6, \
              secondary_used_percent=$7,secondary_window_seconds=$8,secondary_reset_at=$9, \
-             quota_checked_at=$10, \
+             quota_checked_at=$10,quota_reset_credits_available=$11, \
              last_error_code=CASE WHEN reauth_required THEN last_error_code ELSE NULL END, \
              last_error_summary=CASE WHEN reauth_required THEN last_error_summary ELSE NULL END \
-             WHERE channel_id=$1 AND deleted_at IS NULL",
+             WHERE channel_id=$1 AND deleted_at IS NULL \
+               AND (quota_checked_at IS NULL OR quota_checked_at <= $10)",
         )
         .bind(channel_id)
         .bind(quota.allowed)
@@ -1008,9 +1182,101 @@ impl ControlPlaneRepository {
         .bind(quota.secondary_window_seconds)
         .bind(quota.secondary_reset_at)
         .bind(quota.checked_at)
-        .execute(&self.pool)
+        .bind(quota.reset_credits_available)
+        .execute(&mut *transaction)
         .await?;
+        transaction.commit().await?;
         Ok(())
+    }
+
+    pub async fn record_codex_quota_reset(
+        &self,
+        actor_user_id: Uuid,
+        channel_id: Uuid,
+        event_id: Uuid,
+        requested_at: DateTime<Utc>,
+        outcome: CodexQuotaResetOutcome,
+        windows_reset: i32,
+    ) -> Result<Uuid, RepositoryError> {
+        if !(0..=2).contains(&windows_reset) {
+            return Err(RepositoryError::Validation);
+        }
+        let mut transaction = self.begin_serializable().await?;
+        let reset_credits_available = sqlx::query_scalar::<_, Option<i64>>(
+            "SELECT quota_reset_credits_available \
+             FROM codex_oauth_credentials \
+             WHERE channel_id=$1 AND deleted_at IS NULL FOR UPDATE",
+        )
+        .bind(channel_id)
+        .fetch_optional(&mut *transaction)
+        .await?
+        .ok_or(RepositoryError::NotFound)?;
+        let correlation_id = self
+            .record_codex_quota_reset_transaction(
+                &mut transaction,
+                actor_user_id,
+                channel_id,
+                event_id,
+                requested_at,
+                outcome,
+                windows_reset,
+                reset_credits_available,
+            )
+            .await?;
+        transaction.commit().await?;
+        Ok(correlation_id)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn record_codex_quota_reset_transaction(
+        &self,
+        transaction: &mut Transaction<'_, Postgres>,
+        actor_user_id: Uuid,
+        channel_id: Uuid,
+        event_id: Uuid,
+        requested_at: DateTime<Utc>,
+        outcome: CodexQuotaResetOutcome,
+        windows_reset: i32,
+        reset_credits_available: Option<i64>,
+    ) -> Result<Uuid, RepositoryError> {
+        if !(0..=2).contains(&windows_reset) {
+            return Err(RepositoryError::Validation);
+        }
+        let correlation_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO codex_quota_reset_events \
+             (id,credential_id,actor_user_id,requested_at,outcome,windows_reset,correlation_id) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7)",
+        )
+        .bind(event_id)
+        .bind(channel_id)
+        .bind(actor_user_id)
+        .bind(requested_at)
+        .bind(outcome.as_str())
+        .bind(windows_reset)
+        .bind(correlation_id)
+        .execute(&mut **transaction)
+        .await?;
+        let mutation = MutationResult {
+            id: channel_id,
+            object_type: "codex_oauth_credential",
+            action: "reset_quota",
+            before_redacted: json!({
+                "quota_reset_credits_available": reset_credits_available,
+            }),
+            after_redacted: json!({
+                "outcome": outcome.as_str(),
+                "windows_reset": windows_reset,
+                "redeem_request_id": event_id,
+            }),
+            created_secret: None,
+            reason: Some("manual_reset_credit".into()),
+            updated_at: requested_at,
+            correlation_id: Some(correlation_id),
+        };
+        self.insert_audit(transaction, actor_user_id, &mutation, correlation_id)
+            .await?;
+        Ok(correlation_id)
     }
 
     pub async fn mark_codex_credential_error(
@@ -1073,6 +1339,237 @@ impl ControlPlaneRepository {
     }
 }
 
+async fn reconcile_codex_quota_windows(
+    transaction: &mut Transaction<'_, Postgres>,
+    channel_id: Uuid,
+    quota: &CodexQuotaUpdate,
+) -> Result<(), RepositoryError> {
+    for kind in CodexQuotaWindowKind::ALL {
+        let Some(observation) = observed_codex_quota_window(quota, kind)? else {
+            continue;
+        };
+        reconcile_codex_quota_window(transaction, channel_id, kind, observation, quota.checked_at)
+            .await?;
+    }
+    Ok(())
+}
+
+fn observed_codex_quota_window(
+    quota: &CodexQuotaUpdate,
+    kind: CodexQuotaWindowKind,
+) -> Result<Option<ObservedCodexQuotaWindow>, RepositoryError> {
+    let values = match kind {
+        CodexQuotaWindowKind::Primary => (
+            quota.primary_used_percent,
+            quota.primary_window_seconds,
+            quota.primary_reset_at,
+        ),
+        CodexQuotaWindowKind::Secondary => (
+            quota.secondary_used_percent,
+            quota.secondary_window_seconds,
+            quota.secondary_reset_at,
+        ),
+    };
+    match values {
+        (None, None, None) => Ok(None),
+        (Some(used_percent), Some(window_seconds), Some(reset_at))
+            if (0..=100).contains(&used_percent) && window_seconds > 0 =>
+        {
+            Ok(Some(ObservedCodexQuotaWindow {
+                used_percent,
+                window_seconds,
+                reset_at,
+            }))
+        }
+        _ => Err(RepositoryError::Validation),
+    }
+}
+
+async fn reconcile_codex_quota_window(
+    transaction: &mut Transaction<'_, Postgres>,
+    channel_id: Uuid,
+    kind: CodexQuotaWindowKind,
+    observation: ObservedCodexQuotaWindow,
+    checked_at: DateTime<Utc>,
+) -> Result<(), RepositoryError> {
+    let started_at = observation
+        .reset_at
+        .checked_sub_signed(Duration::seconds(i64::from(observation.window_seconds)))
+        .ok_or(RepositoryError::Validation)?;
+    let current = sqlx::query_as::<_, CurrentCodexQuotaWindowPeriod>(
+        "SELECT id,window_seconds,started_at,scheduled_reset_at,last_observed_at \
+         FROM codex_quota_window_periods \
+         WHERE credential_id=$1 AND window_kind=$2 AND ended_at IS NULL \
+         FOR UPDATE",
+    )
+    .bind(channel_id)
+    .bind(kind.as_str())
+    .fetch_optional(&mut **transaction)
+    .await?;
+
+    let Some(current) = current else {
+        insert_codex_quota_window_period(
+            transaction,
+            channel_id,
+            kind,
+            observation,
+            started_at,
+            checked_at,
+        )
+        .await?;
+        return Ok(());
+    };
+
+    if checked_at < current.last_observed_at {
+        return Ok(());
+    }
+
+    let same_period = current.window_seconds == observation.window_seconds
+        && timestamps_within(
+            current.scheduled_reset_at,
+            observation.reset_at,
+            QUOTA_WINDOW_IDENTITY_TOLERANCE,
+        );
+    if same_period
+        || started_at
+            <= current
+                .started_at
+                .checked_add_signed(QUOTA_WINDOW_IDENTITY_TOLERANCE)
+                .unwrap_or(current.started_at)
+    {
+        sqlx::query(
+            "UPDATE codex_quota_window_periods \
+             SET last_used_percent=CASE \
+                     WHEN last_observed_at <= $3 THEN $2 \
+                     ELSE last_used_percent \
+                 END, \
+                 last_observed_at=GREATEST(last_observed_at,$3) \
+             WHERE id=$1",
+        )
+        .bind(current.id)
+        .bind(observation.used_percent)
+        .bind(checked_at)
+        .execute(&mut **transaction)
+        .await?;
+        return Ok(());
+    }
+
+    let natural_boundary = current
+        .scheduled_reset_at
+        .checked_sub_signed(QUOTA_WINDOW_IDENTITY_TOLERANCE)
+        .unwrap_or(current.scheduled_reset_at);
+    let (reset_reason, ended_at) = if started_at >= natural_boundary {
+        ("natural", current.scheduled_reset_at)
+    } else if claim_manual_codex_quota_reset(transaction, channel_id, kind, started_at, checked_at)
+        .await?
+    {
+        ("manual", started_at)
+    } else {
+        ("openai_official", started_at)
+    };
+    sqlx::query(
+        "UPDATE codex_quota_window_periods \
+         SET ended_at=$2,reset_reason=$3 \
+         WHERE id=$1",
+    )
+    .bind(current.id)
+    .bind(ended_at)
+    .bind(reset_reason)
+    .execute(&mut **transaction)
+    .await?;
+    insert_codex_quota_window_period(
+        transaction,
+        channel_id,
+        kind,
+        observation,
+        started_at,
+        checked_at,
+    )
+    .await
+}
+
+async fn insert_codex_quota_window_period(
+    transaction: &mut Transaction<'_, Postgres>,
+    channel_id: Uuid,
+    kind: CodexQuotaWindowKind,
+    observation: ObservedCodexQuotaWindow,
+    started_at: DateTime<Utc>,
+    checked_at: DateTime<Utc>,
+) -> Result<(), RepositoryError> {
+    sqlx::query(
+        "INSERT INTO codex_quota_window_periods \
+         (id,credential_id,window_kind,window_seconds,started_at,scheduled_reset_at, \
+          initial_used_percent,last_used_percent,first_observed_at,last_observed_at) \
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$7,$8,$8)",
+    )
+    .bind(Uuid::new_v4())
+    .bind(channel_id)
+    .bind(kind.as_str())
+    .bind(observation.window_seconds)
+    .bind(started_at)
+    .bind(observation.reset_at)
+    .bind(observation.used_percent)
+    .bind(checked_at)
+    .execute(&mut **transaction)
+    .await?;
+    Ok(())
+}
+
+async fn claim_manual_codex_quota_reset(
+    transaction: &mut Transaction<'_, Postgres>,
+    channel_id: Uuid,
+    kind: CodexQuotaWindowKind,
+    transition_started_at: DateTime<Utc>,
+    observed_at: DateTime<Utc>,
+) -> Result<bool, RepositoryError> {
+    let event_id = sqlx::query_scalar::<_, Uuid>(
+        "SELECT id \
+         FROM codex_quota_reset_events \
+         WHERE credential_id=$1 \
+           AND outcome IN ('reset','already_redeemed') \
+           AND windows_reset > ( \
+               CASE WHEN primary_applied_at IS NULL THEN 0 ELSE 1 END \
+               + CASE WHEN secondary_applied_at IS NULL THEN 0 ELSE 1 END \
+           ) \
+           AND requested_at <= $2 + make_interval(secs => $3) \
+           AND requested_at >= $2 - make_interval(secs => $3) \
+           AND CASE \
+               WHEN $4='primary' THEN primary_applied_at \
+               ELSE secondary_applied_at \
+           END IS NULL \
+         ORDER BY requested_at DESC,id DESC \
+         FOR UPDATE \
+         LIMIT 1",
+    )
+    .bind(channel_id)
+    .bind(transition_started_at)
+    .bind(MANUAL_RESET_MATCH_WINDOW.num_seconds())
+    .bind(kind.as_str())
+    .fetch_optional(&mut **transaction)
+    .await?;
+    let Some(event_id) = event_id else {
+        return Ok(false);
+    };
+    let update = match kind {
+        CodexQuotaWindowKind::Primary => {
+            "UPDATE codex_quota_reset_events SET primary_applied_at=$2 WHERE id=$1"
+        }
+        CodexQuotaWindowKind::Secondary => {
+            "UPDATE codex_quota_reset_events SET secondary_applied_at=$2 WHERE id=$1"
+        }
+    };
+    sqlx::query(update)
+        .bind(event_id)
+        .bind(observed_at)
+        .execute(&mut **transaction)
+        .await?;
+    Ok(true)
+}
+
+fn timestamps_within(left: DateTime<Utc>, right: DateTime<Utc>, tolerance: Duration) -> bool {
+    left.signed_duration_since(right).abs() <= tolerance
+}
+
 fn credential_select(suffix: &str) -> String {
     format!(
         "SELECT c.channel_id,c.channel_group_id,c.connector_pool_id, \
@@ -1089,7 +1586,8 @@ fn credential_select(suffix: &str) -> String {
                 c.quota_threshold_percent,c.runtime_status,c.quota_allowed, \
                 c.quota_limit_reached,c.primary_used_percent,c.primary_window_seconds, \
                 c.primary_reset_at,c.secondary_used_percent,c.secondary_window_seconds, \
-                c.secondary_reset_at,c.quota_checked_at,c.last_error_code,c.last_error_summary, \
+                c.secondary_reset_at,c.quota_reset_credits_available,c.quota_checked_at, \
+                c.last_error_code,c.last_error_summary, \
                 ch.proxy_id,ch.weight,c.enabled,ch.available_models,c.created_at,c.updated_at \
          FROM codex_oauth_credentials c JOIN channels ch ON ch.id=c.channel_id {suffix}"
     )
@@ -1228,7 +1726,8 @@ async fn delete_codex_credential(
          access_token_expires_at=NULL,quota_allowed=NULL,quota_limit_reached=NULL, \
          primary_used_percent=NULL,primary_window_seconds=NULL,primary_reset_at=NULL, \
          secondary_used_percent=NULL,secondary_window_seconds=NULL,secondary_reset_at=NULL, \
-         quota_checked_at=NULL,last_error_code=NULL,last_error_summary=NULL,deleted_at=now() \
+         quota_reset_credits_available=NULL,quota_checked_at=NULL, \
+         last_error_code=NULL,last_error_summary=NULL,deleted_at=now() \
          WHERE channel_id=$1 AND updated_at=$2 AND deleted_at IS NULL \
          RETURNING updated_at",
     )

@@ -268,4 +268,53 @@ describe("StatisticsPage", () => {
       expect(startedAt.getHours()).toBe(0);
     });
   });
+
+  it("hydrates a Codex credential filter from the URL and keeps it separate from channel filters", async () => {
+    seedAuthenticatedSession();
+    const credentialId = "00000000-0000-0000-0000-00000000d001";
+    const queries: URLSearchParams[] = [];
+    server.use(
+      http.get("/console/v1/routing/channels", () =>
+        HttpResponse.json([
+          CHANNEL,
+          {
+            ...CHANNEL,
+            id: credentialId,
+            name: "Codex Plus",
+            api_format: "open_ai_responses",
+            connector_kind: "codex_oauth",
+            provider_managed: true,
+          },
+          {
+            ...CHANNEL,
+            id: "00000000-0000-0000-0000-00000000d002",
+            name: "Codex Plus",
+            api_format: "open_ai_images",
+            connector_kind: "codex_oauth",
+            provider_managed: true,
+          },
+        ]),
+      ),
+      http.get("/console/v1/system/statistics/costs", ({ request }) => {
+        queries.push(new URL(request.url).searchParams);
+        return HttpResponse.json(COST_STATISTICS_REPORT);
+      }),
+    );
+    renderApp(
+      `/admin/cost-statistics?started_after=${encodeURIComponent(
+        "2026-07-29T09:00:00.000Z",
+      )}&started_before=${encodeURIComponent(
+        "2026-07-29T12:00:00.000Z",
+      )}&granularity=hour&codex_credential_id=${credentialId}`,
+    );
+
+    await waitFor(() => expect(queries.length).toBeGreaterThan(0));
+    const query = queries.at(-1);
+    expect(query?.get("codex_credential_id")).toBe(credentialId);
+    expect(query?.has("channel_id")).toBe(false);
+    expect(
+      screen.getByRole("combobox", { name: "Codex credential" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Channel" })).toBeInTheDocument();
+  });
 });

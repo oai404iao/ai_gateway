@@ -1298,6 +1298,8 @@ const zhCN: Record<string, string> = {
     "按时间区间、用户、API 密钥和聚合颗粒度筛选。",
   "Filter by time range, user, API key, channel, and aggregation granularity.":
     "按时间区间、用户、API 密钥、渠道和聚合颗粒度筛选。",
+  "Filter by time range, user, API key, channel or Codex credential, and aggregation granularity.":
+    "按时间区间、用户、API 密钥、渠道或 Codex 凭证和聚合颗粒度筛选。",
   "Filter your own statistics by time range, API key, and aggregation granularity.":
     "按时间区间、API 密钥和聚合颗粒度筛选您自己的统计。",
   "Channel status and your own cost analytics.": "渠道状态和您自己的花费统计。",
@@ -1311,6 +1313,8 @@ const zhCN: Record<string, string> = {
   "Daily": "按天",
   "hourly": "按小时",
   "daily": "按天",
+  "Codex credential": "Codex 凭证",
+  "All Codex credentials": "全部 Codex 凭证",
   "All users": "所有用户",
   "All API keys": "所有 API 密钥",
   "All channels": "所有渠道",
@@ -1639,7 +1643,11 @@ const zhCN: Record<string, string> = {
   "{percent}% used": "已使用 {percent}%",
   "Primary window": "主窗口",
   "Secondary window": "次窗口",
+  "Natural reset": "自然重置",
+  "Manual reset credit": "手动 reset credit",
+  "OpenAI official reset": "OpenAI 官方重置",
   "Threshold: {percent}%": "阈值：{percent}%",
+  "OpenAI reset credits: {count}": "OpenAI reset credit：{count}",
   "Refreshed {time}": "刷新于 {time}",
   "Weight {weight}": "权重 {weight}",
   "Proxy assigned": "已分配代理",
@@ -1647,6 +1655,9 @@ const zhCN: Record<string, string> = {
   "Member {id}": "成员 {id}",
   "Refresh token for {label}": "刷新 {label} 的 Token",
   "Refresh quota for {label}": "刷新 {label} 的额度",
+  "View quota history for {label}": "查看 {label} 的额度窗口历史",
+  "Reset quota with an OpenAI credit for {label}":
+    "使用 OpenAI reset credit 重置 {label} 的额度",
   "Edit {label}": "编辑 {label}",
   "Delete {label}": "删除 {label}",
   "Select {label}": "选择 {label}",
@@ -1685,6 +1696,35 @@ const zhCN: Record<string, string> = {
   "Disabled {count} credentials.": "已停用 {count} 个凭证。",
   "Deleted {count} credentials.": "已删除 {count} 个凭证。",
   "Deleted {label}.": "已删除 {label}。",
+  "OpenAI reset credit consumed.": "已消费 OpenAI reset credit。",
+  "No active quota window needed a reset.": "当前没有需要重置的额度窗口。",
+  "No OpenAI reset credit is available.": "没有可用的 OpenAI reset credit。",
+  "This reset request was already redeemed.": "该重置请求已兑换过。",
+  "{message} The follow-up quota refresh failed; automatic polling will retry.":
+    "{message} 后续额度刷新失败，自动轮询将继续重试。",
+  "{message} {count} windows reset.": "{message} 已重置 {count} 个窗口。",
+  "Consume an OpenAI reset credit?": "确认消费一个 OpenAI reset credit？",
+  "This calls OpenAI's reset-credit endpoint for {label}. One available credit may be consumed and both quota windows may restart. Available credits: {count}.":
+    "此操作会为 {label} 调用 OpenAI reset-credit 接口，可能消费一个可用 credit，并重新开始两个额度窗口。当前可用：{count}。",
+  "Consume reset credit": "消费 reset credit",
+  "Quota window history for {label}": "{label} 的额度窗口历史",
+  "Natural resets follow the scheduled boundary. Manual resets consume a reset credit through this Console. An earlier unmatched rollover is recorded as an OpenAI official reset.":
+    "自然重置按计划边界发生；手动重置会通过本 Console 消费 reset credit；未匹配到手动事件的提前换窗会记录为 OpenAI 官方重置。",
+  "No quota window history": "暂无额度窗口历史",
+  "History begins with the first stored quota observation.":
+    "历史从首次保存的额度观察开始记录。",
+  "No periods for this window": "该窗口暂无周期",
+  "The provider has not reported this quota window yet.":
+    "Provider 尚未报告该额度窗口。",
+  "Period": "周期",
+  "Usage": "使用量",
+  "Ended by": "结束原因",
+  "Last observed": "最后观察时间",
+  "Ended {time}": "结束于 {time}",
+  "Scheduled reset {time}": "计划于 {time} 重置",
+  "View costs": "查看花费",
+  "This quota period has no elapsed time to analyze.":
+    "该额度周期尚无可分析的已用时间。",
   "Delete Codex credential?": "确认删除 Codex 凭证？",
   "Delete credential": "删除凭证",
   "{label} will stop receiving requests and its stored OAuth tokens will be cleared. This cannot be undone.":

@@ -203,6 +203,7 @@ mod tests {
             secondary_used_percent: None,
             secondary_window_seconds: None,
             secondary_reset_at: None,
+            quota_reset_credits_available: None,
             quota_checked_at: Some(now),
             last_error_code: None,
             last_error_summary: None,
