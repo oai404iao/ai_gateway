@@ -1977,7 +1977,7 @@ paths:
 
   /request-logs:
     get:
-      tags: [RequestLogs]
+      tags: [System, RequestLogs]
       operationId: listAllRequestLogs
       description: |
         Administrator-only global request logs, including current user and
@@ -2006,7 +2006,7 @@ paths:
 
   /request-logs/{id}:
     get:
-      tags: [RequestLogs]
+      tags: [System, RequestLogs]
       operationId: getRequestLog
       description: |
         Administrator-only global request-log detail, including current user
@@ -2050,12 +2050,14 @@ paths:
 
   /statistics/costs:
     get:
-      tags: [Statistics]
-      operationId: getCostStatistics
+      tags: [Self, Statistics]
+      operationId: getOwnCostStatistics
       description: |
-        Regular users can only aggregate their own requests. Administrators
-        can aggregate all users or filter by `user_id`, `api_key_id`, and
-        `channel_id`. Channel-level details are returned only to administrators.
+        Aggregates only the authenticated user's requests for every caller,
+        including administrators. The interface accepts the same filters and
+        returns the same owner-visible fields regardless of role; `channels`
+        is always empty. Use the administrator-only system endpoint for
+        cross-user or channel-level analytics.
         Aggregates request counts, token totals and usage categories, RPM/TPM,
         and cost by UTC hour or day. All monetary amounts are settled in USD,
         and the response includes continuous zero-valued buckets across the
@@ -2066,17 +2068,14 @@ paths:
         - $ref: "#/components/parameters/StatisticsStartedAfter"
         - $ref: "#/components/parameters/StatisticsStartedBefore"
         - $ref: "#/components/parameters/StatisticsGranularity"
-        - $ref: "#/components/parameters/RequestLogUserId"
         - $ref: "#/components/parameters/RequestLogApiKeyId"
-        - $ref: "#/components/parameters/StatisticsChannelId"
       responses:
         "200":
-          description: Cost and usage statistics.
+          description: Owner-scoped cost and usage statistics.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/CostStatisticsReport" }
         "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/Unprocessable" }
 
   /statistics/spend-leaderboard:
@@ -2104,6 +2103,37 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/SpendLeaderboardReport" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /system/statistics/costs:
+    get:
+      tags: [System, Statistics]
+      operationId: getSystemCostStatistics
+      description: |
+        Administrator-only system-wide cost analytics. Administrators can
+        aggregate all users or filter by `user_id`, `api_key_id`, and
+        `channel_id`; channel-level details are included in the response.
+        Aggregates request counts, token totals and usage categories, RPM/TPM,
+        and cost by UTC hour or day. All monetary amounts are settled in USD,
+        and the response includes continuous zero-valued buckets across the
+        selected range. Client-cancelled requests do not participate in model
+        or channel success rates.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/StatisticsStartedAfter"
+        - $ref: "#/components/parameters/StatisticsStartedBefore"
+        - $ref: "#/components/parameters/StatisticsGranularity"
+        - $ref: "#/components/parameters/RequestLogUserId"
+        - $ref: "#/components/parameters/RequestLogApiKeyId"
+        - $ref: "#/components/parameters/StatisticsChannelId"
+      responses:
+        "200":
+          description: System-wide cost and usage statistics.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CostStatisticsReport" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/Unprocessable" }
 
   /audit-logs:

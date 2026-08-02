@@ -17,6 +17,8 @@ export interface CostStatisticsFilters {
   channel_id?: string;
 }
 
+export type CostStatisticsScope = "own" | "system";
+
 function queryString(values: Record<string, string | undefined>): string {
   const search = new URLSearchParams();
   for (const [key, value] of Object.entries(values)) {
@@ -42,18 +44,22 @@ export function usePersonalUsage() {
   });
 }
 
-export function useCostStatistics(filters: CostStatisticsFilters) {
+export function useCostStatistics(
+  scope: CostStatisticsScope,
+  filters: CostStatisticsFilters,
+) {
+  const systemScope = scope === "system";
   return useQuery({
-    queryKey: ["console", "statistics", "costs", filters] as const,
+    queryKey: ["console", scope, "statistics", "costs", filters] as const,
     queryFn: () =>
       apiGet<CostStatisticsReport>(
-        `/statistics/costs?${queryString({
+        `${systemScope ? "/system/statistics/costs" : "/statistics/costs"}?${queryString({
           started_after: filters.started_after,
           started_before: filters.started_before,
           granularity: filters.granularity,
-          user_id: filters.user_id,
+          user_id: systemScope ? filters.user_id : undefined,
           api_key_id: filters.api_key_id,
-          channel_id: filters.channel_id,
+          channel_id: systemScope ? filters.channel_id : undefined,
         })}`,
       ),
   });

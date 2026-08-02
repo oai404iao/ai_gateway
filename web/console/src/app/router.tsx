@@ -59,6 +59,11 @@ const StatisticsPage = lazy(() =>
     default: m.StatisticsPage,
   })),
 );
+const SystemCostStatisticsPage = lazy(() =>
+  import("@/features/statistics/system-cost-statistics-page").then((m) => ({
+    default: m.SystemCostStatisticsPage,
+  })),
+);
 const ChannelStatusPage = lazy(() =>
   import("@/features/statistics/channel-status-page").then((m) => ({
     default: m.ChannelStatusPage,
@@ -308,7 +313,11 @@ export function AppRouter() {
               />
               <Route
                 path="/admin/statistics"
-                element={<Navigate to="/statistics" replace />}
+                element={<Navigate to="/admin/cost-statistics" replace />}
+              />
+              <Route
+                path="/admin/cost-statistics"
+                element={<SystemCostStatisticsPage />}
               />
               <Route path="/admin/request-logs" element={<AdminRequestLogsPage />} />
               <Route path="/admin/audit-logs" element={<AuditLogsPage />} />

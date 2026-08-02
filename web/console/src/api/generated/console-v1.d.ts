@@ -1110,16 +1110,18 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * @description Regular users can only aggregate their own requests. Administrators
-         *     can aggregate all users or filter by `user_id`, `api_key_id`, and
-         *     `channel_id`. Channel-level details are returned only to administrators.
+         * @description Aggregates only the authenticated user's requests for every caller,
+         *     including administrators. The interface accepts the same filters and
+         *     returns the same owner-visible fields regardless of role; `channels`
+         *     is always empty. Use the administrator-only system endpoint for
+         *     cross-user or channel-level analytics.
          *     Aggregates request counts, token totals and usage categories, RPM/TPM,
          *     and cost by UTC hour or day. All monetary amounts are settled in USD,
          *     and the response includes continuous zero-valued buckets across the
          *     selected range. Client-cancelled requests do not participate in model
          *     success rates.
          */
-        get: operations["getCostStatistics"];
+        get: operations["getOwnCostStatistics"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1146,6 +1148,32 @@ export interface paths {
          *     request in the selected period are omitted.
          */
         get: operations["getSpendLeaderboard"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/system/statistics/costs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * @description Administrator-only system-wide cost analytics. Administrators can
+         *     aggregate all users or filter by `user_id`, `api_key_id`, and
+         *     `channel_id`; channel-level details are included in the response.
+         *     Aggregates request counts, token totals and usage categories, RPM/TPM,
+         *     and cost by UTC hour or day. All monetary amounts are settled in USD,
+         *     and the response includes continuous zero-valued buckets across the
+         *     selected range. Client-cancelled requests do not participate in model
+         *     or channel success rates.
+         */
+        get: operations["getSystemCostStatistics"];
         put?: never;
         post?: never;
         delete?: never;
@@ -5753,7 +5781,7 @@ export interface operations {
             422: components["responses"]["Unprocessable"];
         };
     };
-    getCostStatistics: {
+    getOwnCostStatistics: {
         parameters: {
             query?: {
                 /** @description Inclusive range start; defaults to seven days before the end. */
@@ -5762,11 +5790,7 @@ export interface operations {
                 started_before?: components["parameters"]["StatisticsStartedBefore"];
                 /** @description Hour supports at most 31 days; day supports at most 366 days. */
                 granularity?: components["parameters"]["StatisticsGranularity"];
-                /** @description Administrator-only owner filter. */
-                user_id?: components["parameters"]["RequestLogUserId"];
                 api_key_id?: components["parameters"]["RequestLogApiKeyId"];
-                /** @description Administrator-only exact channel filter. */
-                channel_id?: components["parameters"]["StatisticsChannelId"];
             };
             header?: never;
             path?: never;
@@ -5774,7 +5798,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Cost and usage statistics. */
+            /** @description Owner-scoped cost and usage statistics. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -5784,7 +5808,6 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthorized"];
-            403: components["responses"]["Forbidden"];
             422: components["responses"]["Unprocessable"];
         };
     };
@@ -5816,6 +5839,41 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthorized"];
+            422: components["responses"]["Unprocessable"];
+        };
+    };
+    getSystemCostStatistics: {
+        parameters: {
+            query?: {
+                /** @description Inclusive range start; defaults to seven days before the end. */
+                started_after?: components["parameters"]["StatisticsStartedAfter"];
+                /** @description Exclusive range end; defaults to the current time. */
+                started_before?: components["parameters"]["StatisticsStartedBefore"];
+                /** @description Hour supports at most 31 days; day supports at most 366 days. */
+                granularity?: components["parameters"]["StatisticsGranularity"];
+                /** @description Administrator-only owner filter. */
+                user_id?: components["parameters"]["RequestLogUserId"];
+                api_key_id?: components["parameters"]["RequestLogApiKeyId"];
+                /** @description Administrator-only exact channel filter. */
+                channel_id?: components["parameters"]["StatisticsChannelId"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description System-wide cost and usage statistics. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CostStatisticsReport"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
             422: components["responses"]["Unprocessable"];
         };
     };

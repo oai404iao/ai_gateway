@@ -23,6 +23,7 @@ import {
   MODEL,
   MODEL_RULE,
   NEW_API_KEY_SECRET,
+  OWN_COST_STATISTICS_REPORT,
   OTHER_ACTIVE_SESSION,
   OWN_API_KEY,
   PERSONAL_USAGE_REPORT,
@@ -234,6 +235,9 @@ export const handlers = [
     HttpResponse.json(CHANNEL_STATUS_REPORT),
   ),
   http.get("/console/v1/statistics/costs", () =>
+    HttpResponse.json(OWN_COST_STATISTICS_REPORT),
+  ),
+  http.get("/console/v1/system/statistics/costs", () =>
     HttpResponse.json(COST_STATISTICS_REPORT),
   ),
   http.get("/console/v1/statistics/spend-leaderboard", () =>

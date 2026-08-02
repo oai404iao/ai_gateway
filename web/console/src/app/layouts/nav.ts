@@ -77,7 +77,18 @@ export const NAV_SECTIONS: NavSection[] = [
     items: [
       { label: "Proxies", path: "/admin/network/proxies", icon: Network },
       { label: "Templates", path: "/admin/transforms/templates", icon: FileText },
+    ],
+  },
+  {
+    title: "System",
+    roles: ["admin"],
+    items: [
       { label: "Request Logs", path: "/admin/request-logs", icon: ScrollText },
+      {
+        label: "Cost statistics",
+        path: "/admin/cost-statistics",
+        icon: ChartNoAxesCombined,
+      },
       { label: "Audit Logs", path: "/admin/audit-logs", icon: ShieldCheck },
       { label: "System load", path: "/admin/system-load", icon: Gauge },
       { label: "System settings", path: "/admin/system", icon: RefreshCw },

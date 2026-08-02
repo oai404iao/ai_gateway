@@ -43,9 +43,10 @@ pnpm e2e:install            # install Playwright Chromium + OS deps (first run)
   `types.ts` re-exports it).
 - `src/app/` — providers, router, layouts, theme.
 - `src/features/` — feature modules (auth, profile, sessions, api-keys,
-  request-logs, personal/cost statistics, channel status, spend leaderboard,
-  self-registration, user/user-group/registration-code management, system
-  load, proxy egress-IP diagnostics, Codex OAuth credential/quota management,
+  owner-scoped request logs and cost statistics, administrator system request
+  logs and cost statistics, channel status, spend leaderboard,
+  self-registration, user/user-group/registration-code management, system load,
+  proxy egress-IP diagnostics, Codex OAuth credential/quota management,
   Business workspace-member identity, single/batch credential deletion and
   state changes, Codex credential export/import review with in-page proxy management, and the
   remaining admin control plane).

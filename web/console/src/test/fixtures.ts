@@ -651,6 +651,11 @@ export const COST_STATISTICS_REPORT: CostStatisticsReport = {
   ],
 };
 
+export const OWN_COST_STATISTICS_REPORT: CostStatisticsReport = {
+  ...COST_STATISTICS_REPORT,
+  channels: [],
+};
+
 export const SPEND_LEADERBOARD_REPORT: SpendLeaderboardReport = {
   period: "day",
   period_start: "2026-07-21",

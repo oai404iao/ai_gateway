@@ -35,8 +35,23 @@ describe("StatisticsPage", () => {
     expect(window.location.pathname).toBe("/statistics");
   });
 
-  it("shows personal usage, cost analytics, and the operations load page", async () => {
+  it("keeps administrator personal analytics owner-scoped and exposes system analytics", async () => {
     seedAuthenticatedSession();
+    const ownQueries: URLSearchParams[] = [];
+    let systemCostRequests = 0;
+    server.use(
+      http.get("/console/v1/statistics/costs", ({ request }) => {
+        ownQueries.push(new URL(request.url).searchParams);
+        return HttpResponse.json({
+          ...COST_STATISTICS_REPORT,
+          channels: [],
+        });
+      }),
+      http.get("/console/v1/system/statistics/costs", () => {
+        systemCostRequests += 1;
+        return HttpResponse.json(COST_STATISTICS_REPORT);
+      }),
+    );
     const user = userEvent.setup();
     renderApp();
 
@@ -55,11 +70,33 @@ describe("StatisticsPage", () => {
       "href",
       "/admin/system-load",
     );
+    expect(screen.getByRole("link", { name: "Cost statistics" })).toHaveAttribute(
+      "href",
+      "/admin/cost-statistics",
+    );
     expect(screen.queryByRole("tab", { name: "System load" })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("tab", { name: "Cost statistics" }));
 
     expect(await screen.findByText("Total cost", {}, { timeout: 5_000 })).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Filter your own statistics by time range, API key, and aggregation granularity.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "Channel" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Channel details")).not.toBeInTheDocument();
+    expect(ownQueries.length).toBeGreaterThan(0);
+    expect(ownQueries.every((query) => !query.has("user_id"))).toBe(true);
+    expect(ownQueries.every((query) => !query.has("channel_id"))).toBe(true);
+    expect(systemCostRequests).toBe(0);
+
+    await user.click(screen.getByRole("link", { name: "Cost statistics" }));
+
+    expect(window.location.pathname).toBe("/admin/cost-statistics");
+    expect(
+      await screen.findByRole("heading", { name: "Cost statistics" }),
+    ).toBeInTheDocument();
     expect((await screen.findAllByText(MODEL.source_model_id)).length).toBeGreaterThan(0);
     expect((await screen.findAllByText("97.5%")).length).toBeGreaterThan(0);
 
@@ -89,6 +126,7 @@ describe("StatisticsPage", () => {
     expect(screen.getAllByText("12M").length).toBeGreaterThan(0);
     expect(screen.getAllByText("53M").length).toBeGreaterThan(0);
     expect(screen.getAllByText("40%").length).toBeGreaterThan(0);
+    expect(systemCostRequests).toBeGreaterThan(0);
 
     await user.click(screen.getByRole("link", { name: "System load" }));
 
@@ -137,6 +175,9 @@ describe("StatisticsPage", () => {
     );
     expect(screen.queryByRole("link", { name: "Price sync" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "System load" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: "Cost statistics" }),
+    ).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "System load" })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("tab", { name: "Cost statistics" }));
@@ -169,15 +210,14 @@ describe("StatisticsPage", () => {
     seedAuthenticatedSession();
     const queries: URLSearchParams[] = [];
     server.use(
-      http.get("/console/v1/statistics/costs", ({ request }) => {
+      http.get("/console/v1/system/statistics/costs", ({ request }) => {
         queries.push(new URL(request.url).searchParams);
         return HttpResponse.json(COST_STATISTICS_REPORT);
       }),
     );
     const user = userEvent.setup();
-    renderApp();
+    renderApp("/admin/cost-statistics");
 
-    await user.click(await screen.findByRole("tab", { name: "Cost statistics" }));
     await waitFor(() => {
       expect(queries.length).toBeGreaterThan(0);
       expect(queries.at(-1)?.get("granularity")).toBe("hour");

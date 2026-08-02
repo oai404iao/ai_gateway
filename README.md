@@ -57,7 +57,8 @@ separate management Console for users and administrators.
   settlement.
 - **Management Console** with JWT sessions, user/admin roles, administrator-
   assisted temporary-password recovery, API-key policy, routing and channel
-  management, audit logs, and optimistic concurrency.
+  management, owner-scoped request/cost analytics, administrator system
+  analytics, audit logs, and optimistic concurrency.
 - **Single-binary deployment** with an optional embedded React Console UI; no
   Node.js process is required in production.
 
