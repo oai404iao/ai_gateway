@@ -28,7 +28,7 @@ Chat Completions、Responses、非流式 JSON Images generation 与 multipart Im
   系统负载页显示活跃落盘字节、可用容量和失败次数。
 - 将 PostgreSQL 控制面记录编译为不可变内存快照，因此代理请求不需要逐次查询数据库。
 - 可按配置执行模型别名、受限 JSON/Header/响应/SSE 变换。
-- 转发前会移除客户端凭据和 hop-by-hop Header，再注入渠道专属的上游鉴权。
+- 转发前会移除客户端凭据、hop-by-hop Header 和常见反向代理/CDN 转发元数据，再注入渠道专属的上游鉴权。
 - 上游响应以流式方式转发，不缓冲完整响应；一旦发送响应头或任何响应字节，绝不重试或切换渠道。
 - 提供进程内 RPM、并发和软额度准入控制、被动连接健康、异步请求日志、用量提取与结算。
 - 提供独立的 JWT Console API，包括按用户邀请、可复用邀请码自助注册、管理员辅助临时密码恢复、轮换 refresh session、用户/管理员角色、审计日志，以及大多数可变资源的乐观并发控制。
@@ -402,7 +402,8 @@ pnpm --dir web/console generate:api:check   # OpenAPI spec/类型漂移门禁
 - 请求在读取 body 前完成认证与准入。
 - 只有模型别名或变换确有需要时才重新序列化请求；否则转发原始请求字节。
 - 变换顺序固定为：模板默认值 → 渠道覆盖 → 受保护 Header 清理 → 上游鉴权。
-- 客户端 `Authorization`、hop-by-hop Header 及 `Connection` 声明的 Header 永不转发给上游。
+- 客户端 `Authorization`、hop-by-hop Header、`Connection` 声明的 Header，以及常见反向代理/CDN
+  转发元数据永不转发给任何上游渠道。
 - 被动健康响应收到上游响应头之前的连接失败。配置允许时，只能在响应头前切换到
   尚未尝试的健康渠道；上游 HTTP 错误或已经开始的响应流不会重试。
 - RPM、并发和软额度准入均为进程内状态；没有跨实例协调。

@@ -44,6 +44,24 @@ const CHAT_ONLY_KEY: &str = "chat-only-key";
 const MODELS_READ_ONLY_KEY: &str = "models-read-only-key";
 const NO_REACHABLE_MODELS_KEY: &str = "no-reachable-models-key";
 const UPSTREAM_KEY: &str = "upstream-key";
+const FORWARDING_METADATA_HEADERS: &[&str] = &[
+    "forwarded",
+    "via",
+    "x-forwarded-for",
+    "x-forwarded-host",
+    "x-forwarded-proto",
+    "x-forwarded-port",
+    "x-real-ip",
+    "x-client-ip",
+    "x-original-forwarded-for",
+    "true-client-ip",
+    "cf-connecting-ip",
+    "cf-connecting-ipv6",
+    "cf-pseudo-ipv4",
+    "cf-ipcountry",
+    "cf-ray",
+    "cf-visitor",
+];
 
 #[derive(Clone)]
 struct MockUpstream {
@@ -850,6 +868,13 @@ fn authorized_post(
         .body(body.into())
 }
 
+fn with_forwarding_metadata(mut request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    for name in FORWARDING_METADATA_HEADERS {
+        request = request.header(*name, "discard");
+    }
+    request
+}
+
 fn multipart_edit_body(
     boundary: &str,
     model: &str,
@@ -1321,6 +1346,57 @@ async fn matching_chat_model_preserves_body_and_forwards_response_safely() {
     assert!(request.headers.get("connection").is_none());
     assert!(request.headers.get("x-internal-hop").is_none());
     assert_eq!(request.headers.get("x-request-id").unwrap(), "forward-me");
+}
+
+#[tokio::test]
+async fn common_forwarding_metadata_is_filtered_for_every_http_operation() {
+    let harness = harness(StatusCode::OK, br#"{}"#.to_vec()).await;
+    let client = client();
+
+    let requests = [
+        with_forwarding_metadata(authorized_post(
+            &client,
+            harness.url("/v1/chat/completions"),
+            CLIENT_KEY,
+            br#"{"model":"same-model"}"#.to_vec(),
+        )),
+        with_forwarding_metadata(authorized_post(
+            &client,
+            harness.url("/v1/responses"),
+            CLIENT_KEY,
+            br#"{"model":"responses-model"}"#.to_vec(),
+        )),
+        with_forwarding_metadata(authorized_post(
+            &client,
+            harness.url("/v1/images/generations"),
+            CLIENT_KEY,
+            br#"{"model":"gpt-image-2","prompt":"test"}"#.to_vec(),
+        )),
+    ];
+    for request in requests {
+        assert_eq!(request.send().await.unwrap().status(), StatusCode::OK);
+    }
+
+    let boundary = "gateway-forwarding-header-filter-boundary";
+    let edit = with_forwarding_metadata(authorized_multipart_post(
+        &client,
+        harness.url("/v1/images/edits"),
+        CLIENT_KEY,
+        boundary,
+        multipart_edit_body(boundary, "gpt-image-2", &[], b"image"),
+    ))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(edit.status(), StatusCode::OK);
+
+    let requests = harness.upstream_requests();
+    assert_eq!(requests.len(), 4);
+    for request in requests {
+        for name in FORWARDING_METADATA_HEADERS {
+            assert!(request.headers.get(*name).is_none(), "{name} was forwarded");
+        }
+    }
 }
 
 #[tokio::test]

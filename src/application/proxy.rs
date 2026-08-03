@@ -1538,6 +1538,25 @@ fn forward_response_headers(headers: &HeaderMap) -> HeaderMap {
     forward_headers(headers, false)
 }
 
+const REQUEST_FORWARDING_METADATA_HEADERS: &[&str] = &[
+    "forwarded",
+    "via",
+    "x-forwarded-for",
+    "x-forwarded-host",
+    "x-forwarded-proto",
+    "x-forwarded-port",
+    "x-real-ip",
+    "x-client-ip",
+    "x-original-forwarded-for",
+    "true-client-ip",
+    "cf-connecting-ip",
+    "cf-connecting-ipv6",
+    "cf-pseudo-ipv4",
+    "cf-ipcountry",
+    "cf-ray",
+    "cf-visitor",
+];
+
 fn remove_rewritten_request_entity_headers(headers: &mut HeaderMap) {
     for name in [
         HeaderName::from_static("content-md5"),
@@ -1557,10 +1576,10 @@ fn forward_headers(headers: &HeaderMap, request: bool) -> HeaderMap {
     for (name, value) in headers {
         if is_hop_by_hop(name, &connection_names)
             || (request
-                && matches!(
+                && (matches!(
                     *name,
                     HOST | CONTENT_LENGTH | AUTHORIZATION | PROXY_AUTHORIZATION
-                ))
+                ) || REQUEST_FORWARDING_METADATA_HEADERS.contains(&name.as_str())))
         {
             continue;
         }
@@ -2672,6 +2691,30 @@ mod tests {
         assert!(forwarded.get(CONNECTION).is_none());
         assert!(forwarded.get("x-internal-hop").is_none());
         assert!(forwarded.get("authorization").is_none());
+        assert_eq!(forwarded.get("x-request-id").unwrap(), "keep");
+    }
+
+    #[test]
+    fn removes_common_proxy_and_cdn_forwarding_metadata_from_requests() {
+        let mut headers = HeaderMap::new();
+        for name in super::REQUEST_FORWARDING_METADATA_HEADERS {
+            headers.insert(*name, HeaderValue::from_static("discard"));
+        }
+        headers.insert(
+            "x-forwarded-custom",
+            HeaderValue::from_static("keep-similar-name"),
+        );
+        headers.insert("x-request-id", HeaderValue::from_static("keep"));
+
+        let forwarded = forward_request_headers(&headers);
+
+        for name in super::REQUEST_FORWARDING_METADATA_HEADERS {
+            assert!(forwarded.get(*name).is_none(), "{name} was forwarded");
+        }
+        assert_eq!(
+            forwarded.get("x-forwarded-custom").unwrap(),
+            "keep-similar-name"
+        );
         assert_eq!(forwarded.get("x-request-id").unwrap(), "keep");
     }
 
