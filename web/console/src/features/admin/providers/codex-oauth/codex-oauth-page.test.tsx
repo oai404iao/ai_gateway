@@ -287,7 +287,7 @@ describe("CodexOauthPage", () => {
     }
   });
 
-  it("starts PKCE authorization and submits the copied callback URL", async () => {
+  it("starts PKCE authorization without opening a tab and submits the copied callback URL", async () => {
     seedAuthenticatedSession();
     const authorizationUrl =
       "https://auth.openai.com/oauth/authorize?client_id=client&state=state-value";
@@ -337,6 +337,11 @@ describe("CodexOauthPage", () => {
       weight: 100,
       quota_threshold_percent: 95,
     });
+    expect(open).not.toHaveBeenCalled();
+
+    await user.click(
+      await screen.findByRole("button", { name: "Open authorization page" }),
+    );
     expect(open).toHaveBeenCalledWith(
       authorizationUrl,
       "_blank",
