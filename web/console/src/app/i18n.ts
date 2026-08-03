@@ -1688,7 +1688,7 @@ const zhCN: Record<string, string> = {
   "Connect Codex account": "连接 Codex 账户",
   "The gateway creates a short-lived PKCE flow. Authorize in a browser, then paste the complete localhost callback URL.":
     "网关会创建短期 PKCE 流程。请在浏览器中授权，然后粘贴完整的 localhost 回调 URL。",
-  "Authorization opened": "授权页面已打开",
+  "Authorization ready": "授权链接已就绪",
   "This flow expires at {time}.": "该流程将于 {time} 过期。",
   "Authorization URL": "授权 URL",
   "Open authorization page": "打开授权页面",

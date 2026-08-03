@@ -495,7 +495,6 @@ export default function CodexOauthPage() {
         authorizationUrl: result.authorization_url,
         expiresAt: result.expires_at,
       });
-      window.open(result.authorization_url, "_blank", "noopener,noreferrer");
     } catch (error) {
       toast.error(errorMessage(error));
     }
@@ -1159,7 +1158,7 @@ export default function CodexOauthPage() {
             <FieldGroup>
               <Alert>
                 <ExternalLink />
-                <AlertTitle>{t("Authorization opened")}</AlertTitle>
+                <AlertTitle>{t("Authorization ready")}</AlertTitle>
                 <AlertDescription>
                   {t("This flow expires at {time}.", {
                     time: formatDateTime(oauthFlow.expiresAt),
