@@ -47,6 +47,41 @@ const AUTO_DISABLED_CHANNEL: ChannelView = {
   auto_disabled_reason: "quota exceeded",
 };
 
+const CODEX_POOL_ID = "00000000-0000-0000-0000-000000000027";
+
+const CODEX_RESPONSES_GROUP: ChannelGroupView = {
+  ...CHANNEL_GROUP,
+  id: CODEX_POOL_ID,
+  name: "codex-subscriptions",
+  api_format: "open_ai_responses",
+  connector_kind: "codex_oauth",
+  connector_pool_id: CODEX_POOL_ID,
+};
+
+const CODEX_IMAGES_GROUP: ChannelGroupView = {
+  ...CODEX_RESPONSES_GROUP,
+  id: "00000000-0000-0000-0000-000000000028",
+  name: "codex-subscriptions Images",
+  api_format: "open_ai_images",
+  enabled: false,
+};
+
+const CODEX_RESPONSES_CHANNEL: ChannelView = {
+  ...RESPONSES_CHANNEL,
+  id: "00000000-0000-0000-0000-000000000029",
+  channel_group_id: CODEX_RESPONSES_GROUP.id,
+  connector_kind: "codex_oauth",
+  provider_managed: true,
+  name: "personal-plus",
+};
+
+const CODEX_IMAGES_CHANNEL: ChannelView = {
+  ...CODEX_RESPONSES_CHANNEL,
+  id: "00000000-0000-0000-0000-000000000030",
+  channel_group_id: CODEX_IMAGES_GROUP.id,
+  api_format: "open_ai_images",
+};
+
 function renderAppAt(path: string) {
   window.history.replaceState({}, "", path);
   render(
@@ -81,6 +116,93 @@ describe("ChannelsPage", () => {
     expect(screen.getByRole("button", { name: "New group" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "New channel" })).toBeInTheDocument();
     expect(screen.getAllByText("1.25")).toHaveLength(2);
+  });
+
+  it("combines Codex Responses and Images groups from one credential pool", async () => {
+    seedAuthenticatedSession();
+    server.use(
+      http.get("/console/v1/routing/channel-groups", () =>
+        HttpResponse.json([
+          CHANNEL_GROUP,
+          CODEX_RESPONSES_GROUP,
+          CODEX_IMAGES_GROUP,
+        ]),
+      ),
+      http.get("/console/v1/routing/channels", () =>
+        HttpResponse.json([
+          CHANNEL,
+          CODEX_RESPONSES_CHANNEL,
+          CODEX_IMAGES_CHANNEL,
+        ]),
+      ),
+    );
+    const user = userEvent.setup();
+    renderAppAt("/admin/routing/channels");
+
+    const pool = await screen.findByRole("region", {
+      name: CODEX_RESPONSES_GROUP.name,
+    });
+    expect(
+      screen.getByRole("heading", { name: "Codex credential pools" }),
+    ).toBeInTheDocument();
+    expect(within(pool).getByText(CODEX_IMAGES_GROUP.name)).toBeInTheDocument();
+    expect(within(pool).getByText("Responses")).toBeInTheDocument();
+    expect(within(pool).getByText("Images")).toBeInTheDocument();
+    expect(
+      within(pool).getByRole("button", { name: "Manage shared credentials" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("region", { name: CODEX_IMAGES_GROUP.name }),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Codex OAuth" }));
+    expect(
+      screen.queryByRole("region", { name: CHANNEL_GROUP.name }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("region", { name: CODEX_RESPONSES_GROUP.name }),
+    ).toBeInTheDocument();
+  });
+
+  it("filters a large group list and expands the matching channel", async () => {
+    seedAuthenticatedSession();
+    const largeGroups = Array.from({ length: 5 }, (_, index) => ({
+      ...CHANNEL_GROUP,
+      id: `00000000-0000-0000-0000-0000000001${index}`,
+      name: index === 4 ? "target-group" : `bulk-group-${index}`,
+      priority: index,
+    }));
+    const targetChannel: ChannelView = {
+      ...CHANNEL,
+      id: "00000000-0000-0000-0000-000000000199",
+      channel_group_id: largeGroups[4].id,
+      name: "needle-upstream",
+    };
+    server.use(
+      http.get("/console/v1/routing/channel-groups", () =>
+        HttpResponse.json(largeGroups),
+      ),
+      http.get("/console/v1/routing/channels", () =>
+        HttpResponse.json([targetChannel]),
+      ),
+    );
+    const user = userEvent.setup();
+    renderAppAt("/admin/routing/channels");
+
+    await user.type(
+      await screen.findByRole("searchbox", {
+        name: "Search groups or channels",
+      }),
+      "needle",
+    );
+
+    const targetGroup = await screen.findByRole("region", {
+      name: "target-group",
+    });
+    expect(within(targetGroup).getByText("needle-upstream")).toBeVisible();
+    expect(
+      screen.queryByRole("region", { name: "bulk-group-0" }),
+    ).not.toBeInTheDocument();
   });
 
   it("submits an atomic batch update for the selected channels", async () => {

@@ -226,6 +226,68 @@ test.describe("Console SPA smoke", () => {
     await expect(page.getByText("E2E ISP")).toBeVisible();
   });
 
+  test("administrators can browse large channel inventories with paired Codex pools", async ({
+    page,
+  }) => {
+    await mockConsoleApi(page);
+    await page.goto("/login");
+    await page.getByLabel(/email/i).fill("admin@example.com");
+    await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
+    await page.getByRole("button", { name: /sign in/i }).click();
+    await page.evaluate((path) => {
+      window.history.pushState({}, "", path);
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    }, "/admin/routing/channels");
+
+    await expect(page.getByRole("heading", { name: "Channels" })).toBeVisible();
+    const codexPool = page.getByRole("region", {
+      name: "Codex subscriptions",
+    });
+    await expect(codexPool).toBeVisible();
+    await expect(codexPool.getByText("Responses", { exact: true })).toBeVisible();
+    await expect(codexPool.getByText("Images", { exact: true })).toBeVisible();
+    await expect(
+      codexPool.getByRole("button", { name: "Manage shared credentials" }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("region", { name: "Codex subscriptions Images" }),
+    ).toHaveCount(0);
+
+    const search = page.getByRole("searchbox", {
+      name: "Search groups or channels",
+    });
+    await search.fill("needle");
+    const targetGroup = page.getByRole("region", { name: "target-group" });
+    await expect(targetGroup).toBeVisible();
+    await expect(targetGroup.getByText("needle-upstream")).toBeVisible();
+    await expect(
+      page.getByRole("region", { name: "standard-group-1" }),
+    ).toHaveCount(0);
+
+    await page.getByRole("button", { name: "Clear search" }).click();
+    await page
+      .getByRole("group", { name: "Channel group type" })
+      .getByRole("button", { name: "Codex OAuth" })
+      .click();
+    await expect(
+      page.getByRole("heading", { name: "Standard channel groups" }),
+    ).toHaveCount(0);
+    await expect(codexPool).toBeVisible();
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(search).toBeVisible();
+    await expect(
+      codexPool.getByRole("button", { name: "Manage shared credentials" }),
+    ).toBeVisible();
+    expect(
+      await page.evaluate(
+        () =>
+          document.documentElement.scrollWidth <=
+          document.documentElement.clientWidth + 1,
+      ),
+    ).toBe(true);
+  });
+
   test("administrators can inspect and batch-update a Codex OAuth credential", async ({
     page,
   }) => {

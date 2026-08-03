@@ -931,6 +931,30 @@ const zhCN: Record<string, string> = {
     "配置路由状态、状态统计与自动禁用行为。",
   "Manage channel groups and their upstream channels in one grouped view.":
     "在一个分组视图中管理渠道组及其上游渠道。",
+  "Browse compact channel groups, with shared Codex credentials kept together.":
+    "以紧凑方式浏览渠道组，并将共享同一 Codex 凭证的渠道组集中展示。",
+  "Channel group directory": "渠道组目录",
+  "Search first, then expand only the channel groups you need.":
+    "先搜索筛选，再按需展开需要查看的渠道组。",
+  "Standard groups": "普通渠道组",
+  "Codex pools": "Codex 凭证池",
+  "Search groups or channels": "搜索渠道组或渠道",
+  "Clear search": "清除搜索",
+  "Channel group type": "渠道组类型",
+  "All groups": "全部渠道组",
+  "Codex credential pools": "Codex 凭证池",
+  "Responses and Images groups derived from the same credential pool are managed together.":
+    "由同一凭证池派生的 Responses 与 Images 渠道组统一管理。",
+  "Shared credentials": "共享凭证",
+  "Credentials ({count})": "凭证（{count}）",
+  "Manage shared credentials": "管理共享凭证",
+  "Standard channel groups": "普通渠道组",
+  "Large lists stay compact until you expand a group to inspect its channels.":
+    "大量渠道组默认保持紧凑，仅在展开后查看其中渠道。",
+  "Show channels ({count})": "展开渠道（{count}）",
+  "Hide channels": "收起渠道",
+  "No matching channel groups": "没有匹配的渠道组",
+  "Try another search or channel group type.": "请尝试其他搜索词或渠道组类型。",
   "Select all": "全选",
   "Clear selection": "清除选择",
   "Batch edit ({count})": "批量修改（{count}）",

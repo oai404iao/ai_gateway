@@ -2414,8 +2414,9 @@ async fn etag_if_match_optimistic_concurrency_matches_spec() {
         .unwrap()
         .to_owned();
     let mut update = body_json(detail).await;
+    assert!(update["connector_pool_id"].is_null());
     update["name"] = serde_json::json!("spec-group-renamed");
-    for field in ["id", "updated_at"] {
+    for field in ["id", "connector_pool_id", "updated_at"] {
         update.as_object_mut().unwrap().remove(field);
     }
 
@@ -2492,6 +2493,27 @@ async fn codex_oauth_flow_contract_uses_pkce_and_actor_scoped_completion() {
     .await
     .unwrap();
     assert!(!images_group_enabled);
+    let listed_groups = request(
+        &app,
+        "GET",
+        "/console/v1/routing/channel-groups",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(listed_groups.status(), StatusCode::OK);
+    let listed_groups = body_json(listed_groups).await;
+    let listed_groups = listed_groups.as_array().unwrap();
+    let responses_group = listed_groups
+        .iter()
+        .find(|group| group["id"] == group_id)
+        .unwrap();
+    let images_group = listed_groups
+        .iter()
+        .find(|group| group["id"] == images_group_id.to_string())
+        .unwrap();
+    assert_eq!(responses_group["connector_pool_id"], group_id);
+    assert_eq!(images_group["connector_pool_id"], group_id);
     let group_audit: serde_json::Value = sqlx::query_scalar(
         "SELECT after_redacted FROM audit_logs \
          WHERE object_type='channel_group' AND object_id=$1 AND action='create'",
@@ -2523,6 +2545,10 @@ async fn codex_oauth_flow_contract_uses_pkce_and_actor_scoped_completion() {
     assert_eq!(images_group_update["enabled"], false);
     images_group_update["enabled"] = serde_json::json!(true);
     images_group_update.as_object_mut().unwrap().remove("id");
+    images_group_update
+        .as_object_mut()
+        .unwrap()
+        .remove("connector_pool_id");
     images_group_update
         .as_object_mut()
         .unwrap()

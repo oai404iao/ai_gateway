@@ -1,13 +1,16 @@
-import { useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import {
   CheckCheck,
+  ChevronDown,
   ListChecks,
   Pencil,
   Plus,
   Power,
   PowerOff,
   RotateCcw,
+  Search,
+  X,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
@@ -21,6 +24,21 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupButton,
+  InputGroupInput,
+} from "@/components/ui/input-group";
+import {
+  ToggleGroup,
+  ToggleGroupItem,
+} from "@/components/ui/toggle-group";
 import { AsyncResource } from "@/components/shared/async-resource";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { EmptyState } from "@/components/shared/empty-state";
@@ -41,8 +59,112 @@ import {
   connectorKindLabel,
   selectionStrategyLabel,
 } from "@/lib/permissions";
+import { cn } from "@/lib/utils";
 import { useI18n } from "@/app/i18n";
-import type { ChannelView } from "@/api/types";
+import type { ChannelGroupView, ChannelView } from "@/api/types";
+
+type GroupFilter = "all" | "standard" | "codex";
+
+interface StandardGroupEntry {
+  group: ChannelGroupView;
+  channels: ChannelView[];
+}
+
+interface CodexPoolEntry {
+  id: string;
+  canonicalGroup: ChannelGroupView;
+  groups: ChannelGroupView[];
+  credentialCount: number;
+}
+
+const FORMAT_ORDER: Record<ChannelGroupView["api_format"], number> = {
+  open_ai_chat_completions: 0,
+  open_ai_responses: 1,
+  open_ai_images: 2,
+};
+
+function compareGroups(left: ChannelGroupView, right: ChannelGroupView): number {
+  return (
+    left.priority - right.priority ||
+    left.name.localeCompare(right.name) ||
+    FORMAT_ORDER[left.api_format] - FORMAT_ORDER[right.api_format]
+  );
+}
+
+function matchesSearch(value: string, search: string): boolean {
+  return value.toLowerCase().includes(search);
+}
+
+function StandardGroupCard({
+  group,
+  channels,
+  preferOpen,
+  children,
+  onEdit,
+}: {
+  group: ChannelGroupView;
+  channels: ChannelView[];
+  preferOpen: boolean;
+  children: ReactNode;
+  onEdit: () => void;
+}) {
+  const { t } = useI18n();
+  const [open, setOpen] = useState(preferOpen);
+  const titleId = `channel-group-${group.id}`;
+
+  useEffect(() => {
+    if (preferOpen) setOpen(true);
+  }, [preferOpen]);
+
+  return (
+    <Collapsible open={open} onOpenChange={setOpen}>
+      <Card size="sm" role="region" aria-labelledby={titleId}>
+        <CardHeader>
+          <CardTitle id={titleId}>{group.name}</CardTitle>
+          <CardDescription>
+            <span className="flex flex-wrap items-center gap-2">
+              <StatusBadge
+                value={group.api_format}
+                label={apiFormatLabel(group.api_format)}
+                variant="info"
+              />
+              <StatusBadge value={group.enabled} />
+              <Badge variant="secondary">
+                {t("Channels ({count})", { count: channels.length })}
+              </Badge>
+              <Badge variant="outline">
+                {t("Priority")}: {group.priority}
+              </Badge>
+              <Badge variant="outline">
+                {selectionStrategyLabel(group.selection_strategy)}
+              </Badge>
+            </span>
+          </CardDescription>
+          <CardAction className="flex flex-wrap items-center justify-end gap-1">
+            <Button variant="ghost" size="sm" onClick={onEdit}>
+              <Pencil data-icon="inline-start" />
+              {t("Edit group")}
+            </Button>
+            <CollapsibleTrigger
+              render={<Button variant="outline" size="sm" />}
+            >
+              {open
+                ? t("Hide channels")
+                : t("Show channels ({count})", { count: channels.length })}
+              <ChevronDown
+                data-icon="inline-end"
+                className={cn("transition-transform", open && "rotate-180")}
+              />
+            </CollapsibleTrigger>
+          </CardAction>
+        </CardHeader>
+        <CollapsibleContent>
+          <CardContent>{children}</CardContent>
+        </CollapsibleContent>
+      </Card>
+    </Collapsible>
+  );
+}
 
 export function ChannelsPage() {
   const navigate = useNavigate();
@@ -52,9 +174,12 @@ export function ChannelsPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [batchOpen, setBatchOpen] = useState(false);
   const [disableTarget, setDisableTarget] = useState<ChannelView | null>(null);
+  const [search, setSearch] = useState("");
+  const [groupFilter, setGroupFilter] = useState<GroupFilter>("all");
   const quickUpdate = useBatchUpdateChannels();
   const recoverChannel = useRecoverChannel();
   const batchDialogTriggerId = "channel-batch-edit-trigger";
+  const normalizedSearch = search.trim().toLowerCase();
   const ordinaryChannels = useMemo(
     () => (channels.data ?? []).filter((channel) => !channel.provider_managed),
     [channels.data],
@@ -77,20 +202,139 @@ export function ChannelsPage() {
     return grouped;
   }, [channels.data]);
 
+  const standardGroupCount = (groups.data ?? []).filter(
+    (group) => group.connector_kind === "openai_compatible",
+  ).length;
+  const codexPoolCount = new Set(
+    (groups.data ?? [])
+      .filter((group) => group.connector_kind === "codex_oauth")
+      .map((group) => group.connector_pool_id ?? group.id),
+  ).size;
+
+  const standardEntries = useMemo<StandardGroupEntry[]>(() => {
+    if (groupFilter === "codex") return [];
+    return (groups.data ?? [])
+      .filter((group) => group.connector_kind === "openai_compatible")
+      .sort(compareGroups)
+      .flatMap((group) => {
+        const groupedChannels = (channelsByGroup.get(group.id) ?? []).filter(
+          (channel) => !channel.provider_managed,
+        );
+        if (!normalizedSearch) {
+          return [{ group, channels: groupedChannels }];
+        }
+        const groupMatches =
+          matchesSearch(group.name, normalizedSearch) ||
+          matchesSearch(apiFormatLabel(group.api_format), normalizedSearch);
+        const matchingChannels = groupedChannels.filter(
+          (channel) =>
+            matchesSearch(channel.name, normalizedSearch) ||
+            matchesSearch(channel.base_url, normalizedSearch),
+        );
+        if (!groupMatches && matchingChannels.length === 0) return [];
+        return [
+          {
+            group,
+            channels: groupMatches ? groupedChannels : matchingChannels,
+          },
+        ];
+      });
+  }, [channelsByGroup, groupFilter, groups.data, normalizedSearch]);
+
+  const codexPoolEntries = useMemo<CodexPoolEntry[]>(() => {
+    if (groupFilter === "standard") return [];
+    const pools = new Map<string, ChannelGroupView[]>();
+    for (const group of groups.data ?? []) {
+      if (group.connector_kind !== "codex_oauth") continue;
+      const poolId = group.connector_pool_id ?? group.id;
+      pools.set(poolId, [...(pools.get(poolId) ?? []), group]);
+    }
+
+    return [...pools.entries()]
+      .flatMap(([id, poolGroups]) => {
+        const sortedGroups = [...poolGroups].sort(
+          (left, right) =>
+            FORMAT_ORDER[left.api_format] - FORMAT_ORDER[right.api_format],
+        );
+        const canonicalGroup =
+          sortedGroups.find((group) => group.api_format === "open_ai_responses") ??
+          sortedGroups[0];
+        const poolChannels = sortedGroups.flatMap(
+          (group) =>
+            (channelsByGroup.get(group.id) ?? []).filter(
+              (channel) => channel.provider_managed,
+            ),
+        );
+        const poolMatches =
+          !normalizedSearch ||
+          sortedGroups.some(
+            (group) =>
+              matchesSearch(group.name, normalizedSearch) ||
+              matchesSearch(apiFormatLabel(group.api_format), normalizedSearch),
+          ) ||
+          poolChannels.some(
+            (channel) =>
+              matchesSearch(channel.name, normalizedSearch) ||
+              matchesSearch(channel.base_url, normalizedSearch),
+          );
+        if (!poolMatches) return [];
+        const responsesGroup = sortedGroups.find(
+          (group) => group.api_format === "open_ai_responses",
+        );
+        const credentialCount = responsesGroup
+          ? (channelsByGroup.get(responsesGroup.id) ?? []).filter(
+              (channel) => channel.provider_managed,
+            ).length
+          : Math.max(
+              0,
+              ...sortedGroups.map(
+                (group) =>
+                  (channelsByGroup.get(group.id) ?? []).filter(
+                    (channel) => channel.provider_managed,
+                  ).length,
+              ),
+            );
+        return [{ id, canonicalGroup, groups: sortedGroups, credentialCount }];
+      })
+      .sort((left, right) =>
+        left.canonicalGroup.name.localeCompare(right.canonicalGroup.name),
+      );
+  }, [channelsByGroup, groupFilter, groups.data, normalizedSearch]);
+
   const knownGroupIds = useMemo(
     () => new Set((groups.data ?? []).map((group) => group.id)),
     [groups.data],
   );
-  const unavailableGroupChannels = (channels.data ?? []).filter(
-    (channel) => !channel.provider_managed && !knownGroupIds.has(channel.channel_group_id),
+  const unavailableGroupChannels = useMemo(() => {
+    if (groupFilter === "codex") return [];
+    return (channels.data ?? []).filter(
+      (channel) =>
+        !channel.provider_managed &&
+        !knownGroupIds.has(channel.channel_group_id) &&
+        (!normalizedSearch ||
+          matchesSearch(channel.name, normalizedSearch) ||
+          matchesSearch(channel.base_url, normalizedSearch)),
+    );
+  }, [channels.data, groupFilter, knownGroupIds, normalizedSearch]);
+  const visibleOrdinaryChannels = useMemo(
+    () =>
+      [
+        ...new Map(
+          [
+            ...standardEntries.flatMap((entry) => entry.channels),
+            ...unavailableGroupChannels,
+          ].map((channel) => [channel.id, channel]),
+        ).values(),
+      ],
+    [standardEntries, unavailableGroupChannels],
   );
   const selectedChannels = useMemo(
     () => ordinaryChannels.filter((channel) => selected.has(channel.id)),
     [ordinaryChannels, selected],
   );
   const allSelected =
-    ordinaryChannels.length > 0 &&
-    selectedChannels.length === ordinaryChannels.length;
+    visibleOrdinaryChannels.length > 0 &&
+    visibleOrdinaryChannels.every((channel) => selected.has(channel.id));
 
   const toggleChannel = (channel: ChannelView) => {
     setSelected((current) => {
@@ -249,19 +493,37 @@ export function ChannelsPage() {
     />
   );
 
+  const hasFilteredResults =
+    codexPoolEntries.length > 0 ||
+    standardEntries.length > 0 ||
+    unavailableGroupChannels.length > 0;
+  const preferExpandedStandardGroups =
+    normalizedSearch.length > 0 || standardEntries.length <= 3;
+
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
         title={t("Channels")}
-        description={t("Manage channel groups and their upstream channels in one grouped view.")}
+        description={t(
+          "Browse compact channel groups, with shared Codex credentials kept together.",
+        )}
         actions={
           <>
             <Button
               variant="outline"
-              disabled={ordinaryChannels.length === 0}
+              disabled={visibleOrdinaryChannels.length === 0}
               onClick={() => {
-                if (allSelected) setSelected(new Set());
-                else setSelected(new Set(ordinaryChannels.map((channel) => channel.id)));
+                if (allSelected) {
+                  setSelected(new Set());
+                  return;
+                }
+                setSelected((current) => {
+                  const next = new Set(current);
+                  for (const channel of visibleOrdinaryChannels) {
+                    next.add(channel.id);
+                  }
+                  return next;
+                });
               }}
             >
               <CheckCheck data-icon="inline-start" />
@@ -289,6 +551,74 @@ export function ChannelsPage() {
         }
       />
 
+      <Card size="sm">
+        <CardHeader>
+          <CardTitle>{t("Channel group directory")}</CardTitle>
+          <CardDescription>
+            <span className="flex flex-wrap items-center justify-between gap-2">
+              <span>
+                {t("Search first, then expand only the channel groups you need.")}
+              </span>
+              <span className="flex flex-wrap gap-2">
+                <Badge variant="secondary">
+                  {t("Standard groups")}: {standardGroupCount}
+                </Badge>
+                <Badge variant="secondary">
+                  {t("Codex pools")}: {codexPoolCount}
+                </Badge>
+              </span>
+            </span>
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="grid gap-3 xl:grid-cols-[minmax(18rem,1fr)_auto] xl:items-center">
+            <InputGroup>
+              <InputGroupAddon>
+                <Search aria-hidden="true" />
+              </InputGroupAddon>
+              <InputGroupInput
+                type="search"
+                value={search}
+                aria-label={t("Search groups or channels")}
+                placeholder={t("Search groups or channels")}
+                onChange={(event) => setSearch(event.target.value)}
+              />
+              {search ? (
+                <InputGroupAddon align="inline-end">
+                  <InputGroupButton
+                    size="icon-xs"
+                    aria-label={t("Clear search")}
+                    onClick={() => setSearch("")}
+                  >
+                    <X data-icon="inline-start" />
+                  </InputGroupButton>
+                </InputGroupAddon>
+              ) : null}
+            </InputGroup>
+            <ToggleGroup
+              value={[groupFilter]}
+              onValueChange={(values) => {
+                const value = values[0] as GroupFilter | undefined;
+                if (value) setGroupFilter(value);
+              }}
+              variant="outline"
+              size="sm"
+              spacing={0}
+              className="max-w-full overflow-x-auto"
+              aria-label={t("Channel group type")}
+            >
+              <ToggleGroupItem value="all">{t("All groups")}</ToggleGroupItem>
+              <ToggleGroupItem value="standard">
+                {connectorKindLabel("openai_compatible")}
+              </ToggleGroupItem>
+              <ToggleGroupItem value="codex">
+                {connectorKindLabel("codex_oauth")}
+              </ToggleGroupItem>
+            </ToggleGroup>
+          </div>
+        </CardContent>
+      </Card>
+
       <AsyncResource
         isLoading={groups.isLoading || channels.isLoading}
         error={groups.error ?? channels.error}
@@ -296,96 +626,200 @@ export function ChannelsPage() {
         emptyTitle={t("No records")}
         emptyDescription={t("There are no records to show yet.")}
       >
-        <div className="flex flex-col gap-4">
-          {(groups.data ?? []).map((group) => {
-            const groupedChannels = channelsByGroup.get(group.id) ?? [];
-            const ordinaryGroupedChannels = groupedChannels.filter(
-              (channel) => !channel.provider_managed,
-            );
-            const titleId = `channel-group-${group.id}`;
-            return (
-              <Card key={group.id} role="region" aria-labelledby={titleId}>
-                <CardHeader>
-                  <CardTitle id={titleId}>{group.name}</CardTitle>
-                  <CardDescription>
-                    <span className="flex flex-wrap items-center gap-2">
-                      <StatusBadge
-                        value={group.api_format}
-                        label={apiFormatLabel(group.api_format)}
-                        variant="info"
-                      />
-                      <StatusBadge value={group.enabled} />
-                      <Badge variant="secondary">
-                        {connectorKindLabel(group.connector_kind)}
-                      </Badge>
-                      <Badge variant="secondary">
-                        {t("Channels ({count})", { count: groupedChannels.length })}
-                      </Badge>
-                      <Badge variant="outline">
-                        {t("Priority")}: {group.priority}
-                      </Badge>
-                      <Badge variant="outline">
-                        {selectionStrategyLabel(group.selection_strategy)}
-                      </Badge>
-                    </span>
-                  </CardDescription>
-                  <CardAction>
-                    <div className="flex gap-2">
-                      {group.connector_kind === "codex_oauth" ? (
-                        <Button
-                          size="sm"
-                          onClick={() =>
-                            navigate(`/admin/providers/codex-oauth/${group.id}`)
-                          }
-                        >
-                          {t("Manage credentials")}
-                        </Button>
-                      ) : null}
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() =>
-                          navigate(`/admin/routing/channel-groups/${group.id}`)
-                        }
-                      >
-                        <Pencil data-icon="inline-start" /> {t("Edit group")}
-                      </Button>
-                    </div>
-                  </CardAction>
-                </CardHeader>
-                <CardContent>
-                  {group.connector_kind === "codex_oauth" ? (
-                    <EmptyState
-                      title={t("Provider-managed credentials")}
-                      description={t(
-                        "Use the Codex credential manager to add OAuth accounts, proxies, and quota thresholds.",
+        {hasFilteredResults ? (
+          <div className="flex flex-col gap-8">
+            {codexPoolEntries.length > 0 ? (
+              <section
+                aria-labelledby="codex-credential-pools"
+                className="flex flex-col gap-3"
+              >
+                <div className="flex flex-wrap items-end justify-between gap-2">
+                  <div className="flex flex-col gap-1">
+                    <h2
+                      id="codex-credential-pools"
+                      className="text-lg font-semibold tracking-tight"
+                    >
+                      {t("Codex credential pools")}
+                    </h2>
+                    <p className="text-sm text-muted-foreground">
+                      {t(
+                        "Responses and Images groups derived from the same credential pool are managed together.",
                       )}
-                      className="min-h-32 border"
-                    />
-                  ) : (
-                    channelTable(ordinaryGroupedChannels)
-                  )}
-                </CardContent>
-              </Card>
-            );
-          })}
+                    </p>
+                  </div>
+                  <Badge variant="secondary">{codexPoolEntries.length}</Badge>
+                </div>
 
-          {unavailableGroupChannels.length > 0 ? (
-            <Card role="region" aria-labelledby="unavailable-channel-groups">
-              <CardHeader>
-                <CardTitle id="unavailable-channel-groups">
-                  {t("Unavailable channel groups")}
-                </CardTitle>
-                <CardDescription>
-                  {t(
-                    "These channels reference a group that is not available in the current response.",
-                  )}
-                </CardDescription>
-              </CardHeader>
-              <CardContent>{channelTable(unavailableGroupChannels)}</CardContent>
-            </Card>
-          ) : null}
-        </div>
+                <div className="grid gap-4 xl:grid-cols-2">
+                  {codexPoolEntries.map((pool) => {
+                    const titleId = `codex-pool-${pool.id}`;
+                    const credentialGroup =
+                      pool.groups.find(
+                        (group) => group.api_format === "open_ai_responses",
+                      ) ?? pool.canonicalGroup;
+                    return (
+                      <Card
+                        key={pool.id}
+                        role="region"
+                        aria-labelledby={titleId}
+                      >
+                        <CardHeader>
+                          <CardTitle id={titleId}>
+                            {pool.canonicalGroup.name}
+                          </CardTitle>
+                          <CardDescription>
+                            <span className="flex flex-wrap items-center gap-2">
+                              <Badge variant="secondary">
+                                {t("Shared credentials")}
+                              </Badge>
+                              <Badge variant="outline">
+                                {t("Credentials ({count})", {
+                                  count: pool.credentialCount,
+                                })}
+                              </Badge>
+                            </span>
+                          </CardDescription>
+                          <CardAction>
+                            <Button
+                              size="sm"
+                              onClick={() =>
+                                navigate(
+                                  `/admin/providers/codex-oauth/${credentialGroup.id}`,
+                                )
+                              }
+                            >
+                              {t("Manage shared credentials")}
+                            </Button>
+                          </CardAction>
+                        </CardHeader>
+                        <CardContent>
+                          <div className="grid gap-3 md:grid-cols-2">
+                            {pool.groups.map((group) => {
+                              const groupedChannels = (
+                                channelsByGroup.get(group.id) ?? []
+                              ).filter((channel) => channel.provider_managed);
+                              return (
+                                <Card key={group.id} size="sm">
+                                  <CardHeader>
+                                    <CardTitle>
+                                      {apiFormatLabel(group.api_format)}
+                                    </CardTitle>
+                                    <CardDescription
+                                      className="truncate"
+                                      title={group.name}
+                                    >
+                                      {group.name}
+                                    </CardDescription>
+                                    <CardAction>
+                                      <Button
+                                        variant="ghost"
+                                        size="icon-sm"
+                                        aria-label={t("Edit {name}", {
+                                          name: group.name,
+                                        })}
+                                        onClick={() =>
+                                          navigate(
+                                            `/admin/routing/channel-groups/${group.id}`,
+                                          )
+                                        }
+                                      >
+                                        <Pencil />
+                                      </Button>
+                                    </CardAction>
+                                  </CardHeader>
+                                  <CardContent className="flex flex-wrap gap-2">
+                                    <StatusBadge value={group.enabled} />
+                                    <Badge variant="secondary">
+                                      {t("Channels ({count})", {
+                                        count: groupedChannels.length,
+                                      })}
+                                    </Badge>
+                                    <Badge variant="outline">
+                                      {t("Priority")}: {group.priority}
+                                    </Badge>
+                                    <Badge variant="outline">
+                                      {selectionStrategyLabel(
+                                        group.selection_strategy,
+                                      )}
+                                    </Badge>
+                                  </CardContent>
+                                </Card>
+                              );
+                            })}
+                          </div>
+                        </CardContent>
+                      </Card>
+                    );
+                  })}
+                </div>
+              </section>
+            ) : null}
+
+            {standardEntries.length > 0 ? (
+              <section
+                aria-labelledby="standard-channel-groups"
+                className="flex flex-col gap-3"
+              >
+                <div className="flex flex-wrap items-end justify-between gap-2">
+                  <div className="flex flex-col gap-1">
+                    <h2
+                      id="standard-channel-groups"
+                      className="text-lg font-semibold tracking-tight"
+                    >
+                      {t("Standard channel groups")}
+                    </h2>
+                    <p className="text-sm text-muted-foreground">
+                      {t(
+                        "Large lists stay compact until you expand a group to inspect its channels.",
+                      )}
+                    </p>
+                  </div>
+                  <Badge variant="secondary">{standardEntries.length}</Badge>
+                </div>
+
+                <div className="flex flex-col gap-3">
+                  {standardEntries.map((entry) => (
+                    <StandardGroupCard
+                      key={entry.group.id}
+                      group={entry.group}
+                      channels={entry.channels}
+                      preferOpen={preferExpandedStandardGroups}
+                      onEdit={() =>
+                        navigate(
+                          `/admin/routing/channel-groups/${entry.group.id}`,
+                        )
+                      }
+                    >
+                      {channelTable(entry.channels)}
+                    </StandardGroupCard>
+                  ))}
+                </div>
+              </section>
+            ) : null}
+
+            {unavailableGroupChannels.length > 0 ? (
+              <Card role="region" aria-labelledby="unavailable-channel-groups">
+                <CardHeader>
+                  <CardTitle id="unavailable-channel-groups">
+                    {t("Unavailable channel groups")}
+                  </CardTitle>
+                  <CardDescription>
+                    {t(
+                      "These channels reference a group that is not available in the current response.",
+                    )}
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>{channelTable(unavailableGroupChannels)}</CardContent>
+              </Card>
+            ) : null}
+          </div>
+        ) : (
+          <EmptyState
+            title={t("No matching channel groups")}
+            description={t("Try another search or channel group type.")}
+            className="min-h-48 border"
+          />
+        )}
       </AsyncResource>
 
       <ChannelBatchEditDialog

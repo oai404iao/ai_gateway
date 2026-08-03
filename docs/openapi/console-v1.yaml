@@ -3377,12 +3377,17 @@ components:
 
     ChannelGroupView:
       type: object
-      required: [id, name, api_format, connector_kind, priority, selection_strategy, enabled, updated_at]
+      required: [id, name, api_format, connector_kind, connector_pool_id, priority, selection_strategy, enabled, updated_at]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
         api_format: { $ref: "#/components/schemas/ApiFormat" }
         connector_kind: { $ref: "#/components/schemas/ConnectorKind" }
+        connector_pool_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Shared by the format-specific channel groups derived from one provider connector pool; null for ordinary OpenAI-compatible groups.
         priority: { type: integer }
         selection_strategy: { $ref: "#/components/schemas/SelectionStrategy" }
         enabled: { type: boolean }

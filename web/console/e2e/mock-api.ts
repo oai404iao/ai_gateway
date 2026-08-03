@@ -157,11 +157,111 @@ const E2E_CODEX_GROUP = {
   name: "Codex subscriptions",
   api_format: "open_ai_responses",
   connector_kind: "codex_oauth",
+  connector_pool_id: E2E_CODEX_GROUP_ID,
   priority: 0,
   selection_strategy: "weighted_random",
   enabled: true,
   updated_at: "2026-07-29T12:00:00.000Z",
 };
+
+const E2E_CODEX_IMAGES_GROUP = {
+  ...E2E_CODEX_GROUP,
+  id: "00000000-0000-0000-0000-00000000c010",
+  name: "Codex subscriptions Images",
+  api_format: "open_ai_images",
+  enabled: false,
+};
+
+const E2E_STANDARD_CHANNEL_GROUPS = Array.from({ length: 5 }, (_, index) => ({
+  id: `00000000-0000-0000-0000-0000000002${index}`,
+  name: index === 4 ? "target-group" : `standard-group-${index + 1}`,
+  api_format: "open_ai_chat_completions",
+  connector_kind: "openai_compatible",
+  connector_pool_id: null,
+  priority: index,
+  selection_strategy: "weighted_random",
+  enabled: true,
+  updated_at: "2026-07-29T12:00:00.000Z",
+}));
+
+const E2E_ROUTING_CHANNEL_GROUPS = [
+  ...E2E_STANDARD_CHANNEL_GROUPS,
+  E2E_CODEX_GROUP,
+  E2E_CODEX_IMAGES_GROUP,
+];
+
+function routingChannel({
+  id,
+  channelGroupId,
+  name,
+  apiFormat = "open_ai_chat_completions",
+  connectorKind = "openai_compatible",
+  providerManaged = false,
+}: {
+  id: string;
+  channelGroupId: string;
+  name: string;
+  apiFormat?: "open_ai_chat_completions" | "open_ai_responses" | "open_ai_images";
+  connectorKind?: "openai_compatible" | "codex_oauth";
+  providerManaged?: boolean;
+}) {
+  return {
+    id,
+    channel_group_id: channelGroupId,
+    api_format: apiFormat,
+    connector_kind: connectorKind,
+    provider_managed: providerManaged,
+    name,
+    base_url: "https://upstream.e2e.example.test",
+    enabled: true,
+    supports_websocket: apiFormat === "open_ai_responses",
+    status_statistics_enabled: !providerManaged,
+    auto_disabled: false,
+    auto_disabled_reason: null,
+    auto_disable_allowed: !providerManaged,
+    weight: 100,
+    billing_multiplier: "1.00",
+    proxy_id: null,
+    config_template_id: null,
+    connect_timeout_ms: null,
+    response_header_timeout_ms: null,
+    stream_idle_timeout_ms: null,
+    upstream_auth_kind: providerManaged ? "none" : "bearer",
+    upstream_auth_header_name: null,
+    upstream_credential_configured: !providerManaged,
+    available_models:
+      apiFormat === "open_ai_images" ? ["gpt-image-2"] : ["gpt-5-codex"],
+    test_model: apiFormat === "open_ai_images" ? null : "gpt-5-codex",
+    created_at: "2026-07-29T12:00:00.000Z",
+    updated_at: "2026-07-29T12:00:00.000Z",
+  };
+}
+
+const E2E_ROUTING_CHANNELS = [
+  ...E2E_STANDARD_CHANNEL_GROUPS.map((group, index) =>
+    routingChannel({
+      id: `00000000-0000-0000-0000-0000000003${index}`,
+      channelGroupId: group.id,
+      name: index === 4 ? "needle-upstream" : `standard-upstream-${index + 1}`,
+    }),
+  ),
+  routingChannel({
+    id: E2E_CODEX_CREDENTIAL_ID,
+    channelGroupId: E2E_CODEX_GROUP_ID,
+    name: "Personal Plus",
+    apiFormat: "open_ai_responses",
+    connectorKind: "codex_oauth",
+    providerManaged: true,
+  }),
+  routingChannel({
+    id: "00000000-0000-0000-0000-00000000c011",
+    channelGroupId: E2E_CODEX_IMAGES_GROUP.id,
+    name: "Personal Plus",
+    apiFormat: "open_ai_images",
+    connectorKind: "codex_oauth",
+    providerManaged: true,
+  }),
+];
 
 export const E2E_CODEX_CREDENTIAL = {
   id: E2E_CODEX_CREDENTIAL_ID,
@@ -767,10 +867,13 @@ export async function mockConsoleApi(page: Page): Promise<void> {
       });
     }
     if (path === "/console/v1/routing/channel-groups" && method === "GET") {
-      return route.fulfill({ status: 200, json: [] });
+      return route.fulfill({
+        status: 200,
+        json: E2E_ROUTING_CHANNEL_GROUPS,
+      });
     }
     if (path === "/console/v1/routing/channels" && method === "GET") {
-      return route.fulfill({ status: 200, json: [] });
+      return route.fulfill({ status: 200, json: E2E_ROUTING_CHANNELS });
     }
     if (path === "/console/v1/routing/model-rules" && method === "GET") {
       return route.fulfill({ status: 200, json: [] });
