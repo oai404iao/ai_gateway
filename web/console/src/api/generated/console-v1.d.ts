@@ -1884,6 +1884,7 @@ export interface components {
             id: string;
             name: string;
             api_format: components["schemas"]["ApiFormat"];
+            priority: number;
             enabled: boolean;
         };
         SelfApiKeyChannelOption: {
@@ -1892,6 +1893,8 @@ export interface components {
             /** Format: uuid */
             channel_group_id: string;
             channel_group_name: string;
+            /** @description Whether the parent channel group is enabled. */
+            channel_group_enabled: boolean;
             api_format: components["schemas"]["ApiFormat"];
             name: string;
             enabled: boolean;

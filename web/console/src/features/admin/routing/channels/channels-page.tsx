@@ -45,11 +45,13 @@ import { EmptyState } from "@/components/shared/empty-state";
 import { PageHeader } from "@/components/shared/page-header";
 import { ResourceTable, type Column } from "@/components/shared/resource-table";
 import { StatusBadge } from "@/components/shared/status-badge";
+import { ApiError, controlPlaneMutationErrorMessage } from "@/api/errors";
 import {
   useBatchUpdateChannels,
   useChannelGroups,
   useChannels,
   useRecoverChannel,
+  useSetChannelGroupEnabled,
 } from "@/features/admin/api";
 import { ChannelBatchEditDialog } from "@/features/admin/routing/channels/channel-batch-edit-dialog";
 import { formatRelative } from "@/lib/dates";
@@ -101,12 +103,16 @@ function StandardGroupCard({
   preferOpen,
   children,
   onEdit,
+  onDisable,
+  disablePending,
 }: {
   group: ChannelGroupView;
   channels: ChannelView[];
   preferOpen: boolean;
   children: ReactNode;
   onEdit: () => void;
+  onDisable: () => void;
+  disablePending: boolean;
 }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(preferOpen);
@@ -141,6 +147,17 @@ function StandardGroupCard({
             </span>
           </CardDescription>
           <CardAction className="flex flex-wrap items-center justify-end gap-1">
+            {group.enabled ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={disablePending}
+                onClick={onDisable}
+              >
+                <PowerOff data-icon="inline-start" />
+                {t("Disable group")}
+              </Button>
+            ) : null}
             <Button variant="ghost" size="sm" onClick={onEdit}>
               <Pencil data-icon="inline-start" />
               {t("Edit group")}
@@ -174,9 +191,12 @@ export function ChannelsPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [batchOpen, setBatchOpen] = useState(false);
   const [disableTarget, setDisableTarget] = useState<ChannelView | null>(null);
+  const [disableGroupTarget, setDisableGroupTarget] =
+    useState<ChannelGroupView | null>(null);
   const [search, setSearch] = useState("");
   const [groupFilter, setGroupFilter] = useState<GroupFilter>("all");
   const quickUpdate = useBatchUpdateChannels();
+  const setGroupEnabled = useSetChannelGroupEnabled();
   const recoverChannel = useRecoverChannel();
   const batchDialogTriggerId = "channel-batch-edit-trigger";
   const normalizedSearch = search.trim().toLowerCase();
@@ -201,6 +221,10 @@ export function ChannelsPage() {
     }
     return grouped;
   }, [channels.data]);
+  const groupById = useMemo(
+    () => new Map((groups.data ?? []).map((group) => [group.id, group])),
+    [groups.data],
+  );
 
   const standardGroupCount = (groups.data ?? []).filter(
     (group) => group.connector_kind === "openai_compatible",
@@ -373,7 +397,28 @@ export function ChannelsPage() {
     }
   };
 
-  const quickActionPending = quickUpdate.isPending || recoverChannel.isPending;
+  const disableGroup = async (group: ChannelGroupView) => {
+    try {
+      await setGroupEnabled.mutateAsync({ group, enabled: false });
+      toast.success(
+        t("Disabled {name}; all {count} channels in the group are unavailable.", {
+          name: group.name,
+          count: channelsByGroup.get(group.id)?.length ?? 0,
+        }),
+      );
+    } catch (error) {
+      if (error instanceof ApiError && error.isConflict) {
+        toast.error(t("This group was changed elsewhere. Reloading."));
+      } else {
+        toast.error(
+          controlPlaneMutationErrorMessage(error, t("Request failed")),
+        );
+      }
+    }
+  };
+
+  const quickActionPending =
+    quickUpdate.isPending || recoverChannel.isPending || setGroupEnabled.isPending;
 
   const columns: Column<ChannelView>[] = [
     {
@@ -396,14 +441,21 @@ export function ChannelsPage() {
     {
       key: "state",
       header: t("State"),
-      render: (channel) => (
-        <div className="flex items-center gap-1">
-          <StatusBadge value={channel.enabled} />
-          {channel.auto_disabled ? (
-            <Badge variant="destructive">{t("auto-disabled")}</Badge>
-          ) : null}
-        </div>
-      ),
+      render: (channel) => {
+        const groupDisabled =
+          groupById.get(channel.channel_group_id)?.enabled === false;
+        return (
+          <div className="flex items-center gap-1">
+            <StatusBadge value={channel.enabled && !groupDisabled} />
+            {groupDisabled ? (
+              <Badge variant="warning">{t("group disabled")}</Badge>
+            ) : null}
+            {channel.auto_disabled ? (
+              <Badge variant="destructive">{t("auto-disabled")}</Badge>
+            ) : null}
+          </div>
+        );
+      },
     },
     {
       key: "statistics",
@@ -711,20 +763,35 @@ export function ChannelsPage() {
                                       {group.name}
                                     </CardDescription>
                                     <CardAction>
-                                      <Button
-                                        variant="ghost"
-                                        size="icon-sm"
-                                        aria-label={t("Edit {name}", {
-                                          name: group.name,
-                                        })}
-                                        onClick={() =>
-                                          navigate(
-                                            `/admin/routing/channel-groups/${group.id}`,
-                                          )
-                                        }
-                                      >
-                                        <Pencil />
-                                      </Button>
+                                      <div className="flex items-center gap-1">
+                                        {group.enabled ? (
+                                          <Button
+                                            variant="ghost"
+                                            size="icon-sm"
+                                            aria-label={t("Disable group {name}", {
+                                              name: group.name,
+                                            })}
+                                            disabled={quickActionPending}
+                                            onClick={() => setDisableGroupTarget(group)}
+                                          >
+                                            <PowerOff />
+                                          </Button>
+                                        ) : null}
+                                        <Button
+                                          variant="ghost"
+                                          size="icon-sm"
+                                          aria-label={t("Edit {name}", {
+                                            name: group.name,
+                                          })}
+                                          onClick={() =>
+                                            navigate(
+                                              `/admin/routing/channel-groups/${group.id}`,
+                                            )
+                                          }
+                                        >
+                                          <Pencil />
+                                        </Button>
+                                      </div>
                                     </CardAction>
                                   </CardHeader>
                                   <CardContent className="flex flex-wrap gap-2">
@@ -789,6 +856,8 @@ export function ChannelsPage() {
                           `/admin/routing/channel-groups/${entry.group.id}`,
                         )
                       }
+                      onDisable={() => setDisableGroupTarget(entry.group)}
+                      disablePending={quickActionPending}
                     >
                       {channelTable(entry.channels)}
                     </StandardGroupCard>
@@ -828,6 +897,32 @@ export function ChannelsPage() {
         onOpenChange={setBatchOpen}
         onApplied={() => setSelected(new Set())}
         triggerId={batchDialogTriggerId}
+      />
+
+      <ConfirmDialog
+        open={disableGroupTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setDisableGroupTarget(null);
+        }}
+        title={t("Disable channel group?")}
+        description={
+          disableGroupTarget
+            ? t(
+                "{name} will stop all {count} channels in this group from receiving new requests. Individual channel settings are preserved.",
+                {
+                  name: disableGroupTarget.name,
+                  count: channelsByGroup.get(disableGroupTarget.id)?.length ?? 0,
+                },
+              )
+            : ""
+        }
+        confirmLabel={t("Disable group")}
+        destructive
+        onConfirm={() => {
+          const group = disableGroupTarget;
+          setDisableGroupTarget(null);
+          if (group) void disableGroup(group);
+        }}
       />
 
       <ConfirmDialog

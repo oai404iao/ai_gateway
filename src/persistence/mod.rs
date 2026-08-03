@@ -1251,6 +1251,7 @@ pub struct SelfApiKeyGroupOption {
     pub id: Uuid,
     pub name: String,
     pub api_format: String,
+    pub priority: i32,
     pub enabled: bool,
 }
 
@@ -1259,6 +1260,7 @@ pub struct SelfApiKeyChannelOption {
     pub id: Uuid,
     pub channel_group_id: Uuid,
     pub channel_group_name: String,
+    pub channel_group_enabled: bool,
     pub api_format: String,
     pub name: String,
     pub enabled: bool,
@@ -4706,16 +4708,17 @@ impl ControlPlaneRepository {
         ensure_policy_enabled(&policy)?;
 
         let groups = sqlx::query_as::<_, SelfApiKeyGroupOption>(
-            "SELECT id,name,api_format::text AS api_format,enabled \
+            "SELECT id,name,api_format::text AS api_format,priority,enabled \
              FROM channel_groups \
              WHERE id = ANY($1) \
-             ORDER BY api_format,name,id",
+             ORDER BY api_format,priority,name,id",
         )
         .bind(&policy.allowed_group_ids)
         .fetch_all(&self.pool)
         .await?;
         let channels = sqlx::query_as::<_, SelfApiKeyChannelOption>(
             "SELECT c.id,c.channel_group_id,g.name AS channel_group_name, \
+                    g.enabled AS channel_group_enabled, \
                     c.api_format::text AS api_format,c.name,c.enabled,c.auto_disabled \
              FROM channels AS c \
              JOIN channel_groups AS g ON g.id=c.channel_group_id \

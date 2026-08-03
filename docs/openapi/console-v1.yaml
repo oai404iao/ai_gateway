@@ -3307,21 +3307,26 @@ components:
 
     SelfApiKeyGroupOption:
       type: object
-      required: [id, name, api_format, enabled]
+      required: [id, name, api_format, priority, enabled]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
         api_format: { $ref: "#/components/schemas/ApiFormat" }
+        priority: { type: integer }
         enabled: { type: boolean }
 
     SelfApiKeyChannelOption:
       type: object
       required:
-        [id, channel_group_id, channel_group_name, api_format, name, enabled, auto_disabled]
+        [id, channel_group_id, channel_group_name, channel_group_enabled,
+         api_format, name, enabled, auto_disabled]
       properties:
         id: { type: string, format: uuid }
         channel_group_id: { type: string, format: uuid }
         channel_group_name: { type: string }
+        channel_group_enabled:
+          type: boolean
+          description: Whether the parent channel group is enabled.
         api_format: { $ref: "#/components/schemas/ApiFormat" }
         name: { type: string }
         enabled: { type: boolean }

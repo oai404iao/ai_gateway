@@ -188,6 +188,7 @@ const E2E_STANDARD_CHANNEL_GROUPS = Array.from({ length: 5 }, (_, index) => ({
   enabled: true,
   updated_at: "2026-07-29T12:00:00.000Z",
 }));
+export const E2E_STANDARD_GROUP_ID = E2E_STANDARD_CHANNEL_GROUPS[0].id;
 
 const E2E_ROUTING_CHANNEL_GROUPS = [
   ...E2E_STANDARD_CHANNEL_GROUPS,
@@ -948,6 +949,18 @@ export async function mockConsoleApi(page: Page): Promise<void> {
         json: E2E_ROUTING_CHANNEL_GROUPS,
       });
     }
+    if (
+      path.startsWith("/console/v1/routing/channel-groups/") &&
+      method === "PUT"
+    ) {
+      return route.fulfill({
+        status: 200,
+        json: {
+          id: path.split("/").at(-1),
+          correlation_id: "00000000-0000-0000-0000-0000000002ff",
+        },
+      });
+    }
     if (path === "/console/v1/routing/channels" && method === "GET") {
       return route.fulfill({ status: 200, json: E2E_ROUTING_CHANNELS });
     }
@@ -977,7 +990,15 @@ export async function mockConsoleApi(page: Page): Promise<void> {
               id: "00000000-0000-0000-0000-000000000021",
               name: "chat-primary",
               api_format: "open_ai_chat_completions",
+              priority: 1,
               enabled: true,
+            },
+            {
+              id: "00000000-0000-0000-0000-000000000025",
+              name: "images-disabled",
+              api_format: "open_ai_images",
+              priority: 1,
+              enabled: false,
             },
           ],
           channels: [
@@ -985,8 +1006,19 @@ export async function mockConsoleApi(page: Page): Promise<void> {
               id: "00000000-0000-0000-0000-000000000022",
               channel_group_id: "00000000-0000-0000-0000-000000000021",
               channel_group_name: "chat-primary",
+              channel_group_enabled: true,
               api_format: "open_ai_chat_completions",
               name: "upstream-a",
+              enabled: true,
+              auto_disabled: false,
+            },
+            {
+              id: "00000000-0000-0000-0000-000000000026",
+              channel_group_id: "00000000-0000-0000-0000-000000000025",
+              channel_group_name: "images-disabled",
+              channel_group_enabled: false,
+              api_format: "open_ai_images",
+              name: "images-disabled-upstream",
               enabled: true,
               auto_disabled: false,
             },
