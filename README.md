@@ -292,6 +292,9 @@ starting the stack.
 - Requests are authenticated and admitted before their body is read.
 - Original request bytes are preserved unless a model alias or configured body
   transform requires reserialization.
+- Client credentials, hop-by-hop headers, `Connection`-declared headers, and
+  common reverse-proxy/CDN forwarding metadata are removed before every
+  upstream channel request.
 - Multipart Images edits use dedicated total/file limits and spill to
   anonymous temporary files after the configured memory threshold.
 - Upstream responses are streamed; the gateway does not buffer the complete
