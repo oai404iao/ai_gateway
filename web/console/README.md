@@ -46,7 +46,8 @@ pnpm e2e:install            # install Playwright Chromium + OS deps (first run)
   owner-scoped request logs and cost statistics, administrator system request
   logs and cost statistics, channel status, spend leaderboard,
   self-registration, user/user-group/registration-code management, system load,
-  proxy egress-IP diagnostics, Codex OAuth credential/quota management,
+  proxy egress-IP diagnostics, user-group-scoped read-only Codex quota windows,
+  administrator Codex OAuth credential/quota management,
   Business workspace-member identity, single/batch credential deletion and
   state changes, Codex credential export/import review with in-page proxy management, and the
   remaining admin control plane).

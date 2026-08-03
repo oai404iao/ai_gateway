@@ -629,6 +629,11 @@ const zhCN: Record<string, string> = {
   "Optional note shown to administrators.": "向管理员显示的可选说明。",
   "Users without an override inherit this policy immediately.":
     "未设置覆盖的用户会立即继承此策略。",
+  "Visible Codex quota groups": "可见 Codex 额度组",
+  "Members can only read quota windows and subscription tiers. Credential names are shown as IDs.":
+    "成员只能只读查看额度窗口和订阅等级；凭证名称显示为 ID。",
+  "No Codex OAuth credential groups are configured.":
+    "尚未配置 Codex OAuth 凭证组。",
   "Save user group": "保存用户组",
   "User group created": "用户组已创建",
   "User group updated": "用户组已更新",
@@ -1621,6 +1626,19 @@ const zhCN: Record<string, string> = {
   "Connector": "连接器",
   "OpenAI-compatible": "OpenAI 兼容",
   "Codex OAuth": "Codex OAuth",
+  "Codex quotas": "Codex 额度",
+  "Read-only quota windows for Codex credential groups granted by your user group.":
+    "只读查看当前用户组获准访问的 Codex 凭证组额度窗口。",
+  "No Codex quota access": "暂无 Codex 额度查看权限",
+  "Your user group has not been granted access to any Codex quota groups.":
+    "当前用户组尚未获准查看任何 Codex 额度组。",
+  "Subscription": "订阅等级",
+  "Last checked": "最后检查时间",
+  "Quota history": "额度窗口历史",
+  "Quota window history for {name}": "{name} 的额度窗口历史",
+  "View quota history for {name}": "查看 {name} 的额度窗口历史",
+  "This view is read-only and contains quota windows plus the provider-reported subscription tier.":
+    "此页面为只读，仅包含额度窗口和 Provider 报告的订阅等级。",
   "Manage Codex credentials": "管理 Codex 凭证",
   "Manage credentials": "管理凭证",
   "Provider-managed credentials": "Provider 托管凭证",

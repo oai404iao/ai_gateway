@@ -327,6 +327,44 @@ pub struct CodexQuotaWindowHistory {
     pub periods: Vec<CodexQuotaWindowPeriodView>,
 }
 
+#[derive(Clone, Debug, Serialize, FromRow)]
+pub struct SelfCodexQuotaCredentialView {
+    pub id: Uuid,
+    pub name: String,
+    pub channel_group_id: Uuid,
+    pub plan_type: Option<String>,
+    pub primary_used_percent: Option<i32>,
+    pub primary_window_seconds: Option<i32>,
+    pub primary_reset_at: Option<DateTime<Utc>>,
+    pub secondary_used_percent: Option<i32>,
+    pub secondary_window_seconds: Option<i32>,
+    pub secondary_reset_at: Option<DateTime<Utc>>,
+    pub quota_checked_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Clone, Debug, Serialize, FromRow)]
+pub struct SelfCodexQuotaWindowPeriodView {
+    pub window_kind: String,
+    pub window_seconds: i32,
+    pub started_at: DateTime<Utc>,
+    pub scheduled_reset_at: DateTime<Utc>,
+    pub ended_at: Option<DateTime<Utc>>,
+    pub reset_reason: Option<String>,
+    pub initial_used_percent: i32,
+    pub last_used_percent: i32,
+    pub first_observed_at: DateTime<Utc>,
+    pub last_observed_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct SelfCodexQuotaWindowHistory {
+    pub credential_id: Uuid,
+    pub name: String,
+    pub channel_group_id: Uuid,
+    pub plan_type: Option<String>,
+    pub periods: Vec<SelfCodexQuotaWindowPeriodView>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CodexQuotaResetOutcome {
@@ -506,6 +544,130 @@ impl ControlPlaneRepository {
         .await?;
         Ok(CodexQuotaWindowHistory {
             credential_id: channel_id,
+            periods,
+        })
+    }
+
+    pub async fn self_codex_quota_credentials(
+        &self,
+        user_id: Uuid,
+    ) -> Result<Vec<SelfCodexQuotaCredentialView>, RepositoryError> {
+        sqlx::query_as::<_, SelfCodexQuotaCredentialView>(
+            "SELECT credential.channel_id AS id, \
+                    credential.channel_id::text AS name, \
+                    visibility.channel_group_id,credential.plan_type, \
+                    credential.primary_used_percent,credential.primary_window_seconds, \
+                    credential.primary_reset_at,credential.secondary_used_percent, \
+                    credential.secondary_window_seconds,credential.secondary_reset_at, \
+                    credential.quota_checked_at \
+             FROM users AS console_user \
+             JOIN user_group_codex_quota_visibility AS visibility \
+               ON visibility.user_group_id=console_user.user_group_id \
+             JOIN channel_groups AS visible_group \
+               ON visible_group.id=visibility.channel_group_id \
+              AND visible_group.connector_kind=$2 \
+              AND visible_group.api_format=$3::api_format \
+             JOIN codex_oauth_credentials AS credential \
+               ON credential.connector_pool_id=visible_group.connector_pool_id \
+             WHERE console_user.id=$1 \
+               AND console_user.status='active' \
+               AND console_user.deleted_at IS NULL \
+               AND credential.deleted_at IS NULL \
+             ORDER BY visibility.channel_group_id,credential.channel_id",
+        )
+        .bind(user_id)
+        .bind(CODEX_CONNECTOR_KIND)
+        .bind(CODEX_RESPONSES_API_FORMAT)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(RepositoryError::from)
+    }
+
+    pub async fn self_codex_quota_window_history(
+        &self,
+        user_id: Uuid,
+        channel_id: Uuid,
+        limit_per_window: i64,
+    ) -> Result<SelfCodexQuotaWindowHistory, RepositoryError> {
+        if !(1..=500).contains(&limit_per_window) {
+            return Err(RepositoryError::Validation);
+        }
+        let credential = sqlx::query_as::<_, SelfCodexQuotaCredentialView>(
+            "SELECT credential.channel_id AS id, \
+                    credential.channel_id::text AS name, \
+                    visibility.channel_group_id,credential.plan_type, \
+                    credential.primary_used_percent,credential.primary_window_seconds, \
+                    credential.primary_reset_at,credential.secondary_used_percent, \
+                    credential.secondary_window_seconds,credential.secondary_reset_at, \
+                    credential.quota_checked_at \
+             FROM users AS console_user \
+             JOIN user_group_codex_quota_visibility AS visibility \
+               ON visibility.user_group_id=console_user.user_group_id \
+             JOIN channel_groups AS visible_group \
+               ON visible_group.id=visibility.channel_group_id \
+              AND visible_group.connector_kind=$3 \
+              AND visible_group.api_format=$4::api_format \
+             JOIN codex_oauth_credentials AS credential \
+               ON credential.connector_pool_id=visible_group.connector_pool_id \
+             WHERE console_user.id=$1 \
+               AND console_user.status='active' \
+               AND console_user.deleted_at IS NULL \
+               AND credential.channel_id=$2 \
+               AND credential.deleted_at IS NULL",
+        )
+        .bind(user_id)
+        .bind(channel_id)
+        .bind(CODEX_CONNECTOR_KIND)
+        .bind(CODEX_RESPONSES_API_FORMAT)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or(RepositoryError::NotFound)?;
+        let periods = sqlx::query_as::<_, SelfCodexQuotaWindowPeriodView>(
+            "WITH ranked AS ( \
+                 SELECT period.window_kind,period.window_seconds,period.started_at, \
+                        period.scheduled_reset_at,period.ended_at,period.reset_reason, \
+                        period.initial_used_percent,period.last_used_percent, \
+                        period.first_observed_at,period.last_observed_at, \
+                        row_number() OVER ( \
+                            PARTITION BY period.window_kind \
+                            ORDER BY period.started_at DESC,period.id DESC \
+                        ) AS window_rank \
+                 FROM codex_quota_window_periods AS period \
+                 JOIN codex_oauth_credentials AS credential \
+                   ON credential.channel_id=period.credential_id \
+                  AND credential.deleted_at IS NULL \
+                 JOIN channel_groups AS visible_group \
+                   ON visible_group.connector_pool_id=credential.connector_pool_id \
+                  AND visible_group.connector_kind=$4 \
+                  AND visible_group.api_format=$5::api_format \
+                 JOIN user_group_codex_quota_visibility AS visibility \
+                   ON visibility.channel_group_id=visible_group.id \
+                 JOIN users AS console_user \
+                   ON console_user.user_group_id=visibility.user_group_id \
+                  AND console_user.status='active' \
+                  AND console_user.deleted_at IS NULL \
+                 WHERE console_user.id=$1 \
+                   AND credential.channel_id=$2 \
+             ) \
+             SELECT window_kind,window_seconds,started_at,scheduled_reset_at, \
+                    ended_at,reset_reason,initial_used_percent,last_used_percent, \
+                    first_observed_at,last_observed_at \
+             FROM ranked \
+             WHERE window_rank <= $3 \
+             ORDER BY window_kind,started_at DESC",
+        )
+        .bind(user_id)
+        .bind(channel_id)
+        .bind(limit_per_window)
+        .bind(CODEX_CONNECTOR_KIND)
+        .bind(CODEX_RESPONSES_API_FORMAT)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(SelfCodexQuotaWindowHistory {
+            credential_id: credential.id,
+            name: credential.name,
+            channel_group_id: credential.channel_group_id,
+            plan_type: credential.plan_type,
             periods,
         })
     }

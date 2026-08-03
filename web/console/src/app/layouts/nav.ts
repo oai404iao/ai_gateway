@@ -42,6 +42,7 @@ export const NAV_SECTIONS: NavSection[] = [
       { label: "Login sessions", path: "/account/sessions", icon: ShieldCheck },
       { label: "API Keys", path: "/api-keys", icon: KeyRound },
       { label: "Request Logs", path: "/usage/request-logs", icon: ScrollText },
+      { label: "Codex quotas", path: "/codex-quotas", icon: Gauge },
       { label: "Channel status", path: "/channel-status", icon: Activity },
       { label: "Statistics", path: "/statistics", icon: ChartNoAxesCombined },
       { label: "Spend leaderboard", path: "/leaderboard", icon: Trophy },
