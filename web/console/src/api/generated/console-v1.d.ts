@@ -1929,6 +1929,11 @@ export interface components {
             name: string;
             api_format: components["schemas"]["ApiFormat"];
             connector_kind: components["schemas"]["ConnectorKind"];
+            /**
+             * Format: uuid
+             * @description Shared by the format-specific channel groups derived from one provider connector pool; null for ordinary OpenAI-compatible groups.
+             */
+            connector_pool_id: string | null;
             priority: number;
             selection_strategy: components["schemas"]["SelectionStrategy"];
             enabled: boolean;

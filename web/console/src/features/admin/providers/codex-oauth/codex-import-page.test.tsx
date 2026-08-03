@@ -28,6 +28,7 @@ const CODEX_GROUP: ChannelGroupView = {
   name: "Portable Codex",
   api_format: "open_ai_responses",
   connector_kind: "codex_oauth",
+  connector_pool_id: GROUP_ID,
 };
 
 function renderPage() {

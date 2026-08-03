@@ -302,6 +302,10 @@ workspace/member 身份、状态、quota、proxy、weight 和时间戳；支持�
 立即生成浏览器下载。普通 Channel 详情遇到 `provider_managed=true` 时跳转到该 provider 页面，
 避免用标准渠道表单覆盖 connector 状态。
 
+渠道管理页使用 `ChannelGroupView.connector_pool_id` 将同一 Codex 凭证池派生出的
+Responses 与 Images 渠道组组合成一个凭证池卡片，并与普通 OpenAI-compatible 渠道组分区展示。
+普通渠道组采用可搜索、可筛选、按需展开的紧凑列表，避免渠道组数量增加后同时渲染大量展开表格。
+
 `/account/sessions` 当前按“活跃会话”和可折叠历史分组，使用后端返回的 `is_current` 与明确
 session 状态标记当前设备、已过期和已撤销记录。活跃会话提供逐设备退出，页面还可一次撤销除当前
 设备外的全部活跃会话；浏览器名称和平台由已保存的 `User-Agent` 在前端做展示级解析。

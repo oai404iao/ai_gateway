@@ -220,6 +220,7 @@ export const CHANNEL_GROUP: ChannelGroupView = {
   name: "chat-primary",
   api_format: "open_ai_chat_completions",
   connector_kind: "openai_compatible",
+  connector_pool_id: null,
   priority: 1,
   selection_strategy: "weighted_random",
   enabled: true,

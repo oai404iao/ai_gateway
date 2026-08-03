@@ -26,6 +26,7 @@ const CODEX_GROUP: ChannelGroupView = {
   name: "Codex subscriptions",
   api_format: "open_ai_responses",
   connector_kind: "codex_oauth",
+  connector_pool_id: GROUP_ID,
 };
 
 const CREDENTIAL: CodexCredentialView = {
