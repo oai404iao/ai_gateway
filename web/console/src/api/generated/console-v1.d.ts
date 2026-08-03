@@ -2046,8 +2046,9 @@ export interface components {
             channel_group_id: string;
             label: string;
             email: string | null;
-            account_id: string;
-            /** @description ChatGPT workspace member identifier from `chatgpt_user_id` or `user_id`. */
+            /** @description Optional ChatGPT workspace identifier. Personal credentials may omit it. */
+            account_id: string | null;
+            /** @description ChatGPT user identifier from `chatgpt_user_id`, `user_id`, or the JWT `sub` fallback. */
             user_id: string | null;
             plan_type: string | null;
             is_fedramp: boolean;
@@ -2201,9 +2202,9 @@ export interface components {
             id_token?: string;
             access_token: string;
             refresh_token: string;
-            /** @description Optional fallback when the ID token has no account claim; mismatches are rejected. */
+            /** @description Optional workspace fallback. Personal credentials may omit it; mismatches are rejected. */
             account_id?: string | null;
-            /** @description Optional member fallback when the token has no user claim; mismatches are rejected. */
+            /** @description Optional user fallback. Accountless credentials require a token or override user ID; mismatches are rejected. */
             user_id?: string | null;
         };
         CodexCredentialExportInput: {
@@ -2240,7 +2241,7 @@ export interface components {
         CodexCredentialExportItem: {
             label: string;
             email: string | null;
-            account_id: string;
+            account_id: string | null;
             user_id: string | null;
             plan_type: string | null;
             is_fedramp: boolean;

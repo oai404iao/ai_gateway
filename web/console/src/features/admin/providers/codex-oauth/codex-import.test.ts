@@ -167,6 +167,44 @@ describe("Codex import parser", () => {
     expect(parsed.proxies[0]?.proxy_url).toBe("socks5://10.0.0.1:1080");
   });
 
+  it("keeps accountless personal credentials importable and de-duplicates by user", () => {
+    const credential = (refreshToken: string) => ({
+      type: "codex",
+      id_token: jwt({
+        email: "free@example.test",
+        sub: "personal-user",
+        "https://api.openai.com/auth": {
+          chatgpt_plan_type: "free",
+        },
+      }),
+      access_token: jwt({ exp: 1_900_000_000 }),
+      refresh_token: refreshToken,
+    });
+    const parsed = parseCodexImportDocuments([
+      {
+        name: "personal-free.json",
+        content: JSON.stringify([
+          credential("refresh-free-a"),
+          credential("refresh-free-b"),
+        ]),
+      },
+    ]);
+
+    expect(parsed.errors).toEqual([]);
+    expect(parsed.credentials[0]).toMatchObject({
+      account_id: "",
+      user_id: "personal-user",
+      selected: true,
+    });
+    expect(parsed.credentials[0]?.warnings).toContain(
+      "No workspace account ID was found; personal credentials can omit it.",
+    );
+    expect(parsed.credentials[1]?.selected).toBe(false);
+    expect(parsed.credentials[1]?.errors).toContain(
+      "Duplicate of import row 1.",
+    );
+  });
+
   it("marks duplicate accounts and unsupported JSON before import", () => {
     const credential = {
       type: "codex",

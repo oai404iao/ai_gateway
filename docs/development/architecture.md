@@ -119,8 +119,9 @@ Codex 的每个逻辑凭证属于一个 `connector_pools` 记录，并通过
 同一 pool 有两个格式隔离的 Channel Group。普通 Channel CRUD 和批量修改在 repository 层拒绝
 managed channel；provider API 在 serializable 控制面事务中同时创建/修改共享凭证和对应
 projections，再编译并发布统一路由快照。
-凭证身份由 workspace account ID 与 member user ID 共同确定，因此同一 Business workspace
-可以包含多个独立凭证；单条/批量删除会清除 Token 并保留不含敏感信息的两个历史 channel
+凭证有 workspace account ID 时由 account/member 共同确定；个人 Token 缺少 account ID 时按
+user ID 确定。因此同一 Business workspace 可以包含多个独立凭证，Free/Plus/Pro 等个人凭证也
+不需要伪造 workspace ID；单条/批量删除会清除 Token 并保留不含敏感信息的两个历史 channel
 tombstone。
 managed channels 保留为统一路由中的稳定壳，credential 的 enable/quota/重新授权状态由独立
 Connector 快照判定；这样 Responses 新 Session 和 Images 请求可在发送前排除不可用账户，
@@ -135,8 +136,8 @@ credential，避免每次 token 轮换都重编译整个控制面。
 Codex 凭证可移植性仍沿用相同 provider 边界：服务端显式导出 API 从 repository 读取敏感 Token
 及实际引用的代理，生成带版本的原生 Bundle；高级导入页在浏览器内把原生、CLIProxyAPI 和
 Sub2API JSON 标准化成可编辑草稿，完成代理 CRUD/映射后再逐条调用既有服务端验证导入事务。导入
-格式解析不是数据面职责，也不会绕过 account/user ID、models、代理 enable 或 managed channel 的现有
-不变量。代理删除使用 optimistic concurrency，并在 repository 层拒绝仍被渠道或待完成 OAuth
+格式解析不是数据面职责，也不会绕过“account/user 至少存在一个”、models、代理 enable 或
+managed channel 的现有不变量。代理删除使用 optimistic concurrency，并在 repository 层拒绝仍被渠道或待完成 OAuth
 授权流引用的记录。
 
 Responses WebSocket 使用同一个 `/v1/responses` 路径的 `GET` Upgrade。握手先验证 API Key

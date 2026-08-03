@@ -89,7 +89,7 @@ pub struct CodexCredentialExportProxy {
 pub struct CodexCredentialExportItem {
     pub label: String,
     pub email: Option<String>,
-    pub account_id: String,
+    pub account_id: Option<String>,
     pub user_id: Option<String>,
     pub plan_type: Option<String>,
     pub is_fedramp: bool,
@@ -145,7 +145,7 @@ pub struct CodexCredentialCreate {
     pub quota_threshold_percent: i16,
     pub base_url: String,
     pub email: Option<String>,
-    pub account_id: String,
+    pub account_id: Option<String>,
     pub user_id: Option<String>,
     pub plan_type: Option<String>,
     pub is_fedramp: bool,
@@ -180,7 +180,7 @@ pub struct CodexCredentialRecord {
     pub projection_channel_ids: Vec<Uuid>,
     pub label: String,
     pub email: Option<String>,
-    pub account_id: String,
+    pub account_id: Option<String>,
     pub user_id: Option<String>,
     pub plan_type: Option<String>,
     pub is_fedramp: bool,
@@ -263,7 +263,7 @@ pub struct CodexCredentialView {
     pub channel_group_id: Uuid,
     pub label: String,
     pub email: Option<String>,
-    pub account_id: String,
+    pub account_id: Option<String>,
     pub user_id: Option<String>,
     pub plan_type: Option<String>,
     pub is_fedramp: bool,
@@ -726,7 +726,7 @@ impl ControlPlaneRepository {
                AND NOT EXISTS( \
                    SELECT 1 FROM codex_oauth_credentials AS existing \
                    WHERE existing.connector_pool_id=target.connector_pool_id \
-                     AND existing.account_id=target.account_id \
+                     AND existing.account_id IS NOT DISTINCT FROM target.account_id \
                      AND existing.user_id=$2 \
                      AND existing.deleted_at IS NULL \
                )",
@@ -914,12 +914,15 @@ impl ControlPlaneRepository {
             channel_group_id: pool.responses_channel_group_id,
             ..input
         };
-        if input.account_id.trim().is_empty()
-            || input.account_id.len() > 300
+        if input
+            .account_id
+            .as_ref()
+            .is_some_and(|value| value.trim().is_empty() || value.len() > 300)
             || input
                 .user_id
                 .as_ref()
                 .is_some_and(|value| value.trim().is_empty() || value.len() > 300)
+            || (input.account_id.is_none() && input.user_id.is_none())
             || input.id_token.is_empty()
             || input.access_token.is_empty()
             || input.refresh_token.is_empty()
@@ -930,7 +933,7 @@ impl ControlPlaneRepository {
         let existing_channel_id = existing_codex_channel_id(
             transaction,
             pool.connector_pool_id,
-            &input.account_id,
+            input.account_id.as_deref(),
             input.user_id.as_deref(),
             input.email.as_deref(),
         )
@@ -1758,10 +1761,27 @@ fn credential_select(suffix: &str) -> String {
 async fn existing_codex_channel_id(
     transaction: &mut Transaction<'_, Postgres>,
     connector_pool_id: Uuid,
-    account_id: &str,
+    account_id: Option<&str>,
     user_id: Option<&str>,
     email: Option<&str>,
 ) -> Result<Option<Uuid>, RepositoryError> {
+    let Some(account_id) = account_id else {
+        let Some(user_id) = user_id else {
+            return Err(RepositoryError::Validation);
+        };
+        return sqlx::query_scalar::<_, Uuid>(
+            "SELECT channel_id FROM codex_oauth_credentials \
+             WHERE connector_pool_id=$1 AND account_id IS NULL AND user_id=$2 \
+               AND deleted_at IS NULL \
+             FOR UPDATE",
+        )
+        .bind(connector_pool_id)
+        .bind(user_id)
+        .fetch_optional(&mut **transaction)
+        .await
+        .map_err(RepositoryError::from);
+    };
+
     if let Some(user_id) = user_id {
         let exact = sqlx::query_scalar::<_, Uuid>(
             "SELECT channel_id FROM codex_oauth_credentials \

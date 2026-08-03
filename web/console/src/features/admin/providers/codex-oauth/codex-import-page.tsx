@@ -651,7 +651,7 @@ export default function CodexImportPage() {
                             </div>
                             <p className="mt-2 break-all text-xs text-muted-foreground">
                               {credential.account_id ||
-                                t("Account ID pending validation")}
+                                t("Personal credential (no workspace ID)")}
                             </p>
                             {credential.user_id ? (
                               <p className="mt-1 break-all text-xs text-muted-foreground">

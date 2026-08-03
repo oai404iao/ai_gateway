@@ -2639,7 +2639,6 @@ fn codex_error_response(error: &CodexConnectorError) -> (StatusCode, &'static st
         | CodexConnectorError::InvalidCallback
         | CodexConnectorError::OauthDenied
         | CodexConnectorError::InvalidCredential
-        | CodexConnectorError::MissingAccountId
         | CodexConnectorError::AccountChanged
         | CodexConnectorError::InvalidJwt
         | CodexConnectorError::InvalidTokenResponse

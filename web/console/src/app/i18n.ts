@@ -1695,6 +1695,7 @@ const zhCN: Record<string, string> = {
   "Proxy assigned": "已分配代理",
   "Workspace {id}": "工作区 {id}",
   "Member {id}": "成员 {id}",
+  "User {id}": "用户 {id}",
   "Refresh token for {label}": "刷新 {label} 的 Token",
   "Refresh quota for {label}": "刷新 {label} 的额度",
   "View quota history for {label}": "查看 {label} 的额度窗口历史",
@@ -1813,7 +1814,7 @@ const zhCN: Record<string, string> = {
   "Threshold": "阈值",
   "Select credential {number}": "选择第 {number} 个凭证",
   "Label for credential {number}": "第 {number} 个凭证的标签",
-  "Account ID pending validation": "Account ID 等待验证",
+  "Personal credential (no workspace ID)": "个人凭证（无工作区 ID）",
   "Proxy for {label}": "{label} 的代理",
   "Weight for {label}": "{label} 的权重",
   "Threshold for {label}": "{label} 的阈值",
@@ -1854,8 +1855,8 @@ const zhCN: Record<string, string> = {
   "Import failed": "导入失败",
   "ID token is missing; identity will be read from the access token.":
     "缺少 ID Token；身份信息将从 Access Token 读取。",
-  "Account ID will be derived from the token during validation.":
-    "验证时将从 Token 推导 Account ID。",
+  "No workspace account ID was found; personal credentials can omit it.":
+    "未找到工作区 Account ID；个人凭证可以不提供该字段。",
   "Enter valid credential settings.": "请输入有效的凭证设置。",
   "Credential updated.": "凭证已更新。",
   "Edit Codex credential": "编辑 Codex 凭证",

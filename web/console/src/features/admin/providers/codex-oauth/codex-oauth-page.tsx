@@ -902,14 +902,26 @@ export default function CodexOauthPage() {
                       <TableCell className="min-w-52 align-top">
                         <div className="font-medium">{credential.label}</div>
                         <div className="text-xs text-muted-foreground">
-                          {credential.email ?? credential.account_id}
+                          {credential.email ??
+                            credential.user_id ??
+                            credential.account_id ??
+                            t("Personal Codex account")}
                         </div>
-                        <p className="mt-1 break-all text-xs text-muted-foreground">
-                          {t("Workspace {id}", { id: credential.account_id })}
-                        </p>
+                        {credential.account_id ? (
+                          <p className="mt-1 break-all text-xs text-muted-foreground">
+                            {t("Workspace {id}", { id: credential.account_id })}
+                          </p>
+                        ) : (
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            {t("Personal credential (no workspace ID)")}
+                          </p>
+                        )}
                         {credential.user_id ? (
                           <p className="mt-1 break-all text-xs text-muted-foreground">
-                            {t("Member {id}", { id: credential.user_id })}
+                            {t(
+                              credential.account_id ? "Member {id}" : "User {id}",
+                              { id: credential.user_id },
+                            )}
                           </p>
                         ) : null}
                         <div className="mt-2 flex flex-wrap gap-1">

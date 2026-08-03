@@ -76,7 +76,7 @@ Codex image tool 声明 `gpt-image-2`，管理员仍须创建对应本地模型�
 - generation JSON 仍受全局 `request_limits.proxy_body_bytes` 限制；edit 使用独立的
   `image_edit_*` 限制和磁盘 spool，不提高默认 `1 MiB` JSON 内存 body limit。
 - 普通 `openai_compatible` 与 Codex OAuth Images generation/edit 均已支持。Codex 凭证共享
-  Token、workspace/member、quota 和 outbound proxy，但使用独立的 Responses/Images group 与
+  Token、可选 workspace/member、quota 和 outbound proxy，但使用独立的 Responses/Images group 与
   channel；Codex Images group 默认关闭，不会自动加入 API Key、Policy 或模型规则。
 - Codex Images generation 会把目标改为 `/backend-api/codex/images/generations`，注入
   `x-codex-image-turn-id`，并删除 Responses 专用 session/thread Header。

@@ -3534,11 +3534,14 @@ components:
           description: Stable primary Responses group retained for credential-management compatibility.
         label: { type: string }
         email: { type: string, nullable: true }
-        account_id: { type: string }
+        account_id:
+          type: string
+          nullable: true
+          description: Optional ChatGPT workspace identifier. Personal credentials may omit it.
         user_id:
           type: string
           nullable: true
-          description: ChatGPT workspace member identifier from `chatgpt_user_id` or `user_id`.
+          description: ChatGPT user identifier from `chatgpt_user_id`, `user_id`, or the JWT `sub` fallback.
         plan_type: { type: string, nullable: true }
         is_fedramp: { type: boolean }
         access_token_expires_at: { $ref: "#/components/schemas/DateTimeNullable" }
@@ -3755,12 +3758,12 @@ components:
               type: string
               maxLength: 300
               nullable: true
-              description: Optional fallback when the ID token has no account claim; mismatches are rejected.
+              description: Optional workspace fallback. Personal credentials may omit it; mismatches are rejected.
             user_id:
               type: string
               maxLength: 300
               nullable: true
-              description: Optional member fallback when the token has no user claim; mismatches are rejected.
+              description: Optional user fallback. Accountless credentials require a token or override user ID; mismatches are rejected.
 
     CodexCredentialExportInput:
       type: object
@@ -3820,7 +3823,9 @@ components:
       properties:
         label: { type: string }
         email: { type: string, nullable: true }
-        account_id: { type: string }
+        account_id:
+          type: string
+          nullable: true
         user_id: { type: string, nullable: true }
         plan_type: { type: string, nullable: true }
         is_fedramp: { type: boolean }

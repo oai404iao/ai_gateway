@@ -169,7 +169,7 @@ Images generation attempt 需要：
 
 - 将目标改写为 Codex subscription backend 的 `/images/generations`；
 - 使用与 Responses projection 相同的 credential snapshot 和预发送 token refresh 边界；
-- 最后注入 Bearer、`ChatGPT-Account-ID`、FedRAMP、`originator`、`version`、
+- 最后注入 Bearer、可选 `ChatGPT-Account-ID`、FedRAMP、`originator`、`version`、
   `User-Agent` 和 Gateway 生成的 `x-codex-image-turn-id`；
 - 移除客户端 `session-id`、`thread-id` 与 `x-client-request-id`，Images 不借用 Responses
   Session identity；
@@ -215,7 +215,7 @@ Codex OAuth edit adapter：
 - 只转发经核对的 `prompt`、`background`、`model`、`n`、`quality` 与 `size` 字段；
 - provider-specific 地限制最多五张图片并拒绝 `mask` 与未核对字段；通用
   `OpenAiImages` multipart 仍保留最多 16 张输入的独立上限；
-- 复用 generation 的 Bearer/account/FedRAMP、`originator`、版本、User-Agent 和新生成的
+- 复用 generation 的 Bearer/可选 account/FedRAMP、`originator`、版本、User-Agent 和新生成的
   `x-codex-image-turn-id`，并删除 Responses Session Header。
 
 临时文件计数、活跃字节、累计写入、存储失败和文件系统可用容量出现在
