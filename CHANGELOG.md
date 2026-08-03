@@ -7,6 +7,8 @@ Versioning.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-08-03
+
 ### Added
 
 - Add an administrator-only system cost-statistics API and Console page with
