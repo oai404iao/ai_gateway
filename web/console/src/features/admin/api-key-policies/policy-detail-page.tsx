@@ -9,10 +9,10 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Spinner } from "@/components/ui/spinner";
 import {
-  ApiKeyTargetFields,
-  type ApiKeyTargetChannel,
-  type ApiKeyTargetGroup,
-} from "@/components/shared/api-key-target-fields";
+  RoutingTargetFields,
+  type RoutingTargetChannel,
+  type RoutingTargetGroup,
+} from "@/components/shared/routing-target-fields";
 import { AdminDetailShell } from "@/features/admin/components/admin-detail-shell";
 import { DetailField } from "@/components/shared/detail-field";
 import { StatusBadge } from "@/components/shared/status-badge";
@@ -79,31 +79,33 @@ export function ApiKeyPolicyDetailPage() {
     }
   }, [data]);
 
-  const targetGroups = useMemo<ApiKeyTargetGroup[]>(
+  const targetGroups = useMemo<RoutingTargetGroup[]>(
     () =>
       (groups.data ?? []).map((group) => ({
         id: group.id,
         name: group.name,
         api_format: group.api_format,
         enabled: group.enabled,
+        priority: group.priority,
       })),
     [groups.data],
   );
-  const targetChannels = useMemo<ApiKeyTargetChannel[]>(
-    () =>
-      (channels.data ?? []).map((channel) => ({
+  const targetChannels = useMemo<RoutingTargetChannel[]>(() => {
+    const groupById = new Map((groups.data ?? []).map((group) => [group.id, group]));
+    return (channels.data ?? []).map((channel) => {
+      const group = groupById.get(channel.channel_group_id);
+      return {
         id: channel.id,
         channel_group_id: channel.channel_group_id,
-        channel_group_name: groups.data?.find(
-          (group) => group.id === channel.channel_group_id,
-        )?.name,
+        channel_group_name: group?.name,
+        channel_group_enabled: group?.enabled ?? false,
         name: channel.name,
         api_format: channel.api_format,
         enabled: channel.enabled,
         auto_disabled: channel.auto_disabled,
-      })),
-    [channels.data, groups.data],
-  );
+      };
+    });
+  }, [channels.data, groups.data]);
 
   const patch = (partial: Partial<FormState>) => setState((prev) => ({ ...prev, ...partial }));
 
@@ -210,7 +212,8 @@ export function ApiKeyPolicyDetailPage() {
                     onCheckedChange={(checked) => patch({ enabled: Boolean(checked) })}
                   />
                 </Field>
-                <ApiKeyTargetFields
+                <RoutingTargetFields
+                  className="xl:col-span-2"
                   groups={targetGroups}
                   channels={targetChannels}
                   selectedGroupIds={state.allowed_group_ids}

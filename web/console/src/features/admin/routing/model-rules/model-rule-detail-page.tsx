@@ -10,11 +10,8 @@ import {
   FieldError,
   FieldGroup,
   FieldLabel,
-  FieldLegend,
-  FieldSet,
 } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Switch } from "@/components/ui/switch";
 import {
   Select,
@@ -26,6 +23,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
+import {
+  RoutingTargetFields,
+  type RoutingTargetChannel,
+  type RoutingTargetGroup,
+} from "@/components/shared/routing-target-fields";
 import { AdminDetailShell } from "@/features/admin/components/admin-detail-shell";
 import { DetailField } from "@/components/shared/detail-field";
 import { StatusBadge } from "@/components/shared/status-badge";
@@ -121,34 +123,53 @@ export function ModelRuleDetailPage() {
         : CUSTOM_CLIENT_MODEL,
     [models.data, state.client_model],
   );
-  const eligibleGroups = useMemo(
+  const targetGroups = useMemo<RoutingTargetGroup[]>(
     () =>
-      groups.data?.filter(
-        (group) => group.api_format === state.api_format && group.enabled,
-      ) ?? [],
+      (groups.data ?? [])
+        .filter((group) => group.api_format === state.api_format)
+        .map((group) => ({
+          id: group.id,
+          name: group.name,
+          api_format: group.api_format,
+          enabled: group.enabled,
+          priority: group.priority,
+        })),
     [groups.data, state.api_format],
   );
-  const eligibleChannels = useMemo(
-    () =>
-      channels.data?.filter(
-        (channel) =>
+  const targetChannels = useMemo<RoutingTargetChannel[]>(() => {
+    const groupById = new Map((groups.data ?? []).map((group) => [group.id, group]));
+    return (channels.data ?? [])
+      .filter(
+        (channel) => {
+          const selected = state.channel_ids.includes(channel.id);
+          return (
           channel.api_format === state.api_format &&
-          channel.enabled &&
-          !channel.auto_disabled &&
           (!selectedUpstreamModel ||
-            channel.available_models.includes(selectedUpstreamModel.source_model_id)),
-      ) ?? [],
-    [channels.data, selectedUpstreamModel, state.api_format],
-  );
-
-  const toggle = (key: "channel_group_ids" | "channel_ids", value: string) => {
-    setState((prev) => ({
-      ...prev,
-      [key]: prev[key].includes(value)
-        ? prev[key].filter((item) => item !== value)
-        : [...prev[key], value],
-    }));
-  };
+            channel.available_models.includes(selectedUpstreamModel.source_model_id) ||
+            selected)
+          );
+        },
+      )
+      .map((channel) => {
+        const group = groupById.get(channel.channel_group_id);
+        return {
+          id: channel.id,
+          channel_group_id: channel.channel_group_id,
+          channel_group_name: group?.name,
+          channel_group_enabled: group?.enabled ?? false,
+          name: channel.name,
+          api_format: channel.api_format,
+          enabled: channel.enabled,
+          auto_disabled: channel.auto_disabled,
+        };
+      });
+  }, [
+    channels.data,
+    groups.data,
+    selectedUpstreamModel,
+    state.api_format,
+    state.channel_ids,
+  ]);
 
   const submit = async () => {
     const parsed = schema.safeParse(state);
@@ -342,68 +363,22 @@ export function ModelRuleDetailPage() {
                     onChange={(event) => patch({ description: event.target.value || null })}
                   />
                 </Field>
-                <FieldSet>
-                  <FieldLegend variant="label">
-                    {t("Channel groups ({count})", { count: eligibleGroups.length })}
-                  </FieldLegend>
-                  <FieldGroup data-slot="checkbox-group" className="gap-3">
-                    {eligibleGroups.map((group) => (
-                      <Field
-                        key={group.id}
-                        orientation="horizontal"
-                        data-invalid={Boolean(fieldError("channel_group_ids"))}
-                      >
-                        <Checkbox
-                          id={`channel_group_${group.id}`}
-                          checked={state.channel_group_ids.includes(group.id)}
-                          aria-invalid={Boolean(fieldError("channel_group_ids"))}
-                          onCheckedChange={() => toggle("channel_group_ids", group.id)}
-                        />
-                        <FieldLabel
-                          htmlFor={`channel_group_${group.id}`}
-                          className="font-normal"
-                        >
-                          {group.name} ({t("priority {priority}", { priority: group.priority })})
-                        </FieldLabel>
-                      </Field>
-                    ))}
-                    {eligibleGroups.length === 0 ? (
-                      <FieldDescription>
-                        {t("No groups for this format.")}
-                      </FieldDescription>
-                    ) : null}
-                  </FieldGroup>
-                  {fieldError("channel_group_ids") ? (
-                    <FieldError>{fieldError("channel_group_ids")}</FieldError>
-                  ) : null}
-                </FieldSet>
-                <FieldSet>
-                  <FieldLegend variant="label">
-                    {t("Channels ({count})", { count: eligibleChannels.length })}
-                  </FieldLegend>
-                  <FieldGroup data-slot="checkbox-group" className="gap-3">
-                    {eligibleChannels.map((channel) => (
-                      <Field key={channel.id} orientation="horizontal">
-                        <Checkbox
-                          id={`channel_${channel.id}`}
-                          checked={state.channel_ids.includes(channel.id)}
-                          onCheckedChange={() => toggle("channel_ids", channel.id)}
-                        />
-                        <FieldLabel
-                          htmlFor={`channel_${channel.id}`}
-                          className="font-normal"
-                        >
-                          {channel.name}
-                        </FieldLabel>
-                      </Field>
-                    ))}
-                    {eligibleChannels.length === 0 ? (
-                      <FieldDescription>
-                        {t("No channels for this format.")}
-                      </FieldDescription>
-                    ) : null}
-                  </FieldGroup>
-                </FieldSet>
+                <RoutingTargetFields
+                  className="xl:col-span-2"
+                  groups={targetGroups}
+                  channels={targetChannels}
+                  selectedGroupIds={state.channel_group_ids}
+                  selectedChannelIds={state.channel_ids}
+                  onChange={(channelGroupIds, channelIds) =>
+                    patch({
+                      channel_group_ids: channelGroupIds,
+                      channel_ids: channelIds,
+                    })
+                  }
+                  error={
+                    fieldError("channel_group_ids") ?? fieldError("channel_ids")
+                  }
+                />
                 <Field orientation="horizontal">
                   <FieldLabel htmlFor="model_rule_enabled">{t("Enabled")}</FieldLabel>
                   <Switch

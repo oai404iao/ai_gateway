@@ -4658,7 +4658,9 @@ async fn self_api_key_create_reports_policy_preconditions() {
     let options = body_json(options).await;
     assert_eq!(options["policy_id"], policy_id.to_string());
     assert_eq!(options["groups"][0]["id"], group_id);
+    assert_eq!(options["groups"][0]["priority"], 1);
     assert_eq!(options["channels"][0]["id"], channel_id);
+    assert_eq!(options["channels"][0]["channel_group_enabled"], true);
 
     let other_group = request(
         &app,

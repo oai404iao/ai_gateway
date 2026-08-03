@@ -40,6 +40,12 @@ describe("ApiKeyPolicyDetailPage", () => {
     renderAppAt("/admin/api-key-policies/new");
 
     await user.type(await screen.findByLabelText(/^name$/i), "channel-only");
+    expect(
+      screen.queryByRole("checkbox", { name: new RegExp(`^${CHANNEL.name}`, "i") }),
+    ).not.toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", { name: /show individual channels/i }),
+    );
     await user.click(
       screen.getByRole("checkbox", { name: new RegExp(`^${CHANNEL.name}`, "i") }),
     );

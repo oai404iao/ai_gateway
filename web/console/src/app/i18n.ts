@@ -780,6 +780,23 @@ const zhCN: Record<string, string> = {
   "Channel groups ({count})": "渠道组（{count}）",
   "Channels ({count})": "渠道（{count}）",
   "Individual channels ({count})": "单独渠道（{count}）",
+  "Routing targets": "路由目标",
+  "Targets are grouped by API format and sorted by priority and name.":
+    "路由目标按 API 格式分类，并按优先级和名称排序。",
+  "{count} groups selected": "已选择 {count} 个渠道组",
+  "{count} individual channels selected": "已选择 {count} 个单独渠道",
+  "Search routing targets": "搜索路由目标",
+  "Search channel groups or channels": "搜索渠道组或渠道",
+  "Show disabled targets ({count})": "显示已禁用目标（{count}）",
+  "Selecting a group applies to every channel in that group.":
+    "选择渠道组会应用到该组内的全部渠道。",
+  "No channel groups match the current filters.": "没有渠道组匹配当前筛选条件。",
+  "Advanced: individual channels": "高级配置：单独渠道",
+  "Use individual channels only when the whole group should not be selected.":
+    "仅在不应选择整个渠道组时使用单独渠道。",
+  "Show individual channels ({count})": "展开单独渠道（{count}）",
+  "Hide individual channels": "收起单独渠道",
+  "No individual channels match the current filters.": "没有单独渠道匹配当前筛选条件。",
   "No groups for this format.": "该格式没有可用渠道组。",
   "No channels for this format.": "该格式没有可用渠道。",
   "priority {priority}": "优先级 {priority}",
@@ -1067,6 +1084,14 @@ const zhCN: Record<string, string> = {
   "Channel group created": "渠道组已创建",
   "Channel group updated": "渠道组已更新",
   "This group was changed elsewhere. Reloading.": "此渠道组已在其他位置修改，正在重新加载。",
+  "Disable group": "禁用渠道组",
+  "Disable group {name}": "禁用渠道组 {name}",
+  "Disable channel group?": "禁用渠道组？",
+  "{name} will stop all {count} channels in this group from receiving new requests. Individual channel settings are preserved.":
+    "{name} 将阻止该组内全部 {count} 个渠道接收新请求。各渠道的独立配置会保留。",
+  "Disabled {name}; all {count} channels in the group are unavailable.":
+    "已禁用 {name}；该组内全部 {count} 个渠道均已不可用。",
+  "group disabled": "渠道组已禁用",
   "Create group": "创建渠道组",
   "Edit group": "编辑渠道组",
   "Save group": "保存渠道组",

@@ -5,6 +5,7 @@ import {
   E2E_CODEX_CREDENTIAL,
   E2E_CODEX_CREDENTIAL_ID,
   E2E_CODEX_GROUP_ID,
+  E2E_STANDARD_GROUP_ID,
   mockConsoleApi,
 } from "./mock-api";
 
@@ -174,6 +175,7 @@ test.describe("Console SPA smoke", () => {
     await page.getByLabel(/email/i).fill("admin@example.com");
     await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
     await page.getByRole("button", { name: /sign in/i }).click();
+    await expect(page).toHaveURL(/\/account/);
     await page.evaluate((path) => {
       window.history.pushState({}, "", path);
       window.dispatchEvent(new PopStateEvent("popstate"));
@@ -304,6 +306,7 @@ test.describe("Console SPA smoke", () => {
     await page.getByLabel(/email/i).fill("admin@example.com");
     await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
     await page.getByRole("button", { name: /sign in/i }).click();
+    await expect(page).toHaveURL(/\/account/);
     await page.evaluate((path) => {
       window.history.pushState({}, "", path);
       window.dispatchEvent(new PopStateEvent("popstate"));
@@ -322,6 +325,38 @@ test.describe("Console SPA smoke", () => {
     await expect(
       page.getByRole("region", { name: "Codex subscriptions Images" }),
     ).toHaveCount(0);
+
+    const firstStandardGroup = page.getByRole("region", {
+      name: "standard-group-1",
+    });
+    const disableRequest = page.waitForRequest(
+      (request) =>
+        request.url().endsWith(
+          `/console/v1/routing/channel-groups/${E2E_STANDARD_GROUP_ID}`,
+        ) && request.method() === "PUT",
+    );
+    await firstStandardGroup
+      .getByRole("button", { name: "Disable group" })
+      .click();
+    const disableDialog = page.getByRole("alertdialog");
+    await expect(disableDialog).toContainText(
+      "all 1 channels in this group",
+    );
+    await disableDialog
+      .getByRole("button", { name: "Disable group" })
+      .click();
+    const disable = await disableRequest;
+    expect(disable.headers()["if-match"]).toBe(
+      '"2026-07-29T12:00:00.000Z"',
+    );
+    expect(disable.postDataJSON()).toEqual({
+      name: "standard-group-1",
+      api_format: "open_ai_chat_completions",
+      connector_kind: "openai_compatible",
+      priority: 0,
+      selection_strategy: "weighted_random",
+      enabled: false,
+    });
 
     const search = page.getByRole("searchbox", {
       name: "Search groups or channels",
@@ -696,6 +731,31 @@ test.describe("Console SPA smoke", () => {
     await page.getByRole("button", { name: "New API key" }).click();
 
     await page.getByLabel(/^name$/i).fill("browser key");
+    await expect(
+      page.getByRole("checkbox", { name: "upstream-a (chat-primary)" }),
+    ).toHaveCount(0);
+    await expect(
+      page.getByRole("checkbox", { name: "images-disabled (Images)" }),
+    ).toHaveCount(0);
+    const showDisabled = page.getByRole("checkbox", {
+      name: /Show disabled targets/,
+    });
+    await expect(showDisabled).toBeEnabled();
+    await showDisabled.click();
+    await expect(
+      page.getByRole("checkbox", { name: "images-disabled (Images)" }),
+    ).toHaveAttribute("aria-disabled", "true");
+    await page
+      .getByRole("button", { name: "Show individual channels (2)" })
+      .click();
+    await expect(
+      page.getByRole("checkbox", { name: "upstream-a (chat-primary)" }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("checkbox", {
+        name: "images-disabled-upstream (images-disabled)",
+      }),
+    ).toHaveAttribute("aria-disabled", "true");
     await page
       .getByRole("checkbox", { name: "chat-primary (Chat Completions)" })
       .check();

@@ -23,10 +23,10 @@ import { PageHeader } from "@/components/shared/page-header";
 import { AsyncResource } from "@/components/shared/async-resource";
 import { ApiKeyValue } from "@/components/shared/api-key-value";
 import {
-  ApiKeyTargetFields,
-  type ApiKeyTargetChannel,
-  type ApiKeyTargetGroup,
-} from "@/components/shared/api-key-target-fields";
+  RoutingTargetFields,
+  type RoutingTargetChannel,
+  type RoutingTargetGroup,
+} from "@/components/shared/routing-target-fields";
 import { DecimalField, NullableNumberField } from "@/components/shared/decimal-field";
 import { DetailField } from "@/components/shared/detail-field";
 import { StatusBadge } from "@/components/shared/status-badge";
@@ -161,7 +161,7 @@ export function ApiKeyDetailPage() {
   };
 
   const key = data?.data;
-  const targetGroups = useMemo<ApiKeyTargetGroup[]>(() => {
+  const targetGroups = useMemo<RoutingTargetGroup[]>(() => {
     const available = options.data?.groups ?? [];
     const missing = (key?.allowed_group_ids ?? [])
       .filter((groupId) => !available.some((group) => group.id === groupId))
@@ -173,7 +173,7 @@ export function ApiKeyDetailPage() {
       }));
     return [...available, ...missing];
   }, [key?.allowed_api_formats, key?.allowed_group_ids, options.data?.groups]);
-  const targetChannels = useMemo<ApiKeyTargetChannel[]>(() => {
+  const targetChannels = useMemo<RoutingTargetChannel[]>(() => {
     const available = options.data?.channels ?? [];
     const missing = (key?.allowed_channel_ids ?? [])
       .filter((channelId) => !available.some((channel) => channel.id === channelId))
@@ -181,6 +181,7 @@ export function ApiKeyDetailPage() {
         id: channelId,
         channel_group_id: "",
         channel_group_name: t("No longer allowed"),
+        channel_group_enabled: false,
         name: channelId,
         api_format: key?.allowed_api_formats[0] ?? "open_ai_chat_completions",
         enabled: false,
@@ -330,25 +331,24 @@ export function ApiKeyDetailPage() {
                           : t("Unable to load API key target options.")}
                       </FieldError>
                     ) : null}
-                    <div className="grid gap-5 xl:col-span-2 xl:grid-cols-2">
-                      <ApiKeyTargetFields
-                        groups={targetGroups}
-                        channels={targetChannels}
-                        selectedGroupIds={selectedGroupIds}
-                        selectedChannelIds={selectedChannelIds}
-                        onChange={(allowedGroupIds, allowedChannelIds) => {
-                          form.setValue("allowed_group_ids", allowedGroupIds, {
-                            shouldDirty: true,
-                            shouldValidate: true,
-                          });
-                          form.setValue("allowed_channel_ids", allowedChannelIds, {
-                            shouldDirty: true,
-                            shouldValidate: true,
-                          });
-                        }}
-                        error={targetError ? t(targetError) : undefined}
-                      />
-                    </div>
+                    <RoutingTargetFields
+                      className="xl:col-span-2"
+                      groups={targetGroups}
+                      channels={targetChannels}
+                      selectedGroupIds={selectedGroupIds}
+                      selectedChannelIds={selectedChannelIds}
+                      onChange={(allowedGroupIds, allowedChannelIds) => {
+                        form.setValue("allowed_group_ids", allowedGroupIds, {
+                          shouldDirty: true,
+                          shouldValidate: true,
+                        });
+                        form.setValue("allowed_channel_ids", allowedChannelIds, {
+                          shouldDirty: true,
+                          shouldValidate: true,
+                        });
+                      }}
+                      error={targetError ? t(targetError) : undefined}
+                    />
                     <NullableNumberField
                       id="requests_per_minute"
                       label={t("Requests / minute")}

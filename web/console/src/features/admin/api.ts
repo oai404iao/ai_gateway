@@ -318,6 +318,43 @@ export const useUpdateChannelGroup = makeUpdate<ChannelGroupInput>(
   GROUPS_KEY,
   groupDetailKey,
 );
+export function useSetChannelGroupEnabled() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      group,
+      enabled,
+    }: {
+      group: ChannelGroupView;
+      enabled: boolean;
+    }) =>
+      apiPut<MutationResponse>(
+        `/routing/channel-groups/${group.id}`,
+        {
+          name: group.name,
+          api_format: group.api_format,
+          connector_kind: group.connector_kind,
+          priority: group.priority,
+          selection_strategy: group.selection_strategy,
+          enabled,
+        } satisfies ChannelGroupInput,
+        `"${group.updated_at}"`,
+      ),
+    onSettled: (_data, _error, variables) => {
+      void queryClient.invalidateQueries({ queryKey: GROUPS_KEY });
+      void queryClient.invalidateQueries({
+        queryKey: groupDetailKey(variables.group.id),
+      });
+      void queryClient.invalidateQueries({ queryKey: CHANNELS_KEY });
+      void queryClient.invalidateQueries({
+        queryKey: ["console", "me", "api-key-options"],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["console", "control-plane-lists"],
+      });
+    },
+  });
+}
 
 // ---- Channels ----
 const CHANNELS_KEY = ["console", "channels"] as const;
