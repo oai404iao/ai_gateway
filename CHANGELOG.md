@@ -7,6 +7,14 @@ Versioning.
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-08-03
+
+### Fixed
+
+- Strip common reverse-proxy and CDN forwarding metadata from every upstream
+  channel request, including Chat Completions, Responses HTTP/SSE/WebSocket,
+  and Images generation/edit forwarding.
+
 ## [0.9.0] - 2026-08-03
 
 ### Added
