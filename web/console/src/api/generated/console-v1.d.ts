@@ -1165,7 +1165,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/statistics/channel-status": {
+    "/statistics/channel-group-status": {
         parameters: {
             query?: never;
             header?: never;
@@ -1175,12 +1175,13 @@ export interface paths {
         /**
          * @description Available to every authenticated Console user.
          *     Aggregates P90 TTFT, P50 output TPS, and terminal success rate for
-         *     channels whose `status_statistics_enabled` flag is true. Model
-         *     identifiers prefer the selected upstream model and retain the API
-         *     format dimension. Client-cancelled requests do not participate in the
-         *     success-rate denominator.
+         *     channel groups whose `status_statistics_enabled` flag is true. Each
+         *     monitored group aggregates all requests and available models from its
+         *     member channels. Model identifiers prefer the selected upstream model
+         *     and retain the API format dimension. Client-cancelled requests do not
+         *     participate in the success-rate denominator.
          */
-        get: operations["getChannelStatusStatistics"];
+        get: operations["getChannelGroupStatusStatistics"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1394,7 +1395,7 @@ export interface components {
         /** @enum {string} */
         ModelSyncAction: "price_update" | "import";
         /** @enum {string} */
-        ChannelStatusWindow: "24h" | "3d" | "7d";
+        ChannelGroupStatusWindow: "24h" | "3d" | "7d";
         /** @enum {string} */
         StatisticsGranularity: "hour" | "day";
         /** Format: date-time */
@@ -1990,6 +1991,8 @@ export interface components {
             priority: number;
             selection_strategy: components["schemas"]["SelectionStrategy"];
             enabled: boolean;
+            /** @description Includes this channel group in the authenticated channel-group status report. */
+            status_statistics_enabled: boolean;
             updated_at: components["schemas"]["DateTime"];
         };
         ChannelView: {
@@ -2006,8 +2009,6 @@ export interface components {
             enabled: boolean;
             /** @description Whether this OpenAI Responses channel accepts WebSocket upgrades. */
             supports_websocket: boolean;
-            /** @description Includes this channel in the administrator channel-status report. */
-            status_statistics_enabled: boolean;
             auto_disabled: boolean;
             auto_disabled_reason: string | null;
             /** @description Allows system automatic-disable rules to temporarily remove this channel from routing. */
@@ -2440,15 +2441,15 @@ export interface components {
             date: string;
             request_count: number;
         };
-        ChannelStatusReport: {
-            window: components["schemas"]["ChannelStatusWindow"];
+        ChannelGroupStatusReport: {
+            window: components["schemas"]["ChannelGroupStatusWindow"];
             started_at: components["schemas"]["DateTime"];
             ended_at: components["schemas"]["DateTime"];
             bucket_seconds: number;
-            models: components["schemas"]["ChannelStatusModelMetric"][];
-            channels: components["schemas"]["ChannelStatusChannel"][];
+            models: components["schemas"]["ChannelGroupStatusModelMetric"][];
+            groups: components["schemas"]["ChannelGroupStatusGroup"][];
         };
-        ChannelStatusModelMetric: {
+        ChannelGroupStatusModelMetric: {
             api_format: components["schemas"]["ApiFormat"];
             model: string;
             request_count: number;
@@ -2462,22 +2463,18 @@ export interface components {
             /** Format: double */
             p50_tps: number | null;
         };
-        ChannelStatusChannel: {
+        ChannelGroupStatusGroup: {
             /** Format: uuid */
             id: string;
-            /** Format: uuid */
-            channel_group_id: string;
-            channel_group_name: string;
             api_format: components["schemas"]["ApiFormat"];
             name: string;
             enabled: boolean;
-            auto_disabled: boolean;
-            models: components["schemas"]["ChannelStatusChannelModel"][];
+            models: components["schemas"]["ChannelGroupStatusGroupModel"][];
         };
-        ChannelStatusChannelModel: components["schemas"]["ChannelStatusModelMetric"] & {
-            history: components["schemas"]["ChannelStatusBucket"][];
+        ChannelGroupStatusGroupModel: components["schemas"]["ChannelGroupStatusModelMetric"] & {
+            history: components["schemas"]["ChannelGroupStatusBucket"][];
         };
-        ChannelStatusBucket: {
+        ChannelGroupStatusBucket: {
             started_at: components["schemas"]["DateTime"];
             request_count: number;
             /**
@@ -2931,6 +2928,8 @@ export interface components {
             priority: number;
             selection_strategy: components["schemas"]["SelectionStrategy"];
             enabled: boolean;
+            /** @description Includes this channel group in the authenticated channel-group status report. Omission defaults to false on create and preserves the current value on update. */
+            status_statistics_enabled?: boolean;
         };
         ChannelCreateInput: {
             /** Format: uuid */
@@ -2948,11 +2947,6 @@ export interface components {
              * @default false
              */
             supports_websocket: boolean;
-            /**
-             * @description Includes this channel in the administrator channel-status report.
-             * @default false
-             */
-            status_statistics_enabled: boolean;
             /**
              * @description Allows configured automatic-disable rules to temporarily remove this channel from routing.
              * @default false
@@ -2995,11 +2989,6 @@ export interface components {
              * @default false
              */
             supports_websocket: boolean;
-            /**
-             * @description Includes this channel in the administrator channel-status report.
-             * @default false
-             */
-            status_statistics_enabled: boolean;
             /**
              * @description Allows configured automatic-disable rules to temporarily remove this channel from routing.
              * @default false
@@ -3056,7 +3045,6 @@ export interface components {
         /** @description At least one property must be supplied. */
         ChannelBatchChanges: {
             enabled?: boolean;
-            status_statistics_enabled?: boolean;
             auto_disable_allowed?: boolean;
             weight?: number;
             /** @description Non-negative multiplier applied to upstream model prices for settlement. */
@@ -3240,7 +3228,7 @@ export interface components {
         RequestLogStartedAfter: components["schemas"]["DateTime"];
         RequestLogStartedBefore: components["schemas"]["DateTime"];
         RequestLogBilled: boolean;
-        StatisticsWindow: components["schemas"]["ChannelStatusWindow"];
+        StatisticsWindow: components["schemas"]["ChannelGroupStatusWindow"];
         /** @description Inclusive range start; defaults to seven days before the end. */
         StatisticsStartedAfter: components["schemas"]["DateTime"];
         /** @description Natural Asia/Shanghai period to rank: day (00:00–next 00:00), week (Monday–Sunday), or month (day 1–final day). */
@@ -6071,7 +6059,7 @@ export interface operations {
             404: components["responses"]["NotFound"];
         };
     };
-    getChannelStatusStatistics: {
+    getChannelGroupStatusStatistics: {
         parameters: {
             query?: {
                 window?: components["parameters"]["StatisticsWindow"];
@@ -6082,13 +6070,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Channel and model status metrics. */
+            /** @description Channel-group and model status metrics. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ChannelStatusReport"];
+                    "application/json": components["schemas"]["ChannelGroupStatusReport"];
                 };
             };
             401: components["responses"]["Unauthorized"];

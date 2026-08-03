@@ -518,16 +518,18 @@ test.describe("Console SPA smoke", () => {
     );
   });
 
-  test("all users can open the Channel status page", async ({ page }) => {
+  test("all users can open the Channel group status page", async ({ page }) => {
     await mockConsoleApi(page);
     await page.goto("/login");
     await page.getByLabel(/email/i).fill("admin@example.com");
     await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
     await page.getByRole("button", { name: /sign in/i }).click();
-    await page.getByRole("link", { name: "Channel status" }).click();
+    await page.getByRole("link", { name: "Channel group status" }).click();
 
-    await expect(page).toHaveURL(/\/channel-status/);
-    await expect(page.getByRole("heading", { name: "Channel status" })).toBeVisible();
+    await expect(page).toHaveURL(/\/channel-group-status/);
+    await expect(
+      page.getByRole("heading", { name: "Channel group status" }),
+    ).toBeVisible();
     await expect(page.getByText("Model overview")).toBeVisible();
   });
 

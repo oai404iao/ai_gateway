@@ -1,8 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { apiGet } from "@/api/client";
 import type {
-  ChannelStatusReport,
-  ChannelStatusWindow,
+  ChannelGroupStatusReport,
+  ChannelGroupStatusWindow,
   CostStatisticsReport,
   PersonalUsageReport,
   StatisticsGranularity,
@@ -28,12 +28,12 @@ function queryString(values: Record<string, string | undefined>): string {
   return search.toString();
 }
 
-export function useChannelStatus(window: ChannelStatusWindow) {
+export function useChannelGroupStatus(window: ChannelGroupStatusWindow) {
   return useQuery({
-    queryKey: ["console", "statistics", "channel-status", window] as const,
+    queryKey: ["console", "statistics", "channel-group-status", window] as const,
     queryFn: () =>
-      apiGet<ChannelStatusReport>(
-        `/statistics/channel-status?${queryString({ window })}`,
+      apiGet<ChannelGroupStatusReport>(
+        `/statistics/channel-group-status?${queryString({ window })}`,
       ),
   });
 }

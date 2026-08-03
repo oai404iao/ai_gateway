@@ -32,7 +32,7 @@ use crate::{
     domain::{ConsolePrincipal, UserRole},
     persistence::{
         ApiKeyCreate, ApiKeyPolicyInput, ApiKeyUpdate, ChannelBatchUpdateInput, ChannelCreateInput,
-        ChannelGroupInput, ChannelInput, ChannelRecoverInput, ChannelStatusWindow,
+        ChannelGroupInput, ChannelGroupStatusWindow, ChannelInput, ChannelRecoverInput,
         CodexCredentialBatchInput, CodexCredentialExportBundle, CodexCredentialExportInput,
         CodexCredentialImportInput, CodexCredentialUpdateInput, CodexCredentialView,
         CodexOauthStartInput, CodexQuotaWindowHistory, ConfigTemplateCreateInput,
@@ -120,8 +120,8 @@ pub fn router(state: ConsoleState) -> Router {
 
     let statistics_routes = Router::new()
         .route(
-            "/console/v1/statistics/channel-status",
-            get(get_channel_status),
+            "/console/v1/statistics/channel-group-status",
+            get(get_channel_group_status),
         )
         .route("/console/v1/statistics/costs", get(get_own_cost_statistics))
         .route(
@@ -673,7 +673,7 @@ struct LogQuery {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ChannelStatusQuery {
+struct ChannelGroupStatusQuery {
     #[serde(default)]
     window: Option<String>,
 }
@@ -2105,17 +2105,17 @@ async fn get_request_log(
         .ok_or(ConsoleError::NotFound)
 }
 
-async fn get_channel_status(
+async fn get_channel_group_status(
     State(state): State<ConsoleState>,
-    Query(query): Query<ChannelStatusQuery>,
-) -> Result<Json<crate::persistence::ChannelStatusReport>, ConsoleError> {
+    Query(query): Query<ChannelGroupStatusQuery>,
+) -> Result<Json<crate::persistence::ChannelGroupStatusReport>, ConsoleError> {
     let window = match query.window.as_deref().unwrap_or("24h") {
-        "24h" => ChannelStatusWindow::Last24Hours,
-        "3d" => ChannelStatusWindow::Last3Days,
-        "7d" => ChannelStatusWindow::Last7Days,
+        "24h" => ChannelGroupStatusWindow::Last24Hours,
+        "3d" => ChannelGroupStatusWindow::Last3Days,
+        "7d" => ChannelGroupStatusWindow::Last7Days,
         _ => return Err(ConsoleError::Validation),
     };
-    Ok(Json(state.request_logs.channel_status(window).await?))
+    Ok(Json(state.request_logs.channel_group_status(window).await?))
 }
 
 async fn get_own_cost_statistics(

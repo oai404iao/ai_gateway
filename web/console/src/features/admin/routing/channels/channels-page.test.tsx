@@ -65,6 +65,7 @@ const CODEX_IMAGES_GROUP: ChannelGroupView = {
   name: "codex-subscriptions Images",
   api_format: "open_ai_images",
   enabled: false,
+  status_statistics_enabled: false,
 };
 
 const CODEX_RESPONSES_CHANNEL: ChannelView = {

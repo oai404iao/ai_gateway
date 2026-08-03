@@ -1769,6 +1769,7 @@ async fn removed_console_compatibility_paths_are_not_routed() {
         ("POST", "/console/v1/models/sync/preview"),
         ("POST", "/console/v1/models/sync/import"),
         ("POST", "/console/v1/reload"),
+        ("GET", "/console/v1/statistics/channel-status"),
     ] {
         let response = request(&app, method, path, serde_json::json!({}), &[]).await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND, "{method} {path}");
@@ -1804,6 +1805,7 @@ async fn obsolete_control_plane_columns_are_absent() {
     for (table, column) in [
         ("api_keys", "tokens_per_minute"),
         ("channels", "health_check"),
+        ("channels", "status_statistics_enabled"),
     ] {
         let exists: bool = sqlx::query_scalar(
             "SELECT EXISTS (\
@@ -1818,6 +1820,19 @@ async fn obsolete_control_plane_columns_are_absent() {
         .unwrap();
         assert!(!exists, "{table}.{column} must be removed");
     }
+
+    let group_status_monitoring_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS (\
+         SELECT 1 FROM information_schema.columns \
+         WHERE table_schema='public' \
+           AND table_name='channel_groups' \
+           AND column_name='status_statistics_enabled'\
+         )",
+    )
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert!(group_status_monitoring_exists);
 
     database.cleanup().await;
 }
@@ -2164,11 +2179,10 @@ async fn user_group_codex_quota_visibility_is_scoped_sanitized_and_read_only() {
         sqlx::query(
             "INSERT INTO channels \
              (id,channel_group_id,api_format,name,base_url,enabled,weight, \
-              upstream_auth_kind,available_models,status_statistics_enabled, \
-              auto_disable_allowed,supports_websocket) \
+              upstream_auth_kind,available_models,auto_disable_allowed,supports_websocket) \
              VALUES ($1,$2,'open_ai_responses',$3, \
                      'https://chatgpt.com/backend-api/codex',true,100,'none', \
-                     ARRAY['gpt-5-codex'],false,false,true)",
+                     ARRAY['gpt-5-codex'],false,true)",
         )
         .bind(credential_id)
         .bind(group_id)
@@ -2729,7 +2743,9 @@ async fn etag_if_match_optimistic_concurrency_matches_spec() {
         .to_owned();
     let mut update = body_json(detail).await;
     assert!(update["connector_pool_id"].is_null());
+    assert_eq!(update["status_statistics_enabled"], false);
     update["name"] = serde_json::json!("spec-group-renamed");
+    update["status_statistics_enabled"] = serde_json::json!(true);
     for field in ["id", "connector_pool_id", "updated_at"] {
         update.as_object_mut().unwrap().remove(field);
     }
@@ -2741,6 +2757,13 @@ async fn etag_if_match_optimistic_concurrency_matches_spec() {
         ok_body["correlation_id"].is_string(),
         "mutation correlation"
     );
+    let monitoring_enabled: bool =
+        sqlx::query_scalar("SELECT status_statistics_enabled FROM channel_groups WHERE id=$1")
+            .bind(Uuid::parse_str(&group_id).unwrap())
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert!(monitoring_enabled);
 
     let conflict = request(&app, "PUT", &path, update, &[("if-match", &etag)]).await;
     assert_eq!(conflict.status(), StatusCode::CONFLICT);
@@ -3007,11 +3030,10 @@ async fn codex_export_and_proxy_delete_contracts_preserve_secrets_and_references
     sqlx::query(
         "INSERT INTO channels \
          (id,channel_group_id,api_format,name,base_url,enabled,weight,proxy_id, \
-          upstream_auth_kind,available_models,status_statistics_enabled, \
-          auto_disable_allowed,supports_websocket) \
+          upstream_auth_kind,available_models,auto_disable_allowed,supports_websocket) \
          VALUES ($1,$2,'open_ai_responses','spec-portable', \
                  'https://chatgpt.com/backend-api/codex',true,100,$3,'none', \
-                 ARRAY['gpt-5-codex'],false,false,true)",
+                 ARRAY['gpt-5-codex'],false,true)",
     )
     .bind(channel_id)
     .bind(group_id)
@@ -3160,11 +3182,10 @@ async fn codex_business_batch_and_delete_contracts_are_versioned() {
         sqlx::query(
             "INSERT INTO channels \
              (id,channel_group_id,api_format,name,base_url,enabled,weight, \
-              upstream_auth_kind,available_models,status_statistics_enabled, \
-              auto_disable_allowed,supports_websocket) \
+              upstream_auth_kind,available_models,auto_disable_allowed,supports_websocket) \
              VALUES ($1,$2,'open_ai_responses',$3, \
                      'https://chatgpt.com/backend-api/codex',true,100,'none', \
-                     ARRAY['gpt-5-codex'],false,false,true)",
+                     ARRAY['gpt-5-codex'],false,true)",
         )
         .bind(channel_id)
         .bind(group_id)
@@ -4216,7 +4237,6 @@ async fn channel_batch_updates_are_atomic_versioned_and_published_once() {
         serde_json::json!({
             "items": before_items,
             "changes": {
-                "status_statistics_enabled": true,
                 "auto_disable_allowed": true,
                 "weight": 7,
                 "billing_multiplier": "2.5"
@@ -4250,7 +4270,6 @@ async fn channel_batch_updates_are_atomic_versioned_and_published_once() {
             .unwrap();
         assert_eq!(channel["weight"], 7);
         assert_eq!(channel["billing_multiplier"], "2.500000000000");
-        assert_eq!(channel["status_statistics_enabled"], true);
         assert_eq!(channel["auto_disable_allowed"], true);
         let compiled = app
             .runtime
@@ -5023,21 +5042,42 @@ async fn request_log_filters_match_the_console_contract() {
 }
 
 #[tokio::test]
-async fn statistics_endpoints_aggregate_channel_health_and_costs() {
+async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
     let group_id = Uuid::new_v4();
     let api_key_id = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO channel_groups \
-         (id,name,api_format,priority,selection_strategy,enabled) \
-         VALUES ($1,$2,'open_ai_chat_completions',1,'weighted_random',true)",
+         (id,name,api_format,priority,selection_strategy,enabled,status_statistics_enabled) \
+         VALUES ($1,$2,'open_ai_chat_completions',1,'weighted_random',true,true)",
     )
     .bind(group_id)
     .bind(format!("statistics-group-{group_id}"))
     .execute(&database.pool)
     .await
     .unwrap();
+    let legacy_channel_monitoring = request(
+        &app,
+        "POST",
+        "/console/v1/routing/channels",
+        serde_json::json!({
+            "channel_group_id": group_id,
+            "api_format": "open_ai_chat_completions",
+            "name": format!("legacy-statistics-channel-{group_id}"),
+            "base_url": "https://legacy-statistics.example.test",
+            "enabled": true,
+            "status_statistics_enabled": true,
+            "weight": 1,
+            "upstream_auth_kind": "none",
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(
+        legacy_channel_monitoring.status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
     let channel = request(
         &app,
         "POST",
@@ -5048,7 +5088,6 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
             "name": format!("statistics-channel-{group_id}"),
             "base_url": "https://statistics.example.test",
             "enabled": true,
-            "status_statistics_enabled": true,
             "weight": 1,
             "upstream_auth_kind": "none",
             "available_models": ["statistics-model"],
@@ -5182,15 +5221,30 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
     )
     .await;
     assert_eq!(channel_detail.status(), StatusCode::OK);
+    assert!(
+        body_json(channel_detail)
+            .await
+            .get("status_statistics_enabled")
+            .is_none()
+    );
+    let group_detail = request(
+        &app,
+        "GET",
+        &format!("/console/v1/routing/channel-groups/{group_id}"),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(group_detail.status(), StatusCode::OK);
     assert_eq!(
-        body_json(channel_detail).await["status_statistics_enabled"],
+        body_json(group_detail).await["status_statistics_enabled"],
         true
     );
 
     let status = request(
         &app,
         "GET",
-        "/console/v1/statistics/channel-status?window=24h",
+        "/console/v1/statistics/channel-group-status?window=24h",
         serde_json::json!({}),
         &[],
     )
@@ -5203,8 +5257,8 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
     assert_eq!(status["models"][0]["success_rate"], 0.5);
     assert_eq!(status["models"][0]["p90_ttft_ms"], 500.0);
     assert_eq!(status["models"][0]["p50_tps"], 20.0);
-    assert_eq!(status["channels"][0]["id"], channel_id.to_string());
-    assert!(status["channels"][0]["models"][0]["history"].is_array());
+    assert_eq!(status["groups"][0]["id"], group_id.to_string());
+    assert!(status["groups"][0]["models"][0]["history"].is_array());
 
     let range_start = (started_at - chrono::Duration::hours(1))
         .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
@@ -5479,7 +5533,7 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
         &app,
         &regular_session.access_token,
         "GET",
-        "/console/v1/statistics/channel-status?window=24h",
+        "/console/v1/statistics/channel-group-status?window=24h",
         serde_json::json!({}),
         &[],
     )
@@ -5752,11 +5806,10 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
     sqlx::query(
         "INSERT INTO channels \
          (id,channel_group_id,api_format,name,base_url,enabled,weight, \
-          upstream_auth_kind,available_models,status_statistics_enabled, \
-          auto_disable_allowed,supports_websocket) \
+          upstream_auth_kind,available_models,auto_disable_allowed,supports_websocket) \
          VALUES ($1,$2,'open_ai_responses','statistics-codex', \
                  'https://chatgpt.com/backend-api/codex',true,100,'none', \
-                 ARRAY['gpt-5-codex'],false,false,true)",
+                 ARRAY['gpt-5-codex'],false,true)",
     )
     .bind(codex_credential_id)
     .bind(codex_group_id)

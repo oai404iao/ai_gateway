@@ -7,6 +7,12 @@ Versioning.
 
 ## [Unreleased]
 
+### Changed
+
+- Move status monitoring from individual channels to channel groups, aggregate
+  the public status report by group, and rename the Console/API routes to
+  channel-group status.
+
 ## [0.9.1] - 2026-08-03
 
 ### Fixed

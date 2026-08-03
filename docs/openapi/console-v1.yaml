@@ -2115,26 +2115,27 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
 
-  /statistics/channel-status:
+  /statistics/channel-group-status:
     get:
       tags: [Statistics]
-      operationId: getChannelStatusStatistics
+      operationId: getChannelGroupStatusStatistics
       description: |
         Available to every authenticated Console user.
         Aggregates P90 TTFT, P50 output TPS, and terminal success rate for
-        channels whose `status_statistics_enabled` flag is true. Model
-        identifiers prefer the selected upstream model and retain the API
-        format dimension. Client-cancelled requests do not participate in the
-        success-rate denominator.
+        channel groups whose `status_statistics_enabled` flag is true. Each
+        monitored group aggregates all requests and available models from its
+        member channels. Model identifiers prefer the selected upstream model
+        and retain the API format dimension. Client-cancelled requests do not
+        participate in the success-rate denominator.
       security: [{ bearerAuth: [] }]
       parameters:
         - $ref: "#/components/parameters/StatisticsWindow"
       responses:
         "200":
-          description: Channel and model status metrics.
+          description: Channel-group and model status metrics.
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/ChannelStatusReport" }
+              schema: { $ref: "#/components/schemas/ChannelGroupStatusReport" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/Unprocessable" }
@@ -2434,7 +2435,7 @@ components:
       in: query
       required: false
       schema:
-        $ref: "#/components/schemas/ChannelStatusWindow"
+        $ref: "#/components/schemas/ChannelGroupStatusWindow"
         default: 24h
     StatisticsStartedAfter:
       name: started_after
@@ -2575,7 +2576,7 @@ components:
     ModelSyncAction:
       type: string
       enum: [price_update, import]
-    ChannelStatusWindow:
+    ChannelGroupStatusWindow:
       type: string
       enum: [24h, 3d, 7d]
     StatisticsGranularity:
@@ -3433,7 +3434,7 @@ components:
 
     ChannelGroupView:
       type: object
-      required: [id, name, api_format, connector_kind, connector_pool_id, priority, selection_strategy, enabled, updated_at]
+      required: [id, name, api_format, connector_kind, connector_pool_id, priority, selection_strategy, enabled, status_statistics_enabled, updated_at]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
@@ -3447,13 +3448,16 @@ components:
         priority: { type: integer }
         selection_strategy: { $ref: "#/components/schemas/SelectionStrategy" }
         enabled: { type: boolean }
+        status_statistics_enabled:
+          type: boolean
+          description: Includes this channel group in the authenticated channel-group status report.
         updated_at: { $ref: "#/components/schemas/DateTime" }
 
     ChannelView:
       type: object
       required:
         [id, channel_group_id, api_format, connector_kind, provider_managed, name, base_url, enabled, supports_websocket,
-         status_statistics_enabled, auto_disabled, auto_disabled_reason, auto_disable_allowed,
+         auto_disabled, auto_disabled_reason, auto_disable_allowed,
          weight, billing_multiplier, proxy_id,
          config_template_id, connect_timeout_ms, response_header_timeout_ms,
          stream_idle_timeout_ms, upstream_auth_kind, upstream_auth_header_name,
@@ -3472,9 +3476,6 @@ components:
         supports_websocket:
           type: boolean
           description: Whether this OpenAI Responses channel accepts WebSocket upgrades.
-        status_statistics_enabled:
-          type: boolean
-          description: Includes this channel in the administrator channel-status report.
         auto_disabled: { type: boolean }
         auto_disabled_reason: { type: string, nullable: true }
         auto_disable_allowed:
@@ -4118,22 +4119,22 @@ components:
           type: integer
           minimum: 0
 
-    ChannelStatusReport:
+    ChannelGroupStatusReport:
       type: object
-      required: [window, started_at, ended_at, bucket_seconds, models, channels]
+      required: [window, started_at, ended_at, bucket_seconds, models, groups]
       properties:
-        window: { $ref: "#/components/schemas/ChannelStatusWindow" }
+        window: { $ref: "#/components/schemas/ChannelGroupStatusWindow" }
         started_at: { $ref: "#/components/schemas/DateTime" }
         ended_at: { $ref: "#/components/schemas/DateTime" }
         bucket_seconds: { type: integer }
         models:
           type: array
-          items: { $ref: "#/components/schemas/ChannelStatusModelMetric" }
-        channels:
+          items: { $ref: "#/components/schemas/ChannelGroupStatusModelMetric" }
+        groups:
           type: array
-          items: { $ref: "#/components/schemas/ChannelStatusChannel" }
+          items: { $ref: "#/components/schemas/ChannelGroupStatusGroup" }
 
-    ChannelStatusModelMetric:
+    ChannelGroupStatusModelMetric:
       type: object
       required:
         [api_format, model, request_count, success_rate, p90_ttft_ms, p50_tps]
@@ -4159,34 +4160,29 @@ components:
           minimum: 0
           nullable: true
 
-    ChannelStatusChannel:
+    ChannelGroupStatusGroup:
       type: object
-      required:
-        [id, channel_group_id, channel_group_name, api_format, name, enabled,
-         auto_disabled, models]
+      required: [id, api_format, name, enabled, models]
       properties:
         id: { type: string, format: uuid }
-        channel_group_id: { type: string, format: uuid }
-        channel_group_name: { type: string }
         api_format: { $ref: "#/components/schemas/ApiFormat" }
         name: { type: string }
         enabled: { type: boolean }
-        auto_disabled: { type: boolean }
         models:
           type: array
-          items: { $ref: "#/components/schemas/ChannelStatusChannelModel" }
+          items: { $ref: "#/components/schemas/ChannelGroupStatusGroupModel" }
 
-    ChannelStatusChannelModel:
+    ChannelGroupStatusGroupModel:
       allOf:
-        - $ref: "#/components/schemas/ChannelStatusModelMetric"
+        - $ref: "#/components/schemas/ChannelGroupStatusModelMetric"
         - type: object
           required: [history]
           properties:
             history:
               type: array
-              items: { $ref: "#/components/schemas/ChannelStatusBucket" }
+              items: { $ref: "#/components/schemas/ChannelGroupStatusBucket" }
 
-    ChannelStatusBucket:
+    ChannelGroupStatusBucket:
       type: object
       required: [started_at, request_count, success_rate, p90_ttft_ms, p50_tps]
       properties:
@@ -4905,6 +4901,9 @@ components:
         priority: { type: integer, minimum: 0 }
         selection_strategy: { $ref: "#/components/schemas/SelectionStrategy" }
         enabled: { type: boolean }
+        status_statistics_enabled:
+          type: boolean
+          description: Includes this channel group in the authenticated channel-group status report. Omission defaults to false on create and preserves the current value on update.
 
     ChannelCreateInput:
       type: object
@@ -4923,10 +4922,6 @@ components:
           type: boolean
           default: false
           description: Valid only for open_ai_responses channels.
-        status_statistics_enabled:
-          type: boolean
-          default: false
-          description: Includes this channel in the administrator channel-status report.
         auto_disable_allowed:
           type: boolean
           default: false
@@ -4970,10 +4965,6 @@ components:
           type: boolean
           default: false
           description: Valid only for open_ai_responses channels.
-        status_statistics_enabled:
-          type: boolean
-          default: false
-          description: Includes this channel in the administrator channel-status report.
         auto_disable_allowed:
           type: boolean
           default: false
@@ -5044,7 +5035,6 @@ components:
       description: At least one property must be supplied.
       properties:
         enabled: { type: boolean }
-        status_statistics_enabled: { type: boolean }
         auto_disable_allowed: { type: boolean }
         weight: { type: integer, minimum: 1 }
         billing_multiplier:

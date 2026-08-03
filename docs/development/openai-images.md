@@ -144,7 +144,8 @@ codex_oauth_credentials
 来源；label、weight、proxy 和超时初始同步。它们拥有独立的 ID、模型列表、格式能力、被动健康
 状态和路由授权。Responses projection 继续使用 models endpoint 返回的 slug 并声明 WebSocket；
 Images projection 当前固定声明经核对的 `gpt-image-2`，不声明 WebSocket、scheduled probe 或
-状态统计。
+渠道级状态统计。状态监控由 Images Channel Group 独立控制，新建的配对 Images group 默认关闭
+`status_statistics_enabled`。
 
 ### 安全迁移
 

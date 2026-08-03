@@ -165,9 +165,9 @@ describe("StatisticsPage", () => {
       "href",
       "/statistics",
     );
-    expect(screen.getByRole("link", { name: "Channel status" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Channel group status" })).toHaveAttribute(
       "href",
-      "/channel-status",
+      "/channel-group-status",
     );
     expect(screen.getByRole("link", { name: "Spend leaderboard" })).toHaveAttribute(
       "href",
@@ -196,13 +196,15 @@ describe("StatisticsPage", () => {
     expect(adminKeyRequests).toBe(0);
   });
 
-  it("shows public channel status on its own page", async () => {
+  it("shows public channel-group status on its own page", async () => {
     seedUserSession();
-    renderApp("/channel-status");
+    renderApp("/channel-group-status");
 
-    expect(await screen.findByRole("heading", { name: "Channel status" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: "Channel group status" }),
+    ).toBeInTheDocument();
     expect(await screen.findByText("Model overview")).toBeInTheDocument();
-    expect(await screen.findByText(CHANNEL.name)).toBeInTheDocument();
+    expect(await screen.findByText(CHANNEL_GROUP.name)).toBeInTheDocument();
     expect(screen.queryByText("Total cost")).not.toBeInTheDocument();
   });
 

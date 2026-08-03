@@ -6,6 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import {
   Field,
+  FieldContent,
   FieldDescription,
   FieldError,
   FieldGroup,
@@ -54,6 +55,7 @@ const schema = z.object({
   priority: z.number().int().min(0, "Priority must be zero or greater."),
   selection_strategy: z.enum(["weighted_random", "weighted_round_robin"]),
   enabled: z.boolean(),
+  status_statistics_enabled: z.boolean(),
 });
 
 type FormState = z.infer<typeof schema>;
@@ -65,6 +67,7 @@ const empty: FormState = {
   priority: 1,
   selection_strategy: "weighted_random",
   enabled: true,
+  status_statistics_enabled: false,
 };
 
 export function ChannelGroupDetailPage() {
@@ -88,6 +91,7 @@ export function ChannelGroupDetailPage() {
         priority: data.data.priority,
         selection_strategy: data.data.selection_strategy,
         enabled: data.data.enabled,
+        status_statistics_enabled: data.data.status_statistics_enabled,
       });
     }
   }, [data]);
@@ -109,6 +113,7 @@ export function ChannelGroupDetailPage() {
       priority: parsed.data.priority,
       selection_strategy: parsed.data.selection_strategy as SelectionStrategy,
       enabled: parsed.data.enabled,
+      status_statistics_enabled: parsed.data.status_statistics_enabled,
     };
     try {
       if (isNew) {
@@ -165,6 +170,10 @@ export function ChannelGroupDetailPage() {
                 <DetailField
                   label={t("Enabled")}
                   value={<StatusBadge value={data.data.enabled} />}
+                />
+                <DetailField
+                  label={t("Status monitoring")}
+                  value={<StatusBadge value={data.data.status_statistics_enabled} />}
                 />
               </dl>
             </CardContent>
@@ -291,6 +300,25 @@ export function ChannelGroupDetailPage() {
                     id="channel_group_enabled"
                     checked={state.enabled}
                     onCheckedChange={(checked) => patch({ enabled: Boolean(checked) })}
+                  />
+                </Field>
+                <Field orientation="horizontal">
+                  <FieldContent>
+                    <FieldLabel htmlFor="channel_group_status_statistics_enabled">
+                      {t("Status monitoring")}
+                    </FieldLabel>
+                    <FieldDescription>
+                      {t(
+                        "Include this channel group in the channel group status report.",
+                      )}
+                    </FieldDescription>
+                  </FieldContent>
+                  <Switch
+                    id="channel_group_status_statistics_enabled"
+                    checked={state.status_statistics_enabled}
+                    onCheckedChange={(checked) =>
+                      patch({ status_statistics_enabled: Boolean(checked) })
+                    }
                   />
                 </Field>
               </FieldGroup>

@@ -204,12 +204,12 @@ const zhCN: Record<string, string> = {
     "重新编译并发布不可变运行时快照；定时重载也会自动执行。",
   "Reload now": "立即重载",
   "Correlation id": "关联 ID",
-  "Channel status": "渠道状态",
+  "Channel group status": "渠道组状态监控",
   "Personal request activity and cost analytics.": "个人请求活动与花费分析。",
   "System-wide request activity, token usage, and cost analytics.":
     "全系统请求活动、Token 用量与花费分析。",
-  "Availability and performance for channels included in status statistics.":
-    "已纳入状态统计的渠道可用性与性能。",
+  "Availability and performance aggregated for monitored channel groups.":
+    "按已启用监控的渠道组聚合可用性与性能。",
   "Personal usage": "个人使用情况",
   "Cost statistics": "花费统计",
   "Spend leaderboard": "花费排行榜",
@@ -877,18 +877,20 @@ const zhCN: Record<string, string> = {
   "P90 TTFT": "P90 首字延迟",
   "P50 TPS": "P50 吞吐",
   "Model overview": "模型概览",
-  "Metrics aggregated across channels included in status statistics.":
-    "聚合已纳入状态统计渠道的指标。",
+  "Metrics aggregated across monitored channel groups.":
+    "聚合已启用监控的渠道组指标。",
   "Status window": "状态时间窗口",
   "Last 24 hours": "最近 24 小时",
   "Last 3 days": "最近 3 天",
   "Last 7 days": "最近 7 天",
-  "No tracked channels": "没有纳入统计的渠道",
-  "Enable status statistics on at least one channel.": "请至少为一个渠道启用状态统计。",
+  "No monitored channel groups": "没有启用监控的渠道组",
+  "Enable status monitoring on at least one channel group.":
+    "请至少为一个渠道组启用状态监控。",
   "Routing enabled": "路由已启用",
   "Routing disabled": "路由已禁用",
-  "No channel models": "渠道没有模型",
-  "Add available upstream models to this channel.": "请为此渠道添加可用上游模型。",
+  "No channel group models": "渠道组没有模型",
+  "Add available upstream models to channels in this group.":
+    "请为此渠道组中的渠道添加可用上游模型。",
   "The gateway does not store request or response bodies. Sanitized upstream error messages may be retained.":
     "网关不会存储请求或响应正文，但可能保留已清洗的上游错误消息。",
   "No request logs": "没有请求日志",
@@ -949,8 +951,7 @@ const zhCN: Record<string, string> = {
     "配置可用上游模型、定时检测与超时覆盖。",
   "Transform override": "转换覆盖",
   "Availability and automation": "可用性与自动化",
-  "Routing state, status reporting, and automatic disable behavior.":
-    "配置路由状态、状态统计与自动禁用行为。",
+  "Routing state and automatic disable behavior.": "配置路由状态与自动禁用行为。",
   "Manage channel groups and their upstream channels in one grouped view.":
     "在一个分组视图中管理渠道组及其上游渠道。",
   "Browse compact channel groups, with shared Codex credentials kept together.":
@@ -1106,8 +1107,11 @@ const zhCN: Record<string, string> = {
   "Create channel": "创建渠道",
   "Edit channel": "编辑渠道",
   "Save channel": "保存渠道",
-  "Status statistics": "状态统计",
-  "Include this channel in the channel status report.": "在渠道状态报告中包含此渠道。",
+  "Status monitoring": "状态监控",
+  "Include this channel group in the channel group status report.":
+    "在渠道组状态监控报告中包含此渠道组。",
+  "Monitoring enabled": "监控已启用",
+  "Monitoring disabled": "监控已禁用",
   "Auto-disabled": "自动禁用",
   "Auto-disable reason": "自动禁用原因",
   "Allow automatic disable": "允许自动禁用",
@@ -1356,7 +1360,8 @@ const zhCN: Record<string, string> = {
     "按时间区间、用户、API 密钥、渠道或 Codex 凭证和聚合颗粒度筛选。",
   "Filter your own statistics by time range, API key, and aggregation granularity.":
     "按时间区间、API 密钥和聚合颗粒度筛选您自己的统计。",
-  "Channel status and your own cost analytics.": "渠道状态和您自己的花费统计。",
+  "Channel group status and your own cost analytics.":
+    "渠道组状态监控和您自己的花费统计。",
   "Quick range": "快速时间范围",
   "Today": "今天",
   "This week": "本周",
