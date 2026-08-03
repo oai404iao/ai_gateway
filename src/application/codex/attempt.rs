@@ -150,10 +150,14 @@ impl PreparedCodexAttempt {
             HeaderValue::from_str(&format!("Bearer {}", self.credential.access_token()))
                 .map_err(invalid)?,
         );
-        headers.insert(
-            "ChatGPT-Account-ID",
-            HeaderValue::from_str(self.credential.account_id()).map_err(invalid)?,
-        );
+        if let Some(account_id) = self.credential.account_id() {
+            headers.insert(
+                "ChatGPT-Account-ID",
+                HeaderValue::from_str(account_id).map_err(invalid)?,
+            );
+        } else {
+            headers.remove("ChatGPT-Account-ID");
+        }
         headers.insert(
             USER_AGENT,
             HeaderValue::from_str(&codex_user_agent()).map_err(invalid)?,
@@ -323,7 +327,7 @@ mod tests {
             projection_channel_ids: vec![Uuid::from_u128(1), Uuid::from_u128(3)],
             label: "credential".into(),
             email: None,
-            account_id: "account-123".into(),
+            account_id: Some("account-123".into()),
             user_id: Some("user-123".into()),
             plan_type: Some("plus".into()),
             is_fedramp: false,
@@ -487,6 +491,35 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some(codex_user_agent().as_str())
         );
+    }
+
+    #[test]
+    fn personal_credentials_omit_workspace_header() {
+        let now = Utc::now();
+        let runtime = CodexCredentialRuntime::new();
+        let mut record = runtime_record(now);
+        record.account_id = None;
+        runtime.replace(vec![record]);
+        let attempt = PreparedCodexAttempt::prepare(
+            &runtime,
+            Uuid::from_u128(1),
+            ApiOperation::Responses,
+            false,
+            &HeaderMap::new(),
+            None,
+        )
+        .unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "ChatGPT-Account-ID",
+            HeaderValue::from_static("client-controlled"),
+        );
+
+        attempt
+            .inject_headers(&mut headers, RequestProtocol::Sse)
+            .unwrap();
+
+        assert!(!headers.contains_key("chatgpt-account-id"));
     }
 
     #[test]
@@ -680,7 +713,7 @@ mod tests {
             projection_channel_ids: vec![Uuid::from_u128(1), Uuid::from_u128(3)],
             label: "credential".into(),
             email: None,
-            account_id: "account-123".into(),
+            account_id: Some("account-123".into()),
             user_id: Some("user-123".into()),
             plan_type: Some("plus".into()),
             is_fedramp: false,

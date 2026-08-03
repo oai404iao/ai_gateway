@@ -3021,11 +3021,11 @@ async fn codex_export_and_proxy_delete_contracts_preserve_secrets_and_references
     .unwrap();
     sqlx::query(
         "INSERT INTO codex_oauth_credentials \
-         (channel_id,channel_group_id,label,email,account_id,plan_type,is_fedramp, \
+         (channel_id,channel_group_id,label,email,account_id,user_id,plan_type,is_fedramp, \
           id_token,access_token,refresh_token,last_refreshed_at,enabled, \
           quota_threshold_percent,runtime_status) \
-         VALUES ($1,$2,'spec-account','portable@example.test','spec-account-id', \
-                 'plus',false,'secret-id','secret-access','secret-refresh',now(), \
+         VALUES ($1,$2,'spec-account','portable@example.test',NULL,'portable-user', \
+                 'free',false,'secret-id','secret-access','secret-refresh',now(), \
                  true,95,'active')",
     )
     .bind(channel_id)
@@ -3049,6 +3049,11 @@ async fn codex_export_and_proxy_delete_contracts_preserve_secrets_and_references
     let exported = body_json(exported).await;
     assert_eq!(exported["type"], "ai-gateway-codex-credentials");
     assert_eq!(exported["version"], 1);
+    assert_eq!(
+        exported["credentials"][0]["account_id"],
+        serde_json::Value::Null
+    );
+    assert_eq!(exported["credentials"][0]["user_id"], "portable-user");
     assert_eq!(exported["credentials"][0]["id_token"], "secret-id");
     assert_eq!(exported["credentials"][0]["access_token"], "secret-access");
     assert_eq!(

@@ -371,7 +371,7 @@ pub async fn fetch_models(
     client: &Client,
     endpoints: &CodexEndpoints,
     access_token: &str,
-    account_id: &str,
+    account_id: Option<&str>,
     is_fedramp: bool,
     response_header_timeout: Duration,
     stream_idle_timeout: Duration,
@@ -423,7 +423,7 @@ pub async fn fetch_quota(
     client: &Client,
     endpoints: &CodexEndpoints,
     access_token: &str,
-    account_id: &str,
+    account_id: Option<&str>,
     is_fedramp: bool,
     response_header_timeout: Duration,
     stream_idle_timeout: Duration,
@@ -481,7 +481,7 @@ pub async fn consume_quota_reset_credit(
     client: &Client,
     endpoints: &CodexEndpoints,
     access_token: &str,
-    account_id: &str,
+    account_id: Option<&str>,
     is_fedramp: bool,
     redeem_request_id: &str,
     response_header_timeout: Duration,
@@ -559,6 +559,8 @@ pub fn parse_identity(jwt: &str) -> Result<CodexIdentity, CodexConnectorError> {
     struct Claims {
         #[serde(default)]
         email: Option<String>,
+        #[serde(default)]
+        sub: Option<String>,
         #[serde(rename = "https://api.openai.com/profile", default)]
         profile: Option<Profile>,
         #[serde(rename = "https://api.openai.com/auth", default)]
@@ -597,11 +599,13 @@ pub fn parse_identity(jwt: &str) -> Result<CodexIdentity, CodexConnectorError> {
         300,
     )?;
     let user_id = normalize_claim(
-        auth.as_ref().and_then(|auth| {
-            auth.chatgpt_user_id
-                .clone()
-                .or_else(|| auth.user_id.clone())
-        }),
+        auth.as_ref()
+            .and_then(|auth| {
+                auth.chatgpt_user_id
+                    .clone()
+                    .or_else(|| auth.user_id.clone())
+            })
+            .or(claims.sub),
         300,
     )?;
     let plan_type = match auth
@@ -673,7 +677,7 @@ fn normalize_claim(
 
 fn codex_headers(
     access_token: &str,
-    account_id: &str,
+    account_id: Option<&str>,
     is_fedramp: bool,
 ) -> Result<HeaderMap, CodexConnectorError> {
     let mut headers = HeaderMap::new();
@@ -682,10 +686,13 @@ fn codex_headers(
         HeaderValue::from_str(&format!("Bearer {access_token}"))
             .map_err(|_| CodexConnectorError::InvalidCredential)?,
     );
-    headers.insert(
-        "ChatGPT-Account-ID",
-        HeaderValue::from_str(account_id).map_err(|_| CodexConnectorError::InvalidCredential)?,
-    );
+    if let Some(account_id) = account_id {
+        headers.insert(
+            "ChatGPT-Account-ID",
+            HeaderValue::from_str(account_id)
+                .map_err(|_| CodexConnectorError::InvalidCredential)?,
+        );
+    }
     headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
     headers.insert(
         USER_AGENT,
@@ -924,6 +931,7 @@ mod tests {
         assert!(identity.is_fedramp);
 
         let fallback_identity = parse_identity(&jwt(json!({
+            "sub": "subject-user",
             "https://api.openai.com/auth": {
                 "chatgpt_account_id": "business-workspace",
                 "user_id": "fallback-user"
@@ -931,6 +939,20 @@ mod tests {
         })))
         .unwrap();
         assert_eq!(fallback_identity.user_id.as_deref(), Some("fallback-user"));
+
+        let personal_identity = parse_identity(&jwt(json!({
+            "email": "free@example.test",
+            "sub": "personal-user",
+            "https://api.openai.com/auth": {
+                "chatgpt_plan_type": "free"
+            }
+        })))
+        .unwrap();
+        assert_eq!(personal_identity.account_id, None);
+        assert_eq!(personal_identity.user_id.as_deref(), Some("personal-user"));
+
+        let headers = codex_headers("access-token", None, false).unwrap();
+        assert!(!headers.contains_key("chatgpt-account-id"));
 
         let expires_at = parse_jwt_expiration(&jwt(json!({"exp": 1_800_000_000})))
             .unwrap()
@@ -1030,16 +1052,29 @@ mod tests {
     }
 
     fn validate_mock_codex_headers(headers: &AxumHeaderMap) -> Result<(), AxumStatusCode> {
-        let expected = [
-            ("authorization", "Bearer access-token"),
-            ("chatgpt-account-id", "account-123"),
+        let authorization = headers
+            .get("authorization")
+            .and_then(|header| header.to_str().ok());
+        let (expected_account_id, expected_fedramp) = match authorization {
+            Some("Bearer access-token") => (Some("account-123"), Some("true")),
+            Some("Bearer personal-access-token") => (None, None),
+            _ => return Err(AxumStatusCode::UNAUTHORIZED),
+        };
+        let common = [
             ("originator", CODEX_ORIGINATOR),
             ("version", CODEX_CLIENT_VERSION),
-            ("x-openai-fedramp", "true"),
         ];
-        if expected.iter().any(|(name, value)| {
+        if common.iter().any(|(name, value)| {
             headers.get(*name).and_then(|header| header.to_str().ok()) != Some(*value)
-        }) || headers.get(USER_AGENT).is_none()
+        }) || headers
+            .get("chatgpt-account-id")
+            .and_then(|header| header.to_str().ok())
+            != expected_account_id
+            || headers
+                .get("x-openai-fedramp")
+                .and_then(|header| header.to_str().ok())
+                != expected_fedramp
+            || headers.get(USER_AGENT).is_none()
         {
             return Err(AxumStatusCode::UNAUTHORIZED);
         }
@@ -1069,7 +1104,7 @@ mod tests {
             &client,
             &endpoints,
             "access-token",
-            "account-123",
+            Some("account-123"),
             true,
             Duration::from_secs(2),
             Duration::from_secs(2),
@@ -1077,12 +1112,26 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(models, vec!["gpt-5-codex"]);
+        assert_eq!(
+            fetch_models(
+                &client,
+                &endpoints,
+                "personal-access-token",
+                None,
+                false,
+                Duration::from_secs(2),
+                Duration::from_secs(2),
+            )
+            .await
+            .unwrap(),
+            vec!["gpt-5-codex"]
+        );
 
         let quota = fetch_quota(
             &client,
             &endpoints,
             "access-token",
-            "account-123",
+            Some("account-123"),
             true,
             Duration::from_secs(2),
             Duration::from_secs(2),
@@ -1098,12 +1147,26 @@ mod tests {
             Some(1_800_000_000)
         );
         assert_eq!(quota.reset_credits_available, Some(2));
+        assert!(
+            fetch_quota(
+                &client,
+                &endpoints,
+                "personal-access-token",
+                None,
+                false,
+                Duration::from_secs(2),
+                Duration::from_secs(2),
+            )
+            .await
+            .unwrap()
+            .allowed
+        );
 
         let reset = consume_quota_reset_credit(
             &client,
             &endpoints,
             "access-token",
-            "account-123",
+            Some("account-123"),
             true,
             "redeem-123",
             Duration::from_secs(2),

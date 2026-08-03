@@ -2,13 +2,14 @@
 
 > 类型：外部参考
 >
-> 最近核对：2026-07-30
+> 最近核对：2026-08-03
 >
 > 权威来源：
 > [CLIProxyAPI Codex Token 定义](https://github.com/router-for-me/CLIProxyAPI/blob/928478e4b91533cec05a763bfac3edad9c3e76cf/internal/auth/codex/token.go)、
 > [CLIProxyAPI 文件元数据合成](https://github.com/router-for-me/CLIProxyAPI/blob/928478e4b91533cec05a763bfac3edad9c3e76cf/internal/watcher/synthesizer/file.go)、
-> [Sub2API 数据导出结构](https://github.com/Wei-Shaw/sub2api/blob/5a6143097db142b72a6fc848c214e97214470bdd/backend/internal/handler/admin/account_data.go)、
-> [Sub2API Codex 导入字段](https://github.com/Wei-Shaw/sub2api/blob/5a6143097db142b72a6fc848c214e97214470bdd/backend/internal/handler/admin/account_codex_import.go)
+> [Sub2API 数据导出结构](https://github.com/Wei-Shaw/sub2api/blob/825ca7b1fc9335f904bc077f051de815fb61e47f/backend/internal/handler/admin/account_data.go)、
+> [Sub2API Codex 导入与身份 fallback](https://github.com/Wei-Shaw/sub2api/blob/825ca7b1fc9335f904bc077f051de815fb61e47f/backend/internal/handler/admin/account_codex_import.go)、
+> [Sub2API 可选 account Header](https://github.com/Wei-Shaw/sub2api/blob/825ca7b1fc9335f904bc077f051de815fb61e47f/backend/internal/service/openai_chatgpt_headers.go)
 
 ## 外部格式关键语义
 
@@ -20,6 +21,11 @@ Sub2API 管理员数据导出使用 `type = "sub2api-data"`、`version = 1`、`p
 代理以 `proxy_key` 关联；Codex 账户通常为 `platform = "openai"`、`type = "oauth"`，敏感字段位于
 `credentials`，其中 account ID 可能写作 `chatgpt_account_id`。部署或客户端也可能把该 payload
 包在带 `code` 和 `data` 的 API 响应封装中。
+
+当前 Sub2API 导入不会把 `chatgpt_account_id` 当作 OAuth Token 的必填字段：缺少时继续使用
+`chatgpt_user_id`/`user_id`，并可回退 JWT 顶层 `sub`、email 或 Token 指纹进行身份匹配。其请求
+Header helper 同样只在 account ID 非空时写入 `chatgpt-account-id`。因此缺少 account ID 不是
+Free plan 专属格式，也不应由导入器补造 workspace ID。
 
 这些是外部项目在上述固定 commit 中的结构，不是它们未来版本的稳定性承诺。
 
@@ -35,12 +41,15 @@ Sub2API 管理员数据导出使用 `type = "sub2api-data"`、`version = 1`、`p
 解析发生在浏览器内，结果必须先进入可检查和修改的草稿态。管理员可以修改 label、enable、
 account ID、user ID、Token、weight、quota threshold 和代理分配；导入文件中的代理必须先映射到
 现有代理，或在同一页面检查并创建。最终每条凭证仍由 ai-gateway 服务端验证 Token、
-workspace/member 身份和 Codex models 后写入。
+可选 workspace/member 身份和 Codex models 后写入。
 
 `id_token` 可缺失；此时服务端从 `access_token` 读取身份声明。`access_token` 和
-`refresh_token` 必须存在。浏览器优先按 `(account ID, user ID)`，其次按
-`(account ID, email)` 或完全相同的 Token 检测重复草稿；不会仅因两个 Business 成员共享同一
-workspace account ID 就把后者标成重复。
+`refresh_token` 必须存在。account ID 可以缺失，但此时必须能取得 user ID；解析兼容
+`chatgpt_user_id`、同 namespace 的 `user_id` 和 JWT 顶层 `sub`。浏览器优先按
+`(account ID, user ID)`，其次按 `(account ID, email)`；没有 account ID 时按 personal user ID，
+最后才按相同 Token 检测重复草稿。不会仅因两个 Business 成员共享同一 workspace account ID
+就把后者标成重复。服务端验证 models、quota 和后续数据面请求时，仅在 account ID 存在时发送
+`ChatGPT-Account-ID`。
 
 ai-gateway 的导出只生成自己的 versioned Bundle，不尝试生成 CLIProxyAPI 或 Sub2API 文件。Bundle
 可包含凭证引用的代理定义和代理认证信息，并保留 account/user ID、enable、weight 和 quota
@@ -59,6 +68,7 @@ threshold。
 升级兼容范围时应重新核对上述固定来源，更新本页日期，并至少覆盖：
 
 1. CLIProxyAPI 单对象、对象数组、缺少 `id_token` 和带 `proxy_url` 的解析测试；
-2. Sub2API 原始 payload、响应封装、`proxy_key` 映射和内嵌代理认证测试；
+2. Sub2API 原始 payload、响应封装、accountless personal identity、`proxy_key` 映射和内嵌
+   代理认证测试；
 3. 原生 Bundle 导出后重新导入的字段保持；
 4. 解析失败、重复凭证、禁用或已删除代理，以及逐条导入失败重试。

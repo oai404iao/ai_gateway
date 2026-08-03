@@ -30,7 +30,7 @@ impl CodexCredentialStatus {
 #[derive(Clone)]
 pub struct CompiledCodexCredential {
     credential_id: Uuid,
-    account_id: Arc<str>,
+    account_id: Option<Arc<str>>,
     access_token: Arc<SecretString>,
     is_fedramp: bool,
     access_token_expires_at: Option<DateTime<Utc>>,
@@ -60,8 +60,8 @@ impl CompiledCodexCredential {
     }
 
     #[must_use]
-    pub fn account_id(&self) -> &str {
-        &self.account_id
+    pub fn account_id(&self) -> Option<&str> {
+        self.account_id.as_deref()
     }
 
     #[must_use]
@@ -127,7 +127,7 @@ impl CodexCredentialRuntime {
             };
             let credential = Arc::new(CompiledCodexCredential {
                 credential_id: record.channel_id,
-                account_id: Arc::from(record.account_id),
+                account_id: record.account_id.map(Arc::from),
                 access_token: Arc::new(SecretString::from(record.access_token)),
                 is_fedramp: record.is_fedramp,
                 access_token_expires_at: record.access_token_expires_at,
@@ -182,7 +182,7 @@ mod tests {
             projection_channel_ids: vec![Uuid::from_u128(1), Uuid::from_u128(3)],
             label: "credential".into(),
             email: Some("codex@example.test".into()),
-            account_id: "account-123".into(),
+            account_id: Some("account-123".into()),
             user_id: Some("user-123".into()),
             plan_type: Some("plus".into()),
             is_fedramp: false,
@@ -229,7 +229,7 @@ mod tests {
             CodexCredentialUnavailable::Draining
         );
         let credential = runtime.credential(Uuid::from_u128(1), true).unwrap();
-        assert_eq!(credential.account_id(), "account-123");
+        assert_eq!(credential.account_id(), Some("account-123"));
         assert_eq!(credential.refresh_generation(), 7);
     }
 

@@ -1230,7 +1230,7 @@ fn business_codex_credential(
         quota_threshold_percent: 95,
         base_url: "https://chatgpt.com/backend-api/codex".into(),
         email: Some(email.into()),
-        account_id: "business-workspace".into(),
+        account_id: Some("business-workspace".into()),
         user_id: Some(user_id.into()),
         plan_type: Some("business".into()),
         is_fedramp: false,
@@ -1378,6 +1378,101 @@ async fn codex_business_credentials_are_unique_per_workspace_member() {
             .collect::<std::collections::BTreeSet<_>>(),
         std::collections::BTreeSet::from(["user-a", "user-b", "user-c"])
     );
+
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn codex_personal_credentials_without_account_ids_are_unique_by_user() {
+    let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
+    let codex_group = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO channel_groups \
+         (id,name,api_format,connector_kind,priority,selection_strategy,enabled) \
+         VALUES ($1,'codex-personal','open_ai_responses','codex_oauth',0,'weighted_random',true)",
+    )
+    .bind(codex_group)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let repository = ControlPlaneRepository::new(database.pool.clone());
+    let runtime = Arc::new(RuntimeConfig::new(
+        compile_runtime_config(repository.load_runtime().await.unwrap()).unwrap(),
+    ));
+    let coordinator = ControlPlaneCoordinator::new(
+        repository.clone(),
+        runtime,
+        RoutingRuntime::new(PassiveHealthPolicy::default()),
+    );
+    let personal_credential = |label: &str, email: &str, user_id: &str| {
+        let mut credential = business_codex_credential(codex_group, label, email, user_id);
+        credential.account_id = None;
+        credential.plan_type = Some("free".into());
+        credential
+    };
+
+    let original = coordinator
+        .create_codex_credential(
+            seed.user,
+            personal_credential("personal", "personal@example.test", "personal-user"),
+            None,
+        )
+        .await
+        .unwrap();
+    let reauthorized = coordinator
+        .create_codex_credential(
+            seed.user,
+            personal_credential(
+                "personal-new",
+                "personal-renamed@example.test",
+                "personal-user",
+            ),
+            None,
+        )
+        .await
+        .unwrap();
+    let other = coordinator
+        .create_codex_credential(
+            seed.user,
+            personal_credential("personal-other", "other@example.test", "other-user"),
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(reauthorized.id, original.id);
+    assert_eq!(reauthorized.action, "update");
+    assert_ne!(other.id, original.id);
+    let credentials = repository.codex_credentials(codex_group).await.unwrap();
+    assert_eq!(credentials.len(), 2);
+    assert!(
+        credentials
+            .iter()
+            .all(|credential| credential.account_id.is_none())
+    );
+    assert_eq!(
+        credentials
+            .iter()
+            .map(|credential| credential.user_id.as_deref().unwrap())
+            .collect::<std::collections::BTreeSet<_>>(),
+        std::collections::BTreeSet::from(["other-user", "personal-user"])
+    );
+
+    let mut identityless = personal_credential(
+        "identityless",
+        "identityless@example.test",
+        "temporary-user",
+    );
+    identityless.user_id = None;
+    assert!(matches!(
+        coordinator
+            .create_codex_credential(seed.user, identityless, None)
+            .await,
+        Err(ai_gateway::application::ControlPlaneError::Repository(
+            ai_gateway::persistence::RepositoryError::Validation
+        ))
+    ));
 
     database.cleanup().await;
 }
@@ -1699,7 +1794,7 @@ async fn codex_credentials_create_managed_channels_and_recompute_quota_state() {
                 quota_threshold_percent: 95,
                 base_url: "https://chatgpt.com/backend-api/codex".into(),
                 email: Some("codex@example.test".into()),
-                account_id: "account-123".into(),
+                account_id: Some("account-123".into()),
                 user_id: Some("user-123".into()),
                 plan_type: Some("plus".into()),
                 is_fedramp: false,
@@ -1939,7 +2034,7 @@ async fn codex_credentials_create_managed_channels_and_recompute_quota_state() {
                 quota_threshold_percent: 98,
                 base_url: "https://chatgpt.com/backend-api/codex".into(),
                 email: Some("codex-updated@example.test".into()),
-                account_id: "account-123".into(),
+                account_id: Some("account-123".into()),
                 user_id: Some("user-123".into()),
                 plan_type: Some("pro".into()),
                 is_fedramp: false,
@@ -2321,7 +2416,7 @@ async fn codex_credentials_export_secrets_and_protect_assigned_proxies_from_dele
                 quota_threshold_percent: 91,
                 base_url: "https://chatgpt.com/backend-api/codex".into(),
                 email: Some("portable@example.test".into()),
-                account_id: "portable-account-id".into(),
+                account_id: Some("portable-account-id".into()),
                 user_id: Some("portable-user-id".into()),
                 plan_type: Some("plus".into()),
                 is_fedramp: false,
@@ -2546,9 +2641,9 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
                 quota_threshold_percent: 95,
                 base_url: format!("http://{}/backend-api/codex", upstream.address),
                 email: Some("codex@example.test".into()),
-                account_id: "account-123".into(),
+                account_id: None,
                 user_id: Some("user-123".into()),
-                plan_type: Some("plus".into()),
+                plan_type: Some("free".into()),
                 is_fedramp: false,
                 id_token: "id-token".into(),
                 access_token: "access-token".into(),
@@ -2737,7 +2832,7 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
         Some("Bearer access-token")
     );
     assert_eq!(forwarded.accept_encoding.as_deref(), Some("identity"));
-    assert_eq!(forwarded.account_id.as_deref(), Some("account-123"));
+    assert_eq!(forwarded.account_id, None);
     assert_eq!(forwarded.originator.as_deref(), Some(CODEX_ORIGINATOR));
     assert_eq!(
         forwarded.user_agent.as_deref(),
@@ -2837,7 +2932,7 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
         image_request.authorization.as_deref(),
         Some("Bearer access-token")
     );
-    assert_eq!(image_request.account_id.as_deref(), Some("account-123"));
+    assert_eq!(image_request.account_id, None);
     assert_eq!(image_request.originator.as_deref(), Some(CODEX_ORIGINATOR));
     assert_eq!(
         image_request.user_agent.as_deref(),
@@ -2947,7 +3042,7 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
         edit_request.authorization.as_deref(),
         Some("Bearer access-token")
     );
-    assert_eq!(edit_request.account_id.as_deref(), Some("account-123"));
+    assert_eq!(edit_request.account_id, None);
     assert_eq!(
         edit_request.content_type.as_deref(),
         Some("application/json")
@@ -3084,7 +3179,7 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
         handshake.authorization.as_deref(),
         Some("Bearer access-token")
     );
-    assert_eq!(handshake.account_id.as_deref(), Some("account-123"));
+    assert_eq!(handshake.account_id, None);
     assert_eq!(handshake.originator.as_deref(), Some(CODEX_ORIGINATOR));
     assert_eq!(
         handshake.user_agent.as_deref(),

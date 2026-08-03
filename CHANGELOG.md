@@ -24,6 +24,11 @@ Versioning.
 
 ### Fixed
 
+- Accept Codex OAuth credentials whose tokens omit `chatgpt_account_id`,
+  identify those personal credentials by user ID, and omit the
+  `ChatGPT-Account-ID` upstream header instead of rejecting Free/Pro-style
+  token sets during OAuth completion or import. Migration
+  `0040_codex_optional_account_id.sql` makes the stored workspace ID nullable.
 - Strip the unsupported `max_output_tokens` field only after a Responses
   request selects a Codex OAuth channel, while preserving other unknown fields
   and the existing streaming-only boundary; normalize successful Codex HTTP
