@@ -20,7 +20,8 @@ use crate::{
         CodexCredentialExportInput, CodexCredentialImportInput, CodexCredentialRecord,
         CodexCredentialUpdateInput, CodexCredentialView, CodexOauthStartInput,
         CodexQuotaResetOutcome, CodexQuotaWindowHistory, CodexTokenRefreshUpdate,
-        ControlPlaneRepository, MutationResult, RepositoryError,
+        ControlPlaneRepository, MutationResult, RepositoryError, SelfCodexQuotaCredentialView,
+        SelfCodexQuotaWindowHistory,
     },
     runtime_config::RuntimeConfig,
     transforms::TransformPlan,
@@ -146,6 +147,28 @@ impl CodexConnectorService {
         Ok(self
             .repository
             .codex_quota_window_history(channel_id, limit_per_window)
+            .await?)
+    }
+
+    pub async fn self_quota_credentials(
+        &self,
+        user_id: Uuid,
+    ) -> Result<Vec<SelfCodexQuotaCredentialView>, CodexConnectorError> {
+        Ok(self
+            .repository
+            .self_codex_quota_credentials(user_id)
+            .await?)
+    }
+
+    pub async fn self_quota_window_history(
+        &self,
+        user_id: Uuid,
+        channel_id: Uuid,
+        limit_per_window: i64,
+    ) -> Result<SelfCodexQuotaWindowHistory, CodexConnectorError> {
+        Ok(self
+            .repository
+            .self_codex_quota_window_history(user_id, channel_id, limit_per_window)
             .await?)
     }
 

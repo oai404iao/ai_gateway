@@ -39,8 +39,9 @@ use crate::{
         ConfigTemplateInput, ConsoleApiKey, ControlPlaneMutation, CostStatisticsFilter,
         InviteUserInput, ModelInput, ModelRuleInput, ProxyCreateInput, ProxyInput,
         RequestLogFilter, RequestLogRepository, SelfApiKeyCreate, SelfApiKeyUpdate,
-        SpendLeaderboardFilter, SpendLeaderboardPeriod, StatisticsGranularity, SystemSettingsInput,
-        UserBatchUpdateInput, UserGroupInput, UserInput, UserSettingsInput, UserUpdateInput,
+        SelfCodexQuotaCredentialView, SelfCodexQuotaWindowHistory, SpendLeaderboardFilter,
+        SpendLeaderboardPeriod, StatisticsGranularity, SystemSettingsInput, UserBatchUpdateInput,
+        UserGroupInput, UserInput, UserSettingsInput, UserUpdateInput,
     },
     runtime_config::ConfigError,
 };
@@ -110,7 +111,12 @@ pub fn router(state: ConsoleState) -> Router {
         )
         .route("/console/v1/me/request-logs", get(list_own_request_logs))
         .route("/console/v1/me/request-logs/{id}", get(get_own_request_log))
-        .route("/console/v1/me/usage", get(get_own_usage));
+        .route("/console/v1/me/usage", get(get_own_usage))
+        .route("/console/v1/me/codex-quotas", get(list_own_codex_quotas))
+        .route(
+            "/console/v1/me/codex-quotas/{id}/windows",
+            get(get_own_codex_quota_window_history),
+        );
 
     let statistics_routes = Router::new()
         .route(
@@ -1079,6 +1085,32 @@ async fn get_own_usage(
         state
             .request_logs
             .personal_usage(principal.user_id(), Utc::now().date_naive())
+            .await?,
+    ))
+}
+
+async fn list_own_codex_quotas(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+) -> Result<Json<Vec<SelfCodexQuotaCredentialView>>, ConsoleError> {
+    Ok(Json(
+        state
+            .codex_connector
+            .self_quota_credentials(principal.user_id())
+            .await?,
+    ))
+}
+
+async fn get_own_codex_quota_window_history(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Path(id): Path<Uuid>,
+    Query(query): Query<CodexQuotaWindowHistoryQuery>,
+) -> Result<Json<SelfCodexQuotaWindowHistory>, ConsoleError> {
+    Ok(Json(
+        state
+            .codex_connector
+            .self_quota_window_history(principal.user_id(), id, query.limit.unwrap_or(100))
             .await?,
     ))
 }

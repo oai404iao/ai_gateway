@@ -5,7 +5,7 @@ import { BrowserRouter } from "react-router";
 import { describe, expect, it } from "vitest";
 import { AppProviders } from "@/app/providers";
 import { AppRouter } from "@/app/router";
-import { USER_GROUP } from "@/test/fixtures";
+import { CODEX_QUOTA_GROUP, USER_GROUP } from "@/test/fixtures";
 import { server, seedAuthenticatedSession } from "@/test/msw";
 
 function renderAppAt(path: string) {
@@ -66,5 +66,40 @@ describe("UserGroupDetailPage", () => {
     );
 
     await waitFor(() => expect(deleted).toBe(true));
+  });
+
+  it("configures read-only Codex quota visibility", async () => {
+    seedAuthenticatedSession();
+    let submitted: unknown;
+    server.use(
+      http.get("/console/v1/routing/channel-groups", () =>
+        HttpResponse.json([CODEX_QUOTA_GROUP]),
+      ),
+      http.put("/console/v1/user-groups/:id", async ({ request }) => {
+        submitted = await request.json();
+        return HttpResponse.json({
+          id: USER_GROUP.id,
+          correlation_id: "00000000-0000-0000-0000-000000000055",
+        });
+      }),
+    );
+    const user = userEvent.setup();
+    renderAppAt(`/admin/user-groups/${USER_GROUP.id}`);
+
+    await user.click(
+      await screen.findByRole("checkbox", {
+        name: CODEX_QUOTA_GROUP.name,
+      }),
+    );
+    await user.click(screen.getByRole("button", { name: "Save user group" }));
+
+    await waitFor(() =>
+      expect(submitted).toEqual({
+        name: USER_GROUP.name,
+        description: USER_GROUP.description,
+        default_api_key_policy_id: USER_GROUP.default_api_key_policy_id,
+        visible_codex_quota_group_ids: [CODEX_QUOTA_GROUP.id],
+      }),
+    );
   });
 });

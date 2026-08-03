@@ -337,6 +337,50 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/me/codex-quotas": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * @description Returns current quota-window snapshots for Codex credentials in the
+         *     canonical Responses channel groups granted to the authenticated
+         *     user's user group. Credential labels and account identity are never
+         *     returned; `name` is the credential UUID string.
+         */
+        get: operations["listOwnCodexQuotas"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/me/codex-quotas/{id}/windows": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * @description Returns read-only primary and secondary quota-window history only
+         *     when the credential belongs to a Codex channel group granted through
+         *     the authenticated user's user group. Hidden and missing credentials
+         *     both return `404`.
+         */
+        get: operations["getOwnCodexQuotaWindowHistory"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/users": {
         parameters: {
             query?: never;
@@ -1895,6 +1939,12 @@ export interface components {
             /** Format: uuid */
             default_api_key_policy_id: string | null;
             /**
+             * @description Canonical Codex OAuth Responses channel groups whose credential
+             *     quota windows are visible to members through the read-only
+             *     `/me/codex-quotas` endpoints.
+             */
+            visible_codex_quota_group_ids: string[];
+            /**
              * @description Non-null only for the protected built-in group used when a user of
              *     that role is invited without an explicit group.
              * @enum {string|null}
@@ -2062,6 +2112,53 @@ export interface components {
             /** Format: uuid */
             credential_id: string;
             periods: components["schemas"]["CodexQuotaWindowPeriod"][];
+        };
+        /**
+         * @description Sanitized, read-only Codex quota snapshot. The stored credential
+         *     label and account identity are deliberately omitted.
+         */
+        SelfCodexQuotaCredentialView: {
+            /** Format: uuid */
+            id: string;
+            /** @description Credential UUID rendered as a name; never the administrator label. */
+            name: string;
+            /**
+             * Format: uuid
+             * @description Canonical Codex OAuth Responses channel group granting visibility.
+             */
+            channel_group_id: string;
+            /** @description Provider-reported subscription tier. */
+            plan_type: string | null;
+            primary_used_percent: number | null;
+            primary_window_seconds: number | null;
+            primary_reset_at: components["schemas"]["DateTimeNullable"];
+            secondary_used_percent: number | null;
+            secondary_window_seconds: number | null;
+            secondary_reset_at: components["schemas"]["DateTimeNullable"];
+            quota_checked_at: components["schemas"]["DateTimeNullable"];
+        };
+        /** @description Sanitized quota-window period without internal row identifiers. */
+        SelfCodexQuotaWindowPeriod: {
+            window_kind: components["schemas"]["CodexQuotaWindowKind"];
+            window_seconds: number;
+            started_at: components["schemas"]["DateTime"];
+            scheduled_reset_at: components["schemas"]["DateTime"];
+            ended_at: components["schemas"]["DateTimeNullable"];
+            reset_reason: components["schemas"]["CodexQuotaResetReason"] | null;
+            initial_used_percent: number;
+            last_used_percent: number;
+            first_observed_at: components["schemas"]["DateTime"];
+            last_observed_at: components["schemas"]["DateTime"];
+        };
+        SelfCodexQuotaWindowHistory: {
+            /** Format: uuid */
+            credential_id: string;
+            /** @description Credential UUID rendered as a name; never the administrator label. */
+            name: string;
+            /** Format: uuid */
+            channel_group_id: string;
+            plan_type: string | null;
+            periods: components["schemas"]["SelfCodexQuotaWindowPeriod"][];
         };
         /** @enum {string} */
         CodexQuotaResetOutcome: "reset" | "nothing_to_reset" | "no_credit" | "already_redeemed";
@@ -2746,6 +2843,11 @@ export interface components {
             description?: string | null;
             /** Format: uuid */
             default_api_key_policy_id: string | null;
+            /**
+             * @description Canonical `codex_oauth` Responses channel groups whose shared
+             *     credential quota windows may be read by group members.
+             */
+            visible_codex_quota_group_ids: string[];
         };
         ApiKeyPolicyInput: {
             name: string;
@@ -3806,6 +3908,55 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthorized"];
+        };
+    };
+    listOwnCodexQuotas: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Read-only Codex quota snapshots visible to the current user. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SelfCodexQuotaCredentialView"][];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+        };
+    };
+    getOwnCodexQuotaWindowHistory: {
+        parameters: {
+            query?: {
+                /** @description Maximum periods returned independently for each window. */
+                limit?: components["parameters"]["CodexQuotaHistoryLimit"];
+            };
+            header?: never;
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Sanitized quota-window history visible to the current user. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SelfCodexQuotaWindowHistory"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["Unprocessable"];
         };
     };
     listUsers: {

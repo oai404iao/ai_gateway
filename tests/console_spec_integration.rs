@@ -1972,6 +1972,7 @@ async fn user_groups_supply_role_defaults_and_inherited_api_policy() {
             "name": group["name"],
             "description": group["description"],
             "default_api_key_policy_id": policy_id,
+            "visible_codex_quota_group_ids": group["visible_codex_quota_group_ids"],
         }),
         &[("if-match", &etag)],
     )
@@ -2076,6 +2077,319 @@ async fn user_groups_supply_role_defaults_and_inherited_api_policy() {
         body_json(protected).await,
         serde_json::json!({"error": "protected_user_group"})
     );
+    database.cleanup().await;
+}
+
+/// Administrators grant quota visibility through user groups, while the
+/// owner-scoped API exposes only credential IDs, subscription tiers, and
+/// quota-window data.
+#[tokio::test]
+async fn user_group_codex_quota_visibility_is_scoped_sanitized_and_read_only() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+    let user_group_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO user_groups (id,name) VALUES ($1,$2)")
+        .bind(user_group_id)
+        .bind(format!("quota-viewers-{user_group_id}"))
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    let viewer_id = Uuid::new_v4();
+    let viewer_email = format!("quota-viewer-{viewer_id}@example.test");
+    let viewer_password = "quota-viewer-password-value";
+    let viewer_password_hash = hash_console_password(viewer_password.to_owned())
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO users \
+         (id,email,display_name,role,status,password_hash,user_group_id) \
+         VALUES ($1,$2,'Quota Viewer','user','active',$3,$4)",
+    )
+    .bind(viewer_id)
+    .bind(&viewer_email)
+    .bind(viewer_password_hash)
+    .bind(user_group_id)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let viewer_session = app
+        .auth
+        .login(viewer_email, viewer_password.to_owned())
+        .await
+        .unwrap();
+
+    let ordinary_group_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO channel_groups \
+         (id,name,api_format,priority,selection_strategy,enabled) \
+         VALUES ($1,$2,'open_ai_responses',1,'weighted_random',true)",
+    )
+    .bind(ordinary_group_id)
+    .bind(format!("ordinary-{ordinary_group_id}"))
+    .execute(&database.pool)
+    .await
+    .unwrap();
+
+    let visible_group_id = Uuid::new_v4();
+    let visible_credential_id = Uuid::new_v4();
+    let hidden_group_id = Uuid::new_v4();
+    let hidden_credential_id = Uuid::new_v4();
+    for (group_id, credential_id, label, plan_type, primary_used_percent) in [
+        (
+            visible_group_id,
+            visible_credential_id,
+            "Visible private label",
+            "plus",
+            42,
+        ),
+        (
+            hidden_group_id,
+            hidden_credential_id,
+            "Hidden private label",
+            "business",
+            81,
+        ),
+    ] {
+        sqlx::query(
+            "INSERT INTO channel_groups \
+             (id,name,api_format,connector_kind,priority,selection_strategy,enabled) \
+             VALUES ($1,$2,'open_ai_responses','codex_oauth',1, \
+                     'weighted_random',true)",
+        )
+        .bind(group_id)
+        .bind(format!("codex-{group_id}"))
+        .execute(&database.pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO channels \
+             (id,channel_group_id,api_format,name,base_url,enabled,weight, \
+              upstream_auth_kind,available_models,status_statistics_enabled, \
+              auto_disable_allowed,supports_websocket) \
+             VALUES ($1,$2,'open_ai_responses',$3, \
+                     'https://chatgpt.com/backend-api/codex',true,100,'none', \
+                     ARRAY['gpt-5-codex'],false,false,true)",
+        )
+        .bind(credential_id)
+        .bind(group_id)
+        .bind(label)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO codex_oauth_credentials \
+             (channel_id,channel_group_id,label,email,account_id,user_id,plan_type,is_fedramp, \
+              id_token,access_token,refresh_token,last_refreshed_at,enabled, \
+              quota_threshold_percent,runtime_status,quota_allowed,quota_limit_reached, \
+              primary_used_percent,primary_window_seconds,primary_reset_at, \
+              secondary_used_percent,secondary_window_seconds,secondary_reset_at, \
+              quota_reset_credits_available,quota_checked_at) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,false, \
+                     'private-id-token','private-access-token','private-refresh-token', \
+                     now(),true,95,'active',true,false,$8,10800, \
+                     '2026-08-03T15:00:00Z',12,604800,'2026-08-10T12:00:00Z', \
+                     3,'2026-08-03T12:00:00Z')",
+        )
+        .bind(credential_id)
+        .bind(group_id)
+        .bind(label)
+        .bind(format!("{credential_id}@example.test"))
+        .bind(format!("account-{credential_id}"))
+        .bind(format!("member-{credential_id}"))
+        .bind(plan_type)
+        .bind(primary_used_percent)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    }
+    let visible_images_group_id: Uuid = sqlx::query_scalar(
+        "SELECT id FROM channel_groups \
+         WHERE connector_pool_id=$1 AND api_format='open_ai_images'::api_format",
+    )
+    .bind(visible_group_id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    let period_started_at = chrono::DateTime::parse_from_rfc3339("2026-08-03T09:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    sqlx::query(
+        "INSERT INTO codex_quota_window_periods \
+         (id,credential_id,window_kind,window_seconds,started_at,scheduled_reset_at, \
+          ended_at,reset_reason,initial_used_percent,last_used_percent, \
+          first_observed_at,last_observed_at) \
+         VALUES ($1,$2,'primary',10800,$3,$4,NULL,NULL,5,42,$3,$5)",
+    )
+    .bind(Uuid::new_v4())
+    .bind(visible_credential_id)
+    .bind(period_started_at)
+    .bind(period_started_at + chrono::Duration::hours(3))
+    .bind(period_started_at + chrono::Duration::hours(2))
+    .execute(&database.pool)
+    .await
+    .unwrap();
+
+    let group_path = format!("/console/v1/user-groups/{user_group_id}");
+    let detail = request(&app, "GET", &group_path, serde_json::json!({}), &[]).await;
+    assert_eq!(detail.status(), StatusCode::OK);
+    let group_etag = detail.headers()[header::ETAG].to_str().unwrap().to_owned();
+    let group = body_json(detail).await;
+    assert_eq!(
+        group["visible_codex_quota_group_ids"],
+        serde_json::json!([])
+    );
+
+    for invalid_group_id in [ordinary_group_id, visible_images_group_id] {
+        let invalid = request(
+            &app,
+            "PUT",
+            &group_path,
+            serde_json::json!({
+                "name": group["name"],
+                "description": group["description"],
+                "default_api_key_policy_id": null,
+                "visible_codex_quota_group_ids": [invalid_group_id],
+            }),
+            &[("if-match", &group_etag)],
+        )
+        .await;
+        assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    let denied_by_default = request_with_token(
+        &app,
+        &viewer_session.access_token,
+        "GET",
+        "/console/v1/me/codex-quotas",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(denied_by_default.status(), StatusCode::OK);
+    assert_eq!(body_json(denied_by_default).await, serde_json::json!([]));
+
+    let update = request(
+        &app,
+        "PUT",
+        &group_path,
+        serde_json::json!({
+            "name": group["name"],
+            "description": group["description"],
+            "default_api_key_policy_id": null,
+            "visible_codex_quota_group_ids": [visible_group_id],
+        }),
+        &[("if-match", &group_etag)],
+    )
+    .await;
+    assert_eq!(update.status(), StatusCode::OK);
+    let audit: serde_json::Value = sqlx::query_scalar(
+        "SELECT after_redacted FROM audit_logs \
+         WHERE object_type='user_group' AND object_id=$1 \
+         ORDER BY occurred_at DESC LIMIT 1",
+    )
+    .bind(user_group_id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        audit["visible_codex_quota_group_ids"],
+        serde_json::json!([visible_group_id])
+    );
+
+    let quotas = request_with_token(
+        &app,
+        &viewer_session.access_token,
+        "GET",
+        "/console/v1/me/codex-quotas",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(quotas.status(), StatusCode::OK);
+    let quotas = body_json(quotas).await;
+    let quotas = quotas.as_array().unwrap();
+    assert_eq!(quotas.len(), 1);
+    let quota = quotas[0].as_object().unwrap();
+    assert_eq!(quota.len(), 11);
+    assert_eq!(quota["id"], visible_credential_id.to_string());
+    assert_eq!(quota["name"], visible_credential_id.to_string());
+    assert_eq!(quota["channel_group_id"], visible_group_id.to_string());
+    assert_eq!(quota["plan_type"], "plus");
+    assert_eq!(quota["primary_used_percent"], 42);
+    assert_eq!(quota["secondary_used_percent"], 12);
+    assert_eq!(quota["quota_checked_at"], "2026-08-03T12:00:00Z");
+    for forbidden in [
+        "label",
+        "email",
+        "account_id",
+        "user_id",
+        "runtime_status",
+        "quota_reset_credits_available",
+        "last_error_code",
+        "proxy_id",
+        "weight",
+        "enabled",
+    ] {
+        assert!(!quota.contains_key(forbidden));
+    }
+
+    let history = request_with_token(
+        &app,
+        &viewer_session.access_token,
+        "GET",
+        &format!("/console/v1/me/codex-quotas/{visible_credential_id}/windows?limit=10"),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(history.status(), StatusCode::OK);
+    let history = body_json(history).await;
+    assert_eq!(history["credential_id"], visible_credential_id.to_string());
+    assert_eq!(history["name"], visible_credential_id.to_string());
+    assert_eq!(history["channel_group_id"], visible_group_id.to_string());
+    assert_eq!(history["plan_type"], "plus");
+    let period = history["periods"][0].as_object().unwrap();
+    assert_eq!(period.len(), 10);
+    assert!(!period.contains_key("id"));
+    assert!(!period.contains_key("credential_id"));
+    assert_eq!(period["window_kind"], "primary");
+    assert_eq!(period["last_used_percent"], 42);
+
+    let hidden_history = request_with_token(
+        &app,
+        &viewer_session.access_token,
+        "GET",
+        &format!("/console/v1/me/codex-quotas/{hidden_credential_id}/windows"),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(hidden_history.status(), StatusCode::NOT_FOUND);
+
+    let write_attempt = request_with_token(
+        &app,
+        &viewer_session.access_token,
+        "POST",
+        "/console/v1/me/codex-quotas",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(write_attempt.status(), StatusCode::METHOD_NOT_ALLOWED);
+
+    let admin_history = request_with_token(
+        &app,
+        &viewer_session.access_token,
+        "GET",
+        &format!(
+            "/console/v1/providers/codex-oauth/credentials/{visible_credential_id}/quota/windows"
+        ),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(admin_history.status(), StatusCode::FORBIDDEN);
+
     database.cleanup().await;
 }
 

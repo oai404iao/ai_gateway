@@ -26,6 +26,8 @@ import type {
   RegistrationInvitationCodeView,
   RequestLogView,
   SelfApiKeyOptions,
+  SelfCodexQuotaCredentialView,
+  SelfCodexQuotaWindowHistory,
   SessionAffinityCacheReport,
   SpendLeaderboardReport,
   SystemLoadReport,
@@ -157,6 +159,7 @@ export const DEFAULT_USER_GROUP: UserGroupView = {
   name: "Default Users",
   description: "Default group for newly invited users.",
   default_api_key_policy_id: API_KEY_POLICY.id,
+  visible_codex_quota_group_ids: [],
   system_role: "user",
   member_count: 1,
   created_at: "2026-01-01T00:00:00.000Z",
@@ -168,6 +171,7 @@ export const USER_GROUP: UserGroupView = {
   name: "Default Administrators",
   description: "Default group for newly invited administrators.",
   default_api_key_policy_id: API_KEY_POLICY.id,
+  visible_codex_quota_group_ids: [],
   system_role: "admin",
   member_count: 1,
   created_at: "2026-01-01T00:00:00.000Z",
@@ -225,6 +229,53 @@ export const CHANNEL_GROUP: ChannelGroupView = {
   selection_strategy: "weighted_random",
   enabled: true,
   updated_at: "2026-01-02T00:00:00.000Z",
+};
+
+export const CODEX_QUOTA_GROUP: ChannelGroupView = {
+  id: "00000000-0000-0000-0000-00000000c001",
+  name: "Codex subscriptions",
+  api_format: "open_ai_responses",
+  connector_kind: "codex_oauth",
+  connector_pool_id: "00000000-0000-0000-0000-00000000c001",
+  priority: 1,
+  selection_strategy: "weighted_random",
+  enabled: true,
+  updated_at: "2026-08-03T00:00:00.000Z",
+};
+
+export const OWN_CODEX_QUOTA: SelfCodexQuotaCredentialView = {
+  id: "00000000-0000-0000-0000-00000000c010",
+  name: "00000000-0000-0000-0000-00000000c010",
+  channel_group_id: CODEX_QUOTA_GROUP.id,
+  plan_type: "plus",
+  primary_used_percent: 42,
+  primary_window_seconds: 10_800,
+  primary_reset_at: "2026-08-03T15:00:00.000Z",
+  secondary_used_percent: 12,
+  secondary_window_seconds: 604_800,
+  secondary_reset_at: "2026-08-10T12:00:00.000Z",
+  quota_checked_at: "2026-08-03T12:00:00.000Z",
+};
+
+export const OWN_CODEX_QUOTA_HISTORY: SelfCodexQuotaWindowHistory = {
+  credential_id: OWN_CODEX_QUOTA.id,
+  name: OWN_CODEX_QUOTA.name,
+  channel_group_id: CODEX_QUOTA_GROUP.id,
+  plan_type: OWN_CODEX_QUOTA.plan_type,
+  periods: [
+    {
+      window_kind: "primary",
+      window_seconds: 10_800,
+      started_at: "2026-08-03T09:00:00.000Z",
+      scheduled_reset_at: "2026-08-03T12:00:00.000Z",
+      ended_at: "2026-08-03T12:00:00.000Z",
+      reset_reason: "natural",
+      initial_used_percent: 5,
+      last_used_percent: 42,
+      first_observed_at: "2026-08-03T09:01:00.000Z",
+      last_observed_at: "2026-08-03T11:59:00.000Z",
+    },
+  ],
 };
 
 export const CHANNEL: ChannelView = {

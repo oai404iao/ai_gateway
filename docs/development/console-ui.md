@@ -277,6 +277,7 @@ API 集成测试应同时验证实现与该规范的关键请求/响应示例，
 | 个人资料、设置与安全 | `/account`、`/account/settings`、`/account/sessions` | `/console/v1/me*` | user |
 | 我的 API Key | `/api-keys` | `/console/v1/me/api-keys*` | user |
 | 我的请求日志 | `/usage/request-logs` | `/console/v1/me/request-logs*` | user |
+| Codex 额度 | `/codex-quotas` | `/console/v1/me/codex-quotas*` | user |
 | 个人统计与排行 | `/statistics`、`/channel-status`、`/leaderboard` | `/console/v1/me/usage`、`/statistics/costs`、`/statistics/channel-status`、`/statistics/spend-leaderboard` | user |
 | 用户、用户组、注册邀请码与策略 | `/admin/users`、`/admin/user-groups`、`/admin/registration-invitation-codes`、`/admin/api-key-policies` | `/console/v1/users*`、`/user-groups*`、`/registration-invitation-codes*`、`/api-key-policies*` | admin |
 | 模型和目录 | `/admin/models`、`/admin/catalog` | `/console/v1/models*`、`/catalog/models/*` | admin |
@@ -290,6 +291,10 @@ API 集成测试应同时验证实现与该规范的关键请求/响应示例，
 个人区域的请求日志和花费统计始终使用 owner-scoped 接口；管理员访问这些页面时与普通用户获得
 相同字段和筛选。跨用户、渠道级或其他管理员专属能力使用独立管理员接口，并放在 Console“系统”
 分组，而不是按角色扩展个人接口的响应。
+
+`/codex-quotas` 同样是 owner-scoped 只读页面。管理员在用户组详情中选择 canonical Codex
+Responses Channel Group 后，成员只能看到凭证 UUID 形式的名称、订阅等级、当前主/次窗口和窗口
+历史；页面不复用管理员凭证 DTO，也不渲染 refresh、reset、编辑、导出或花费跳转操作。
 
 Codex OAuth 页面按 connector Channel Group 隔离。PKCE `authorization_url` 只保留在当前
 Dialog state；管理员粘贴 callback URL 后立即提交，不能进入 URL、持久化 storage 或 Query Cache。

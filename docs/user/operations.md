@@ -410,6 +410,8 @@ SHA-256 哈希，明文仅在创建响应中返回一次，之后无法查看或
 - `GET /console/v1/me/request-logs?limit=50`
 - `GET /console/v1/me/request-logs/{id}`
 - `GET /console/v1/me/usage`
+- `GET /console/v1/me/codex-quotas`
+- `GET /console/v1/me/codex-quotas/{credential-id}/windows?limit=100`
 
 `GET /console/v1/me/sessions` 返回每条 session 的浏览器 `user_agent`、`active` / `expired` /
 `revoked` 状态和 `is_current` 标记。`last_seen_at` 表示 refresh token 最近一次轮换时间，而不是每个
@@ -426,6 +428,13 @@ Policy 不再保存额度、RPM、并发、格式、权限或最大活动 Key �
 未分配策略、策略已禁用或提交了策略范围外的目标时，接口分别返回
 `default_api_key_policy_required`、`default_api_key_policy_disabled` 或
 `api_key_target_not_allowed`。
+
+用户组还可以授权只读查看指定 Codex 凭证池的额度窗口。管理员只配置 canonical
+`open_ai_responses` Codex Channel Group；同一 Connector pool 的 Images projection 自动共享这份
+可见性。普通用户接口只返回凭证 UUID（`name` 固定使用同一个 UUID）、Provider 报告的
+`plan_type`、当前主/次窗口以及窗口周期历史，不返回管理员 label、邮箱、workspace/member
+身份、Token、代理、权重、运行状态、错误或 reset-credit 信息。接口没有写方法，也不提供
+refresh、reset、编辑或导出操作；未授权凭证与不存在的凭证统一返回 `404`。
 
 ## 管理员接口
 
@@ -466,9 +475,12 @@ Policy 不再保存额度、RPM、并发、格式、权限或最大活动 Key �
 该用户；请求日志和审计记录继续保留原 user ID。管理员不能删除自己，也不能删除最后一个活跃的
 非系统管理员。匿名化后原邮箱可重新使用。
 
-用户组通过 `/console/v1/user-groups` 管理。每个组可设置一个默认 API Key Policy；修改后，所有
-没有用户级覆盖的组成员立即使用新策略。自定义组只有在没有成员时才能删除；内置默认用户组和默认
-管理员组始终受保护。仍被注册邀请码引用的用户组同样不能删除，必须先把相关邀请码调整到其他组。
+用户组通过 `/console/v1/user-groups` 管理。每个组可设置一个默认 API Key Policy，并通过
+`visible_codex_quota_group_ids` 选择成员可只读查看额度的 canonical Codex Responses Channel
+Group；普通 OpenAI-compatible group、Codex Images projection、重复 ID 或不存在的 group 都会被
+拒绝。修改后，没有用户级覆盖的组成员立即使用新策略，Codex 额度可见性也立即按当前用户组查询。
+自定义组只有在没有成员时才能删除；内置默认用户组和默认管理员组始终受保护。仍被注册邀请码引用的
+用户组同样不能删除，必须先把相关邀请码调整到其他组。
 
 注册邀请码通过 `/console/v1/registration-invitation-codes` 管理。列表和详情只返回名称、启用状态、
 次数、过期时间、用户组、初始额度和使用统计，不返回明文或哈希。详情 `GET` 返回 `ETag`，调整名称、

@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import {
+  E2E_ADMIN_USER_GROUP_ID,
   E2E_API_KEY_SECRET,
   E2E_CODEX_CREDENTIAL,
   E2E_CODEX_CREDENTIAL_ID,
@@ -127,6 +128,75 @@ test.describe("Console SPA smoke", () => {
     await expect(keyValue).toHaveValue(`sk-${"•".repeat(24)}`);
     await page.getByRole("button", { name: "Show full API key" }).click();
     await expect(keyValue).toHaveValue(E2E_API_KEY_SECRET);
+  });
+
+  test("users can only read sanitized Codex quota windows", async ({ page }) => {
+    await mockConsoleApi(page);
+    await page.goto("/login");
+    await page.getByLabel(/email/i).fill("admin@example.com");
+    await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
+    await page.getByRole("button", { name: /sign in/i }).click();
+    await page.getByRole("link", { name: "Codex quotas" }).click();
+
+    await expect(page).toHaveURL(/\/codex-quotas/);
+    await expect(
+      page.getByRole("heading", { name: "Codex quotas" }),
+    ).toBeVisible();
+    await expect(page.getByText(E2E_CODEX_CREDENTIAL_ID)).toBeVisible();
+    await expect(page.getByText("96%")).toBeVisible();
+    await expect(page.getByText("Personal Plus")).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: /refresh quota/i }),
+    ).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: /reset quota/i }),
+    ).toHaveCount(0);
+
+    await page
+      .getByRole("button", {
+        name: `View quota history for ${E2E_CODEX_CREDENTIAL_ID}`,
+      })
+      .click();
+    await expect(
+      page.getByRole("heading", {
+        name: `Quota window history for ${E2E_CODEX_CREDENTIAL_ID}`,
+      }),
+    ).toBeVisible();
+    await expect(page.getByText("Natural reset")).toBeVisible();
+    await expect(page.getByRole("button", { name: "View costs" })).toHaveCount(0);
+  });
+
+  test("administrators grant Codex quota visibility through user groups", async ({
+    page,
+  }) => {
+    await mockConsoleApi(page);
+    await page.goto("/login");
+    await page.getByLabel(/email/i).fill("admin@example.com");
+    await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
+    await page.getByRole("button", { name: /sign in/i }).click();
+    await page.evaluate((path) => {
+      window.history.pushState({}, "", path);
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    }, `/admin/user-groups/${E2E_ADMIN_USER_GROUP_ID}`);
+
+    const visibility = page.getByRole("checkbox", {
+      name: "Codex subscriptions",
+    });
+    await expect(visibility).toBeVisible();
+    await visibility.click();
+    const update = page.waitForRequest(
+      (request) =>
+        request.url().endsWith(
+          `/console/v1/user-groups/${E2E_ADMIN_USER_GROUP_ID}`,
+        ) && request.method() === "PUT",
+    );
+    await page.getByRole("button", { name: "Save user group" }).click();
+    expect((await update).postDataJSON()).toEqual({
+      name: "Default Administrators",
+      description: "Default group for newly invited administrators.",
+      default_api_key_policy_id: "00000000-0000-0000-0000-000000000031",
+      visible_codex_quota_group_ids: [E2E_CODEX_GROUP_ID],
+    });
   });
 
   test("users can identify and revoke a specific login session", async ({ page }) => {

@@ -183,6 +183,11 @@ Console 用户采用单用户组模型。内置默认用户组和默认管理员
 邀请码，原子检查启用状态、过期时间和剩余次数，再创建 active user、分配邀请码当前用户组与初始
 余额并递增使用次数。注册成功后直接签发 Console session，不经过邮箱确认。
 
+用户组还通过独立关联表授予 canonical Codex Responses Channel Group 的额度可见性。普通用户查询
+始终按 JWT 用户当前所属组在 PostgreSQL 中限定 credential pool，只投影凭证 UUID、订阅等级和额度
+窗口/周期字段；管理员 label、账户身份、Token、代理、运行状态和 reset-credit 等字段不进入 DTO。
+该能力只挂载 owner-scoped `GET` 路由，不进入数据面快照，也不提供 refresh、reset 或其他 mutation。
+
 用户批量修改在同一 serializable 事务中验证所有 `updated_at` 版本并统一审计，任一失败会回滚整批。
 删除用户采用不可恢复的匿名化：撤销会话、邀请和 API Key，但保留用户主键以维持请求日志与审计记录
 的引用完整性。Console session 保存 refresh token 哈希和浏览器 `User-Agent`；本人会话查询在响应中

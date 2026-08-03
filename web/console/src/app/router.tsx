@@ -49,6 +49,11 @@ const OwnRequestLogsPage = lazy(() =>
     default: m.OwnRequestLogsPage,
   })),
 );
+const CodexQuotasPage = lazy(() =>
+  import("@/features/codex-quotas/codex-quotas-page").then((m) => ({
+    default: m.CodexQuotasPage,
+  })),
+);
 const AdminRequestLogsPage = lazy(() =>
   import("@/features/request-logs/admin-request-logs-page").then((m) => ({
     default: m.AdminRequestLogsPage,
@@ -253,6 +258,7 @@ export function AppRouter() {
             <Route path="/api-keys" element={<ApiKeysPage />} />
             <Route path="/api-keys/:id" element={<ApiKeyDetailPage />} />
             <Route path="/usage/request-logs" element={<OwnRequestLogsPage />} />
+            <Route path="/codex-quotas" element={<CodexQuotasPage />} />
             <Route path="/channel-status" element={<ChannelStatusPage />} />
             <Route path="/statistics" element={<StatisticsPage />} />
             <Route path="/leaderboard" element={<SpendLeaderboardPage />} />

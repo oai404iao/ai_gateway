@@ -15,7 +15,8 @@ pub use codex::{
     CodexCredentialExportItem, CodexCredentialExportProxy, CodexCredentialImportInput,
     CodexCredentialRecord, CodexCredentialUpdateInput, CodexCredentialView, CodexOauthFlowRecord,
     CodexOauthStartInput, CodexQuotaResetOutcome, CodexQuotaUpdate, CodexQuotaWindowHistory,
-    CodexQuotaWindowPeriodView, CodexTokenRefreshUpdate,
+    CodexQuotaWindowPeriodView, CodexTokenRefreshUpdate, SelfCodexQuotaCredentialView,
+    SelfCodexQuotaWindowHistory, SelfCodexQuotaWindowPeriodView,
 };
 
 use std::{
@@ -537,6 +538,8 @@ pub struct UserGroupInput {
     pub description: Option<String>,
     #[serde(default)]
     pub default_api_key_policy_id: Option<Uuid>,
+    #[serde(default)]
+    pub visible_codex_quota_group_ids: Vec<Uuid>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -1181,6 +1184,7 @@ pub struct ControlPlaneUserGroup {
     pub name: String,
     pub description: Option<String>,
     pub default_api_key_policy_id: Option<Uuid>,
+    pub visible_codex_quota_group_ids: Vec<Uuid>,
     pub system_role: Option<String>,
     pub member_count: i64,
     pub created_at: DateTime<Utc>,
@@ -4563,7 +4567,14 @@ impl ControlPlaneRepository {
         .fetch_all(&self.pool)
         .await?;
         let user_groups = sqlx::query_as::<_, ControlPlaneUserGroup>(
-            "SELECT g.id,g.name,g.description,g.default_api_key_policy_id,g.system_role, \
+            "SELECT g.id,g.name,g.description,g.default_api_key_policy_id, \
+                    ARRAY( \
+                        SELECT visibility.channel_group_id \
+                        FROM user_group_codex_quota_visibility AS visibility \
+                        WHERE visibility.user_group_id=g.id \
+                        ORDER BY visibility.channel_group_id \
+                    ) AS visible_codex_quota_group_ids, \
+                    g.system_role, \
                     count(u.id) FILTER (WHERE u.deleted_at IS NULL AND NOT u.is_system) AS member_count, \
                     g.created_at,g.updated_at \
              FROM user_groups AS g \
@@ -5683,6 +5694,12 @@ async fn user_group_audit(
             'name',g.name, \
             'description',g.description, \
             'default_api_key_policy_id',g.default_api_key_policy_id, \
+            'visible_codex_quota_group_ids',ARRAY( \
+                SELECT visibility.channel_group_id \
+                FROM user_group_codex_quota_visibility AS visibility \
+                WHERE visibility.user_group_id=g.id \
+                ORDER BY visibility.channel_group_id \
+            ), \
             'system_role',g.system_role, \
             'member_count',count(u.id) FILTER (WHERE u.deleted_at IS NULL AND NOT u.is_system), \
             'created_at',g.created_at, \
@@ -5979,6 +5996,50 @@ async fn ensure_enabled_policy(
     }
 }
 
+async fn replace_user_group_codex_quota_visibility(
+    transaction: &mut Transaction<'_, Postgres>,
+    user_group_id: Uuid,
+    channel_group_ids: &[Uuid],
+) -> Result<(), RepositoryError> {
+    let unique_ids = channel_group_ids.iter().copied().collect::<HashSet<_>>();
+    if unique_ids.len() != channel_group_ids.len() {
+        return Err(RepositoryError::Validation);
+    }
+    if !channel_group_ids.is_empty() {
+        let valid_count = sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) \
+             FROM channel_groups \
+             WHERE id=ANY($1) \
+               AND connector_kind='codex_oauth' \
+               AND api_format='open_ai_responses'::api_format",
+        )
+        .bind(channel_group_ids)
+        .fetch_one(&mut **transaction)
+        .await?;
+        if valid_count != channel_group_ids.len() as i64 {
+            return Err(RepositoryError::Validation);
+        }
+    }
+
+    sqlx::query("DELETE FROM user_group_codex_quota_visibility WHERE user_group_id=$1")
+        .bind(user_group_id)
+        .execute(&mut **transaction)
+        .await?;
+    if !channel_group_ids.is_empty() {
+        sqlx::query(
+            "INSERT INTO user_group_codex_quota_visibility \
+             (user_group_id,channel_group_id) \
+             SELECT $1,selected.channel_group_id \
+             FROM unnest($2::uuid[]) AS selected(channel_group_id)",
+        )
+        .bind(user_group_id)
+        .bind(channel_group_ids)
+        .execute(&mut **transaction)
+        .await?;
+    }
+    Ok(())
+}
+
 async fn user_group_insert(
     transaction: &mut Transaction<'_, Postgres>,
     id: Uuid,
@@ -6035,6 +6096,12 @@ async fn user_group_insert(
         .await?
         .ok_or(RepositoryError::Conflict)?
     };
+    replace_user_group_codex_quota_visibility(
+        transaction,
+        id,
+        &input.visible_codex_quota_group_ids,
+    )
+    .await?;
     Ok(MutationResult {
         id,
         object_type: "user_group",

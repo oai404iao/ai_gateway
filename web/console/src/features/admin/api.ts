@@ -205,6 +205,9 @@ export function useUpdateUserGroup(id: string) {
       void queryClient.invalidateQueries({ queryKey: USER_GROUPS_KEY });
       void queryClient.invalidateQueries({ queryKey: userGroupDetailKey(id) });
       void queryClient.invalidateQueries({ queryKey: USERS_KEY });
+      void queryClient.invalidateQueries({
+        queryKey: ["console", "me", "codex-quotas"],
+      });
     },
   });
 }
