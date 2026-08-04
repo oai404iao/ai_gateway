@@ -219,7 +219,9 @@ CHECK (cardinality(channel_group_ids) + cardinality(channel_ids) > 0);
 
 ### 4.6 `channels`
 
-渠道的请求/响应变换和测试配置采用 JSONB，避免为每种 DSL 操作再建立表。最终配置顺序固定为：**模板默认值 → 渠道覆盖 → 网关移除客户端鉴权和 hop-by-hop Header → 上游鉴权注入**。
+渠道的请求/响应变换和测试配置采用 JSONB，避免为每种 DSL 操作再建立表。最终请求顺序固定为：
+**客户端白名单 → 模板默认值 → 渠道覆盖 → Codex body 白名单（如适用）→ 网关移除客户端鉴权和
+hop-by-hop Header → Codex Header 白名单（如适用）→ 上游鉴权注入**。
 
 | 列 | 类型 | 说明 |
 | --- | --- | --- |
@@ -399,15 +401,20 @@ bootstrap 配置初始化，之后数据库为唯一运行时来源。
 ```text
 Bearer Key
   → 内存快照校验 Key 状态、格式、权限和分组；软额度预检查 `used >= limit` 时拒绝
+  → 客户端 Header 与顶层 body 白名单
   → 根据 (api_format, client_model) 从分格式索引找到 model_rule
   → 通过 accessible_routes 位图完成模型授权判断
   → 使用已编译的模型候选 tier，按渠道授权位图、组优先级、渠道权重和内存健康状态选择渠道
-  → 模板默认值 + 渠道覆盖 + 上游鉴权
+  → 模板默认值 + 渠道覆盖
+  → Codex body 白名单（Codex only）
+  → Header 清理 + Codex Header 白名单（Codex only）+ 上游鉴权
   → 原路径流式转发
   → 异步写入一条 request_logs；对已持久化的可结算成本幂等更新余额和已用额度
 ```
 
-即使为读取 `model` 而解析过 JSON，只要没有变换或 `client_model != upstream_model` 的别名映射，请求体仍使用原始字节。普通流式响应不缓冲；经过 SSE 变换时按 `data:` 事件边界处理。
+只要客户端/Connector policy 未删除或覆盖字段、没有变换，且不存在
+`client_model != upstream_model` 的别名映射，请求体仍使用原始字节。普通流式响应不缓冲；经过
+SSE 变换时按 `data:` 事件边界处理。
 
 ## 6. 索引、保留与取舍
 

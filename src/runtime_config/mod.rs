@@ -41,6 +41,7 @@ use crate::{
         SystemSessionAffinitySettingsInput, SystemSettingsInput, SystemSettingsRecord,
         valid_api_hosts,
     },
+    request_policy::client_header_allowed,
     transforms::{TransformCompileError, TransformPlan, compile_document, declared_api_format},
 };
 
@@ -1101,6 +1102,12 @@ fn compile_session_affinity_key_source(
             ) {
                 return Err(ConfigError::Compile(
                     "session affinity request header is unsafe".into(),
+                ));
+            }
+            if !client_header_allowed(&name) {
+                return Err(ConfigError::Compile(
+                    "session affinity request header is not allowed by the client request policy"
+                        .into(),
                 ));
             }
             Ok(SessionAffinityKeySource::RequestHeader(name))
@@ -2903,6 +2910,31 @@ mod tests {
         };
 
         assert!(compile_session_affinity_settings(&input).is_err());
+    }
+
+    #[test]
+    fn compiler_rejects_session_affinity_headers_outside_the_client_allowlist() {
+        let input = SystemSessionAffinitySettingsInput {
+            enabled: true,
+            max_entries: 100,
+            default_ttl_seconds: 60,
+            rules: vec![SystemSessionAffinityRuleInput {
+                name: "unknown-header".into(),
+                enabled: true,
+                api_formats: vec!["open_ai_responses".into()],
+                model_regex: vec![],
+                key_sources: vec![SystemSessionAffinityKeySourceInput::RequestHeader {
+                    name: "x-private-session".into(),
+                }],
+                value_regex: None,
+                ttl_seconds: None,
+            }],
+        };
+
+        let error = compile_session_affinity_settings(&input)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("not allowed by the client request policy"));
     }
 
     #[test]

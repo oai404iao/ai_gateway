@@ -165,9 +165,9 @@ Codex HTTP attempt：
 
 - 要求 SSE streaming；
 - 强制 `stream=true`、`store=false`；
-- 在通用变换之后删除 Codex 已确认不支持的顶层 `max_output_tokens`；不使用字段白名单，
-  其他未知字段继续透明转发；
-- 拒绝非空 `previous_response_id`；
+- 在通用 JSON Transform 之后应用 Codex Responses HTTP body 白名单；
+- 删除显式兼容的 `max_output_tokens` 和纯遥测字段；`previous_response_id` 只允许空值后删除；
+  其他已知但 provider 无法表达的非默认值以及未知字段返回客户端错误；
 - 目标固定为 managed channel base URL 下的 `/responses`；
 - 注入 Bearer、存在 workspace account ID 时才注入 `ChatGPT-Account-ID`、可选 FedRAMP、
   session/thread、User-Agent、
@@ -180,7 +180,8 @@ Codex HTTP attempt：
 Codex WebSocket attempt：
 
 - 只接受 `response.create` 文本消息，并同样强制 `stream=true`、`store=false`；
-- 同样删除 `max_output_tokens`，但不删除其他未列入显式 denylist 的字段；
+- 在通用 JSON Transform 之后应用独立的 Codex Responses WebSocket body 白名单，并删除
+  `max_output_tokens` 与显式纯遥测字段；
 - 保留客户端的 `previous_response_id`、`generate` 和 `client_metadata`；
 - 把 managed channel base URL 转成 `/responses` 的 `ws`/`wss` 目标；
 - 使用 Codex 同源的 WebSocket Beta、Bearer/可选 account、FedRAMP、session/thread、
@@ -192,7 +193,8 @@ Codex WebSocket attempt：
 Codex Images generation attempt：
 
 - 只接受 `ApiOperation::ImagesGeneration` 的非流式 JSON；
-- 保留模型别名和受限变换之后的 JSON 字节，不注入 Responses 的 `stream` 或 `store`；
+- 在模型别名和受限变换后应用 Codex Images generation body 白名单，只保留 wire type 字段；
+  `output_format=png`、`moderation=auto` 等契约列出的等价值被删除，无法表达的非默认值返回错误；
 - 目标固定为 managed channel base URL 下的 `/images/generations`；
 - 注入 Bearer/可选 account、FedRAMP、User-Agent、`originator`、版本和 Gateway 生成的
   `x-codex-image-turn-id`；
@@ -204,8 +206,10 @@ Codex Images edit attempt：
 - 只接受 `ApiOperation::ImagesEdit` 的非流式 multipart；
 - 复用 `ReplayableRequestBody` 顺序读取 image parts，并把最多五张图片增量 base64 编码为
   JSON `images[].image_url` data URL；
-- provider-specific 地拒绝 `mask`、第六张图片和未核对字段，只保留
+- 在客户端 multipart 白名单之后应用 Codex Images edit body 白名单，只保留
   `prompt`、`background`、`model`、`n`、`quality` 与 `size`；
+- provider-specific 地拒绝 `mask`、第六张图片及无法等价删除的字段；客户端兼容字段和
+  `output_format=png` 等 provider 默认值按机器契约删除；
 - 目标固定为 managed channel base URL 下的 `/images/edits`；
 - 使用与 generation 相同的 Bearer/可选 account/FedRAMP、User-Agent、`originator`、版本和新
   `x-codex-image-turn-id`，不发送 Responses Session Header；
@@ -217,6 +221,12 @@ reqwest 返回 pre-header error 时不能证明请求体未被上游接收。Web
 WebSocket pin 的 Codex Session fail closed，不换账户。消息发出后不重试。Responses 或 Images
 HTTP `401`、WebSocket 握手 `401` 或带 `status = 401` 的终态错误会按共享 credential ID 异步触发
 generation 去重 refresh；已经发送的图片请求不会重放。
+
+客户端入口和 Codex 出口的完整 Header/body 动作由
+[`request-allowlists.json`](../reference/request-allowlists.json) 定义，维护说明见
+[`请求字段与 Header 白名单`](../reference/request-allowlists.md)。Codex Header policy 位于
+普通 Header Transform 与最终凭证/协议 Header 注入之间，因此自定义 Header 不能绕过 provider
+白名单，也不能覆盖最终认证。
 
 ## 安全边界
 

@@ -210,7 +210,7 @@ async fn start_mock_upstream() -> MockResponsesWebSocket {
                             .await
                             .unwrap();
                         last_response_id = Some(response_id);
-                        if body["force_residual"] == true {
+                        if body["client_metadata"]["force_residual"] == true {
                             websocket
                                 .send(Message::Text(
                                     json!({
@@ -601,7 +601,7 @@ async fn response_create_with_residual(
         body["previous_response_id"] = json!(previous_response_id);
     }
     if force_residual {
-        body["force_residual"] = json!(true);
+        body["client_metadata"] = json!({"force_residual": true});
     }
     websocket
         .send(Message::Text(body.to_string().into()))
@@ -807,6 +807,45 @@ async fn responses_websocket_rejects_an_invalid_gateway_api_key_during_upgrade()
     };
     assert_eq!(response.status(), 401);
     assert!(upstream.handshakes().is_empty());
+}
+
+#[tokio::test]
+async fn responses_websocket_rejects_unknown_client_body_fields_before_upstream_contact() {
+    let upstream = start_mock_upstream().await;
+    let gateway = gateway_harness(&upstream).await;
+    let (mut websocket, _) = connect_async(websocket_request(
+        gateway.server.address,
+        CLIENT_KEY,
+        "unknown-field-session",
+    ))
+    .await
+    .unwrap();
+
+    websocket
+        .send(Message::Text(
+            json!({
+                "type": "response.create",
+                "model": CLIENT_MODEL,
+                "input": [],
+                "future_field": true
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    let message = timeout(Duration::from_secs(2), websocket.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let Message::Text(text) = message else {
+        panic!("expected a JSON WebSocket error");
+    };
+    let value: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(value["error"]["code"], "request_body_field_unsupported");
+    assert!(upstream.handshakes().is_empty());
+    assert!(upstream.requests().is_empty());
 }
 
 #[tokio::test]

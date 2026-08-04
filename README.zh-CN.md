@@ -400,8 +400,12 @@ pnpm --dir web/console generate:api:check   # OpenAPI spec/类型漂移门禁
 ## 运行行为与边界
 
 - 请求在读取 body 前完成认证与准入。
-- 只有模型别名或变换确有需要时才重新序列化请求；否则转发原始请求字节。
-- 变换顺序固定为：模板默认值 → 渠道覆盖 → 受保护 Header 清理 → 上游鉴权。
+- 客户端 Header 和顶层 body 字段按
+  [请求白名单契约](docs/reference/request-allowlists.md)检查；未知 body 字段 fail closed，
+  未知 Header 被忽略。
+- 只有请求 policy、模型别名或变换确有需要时才重新序列化请求；否则转发原始请求字节。
+- 顺序固定为：客户端白名单 → 模板默认值 → 渠道覆盖 → Codex body 白名单（如适用）→
+  受保护 Header 清理 → Codex Header 白名单（如适用）→ 上游鉴权。
 - 客户端 `Authorization`、hop-by-hop Header、`Connection` 声明的 Header，以及常见反向代理/CDN
   转发元数据永不转发给任何上游渠道。
 - 被动健康响应收到上游响应头之前的连接失败。配置允许时，只能在响应头前切换到

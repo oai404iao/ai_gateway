@@ -29,9 +29,10 @@
 ## ai-gateway 行为
 
 - 此路径只匹配 `open_ai_chat_completions` 模型规则、渠道组和渠道。
-- 网关不完整校验 `messages`、tools 或模型专属字段；完成最小路由校验后交给上游。
+- 顶层字段必须进入 `chat_completions.client_body` 白名单；未知顶层字段返回本地 `400`。
+- 网关不递归校验 `messages`、tools 或模型专属嵌套结构；顶层检查后仍由目标上游解释。
 - 模型别名只改写顶层 `model`，嵌套对象中的同名字段不变。
-- 无变换时，请求 JSON 的空白、键顺序和原始字节保持不变。
+- 客户端 policy 未删除字段且无变换时，请求 JSON 的空白、键顺序和原始字节保持不变。
 - 普通响应状态和 body 默认透传。
 - SSE 无变换时按原始字节转发；启用变换时按完整 SSE frame 应用格式专属规则。
 - usage 采集把 `prompt_tokens` 记录为输入总量，把 `completion_tokens` 原样记录为输出总量，
@@ -55,3 +56,5 @@
 6. 上游是否支持客户端要使用的 tools、response format、reasoning 或其他扩展字段。
 
 转发路径变更后，按 [真实上游 smoke test](../development/real-upstream-smoke.md) 验证。
+完整顶层字段和 Header 契约见
+[`请求字段与 Header 白名单`](request-allowlists.md)。

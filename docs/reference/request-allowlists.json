@@ -1,0 +1,641 @@
+{
+  "version": 1,
+  "verified_at": "2026-08-04",
+  "sources": {
+    "openai_node_commit": "854892a0580980449ce1ed04aa5e3831d3330383",
+    "codex_commit": "5af85998c24fb3353ddd8164c3ed472057b03cb3"
+  },
+  "client_headers": {
+    "unknown": "ignore",
+    "allow": [
+      "accept",
+      "accept-encoding",
+      "authorization",
+      "baggage",
+      "connection",
+      "content-digest",
+      "content-encoding",
+      "content-length",
+      "content-md5",
+      "content-type",
+      "digest",
+      "etag",
+      "idempotency-key",
+      "last-modified",
+      "openai-beta",
+      "openai-organization",
+      "openai-project",
+      "range",
+      "repr-digest",
+      "session-id",
+      "thread-id",
+      "traceparent",
+      "tracestate",
+      "user-agent",
+      "x-client-request-id",
+      "x-openai-client-user-agent",
+      "x-request-id",
+      "x-session-id"
+    ],
+    "allow_prefixes": [
+      "x-stainless-"
+    ],
+    "generated": []
+  },
+  "interfaces": {
+    "chat_completions": {
+      "client_body": {
+        "unknown": "reject",
+        "allow": [
+          "audio",
+          "frequency_penalty",
+          "function_call",
+          "functions",
+          "logit_bias",
+          "logprobs",
+          "max_completion_tokens",
+          "max_tokens",
+          "messages",
+          "metadata",
+          "modalities",
+          "model",
+          "moderation",
+          "n",
+          "parallel_tool_calls",
+          "prediction",
+          "presence_penalty",
+          "prompt_cache_key",
+          "prompt_cache_options",
+          "prompt_cache_retention",
+          "reasoning_effort",
+          "response_format",
+          "safety_identifier",
+          "seed",
+          "service_tier",
+          "stop",
+          "store",
+          "stream",
+          "stream_options",
+          "temperature",
+          "tool_choice",
+          "tools",
+          "top_logprobs",
+          "top_p",
+          "user",
+          "verbosity",
+          "web_search_options"
+        ],
+        "ignore": {},
+        "reject": []
+      }
+    },
+    "responses_http": {
+      "client_body": {
+        "unknown": "reject",
+        "allow": [
+          "background",
+          "context_management",
+          "conversation",
+          "include",
+          "input",
+          "instructions",
+          "max_output_tokens",
+          "metadata",
+          "model",
+          "moderation",
+          "parallel_tool_calls",
+          "previous_response_id",
+          "prompt",
+          "prompt_cache_key",
+          "prompt_cache_options",
+          "prompt_cache_retention",
+          "reasoning",
+          "safety_identifier",
+          "service_tier",
+          "store",
+          "stream",
+          "stream_options",
+          "temperature",
+          "text",
+          "tool_choice",
+          "tools",
+          "top_logprobs",
+          "top_p",
+          "truncation",
+          "user"
+        ],
+        "ignore": {},
+        "reject": []
+      },
+      "codex_oauth": {
+        "headers": {
+          "unknown": "ignore",
+          "allow": [
+            "baggage",
+            "traceparent",
+            "tracestate",
+            "x-client-request-id"
+          ],
+          "allow_prefixes": [],
+          "generated": [
+            "accept",
+            "accept-encoding",
+            "authorization",
+            "chatgpt-account-id",
+            "content-length",
+            "content-type",
+            "host",
+            "originator",
+            "session-id",
+            "thread-id",
+            "user-agent",
+            "version",
+            "x-client-request-id",
+            "x-openai-fedramp"
+          ]
+        },
+        "body": {
+          "unknown": "reject",
+          "allow": [
+            "client_metadata",
+            "include",
+            "input",
+            "instructions",
+            "model",
+            "parallel_tool_calls",
+            "prompt_cache_key",
+            "reasoning",
+            "service_tier",
+            "store",
+            "stream",
+            "stream_options",
+            "text",
+            "tool_choice",
+            "tools"
+          ],
+          "ignore": {
+            "background": {
+              "accepted_values": [
+                null,
+                false
+              ]
+            },
+            "context_management": {
+              "accepted_values": [
+                null,
+                []
+              ]
+            },
+            "conversation": {
+              "accepted_values": [
+                null
+              ]
+            },
+            "max_output_tokens": {},
+            "metadata": {},
+            "moderation": {
+              "accepted_values": [
+                null
+              ]
+            },
+            "previous_response_id": {
+              "accepted_values": [
+                null,
+                ""
+              ]
+            },
+            "prompt": {
+              "accepted_values": [
+                null
+              ]
+            },
+            "prompt_cache_options": {
+              "accepted_values": [
+                null
+              ]
+            },
+            "prompt_cache_retention": {
+              "accepted_values": [
+                null
+              ]
+            },
+            "safety_identifier": {},
+            "temperature": {
+              "accepted_values": [
+                null
+              ]
+            },
+            "top_logprobs": {
+              "accepted_values": [
+                null
+              ]
+            },
+            "top_p": {
+              "accepted_values": [
+                null
+              ]
+            },
+            "truncation": {
+              "accepted_values": [
+                null,
+                "disabled"
+              ]
+            },
+            "user": {}
+          },
+          "reject": []
+        },
+        "body_overrides": {
+          "store": false,
+          "stream": true
+        },
+        "generated_body_fields": []
+      }
+    },
+    "responses_websocket": {
+      "client_body": {
+        "unknown": "reject",
+        "allow": [
+          "background",
+          "client_metadata",
+          "context_management",
+          "conversation",
+          "generate",
+          "include",
+          "input",
+          "instructions",
+          "max_output_tokens",
+          "max_tool_calls",
+          "metadata",
+          "model",
+          "moderation",
+          "parallel_tool_calls",
+          "previous_response_id",
+          "prompt",
+          "prompt_cache_key",
+          "prompt_cache_options",
+          "prompt_cache_retention",
+          "reasoning",
+          "safety_identifier",
+          "service_tier",
+          "store",
+          "stream",
+          "stream_options",
+          "temperature",
+          "text",
+          "tool_choice",
+          "tools",
+          "top_logprobs",
+          "top_p",
+          "truncation",
+          "type",
+          "user"
+        ],
+        "ignore": {},
+        "reject": []
+      },
+      "codex_oauth": {
+        "headers": {
+          "unknown": "ignore",
+          "allow": [
+            "baggage",
+            "openai-beta",
+            "traceparent",
+            "tracestate",
+            "x-client-request-id"
+          ],
+          "allow_prefixes": [],
+          "generated": [
+            "authorization",
+            "chatgpt-account-id",
+            "connection",
+            "host",
+            "openai-beta",
+            "originator",
+            "sec-websocket-extensions",
+            "sec-websocket-key",
+            "sec-websocket-version",
+            "session-id",
+            "thread-id",
+            "upgrade",
+            "user-agent",
+            "version",
+            "x-client-request-id",
+            "x-openai-fedramp"
+          ]
+        },
+        "body": {
+          "unknown": "reject",
+          "allow": [
+            "client_metadata",
+            "generate",
+            "include",
+            "input",
+            "instructions",
+            "model",
+            "parallel_tool_calls",
+            "previous_response_id",
+            "prompt_cache_key",
+            "reasoning",
+            "service_tier",
+            "store",
+            "stream",
+            "stream_options",
+            "text",
+            "tool_choice",
+            "tools",
+            "type"
+          ],
+          "ignore": {
+            "background": {
+              "accepted_values": [
+                null,
+                false
+              ]
+            },
+            "context_management": {
+              "accepted_values": [
+                null,
+                []
+              ]
+            },
+            "conversation": {
+              "accepted_values": [
+                null
+              ]
+            },
+            "max_output_tokens": {},
+            "max_tool_calls": {
+              "accepted_values": [
+                null
+              ]
+            },
+            "metadata": {},
+            "moderation": {
+              "accepted_values": [
+                null
+              ]
+            },
+            "prompt": {
+              "accepted_values": [
+                null
+              ]
+            },
+            "prompt_cache_options": {
+              "accepted_values": [
+                null
+              ]
+            },
+            "prompt_cache_retention": {
+              "accepted_values": [
+                null
+              ]
+            },
+            "safety_identifier": {},
+            "temperature": {
+              "accepted_values": [
+                null
+              ]
+            },
+            "top_logprobs": {
+              "accepted_values": [
+                null
+              ]
+            },
+            "top_p": {
+              "accepted_values": [
+                null
+              ]
+            },
+            "truncation": {
+              "accepted_values": [
+                null,
+                "disabled"
+              ]
+            },
+            "user": {}
+          },
+          "reject": []
+        },
+        "body_overrides": {
+          "store": false,
+          "stream": true,
+          "type": "response.create"
+        },
+        "generated_body_fields": []
+      }
+    },
+    "images_generation": {
+      "client_body": {
+        "unknown": "reject",
+        "allow": [
+          "background",
+          "model",
+          "moderation",
+          "n",
+          "output_compression",
+          "output_format",
+          "partial_images",
+          "prompt",
+          "quality",
+          "response_format",
+          "size",
+          "stream",
+          "style",
+          "user"
+        ],
+        "ignore": {},
+        "reject": []
+      },
+      "codex_oauth": {
+        "headers": {
+          "unknown": "ignore",
+          "allow": [
+            "baggage",
+            "traceparent",
+            "tracestate"
+          ],
+          "allow_prefixes": [],
+          "generated": [
+            "accept",
+            "accept-encoding",
+            "authorization",
+            "chatgpt-account-id",
+            "content-length",
+            "content-type",
+            "host",
+            "originator",
+            "user-agent",
+            "version",
+            "x-codex-image-turn-id",
+            "x-openai-fedramp"
+          ]
+        },
+        "body": {
+          "unknown": "reject",
+          "allow": [
+            "background",
+            "model",
+            "n",
+            "prompt",
+            "quality",
+            "size"
+          ],
+          "ignore": {
+            "moderation": {
+              "accepted_values": [
+                null,
+                "auto"
+              ]
+            },
+            "output_compression": {
+              "accepted_values": [
+                null
+              ]
+            },
+            "output_format": {
+              "accepted_values": [
+                null,
+                "png"
+              ]
+            },
+            "partial_images": {
+              "accepted_values": [
+                null,
+                0
+              ]
+            },
+            "response_format": {
+              "accepted_values": [
+                null,
+                "b64_json"
+              ]
+            },
+            "stream": {
+              "accepted_values": [
+                null,
+                false
+              ]
+            },
+            "style": {
+              "accepted_values": [
+                null
+              ]
+            },
+            "user": {}
+          },
+          "reject": []
+        },
+        "body_overrides": {},
+        "generated_body_fields": []
+      }
+    },
+    "images_edit": {
+      "client_body": {
+        "unknown": "reject",
+        "allow": [
+          "background",
+          "image",
+          "image[]",
+          "input_fidelity",
+          "mask",
+          "model",
+          "n",
+          "output_compression",
+          "output_format",
+          "partial_images",
+          "prompt",
+          "quality",
+          "response_format",
+          "size",
+          "stream",
+          "user"
+        ],
+        "ignore": {
+          "moderation": {
+            "accepted_values": [
+              "auto"
+            ]
+          }
+        },
+        "reject": []
+      },
+      "codex_oauth": {
+        "headers": {
+          "unknown": "ignore",
+          "allow": [
+            "baggage",
+            "traceparent",
+            "tracestate"
+          ],
+          "allow_prefixes": [],
+          "generated": [
+            "accept",
+            "accept-encoding",
+            "authorization",
+            "chatgpt-account-id",
+            "content-length",
+            "content-type",
+            "host",
+            "originator",
+            "user-agent",
+            "version",
+            "x-codex-image-turn-id",
+            "x-openai-fedramp"
+          ]
+        },
+        "body": {
+          "unknown": "reject",
+          "allow": [
+            "background",
+            "image",
+            "image[]",
+            "model",
+            "n",
+            "prompt",
+            "quality",
+            "size"
+          ],
+          "ignore": {
+            "moderation": {
+              "accepted_values": [
+                "auto"
+              ]
+            },
+            "output_format": {
+              "accepted_values": [
+                "png"
+              ]
+            },
+            "partial_images": {
+              "accepted_values": [
+                "0"
+              ]
+            },
+            "response_format": {
+              "accepted_values": [
+                "b64_json"
+              ]
+            },
+            "stream": {
+              "accepted_values": [
+                "false",
+                "0"
+              ]
+            },
+            "user": {}
+          },
+          "reject": [
+            "input_fidelity",
+            "mask",
+            "output_compression"
+          ]
+        },
+        "body_overrides": {},
+        "generated_body_fields": [
+          "images"
+        ]
+      }
+    }
+  }
+}

@@ -2,7 +2,7 @@
 
 > 类型：外部参考。
 >
-> 最近核对：2026-07-27。
+> 最近核对：2026-08-04。
 >
 > 权威来源：[Create a model response](https://developers.openai.com/api/reference/resources/responses/methods/create)、[Streaming API responses](https://developers.openai.com/api/docs/guides/streaming-responses) 和 [WebSocket mode](https://developers.openai.com/api/docs/guides/websocket-mode)。
 
@@ -24,8 +24,9 @@
 
 - 此路径只匹配 `open_ai_responses` 模型规则、渠道组和渠道。
 - 网关不会把 `input` 转换为 Chat Completions `messages`，也不会反向转换响应。
-- 除最小路由字段和已配置变换外，请求字段由目标上游解释。
-- 无变换时保留原始请求字节；模型别名只改写顶层 `model`。
+- HTTP 与 WebSocket `response.create` 分别使用独立顶层字段白名单；未知顶层字段返回本地
+  `400`，允许字段内部的嵌套结构仍由目标上游解释。
+- 客户端 policy 未删除字段且无变换时保留原始请求字节；模型别名只改写顶层 `model`。
 - 普通 JSON 和 SSE 响应默认流式透传。
 - SSE 变换按 Responses 事件类型匹配，不能使用 Chat Completions 事件规则。
 - WebSocket 事件使用同一套 Responses 事件选择器和 JSON patch 规则，但没有 SSE 文本 envelope。
@@ -62,3 +63,5 @@
 转发路径变更后，按 [真实上游 smoke test](../development/real-upstream-smoke.md) 验证。
 Codex 的具体请求形状、连接缓存、增量请求和 fallback 实现见
 [Codex Responses WebSocket 实现参考](codex-responses-websocket.md)。
+完整客户端与 Codex 字段/Header 动作见
+[`请求字段与 Header 白名单`](request-allowlists.md)。

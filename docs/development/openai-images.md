@@ -81,7 +81,8 @@ POST /v1/images/generations
 
 - JSON body 必须可解析，顶层 `model` 必须是非空字符串；
 - `stream: true` 返回 `400 image_streaming_unsupported`，不联系上游；
-- 未启用模型别名或请求 JSON 变换时保留原始请求字节；
+- 先应用 `images_generation.client_body` 顶层字段白名单；policy 未删除字段且未启用模型别名或
+  请求 JSON 变换时保留原始请求字节；
 - 使用 `open_ai_images` API Key 权限、模型规则、Channel Group 和 Channel；
 - 普通 `openai_compatible` Connector 沿用原路径
   `/v1/images/generations`、查询字符串和 Header/鉴权顺序；
@@ -203,10 +204,13 @@ POST /v1/images/edits
   block 和 boundary padding 还分别限制为 `8 KiB`、`16 KiB` 与 `1 KiB`，避免畸形 framing
   绕过磁盘 spool 后重新放大 parser 内存；这些协议级界限在联系上游前执行；
 - 要求恰好一个非空、最多 300 字符的 `model` 字段，以及至少一个 image part；
+- 按 `images_edit.client_body` 白名单检查 multipart 顶层字段；未知字段返回
+  `request_body_field_unsupported`。兼容表单字段 `moderation=auto` 在入口层删除，其他
+  moderation 值返回错误；
 - `stream=true`、非 identity `Content-Encoding`、无效 multipart 和非 multipart
   Content-Type 均 fail closed；
-- 普通 `openai_compatible` Connector 在无需模型别名时原样回放捕获的 multipart；需要别名时
-  使用同一 boundary 流式等价重建，只替换 `model` part；
+- 普通 `openai_compatible` Connector 在无需模型别名且入口策略未删除字段时原样回放捕获的
+  multipart；需要别名或删除字段时使用同一 boundary 流式等价重建；
 - multipart edit 不应用格式级请求 JSON Transform；若选中渠道配置了该类规则，返回
   `400 image_edit_json_transform_unsupported`。Header 与响应 Header 变换仍照常执行；
 - Images edit 与 generation 一样，上游尝试开始后不自动重试或切换渠道。
@@ -216,11 +220,17 @@ Codex OAuth edit adapter：
 - 把公共 multipart 输入转换为 Codex `/images/edits` 要求的非流式 JSON；
 - 流式 base64 编码 image parts，写入
   `images[].image_url = data:<mime>;base64,...`，不会把完整输入图片或 JSON 放入单个内存缓冲；
-- 只转发经核对的 `prompt`、`background`、`model`、`n`、`quality` 与 `size` 字段；
-- provider-specific 地限制最多五张图片并拒绝 `mask` 与未核对字段；通用
+- 通过统一 Codex Images edit body 白名单只转发 `prompt`、`background`、`model`、`n`、
+  `quality` 与 `size`；`output_format=png` 等等价值删除，非默认 provider-unsupported 值
+  fail closed；
+- provider-specific 地限制最多五张图片并拒绝 `mask` 与无法等价忽略的字段；通用
   `OpenAiImages` multipart 仍保留最多 16 张输入的独立上限；
 - 复用 generation 的 Bearer/可选 account/FedRAMP、`originator`、版本、User-Agent 和新生成的
   `x-codex-image-turn-id`，并删除 Responses Session Header。
+
+完整的客户端与 Codex Header/body 动作见
+[`request-allowlists.json`](../reference/request-allowlists.json) 和
+[`请求字段与 Header 白名单`](../reference/request-allowlists.md)。
 
 临时文件计数、活跃字节、累计写入、存储失败和文件系统可用容量出现在
 `GET /console/v1/system/load` 的 `image_body_spool` 中。容量低于三个最大 edit body 时，数据面

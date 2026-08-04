@@ -160,7 +160,8 @@ provider-managed `channels` 记录。因此普通优先级、权重、API Key �
 
 1. 要求请求本身为 SSE streaming；
 2. 拒绝非空 `previous_response_id`；
-3. 删除当前 Codex request type 未声明的 `max_output_tokens`，但不使用字段白名单；
+3. 在普通 Transform 后应用 Codex Responses HTTP body/Header 白名单，删除
+   `max_output_tokens`、纯遥测和契约列出的空值/no-op；其他 provider-unsupported 非默认值报错；
 4. 强制写入 `stream=true`、`store=false`；
 5. 将目标改为 `/backend-api/codex/responses`；
 6. `Accept-Encoding` 由通用代理层独立设置为 `gzip, deflate, br, zstd`，上游响应在终态 SSE
@@ -173,7 +174,8 @@ provider-managed `channels` 记录。因此普通优先级、权重、API Key �
 WebSocket 路径：
 
 1. 要求消息 `type = "response.create"` 并取得顶层 `model`；
-2. 删除 `max_output_tokens`，其他未进入显式 denylist 的未知字段继续转发；
+2. 在普通 Transform 后应用独立的 Codex Responses WebSocket body/Header 白名单，删除
+   `max_output_tokens` 和契约列出的纯遥测/no-op，未知 body 字段报错；
 3. 强制 `stream=true`、`store=false`，但保留
    `previous_response_id`、`generate` 和 `client_metadata`；
 4. 把目标改为 managed channel base URL 下的 `/responses`，再将
@@ -186,7 +188,8 @@ WebSocket 路径：
 
 客户端也可以调用非流式 JSON `POST /v1/images/generations`。选中 Codex Images projection 后：
 
-1. 保留模型别名和受限变换后的 JSON，不加入 Responses 的 `stream` / `store` 字段；
+1. 在模型别名和受限变换后应用 Codex Images generation body 白名单，只保留 wire type 字段；
+   `output_format=png`、`moderation=auto` 等等价值删除；
 2. 将目标改为 `/backend-api/codex/images/generations`；
 3. 注入共享 credential 的 Bearer/可选 account/FedRAMP，以及 `originator`、版本、User-Agent 和
    Gateway 生成的 `x-codex-image-turn-id`；
@@ -198,8 +201,9 @@ WebSocket 路径：
 1. 网关先在专用限制内捕获 replayable multipart，并完成模型路由；
 2. 最多五个 `image`/`image[]` part 被增量 base64 编码为
    `images[].image_url = data:<mime>;base64,...`；
-3. 只保留 Codex wire type 已核对的 `prompt`、`background`、`model`、`n`、`quality` 与
-   `size`；mask 和其他字段在联系上游前拒绝；
+3. 客户端 multipart 与 Codex adapter 分别应用入口/出口白名单，只保留
+   `prompt`、`background`、`model`、`n`、`quality` 与 `size`；`moderation=auto` 在入口层
+   删除，`output_format=png` 在 Codex 层删除，mask 和无法等价表达的值在联系上游前拒绝；
 4. 将目标改为 `/backend-api/codex/images/edits`；
 5. 注入与 generation 相同的 credential 和 image-turn Header，并按非流式 JSON 处理响应。
 
@@ -263,10 +267,10 @@ WebSocket 错误会触发按 refresh generation 去重的后台 token refresh。
 - Codex Connector 支持 Responses HTTP SSE、Responses WebSocket、非流式 Images generation
   与 multipart Images edit；
   Responses HTTP 仍拒绝非空 `previous_response_id`，WebSocket 保留该字段并依赖同一条上游连接
-  的增量状态；两种传输都只显式屏蔽当前已确认不兼容的 `max_output_tokens`，而不是通过
-  allowlist 丢弃其他字段。
-- edit adapter 最多接受五张图片，不接受 mask 或 Codex wire type 未声明的字段；这些
-  provider-specific 限制不改变普通 OpenAI-compatible edit 的最多 16 张图片边界。
+  的增量状态；两种传输都通过独立 allowlist 明确分类已知字段，未知 body 字段不再透明转发。
+- edit adapter 最多接受五张图片，不接受 mask 或无法等价表达的 Codex wire type 外字段；
+  显式默认值/no-op 按契约删除。这些 provider-specific 限制不改变普通 OpenAI-compatible edit
+  的最多 16 张图片边界。
 - Connector 不实现 Chat Completions、Responses 与 Images 之间的转换。
 - Console 删除会清除数据库中的 OAuth Token 并保留两个非敏感 managed-channel tombstone，但
   不会调用 OpenAI token revocation endpoint；外部撤销仍需在账户侧完成。
@@ -277,6 +281,10 @@ WebSocket 错误会触发按 refresh generation 去重的后台 token refresh。
   各实例周期重载最终收敛。
 - ChatGPT Codex 后端不是公开稳定 API。出现 OAuth 参数、JWT claim、models schema、quota
   schema、Header 或路径变化时，应先更新本参考和本地 deterministic tests，再修改 Connector。
+
+完整字段和 Header 动作的机器可读来源是
+[`request-allowlists.json`](request-allowlists.json)，维护规则见
+[`请求字段与 Header 白名单`](request-allowlists.md)。
 
 ## 维护检查项
 

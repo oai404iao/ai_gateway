@@ -524,6 +524,7 @@ struct CapturedCodexRequest {
     session_id: Option<String>,
     thread_id: Option<String>,
     client_request_id: Option<String>,
+    stainless_lang: Option<String>,
     body: serde_json::Value,
 }
 
@@ -539,6 +540,7 @@ struct CapturedCodexImageRequest {
     session_id: Option<String>,
     thread_id: Option<String>,
     client_request_id: Option<String>,
+    stainless_lang: Option<String>,
     content_type: Option<String>,
     body: Bytes,
 }
@@ -555,6 +557,7 @@ struct CapturedCodexWebSocketHandshake {
     client_request_id: Option<String>,
     openai_beta: Option<String>,
     accept_encoding: Option<String>,
+    stainless_lang: Option<String>,
 }
 
 #[derive(Clone, Default)]
@@ -588,6 +591,7 @@ async fn codex_responses_upstream(
             session_id: header("session-id"),
             thread_id: header("thread-id"),
             client_request_id: header("x-client-request-id"),
+            stainless_lang: header("x-stainless-lang"),
             body: serde_json::from_slice(&body).unwrap(),
         });
         request_index
@@ -640,6 +644,7 @@ async fn codex_images_upstream(
             session_id: header("session-id"),
             thread_id: header("thread-id"),
             client_request_id: header("x-client-request-id"),
+            stainless_lang: header("x-stainless-lang"),
             content_type: header("content-type"),
             body,
         });
@@ -679,6 +684,7 @@ async fn codex_responses_websocket_upstream(
             client_request_id: header("x-client-request-id"),
             openai_beta: header("openai-beta"),
             accept_encoding: header("accept-encoding"),
+            stainless_lang: header("x-stainless-lang"),
         });
     websocket.on_upgrade(move |socket| codex_websocket_connection(socket, state))
 }
@@ -2780,6 +2786,7 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
             .header("accept-encoding", "gzip, br")
             .header("session-id", session_id)
             .header("thread-id", "thread-456")
+            .header("x-stainless-lang", "rust")
             .body(Body::from(serde_json::to_vec(&body).unwrap()))
             .unwrap()
     };
@@ -2793,7 +2800,7 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
                 "stream": true,
                 "store": true,
                 "max_output_tokens": 1,
-                "future_responses_field": "kept",
+                "metadata": {"client": "ignored by Codex"},
                 "input": responses_message_input("hello")
             }),
         ))
@@ -2856,7 +2863,8 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
     assert_eq!(forwarded.body["stream"], true);
     assert_eq!(forwarded.body["store"], false);
     assert!(forwarded.body.get("max_output_tokens").is_none());
-    assert_eq!(forwarded.body["future_responses_field"], "kept");
+    assert!(forwarded.body.get("metadata").is_none());
+    assert!(forwarded.stainless_lang.is_none());
     assert_eq!(
         runtime_channel_connector(&database.pool, credential.id).await,
         "codex_oauth"
@@ -2899,12 +2907,14 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
     assert_eq!(previous.status(), StatusCode::BAD_REQUEST);
     let previous_body = previous.into_body().collect().await.unwrap().to_bytes();
     assert!(
-        String::from_utf8_lossy(&previous_body).contains("codex_previous_response_unsupported")
+        String::from_utf8_lossy(&previous_body)
+            .contains("codex_request_body_field_value_unsupported")
     );
     assert_eq!(captured.http_requests.lock().unwrap().len(), 1);
 
-    let image_request_body =
-        Bytes::from_static(br#"{ "model" : "gpt-image-2", "prompt" : "a red fox in a field" }"#);
+    let image_request_body = Bytes::from_static(
+        br#"{ "model" : "gpt-image-2", "prompt" : "a red fox in a field", "output_format":"png", "moderation":"auto", "user":"ignored" }"#,
+    );
     let image_response = app
         .clone()
         .oneshot(
@@ -2917,6 +2927,7 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
                 .header("thread-id", "client-image-thread")
                 .header("x-client-request-id", "client-image-request")
                 .header("x-codex-image-turn-id", "client-controlled")
+                .header("x-stainless-lang", "rust")
                 .body(Body::from(image_request_body.clone()))
                 .unwrap(),
         )
@@ -2966,10 +2977,16 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
     assert!(image_request.session_id.is_none());
     assert!(image_request.thread_id.is_none());
     assert!(image_request.client_request_id.is_none());
+    assert!(image_request.stainless_lang.is_none());
     let image_turn_id = image_request.image_turn_id.as_deref().unwrap();
     assert_ne!(image_turn_id, "client-controlled");
     assert!(Uuid::parse_str(image_turn_id).is_ok());
-    assert_eq!(image_request.body, image_request_body);
+    let image_json: serde_json::Value = serde_json::from_slice(&image_request.body).unwrap();
+    assert_eq!(image_json["model"], "gpt-image-2");
+    assert_eq!(image_json["prompt"], "a red fox in a field");
+    assert!(image_json.get("output_format").is_none());
+    assert!(image_json.get("moderation").is_none());
+    assert!(image_json.get("user").is_none());
 
     let events = logs.events();
     let image_events = events
@@ -3000,6 +3017,8 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
         ("background", "auto"),
         ("quality", "high"),
         ("size", "1024x1024"),
+        ("output_format", "png"),
+        ("moderation", "auto"),
     ] {
         edit_body.extend_from_slice(format!("--{edit_boundary}\r\n").as_bytes());
         edit_body.extend_from_slice(
@@ -3042,6 +3061,7 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
                 .header("thread-id", "client-edit-thread")
                 .header("x-client-request-id", "client-edit-request")
                 .header("x-codex-image-turn-id", "client-edit-controlled")
+                .header("x-stainless-lang", "rust")
                 .body(Body::from(edit_body.clone()))
                 .unwrap(),
         )
@@ -3065,6 +3085,7 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
     assert!(edit_request.session_id.is_none());
     assert!(edit_request.thread_id.is_none());
     assert!(edit_request.client_request_id.is_none());
+    assert!(edit_request.stainless_lang.is_none());
     let edit_turn_id = edit_request.image_turn_id.as_deref().unwrap();
     assert_ne!(edit_turn_id, "client-edit-controlled");
     assert_ne!(edit_turn_id, image_turn_id);
@@ -3075,6 +3096,8 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
     assert_eq!(edit_json["background"], "auto");
     assert_eq!(edit_json["quality"], "high");
     assert_eq!(edit_json["size"], "1024x1024");
+    assert!(edit_json.get("output_format").is_none());
+    assert!(edit_json.get("moderation").is_none());
     assert_eq!(
         edit_json["images"][0]["image_url"],
         format!(
@@ -3119,6 +3142,9 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
             .headers_mut()
             .insert(ACCEPT_ENCODING, HeaderValue::from_static("gzip, br"));
         request
+            .headers_mut()
+            .insert("x-stainless-lang", HeaderValue::from_static("rust"));
+        request
     };
     let (mut websocket, response) = connect_async(websocket_request()).await.unwrap();
     assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
@@ -3132,7 +3158,7 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
             "store": true,
             "generate": false,
             "max_output_tokens": 1,
-            "future_responses_field": "kept",
+            "metadata": {"client": "ignored by Codex"},
             "input": [{"type": "message", "role": "user", "content": []}]
         }),
     )
@@ -3214,6 +3240,7 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
         Some("responses_websockets=2026-02-06")
     );
     assert_eq!(handshake.accept_encoding, None);
+    assert!(handshake.stainless_lang.is_none());
 
     let websocket_requests = captured.websocket_requests.lock().unwrap().clone();
     assert_eq!(websocket_requests.len(), 3);
@@ -3223,7 +3250,7 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
     assert_eq!(websocket_requests[0]["store"], false);
     assert_eq!(websocket_requests[0]["generate"], false);
     assert!(websocket_requests[0].get("max_output_tokens").is_none());
-    assert_eq!(websocket_requests[0]["future_responses_field"], "kept");
+    assert!(websocket_requests[0].get("metadata").is_none());
     assert_eq!(
         websocket_requests[1]["previous_response_id"],
         "resp_codex_ws_1"

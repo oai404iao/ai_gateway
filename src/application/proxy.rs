@@ -42,6 +42,9 @@ use crate::{
         RequestLogOutcome, RequestLogSource, RequestProtocol, SessionAffinityKeySource,
         SessionAffinitySettings,
     },
+    request_policy::{
+        RequestInterface, RequestPolicyError, RequestPolicyLayer, filter_client_headers,
+    },
     routing::{
         ChannelLease, RoutingRuntime, SelectionResult, SessionAffinityMatch,
         SessionAffinitySelection,
@@ -296,11 +299,27 @@ impl ProxyService {
                 return Err(error);
             }
         };
+        let interface = RequestInterface::for_http(api_operation);
+        let (original_body, client_body_changed) =
+            match original_body.apply_policy(RequestPolicyLayer::Client, interface) {
+                Ok(value) => value,
+                Err(error) => {
+                    trace_unlogged("request_policy_rejected");
+                    return Err(ProxyError::request_policy(error));
+                }
+            };
+        let client_headers = match filter_client_headers(interface, &parts.headers) {
+            Ok(headers) => headers,
+            Err(error) => {
+                trace_unlogged("request_policy_rejected");
+                return Err(ProxyError::request_policy(error));
+            }
+        };
         let session_affinity = match_session_affinity(
             snapshot.system_settings().session_affinity(),
             api_format,
             &parsed.model,
-            &parts.headers,
+            &client_headers,
             original_body
                 .json_bytes()
                 .map(Bytes::as_ref)
@@ -393,7 +412,7 @@ impl ProxyService {
                 &current_channel,
                 api_operation,
                 affinity_hit,
-                &parts.headers,
+                &client_headers,
                 session_affinity
                     .as_ref()
                     .map(SessionAffinityMatch::session_hash),
@@ -488,7 +507,8 @@ impl ProxyService {
                     return Err(error);
                 }
             };
-            let request_body_changed = model_rewritten
+            let request_body_changed = client_body_changed
+                || model_rewritten
                 || !transforms.request_json().is_empty()
                 || prepared_attempt.changes_request_body();
 
@@ -497,7 +517,7 @@ impl ProxyService {
             // `Connection` header. Stale client entity metadata is removed
             // first so the plan may explicitly supply values for the final
             // body. Cleanup then removes hop-by-hop names again.
-            let mut headers = parts.headers.clone();
+            let mut headers = client_headers.clone();
             if request_body_changed {
                 remove_rewritten_request_entity_headers(&mut headers);
             }
@@ -883,6 +903,7 @@ impl ProxyError {
 
     fn image_edit_body(error: ImageEditBodyError) -> Self {
         let (status, message, param, code) = match error {
+            ImageEditBodyError::RequestPolicy(error) => return Self::request_policy(error),
             ImageEditBodyError::BodyTooLarge => (
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "Images edit request body exceeds the configured size limit.",
@@ -999,18 +1020,6 @@ impl ProxyError {
                 "image",
                 "codex_image_edit_too_many_images",
             ),
-            ImageEditBodyError::CodexMaskUnsupported => (
-                StatusCode::BAD_REQUEST,
-                "Codex OAuth Images edits do not support masks.",
-                "mask",
-                "codex_image_edit_mask_unsupported",
-            ),
-            ImageEditBodyError::CodexUnsupportedField => (
-                StatusCode::BAD_REQUEST,
-                "Codex OAuth Images edit request contains an unsupported field.",
-                "body",
-                "codex_image_edit_field_unsupported",
-            ),
             ImageEditBodyError::CodexMissingField => (
                 StatusCode::BAD_REQUEST,
                 "Codex OAuth Images edit request is missing a required field.",
@@ -1078,6 +1087,18 @@ impl ProxyError {
             error_type: "invalid_request_error",
             param: Some(param),
             code: Some(code),
+            authenticate: false,
+            retry_after: None,
+        }
+    }
+
+    fn request_policy(error: RequestPolicyError) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            message: error.message(),
+            error_type: "invalid_request_error",
+            param: Some(error.param()),
+            code: Some(error.code()),
             authenticate: false,
             retry_after: None,
         }
@@ -1151,6 +1172,7 @@ impl ProxyError {
                 retry_after: None,
             },
             ConnectorAttemptError::RequestBody(error) => Self::image_edit_body(error),
+            ConnectorAttemptError::RequestPolicy(error) => Self::request_policy(error),
             ConnectorAttemptError::InvalidTarget => Self {
                 status: StatusCode::BAD_GATEWAY,
                 message: "The selected upstream channel has an invalid target URL.".to_owned(),

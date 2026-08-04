@@ -7,6 +7,18 @@ Versioning.
 
 ## [Unreleased]
 
+### Added
+
+- Add a machine-readable request allowlist contract covering client Headers,
+  all public top-level request fields, and Codex OAuth outbound Headers and
+  body fields.
+
+### Changed
+
+- Ignore unknown client Headers, reject unknown client top-level body fields,
+  and apply a second explicit allow/ignore/reject policy after transforms for
+  Codex Responses HTTP/WebSocket and Images requests.
+
 ### Fixed
 
 - Parse Chat Completions usage consistently across OpenAI and DeepSeek
@@ -14,6 +26,9 @@ Versioning.
   retain reasoning as a subset, prefer DeepSeek cache-hit fields when present,
   accept both OpenAI usage-only summary chunks and DeepSeek finish chunks, and
   show the full output total in Console request logs.
+- Accept image edit forms that send `moderation=auto` and
+  `output_format=png` by removing each value at its declared client or Codex
+  compatibility layer while continuing to reject non-equivalent values.
 
 ## [0.9.4] - 2026-08-04
 

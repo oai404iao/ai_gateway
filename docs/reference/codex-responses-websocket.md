@@ -175,13 +175,13 @@ Codex WebSocket 测试至少覆盖：
 | 方面 | Codex | `ai-gateway` |
 | --- | --- | --- |
 | 角色 | 最终客户端 | 透明服务端代理 |
-| 请求构造 | 主动构造完整 Codex `response.create` | 只做最小 model 解析及已配置变换，不补齐 Codex body 字段 |
+| 请求构造 | 主动构造完整 Codex `response.create` | 客户端与 Codex 两层顶级字段白名单、模型别名及已配置变换 |
 | 增量压缩 | 根据上一请求/响应自动生成 delta 和 `previous_response_id` | 原样转发客户端提供的增量语义 |
 | 连接持有 | 一个 Session 缓存一个连接 | 成功请求后把干净连接归还到有界、Session 隔离的池 |
 | 接收队列 | 无界 | 有界，向上游施加背压 |
 | 压缩扩展 | 启用 per-message deflate | 使用 SHA 固定的 OpenAI Tungstenite forks 主动协商；上游不接受时回退为未压缩消息 |
 | 失败恢复 | 客户端重连，预算耗尽后切 HTTP | 只允许上游 Upgrade 前故障转移；消息发送后不重试 |
-| Header | Codex主动构造 Session 和内部 Header | 转发下游 Header，并按渠道变换/认证；缺省补 WebSocket Beta Header |
+| Header | Codex主动构造 Session 和内部 Header | 客户端 Header 白名单、渠道变换、Codex Header 白名单，再注入协议/认证 Header |
 | 能力开关 | provider 声明支持后由 Codex 使用 | 网关要求系统、用户和 Responses 渠道三层均显式启用；默认关闭 |
 
 对于 `connector_kind = codex_oauth`，managed channel 在创建和 migration 时自动设置
@@ -191,14 +191,18 @@ Codex WebSocket 测试至少覆盖：
 Bearer、可选 account、FedRAMP、Codex Session/thread、User-Agent、`originator` 和版本 Header。
 HTTP SSE 专用的 `Accept`、`Accept-Encoding` 与 `Content-Type` 不进入上游 WebSocket 握手。
 
-因此，`ai-gateway` 不会为普通 OpenAI-compatible channel 全局删除
+因此，`ai-gateway` 不会为普通 OpenAI-compatible channel 删除
 `max_output_tokens`，也不会伪造全部 Codex metadata。只有选中
-`connector_kind = codex_oauth` 的 Responses attempt 才会通过显式 denylist 删除当前已确认不兼容
-的 `max_output_tokens`；其他未知字段仍透明转发。真实上游 smoke 在 Codex profile 中故意保留该
-客户端字段，以验证目标 Gateway 的 provider adapter，而不是要求 smoke 自己构造 Codex 专属
-请求。HTTP 成功响应还会把客户端可见 `Content-Type` 规范化为 `text/event-stream`，与既有
+`connector_kind = codex_oauth` 的 Responses attempt 才会按 Codex WebSocket body 白名单删除该
+兼容字段；其他已知字段必须显式归类为转发、忽略或报错，未知 body 字段报错。真实上游 smoke 在
+Codex profile 中故意保留 `max_output_tokens`，以验证目标 Gateway 的 provider policy，而不是
+要求 smoke 自己构造 Codex 专属请求。HTTP 成功响应还会把客户端可见 `Content-Type` 规范化为
+`text/event-stream`，与既有
 “即使上游 Header 缺失或错误也按 SSE 解析”的 Connector 契约保持一致。Codex 特有行为继续由
 确定性集成测试和本参考文档覆盖。
+
+完整客户端/Codex 字段和 Header 动作见
+[`request-allowlists.json`](request-allowlists.json)。
 
 ## 维护检查项
 
