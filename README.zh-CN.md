@@ -301,7 +301,7 @@ TOML 仅保存进程级 bootstrap 配置。二进制默认读取
 | `[server]` | 公共监听器和优雅关闭期限。 |
 | `[request_limits]` | 代理、Console 和认证接口各自独立的请求体大小限制。 |
 | `[database]` | PostgreSQL URL、连接池大小和连接超时。 |
-| `[upstream]` | 默认建连、响应头和流空闲超时。 |
+| `[upstream]` | 默认建连、普通响应头、Images 响应头和流空闲超时。 |
 | `[runtime_config]` | PostgreSQL 控制面定时重载间隔。 |
 | `[passive_health]` | 连接失败阈值和冷却时间。 |
 | `[request_logging]` | 本地耐久 spool、独立数据库池、COPY 入口、投影、结算与观测参数。 |

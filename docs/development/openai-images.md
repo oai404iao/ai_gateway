@@ -86,6 +86,8 @@ POST /v1/images/generations
 - 普通 `openai_compatible` Connector 沿用原路径
   `/v1/images/generations`、查询字符串和 Header/鉴权顺序；
 - 上游状态、Header 和响应 body 默认逐块透传；
+- 渠道未显式设置 `response_header_timeout_ms` 时，generation/edit 使用系统设置中的 Images
+  专用响应头超时；默认 300 秒，建连和流空闲超时仍复用通用值；
 - 若顶层 `usage` 存在，增量提取输入/输出 token，不为 base64 图片缓冲完整响应；
 - 请求日志写入 `images_generation` 操作，journal schema 为 v4，并兼容读取 v2/v3 backlog；
 - Images 请求禁用自动重试、Session affinity、SSE 变换、WebSocket 和 scheduled probe。
@@ -270,6 +272,8 @@ PR 3 另外覆盖：
 - Codex edit 路径、Header、两张输入图片的流式 data URL 转换，以及最多五张、无 mask 的
   provider 约束；
 - edit 响应头超时只发生一次上游尝试，draining Codex credential 在发送前拒绝。
+- 普通响应头超时较短而 Images 专用超时较长时，generation/edit 使用后者；渠道显式响应头
+  超时仍覆盖系统默认值。
 
 任何后续 Images 转发改动仍须运行普通 Rust/Console 检查和现有付费真实上游 smoke。提供完整
 `REAL_UPSTREAM_IMAGES_*` 配置时，脚本还会执行 generation/edit 付费 smoke；无论是否配置真实

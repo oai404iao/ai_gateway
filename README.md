@@ -257,7 +257,7 @@ Configuration is split into two layers:
 
 | Layer | Source | Examples |
 | --- | --- | --- |
-| Process/bootstrap | TOML | Listeners, PostgreSQL, request limits, default timeouts, durable spool, Console JWT key paths. |
+| Process/bootstrap | TOML | Listeners, PostgreSQL, request limits, default and Images-specific response-header timeouts, durable spool, Console JWT key paths. |
 | Dynamic control plane | PostgreSQL through the Console | Users, API keys, models, routes, channels, proxies, transforms, and forwarding settings. |
 
 Console writes validate the complete candidate configuration before commit and

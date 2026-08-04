@@ -95,6 +95,9 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
             upstream: SystemUpstreamSettingsInput {
                 connect_timeout_seconds: config.upstream.connect_timeout_seconds,
                 response_header_timeout_seconds: config.upstream.response_header_timeout_seconds,
+                images_response_header_timeout_seconds: config
+                    .upstream
+                    .images_response_header_timeout_seconds,
                 stream_idle_timeout_seconds: config.upstream.stream_idle_timeout_seconds,
             },
             request_retry: SystemRequestRetrySettingsInput {

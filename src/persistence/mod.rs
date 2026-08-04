@@ -34,7 +34,10 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::{
-    domain::{ApiFormat, AutomaticDisableTrigger, MAX_REQUEST_RETRIES, RequestLogEvent},
+    domain::{
+        ApiFormat, AutomaticDisableTrigger, DEFAULT_IMAGES_RESPONSE_HEADER_TIMEOUT_SECONDS,
+        MAX_REQUEST_RETRIES, RequestLogEvent,
+    },
     request_log_journal::EncodedRequestLog,
 };
 
@@ -111,6 +114,8 @@ pub struct SystemSettingsInput {
 pub struct SystemUpstreamSettingsInput {
     pub connect_timeout_seconds: u64,
     pub response_header_timeout_seconds: u64,
+    #[serde(default = "default_images_response_header_timeout_seconds")]
+    pub images_response_header_timeout_seconds: u64,
     pub stream_idle_timeout_seconds: u64,
 }
 
@@ -243,6 +248,10 @@ fn default_scheduled_testing_mode() -> String {
 
 const fn default_request_retry_enabled() -> bool {
     true
+}
+
+const fn default_images_response_header_timeout_seconds() -> u64 {
+    DEFAULT_IMAGES_RESPONSE_HEADER_TIMEOUT_SECONDS
 }
 
 const fn default_request_retry_max_retries() -> u32 {
@@ -7161,6 +7170,7 @@ fn validate_system_settings_input(input: &SystemSettingsInput) -> Result<(), Rep
     if !valid_api_hosts(api_hosts)
         || upstream.connect_timeout_seconds == 0
         || upstream.response_header_timeout_seconds <= upstream.connect_timeout_seconds
+        || upstream.images_response_header_timeout_seconds <= upstream.connect_timeout_seconds
         || upstream.stream_idle_timeout_seconds == 0
         || request_retry.max_retries == 0
         || request_retry.max_retries > MAX_REQUEST_RETRIES

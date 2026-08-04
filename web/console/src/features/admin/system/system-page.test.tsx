@@ -56,6 +56,7 @@ describe("SystemPage", () => {
       upstream: {
         connect_timeout_seconds: 12,
         response_header_timeout_seconds: 30,
+        images_response_header_timeout_seconds: 300,
         stream_idle_timeout_seconds: 90,
       },
       request_retry: {
@@ -122,6 +123,23 @@ describe("SystemPage", () => {
 
     expect(
       await screen.findByText("Response header timeout must exceed connect timeout."),
+    ).toBeInTheDocument();
+  });
+
+  it("requires the Images response-header timeout to exceed the connect timeout", async () => {
+    seedAuthenticatedSession();
+    const user = userEvent.setup();
+    renderApp();
+
+    const imagesResponseHeaderTimeout = await screen.findByLabelText(
+      "Images response header timeout (seconds)",
+    );
+    await user.clear(imagesResponseHeaderTimeout);
+    await user.type(imagesResponseHeaderTimeout, "10");
+    await user.click(screen.getByRole("button", { name: /save system settings/i }));
+
+    expect(
+      await screen.findByText("Images response header timeout must exceed connect timeout."),
     ).toBeInTheDocument();
   });
 

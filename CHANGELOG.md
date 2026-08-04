@@ -7,6 +7,12 @@ Versioning.
 
 ## [Unreleased]
 
+### Added
+
+- Add a database-backed Images-specific response-header timeout, bootstrapped
+  from `[upstream].images_response_header_timeout_seconds` with a 300-second
+  default, while preserving channel-level timeout overrides.
+
 ## [0.9.2] - 2026-08-04
 
 ### Changed

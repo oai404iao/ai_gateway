@@ -1537,6 +1537,12 @@ export interface components {
             connect_timeout_seconds: number;
             /** Format: int64 */
             response_header_timeout_seconds: number;
+            /**
+             * Format: int64
+             * @description Used by Images generation and edit when the channel has no explicit response-header timeout.
+             * @default 300
+             */
+            images_response_header_timeout_seconds: number;
             /** Format: int64 */
             stream_idle_timeout_seconds: number;
         };

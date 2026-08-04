@@ -54,10 +54,11 @@ const zhCN: Record<string, string> = {
   "Saving validates the full routing configuration and publishes a new runtime snapshot. Requests already in flight retain their original settings.":
     "保存时会校验完整路由配置并发布新的运行时快照。已在处理中的请求会保留原有设置。",
   "Default upstream timeouts": "上游默认超时",
-  "Used only when a channel does not define an explicit timeout. Response header timeout must be greater than connect timeout.":
-    "仅在渠道未设置显式超时时使用。响应头超时必须大于连接超时。",
+  "Used only when a channel does not define an explicit timeout. Images use their own longer response header timeout; both response header timeouts must exceed connect timeout.":
+    "仅在渠道未设置显式超时时使用。Images 使用独立且更长的响应头超时；两个响应头超时都必须大于连接超时。",
   "Connect timeout (seconds)": "连接超时（秒）",
   "Response header timeout (seconds)": "响应头超时（秒）",
+  "Images response header timeout (seconds)": "Images 响应头超时（秒）",
   "Stream idle timeout (seconds)": "流空闲超时（秒）",
   "Request failover": "请求故障转移",
   "Before response headers arrive, connection failures, connect timeouts, and response-header timeouts can retry on distinct healthy channels. A timed-out upstream may still process the original request.":
@@ -197,6 +198,8 @@ const zhCN: Record<string, string> = {
   "Enter a positive number of seconds.": "请输入正整数秒数。",
   "Enter a positive failure threshold.": "请输入正整数失败阈值。",
   "Response header timeout must exceed connect timeout.": "响应头超时必须大于连接超时。",
+  "Images response header timeout must exceed connect timeout.":
+    "Images 响应头超时必须大于连接超时。",
   "Control plane reloaded": "控制面已重载",
   "Reload failed": "重载失败",
   "Reload control plane": "重载控制面",

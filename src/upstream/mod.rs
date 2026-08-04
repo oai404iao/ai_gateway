@@ -14,8 +14,8 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::domain::{
-    CompiledChannelUpstreamPolicy, CompiledRuntimeConfig, NoProxyHost, ResponsesWebSocketSettings,
-    UpstreamTimeoutDefaults,
+    ApiFormat, CompiledChannelUpstreamPolicy, CompiledRuntimeConfig, NoProxyHost,
+    ResponsesWebSocketSettings, UpstreamTimeoutDefaults,
 };
 
 pub(crate) use websocket::{
@@ -46,12 +46,32 @@ impl ResolvedUpstreamTimeouts {
         upstream: &UpstreamTimeoutDefaults,
         channel: &CompiledChannelUpstreamPolicy,
     ) -> Self {
+        Self::resolve_with_response_header(upstream.response_header(), upstream, channel)
+    }
+
+    /// Uses the Images-specific response-header default for Images channels.
+    #[must_use]
+    pub fn resolve_for(
+        api_format: ApiFormat,
+        upstream: &UpstreamTimeoutDefaults,
+        channel: &CompiledChannelUpstreamPolicy,
+    ) -> Self {
+        Self::resolve_with_response_header(
+            upstream.response_header_for(api_format),
+            upstream,
+            channel,
+        )
+    }
+
+    fn resolve_with_response_header(
+        response_header: Duration,
+        upstream: &UpstreamTimeoutDefaults,
+        channel: &CompiledChannelUpstreamPolicy,
+    ) -> Self {
         let overrides = channel.timeouts();
         Self {
             connect: overrides.connect().unwrap_or_else(|| upstream.connect()),
-            response_header: overrides
-                .response_header()
-                .unwrap_or_else(|| upstream.response_header()),
+            response_header: overrides.response_header().unwrap_or(response_header),
             stream_idle: overrides
                 .stream_idle()
                 .unwrap_or_else(|| upstream.stream_idle()),
@@ -95,6 +115,18 @@ impl ResolvedUpstreamPolicy {
         }
     }
 
+    #[must_use]
+    pub fn resolve_for(
+        api_format: ApiFormat,
+        upstream: &UpstreamTimeoutDefaults,
+        channel: &CompiledChannelUpstreamPolicy,
+    ) -> Self {
+        Self {
+            timeouts: ResolvedUpstreamTimeouts::resolve_for(api_format, upstream, channel),
+            tls: UpstreamTlsPolicy::RustlsWebPkiRoots,
+        }
+    }
+
     /// Resolves and validates the effective policy before it is used for any
     /// outbound request work.
     pub fn try_resolve(
@@ -102,6 +134,14 @@ impl ResolvedUpstreamPolicy {
         channel: &CompiledChannelUpstreamPolicy,
     ) -> Result<Self, ResolvedUpstreamPolicyError> {
         Self::resolve(upstream, channel).validate()
+    }
+
+    pub fn try_resolve_for(
+        api_format: ApiFormat,
+        upstream: &UpstreamTimeoutDefaults,
+        channel: &CompiledChannelUpstreamPolicy,
+    ) -> Result<Self, ResolvedUpstreamPolicyError> {
+        Self::resolve_for(api_format, upstream, channel).validate()
     }
 
     /// Requires enough time for a connection attempt to complete before the
@@ -140,8 +180,12 @@ pub fn validate_snapshot_upstream_policies(
 ) -> Result<(), ResolvedUpstreamPolicyError> {
     let upstream_defaults = snapshot.system_settings().upstream_timeouts();
     snapshot.probe_channels().try_for_each(|channel| {
-        ResolvedUpstreamPolicy::try_resolve(&upstream_defaults, channel.upstream_policy())
-            .map(|_| ())
+        ResolvedUpstreamPolicy::try_resolve_for(
+            channel.api_format(),
+            &upstream_defaults,
+            channel.upstream_policy(),
+        )
+        .map(|_| ())
     })
 }
 
@@ -369,7 +413,11 @@ impl UpstreamClientRegistry {
             .map(|channel| {
                 UpstreamClientKey::resolve(
                     channel.upstream_policy(),
-                    ResolvedUpstreamPolicy::resolve(&upstream_defaults, channel.upstream_policy()),
+                    ResolvedUpstreamPolicy::resolve_for(
+                        channel.api_format(),
+                        &upstream_defaults,
+                        channel.upstream_policy(),
+                    ),
                 )
             })
             .collect::<HashSet<_>>();
@@ -653,6 +701,22 @@ mod tests {
         connect_timeout_ms: Option<i32>,
         response_header_timeout_ms: Option<i32>,
     ) -> CompiledRuntimeConfig {
+        snapshot_with_format_proxy_timeouts_and_defaults(
+            "open_ai_chat_completions",
+            proxy_url,
+            connect_timeout_ms,
+            response_header_timeout_ms,
+            upstream(),
+        )
+    }
+
+    fn snapshot_with_format_proxy_timeouts_and_defaults(
+        api_format: &str,
+        proxy_url: &str,
+        connect_timeout_ms: Option<i32>,
+        response_header_timeout_ms: Option<i32>,
+        defaults: UpstreamTimeoutDefaults,
+    ) -> CompiledRuntimeConfig {
         let group_id = Uuid::from_u128(1);
         let channel_id = Uuid::from_u128(2);
         let proxy_id = Uuid::from_u128(3);
@@ -662,7 +726,7 @@ mod tests {
                 groups: vec![ChannelGroupRecord {
                     id: group_id,
                     name: "group".into(),
-                    api_format: "open_ai_chat_completions".into(),
+                    api_format: api_format.into(),
                     connector_kind: "openai_compatible".into(),
                     priority: 0,
                     selection_strategy: "weighted_random".into(),
@@ -671,7 +735,7 @@ mod tests {
                 channels: vec![ChannelRecord {
                     id: channel_id,
                     channel_group_id: group_id,
-                    api_format: "open_ai_chat_completions".into(),
+                    api_format: api_format.into(),
                     name: "channel".into(),
                     base_url: "https://upstream.test".into(),
                     enabled: true,
@@ -705,7 +769,7 @@ mod tests {
                 }],
                 templates: vec![],
             },
-            SystemRuntimeSettings::new(upstream(), PassiveHealthSettings::default()),
+            SystemRuntimeSettings::new(defaults, PassiveHealthSettings::default()),
         )
         .unwrap()
     }
@@ -742,6 +806,51 @@ mod tests {
                 ResolvedUpstreamPolicy::resolve(&upstream(), &different_lifecycle_timeouts),
             )
         );
+    }
+
+    #[test]
+    fn images_use_their_own_response_header_default_until_a_channel_overrides_it() {
+        let defaults = upstream().with_images_response_header(Duration::from_secs(30));
+        let inherited = policy(None, ChannelTimeoutPolicy::default());
+
+        assert_eq!(
+            ResolvedUpstreamPolicy::resolve(&defaults, &inherited)
+                .timeouts()
+                .response_header(),
+            Duration::from_secs(5)
+        );
+        assert_eq!(
+            ResolvedUpstreamPolicy::resolve_for(ApiFormat::OpenAiImages, &defaults, &inherited,)
+                .timeouts()
+                .response_header(),
+            Duration::from_secs(30)
+        );
+
+        let overridden = policy(
+            None,
+            ChannelTimeoutPolicy::new(None, Some(Duration::from_secs(9)), None),
+        );
+        assert_eq!(
+            ResolvedUpstreamPolicy::resolve_for(ApiFormat::OpenAiImages, &defaults, &overridden,)
+                .timeouts()
+                .response_header(),
+            Duration::from_secs(9)
+        );
+    }
+
+    #[test]
+    fn snapshot_validation_uses_the_images_response_header_default_for_images_channels() {
+        let defaults = upstream().with_images_response_header(Duration::from_secs(10));
+        let snapshot = snapshot_with_format_proxy_timeouts_and_defaults(
+            "open_ai_images",
+            "http://images-proxy.test:8080",
+            Some(6_000),
+            None,
+            defaults,
+        );
+
+        validate_snapshot_upstream_policies(&snapshot).unwrap();
+        UpstreamClientRegistry::new().reconcile(&snapshot).unwrap();
     }
 
     #[test]

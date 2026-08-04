@@ -103,6 +103,23 @@ verification_key_path = "./config/console-jwt-public.pem"
   `0700` 与 `0600`；图片字节不会进入请求日志。
 - `console_body_bytes` 限制已认证 Console 写操作；`auth_body_bytes` 限制登录、注册、刷新和邀请激活请求。
 
+## 上游超时
+
+```toml
+[upstream]
+connect_timeout_seconds = 10
+response_header_timeout_seconds = 30
+images_response_header_timeout_seconds = 300
+stream_idle_timeout_seconds = 90
+```
+
+这些 TOML 值只在数据库 `forwarding_policy` 系统设置不存在时用于首次初始化；之后应在 Console
+的“系统设置”页面修改。Images generation/edit 使用独立的
+`images_response_header_timeout_seconds`，因为上游通常要完成图片处理后才返回响应头。Chat
+Completions、Responses 和其他辅助上游请求继续使用 `response_header_timeout_seconds`。
+渠道显式 `response_header_timeout_ms` 始终优先于对应的系统默认值；Images 仍与其他格式共享建连
+超时和流空闲超时。两个响应头超时都必须大于有效建连超时。
+
 ## 公共数据面
 
 - `GET /health`：返回 `204`，无需认证。
@@ -125,7 +142,8 @@ Images generation/edit 是例外：请求一旦开始尝试上游，就不会自
 发生在响应头之前，以避免重复生成和重复计费。`stream: true` 返回
 `400 image_streaming_unsupported`，且不会联系上游。generation JSON 与其他数据面请求共享
 `request_limits.proxy_body_bytes`；edit 使用独立的总 body、单文件、内存阈值和 spool 目录，
-不会提高全局 JSON 内存上限。
+不会提高全局 JSON 内存上限。未配置渠道级响应头超时时，generation/edit 使用系统设置中的
+Images 专用响应头超时，而不是 Chat Completions/Responses 的普通响应头超时。
 
 multipart edit 最多接受 64 个 part、16 张输入图片和一个 mask；普通文本字段最多
 单项 `64 KiB`、合计 `1 MiB`；boundary 最多 70 bytes，preamble、单个 part Header block 和

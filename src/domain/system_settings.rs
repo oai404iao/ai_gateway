@@ -11,11 +11,15 @@ use super::ApiFormat;
 /// Hard ceiling for one client request's automatic failover retries.
 pub const MAX_REQUEST_RETRIES: u32 = 10;
 
+/// Default Images response-header timeout for newly bootstrapped settings.
+pub const DEFAULT_IMAGES_RESPONSE_HEADER_TIMEOUT_SECONDS: u64 = 300;
+
 /// Global timeout defaults used when a channel has no explicit override.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct UpstreamTimeoutDefaults {
     connect: Duration,
     response_header: Duration,
+    images_response_header: Duration,
     stream_idle: Duration,
 }
 
@@ -25,8 +29,15 @@ impl UpstreamTimeoutDefaults {
         Self {
             connect,
             response_header,
+            images_response_header: response_header,
             stream_idle,
         }
+    }
+
+    #[must_use]
+    pub const fn with_images_response_header(mut self, images_response_header: Duration) -> Self {
+        self.images_response_header = images_response_header;
+        self
     }
 
     #[must_use]
@@ -37,6 +48,19 @@ impl UpstreamTimeoutDefaults {
     #[must_use]
     pub const fn response_header(self) -> Duration {
         self.response_header
+    }
+
+    #[must_use]
+    pub const fn images_response_header(self) -> Duration {
+        self.images_response_header
+    }
+
+    #[must_use]
+    pub const fn response_header_for(self, api_format: ApiFormat) -> Duration {
+        match api_format {
+            ApiFormat::OpenAiImages => self.images_response_header,
+            ApiFormat::OpenAiChatCompletions | ApiFormat::OpenAiResponses => self.response_header,
+        }
     }
 
     #[must_use]
@@ -52,6 +76,9 @@ impl Default for UpstreamTimeoutDefaults {
             Duration::from_secs(30),
             Duration::from_secs(90),
         )
+        .with_images_response_header(Duration::from_secs(
+            DEFAULT_IMAGES_RESPONSE_HEADER_TIMEOUT_SECONDS,
+        ))
     }
 }
 
