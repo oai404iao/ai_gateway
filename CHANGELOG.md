@@ -7,6 +7,8 @@ Versioning.
 
 ## [Unreleased]
 
+## [0.9.6] - 2026-08-04
+
 ### Fixed
 
 - Keep common reverse-proxy and CDN forwarding metadata in the machine-readable
