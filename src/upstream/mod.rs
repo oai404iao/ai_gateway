@@ -1,5 +1,6 @@
 //! Reusable reqwest clients keyed by compiled outbound network policy.
 
+mod content_coding;
 mod websocket;
 
 use std::{
@@ -18,6 +19,9 @@ use crate::domain::{
     ResponsesWebSocketSettings, UpstreamTimeoutDefaults,
 };
 
+pub(crate) use content_coding::{
+    DecodedBodyError, ResponseContentCodings, UPSTREAM_ACCEPT_ENCODING, decode_response_body,
+};
 pub(crate) use websocket::{
     MAX_UPSTREAM_MESSAGE_BYTES, UpstreamWebSocket, UpstreamWebSocketError, UpstreamWebSocketKey,
     WebSocketClientIdentity, WebSocketPoolSnapshot, connect_upstream_websocket,

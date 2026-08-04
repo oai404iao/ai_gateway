@@ -4,11 +4,13 @@ pub mod console;
 /// Embedded Console web UI; only compiled with `embedded-console-ui`.
 #[cfg(feature = "embedded-console-ui")]
 pub mod console_ui;
+mod content_coding;
 
 use axum::{
     Json, Router,
     extract::{OriginalUri, Request, State, ws::WebSocketUpgrade},
     http::{HeaderMap, StatusCode},
+    middleware,
     response::Response,
     routing::{get, post},
 };
@@ -29,6 +31,10 @@ pub fn router(proxy: ProxyService) -> Router {
         .route("/v1/images/generations", post(images_generations))
         .route("/v1/images/edits", post(images_edits))
         .with_state(proxy)
+        .layer(content_coding::compression_layer())
+        .layer(middleware::from_fn(
+            content_coding::sanitize_compressed_response,
+        ))
 }
 
 async fn health() -> StatusCode {

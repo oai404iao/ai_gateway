@@ -177,9 +177,6 @@ impl PreparedCodexAttempt {
                     headers.remove(CONTENT_TYPE);
                 } else {
                     headers.insert(ACCEPT, HeaderValue::from_static("text/event-stream"));
-                    // The Gateway must inspect Codex's terminal SSE event for usage and
-                    // completion before clients stop polling the response body.
-                    headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("identity"));
                     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
                 }
                 headers.insert(
@@ -452,7 +449,7 @@ mod tests {
     }
 
     #[test]
-    fn request_headers_report_the_pinned_codex_client_identity() {
+    fn request_headers_leave_content_coding_to_the_proxy() {
         let attempt = PreparedCodexAttempt::prepare(
             &runtime(),
             Uuid::from_u128(1),
@@ -463,18 +460,12 @@ mod tests {
         )
         .unwrap();
         let mut headers = HeaderMap::new();
-        headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("gzip, br"));
 
         attempt
             .inject_headers(&mut headers, RequestProtocol::Sse)
             .unwrap();
 
-        assert_eq!(
-            headers
-                .get(ACCEPT_ENCODING)
-                .and_then(|value| value.to_str().ok()),
-            Some("identity")
-        );
+        assert!(!headers.contains_key(ACCEPT_ENCODING));
         assert_eq!(
             headers.get("version").and_then(|value| value.to_str().ok()),
             Some(CODEX_CLIENT_VERSION)

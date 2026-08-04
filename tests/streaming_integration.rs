@@ -16,6 +16,7 @@ use ai_gateway::{
     },
     runtime_config::{RuntimeConfig, UpstreamConfig, compile_control_plane_with_system_settings},
 };
+use async_compression::tokio::write::GzipEncoder;
 use axum::{
     Router,
     body::{Body, Bytes},
@@ -26,7 +27,7 @@ use axum::{
 };
 use futures_util::{StreamExt, stream};
 use serde_json::Value;
-use tokio::{net::TcpListener, sync::oneshot, task::JoinHandle, time::timeout};
+use tokio::{io::AsyncWriteExt, net::TcpListener, sync::oneshot, task::JoinHandle, time::timeout};
 use uuid::Uuid;
 
 const CLIENT_KEY: &str = "client-key";
@@ -873,7 +874,7 @@ async fn capture_accept_encoding(
 }
 
 #[tokio::test]
-async fn active_sse_plan_forces_identity_encoding_upstream() {
+async fn active_sse_plan_uses_gateway_controlled_upstream_encoding() {
     let captured = Arc::new(Mutex::new(None));
     let upstream = start_server(
         Router::new()
@@ -899,18 +900,27 @@ async fn active_sse_plan_forces_identity_encoding_upstream() {
         response.bytes().await.unwrap(),
         b"data: {\"object\":\"chat.completion.chunk\",\"patched\":true}\n\n".as_slice()
     );
-    assert_eq!(captured.lock().unwrap().as_deref(), Some("identity"));
+    assert_eq!(
+        captured.lock().unwrap().as_deref(),
+        Some("gzip, deflate, br, zstd")
+    );
 }
 
 async fn compressed_sse() -> Response {
+    let mut encoder = GzipEncoder::new(Vec::new());
+    encoder
+        .write_all(b"data: {\"object\":\"chat.completion.chunk\"}\n\n")
+        .await
+        .unwrap();
+    encoder.shutdown().await.unwrap();
     sse_response_with_headers(
-        Body::from(Bytes::from_static(b"not-actually-gzip")),
+        Body::from(encoder.into_inner()),
         &[("content-encoding", "gzip")],
     )
 }
 
 #[tokio::test]
-async fn compressed_sse_with_an_active_plan_fails_before_downstream_headers() {
+async fn compressed_sse_with_an_active_plan_is_decoded_and_transformed() {
     let upstream =
         start_server(Router::new().route("/v1/chat/completions", post(compressed_sse))).await;
     let logs = RecordingRequestLogSink::default();
@@ -928,15 +938,14 @@ async fn compressed_sse_with_an_active_plan_fails_before_downstream_headers() {
 
     let response = request(&client(), gateway.address).send().await.unwrap();
 
-    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
-    let body: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
-    assert_eq!(body["error"]["code"], "response_transform_failed");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.bytes().await.unwrap(),
+        b"data: {\"object\":\"chat.completion.chunk\",\"patched\":true}\n\n".as_slice()
+    );
     let events = logs.events();
     assert_eq!(events.len(), 1);
-    assert_eq!(
-        events[0].response_status_code,
-        Some(StatusCode::BAD_GATEWAY.as_u16())
-    );
+    assert_eq!(events[0].outcome.as_str(), "succeeded");
 }
 
 async fn response_with_dynamic_hop_header() -> Response {

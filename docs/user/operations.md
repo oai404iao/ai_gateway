@@ -136,7 +136,15 @@ Completions、Responses 和其他辅助上游请求继续使用 `response_header
 三个 OpenAI 格式绝不互相回退。客户端 `Authorization` 不会转发给上游；网关清理
 hop-by-hop headers 后，按渠道配置最后注入上游认证。
 
-数据面在认证后、读取请求体前执行 RPM、并发与已结算软额度预检查。请求体只有在模型别名或 JSON 变换启用时才重新序列化；响应默认逐块流式转发，SSE 变换按事件边界执行且不缓冲整条流。连接失败、连接超时或等待响应头超时时，可以按系统设置在尚未尝试过的其他健康渠道上故障转移；一旦收到上游响应头或向客户端发送任何响应字节，绝不重试或切换渠道。
+数据面在认证后、读取请求体前执行 RPM、并发与已结算软额度预检查。请求体只有在模型别名或 JSON
+变换启用时才重新序列化。客户端 `Accept-Encoding` 不直接转发；网关独立向上游声明
+`gzip, deflate, br, zstd`，流式解码后执行 usage、错误诊断和 SSE 变换，再按客户端的
+`Accept-Encoding` 对可压缩非 SSE 响应流式重编码。已知小于 `1 KiB` 的响应保持 identity；
+长度未知的流不会为阈值判断而延迟或缓冲。SSE 下游保持 identity，Range 请求上游也使用
+identity；整个过程不缓冲完整响应。未知上游 coding 返回
+`502 upstream_content_encoding_unsupported`；读取中才能发现的损坏压缩流会终止响应 body 并
+记录 `upstream_body_error`。连接失败、连接超时或等待响应头超时时，可以按系统设置在尚未尝试过
+的其他健康渠道上故障转移；一旦收到上游响应头或向客户端发送任何响应字节，绝不重试或切换渠道。
 
 Images generation/edit 是例外：请求一旦开始尝试上游，就不会自动切换渠道或重试，即使失败
 发生在响应头之前，以避免重复生成和重复计费。`stream: true` 返回
