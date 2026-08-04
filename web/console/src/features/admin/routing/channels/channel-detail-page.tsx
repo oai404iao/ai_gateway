@@ -92,7 +92,6 @@ const schema = z.object({
   ),
   enabled: z.boolean(),
   supports_websocket: z.boolean(),
-  status_statistics_enabled: z.boolean(),
   auto_disable_allowed: z.boolean(),
   weight: z.number().int().min(1, "Weight must be at least 1."),
   billing_multiplier: z
@@ -160,7 +159,6 @@ const empty: FormState = {
   base_url: "",
   enabled: true,
   supports_websocket: false,
-  status_statistics_enabled: false,
   auto_disable_allowed: false,
   weight: 100,
   billing_multiplier: "1",
@@ -216,7 +214,6 @@ export function ChannelDetailPage() {
         base_url: data.data.base_url,
         enabled: data.data.enabled,
         supports_websocket: data.data.supports_websocket,
-        status_statistics_enabled: data.data.status_statistics_enabled,
         auto_disable_allowed: data.data.auto_disable_allowed,
         weight: data.data.weight,
         billing_multiplier: data.data.billing_multiplier,
@@ -431,7 +428,6 @@ export function ChannelDetailPage() {
           base_url: parsed.data.base_url,
           enabled: parsed.data.enabled,
           supports_websocket: parsed.data.supports_websocket,
-          status_statistics_enabled: parsed.data.status_statistics_enabled,
           auto_disable_allowed: parsed.data.auto_disable_allowed,
           weight: parsed.data.weight,
           billing_multiplier: parsed.data.billing_multiplier,
@@ -465,7 +461,6 @@ export function ChannelDetailPage() {
           base_url: parsed.data.base_url,
           enabled: parsed.data.enabled,
           supports_websocket: parsed.data.supports_websocket,
-          status_statistics_enabled: parsed.data.status_statistics_enabled,
           auto_disable_allowed: parsed.data.auto_disable_allowed,
           weight: parsed.data.weight,
           billing_multiplier: parsed.data.billing_multiplier,
@@ -552,10 +547,6 @@ export function ChannelDetailPage() {
                   label={t("Scheduled test model")}
                   value={data.data.test_model ?? "—"}
                   mono={Boolean(data.data.test_model)}
-                />
-                <DetailField
-                  label={t("Status statistics")}
-                  value={<StatusBadge value={data.data.status_statistics_enabled} />}
                 />
                 <DetailField
                   label={t("Credential configured")}
@@ -957,28 +948,11 @@ export function ChannelDetailPage() {
               <CardHeader>
                 <CardTitle>{t("Availability and automation")}</CardTitle>
                 <CardDescription>
-                  {t("Routing state, status reporting, and automatic disable behavior.")}
+                  {t("Routing state and automatic disable behavior.")}
                 </CardDescription>
               </CardHeader>
               <CardContent>
                 <FieldGroup className="grid gap-5 xl:grid-cols-2">
-                  <Field orientation="horizontal">
-                    <FieldContent>
-                      <FieldLabel htmlFor="status_statistics_enabled">
-                        {t("Status statistics")}
-                      </FieldLabel>
-                      <FieldDescription>
-                        {t("Include this channel in the channel status report.")}
-                      </FieldDescription>
-                    </FieldContent>
-                    <Switch
-                      id="status_statistics_enabled"
-                      checked={state.status_statistics_enabled}
-                      onCheckedChange={(checked) =>
-                        patch({ status_statistics_enabled: Boolean(checked) })
-                      }
-                    />
-                  </Field>
                   <Field
                     orientation="horizontal"
                     data-invalid={Boolean(fieldError("supports_websocket"))}

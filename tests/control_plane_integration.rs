@@ -2099,6 +2099,7 @@ async fn codex_credentials_create_managed_channels_and_recompute_quota_state() {
                     priority: 0,
                     selection_strategy: "weighted_random".into(),
                     enabled: true,
+                    status_statistics_enabled: None,
                 },
                 expected_updated_at: group_updated_at,
             },
@@ -2675,17 +2676,21 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
     .fetch_one(&database.pool)
     .await
     .unwrap();
-    let images_channel_shape: (Vec<String>, bool, bool) = sqlx::query_as(
-        "SELECT available_models,supports_websocket,status_statistics_enabled \
-         FROM channels WHERE id=$1",
-    )
-    .bind(images_channel)
-    .fetch_one(&database.pool)
-    .await
-    .unwrap();
+    let images_channel_shape: (Vec<String>, bool) =
+        sqlx::query_as("SELECT available_models,supports_websocket FROM channels WHERE id=$1")
+            .bind(images_channel)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
     assert_eq!(images_channel_shape.0, vec!["gpt-image-2"]);
     assert!(!images_channel_shape.1);
-    assert!(!images_channel_shape.2);
+    let images_group_monitoring: bool =
+        sqlx::query_scalar("SELECT status_statistics_enabled FROM channel_groups WHERE id=$1")
+            .bind(images_group)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert!(!images_group_monitoring);
     let client_model = format!("codex-client-{}", Uuid::new_v4());
     sqlx::query(
         "INSERT INTO model_rules \
@@ -6090,6 +6095,86 @@ async fn repository_migrates_compiles_seeded_snapshot_and_authenticates() {
         "upstream-v1"
     );
     assert!(!format!("{snapshot:?}").contains("upstream-secret"));
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn channel_group_status_monitoring_migration_preserves_tracked_groups() {
+    let database = TestDatabase::new_unmigrated().await;
+    for migration in MIGRATOR.iter().filter(|migration| migration.version <= 40) {
+        sqlx::raw_sql(migration.sql.as_ref())
+            .execute(&database.pool)
+            .await
+            .unwrap_or_else(|error| panic!("migration {} failed: {error}", migration.version));
+    }
+
+    let monitored_group = Uuid::new_v4();
+    let unmonitored_group = Uuid::new_v4();
+    for (group_id, name) in [
+        (monitored_group, "legacy-monitored"),
+        (unmonitored_group, "legacy-unmonitored"),
+    ] {
+        sqlx::query(
+            "INSERT INTO channel_groups \
+             (id,name,api_format,priority,selection_strategy,enabled) \
+             VALUES ($1,$2,'open_ai_chat_completions',1,'weighted_random',true)",
+        )
+        .bind(group_id)
+        .bind(name)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    }
+    for (group_id, monitored) in [(monitored_group, true), (unmonitored_group, false)] {
+        sqlx::query(
+            "INSERT INTO channels \
+             (id,channel_group_id,api_format,name,base_url,enabled,weight, \
+              upstream_auth_kind,status_statistics_enabled) \
+             VALUES ($1,$2,'open_ai_chat_completions',$3,$4,true,1,'none',$5)",
+        )
+        .bind(Uuid::new_v4())
+        .bind(group_id)
+        .bind(format!("legacy-channel-{group_id}"))
+        .bind(format!("https://{group_id}.example.test"))
+        .bind(monitored)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    }
+
+    sqlx::raw_sql(include_str!(
+        "../migrations/0041_channel_group_status_monitoring.sql"
+    ))
+    .execute(&database.pool)
+    .await
+    .expect("channel-group monitoring migration must apply");
+
+    let monitoring = sqlx::query_as::<_, (Uuid, bool)>(
+        "SELECT id,status_statistics_enabled \
+         FROM channel_groups WHERE id=ANY($1) ORDER BY id",
+    )
+    .bind(vec![monitored_group, unmonitored_group])
+    .fetch_all(&database.pool)
+    .await
+    .unwrap()
+    .into_iter()
+    .collect::<std::collections::HashMap<_, _>>();
+    assert_eq!(monitoring.get(&monitored_group), Some(&true));
+    assert_eq!(monitoring.get(&unmonitored_group), Some(&false));
+
+    let channel_column_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS (\
+         SELECT 1 FROM information_schema.columns \
+         WHERE table_schema='public' \
+           AND table_name='channels' \
+           AND column_name='status_statistics_enabled'\
+         )",
+    )
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert!(!channel_column_exists);
+
     database.cleanup().await;
 }
 

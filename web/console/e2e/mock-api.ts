@@ -166,6 +166,7 @@ const E2E_CODEX_GROUP = {
   priority: 0,
   selection_strategy: "weighted_random",
   enabled: true,
+  status_statistics_enabled: true,
   updated_at: "2026-07-29T12:00:00.000Z",
 };
 
@@ -175,6 +176,7 @@ const E2E_CODEX_IMAGES_GROUP = {
   name: "Codex subscriptions Images",
   api_format: "open_ai_images",
   enabled: false,
+  status_statistics_enabled: false,
 };
 
 const E2E_STANDARD_CHANNEL_GROUPS = Array.from({ length: 5 }, (_, index) => ({
@@ -186,6 +188,7 @@ const E2E_STANDARD_CHANNEL_GROUPS = Array.from({ length: 5 }, (_, index) => ({
   priority: index,
   selection_strategy: "weighted_random",
   enabled: true,
+  status_statistics_enabled: true,
   updated_at: "2026-07-29T12:00:00.000Z",
 }));
 export const E2E_STANDARD_GROUP_ID = E2E_STANDARD_CHANNEL_GROUPS[0].id;
@@ -221,7 +224,6 @@ function routingChannel({
     base_url: "https://upstream.e2e.example.test",
     enabled: true,
     supports_websocket: apiFormat === "open_ai_responses",
-    status_statistics_enabled: !providerManaged,
     auto_disabled: false,
     auto_disabled_reason: null,
     auto_disable_allowed: !providerManaged,
@@ -826,7 +828,10 @@ export async function mockConsoleApi(page: Page): Promise<void> {
         json: { api_hosts: ["https://api.e2e.example.test/v1"] },
       });
     }
-    if (path === "/console/v1/statistics/channel-status" && method === "GET") {
+    if (
+      path === "/console/v1/statistics/channel-group-status" &&
+      method === "GET"
+    ) {
       return route.fulfill({
         status: 200,
         json: {
@@ -835,7 +840,7 @@ export async function mockConsoleApi(page: Page): Promise<void> {
           ended_at: "2026-07-24T00:00:00.000Z",
           bucket_seconds: 3600,
           models: [],
-          channels: [],
+          groups: [],
         },
       });
     }

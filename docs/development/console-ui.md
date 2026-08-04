@@ -278,7 +278,7 @@ API 集成测试应同时验证实现与该规范的关键请求/响应示例，
 | 我的 API Key | `/api-keys` | `/console/v1/me/api-keys*` | user |
 | 我的请求日志 | `/usage/request-logs` | `/console/v1/me/request-logs*` | user |
 | Codex 额度 | `/codex-quotas` | `/console/v1/me/codex-quotas*` | user |
-| 个人统计与排行 | `/statistics`、`/channel-status`、`/leaderboard` | `/console/v1/me/usage`、`/statistics/costs`、`/statistics/channel-status`、`/statistics/spend-leaderboard` | user |
+| 个人统计与排行 | `/statistics`、`/channel-group-status`、`/leaderboard` | `/console/v1/me/usage`、`/statistics/costs`、`/statistics/channel-group-status`、`/statistics/spend-leaderboard` | user |
 | 用户、用户组、注册邀请码与策略 | `/admin/users`、`/admin/user-groups`、`/admin/registration-invitation-codes`、`/admin/api-key-policies` | `/console/v1/users*`、`/user-groups*`、`/registration-invitation-codes*`、`/api-key-policies*` | admin |
 | 模型和目录 | `/admin/models`、`/admin/catalog` | `/console/v1/models*`、`/catalog/models/*` | admin |
 | 路由 | `/admin/routing/*` | `/console/v1/routing/*` | admin |

@@ -1060,8 +1060,8 @@ impl ControlPlaneRepository {
             "INSERT INTO channels \
              (id,channel_group_id,api_format,name,base_url,enabled,weight,billing_multiplier, \
               proxy_id,override_document,upstream_auth_kind,available_models, \
-              status_statistics_enabled,auto_disable_allowed,supports_websocket) \
-             VALUES ($1,$2,$3::api_format,$4,$5,true,$6,1,$7,'{}','none',$8,false,false,true) \
+              auto_disable_allowed,supports_websocket) \
+             VALUES ($1,$2,$3::api_format,$4,$5,true,$6,1,$7,'{}','none',$8,false,true) \
              RETURNING updated_at",
         )
         .bind(channel_id)

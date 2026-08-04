@@ -52,9 +52,10 @@ Header 或错误分类。
   路由快照；
 - credential 的逻辑 `enabled` 和动态状态由 Connector 快照持有；底层 managed channel
   始终保留为可选择的路由壳，Connector prepare 再排除新 Session 或让 affinity hit fail closed；
-- 两种 channel 都固定 `upstream_auth_kind = none`、
-  `status_statistics_enabled = false`、`auto_disable_allowed = false`；Responses 声明
-  `supports_websocket = true`，Images 必须为 false；
+- 两种 channel 都固定 `upstream_auth_kind = none`、`auto_disable_allowed = false`；
+  Responses 声明 `supports_websocket = true`，Images 必须为 false；状态监控不再是 channel
+  属性，而由 Responses 与 Images 各自的 `channel_groups.status_statistics_enabled` 独立控制，
+  新建时默认关闭；
 - 普通 channel create/update/batch API 在 repository 层拒绝 provider-managed channel；
 - provider mutation 在同一控制面事务中更新凭证与 channel、写 audit、编译候选快照并发布。
 

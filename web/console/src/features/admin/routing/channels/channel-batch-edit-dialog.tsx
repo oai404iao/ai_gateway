@@ -40,7 +40,6 @@ const decimalPattern = /^(?:0|[1-9]\d*)(?:\.\d+)?$/;
 const schema = z
   .object({
     enabled: z.enum(["unchanged", "true", "false"]),
-    status_statistics_enabled: z.enum(["unchanged", "true", "false"]),
     auto_disable_allowed: z.enum(["unchanged", "true", "false"]),
     weight: z.string().trim(),
     billing_multiplier: z.string().trim(),
@@ -69,7 +68,6 @@ const schema = z
     }
     if (
       value.enabled === "unchanged" &&
-      value.status_statistics_enabled === "unchanged" &&
       value.auto_disable_allowed === "unchanged" &&
       value.weight === "" &&
       value.billing_multiplier === ""
@@ -86,7 +84,6 @@ type FormState = z.infer<typeof schema>;
 
 const empty: FormState = {
   enabled: "unchanged",
-  status_statistics_enabled: "unchanged",
   auto_disable_allowed: "unchanged",
   weight: "",
   billing_multiplier: "",
@@ -140,14 +137,8 @@ export function ChannelBatchEditDialog({
     }
     const changes: ChannelBatchChanges = {};
     const enabled = booleanChange(parsed.data.enabled);
-    const statusStatisticsEnabled = booleanChange(
-      parsed.data.status_statistics_enabled,
-    );
     const autoDisableAllowed = booleanChange(parsed.data.auto_disable_allowed);
     if (enabled !== undefined) changes.enabled = enabled;
-    if (statusStatisticsEnabled !== undefined) {
-      changes.status_statistics_enabled = statusStatisticsEnabled;
-    }
     if (autoDisableAllowed !== undefined) {
       changes.auto_disable_allowed = autoDisableAllowed;
     }
@@ -207,26 +198,6 @@ export function ChannelBatchEditDialog({
             <Select
               value={state.enabled}
               onValueChange={(value) => patch({ enabled: value as BooleanChange })}
-            >
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectGroup>
-                  <SelectItem value="unchanged">{t("Keep unchanged")}</SelectItem>
-                  <SelectItem value="true">{t("Enabled")}</SelectItem>
-                  <SelectItem value="false">{t("Disabled")}</SelectItem>
-                </SelectGroup>
-              </SelectContent>
-            </Select>
-          </Field>
-          <Field>
-            <FieldLabel>{t("Status statistics")}</FieldLabel>
-            <Select
-              value={state.status_statistics_enabled}
-              onValueChange={(value) =>
-                patch({ status_statistics_enabled: value as BooleanChange })
-              }
             >
               <SelectTrigger>
                 <SelectValue />

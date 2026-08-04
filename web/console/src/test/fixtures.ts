@@ -7,7 +7,7 @@ import type {
   ApiKeyPolicyView,
   ApiKeyView,
   ChannelDetailView,
-  ChannelStatusReport,
+  ChannelGroupStatusReport,
   ChannelGroupView,
   ChannelView,
   ConfigTemplateDetailView,
@@ -228,6 +228,7 @@ export const CHANNEL_GROUP: ChannelGroupView = {
   priority: 1,
   selection_strategy: "weighted_random",
   enabled: true,
+  status_statistics_enabled: true,
   updated_at: "2026-01-02T00:00:00.000Z",
 };
 
@@ -240,6 +241,7 @@ export const CODEX_QUOTA_GROUP: ChannelGroupView = {
   priority: 1,
   selection_strategy: "weighted_random",
   enabled: true,
+  status_statistics_enabled: false,
   updated_at: "2026-08-03T00:00:00.000Z",
 };
 
@@ -288,7 +290,6 @@ export const CHANNEL: ChannelView = {
   base_url: "https://api.upstream.example",
   enabled: true,
   supports_websocket: false,
-  status_statistics_enabled: true,
   auto_disabled: false,
   auto_disabled_reason: null,
   auto_disable_allowed: true,
@@ -540,7 +541,7 @@ export const CONTROL_PLANE_USER: ControlPlaneUser = {
   updated_at: "2026-01-02T00:00:00.000Z",
 };
 
-export const CHANNEL_STATUS_REPORT: ChannelStatusReport = {
+export const CHANNEL_GROUP_STATUS_REPORT: ChannelGroupStatusReport = {
   window: "24h",
   started_at: "2026-07-20T14:00:00.000Z",
   ended_at: "2026-07-21T13:46:00.000Z",
@@ -555,18 +556,15 @@ export const CHANNEL_STATUS_REPORT: ChannelStatusReport = {
       p50_tps: 31.2,
     },
   ],
-  channels: [
+  groups: [
     {
-      id: CHANNEL.id,
-      channel_group_id: CHANNEL.channel_group_id,
-      channel_group_name: CHANNEL_GROUP.name,
-      api_format: CHANNEL.api_format,
-      name: CHANNEL.name,
-      enabled: CHANNEL.enabled,
-      auto_disabled: CHANNEL.auto_disabled,
+      id: CHANNEL_GROUP.id,
+      api_format: CHANNEL_GROUP.api_format,
+      name: CHANNEL_GROUP.name,
+      enabled: CHANNEL_GROUP.enabled,
       models: [
         {
-          api_format: CHANNEL.api_format,
+          api_format: CHANNEL_GROUP.api_format,
           model: MODEL.source_model_id,
           request_count: 120,
           success_rate: 0.975,

@@ -1,5 +1,4 @@
 import { Fragment, useMemo, useState } from "react";
-import { Badge } from "@/components/ui/badge";
 import {
   Card,
   CardAction,
@@ -14,13 +13,13 @@ import { AsyncResource } from "@/components/shared/async-resource";
 import { EmptyState } from "@/components/shared/empty-state";
 import { ResourceTable, type Column } from "@/components/shared/resource-table";
 import { StatusBadge } from "@/components/shared/status-badge";
-import { useChannelStatus } from "@/features/statistics/api";
+import { useChannelGroupStatus } from "@/features/statistics/api";
 import type {
-  ChannelStatusBucket,
-  ChannelStatusChannelModel,
-  ChannelStatusModelMetric,
-  ChannelStatusReport,
-  ChannelStatusWindow,
+  ChannelGroupStatusBucket,
+  ChannelGroupStatusGroupModel,
+  ChannelGroupStatusModelMetric,
+  ChannelGroupStatusReport,
+  ChannelGroupStatusWindow,
 } from "@/api/types";
 import { formatDateTime } from "@/lib/dates";
 import { formatDurationMs } from "@/lib/formatters";
@@ -28,7 +27,11 @@ import { apiFormatLabel } from "@/lib/permissions";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/app/i18n";
 
-const WINDOWS: Array<{ value: ChannelStatusWindow; label: string; shortLabel: string }> = [
+const WINDOWS: Array<{
+  value: ChannelGroupStatusWindow;
+  label: string;
+  shortLabel: string;
+}> = [
   { value: "24h", label: "Last 24 hours", shortLabel: "24h" },
   { value: "3d", label: "Last 3 days", shortLabel: "3d" },
   { value: "7d", label: "Last 7 days", shortLabel: "7d" },
@@ -44,14 +47,17 @@ function formatTps(value: number | null): string {
   return `${value.toLocaleString(undefined, { maximumFractionDigits: 1 })} tok/s`;
 }
 
-function statusClass(bucket: ChannelStatusBucket | undefined): string {
+function statusClass(bucket: ChannelGroupStatusBucket | undefined): string {
   if (!bucket || bucket.request_count === 0 || bucket.success_rate === null) return "bg-muted";
   if (bucket.success_rate >= 0.98) return "bg-success";
   if (bucket.success_rate >= 0.9) return "bg-warning";
   return "bg-destructive";
 }
 
-function statusLabel(bucket: ChannelStatusBucket | undefined, startedAt: Date): string {
+function statusLabel(
+  bucket: ChannelGroupStatusBucket | undefined,
+  startedAt: Date,
+): string {
   if (!bucket) return `${formatDateTime(startedAt.toISOString())}: no requests`;
   return `${formatDateTime(bucket.started_at)}: ${formatRate(bucket.success_rate)}, ${bucket.request_count} requests`;
 }
@@ -60,8 +66,8 @@ function StatusHistory({
   report,
   model,
 }: {
-  report: ChannelStatusReport;
-  model: ChannelStatusChannelModel;
+  report: ChannelGroupStatusReport;
+  model: ChannelGroupStatusGroupModel;
 }) {
   const buckets = useMemo(() => {
     const bucketMs = report.bucket_seconds * 1000;
@@ -107,7 +113,7 @@ function StatusHistory({
   );
 }
 
-function MetricSummary({ metric }: { metric: ChannelStatusChannelModel }) {
+function MetricSummary({ metric }: { metric: ChannelGroupStatusGroupModel }) {
   const { t } = useI18n();
   return (
     <dl className="flex flex-wrap gap-x-6 gap-y-1 text-xs">
@@ -131,12 +137,12 @@ function MetricSummary({ metric }: { metric: ChannelStatusChannelModel }) {
   );
 }
 
-export function ChannelStatusPanel() {
-  const [window, setWindow] = useState<ChannelStatusWindow>("24h");
-  const { data, isLoading, error } = useChannelStatus(window);
+export function ChannelGroupStatusPanel() {
+  const [window, setWindow] = useState<ChannelGroupStatusWindow>("24h");
+  const { data, isLoading, error } = useChannelGroupStatus(window);
   const { t } = useI18n();
 
-  const columns: Column<ChannelStatusModelMetric>[] = [
+  const columns: Column<ChannelGroupStatusModelMetric>[] = [
     {
       key: "model",
       header: t("Model"),
@@ -181,14 +187,14 @@ export function ChannelStatusPanel() {
         <CardHeader>
           <CardTitle>{t("Model overview")}</CardTitle>
           <CardDescription>
-            {t("Metrics aggregated across channels included in status statistics.")}
+            {t("Metrics aggregated across monitored channel groups.")}
           </CardDescription>
           <CardAction>
             <ToggleGroup
               value={[window]}
               onValueChange={(values) => {
                 const value = values[0];
-                if (value) setWindow(value as ChannelStatusWindow);
+                if (value) setWindow(value as ChannelGroupStatusWindow);
               }}
               variant="outline"
               size="sm"
@@ -212,9 +218,9 @@ export function ChannelStatusPanel() {
           <AsyncResource
             isLoading={isLoading}
             error={error}
-            isEmpty={data?.channels.length === 0}
-            emptyTitle="No tracked channels"
-            emptyDescription="Enable status statistics on at least one channel."
+            isEmpty={data?.groups.length === 0}
+            emptyTitle="No monitored channel groups"
+            emptyDescription="Enable status monitoring on at least one channel group."
           >
             <ResourceTable
               columns={columns}
@@ -225,32 +231,30 @@ export function ChannelStatusPanel() {
         </CardContent>
       </Card>
 
-      {data?.channels.map((channel) => (
-        <Card key={channel.id}>
+      {data?.groups.map((group) => (
+        <Card key={group.id}>
           <CardHeader>
             <CardTitle className="flex flex-wrap items-center gap-2">
-              <span>{channel.name}</span>
-              <Badge variant="secondary">{channel.channel_group_name}</Badge>
+              <span>{group.name}</span>
               <StatusBadge
-                value={channel.api_format}
-                label={apiFormatLabel(channel.api_format)}
+                value={group.api_format}
+                label={apiFormatLabel(group.api_format)}
                 variant="info"
               />
             </CardTitle>
             <CardDescription>
-              {channel.enabled ? t("Routing enabled") : t("Routing disabled")}
-              {channel.auto_disabled ? ` · ${t("Auto-disabled")}` : ""}
+              {group.enabled ? t("Routing enabled") : t("Routing disabled")}
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-5">
-            {channel.models.length === 0 ? (
+            {group.models.length === 0 ? (
               <EmptyState
-                title={t("No channel models")}
-                description={t("Add available upstream models to this channel.")}
+                title={t("No channel group models")}
+                description={t("Add available upstream models to channels in this group.")}
                 className="py-8"
               />
             ) : (
-              channel.models.map((model, index) => (
+              group.models.map((model, index) => (
                 <Fragment key={`${model.api_format}:${model.model}`}>
                   {index > 0 ? <Separator /> : null}
                   <div className="flex flex-col gap-3">

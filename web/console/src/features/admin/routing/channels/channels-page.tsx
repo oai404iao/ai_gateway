@@ -135,6 +135,14 @@ function StandardGroupCard({
                 variant="info"
               />
               <StatusBadge value={group.enabled} />
+              <StatusBadge
+                value={group.status_statistics_enabled}
+                label={t(
+                  group.status_statistics_enabled
+                    ? "Monitoring enabled"
+                    : "Monitoring disabled",
+                )}
+              />
               <Badge variant="secondary">
                 {t("Channels ({count})", { count: channels.length })}
               </Badge>
@@ -456,11 +464,6 @@ export function ChannelsPage() {
           </div>
         );
       },
-    },
-    {
-      key: "statistics",
-      header: t("Status statistics"),
-      render: (channel) => <StatusBadge value={channel.status_statistics_enabled} />,
     },
     {
       key: "websocket",
@@ -796,6 +799,14 @@ export function ChannelsPage() {
                                   </CardHeader>
                                   <CardContent className="flex flex-wrap gap-2">
                                     <StatusBadge value={group.enabled} />
+                                    <StatusBadge
+                                      value={group.status_statistics_enabled}
+                                      label={t(
+                                        group.status_statistics_enabled
+                                          ? "Monitoring enabled"
+                                          : "Monitoring disabled",
+                                      )}
+                                    />
                                     <Badge variant="secondary">
                                       {t("Channels ({count})", {
                                         count: groupedChannels.length,

@@ -13,7 +13,7 @@ import {
   CHANNEL,
   CHANNEL_DETAIL,
   CHANNEL_GROUP,
-  CHANNEL_STATUS_REPORT,
+  CHANNEL_GROUP_STATUS_REPORT,
   CONFIG_TEMPLATE,
   CONFIG_TEMPLATE_DETAIL,
   CONTROL_PLANE_USER,
@@ -239,8 +239,8 @@ export const handlers = [
   http.get("/console/v1/request-logs", () => HttpResponse.json([])),
   http.get("/console/v1/me/request-logs", () => HttpResponse.json([])),
   http.get("/console/v1/me/usage", () => HttpResponse.json(PERSONAL_USAGE_REPORT)),
-  http.get("/console/v1/statistics/channel-status", () =>
-    HttpResponse.json(CHANNEL_STATUS_REPORT),
+  http.get("/console/v1/statistics/channel-group-status", () =>
+    HttpResponse.json(CHANNEL_GROUP_STATUS_REPORT),
   ),
   http.get("/console/v1/statistics/costs", () =>
     HttpResponse.json(OWN_COST_STATISTICS_REPORT),
