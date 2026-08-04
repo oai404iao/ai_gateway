@@ -274,7 +274,7 @@ describe("RequestLogsView", () => {
       "Duration",
       "HTTP",
       "Error code",
-      "Error message",
+      "Error detail",
       "Completed",
     ]);
     expect(
@@ -286,7 +286,7 @@ describe("RequestLogsView", () => {
     expect(channelLabel.parentElement).toHaveTextContent(CHANNEL.name);
     const userLabel = await screen.findByText("User", { selector: "dt" });
     expect(userLabel.parentElement).toHaveTextContent("System Request Owner");
-    const errorMessageLabel = await screen.findByText("Error message", { selector: "dt" });
+    const errorMessageLabel = await screen.findByText("Error detail", { selector: "dt" });
     expect(errorMessageLabel.parentElement).toHaveTextContent(
       "Upstream quota exhausted. Try another channel.",
     );
@@ -344,7 +344,7 @@ describe("RequestLogsView", () => {
       "Duration",
       "HTTP",
       "Error code",
-      "Error message",
+      "Error detail",
       "Completed",
     ]);
     const groupLabel = await screen.findByText("Channel group", { selector: "dt" });

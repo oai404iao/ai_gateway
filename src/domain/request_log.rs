@@ -7,9 +7,10 @@ use uuid::Uuid;
 
 use super::{ApiFormat, ApiOperation};
 
-/// A single idempotent request-log row. It deliberately excludes request and
-/// response bodies, headers, credentials, and raw transport errors. A bounded,
-/// cleaned upstream error summary may be retained for operator diagnostics.
+/// A single idempotent request-log row. It deliberately excludes request
+/// bodies, successful response bodies, headers, and credentials. Failed
+/// requests may retain a bounded, cleaned upstream response detail or
+/// gateway/transport diagnostic for operator troubleshooting.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RequestLogEvent {
     pub id: Uuid,
