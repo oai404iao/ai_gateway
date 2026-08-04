@@ -7,6 +7,8 @@ Versioning.
 
 ## [Unreleased]
 
+## [0.9.4] - 2026-08-04
+
 ### Added
 
 - Negotiate HTTP response compression independently on each proxy hop: advertise
