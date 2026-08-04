@@ -1,7 +1,7 @@
 # Codex OAuth 与订阅后端接入参考
 
 > 类型：外部参考
-> 最近核对：2026-08-03
+> 最近核对：2026-08-04
 > 权威来源：
 > [`openai/codex` 0.146.0 release](https://github.com/openai/codex/releases/tag/rust-v0.146.0)、
 > [OAuth server](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/login/src/server.rs)、
@@ -36,6 +36,14 @@
 > [Images wire types](https://github.com/openai/codex/blob/aa064463458adbef10400c74174107fc4b3550f0/codex-rs/codex-api/src/images.rs)、
 > [image backend](https://github.com/openai/codex/blob/aa064463458adbef10400c74174107fc4b3550f0/codex-rs/ext/image-generation/src/backend.rs)
 > 和 [image tool](https://github.com/openai/codex/blob/aa064463458adbef10400c74174107fc4b3550f0/codex-rs/ext/image-generation/src/tool.rs)。
+> HTTP content-coding 基线另外核对当前
+> [`openai/codex@5af85998c23ddb9cc21c43ef41db44712b481611`](https://github.com/openai/codex/tree/5af85998c23ddb9cc21c43ef41db44712b481611)：
+> [default client](https://github.com/openai/codex/blob/5af85998c23ddb9cc21c43ef41db44712b481611/codex-rs/login/src/auth/default_client.rs)、
+> [HTTP client features](https://github.com/openai/codex/blob/5af85998c23ddb9cc21c43ef41db44712b481611/codex-rs/http-client/Cargo.toml)
+> 和
+> [response transport](https://github.com/openai/codex/blob/5af85998c23ddb9cc21c43ef41db44712b481611/codex-rs/http-client/src/transport.rs)。
+> 官方客户端当前不主动发送 `Accept-Encoding`，也没有启用 reqwest 的 HTTP 响应解压 features；
+> 下述双向独立协商是 ai-gateway 的代理增强能力，不是 Codex 客户端保证。
 
 本文记录 `ai-gateway` 的 Codex OAuth Connector 所依赖的外部行为。这里的
 `chatgpt.com/backend-api/*` 是 Codex 客户端使用的 ChatGPT 后端接口，不是公开的
@@ -155,11 +163,12 @@ provider-managed `channels` 记录。因此普通优先级、权重、API Key �
 3. 删除当前 Codex request type 未声明的 `max_output_tokens`，但不使用字段白名单；
 4. 强制写入 `stream=true`、`store=false`；
 5. 将目标改为 `/backend-api/codex/responses`；
-6. 强制上游 `Accept-Encoding: identity`，使网关能直接观察终态 SSE 与 usage；
+6. `Accept-Encoding` 由通用代理层独立设置为 `gzip, deflate, br, zstd`，上游响应在终态 SSE
+   与 usage 解析前流式解码；
 7. 最后注入当前凭证的 Bearer、可选 account、FedRAMP 和 Codex 会话 Header；
 8. 成功响应按 SSE 分类，并将客户端可见 `Content-Type` 规范化为
    `text/event-stream`，即使 Codex 上游缺少或改写了该 Header；
-9. 逐块转发上游 SSE，不在 Connector 中缓冲整条响应。
+9. 逐块转发解码后的上游 SSE，不在 Connector 中缓冲整条响应；下游 SSE 保持 identity。
 
 WebSocket 路径：
 

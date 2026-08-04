@@ -530,6 +530,7 @@ struct CapturedCodexRequest {
 #[derive(Clone, Debug)]
 struct CapturedCodexImageRequest {
     authorization: Option<String>,
+    accept_encoding: Option<String>,
     account_id: Option<String>,
     originator: Option<String>,
     user_agent: Option<String>,
@@ -630,6 +631,7 @@ async fn codex_images_upstream(
         .unwrap()
         .push(CapturedCodexImageRequest {
             authorization: header("authorization"),
+            accept_encoding: header("accept-encoding"),
             account_id: header("chatgpt-account-id"),
             originator: header("originator"),
             user_agent: header("user-agent"),
@@ -2837,7 +2839,10 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
         forwarded.authorization.as_deref(),
         Some("Bearer access-token")
     );
-    assert_eq!(forwarded.accept_encoding.as_deref(), Some("identity"));
+    assert_eq!(
+        forwarded.accept_encoding.as_deref(),
+        Some("gzip, deflate, br, zstd")
+    );
     assert_eq!(forwarded.account_id, None);
     assert_eq!(forwarded.originator.as_deref(), Some(CODEX_ORIGINATOR));
     assert_eq!(
@@ -2937,6 +2942,10 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
     assert_eq!(
         image_request.authorization.as_deref(),
         Some("Bearer access-token")
+    );
+    assert_eq!(
+        image_request.accept_encoding.as_deref(),
+        Some("gzip, deflate, br, zstd")
     );
     assert_eq!(image_request.account_id, None);
     assert_eq!(image_request.originator.as_deref(), Some(CODEX_ORIGINATOR));

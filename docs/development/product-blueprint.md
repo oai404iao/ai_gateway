@@ -133,6 +133,7 @@ enum ApiFormat {
 ```text
 Host
 Content-Length
+Accept-Encoding（由网关逐跳协商）
 Connection
 Transfer-Encoding
 Authorization（客户端）
@@ -144,7 +145,8 @@ Proxy-Authorization
 ## Streaming 策略
 
 - 请求体：读取并限制大小，因为必须识别 `model`。
-- 上游响应：使用 `reqwest_response.bytes_stream()` 直接转成 Axum `Body`，不缓冲。
+- 上游响应：使用 `reqwest_response.bytes_stream()`，必要时经过增量 content decoder 后转成
+  Axum `Body`，不缓冲完整响应。
 - 客户端断开时，丢弃流以取消上游请求。
 - 一旦响应头或首个流块已经发送，绝不能切换渠道或重试。
 - 非流式响应变换可以完整缓冲 JSON；普通流式响应绝不能为变换而整体缓冲。

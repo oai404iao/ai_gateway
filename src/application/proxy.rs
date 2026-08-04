@@ -15,8 +15,8 @@ use axum::{
     http::{
         HeaderMap, HeaderName, HeaderValue, Request, Response, StatusCode,
         header::{
-            ACCEPT_ENCODING, AUTHORIZATION, CONNECTION, CONTENT_ENCODING, CONTENT_LENGTH,
-            CONTENT_TYPE, HOST, PROXY_AUTHORIZATION,
+            ACCEPT_ENCODING, ACCEPT_RANGES, AUTHORIZATION, CONNECTION, CONTENT_ENCODING,
+            CONTENT_LENGTH, CONTENT_TYPE, HOST, PROXY_AUTHORIZATION, RANGE,
         },
     },
     response::{IntoResponse, Response as AxumResponse},
@@ -51,7 +51,10 @@ use crate::{
         JsonPatchPlan, SseEventPatchPlan, SseTransformer, apply_header_plan, apply_json_patch_plan,
         apply_response_header_plan, parse_connection_header_names,
     },
-    upstream::{ResolvedUpstreamPolicy, UpstreamClientRegistry},
+    upstream::{
+        DecodedBodyError, ResolvedUpstreamPolicy, ResponseContentCodings, UPSTREAM_ACCEPT_ENCODING,
+        UpstreamClientRegistry, decode_response_body,
+    },
 };
 
 use super::{
@@ -508,10 +511,6 @@ impl ProxyService {
                 return Err(error);
             }
             let mut headers = forward_request_headers(&headers);
-            let sse_transform_active = transforms.sse_event_patches().has_operations();
-            if sse_transform_active {
-                headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("identity"));
-            }
 
             let url = match prepared_attempt.upstream_url(&current_channel, &parts.uri) {
                 Ok(value) => value,
@@ -530,6 +529,14 @@ impl ProxyService {
                 completion.finish_with_proxy_error(RequestOutcome::UpstreamUnavailable, &error);
                 return Err(error);
             }
+            headers.insert(
+                ACCEPT_ENCODING,
+                if headers.contains_key(RANGE) {
+                    HeaderValue::from_static("identity")
+                } else {
+                    HeaderValue::from_static(UPSTREAM_ACCEPT_ENCODING)
+                },
+            );
             let upstream_policy = match ResolvedUpstreamPolicy::try_resolve_for(
                 api_format,
                 &snapshot.system_settings().upstream_timeouts(),
@@ -1092,6 +1099,18 @@ impl ProxyError {
         }
     }
 
+    fn unsupported_upstream_content_encoding() -> Self {
+        Self {
+            status: StatusCode::BAD_GATEWAY,
+            message: "The upstream response used an unsupported content encoding.".to_owned(),
+            error_type: "api_error",
+            param: None,
+            code: Some("upstream_content_encoding_unsupported"),
+            authenticate: false,
+            retry_after: None,
+        }
+    }
+
     fn unknown_model(model: &str) -> Self {
         Self {
             status: StatusCode::NOT_FOUND,
@@ -1637,7 +1656,7 @@ fn forward_headers(headers: &HeaderMap, request: bool) -> HeaderMap {
             || (request
                 && (matches!(
                     *name,
-                    HOST | CONTENT_LENGTH | AUTHORIZATION | PROXY_AUTHORIZATION
+                    HOST | CONTENT_LENGTH | AUTHORIZATION | PROXY_AUTHORIZATION | ACCEPT_ENCODING
                 ) || REQUEST_FORWARDING_METADATA_HEADERS.contains(&name.as_str())))
         {
             continue;
@@ -1686,6 +1705,18 @@ fn response_from_upstream(
     // presentation headers. Response plans are also forbidden from touching
     // these headers, but classify first to keep that invariant explicit.
     let original_upstream_headers = upstream_response.headers();
+    let content_codings = match ResponseContentCodings::parse(original_upstream_headers) {
+        Ok(codings) => codings,
+        Err(_) => {
+            let error = ProxyError::unsupported_upstream_content_encoding();
+            completion.set_client_visible_status(StatusCode::BAD_GATEWAY.as_u16());
+            completion.finish_with_proxy_error(
+                RequestOutcome::UpstreamContentEncodingUnsupported,
+                &error,
+            );
+            return Err(error);
+        }
+    };
     let response_is_sse = is_sse_response(original_upstream_headers)
         || (connector_success_response_is_sse && upstream_status.is_success());
     let transform_sse = sse_event_patches.has_operations() && response_is_sse;
@@ -1693,7 +1724,6 @@ fn response_from_upstream(
         && !upstream_status.is_success()
         && response_error_body_is_textual(original_upstream_headers);
     completion.configure_usage_collector(response_is_sse, capture_error_body);
-    let sse_has_identity_encoding = has_identity_content_encoding(original_upstream_headers);
     let mut upstream_headers = original_upstream_headers.clone();
     if let Err(apply_error) = apply_response_header_plan(&mut upstream_headers, response_headers) {
         let error = ProxyError::response_transform_failed();
@@ -1707,17 +1737,15 @@ fn response_from_upstream(
     if connector_success_response_is_sse && upstream_status.is_success() {
         upstream_headers.insert(CONTENT_TYPE, HeaderValue::from_static("text/event-stream"));
     }
-    if transform_sse && !sse_has_identity_encoding {
-        let error = ProxyError::response_transform_failed();
-        completion.set_client_visible_status(StatusCode::BAD_GATEWAY.as_u16());
-        completion.finish_with_proxy_error(RequestOutcome::ResponseTransformFailed, &error);
-        return Err(error);
+    upstream_headers.remove(CONTENT_ENCODING);
+    if content_codings.is_encoded() {
+        remove_decoded_entity_headers(&mut upstream_headers);
     }
     let mut headers = forward_response_headers(&upstream_headers);
     if transform_sse {
         remove_transformed_entity_headers(&mut headers);
     }
-    let expected_body_bytes = (!transform_sse)
+    let expected_body_bytes = (!transform_sse && !content_codings.is_encoded())
         .then(|| upstream_response.content_length())
         .flatten();
     if response_has_no_body(status) || expected_body_bytes == Some(0) {
@@ -1732,7 +1760,7 @@ fn response_from_upstream(
         return Ok(response);
     }
     let stream = timed_upstream_stream(
-        upstream_response.bytes_stream(),
+        decode_response_body(upstream_response, &content_codings),
         stream_idle_timeout,
         completion,
         upstream_status.is_success(),
@@ -1775,12 +1803,19 @@ fn response_error_body_is_textual(headers: &HeaderMap) -> bool {
         )
 }
 
-fn has_identity_content_encoding(headers: &HeaderMap) -> bool {
-    headers.get_all(CONTENT_ENCODING).iter().all(|value| {
-        value
-            .to_str()
-            .is_ok_and(|value| value.trim().eq_ignore_ascii_case("identity"))
-    })
+fn remove_decoded_entity_headers(headers: &mut HeaderMap) {
+    for name in [
+        CONTENT_ENCODING,
+        CONTENT_LENGTH,
+        ACCEPT_RANGES,
+        HeaderName::from_static("etag"),
+        HeaderName::from_static("content-md5"),
+        HeaderName::from_static("digest"),
+        HeaderName::from_static("content-digest"),
+        HeaderName::from_static("repr-digest"),
+    ] {
+        headers.remove(name);
+    }
 }
 
 fn remove_transformed_entity_headers(headers: &mut HeaderMap) {
@@ -1803,8 +1838,8 @@ fn response_has_no_body(status: StatusCode) -> bool {
         || status == StatusCode::NOT_MODIFIED
 }
 
-type UpstreamByteStream = Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>>;
-type BodyStreamError = Box<dyn Error + Send + Sync>;
+type UpstreamByteStream = Pin<Box<dyn Stream<Item = Result<Bytes, DecodedBodyError>> + Send>>;
+type BodyStreamError = DecodedBodyError;
 
 struct StreamState {
     upstream: Option<UpstreamByteStream>,
@@ -1817,7 +1852,7 @@ struct StreamState {
 }
 
 fn timed_upstream_stream(
-    upstream: impl Stream<Item = Result<Bytes, reqwest::Error>> + Send + 'static,
+    upstream: impl Stream<Item = Result<Bytes, DecodedBodyError>> + Send + 'static,
     idle_timeout: Duration,
     completion: CompletionGuard,
     upstream_succeeded: bool,
@@ -1880,9 +1915,8 @@ fn timed_upstream_stream(
                         state.completion.finish_with_message(
                             RequestOutcome::UpstreamBodyError,
                             Some("upstream_body_error"),
-                            &format_error_chain(&error),
+                            &format_error_chain(error.as_ref()),
                         );
-                        let error: BodyStreamError = Box::new(error);
                         return Some((Err(error), state));
                     }
                     Ok(None) => {
@@ -1929,6 +1963,7 @@ fn timed_upstream_stream(
             }
         },
     )
+    .fuse()
 }
 
 fn record_stream_bytes(state: &mut StreamState, bytes: &Bytes) {
@@ -2073,6 +2108,7 @@ enum RequestOutcome {
     ConnectTimeout,
     ResponseHeaderTimeout,
     UpstreamUnavailable,
+    UpstreamContentEncodingUnsupported,
     UpstreamBodyError,
     StreamIdleTimeout,
     ResponseTransformFailed,
@@ -2089,6 +2125,7 @@ impl RequestOutcome {
             Self::ConnectTimeout => "connect_timeout",
             Self::ResponseHeaderTimeout => "response_header_timeout",
             Self::UpstreamUnavailable => "upstream_unavailable",
+            Self::UpstreamContentEncodingUnsupported => "upstream_content_encoding_unsupported",
             Self::UpstreamBodyError => "upstream_body_error",
             Self::StreamIdleTimeout => "stream_idle_timeout",
             Self::ResponseTransformFailed => "response_transform_failed",
@@ -2106,6 +2143,7 @@ impl RequestOutcome {
             | Self::ConnectTimeout
             | Self::ResponseHeaderTimeout
             | Self::UpstreamUnavailable
+            | Self::UpstreamContentEncodingUnsupported
             | Self::UpstreamBodyError
             | Self::StreamIdleTimeout
             | Self::ResponseTransformFailed
@@ -2121,6 +2159,9 @@ impl RequestOutcome {
             Self::ConnectTimeout => Some("connect_timeout"),
             Self::ResponseHeaderTimeout => Some("response_header_timeout"),
             Self::UpstreamUnavailable => Some("upstream_unavailable"),
+            Self::UpstreamContentEncodingUnsupported => {
+                Some("upstream_content_encoding_unsupported")
+            }
             Self::UpstreamBodyError => Some("upstream_body_error"),
             Self::StreamIdleTimeout => Some("stream_idle_timeout"),
             Self::ResponseTransformFailed => Some("response_transform_failed"),
@@ -2144,6 +2185,9 @@ impl RequestOutcome {
                 "The selected upstream channel did not return response headers in time."
             }
             Self::UpstreamUnavailable => "The selected upstream channel could not be reached.",
+            Self::UpstreamContentEncodingUnsupported => {
+                "The upstream response used an unsupported content encoding."
+            }
             Self::UpstreamBodyError => {
                 "The upstream response body ended with a transport or protocol error."
             }
@@ -2165,6 +2209,7 @@ impl RequestOutcome {
                 Some(StatusCode::GATEWAY_TIMEOUT.as_u16())
             }
             Self::UpstreamUnavailable => Some(StatusCode::BAD_GATEWAY.as_u16()),
+            Self::UpstreamContentEncodingUnsupported => Some(StatusCode::BAD_GATEWAY.as_u16()),
             Self::ResponseTransformFailed => Some(StatusCode::BAD_GATEWAY.as_u16()),
             Self::ClientRequestError => Some(StatusCode::BAD_REQUEST.as_u16()),
             Self::Succeeded
@@ -2184,6 +2229,7 @@ impl RequestOutcome {
                 | Self::ConnectTimeout
                 | Self::ResponseHeaderTimeout
                 | Self::UpstreamUnavailable
+                | Self::UpstreamContentEncodingUnsupported
                 | Self::UpstreamBodyError
                 | Self::StreamIdleTimeout
         )
@@ -2646,7 +2692,10 @@ impl Drop for CompletionGuard {
 mod tests {
     use axum::{
         body::Bytes,
-        http::{HeaderMap, HeaderValue, StatusCode, header::CONNECTION},
+        http::{
+            HeaderMap, HeaderValue, StatusCode,
+            header::{ACCEPT_ENCODING, CONNECTION},
+        },
     };
     use std::{sync::Arc, time::Duration};
 
@@ -2847,12 +2896,14 @@ mod tests {
             "authorization",
             HeaderValue::from_static("Bearer client-key"),
         );
+        headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("br"));
         headers.insert("x-request-id", HeaderValue::from_static("keep"));
 
         let forwarded = forward_request_headers(&headers);
         assert!(forwarded.get(CONNECTION).is_none());
         assert!(forwarded.get("x-internal-hop").is_none());
         assert!(forwarded.get("authorization").is_none());
+        assert!(forwarded.get(ACCEPT_ENCODING).is_none());
         assert_eq!(forwarded.get("x-request-id").unwrap(), "keep");
     }
 

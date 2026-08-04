@@ -1992,7 +1992,12 @@ fn is_protected_header(name: &str, scope: HeaderScope) -> bool {
     match scope {
         HeaderScope::Request => matches!(
             name,
-            "host" | "content-length" | "authorization" | "proxy-authorization" | "cookie"
+            "host"
+                | "content-length"
+                | "authorization"
+                | "proxy-authorization"
+                | "cookie"
+                | "accept-encoding"
         ),
         HeaderScope::Response => {
             matches!(
@@ -2961,6 +2966,16 @@ mod tests {
 
     #[test]
     fn response_header_plans_apply_in_layer_order_and_protect_static_and_dynamic_hops() {
+        let request_document = json!({
+            "version": 1,
+            "api_format": "open_ai_chat_completions",
+            "request_headers": {"set": {"accept-encoding": "identity"}}
+        });
+        assert!(matches!(
+            compile_document(&request_document, CHAT),
+            Err(TransformCompileError::ProtectedHeader)
+        ));
+
         let template = compile_document(
             &json!({
                 "version": 1,

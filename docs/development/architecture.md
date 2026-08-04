@@ -70,10 +70,19 @@ Browser or Console client
 8. 由进程内 Connector 的 `PreparedUpstreamAttempt` 完成 provider 特定 body、目标路径和最终
    Header/鉴权准备；普通 Connector 保持相同 API 路径和现有认证行为。
 9. 清理客户端鉴权、hop-by-hop headers 和常见反向代理/CDN 转发元数据；该规则位于所有普通、
-   Codex、HTTP/SSE、Images 与 Responses WebSocket 渠道共享的请求清理层。随后使用按代理、TLS
-   和超时策略复用的 reqwest client 直接转发，不经过 sidecar、Unix Socket RPC 或第二个 HTTP 服务。
-10. 转发上游状态、响应头和响应流；仅在配置的响应/SSE 变换需要时改写。失败的文本响应会旁路保留
-    最长 16KiB 供请求日志诊断，成功响应和二进制媒体响应仍不缓冲。
+   Codex、HTTP/SSE、Images 与 Responses WebSocket 渠道共享的请求清理层。HTTP
+   `Accept-Encoding` 由网关拥有：下游值不会直接转发，普通请求向上游声明
+   `gzip, deflate, br, zstd`，Range 请求使用 `identity`。随后使用按代理、TLS 和超时策略复用的
+   reqwest client 直接转发，不经过 sidecar、Unix Socket RPC 或第二个 HTTP 服务。
+10. 上游响应按 `Content-Encoding` 流式解码；支持 gzip、RFC 1950 deflate、Brotli 和
+    Zstandard，已知的多层 coding 按逆序解码。usage、错误诊断和 SSE Transform 只读取解码后的
+    明文流，不缓冲完整响应。公共 listener 再按下游请求的 `Accept-Encoding` 独立选择 coding；
+    已知小于 1KiB 的响应保持 identity，长度未知的可压缩非 SSE 流仍可立即流式重编码。SSE 保持
+    identity 以避免事件延迟。未知或过深的上游 coding 在发送下游响应头前返回
+    `502 upstream_content_encoding_unsupported`。
+    表示被解码、变换或重编码时，失效的长度、range、ETag 和 digest 元数据会被移除。失败的文本
+    响应仍旁路保留最长 16KiB 供请求日志诊断；只能在读取 body 时发现的损坏压缩流会终止当前
+    body，并记录 `upstream_body_error`。
 11. 将终态事件写入本地 spool，并异步投影、提取 usage 和结算。
 
 没有 body 变换或模型别名时，原始请求字节保持不变。普通响应不会为了 usage 采集而整体缓冲。
@@ -171,7 +180,7 @@ grace period 内完成，截止时强制取消，避免 Upgrade 脱离 Hyper con
 - 每次后续尝试排除已经尝试过的渠道，并重新遵守授权、优先级、健康和权重规则。
 - 上游返回任意 HTTP 响应头后，不再重试 HTTP 错误。
 - 向客户端发送响应头或任何响应字节后，不得切换渠道。
-- SSE 变换按事件边界处理，不按网络 chunk 处理，也不缓冲完整流。
+- SSE 变换按解码后的事件边界处理，不按压缩或网络 chunk 处理，也不缓冲完整流。
 - 客户端断开会释放上游响应体；流空闲超时只终止当前流，不再发起新尝试。
 
 ## 控制面与一致性

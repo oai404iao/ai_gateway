@@ -172,6 +172,8 @@ Codex HTTP attempt：
 - 注入 Bearer、存在 workspace account ID 时才注入 `ChatGPT-Account-ID`、可选 FedRAMP、
   session/thread、User-Agent、
   `originator` 和版本 Header。
+- `Accept-Encoding` 由通用 HTTP 代理层拥有；Codex Connector 不单独指定 coding，通用层向
+  上游声明 gzip、deflate、Brotli 与 Zstandard，并在 SSE 解析前流式解码。
 - 成功响应无论上游如何声明 `Content-Type`，都按 SSE 处理并向客户端规范化为
   `text/event-stream`；非成功响应不强制改写。
 
@@ -195,7 +197,7 @@ Codex Images generation attempt：
 - 注入 Bearer/可选 account、FedRAMP、User-Agent、`originator`、版本和 Gateway 生成的
   `x-codex-image-turn-id`；
 - 删除客户端 `session-id`、`thread-id` 与 `x-client-request-id`；
-- 把成功响应按普通 JSON 交给 Images usage collector，不按 SSE 解释。
+- 把流式解码后的成功响应按普通 JSON 交给 Images usage collector，不按 SSE 解释。
 
 Codex Images edit attempt：
 

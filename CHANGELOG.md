@@ -7,12 +7,24 @@ Versioning.
 
 ## [Unreleased]
 
+### Added
+
+- Negotiate HTTP response compression independently on each proxy hop: advertise
+  gzip, deflate, Brotli, and Zstandard upstream, incrementally decode supported
+  single or stacked content codings for usage/error/SSE processing, and
+  recompress eligible non-SSE downstream responses according to the client's
+  `Accept-Encoding`.
+
 ### Changed
 
 - Retain up to 16KiB of cleaned request-log error detail for failed
   non-streaming HTTP responses, SSE/Responses WebSocket terminal events, and
   gateway or transport failures, instead of recording only short structured
   SSE messages.
+- Treat `Accept-Encoding` as a gateway-owned transport header instead of
+  forwarding the downstream value to upstream channels; range requests use
+  upstream identity coding, and unsupported upstream response codings fail
+  before downstream response headers are sent.
 
 ## [0.9.3] - 2026-08-04
 

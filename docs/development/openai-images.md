@@ -85,10 +85,11 @@ POST /v1/images/generations
 - 使用 `open_ai_images` API Key 权限、模型规则、Channel Group 和 Channel；
 - 普通 `openai_compatible` Connector 沿用原路径
   `/v1/images/generations`、查询字符串和 Header/鉴权顺序；
-- 上游状态、Header 和响应 body 默认逐块透传；
+- 上下游分别协商 HTTP content coding：网关向上游声明 gzip、deflate、Brotli 与 Zstandard，
+  流式解码后采集 usage，再按下游 `Accept-Encoding` 流式重编码；完整 base64 响应仍不缓冲；
 - 渠道未显式设置 `response_header_timeout_ms` 时，generation/edit 使用系统设置中的 Images
   专用响应头超时；默认 300 秒，建连和流空闲超时仍复用通用值；
-- 若顶层 `usage` 存在，增量提取输入/输出 token，不为 base64 图片缓冲完整响应；
+- 若顶层 `usage` 存在，从解码后的 JSON 流增量提取输入/输出 token，不为 base64 图片缓冲完整响应；
 - 请求日志写入 `images_generation` 操作，journal schema 为 v4，并兼容读取 v2/v3 backlog；
 - Images 请求禁用自动重试、Session affinity、SSE 变换、WebSocket 和 scheduled probe。
 
@@ -245,6 +246,8 @@ PR 1 的最低覆盖：
 - generation 路由、API Key/模型格式隔离和原始 JSON 字节透传；
 - 上游认证与响应透传；
 - 顶层 Images usage 增量提取，不缓冲 base64 输出；
+- gzip、deflate、Brotli、Zstandard 及已知多层上游 coding 的增量解码，并验证下游独立协商、
+  identity 回退、失效表示 Header 清理和未知 coding 的响应头前失败；
 - `stream: true` 在联系上游前拒绝；
 - 至少两个可选 Images Channel 时仍只尝试一次；
 - Images SSE Transform 和 scheduled test model 编译/写入拒绝；

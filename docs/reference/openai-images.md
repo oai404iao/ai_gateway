@@ -2,7 +2,7 @@
 
 > 类型：外部参考与项目兼容契约。
 >
-> 最近核对：2026-07-31。
+> 最近核对：2026-08-04。
 >
 > 权威来源：
 > [OpenAI Images API Reference](https://developers.openai.com/api/reference/resources/images)、
@@ -40,8 +40,12 @@ generation 路径：
   Header 清理、上游鉴权、被动健康和耐久请求日志；
 - 只解析路由所需的顶层 `model` 和可选 `stream`，没有模型别名或请求 JSON 变换时保留原始
   请求字节；
-- 默认逐块透传上游响应，不缓冲可能包含 base64 图片的完整 JSON；
-- 若上游返回顶层 `usage`，增量采集 `input_tokens`、`output_tokens` 及已支持的细分字段；
+- 下游 `Accept-Encoding` 不直接转发；网关独立向上游声明 gzip、deflate、Brotli 和
+  Zstandard，流式解码支持的单层或多层响应 coding；
+- 若上游返回顶层 `usage`，从解码后的流增量采集 `input_tokens`、`output_tokens` 及已支持的
+  细分字段；
+- 公共 listener 根据客户端 `Accept-Encoding` 独立重编码可压缩 JSON；已知小于 1KiB 时保持
+  identity，长度未知时不为阈值判断缓冲可能包含 base64 图片的完整 JSON；
 - 将请求日志记录为 `api_format = open_ai_images`、
   `api_operation = images_generation` 和 `request_protocol = non_stream`。
 
@@ -58,7 +62,8 @@ edit 路径：
   受限目录中的匿名临时文件；
 - 普通 OpenAI-compatible 渠道在模型不需要别名时原样回放 multipart；需要别名时流式等价重建
   multipart 并只替换 model part；
-- 响应仍逐块转发，并使用相同 Images usage collector。
+- 响应使用与 generation 相同的上下游 content-coding 协商和 Images usage collector，仍逐块
+  转发解码或重编码后的流。
 
 普通 OpenAI-compatible 渠道的模型名不在代码中硬编码；管理员必须配置 Images 渠道、可用上游
 模型、计价模型和模型规则。Codex OAuth projection 是 provider-specific 例外，当前按核对的

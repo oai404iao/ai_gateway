@@ -2,7 +2,7 @@
 
 > 类型：外部参考与项目兼容契约。
 >
-> 最近核对：2026-07-31。
+> 最近核对：2026-08-04。
 >
 > 权威来源：[OpenAI API Reference](https://developers.openai.com/api/reference/overview)。
 >
@@ -48,7 +48,8 @@ assistants、fine-tuning 等其他 OpenAI 路径。
   否则原始字节保持不变。
 - 普通 `openai_compatible` Connector 会把查询字符串和原 API 路径拼接到渠道 `base_url`；
   provider Connector 可以按操作改写目标路径。
-- 客户端 `Authorization`、`Host`、`Content-Length`、代理鉴权和 hop-by-hop headers 不会直接转发；上游鉴权最后注入。
+- 客户端 `Authorization`、`Host`、`Content-Length`、`Accept-Encoding`、代理鉴权和
+  hop-by-hop headers 不会直接转发；上游鉴权最后注入，HTTP content coding 由网关独立协商。
 - 模型别名、请求 JSON Transform 或 provider adapter 改变 body 时，客户端提供的
   `Content-MD5`、`Digest`、`Content-Digest`、`Repr-Digest`、`ETag` 和 `Last-Modified`
   会在 Header Transform 之前移除，避免把失效的完整性/表示元数据带到上游；Header
@@ -58,9 +59,15 @@ assistants、fine-tuning 等其他 OpenAI 路径。
 
 ## 响应兼容策略
 
-- 收到上游响应头后，状态码和响应体默认透传。
-- 普通 JSON 响应不会为了 usage 采集而整体缓冲。
-- SSE 默认按字节流转发；只有启用 SSE 变换时才按事件边界解析和重写。
+- 网关向上游声明 gzip、deflate、Brotli 和 Zstandard，支持流式解码单层或最多四层已知
+  `Content-Encoding`；未知 coding 在发送下游响应头前失败，读取中发现的损坏压缩流以
+  `upstream_body_error` 终止。
+- 普通 JSON 响应不会为了解压、usage 采集或下游重编码而整体缓冲。
+- SSE 在解码后默认按事件字节流转发；只有启用 SSE 变换时才按事件边界解析和重写。下游 SSE
+  不启用 HTTP 压缩，以避免事件延迟。
+- 已知长度至少 1KiB 的可压缩非 SSE 响应按客户端 `Accept-Encoding` 独立选择 gzip、deflate、
+  Brotli、Zstandard 或 identity；长度未知的流保持立即转发并允许压缩。表示变化时移除失效的
+  长度、range、ETag 和 digest 元数据。
 - 上游 HTTP 错误不会触发自动重试。
 - Chat Completions 与 Responses 的自动故障转移仅发生在响应头前的连接失败、建连超时或
   响应头超时。Images generation/edit 一旦开始上游尝试就不自动重试或切换渠道。
@@ -121,6 +128,7 @@ OpenAI-compatible edit 的最多 16 张输入边界。
 | `415` | `image_edit_content_type_unsupported` | edit 不是合法 multipart/form-data。 |
 | `429` | `rate_limit_exceeded` / `concurrent_limit_exceeded` / `insufficient_quota` | 进程内准入或软额度拒绝。 |
 | `502` | `upstream_unavailable` / `response_transform_failed` | 上游连接或响应变换失败。 |
+| `502` | `upstream_content_encoding_unsupported` | 上游返回未知或过深的 HTTP content coding。 |
 | `503` | `no_healthy_channel` | 没有可选择的健康渠道。 |
 | `503` | `image_body_spool_unavailable` | edit 临时文件系统无法创建、写入或准备回放。 |
 | `504` | `connect_timeout` / `response_header_timeout` | 响应头前超时。 |
