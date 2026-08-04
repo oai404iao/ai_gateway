@@ -7,6 +7,8 @@ Versioning.
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-08-04
+
 ### Changed
 
 - Move status monitoring from individual channels to channel groups, aggregate
