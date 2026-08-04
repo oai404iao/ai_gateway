@@ -293,7 +293,7 @@ Images generation/edit 在渠道未显式配置 `response_header_timeout_ms` 时
 
 保存模板或渠道时，编译器必须验证 JSON 语法、操作白名单、Pointer、SSE 适配性以及最终合并结果。配置不得改写 `Host`、`Content-Length`、`Connection`、`Transfer-Encoding`、客户端 `Authorization`、`Proxy-Authorization` 或 `Connection` 动态声明的 Header。模板更新会立即影响引用它的渠道；系统没有版本回滚能力，依赖 `audit_logs` 查看变更。
 
-无论是否启用变换，转发器都必须在上游请求前移除客户端 `Authorization`、所有 hop-by-hop Header、`Connection` 中动态声明的 Header，以及常见反向代理/CDN 转发元数据（`Forwarded`、`Via`、`X-Forwarded-*` 的常用字段、真实客户端 IP Header 与 Cloudflare 转发 Header）；随后才注入 `upstream_auth_kind` 指定的上游鉴权。该规则由所有普通、Codex、HTTP/SSE、Images 与 Responses WebSocket 渠道共享，不可按渠道绕过。上游响应转发给客户端前也必须移除所有 hop-by-hop Header 和 `Connection` 动态声明的 Header；响应经过任何变换后还必须移除原始 `Content-Length`。这些是网关强制行为，不可由 JSON 配置关闭或覆盖。
+无论是否启用变换，转发器都必须在上游请求前移除客户端 `Authorization`、所有 hop-by-hop Header、`Connection` 中动态声明的 Header，以及 [`request-allowlists.json`](../reference/request-allowlists.json) 在客户端 Header policy 中显式 `ignore` 的常见反向代理/CDN 转发元数据（`Forwarded`、`Via`、`X-Forwarded-*` 的常用字段、真实客户端 IP Header 与 Cloudflare 转发 Header）；随后才注入 `upstream_auth_kind` 指定的上游鉴权。同一显式 `ignore` policy 必须在 Header Transform 后及最终派发边界再次执行，不能依赖入口层删除；自定义上游鉴权 Header 名和 Connector 生成 Header 不得与该集合冲突。该规则由所有普通、Codex、HTTP/SSE、Images 与 Responses WebSocket 渠道共享，渠道模型发现和 scheduled probe 等 transform-capable 内部请求也不能绕过。上游响应转发给客户端前也必须移除所有 hop-by-hop Header 和 `Connection` 动态声明的 Header；响应经过任何变换后还必须移除原始 `Content-Length`。这些是网关强制行为，不可由 JSON 配置关闭或覆盖。
 
 ### 4.9 `request_logs`
 

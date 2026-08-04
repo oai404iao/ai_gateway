@@ -41,7 +41,7 @@ use crate::{
         SystemSessionAffinitySettingsInput, SystemSettingsInput, SystemSettingsRecord,
         valid_api_hosts,
     },
-    request_policy::client_header_allowed,
+    request_policy::{client_header_allowed, client_header_explicitly_ignored},
     transforms::{TransformCompileError, TransformPlan, compile_document, declared_api_format},
 };
 
@@ -2225,7 +2225,8 @@ fn compile_auth(channel: &ChannelRecord) -> Result<UpstreamAuth, ConfigError> {
                     | "trailer"
                     | "upgrade"
                     | "proxy-connection"
-            ) {
+            ) || client_header_explicitly_ignored(&name)
+            {
                 return Err(ConfigError::Compile(
                     "unsafe upstream auth header name".into(),
                 ));
@@ -2659,6 +2660,18 @@ mod tests {
     }
 
     #[test]
+    fn compiler_rejects_forwarding_metadata_as_custom_auth_headers() {
+        for name in ["forwarded", "x-forwarded-for", "cf-connecting-ip"] {
+            let mut records = route_records(0, "weighted_random", 1, "weighted_random", false);
+            records.channels[0].upstream_auth_kind = "header".into();
+            records.channels[0].upstream_auth_header_name = Some(name.into());
+            records.channels[0].upstream_api_key = Some("credential".into());
+            let error = compile_control_plane(records).unwrap_err().to_string();
+            assert!(error.contains("unsafe upstream auth header name"), "{name}");
+        }
+    }
+
+    #[test]
     fn compiler_requires_a_priced_model_for_each_scheduled_test_model() {
         let mut records = route_records(0, "weighted_random", 1, "weighted_random", false);
         records.channels[0].test_model = Some("upstream".into());
@@ -2735,7 +2748,12 @@ mod tests {
 
     #[test]
     fn production_example_configuration_parses_and_validates() {
-        toml::from_str::<AppConfig>(include_str!("../../config.example.toml"))
+        let example = include_str!("../../config.example.toml");
+        assert!(example.contains(r#"name = "session-id""#));
+        assert!(example.contains(r#"name = "thread-id""#));
+        assert!(!example.contains(r#"name = "session_id""#));
+        assert!(!example.contains(r#"name = "thread_id""#));
+        toml::from_str::<AppConfig>(example)
             .unwrap()
             .validate()
             .unwrap();
@@ -2743,9 +2761,12 @@ mod tests {
 
     #[test]
     fn container_example_configuration_matches_the_embedded_image_contract() {
-        let file =
-            toml::from_str::<AppConfig>(include_str!("../../deploy/compose/config.example.toml"))
-                .unwrap();
+        let example = include_str!("../../deploy/compose/config.example.toml");
+        assert!(example.contains(r#"name = "session-id""#));
+        assert!(example.contains(r#"name = "thread-id""#));
+        assert!(!example.contains(r#"name = "session_id""#));
+        assert!(!example.contains(r#"name = "thread_id""#));
+        let file = toml::from_str::<AppConfig>(example).unwrap();
 
         #[cfg(not(feature = "embedded-console-ui"))]
         assert!(file.validate().is_err());
@@ -2869,9 +2890,17 @@ mod tests {
                     enabled: true,
                     api_formats: vec!["open_ai_responses".into()],
                     model_regex: vec!["^gpt-.*$".into()],
-                    key_sources: vec![SystemSessionAffinityKeySourceInput::JsonPointer {
-                        pointer: "/prompt_cache_key".into(),
-                    }],
+                    key_sources: vec![
+                        SystemSessionAffinityKeySourceInput::JsonPointer {
+                            pointer: "/prompt_cache_key".into(),
+                        },
+                        SystemSessionAffinityKeySourceInput::RequestHeader {
+                            name: "session_id".into(),
+                        },
+                        SystemSessionAffinityKeySourceInput::RequestHeader {
+                            name: "thread_id".into(),
+                        },
+                    ],
                     value_regex: None,
                     ttl_seconds: None,
                 }],

@@ -39,7 +39,7 @@ hop-by-hop 清理和上游鉴权覆盖约束。
 | 动作 | 行为 |
 | --- | --- |
 | `allow` | 保留字段；若没有其他 Transform，JSON 原始字节保持不变。 |
-| `ignore` | 删除字段后继续；`accepted_values` 存在时，仅这些等价值可以被删除。 |
+| `ignore` | 删除字段后继续；body 的 `accepted_values` 存在时，仅这些等价值可以被删除。 |
 | `reject` | 返回客户端 `400`，不联系上游。 |
 | 未列出字段 | 客户端或 Codex body 默认 `reject`；Header 默认 `ignore`。 |
 
@@ -56,18 +56,26 @@ hop-by-hop 清理和上游鉴权覆盖约束。
 
 ### Header
 
-所有公开数据面操作共享 `client_headers` 白名单。精确 Header 名与允许的前缀完整记录在
+所有公开数据面操作共享 `client_headers` 白名单。精确允许/忽略的 Header 名与允许的前缀完整记录在
 [`request-allowlists.json`](request-allowlists.json)：
 
 - OpenAI 与 HTTP 表示相关 Header，例如 `authorization`、`content-type`、
   `openai-organization`、`openai-project`、`idempotency-key`；
 - Gateway/Codex Session Header，例如 `session-id`、`thread-id`、
   `x-client-request-id`、`x-session-id`；
+- 为兼容 0.9.4 示例配置而保留的 `session_id`、`thread_id`；新配置应使用上面的连字符形式；
 - W3C trace Header；
 - 官方 SDK 使用的 `x-stainless-*` 前缀。
 
-未列出的客户端 Header 被忽略。`Connection` 声明的动态 hop-by-hop 名称会暂时保留到安全清理
-阶段，以防 Header Transform 绕过动态保护，但绝不会转发。Session affinity 的
+`client_headers.ignore` 显式列出 `Forwarded`、`Via`、常用 `X-Forwarded-*`、真实客户端 IP
+Header 与 Cloudflare 转发 Header。这些名称既在客户端入口删除，也在 Header Transform 后由
+共享清理层删除，并在 Connector 鉴权及网关自有 Header 准备完成、交给 transport 前再次检查，
+因此配置、内部 Connector 或自定义上游鉴权都不能重新引入。渠道模型发现和 scheduled probe
+等会应用 Header Transform 的内部请求使用同一个最终 guard。未列出的客户端 Header 仍默认仅在
+入口层忽略；普通 Connector 的 Header Transform 可以添加其他未受保护的自定义 Header。
+
+`Connection` 声明的动态 hop-by-hop 名称会暂时保留到安全清理阶段，以防 Header Transform 绕过
+动态保护，但绝不会转发。Session affinity 的
 `request_header` 来源必须同时位于该客户端 Header 白名单，否则控制面编译失败。
 
 ### Body
@@ -148,10 +156,11 @@ raw request
   -> model routing and alias
   -> configured JSON/Header Transform
   -> Codex top-level body allowlist (Codex only)
-  -> common hop-by-hop cleanup
+  -> common hop-by-hop and explicit client Header ignore cleanup
   -> Codex Header allowlist (Codex only)
   -> connector auth/protocol headers
-  -> transport headers
+  -> final explicit client Header ignore guard
+  -> transport framing headers
 ```
 
 客户端策略删除字段、模型别名、JSON Transform 或 Connector policy 改变 body 时，网关会移除原始
@@ -166,15 +175,19 @@ part，不把图片整体读回内存。
 2. 首先编辑 `request-allowlists.json`，更新 `verified_at` 和 source commit；
 3. 对每个字段明确选择 `allow`、`ignore` 或 `reject`，不得依赖未列出字段的默认动作表达已知
    provider 差异；
-4. 更新本说明及相关接口文档；
-5. 添加客户端入口、普通 upstream、Codex HTTP/WebSocket/Images 的确定性测试；
-6. 运行 Rust、文档和真实上游验证。
+4. 常见反向代理/CDN 转发 Header 必须放入 `client_headers.ignore`，不得在代理转发模块另建
+   一份运行时名单；
+5. 更新本说明及相关接口文档；
+6. 添加客户端入口、普通 upstream、Codex HTTP/WebSocket/Images 的确定性测试；
+7. 运行 Rust、文档和真实上游验证。
 
 Rust 单元测试会拒绝以下契约漂移：
 
 - 缺少五个公共接口之一；
 - 未知客户端/Codex body 不再默认拒绝；
 - 未知 Header 不再默认忽略；
+- Header 的精确 `allow`/`ignore` 动作重叠；
+- Codex 生成 Header 与客户端显式 `ignore` 动作冲突；
 - 一个字段同时出现在多个动作集合；
 - 客户端已知字段在对应 Codex policy 中没有显式动作；
 - Header 名、排序、重复项、source commit 或日期格式无效。

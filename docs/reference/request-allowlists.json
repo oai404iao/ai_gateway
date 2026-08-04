@@ -28,7 +28,9 @@
       "range",
       "repr-digest",
       "session-id",
+      "session_id",
       "thread-id",
+      "thread_id",
       "traceparent",
       "tracestate",
       "user-agent",
@@ -39,6 +41,24 @@
     ],
     "allow_prefixes": [
       "x-stainless-"
+    ],
+    "ignore": [
+      "cf-connecting-ip",
+      "cf-connecting-ipv6",
+      "cf-ipcountry",
+      "cf-pseudo-ipv4",
+      "cf-ray",
+      "cf-visitor",
+      "forwarded",
+      "true-client-ip",
+      "via",
+      "x-client-ip",
+      "x-forwarded-for",
+      "x-forwarded-host",
+      "x-forwarded-port",
+      "x-forwarded-proto",
+      "x-original-forwarded-for",
+      "x-real-ip"
     ],
     "generated": []
   },
@@ -137,6 +157,7 @@
             "x-client-request-id"
           ],
           "allow_prefixes": [],
+          "ignore": [],
           "generated": [
             "accept",
             "accept-encoding",
@@ -305,6 +326,7 @@
             "x-client-request-id"
           ],
           "allow_prefixes": [],
+          "ignore": [],
           "generated": [
             "authorization",
             "chatgpt-account-id",
@@ -456,6 +478,7 @@
             "tracestate"
           ],
           "allow_prefixes": [],
+          "ignore": [],
           "generated": [
             "accept",
             "accept-encoding",
@@ -569,6 +592,7 @@
             "tracestate"
           ],
           "allow_prefixes": [],
+          "ignore": [],
           "generated": [
             "accept",
             "accept-encoding",

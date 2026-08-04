@@ -1033,6 +1033,18 @@ fn with_forwarding_metadata(mut request: reqwest::RequestBuilder) -> reqwest::Re
     request
 }
 
+fn forwarding_metadata_transform(api_format: &str) -> Value {
+    let headers = FORWARDING_METADATA_HEADERS
+        .iter()
+        .map(|name| ((*name).to_owned(), Value::String("discard".into())))
+        .collect::<serde_json::Map<_, _>>();
+    serde_json::json!({
+        "version": 1,
+        "api_format": api_format,
+        "request_headers": {"set": headers}
+    })
+}
+
 fn multipart_edit_body(
     boundary: &str,
     model: &str,
@@ -1574,8 +1586,17 @@ async fn deepseek_chat_nonstream_usage_preserves_total_output_and_reasoning() {
 }
 
 #[tokio::test]
-async fn common_forwarding_metadata_is_filtered_for_every_http_operation() {
-    let harness = harness(StatusCode::OK, br#"{}"#.to_vec()).await;
+async fn common_forwarding_metadata_cannot_be_reintroduced_by_http_transforms() {
+    // Client copies are removed by the ingress allowlist. Re-adding the same
+    // names through each format's Header Transform verifies the later
+    // outbound guard instead of letting the ingress filter make this test pass.
+    let harness = harness_with_transforms(TransformDocuments {
+        chat_override: forwarding_metadata_transform("open_ai_chat_completions"),
+        responses_override: forwarding_metadata_transform("open_ai_responses"),
+        images_override: forwarding_metadata_transform("open_ai_images"),
+        ..TransformDocuments::default()
+    })
+    .await;
     let client = client();
 
     let requests = [

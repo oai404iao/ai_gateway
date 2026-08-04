@@ -59,8 +59,9 @@ Browser or Console client
    `reasoning.effort`、`reasoning_effort` 和 `service_tier = "priority"`，但这些元数据不会
    增加转发校验。
 5. 使用嵌入的 [`request-allowlists.json`](../reference/request-allowlists.json) 执行客户端入口
-   白名单：未列出的 Header 被忽略，未列出的顶层 JSON/multipart 字段返回 `400`；显式
-   `ignore` 字段只在值满足契约时删除。当前只校验顶层字段，允许字段内部的嵌套结构仍由上游解释。
+   白名单：未列出的 Header 被忽略，常见反向代理/CDN 转发元数据作为显式 Header `ignore`
+   条目删除，未列出的顶层 JSON/multipart 字段返回 `400`；显式 body `ignore` 字段只在值满足
+   契约时删除。当前只校验顶层字段，允许字段内部的嵌套结构仍由上游解释。
 6. 从分 API 格式索引按 `(api_format, client_model)` 取得预编译模型路由；渠道组
    成员已经按规则 `upstream_model` 与 `channels.available_models` 求交并划分
    优先级 tier。
@@ -73,10 +74,13 @@ Browser or Console client
 9. 由进程内 Connector 的 `PreparedUpstreamAttempt` 完成 provider 特定 body、目标路径和最终
    Header/鉴权准备。Codex Connector 在普通 Transform 之后再次执行 provider body 白名单，
    只保留 wire type 声明的字段或显式兼容项；普通 Connector 保持相同 API 路径和认证行为。
-10. 清理客户端鉴权、hop-by-hop headers 和常见反向代理/CDN 转发元数据；Codex Connector 还会
-   在该结果上执行 provider Header 白名单，再注入最终 OAuth/account/protocol Header。该共享
-   清理规则覆盖所有普通、
-   Codex、HTTP/SSE、Images 与 Responses WebSocket 渠道共享的请求清理层。HTTP
+10. 清理客户端鉴权、hop-by-hop headers，并再次应用客户端 Header policy 中显式 `ignore` 的
+   常见反向代理/CDN 转发元数据，防止 Header Transform 重新引入；Codex Connector 还会在该结果
+   上执行 provider Header 白名单，再注入最终 OAuth/account/protocol Header。该共享清理规则
+   覆盖所有普通、Codex、HTTP/SSE、Images 与 Responses WebSocket 渠道共享的请求清理层。Connector
+   鉴权和网关自有 coding Header 准备完成后，还会在交给 transport 前再次执行显式 `ignore`
+   guard；自定义上游鉴权 Header 名若与该集合冲突则在控制面编译时直接拒绝。渠道模型发现和
+   scheduled probe 等会应用 Header Transform 的内部请求同样执行最终 guard。HTTP
    `Accept-Encoding` 由网关拥有：下游值不会直接转发，普通请求向上游声明
    `gzip, deflate, br, zstd`，Range 请求使用 `identity`。随后使用按代理、TLS 和超时策略复用的
    reqwest client 直接转发，不经过 sidecar、Unix Socket RPC 或第二个 HTTP 服务。

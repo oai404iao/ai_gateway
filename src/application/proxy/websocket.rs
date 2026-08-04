@@ -32,6 +32,7 @@ use crate::{
     },
     request_policy::{
         RequestInterface, RequestPolicyLayer, apply_json_body_policy, filter_client_headers,
+        strip_explicitly_ignored_client_headers,
     },
     routing::{SelectionResult, SessionAffinityMatch},
     transforms::{apply_header_plan, apply_json_patch_plan, apply_websocket_event_plan},
@@ -848,6 +849,7 @@ impl ResponsesWebSocketSession {
         connector
             .inject_headers(&mut headers, channel, RequestProtocol::WebSocket)
             .map_err(ProxyError::connector_attempt)?;
+        strip_explicitly_ignored_client_headers(&mut headers);
         let target = connector
             .upstream_url(channel, &self.request_uri)
             .map_err(ProxyError::connector_attempt)?;

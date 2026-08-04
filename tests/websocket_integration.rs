@@ -466,7 +466,14 @@ async fn gateway_harness_with_controls(
                 "version": 1,
                 "api_format": "open_ai_responses",
                 "request_headers": {
-                    "set": {"x-gateway-transform": "enabled"}
+                    // These names are also present on the downstream handshake.
+                    // Re-adding them here verifies post-allowlist cleanup.
+                    "set": {
+                        "cf-connecting-ip": "192.0.2.2",
+                        "forwarded": "for=192.0.2.2;proto=https",
+                        "x-forwarded-for": "192.0.2.2",
+                        "x-gateway-transform": "enabled"
+                    }
                 },
                 "request_json": [{
                     "op": "add",

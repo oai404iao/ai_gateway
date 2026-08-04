@@ -43,7 +43,8 @@ use crate::{
         SessionAffinitySettings,
     },
     request_policy::{
-        RequestInterface, RequestPolicyError, RequestPolicyLayer, filter_client_headers,
+        RequestInterface, RequestPolicyError, RequestPolicyLayer, client_header_explicitly_ignored,
+        filter_client_headers, strip_explicitly_ignored_client_headers,
     },
     routing::{
         ChannelLease, RoutingRuntime, SelectionResult, SessionAffinityMatch,
@@ -557,6 +558,7 @@ impl ProxyService {
                     HeaderValue::from_static(UPSTREAM_ACCEPT_ENCODING)
                 },
             );
+            strip_explicitly_ignored_client_headers(&mut headers);
             let upstream_policy = match ResolvedUpstreamPolicy::try_resolve_for(
                 api_format,
                 &snapshot.system_settings().upstream_timeouts(),
@@ -1638,25 +1640,6 @@ fn forward_response_headers(headers: &HeaderMap) -> HeaderMap {
     forward_headers(headers, false)
 }
 
-const REQUEST_FORWARDING_METADATA_HEADERS: &[&str] = &[
-    "forwarded",
-    "via",
-    "x-forwarded-for",
-    "x-forwarded-host",
-    "x-forwarded-proto",
-    "x-forwarded-port",
-    "x-real-ip",
-    "x-client-ip",
-    "x-original-forwarded-for",
-    "true-client-ip",
-    "cf-connecting-ip",
-    "cf-connecting-ipv6",
-    "cf-pseudo-ipv4",
-    "cf-ipcountry",
-    "cf-ray",
-    "cf-visitor",
-];
-
 fn remove_rewritten_request_entity_headers(headers: &mut HeaderMap) {
     for name in [
         HeaderName::from_static("content-md5"),
@@ -1679,7 +1662,7 @@ fn forward_headers(headers: &HeaderMap, request: bool) -> HeaderMap {
                 && (matches!(
                     *name,
                     HOST | CONTENT_LENGTH | AUTHORIZATION | PROXY_AUTHORIZATION | ACCEPT_ENCODING
-                ) || REQUEST_FORWARDING_METADATA_HEADERS.contains(&name.as_str())))
+                ) || client_header_explicitly_ignored(name)))
         {
             continue;
         }
@@ -2932,9 +2915,9 @@ mod tests {
     #[test]
     fn removes_common_proxy_and_cdn_forwarding_metadata_from_requests() {
         let mut headers = HeaderMap::new();
-        for name in super::REQUEST_FORWARDING_METADATA_HEADERS {
-            headers.insert(*name, HeaderValue::from_static("discard"));
-        }
+        headers.insert("forwarded", HeaderValue::from_static("discard"));
+        headers.insert("x-forwarded-for", HeaderValue::from_static("discard"));
+        headers.insert("cf-connecting-ip", HeaderValue::from_static("discard"));
         headers.insert(
             "x-forwarded-custom",
             HeaderValue::from_static("keep-similar-name"),
@@ -2943,9 +2926,9 @@ mod tests {
 
         let forwarded = forward_request_headers(&headers);
 
-        for name in super::REQUEST_FORWARDING_METADATA_HEADERS {
-            assert!(forwarded.get(*name).is_none(), "{name} was forwarded");
-        }
+        assert!(forwarded.get("forwarded").is_none());
+        assert!(forwarded.get("x-forwarded-for").is_none());
+        assert!(forwarded.get("cf-connecting-ip").is_none());
         assert_eq!(
             forwarded.get("x-forwarded-custom").unwrap(),
             "keep-similar-name"
