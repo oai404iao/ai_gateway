@@ -54,15 +54,22 @@ impl ResponseUsage {
                 ),
             };
         let input_tokens = token(usage.get(input_field))?;
+        // `completion_tokens` / `output_tokens` is the full generated-token
+        // total. Reasoning tokens are a subset and must not replace or be
+        // subtracted from it while parsing usage.
         let output_tokens = token(usage.get(output_field))?;
         let input_details = usage.get(input_details_field);
-        let cached_input_tokens = input_details
-            .and_then(|details| token(details.get("cached_tokens")))
-            .or_else(|| match api_format {
-                ApiFormat::OpenAiChatCompletions => token(usage.get("prompt_cache_hit_tokens")),
-                ApiFormat::OpenAiResponses | ApiFormat::OpenAiImages => None,
-            })
-            .unwrap_or(0);
+        let cached_input_tokens = match api_format {
+            // DeepSeek exposes cache hits at the top level. Prefer that
+            // provider-specific value when present, then fall back to the
+            // OpenAI-standard nested detail.
+            ApiFormat::OpenAiChatCompletions => token(usage.get("prompt_cache_hit_tokens"))
+                .or_else(|| input_details.and_then(|details| token(details.get("cached_tokens")))),
+            ApiFormat::OpenAiResponses | ApiFormat::OpenAiImages => {
+                input_details.and_then(|details| token(details.get("cached_tokens")))
+            }
+        }
+        .unwrap_or(0);
         let cache_write_tokens = input_details
             .and_then(|details| {
                 token(details.get("cache_write_tokens"))
@@ -301,11 +308,17 @@ fn is_terminal_usage_event(api_format: ApiFormat, value: &Value) -> bool {
             .get("choices")
             .and_then(Value::as_array)
             .is_some_and(|choices| {
-                choices.iter().any(|choice| {
-                    choice
-                        .get("finish_reason")
-                        .is_some_and(|reason| !reason.is_null())
-                })
+                // OpenAI emits a final usage-only chunk with `choices: []`,
+                // while DeepSeek-compatible streams may attach usage to the
+                // chunk carrying `finish_reason`. Treat both as terminal
+                // usage summaries so a later OpenAI summary supersedes an
+                // earlier finish-chunk value.
+                choices.is_empty()
+                    || choices.iter().any(|choice| {
+                        choice
+                            .get("finish_reason")
+                            .is_some_and(|reason| !reason.is_null())
+                    })
             }),
         ApiFormat::OpenAiResponses => {
             matches!(
@@ -838,6 +851,84 @@ mod tests {
     }
 
     #[test]
+    fn extracts_deepseek_nonstreaming_chat_usage_without_subtracting_reasoning() {
+        let body = br#"{
+            "id": "b6de8b7e-d52a-4e36-9032-7362d940c5fd",
+            "object": "chat.completion",
+            "created": 1785837502,
+            "model": "deepseek-v4-flash",
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "pong",
+                    "reasoning_content": "The answer is pong."
+                },
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 11,
+                "completion_tokens": 49,
+                "total_tokens": 60,
+                "prompt_tokens_details": {
+                    "cached_tokens": 0
+                },
+                "completion_tokens_details": {
+                    "reasoning_tokens": 46
+                },
+                "prompt_cache_hit_tokens": 0,
+                "prompt_cache_miss_tokens": 11
+            }
+        }"#;
+        let mut collector = UsageCollector::new(ApiFormat::OpenAiChatCompletions, false);
+        for chunk in body.chunks(73) {
+            collector.observe(&Bytes::copy_from_slice(chunk));
+        }
+
+        assert_eq!(
+            collector.latest(),
+            Some(ResponseUsage {
+                input_tokens: 11,
+                cached_input_tokens: 0,
+                cache_write_tokens: 0,
+                output_tokens: 49,
+                reasoning_tokens: 46,
+            })
+        );
+    }
+
+    #[test]
+    fn extracts_deepseek_streaming_chat_usage_from_the_finish_chunk() {
+        let mut collector = UsageCollector::new(ApiFormat::OpenAiChatCompletions, true);
+        collector.observe(&Bytes::from_static(
+            br#"data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":null,"reasoning_content":"The answer is pong."},"finish_reason":null}]}
+
+data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"pong","reasoning_content":null},"finish_reason":null}]}
+
+data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"","reasoning_content":null},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":45,"total_tokens":56,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":42},"prompt_cache_hit_tokens":0,"prompt_cache_miss_tokens":11}}
+
+data: [DONE]
+
+"#,
+        ));
+
+        assert_eq!(
+            collector.sse_terminal_outcome(),
+            Some(SseTerminalOutcome::Completed)
+        );
+        assert_eq!(
+            collector.latest(),
+            Some(ResponseUsage {
+                input_tokens: 11,
+                cached_input_tokens: 0,
+                cache_write_tokens: 0,
+                output_tokens: 45,
+                reasoning_tokens: 42,
+            })
+        );
+    }
+
+    #[test]
     fn extracts_codex_responses_usage_from_completed_sse_event() {
         let mut collector = UsageCollector::new(ApiFormat::OpenAiResponses, true);
         collector.observe(&Bytes::from_static(
@@ -1066,6 +1157,9 @@ mod tests {
             "usage": {
                 "prompt_tokens": 87,
                 "completion_tokens": 4,
+                "prompt_tokens_details": {
+                    "cached_tokens": 0
+                },
                 "prompt_cache_hit_tokens": 43,
                 "prompt_cache_miss_tokens": 44
             }
@@ -1086,42 +1180,33 @@ mod tests {
     fn finalizes_an_unterminated_terminal_sse_usage_frame() {
         let mut collector = UsageCollector::new(ApiFormat::OpenAiChatCompletions, true);
         collector.observe(&Bytes::from_static(
-            br#"data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":0,"completion_tokens":1928}}
+            br#"data: {"object":"chat.completion.chunk","choices":[{"delta":{"content":null,"reasoning_content":"The answer is pong."},"finish_reason":null}]}
 
-data: {"object":"chat.completion.chunk","choices":[{"delta":{"content":""},"finish_reason":"stop","index":0}],"usage":{"prompt_tokens":87,"completion_tokens":1361,"prompt_cache_hit_tokens":0,"prompt_cache_miss_tokens":87}}"#,
+data: {"object":"chat.completion.chunk","choices":[{"delta":{"content":""},"finish_reason":"stop","index":0}],"usage":{"prompt_tokens":11,"completion_tokens":45,"total_tokens":56,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":42},"prompt_cache_hit_tokens":0,"prompt_cache_miss_tokens":11}}"#,
         ));
-        assert_eq!(
-            collector.latest(),
-            Some(ResponseUsage {
-                input_tokens: 0,
-                cached_input_tokens: 0,
-                cache_write_tokens: 0,
-                output_tokens: 1928,
-                reasoning_tokens: 0,
-            })
-        );
+        assert_eq!(collector.latest(), None);
 
         collector.finalize();
 
         assert_eq!(
             collector.latest(),
             Some(ResponseUsage {
-                input_tokens: 87,
+                input_tokens: 11,
                 cached_input_tokens: 0,
                 cache_write_tokens: 0,
-                output_tokens: 1361,
-                reasoning_tokens: 0,
+                output_tokens: 45,
+                reasoning_tokens: 42,
             })
         );
     }
 
     #[test]
-    fn prefers_usage_attached_to_a_chat_finish_chunk() {
+    fn prefers_a_later_openai_usage_summary_over_finish_chunk_usage() {
         let mut collector = UsageCollector::new(ApiFormat::OpenAiChatCompletions, true);
         collector.observe(&Bytes::from_static(
-            br#"data: {"object":"chat.completion.chunk","choices":[{"delta":{"content":""},"finish_reason":"stop","index":0}],"usage":{"prompt_tokens":84,"completion_tokens":721}}
+            br#"data: {"object":"chat.completion.chunk","choices":[{"delta":{"content":""},"finish_reason":"stop","index":0}],"usage":{"prompt_tokens":11,"completion_tokens":44,"total_tokens":55,"completion_tokens_details":{"reasoning_tokens":41}}}
 
-data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":0,"completion_tokens":834}}
+data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":11,"completion_tokens":45,"total_tokens":56,"completion_tokens_details":{"reasoning_tokens":42}}}
 
 "#,
         ));
@@ -1129,11 +1214,11 @@ data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":0,
         assert_eq!(
             collector.latest(),
             Some(ResponseUsage {
-                input_tokens: 84,
+                input_tokens: 11,
                 cached_input_tokens: 0,
                 cache_write_tokens: 0,
-                output_tokens: 721,
-                reasoning_tokens: 0,
+                output_tokens: 45,
+                reasoning_tokens: 42,
             })
         );
     }

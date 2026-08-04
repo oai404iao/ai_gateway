@@ -155,10 +155,9 @@ function requestOperationLabel(
 function TokenUsage({ log }: { log: RequestLogView }) {
   const { t } = useI18n();
   const uncachedInput = tokenRemainder(log.input_tokens, log.cached_input_tokens);
-  const nonReasoningOutput = tokenRemainder(log.output_tokens, log.reasoning_tokens);
   const uncachedInputLabel = `${t("Uncached input")}: ${formatTokens(uncachedInput)}`;
   const cachedInputLabel = `${t("Cached input")}: ${formatTokens(log.cached_input_tokens)}`;
-  const nonReasoningOutputLabel = `${t("Non-reasoning output")}: ${formatTokens(nonReasoningOutput)}`;
+  const outputLabel = `${t("Output tokens")}: ${formatTokens(log.output_tokens)}`;
   const reasoningLabel = `${t("Reasoning tokens")}: ${formatTokens(log.reasoning_tokens)}`;
 
   return (
@@ -181,11 +180,11 @@ function TokenUsage({ log }: { log: RequestLogView }) {
       <span className="flex items-center gap-2">
         <span
           className="flex min-w-20 items-center gap-1.5"
-          aria-label={nonReasoningOutputLabel}
-          title={nonReasoningOutputLabel}
+          aria-label={outputLabel}
+          title={outputLabel}
         >
           <ArrowDown className="size-4 shrink-0 text-info" aria-hidden />
-          <span>{formatTokens(nonReasoningOutput)}</span>
+          <span>{formatTokens(log.output_tokens)}</span>
         </span>
         {log.reasoning_tokens !== null && log.reasoning_tokens > 0 ? (
           <Badge variant="info" aria-label={reasoningLabel} title={reasoningLabel}>

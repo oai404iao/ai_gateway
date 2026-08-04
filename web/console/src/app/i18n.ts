@@ -908,7 +908,6 @@ const zhCN: Record<string, string> = {
   "Tokens": "Token",
   "Output tokens": "输出 Token",
   "Uncached input": "未缓存输入",
-  "Non-reasoning output": "非推理输出",
   "Reasoning tokens": "推理 Token",
   "Cost": "成本",
   "Duration": "耗时",

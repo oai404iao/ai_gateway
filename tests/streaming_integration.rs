@@ -711,9 +711,11 @@ async fn unusual_sse_response() -> Response {
 
 async fn chat_usage_sse() -> Response {
     sse_response(Body::from(Bytes::from_static(
-        br#"data: {"object":"chat.completion.chunk","choices":[]}
+        br#"data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"pong"},"finish_reason":null}],"usage":null}
 
-data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":11,"completion_tokens":4,"prompt_tokens_details":{"cached_tokens":2},"completion_tokens_details":{"reasoning_tokens":1}}}
+data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":null}
+
+data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":11,"completion_tokens":4,"total_tokens":15,"prompt_tokens_details":{"cached_tokens":2},"completion_tokens_details":{"reasoning_tokens":1}}}
 
 data: [DONE]
 
@@ -721,11 +723,13 @@ data: [DONE]
     )))
 }
 
-async fn chat_usage_sse_with_unterminated_terminal_frame() -> Response {
+async fn deepseek_chat_usage_sse_with_unterminated_final_frame() -> Response {
     sse_response(Body::from(Bytes::from_static(
-        br#"data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":0,"completion_tokens":1928}}
+        br#"data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":null,"reasoning_content":"The answer is pong."},"finish_reason":null}]}
 
-data: {"object":"chat.completion.chunk","choices":[{"delta":{"content":""},"finish_reason":"stop","index":0}],"usage":{"prompt_tokens":87,"completion_tokens":1361,"prompt_cache_hit_tokens":0,"prompt_cache_miss_tokens":87}}"#,
+data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"pong","reasoning_content":null},"finish_reason":null}]}
+
+data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"","reasoning_content":null},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":45,"total_tokens":56,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":42},"prompt_cache_hit_tokens":0,"prompt_cache_miss_tokens":11}}"#,
     )))
 }
 
@@ -768,10 +772,10 @@ async fn chat_sse_usage_is_collected_without_changing_forwarded_bytes() {
 }
 
 #[tokio::test]
-async fn chat_sse_usage_in_unterminated_terminal_frame_is_collected() {
+async fn deepseek_chat_sse_usage_in_unterminated_final_frame_is_collected() {
     let upstream = start_server(Router::new().route(
         "/v1/chat/completions",
-        post(chat_usage_sse_with_unterminated_terminal_frame),
+        post(deepseek_chat_usage_sse_with_unterminated_final_frame),
     ))
     .await;
     let logs = RecordingRequestLogSink::default();
@@ -792,8 +796,8 @@ async fn chat_sse_usage_in_unterminated_terminal_frame_is_collected() {
             .bytes()
             .await
             .unwrap()
-            .windows(b"\"prompt_tokens\":87".len())
-            .any(|window| window == b"\"prompt_tokens\":87")
+            .windows(b"\"prompt_tokens\":11".len())
+            .any(|window| window == b"\"prompt_tokens\":11")
     );
 
     let events = logs.events();
@@ -801,11 +805,11 @@ async fn chat_sse_usage_in_unterminated_terminal_frame_is_collected() {
     assert_eq!(
         events[0].billing.as_ref().unwrap().usage,
         Some(ai_gateway::domain::RequestUsage {
-            input_tokens: 87,
+            input_tokens: 11,
             cached_input_tokens: 0,
             cache_write_tokens: 0,
-            output_tokens: 1361,
-            reasoning_tokens: 0,
+            output_tokens: 45,
+            reasoning_tokens: 42,
         })
     );
 }

@@ -640,8 +640,10 @@ API Key 和小时/天聚合粒度，不提供用户或渠道筛选，响应中�
 事件和一条 `request_logs`，其中渠道、结果和计费快照对应最终尝试。worker 从三种格式的普通 JSON
 以及 Chat Completions/Responses 的 SSE 事件增量提取 usage，在选路时绑定价格快照，并在可结算时以 `billed_at` 条件幂等更新用户余额
 和 API Key 已用额度。usage 同时保留输入、缓存命中、缓存写入、输出总量，以及输出中包含的
-reasoning token。Console 请求日志的 `Tokens` 列将未缓存输入和非 reasoning 输出作为主数字，
-并用紧凑标记分别展示缓存命中与 reasoning token。
+reasoning token。Chat Completions 的 `completion_tokens` 始终作为包含 reasoning 的输出总量保存；
+OpenAI 的最终空 `choices` usage chunk 和 DeepSeek 将 usage 附在 `finish_reason` chunk 的形式都可解析。
+Console 请求日志的 `Tokens` 列将未缓存输入和输出总量作为主数字，并用紧凑标记分别展示缓存命中
+与作为输出子集的 reasoning token。
 
 对于客户端原始请求，日志还会在不改变转发校验或请求字节的前提下提取显式模式元数据：
 OpenAI Responses 的 `reasoning.effort`、DeepSeek/OpenAI Chat Completions 兼容的

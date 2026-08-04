@@ -1160,13 +1160,16 @@ fn usage_from_sse_value(format: SmokeFormat, value: &Value) -> Option<RequestUsa
     let input_tokens = nonnegative_token(usage.get(input_field))?;
     let output_tokens = nonnegative_token(usage.get(output_field))?;
     let input_details = usage.get(input_details_field);
-    let cached_input_tokens = input_details
-        .and_then(|details| nonnegative_token(details.get("cached_tokens")))
-        .or_else(|| match format {
-            SmokeFormat::ChatCompletions => nonnegative_token(usage.get("prompt_cache_hit_tokens")),
-            SmokeFormat::Responses | SmokeFormat::Images => None,
-        })
-        .unwrap_or(0);
+    let cached_input_tokens = match format {
+        SmokeFormat::ChatCompletions => nonnegative_token(usage.get("prompt_cache_hit_tokens"))
+            .or_else(|| {
+                input_details.and_then(|details| nonnegative_token(details.get("cached_tokens")))
+            }),
+        SmokeFormat::Responses | SmokeFormat::Images => {
+            input_details.and_then(|details| nonnegative_token(details.get("cached_tokens")))
+        }
+    }
+    .unwrap_or(0);
     let cache_write_tokens = input_details
         .and_then(|details| {
             nonnegative_token(details.get("cache_write_tokens"))
@@ -1200,11 +1203,12 @@ fn is_terminal_sse_usage(format: SmokeFormat, value: &Value) -> bool {
                 .get("choices")
                 .and_then(Value::as_array)
                 .is_some_and(|choices| {
-                    choices.iter().any(|choice| {
-                        choice
-                            .get("finish_reason")
-                            .is_some_and(|reason| !reason.is_null())
-                    })
+                    choices.is_empty()
+                        || choices.iter().any(|choice| {
+                            choice
+                                .get("finish_reason")
+                                .is_some_and(|reason| !reason.is_null())
+                        })
                 })
         }
         SmokeFormat::Responses => {

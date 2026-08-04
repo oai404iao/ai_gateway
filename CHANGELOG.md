@@ -7,6 +7,14 @@ Versioning.
 
 ## [Unreleased]
 
+### Fixed
+
+- Parse Chat Completions usage consistently across OpenAI and DeepSeek
+  non-streaming and SSE responses: preserve `completion_tokens` as total output,
+  retain reasoning as a subset, prefer DeepSeek cache-hit fields when present,
+  accept both OpenAI usage-only summary chunks and DeepSeek finish chunks, and
+  show the full output total in Console request logs.
+
 ## [0.9.4] - 2026-08-04
 
 ### Added
