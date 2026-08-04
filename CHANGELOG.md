@@ -7,6 +7,8 @@ Versioning.
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-08-04
+
 ### Added
 
 - Add a database-backed Images-specific response-header timeout, bootstrapped
