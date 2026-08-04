@@ -1,6 +1,7 @@
 //! Bounded replayable request bodies and multipart Images edit adaptation.
 
 use std::{
+    collections::BTreeSet,
     fmt, io,
     path::PathBuf,
     pin::Pin,
@@ -27,7 +28,13 @@ use tokio::{
     sync::Mutex,
 };
 
-use crate::runtime_config::RequestLimitsConfig;
+use crate::{
+    request_policy::{
+        FieldDisposition, RequestInterface, RequestPolicyError, RequestPolicyLayer,
+        apply_json_body_policy, body_field_disposition,
+    },
+    runtime_config::RequestLimitsConfig,
+};
 
 const BODY_READ_CHUNK_BYTES: usize = 64 * 1_024;
 const MAX_MULTIPART_FIELDS: usize = 64;
@@ -168,6 +175,7 @@ impl ImageEditBodyPolicy {
             body,
             boundary: boundary.into(),
             text_fields: inspection.text_fields.into(),
+            ignored_part_fields: Arc::from([]),
             wire_model: Arc::clone(&model),
             model,
             image_count: inspection.image_count,
@@ -224,6 +232,24 @@ impl PreparedRequestBody {
         }
     }
 
+    pub(crate) fn apply_policy(
+        self,
+        layer: RequestPolicyLayer,
+        interface: RequestInterface,
+    ) -> Result<(Self, bool), RequestPolicyError> {
+        match self {
+            Self::Json(body) => {
+                let applied = apply_json_body_policy(layer, interface, body)?;
+                Ok((Self::Json(applied.body), applied.changed))
+            }
+            Self::ImageEdit(body) => {
+                debug_assert_eq!(interface, RequestInterface::ImagesEdit);
+                let (body, changed) = body.apply_field_policy(layer, interface)?;
+                Ok((Self::ImageEdit(body), changed))
+            }
+        }
+    }
+
     pub(crate) async fn rewrite_model(
         self,
         client_model: &str,
@@ -264,6 +290,7 @@ pub(crate) struct ImageEditRequestBody {
     body: ReplayableRequestBody,
     boundary: Arc<str>,
     text_fields: Arc<[MultipartTextField]>,
+    ignored_part_fields: Arc<[String]>,
     wire_model: Arc<str>,
     model: Arc<str>,
     image_count: usize,
@@ -309,6 +336,56 @@ impl ImageEditRequestBody {
         Value::Object(object)
     }
 
+    fn apply_field_policy(
+        mut self,
+        layer: RequestPolicyLayer,
+        interface: RequestInterface,
+    ) -> Result<(Self, bool), RequestPolicyError> {
+        let mut retained = Vec::with_capacity(self.text_fields.len());
+        let mut ignored = self
+            .ignored_part_fields
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let mut changed = false;
+        for (field, present) in [
+            ("image", self.image_count > 0),
+            ("mask", self.mask_count > 0),
+        ] {
+            if !present {
+                continue;
+            }
+            if body_field_disposition(layer, interface, field, None)? == FieldDisposition::Ignore {
+                ignored.insert(field.to_owned());
+                if field == "image" {
+                    ignored.insert("image[]".to_owned());
+                    self.image_count = 0;
+                    self.image_bytes = 0;
+                } else {
+                    self.mask_count = 0;
+                }
+                changed = true;
+            }
+        }
+        for field in self.text_fields.iter() {
+            let value = std::str::from_utf8(&field.value)
+                .ok()
+                .map(|value| Value::String(value.to_owned()));
+            match body_field_disposition(layer, interface, &field.name, value.as_ref())? {
+                FieldDisposition::Allow => retained.push(field.clone()),
+                FieldDisposition::Ignore => {
+                    ignored.insert(field.name.clone());
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            self.text_fields = retained.into();
+            self.ignored_part_fields = ignored.into_iter().collect::<Vec<_>>().into();
+        }
+        Ok((self, changed))
+    }
+
     fn rewrite_model(mut self, upstream_model: &str) -> Result<Self, ImageEditBodyError> {
         if upstream_model.contains(['\r', '\n']) {
             return Err(ImageEditBodyError::InvalidModel);
@@ -325,13 +402,13 @@ impl ImageEditRequestBody {
     }
 
     async fn into_openai_replayable(self) -> Result<ReplayableRequestBody, ImageEditBodyError> {
-        if self.model == self.wire_model {
+        if self.model == self.wire_model && self.ignored_part_fields.is_empty() {
             return Ok(self.body);
         }
-        self.rebuild_model_part().await
+        self.rebuild_parts().await
     }
 
-    async fn rebuild_model_part(self) -> Result<ReplayableRequestBody, ImageEditBodyError> {
+    async fn rebuild_parts(self) -> Result<ReplayableRequestBody, ImageEditBodyError> {
         let upstream_model = Arc::clone(&self.model);
         let max_bytes = self
             .body
@@ -350,10 +427,24 @@ impl ImageEditRequestBody {
             .await
             .map_err(|_| ImageEditBodyError::MalformedMultipart)?
         {
+            let field_name = field.name().map(str::to_owned);
+            if field_name.as_deref().is_some_and(|name| {
+                self.ignored_part_fields
+                    .binary_search_by(|ignored| ignored.as_str().cmp(name))
+                    .is_ok()
+            }) {
+                while field
+                    .chunk()
+                    .await
+                    .map_err(|_| ImageEditBodyError::MalformedMultipart)?
+                    .is_some()
+                {}
+                continue;
+            }
             writer.write(b"--").await?;
             writer.write(self.boundary.as_bytes()).await?;
             writer.write(b"\r\n").await?;
-            let replace = field.name() == Some("model");
+            let replace = field_name.as_deref() == Some("model");
             for (name, value) in field.headers() {
                 if replace && is_stale_rebuilt_part_header(name.as_str()) {
                     continue;
@@ -398,7 +489,14 @@ impl ImageEditRequestBody {
             return Err(ImageEditBodyError::CodexTooManyImages);
         }
         if self.mask_count > 0 {
-            return Err(ImageEditBodyError::CodexMaskUnsupported);
+            let error = body_field_disposition(
+                RequestPolicyLayer::CodexOauth,
+                RequestInterface::ImagesEdit,
+                "mask",
+                None,
+            )
+            .expect_err("validated Codex Images edit policy must reject mask");
+            return Err(ImageEditBodyError::RequestPolicy(error));
         }
         let fields = CodexEditFields::parse(&self.text_fields)?;
         let text_bytes = self.text_fields.iter().fold(0_usize, |total, field| {
@@ -421,6 +519,19 @@ impl ImageEditRequestBody {
             .map_err(|_| ImageEditBodyError::MalformedMultipart)?
         {
             let name = field.name().map(str::to_owned);
+            if name.as_deref().is_some_and(|name| {
+                self.ignored_part_fields
+                    .binary_search_by(|ignored| ignored.as_str().cmp(name))
+                    .is_ok()
+            }) {
+                while field
+                    .chunk()
+                    .await
+                    .map_err(|_| ImageEditBodyError::MalformedMultipart)?
+                    .is_some()
+                {}
+                continue;
+            }
             if name.as_deref().is_some_and(is_image_field) {
                 if image_index > 0 {
                     writer.write(b",").await?;
@@ -517,6 +628,18 @@ async fn inspect_multipart(
         let is_mask = name == "mask";
         let is_file = is_image || is_mask || field.file_name().is_some();
         if is_file {
+            let policy_name = if name == "image[]" {
+                "image"
+            } else {
+                name.as_str()
+            };
+            body_field_disposition(
+                RequestPolicyLayer::Client,
+                RequestInterface::ImagesEdit,
+                policy_name,
+                None,
+            )
+            .map_err(ImageEditBodyError::RequestPolicy)?;
             if !is_image && !is_mask {
                 return Err(ImageEditBodyError::UnexpectedFileField);
             }
@@ -813,20 +936,6 @@ struct CodexEditFields {
 
 impl CodexEditFields {
     fn parse(fields: &[MultipartTextField]) -> Result<Self, ImageEditBodyError> {
-        const SUPPORTED: &[&str] = &[
-            "background",
-            "model",
-            "n",
-            "prompt",
-            "quality",
-            "size",
-            "stream",
-        ];
-        for field in fields {
-            if !SUPPORTED.contains(&field.name.as_str()) {
-                return Err(ImageEditBodyError::CodexUnsupportedField);
-            }
-        }
         let prompt = required_text_field(fields, "prompt")?;
         let model = required_text_field(fields, "model")?;
         let background = validated_optional_text_field(
@@ -1362,8 +1471,9 @@ pub(crate) struct ImageBodySpoolSnapshot {
     pub(crate) storage_failures_total: u64,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ImageEditBodyError {
+    RequestPolicy(RequestPolicyError),
     BodyTooLarge,
     FileTooLarge,
     Unreadable,
@@ -1387,8 +1497,6 @@ pub(crate) enum ImageEditBodyError {
     InvalidJson,
     JsonTransformUnsupported,
     CodexTooManyImages,
-    CodexMaskUnsupported,
-    CodexUnsupportedField,
     CodexMissingField,
     CodexDuplicateField,
     CodexInvalidField,
@@ -1606,6 +1714,36 @@ mod tests {
             .err()
             .expect("encoded multipart bodies must fail");
         assert_eq!(error, ImageEditBodyError::UnsupportedContentEncoding);
+    }
+
+    #[tokio::test]
+    async fn multipart_unknown_file_field_uses_request_policy_contract() {
+        let boundary = "unknown-file-boundary";
+        let bytes = Bytes::from(format!(
+            "--{boundary}\r\n\
+             Content-Disposition: form-data; name=\"model\"\r\n\r\n\
+             gpt-image-2\r\n\
+             --{boundary}\r\n\
+             Content-Disposition: form-data; name=\"image\"; filename=\"image.png\"\r\n\
+             Content-Type: image/png\r\n\r\n\
+             image\r\n\
+             --{boundary}\r\n\
+             Content-Disposition: form-data; name=\"future_file\"; filename=\"future.bin\"\r\n\
+             Content-Type: application/octet-stream\r\n\r\n\
+             future\r\n\
+             --{boundary}--\r\n"
+        ));
+        let (_directory, policy) = policy(1_024, 128 * 1_024);
+        let error = policy
+            .capture(&headers(boundary, bytes.len()), Body::from(bytes))
+            .await
+            .err()
+            .expect("unknown multipart file fields must fail");
+        let ImageEditBodyError::RequestPolicy(error) = error else {
+            panic!("unknown file field must use the shared request policy");
+        };
+        assert_eq!(error.code(), "request_body_field_unsupported");
+        assert!(error.message().contains("future_file"));
     }
 
     #[tokio::test]
@@ -1828,6 +1966,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn codex_adapter_accepts_compatible_openai_edit_defaults() {
+        let boundary = "codex-openai-defaults-boundary";
+        let bytes = multipart_body(
+            boundary,
+            "gpt-image-2",
+            &[
+                ("prompt", "改为蓝色衣服"),
+                ("size", "auto"),
+                ("output_format", "png"),
+                ("moderation", "auto"),
+                ("quality", "auto"),
+            ],
+            &[("image/png", b"image")],
+            None,
+        );
+        let (_directory, policy) = policy(16, 128 * 1_024);
+        let edit = policy
+            .capture(&headers(boundary, bytes.len()), Body::from(bytes))
+            .await
+            .unwrap();
+        let (body, client_changed) = PreparedRequestBody::ImageEdit(edit)
+            .apply_policy(RequestPolicyLayer::Client, RequestInterface::ImagesEdit)
+            .unwrap();
+        assert!(client_changed);
+        let standard = body.clone().into_openai_replayable().await.unwrap();
+        let standard_bytes = replay(&standard).await;
+        let standard_text = String::from_utf8_lossy(&standard_bytes);
+        assert!(!standard_text.contains("name=\"moderation\""));
+        assert!(standard_text.contains("name=\"output_format\""));
+
+        let (body, codex_changed) = body
+            .apply_policy(RequestPolicyLayer::CodexOauth, RequestInterface::ImagesEdit)
+            .unwrap();
+        assert!(codex_changed);
+        let adapted = body.image_edit().unwrap().to_codex_json().await.unwrap();
+        let value: Value = serde_json::from_slice(&replay(&adapted).await).unwrap();
+
+        assert_eq!(value["model"], "gpt-image-2");
+        assert_eq!(value["prompt"], "改为蓝色衣服");
+        assert_eq!(value["size"], "auto");
+        assert_eq!(value["quality"], "auto");
+        assert!(value.get("output_format").is_none());
+        assert!(value.get("moderation").is_none());
+    }
+
+    #[tokio::test]
     async fn codex_adapter_accounts_for_worst_case_json_text_escaping() {
         let boundary = "codex-escaped-text-boundary";
         let prompt = "\u{0001}".repeat(2_048);
@@ -1883,10 +2067,11 @@ mod tests {
             .capture(&headers(boundary, bytes.len()), Body::from(bytes))
             .await
             .unwrap();
-        assert_eq!(
-            edit.to_codex_json().await.unwrap_err(),
-            ImageEditBodyError::CodexMaskUnsupported
-        );
+        let error = edit.to_codex_json().await.unwrap_err();
+        let ImageEditBodyError::RequestPolicy(error) = error else {
+            panic!("Codex mask rejection must use the shared request policy");
+        };
+        assert_eq!(error.code(), "codex_request_body_field_unsupported");
 
         let bytes = multipart_body(
             boundary,
@@ -1918,22 +2103,6 @@ mod tests {
         assert_eq!(
             edit.to_codex_json().await.unwrap_err(),
             ImageEditBodyError::CodexInvalidField
-        );
-
-        let bytes = multipart_body(
-            boundary,
-            "gpt-image-2",
-            &[("prompt", "compose"), ("user", "unverified")],
-            &[("image/png", b"x")],
-            None,
-        );
-        let edit = policy
-            .capture(&headers(boundary, bytes.len()), Body::from(bytes))
-            .await
-            .unwrap();
-        assert_eq!(
-            edit.to_codex_json().await.unwrap_err(),
-            ImageEditBodyError::CodexUnsupportedField
         );
     }
 }

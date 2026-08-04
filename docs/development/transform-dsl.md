@@ -6,11 +6,15 @@
 JSON 转换 DSL。空对象 `{}` 是显式 no-op。非空文档必须声明 API 格式，并且
 格式必须与所绑定渠道一致。
 
-转换顺序固定：
+DSL 内部顺序固定：
 
 ```text
-模板默认规则 → 渠道覆写规则 → 上游鉴权注入
+模板默认规则 → 渠道覆写规则
 ```
+
+完整请求顺序为：客户端白名单 → 上述 DSL → Codex body 白名单（如适用）→ Header 清理 →
+Codex Header 白名单（如适用）→ 上游鉴权注入。因此 Transform 可以添加普通 upstream 字段，
+但不能绕过 Codex provider policy。
 
 所有请求体规则都不能修改 `model` 或 `stream`；请求和响应 Header 均有受保护
 名称；响应体规则只作用于受支持的 SSE JSON 事件。

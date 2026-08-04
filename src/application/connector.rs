@@ -5,6 +5,10 @@ use bytes::Bytes;
 use reqwest::{StatusCode, Url};
 
 use crate::domain::{ApiOperation, CompiledChannel, ConnectorKind, RequestProtocol, UpstreamAuth};
+use crate::request_policy::{
+    RequestInterface, RequestPolicyError, RequestPolicyLayer, apply_json_body_policy,
+    filter_codex_headers,
+};
 
 use super::codex::{
     CodexAttemptError, CodexConnectorService, CodexCredentialUnavailable, PreparedCodexAttempt,
@@ -76,10 +80,16 @@ impl PreparedUpstreamAttempt {
                 PreparedRequestBody::Json(body) => self
                     .adapt_json_body(body, request_protocol)
                     .map(ReplayableRequestBody::Memory),
-                PreparedRequestBody::ImageEdit(body) if attempt.is_image_edit() => body
-                    .to_codex_json()
-                    .await
-                    .map_err(ConnectorAttemptError::RequestBody),
+                PreparedRequestBody::ImageEdit(body) if attempt.is_image_edit() => {
+                    let (body, _) = PreparedRequestBody::ImageEdit(body)
+                        .apply_policy(RequestPolicyLayer::CodexOauth, RequestInterface::ImagesEdit)
+                        .map_err(ConnectorAttemptError::RequestPolicy)?;
+                    body.image_edit()
+                        .expect("Codex Images edit policy preserves the body kind")
+                        .to_codex_json()
+                        .await
+                        .map_err(ConnectorAttemptError::RequestBody)
+                }
                 PreparedRequestBody::ImageEdit(_) => Err(ConnectorAttemptError::from(
                     CodexAttemptError::UnsupportedOperation,
                 )),
@@ -94,9 +104,17 @@ impl PreparedUpstreamAttempt {
     ) -> Result<Bytes, ConnectorAttemptError> {
         match self {
             Self::OpenAiCompatible => Ok(body),
-            Self::Codex { attempt, .. } => attempt
-                .adapt_body(body, request_protocol)
-                .map_err(ConnectorAttemptError::from),
+            Self::Codex { attempt, .. } => {
+                let interface = attempt
+                    .request_interface(request_protocol)
+                    .map_err(ConnectorAttemptError::from)?;
+                let body = apply_json_body_policy(RequestPolicyLayer::CodexOauth, interface, body)
+                    .map_err(ConnectorAttemptError::RequestPolicy)?
+                    .body;
+                attempt
+                    .adapt_body(body, request_protocol)
+                    .map_err(ConnectorAttemptError::from)
+            }
         }
     }
 
@@ -121,9 +139,16 @@ impl PreparedUpstreamAttempt {
     ) -> Result<(), ConnectorAttemptError> {
         match self {
             Self::OpenAiCompatible => inject_standard_auth(headers, channel),
-            Self::Codex { attempt, .. } => attempt
-                .inject_headers(headers, request_protocol)
-                .map_err(ConnectorAttemptError::from),
+            Self::Codex { attempt, .. } => {
+                let interface = attempt
+                    .request_interface(request_protocol)
+                    .map_err(ConnectorAttemptError::from)?;
+                *headers = filter_codex_headers(interface, headers)
+                    .map_err(ConnectorAttemptError::RequestPolicy)?;
+                attempt
+                    .inject_headers(headers, request_protocol)
+                    .map_err(ConnectorAttemptError::from)
+            }
         }
     }
 
@@ -203,7 +228,7 @@ impl ConnectorUnavailable {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ConnectorAttemptError {
     ClientRequest {
         message: &'static str,
@@ -211,6 +236,7 @@ pub(crate) enum ConnectorAttemptError {
         code: &'static str,
     },
     RequestBody(ImageEditBodyError),
+    RequestPolicy(RequestPolicyError),
     InvalidTarget,
     InvalidCredentials,
 }
@@ -222,11 +248,6 @@ impl From<CodexAttemptError> for ConnectorAttemptError {
                 message: "Codex OAuth channels currently require `stream: true`.",
                 param: "stream",
                 code: "codex_streaming_required",
-            },
-            CodexAttemptError::PreviousResponseUnsupported => Self::ClientRequest {
-                message: "Codex OAuth HTTP requests do not support `previous_response_id`.",
-                param: "previous_response_id",
-                code: "codex_previous_response_unsupported",
             },
             CodexAttemptError::ImageStreamingUnsupported => Self::ClientRequest {
                 message: "Codex OAuth Images generation does not support streaming.",

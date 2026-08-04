@@ -29,13 +29,17 @@ assistants、fine-tuning 等其他 OpenAI 路径。
 ## 请求兼容策略
 
 - 客户端使用 `Authorization: Bearer <gateway-api-key>`。
-- 网关只做路由所需的最小 JSON 校验：body 必须是可解析的 JSON 对象，顶层
-  `model` 必须是非空字符串且不超过 300 个字符；可选 `stream` 必须是布尔值。
-- 除 `model`、`stream` 和已配置变换涉及的字段外，其余字段语义由上游决定。
+- 网关要求 body 是 JSON 对象或 Images edit multipart，顶层 `model` 必须是非空字符串且不超过
+  300 个字符；可选 `stream` 必须是布尔值。
+- 所有公开接口使用顶层客户端 body 白名单。未列出字段返回
+  `request_body_field_unsupported`；字段已知但不能按契约忽略的值返回
+  `request_body_field_value_unsupported`。允许字段内部的嵌套结构不递归校验。
+- 客户端 Header 使用共享白名单；未知 Header 被删除。官方 SDK 的 `x-stainless-*`、OpenAI
+  组织/项目 Header、Gateway Session Header 和 W3C trace Header 显式列入契约。
 - 仅为请求日志元数据，网关会宽松识别 Responses 的 `reasoning.effort`、兼容
   Chat Completions 的 `reasoning_effort`，以及 `service_tier = "priority"`；非字符串、
   过长或未知形状不会增加本地拒绝条件。
-- 没有模型别名或 body 变换时，网关保留原始请求字节，不重新序列化。
+- 客户端 policy 未删除字段、且没有模型别名或 body 变换时，网关保留原始请求字节。
 - 模型别名只改写顶层 `model`。
 - Images generation/edit 的 `stream: true` 在本地返回
   `400 image_streaming_unsupported`；当前不会联系上游。
@@ -55,7 +59,9 @@ assistants、fine-tuning 等其他 OpenAI 路径。
   会在 Header Transform 之前移除，避免把失效的完整性/表示元数据带到上游；Header
   Transform 仍可显式设置新的值。
 
-因此，“网关接受某字段”不代表所有上游都支持该字段；同样，上游新增字段通常不需要网关先升级，只要该字段不触发本地变换限制。
+机器可读权威契约为 [`request-allowlists.json`](request-allowlists.json)，动作语义和维护流程见
+[`请求字段与 Header 白名单`](request-allowlists.md)。上游新增顶层字段需要先更新该契约；
+嵌套字段仍通常不要求网关升级。
 
 ## 响应兼容策略
 
@@ -89,8 +95,14 @@ Codex OAuth Images projection 仍使用标准客户端 `/v1/images/generations`�
 
 同一 projection 也接受客户端 `/v1/images/edits` multipart。Connector 流式读取 replayable
 body，把最多五张输入图片编码为 Codex JSON `images[].image_url` data URL，再将目标改为
-`/images/edits`。Codex adapter 不接受 mask 或未核对字段；这些限制不改变普通
+`/images/edits`。Codex adapter 不接受 mask 或无法等价表达的字段；`moderation=auto` 在客户端
+入口 policy 删除，`output_format=png` 在 Codex policy 删除。这些限制不改变普通
 OpenAI-compatible edit 的最多 16 张输入边界。
+
+Codex Responses HTTP、Responses WebSocket、Images generation/edit 都在普通 Transform 后执行
+独立的 provider body/Header 白名单。已知字段必须显式归类为转发、忽略或报错；未知 Codex body
+字段报错，未知 Codex Header 被删除。最终 OAuth/account/Session/image-turn Header 在白名单之后
+注入，不能由客户端或 Transform 覆盖。
 
 ## 格式隔离
 
@@ -118,9 +130,13 @@ OpenAI-compatible edit 的最多 16 张输入边界。
 | HTTP | `code` | 含义 |
 | --- | --- | --- |
 | `400` | `invalid_request` | body、`model` 或请求变换无效。 |
+| `400` | `request_body_field_unsupported` | 客户端提交了当前接口未列入白名单的顶层字段。 |
+| `400` | `request_body_field_value_unsupported` | 字段只能按特定默认/no-op 值忽略，但请求使用了其他值。 |
+| `400` | `codex_request_body_field_unsupported` | Codex wire type 未声明该字段。 |
+| `400` | `codex_request_body_field_value_unsupported` | Codex 无法等价表达该字段的非默认值。 |
 | `400` | `image_streaming_unsupported` | Images generation/edit 请求设置了 `stream: true`。 |
 | `400` | `image_edit_json_transform_unsupported` | multipart edit 选中了请求 JSON Transform。 |
-| `400` | `codex_image_edit_*` | Codex edit 的图片数量、mask、字段或 MIME 不符合 adapter 契约。 |
+| `400` | `codex_image_edit_*` | Codex edit 的图片数量、必填/重复/无效文本字段或 MIME 不符合 adapter 契约。 |
 | `401` | `invalid_api_key` | 缺少或无法认证 Gateway API Key。 |
 | `403` | `permission_denied` | API Key 没有当前格式或模型列表权限。 |
 | `404` | `model_not_found` | 模型不存在、未授权或当前格式没有路由。 |

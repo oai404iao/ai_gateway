@@ -290,8 +290,11 @@ starting the stack.
 ## 🧭 Runtime boundaries
 
 - Requests are authenticated and admitted before their body is read.
-- Original request bytes are preserved unless a model alias or configured body
-  transform requires reserialization.
+- Client Headers and top-level body fields are checked against the
+  [request allowlist contract](docs/reference/request-allowlists.md); unknown
+  body fields fail closed while unknown Headers are ignored.
+- Original request bytes are preserved when neither request policy nor a model
+  alias/configured body transform changes them.
 - Client credentials, hop-by-hop headers, `Connection`-declared headers, and
   common reverse-proxy/CDN forwarding metadata are removed before every
   upstream channel request.

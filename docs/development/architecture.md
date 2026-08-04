@@ -58,23 +58,29 @@ Browser or Console client
    Images streaming fail closed。请求日志还会宽松提取客户端显式提供的
    `reasoning.effort`、`reasoning_effort` 和 `service_tier = "priority"`，但这些元数据不会
    增加转发校验。
-5. 从分 API 格式索引按 `(api_format, client_model)` 取得预编译模型路由；渠道组
+5. 使用嵌入的 [`request-allowlists.json`](../reference/request-allowlists.json) 执行客户端入口
+   白名单：未列出的 Header 被忽略，未列出的顶层 JSON/multipart 字段返回 `400`；显式
+   `ignore` 字段只在值满足契约时删除。当前只校验顶层字段，允许字段内部的嵌套结构仍由上游解释。
+6. 从分 API 格式索引按 `(api_format, client_model)` 取得预编译模型路由；渠道组
    成员已经按规则 `upstream_model` 与 `channels.available_models` 求交并划分
    优先级 tier。
-6. 先用 API Key 的 `accessible_routes` 位图完成 O(1) 模型可达性判断，再使用渠道
+7. 先用 API Key 的 `accessible_routes` 位图完成 O(1) 模型可达性判断，再使用渠道
    授权位图过滤候选，并依次应用 Session 粘性、最低优先级、权重策略和被动健康过滤。
-7. 必要时改写顶层模型别名，并按“模板默认值 → 渠道覆盖”应用受限变换。普通 JSON 沿用
+8. 必要时改写顶层模型别名，并按“模板默认值 → 渠道覆盖”应用受限变换。普通 JSON 沿用
    JSON Patch；multipart edit 在无需别名时原样回放，需要别名时流式等价重建，只执行 Header
    变换而不执行请求 JSON Transform。只要 body 被别名、JSON Transform 或 provider adapter
    改变，客户端完整性 Header 会先被移除，随后 Header Transform 才能设置与新 body 匹配的值。
-8. 由进程内 Connector 的 `PreparedUpstreamAttempt` 完成 provider 特定 body、目标路径和最终
-   Header/鉴权准备；普通 Connector 保持相同 API 路径和现有认证行为。
-9. 清理客户端鉴权、hop-by-hop headers 和常见反向代理/CDN 转发元数据；该规则位于所有普通、
+9. 由进程内 Connector 的 `PreparedUpstreamAttempt` 完成 provider 特定 body、目标路径和最终
+   Header/鉴权准备。Codex Connector 在普通 Transform 之后再次执行 provider body 白名单，
+   只保留 wire type 声明的字段或显式兼容项；普通 Connector 保持相同 API 路径和认证行为。
+10. 清理客户端鉴权、hop-by-hop headers 和常见反向代理/CDN 转发元数据；Codex Connector 还会
+   在该结果上执行 provider Header 白名单，再注入最终 OAuth/account/protocol Header。该共享
+   清理规则覆盖所有普通、
    Codex、HTTP/SSE、Images 与 Responses WebSocket 渠道共享的请求清理层。HTTP
    `Accept-Encoding` 由网关拥有：下游值不会直接转发，普通请求向上游声明
    `gzip, deflate, br, zstd`，Range 请求使用 `identity`。随后使用按代理、TLS 和超时策略复用的
    reqwest client 直接转发，不经过 sidecar、Unix Socket RPC 或第二个 HTTP 服务。
-10. 上游响应按 `Content-Encoding` 流式解码；支持 gzip、RFC 1950 deflate、Brotli 和
+11. 上游响应按 `Content-Encoding` 流式解码；支持 gzip、RFC 1950 deflate、Brotli 和
     Zstandard，已知的多层 coding 按逆序解码。usage、错误诊断和 SSE Transform 只读取解码后的
     明文流，不缓冲完整响应。公共 listener 再按下游请求的 `Accept-Encoding` 独立选择 coding；
     已知小于 1KiB 的响应保持 identity，长度未知的可压缩非 SSE 流仍可立即流式重编码。SSE 保持
@@ -83,9 +89,10 @@ Browser or Console client
     表示被解码、变换或重编码时，失效的长度、range、ETag 和 digest 元数据会被移除。失败的文本
     响应仍旁路保留最长 16KiB 供请求日志诊断；只能在读取 body 时发现的损坏压缩流会终止当前
     body，并记录 `upstream_body_error`。
-11. 将终态事件写入本地 spool，并异步投影、提取 usage 和结算。
+12. 将终态事件写入本地 spool，并异步投影、提取 usage 和结算。
 
-没有 body 变换或模型别名时，原始请求字节保持不变。普通响应不会为了 usage 采集而整体缓冲。
+客户端和 Connector policy 均未删除/覆盖字段、且没有模型别名或 body Transform 时，原始请求
+字节保持不变。普通响应不会为了 usage 采集而整体缓冲。
 
 ### Images edit replayable body
 

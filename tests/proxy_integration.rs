@@ -1474,7 +1474,7 @@ async fn api_key_and_model_rules_do_not_fall_back_between_formats() {
 async fn matching_chat_model_preserves_body_and_forwards_response_safely() {
     let upstream_body = br#"{"id":"upstream-result","ok":true}"#.to_vec();
     let harness = harness(StatusCode::CREATED, upstream_body.clone()).await;
-    let request_body = br#"{ "z": [3, 2], "model" : "same-model", "reasoning_effort": "high", "service_tier": "priority", "nested": { "a": 1 } }"#.to_vec();
+    let request_body = br#"{ "messages": [{"role":"user","content":{"nested":{"a":1}}}], "model" : "same-model", "reasoning_effort": "high", "service_tier": "priority", "metadata": { "key": "value" } }"#.to_vec();
 
     let response = authorized_post(
         &client(),
@@ -1485,6 +1485,7 @@ async fn matching_chat_model_preserves_body_and_forwards_response_safely() {
     .header("connection", "x-internal-hop, keep-alive")
     .header("x-internal-hop", "do-not-forward")
     .header("x-request-id", "forward-me")
+    .header("x-unlisted-client-header", "drop-me")
     .send()
     .await
     .unwrap();
@@ -1514,6 +1515,7 @@ async fn matching_chat_model_preserves_body_and_forwards_response_safely() {
     assert!(request.headers.get("connection").is_none());
     assert!(request.headers.get("x-internal-hop").is_none());
     assert_eq!(request.headers.get("x-request-id").unwrap(), "forward-me");
+    assert!(request.headers.get("x-unlisted-client-header").is_none());
 }
 
 #[tokio::test]
@@ -2160,6 +2162,96 @@ async fn images_edit_preserves_multipart_spools_large_input_and_collects_usage()
 }
 
 #[tokio::test]
+async fn client_body_allowlists_reject_unknown_fields_before_upstream_contact() {
+    let harness = harness(StatusCode::OK, Vec::new()).await;
+    let client = client();
+    for (path, body) in [
+        (
+            "/v1/chat/completions",
+            br#"{"model":"same-model","messages":[],"future_field":true}"#.as_slice(),
+        ),
+        (
+            "/v1/responses",
+            br#"{"model":"responses-model","input":[],"future_field":true}"#.as_slice(),
+        ),
+        (
+            "/v1/images/generations",
+            br#"{"model":"gpt-image-2","prompt":"test","future_field":true}"#.as_slice(),
+        ),
+    ] {
+        let response = authorized_post(&client, harness.url(path), CLIENT_KEY, body.to_vec())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{path}");
+        let value: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+        assert_eq!(
+            value["error"]["code"], "request_body_field_unsupported",
+            "{path}"
+        );
+    }
+
+    let boundary = "unknown-edit-field-boundary";
+    let response = authorized_multipart_post(
+        &client,
+        harness.url("/v1/images/edits"),
+        CLIENT_KEY,
+        boundary,
+        multipart_edit_body(
+            boundary,
+            "gpt-image-2",
+            &[("prompt", "test"), ("future_field", "true")],
+            b"image",
+        ),
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let value: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+    assert_eq!(value["error"]["code"], "request_body_field_unsupported");
+    assert!(harness.upstream_requests().is_empty());
+    assert!(harness.logs().is_empty());
+}
+
+#[tokio::test]
+async fn images_edit_ignores_only_declared_client_compatibility_fields() {
+    let harness = harness(StatusCode::OK, br#"{"data":[]}"#.to_vec()).await;
+    let boundary = "gateway-edit-client-policy-boundary";
+    let request_body = multipart_edit_body(
+        boundary,
+        "gpt-image-2",
+        &[
+            ("prompt", "change the clothes to blue"),
+            ("output_format", "png"),
+            ("moderation", "auto"),
+        ],
+        b"image",
+    );
+
+    let response = authorized_multipart_post(
+        &client(),
+        harness.url("/v1/images/edits"),
+        CLIENT_KEY,
+        boundary,
+        request_body.clone(),
+    )
+    .header("content-md5", "stale")
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let requests = harness.upstream_requests();
+    assert_eq!(requests.len(), 1);
+    assert_ne!(requests[0].body, request_body);
+    assert!(requests[0].headers.get("content-md5").is_none());
+    let body = String::from_utf8_lossy(&requests[0].body);
+    assert!(body.contains("name=\"output_format\""));
+    assert!(!body.contains("name=\"moderation\""));
+}
+
+#[tokio::test]
 async fn images_edit_rebuilds_multipart_only_when_model_aliasing_is_required() {
     let harness = harness(StatusCode::OK, br#"{"data":[]}"#.to_vec()).await;
     let boundary = "gateway-edit-alias-boundary";
@@ -2690,8 +2782,7 @@ async fn configured_custom_upstream_auth_is_injected_after_header_plans() {
 #[tokio::test]
 async fn no_transform_plan_preserves_unusual_json_body_bytes_exactly() {
     let harness = harness_with_transforms(TransformDocuments::default()).await;
-    let request_body =
-        br#"{ "z" : [3,2], "model":"same-model", "nested" : { "b":2,"a":1 } }"#.to_vec();
+    let request_body = br#"{ "messages" : [{"role":"user","content":{"b":2,"a":1}}], "model":"same-model", "metadata" : { "z":[3,2] } }"#.to_vec();
 
     let response = authorized_post(
         &client(),
@@ -2860,7 +2951,7 @@ async fn malformed_model_is_trace_only_and_not_persisted() {
 #[tokio::test]
 async fn alias_rewrites_only_the_top_level_model() {
     let harness = harness(StatusCode::OK, br#"{"ok":true}"#.to_vec()).await;
-    let request_body = br#"{"model":"alias-model","nested":{"model":"unchanged"},"items":[{"model":"also-unchanged"}]}"#;
+    let request_body = br#"{"model":"alias-model","metadata":{"model":"unchanged"},"messages":[{"role":"user","content":"test","model":"also-unchanged"}]}"#;
 
     let response = authorized_post(
         &client(),
@@ -2877,8 +2968,8 @@ async fn alias_rewrites_only_the_top_level_model() {
     assert_eq!(requests.len(), 1);
     let forwarded: Value = serde_json::from_slice(&requests[0].body).unwrap();
     assert_eq!(forwarded["model"], "upstream-alias-model");
-    assert_eq!(forwarded["nested"]["model"], "unchanged");
-    assert_eq!(forwarded["items"][0]["model"], "also-unchanged");
+    assert_eq!(forwarded["metadata"]["model"], "unchanged");
+    assert_eq!(forwarded["messages"][0]["model"], "also-unchanged");
 }
 
 #[tokio::test]

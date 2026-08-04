@@ -7,6 +7,7 @@
 ## OpenAI API
 
 - [兼容性总览](openai-compatibility.md)
+- [请求字段与 Header 白名单](request-allowlists.md)
 - [Chat Completions](chat-completions.md)
 - [Responses](responses.md)
 - [Images](openai-images.md)

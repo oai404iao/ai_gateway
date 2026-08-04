@@ -4,11 +4,13 @@ use axum::http::{
 };
 use bytes::Bytes;
 use reqwest::Url;
-use serde_json::Value;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::domain::{ApiOperation, CompiledChannel, RequestProtocol};
+use crate::{
+    domain::{ApiOperation, CompiledChannel, RequestProtocol},
+    request_policy::RequestInterface,
+};
 
 use super::{
     CODEX_CLIENT_VERSION, CODEX_ORIGINATOR, CodexCredentialRuntime, CodexCredentialUnavailable,
@@ -24,7 +26,6 @@ pub(crate) struct PreparedCodexAttempt {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CodexAttemptError {
     StreamingRequired,
-    PreviousResponseUnsupported,
     ImageStreamingUnsupported,
     UnsupportedOperation,
     InvalidRequestBody,
@@ -39,10 +40,6 @@ enum CodexRequestContext {
     ImagesEdit { turn_id: String },
     Unsupported,
 }
-
-// Keep this as an explicit denylist: unrecognized Responses fields remain
-// transparent until Codex incompatibility is confirmed.
-const CODEX_UNSUPPORTED_RESPONSES_FIELDS: &[&str] = &["max_output_tokens"];
 
 impl PreparedCodexAttempt {
     pub(crate) fn prepare(
@@ -96,27 +93,7 @@ impl PreparedCodexAttempt {
         if !request_protocol.is_streamed() {
             return Err(CodexAttemptError::StreamingRequired);
         }
-        let mut value = serde_json::from_slice::<Value>(&body)
-            .map_err(|_| CodexAttemptError::InvalidRequestBody)?;
-        let object = value
-            .as_object_mut()
-            .ok_or(CodexAttemptError::InvalidRequestBody)?;
-        if request_protocol != RequestProtocol::WebSocket {
-            if object.get("previous_response_id").is_some_and(|value| {
-                !value.is_null() && !matches!(value, Value::String(value) if value.is_empty())
-            }) {
-                return Err(CodexAttemptError::PreviousResponseUnsupported);
-            }
-            object.remove("previous_response_id");
-        }
-        for field in CODEX_UNSUPPORTED_RESPONSES_FIELDS {
-            object.remove(*field);
-        }
-        object.insert("store".to_owned(), Value::Bool(false));
-        object.insert("stream".to_owned(), Value::Bool(true));
-        serde_json::to_vec(&value)
-            .map(Bytes::from)
-            .map_err(|_| CodexAttemptError::InvalidRequestBody)
+        Ok(body)
     }
 
     pub(crate) fn upstream_url(
@@ -234,11 +211,23 @@ impl PreparedCodexAttempt {
         matches!(self.request, CodexRequestContext::ImagesEdit { .. })
     }
 
+    pub(crate) fn request_interface(
+        &self,
+        request_protocol: RequestProtocol,
+    ) -> Result<RequestInterface, CodexAttemptError> {
+        match self.request {
+            CodexRequestContext::Responses(_) if request_protocol == RequestProtocol::WebSocket => {
+                Ok(RequestInterface::ResponsesWebSocket)
+            }
+            CodexRequestContext::Responses(_) => Ok(RequestInterface::ResponsesHttp),
+            CodexRequestContext::ImagesGeneration { .. } => Ok(RequestInterface::ImagesGeneration),
+            CodexRequestContext::ImagesEdit { .. } => Ok(RequestInterface::ImagesEdit),
+            CodexRequestContext::Unsupported => Err(CodexAttemptError::UnsupportedOperation),
+        }
+    }
+
     pub(crate) fn changes_request_body(&self) -> bool {
-        matches!(
-            self.request,
-            CodexRequestContext::Responses(_) | CodexRequestContext::ImagesEdit { .. }
-        )
+        !matches!(self.request, CodexRequestContext::Unsupported)
     }
 }
 
@@ -309,6 +298,7 @@ fn opaque_uuid(seed: &[u8], domain: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use chrono::Utc;
+    use serde_json::Value;
 
     use crate::persistence::CodexCredentialRecord;
 
@@ -360,7 +350,7 @@ mod tests {
     }
 
     #[test]
-    fn request_adapter_forces_streaming_and_disables_storage() {
+    fn request_adapter_accepts_a_policy_normalized_streaming_body() {
         let attempt = PreparedCodexAttempt::prepare(
             &runtime(),
             Uuid::from_u128(1),
@@ -372,9 +362,7 @@ mod tests {
         .unwrap();
         let body = attempt
             .adapt_body(
-                Bytes::from_static(
-                    br#"{"model":"gpt-5-codex","stream":true,"store":true,"max_output_tokens":1,"future_responses_field":"kept"}"#,
-                ),
+                Bytes::from_static(br#"{"model":"gpt-5-codex","stream":true,"store":false}"#),
                 RequestProtocol::Sse,
             )
             .unwrap();
@@ -383,12 +371,10 @@ mod tests {
         assert_eq!(value["stream"], true);
         assert_eq!(value["store"], false);
         assert_eq!(value["model"], "gpt-5-codex");
-        assert!(value.get("max_output_tokens").is_none());
-        assert_eq!(value["future_responses_field"], "kept");
     }
 
     #[test]
-    fn request_adapter_rejects_non_streaming_and_previous_response_ids() {
+    fn request_adapter_rejects_non_streaming_http_requests() {
         let attempt = PreparedCodexAttempt::prepare(
             &runtime(),
             Uuid::from_u128(1),
@@ -407,27 +393,6 @@ mod tests {
                 .unwrap_err(),
             CodexAttemptError::StreamingRequired
         );
-        assert_eq!(
-            attempt
-                .adapt_body(
-                    Bytes::from_static(
-                        br#"{"model":"gpt-5-codex","stream":true,"previous_response_id":"resp_1"}"#,
-                    ),
-                    RequestProtocol::Sse,
-                )
-                .unwrap_err(),
-            CodexAttemptError::PreviousResponseUnsupported
-        );
-        let body = attempt
-            .adapt_body(
-                Bytes::from_static(
-                    br#"{"model":"gpt-5-codex","stream":true,"previous_response_id":""}"#,
-                ),
-                RequestProtocol::Sse,
-            )
-            .unwrap();
-        let value: Value = serde_json::from_slice(&body).unwrap();
-        assert!(value.get("previous_response_id").is_none());
     }
 
     #[test]
@@ -627,7 +592,7 @@ mod tests {
         let body = attempt
             .adapt_body(
                 Bytes::from_static(
-                    br#"{"type":"response.create","model":"gpt-5-codex","stream":false,"store":true,"previous_response_id":"resp_1","max_output_tokens":1,"future_responses_field":"kept"}"#,
+                    br#"{"type":"response.create","model":"gpt-5-codex","stream":true,"store":false,"previous_response_id":"resp_1","generate":false,"client_metadata":{"session_id":"session"}}"#,
                 ),
                 RequestProtocol::WebSocket,
             )
@@ -636,8 +601,8 @@ mod tests {
         assert_eq!(value["previous_response_id"], "resp_1");
         assert_eq!(value["stream"], true);
         assert_eq!(value["store"], false);
-        assert!(value.get("max_output_tokens").is_none());
-        assert_eq!(value["future_responses_field"], "kept");
+        assert_eq!(value["generate"], false);
+        assert_eq!(value["client_metadata"]["session_id"], "session");
 
         let mut headers = HeaderMap::new();
         headers.insert(ACCEPT, HeaderValue::from_static("text/event-stream"));

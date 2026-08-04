@@ -9,6 +9,7 @@ pub mod observability;
 pub mod persistence;
 mod request_log_journal;
 mod request_log_spool;
+mod request_policy;
 pub mod routing;
 pub mod runtime_config;
 pub mod transforms;

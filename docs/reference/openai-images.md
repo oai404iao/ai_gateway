@@ -38,8 +38,8 @@ generation 路径：
 - 使用独立的 `open_ai_images` 路由格式和 `images_generation` 请求操作；
 - 只接受 JSON body，并执行与其他数据面相同的 Gateway API Key 鉴权、准入、模型路由、
   Header 清理、上游鉴权、被动健康和耐久请求日志；
-- 只解析路由所需的顶层 `model` 和可选 `stream`，没有模型别名或请求 JSON 变换时保留原始
-  请求字节；
+- 校验 `images_generation.client_body` 顶层白名单，并提取路由所需的 `model` 和可选
+  `stream`；policy 未删除字段且没有模型别名或请求 JSON 变换时保留原始请求字节；
 - 下游 `Accept-Encoding` 不直接转发；网关独立向上游声明 gzip、deflate、Brotli 和
   Zstandard，流式解码支持的单层或多层响应 coding；
 - 若上游返回顶层 `usage`，从解码后的流增量采集 `input_tokens`、`output_tokens` 及已支持的
@@ -54,6 +54,8 @@ edit 路径：
 - 使用相同的 `open_ai_images` 路由格式，但请求日志操作为 `images_edit`；
 - 只接受带合法 boundary 的 `multipart/form-data`，要求一个非空 `model` 和至少一个
   `image`/`image[]` part；
+- 顶层 multipart 字段必须进入 `images_edit.client_body` 白名单；未知字段返回本地 `400`。
+  `moderation=auto` 是兼容通用表单的显式入口层忽略项，其他 moderation 值返回错误；
 - 最多接受 16 张输入图片、一个 `mask` 和 64 个 part；每个文本字段最多 `64 KiB`，文本字段
   合计最多 `1 MiB`；
 - boundary 最多 70 bytes；preamble、单个 part Header block 和 boundary padding 分别最多
@@ -87,9 +89,13 @@ Codex image tool 声明 `gpt-image-2`，管理员仍须创建对应本地模型�
   `x-codex-image-turn-id`，并删除 Responses 专用 session/thread Header。
 - Codex Images edit 会把公共 multipart 流式转换为
   `/backend-api/codex/images/edits` 的 JSON `images[].image_url` data URL。该 provider
-  仅接受最多五张图片、不接受 mask，并拒绝未核对的 edit 字段。
+  仅接受最多五张图片、不接受 mask，并通过统一 Codex body 白名单拒绝无法等价表达的 edit
+  字段；`output_format=png` 在 Codex 层删除，`moderation=auto` 已在客户端层删除。
 - multipart edit 不执行请求 JSON Transform；配置了该类规则的选中渠道返回
   `image_edit_json_transform_unsupported`。Header 和响应 Header Transform 仍可使用。
+
+Images generation/edit 的完整客户端和 Codex 字段动作见
+[`request-allowlists.json`](request-allowlists.json)。
 
 Codex 外部路径、Header 和当前 image model 的核对来源见
 [Codex OAuth 与订阅后端接入参考](codex-oauth-connect.md)。

@@ -82,9 +82,9 @@ overrides or an unknown Responses profile fail before Cargo starts.
 With `REAL_UPSTREAM_RESPONSES_PROFILE=codex_oauth`, the Responses SSE and
 WebSocket fixtures keep the ordinary client field `max_output_tokens`. A
 target Gateway using a Codex OAuth Responses channel must remove that
-provider-unsupported field before forwarding, so successful streamed results
-cover the compatibility adapter rather than requiring provider-specific client
-bodies.
+provider-unsupported field through the Codex request allowlist before forwarding,
+so successful streamed results cover the compatibility policy rather than requiring
+provider-specific client bodies.
 The Responses non-streaming case remains part of the run but succeeds by
 asserting the target gateway's documented HTTP `400`
 `codex_streaming_required` boundary. The SSE and WebSocket cases must still

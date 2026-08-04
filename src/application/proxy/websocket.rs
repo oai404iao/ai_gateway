@@ -30,6 +30,9 @@ use crate::{
         ApiFormat, ApiKeyPermission, ApiOperation, CompiledApiKey, CompiledChannel,
         CompiledModelRule, RequestProtocol,
     },
+    request_policy::{
+        RequestInterface, RequestPolicyLayer, apply_json_body_policy, filter_client_headers,
+    },
     routing::{SelectionResult, SessionAffinityMatch},
     transforms::{apply_header_plan, apply_json_patch_plan, apply_websocket_event_plan},
     upstream::{
@@ -96,8 +99,10 @@ impl ProxyService {
             .websocket_lifecycle
             .reserve()
             .ok_or_else(ProxyError::shutting_down)?;
-        let identity_headers = forward_websocket_request_headers(headers);
-        let mut request_headers = headers.clone();
+        let mut request_headers =
+            filter_client_headers(RequestInterface::ResponsesWebSocket, headers)
+                .map_err(ProxyError::request_policy)?;
+        let identity_headers = forward_websocket_request_headers(&request_headers);
         request_headers.remove(AUTHORIZATION);
         request_headers.remove(PROXY_AUTHORIZATION);
         Ok(ResponsesWebSocketSession {
@@ -341,6 +346,17 @@ impl ResponsesWebSocketSession {
             Ok(parsed) => parsed,
             Err(error) => {
                 send_proxy_error(client, error).await;
+                return SessionAction::Close;
+            }
+        };
+        let original_body = match apply_json_body_policy(
+            RequestPolicyLayer::Client,
+            RequestInterface::ResponsesWebSocket,
+            original_body,
+        ) {
+            Ok(applied) => applied.body,
+            Err(error) => {
+                send_proxy_error(client, ProxyError::request_policy(error)).await;
                 return SessionAction::Close;
             }
         };

@@ -49,6 +49,7 @@ repo/
 |   |-- runtime_config/         # TOML deserialization and ArcSwap configuration snapshots; [console].ui_enabled validation
 |   |-- observability/          # tracing-subscriber initialization
 |   |-- application/            # Proxy, Console auth, control-plane publication, request-log sink
+|   |-- request_policy.rs       # Embedded client/Codex Header and top-level body allowlist compiler/enforcer
 |   |-- request_log_journal.rs  # Versioned safe request-log payload encoding
 |   |-- request_log_spool.rs    # CRC-protected local append log and checkpoints
 |   |-- routing/                # Priority/weight selection and passive health state
@@ -73,6 +74,7 @@ repo/
 |   |-- user/                    # Current usage, production configuration, and deployment
 |   |-- development/             # Current architecture, design records, testing, performance, and releases
 |   |-- reference/               # External OpenAI semantics and gateway compatibility boundaries
+|   |   `-- request-allowlists.json # Machine-readable public/Codex request policy source of truth
 |   |-- archive/                 # Historical MVP plans; never current behavior
 |   `-- openapi/console-v1.yaml  # Authoritative Console API spec; drives generated TS types
 |-- .github/                    # SHA-pinned path-aware CI, reusable quality, security, release workflows, and Dependabot updates
@@ -215,9 +217,11 @@ performance run.** Building the tool or running
 ```text
 Axum HTTP
   -> client API-key authentication
+  -> client Header/top-level body allowlist
   -> API-format and model-rule resolution
   -> healthy channel selection (priority, then weight)
-  -> request transformation and upstream authentication
+  -> request transformation
+  -> connector body/Header allowlist and upstream authentication
   -> reqwest forwarding
   -> response pass-through or transformation
   -> asynchronous logging, usage, and billing
@@ -227,10 +231,19 @@ Axum HTTP
 
 - Support `OpenAiChatCompletions`, `OpenAiResponses`, and `OpenAiImages` (`src/domain/api_format.rs`). Keep their validation and routing paths separate: never fall back or transform between formats. `OpenAiImages` exposes JSON `POST /v1/images/generations` and multipart `POST /v1/images/edits`; image streaming and public JSON/data-URL edits are not implemented.
 - `model_rules`, channel groups, and channels must agree on `api_format`; a model rule is unique by `(client_model, api_format)`.
-- Parse a request only as far as necessary to obtain `model`; absent an enabled transform or model alias, forward the original request bytes without reserialization.
+- Treat `docs/reference/request-allowlists.json` as the source of truth for accepted client Headers,
+  public top-level body fields, and Codex outbound Header/body actions. Unknown client/Codex body
+  fields fail closed; unknown Headers are ignored. Only top-level fields are checked. When neither
+  policy deletes/overrides a field and no transform or model alias applies, preserve the original
+  request bytes without reserialization.
 - Keep multipart Images edits behind `ReplayableRequestBody::{Memory, TempFile}` and the dedicated `image_edit_*` limits. Never raise the global JSON body limit to accommodate images, require complete input images/data-URL JSON to remain in memory beyond the configured threshold, retain named upload files, or put multipart values in logs/errors/audit.
-- Multipart edit request JSON transforms fail closed; ordinary connectors replay exact bytes or rebuild only the model field, while Codex adapts at most five images to streamed base64 data URLs and rejects masks/unverified fields.
-- Keep the fixed transform order: template defaults → channel overrides → upstream authentication. Configurable transforms must not alter protected or hop-by-hop headers.
+- Multipart edit request JSON transforms fail closed; ordinary connectors replay exact bytes or
+  rebuild only the model/explicitly ignored client fields, while Codex adapts at most five images
+  to streamed base64 data URLs and rejects masks or non-equivalent provider fields.
+- Keep the fixed request order: client allowlist → template defaults → channel overrides → Codex
+  body allowlist (Codex only) → shared Header cleanup → Codex Header allowlist (Codex only) →
+  upstream authentication. Configurable transforms must not alter protected or hop-by-hop headers
+  and cannot bypass the Codex outbound policy.
 - A Codex OAuth logical credential belongs to one `connector_pools` record and projects through
   `codex_oauth_credential_channels` to separate Responses and Images managed channels. Preserve the
   legacy Responses channel/credential ID, share token/quota/proxy state, keep format health and
@@ -301,10 +314,13 @@ Axum HTTP
 
 ### Change request forwarding
 
-1. Add or update deterministic local and PostgreSQL tests as appropriate.
-2. Run `cargo fmt --check`, `cargo clippy --all-targets`, and `cargo test`.
-3. Run `./scripts/run-real-upstream-smoke.sh` before considering the change complete. It requires the ignored `.env.real-upstream` file and always makes paid Chat Completions and Responses calls. Optional paired WebSocket settings can select a separate Responses WebSocket URL/key, and a complete `REAL_UPSTREAM_IMAGES_*` setting group additionally enables paid Images generation/edit calls. Images changes still require deterministic proxy integration coverage.
-4. Do not print, commit, or copy credentials from `.env.real-upstream` into TOML, source, tests, or logs.
+1. If accepted client/Codex Headers or top-level fields change, edit
+   `docs/reference/request-allowlists.json` first, update its verification metadata, and synchronize
+   `docs/reference/request-allowlists.md`.
+2. Add or update deterministic local and PostgreSQL tests as appropriate.
+3. Run `cargo fmt --check`, `cargo clippy --all-targets`, and `cargo test`.
+4. Run `./scripts/run-real-upstream-smoke.sh` before considering the change complete. It requires the ignored `.env.real-upstream` file and always makes paid Chat Completions and Responses calls. Optional paired WebSocket settings can select a separate Responses WebSocket URL/key, and a complete `REAL_UPSTREAM_IMAGES_*` setting group additionally enables paid Images generation/edit calls. Images changes still require deterministic proxy integration coverage.
+5. Do not print, commit, or copy credentials from `.env.real-upstream` into TOML, source, tests, or logs.
 
 For Responses WebSocket changes, also run
 `cargo test --locked --test websocket_integration`; cover sequential reuse,
@@ -357,6 +373,10 @@ pool isolation, transforms, and configured outbound proxies.
     session-isolated connection for `previous_response_id`, and discard any
     socket with an incomplete response, terminal error, queued residual
     message, or expired pool lifetime.
+20. **Request allowlists are machine-readable contracts.** Do not add one-off field arrays in
+    `proxy.rs`, Codex attempts, or multipart adapters. Classify each known field in
+    `docs/reference/request-allowlists.json` as allow/ignore/reject, keep every public interface and
+    Codex projection explicit, and use `src/request_policy.rs` for enforcement.
 
 ## Code Style
 
@@ -386,6 +406,7 @@ pool isolation, transforms, and configured outbound proxies.
 | Product direction and design background | `docs/development/product-blueprint.md` |
 | Supported client formats | `src/domain/api_format.rs` |
 | Public data-plane route registry | `src/http/mod.rs` |
+| Client/Codex request Header and body policy | `docs/reference/request-allowlists.json`, `docs/reference/request-allowlists.md`, and `src/request_policy.rs` |
 | Images multipart capture/replay and Codex edit adaptation | `src/application/request_body.rs` |
 | Responses WebSocket proxy and pooling | `src/application/proxy/websocket.rs` and `src/upstream/websocket.rs` |
 | Console API route registry | `src/http/console.rs` |

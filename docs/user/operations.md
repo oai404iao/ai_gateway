@@ -136,8 +136,14 @@ Completions、Responses 和其他辅助上游请求继续使用 `response_header
 三个 OpenAI 格式绝不互相回退。客户端 `Authorization` 不会转发给上游；网关清理
 hop-by-hop headers 后，按渠道配置最后注入上游认证。
 
-数据面在认证后、读取请求体前执行 RPM、并发与已结算软额度预检查。请求体只有在模型别名或 JSON
-变换启用时才重新序列化。客户端 `Accept-Encoding` 不直接转发；网关独立向上游声明
+所有公开数据面请求先应用客户端入口白名单：未列出的 Header 被忽略，未列出的顶层 JSON 或
+multipart 字段返回 `400 request_body_field_unsupported`。当前只检查顶层字段，允许字段内部的
+嵌套结构仍由上游解释。完整字段和动作见
+[`请求字段与 Header 白名单`](../reference/request-allowlists.md)。
+
+数据面在认证后、读取请求体前执行 RPM、并发与已结算软额度预检查。客户端/Connector policy
+均未删除或覆盖字段、且没有模型别名或 JSON 变换时才保留原始请求字节。客户端
+`Accept-Encoding` 不直接转发；网关独立向上游声明
 `gzip, deflate, br, zstd`，流式解码后执行 usage、错误诊断和 SSE 变换，再按客户端的
 `Accept-Encoding` 对可压缩非 SSE 响应流式重编码。已知小于 `1 KiB` 的响应保持 identity；
 长度未知的流不会为阈值判断而延迟或缓冲。SSE 下游保持 identity，Range 请求上游也使用
@@ -157,7 +163,8 @@ multipart edit 最多接受 64 个 part、16 张输入图片和一个 mask；普
 单项 `64 KiB`、合计 `1 MiB`；boundary 最多 70 bytes，preamble、单个 part Header block 和
 boundary padding 分别最多 `8 KiB`、`16 KiB` 与 `1 KiB`，防止畸形 framing 放大 parser
 内存。不需要模型别名时，普通 OpenAI-compatible 渠道收到原始 multipart 字节；需要别名时，
-网关流式等价重建并只替换 `model` part。edit 不应用请求 JSON Transform；若选中渠道配置了该类规则，返回
+网关流式等价重建并只替换 `model` part。客户端 policy 删除兼容字段时也会通过同一 replayable
+路径重建 multipart。edit 不应用请求 JSON Transform；若选中渠道配置了该类规则，返回
 `400 image_edit_json_transform_unsupported`。Header 和响应 Header 变换仍照常执行。当前不接受
 JSON/data URL 形式的公开客户端 edit 请求。
 
@@ -206,7 +213,8 @@ JSON/data URL 形式的公开客户端 edit 请求。
 6. 确保调用方 API Key 允许所需格式、`proxy` 权限和对应格式的 Channel Group。服务不会自动把
    Images format、group 或 channel 加入现有 API Key、Policy 或规则。
 7. 需要跨 Responses 请求固定同一订阅账户时，在系统设置中启用 Session affinity，并为目标模型配置稳定
-   key source，例如请求 Header `session-id` 或 JSON Pointer `/prompt_cache_key`。
+   key source，例如请求 Header `session-id` 或 JSON Pointer `/prompt_cache_key`。Header source
+   还必须位于客户端 Header 白名单中，否则系统设置编译失败。
 
 每个凭证自动创建 Responses 与 Images 两个 provider-managed channels。既有 Responses Channel ID
 继续作为稳定的凭证 ID；Images 使用独立 Channel ID，因此两个格式的被动健康和日志不会混合。
@@ -261,7 +269,8 @@ Codex Responses HTTP Connector 只接受 `stream: true` 的 SSE 请求，强制�
 `max_output_tokens`，但选中 Codex managed channel 后，Connector 会在最终上游请求中静默删除
 该字段，因为当前 Codex 订阅请求类型不支持它；该值因此不会限制 Codex 输出。这个兼容处理同时
 适用于 HTTP SSE 与 WebSocket `response.create`，普通 OpenAI-compatible channel 不受影响。
-当前只屏蔽这一项已确认字段，其他未知顶层字段仍保持透明转发。
+Codex body/Header 在普通 Transform 之后还会应用独立 provider 白名单：纯遥测、空值和明确
+no-op 可以按契约删除；无法表达的非默认语义和未知 body 字段返回 `400`，未知 Header 被删除。
 Codex HTTP 成功响应即使缺少或错误声明上游 `Content-Type`，Gateway 也会向客户端规范化为
 `text/event-stream`；非成功 JSON 错误响应仍保留原内容类型。
 Codex managed channel 会自动启用
@@ -272,7 +281,7 @@ Responses WebSocket 能力；WebSocket `response.create` 同样强制 `stream: t
 已命中 affinity 的凭证处于 `unavailable`、`disabled` 或 Token 过期时，会在 affinity TTL
 内持续 fail closed；已经固定到 managed channel 的 WebSocket Session 也不会改用其他订阅账户。
 
-Codex Images generation 保留模型别名和受限变换后的 JSON，请求目标改为
+Codex Images generation 在模型别名和受限变换后只保留 Codex wire type 声明的 JSON 字段，请求目标改为
 `/backend-api/codex/images/generations`。Connector 注入共享凭证的 Bearer、可选
 account/FedRAMP、
 `originator`、版本、User-Agent 和新生成的 `x-codex-image-turn-id`，并删除客户端
@@ -283,8 +292,9 @@ account/FedRAMP、
 Codex Images edit 接收相同客户端模型的 multipart 请求，并在 replayable body 上流式读取图片，
 转换为 `/backend-api/codex/images/edits` 的 JSON `images[].image_url` data URL。该 adapter
 provider-specific 地限制最多五张输入图片、不接受 mask，并只转发 `prompt`、`background`、
-`model`、`n`、`quality` 和 `size`。未核对字段返回 `codex_image_edit_field_unsupported`，
-不会静默丢弃。认证、image turn Header、draining 和发送后不重试边界与 generation 相同。
+`model`、`n`、`quality` 和 `size`。`moderation=auto` 在客户端入口层作为兼容默认值删除；
+`output_format=png` 在 Codex 出口层作为 provider 等价值删除。其他无法等价忽略的取值或字段在
+联系上游前拒绝。认证、image turn Header、draining 和发送后不重试边界与 generation 相同。
 
 客户端已有的合法 `session-id` / `thread-id` 会转发。缺少时，HTTP 请求若匹配 Session affinity，
 会从不可逆 session hash 派生稳定 opaque UUID；未匹配 affinity 的 HTTP 请求仅使用本次请求
