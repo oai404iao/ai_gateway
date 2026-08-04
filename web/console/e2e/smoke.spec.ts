@@ -634,7 +634,7 @@ test.describe("Console SPA smoke", () => {
       "Duration",
       "HTTP",
       "Error code",
-      "Error message",
+      "Error detail",
       "Completed",
     ]);
     await expect(
@@ -683,7 +683,7 @@ test.describe("Console SPA smoke", () => {
       "Duration",
       "HTTP",
       "Error code",
-      "Error message",
+      "Error detail",
       "Completed",
     ]);
     await expect(
