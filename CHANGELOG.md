@@ -7,6 +7,8 @@ Versioning.
 
 ## [Unreleased]
 
+## [0.9.5] - 2026-08-04
+
 ### Added
 
 - Add a machine-readable request allowlist contract covering client Headers,
