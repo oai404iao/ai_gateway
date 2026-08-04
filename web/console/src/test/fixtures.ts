@@ -488,6 +488,7 @@ export const SYSTEM_SETTINGS: SystemSettings = {
   upstream: {
     connect_timeout_seconds: 10,
     response_header_timeout_seconds: 30,
+    images_response_header_timeout_seconds: 300,
     stream_idle_timeout_seconds: 90,
   },
   request_retry: {

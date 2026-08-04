@@ -517,7 +517,8 @@ impl ProxyService {
                 completion.finish(RequestOutcome::UpstreamUnavailable);
                 return Err(ProxyError::connector_attempt(error));
             }
-            let upstream_policy = match ResolvedUpstreamPolicy::try_resolve(
+            let upstream_policy = match ResolvedUpstreamPolicy::try_resolve_for(
+                api_format,
                 &snapshot.system_settings().upstream_timeouts(),
                 current_channel.upstream_policy(),
             ) {

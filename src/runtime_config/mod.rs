@@ -27,11 +27,12 @@ use crate::{
         AutomaticDisableSettings, ChannelTimeoutPolicy, CompiledApiKey, CompiledCandidate,
         CompiledChannel, CompiledChannelGroup, CompiledChannelUpstreamPolicy,
         CompiledConfigTemplate, CompiledModelRule, CompiledProxy, CompiledRouteTier,
-        CompiledRuntimeConfig, CompiledScheduledTestModel, ConnectorKind, MAX_REQUEST_RETRIES,
-        ModelPriceSnapshot, ModelRouteKey, NoProxyHost, PassiveHealthSettings,
-        RequestRetrySettings, ResponsesWebSocketSettings, ScheduledTestingMode,
-        ScheduledTestingSettings, SelectionStrategy, SessionAffinityKeySource, SessionAffinityRule,
-        SessionAffinitySettings, SystemRuntimeSettings, UpstreamAuth, UpstreamTimeoutDefaults,
+        CompiledRuntimeConfig, CompiledScheduledTestModel, ConnectorKind,
+        DEFAULT_IMAGES_RESPONSE_HEADER_TIMEOUT_SECONDS, MAX_REQUEST_RETRIES, ModelPriceSnapshot,
+        ModelRouteKey, NoProxyHost, PassiveHealthSettings, RequestRetrySettings,
+        ResponsesWebSocketSettings, ScheduledTestingMode, ScheduledTestingSettings,
+        SelectionStrategy, SessionAffinityKeySource, SessionAffinityRule, SessionAffinitySettings,
+        SystemRuntimeSettings, UpstreamAuth, UpstreamTimeoutDefaults,
     },
     persistence::{
         ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ConfigTemplateRecord, ControlPlaneRecords,
@@ -225,6 +226,8 @@ impl DatabaseConfig {
 pub struct UpstreamConfig {
     pub connect_timeout_seconds: u64,
     pub response_header_timeout_seconds: u64,
+    #[serde(default = "default_images_response_header_timeout_seconds")]
+    pub images_response_header_timeout_seconds: u64,
     pub stream_idle_timeout_seconds: u64,
 }
 /// One-time bootstrap source for pre-header request failover.
@@ -608,6 +611,9 @@ const fn default_connection_failure_threshold() -> u32 {
 const fn default_request_retry_enabled() -> bool {
     true
 }
+const fn default_images_response_header_timeout_seconds() -> u64 {
+    DEFAULT_IMAGES_RESPONSE_HEADER_TIMEOUT_SECONDS
+}
 const fn default_request_retry_max_retries() -> u32 {
     1
 }
@@ -879,6 +885,7 @@ pub fn compile_system_settings_input(
     if !valid_api_hosts(&input.api_hosts)
         || upstream.connect_timeout_seconds == 0
         || upstream.response_header_timeout_seconds <= upstream.connect_timeout_seconds
+        || upstream.images_response_header_timeout_seconds <= upstream.connect_timeout_seconds
         || upstream.stream_idle_timeout_seconds == 0
         || request_retry.max_retries == 0
         || request_retry.max_retries > MAX_REQUEST_RETRIES
@@ -927,7 +934,10 @@ pub fn compile_system_settings_input(
             std::time::Duration::from_secs(upstream.connect_timeout_seconds),
             std::time::Duration::from_secs(upstream.response_header_timeout_seconds),
             std::time::Duration::from_secs(upstream.stream_idle_timeout_seconds),
-        ),
+        )
+        .with_images_response_header(std::time::Duration::from_secs(
+            upstream.images_response_header_timeout_seconds,
+        )),
         RequestRetrySettings::new(request_retry.enabled, request_retry.max_retries),
         PassiveHealthSettings::new(
             passive_health.connection_failure_threshold,
@@ -2338,6 +2348,7 @@ fn validate_database(database: &DatabaseConfig) -> Result<(), ConfigError> {
 fn validate_upstream(upstream: &UpstreamConfig) -> Result<(), ConfigError> {
     if upstream.connect_timeout_seconds == 0
         || upstream.response_header_timeout_seconds <= upstream.connect_timeout_seconds
+        || upstream.images_response_header_timeout_seconds <= upstream.connect_timeout_seconds
         || upstream.stream_idle_timeout_seconds == 0
     {
         return Err(ConfigError::Compile(
@@ -2705,6 +2716,17 @@ mod tests {
     }
 
     #[test]
+    fn bootstrap_defaults_the_images_response_header_timeout_for_older_toml() {
+        let value = "[server]\nhost='x'\nport=1\n[database]\nurl='postgres://x'\nmax_connections=1\nconnect_timeout_seconds=1\n[upstream]\nconnect_timeout_seconds=1\nresponse_header_timeout_seconds=2\nstream_idle_timeout_seconds=1\n[runtime_config]\nreload_interval_seconds=1\n[observability]\nfilter='info'";
+        let config = toml::from_str::<AppConfig>(value).unwrap();
+
+        assert_eq!(
+            config.upstream.images_response_header_timeout_seconds,
+            DEFAULT_IMAGES_RESPONSE_HEADER_TIMEOUT_SECONDS
+        );
+    }
+
+    #[test]
     fn production_example_configuration_parses_and_validates() {
         toml::from_str::<AppConfig>(include_str!("../../config.example.toml"))
             .unwrap()
@@ -2752,6 +2774,7 @@ mod tests {
                     upstream: SystemUpstreamSettingsInput {
                         connect_timeout_seconds: 2,
                         response_header_timeout_seconds: 5,
+                        images_response_header_timeout_seconds: 300,
                         stream_idle_timeout_seconds: 8,
                     },
                     request_retry: SystemRequestRetrySettingsInput {
@@ -2790,6 +2813,10 @@ mod tests {
             settings.upstream_timeouts().response_header(),
             std::time::Duration::from_secs(5)
         );
+        assert_eq!(
+            settings.upstream_timeouts().images_response_header(),
+            std::time::Duration::from_secs(300)
+        );
         assert!(settings.request_retry().enabled());
         assert_eq!(settings.request_retry().max_retries(), 3);
         assert_eq!(settings.passive_health().connection_failure_threshold(), 4);
@@ -2816,6 +2843,7 @@ mod tests {
             upstream: SystemUpstreamSettingsInput {
                 connect_timeout_seconds: 1,
                 response_header_timeout_seconds: 2,
+                images_response_header_timeout_seconds: 300,
                 stream_idle_timeout_seconds: 3,
             },
             request_retry: Default::default(),

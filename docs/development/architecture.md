@@ -163,6 +163,8 @@ grace period 内完成，截止时强制取消，避免 Upgrade 脱离 Hyper con
 
 - 自动故障转移只覆盖收到响应头前的连接失败、建连超时和响应头超时。
 - Images generation/edit 不使用自动故障转移；上游尝试一旦开始即只返回该尝试结果。
+- Images generation/edit 在渠道没有显式响应头超时时使用独立的系统 Images 响应头超时；
+  建连和流空闲超时仍与其他格式共享。
 - Responses WebSocket 只在上游 Upgrade/建连完成前故障转移；`response.create`
   一旦发送就不再切换连接或渠道。
 - 每次后续尝试排除已经尝试过的渠道，并重新遵守授权、优先级、健康和权重规则。

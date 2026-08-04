@@ -189,6 +189,7 @@ fn system_settings() -> SystemSettingsInput {
         upstream: SystemUpstreamSettingsInput {
             connect_timeout_seconds: 5,
             response_header_timeout_seconds: 30,
+            images_response_header_timeout_seconds: 300,
             stream_idle_timeout_seconds: 60,
         },
         request_retry: Default::default(),

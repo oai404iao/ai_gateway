@@ -2776,10 +2776,17 @@ components:
     SystemUpstreamSettings:
       type: object
       required:
-        [connect_timeout_seconds, response_header_timeout_seconds, stream_idle_timeout_seconds]
+        [connect_timeout_seconds, response_header_timeout_seconds,
+         images_response_header_timeout_seconds, stream_idle_timeout_seconds]
       properties:
         connect_timeout_seconds: { type: integer, format: int64, minimum: 1 }
         response_header_timeout_seconds: { type: integer, format: int64, minimum: 1 }
+        images_response_header_timeout_seconds:
+          type: integer
+          format: int64
+          minimum: 1
+          default: 300
+          description: Used by Images generation and edit when the channel has no explicit response-header timeout.
         stream_idle_timeout_seconds: { type: integer, format: int64, minimum: 1 }
 
     SystemRequestRetrySettings:

@@ -136,6 +136,7 @@ fn bootstrap_system_settings() -> SystemSettingsInput {
         upstream: SystemUpstreamSettingsInput {
             connect_timeout_seconds: 1,
             response_header_timeout_seconds: 2,
+            images_response_header_timeout_seconds: 300,
             stream_idle_timeout_seconds: 3,
         },
         request_retry: Default::default(),
@@ -398,6 +399,7 @@ async fn system_settings_bootstrap_initializes_once_without_overwriting_database
         upstream: SystemUpstreamSettingsInput {
             connect_timeout_seconds: 5,
             response_header_timeout_seconds: 10,
+            images_response_header_timeout_seconds: 300,
             stream_idle_timeout_seconds: 15,
         },
         request_retry: Default::default(),
@@ -422,6 +424,13 @@ async fn system_settings_bootstrap_initializes_once_without_overwriting_database
 
     let stored = repository.system_settings().await.unwrap();
     assert_eq!(stored.settings.upstream.connect_timeout_seconds, 1);
+    assert_eq!(
+        stored
+            .settings
+            .upstream
+            .images_response_header_timeout_seconds,
+        300
+    );
     assert!(stored.settings.request_retry.enabled);
     assert_eq!(stored.settings.request_retry.max_retries, 1);
     assert_eq!(
@@ -3382,6 +3391,7 @@ async fn system_settings_are_versioned_audited_and_updated_via_console() {
     input["api_hosts"] = serde_json::json!(["https://gateway.example.test/v1"]);
     input["upstream"]["connect_timeout_seconds"] = serde_json::json!(2);
     input["upstream"]["response_header_timeout_seconds"] = serde_json::json!(5);
+    input["upstream"]["images_response_header_timeout_seconds"] = serde_json::json!(180);
     input["upstream"]["stream_idle_timeout_seconds"] = serde_json::json!(8);
     input["request_retry"] = serde_json::json!({
         "enabled": false,
@@ -3429,6 +3439,19 @@ async fn system_settings_are_versioned_audited_and_updated_via_console() {
         "PUT",
         "/console/v1/system/settings",
         invalid_retry,
+        &[("if-match", &etag)],
+    )
+    .await;
+    assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let mut invalid_images_timeout = input.clone();
+    invalid_images_timeout["upstream"]["images_response_header_timeout_seconds"] =
+        serde_json::json!(2);
+    let invalid = request(
+        &app,
+        "PUT",
+        "/console/v1/system/settings",
+        invalid_images_timeout,
         &[("if-match", &etag)],
     )
     .await;
@@ -3495,6 +3518,10 @@ async fn system_settings_are_versioned_audited_and_updated_via_console() {
     assert_eq!(
         published.upstream_timeouts().connect(),
         std::time::Duration::from_secs(2)
+    );
+    assert_eq!(
+        published.upstream_timeouts().images_response_header(),
+        std::time::Duration::from_secs(180)
     );
     assert!(!published.request_retry().enabled());
     assert_eq!(published.request_retry().max_retries(), 4);

@@ -91,6 +91,23 @@ async fn capture_upstream(State(upstream): State<MockUpstream>, request: Request
         .unwrap()
 }
 
+async fn delayed_upstream_response(
+    State(upstream): State<MockUpstream>,
+    request: Request,
+) -> Response {
+    let (parts, body) = request.into_parts();
+    let body = to_bytes(body, usize::MAX).await.unwrap().to_vec();
+    upstream.requests.lock().unwrap().push(CapturedRequest {
+        headers: parts.headers,
+        body,
+    });
+    tokio::time::sleep(Duration::from_millis(2_100)).await;
+    Response::builder()
+        .status(upstream.status)
+        .body(Body::from(upstream.body))
+        .unwrap()
+}
+
 async fn hanging_upstream(State(upstream): State<MockUpstream>, request: Request) -> Response {
     let (parts, body) = request.into_parts();
     let body = to_bytes(body, usize::MAX).await.unwrap().to_vec();
@@ -471,6 +488,7 @@ async fn harness_with_transforms(transforms: TransformDocuments) -> Harness {
         UpstreamConfig {
             connect_timeout_seconds: 1,
             response_header_timeout_seconds: 2,
+            images_response_header_timeout_seconds: 2,
             stream_idle_timeout_seconds: 1,
         },
         transforms,
@@ -544,6 +562,7 @@ fn proxy_service_with_policy(
         UpstreamConfig {
             connect_timeout_seconds: 1,
             response_header_timeout_seconds: 2,
+            images_response_header_timeout_seconds: 2,
             stream_idle_timeout_seconds: 1,
         },
     )
@@ -833,7 +852,10 @@ fn configured_proxy_with_policy_and_transforms(
                     Duration::from_secs(upstream_config.connect_timeout_seconds),
                     Duration::from_secs(upstream_config.response_header_timeout_seconds),
                     Duration::from_secs(upstream_config.stream_idle_timeout_seconds),
-                ),
+                )
+                .with_images_response_header(Duration::from_secs(
+                    upstream_config.images_response_header_timeout_seconds,
+                )),
                 PassiveHealthSettings::default(),
             ),
         )
@@ -1234,6 +1256,7 @@ async fn configured_model_with_only_disabled_channels_returns_service_unavailabl
         UpstreamConfig {
             connect_timeout_seconds: 1,
             response_header_timeout_seconds: 2,
+            images_response_header_timeout_seconds: 2,
             stream_idle_timeout_seconds: 1,
         },
         TransformDocuments::default(),
@@ -1448,6 +1471,54 @@ async fn images_generation_preserves_json_and_collects_top_level_usage() {
         logs[0].billing.as_ref().unwrap().output_tokens_per_second,
         None
     );
+}
+
+#[tokio::test]
+async fn images_generation_uses_the_longer_images_response_header_timeout() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let upstream = start_server(
+        Router::new()
+            .route("/v1/images/generations", post(delayed_upstream_response))
+            .with_state(MockUpstream {
+                requests: Arc::clone(&requests),
+                status: StatusCode::OK,
+                body: br#"{"data":[]}"#.to_vec(),
+            }),
+    )
+    .await;
+    let configured = configured_proxy_with_policy(
+        &format!("http://{}", upstream.address),
+        RecordingRequestLogSink::default(),
+        None,
+        None,
+        None,
+        Default::default(),
+        None,
+        UpstreamConfig {
+            connect_timeout_seconds: 1,
+            response_header_timeout_seconds: 2,
+            images_response_header_timeout_seconds: 3,
+            stream_idle_timeout_seconds: 1,
+        },
+    );
+    let gateway = start_server(http::router(configured.proxy)).await;
+    let timeout_client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    let response = authorized_post(
+        &timeout_client,
+        format!("http://{}/v1/images/generations", gateway.address),
+        CLIENT_KEY,
+        br#"{"model":"gpt-image-2","prompt":"test"}"#.to_vec(),
+    )
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(requests.lock().unwrap().len(), 1);
 }
 
 #[tokio::test]
@@ -2522,6 +2593,7 @@ async fn admission_keeps_streaming_work_across_snapshot_replacement_and_consumes
         UpstreamConfig {
             connect_timeout_seconds: 1,
             response_header_timeout_seconds: 2,
+            images_response_header_timeout_seconds: 2,
             stream_idle_timeout_seconds: 1,
         },
     );
@@ -2536,6 +2608,7 @@ async fn admission_keeps_streaming_work_across_snapshot_replacement_and_consumes
         UpstreamConfig {
             connect_timeout_seconds: 1,
             response_header_timeout_seconds: 2,
+            images_response_header_timeout_seconds: 2,
             stream_idle_timeout_seconds: 1,
         },
     );
@@ -2662,6 +2735,7 @@ async fn admission_releases_capacity_after_response_header_timeout() {
         UpstreamConfig {
             connect_timeout_seconds: 1,
             response_header_timeout_seconds: 2,
+            images_response_header_timeout_seconds: 2,
             stream_idle_timeout_seconds: 1,
         },
     );
@@ -2696,6 +2770,7 @@ async fn invalid_effective_timeout_policy_never_contacts_upstream_or_cools_the_c
         UpstreamConfig {
             connect_timeout_seconds: 1,
             response_header_timeout_seconds: 2,
+            images_response_header_timeout_seconds: 2,
             stream_idle_timeout_seconds: 1,
         },
         OutboundTestPolicy {
@@ -2736,6 +2811,7 @@ async fn http_proxy_routes_nonmatching_targets_and_explicit_no_proxy_hosts_bypas
     let defaults = UpstreamConfig {
         connect_timeout_seconds: 1,
         response_header_timeout_seconds: 2,
+        images_response_header_timeout_seconds: 2,
         stream_idle_timeout_seconds: 1,
     };
     let logs = RecordingRequestLogSink::default();
@@ -2846,6 +2922,7 @@ async fn dead_configured_proxy_returns_safe_bad_gateway_without_direct_upstream_
         UpstreamConfig {
             connect_timeout_seconds: 1,
             response_header_timeout_seconds: 2,
+            images_response_header_timeout_seconds: 2,
             stream_idle_timeout_seconds: 1,
         },
         OutboundTestPolicy {
@@ -2898,6 +2975,7 @@ async fn socks5_proxy_connects_and_keeps_credentials_out_of_upstream_and_logs() 
         UpstreamConfig {
             connect_timeout_seconds: 1,
             response_header_timeout_seconds: 2,
+            images_response_header_timeout_seconds: 2,
             stream_idle_timeout_seconds: 1,
         },
         OutboundTestPolicy {
@@ -2986,6 +3064,7 @@ async fn snapshot_replacement_uses_new_proxy_policy_after_cancelling_an_existing
     let defaults = UpstreamConfig {
         connect_timeout_seconds: 1,
         response_header_timeout_seconds: 2,
+        images_response_header_timeout_seconds: 2,
         stream_idle_timeout_seconds: 2,
     };
     let current = configured_proxy_with_policy(

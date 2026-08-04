@@ -58,6 +58,9 @@ connect_timeout_seconds = 5
 # these defaults through the Console System settings page instead of TOML.
 connect_timeout_seconds = 10
 response_header_timeout_seconds = 30
+# Images generation/edit often completes before the upstream sends response
+# headers, so it uses this longer format-specific default.
+images_response_header_timeout_seconds = 300
 stream_idle_timeout_seconds = 90
 
 [request_retry]

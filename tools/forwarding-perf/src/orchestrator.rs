@@ -504,6 +504,7 @@ async fn write_gateway_config(
         upstream: GatewayUpstream {
             connect_timeout_seconds: 5,
             response_header_timeout_seconds: 30,
+            images_response_header_timeout_seconds: 300,
             stream_idle_timeout_seconds: 60,
         },
         runtime_config: GatewayReload {
@@ -631,6 +632,7 @@ struct GatewayDatabase {
 struct GatewayUpstream {
     connect_timeout_seconds: u64,
     response_header_timeout_seconds: u64,
+    images_response_header_timeout_seconds: u64,
     stream_idle_timeout_seconds: u64,
 }
 

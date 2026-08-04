@@ -81,6 +81,7 @@ fn proxy_service_with_documents(
         UpstreamConfig {
             connect_timeout_seconds: 1,
             response_header_timeout_seconds: response_header_timeout,
+            images_response_header_timeout_seconds: response_header_timeout,
             stream_idle_timeout_seconds: stream_idle_timeout,
         },
         (None, None, None),
@@ -337,6 +338,7 @@ async fn channel_response_header_timeout_overrides_the_longer_toml_default() {
         UpstreamConfig {
             connect_timeout_seconds: 5,
             response_header_timeout_seconds: 5,
+            images_response_header_timeout_seconds: 5,
             stream_idle_timeout_seconds: 5,
         },
         (Some(50), Some(100), None),
@@ -516,6 +518,7 @@ async fn channel_stream_idle_timeout_overrides_the_longer_toml_default() {
         UpstreamConfig {
             connect_timeout_seconds: 5,
             response_header_timeout_seconds: 6,
+            images_response_header_timeout_seconds: 6,
             stream_idle_timeout_seconds: 5,
         },
         (None, None, Some(100)),

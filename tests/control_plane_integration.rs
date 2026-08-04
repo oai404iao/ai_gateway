@@ -94,6 +94,7 @@ fn system_settings() -> SystemSettingsInput {
         upstream: SystemUpstreamSettingsInput {
             connect_timeout_seconds: 1,
             response_header_timeout_seconds: 2,
+            images_response_header_timeout_seconds: 300,
             stream_idle_timeout_seconds: 3,
         },
         request_retry: Default::default(),
@@ -6174,6 +6175,62 @@ async fn channel_group_status_monitoring_migration_preserves_tracked_groups() {
     .await
     .unwrap();
     assert!(!channel_column_exists);
+
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn images_timeout_migration_adds_the_default_without_overwriting_an_existing_value() {
+    let database = TestDatabase::new_unmigrated().await;
+    for migration in MIGRATOR.iter().filter(|migration| migration.version <= 41) {
+        sqlx::raw_sql(migration.sql.as_ref())
+            .execute(&database.pool)
+            .await
+            .unwrap_or_else(|error| panic!("migration {} failed: {error}", migration.version));
+    }
+    sqlx::query(
+        "INSERT INTO system_settings (setting_key,value) VALUES \
+         ('forwarding_policy','{\"upstream\":{\"connect_timeout_seconds\":10,\
+          \"response_header_timeout_seconds\":30,\"stream_idle_timeout_seconds\":90}}'::jsonb)",
+    )
+    .execute(&database.pool)
+    .await
+    .unwrap();
+
+    let migration = include_str!("../migrations/0042_images_response_header_timeout.sql");
+    sqlx::raw_sql(migration)
+        .execute(&database.pool)
+        .await
+        .expect("Images timeout migration must apply");
+    let migrated: i64 = sqlx::query_scalar(
+        "SELECT (value #>> '{upstream,images_response_header_timeout_seconds}')::bigint \
+         FROM system_settings WHERE setting_key='forwarding_policy'",
+    )
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(migrated, 300);
+
+    sqlx::query(
+        "UPDATE system_settings SET value=jsonb_set(\
+         value,'{upstream,images_response_header_timeout_seconds}','600'::jsonb,true) \
+         WHERE setting_key='forwarding_policy'",
+    )
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    sqlx::raw_sql(migration)
+        .execute(&database.pool)
+        .await
+        .expect("Images timeout migration must be idempotent");
+    let preserved: i64 = sqlx::query_scalar(
+        "SELECT (value #>> '{upstream,images_response_header_timeout_seconds}')::bigint \
+         FROM system_settings WHERE setting_key='forwarding_policy'",
+    )
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(preserved, 600);
 
     database.cleanup().await;
 }
