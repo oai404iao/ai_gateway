@@ -160,8 +160,8 @@ rules = []
 # model_regex = ["^gpt-.*$"]
 # key_sources = [
 #   { type = "json_pointer", pointer = "/prompt_cache_key" },
-#   { type = "request_header", name = "session_id" },
-#   { type = "request_header", name = "thread_id" },
+#   { type = "request_header", name = "session-id" },
+#   { type = "request_header", name = "thread-id" },
 # ]
 
 [models_sync]

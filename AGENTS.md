@@ -231,19 +231,23 @@ Axum HTTP
 
 - Support `OpenAiChatCompletions`, `OpenAiResponses`, and `OpenAiImages` (`src/domain/api_format.rs`). Keep their validation and routing paths separate: never fall back or transform between formats. `OpenAiImages` exposes JSON `POST /v1/images/generations` and multipart `POST /v1/images/edits`; image streaming and public JSON/data-URL edits are not implemented.
 - `model_rules`, channel groups, and channels must agree on `api_format`; a model rule is unique by `(client_model, api_format)`.
-- Treat `docs/reference/request-allowlists.json` as the source of truth for accepted client Headers,
-  public top-level body fields, and Codex outbound Header/body actions. Unknown client/Codex body
-  fields fail closed; unknown Headers are ignored. Only top-level fields are checked. When neither
-  policy deletes/overrides a field and no transform or model alias applies, preserve the original
-  request bytes without reserialization.
+- Treat `docs/reference/request-allowlists.json` as the source of truth for accepted and explicitly
+  stripped client Headers, public top-level body fields, and Codex outbound Header/body actions.
+  Common reverse-proxy/CDN forwarding metadata must remain explicit client Header `ignore` entries
+  and every transform-capable outbound path must consume that same policy again immediately before
+  dispatch. Custom upstream authentication and Connector-generated Headers must not conflict with
+  the explicit ignore set. Unknown client/Codex body fields fail closed; unknown Headers are
+  ignored. Only top-level fields are checked. When neither policy deletes/overrides a field and no
+  transform or model alias applies, preserve the original request bytes without reserialization.
 - Keep multipart Images edits behind `ReplayableRequestBody::{Memory, TempFile}` and the dedicated `image_edit_*` limits. Never raise the global JSON body limit to accommodate images, require complete input images/data-URL JSON to remain in memory beyond the configured threshold, retain named upload files, or put multipart values in logs/errors/audit.
 - Multipart edit request JSON transforms fail closed; ordinary connectors replay exact bytes or
   rebuild only the model/explicitly ignored client fields, while Codex adapts at most five images
   to streamed base64 data URLs and rejects masks or non-equivalent provider fields.
 - Keep the fixed request order: client allowlist → template defaults → channel overrides → Codex
-  body allowlist (Codex only) → shared Header cleanup → Codex Header allowlist (Codex only) →
-  upstream authentication. Configurable transforms must not alter protected or hop-by-hop headers
-  and cannot bypass the Codex outbound policy.
+  body allowlist (Codex only) → shared hop-by-hop/explicit-ignore Header cleanup → Codex Header
+  allowlist (Codex only) → upstream authentication → final explicit-ignore guard → transport
+  dispatch. Configurable transforms must not alter protected or hop-by-hop headers and cannot
+  bypass the client forwarding-metadata block or the Codex outbound policy.
 - A Codex OAuth logical credential belongs to one `connector_pools` record and projects through
   `codex_oauth_credential_channels` to separate Responses and Images managed channels. Preserve the
   legacy Responses channel/credential ID, share token/quota/proxy state, keep format health and
@@ -373,10 +377,11 @@ pool isolation, transforms, and configured outbound proxies.
     session-isolated connection for `previous_response_id`, and discard any
     socket with an incomplete response, terminal error, queued residual
     message, or expired pool lifetime.
-20. **Request allowlists are machine-readable contracts.** Do not add one-off field arrays in
-    `proxy.rs`, Codex attempts, or multipart adapters. Classify each known field in
+20. **Request allowlists are machine-readable contracts.** Do not add one-off field or blocked
+    Header arrays in `proxy.rs`, Codex attempts, or multipart adapters. Classify each known field in
     `docs/reference/request-allowlists.json` as allow/ignore/reject, keep every public interface and
-    Codex projection explicit, and use `src/request_policy.rs` for enforcement.
+    Codex projection explicit, and use `src/request_policy.rs` for ingress and shared outbound
+    enforcement.
 
 ## Code Style
 

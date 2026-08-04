@@ -7,6 +7,17 @@ Versioning.
 
 ## [Unreleased]
 
+### Fixed
+
+- Keep common reverse-proxy and CDN forwarding metadata in the machine-readable
+  client Header policy, reject those names for custom upstream authentication,
+  and enforce the explicit ignore actions again at the final outbound boundary,
+  so HTTP, Responses WebSocket, model-discovery, and scheduled-test requests
+  cannot reintroduce the stripped metadata.
+- Preserve startup compatibility for the `session_id` and `thread_id`
+  session-affinity Header names documented before 0.9.5, while correcting the
+  tracked configuration examples to canonical `session-id` and `thread-id`.
+
 ## [0.9.5] - 2026-08-04
 
 ### Added

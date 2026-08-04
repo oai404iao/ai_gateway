@@ -384,6 +384,17 @@ pub(crate) fn client_header_allowed(name: &HeaderName) -> bool {
     header_action(&contract().client_headers, name) == UnknownAction::Allow
 }
 
+#[must_use]
+pub(crate) fn client_header_explicitly_ignored(name: &HeaderName) -> bool {
+    contains_sorted(&contract().client_headers.ignore, name.as_str())
+}
+
+pub(crate) fn strip_explicitly_ignored_client_headers(headers: &mut HeaderMap) {
+    for name in &contract().client_headers.ignore {
+        headers.remove(name);
+    }
+}
+
 fn filter_headers(
     layer: RequestPolicyLayer,
     interface: RequestInterface,
@@ -420,11 +431,14 @@ fn filter_headers(
 
 fn header_action(policy: &HeaderPolicy, name: &HeaderName) -> UnknownAction {
     let name = name.as_str();
-    if contains_sorted(&policy.allow, name)
-        || policy
-            .allow_prefixes
-            .iter()
-            .any(|prefix| name.starts_with(prefix))
+    if contains_sorted(&policy.allow, name) {
+        UnknownAction::Allow
+    } else if contains_sorted(&policy.ignore, name) {
+        UnknownAction::Ignore
+    } else if policy
+        .allow_prefixes
+        .iter()
+        .any(|prefix| name.starts_with(prefix))
     {
         UnknownAction::Allow
     } else {
@@ -520,6 +534,7 @@ struct HeaderPolicy {
     unknown: UnknownAction,
     allow: Vec<String>,
     allow_prefixes: Vec<String>,
+    ignore: Vec<String>,
     generated: Vec<String>,
 }
 
@@ -626,6 +641,17 @@ fn validate_contract(contract: &RequestPolicyContract) -> Result<(), String> {
                 interface.as_str()
             ));
         }
+        if let Some(name) = codex
+            .headers
+            .generated
+            .iter()
+            .find(|name| contains_sorted(&contract.client_headers.ignore, name))
+        {
+            return Err(format!(
+                "Codex generated header `{name}` conflicts with the client ignore policy for `{}`",
+                interface.as_str()
+            ));
+        }
         if codex.body.unknown != UnknownAction::Reject {
             return Err(format!(
                 "unknown Codex body fields must be rejected for `{}`",
@@ -670,8 +696,23 @@ fn validate_contract(contract: &RequestPolicyContract) -> Result<(), String> {
 fn validate_header_policy(policy: &HeaderPolicy) -> Result<(), String> {
     validate_sorted_unique("allowed headers", &policy.allow)?;
     validate_sorted_unique("allowed header prefixes", &policy.allow_prefixes)?;
+    validate_sorted_unique("ignored headers", &policy.ignore)?;
     validate_sorted_unique("generated headers", &policy.generated)?;
-    for name in policy.allow.iter().chain(&policy.generated) {
+    if let Some(name) = policy
+        .allow
+        .iter()
+        .find(|name| contains_sorted(&policy.ignore, name))
+    {
+        return Err(format!(
+            "request policy header `{name}` has multiple policy actions"
+        ));
+    }
+    for name in policy
+        .allow
+        .iter()
+        .chain(&policy.ignore)
+        .chain(&policy.generated)
+    {
         let parsed = HeaderName::from_bytes(name.as_bytes())
             .map_err(|_| format!("invalid request policy header `{name}`"))?;
         if parsed.as_str() != name {
@@ -891,6 +932,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(CONNECTION, HeaderValue::from_static("x-hop"));
         headers.insert("x-hop", HeaderValue::from_static("internal"));
+        headers.insert("forwarded", HeaderValue::from_static("for=192.0.2.1"));
         headers.insert("x-unknown", HeaderValue::from_static("drop"));
         headers.insert("x-stainless-lang", HeaderValue::from_static("rust"));
         headers.insert("traceparent", HeaderValue::from_static("trace"));
@@ -900,6 +942,7 @@ mod tests {
         assert!(client.contains_key("x-hop"));
         assert!(client.contains_key("x-stainless-lang"));
         assert!(client.contains_key("traceparent"));
+        assert!(!client.contains_key("forwarded"));
         assert!(!client.contains_key("x-unknown"));
 
         let codex = filter_codex_headers(RequestInterface::ResponsesHttp, &client).unwrap();
@@ -909,13 +952,63 @@ mod tests {
     }
 
     #[test]
+    fn common_forwarding_metadata_is_explicitly_ignored_by_client_policy() {
+        let mut headers = HeaderMap::new();
+        for name in [
+            "cf-connecting-ip",
+            "cf-connecting-ipv6",
+            "cf-ipcountry",
+            "cf-pseudo-ipv4",
+            "cf-ray",
+            "cf-visitor",
+            "forwarded",
+            "true-client-ip",
+            "via",
+            "x-client-ip",
+            "x-forwarded-for",
+            "x-forwarded-host",
+            "x-forwarded-port",
+            "x-forwarded-proto",
+            "x-original-forwarded-for",
+            "x-real-ip",
+        ] {
+            assert!(
+                client_header_explicitly_ignored(&HeaderName::from_static(name)),
+                "{name} is not explicitly ignored"
+            );
+            headers.insert(name, HeaderValue::from_static("discard"));
+        }
+        headers.insert(
+            "x-forwarded-custom",
+            HeaderValue::from_static("preserve-transform-header"),
+        );
+        strip_explicitly_ignored_client_headers(&mut headers);
+        assert!(headers.get("forwarded").is_none());
+        assert!(headers.get("x-forwarded-for").is_none());
+        assert!(headers.get("cf-connecting-ip").is_none());
+        assert_eq!(
+            headers.get("x-forwarded-custom").unwrap(),
+            "preserve-transform-header"
+        );
+        assert!(!client_header_explicitly_ignored(&HeaderName::from_static(
+            "x-forwarded-custom"
+        )));
+    }
+
+    #[test]
     fn session_affinity_headers_must_be_part_of_the_client_contract() {
-        assert!(client_header_allowed(&HeaderName::from_static(
-            "session-id"
-        )));
-        assert!(client_header_allowed(&HeaderName::from_static(
-            "x-session-id"
-        )));
+        for name in [
+            "session-id",
+            "session_id",
+            "thread-id",
+            "thread_id",
+            "x-session-id",
+        ] {
+            assert!(
+                client_header_allowed(&HeaderName::from_static(name)),
+                "{name} is not allowed"
+            );
+        }
         assert!(!client_header_allowed(&HeaderName::from_static(
             "x-private-session"
         )));

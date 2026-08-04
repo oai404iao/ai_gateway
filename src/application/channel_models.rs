@@ -18,6 +18,7 @@ use uuid::Uuid;
 use crate::{
     domain::{CompiledChannel, UpstreamAuth},
     persistence::ChannelRecord,
+    request_policy::strip_explicitly_ignored_client_headers,
     runtime_config::{RuntimeConfig, compile_channel_discovery_target},
     transforms::apply_header_plan,
     upstream::{ResolvedUpstreamPolicy, UpstreamClientRegistry},
@@ -73,6 +74,7 @@ impl ChannelModelDiscoveryService {
         .map_err(|_| ChannelModelDiscoveryError::InvalidConfiguration)?;
         inject_upstream_auth(&mut headers, &channel)
             .map_err(|_| ChannelModelDiscoveryError::InvalidConfiguration)?;
+        strip_explicitly_ignored_client_headers(&mut headers);
 
         let response = timeout(
             policy.timeouts().response_header(),
@@ -304,6 +306,9 @@ mod tests {
                 .get("x-discovery-source")
                 .and_then(|value| value.to_str().ok())
                 != Some("channel-form")
+            || ["forwarded", "x-forwarded-for", "cf-connecting-ip"]
+                .iter()
+                .any(|name| headers.contains_key(*name))
         {
             return Err(StatusCode::UNAUTHORIZED);
         }
@@ -341,7 +346,12 @@ mod tests {
                     "version": 1,
                     "api_format": "open_ai_chat_completions",
                     "request_headers": {
-                        "set": {"x-discovery-source": "channel-form"}
+                        "set": {
+                            "cf-connecting-ip": "192.0.2.1",
+                            "forwarded": "for=192.0.2.1;proto=https",
+                            "x-discovery-source": "channel-form",
+                            "x-forwarded-for": "192.0.2.1"
+                        }
                     }
                 }),
                 connect_timeout_ms: None,

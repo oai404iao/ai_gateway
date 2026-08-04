@@ -30,6 +30,7 @@ use crate::{
         RequestProtocol, ScheduledTestingMode, UpstreamAuth,
     },
     persistence::SystemProbeIdentity,
+    request_policy::strip_explicitly_ignored_client_headers,
     runtime_config::RuntimeConfig,
     transforms::{apply_header_plan, apply_json_patch_plan},
     upstream::{ResolvedUpstreamPolicy, UpstreamClientRegistry},
@@ -261,6 +262,7 @@ async fn probe_channel(
             None,
         );
     }
+    strip_explicitly_ignored_client_headers(&mut headers);
     let url = match probe_url(channel) {
         Ok(url) => url,
         Err(()) => {
@@ -620,12 +622,13 @@ mod tests {
     use crate::{
         application::AutomaticDisableService,
         domain::{
-            ApiFormat, AutomaticDisableSettings, AutomaticDisableTrigger, CompiledAdvancedBilling,
-            CompiledChannel, CompiledChannelUpstreamPolicy, CompiledScheduledTestModel,
-            ModelPriceSnapshot, RequestLogOutcome, RequestLogSource, RequestUsage, UpstreamAuth,
-            UpstreamTimeoutDefaults,
+            ApiFormat, AutomaticDisableSettings, AutomaticDisableTrigger, ChannelTimeoutPolicy,
+            CompiledAdvancedBilling, CompiledChannel, CompiledChannelUpstreamPolicy,
+            CompiledScheduledTestModel, ModelPriceSnapshot, RequestLogOutcome, RequestLogSource,
+            RequestUsage, UpstreamAuth, UpstreamTimeoutDefaults,
         },
         persistence::SystemProbeIdentity,
+        transforms::compile_document,
         upstream::UpstreamClientRegistry,
     };
 
@@ -637,7 +640,14 @@ mod tests {
     }
 
     async fn upstream(State(state): State<TestUpstream>, request: Request) -> Response {
-        let body = to_bytes(request.into_body(), usize::MAX).await.unwrap();
+        let (parts, body) = request.into_parts();
+        for name in ["forwarded", "x-forwarded-for", "cf-connecting-ip"] {
+            assert!(
+                parts.headers.get(name).is_none(),
+                "{name} reached the probe"
+            );
+        }
+        let body = to_bytes(body, usize::MAX).await.unwrap();
         state
             .requests
             .lock()
@@ -662,6 +672,31 @@ mod tests {
                 Decimal::from(4_i64),
             ),
             CompiledAdvancedBilling::default(),
+        )
+    }
+
+    fn forwarding_metadata_transform_policy() -> CompiledChannelUpstreamPolicy {
+        let transform = compile_document(
+            &serde_json::json!({
+                "version": 1,
+                "api_format": "open_ai_chat_completions",
+                "request_headers": {
+                    "set": {
+                        "cf-connecting-ip": "192.0.2.1",
+                        "forwarded": "for=192.0.2.1;proto=https",
+                        "x-forwarded-for": "192.0.2.1"
+                    }
+                }
+            }),
+            ApiFormat::OpenAiChatCompletions,
+        )
+        .unwrap();
+        CompiledChannelUpstreamPolicy::new(
+            None,
+            None,
+            transform.clone(),
+            transform,
+            ChannelTimeoutPolicy::default(),
         )
     }
 
@@ -714,7 +749,7 @@ mod tests {
             true,
             false,
             Some(Arc::from("probe-model")),
-            CompiledChannelUpstreamPolicy::transparent(ApiFormat::OpenAiChatCompletions),
+            forwarding_metadata_transform_policy(),
         );
         let settings = AutomaticDisableSettings::new(
             true,
