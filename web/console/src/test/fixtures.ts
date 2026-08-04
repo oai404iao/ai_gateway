@@ -7,7 +7,7 @@ import type {
   ApiKeyPolicyView,
   ApiKeyView,
   ChannelDetailView,
-  ChannelStatusReport,
+  ChannelGroupStatusReport,
   ChannelGroupView,
   ChannelView,
   ConfigTemplateDetailView,
@@ -26,6 +26,8 @@ import type {
   RegistrationInvitationCodeView,
   RequestLogView,
   SelfApiKeyOptions,
+  SelfCodexQuotaCredentialView,
+  SelfCodexQuotaWindowHistory,
   SessionAffinityCacheReport,
   SpendLeaderboardReport,
   SystemLoadReport,
@@ -157,6 +159,7 @@ export const DEFAULT_USER_GROUP: UserGroupView = {
   name: "Default Users",
   description: "Default group for newly invited users.",
   default_api_key_policy_id: API_KEY_POLICY.id,
+  visible_codex_quota_group_ids: [],
   system_role: "user",
   member_count: 1,
   created_at: "2026-01-01T00:00:00.000Z",
@@ -168,6 +171,7 @@ export const USER_GROUP: UserGroupView = {
   name: "Default Administrators",
   description: "Default group for newly invited administrators.",
   default_api_key_policy_id: API_KEY_POLICY.id,
+  visible_codex_quota_group_ids: [],
   system_role: "admin",
   member_count: 1,
   created_at: "2026-01-01T00:00:00.000Z",
@@ -224,7 +228,56 @@ export const CHANNEL_GROUP: ChannelGroupView = {
   priority: 1,
   selection_strategy: "weighted_random",
   enabled: true,
+  status_statistics_enabled: true,
   updated_at: "2026-01-02T00:00:00.000Z",
+};
+
+export const CODEX_QUOTA_GROUP: ChannelGroupView = {
+  id: "00000000-0000-0000-0000-00000000c001",
+  name: "Codex subscriptions",
+  api_format: "open_ai_responses",
+  connector_kind: "codex_oauth",
+  connector_pool_id: "00000000-0000-0000-0000-00000000c001",
+  priority: 1,
+  selection_strategy: "weighted_random",
+  enabled: true,
+  status_statistics_enabled: false,
+  updated_at: "2026-08-03T00:00:00.000Z",
+};
+
+export const OWN_CODEX_QUOTA: SelfCodexQuotaCredentialView = {
+  id: "00000000-0000-0000-0000-00000000c010",
+  name: "00000000-0000-0000-0000-00000000c010",
+  channel_group_id: CODEX_QUOTA_GROUP.id,
+  plan_type: "plus",
+  primary_used_percent: 42,
+  primary_window_seconds: 10_800,
+  primary_reset_at: "2026-08-03T15:00:00.000Z",
+  secondary_used_percent: 12,
+  secondary_window_seconds: 604_800,
+  secondary_reset_at: "2026-08-10T12:00:00.000Z",
+  quota_checked_at: "2026-08-03T12:00:00.000Z",
+};
+
+export const OWN_CODEX_QUOTA_HISTORY: SelfCodexQuotaWindowHistory = {
+  credential_id: OWN_CODEX_QUOTA.id,
+  name: OWN_CODEX_QUOTA.name,
+  channel_group_id: CODEX_QUOTA_GROUP.id,
+  plan_type: OWN_CODEX_QUOTA.plan_type,
+  periods: [
+    {
+      window_kind: "primary",
+      window_seconds: 10_800,
+      started_at: "2026-08-03T09:00:00.000Z",
+      scheduled_reset_at: "2026-08-03T12:00:00.000Z",
+      ended_at: "2026-08-03T12:00:00.000Z",
+      reset_reason: "natural",
+      initial_used_percent: 5,
+      last_used_percent: 42,
+      first_observed_at: "2026-08-03T09:01:00.000Z",
+      last_observed_at: "2026-08-03T11:59:00.000Z",
+    },
+  ],
 };
 
 export const CHANNEL: ChannelView = {
@@ -237,7 +290,6 @@ export const CHANNEL: ChannelView = {
   base_url: "https://api.upstream.example",
   enabled: true,
   supports_websocket: false,
-  status_statistics_enabled: true,
   auto_disabled: false,
   auto_disabled_reason: null,
   auto_disable_allowed: true,
@@ -279,6 +331,7 @@ export const API_KEY_OPTIONS: SelfApiKeyOptions = {
       id: CHANNEL_GROUP.id,
       name: CHANNEL_GROUP.name,
       api_format: CHANNEL_GROUP.api_format,
+      priority: CHANNEL_GROUP.priority,
       enabled: CHANNEL_GROUP.enabled,
     },
   ],
@@ -287,6 +340,7 @@ export const API_KEY_OPTIONS: SelfApiKeyOptions = {
       id: CHANNEL.id,
       channel_group_id: CHANNEL.channel_group_id,
       channel_group_name: CHANNEL_GROUP.name,
+      channel_group_enabled: CHANNEL_GROUP.enabled,
       api_format: CHANNEL.api_format,
       name: CHANNEL.name,
       enabled: CHANNEL.enabled,
@@ -434,6 +488,7 @@ export const SYSTEM_SETTINGS: SystemSettings = {
   upstream: {
     connect_timeout_seconds: 10,
     response_header_timeout_seconds: 30,
+    images_response_header_timeout_seconds: 300,
     stream_idle_timeout_seconds: 90,
   },
   request_retry: {
@@ -487,7 +542,7 @@ export const CONTROL_PLANE_USER: ControlPlaneUser = {
   updated_at: "2026-01-02T00:00:00.000Z",
 };
 
-export const CHANNEL_STATUS_REPORT: ChannelStatusReport = {
+export const CHANNEL_GROUP_STATUS_REPORT: ChannelGroupStatusReport = {
   window: "24h",
   started_at: "2026-07-20T14:00:00.000Z",
   ended_at: "2026-07-21T13:46:00.000Z",
@@ -502,18 +557,15 @@ export const CHANNEL_STATUS_REPORT: ChannelStatusReport = {
       p50_tps: 31.2,
     },
   ],
-  channels: [
+  groups: [
     {
-      id: CHANNEL.id,
-      channel_group_id: CHANNEL.channel_group_id,
-      channel_group_name: CHANNEL_GROUP.name,
-      api_format: CHANNEL.api_format,
-      name: CHANNEL.name,
-      enabled: CHANNEL.enabled,
-      auto_disabled: CHANNEL.auto_disabled,
+      id: CHANNEL_GROUP.id,
+      api_format: CHANNEL_GROUP.api_format,
+      name: CHANNEL_GROUP.name,
+      enabled: CHANNEL_GROUP.enabled,
       models: [
         {
-          api_format: CHANNEL.api_format,
+          api_format: CHANNEL_GROUP.api_format,
           model: MODEL.source_model_id,
           request_count: 120,
           success_rate: 0.975,

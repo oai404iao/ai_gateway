@@ -94,6 +94,7 @@ fn system_settings() -> SystemSettingsInput {
         upstream: SystemUpstreamSettingsInput {
             connect_timeout_seconds: 1,
             response_header_timeout_seconds: 2,
+            images_response_header_timeout_seconds: 300,
             stream_idle_timeout_seconds: 3,
         },
         request_retry: Default::default(),
@@ -529,6 +530,7 @@ struct CapturedCodexRequest {
 #[derive(Clone, Debug)]
 struct CapturedCodexImageRequest {
     authorization: Option<String>,
+    accept_encoding: Option<String>,
     account_id: Option<String>,
     originator: Option<String>,
     user_agent: Option<String>,
@@ -629,6 +631,7 @@ async fn codex_images_upstream(
         .unwrap()
         .push(CapturedCodexImageRequest {
             authorization: header("authorization"),
+            accept_encoding: header("accept-encoding"),
             account_id: header("chatgpt-account-id"),
             originator: header("originator"),
             user_agent: header("user-agent"),
@@ -1230,7 +1233,7 @@ fn business_codex_credential(
         quota_threshold_percent: 95,
         base_url: "https://chatgpt.com/backend-api/codex".into(),
         email: Some(email.into()),
-        account_id: "business-workspace".into(),
+        account_id: Some("business-workspace".into()),
         user_id: Some(user_id.into()),
         plan_type: Some("business".into()),
         is_fedramp: false,
@@ -1378,6 +1381,101 @@ async fn codex_business_credentials_are_unique_per_workspace_member() {
             .collect::<std::collections::BTreeSet<_>>(),
         std::collections::BTreeSet::from(["user-a", "user-b", "user-c"])
     );
+
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn codex_personal_credentials_without_account_ids_are_unique_by_user() {
+    let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
+    let codex_group = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO channel_groups \
+         (id,name,api_format,connector_kind,priority,selection_strategy,enabled) \
+         VALUES ($1,'codex-personal','open_ai_responses','codex_oauth',0,'weighted_random',true)",
+    )
+    .bind(codex_group)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let repository = ControlPlaneRepository::new(database.pool.clone());
+    let runtime = Arc::new(RuntimeConfig::new(
+        compile_runtime_config(repository.load_runtime().await.unwrap()).unwrap(),
+    ));
+    let coordinator = ControlPlaneCoordinator::new(
+        repository.clone(),
+        runtime,
+        RoutingRuntime::new(PassiveHealthPolicy::default()),
+    );
+    let personal_credential = |label: &str, email: &str, user_id: &str| {
+        let mut credential = business_codex_credential(codex_group, label, email, user_id);
+        credential.account_id = None;
+        credential.plan_type = Some("free".into());
+        credential
+    };
+
+    let original = coordinator
+        .create_codex_credential(
+            seed.user,
+            personal_credential("personal", "personal@example.test", "personal-user"),
+            None,
+        )
+        .await
+        .unwrap();
+    let reauthorized = coordinator
+        .create_codex_credential(
+            seed.user,
+            personal_credential(
+                "personal-new",
+                "personal-renamed@example.test",
+                "personal-user",
+            ),
+            None,
+        )
+        .await
+        .unwrap();
+    let other = coordinator
+        .create_codex_credential(
+            seed.user,
+            personal_credential("personal-other", "other@example.test", "other-user"),
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(reauthorized.id, original.id);
+    assert_eq!(reauthorized.action, "update");
+    assert_ne!(other.id, original.id);
+    let credentials = repository.codex_credentials(codex_group).await.unwrap();
+    assert_eq!(credentials.len(), 2);
+    assert!(
+        credentials
+            .iter()
+            .all(|credential| credential.account_id.is_none())
+    );
+    assert_eq!(
+        credentials
+            .iter()
+            .map(|credential| credential.user_id.as_deref().unwrap())
+            .collect::<std::collections::BTreeSet<_>>(),
+        std::collections::BTreeSet::from(["other-user", "personal-user"])
+    );
+
+    let mut identityless = personal_credential(
+        "identityless",
+        "identityless@example.test",
+        "temporary-user",
+    );
+    identityless.user_id = None;
+    assert!(matches!(
+        coordinator
+            .create_codex_credential(seed.user, identityless, None)
+            .await,
+        Err(ai_gateway::application::ControlPlaneError::Repository(
+            ai_gateway::persistence::RepositoryError::Validation
+        ))
+    ));
 
     database.cleanup().await;
 }
@@ -1699,7 +1797,7 @@ async fn codex_credentials_create_managed_channels_and_recompute_quota_state() {
                 quota_threshold_percent: 95,
                 base_url: "https://chatgpt.com/backend-api/codex".into(),
                 email: Some("codex@example.test".into()),
-                account_id: "account-123".into(),
+                account_id: Some("account-123".into()),
                 user_id: Some("user-123".into()),
                 plan_type: Some("plus".into()),
                 is_fedramp: false,
@@ -1939,7 +2037,7 @@ async fn codex_credentials_create_managed_channels_and_recompute_quota_state() {
                 quota_threshold_percent: 98,
                 base_url: "https://chatgpt.com/backend-api/codex".into(),
                 email: Some("codex-updated@example.test".into()),
-                account_id: "account-123".into(),
+                account_id: Some("account-123".into()),
                 user_id: Some("user-123".into()),
                 plan_type: Some("pro".into()),
                 is_fedramp: false,
@@ -2004,6 +2102,7 @@ async fn codex_credentials_create_managed_channels_and_recompute_quota_state() {
                     priority: 0,
                     selection_strategy: "weighted_random".into(),
                     enabled: true,
+                    status_statistics_enabled: None,
                 },
                 expected_updated_at: group_updated_at,
             },
@@ -2321,7 +2420,7 @@ async fn codex_credentials_export_secrets_and_protect_assigned_proxies_from_dele
                 quota_threshold_percent: 91,
                 base_url: "https://chatgpt.com/backend-api/codex".into(),
                 email: Some("portable@example.test".into()),
-                account_id: "portable-account-id".into(),
+                account_id: Some("portable-account-id".into()),
                 user_id: Some("portable-user-id".into()),
                 plan_type: Some("plus".into()),
                 is_fedramp: false,
@@ -2546,9 +2645,9 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
                 quota_threshold_percent: 95,
                 base_url: format!("http://{}/backend-api/codex", upstream.address),
                 email: Some("codex@example.test".into()),
-                account_id: "account-123".into(),
+                account_id: None,
                 user_id: Some("user-123".into()),
-                plan_type: Some("plus".into()),
+                plan_type: Some("free".into()),
                 is_fedramp: false,
                 id_token: "id-token".into(),
                 access_token: "access-token".into(),
@@ -2580,17 +2679,21 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
     .fetch_one(&database.pool)
     .await
     .unwrap();
-    let images_channel_shape: (Vec<String>, bool, bool) = sqlx::query_as(
-        "SELECT available_models,supports_websocket,status_statistics_enabled \
-         FROM channels WHERE id=$1",
-    )
-    .bind(images_channel)
-    .fetch_one(&database.pool)
-    .await
-    .unwrap();
+    let images_channel_shape: (Vec<String>, bool) =
+        sqlx::query_as("SELECT available_models,supports_websocket FROM channels WHERE id=$1")
+            .bind(images_channel)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
     assert_eq!(images_channel_shape.0, vec!["gpt-image-2"]);
     assert!(!images_channel_shape.1);
-    assert!(!images_channel_shape.2);
+    let images_group_monitoring: bool =
+        sqlx::query_scalar("SELECT status_statistics_enabled FROM channel_groups WHERE id=$1")
+            .bind(images_group)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert!(!images_group_monitoring);
     let client_model = format!("codex-client-{}", Uuid::new_v4());
     sqlx::query(
         "INSERT INTO model_rules \
@@ -2736,8 +2839,11 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
         forwarded.authorization.as_deref(),
         Some("Bearer access-token")
     );
-    assert_eq!(forwarded.accept_encoding.as_deref(), Some("identity"));
-    assert_eq!(forwarded.account_id.as_deref(), Some("account-123"));
+    assert_eq!(
+        forwarded.accept_encoding.as_deref(),
+        Some("gzip, deflate, br, zstd")
+    );
+    assert_eq!(forwarded.account_id, None);
     assert_eq!(forwarded.originator.as_deref(), Some(CODEX_ORIGINATOR));
     assert_eq!(
         forwarded.user_agent.as_deref(),
@@ -2837,7 +2943,11 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
         image_request.authorization.as_deref(),
         Some("Bearer access-token")
     );
-    assert_eq!(image_request.account_id.as_deref(), Some("account-123"));
+    assert_eq!(
+        image_request.accept_encoding.as_deref(),
+        Some("gzip, deflate, br, zstd")
+    );
+    assert_eq!(image_request.account_id, None);
     assert_eq!(image_request.originator.as_deref(), Some(CODEX_ORIGINATOR));
     assert_eq!(
         image_request.user_agent.as_deref(),
@@ -2947,7 +3057,7 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
         edit_request.authorization.as_deref(),
         Some("Bearer access-token")
     );
-    assert_eq!(edit_request.account_id.as_deref(), Some("account-123"));
+    assert_eq!(edit_request.account_id, None);
     assert_eq!(
         edit_request.content_type.as_deref(),
         Some("application/json")
@@ -3084,7 +3194,7 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
         handshake.authorization.as_deref(),
         Some("Bearer access-token")
     );
-    assert_eq!(handshake.account_id.as_deref(), Some("account-123"));
+    assert_eq!(handshake.account_id, None);
     assert_eq!(handshake.originator.as_deref(), Some(CODEX_ORIGINATOR));
     assert_eq!(
         handshake.user_agent.as_deref(),
@@ -3536,6 +3646,36 @@ async fn request_log_insert_is_idempotent_and_worker_continues_after_failure() {
     // Keep a producer clone alive: shutdown must close acceptance and drain
     // without waiting for it to be dropped.
     worker.shutdown().await;
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn request_log_persists_extended_error_details() {
+    let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
+    let repository = RequestLogRepository::new(database.pool.clone());
+    let mut event = request_log_event(&seed, RequestLogOutcome::Failed);
+    let summary = format!(
+        "provider returned an extended diagnostic\n\n{}",
+        "stack frame\n".repeat(1_000)
+    );
+    assert!(summary.len() > 1_000);
+    assert!(summary.len() < 16 * 1_024);
+    event.error_code = Some("provider_error".into());
+    event.error_summary = Some(summary.clone());
+
+    assert_eq!(
+        repository.insert(&event).await.unwrap(),
+        RequestLogInsertOutcome::Inserted
+    );
+    let persisted: Option<String> =
+        sqlx::query_scalar("SELECT error_summary FROM request_logs WHERE id = $1")
+            .bind(event.id)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert_eq!(persisted.as_deref(), Some(summary.as_str()));
+
     database.cleanup().await;
 }
 
@@ -5999,6 +6139,142 @@ async fn repository_migrates_compiles_seeded_snapshot_and_authenticates() {
 }
 
 #[tokio::test]
+async fn channel_group_status_monitoring_migration_preserves_tracked_groups() {
+    let database = TestDatabase::new_unmigrated().await;
+    for migration in MIGRATOR.iter().filter(|migration| migration.version <= 40) {
+        sqlx::raw_sql(migration.sql.as_ref())
+            .execute(&database.pool)
+            .await
+            .unwrap_or_else(|error| panic!("migration {} failed: {error}", migration.version));
+    }
+
+    let monitored_group = Uuid::new_v4();
+    let unmonitored_group = Uuid::new_v4();
+    for (group_id, name) in [
+        (monitored_group, "legacy-monitored"),
+        (unmonitored_group, "legacy-unmonitored"),
+    ] {
+        sqlx::query(
+            "INSERT INTO channel_groups \
+             (id,name,api_format,priority,selection_strategy,enabled) \
+             VALUES ($1,$2,'open_ai_chat_completions',1,'weighted_random',true)",
+        )
+        .bind(group_id)
+        .bind(name)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    }
+    for (group_id, monitored) in [(monitored_group, true), (unmonitored_group, false)] {
+        sqlx::query(
+            "INSERT INTO channels \
+             (id,channel_group_id,api_format,name,base_url,enabled,weight, \
+              upstream_auth_kind,status_statistics_enabled) \
+             VALUES ($1,$2,'open_ai_chat_completions',$3,$4,true,1,'none',$5)",
+        )
+        .bind(Uuid::new_v4())
+        .bind(group_id)
+        .bind(format!("legacy-channel-{group_id}"))
+        .bind(format!("https://{group_id}.example.test"))
+        .bind(monitored)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    }
+
+    sqlx::raw_sql(include_str!(
+        "../migrations/0041_channel_group_status_monitoring.sql"
+    ))
+    .execute(&database.pool)
+    .await
+    .expect("channel-group monitoring migration must apply");
+
+    let monitoring = sqlx::query_as::<_, (Uuid, bool)>(
+        "SELECT id,status_statistics_enabled \
+         FROM channel_groups WHERE id=ANY($1) ORDER BY id",
+    )
+    .bind(vec![monitored_group, unmonitored_group])
+    .fetch_all(&database.pool)
+    .await
+    .unwrap()
+    .into_iter()
+    .collect::<std::collections::HashMap<_, _>>();
+    assert_eq!(monitoring.get(&monitored_group), Some(&true));
+    assert_eq!(monitoring.get(&unmonitored_group), Some(&false));
+
+    let channel_column_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS (\
+         SELECT 1 FROM information_schema.columns \
+         WHERE table_schema='public' \
+           AND table_name='channels' \
+           AND column_name='status_statistics_enabled'\
+         )",
+    )
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert!(!channel_column_exists);
+
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn images_timeout_migration_adds_the_default_without_overwriting_an_existing_value() {
+    let database = TestDatabase::new_unmigrated().await;
+    for migration in MIGRATOR.iter().filter(|migration| migration.version <= 41) {
+        sqlx::raw_sql(migration.sql.as_ref())
+            .execute(&database.pool)
+            .await
+            .unwrap_or_else(|error| panic!("migration {} failed: {error}", migration.version));
+    }
+    sqlx::query(
+        "INSERT INTO system_settings (setting_key,value) VALUES \
+         ('forwarding_policy','{\"upstream\":{\"connect_timeout_seconds\":10,\
+          \"response_header_timeout_seconds\":30,\"stream_idle_timeout_seconds\":90}}'::jsonb)",
+    )
+    .execute(&database.pool)
+    .await
+    .unwrap();
+
+    let migration = include_str!("../migrations/0042_images_response_header_timeout.sql");
+    sqlx::raw_sql(migration)
+        .execute(&database.pool)
+        .await
+        .expect("Images timeout migration must apply");
+    let migrated: i64 = sqlx::query_scalar(
+        "SELECT (value #>> '{upstream,images_response_header_timeout_seconds}')::bigint \
+         FROM system_settings WHERE setting_key='forwarding_policy'",
+    )
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(migrated, 300);
+
+    sqlx::query(
+        "UPDATE system_settings SET value=jsonb_set(\
+         value,'{upstream,images_response_header_timeout_seconds}','600'::jsonb,true) \
+         WHERE setting_key='forwarding_policy'",
+    )
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    sqlx::raw_sql(migration)
+        .execute(&database.pool)
+        .await
+        .expect("Images timeout migration must be idempotent");
+    let preserved: i64 = sqlx::query_scalar(
+        "SELECT (value #>> '{upstream,images_response_header_timeout_seconds}')::bigint \
+         FROM system_settings WHERE setting_key='forwarding_policy'",
+    )
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(preserved, 600);
+
+    database.cleanup().await;
+}
+
+#[tokio::test]
 async fn codex_images_migration_backfills_existing_credentials_without_replacing_responses() {
     let database = TestDatabase::new_unmigrated().await;
     for migration in MIGRATOR.iter().filter(|migration| migration.version <= 35) {
@@ -6626,10 +6902,9 @@ async fn proxy_request_logs_reach_postgres_for_terminal_and_rejected_requests() 
     .await;
     assert_eq!(sse_error.response_status_code, Some(200));
     assert_eq!(sse_error.request_protocol, "sse");
-    assert_eq!(
-        sse_error.error_summary.as_deref(),
-        Some("upstream quota exhausted")
-    );
+    let summary = sse_error.error_summary.as_deref().unwrap();
+    assert!(summary.starts_with("upstream quota exhausted\n\n{"));
+    assert!(summary.contains("\"code\": \"provider_error\""));
 
     *state.0.lock().unwrap() = UpstreamMode::Immediate(StatusCode::TOO_MANY_REQUESTS);
     let response = request(&seed.secret, &seed.client_model, false)
@@ -6648,6 +6923,7 @@ async fn proxy_request_logs_reach_postgres_for_terminal_and_rejected_requests() 
     .await;
     assert_eq!(upstream_failure.response_status_code, Some(429));
     assert_eq!(upstream_failure.request_protocol, "non_stream");
+    assert_eq!(upstream_failure.error_summary.as_deref(), Some("upstream"));
 
     *state.0.lock().unwrap() = UpstreamMode::HeaderDelay;
     let response = request(&seed.secret, &seed.client_model, false)
@@ -6668,6 +6944,12 @@ async fn proxy_request_logs_reach_postgres_for_terminal_and_rejected_requests() 
     assert_eq!(
         header_timeout.error_code.as_deref(),
         Some("response_header_timeout")
+    );
+    assert!(
+        header_timeout
+            .error_summary
+            .as_deref()
+            .is_some_and(|summary| summary.contains("did not return response headers in time"))
     );
 
     *state.0.lock().unwrap() = UpstreamMode::OneChunkThenIdle;

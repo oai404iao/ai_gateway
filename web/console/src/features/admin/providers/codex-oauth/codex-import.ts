@@ -392,6 +392,10 @@ function normalizeCredential({
     claimEmail(claims);
   const accountId =
     firstString(value, [
+      ["tokens", "account_id"],
+      ["tokens", "accountId"],
+      ["tokens", "chatgpt_account_id"],
+      ["tokens", "chatgptAccountId"],
       ["chatgpt_account_id"],
       ["chatgptAccountId"],
       ["account_id"],
@@ -418,7 +422,9 @@ function normalizeCredential({
   const warnings: string[] = [];
   const errors: string[] = [];
   if (!idToken) warnings.push("ID token is missing; identity will be read from the access token.");
-  if (!accountId) warnings.push("Account ID will be derived from the token during validation.");
+  if (!accountId) {
+    warnings.push("No workspace account ID was found; personal credentials can omit it.");
+  }
   if (!label.trim()) errors.push("Label is required.");
   if (!accessToken) errors.push("Access token is required.");
   if (!refreshToken) errors.push("Refresh token is required.");
@@ -506,6 +512,8 @@ function markDuplicateCredentials(credentials: CodexCredentialImportDraft[]): vo
               credential.account_id,
               credential.email.toLowerCase(),
             ])
+          : credential.user_id
+            ? JSON.stringify(["personal", credential.user_id])
           : credential.refresh_token
             ? `refresh:${credential.refresh_token}`
             : credential.access_token
@@ -593,6 +601,7 @@ function claimUserId(claims: JsonRecord | null): string {
   return firstString(claims, [
     ["https://api.openai.com/auth", "chatgpt_user_id"],
     ["https://api.openai.com/auth", "user_id"],
+    ["sub"],
   ]);
 }
 

@@ -21,7 +21,8 @@ use uuid::Uuid;
 use crate::{
     application::{
         AutomaticDisableService, ControlPlaneCoordinator, ErrorKeywordMatcher, RequestLogSink,
-        ResponseUsage, UsageCollector, request_billing, request_billing_multiplier,
+        ResponseErrorDetails, ResponseUsage, UsageCollector, request_billing,
+        request_billing_multiplier,
     },
     domain::{
         ApiFormat, ApiOperation, AutomaticDisableTrigger, CompiledChannel,
@@ -214,6 +215,10 @@ async fn probe_channel(
                 response_status_code,
                 ttft_ms,
                 error_code,
+                error_summary(
+                    error_code,
+                    "Scheduled test request body could not be built.",
+                ),
                 None,
             );
         }
@@ -230,6 +235,10 @@ async fn probe_channel(
                 response_status_code,
                 ttft_ms,
                 error_code,
+                error_summary(
+                    error_code,
+                    "Scheduled test request JSON transform could not be applied.",
+                ),
                 None,
             );
         }
@@ -245,6 +254,10 @@ async fn probe_channel(
             response_status_code,
             ttft_ms,
             error_code,
+            error_summary(
+                error_code,
+                "Scheduled test request headers or upstream authentication could not be prepared.",
+            ),
             None,
         );
     }
@@ -257,6 +270,7 @@ async fn probe_channel(
                 response_status_code,
                 ttft_ms,
                 error_code,
+                error_summary(error_code, "Scheduled test upstream URL is invalid."),
                 None,
             );
         }
@@ -271,6 +285,10 @@ async fn probe_channel(
                     response_status_code,
                     ttft_ms,
                     error_code,
+                    error_summary(
+                        error_code,
+                        "Scheduled test upstream timeout or proxy policy is invalid.",
+                    ),
                     None,
                 );
             }
@@ -284,6 +302,10 @@ async fn probe_channel(
                 response_status_code,
                 ttft_ms,
                 error_code,
+                error_summary(
+                    error_code,
+                    "Scheduled test upstream client could not be created.",
+                ),
                 None,
             );
         }
@@ -307,6 +329,10 @@ async fn probe_channel(
                 response_status_code,
                 ttft_ms,
                 error_code,
+                error_summary(
+                    error_code,
+                    "The scheduled test upstream did not return response headers in time.",
+                ),
                 None,
             );
         }
@@ -322,6 +348,7 @@ async fn probe_channel(
                 response_status_code,
                 ttft_ms,
                 error_code,
+                error_summary(error_code, &error.to_string()),
                 None,
             );
         }
@@ -341,6 +368,9 @@ async fn probe_channel(
         .then(|| ErrorKeywordMatcher::new(automatic_settings))
         .flatten();
     let mut usage = UsageCollector::new(channel.api_format(), is_sse_response(response.headers()));
+    if !upstream_succeeded {
+        usage.capture_error_body();
+    }
     let mut response_stream = response.bytes_stream();
     let mut total_bytes = 0_usize;
     loop {
@@ -363,11 +393,12 @@ async fn probe_channel(
                         response_status_code,
                         ttft_ms,
                         error_code,
+                        usage.error_details().and_then(|error| error.summary),
                         usage.latest(),
                     );
                 }
             }
-            Ok(Some(Err(_))) => {
+            Ok(Some(Err(error))) => {
                 error_code = Some("scheduled_test_response_body_error");
                 return finished_probe(
                     &context,
@@ -375,6 +406,11 @@ async fn probe_channel(
                     response_status_code,
                     ttft_ms,
                     error_code,
+                    usage.error_details().and_then(|details| {
+                        details
+                            .summary
+                            .or_else(|| error_summary(error_code, &error.to_string()))
+                    }),
                     usage.latest(),
                 );
             }
@@ -392,6 +428,7 @@ async fn probe_channel(
                     response_status_code,
                     ttft_ms,
                     error_code,
+                    usage.error_details().and_then(|error| error.summary),
                     usage.latest(),
                 );
             }
@@ -403,6 +440,12 @@ async fn probe_channel(
                     response_status_code,
                     ttft_ms,
                     error_code,
+                    usage.error_details().and_then(|error| error.summary).or_else(|| {
+                        error_summary(
+                            error_code,
+                            "The scheduled test upstream response stream was idle for too long.",
+                        )
+                    }),
                     usage.latest(),
                 );
             }
@@ -416,6 +459,7 @@ fn finished_probe(
     response_status_code: Option<u16>,
     ttft_ms: Option<i32>,
     error_code: Option<&'static str>,
+    error_summary: Option<String>,
     usage: Option<ResponseUsage>,
 ) -> ProbeResult {
     let succeeded = outcome == RequestLogOutcome::Succeeded;
@@ -470,10 +514,14 @@ fn finished_probe(
             total_duration_ms,
             billing: Some(billing),
             error_code: error_code.map(str::to_owned),
-            error_summary: None,
+            error_summary,
         },
         succeeded,
     }
+}
+
+fn error_summary(error_code: Option<&str>, message: &str) -> Option<String> {
+    ResponseErrorDetails::from_message(error_code, message).summary
 }
 
 fn build_probe_body(api_format: ApiFormat, model: &str, prompt: &str) -> Result<Bytes, ()> {
@@ -704,6 +752,9 @@ mod tests {
             result.event.error_code.as_deref(),
             Some("scheduled_test_http_error")
         );
+        let summary = result.event.error_summary.as_deref().unwrap();
+        assert!(summary.starts_with("quota exceeded\n\n{"));
+        assert!(summary.contains("\"message\": \"quota exceeded\""));
         assert_eq!(
             timeout(Duration::from_secs(1), receiver.recv())
                 .await

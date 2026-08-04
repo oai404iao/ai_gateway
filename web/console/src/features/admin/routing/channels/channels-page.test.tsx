@@ -9,6 +9,7 @@ import { server, seedAuthenticatedSession } from "@/test/msw";
 import { CHANNEL, CHANNEL_GROUP } from "@/test/fixtures";
 import type {
   ChannelBatchUpdateInput,
+  ChannelGroupInput,
   ChannelGroupView,
   ChannelRecoverInput,
   ChannelView,
@@ -64,6 +65,7 @@ const CODEX_IMAGES_GROUP: ChannelGroupView = {
   name: "codex-subscriptions Images",
   api_format: "open_ai_images",
   enabled: false,
+  status_statistics_enabled: false,
 };
 
 const CODEX_RESPONSES_CHANNEL: ChannelView = {
@@ -249,6 +251,8 @@ describe("ChannelsPage", () => {
   it("quickly disables, enables, and recovers channels from the operations column", async () => {
     seedAuthenticatedSession();
     const batchInputs: ChannelBatchUpdateInput[] = [];
+    let groupInput: ChannelGroupInput | undefined;
+    let groupIfMatch: string | null = null;
     let recoverInput: ChannelRecoverInput | undefined;
     server.use(
       http.get("/console/v1/routing/channel-groups", () =>
@@ -264,6 +268,18 @@ describe("ChannelsPage", () => {
           correlation_id: "77777777-0000-0000-0000-000000000001",
         });
       }),
+      http.put(
+        "/console/v1/routing/channel-groups/:id",
+        async ({ params, request }) => {
+          expect(params.id).toBe(CHANNEL_GROUP.id);
+          groupInput = (await request.json()) as ChannelGroupInput;
+          groupIfMatch = request.headers.get("If-Match");
+          return HttpResponse.json({
+            id: CHANNEL_GROUP.id,
+            correlation_id: "77777777-0000-0000-0000-000000000003",
+          });
+        },
+      ),
       http.post(
         "/console/v1/routing/channels/:id/recover",
         async ({ params, request }) => {
@@ -278,6 +294,27 @@ describe("ChannelsPage", () => {
     );
     const user = userEvent.setup();
     renderAppAt("/admin/routing/channels");
+
+    const groupRegion = await screen.findByRole("region", {
+      name: CHANNEL_GROUP.name,
+    });
+    await user.click(
+      within(groupRegion).getByRole("button", { name: "Disable group" }),
+    );
+    const groupDialog = await screen.findByRole("alertdialog");
+    await user.click(
+      within(groupDialog).getByRole("button", { name: "Disable group" }),
+    );
+    await waitFor(() => expect(groupInput?.enabled).toBe(false));
+    expect(groupInput).toEqual({
+      name: CHANNEL_GROUP.name,
+      api_format: CHANNEL_GROUP.api_format,
+      connector_kind: CHANNEL_GROUP.connector_kind,
+      priority: CHANNEL_GROUP.priority,
+      selection_strategy: CHANNEL_GROUP.selection_strategy,
+      enabled: false,
+    });
+    expect(groupIfMatch).toBe(`"${CHANNEL_GROUP.updated_at}"`);
 
     await user.click(
       await screen.findByRole("button", { name: `Disable ${CHANNEL.name}` }),

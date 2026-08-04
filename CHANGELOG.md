@@ -7,6 +7,53 @@ Versioning.
 
 ## [Unreleased]
 
+## [0.9.4] - 2026-08-04
+
+### Added
+
+- Negotiate HTTP response compression independently on each proxy hop: advertise
+  gzip, deflate, Brotli, and Zstandard upstream, incrementally decode supported
+  single or stacked content codings for usage/error/SSE processing, and
+  recompress eligible non-SSE downstream responses according to the client's
+  `Accept-Encoding`.
+
+### Changed
+
+- Retain up to 16KiB of cleaned request-log error detail for failed
+  non-streaming HTTP responses, SSE/Responses WebSocket terminal events, and
+  gateway or transport failures, instead of recording only short structured
+  SSE messages.
+- Treat `Accept-Encoding` as a gateway-owned transport header instead of
+  forwarding the downstream value to upstream channels; range requests use
+  upstream identity coding, and unsupported upstream response codings fail
+  before downstream response headers are sent.
+
+## [0.9.3] - 2026-08-04
+
+### Added
+
+- Add a database-backed Images-specific response-header timeout, bootstrapped
+  from `[upstream].images_response_header_timeout_seconds` with a 300-second
+  default, while preserving channel-level timeout overrides.
+
+## [0.9.2] - 2026-08-04
+
+### Changed
+
+- Move status monitoring from individual channels to channel groups, aggregate
+  the public status report by group, and rename the Console/API routes to
+  channel-group status.
+
+## [0.9.1] - 2026-08-03
+
+### Fixed
+
+- Strip common reverse-proxy and CDN forwarding metadata from every upstream
+  channel request, including Chat Completions, Responses HTTP/SSE/WebSocket,
+  and Images generation/edit forwarding.
+
+## [0.9.0] - 2026-08-03
+
 ### Added
 
 - Add an administrator-only system cost-statistics API and Console page with
@@ -24,6 +71,11 @@ Versioning.
 
 ### Fixed
 
+- Accept Codex OAuth credentials whose tokens omit `chatgpt_account_id`,
+  identify those personal credentials by user ID, and omit the
+  `ChatGPT-Account-ID` upstream header instead of rejecting Free/Pro-style
+  token sets during OAuth completion or import. Migration
+  `0040_codex_optional_account_id.sql` makes the stored workspace ID nullable.
 - Strip the unsupported `max_output_tokens` field only after a Responses
   request selects a Codex OAuth channel, while preserving other unknown fields
   and the existing streaming-only boundary; normalize successful Codex HTTP

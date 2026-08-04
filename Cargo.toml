@@ -1,6 +1,6 @@
 [package]
 name = "ai-gateway"
-version = "0.8.1"
+version = "0.9.4"
 edition = "2024"
 rust-version = "1.92"
 description = "High-performance LLM request forwarding gateway"
@@ -17,6 +17,7 @@ embedded-console-ui = ["dep:rust-embed", "dep:mime_guess"]
 [dependencies]
 arc-swap = "1.7"
 argon2 = { version = "0.5", features = ["password-hash"] }
+async-compression = { version = "0.4", features = ["tokio", "gzip", "zlib", "brotli", "zstd"] }
 axum = { version = "0.8", features = ["ws"] }
 base64 = "0.22"
 bytes = "1.10"
@@ -46,6 +47,7 @@ tempfile = "3.20"
 thiserror = "2.0"
 time = "=0.3.54"
 tokio = { version = "1.43", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-util = { version = "0.7", features = ["io"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 tokio-socks = "0.5"
 # Codex negotiates permessage-deflate for Responses WebSocket connections.
@@ -55,7 +57,7 @@ tokio-tungstenite = { git = "https://github.com/openai-oss-forks/tokio-tungsteni
 tungstenite = { git = "https://github.com/openai-oss-forks/tungstenite-rs", rev = "4fffad30fe373adbdcffab9545e9e9bf4f2fc19f", features = ["deflate"] }
 toml = "1.1"
 tower = { version = "0.5", features = ["util"] }
-tower-http = { version = "0.7", features = ["cors", "limit", "trace"] }
+tower-http = { version = "0.7", features = ["compression-full", "cors", "limit", "trace"] }
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }

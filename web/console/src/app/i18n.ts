@@ -54,10 +54,11 @@ const zhCN: Record<string, string> = {
   "Saving validates the full routing configuration and publishes a new runtime snapshot. Requests already in flight retain their original settings.":
     "保存时会校验完整路由配置并发布新的运行时快照。已在处理中的请求会保留原有设置。",
   "Default upstream timeouts": "上游默认超时",
-  "Used only when a channel does not define an explicit timeout. Response header timeout must be greater than connect timeout.":
-    "仅在渠道未设置显式超时时使用。响应头超时必须大于连接超时。",
+  "Used only when a channel does not define an explicit timeout. Images use their own longer response header timeout; both response header timeouts must exceed connect timeout.":
+    "仅在渠道未设置显式超时时使用。Images 使用独立且更长的响应头超时；两个响应头超时都必须大于连接超时。",
   "Connect timeout (seconds)": "连接超时（秒）",
   "Response header timeout (seconds)": "响应头超时（秒）",
+  "Images response header timeout (seconds)": "Images 响应头超时（秒）",
   "Stream idle timeout (seconds)": "流空闲超时（秒）",
   "Request failover": "请求故障转移",
   "Before response headers arrive, connection failures, connect timeouts, and response-header timeouts can retry on distinct healthy channels. A timed-out upstream may still process the original request.":
@@ -197,6 +198,8 @@ const zhCN: Record<string, string> = {
   "Enter a positive number of seconds.": "请输入正整数秒数。",
   "Enter a positive failure threshold.": "请输入正整数失败阈值。",
   "Response header timeout must exceed connect timeout.": "响应头超时必须大于连接超时。",
+  "Images response header timeout must exceed connect timeout.":
+    "Images 响应头超时必须大于连接超时。",
   "Control plane reloaded": "控制面已重载",
   "Reload failed": "重载失败",
   "Reload control plane": "重载控制面",
@@ -204,12 +207,12 @@ const zhCN: Record<string, string> = {
     "重新编译并发布不可变运行时快照；定时重载也会自动执行。",
   "Reload now": "立即重载",
   "Correlation id": "关联 ID",
-  "Channel status": "渠道状态",
+  "Channel group status": "渠道组状态监控",
   "Personal request activity and cost analytics.": "个人请求活动与花费分析。",
   "System-wide request activity, token usage, and cost analytics.":
     "全系统请求活动、Token 用量与花费分析。",
-  "Availability and performance for channels included in status statistics.":
-    "已纳入状态统计的渠道可用性与性能。",
+  "Availability and performance aggregated for monitored channel groups.":
+    "按已启用监控的渠道组聚合可用性与性能。",
   "Personal usage": "个人使用情况",
   "Cost statistics": "花费统计",
   "Spend leaderboard": "花费排行榜",
@@ -629,6 +632,11 @@ const zhCN: Record<string, string> = {
   "Optional note shown to administrators.": "向管理员显示的可选说明。",
   "Users without an override inherit this policy immediately.":
     "未设置覆盖的用户会立即继承此策略。",
+  "Visible Codex quota groups": "可见 Codex 额度组",
+  "Members can only read quota windows and subscription tiers. Credential names are shown as IDs.":
+    "成员只能只读查看额度窗口和订阅等级；凭证名称显示为 ID。",
+  "No Codex OAuth credential groups are configured.":
+    "尚未配置 Codex OAuth 凭证组。",
   "Save user group": "保存用户组",
   "User group created": "用户组已创建",
   "User group updated": "用户组已更新",
@@ -775,6 +783,23 @@ const zhCN: Record<string, string> = {
   "Channel groups ({count})": "渠道组（{count}）",
   "Channels ({count})": "渠道（{count}）",
   "Individual channels ({count})": "单独渠道（{count}）",
+  "Routing targets": "路由目标",
+  "Targets are grouped by API format and sorted by priority and name.":
+    "路由目标按 API 格式分类，并按优先级和名称排序。",
+  "{count} groups selected": "已选择 {count} 个渠道组",
+  "{count} individual channels selected": "已选择 {count} 个单独渠道",
+  "Search routing targets": "搜索路由目标",
+  "Search channel groups or channels": "搜索渠道组或渠道",
+  "Show disabled targets ({count})": "显示已禁用目标（{count}）",
+  "Selecting a group applies to every channel in that group.":
+    "选择渠道组会应用到该组内的全部渠道。",
+  "No channel groups match the current filters.": "没有渠道组匹配当前筛选条件。",
+  "Advanced: individual channels": "高级配置：单独渠道",
+  "Use individual channels only when the whole group should not be selected.":
+    "仅在不应选择整个渠道组时使用单独渠道。",
+  "Show individual channels ({count})": "展开单独渠道（{count}）",
+  "Hide individual channels": "收起单独渠道",
+  "No individual channels match the current filters.": "没有单独渠道匹配当前筛选条件。",
   "No groups for this format.": "该格式没有可用渠道组。",
   "No channels for this format.": "该格式没有可用渠道。",
   "priority {priority}": "优先级 {priority}",
@@ -855,20 +880,22 @@ const zhCN: Record<string, string> = {
   "P90 TTFT": "P90 首字延迟",
   "P50 TPS": "P50 吞吐",
   "Model overview": "模型概览",
-  "Metrics aggregated across channels included in status statistics.":
-    "聚合已纳入状态统计渠道的指标。",
+  "Metrics aggregated across monitored channel groups.":
+    "聚合已启用监控的渠道组指标。",
   "Status window": "状态时间窗口",
   "Last 24 hours": "最近 24 小时",
   "Last 3 days": "最近 3 天",
   "Last 7 days": "最近 7 天",
-  "No tracked channels": "没有纳入统计的渠道",
-  "Enable status statistics on at least one channel.": "请至少为一个渠道启用状态统计。",
+  "No monitored channel groups": "没有启用监控的渠道组",
+  "Enable status monitoring on at least one channel group.":
+    "请至少为一个渠道组启用状态监控。",
   "Routing enabled": "路由已启用",
   "Routing disabled": "路由已禁用",
-  "No channel models": "渠道没有模型",
-  "Add available upstream models to this channel.": "请为此渠道添加可用上游模型。",
-  "The gateway does not store request or response bodies. Sanitized upstream error messages may be retained.":
-    "网关不会存储请求或响应正文，但可能保留已清洗的上游错误消息。",
+  "No channel group models": "渠道组没有模型",
+  "Add available upstream models to channels in this group.":
+    "请为此渠道组中的渠道添加可用上游模型。",
+  "The gateway does not store request bodies or successful response bodies. Bounded upstream error details may be retained.":
+    "网关不会存储请求正文或成功响应正文，但可能保留受限长度的上游错误详情。",
   "No request logs": "没有请求日志",
   "There are no logged requests matching these filters.": "没有符合这些筛选条件的请求日志。",
   "Started": "开始时间",
@@ -900,7 +927,7 @@ const zhCN: Record<string, string> = {
   "Cache rate": "缓存率",
   "Billed at": "结算时间",
   "Error code": "错误代码",
-  "Error message": "错误消息",
+  "Error detail": "错误详情",
   "Channel group": "渠道组",
   "Channel": "渠道",
   "Channel ID": "渠道 ID",
@@ -927,8 +954,7 @@ const zhCN: Record<string, string> = {
     "配置可用上游模型、定时检测与超时覆盖。",
   "Transform override": "转换覆盖",
   "Availability and automation": "可用性与自动化",
-  "Routing state, status reporting, and automatic disable behavior.":
-    "配置路由状态、状态统计与自动禁用行为。",
+  "Routing state and automatic disable behavior.": "配置路由状态与自动禁用行为。",
   "Manage channel groups and their upstream channels in one grouped view.":
     "在一个分组视图中管理渠道组及其上游渠道。",
   "Browse compact channel groups, with shared Codex credentials kept together.":
@@ -1062,6 +1088,14 @@ const zhCN: Record<string, string> = {
   "Channel group created": "渠道组已创建",
   "Channel group updated": "渠道组已更新",
   "This group was changed elsewhere. Reloading.": "此渠道组已在其他位置修改，正在重新加载。",
+  "Disable group": "禁用渠道组",
+  "Disable group {name}": "禁用渠道组 {name}",
+  "Disable channel group?": "禁用渠道组？",
+  "{name} will stop all {count} channels in this group from receiving new requests. Individual channel settings are preserved.":
+    "{name} 将阻止该组内全部 {count} 个渠道接收新请求。各渠道的独立配置会保留。",
+  "Disabled {name}; all {count} channels in the group are unavailable.":
+    "已禁用 {name}；该组内全部 {count} 个渠道均已不可用。",
+  "group disabled": "渠道组已禁用",
   "Create group": "创建渠道组",
   "Edit group": "编辑渠道组",
   "Save group": "保存渠道组",
@@ -1076,8 +1110,11 @@ const zhCN: Record<string, string> = {
   "Create channel": "创建渠道",
   "Edit channel": "编辑渠道",
   "Save channel": "保存渠道",
-  "Status statistics": "状态统计",
-  "Include this channel in the channel status report.": "在渠道状态报告中包含此渠道。",
+  "Status monitoring": "状态监控",
+  "Include this channel group in the channel group status report.":
+    "在渠道组状态监控报告中包含此渠道组。",
+  "Monitoring enabled": "监控已启用",
+  "Monitoring disabled": "监控已禁用",
   "Auto-disabled": "自动禁用",
   "Auto-disable reason": "自动禁用原因",
   "Allow automatic disable": "允许自动禁用",
@@ -1326,7 +1363,8 @@ const zhCN: Record<string, string> = {
     "按时间区间、用户、API 密钥、渠道或 Codex 凭证和聚合颗粒度筛选。",
   "Filter your own statistics by time range, API key, and aggregation granularity.":
     "按时间区间、API 密钥和聚合颗粒度筛选您自己的统计。",
-  "Channel status and your own cost analytics.": "渠道状态和您自己的花费统计。",
+  "Channel group status and your own cost analytics.":
+    "渠道组状态监控和您自己的花费统计。",
   "Quick range": "快速时间范围",
   "Today": "今天",
   "This week": "本周",
@@ -1621,6 +1659,19 @@ const zhCN: Record<string, string> = {
   "Connector": "连接器",
   "OpenAI-compatible": "OpenAI 兼容",
   "Codex OAuth": "Codex OAuth",
+  "Codex quotas": "Codex 额度",
+  "Read-only quota windows for Codex credential groups granted by your user group.":
+    "只读查看当前用户组获准访问的 Codex 凭证组额度窗口。",
+  "No Codex quota access": "暂无 Codex 额度查看权限",
+  "Your user group has not been granted access to any Codex quota groups.":
+    "当前用户组尚未获准查看任何 Codex 额度组。",
+  "Subscription": "订阅等级",
+  "Last checked": "最后检查时间",
+  "Quota history": "额度窗口历史",
+  "Quota window history for {name}": "{name} 的额度窗口历史",
+  "View quota history for {name}": "查看 {name} 的额度窗口历史",
+  "This view is read-only and contains quota windows plus the provider-reported subscription tier.":
+    "此页面为只读，仅包含额度窗口和 Provider 报告的订阅等级。",
   "Manage Codex credentials": "管理 Codex 凭证",
   "Manage credentials": "管理凭证",
   "Provider-managed credentials": "Provider 托管凭证",
@@ -1677,6 +1728,7 @@ const zhCN: Record<string, string> = {
   "Proxy assigned": "已分配代理",
   "Workspace {id}": "工作区 {id}",
   "Member {id}": "成员 {id}",
+  "User {id}": "用户 {id}",
   "Refresh token for {label}": "刷新 {label} 的 Token",
   "Refresh quota for {label}": "刷新 {label} 的额度",
   "View quota history for {label}": "查看 {label} 的额度窗口历史",
@@ -1795,7 +1847,7 @@ const zhCN: Record<string, string> = {
   "Threshold": "阈值",
   "Select credential {number}": "选择第 {number} 个凭证",
   "Label for credential {number}": "第 {number} 个凭证的标签",
-  "Account ID pending validation": "Account ID 等待验证",
+  "Personal credential (no workspace ID)": "个人凭证（无工作区 ID）",
   "Proxy for {label}": "{label} 的代理",
   "Weight for {label}": "{label} 的权重",
   "Threshold for {label}": "{label} 的阈值",
@@ -1836,8 +1888,8 @@ const zhCN: Record<string, string> = {
   "Import failed": "导入失败",
   "ID token is missing; identity will be read from the access token.":
     "缺少 ID Token；身份信息将从 Access Token 读取。",
-  "Account ID will be derived from the token during validation.":
-    "验证时将从 Token 推导 Account ID。",
+  "No workspace account ID was found; personal credentials can omit it.":
+    "未找到工作区 Account ID；个人凭证可以不提供该字段。",
   "Enter valid credential settings.": "请输入有效的凭证设置。",
   "Credential updated.": "凭证已更新。",
   "Edit Codex credential": "编辑 Codex 凭证",

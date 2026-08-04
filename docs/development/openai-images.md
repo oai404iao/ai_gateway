@@ -85,8 +85,11 @@ POST /v1/images/generations
 - 使用 `open_ai_images` API Key 权限、模型规则、Channel Group 和 Channel；
 - 普通 `openai_compatible` Connector 沿用原路径
   `/v1/images/generations`、查询字符串和 Header/鉴权顺序；
-- 上游状态、Header 和响应 body 默认逐块透传；
-- 若顶层 `usage` 存在，增量提取输入/输出 token，不为 base64 图片缓冲完整响应；
+- 上下游分别协商 HTTP content coding：网关向上游声明 gzip、deflate、Brotli 与 Zstandard，
+  流式解码后采集 usage，再按下游 `Accept-Encoding` 流式重编码；完整 base64 响应仍不缓冲；
+- 渠道未显式设置 `response_header_timeout_ms` 时，generation/edit 使用系统设置中的 Images
+  专用响应头超时；默认 300 秒，建连和流空闲超时仍复用通用值；
+- 若顶层 `usage` 存在，从解码后的 JSON 流增量提取输入/输出 token，不为 base64 图片缓冲完整响应；
 - 请求日志写入 `images_generation` 操作，journal schema 为 v4，并兼容读取 v2/v3 backlog；
 - Images 请求禁用自动重试、Session affinity、SSE 变换、WebSocket 和 scheduled probe。
 
@@ -144,7 +147,8 @@ codex_oauth_credentials
 来源；label、weight、proxy 和超时初始同步。它们拥有独立的 ID、模型列表、格式能力、被动健康
 状态和路由授权。Responses projection 继续使用 models endpoint 返回的 slug 并声明 WebSocket；
 Images projection 当前固定声明经核对的 `gpt-image-2`，不声明 WebSocket、scheduled probe 或
-状态统计。
+渠道级状态统计。状态监控由 Images Channel Group 独立控制，新建的配对 Images group 默认关闭
+`status_statistics_enabled`。
 
 ### 安全迁移
 
@@ -169,7 +173,7 @@ Images generation attempt 需要：
 
 - 将目标改写为 Codex subscription backend 的 `/images/generations`；
 - 使用与 Responses projection 相同的 credential snapshot 和预发送 token refresh 边界；
-- 最后注入 Bearer、`ChatGPT-Account-ID`、FedRAMP、`originator`、`version`、
+- 最后注入 Bearer、可选 `ChatGPT-Account-ID`、FedRAMP、`originator`、`version`、
   `User-Agent` 和 Gateway 生成的 `x-codex-image-turn-id`；
 - 移除客户端 `session-id`、`thread-id` 与 `x-client-request-id`，Images 不借用 Responses
   Session identity；
@@ -215,7 +219,7 @@ Codex OAuth edit adapter：
 - 只转发经核对的 `prompt`、`background`、`model`、`n`、`quality` 与 `size` 字段；
 - provider-specific 地限制最多五张图片并拒绝 `mask` 与未核对字段；通用
   `OpenAiImages` multipart 仍保留最多 16 张输入的独立上限；
-- 复用 generation 的 Bearer/account/FedRAMP、`originator`、版本、User-Agent 和新生成的
+- 复用 generation 的 Bearer/可选 account/FedRAMP、`originator`、版本、User-Agent 和新生成的
   `x-codex-image-turn-id`，并删除 Responses Session Header。
 
 临时文件计数、活跃字节、累计写入、存储失败和文件系统可用容量出现在
@@ -242,6 +246,8 @@ PR 1 的最低覆盖：
 - generation 路由、API Key/模型格式隔离和原始 JSON 字节透传；
 - 上游认证与响应透传；
 - 顶层 Images usage 增量提取，不缓冲 base64 输出；
+- gzip、deflate、Brotli、Zstandard 及已知多层上游 coding 的增量解码，并验证下游独立协商、
+  identity 回退、失效表示 Header 清理和未知 coding 的响应头前失败；
 - `stream: true` 在联系上游前拒绝；
 - 至少两个可选 Images Channel 时仍只尝试一次；
 - Images SSE Transform 和 scheduled test model 编译/写入拒绝；
@@ -269,6 +275,8 @@ PR 3 另外覆盖：
 - Codex edit 路径、Header、两张输入图片的流式 data URL 转换，以及最多五张、无 mask 的
   provider 约束；
 - edit 响应头超时只发生一次上游尝试，draining Codex credential 在发送前拒绝。
+- 普通响应头超时较短而 Images 专用超时较长时，generation/edit 使用后者；渠道显式响应头
+  超时仍覆盖系统默认值。
 
 任何后续 Images 转发改动仍须运行普通 Rust/Console 检查和现有付费真实上游 smoke。提供完整
 `REAL_UPSTREAM_IMAGES_*` 配置时，脚本还会执行 generation/edit 付费 smoke；无论是否配置真实

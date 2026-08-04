@@ -25,10 +25,10 @@ import {
 } from "@/components/ui/input-group";
 import { Spinner } from "@/components/ui/spinner";
 import {
-  ApiKeyTargetFields,
-  type ApiKeyTargetChannel,
-  type ApiKeyTargetGroup,
-} from "@/components/shared/api-key-target-fields";
+  RoutingTargetFields,
+  type RoutingTargetChannel,
+  type RoutingTargetGroup,
+} from "@/components/shared/routing-target-fields";
 import { PageHeader } from "@/components/shared/page-header";
 import { AsyncResource } from "@/components/shared/async-resource";
 import { ApiKeyValue } from "@/components/shared/api-key-value";
@@ -143,11 +143,11 @@ export function ApiKeysPage() {
     }
   };
 
-  const targetGroups = useMemo<ApiKeyTargetGroup[]>(
+  const targetGroups = useMemo<RoutingTargetGroup[]>(
     () => options.data?.groups ?? [],
     [options.data?.groups],
   );
-  const targetChannels = useMemo<ApiKeyTargetChannel[]>(
+  const targetChannels = useMemo<RoutingTargetChannel[]>(
     () => options.data?.channels ?? [],
     [options.data?.channels],
   );
@@ -345,25 +345,24 @@ export function ApiKeysPage() {
                   {createErrorMessage(options.error, t)}
                 </FieldError>
               ) : null}
-              <div className="grid gap-5 md:col-span-2 md:grid-cols-2">
-                <ApiKeyTargetFields
-                  groups={targetGroups}
-                  channels={targetChannels}
-                  selectedGroupIds={selectedGroupIds}
-                  selectedChannelIds={selectedChannelIds}
-                  onChange={(allowedGroupIds, allowedChannelIds) => {
-                    form.setValue("allowed_group_ids", allowedGroupIds, {
-                      shouldDirty: true,
-                      shouldValidate: true,
-                    });
-                    form.setValue("allowed_channel_ids", allowedChannelIds, {
-                      shouldDirty: true,
-                      shouldValidate: true,
-                    });
-                  }}
-                  error={targetError ? t(targetError) : undefined}
-                />
-              </div>
+              <RoutingTargetFields
+                className="md:col-span-2"
+                groups={targetGroups}
+                channels={targetChannels}
+                selectedGroupIds={selectedGroupIds}
+                selectedChannelIds={selectedChannelIds}
+                onChange={(allowedGroupIds, allowedChannelIds) => {
+                  form.setValue("allowed_group_ids", allowedGroupIds, {
+                    shouldDirty: true,
+                    shouldValidate: true,
+                  });
+                  form.setValue("allowed_channel_ids", allowedChannelIds, {
+                    shouldDirty: true,
+                    shouldValidate: true,
+                  });
+                }}
+                error={targetError ? t(targetError) : undefined}
+              />
               <NullableNumberField
                 id="requests_per_minute"
                 label={t("Requests / minute")}

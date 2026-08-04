@@ -132,6 +132,11 @@ Migration `0036_codex_images_projection.sql` 会新增旧版 Gateway 无法编�
 `open_ai_images` groups。多实例部署必须先排空并停止所有未包含该 migration 对应代码的旧实例，
 再由新版本执行 migration 并整体切换；migration 应用后不得把流量或 Console 请求切回旧二进制。
 
+Migration `0040_codex_optional_account_id.sql` 允许个人 Codex 凭证把 workspace account ID 保存为
+`NULL`。旧二进制的持久化类型仍把该列当作必填字符串，无法加载新版本写入的 accountless
+凭证；多实例部署应停止旧实例后再升级并导入这类凭证，不能让新旧版本共同维护同一 Codex
+credential pool。
+
 Images edit 不增加数据库 migration，新二进制可以用未包含 `image_edit_*` 的旧 TOML 启动并采用
 默认值。但旧二进制的 TOML schema 使用 `deny_unknown_fields`，不能读取新增的
 `request_limits.image_edit_*` 设置；滚动升级或应用回滚时，必须让旧实例继续使用旧配置，或先从

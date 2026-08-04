@@ -11,10 +11,10 @@ Console 提供统计页面：
    - 固定展示截至当前 UTC 日期的连续 365 天请求活动。
    - 使用类似 GitHub 贡献图的日期网格展示每日客户端请求数。
    - 同时展示总请求数、活跃天数、当前连续活跃天数和最长连续活跃天数。
-2. **渠道状态**
+2. **渠道组状态监控**
    - 所有已登录用户均可查看。
-   - 展示纳入状态统计的渠道。
-   - 展示上游模型整体和“渠道 × 上游模型”的 TTFT、TPS、成功率。
+   - 展示已启用状态监控的渠道组。
+   - 展示上游模型整体和“渠道组 × 上游模型”的 TTFT、TPS、成功率。
    - 支持最近 24 小时、3 天、7 天三个窗口。
 3. **个人花费统计**
    - 所有已登录用户都只能查看当前 JWT 用户自己的统计；管理员进入个人页面时行为完全相同。
@@ -35,7 +35,7 @@ Console 提供统计页面：
      月榜为每月 1 日至月底。
    - Console 将前三名以领奖台柱状图展示，提供最多 50 名用户的榜单，并可前后浏览已保留的历史周期。
 
-个人使用情况、渠道状态、个人花费统计和系统花费统计在 Console 请求时从 append-only
+个人使用情况、渠道组状态监控、个人花费统计和系统花费统计在 Console 请求时从 append-only
 `request_logs` 聚合；排行榜由后台快照 worker 聚合，Console 请求只读取快照表。
 这些查询都不在数据平面请求路径中执行。
 
@@ -55,19 +55,23 @@ Console 提供统计页面：
 Console 的“统计”页面默认打开“个人使用情况”标签；贡献图使用请求数强度分级，并提供每个日期的
 可聚焦提示。个人花费统计保留在同一页面的独立标签中，管理员在该标签内也不会获得额外字段或筛选。
 
-## 渠道状态开关
+## 渠道组状态监控开关
 
-`channels.status_statistics_enabled` 是独立的展示开关，默认 `false`：
+`channel_groups.status_statistics_enabled` 是独立的展示开关，默认 `false`：
 
-- `false`：渠道不进入渠道状态统计。
-- `true`：渠道及其 `available_models` 进入状态页；即使当前没有请求，也会显示无数据状态。
+- `false`：渠道组不进入渠道组状态监控。
+- `true`：渠道组及其成员渠道 `available_models` 的并集进入状态页；即使当前没有请求，
+  也会显示无数据状态。
+- 启用后会聚合该组全部成员渠道的请求，不再支持按单个渠道选择是否纳入。
 - 开关不影响路由、被动健康、日志采集或自动禁用。
 
-该字段通过 Channel Console API 读写，并进入审计快照。
+该字段通过 Channel Group Console API 读写，并进入渠道组审计快照。migration
+`0041_channel_group_status_monitoring.sql` 会在升级时把“任一成员渠道已启用”的旧组迁移为启用，
+随后移除渠道级字段。
 
 ## 指标定义
 
-渠道状态统一以 `COALESCE(request_logs.upstream_model, client_model)` 作为模型标识，
+渠道组状态监控统一以 `COALESCE(request_logs.upstream_model, client_model)` 作为模型标识，
 并保留 `api_format` 维度，避免混合 Chat Completions、Responses 与 Images。
 
 - **TTFT**：成功请求且 `ttft_ms IS NOT NULL` 的 P90。
@@ -101,7 +105,7 @@ Console 的“统计”页面默认打开“个人使用情况”标签；贡献
 - **平均 RPM**：请求数 / 过滤区间分钟数。
 - **平均 TPM**：总 Token / 过滤区间分钟数。
 - **花费**：所有模型价格和请求费用均为 USD，直接对 `cost_amount` 求和，不提供币种选择或换算。
-- **模型维度**：与渠道状态相同，使用上游模型优先的模型标识并保留 API 格式。
+- **模型维度**：与渠道组状态监控相同，使用上游模型优先的模型标识并保留 API 格式。
 - **渠道维度**：系统花费统计响应按渠道 ID、请求发生时的渠道组 ID 和 API 格式聚合，
   展示当前渠道/渠道组名称、请求数、成功率、各类 Token 与 USD 花费。
   个人花费统计响应中的 `channels` 固定为空数组，包括管理员自己的个人页面。
@@ -160,7 +164,7 @@ Console 端点：
   - 任意已登录用户可访问。
   - 固定返回当前用户截至当前 UTC 日期的连续 365 天客户端请求活动。
   - 响应包含连续日期、总请求数、活跃天数、当前连续活跃天数和最长连续活跃天数。
-- `GET /console/v1/statistics/channel-status?window=24h|3d|7d`
+- `GET /console/v1/statistics/channel-group-status?window=24h|3d|7d`
   - 任意已登录用户可访问。
 - `GET /console/v1/statistics/costs`
   - 任意已登录用户可访问，且始终限定为当前 JWT 用户，包括管理员。

@@ -52,9 +52,10 @@ Header 或错误分类。
   路由快照；
 - credential 的逻辑 `enabled` 和动态状态由 Connector 快照持有；底层 managed channel
   始终保留为可选择的路由壳，Connector prepare 再排除新 Session 或让 affinity hit fail closed；
-- 两种 channel 都固定 `upstream_auth_kind = none`、
-  `status_statistics_enabled = false`、`auto_disable_allowed = false`；Responses 声明
-  `supports_websocket = true`，Images 必须为 false；
+- 两种 channel 都固定 `upstream_auth_kind = none`、`auto_disable_allowed = false`；
+  Responses 声明 `supports_websocket = true`，Images 必须为 false；状态监控不再是 channel
+  属性，而由 Responses 与 Images 各自的 `channel_groups.status_statistics_enabled` 独立控制，
+  新建时默认关闭；
 - 普通 channel create/update/batch API 在 repository 层拒绝 provider-managed channel；
 - provider mutation 在同一控制面事务中更新凭证与 channel、写 audit、编译候选快照并发布。
 
@@ -63,10 +64,11 @@ Header 或错误分类。
 Images group，并配置 `gpt-image-2` 的本地模型、Images rule 和权限。
 
 凭证的持久身份不是单独的 workspace account ID，而是
-`(connector_pool_id, account_id, user_id)`；`user_id` 来自
-`chatgpt_user_id`，并兼容 Codex 使用的 `user_id` fallback。这样同一 Business workspace
-中的多个成员可以分别成为路由凭证。缺少 user claim 的旧 Token 仍按 account/email 回退匹配，
-服务启动时会从已保存 Token 尽力补齐旧记录的 user ID。
+`(connector_pool_id, account_id?, user_id)`，并要求 account ID 与 user ID 至少存在一个。
+`user_id` 优先来自 `chatgpt_user_id`，兼容同 namespace 的 `user_id` 和 JWT 顶层 `sub`
+fallback。这样同一 Business workspace 中的多个成员可以分别成为路由凭证，而没有 workspace
+account ID 的个人凭证按 user ID 独立保存。缺少 user claim 的旧 workspace Token 仍按
+account/email 回退匹配，服务启动时会从已保存 Token 尽力补齐旧记录的 user ID。
 
 删除使用软删除凭证记录加 managed-channel tombstone：事务内关闭凭证、清除三个 OAuth Token、
 释放 proxy、记录 `deleted_at` 并把 Responses 与 Images channel 改成唯一 tombstone 名称。列表、
@@ -107,8 +109,8 @@ worker、上游 `401` 恢复和多实例并发均传递 observed generation；�
 因此表示一次强制刷新。
 
 永久 refresh 失败设置持久的 `reauth_required`，maintenance 不再自动重复消费该 Token，quota
-成功和普通设置更新也不能清除状态。再次 OAuth 或导入相同 Connector pool/workspace/member
-的新 Token
+成功和普通设置更新也不能清除状态。再次 OAuth 或导入相同
+Connector pool/workspace/member，或相同 accountless personal user ID 的新 Token
 会事务内更新原 credential/channel、递增 generation 并清除 `reauth_required`，不会创建重复
 channel。
 
@@ -167,8 +169,11 @@ Codex HTTP attempt：
   其他未知字段继续透明转发；
 - 拒绝非空 `previous_response_id`；
 - 目标固定为 managed channel base URL 下的 `/responses`；
-- 注入 Bearer、`ChatGPT-Account-ID`、可选 FedRAMP、session/thread、User-Agent、
+- 注入 Bearer、存在 workspace account ID 时才注入 `ChatGPT-Account-ID`、可选 FedRAMP、
+  session/thread、User-Agent、
   `originator` 和版本 Header。
+- `Accept-Encoding` 由通用 HTTP 代理层拥有；Codex Connector 不单独指定 coding，通用层向
+  上游声明 gzip、deflate、Brotli 与 Zstandard，并在 SSE 解析前流式解码。
 - 成功响应无论上游如何声明 `Content-Type`，都按 SSE 处理并向客户端规范化为
   `text/event-stream`；非成功响应不强制改写。
 
@@ -178,7 +183,7 @@ Codex WebSocket attempt：
 - 同样删除 `max_output_tokens`，但不删除其他未列入显式 denylist 的字段；
 - 保留客户端的 `previous_response_id`、`generate` 和 `client_metadata`；
 - 把 managed channel base URL 转成 `/responses` 的 `ws`/`wss` 目标；
-- 使用 Codex 同源的 WebSocket Beta、Bearer/account、FedRAMP、session/thread、
+- 使用 Codex 同源的 WebSocket Beta、Bearer/可选 account、FedRAMP、session/thread、
   User-Agent、`originator` 和版本 Header，不发送 HTTP SSE 专用的 `Accept`、
   `Accept-Encoding` 或 `Content-Type`；
 - 成功终态后只复用无残留的同一上游连接，保留 connection-local
@@ -189,10 +194,10 @@ Codex Images generation attempt：
 - 只接受 `ApiOperation::ImagesGeneration` 的非流式 JSON；
 - 保留模型别名和受限变换之后的 JSON 字节，不注入 Responses 的 `stream` 或 `store`；
 - 目标固定为 managed channel base URL 下的 `/images/generations`；
-- 注入 Bearer/account、FedRAMP、User-Agent、`originator`、版本和 Gateway 生成的
+- 注入 Bearer/可选 account、FedRAMP、User-Agent、`originator`、版本和 Gateway 生成的
   `x-codex-image-turn-id`；
 - 删除客户端 `session-id`、`thread-id` 与 `x-client-request-id`；
-- 把成功响应按普通 JSON 交给 Images usage collector，不按 SSE 解释。
+- 把流式解码后的成功响应按普通 JSON 交给 Images usage collector，不按 SSE 解释。
 
 Codex Images edit attempt：
 
@@ -202,7 +207,7 @@ Codex Images edit attempt：
 - provider-specific 地拒绝 `mask`、第六张图片和未核对字段，只保留
   `prompt`、`background`、`model`、`n`、`quality` 与 `size`；
 - 目标固定为 managed channel base URL 下的 `/images/edits`；
-- 使用与 generation 相同的 Bearer/account/FedRAMP、User-Agent、`originator`、版本和新
+- 使用与 generation 相同的 Bearer/可选 account/FedRAMP、User-Agent、`originator`、版本和新
   `x-codex-image-turn-id`，不发送 Responses Session Header；
 - 成功响应继续按普通 JSON 与 Images usage collector 处理。
 

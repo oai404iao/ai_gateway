@@ -651,13 +651,19 @@ async fn responses_websocket_forwards_transforms_reuses_connection_and_logs_requ
     let upstream = start_mock_upstream().await;
     let gateway = gateway_harness(&upstream).await;
 
-    let (mut first, response) = connect_async(websocket_request(
-        gateway.server.address,
-        CLIENT_KEY,
-        "session-a",
-    ))
-    .await
-    .unwrap();
+    let mut first_request = websocket_request(gateway.server.address, CLIENT_KEY, "session-a");
+    first_request.headers_mut().insert(
+        "forwarded",
+        HeaderValue::from_static("for=192.0.2.1;proto=https"),
+    );
+    first_request
+        .headers_mut()
+        .insert("x-forwarded-for", HeaderValue::from_static("192.0.2.1"));
+    first_request
+        .headers_mut()
+        .insert("cf-connecting-ip", HeaderValue::from_static("192.0.2.1"));
+
+    let (mut first, response) = connect_async(first_request).await.unwrap();
     assert_eq!(response.status(), 101);
     let first_events = response_create(&mut first, None).await;
     assert_eq!(first_events[0]["type"], "response.created");
@@ -734,6 +740,12 @@ async fn responses_websocket_forwards_transforms_reuses_connection_and_logs_requ
         handshakes[0].headers.get("x-session-id").unwrap(),
         "session-a"
     );
+    for name in ["forwarded", "x-forwarded-for", "cf-connecting-ip"] {
+        assert!(
+            handshakes[0].headers.get(name).is_none(),
+            "{name} was forwarded"
+        );
+    }
 
     let requests = upstream.requests();
     assert_eq!(requests.len(), 4);

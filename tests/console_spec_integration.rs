@@ -136,6 +136,7 @@ fn bootstrap_system_settings() -> SystemSettingsInput {
         upstream: SystemUpstreamSettingsInput {
             connect_timeout_seconds: 1,
             response_header_timeout_seconds: 2,
+            images_response_header_timeout_seconds: 300,
             stream_idle_timeout_seconds: 3,
         },
         request_retry: Default::default(),
@@ -398,6 +399,7 @@ async fn system_settings_bootstrap_initializes_once_without_overwriting_database
         upstream: SystemUpstreamSettingsInput {
             connect_timeout_seconds: 5,
             response_header_timeout_seconds: 10,
+            images_response_header_timeout_seconds: 300,
             stream_idle_timeout_seconds: 15,
         },
         request_retry: Default::default(),
@@ -422,6 +424,13 @@ async fn system_settings_bootstrap_initializes_once_without_overwriting_database
 
     let stored = repository.system_settings().await.unwrap();
     assert_eq!(stored.settings.upstream.connect_timeout_seconds, 1);
+    assert_eq!(
+        stored
+            .settings
+            .upstream
+            .images_response_header_timeout_seconds,
+        300
+    );
     assert!(stored.settings.request_retry.enabled);
     assert_eq!(stored.settings.request_retry.max_retries, 1);
     assert_eq!(
@@ -1769,6 +1778,7 @@ async fn removed_console_compatibility_paths_are_not_routed() {
         ("POST", "/console/v1/models/sync/preview"),
         ("POST", "/console/v1/models/sync/import"),
         ("POST", "/console/v1/reload"),
+        ("GET", "/console/v1/statistics/channel-status"),
     ] {
         let response = request(&app, method, path, serde_json::json!({}), &[]).await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND, "{method} {path}");
@@ -1804,6 +1814,7 @@ async fn obsolete_control_plane_columns_are_absent() {
     for (table, column) in [
         ("api_keys", "tokens_per_minute"),
         ("channels", "health_check"),
+        ("channels", "status_statistics_enabled"),
     ] {
         let exists: bool = sqlx::query_scalar(
             "SELECT EXISTS (\
@@ -1818,6 +1829,19 @@ async fn obsolete_control_plane_columns_are_absent() {
         .unwrap();
         assert!(!exists, "{table}.{column} must be removed");
     }
+
+    let group_status_monitoring_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS (\
+         SELECT 1 FROM information_schema.columns \
+         WHERE table_schema='public' \
+           AND table_name='channel_groups' \
+           AND column_name='status_statistics_enabled'\
+         )",
+    )
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert!(group_status_monitoring_exists);
 
     database.cleanup().await;
 }
@@ -1972,6 +1996,7 @@ async fn user_groups_supply_role_defaults_and_inherited_api_policy() {
             "name": group["name"],
             "description": group["description"],
             "default_api_key_policy_id": policy_id,
+            "visible_codex_quota_group_ids": group["visible_codex_quota_group_ids"],
         }),
         &[("if-match", &etag)],
     )
@@ -2076,6 +2101,318 @@ async fn user_groups_supply_role_defaults_and_inherited_api_policy() {
         body_json(protected).await,
         serde_json::json!({"error": "protected_user_group"})
     );
+    database.cleanup().await;
+}
+
+/// Administrators grant quota visibility through user groups, while the
+/// owner-scoped API exposes only credential IDs, subscription tiers, and
+/// quota-window data.
+#[tokio::test]
+async fn user_group_codex_quota_visibility_is_scoped_sanitized_and_read_only() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+    let user_group_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO user_groups (id,name) VALUES ($1,$2)")
+        .bind(user_group_id)
+        .bind(format!("quota-viewers-{user_group_id}"))
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    let viewer_id = Uuid::new_v4();
+    let viewer_email = format!("quota-viewer-{viewer_id}@example.test");
+    let viewer_password = "quota-viewer-password-value";
+    let viewer_password_hash = hash_console_password(viewer_password.to_owned())
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO users \
+         (id,email,display_name,role,status,password_hash,user_group_id) \
+         VALUES ($1,$2,'Quota Viewer','user','active',$3,$4)",
+    )
+    .bind(viewer_id)
+    .bind(&viewer_email)
+    .bind(viewer_password_hash)
+    .bind(user_group_id)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let viewer_session = app
+        .auth
+        .login(viewer_email, viewer_password.to_owned())
+        .await
+        .unwrap();
+
+    let ordinary_group_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO channel_groups \
+         (id,name,api_format,priority,selection_strategy,enabled) \
+         VALUES ($1,$2,'open_ai_responses',1,'weighted_random',true)",
+    )
+    .bind(ordinary_group_id)
+    .bind(format!("ordinary-{ordinary_group_id}"))
+    .execute(&database.pool)
+    .await
+    .unwrap();
+
+    let visible_group_id = Uuid::new_v4();
+    let visible_credential_id = Uuid::new_v4();
+    let hidden_group_id = Uuid::new_v4();
+    let hidden_credential_id = Uuid::new_v4();
+    for (group_id, credential_id, label, plan_type, primary_used_percent) in [
+        (
+            visible_group_id,
+            visible_credential_id,
+            "Visible private label",
+            "plus",
+            42,
+        ),
+        (
+            hidden_group_id,
+            hidden_credential_id,
+            "Hidden private label",
+            "business",
+            81,
+        ),
+    ] {
+        sqlx::query(
+            "INSERT INTO channel_groups \
+             (id,name,api_format,connector_kind,priority,selection_strategy,enabled) \
+             VALUES ($1,$2,'open_ai_responses','codex_oauth',1, \
+                     'weighted_random',true)",
+        )
+        .bind(group_id)
+        .bind(format!("codex-{group_id}"))
+        .execute(&database.pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO channels \
+             (id,channel_group_id,api_format,name,base_url,enabled,weight, \
+              upstream_auth_kind,available_models,auto_disable_allowed,supports_websocket) \
+             VALUES ($1,$2,'open_ai_responses',$3, \
+                     'https://chatgpt.com/backend-api/codex',true,100,'none', \
+                     ARRAY['gpt-5-codex'],false,true)",
+        )
+        .bind(credential_id)
+        .bind(group_id)
+        .bind(label)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO codex_oauth_credentials \
+             (channel_id,channel_group_id,label,email,account_id,user_id,plan_type,is_fedramp, \
+              id_token,access_token,refresh_token,last_refreshed_at,enabled, \
+              quota_threshold_percent,runtime_status,quota_allowed,quota_limit_reached, \
+              primary_used_percent,primary_window_seconds,primary_reset_at, \
+              secondary_used_percent,secondary_window_seconds,secondary_reset_at, \
+              quota_reset_credits_available,quota_checked_at) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,false, \
+                     'private-id-token','private-access-token','private-refresh-token', \
+                     now(),true,95,'active',true,false,$8,10800, \
+                     '2026-08-03T15:00:00Z',12,604800,'2026-08-10T12:00:00Z', \
+                     3,'2026-08-03T12:00:00Z')",
+        )
+        .bind(credential_id)
+        .bind(group_id)
+        .bind(label)
+        .bind(format!("{credential_id}@example.test"))
+        .bind(format!("account-{credential_id}"))
+        .bind(format!("member-{credential_id}"))
+        .bind(plan_type)
+        .bind(primary_used_percent)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    }
+    let visible_images_group_id: Uuid = sqlx::query_scalar(
+        "SELECT id FROM channel_groups \
+         WHERE connector_pool_id=$1 AND api_format='open_ai_images'::api_format",
+    )
+    .bind(visible_group_id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    let period_started_at = chrono::DateTime::parse_from_rfc3339("2026-08-03T09:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    sqlx::query(
+        "INSERT INTO codex_quota_window_periods \
+         (id,credential_id,window_kind,window_seconds,started_at,scheduled_reset_at, \
+          ended_at,reset_reason,initial_used_percent,last_used_percent, \
+          first_observed_at,last_observed_at) \
+         VALUES ($1,$2,'primary',10800,$3,$4,NULL,NULL,5,42,$3,$5)",
+    )
+    .bind(Uuid::new_v4())
+    .bind(visible_credential_id)
+    .bind(period_started_at)
+    .bind(period_started_at + chrono::Duration::hours(3))
+    .bind(period_started_at + chrono::Duration::hours(2))
+    .execute(&database.pool)
+    .await
+    .unwrap();
+
+    let group_path = format!("/console/v1/user-groups/{user_group_id}");
+    let detail = request(&app, "GET", &group_path, serde_json::json!({}), &[]).await;
+    assert_eq!(detail.status(), StatusCode::OK);
+    let group_etag = detail.headers()[header::ETAG].to_str().unwrap().to_owned();
+    let group = body_json(detail).await;
+    assert_eq!(
+        group["visible_codex_quota_group_ids"],
+        serde_json::json!([])
+    );
+
+    for invalid_group_id in [ordinary_group_id, visible_images_group_id] {
+        let invalid = request(
+            &app,
+            "PUT",
+            &group_path,
+            serde_json::json!({
+                "name": group["name"],
+                "description": group["description"],
+                "default_api_key_policy_id": null,
+                "visible_codex_quota_group_ids": [invalid_group_id],
+            }),
+            &[("if-match", &group_etag)],
+        )
+        .await;
+        assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    let denied_by_default = request_with_token(
+        &app,
+        &viewer_session.access_token,
+        "GET",
+        "/console/v1/me/codex-quotas",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(denied_by_default.status(), StatusCode::OK);
+    assert_eq!(body_json(denied_by_default).await, serde_json::json!([]));
+
+    let update = request(
+        &app,
+        "PUT",
+        &group_path,
+        serde_json::json!({
+            "name": group["name"],
+            "description": group["description"],
+            "default_api_key_policy_id": null,
+            "visible_codex_quota_group_ids": [visible_group_id],
+        }),
+        &[("if-match", &group_etag)],
+    )
+    .await;
+    assert_eq!(update.status(), StatusCode::OK);
+    let audit: serde_json::Value = sqlx::query_scalar(
+        "SELECT after_redacted FROM audit_logs \
+         WHERE object_type='user_group' AND object_id=$1 \
+         ORDER BY occurred_at DESC LIMIT 1",
+    )
+    .bind(user_group_id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        audit["visible_codex_quota_group_ids"],
+        serde_json::json!([visible_group_id])
+    );
+
+    let quotas = request_with_token(
+        &app,
+        &viewer_session.access_token,
+        "GET",
+        "/console/v1/me/codex-quotas",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(quotas.status(), StatusCode::OK);
+    let quotas = body_json(quotas).await;
+    let quotas = quotas.as_array().unwrap();
+    assert_eq!(quotas.len(), 1);
+    let quota = quotas[0].as_object().unwrap();
+    assert_eq!(quota.len(), 11);
+    assert_eq!(quota["id"], visible_credential_id.to_string());
+    assert_eq!(quota["name"], visible_credential_id.to_string());
+    assert_eq!(quota["channel_group_id"], visible_group_id.to_string());
+    assert_eq!(quota["plan_type"], "plus");
+    assert_eq!(quota["primary_used_percent"], 42);
+    assert_eq!(quota["secondary_used_percent"], 12);
+    assert_eq!(quota["quota_checked_at"], "2026-08-03T12:00:00Z");
+    for forbidden in [
+        "label",
+        "email",
+        "account_id",
+        "user_id",
+        "runtime_status",
+        "quota_reset_credits_available",
+        "last_error_code",
+        "proxy_id",
+        "weight",
+        "enabled",
+    ] {
+        assert!(!quota.contains_key(forbidden));
+    }
+
+    let history = request_with_token(
+        &app,
+        &viewer_session.access_token,
+        "GET",
+        &format!("/console/v1/me/codex-quotas/{visible_credential_id}/windows?limit=10"),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(history.status(), StatusCode::OK);
+    let history = body_json(history).await;
+    assert_eq!(history["credential_id"], visible_credential_id.to_string());
+    assert_eq!(history["name"], visible_credential_id.to_string());
+    assert_eq!(history["channel_group_id"], visible_group_id.to_string());
+    assert_eq!(history["plan_type"], "plus");
+    let period = history["periods"][0].as_object().unwrap();
+    assert_eq!(period.len(), 10);
+    assert!(!period.contains_key("id"));
+    assert!(!period.contains_key("credential_id"));
+    assert_eq!(period["window_kind"], "primary");
+    assert_eq!(period["last_used_percent"], 42);
+
+    let hidden_history = request_with_token(
+        &app,
+        &viewer_session.access_token,
+        "GET",
+        &format!("/console/v1/me/codex-quotas/{hidden_credential_id}/windows"),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(hidden_history.status(), StatusCode::NOT_FOUND);
+
+    let write_attempt = request_with_token(
+        &app,
+        &viewer_session.access_token,
+        "POST",
+        "/console/v1/me/codex-quotas",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(write_attempt.status(), StatusCode::METHOD_NOT_ALLOWED);
+
+    let admin_history = request_with_token(
+        &app,
+        &viewer_session.access_token,
+        "GET",
+        &format!(
+            "/console/v1/providers/codex-oauth/credentials/{visible_credential_id}/quota/windows"
+        ),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(admin_history.status(), StatusCode::FORBIDDEN);
+
     database.cleanup().await;
 }
 
@@ -2415,7 +2752,9 @@ async fn etag_if_match_optimistic_concurrency_matches_spec() {
         .to_owned();
     let mut update = body_json(detail).await;
     assert!(update["connector_pool_id"].is_null());
+    assert_eq!(update["status_statistics_enabled"], false);
     update["name"] = serde_json::json!("spec-group-renamed");
+    update["status_statistics_enabled"] = serde_json::json!(true);
     for field in ["id", "connector_pool_id", "updated_at"] {
         update.as_object_mut().unwrap().remove(field);
     }
@@ -2427,6 +2766,13 @@ async fn etag_if_match_optimistic_concurrency_matches_spec() {
         ok_body["correlation_id"].is_string(),
         "mutation correlation"
     );
+    let monitoring_enabled: bool =
+        sqlx::query_scalar("SELECT status_statistics_enabled FROM channel_groups WHERE id=$1")
+            .bind(Uuid::parse_str(&group_id).unwrap())
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert!(monitoring_enabled);
 
     let conflict = request(&app, "PUT", &path, update, &[("if-match", &etag)]).await;
     assert_eq!(conflict.status(), StatusCode::CONFLICT);
@@ -2693,11 +3039,10 @@ async fn codex_export_and_proxy_delete_contracts_preserve_secrets_and_references
     sqlx::query(
         "INSERT INTO channels \
          (id,channel_group_id,api_format,name,base_url,enabled,weight,proxy_id, \
-          upstream_auth_kind,available_models,status_statistics_enabled, \
-          auto_disable_allowed,supports_websocket) \
+          upstream_auth_kind,available_models,auto_disable_allowed,supports_websocket) \
          VALUES ($1,$2,'open_ai_responses','spec-portable', \
                  'https://chatgpt.com/backend-api/codex',true,100,$3,'none', \
-                 ARRAY['gpt-5-codex'],false,false,true)",
+                 ARRAY['gpt-5-codex'],false,true)",
     )
     .bind(channel_id)
     .bind(group_id)
@@ -2707,11 +3052,11 @@ async fn codex_export_and_proxy_delete_contracts_preserve_secrets_and_references
     .unwrap();
     sqlx::query(
         "INSERT INTO codex_oauth_credentials \
-         (channel_id,channel_group_id,label,email,account_id,plan_type,is_fedramp, \
+         (channel_id,channel_group_id,label,email,account_id,user_id,plan_type,is_fedramp, \
           id_token,access_token,refresh_token,last_refreshed_at,enabled, \
           quota_threshold_percent,runtime_status) \
-         VALUES ($1,$2,'spec-account','portable@example.test','spec-account-id', \
-                 'plus',false,'secret-id','secret-access','secret-refresh',now(), \
+         VALUES ($1,$2,'spec-account','portable@example.test',NULL,'portable-user', \
+                 'free',false,'secret-id','secret-access','secret-refresh',now(), \
                  true,95,'active')",
     )
     .bind(channel_id)
@@ -2735,6 +3080,11 @@ async fn codex_export_and_proxy_delete_contracts_preserve_secrets_and_references
     let exported = body_json(exported).await;
     assert_eq!(exported["type"], "ai-gateway-codex-credentials");
     assert_eq!(exported["version"], 1);
+    assert_eq!(
+        exported["credentials"][0]["account_id"],
+        serde_json::Value::Null
+    );
+    assert_eq!(exported["credentials"][0]["user_id"], "portable-user");
     assert_eq!(exported["credentials"][0]["id_token"], "secret-id");
     assert_eq!(exported["credentials"][0]["access_token"], "secret-access");
     assert_eq!(
@@ -2841,11 +3191,10 @@ async fn codex_business_batch_and_delete_contracts_are_versioned() {
         sqlx::query(
             "INSERT INTO channels \
              (id,channel_group_id,api_format,name,base_url,enabled,weight, \
-              upstream_auth_kind,available_models,status_statistics_enabled, \
-              auto_disable_allowed,supports_websocket) \
+              upstream_auth_kind,available_models,auto_disable_allowed,supports_websocket) \
              VALUES ($1,$2,'open_ai_responses',$3, \
                      'https://chatgpt.com/backend-api/codex',true,100,'none', \
-                     ARRAY['gpt-5-codex'],false,false,true)",
+                     ARRAY['gpt-5-codex'],false,true)",
         )
         .bind(channel_id)
         .bind(group_id)
@@ -3042,6 +3391,7 @@ async fn system_settings_are_versioned_audited_and_updated_via_console() {
     input["api_hosts"] = serde_json::json!(["https://gateway.example.test/v1"]);
     input["upstream"]["connect_timeout_seconds"] = serde_json::json!(2);
     input["upstream"]["response_header_timeout_seconds"] = serde_json::json!(5);
+    input["upstream"]["images_response_header_timeout_seconds"] = serde_json::json!(180);
     input["upstream"]["stream_idle_timeout_seconds"] = serde_json::json!(8);
     input["request_retry"] = serde_json::json!({
         "enabled": false,
@@ -3089,6 +3439,19 @@ async fn system_settings_are_versioned_audited_and_updated_via_console() {
         "PUT",
         "/console/v1/system/settings",
         invalid_retry,
+        &[("if-match", &etag)],
+    )
+    .await;
+    assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let mut invalid_images_timeout = input.clone();
+    invalid_images_timeout["upstream"]["images_response_header_timeout_seconds"] =
+        serde_json::json!(2);
+    let invalid = request(
+        &app,
+        "PUT",
+        "/console/v1/system/settings",
+        invalid_images_timeout,
         &[("if-match", &etag)],
     )
     .await;
@@ -3155,6 +3518,10 @@ async fn system_settings_are_versioned_audited_and_updated_via_console() {
     assert_eq!(
         published.upstream_timeouts().connect(),
         std::time::Duration::from_secs(2)
+    );
+    assert_eq!(
+        published.upstream_timeouts().images_response_header(),
+        std::time::Duration::from_secs(180)
     );
     assert!(!published.request_retry().enabled());
     assert_eq!(published.request_retry().max_retries(), 4);
@@ -3897,7 +4264,6 @@ async fn channel_batch_updates_are_atomic_versioned_and_published_once() {
         serde_json::json!({
             "items": before_items,
             "changes": {
-                "status_statistics_enabled": true,
                 "auto_disable_allowed": true,
                 "weight": 7,
                 "billing_multiplier": "2.5"
@@ -3931,7 +4297,6 @@ async fn channel_batch_updates_are_atomic_versioned_and_published_once() {
             .unwrap();
         assert_eq!(channel["weight"], 7);
         assert_eq!(channel["billing_multiplier"], "2.500000000000");
-        assert_eq!(channel["status_statistics_enabled"], true);
         assert_eq!(channel["auto_disable_allowed"], true);
         let compiled = app
             .runtime
@@ -4339,7 +4704,9 @@ async fn self_api_key_create_reports_policy_preconditions() {
     let options = body_json(options).await;
     assert_eq!(options["policy_id"], policy_id.to_string());
     assert_eq!(options["groups"][0]["id"], group_id);
+    assert_eq!(options["groups"][0]["priority"], 1);
     assert_eq!(options["channels"][0]["id"], channel_id);
+    assert_eq!(options["channels"][0]["channel_group_enabled"], true);
 
     let other_group = request(
         &app,
@@ -4702,21 +5069,42 @@ async fn request_log_filters_match_the_console_contract() {
 }
 
 #[tokio::test]
-async fn statistics_endpoints_aggregate_channel_health_and_costs() {
+async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
     let group_id = Uuid::new_v4();
     let api_key_id = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO channel_groups \
-         (id,name,api_format,priority,selection_strategy,enabled) \
-         VALUES ($1,$2,'open_ai_chat_completions',1,'weighted_random',true)",
+         (id,name,api_format,priority,selection_strategy,enabled,status_statistics_enabled) \
+         VALUES ($1,$2,'open_ai_chat_completions',1,'weighted_random',true,true)",
     )
     .bind(group_id)
     .bind(format!("statistics-group-{group_id}"))
     .execute(&database.pool)
     .await
     .unwrap();
+    let legacy_channel_monitoring = request(
+        &app,
+        "POST",
+        "/console/v1/routing/channels",
+        serde_json::json!({
+            "channel_group_id": group_id,
+            "api_format": "open_ai_chat_completions",
+            "name": format!("legacy-statistics-channel-{group_id}"),
+            "base_url": "https://legacy-statistics.example.test",
+            "enabled": true,
+            "status_statistics_enabled": true,
+            "weight": 1,
+            "upstream_auth_kind": "none",
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(
+        legacy_channel_monitoring.status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
     let channel = request(
         &app,
         "POST",
@@ -4727,7 +5115,6 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
             "name": format!("statistics-channel-{group_id}"),
             "base_url": "https://statistics.example.test",
             "enabled": true,
-            "status_statistics_enabled": true,
             "weight": 1,
             "upstream_auth_kind": "none",
             "available_models": ["statistics-model"],
@@ -4861,15 +5248,30 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
     )
     .await;
     assert_eq!(channel_detail.status(), StatusCode::OK);
+    assert!(
+        body_json(channel_detail)
+            .await
+            .get("status_statistics_enabled")
+            .is_none()
+    );
+    let group_detail = request(
+        &app,
+        "GET",
+        &format!("/console/v1/routing/channel-groups/{group_id}"),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(group_detail.status(), StatusCode::OK);
     assert_eq!(
-        body_json(channel_detail).await["status_statistics_enabled"],
+        body_json(group_detail).await["status_statistics_enabled"],
         true
     );
 
     let status = request(
         &app,
         "GET",
-        "/console/v1/statistics/channel-status?window=24h",
+        "/console/v1/statistics/channel-group-status?window=24h",
         serde_json::json!({}),
         &[],
     )
@@ -4882,8 +5284,8 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
     assert_eq!(status["models"][0]["success_rate"], 0.5);
     assert_eq!(status["models"][0]["p90_ttft_ms"], 500.0);
     assert_eq!(status["models"][0]["p50_tps"], 20.0);
-    assert_eq!(status["channels"][0]["id"], channel_id.to_string());
-    assert!(status["channels"][0]["models"][0]["history"].is_array());
+    assert_eq!(status["groups"][0]["id"], group_id.to_string());
+    assert!(status["groups"][0]["models"][0]["history"].is_array());
 
     let range_start = (started_at - chrono::Duration::hours(1))
         .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
@@ -5158,7 +5560,7 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
         &app,
         &regular_session.access_token,
         "GET",
-        "/console/v1/statistics/channel-status?window=24h",
+        "/console/v1/statistics/channel-group-status?window=24h",
         serde_json::json!({}),
         &[],
     )
@@ -5431,11 +5833,10 @@ async fn statistics_endpoints_aggregate_channel_health_and_costs() {
     sqlx::query(
         "INSERT INTO channels \
          (id,channel_group_id,api_format,name,base_url,enabled,weight, \
-          upstream_auth_kind,available_models,status_statistics_enabled, \
-          auto_disable_allowed,supports_websocket) \
+          upstream_auth_kind,available_models,auto_disable_allowed,supports_websocket) \
          VALUES ($1,$2,'open_ai_responses','statistics-codex', \
                  'https://chatgpt.com/backend-api/codex',true,100,'none', \
-                 ARRAY['gpt-5-codex'],false,false,true)",
+                 ARRAY['gpt-5-codex'],false,true)",
     )
     .bind(codex_credential_id)
     .bind(codex_group_id)

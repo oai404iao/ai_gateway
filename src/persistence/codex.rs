@@ -89,7 +89,7 @@ pub struct CodexCredentialExportProxy {
 pub struct CodexCredentialExportItem {
     pub label: String,
     pub email: Option<String>,
-    pub account_id: String,
+    pub account_id: Option<String>,
     pub user_id: Option<String>,
     pub plan_type: Option<String>,
     pub is_fedramp: bool,
@@ -145,7 +145,7 @@ pub struct CodexCredentialCreate {
     pub quota_threshold_percent: i16,
     pub base_url: String,
     pub email: Option<String>,
-    pub account_id: String,
+    pub account_id: Option<String>,
     pub user_id: Option<String>,
     pub plan_type: Option<String>,
     pub is_fedramp: bool,
@@ -180,7 +180,7 @@ pub struct CodexCredentialRecord {
     pub projection_channel_ids: Vec<Uuid>,
     pub label: String,
     pub email: Option<String>,
-    pub account_id: String,
+    pub account_id: Option<String>,
     pub user_id: Option<String>,
     pub plan_type: Option<String>,
     pub is_fedramp: bool,
@@ -263,7 +263,7 @@ pub struct CodexCredentialView {
     pub channel_group_id: Uuid,
     pub label: String,
     pub email: Option<String>,
-    pub account_id: String,
+    pub account_id: Option<String>,
     pub user_id: Option<String>,
     pub plan_type: Option<String>,
     pub is_fedramp: bool,
@@ -325,6 +325,44 @@ pub struct CodexQuotaWindowPeriodView {
 pub struct CodexQuotaWindowHistory {
     pub credential_id: Uuid,
     pub periods: Vec<CodexQuotaWindowPeriodView>,
+}
+
+#[derive(Clone, Debug, Serialize, FromRow)]
+pub struct SelfCodexQuotaCredentialView {
+    pub id: Uuid,
+    pub name: String,
+    pub channel_group_id: Uuid,
+    pub plan_type: Option<String>,
+    pub primary_used_percent: Option<i32>,
+    pub primary_window_seconds: Option<i32>,
+    pub primary_reset_at: Option<DateTime<Utc>>,
+    pub secondary_used_percent: Option<i32>,
+    pub secondary_window_seconds: Option<i32>,
+    pub secondary_reset_at: Option<DateTime<Utc>>,
+    pub quota_checked_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Clone, Debug, Serialize, FromRow)]
+pub struct SelfCodexQuotaWindowPeriodView {
+    pub window_kind: String,
+    pub window_seconds: i32,
+    pub started_at: DateTime<Utc>,
+    pub scheduled_reset_at: DateTime<Utc>,
+    pub ended_at: Option<DateTime<Utc>>,
+    pub reset_reason: Option<String>,
+    pub initial_used_percent: i32,
+    pub last_used_percent: i32,
+    pub first_observed_at: DateTime<Utc>,
+    pub last_observed_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct SelfCodexQuotaWindowHistory {
+    pub credential_id: Uuid,
+    pub name: String,
+    pub channel_group_id: Uuid,
+    pub plan_type: Option<String>,
+    pub periods: Vec<SelfCodexQuotaWindowPeriodView>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -510,6 +548,130 @@ impl ControlPlaneRepository {
         })
     }
 
+    pub async fn self_codex_quota_credentials(
+        &self,
+        user_id: Uuid,
+    ) -> Result<Vec<SelfCodexQuotaCredentialView>, RepositoryError> {
+        sqlx::query_as::<_, SelfCodexQuotaCredentialView>(
+            "SELECT credential.channel_id AS id, \
+                    credential.channel_id::text AS name, \
+                    visibility.channel_group_id,credential.plan_type, \
+                    credential.primary_used_percent,credential.primary_window_seconds, \
+                    credential.primary_reset_at,credential.secondary_used_percent, \
+                    credential.secondary_window_seconds,credential.secondary_reset_at, \
+                    credential.quota_checked_at \
+             FROM users AS console_user \
+             JOIN user_group_codex_quota_visibility AS visibility \
+               ON visibility.user_group_id=console_user.user_group_id \
+             JOIN channel_groups AS visible_group \
+               ON visible_group.id=visibility.channel_group_id \
+              AND visible_group.connector_kind=$2 \
+              AND visible_group.api_format=$3::api_format \
+             JOIN codex_oauth_credentials AS credential \
+               ON credential.connector_pool_id=visible_group.connector_pool_id \
+             WHERE console_user.id=$1 \
+               AND console_user.status='active' \
+               AND console_user.deleted_at IS NULL \
+               AND credential.deleted_at IS NULL \
+             ORDER BY visibility.channel_group_id,credential.channel_id",
+        )
+        .bind(user_id)
+        .bind(CODEX_CONNECTOR_KIND)
+        .bind(CODEX_RESPONSES_API_FORMAT)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(RepositoryError::from)
+    }
+
+    pub async fn self_codex_quota_window_history(
+        &self,
+        user_id: Uuid,
+        channel_id: Uuid,
+        limit_per_window: i64,
+    ) -> Result<SelfCodexQuotaWindowHistory, RepositoryError> {
+        if !(1..=500).contains(&limit_per_window) {
+            return Err(RepositoryError::Validation);
+        }
+        let credential = sqlx::query_as::<_, SelfCodexQuotaCredentialView>(
+            "SELECT credential.channel_id AS id, \
+                    credential.channel_id::text AS name, \
+                    visibility.channel_group_id,credential.plan_type, \
+                    credential.primary_used_percent,credential.primary_window_seconds, \
+                    credential.primary_reset_at,credential.secondary_used_percent, \
+                    credential.secondary_window_seconds,credential.secondary_reset_at, \
+                    credential.quota_checked_at \
+             FROM users AS console_user \
+             JOIN user_group_codex_quota_visibility AS visibility \
+               ON visibility.user_group_id=console_user.user_group_id \
+             JOIN channel_groups AS visible_group \
+               ON visible_group.id=visibility.channel_group_id \
+              AND visible_group.connector_kind=$3 \
+              AND visible_group.api_format=$4::api_format \
+             JOIN codex_oauth_credentials AS credential \
+               ON credential.connector_pool_id=visible_group.connector_pool_id \
+             WHERE console_user.id=$1 \
+               AND console_user.status='active' \
+               AND console_user.deleted_at IS NULL \
+               AND credential.channel_id=$2 \
+               AND credential.deleted_at IS NULL",
+        )
+        .bind(user_id)
+        .bind(channel_id)
+        .bind(CODEX_CONNECTOR_KIND)
+        .bind(CODEX_RESPONSES_API_FORMAT)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or(RepositoryError::NotFound)?;
+        let periods = sqlx::query_as::<_, SelfCodexQuotaWindowPeriodView>(
+            "WITH ranked AS ( \
+                 SELECT period.window_kind,period.window_seconds,period.started_at, \
+                        period.scheduled_reset_at,period.ended_at,period.reset_reason, \
+                        period.initial_used_percent,period.last_used_percent, \
+                        period.first_observed_at,period.last_observed_at, \
+                        row_number() OVER ( \
+                            PARTITION BY period.window_kind \
+                            ORDER BY period.started_at DESC,period.id DESC \
+                        ) AS window_rank \
+                 FROM codex_quota_window_periods AS period \
+                 JOIN codex_oauth_credentials AS credential \
+                   ON credential.channel_id=period.credential_id \
+                  AND credential.deleted_at IS NULL \
+                 JOIN channel_groups AS visible_group \
+                   ON visible_group.connector_pool_id=credential.connector_pool_id \
+                  AND visible_group.connector_kind=$4 \
+                  AND visible_group.api_format=$5::api_format \
+                 JOIN user_group_codex_quota_visibility AS visibility \
+                   ON visibility.channel_group_id=visible_group.id \
+                 JOIN users AS console_user \
+                   ON console_user.user_group_id=visibility.user_group_id \
+                  AND console_user.status='active' \
+                  AND console_user.deleted_at IS NULL \
+                 WHERE console_user.id=$1 \
+                   AND credential.channel_id=$2 \
+             ) \
+             SELECT window_kind,window_seconds,started_at,scheduled_reset_at, \
+                    ended_at,reset_reason,initial_used_percent,last_used_percent, \
+                    first_observed_at,last_observed_at \
+             FROM ranked \
+             WHERE window_rank <= $3 \
+             ORDER BY window_kind,started_at DESC",
+        )
+        .bind(user_id)
+        .bind(channel_id)
+        .bind(limit_per_window)
+        .bind(CODEX_CONNECTOR_KIND)
+        .bind(CODEX_RESPONSES_API_FORMAT)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(SelfCodexQuotaWindowHistory {
+            credential_id: credential.id,
+            name: credential.name,
+            channel_group_id: credential.channel_group_id,
+            plan_type: credential.plan_type,
+            periods,
+        })
+    }
+
     pub async fn codex_credential(
         &self,
         channel_id: Uuid,
@@ -564,7 +726,7 @@ impl ControlPlaneRepository {
                AND NOT EXISTS( \
                    SELECT 1 FROM codex_oauth_credentials AS existing \
                    WHERE existing.connector_pool_id=target.connector_pool_id \
-                     AND existing.account_id=target.account_id \
+                     AND existing.account_id IS NOT DISTINCT FROM target.account_id \
                      AND existing.user_id=$2 \
                      AND existing.deleted_at IS NULL \
                )",
@@ -752,12 +914,15 @@ impl ControlPlaneRepository {
             channel_group_id: pool.responses_channel_group_id,
             ..input
         };
-        if input.account_id.trim().is_empty()
-            || input.account_id.len() > 300
+        if input
+            .account_id
+            .as_ref()
+            .is_some_and(|value| value.trim().is_empty() || value.len() > 300)
             || input
                 .user_id
                 .as_ref()
                 .is_some_and(|value| value.trim().is_empty() || value.len() > 300)
+            || (input.account_id.is_none() && input.user_id.is_none())
             || input.id_token.is_empty()
             || input.access_token.is_empty()
             || input.refresh_token.is_empty()
@@ -768,7 +933,7 @@ impl ControlPlaneRepository {
         let existing_channel_id = existing_codex_channel_id(
             transaction,
             pool.connector_pool_id,
-            &input.account_id,
+            input.account_id.as_deref(),
             input.user_id.as_deref(),
             input.email.as_deref(),
         )
@@ -895,8 +1060,8 @@ impl ControlPlaneRepository {
             "INSERT INTO channels \
              (id,channel_group_id,api_format,name,base_url,enabled,weight,billing_multiplier, \
               proxy_id,override_document,upstream_auth_kind,available_models, \
-              status_statistics_enabled,auto_disable_allowed,supports_websocket) \
-             VALUES ($1,$2,$3::api_format,$4,$5,true,$6,1,$7,'{}','none',$8,false,false,true) \
+              auto_disable_allowed,supports_websocket) \
+             VALUES ($1,$2,$3::api_format,$4,$5,true,$6,1,$7,'{}','none',$8,false,true) \
              RETURNING updated_at",
         )
         .bind(channel_id)
@@ -1596,10 +1761,27 @@ fn credential_select(suffix: &str) -> String {
 async fn existing_codex_channel_id(
     transaction: &mut Transaction<'_, Postgres>,
     connector_pool_id: Uuid,
-    account_id: &str,
+    account_id: Option<&str>,
     user_id: Option<&str>,
     email: Option<&str>,
 ) -> Result<Option<Uuid>, RepositoryError> {
+    let Some(account_id) = account_id else {
+        let Some(user_id) = user_id else {
+            return Err(RepositoryError::Validation);
+        };
+        return sqlx::query_scalar::<_, Uuid>(
+            "SELECT channel_id FROM codex_oauth_credentials \
+             WHERE connector_pool_id=$1 AND account_id IS NULL AND user_id=$2 \
+               AND deleted_at IS NULL \
+             FOR UPDATE",
+        )
+        .bind(connector_pool_id)
+        .bind(user_id)
+        .fetch_optional(&mut **transaction)
+        .await
+        .map_err(RepositoryError::from);
+    };
+
     if let Some(user_id) = user_id {
         let exact = sqlx::query_scalar::<_, Uuid>(
             "SELECT channel_id FROM codex_oauth_credentials \

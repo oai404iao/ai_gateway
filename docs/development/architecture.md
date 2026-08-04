@@ -69,9 +69,20 @@ Browser or Console client
    改变，客户端完整性 Header 会先被移除，随后 Header Transform 才能设置与新 body 匹配的值。
 8. 由进程内 Connector 的 `PreparedUpstreamAttempt` 完成 provider 特定 body、目标路径和最终
    Header/鉴权准备；普通 Connector 保持相同 API 路径和现有认证行为。
-9. 清理客户端鉴权与 hop-by-hop headers，使用按代理、TLS 和超时策略复用的 reqwest client
-   直接转发，不经过 sidecar、Unix Socket RPC 或第二个 HTTP 服务。
-10. 转发上游状态、响应头和响应流；仅在配置的响应/SSE 变换需要时改写。
+9. 清理客户端鉴权、hop-by-hop headers 和常见反向代理/CDN 转发元数据；该规则位于所有普通、
+   Codex、HTTP/SSE、Images 与 Responses WebSocket 渠道共享的请求清理层。HTTP
+   `Accept-Encoding` 由网关拥有：下游值不会直接转发，普通请求向上游声明
+   `gzip, deflate, br, zstd`，Range 请求使用 `identity`。随后使用按代理、TLS 和超时策略复用的
+   reqwest client 直接转发，不经过 sidecar、Unix Socket RPC 或第二个 HTTP 服务。
+10. 上游响应按 `Content-Encoding` 流式解码；支持 gzip、RFC 1950 deflate、Brotli 和
+    Zstandard，已知的多层 coding 按逆序解码。usage、错误诊断和 SSE Transform 只读取解码后的
+    明文流，不缓冲完整响应。公共 listener 再按下游请求的 `Accept-Encoding` 独立选择 coding；
+    已知小于 1KiB 的响应保持 identity，长度未知的可压缩非 SSE 流仍可立即流式重编码。SSE 保持
+    identity 以避免事件延迟。未知或过深的上游 coding 在发送下游响应头前返回
+    `502 upstream_content_encoding_unsupported`。
+    表示被解码、变换或重编码时，失效的长度、range、ETag 和 digest 元数据会被移除。失败的文本
+    响应仍旁路保留最长 16KiB 供请求日志诊断；只能在读取 body 时发现的损坏压缩流会终止当前
+    body，并记录 `upstream_body_error`。
 11. 将终态事件写入本地 spool，并异步投影、提取 usage 和结算。
 
 没有 body 变换或模型别名时，原始请求字节保持不变。普通响应不会为了 usage 采集而整体缓冲。
@@ -119,8 +130,9 @@ Codex 的每个逻辑凭证属于一个 `connector_pools` 记录，并通过
 同一 pool 有两个格式隔离的 Channel Group。普通 Channel CRUD 和批量修改在 repository 层拒绝
 managed channel；provider API 在 serializable 控制面事务中同时创建/修改共享凭证和对应
 projections，再编译并发布统一路由快照。
-凭证身份由 workspace account ID 与 member user ID 共同确定，因此同一 Business workspace
-可以包含多个独立凭证；单条/批量删除会清除 Token 并保留不含敏感信息的两个历史 channel
+凭证有 workspace account ID 时由 account/member 共同确定；个人 Token 缺少 account ID 时按
+user ID 确定。因此同一 Business workspace 可以包含多个独立凭证，Free/Plus/Pro 等个人凭证也
+不需要伪造 workspace ID；单条/批量删除会清除 Token 并保留不含敏感信息的两个历史 channel
 tombstone。
 managed channels 保留为统一路由中的稳定壳，credential 的 enable/quota/重新授权状态由独立
 Connector 快照判定；这样 Responses 新 Session 和 Images 请求可在发送前排除不可用账户，
@@ -135,8 +147,8 @@ credential，避免每次 token 轮换都重编译整个控制面。
 Codex 凭证可移植性仍沿用相同 provider 边界：服务端显式导出 API 从 repository 读取敏感 Token
 及实际引用的代理，生成带版本的原生 Bundle；高级导入页在浏览器内把原生、CLIProxyAPI 和
 Sub2API JSON 标准化成可编辑草稿，完成代理 CRUD/映射后再逐条调用既有服务端验证导入事务。导入
-格式解析不是数据面职责，也不会绕过 account/user ID、models、代理 enable 或 managed channel 的现有
-不变量。代理删除使用 optimistic concurrency，并在 repository 层拒绝仍被渠道或待完成 OAuth
+格式解析不是数据面职责，也不会绕过“account/user 至少存在一个”、models、代理 enable 或
+managed channel 的现有不变量。代理删除使用 optimistic concurrency，并在 repository 层拒绝仍被渠道或待完成 OAuth
 授权流引用的记录。
 
 Responses WebSocket 使用同一个 `/v1/responses` 路径的 `GET` Upgrade。握手先验证 API Key
@@ -161,12 +173,14 @@ grace period 内完成，截止时强制取消，避免 Upgrade 脱离 Hyper con
 
 - 自动故障转移只覆盖收到响应头前的连接失败、建连超时和响应头超时。
 - Images generation/edit 不使用自动故障转移；上游尝试一旦开始即只返回该尝试结果。
+- Images generation/edit 在渠道没有显式响应头超时时使用独立的系统 Images 响应头超时；
+  建连和流空闲超时仍与其他格式共享。
 - Responses WebSocket 只在上游 Upgrade/建连完成前故障转移；`response.create`
   一旦发送就不再切换连接或渠道。
 - 每次后续尝试排除已经尝试过的渠道，并重新遵守授权、优先级、健康和权重规则。
 - 上游返回任意 HTTP 响应头后，不再重试 HTTP 错误。
 - 向客户端发送响应头或任何响应字节后，不得切换渠道。
-- SSE 变换按事件边界处理，不按网络 chunk 处理，也不缓冲完整流。
+- SSE 变换按解码后的事件边界处理，不按压缩或网络 chunk 处理，也不缓冲完整流。
 - 客户端断开会释放上游响应体；流空闲超时只终止当前流，不再发起新尝试。
 
 ## 控制面与一致性
@@ -182,6 +196,11 @@ Console 用户采用单用户组模型。内置默认用户组和默认管理员
 用户还可以使用管理员维护的可复用注册邀请码自助注册。邀请码明文不入库；注册事务锁定哈希匹配的
 邀请码，原子检查启用状态、过期时间和剩余次数，再创建 active user、分配邀请码当前用户组与初始
 余额并递增使用次数。注册成功后直接签发 Console session，不经过邮箱确认。
+
+用户组还通过独立关联表授予 canonical Codex Responses Channel Group 的额度可见性。普通用户查询
+始终按 JWT 用户当前所属组在 PostgreSQL 中限定 credential pool，只投影凭证 UUID、订阅等级和额度
+窗口/周期字段；管理员 label、账户身份、Token、代理、运行状态和 reset-credit 等字段不进入 DTO。
+该能力只挂载 owner-scoped `GET` 路由，不进入数据面快照，也不提供 refresh、reset 或其他 mutation。
 
 用户批量修改在同一 serializable 事务中验证所有 `updated_at` 版本并统一审计，任一失败会回滚整批。
 删除用户采用不可恢复的匿名化：撤销会话、邀请和 API Key，但保留用户主键以维持请求日志与审计记录

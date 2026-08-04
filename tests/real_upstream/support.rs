@@ -559,7 +559,13 @@ async fn assert_codex_nonstreaming_rejection(
         event.response_status_code,
         Some(StatusCode::BAD_REQUEST.as_u16())
     );
-    assert_eq!(event.error_code.as_deref(), Some("upstream_http_error"));
+    assert_eq!(
+        event.error_code.as_deref(),
+        Some("codex_streaming_required")
+    );
+    let summary = event.error_summary.as_deref().unwrap();
+    assert!(summary.contains("\"code\": \"codex_streaming_required\""));
+    assert!(summary.contains("\"param\": \"stream\""));
     assert_eq!(
         event.billing.as_ref().and_then(|billing| billing.usage),
         None

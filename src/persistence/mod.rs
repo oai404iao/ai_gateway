@@ -15,7 +15,8 @@ pub use codex::{
     CodexCredentialExportItem, CodexCredentialExportProxy, CodexCredentialImportInput,
     CodexCredentialRecord, CodexCredentialUpdateInput, CodexCredentialView, CodexOauthFlowRecord,
     CodexOauthStartInput, CodexQuotaResetOutcome, CodexQuotaUpdate, CodexQuotaWindowHistory,
-    CodexQuotaWindowPeriodView, CodexTokenRefreshUpdate,
+    CodexQuotaWindowPeriodView, CodexTokenRefreshUpdate, SelfCodexQuotaCredentialView,
+    SelfCodexQuotaWindowHistory, SelfCodexQuotaWindowPeriodView,
 };
 
 use std::{
@@ -33,7 +34,10 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::{
-    domain::{ApiFormat, AutomaticDisableTrigger, MAX_REQUEST_RETRIES, RequestLogEvent},
+    domain::{
+        ApiFormat, AutomaticDisableTrigger, DEFAULT_IMAGES_RESPONSE_HEADER_TIMEOUT_SECONDS,
+        MAX_REQUEST_RETRIES, RequestLogEvent,
+    },
     request_log_journal::EncodedRequestLog,
 };
 
@@ -110,6 +114,8 @@ pub struct SystemSettingsInput {
 pub struct SystemUpstreamSettingsInput {
     pub connect_timeout_seconds: u64,
     pub response_header_timeout_seconds: u64,
+    #[serde(default = "default_images_response_header_timeout_seconds")]
+    pub images_response_header_timeout_seconds: u64,
     pub stream_idle_timeout_seconds: u64,
 }
 
@@ -242,6 +248,10 @@ fn default_scheduled_testing_mode() -> String {
 
 const fn default_request_retry_enabled() -> bool {
     true
+}
+
+const fn default_images_response_header_timeout_seconds() -> u64 {
+    DEFAULT_IMAGES_RESPONSE_HEADER_TIMEOUT_SECONDS
 }
 
 const fn default_request_retry_max_retries() -> u32 {
@@ -537,6 +547,8 @@ pub struct UserGroupInput {
     pub description: Option<String>,
     #[serde(default)]
     pub default_api_key_policy_id: Option<Uuid>,
+    #[serde(default)]
+    pub visible_codex_quota_group_ids: Vec<Uuid>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -730,6 +742,10 @@ pub struct ChannelGroupInput {
     pub priority: i32,
     pub selection_strategy: String,
     pub enabled: bool,
+    /// Create defaults to disabled; omission during an update preserves the
+    /// current group-level status-monitoring setting.
+    #[serde(default)]
+    pub status_statistics_enabled: Option<bool>,
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -741,8 +757,6 @@ pub struct ChannelCreateInput {
     pub enabled: bool,
     #[serde(default)]
     pub supports_websocket: bool,
-    #[serde(default)]
-    pub status_statistics_enabled: bool,
     #[serde(default)]
     pub auto_disable_allowed: bool,
     pub weight: i32,
@@ -779,8 +793,6 @@ pub struct ChannelInput {
     pub enabled: bool,
     #[serde(default)]
     pub supports_websocket: bool,
-    #[serde(default)]
-    pub status_statistics_enabled: bool,
     #[serde(default)]
     pub auto_disable_allowed: bool,
     pub weight: i32,
@@ -835,8 +847,6 @@ pub struct ChannelBatchChanges {
     #[serde(default)]
     pub enabled: Option<bool>,
     #[serde(default)]
-    pub status_statistics_enabled: Option<bool>,
-    #[serde(default)]
     pub auto_disable_allowed: Option<bool>,
     #[serde(default)]
     pub weight: Option<i32>,
@@ -846,7 +856,6 @@ pub struct ChannelBatchChanges {
 impl ChannelBatchChanges {
     fn is_empty(&self) -> bool {
         self.enabled.is_none()
-            && self.status_statistics_enabled.is_none()
             && self.auto_disable_allowed.is_none()
             && self.weight.is_none()
             && self.billing_multiplier.is_none()
@@ -948,7 +957,6 @@ struct ChannelMutationInput {
     base_url: String,
     enabled: bool,
     supports_websocket: bool,
-    status_statistics_enabled: bool,
     auto_disable_allowed: bool,
     weight: i32,
     billing_multiplier: Option<rust_decimal::Decimal>,
@@ -973,7 +981,6 @@ impl From<ChannelCreateInput> for ChannelMutationInput {
             base_url: value.base_url,
             enabled: value.enabled,
             supports_websocket: value.supports_websocket,
-            status_statistics_enabled: value.status_statistics_enabled,
             auto_disable_allowed: value.auto_disable_allowed,
             weight: value.weight,
             billing_multiplier: Some(value.billing_multiplier),
@@ -1000,7 +1007,6 @@ impl From<ChannelInput> for ChannelMutationInput {
             base_url: value.base_url,
             enabled: value.enabled,
             supports_websocket: value.supports_websocket,
-            status_statistics_enabled: value.status_statistics_enabled,
             auto_disable_allowed: value.auto_disable_allowed,
             weight: value.weight,
             billing_multiplier: value.billing_multiplier,
@@ -1181,6 +1187,7 @@ pub struct ControlPlaneUserGroup {
     pub name: String,
     pub description: Option<String>,
     pub default_api_key_policy_id: Option<Uuid>,
+    pub visible_codex_quota_group_ids: Vec<Uuid>,
     pub system_role: Option<String>,
     pub member_count: i64,
     pub created_at: DateTime<Utc>,
@@ -1247,6 +1254,7 @@ pub struct SelfApiKeyGroupOption {
     pub id: Uuid,
     pub name: String,
     pub api_format: String,
+    pub priority: i32,
     pub enabled: bool,
 }
 
@@ -1255,6 +1263,7 @@ pub struct SelfApiKeyChannelOption {
     pub id: Uuid,
     pub channel_group_id: Uuid,
     pub channel_group_name: String,
+    pub channel_group_enabled: bool,
     pub api_format: String,
     pub name: String,
     pub enabled: bool,
@@ -1315,13 +1324,13 @@ pub struct RequestLogFilter {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ChannelStatusWindow {
+pub enum ChannelGroupStatusWindow {
     Last24Hours,
     Last3Days,
     Last7Days,
 }
 
-impl ChannelStatusWindow {
+impl ChannelGroupStatusWindow {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -1476,13 +1485,13 @@ pub struct SpendLeaderboardFilter {
 }
 
 #[derive(Clone, Debug, Serialize)]
-pub struct ChannelStatusReport {
+pub struct ChannelGroupStatusReport {
     pub window: String,
     pub started_at: DateTime<Utc>,
     pub ended_at: DateTime<Utc>,
     pub bucket_seconds: i64,
-    pub models: Vec<ChannelStatusModelMetric>,
-    pub channels: Vec<ChannelStatusChannel>,
+    pub models: Vec<ChannelGroupStatusModelMetric>,
+    pub groups: Vec<ChannelGroupStatusGroup>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1503,7 +1512,7 @@ pub struct PersonalUsageDay {
 }
 
 #[derive(Clone, Debug, Serialize)]
-pub struct ChannelStatusModelMetric {
+pub struct ChannelGroupStatusModelMetric {
     pub api_format: String,
     pub model: String,
     pub request_count: i64,
@@ -1513,30 +1522,27 @@ pub struct ChannelStatusModelMetric {
 }
 
 #[derive(Clone, Debug, Serialize)]
-pub struct ChannelStatusChannel {
+pub struct ChannelGroupStatusGroup {
     pub id: Uuid,
-    pub channel_group_id: Uuid,
-    pub channel_group_name: String,
     pub api_format: String,
     pub name: String,
     pub enabled: bool,
-    pub auto_disabled: bool,
-    pub models: Vec<ChannelStatusChannelModel>,
+    pub models: Vec<ChannelGroupStatusGroupModel>,
 }
 
 #[derive(Clone, Debug, Serialize)]
-pub struct ChannelStatusChannelModel {
+pub struct ChannelGroupStatusGroupModel {
     pub api_format: String,
     pub model: String,
     pub request_count: i64,
     pub success_rate: Option<f64>,
     pub p90_ttft_ms: Option<f64>,
     pub p50_tps: Option<f64>,
-    pub history: Vec<ChannelStatusBucket>,
+    pub history: Vec<ChannelGroupStatusBucket>,
 }
 
 #[derive(Clone, Debug, Serialize)]
-pub struct ChannelStatusBucket {
+pub struct ChannelGroupStatusBucket {
     pub started_at: DateTime<Utc>,
     pub request_count: i64,
     pub success_rate: Option<f64>,
@@ -1692,6 +1698,7 @@ pub struct ControlPlaneChannelGroup {
     pub priority: i32,
     pub selection_strategy: String,
     pub enabled: bool,
+    pub status_statistics_enabled: bool,
     pub updated_at: DateTime<Utc>,
 }
 #[derive(Serialize)]
@@ -1705,7 +1712,6 @@ pub struct ControlPlaneChannel {
     pub base_url: String,
     pub enabled: bool,
     pub supports_websocket: bool,
-    pub status_statistics_enabled: bool,
     pub auto_disabled: bool,
     pub auto_disabled_reason: Option<String>,
     pub auto_disable_allowed: bool,
@@ -1735,7 +1741,6 @@ pub struct ControlPlaneChannelDetail {
     pub base_url: String,
     pub enabled: bool,
     pub supports_websocket: bool,
-    pub status_statistics_enabled: bool,
     pub auto_disabled: bool,
     pub auto_disabled_reason: Option<String>,
     pub auto_disable_allowed: bool,
@@ -1767,7 +1772,6 @@ struct ControlPlaneChannelRow {
     base_url: String,
     enabled: bool,
     supports_websocket: bool,
-    status_statistics_enabled: bool,
     auto_disabled: bool,
     auto_disabled_reason: Option<String>,
     auto_disable_allowed: bool,
@@ -1798,7 +1802,6 @@ impl From<ControlPlaneChannelRow> for ControlPlaneChannel {
             base_url: value.base_url,
             enabled: value.enabled,
             supports_websocket: value.supports_websocket,
-            status_statistics_enabled: value.status_statistics_enabled,
             auto_disabled: value.auto_disabled,
             auto_disabled_reason: value.auto_disabled_reason,
             auto_disable_allowed: value.auto_disable_allowed,
@@ -2094,54 +2097,59 @@ impl RequestLogRepository {
         Ok(fold_personal_usage(rows, started_on, ended_on))
     }
 
-    pub async fn channel_status(
+    pub async fn channel_group_status(
         &self,
-        window: ChannelStatusWindow,
-    ) -> Result<ChannelStatusReport, RepositoryError> {
+        window: ChannelGroupStatusWindow,
+    ) -> Result<ChannelGroupStatusReport, RepositoryError> {
         let ended_at = Utc::now();
         let (started_at, ended_at) = window.range(ended_at);
-        let tracked_channels = sqlx::query_as::<_, TrackedChannelRow>(
-            "SELECT c.id,
-                    c.channel_group_id,
-                    g.name AS channel_group_name,
-                    c.api_format::text AS api_format,
-                    c.name,
-                    c.enabled,
-                    c.auto_disabled,
-                    c.available_models
-             FROM channels AS c
-             JOIN channel_groups AS g ON g.id = c.channel_group_id
-             WHERE c.status_statistics_enabled
-             ORDER BY g.priority, g.name, c.name, c.id",
+        let tracked_groups = sqlx::query_as::<_, TrackedChannelGroupRow>(
+            "SELECT channel_group.id,
+                    channel_group.api_format::text AS api_format,
+                    channel_group.name,
+                    channel_group.enabled,
+                    COALESCE(
+                        array_agg(DISTINCT available_model.model ORDER BY available_model.model)
+                            FILTER (WHERE available_model.model IS NOT NULL),
+                        ARRAY[]::text[]
+                    ) AS available_models
+             FROM channel_groups AS channel_group
+             LEFT JOIN channels AS channel
+               ON channel.channel_group_id = channel_group.id
+             LEFT JOIN LATERAL unnest(channel.available_models)
+               AS available_model(model) ON true
+             WHERE channel_group.status_statistics_enabled
+             GROUP BY channel_group.id,
+                      channel_group.api_format,
+                      channel_group.name,
+                      channel_group.enabled,
+                      channel_group.priority
+             ORDER BY channel_group.priority, channel_group.name, channel_group.id",
         )
         .fetch_all(&self.pool)
         .await?;
 
-        let mut overall_models = BTreeMap::<(String, String), ChannelStatusModelMetric>::new();
-        let mut channel_indexes = BTreeMap::<Uuid, usize>::new();
-        let mut channels =
-            Vec::<ChannelStatusChannelBuilder>::with_capacity(tracked_channels.len());
-        for channel in tracked_channels {
+        let mut overall_models = BTreeMap::<(String, String), ChannelGroupStatusModelMetric>::new();
+        let mut group_indexes = BTreeMap::<Uuid, usize>::new();
+        let mut groups = Vec::<ChannelGroupStatusGroupBuilder>::with_capacity(tracked_groups.len());
+        for group in tracked_groups {
             let mut models = BTreeMap::new();
-            for model in &channel.available_models {
-                let key = (channel.api_format.clone(), model.clone());
+            for model in &group.available_models {
+                let key = (group.api_format.clone(), model.clone());
                 overall_models
                     .entry(key.clone())
-                    .or_insert_with(|| empty_channel_status_metric(&key.0, &key.1));
+                    .or_insert_with(|| empty_channel_group_status_metric(&key.0, &key.1));
                 models
                     .entry(key.clone())
-                    .or_insert_with(|| empty_channel_status_channel_model(&key.0, &key.1));
+                    .or_insert_with(|| empty_channel_group_status_group_model(&key.0, &key.1));
             }
-            let index = channels.len();
-            channel_indexes.insert(channel.id, index);
-            channels.push(ChannelStatusChannelBuilder {
-                id: channel.id,
-                channel_group_id: channel.channel_group_id,
-                channel_group_name: channel.channel_group_name,
-                api_format: channel.api_format,
-                name: channel.name,
-                enabled: channel.enabled,
-                auto_disabled: channel.auto_disabled,
+            let index = groups.len();
+            group_indexes.insert(group.id, index);
+            groups.push(ChannelGroupStatusGroupBuilder {
+                id: group.id,
+                api_format: group.api_format,
+                name: group.name,
+                enabled: group.enabled,
                 models,
             });
         }
@@ -2163,8 +2171,9 @@ impl RequestLogRepository {
                           AND log.output_tokens_per_second IS NOT NULL
                     ) AS p50_tps
              FROM request_logs AS log
-             JOIN channels AS channel ON channel.id = log.channel_id
-             WHERE channel.status_statistics_enabled
+             JOIN channel_groups AS channel_group
+               ON channel_group.id = log.channel_group_id
+             WHERE channel_group.status_statistics_enabled
                AND log.started_at >= $1
                AND log.started_at < $2
              GROUP BY log.api_format, COALESCE(log.upstream_model, log.client_model)
@@ -2179,8 +2188,8 @@ impl RequestLogRepository {
             overall_models.insert(key, row.into_metric());
         }
 
-        let channel_rows = sqlx::query_as::<_, StatusChannelMetricRow>(
-            "SELECT log.channel_id,
+        let group_rows = sqlx::query_as::<_, StatusChannelGroupMetricRow>(
+            "SELECT log.channel_group_id,
                     log.api_format::text AS api_format,
                     COALESCE(log.upstream_model, log.client_model) AS model,
                     count(*)::bigint AS request_count,
@@ -2197,28 +2206,29 @@ impl RequestLogRepository {
                           AND log.output_tokens_per_second IS NOT NULL
                     ) AS p50_tps
              FROM request_logs AS log
-             JOIN channels AS channel ON channel.id = log.channel_id
-             WHERE channel.status_statistics_enabled
+             JOIN channel_groups AS channel_group
+               ON channel_group.id = log.channel_group_id
+             WHERE channel_group.status_statistics_enabled
                AND log.started_at >= $1
                AND log.started_at < $2
-             GROUP BY log.channel_id, log.api_format,
+             GROUP BY log.channel_group_id, log.api_format,
                       COALESCE(log.upstream_model, log.client_model)
-             ORDER BY log.channel_id, log.api_format,
+             ORDER BY log.channel_group_id, log.api_format,
                       COALESCE(log.upstream_model, log.client_model)",
         )
         .bind(started_at)
         .bind(ended_at)
         .fetch_all(&self.pool)
         .await?;
-        for row in channel_rows {
-            let Some(index) = channel_indexes.get(&row.channel_id).copied() else {
+        for row in group_rows {
+            let Some(index) = group_indexes.get(&row.channel_group_id).copied() else {
                 continue;
             };
             let key = (row.api_format.clone(), row.model.clone());
-            let metric = channels[index]
+            let metric = groups[index]
                 .models
                 .entry(key.clone())
-                .or_insert_with(|| empty_channel_status_channel_model(&key.0, &key.1));
+                .or_insert_with(|| empty_channel_group_status_group_model(&key.0, &key.1));
             metric.request_count = row.request_count;
             metric.success_rate = success_rate(row.success_rate_request_count, row.succeeded_count);
             metric.p90_ttft_ms = row.p90_ttft_ms;
@@ -2226,7 +2236,7 @@ impl RequestLogRepository {
         }
 
         let history_rows = sqlx::query_as::<_, StatusBucketMetricRow>(
-            "SELECT log.channel_id,
+            "SELECT log.channel_group_id,
                     log.api_format::text AS api_format,
                     COALESCE(log.upstream_model, log.client_model) AS model,
                     to_timestamp(
@@ -2247,14 +2257,15 @@ impl RequestLogRepository {
                           AND log.output_tokens_per_second IS NOT NULL
                     ) AS p50_tps
              FROM request_logs AS log
-             JOIN channels AS channel ON channel.id = log.channel_id
-             WHERE channel.status_statistics_enabled
+             JOIN channel_groups AS channel_group
+               ON channel_group.id = log.channel_group_id
+             WHERE channel_group.status_statistics_enabled
                AND log.started_at >= $1
                AND log.started_at < $2
-             GROUP BY log.channel_id, log.api_format,
+             GROUP BY log.channel_group_id, log.api_format,
                       COALESCE(log.upstream_model, log.client_model),
                       bucket_started_at
-             ORDER BY log.channel_id, log.api_format,
+             ORDER BY log.channel_group_id, log.api_format,
                       COALESCE(log.upstream_model, log.client_model),
                       bucket_started_at",
         )
@@ -2264,16 +2275,16 @@ impl RequestLogRepository {
         .fetch_all(&self.pool)
         .await?;
         for row in history_rows {
-            let Some(index) = channel_indexes.get(&row.channel_id).copied() else {
+            let Some(index) = group_indexes.get(&row.channel_group_id).copied() else {
                 continue;
             };
             let key = (row.api_format.clone(), row.model.clone());
-            channels[index]
+            groups[index]
                 .models
                 .entry(key.clone())
-                .or_insert_with(|| empty_channel_status_channel_model(&key.0, &key.1))
+                .or_insert_with(|| empty_channel_group_status_group_model(&key.0, &key.1))
                 .history
-                .push(ChannelStatusBucket {
+                .push(ChannelGroupStatusBucket {
                     started_at: row.bucket_started_at,
                     request_count: row.request_count,
                     success_rate: success_rate(row.success_rate_request_count, row.succeeded_count),
@@ -2282,15 +2293,15 @@ impl RequestLogRepository {
                 });
         }
 
-        Ok(ChannelStatusReport {
+        Ok(ChannelGroupStatusReport {
             window: window.as_str().into(),
             started_at,
             ended_at,
             bucket_seconds: window.bucket_seconds(),
             models: overall_models.into_values().collect(),
-            channels: channels
+            groups: groups
                 .into_iter()
-                .map(ChannelStatusChannelBuilder::finish)
+                .map(ChannelGroupStatusGroupBuilder::finish)
                 .collect(),
         })
     }
@@ -3361,14 +3372,11 @@ async fn query_console_request_logs(
 }
 
 #[derive(FromRow)]
-struct TrackedChannelRow {
+struct TrackedChannelGroupRow {
     id: Uuid,
-    channel_group_id: Uuid,
-    channel_group_name: String,
     api_format: String,
     name: String,
     enabled: bool,
-    auto_disabled: bool,
     available_models: Vec<String>,
 }
 
@@ -3384,8 +3392,8 @@ struct StatusModelMetricRow {
 }
 
 impl StatusModelMetricRow {
-    fn into_metric(self) -> ChannelStatusModelMetric {
-        ChannelStatusModelMetric {
+    fn into_metric(self) -> ChannelGroupStatusModelMetric {
+        ChannelGroupStatusModelMetric {
             api_format: self.api_format,
             model: self.model,
             request_count: self.request_count,
@@ -3397,8 +3405,8 @@ impl StatusModelMetricRow {
 }
 
 #[derive(FromRow)]
-struct StatusChannelMetricRow {
-    channel_id: Uuid,
+struct StatusChannelGroupMetricRow {
+    channel_group_id: Uuid,
     api_format: String,
     model: String,
     request_count: i64,
@@ -3410,7 +3418,7 @@ struct StatusChannelMetricRow {
 
 #[derive(FromRow)]
 struct StatusBucketMetricRow {
-    channel_id: Uuid,
+    channel_group_id: Uuid,
     api_format: String,
     model: String,
     bucket_started_at: DateTime<Utc>,
@@ -3421,27 +3429,21 @@ struct StatusBucketMetricRow {
     p50_tps: Option<f64>,
 }
 
-struct ChannelStatusChannelBuilder {
+struct ChannelGroupStatusGroupBuilder {
     id: Uuid,
-    channel_group_id: Uuid,
-    channel_group_name: String,
     api_format: String,
     name: String,
     enabled: bool,
-    auto_disabled: bool,
-    models: BTreeMap<(String, String), ChannelStatusChannelModel>,
+    models: BTreeMap<(String, String), ChannelGroupStatusGroupModel>,
 }
 
-impl ChannelStatusChannelBuilder {
-    fn finish(self) -> ChannelStatusChannel {
-        ChannelStatusChannel {
+impl ChannelGroupStatusGroupBuilder {
+    fn finish(self) -> ChannelGroupStatusGroup {
+        ChannelGroupStatusGroup {
             id: self.id,
-            channel_group_id: self.channel_group_id,
-            channel_group_name: self.channel_group_name,
             api_format: self.api_format,
             name: self.name,
             enabled: self.enabled,
-            auto_disabled: self.auto_disabled,
             models: self
                 .models
                 .into_values()
@@ -3454,8 +3456,11 @@ impl ChannelStatusChannelBuilder {
     }
 }
 
-fn empty_channel_status_metric(api_format: &str, model: &str) -> ChannelStatusModelMetric {
-    ChannelStatusModelMetric {
+fn empty_channel_group_status_metric(
+    api_format: &str,
+    model: &str,
+) -> ChannelGroupStatusModelMetric {
+    ChannelGroupStatusModelMetric {
         api_format: api_format.into(),
         model: model.into(),
         request_count: 0,
@@ -3465,8 +3470,11 @@ fn empty_channel_status_metric(api_format: &str, model: &str) -> ChannelStatusMo
     }
 }
 
-fn empty_channel_status_channel_model(api_format: &str, model: &str) -> ChannelStatusChannelModel {
-    ChannelStatusChannelModel {
+fn empty_channel_group_status_group_model(
+    api_format: &str,
+    model: &str,
+) -> ChannelGroupStatusGroupModel {
+    ChannelGroupStatusGroupModel {
         api_format: api_format.into(),
         model: model.into(),
         request_count: 0,
@@ -4563,7 +4571,14 @@ impl ControlPlaneRepository {
         .fetch_all(&self.pool)
         .await?;
         let user_groups = sqlx::query_as::<_, ControlPlaneUserGroup>(
-            "SELECT g.id,g.name,g.description,g.default_api_key_policy_id,g.system_role, \
+            "SELECT g.id,g.name,g.description,g.default_api_key_policy_id, \
+                    ARRAY( \
+                        SELECT visibility.channel_group_id \
+                        FROM user_group_codex_quota_visibility AS visibility \
+                        WHERE visibility.user_group_id=g.id \
+                        ORDER BY visibility.channel_group_id \
+                    ) AS visible_codex_quota_group_ids, \
+                    g.system_role, \
                     count(u.id) FILTER (WHERE u.deleted_at IS NULL AND NOT u.is_system) AS member_count, \
                     g.created_at,g.updated_at \
              FROM user_groups AS g \
@@ -4576,8 +4591,8 @@ impl ControlPlaneRepository {
         let models = sqlx::query_as::<_, ControlPlaneModel>("SELECT id,source_model_id,display_name,provider_name,enabled,price_unit_tokens,input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,price_effective_at,advanced_billing,last_synced_at,created_at,updated_at FROM models ORDER BY id").fetch_all(&self.pool).await?;
         let api_keys = sqlx::query_as::<_, ControlPlaneApiKey>("SELECT k.id, k.user_id, u.status AS user_status, k.name, k.secret_value AS secret, k.status, k.expires_at, k.allowed_api_formats::text[] AS allowed_api_formats, k.permissions, k.allowed_group_ids, k.allowed_channel_ids, k.requests_per_minute, k.max_concurrent_requests, k.quota_limit_amount, k.quota_used_amount, k.updated_at FROM api_keys k JOIN users u ON u.id=k.user_id WHERE NOT k.is_system AND u.deleted_at IS NULL ORDER BY k.id").fetch_all(&self.pool).await?;
         let api_key_policies = sqlx::query_as::<_, ControlPlaneApiKeyPolicy>("SELECT id,name,allowed_group_ids,allowed_channel_ids,enabled,created_at,updated_at FROM api_key_policies ORDER BY id").fetch_all(&self.pool).await?;
-        let channel_groups = sqlx::query_as::<_, ControlPlaneChannelGroup>("SELECT id,name,api_format::text AS api_format,connector_kind,connector_pool_id,priority,selection_strategy,enabled,updated_at FROM channel_groups ORDER BY id").fetch_all(&self.pool).await?;
-        let channels = sqlx::query_as::<_, ControlPlaneChannelRow>("SELECT c.id,c.channel_group_id,c.api_format::text AS api_format,g.connector_kind,(g.connector_kind <> 'openai_compatible') AS provider_managed,c.name,c.base_url,CASE WHEN g.connector_kind='codex_oauth' THEN (c.enabled AND COALESCE(co.enabled,false)) ELSE c.enabled END AS enabled,c.supports_websocket,c.status_statistics_enabled,c.auto_disabled,c.auto_disabled_reason,c.auto_disable_allowed,c.weight,c.billing_multiplier,c.proxy_id,c.config_template_id,c.connect_timeout_ms,c.response_header_timeout_ms,c.stream_idle_timeout_ms,c.upstream_auth_kind,c.upstream_auth_header_name,(c.upstream_api_key IS NOT NULL) AS upstream_credential_configured,c.available_models,c.test_model,c.created_at,c.updated_at FROM channels c JOIN channel_groups g ON g.id=c.channel_group_id LEFT JOIN codex_oauth_credential_channels projection ON projection.channel_id=c.id LEFT JOIN codex_oauth_credentials co ON co.channel_id=projection.credential_id WHERE g.connector_kind <> 'codex_oauth' OR (co.channel_id IS NOT NULL AND co.deleted_at IS NULL) ORDER BY c.id").fetch_all(&self.pool).await?;
+        let channel_groups = sqlx::query_as::<_, ControlPlaneChannelGroup>("SELECT id,name,api_format::text AS api_format,connector_kind,connector_pool_id,priority,selection_strategy,enabled,status_statistics_enabled,updated_at FROM channel_groups ORDER BY id").fetch_all(&self.pool).await?;
+        let channels = sqlx::query_as::<_, ControlPlaneChannelRow>("SELECT c.id,c.channel_group_id,c.api_format::text AS api_format,g.connector_kind,(g.connector_kind <> 'openai_compatible') AS provider_managed,c.name,c.base_url,CASE WHEN g.connector_kind='codex_oauth' THEN (c.enabled AND COALESCE(co.enabled,false)) ELSE c.enabled END AS enabled,c.supports_websocket,c.auto_disabled,c.auto_disabled_reason,c.auto_disable_allowed,c.weight,c.billing_multiplier,c.proxy_id,c.config_template_id,c.connect_timeout_ms,c.response_header_timeout_ms,c.stream_idle_timeout_ms,c.upstream_auth_kind,c.upstream_auth_header_name,(c.upstream_api_key IS NOT NULL) AS upstream_credential_configured,c.available_models,c.test_model,c.created_at,c.updated_at FROM channels c JOIN channel_groups g ON g.id=c.channel_group_id LEFT JOIN codex_oauth_credential_channels projection ON projection.channel_id=c.id LEFT JOIN codex_oauth_credentials co ON co.channel_id=projection.credential_id WHERE g.connector_kind <> 'codex_oauth' OR (co.channel_id IS NOT NULL AND co.deleted_at IS NULL) ORDER BY c.id").fetch_all(&self.pool).await?;
         let model_rules = sqlx::query_as::<_, ControlPlaneModelRule>("SELECT r.id,r.client_model,r.api_format::text AS api_format,r.upstream_model_id,m.enabled AS upstream_model_enabled,m.source_model_id AS upstream_model,r.description,r.channel_group_ids,r.channel_ids,r.enabled,r.updated_at FROM model_rules r JOIN models m ON m.id=r.upstream_model_id ORDER BY r.id").fetch_all(&self.pool).await?;
         let proxies = sqlx::query_as::<_, ControlPlaneProxy>("SELECT id,name,regexp_replace(regexp_replace(proxy_url, '^([^:/?#]+://)[^/?#]*@', E'\\1'), '[?#].*$', '') AS proxy_url,no_proxy_hosts,enabled,(username IS NOT NULL OR password IS NOT NULL) AS credential_configured,created_at,updated_at FROM proxies ORDER BY id").fetch_all(&self.pool).await?;
         let config_templates = sqlx::query_as::<_, ControlPlaneConfigTemplate>("SELECT id,name,description,document->>'api_format' AS api_format,enabled,created_at,updated_at FROM config_templates ORDER BY id").fetch_all(&self.pool).await?;
@@ -4614,7 +4629,7 @@ impl ControlPlaneRepository {
         id: Uuid,
     ) -> Result<Option<ControlPlaneChannelDetail>, RepositoryError> {
         sqlx::query_as::<_, ControlPlaneChannelDetail>(
-            "SELECT c.id,c.channel_group_id,c.api_format::text AS api_format,g.connector_kind,(g.connector_kind <> 'openai_compatible') AS provider_managed,c.name,c.base_url,CASE WHEN g.connector_kind='codex_oauth' THEN (c.enabled AND COALESCE(co.enabled,false)) ELSE c.enabled END AS enabled,c.supports_websocket,c.status_statistics_enabled,c.auto_disabled,c.auto_disabled_reason,c.auto_disable_allowed,c.weight,c.billing_multiplier,c.proxy_id,c.config_template_id,c.override_document,c.connect_timeout_ms,c.response_header_timeout_ms,c.stream_idle_timeout_ms,c.upstream_auth_kind,c.upstream_auth_header_name,c.upstream_api_key,(c.upstream_api_key IS NOT NULL) AS upstream_credential_configured,c.available_models,c.test_model,c.created_at,c.updated_at FROM channels c JOIN channel_groups g ON g.id=c.channel_group_id LEFT JOIN codex_oauth_credential_channels projection ON projection.channel_id=c.id LEFT JOIN codex_oauth_credentials co ON co.channel_id=projection.credential_id WHERE c.id=$1 AND (g.connector_kind <> 'codex_oauth' OR (co.channel_id IS NOT NULL AND co.deleted_at IS NULL))",
+            "SELECT c.id,c.channel_group_id,c.api_format::text AS api_format,g.connector_kind,(g.connector_kind <> 'openai_compatible') AS provider_managed,c.name,c.base_url,CASE WHEN g.connector_kind='codex_oauth' THEN (c.enabled AND COALESCE(co.enabled,false)) ELSE c.enabled END AS enabled,c.supports_websocket,c.auto_disabled,c.auto_disabled_reason,c.auto_disable_allowed,c.weight,c.billing_multiplier,c.proxy_id,c.config_template_id,c.override_document,c.connect_timeout_ms,c.response_header_timeout_ms,c.stream_idle_timeout_ms,c.upstream_auth_kind,c.upstream_auth_header_name,c.upstream_api_key,(c.upstream_api_key IS NOT NULL) AS upstream_credential_configured,c.available_models,c.test_model,c.created_at,c.updated_at FROM channels c JOIN channel_groups g ON g.id=c.channel_group_id LEFT JOIN codex_oauth_credential_channels projection ON projection.channel_id=c.id LEFT JOIN codex_oauth_credentials co ON co.channel_id=projection.credential_id WHERE c.id=$1 AND (g.connector_kind <> 'codex_oauth' OR (co.channel_id IS NOT NULL AND co.deleted_at IS NULL))",
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -4695,16 +4710,17 @@ impl ControlPlaneRepository {
         ensure_policy_enabled(&policy)?;
 
         let groups = sqlx::query_as::<_, SelfApiKeyGroupOption>(
-            "SELECT id,name,api_format::text AS api_format,enabled \
+            "SELECT id,name,api_format::text AS api_format,priority,enabled \
              FROM channel_groups \
              WHERE id = ANY($1) \
-             ORDER BY api_format,name,id",
+             ORDER BY api_format,priority,name,id",
         )
         .bind(&policy.allowed_group_ids)
         .fetch_all(&self.pool)
         .await?;
         let channels = sqlx::query_as::<_, SelfApiKeyChannelOption>(
             "SELECT c.id,c.channel_group_id,g.name AS channel_group_name, \
+                    g.enabled AS channel_group_enabled, \
                     c.api_format::text AS api_format,c.name,c.enabled,c.auto_disabled \
              FROM channels AS c \
              JOIN channel_groups AS g ON g.id=c.channel_group_id \
@@ -5067,15 +5083,13 @@ impl ControlPlaneRepository {
             let updated_at = sqlx::query_scalar(
                 "UPDATE channels SET \
                  enabled=COALESCE($2,enabled), \
-                 status_statistics_enabled=COALESCE($3,status_statistics_enabled), \
-                 auto_disable_allowed=COALESCE($4,auto_disable_allowed), \
-                 weight=COALESCE($5,weight), \
-                 billing_multiplier=COALESCE($6,billing_multiplier) \
-                 WHERE id=$1 AND updated_at=$7 RETURNING updated_at",
+                 auto_disable_allowed=COALESCE($3,auto_disable_allowed), \
+                 weight=COALESCE($4,weight), \
+                 billing_multiplier=COALESCE($5,billing_multiplier) \
+                 WHERE id=$1 AND updated_at=$6 RETURNING updated_at",
             )
             .bind(item.id)
             .bind(input.changes.enabled)
-            .bind(input.changes.status_statistics_enabled)
             .bind(input.changes.auto_disable_allowed)
             .bind(input.changes.weight)
             .bind(input.changes.billing_multiplier)
@@ -5683,6 +5697,12 @@ async fn user_group_audit(
             'name',g.name, \
             'description',g.description, \
             'default_api_key_policy_id',g.default_api_key_policy_id, \
+            'visible_codex_quota_group_ids',ARRAY( \
+                SELECT visibility.channel_group_id \
+                FROM user_group_codex_quota_visibility AS visibility \
+                WHERE visibility.user_group_id=g.id \
+                ORDER BY visibility.channel_group_id \
+            ), \
             'system_role',g.system_role, \
             'member_count',count(u.id) FILTER (WHERE u.deleted_at IS NULL AND NOT u.is_system), \
             'created_at',g.created_at, \
@@ -5742,7 +5762,7 @@ async fn channel_audit(
     // Audit snapshots remain allowlisted even though authorized detail reads
     // expose the stored credential and transform document for editing.
     let value = sqlx::query_scalar::<_, Value>(
-        "SELECT json_build_object('id',id,'channel_group_id',channel_group_id,'api_format',api_format,'name',name,'base_url',base_url,'enabled',enabled,'supports_websocket',supports_websocket,'status_statistics_enabled',status_statistics_enabled,'auto_disabled',auto_disabled,'auto_disabled_reason',auto_disabled_reason,'auto_disable_allowed',auto_disable_allowed,'weight',weight,'billing_multiplier',billing_multiplier,'proxy_id',proxy_id,'config_template_id',config_template_id,'connect_timeout_ms',connect_timeout_ms,'response_header_timeout_ms',response_header_timeout_ms,'stream_idle_timeout_ms',stream_idle_timeout_ms,'upstream_auth_kind',upstream_auth_kind,'upstream_auth_header_name',upstream_auth_header_name,'upstream_credential_configured',(upstream_api_key IS NOT NULL),'available_models',available_models,'test_model',test_model,'created_at',created_at,'updated_at',updated_at) FROM channels WHERE id=$1 FOR UPDATE",
+        "SELECT json_build_object('id',id,'channel_group_id',channel_group_id,'api_format',api_format,'name',name,'base_url',base_url,'enabled',enabled,'supports_websocket',supports_websocket,'auto_disabled',auto_disabled,'auto_disabled_reason',auto_disabled_reason,'auto_disable_allowed',auto_disable_allowed,'weight',weight,'billing_multiplier',billing_multiplier,'proxy_id',proxy_id,'config_template_id',config_template_id,'connect_timeout_ms',connect_timeout_ms,'response_header_timeout_ms',response_header_timeout_ms,'stream_idle_timeout_ms',stream_idle_timeout_ms,'upstream_auth_kind',upstream_auth_kind,'upstream_auth_header_name',upstream_auth_header_name,'upstream_credential_configured',(upstream_api_key IS NOT NULL),'available_models',available_models,'test_model',test_model,'created_at',created_at,'updated_at',updated_at) FROM channels WHERE id=$1 FOR UPDATE",
     )
     .bind(id)
     .fetch_optional(&mut **transaction)
@@ -5912,9 +5932,9 @@ async fn group_insert(
         return Err(RepositoryError::Validation);
     }
     let updated_at = if create {
-        sqlx::query_scalar("INSERT INTO channel_groups (id,name,api_format,connector_kind,priority,selection_strategy,enabled) VALUES ($1,$2,$3::api_format,$4,$5,$6,$7) RETURNING updated_at").bind(id).bind(&input.name).bind(&input.api_format).bind(&input.connector_kind).bind(input.priority).bind(&input.selection_strategy).bind(input.enabled).fetch_one(&mut **transaction).await?
+        sqlx::query_scalar("INSERT INTO channel_groups (id,name,api_format,connector_kind,priority,selection_strategy,enabled,status_statistics_enabled) VALUES ($1,$2,$3::api_format,$4,$5,$6,$7,$8) RETURNING updated_at").bind(id).bind(&input.name).bind(&input.api_format).bind(&input.connector_kind).bind(input.priority).bind(&input.selection_strategy).bind(input.enabled).bind(input.status_statistics_enabled.unwrap_or(false)).fetch_one(&mut **transaction).await?
     } else {
-        sqlx::query_scalar("UPDATE channel_groups SET name=$2,api_format=$3::api_format,connector_kind=$4,priority=$5,selection_strategy=$6,enabled=$7 WHERE id=$1 AND updated_at=$8 RETURNING updated_at").bind(id).bind(&input.name).bind(&input.api_format).bind(&input.connector_kind).bind(input.priority).bind(&input.selection_strategy).bind(input.enabled).bind(expected_updated_at.expect("PUT version")).fetch_optional(&mut **transaction).await?.ok_or(RepositoryError::Conflict)?
+        sqlx::query_scalar("UPDATE channel_groups SET name=$2,api_format=$3::api_format,connector_kind=$4,priority=$5,selection_strategy=$6,enabled=$7,status_statistics_enabled=COALESCE($8,status_statistics_enabled) WHERE id=$1 AND updated_at=$9 RETURNING updated_at").bind(id).bind(&input.name).bind(&input.api_format).bind(&input.connector_kind).bind(input.priority).bind(&input.selection_strategy).bind(input.enabled).bind(input.status_statistics_enabled).bind(expected_updated_at.expect("PUT version")).fetch_optional(&mut **transaction).await?.ok_or(RepositoryError::Conflict)?
     };
     Ok(MutationResult {
         id,
@@ -5979,6 +5999,50 @@ async fn ensure_enabled_policy(
     }
 }
 
+async fn replace_user_group_codex_quota_visibility(
+    transaction: &mut Transaction<'_, Postgres>,
+    user_group_id: Uuid,
+    channel_group_ids: &[Uuid],
+) -> Result<(), RepositoryError> {
+    let unique_ids = channel_group_ids.iter().copied().collect::<HashSet<_>>();
+    if unique_ids.len() != channel_group_ids.len() {
+        return Err(RepositoryError::Validation);
+    }
+    if !channel_group_ids.is_empty() {
+        let valid_count = sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) \
+             FROM channel_groups \
+             WHERE id=ANY($1) \
+               AND connector_kind='codex_oauth' \
+               AND api_format='open_ai_responses'::api_format",
+        )
+        .bind(channel_group_ids)
+        .fetch_one(&mut **transaction)
+        .await?;
+        if valid_count != channel_group_ids.len() as i64 {
+            return Err(RepositoryError::Validation);
+        }
+    }
+
+    sqlx::query("DELETE FROM user_group_codex_quota_visibility WHERE user_group_id=$1")
+        .bind(user_group_id)
+        .execute(&mut **transaction)
+        .await?;
+    if !channel_group_ids.is_empty() {
+        sqlx::query(
+            "INSERT INTO user_group_codex_quota_visibility \
+             (user_group_id,channel_group_id) \
+             SELECT $1,selected.channel_group_id \
+             FROM unnest($2::uuid[]) AS selected(channel_group_id)",
+        )
+        .bind(user_group_id)
+        .bind(channel_group_ids)
+        .execute(&mut **transaction)
+        .await?;
+    }
+    Ok(())
+}
+
 async fn user_group_insert(
     transaction: &mut Transaction<'_, Postgres>,
     id: Uuid,
@@ -6035,6 +6099,12 @@ async fn user_group_insert(
         .await?
         .ok_or(RepositoryError::Conflict)?
     };
+    replace_user_group_codex_quota_visibility(
+        transaction,
+        id,
+        &input.visible_codex_quota_group_ids,
+    )
+    .await?;
     Ok(MutationResult {
         id,
         object_type: "user_group",
@@ -6718,10 +6788,10 @@ async fn channel_insert(
         channel_audit(transaction, id).await?
     };
     let updated_at = if create {
-        sqlx::query_scalar("INSERT INTO channels (id,channel_group_id,api_format,name,base_url,enabled,weight,billing_multiplier,proxy_id,config_template_id,override_document,connect_timeout_ms,response_header_timeout_ms,stream_idle_timeout_ms,upstream_auth_kind,upstream_auth_header_name,upstream_api_key,available_models,test_model,status_statistics_enabled,auto_disable_allowed,supports_websocket) VALUES ($1,$2,$3::api_format,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) RETURNING updated_at").bind(id).bind(input.channel_group_id).bind(&input.api_format).bind(&input.name).bind(&input.base_url).bind(input.enabled).bind(input.weight).bind(input.billing_multiplier.unwrap_or_else(default_billing_multiplier)).bind(input.proxy_id).bind(input.config_template_id).bind(&override_document).bind(input.connect_timeout_ms).bind(input.response_header_timeout_ms).bind(input.stream_idle_timeout_ms).bind(&input.upstream_auth_kind).bind(&input.upstream_auth_header_name).bind(input.upstream_api_key.flatten()).bind(&input.available_models).bind(&input.test_model).bind(input.status_statistics_enabled).bind(input.auto_disable_allowed).bind(input.supports_websocket).fetch_one(&mut **transaction).await?
+        sqlx::query_scalar("INSERT INTO channels (id,channel_group_id,api_format,name,base_url,enabled,weight,billing_multiplier,proxy_id,config_template_id,override_document,connect_timeout_ms,response_header_timeout_ms,stream_idle_timeout_ms,upstream_auth_kind,upstream_auth_header_name,upstream_api_key,available_models,test_model,auto_disable_allowed,supports_websocket) VALUES ($1,$2,$3::api_format,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) RETURNING updated_at").bind(id).bind(input.channel_group_id).bind(&input.api_format).bind(&input.name).bind(&input.base_url).bind(input.enabled).bind(input.weight).bind(input.billing_multiplier.unwrap_or_else(default_billing_multiplier)).bind(input.proxy_id).bind(input.config_template_id).bind(&override_document).bind(input.connect_timeout_ms).bind(input.response_header_timeout_ms).bind(input.stream_idle_timeout_ms).bind(&input.upstream_auth_kind).bind(&input.upstream_auth_header_name).bind(input.upstream_api_key.flatten()).bind(&input.available_models).bind(&input.test_model).bind(input.auto_disable_allowed).bind(input.supports_websocket).fetch_one(&mut **transaction).await?
     } else {
         let credential_present = input.upstream_api_key.is_some();
-        sqlx::query_scalar("UPDATE channels SET channel_group_id=$2,api_format=$3::api_format,name=$4,base_url=$5,enabled=$6,weight=$7,billing_multiplier=COALESCE($8,billing_multiplier),proxy_id=$9,config_template_id=$10,override_document=CASE WHEN $11 THEN $12 ELSE override_document END,connect_timeout_ms=$13,response_header_timeout_ms=$14,stream_idle_timeout_ms=$15,upstream_auth_kind=$16,upstream_auth_header_name=$17,upstream_api_key=CASE WHEN $18 THEN $19 ELSE upstream_api_key END,available_models=$20,test_model=$21,status_statistics_enabled=$22,auto_disable_allowed=$23,supports_websocket=$24 WHERE id=$1 AND updated_at=$25 RETURNING updated_at").bind(id).bind(input.channel_group_id).bind(&input.api_format).bind(&input.name).bind(&input.base_url).bind(input.enabled).bind(input.weight).bind(input.billing_multiplier).bind(input.proxy_id).bind(input.config_template_id).bind(override_document_present).bind(&override_document).bind(input.connect_timeout_ms).bind(input.response_header_timeout_ms).bind(input.stream_idle_timeout_ms).bind(&input.upstream_auth_kind).bind(&input.upstream_auth_header_name).bind(credential_present).bind(input.upstream_api_key.flatten()).bind(&input.available_models).bind(&input.test_model).bind(input.status_statistics_enabled).bind(input.auto_disable_allowed).bind(input.supports_websocket).bind(expected_updated_at.expect("PUT version")).fetch_optional(&mut **transaction).await?.ok_or(RepositoryError::Conflict)?
+        sqlx::query_scalar("UPDATE channels SET channel_group_id=$2,api_format=$3::api_format,name=$4,base_url=$5,enabled=$6,weight=$7,billing_multiplier=COALESCE($8,billing_multiplier),proxy_id=$9,config_template_id=$10,override_document=CASE WHEN $11 THEN $12 ELSE override_document END,connect_timeout_ms=$13,response_header_timeout_ms=$14,stream_idle_timeout_ms=$15,upstream_auth_kind=$16,upstream_auth_header_name=$17,upstream_api_key=CASE WHEN $18 THEN $19 ELSE upstream_api_key END,available_models=$20,test_model=$21,auto_disable_allowed=$22,supports_websocket=$23 WHERE id=$1 AND updated_at=$24 RETURNING updated_at").bind(id).bind(input.channel_group_id).bind(&input.api_format).bind(&input.name).bind(&input.base_url).bind(input.enabled).bind(input.weight).bind(input.billing_multiplier).bind(input.proxy_id).bind(input.config_template_id).bind(override_document_present).bind(&override_document).bind(input.connect_timeout_ms).bind(input.response_header_timeout_ms).bind(input.stream_idle_timeout_ms).bind(&input.upstream_auth_kind).bind(&input.upstream_auth_header_name).bind(credential_present).bind(input.upstream_api_key.flatten()).bind(&input.available_models).bind(&input.test_model).bind(input.auto_disable_allowed).bind(input.supports_websocket).bind(expected_updated_at.expect("PUT version")).fetch_optional(&mut **transaction).await?.ok_or(RepositoryError::Conflict)?
     };
     Ok(MutationResult {
         id,
@@ -7100,6 +7170,7 @@ fn validate_system_settings_input(input: &SystemSettingsInput) -> Result<(), Rep
     if !valid_api_hosts(api_hosts)
         || upstream.connect_timeout_seconds == 0
         || upstream.response_header_timeout_seconds <= upstream.connect_timeout_seconds
+        || upstream.images_response_header_timeout_seconds <= upstream.connect_timeout_seconds
         || upstream.stream_idle_timeout_seconds == 0
         || request_retry.max_retries == 0
         || request_retry.max_retries > MAX_REQUEST_RETRIES

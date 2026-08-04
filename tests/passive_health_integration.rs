@@ -250,6 +250,7 @@ fn upstream_config(headers: u64, idle: u64) -> UpstreamConfig {
     UpstreamConfig {
         connect_timeout_seconds: 1,
         response_header_timeout_seconds: headers,
+        images_response_header_timeout_seconds: headers,
         stream_idle_timeout_seconds: idle,
     }
 }

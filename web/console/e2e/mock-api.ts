@@ -65,22 +65,27 @@ const E2E_USER = {
   updated_at: "2026-01-02T00:00:00.000Z",
 };
 
+export const E2E_ADMIN_USER_GROUP_ID =
+  "00000000-0000-0000-0000-000000000102";
+
 const E2E_USER_GROUPS = [
   {
     id: "00000000-0000-0000-0000-000000000101",
     name: "Default Users",
     description: "Default group for newly invited users.",
     default_api_key_policy_id: "00000000-0000-0000-0000-000000000031",
+    visible_codex_quota_group_ids: [],
     system_role: "user",
     member_count: 1,
     created_at: "2026-01-01T00:00:00.000Z",
     updated_at: "2026-01-02T00:00:00.000Z",
   },
   {
-    id: "00000000-0000-0000-0000-000000000102",
+    id: E2E_ADMIN_USER_GROUP_ID,
     name: "Default Administrators",
     description: "Default group for newly invited administrators.",
     default_api_key_policy_id: "00000000-0000-0000-0000-000000000031",
+    visible_codex_quota_group_ids: [],
     system_role: "admin",
     member_count: 1,
     created_at: "2026-01-01T00:00:00.000Z",
@@ -161,6 +166,7 @@ const E2E_CODEX_GROUP = {
   priority: 0,
   selection_strategy: "weighted_random",
   enabled: true,
+  status_statistics_enabled: true,
   updated_at: "2026-07-29T12:00:00.000Z",
 };
 
@@ -170,6 +176,7 @@ const E2E_CODEX_IMAGES_GROUP = {
   name: "Codex subscriptions Images",
   api_format: "open_ai_images",
   enabled: false,
+  status_statistics_enabled: false,
 };
 
 const E2E_STANDARD_CHANNEL_GROUPS = Array.from({ length: 5 }, (_, index) => ({
@@ -181,8 +188,10 @@ const E2E_STANDARD_CHANNEL_GROUPS = Array.from({ length: 5 }, (_, index) => ({
   priority: index,
   selection_strategy: "weighted_random",
   enabled: true,
+  status_statistics_enabled: true,
   updated_at: "2026-07-29T12:00:00.000Z",
 }));
+export const E2E_STANDARD_GROUP_ID = E2E_STANDARD_CHANNEL_GROUPS[0].id;
 
 const E2E_ROUTING_CHANNEL_GROUPS = [
   ...E2E_STANDARD_CHANNEL_GROUPS,
@@ -215,7 +224,6 @@ function routingChannel({
     base_url: "https://upstream.e2e.example.test",
     enabled: true,
     supports_websocket: apiFormat === "open_ai_responses",
-    status_statistics_enabled: !providerManaged,
     auto_disabled: false,
     auto_disabled_reason: null,
     auto_disable_allowed: !providerManaged,
@@ -637,6 +645,55 @@ export async function mockConsoleApi(page: Page): Promise<void> {
     if (path === "/console/v1/me/usage" && method === "GET") {
       return route.fulfill({ status: 200, json: E2E_PERSONAL_USAGE });
     }
+    if (path === "/console/v1/me/codex-quotas" && method === "GET") {
+      return route.fulfill({
+        status: 200,
+        json: [
+          {
+            id: E2E_CODEX_CREDENTIAL_ID,
+            name: E2E_CODEX_CREDENTIAL_ID,
+            channel_group_id: E2E_CODEX_GROUP_ID,
+            plan_type: "plus",
+            primary_used_percent: 96,
+            primary_window_seconds: 10_800,
+            primary_reset_at: "2026-08-03T15:00:00.000Z",
+            secondary_used_percent: 12,
+            secondary_window_seconds: 604_800,
+            secondary_reset_at: "2026-08-10T12:00:00.000Z",
+            quota_checked_at: "2026-08-03T12:00:00.000Z",
+          },
+        ],
+      });
+    }
+    if (
+      path ===
+        `/console/v1/me/codex-quotas/${E2E_CODEX_CREDENTIAL_ID}/windows` &&
+      method === "GET"
+    ) {
+      return route.fulfill({
+        status: 200,
+        json: {
+          credential_id: E2E_CODEX_CREDENTIAL_ID,
+          name: E2E_CODEX_CREDENTIAL_ID,
+          channel_group_id: E2E_CODEX_GROUP_ID,
+          plan_type: "plus",
+          periods: [
+            {
+              window_kind: "primary",
+              window_seconds: 10_800,
+              started_at: "2026-08-03T09:00:00.000Z",
+              scheduled_reset_at: "2026-08-03T12:00:00.000Z",
+              ended_at: "2026-08-03T12:00:00.000Z",
+              reset_reason: "natural",
+              initial_used_percent: 5,
+              last_used_percent: 96,
+              first_observed_at: "2026-08-03T09:01:00.000Z",
+              last_observed_at: "2026-08-03T11:59:00.000Z",
+            },
+          ],
+        },
+      });
+    }
     if (path === "/console/v1/me/request-logs" && method === "GET") {
       return route.fulfill({ status: 200, json: [E2E_PERSONAL_REQUEST_LOG] });
     }
@@ -654,6 +711,28 @@ export async function mockConsoleApi(page: Page): Promise<void> {
     }
     if (path === "/console/v1/user-groups" && method === "GET") {
       return route.fulfill({ status: 200, json: E2E_USER_GROUPS });
+    }
+    if (
+      path === `/console/v1/user-groups/${E2E_USER_GROUPS[1].id}` &&
+      method === "GET"
+    ) {
+      return route.fulfill({
+        status: 200,
+        headers: { ETag: `"${E2E_USER_GROUPS[1].updated_at}"` },
+        json: E2E_USER_GROUPS[1],
+      });
+    }
+    if (
+      path === `/console/v1/user-groups/${E2E_USER_GROUPS[1].id}` &&
+      method === "PUT"
+    ) {
+      return route.fulfill({
+        status: 200,
+        json: {
+          id: E2E_USER_GROUPS[1].id,
+          correlation_id: "00000000-0000-0000-0000-000000000103",
+        },
+      });
     }
     if (
       path === "/console/v1/registration-invitation-codes" &&
@@ -749,7 +828,10 @@ export async function mockConsoleApi(page: Page): Promise<void> {
         json: { api_hosts: ["https://api.e2e.example.test/v1"] },
       });
     }
-    if (path === "/console/v1/statistics/channel-status" && method === "GET") {
+    if (
+      path === "/console/v1/statistics/channel-group-status" &&
+      method === "GET"
+    ) {
       return route.fulfill({
         status: 200,
         json: {
@@ -758,7 +840,7 @@ export async function mockConsoleApi(page: Page): Promise<void> {
           ended_at: "2026-07-24T00:00:00.000Z",
           bucket_seconds: 3600,
           models: [],
-          channels: [],
+          groups: [],
         },
       });
     }
@@ -872,6 +954,18 @@ export async function mockConsoleApi(page: Page): Promise<void> {
         json: E2E_ROUTING_CHANNEL_GROUPS,
       });
     }
+    if (
+      path.startsWith("/console/v1/routing/channel-groups/") &&
+      method === "PUT"
+    ) {
+      return route.fulfill({
+        status: 200,
+        json: {
+          id: path.split("/").at(-1),
+          correlation_id: "00000000-0000-0000-0000-0000000002ff",
+        },
+      });
+    }
     if (path === "/console/v1/routing/channels" && method === "GET") {
       return route.fulfill({ status: 200, json: E2E_ROUTING_CHANNELS });
     }
@@ -901,7 +995,15 @@ export async function mockConsoleApi(page: Page): Promise<void> {
               id: "00000000-0000-0000-0000-000000000021",
               name: "chat-primary",
               api_format: "open_ai_chat_completions",
+              priority: 1,
               enabled: true,
+            },
+            {
+              id: "00000000-0000-0000-0000-000000000025",
+              name: "images-disabled",
+              api_format: "open_ai_images",
+              priority: 1,
+              enabled: false,
             },
           ],
           channels: [
@@ -909,8 +1011,19 @@ export async function mockConsoleApi(page: Page): Promise<void> {
               id: "00000000-0000-0000-0000-000000000022",
               channel_group_id: "00000000-0000-0000-0000-000000000021",
               channel_group_name: "chat-primary",
+              channel_group_enabled: true,
               api_format: "open_ai_chat_completions",
               name: "upstream-a",
+              enabled: true,
+              auto_disabled: false,
+            },
+            {
+              id: "00000000-0000-0000-0000-000000000026",
+              channel_group_id: "00000000-0000-0000-0000-000000000025",
+              channel_group_name: "images-disabled",
+              channel_group_enabled: false,
+              api_format: "open_ai_images",
+              name: "images-disabled-upstream",
               enabled: true,
               auto_disabled: false,
             },

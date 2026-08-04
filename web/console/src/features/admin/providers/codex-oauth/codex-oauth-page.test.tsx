@@ -120,6 +120,27 @@ describe("CodexOauthPage", () => {
     await waitFor(() => expect(refreshedId).toBe(CREDENTIAL_ID));
   });
 
+  it("renders personal credentials without a workspace account id", async () => {
+    seedAuthenticatedSession();
+    server.use(
+      ...baseHandlers([
+        {
+          ...CREDENTIAL,
+          email: "free@example.test",
+          account_id: null,
+          plan_type: "free",
+        },
+      ]),
+    );
+    renderPage();
+
+    expect(await screen.findByText("Personal Plus")).toBeInTheDocument();
+    expect(
+      screen.getByText("Personal credential (no workspace ID)"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Workspace account-123")).not.toBeInTheDocument();
+  });
+
   it("consumes an OpenAI reset credit with confirmation", async () => {
     seedAuthenticatedSession();
     let resetId: string | undefined;

@@ -13,7 +13,7 @@ import {
   CHANNEL,
   CHANNEL_DETAIL,
   CHANNEL_GROUP,
-  CHANNEL_STATUS_REPORT,
+  CHANNEL_GROUP_STATUS_REPORT,
   CONFIG_TEMPLATE,
   CONFIG_TEMPLATE_DETAIL,
   CONTROL_PLANE_USER,
@@ -23,6 +23,8 @@ import {
   MODEL,
   MODEL_RULE,
   NEW_API_KEY_SECRET,
+  OWN_CODEX_QUOTA,
+  OWN_CODEX_QUOTA_HISTORY,
   OWN_COST_STATISTICS_REPORT,
   OTHER_ACTIVE_SESSION,
   OWN_API_KEY,
@@ -98,6 +100,12 @@ export const handlers = [
   http.delete("/console/v1/me/sessions/:id", () => new HttpResponse(null, { status: 204 })),
 
   http.get("/console/v1/me/api-keys", () => HttpResponse.json([OWN_API_KEY])),
+  http.get("/console/v1/me/codex-quotas", () =>
+    HttpResponse.json([OWN_CODEX_QUOTA]),
+  ),
+  http.get("/console/v1/me/codex-quotas/:id/windows", () =>
+    HttpResponse.json(OWN_CODEX_QUOTA_HISTORY),
+  ),
   http.get("/console/v1/me/api-key-options", () => HttpResponse.json(API_KEY_OPTIONS)),
   http.get("/console/v1/me/api-hosts", () =>
     HttpResponse.json({ api_hosts: SYSTEM_SETTINGS.api_hosts }),
@@ -231,8 +239,8 @@ export const handlers = [
   http.get("/console/v1/request-logs", () => HttpResponse.json([])),
   http.get("/console/v1/me/request-logs", () => HttpResponse.json([])),
   http.get("/console/v1/me/usage", () => HttpResponse.json(PERSONAL_USAGE_REPORT)),
-  http.get("/console/v1/statistics/channel-status", () =>
-    HttpResponse.json(CHANNEL_STATUS_REPORT),
+  http.get("/console/v1/statistics/channel-group-status", () =>
+    HttpResponse.json(CHANNEL_GROUP_STATUS_REPORT),
   ),
   http.get("/console/v1/statistics/costs", () =>
     HttpResponse.json(OWN_COST_STATISTICS_REPORT),

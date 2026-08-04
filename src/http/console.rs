@@ -32,15 +32,16 @@ use crate::{
     domain::{ConsolePrincipal, UserRole},
     persistence::{
         ApiKeyCreate, ApiKeyPolicyInput, ApiKeyUpdate, ChannelBatchUpdateInput, ChannelCreateInput,
-        ChannelGroupInput, ChannelInput, ChannelRecoverInput, ChannelStatusWindow,
+        ChannelGroupInput, ChannelGroupStatusWindow, ChannelInput, ChannelRecoverInput,
         CodexCredentialBatchInput, CodexCredentialExportBundle, CodexCredentialExportInput,
         CodexCredentialImportInput, CodexCredentialUpdateInput, CodexCredentialView,
         CodexOauthStartInput, CodexQuotaWindowHistory, ConfigTemplateCreateInput,
         ConfigTemplateInput, ConsoleApiKey, ControlPlaneMutation, CostStatisticsFilter,
         InviteUserInput, ModelInput, ModelRuleInput, ProxyCreateInput, ProxyInput,
         RequestLogFilter, RequestLogRepository, SelfApiKeyCreate, SelfApiKeyUpdate,
-        SpendLeaderboardFilter, SpendLeaderboardPeriod, StatisticsGranularity, SystemSettingsInput,
-        UserBatchUpdateInput, UserGroupInput, UserInput, UserSettingsInput, UserUpdateInput,
+        SelfCodexQuotaCredentialView, SelfCodexQuotaWindowHistory, SpendLeaderboardFilter,
+        SpendLeaderboardPeriod, StatisticsGranularity, SystemSettingsInput, UserBatchUpdateInput,
+        UserGroupInput, UserInput, UserSettingsInput, UserUpdateInput,
     },
     runtime_config::ConfigError,
 };
@@ -110,12 +111,17 @@ pub fn router(state: ConsoleState) -> Router {
         )
         .route("/console/v1/me/request-logs", get(list_own_request_logs))
         .route("/console/v1/me/request-logs/{id}", get(get_own_request_log))
-        .route("/console/v1/me/usage", get(get_own_usage));
+        .route("/console/v1/me/usage", get(get_own_usage))
+        .route("/console/v1/me/codex-quotas", get(list_own_codex_quotas))
+        .route(
+            "/console/v1/me/codex-quotas/{id}/windows",
+            get(get_own_codex_quota_window_history),
+        );
 
     let statistics_routes = Router::new()
         .route(
-            "/console/v1/statistics/channel-status",
-            get(get_channel_status),
+            "/console/v1/statistics/channel-group-status",
+            get(get_channel_group_status),
         )
         .route("/console/v1/statistics/costs", get(get_own_cost_statistics))
         .route(
@@ -667,7 +673,7 @@ struct LogQuery {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ChannelStatusQuery {
+struct ChannelGroupStatusQuery {
     #[serde(default)]
     window: Option<String>,
 }
@@ -1079,6 +1085,32 @@ async fn get_own_usage(
         state
             .request_logs
             .personal_usage(principal.user_id(), Utc::now().date_naive())
+            .await?,
+    ))
+}
+
+async fn list_own_codex_quotas(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+) -> Result<Json<Vec<SelfCodexQuotaCredentialView>>, ConsoleError> {
+    Ok(Json(
+        state
+            .codex_connector
+            .self_quota_credentials(principal.user_id())
+            .await?,
+    ))
+}
+
+async fn get_own_codex_quota_window_history(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Path(id): Path<Uuid>,
+    Query(query): Query<CodexQuotaWindowHistoryQuery>,
+) -> Result<Json<SelfCodexQuotaWindowHistory>, ConsoleError> {
+    Ok(Json(
+        state
+            .codex_connector
+            .self_quota_window_history(principal.user_id(), id, query.limit.unwrap_or(100))
             .await?,
     ))
 }
@@ -2073,17 +2105,17 @@ async fn get_request_log(
         .ok_or(ConsoleError::NotFound)
 }
 
-async fn get_channel_status(
+async fn get_channel_group_status(
     State(state): State<ConsoleState>,
-    Query(query): Query<ChannelStatusQuery>,
-) -> Result<Json<crate::persistence::ChannelStatusReport>, ConsoleError> {
+    Query(query): Query<ChannelGroupStatusQuery>,
+) -> Result<Json<crate::persistence::ChannelGroupStatusReport>, ConsoleError> {
     let window = match query.window.as_deref().unwrap_or("24h") {
-        "24h" => ChannelStatusWindow::Last24Hours,
-        "3d" => ChannelStatusWindow::Last3Days,
-        "7d" => ChannelStatusWindow::Last7Days,
+        "24h" => ChannelGroupStatusWindow::Last24Hours,
+        "3d" => ChannelGroupStatusWindow::Last3Days,
+        "7d" => ChannelGroupStatusWindow::Last7Days,
         _ => return Err(ConsoleError::Validation),
     };
-    Ok(Json(state.request_logs.channel_status(window).await?))
+    Ok(Json(state.request_logs.channel_group_status(window).await?))
 }
 
 async fn get_own_cost_statistics(
@@ -2607,7 +2639,6 @@ fn codex_error_response(error: &CodexConnectorError) -> (StatusCode, &'static st
         | CodexConnectorError::InvalidCallback
         | CodexConnectorError::OauthDenied
         | CodexConnectorError::InvalidCredential
-        | CodexConnectorError::MissingAccountId
         | CodexConnectorError::AccountChanged
         | CodexConnectorError::InvalidJwt
         | CodexConnectorError::InvalidTokenResponse

@@ -32,7 +32,8 @@ pub use request_log::{
     RequestProtocol, RequestUsage,
 };
 pub use system_settings::{
-    AutomaticDisableSettings, AutomaticDisableTrigger, MAX_REQUEST_RETRIES, PassiveHealthSettings,
+    AutomaticDisableSettings, AutomaticDisableTrigger,
+    DEFAULT_IMAGES_RESPONSE_HEADER_TIMEOUT_SECONDS, MAX_REQUEST_RETRIES, PassiveHealthSettings,
     RequestRetrySettings, ResponsesWebSocketSettings, ScheduledTestingMode,
     ScheduledTestingSettings, SessionAffinityKeySource, SessionAffinityRule,
     SessionAffinitySettings, SystemRuntimeSettings, UpstreamTimeoutDefaults,

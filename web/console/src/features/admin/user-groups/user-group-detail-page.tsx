@@ -15,11 +15,15 @@ import {
 } from "@/components/ui/card";
 import {
   Field,
+  FieldContent,
   FieldDescription,
   FieldError,
   FieldGroup,
   FieldLabel,
+  FieldLegend,
+  FieldSet,
 } from "@/components/ui/field";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -37,6 +41,7 @@ import { AdminDetailShell } from "@/features/admin/components/admin-detail-shell
 import {
   useApiKeyPolicies,
   useCreateUserGroup,
+  useChannelGroups,
   useDeleteUserGroup,
   useUpdateUserGroup,
   useUserGroup,
@@ -48,6 +53,7 @@ const schema = z.object({
   name: z.string().trim().min(1, "Name is required.").max(100),
   description: z.string().max(500),
   default_api_key_policy_id: z.string(),
+  visible_codex_quota_group_ids: z.array(z.string()),
 });
 
 type FormState = z.infer<typeof schema>;
@@ -56,6 +62,7 @@ const empty: FormState = {
   name: "",
   description: "",
   default_api_key_policy_id: "",
+  visible_codex_quota_group_ids: [],
 };
 
 export function UserGroupDetailPage() {
@@ -64,6 +71,7 @@ export function UserGroupDetailPage() {
   const navigate = useNavigate();
   const detail = useUserGroup(id);
   const policies = useApiKeyPolicies();
+  const channelGroups = useChannelGroups();
   const create = useCreateUserGroup();
   const update = useUpdateUserGroup(id);
   const remove = useDeleteUserGroup(id);
@@ -79,6 +87,8 @@ export function UserGroupDetailPage() {
         description: detail.data.data.description ?? "",
         default_api_key_policy_id:
           detail.data.data.default_api_key_policy_id ?? "",
+        visible_codex_quota_group_ids:
+          detail.data.data.visible_codex_quota_group_ids,
       });
     }
   }, [detail.data]);
@@ -108,6 +118,8 @@ export function UserGroupDetailPage() {
       description: parsed.data.description || null,
       default_api_key_policy_id:
         parsed.data.default_api_key_policy_id || null,
+      visible_codex_quota_group_ids:
+        parsed.data.visible_codex_quota_group_ids,
     };
     try {
       if (isNew) {
@@ -153,6 +165,19 @@ export function UserGroupDetailPage() {
   };
 
   const pending = create.isPending || update.isPending || remove.isPending;
+  const codexGroups = (channelGroups.data ?? []).filter(
+    (candidate) =>
+      candidate.connector_kind === "codex_oauth" &&
+      candidate.api_format === "open_ai_responses",
+  );
+  const toggleCodexGroup = (groupId: string) => {
+    const selected = state.visible_codex_quota_group_ids.includes(groupId);
+    patch({
+      visible_codex_quota_group_ids: selected
+        ? state.visible_codex_quota_group_ids.filter((id) => id !== groupId)
+        : [...state.visible_codex_quota_group_ids, groupId],
+    });
+  };
 
   return (
     <>
@@ -161,8 +186,10 @@ export function UserGroupDetailPage() {
         description={t("Group defaults apply when a user has no policy override.")}
         backPath="/admin/user-groups"
         backLabel={t("Back to user groups")}
-        isLoading={detail.isLoading || policies.isLoading}
-        error={detail.error ?? policies.error}
+        isLoading={
+          detail.isLoading || policies.isLoading || channelGroups.isLoading
+        }
+        error={detail.error ?? policies.error ?? channelGroups.error}
         hasData={isNew || Boolean(group)}
         detailCard={
           !isNew && group ? (
@@ -183,6 +210,10 @@ export function UserGroupDetailPage() {
                   <DetailField
                     label={t("Default API key policy")}
                     value={policyName}
+                  />
+                  <DetailField
+                    label={t("Visible Codex quota groups")}
+                    value={group.visible_codex_quota_group_ids.length}
                   />
                 </dl>
               </CardContent>
@@ -273,6 +304,43 @@ export function UserGroupDetailPage() {
                         {t("Users without an override inherit this policy immediately.")}
                       </FieldDescription>
                     </Field>
+                    <FieldSet>
+                      <FieldLegend variant="label">
+                        {t("Visible Codex quota groups")}
+                      </FieldLegend>
+                      <FieldDescription>
+                        {t(
+                          "Members can only read quota windows and subscription tiers. Credential names are shown as IDs.",
+                        )}
+                      </FieldDescription>
+                      <FieldGroup data-slot="checkbox-group">
+                        {codexGroups.map((candidate) => (
+                          <Field key={candidate.id} orientation="horizontal">
+                            <Checkbox
+                              id={`visible_codex_quota_group_${candidate.id}`}
+                              checked={state.visible_codex_quota_group_ids.includes(
+                                candidate.id,
+                              )}
+                              onCheckedChange={() => toggleCodexGroup(candidate.id)}
+                            />
+                            <FieldContent>
+                              <FieldLabel
+                                htmlFor={`visible_codex_quota_group_${candidate.id}`}
+                                className="font-normal"
+                              >
+                                <span>{candidate.name}</span>
+                              </FieldLabel>
+                              <FieldDescription>{candidate.id}</FieldDescription>
+                            </FieldContent>
+                          </Field>
+                        ))}
+                        {codexGroups.length === 0 ? (
+                          <FieldDescription>
+                            {t("No Codex OAuth credential groups are configured.")}
+                          </FieldDescription>
+                        ) : null}
+                      </FieldGroup>
+                    </FieldSet>
                   </FieldGroup>
                   <Button
                     className="self-start"

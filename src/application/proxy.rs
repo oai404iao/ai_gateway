@@ -15,8 +15,8 @@ use axum::{
     http::{
         HeaderMap, HeaderName, HeaderValue, Request, Response, StatusCode,
         header::{
-            ACCEPT_ENCODING, AUTHORIZATION, CONNECTION, CONTENT_ENCODING, CONTENT_LENGTH,
-            CONTENT_TYPE, HOST, PROXY_AUTHORIZATION,
+            ACCEPT_ENCODING, ACCEPT_RANGES, AUTHORIZATION, CONNECTION, CONTENT_ENCODING,
+            CONTENT_LENGTH, CONTENT_TYPE, HOST, PROXY_AUTHORIZATION, RANGE,
         },
     },
     response::{IntoResponse, Response as AxumResponse},
@@ -51,7 +51,10 @@ use crate::{
         JsonPatchPlan, SseEventPatchPlan, SseTransformer, apply_header_plan, apply_json_patch_plan,
         apply_response_header_plan, parse_connection_header_names,
     },
-    upstream::{ResolvedUpstreamPolicy, UpstreamClientRegistry},
+    upstream::{
+        DecodedBodyError, ResolvedUpstreamPolicy, ResponseContentCodings, UPSTREAM_ACCEPT_ENCODING,
+        UpstreamClientRegistry, decode_response_body,
+    },
 };
 
 use super::{
@@ -60,7 +63,7 @@ use super::{
         ImageBodySpoolSnapshot, ImageEditBodyError, ImageEditBodyPolicy, PreparedRequestBody,
         ProxyRequestBodyLimits,
     },
-    usage::{SseTerminalOutcome, UsageCollector},
+    usage::{ResponseErrorDetails, SseTerminalOutcome, UsageCollector},
 };
 
 /// Data-plane use case backed by a single immutable configuration snapshot per
@@ -399,8 +402,10 @@ impl ProxyService {
                 Err(error) => {
                     if affinity_hit {
                         completion.set_preserve_affinity_on_failure(true);
-                        completion.finish(RequestOutcome::UpstreamUnavailable);
-                        return Err(ProxyError::sticky_connector_unavailable(error));
+                        let error = ProxyError::sticky_connector_unavailable(error);
+                        completion
+                            .finish_with_proxy_error(RequestOutcome::UpstreamUnavailable, &error);
+                        return Err(error);
                     }
                     let retry_route = self.routing.select_with_affinity_excluding(
                         &snapshot,
@@ -411,8 +416,10 @@ impl ProxyService {
                         attempted_channel_slots.as_slice(),
                     );
                     let SelectionResult::Selected(route) = retry_route else {
-                        completion.finish(RequestOutcome::UpstreamUnavailable);
-                        return Err(ProxyError::connector_unavailable(error));
+                        let error = ProxyError::connector_unavailable(error);
+                        completion
+                            .finish_with_proxy_error(RequestOutcome::UpstreamUnavailable, &error);
+                        return Err(error);
                     };
                     let crate::routing::SelectedRoute {
                         rule,
@@ -452,14 +459,15 @@ impl ProxyService {
             {
                 Ok(value) => value,
                 Err(error) => {
-                    completion.finish(RequestOutcome::ClientRequestError);
-                    return Err(ProxyError::image_edit_body(error));
+                    let error = ProxyError::image_edit_body(error);
+                    completion.finish_with_proxy_error(RequestOutcome::ClientRequestError, &error);
+                    return Err(error);
                 }
             };
             let body = match apply_request_json_transform(body, transforms.request_json()) {
                 Ok(body) => body,
                 Err(error) => {
-                    completion.finish(RequestOutcome::ClientRequestError);
+                    completion.finish_with_proxy_error(RequestOutcome::ClientRequestError, &error);
                     return Err(error);
                 }
             };
@@ -471,11 +479,12 @@ impl ProxyService {
                 Err(error) => {
                     let error = ProxyError::connector_attempt(error);
                     completion.set_client_visible_status(error.status.as_u16());
-                    completion.finish(if error.status.is_client_error() {
+                    let outcome = if error.status.is_client_error() {
                         RequestOutcome::ClientRequestError
                     } else {
                         RequestOutcome::UpstreamUnavailable
-                    });
+                    };
+                    completion.finish_with_proxy_error(outcome, &error);
                     return Err(error);
                 }
             };
@@ -492,21 +501,23 @@ impl ProxyService {
             if request_body_changed {
                 remove_rewritten_request_entity_headers(&mut headers);
             }
-            if apply_header_plan(&mut headers, transforms.request_headers()).is_err() {
-                completion.finish(RequestOutcome::ClientRequestError);
-                return Err(ProxyError::transform_failed());
+            if let Err(apply_error) = apply_header_plan(&mut headers, transforms.request_headers())
+            {
+                let error = ProxyError::transform_failed();
+                completion.finish_with_error_details(
+                    RequestOutcome::ClientRequestError,
+                    proxy_error_with_source(&error, &apply_error),
+                );
+                return Err(error);
             }
             let mut headers = forward_request_headers(&headers);
-            let sse_transform_active = transforms.sse_event_patches().has_operations();
-            if sse_transform_active {
-                headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("identity"));
-            }
 
             let url = match prepared_attempt.upstream_url(&current_channel, &parts.uri) {
                 Ok(value) => value,
                 Err(error) => {
-                    completion.finish(RequestOutcome::UpstreamUnavailable);
-                    return Err(ProxyError::connector_attempt(error));
+                    let error = ProxyError::connector_attempt(error);
+                    completion.finish_with_proxy_error(RequestOutcome::UpstreamUnavailable, &error);
+                    return Err(error);
                 }
             };
             if let Err(error) = prepared_attempt.inject_headers(
@@ -514,17 +525,28 @@ impl ProxyService {
                 &current_channel,
                 parsed.request_protocol,
             ) {
-                completion.finish(RequestOutcome::UpstreamUnavailable);
-                return Err(ProxyError::connector_attempt(error));
+                let error = ProxyError::connector_attempt(error);
+                completion.finish_with_proxy_error(RequestOutcome::UpstreamUnavailable, &error);
+                return Err(error);
             }
-            let upstream_policy = match ResolvedUpstreamPolicy::try_resolve(
+            headers.insert(
+                ACCEPT_ENCODING,
+                if headers.contains_key(RANGE) {
+                    HeaderValue::from_static("identity")
+                } else {
+                    HeaderValue::from_static(UPSTREAM_ACCEPT_ENCODING)
+                },
+            );
+            let upstream_policy = match ResolvedUpstreamPolicy::try_resolve_for(
+                api_format,
                 &snapshot.system_settings().upstream_timeouts(),
                 current_channel.upstream_policy(),
             ) {
                 Ok(policy) => policy,
                 Err(_) => {
-                    completion.finish(RequestOutcome::UpstreamUnavailable);
-                    return Err(ProxyError::upstream_unavailable());
+                    let error = ProxyError::upstream_unavailable();
+                    completion.finish_with_proxy_error(RequestOutcome::UpstreamUnavailable, &error);
+                    return Err(error);
                 }
             };
             let upstream_client = match self
@@ -533,8 +555,9 @@ impl ProxyService {
             {
                 Ok(client) => client,
                 Err(_) => {
-                    completion.finish(RequestOutcome::UpstreamUnavailable);
-                    return Err(ProxyError::upstream_unavailable());
+                    let error = ProxyError::upstream_unavailable();
+                    completion.finish_with_proxy_error(RequestOutcome::UpstreamUnavailable, &error);
+                    return Err(error);
                 }
             };
             headers.insert(
@@ -547,7 +570,7 @@ impl ProxyService {
                 Err(error) => {
                     let error = ProxyError::image_edit_body(error);
                     completion.set_client_visible_status(error.status.as_u16());
-                    completion.finish(RequestOutcome::UpstreamUnavailable);
+                    completion.finish_with_proxy_error(RequestOutcome::UpstreamUnavailable, &error);
                     return Err(error);
                 }
             };
@@ -567,9 +590,13 @@ impl ProxyService {
                     Err(PreHeaderFailure::ConnectTimeout)
                 }
                 Ok(Err(error)) if error.is_connect() => Err(PreHeaderFailure::ConnectionFailure),
-                Ok(Err(_)) => {
-                    completion.finish(RequestOutcome::UpstreamUnavailable);
-                    return Err(ProxyError::upstream_unavailable());
+                Ok(Err(source)) => {
+                    let error = ProxyError::upstream_unavailable();
+                    completion.finish_with_error_details(
+                        RequestOutcome::UpstreamUnavailable,
+                        proxy_error_with_source(&error, &source),
+                    );
+                    return Err(error);
                 }
                 Ok(Ok(response)) => Ok(response),
             };
@@ -595,8 +622,9 @@ impl ProxyService {
                             )
                         });
                     let Some(SelectionResult::Selected(route)) = retry_route else {
-                        completion.finish(failure.outcome());
-                        return Err(failure.proxy_error());
+                        let error = failure.proxy_error();
+                        completion.finish_with_proxy_error(failure.outcome(), &error);
+                        return Err(error);
                     };
                     let crate::routing::SelectedRoute {
                         rule,
@@ -667,6 +695,7 @@ impl ProxyService {
         started: Instant,
     ) {
         let elapsed = clamp_duration_ms(started.elapsed());
+        let error = ProxyError::unknown_model(client_model);
         let event = RequestLogEvent {
             id: Uuid::new_v4(),
             started_at,
@@ -691,8 +720,8 @@ impl ProxyService {
             ttft_ms: None,
             total_duration_ms: elapsed,
             billing: None,
-            error_code: Some("model_not_found".into()),
-            error_summary: None,
+            error_code: error.code.map(str::to_owned),
+            error_summary: error.request_log_details().summary,
         };
         tracing::info!(event = "proxy_request_completed", api_key_id = %api_key.id(), api_format = ?api_format, outcome = "rejected", "proxy request completed");
         self.request_log_sink.try_record(event);
@@ -711,6 +740,7 @@ impl ProxyService {
         started_at: chrono::DateTime<chrono::Utc>,
         started: Instant,
     ) {
+        let error = ProxyError::no_healthy_channel();
         let event = RequestLogEvent {
             id: Uuid::new_v4(),
             started_at,
@@ -735,8 +765,8 @@ impl ProxyService {
             ttft_ms: None,
             total_duration_ms: clamp_duration_ms(started.elapsed()),
             billing: None,
-            error_code: Some("no_healthy_channel".into()),
-            error_summary: None,
+            error_code: error.code.map(str::to_owned),
+            error_summary: error.request_log_details().summary,
         };
         tracing::info!(event = "proxy_request_completed", api_key_id = %api_key.id(), api_format = ?api_format, outcome = "no_healthy_channel", "proxy request completed");
         self.request_log_sink.try_record(event);
@@ -1069,6 +1099,18 @@ impl ProxyError {
         }
     }
 
+    fn unsupported_upstream_content_encoding() -> Self {
+        Self {
+            status: StatusCode::BAD_GATEWAY,
+            message: "The upstream response used an unsupported content encoding.".to_owned(),
+            error_type: "api_error",
+            param: None,
+            code: Some("upstream_content_encoding_unsupported"),
+            authenticate: false,
+            retry_after: None,
+        }
+    }
+
     fn unknown_model(model: &str) -> Self {
         Self {
             status: StatusCode::NOT_FOUND,
@@ -1233,6 +1275,17 @@ impl ProxyError {
             retry_after: None,
         }
     }
+
+    fn request_log_details(&self) -> ResponseErrorDetails {
+        ResponseErrorDetails::from_json(&json!({
+            "error": {
+                "message": self.message,
+                "type": self.error_type,
+                "param": self.param,
+                "code": self.code,
+            }
+        }))
+    }
 }
 
 impl IntoResponse for ProxyError {
@@ -1261,6 +1314,31 @@ impl IntoResponse for ProxyError {
         }
         response
     }
+}
+
+fn proxy_error_with_source(error: &ProxyError, source: &dyn Error) -> ResponseErrorDetails {
+    let base = error
+        .request_log_details()
+        .summary
+        .unwrap_or_else(|| error.message.clone());
+    ResponseErrorDetails::from_message(
+        error.code,
+        &format!(
+            "{base}\n\nSource error chain:\n{}",
+            format_error_chain(source)
+        ),
+    )
+}
+
+fn format_error_chain(error: &dyn Error) -> String {
+    let mut rendered = error.to_string();
+    let mut source = error.source();
+    while let Some(next) = source {
+        rendered.push_str("\nCaused by: ");
+        rendered.push_str(&next.to_string());
+        source = next.source();
+    }
+    rendered
 }
 
 #[derive(Deserialize)]
@@ -1538,6 +1616,25 @@ fn forward_response_headers(headers: &HeaderMap) -> HeaderMap {
     forward_headers(headers, false)
 }
 
+const REQUEST_FORWARDING_METADATA_HEADERS: &[&str] = &[
+    "forwarded",
+    "via",
+    "x-forwarded-for",
+    "x-forwarded-host",
+    "x-forwarded-proto",
+    "x-forwarded-port",
+    "x-real-ip",
+    "x-client-ip",
+    "x-original-forwarded-for",
+    "true-client-ip",
+    "cf-connecting-ip",
+    "cf-connecting-ipv6",
+    "cf-pseudo-ipv4",
+    "cf-ipcountry",
+    "cf-ray",
+    "cf-visitor",
+];
+
 fn remove_rewritten_request_entity_headers(headers: &mut HeaderMap) {
     for name in [
         HeaderName::from_static("content-md5"),
@@ -1557,10 +1654,10 @@ fn forward_headers(headers: &HeaderMap, request: bool) -> HeaderMap {
     for (name, value) in headers {
         if is_hop_by_hop(name, &connection_names)
             || (request
-                && matches!(
+                && (matches!(
                     *name,
-                    HOST | CONTENT_LENGTH | AUTHORIZATION | PROXY_AUTHORIZATION
-                ))
+                    HOST | CONTENT_LENGTH | AUTHORIZATION | PROXY_AUTHORIZATION | ACCEPT_ENCODING
+                ) || REQUEST_FORWARDING_METADATA_HEADERS.contains(&name.as_str())))
         {
             continue;
         }
@@ -1608,30 +1705,47 @@ fn response_from_upstream(
     // presentation headers. Response plans are also forbidden from touching
     // these headers, but classify first to keep that invariant explicit.
     let original_upstream_headers = upstream_response.headers();
+    let content_codings = match ResponseContentCodings::parse(original_upstream_headers) {
+        Ok(codings) => codings,
+        Err(_) => {
+            let error = ProxyError::unsupported_upstream_content_encoding();
+            completion.set_client_visible_status(StatusCode::BAD_GATEWAY.as_u16());
+            completion.finish_with_proxy_error(
+                RequestOutcome::UpstreamContentEncodingUnsupported,
+                &error,
+            );
+            return Err(error);
+        }
+    };
     let response_is_sse = is_sse_response(original_upstream_headers)
         || (connector_success_response_is_sse && upstream_status.is_success());
     let transform_sse = sse_event_patches.has_operations() && response_is_sse;
-    completion.configure_usage_collector(response_is_sse);
-    let sse_has_identity_encoding = has_identity_content_encoding(original_upstream_headers);
+    let capture_error_body = !response_is_sse
+        && !upstream_status.is_success()
+        && response_error_body_is_textual(original_upstream_headers);
+    completion.configure_usage_collector(response_is_sse, capture_error_body);
     let mut upstream_headers = original_upstream_headers.clone();
-    if apply_response_header_plan(&mut upstream_headers, response_headers).is_err() {
+    if let Err(apply_error) = apply_response_header_plan(&mut upstream_headers, response_headers) {
+        let error = ProxyError::response_transform_failed();
         completion.set_client_visible_status(StatusCode::BAD_GATEWAY.as_u16());
-        completion.finish(RequestOutcome::ResponseTransformFailed);
-        return Err(ProxyError::response_transform_failed());
+        completion.finish_with_error_details(
+            RequestOutcome::ResponseTransformFailed,
+            proxy_error_with_source(&error, &apply_error),
+        );
+        return Err(error);
     }
     if connector_success_response_is_sse && upstream_status.is_success() {
         upstream_headers.insert(CONTENT_TYPE, HeaderValue::from_static("text/event-stream"));
     }
-    if transform_sse && !sse_has_identity_encoding {
-        completion.set_client_visible_status(StatusCode::BAD_GATEWAY.as_u16());
-        completion.finish(RequestOutcome::ResponseTransformFailed);
-        return Err(ProxyError::response_transform_failed());
+    upstream_headers.remove(CONTENT_ENCODING);
+    if content_codings.is_encoded() {
+        remove_decoded_entity_headers(&mut upstream_headers);
     }
     let mut headers = forward_response_headers(&upstream_headers);
     if transform_sse {
         remove_transformed_entity_headers(&mut headers);
     }
-    let expected_body_bytes = (!transform_sse)
+    let expected_body_bytes = (!transform_sse && !content_codings.is_encoded())
         .then(|| upstream_response.content_length())
         .flatten();
     if response_has_no_body(status) || expected_body_bytes == Some(0) {
@@ -1646,7 +1760,7 @@ fn response_from_upstream(
         return Ok(response);
     }
     let stream = timed_upstream_stream(
-        upstream_response.bytes_stream(),
+        decode_response_body(upstream_response, &content_codings),
         stream_idle_timeout,
         completion,
         upstream_status.is_success(),
@@ -1667,12 +1781,41 @@ fn is_sse_response(headers: &HeaderMap) -> bool {
         .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("text/event-stream"))
 }
 
-fn has_identity_content_encoding(headers: &HeaderMap) -> bool {
-    headers.get_all(CONTENT_ENCODING).iter().all(|value| {
-        value
-            .to_str()
-            .is_ok_and(|value| value.trim().eq_ignore_ascii_case("identity"))
-    })
+fn response_error_body_is_textual(headers: &HeaderMap) -> bool {
+    let Some(media_type) = headers
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return true;
+    };
+    let media_type = media_type.to_ascii_lowercase();
+    !media_type.starts_with("image/")
+        && !media_type.starts_with("audio/")
+        && !media_type.starts_with("video/")
+        && !media_type.starts_with("font/")
+        && !media_type.starts_with("multipart/")
+        && !matches!(
+            media_type.as_str(),
+            "application/octet-stream" | "application/pdf" | "application/zip" | "application/gzip"
+        )
+}
+
+fn remove_decoded_entity_headers(headers: &mut HeaderMap) {
+    for name in [
+        CONTENT_ENCODING,
+        CONTENT_LENGTH,
+        ACCEPT_RANGES,
+        HeaderName::from_static("etag"),
+        HeaderName::from_static("content-md5"),
+        HeaderName::from_static("digest"),
+        HeaderName::from_static("content-digest"),
+        HeaderName::from_static("repr-digest"),
+    ] {
+        headers.remove(name);
+    }
 }
 
 fn remove_transformed_entity_headers(headers: &mut HeaderMap) {
@@ -1695,8 +1838,8 @@ fn response_has_no_body(status: StatusCode) -> bool {
         || status == StatusCode::NOT_MODIFIED
 }
 
-type UpstreamByteStream = Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>>;
-type BodyStreamError = Box<dyn Error + Send + Sync>;
+type UpstreamByteStream = Pin<Box<dyn Stream<Item = Result<Bytes, DecodedBodyError>> + Send>>;
+type BodyStreamError = DecodedBodyError;
 
 struct StreamState {
     upstream: Option<UpstreamByteStream>,
@@ -1709,7 +1852,7 @@ struct StreamState {
 }
 
 fn timed_upstream_stream(
-    upstream: impl Stream<Item = Result<Bytes, reqwest::Error>> + Send + 'static,
+    upstream: impl Stream<Item = Result<Bytes, DecodedBodyError>> + Send + 'static,
     idle_timeout: Duration,
     completion: CompletionGuard,
     upstream_succeeded: bool,
@@ -1740,12 +1883,14 @@ fn timed_upstream_stream(
                             return Some((Ok(frame), state));
                         }
                         Ok(None) => {}
-                        Err(_) => {
+                        Err(source) => {
                             state.upstream.take();
                             state.sse_transformer = None;
-                            state
-                                .completion
-                                .finish(RequestOutcome::ResponseTransformFailed);
+                            let error = ProxyError::response_transform_failed();
+                            state.completion.finish_with_error_details(
+                                RequestOutcome::ResponseTransformFailed,
+                                proxy_error_with_source(&error, &source),
+                            );
                             let error: BodyStreamError = Box::new(ResponseTransformBodyError);
                             return Some((Err(error), state));
                         }
@@ -1767,8 +1912,11 @@ fn timed_upstream_stream(
                     }
                     Ok(Some(Err(error))) => {
                         state.upstream.take();
-                        state.completion.finish(RequestOutcome::UpstreamBodyError);
-                        let error: BodyStreamError = Box::new(error);
+                        state.completion.finish_with_message(
+                            RequestOutcome::UpstreamBodyError,
+                            Some("upstream_body_error"),
+                            &format_error_chain(error.as_ref()),
+                        );
                         return Some((Err(error), state));
                     }
                     Ok(None) => {
@@ -1800,7 +1948,11 @@ fn timed_upstream_stream(
                     }
                     Err(_) => {
                         state.upstream.take();
-                        state.completion.finish(RequestOutcome::StreamIdleTimeout);
+                        state.completion.finish_with_message(
+                            RequestOutcome::StreamIdleTimeout,
+                            Some("stream_idle_timeout"),
+                            "The upstream response stream was idle for too long.",
+                        );
                         let error: BodyStreamError = Box::new(io::Error::new(
                             io::ErrorKind::TimedOut,
                             "upstream response stream was idle for too long",
@@ -1811,6 +1963,7 @@ fn timed_upstream_stream(
             }
         },
     )
+    .fuse()
 }
 
 fn record_stream_bytes(state: &mut StreamState, bytes: &Bytes) {
@@ -1955,6 +2108,7 @@ enum RequestOutcome {
     ConnectTimeout,
     ResponseHeaderTimeout,
     UpstreamUnavailable,
+    UpstreamContentEncodingUnsupported,
     UpstreamBodyError,
     StreamIdleTimeout,
     ResponseTransformFailed,
@@ -1971,6 +2125,7 @@ impl RequestOutcome {
             Self::ConnectTimeout => "connect_timeout",
             Self::ResponseHeaderTimeout => "response_header_timeout",
             Self::UpstreamUnavailable => "upstream_unavailable",
+            Self::UpstreamContentEncodingUnsupported => "upstream_content_encoding_unsupported",
             Self::UpstreamBodyError => "upstream_body_error",
             Self::StreamIdleTimeout => "stream_idle_timeout",
             Self::ResponseTransformFailed => "response_transform_failed",
@@ -1988,6 +2143,7 @@ impl RequestOutcome {
             | Self::ConnectTimeout
             | Self::ResponseHeaderTimeout
             | Self::UpstreamUnavailable
+            | Self::UpstreamContentEncodingUnsupported
             | Self::UpstreamBodyError
             | Self::StreamIdleTimeout
             | Self::ResponseTransformFailed
@@ -2003,6 +2159,9 @@ impl RequestOutcome {
             Self::ConnectTimeout => Some("connect_timeout"),
             Self::ResponseHeaderTimeout => Some("response_header_timeout"),
             Self::UpstreamUnavailable => Some("upstream_unavailable"),
+            Self::UpstreamContentEncodingUnsupported => {
+                Some("upstream_content_encoding_unsupported")
+            }
             Self::UpstreamBodyError => Some("upstream_body_error"),
             Self::StreamIdleTimeout => Some("stream_idle_timeout"),
             Self::ResponseTransformFailed => Some("response_transform_failed"),
@@ -2011,12 +2170,46 @@ impl RequestOutcome {
         }
     }
 
+    fn default_error_summary(self, upstream_status: Option<u16>) -> Option<String> {
+        let summary = match self {
+            Self::Succeeded => return None,
+            Self::UpstreamHttpError => {
+                return Some(upstream_status.map_or_else(
+                    || "The upstream returned an unsuccessful HTTP response.".to_owned(),
+                    |status| format!("The upstream returned HTTP {status}."),
+                ));
+            }
+            Self::UpstreamSseError => "The upstream stream reported an application-level error.",
+            Self::ConnectTimeout => "Connecting to the selected upstream channel timed out.",
+            Self::ResponseHeaderTimeout => {
+                "The selected upstream channel did not return response headers in time."
+            }
+            Self::UpstreamUnavailable => "The selected upstream channel could not be reached.",
+            Self::UpstreamContentEncodingUnsupported => {
+                "The upstream response used an unsupported content encoding."
+            }
+            Self::UpstreamBodyError => {
+                "The upstream response body ended with a transport or protocol error."
+            }
+            Self::StreamIdleTimeout => "The upstream response stream was idle for too long.",
+            Self::ResponseTransformFailed => {
+                "The upstream response transform could not be applied."
+            }
+            Self::Cancelled => "The downstream client disconnected before the request completed.",
+            Self::ClientRequestError => {
+                "The request could not be prepared for the selected upstream channel."
+            }
+        };
+        Some(summary.to_owned())
+    }
+
     const fn fallback_status(self) -> Option<u16> {
         match self {
             Self::ConnectTimeout | Self::ResponseHeaderTimeout => {
                 Some(StatusCode::GATEWAY_TIMEOUT.as_u16())
             }
             Self::UpstreamUnavailable => Some(StatusCode::BAD_GATEWAY.as_u16()),
+            Self::UpstreamContentEncodingUnsupported => Some(StatusCode::BAD_GATEWAY.as_u16()),
             Self::ResponseTransformFailed => Some(StatusCode::BAD_GATEWAY.as_u16()),
             Self::ClientRequestError => Some(StatusCode::BAD_REQUEST.as_u16()),
             Self::Succeeded
@@ -2036,6 +2229,7 @@ impl RequestOutcome {
                 | Self::ConnectTimeout
                 | Self::ResponseHeaderTimeout
                 | Self::UpstreamUnavailable
+                | Self::UpstreamContentEncodingUnsupported
                 | Self::UpstreamBodyError
                 | Self::StreamIdleTimeout
         )
@@ -2072,6 +2266,7 @@ struct CompletionContext {
     session_affinity_hit: Option<bool>,
     preserve_affinity_on_failure: bool,
     attempts: u32,
+    error_details: Option<ResponseErrorDetails>,
 }
 
 /// Emits exactly one event, including when Axum drops an in-flight response
@@ -2143,6 +2338,7 @@ impl CompletionGuard {
                 session_affinity_hit: session_affinity.map(SessionAffinitySelection::cache_hit),
                 preserve_affinity_on_failure: false,
                 attempts: 1,
+                error_details: None,
             }),
             lease: Some(lease),
             _admission: Some(admission),
@@ -2188,6 +2384,7 @@ impl CompletionGuard {
                 session_affinity.map(SessionAffinitySelection::cache_hit);
             context.preserve_affinity_on_failure = false;
             context.attempts = context.attempts.saturating_add(1);
+            context.error_details = None;
         }
         self.lease = Some(lease);
         self.automatic_disable = automatic_disable_context(
@@ -2230,6 +2427,7 @@ impl CompletionGuard {
             context.session_affinity_hit =
                 session_affinity.map(SessionAffinitySelection::cache_hit);
             context.preserve_affinity_on_failure = false;
+            context.error_details = None;
         }
         self.lease = Some(lease);
         self.automatic_disable = automatic_disable_context(
@@ -2270,10 +2468,36 @@ impl CompletionGuard {
         }
     }
 
-    fn configure_usage_collector(&mut self, sse: bool) {
+    fn configure_usage_collector(&mut self, sse: bool, capture_error_body: bool) {
         if let Some(context) = &mut self.context {
             context.usage = UsageCollector::new(context.api_format, sse);
+            if capture_error_body {
+                context.usage.capture_error_body();
+            }
         }
+    }
+
+    fn set_error_details(&mut self, details: ResponseErrorDetails) {
+        if let Some(context) = &mut self.context {
+            context.error_details = Some(details);
+        }
+    }
+
+    fn finish_with_error_details(
+        &mut self,
+        outcome: RequestOutcome,
+        details: ResponseErrorDetails,
+    ) {
+        self.set_error_details(details);
+        self.finish(outcome);
+    }
+
+    fn finish_with_proxy_error(&mut self, outcome: RequestOutcome, error: &ProxyError) {
+        self.finish_with_error_details(outcome, error.request_log_details());
+    }
+
+    fn finish_with_message(&mut self, outcome: RequestOutcome, code: Option<&str>, message: &str) {
+        self.finish_with_error_details(outcome, ResponseErrorDetails::from_message(code, message));
     }
 
     fn observe_usage(&mut self, bytes: &Bytes) -> Option<SseTerminalOutcome> {
@@ -2353,7 +2577,8 @@ impl CompletionGuard {
             }
         }
         let usage = context.usage.latest();
-        let upstream_error = context.usage.sse_error().cloned();
+        let upstream_error = context.usage.error_details().unwrap_or_default();
+        let explicit_error = context.error_details.unwrap_or_default();
         let total_duration_ms = clamp_duration_ms(context.started_at.elapsed());
         let billing_ttft_ms = (!context.api_operation.is_images())
             .then(|| context.first_byte_at.map(clamp_duration_ms))
@@ -2415,10 +2640,12 @@ impl CompletionGuard {
             total_duration_ms,
             billing: Some(billing),
             error_code: upstream_error
-                .as_ref()
-                .and_then(|error| error.code.clone())
+                .code
                 .or_else(|| outcome.error_code().map(str::to_owned)),
-            error_summary: upstream_error.and_then(|error| error.summary),
+            error_summary: upstream_error
+                .summary
+                .or(explicit_error.summary)
+                .or_else(|| outcome.default_error_summary(context.upstream_status)),
         };
         context.sink.try_record(event);
     }
@@ -2465,7 +2692,10 @@ impl Drop for CompletionGuard {
 mod tests {
     use axum::{
         body::Bytes,
-        http::{HeaderMap, HeaderValue, StatusCode, header::CONNECTION},
+        http::{
+            HeaderMap, HeaderValue, StatusCode,
+            header::{ACCEPT_ENCODING, CONNECTION},
+        },
     };
     use std::{sync::Arc, time::Duration};
 
@@ -2476,7 +2706,7 @@ mod tests {
     use super::{
         AttemptedChannelSlots, PreparedRequestBody, forward_request_headers,
         forward_response_headers, match_session_affinity, parse_bearer_token, parse_request,
-        response_has_no_body,
+        response_error_body_is_textual, response_has_no_body,
     };
     use crate::{
         application::billing::{calculate_cost, request_billing},
@@ -2666,12 +2896,38 @@ mod tests {
             "authorization",
             HeaderValue::from_static("Bearer client-key"),
         );
+        headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("br"));
         headers.insert("x-request-id", HeaderValue::from_static("keep"));
 
         let forwarded = forward_request_headers(&headers);
         assert!(forwarded.get(CONNECTION).is_none());
         assert!(forwarded.get("x-internal-hop").is_none());
         assert!(forwarded.get("authorization").is_none());
+        assert!(forwarded.get(ACCEPT_ENCODING).is_none());
+        assert_eq!(forwarded.get("x-request-id").unwrap(), "keep");
+    }
+
+    #[test]
+    fn removes_common_proxy_and_cdn_forwarding_metadata_from_requests() {
+        let mut headers = HeaderMap::new();
+        for name in super::REQUEST_FORWARDING_METADATA_HEADERS {
+            headers.insert(*name, HeaderValue::from_static("discard"));
+        }
+        headers.insert(
+            "x-forwarded-custom",
+            HeaderValue::from_static("keep-similar-name"),
+        );
+        headers.insert("x-request-id", HeaderValue::from_static("keep"));
+
+        let forwarded = forward_request_headers(&headers);
+
+        for name in super::REQUEST_FORWARDING_METADATA_HEADERS {
+            assert!(forwarded.get(*name).is_none(), "{name} was forwarded");
+        }
+        assert_eq!(
+            forwarded.get("x-forwarded-custom").unwrap(),
+            "keep-similar-name"
+        );
         assert_eq!(forwarded.get("x-request-id").unwrap(), "keep");
     }
 
@@ -2697,6 +2953,24 @@ mod tests {
         assert!(response_has_no_body(StatusCode::NOT_MODIFIED));
         assert!(response_has_no_body(StatusCode::CONTINUE));
         assert!(!response_has_no_body(StatusCode::OK));
+    }
+
+    #[test]
+    fn error_body_capture_excludes_binary_media_types() {
+        let mut headers = HeaderMap::new();
+        assert!(response_error_body_is_textual(&headers));
+        headers.insert(
+            "content-type",
+            HeaderValue::from_static("application/problem+json"),
+        );
+        assert!(response_error_body_is_textual(&headers));
+        headers.insert("content-type", HeaderValue::from_static("IMAGE/PNG"));
+        assert!(!response_error_body_is_textual(&headers));
+        headers.insert(
+            "content-type",
+            HeaderValue::from_static("application/octet-stream"),
+        );
+        assert!(!response_error_body_is_textual(&headers));
     }
 
     #[test]

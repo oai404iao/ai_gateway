@@ -89,7 +89,7 @@ updated_at timestamptz not null
 
 按 PRD，客户端 API Key 与上游 API Key 原始保存，以便所属用户和管理员查看。首版直接使用 `secret_value text UNIQUE` 查询 Key，不额外保存摘要列。
 
-明文 Key、代理密码、`Authorization`、Cookie、请求/响应正文和完整 Header 绝不能写入 `request_logs`、`audit_logs`、tracing 或错误摘要。错误摘要只允许保存从结构化上游错误事件提取、清理控制字符并限制长度后的错误消息；控制台、备份和只读副本都属于敏感数据边界。
+明文 Key、代理密码、`Authorization`、Cookie、请求正文、成功响应正文和完整 Header 绝不能写入 `request_logs`、`audit_logs` 或 tracing。失败请求的 `error_summary` 可以保存最长 16KiB、已清理控制字符的上游文本错误响应、结构化 SSE/WebSocket 错误事件，以及网关或传输错误诊断；上游可能在错误中回显 prompt、标识符或其他业务数据，因此 Console、备份和只读副本都必须按敏感数据边界管理。
 
 ## 4. 表结构
 
@@ -255,7 +255,12 @@ CHECK (jsonb_typeof(override_document) = 'object');
 
 渠道实际可选条件为 `enabled AND NOT auto_disabled`，并在内存中再过滤被动连接健康、熔断和冷却状态。重启后被动健康运行状态回到未知，后续请求重新建立状态。
 
-每类超时按以下优先级取值：渠道显式列 → `system_settings.forwarding_policy.upstream` 默认值。只允许建连、响应头和流空闲超时，禁止总响应超时。首次启动时，若该系统配置行不存在，二进制会用 TOML `[upstream]` 的值一次性初始化；后续 TOML 变更不会覆盖数据库。
+每类超时按以下优先级取值：渠道显式列 → `system_settings.forwarding_policy.upstream` 默认值。
+Images generation/edit 在渠道未显式配置 `response_header_timeout_ms` 时使用独立的
+`images_response_header_timeout_seconds`；其他 HTTP 请求使用
+`response_header_timeout_seconds`。建连和流空闲默认值仍跨格式共享。只允许建连、响应头和流
+空闲超时，禁止总响应超时。首次启动时，若该系统配置行不存在，二进制会用 TOML `[upstream]`
+的值一次性初始化；后续 TOML 变更不会覆盖数据库。
 
 ### 4.7 `proxies`
 
@@ -286,7 +291,7 @@ CHECK (jsonb_typeof(override_document) = 'object');
 
 保存模板或渠道时，编译器必须验证 JSON 语法、操作白名单、Pointer、SSE 适配性以及最终合并结果。配置不得改写 `Host`、`Content-Length`、`Connection`、`Transfer-Encoding`、客户端 `Authorization`、`Proxy-Authorization` 或 `Connection` 动态声明的 Header。模板更新会立即影响引用它的渠道；系统没有版本回滚能力，依赖 `audit_logs` 查看变更。
 
-无论是否启用变换，转发器都必须在上游请求前移除客户端 `Authorization`、所有 hop-by-hop Header 和 `Connection` 中动态声明的 Header；随后才注入 `upstream_auth_kind` 指定的上游鉴权。上游响应转发给客户端前也必须移除所有 hop-by-hop Header 和 `Connection` 动态声明的 Header；响应经过任何变换后还必须移除原始 `Content-Length`。这些是网关强制行为，不可由 JSON 配置关闭或覆盖。
+无论是否启用变换，转发器都必须在上游请求前移除客户端 `Authorization`、所有 hop-by-hop Header、`Connection` 中动态声明的 Header，以及常见反向代理/CDN 转发元数据（`Forwarded`、`Via`、`X-Forwarded-*` 的常用字段、真实客户端 IP Header 与 Cloudflare 转发 Header）；随后才注入 `upstream_auth_kind` 指定的上游鉴权。该规则由所有普通、Codex、HTTP/SSE、Images 与 Responses WebSocket 渠道共享，不可按渠道绕过。上游响应转发给客户端前也必须移除所有 hop-by-hop Header 和 `Connection` 动态声明的 Header；响应经过任何变换后还必须移除原始 `Content-Length`。这些是网关强制行为，不可由 JSON 配置关闭或覆盖。
 
 ### 4.9 `request_logs`
 
@@ -315,7 +320,7 @@ CHECK (jsonb_typeof(override_document) = 'object');
 | `input_unit_price` / `cached_input_unit_price` / `cache_write_unit_price` / `output_unit_price` | `numeric(24,12)` | 本次价格快照。 |
 | `cost_amount` | `numeric(24,8)` | 可空、非负；本次最终费用。 |
 | `attempts` | `jsonb` | 非空，默认 `[]`；为未来首字节前重试审计预留。当前网关只进行一次上游尝试，始终保留空数组。 |
-| `error_code` / `error_summary` | `varchar(100)` / `varchar(1000)` | 可空、已清洗。 |
+| `error_code` / `error_summary` | `varchar(100)` / `varchar(16384)` | 可空；应用分别限制为 100 字节和 16KiB，并清理控制字符。 |
 | `billed_at` | `timestamptz` | 可空；余额/额度已成功应用的唯一标志。 |
 
 必须满足：
@@ -325,10 +330,10 @@ CHECK (jsonb_typeof(override_document) = 'object');
 - 四个价格字段、币种、计价单位和价格生效时间要么全部为空（未计费），要么全部存在。
 - 费用计算为：`(input - cached_input) * input_price / unit + cached_input * cached_input_price / unit + cache_write * cache_write_price / unit + output * output_price / unit`。
 - 当前不写入 `attempts`，因为网关只进行一次上游尝试。若未来引入重试，只能在尚未收到上游任何字节时追加下一项；收到响应头或首字节后不得切换渠道或重试。
-- SSE `error`、`response.failed` 或兼容的顶层 `error` 对象只提取结构化错误代码与消息；代码和摘要分别限制为 100/1000 字节，并清理控制字符。不得把完整 SSE 帧或其他响应正文写入日志。
+- 非流式失败 HTTP 响应会在不改变转发流的前提下保留最长 16KiB 的文本正文前缀；JSON 错误同时提取结构化代码，并保留消息与完整 JSON 详情。SSE/Responses WebSocket 的失败终态事件使用相同规则保存完整结构化事件。网关生成的错误保存客户端可见错误对象，底层传输失败还可追加 source chain。二进制媒体响应、请求正文、成功响应正文和 Header 不进入错误详情。
 - 结算 worker 对 `cost_amount` 非空且 Key 归属一致的日志，以 `UPDATE ... WHERE id = ? AND billed_at IS NULL RETURNING cost_amount` 取得唯一结算权，再在同一事务更新 `users.balance_amount` 和 `api_keys.quota_used_amount`。事务失败会回滚 `billed_at`，因此 worker 重投、启动恢复和并发结算不会重复扣费；余额不足不阻止结算，余额可为负。缺失成本或归属不一致的日志不会被重试扫描错误地结算。系统只接受 USD 价格和费用，不在内部进行货币转换。
 
-不保存请求体、响应体、完整 Header、任何密钥、Cookie、原始 IP 或未清洗的上游错误。请求遥测清理前，必须确认它仍是首版唯一的计费审计依据；在引入独立账本前，不应任意缩短其保留期。
+不保存请求体、成功响应体、完整 Header、任何密钥、Cookie 或原始 IP。失败响应详情可能包含上游回显的业务数据，必须按敏感日志处理。请求遥测清理前，必须确认它仍是首版唯一的计费审计依据；在引入独立账本前，不应任意缩短其保留期。
 
 ### 4.10 `audit_logs`
 
@@ -355,7 +360,12 @@ CHECK (jsonb_typeof(override_document) = 'object');
 | `value` | `jsonb` | 非空对象；当前实现使用固定键 `forwarding_policy`。 |
 | `updated_at` | `timestamptz` | 非空。 |
 
-`forwarding_policy` 的值固定为 `upstream`（建连、响应头、流空闲默认超时，单位秒）和 `passive_health`（响应头前连接失败阈值、冷却秒数）两个对象。Console 管理员通过 `GET`/`PUT /console/v1/system/settings` 读取和更新，使用 `ETag`/`If-Match` 并写入审计日志。保存时会和整个控制面一起编译并立即发布新快照；已在处理中的请求保留取得快照时的超时，新的请求使用新值。首次启动只在此行缺失时从 TOML `[upstream]` / `[passive_health]` 初始化，之后数据库为唯一运行时来源。
+`forwarding_policy.upstream` 保存建连、普通响应头、Images 响应头和流空闲默认超时，单位秒；
+其余对象保存请求重试、被动健康、自动禁用、定时测试、Session affinity 和 Responses
+WebSocket 等系统策略。Console 管理员通过 `GET`/`PUT /console/v1/system/settings` 读取和更新，
+使用 `ETag`/`If-Match` 并写入审计日志。保存时会和整个控制面一起编译并立即发布新快照；已在
+处理中的请求保留取得快照时的超时，新的请求使用新值。首次启动只在此行缺失时从 TOML
+bootstrap 配置初始化，之后数据库为唯一运行时来源。
 
 重试、主动健康检查、硬额度、注册和日志保留策略仍属于后续设计，不能通过向该表写入未定义 JSON 启用。
 
@@ -378,7 +388,9 @@ CHECK (jsonb_typeof(override_document) = 'object');
 3. 每个启用规则至少有一个配置上支持模型的候选渠道；渠道组、渠道禁用或自动禁用只会使候选暂时不可选。同一优先级内所有配置候选组的选路策略必须一致。
 4. API Key 的 `allowed_group_ids` / `allowed_channel_ids` 均存在、无重复，并且 Key 的自动推导格式覆盖这些目标；`proxy` 权限用于代理，`/v1/models` 还需要 `models.read`。
 5. API Key 的渠道组/渠道范围展开为 dense channel slot 位图；相同范围共享一个 `AuthorizationProfile`，并预计算 `accessible_routes` 位图。API Key 可以没有可达路由；`/v1/models` 只输出配置可达规则的 `client_model`，不返回全局 `models`，也不受临时健康冷却影响。
-6. 模板和渠道覆盖符合受限 DSL、Header 保护、SSE 逐事件处理、URL 和超时规则；`forwarding_policy` 的字段必须为正数、响应头超时大于建连超时，且所有渠道覆盖与其合并后的有效超时均有效。
+6. 模板和渠道覆盖符合受限 DSL、Header 保护、SSE 逐事件处理、URL 和超时规则；
+   `forwarding_policy` 的字段必须为正数，普通与 Images 响应头超时都必须大于建连超时，且所有
+   渠道覆盖与对应格式默认值合并后的有效超时均有效。
 
 控制面在一个事务中保存变更和审计日志，完成上述全量校验并编译 `CompiledRuntimeConfig` 后提交；提交后直接替换内存 `ArcSwap` 快照。启动、定时重载和 Console 管理写入均使用 PostgreSQL 控制面；TOML 保留进程级监听、数据库、系统设置首次初始化值、日志、Console listener 和 JWT 密钥文件路径设置。
 

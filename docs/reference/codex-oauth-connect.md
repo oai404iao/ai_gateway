@@ -1,7 +1,7 @@
 # Codex OAuth 与订阅后端接入参考
 
 > 类型：外部参考
-> 最近核对：2026-08-02
+> 最近核对：2026-08-04
 > 权威来源：
 > [`openai/codex` 0.146.0 release](https://github.com/openai/codex/releases/tag/rust-v0.146.0)、
 > [OAuth server](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/login/src/server.rs)、
@@ -15,6 +15,12 @@
 > [Responses request type](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/codex-api/src/common.rs)、
 > [session headers](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/codex-api/src/requests/headers.rs) 和
 > [usage endpoint client](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/backend-client/src/client/rate_limit_resets.rs)。
+> Account-ID 可选行为另外核对
+> [`openai/codex@bb5054fe47abe73ecbbd454751066a28c89f4bb9`](https://github.com/openai/codex/tree/bb5054fe47abe73ecbbd454751066a28c89f4bb9)：
+> [optional TokenData claims](https://github.com/openai/codex/blob/bb5054fe47abe73ecbbd454751066a28c89f4bb9/codex-rs/login/src/token_data.rs)、
+> [optional Bearer account header](https://github.com/openai/codex/blob/bb5054fe47abe73ecbbd454751066a28c89f4bb9/codex-rs/model-provider/src/bearer_auth_provider.rs)
+> 和
+> [accountless Pro auth test](https://github.com/openai/codex/blob/bb5054fe47abe73ecbbd454751066a28c89f4bb9/codex-rs/login/src/auth/auth_tests.rs)。
 > Reset-credit 行为另外核对
 > [`openai/codex@2b5bdcf67547860f2e5c5a605009a70026796b2b`](https://github.com/openai/codex/tree/2b5bdcf67547860f2e5c5a605009a70026796b2b)：
 > [backend reset client](https://github.com/openai/codex/blob/2b5bdcf67547860f2e5c5a605009a70026796b2b/codex-rs/backend-client/src/client/rate_limit_resets.rs)、
@@ -30,6 +36,14 @@
 > [Images wire types](https://github.com/openai/codex/blob/aa064463458adbef10400c74174107fc4b3550f0/codex-rs/codex-api/src/images.rs)、
 > [image backend](https://github.com/openai/codex/blob/aa064463458adbef10400c74174107fc4b3550f0/codex-rs/ext/image-generation/src/backend.rs)
 > 和 [image tool](https://github.com/openai/codex/blob/aa064463458adbef10400c74174107fc4b3550f0/codex-rs/ext/image-generation/src/tool.rs)。
+> HTTP content-coding 基线另外核对当前
+> [`openai/codex@5af85998c23ddb9cc21c43ef41db44712b481611`](https://github.com/openai/codex/tree/5af85998c23ddb9cc21c43ef41db44712b481611)：
+> [default client](https://github.com/openai/codex/blob/5af85998c23ddb9cc21c43ef41db44712b481611/codex-rs/login/src/auth/default_client.rs)、
+> [HTTP client features](https://github.com/openai/codex/blob/5af85998c23ddb9cc21c43ef41db44712b481611/codex-rs/http-client/Cargo.toml)
+> 和
+> [response transport](https://github.com/openai/codex/blob/5af85998c23ddb9cc21c43ef41db44712b481611/codex-rs/http-client/src/transport.rs)。
+> 官方客户端当前不主动发送 `Accept-Encoding`，也没有启用 reqwest 的 HTTP 响应解压 features；
+> 下述双向独立协商是 ai-gateway 的代理增强能力，不是 Codex 客户端保证。
 
 本文记录 `ai-gateway` 的 Codex OAuth Connector 所依赖的外部行为。这里的
 `chatgpt.com/backend-api/*` 是 Codex 客户端使用的 ChatGPT 后端接口，不是公开的
@@ -68,9 +82,11 @@ ID token / access token 的 JWT payload 中，本接入使用：
 - access token 顶层 `exp`。
 
 JWT payload 解析只用于提取元数据和过期时间；真正的凭证有效性由后续 Codex models
-请求验证。`chatgpt_account_id` 表示所选 workspace，`chatgpt_user_id` 表示该 workspace 中的
-成员；Business plan 的多个成员可以共享 account ID。管理员导入凭证时，如果显式
-`account_id`/`user_id` 与 token claim 不同，网关拒绝导入。
+请求验证。`chatgpt_account_id` 在存在时表示所选 workspace，`chatgpt_user_id` 表示用户身份。
+该 account claim 是可选的，并非所有 ChatGPT 认证状态都有 workspace ID；官方当前测试也覆盖
+没有 account ID 的普通 Pro ChatGPT auth，因此不能按 plan 类型推断该字段必然存在。Business
+plan 的多个成员可以共享 account ID。管理员导入凭证时，如果显式 `account_id`/`user_id` 与
+Token claim 不同，网关拒绝导入。
 
 ## Codex 接口
 
@@ -90,7 +106,7 @@ JWT payload 解析只用于提取元数据和过期时间；真正的凭证有�
 认证请求使用：
 
 - `Authorization: Bearer <access_token>`；
-- `ChatGPT-Account-ID: <account_id>`；
+- 有 account ID 时发送 `ChatGPT-Account-ID: <account_id>`；没有时省略；
 - FedRAMP 账户附加 `X-OpenAI-Fedramp: true`；
 - `originator: codex_cli_rs`；
 - 以 `codex_cli_rs/0.146.0` 为基础值的 `User-Agent` 和独立的版本标识；
@@ -147,11 +163,12 @@ provider-managed `channels` 记录。因此普通优先级、权重、API Key �
 3. 删除当前 Codex request type 未声明的 `max_output_tokens`，但不使用字段白名单；
 4. 强制写入 `stream=true`、`store=false`；
 5. 将目标改为 `/backend-api/codex/responses`；
-6. 强制上游 `Accept-Encoding: identity`，使网关能直接观察终态 SSE 与 usage；
-7. 最后注入当前凭证的 Bearer、account、FedRAMP 和 Codex 会话 Header；
+6. `Accept-Encoding` 由通用代理层独立设置为 `gzip, deflate, br, zstd`，上游响应在终态 SSE
+   与 usage 解析前流式解码；
+7. 最后注入当前凭证的 Bearer、可选 account、FedRAMP 和 Codex 会话 Header；
 8. 成功响应按 SSE 分类，并将客户端可见 `Content-Type` 规范化为
    `text/event-stream`，即使 Codex 上游缺少或改写了该 Header；
-9. 逐块转发上游 SSE，不在 Connector 中缓冲整条响应。
+9. 逐块转发解码后的上游 SSE，不在 Connector 中缓冲整条响应；下游 SSE 保持 identity。
 
 WebSocket 路径：
 
@@ -161,7 +178,7 @@ WebSocket 路径：
    `previous_response_id`、`generate` 和 `client_metadata`；
 4. 把目标改为 managed channel base URL 下的 `/responses`，再将
    `http`/`https` 转成 `ws`/`wss`；
-5. 注入 `OpenAI-Beta: responses_websockets=2026-02-06`、Bearer/account、
+5. 注入 `OpenAI-Beta: responses_websockets=2026-02-06`、Bearer/可选 account、
    FedRAMP、session/thread、User-Agent、`originator` 和版本 Header；
 6. 不发送 HTTP SSE 专用的 `Accept`、`Accept-Encoding` 和 `Content-Type`；
 7. 顺序转发事件，并把成功、无残留的连接放回 Session 隔离池，使后续请求可以继续使用
@@ -171,7 +188,7 @@ WebSocket 路径：
 
 1. 保留模型别名和受限变换后的 JSON，不加入 Responses 的 `stream` / `store` 字段；
 2. 将目标改为 `/backend-api/codex/images/generations`；
-3. 注入共享 credential 的 Bearer/account/FedRAMP，以及 `originator`、版本、User-Agent 和
+3. 注入共享 credential 的 Bearer/可选 account/FedRAMP，以及 `originator`、版本、User-Agent 和
    Gateway 生成的 `x-codex-image-turn-id`；
 4. 删除客户端 `session-id`、`thread-id` 与 `x-client-request-id`；
 5. 按普通 JSON 逐块转发响应，并增量提取顶层 usage，不缓冲完整 base64 图片。
@@ -217,8 +234,8 @@ rotating refresh token。
 
 永久 refresh 失败会留下持久的重新授权标记，后续 quota 成功或普通设置编辑不会自动恢复凭证。
 在同一 Connector pool 的任一格式 Channel Group 再次 OAuth 或导入相同 workspace/member 身份，
-会原位更新 Token 和两个 managed channels；同一 Business workspace 的不同 `user_id` 会创建
-独立凭证，不会互相覆盖。
+或相同 accountless personal user ID，会原位更新 Token 和两个 managed channels；同一 Business
+workspace 的不同 `user_id` 会创建独立凭证，不会互相覆盖。
 
 Quota 状态由两个 projection 共享，并映射为：
 
@@ -268,7 +285,7 @@ WebSocket 错误会触发按 refresh generation 去重的后台 token refresh。
 1. OAuth client ID、scope、redirect URI、PKCE 参数和 token request encoding；
 2. refresh error code 与 token rotation 语义；
 3. ChatGPT Codex base URL、Responses/Images/models/quota 路径；
-4. Bearer/account/FedRAMP/session 与 `x-codex-image-turn-id` Header；
+4. Bearer/可选 account/FedRAMP/session 与 `x-codex-image-turn-id` Header；
 5. HTTP 与 WebSocket Responses 的 `stream`、`store`、`max_output_tokens`、
    `previous_response_id`、`generate` 和 `client_metadata` 边界；
 6. models 与 quota JSON shape；

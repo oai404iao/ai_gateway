@@ -20,7 +20,8 @@ use crate::{
         CodexCredentialExportInput, CodexCredentialImportInput, CodexCredentialRecord,
         CodexCredentialUpdateInput, CodexCredentialView, CodexOauthStartInput,
         CodexQuotaResetOutcome, CodexQuotaWindowHistory, CodexTokenRefreshUpdate,
-        ControlPlaneRepository, MutationResult, RepositoryError,
+        ControlPlaneRepository, MutationResult, RepositoryError, SelfCodexQuotaCredentialView,
+        SelfCodexQuotaWindowHistory,
     },
     runtime_config::RuntimeConfig,
     transforms::TransformPlan,
@@ -146,6 +147,28 @@ impl CodexConnectorService {
         Ok(self
             .repository
             .codex_quota_window_history(channel_id, limit_per_window)
+            .await?)
+    }
+
+    pub async fn self_quota_credentials(
+        &self,
+        user_id: Uuid,
+    ) -> Result<Vec<SelfCodexQuotaCredentialView>, CodexConnectorError> {
+        Ok(self
+            .repository
+            .self_codex_quota_credentials(user_id)
+            .await?)
+    }
+
+    pub async fn self_quota_window_history(
+        &self,
+        user_id: Uuid,
+        channel_id: Uuid,
+        limit_per_window: i64,
+    ) -> Result<SelfCodexQuotaWindowHistory, CodexConnectorError> {
+        Ok(self
+            .repository
+            .self_codex_quota_window_history(user_id, channel_id, limit_per_window)
             .await?)
     }
 
@@ -367,7 +390,7 @@ impl CodexConnectorService {
             &client,
             &self.endpoints,
             &record.access_token,
-            &record.account_id,
+            record.account_id.as_deref(),
             record.is_fedramp,
             &redeem_request_id.to_string(),
             policy.timeouts().response_header(),
@@ -491,12 +514,15 @@ impl CodexConnectorService {
         let identity = parse_identity(id_token.as_deref().unwrap_or(&access_token))?;
         let account_id = resolve_account_id(identity.account_id, supplied_account_id)?;
         let user_id = resolve_user_id(identity.user_id, supplied_user_id)?;
+        if account_id.is_none() && user_id.is_none() {
+            return Err(CodexConnectorError::InvalidCredential);
+        }
         let access_token_expires_at = parse_jwt_expiration(&access_token)?;
         let models = fetch_models(
             client,
             &self.endpoints,
             &access_token,
-            &account_id,
+            account_id.as_deref(),
             identity.is_fedramp,
             policy.timeouts().response_header(),
             policy.timeouts().stream_idle(),
@@ -506,7 +532,7 @@ impl CodexConnectorService {
             client,
             &self.endpoints,
             &access_token,
-            &account_id,
+            account_id.as_deref(),
             identity.is_fedramp,
             policy.timeouts().response_header(),
             policy.timeouts().stream_idle(),
@@ -621,7 +647,8 @@ impl CodexConnectorService {
         if identity
             .as_ref()
             .and_then(|identity| identity.account_id.as_deref())
-            .is_some_and(|account_id| account_id != record.account_id)
+            .zip(record.account_id.as_deref())
+            .is_some_and(|(account_id, current_account_id)| account_id != current_account_id)
             || identity
                 .as_ref()
                 .and_then(|identity| identity.user_id.as_deref())
@@ -743,7 +770,7 @@ impl CodexConnectorService {
                 &client,
                 &self.endpoints,
                 &record.access_token,
-                &record.account_id,
+                record.account_id.as_deref(),
                 record.is_fedramp,
                 policy.timeouts().response_header(),
                 policy.timeouts().stream_idle(),
@@ -830,7 +857,7 @@ impl CodexConnectorService {
                     identity
                         .account_id
                         .as_deref()
-                        .is_none_or(|account_id| account_id == record.account_id)
+                        .is_none_or(|account_id| record.account_id.as_deref() == Some(account_id))
                 })
                 .find_map(|identity| identity.user_id);
             let Some(user_id) = user_id else {
@@ -848,7 +875,7 @@ impl CodexConnectorService {
 fn resolve_account_id(
     token_account_id: Option<String>,
     supplied_account_id: Option<String>,
-) -> Result<String, CodexConnectorError> {
+) -> Result<Option<String>, CodexConnectorError> {
     let token_account_id = token_account_id
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty());
@@ -859,9 +886,8 @@ fn resolve_account_id(
         (Some(token), Some(supplied)) if token != supplied => {
             Err(CodexConnectorError::AccountChanged)
         }
-        (Some(token), _) => Ok(token),
-        (None, Some(supplied)) => Ok(supplied),
-        _ => Err(CodexConnectorError::MissingAccountId),
+        (Some(token), _) => Ok(Some(token)),
+        (None, supplied) => Ok(supplied),
     }
 }
 
@@ -929,8 +955,6 @@ pub enum CodexConnectorError {
     OauthStateMismatch,
     #[error("Codex credential is invalid")]
     InvalidCredential,
-    #[error("Codex credential does not contain an account id")]
-    MissingAccountId,
     #[error("Codex workspace or member changed while refreshing the credential")]
     AccountChanged,
     #[error("invalid JWT")]
@@ -977,7 +1001,6 @@ impl CodexConnectorError {
             Self::InvalidCredential | Self::InvalidJwt | Self::InvalidTokenResponse => {
                 "codex_credential_invalid"
             }
-            Self::MissingAccountId => "codex_account_id_missing",
             Self::AccountChanged => "codex_account_changed",
             Self::TokenEndpointStatus(_) => "codex_token_exchange_failed",
             Self::RefreshTokenInvalid => "codex_refresh_token_invalid",
@@ -1016,5 +1039,26 @@ impl CodexConnectorError {
     #[must_use]
     pub const fn permanent_refresh_failure(&self) -> bool {
         matches!(self, Self::RefreshTokenInvalid)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn account_id_is_optional_but_conflicting_overrides_are_rejected() {
+        assert_eq!(resolve_account_id(None, None).unwrap(), None);
+        assert_eq!(
+            resolve_account_id(None, Some("manual-account".into())).unwrap(),
+            Some("manual-account".into())
+        );
+        assert!(matches!(
+            resolve_account_id(
+                Some("token-account".into()),
+                Some("different-account".into())
+            ),
+            Err(CodexConnectorError::AccountChanged)
+        ));
     }
 }

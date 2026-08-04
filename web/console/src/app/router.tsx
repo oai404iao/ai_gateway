@@ -49,6 +49,11 @@ const OwnRequestLogsPage = lazy(() =>
     default: m.OwnRequestLogsPage,
   })),
 );
+const CodexQuotasPage = lazy(() =>
+  import("@/features/codex-quotas/codex-quotas-page").then((m) => ({
+    default: m.CodexQuotasPage,
+  })),
+);
 const AdminRequestLogsPage = lazy(() =>
   import("@/features/request-logs/admin-request-logs-page").then((m) => ({
     default: m.AdminRequestLogsPage,
@@ -64,9 +69,9 @@ const SystemCostStatisticsPage = lazy(() =>
     default: m.SystemCostStatisticsPage,
   })),
 );
-const ChannelStatusPage = lazy(() =>
-  import("@/features/statistics/channel-status-page").then((m) => ({
-    default: m.ChannelStatusPage,
+const ChannelGroupStatusPage = lazy(() =>
+  import("@/features/statistics/channel-group-status-page").then((m) => ({
+    default: m.ChannelGroupStatusPage,
   })),
 );
 const SpendLeaderboardPage = lazy(() =>
@@ -253,7 +258,8 @@ export function AppRouter() {
             <Route path="/api-keys" element={<ApiKeysPage />} />
             <Route path="/api-keys/:id" element={<ApiKeyDetailPage />} />
             <Route path="/usage/request-logs" element={<OwnRequestLogsPage />} />
-            <Route path="/channel-status" element={<ChannelStatusPage />} />
+            <Route path="/codex-quotas" element={<CodexQuotasPage />} />
+            <Route path="/channel-group-status" element={<ChannelGroupStatusPage />} />
             <Route path="/statistics" element={<StatisticsPage />} />
             <Route path="/leaderboard" element={<SpendLeaderboardPage />} />
 

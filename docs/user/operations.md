@@ -103,6 +103,23 @@ verification_key_path = "./config/console-jwt-public.pem"
   `0700` 与 `0600`；图片字节不会进入请求日志。
 - `console_body_bytes` 限制已认证 Console 写操作；`auth_body_bytes` 限制登录、注册、刷新和邀请激活请求。
 
+## 上游超时
+
+```toml
+[upstream]
+connect_timeout_seconds = 10
+response_header_timeout_seconds = 30
+images_response_header_timeout_seconds = 300
+stream_idle_timeout_seconds = 90
+```
+
+这些 TOML 值只在数据库 `forwarding_policy` 系统设置不存在时用于首次初始化；之后应在 Console
+的“系统设置”页面修改。Images generation/edit 使用独立的
+`images_response_header_timeout_seconds`，因为上游通常要完成图片处理后才返回响应头。Chat
+Completions、Responses 和其他辅助上游请求继续使用 `response_header_timeout_seconds`。
+渠道显式 `response_header_timeout_ms` 始终优先于对应的系统默认值；Images 仍与其他格式共享建连
+超时和流空闲超时。两个响应头超时都必须大于有效建连超时。
+
 ## 公共数据面
 
 - `GET /health`：返回 `204`，无需认证。
@@ -119,13 +136,22 @@ verification_key_path = "./config/console-jwt-public.pem"
 三个 OpenAI 格式绝不互相回退。客户端 `Authorization` 不会转发给上游；网关清理
 hop-by-hop headers 后，按渠道配置最后注入上游认证。
 
-数据面在认证后、读取请求体前执行 RPM、并发与已结算软额度预检查。请求体只有在模型别名或 JSON 变换启用时才重新序列化；响应默认逐块流式转发，SSE 变换按事件边界执行且不缓冲整条流。连接失败、连接超时或等待响应头超时时，可以按系统设置在尚未尝试过的其他健康渠道上故障转移；一旦收到上游响应头或向客户端发送任何响应字节，绝不重试或切换渠道。
+数据面在认证后、读取请求体前执行 RPM、并发与已结算软额度预检查。请求体只有在模型别名或 JSON
+变换启用时才重新序列化。客户端 `Accept-Encoding` 不直接转发；网关独立向上游声明
+`gzip, deflate, br, zstd`，流式解码后执行 usage、错误诊断和 SSE 变换，再按客户端的
+`Accept-Encoding` 对可压缩非 SSE 响应流式重编码。已知小于 `1 KiB` 的响应保持 identity；
+长度未知的流不会为阈值判断而延迟或缓冲。SSE 下游保持 identity，Range 请求上游也使用
+identity；整个过程不缓冲完整响应。未知上游 coding 返回
+`502 upstream_content_encoding_unsupported`；读取中才能发现的损坏压缩流会终止响应 body 并
+记录 `upstream_body_error`。连接失败、连接超时或等待响应头超时时，可以按系统设置在尚未尝试过
+的其他健康渠道上故障转移；一旦收到上游响应头或向客户端发送任何响应字节，绝不重试或切换渠道。
 
 Images generation/edit 是例外：请求一旦开始尝试上游，就不会自动切换渠道或重试，即使失败
 发生在响应头之前，以避免重复生成和重复计费。`stream: true` 返回
 `400 image_streaming_unsupported`，且不会联系上游。generation JSON 与其他数据面请求共享
 `request_limits.proxy_body_bytes`；edit 使用独立的总 body、单文件、内存阈值和 spool 目录，
-不会提高全局 JSON 内存上限。
+不会提高全局 JSON 内存上限。未配置渠道级响应头超时时，generation/edit 使用系统设置中的
+Images 专用响应头超时，而不是 Chat Completions/Responses 的普通响应头超时。
 
 multipart edit 最多接受 64 个 part、16 张输入图片和一个 mask；普通文本字段最多
 单项 `64 KiB`、合计 `1 MiB`；boundary 最多 70 bytes，preamble、单个 part Header block 和
@@ -163,8 +189,10 @@ JSON/data URL 形式的公开客户端 edit 请求。
    - **Import tokens**：提交 access token、refresh token，以及可选 ID token、account ID
      和 user ID。网关先调用 Codex models 接口验证凭证，再创建 Responses 与 Images managed
      channels。
-     凭证身份按 workspace `account_id` 与成员 `user_id` 组合识别；同一 Business workspace
-     的不同成员可以分别接入，而同一成员再次连接或导入会原位重新授权已有凭证。
+     Workspace account ID 不是所有 ChatGPT 凭证都具备：个人 Free/Plus/Pro Token 可以只带
+     user ID。存在 `account_id` 时，凭证按 workspace/member 组合识别；缺少它时按个人
+     `user_id` 识别。同一 Business workspace 的不同成员可以分别接入，而同一身份再次连接或
+     导入会原位重新授权已有凭证。若 Token 同时缺少 account ID 和 user ID，导入会拒绝。
    - **Advanced import**：进入独立检查页，粘贴 JSON 或上传一个或多个 JSON 文件。
      Console 会自动识别 ai-gateway 原生导出、CLIProxyAPI（CPA）Codex Token 和
      Sub2API 数据导出，把内容先转换成只保存在当前页面内存中的草稿。提交前可以编辑
@@ -198,8 +226,8 @@ channels 保留为路由壳，使已绑定 Responses Session
 - `disabled`：管理员关闭。
 
 永久 refresh 失败会设置持久的重新授权状态；后续 quota 成功或普通设置编辑不会把该凭证重新置为
-`active`。重新执行 OAuth 或导入同一 workspace/member 身份的新 Token 会复用原 managed channel
-IDs 并清除该状态。
+`active`。重新执行 OAuth 或导入同一 workspace/member 身份，或同一无 workspace 个人 user ID
+的新 Token，会复用原 managed channel IDs 并清除该状态。
 
 凭证列表支持多选后批量启用、停用、删除和导出选中项。单条和批量删除都使用乐观并发版本：
 删除成功后凭证立即从列表消失，保存的 ID/access/refresh token 被清除，代理引用被释放；为保留
@@ -208,7 +236,7 @@ IDs 并清除该状态。
 OpenAI token revocation endpoint，若还需要使外部 Token 失效，应在账户侧另行撤销授权。
 
 凭证页的 **Export credentials** 需要显式确认，并下载 ai-gateway 原生 JSON Bundle。Bundle 包含
-原始 ID/access/refresh token、workspace/member 身份、凭证路由设置，以及被这些凭证引用的代理定义和代理认证信息；它必须
+原始 ID/access/refresh token、可选 workspace/member 身份、凭证路由设置，以及被这些凭证引用的代理定义和代理认证信息；它必须
 按密钥或未加密备份处理。常规凭证列表和详情接口仍不会返回已保存 Token，只有管理员显式调用导出
 接口时才会读取这些敏感字段。高级导入会保留 Bundle 中的 enable 状态；如果 `id_token` 缺失，则
 验证阶段从 `access_token` 读取身份声明。
@@ -245,7 +273,8 @@ Responses WebSocket 能力；WebSocket `response.create` 同样强制 `stream: t
 内持续 fail closed；已经固定到 managed channel 的 WebSocket Session 也不会改用其他订阅账户。
 
 Codex Images generation 保留模型别名和受限变换后的 JSON，请求目标改为
-`/backend-api/codex/images/generations`。Connector 注入共享凭证的 Bearer/account/FedRAMP、
+`/backend-api/codex/images/generations`。Connector 注入共享凭证的 Bearer、可选
+account/FedRAMP、
 `originator`、版本、User-Agent 和新生成的 `x-codex-image-turn-id`，并删除客户端
 `session-id`、`thread-id` 与 `x-client-request-id`。Images 不使用 Session affinity；发送前若凭证
 不可用可以选择同一 Images group 的其他 projection，但请求一旦发送就不会自动换账户或重试。
@@ -410,6 +439,8 @@ SHA-256 哈希，明文仅在创建响应中返回一次，之后无法查看或
 - `GET /console/v1/me/request-logs?limit=50`
 - `GET /console/v1/me/request-logs/{id}`
 - `GET /console/v1/me/usage`
+- `GET /console/v1/me/codex-quotas`
+- `GET /console/v1/me/codex-quotas/{credential-id}/windows?limit=100`
 
 `GET /console/v1/me/sessions` 返回每条 session 的浏览器 `user_agent`、`active` / `expired` /
 `revoked` 状态和 `is_current` 标记。`last_seen_at` 表示 refresh token 最近一次轮换时间，而不是每个
@@ -426,6 +457,13 @@ Policy 不再保存额度、RPM、并发、格式、权限或最大活动 Key �
 未分配策略、策略已禁用或提交了策略范围外的目标时，接口分别返回
 `default_api_key_policy_required`、`default_api_key_policy_disabled` 或
 `api_key_target_not_allowed`。
+
+用户组还可以授权只读查看指定 Codex 凭证池的额度窗口。管理员只配置 canonical
+`open_ai_responses` Codex Channel Group；同一 Connector pool 的 Images projection 自动共享这份
+可见性。普通用户接口只返回凭证 UUID（`name` 固定使用同一个 UUID）、Provider 报告的
+`plan_type`、当前主/次窗口以及窗口周期历史，不返回管理员 label、邮箱、可选 workspace/member
+身份、Token、代理、权重、运行状态、错误或 reset-credit 信息。接口没有写方法，也不提供
+refresh、reset、编辑或导出操作；未授权凭证与不存在的凭证统一返回 `404`。
 
 ## 管理员接口
 
@@ -466,9 +504,12 @@ Policy 不再保存额度、RPM、并发、格式、权限或最大活动 Key �
 该用户；请求日志和审计记录继续保留原 user ID。管理员不能删除自己，也不能删除最后一个活跃的
 非系统管理员。匿名化后原邮箱可重新使用。
 
-用户组通过 `/console/v1/user-groups` 管理。每个组可设置一个默认 API Key Policy；修改后，所有
-没有用户级覆盖的组成员立即使用新策略。自定义组只有在没有成员时才能删除；内置默认用户组和默认
-管理员组始终受保护。仍被注册邀请码引用的用户组同样不能删除，必须先把相关邀请码调整到其他组。
+用户组通过 `/console/v1/user-groups` 管理。每个组可设置一个默认 API Key Policy，并通过
+`visible_codex_quota_group_ids` 选择成员可只读查看额度的 canonical Codex Responses Channel
+Group；普通 OpenAI-compatible group、Codex Images projection、重复 ID 或不存在的 group 都会被
+拒绝。修改后，没有用户级覆盖的组成员立即使用新策略，Codex 额度可见性也立即按当前用户组查询。
+自定义组只有在没有成员时才能删除；内置默认用户组和默认管理员组始终受保护。仍被注册邀请码引用的
+用户组同样不能删除，必须先把相关邀请码调整到其他组。
 
 注册邀请码通过 `/console/v1/registration-invitation-codes` 管理。列表和详情只返回名称、启用状态、
 次数、过期时间、用户组、初始额度和使用统计，不返回明文或哈希。详情 `GET` 返回 `ETag`，调整名称、
@@ -495,8 +536,11 @@ HTTP、仅允许非商业用途并带独立限流，因此结果只适合作为�
 渠道的 `billing_multiplier` 为非负十进制数，默认 `1`。最终选定渠道的倍率会乘到模型
 输入、缓存输入、缓存写入和输出单价上；请求日志保存乘算后的有效价格快照，因此历史费用
 不受后续倍率调整影响。批量修改接口一次最多接收 100 个渠道及各自的 `updated_at` 版本，
-可统一修改启用状态、状态统计、自动禁用授权、权重和计费倍率。任一版本过期或候选路由
+可统一修改启用状态、自动禁用授权、权重和计费倍率。任一版本过期或候选路由
 配置无效时，整批修改、审计和运行时发布都会回滚。
+
+渠道组的 `status_statistics_enabled` 控制是否进入公开的渠道组状态监控报告。启用后，
+报告会聚合该组全部成员渠道的请求和可用模型；单个渠道不再提供独立的监控开关。
 
 模型的 `advanced_billing.request_multipliers` 会在请求变换前，对原始客户端 JSON
 请求体执行 JSON Pointer 精确匹配；所有命中的倍率与渠道倍率相乘，并应用到整次请求费用。
@@ -552,7 +596,7 @@ API Key 和小时/天聚合粒度，不提供用户或渠道筛选，响应中�
 - `request_retry.max_retries`：首次请求失败后的最大自动重试次数，范围 `1..=10`，默认 `1`。同一客户端请求不会重复尝试同一渠道。
 - `automatic_disable.enabled`：自动禁用总开关。关闭时，即使渠道允许自动禁用也不会执行状态变更。
 - `automatic_disable.error_status_codes`：触发临时禁用的上游 HTTP 状态码列表。
-- `automatic_disable.error_message_keywords`：触发临时禁用的上游错误消息关键字；匹配大小写不敏感。自动禁用扫描器不会保存被扫描的响应正文；仅当 SSE 协议解析器识别出结构化错误事件时，请求日志才保存受限、已清洗的错误代码与消息摘要。
+- `automatic_disable.error_message_keywords`：触发临时禁用的上游错误消息关键字；匹配大小写不敏感。自动禁用扫描器本身不保存正文；请求日志会为失败的非流式 HTTP、SSE 和 Responses WebSocket 请求保存最长 16KiB、已清理控制字符的文本或结构化错误详情。
 - `scheduled_testing.mode`：`global` 测试全部启用渠道；`failure_only` 只测试临时自动禁用的渠道。
 - `scheduled_testing.auto_recover`：测试成功后是否自动清除临时禁用。
 - `scheduled_testing.interval_minutes`：测试间隔，默认 `5`。
@@ -616,7 +660,8 @@ Responses、Images generation 与 Images edit；同时显示渠道组名称。�
 始终只查询当前 JWT 用户；即使当前用户是管理员，
 服务端也会将用户名称、具体 `channel_id` 和渠道名称置空。个人列表固定显示开始时间、模型、
 请求协议、渠道组、结果、Token、成本和耗时；模型旁可显示思考等级和 `Fast` 标记，耗时同时包含
-TTFT、总耗时和 TPS。详情再显示 API operation、HTTP 状态、错误代码、错误消息和完成时间。
+TTFT、总耗时和 TPS。详情再显示 API operation、HTTP 状态、错误代码、错误详情和完成时间。错误详情
+可能包含上游返回的完整结构化错误对象、文本错误正文前缀或网关/传输诊断，并最多保留 16KiB。
 
 只有管理员“系统”栏下的全局“请求日志”可以读取所有用户的日志。该页面调用管理员接口
 `GET /console/v1/request-logs`，并在上述字段基础上额外显示

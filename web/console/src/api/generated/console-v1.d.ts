@@ -337,6 +337,50 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/me/codex-quotas": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * @description Returns current quota-window snapshots for Codex credentials in the
+         *     canonical Responses channel groups granted to the authenticated
+         *     user's user group. Credential labels and account identity are never
+         *     returned; `name` is the credential UUID string.
+         */
+        get: operations["listOwnCodexQuotas"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/me/codex-quotas/{id}/windows": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * @description Returns read-only primary and secondary quota-window history only
+         *     when the credential belongs to a Codex channel group granted through
+         *     the authenticated user's user group. Hidden and missing credentials
+         *     both return `404`.
+         */
+        get: operations["getOwnCodexQuotaWindowHistory"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/users": {
         parameters: {
             query?: never;
@@ -1121,7 +1165,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/statistics/channel-status": {
+    "/statistics/channel-group-status": {
         parameters: {
             query?: never;
             header?: never;
@@ -1131,12 +1175,13 @@ export interface paths {
         /**
          * @description Available to every authenticated Console user.
          *     Aggregates P90 TTFT, P50 output TPS, and terminal success rate for
-         *     channels whose `status_statistics_enabled` flag is true. Model
-         *     identifiers prefer the selected upstream model and retain the API
-         *     format dimension. Client-cancelled requests do not participate in the
-         *     success-rate denominator.
+         *     channel groups whose `status_statistics_enabled` flag is true. Each
+         *     monitored group aggregates all requests and available models from its
+         *     member channels. Model identifiers prefer the selected upstream model
+         *     and retain the API format dimension. Client-cancelled requests do not
+         *     participate in the success-rate denominator.
          */
-        get: operations["getChannelStatusStatistics"];
+        get: operations["getChannelGroupStatusStatistics"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1350,7 +1395,7 @@ export interface components {
         /** @enum {string} */
         ModelSyncAction: "price_update" | "import";
         /** @enum {string} */
-        ChannelStatusWindow: "24h" | "3d" | "7d";
+        ChannelGroupStatusWindow: "24h" | "3d" | "7d";
         /** @enum {string} */
         StatisticsGranularity: "hour" | "day";
         /** Format: date-time */
@@ -1492,6 +1537,12 @@ export interface components {
             connect_timeout_seconds: number;
             /** Format: int64 */
             response_header_timeout_seconds: number;
+            /**
+             * Format: int64
+             * @description Used by Images generation and edit when the channel has no explicit response-header timeout.
+             * @default 300
+             */
+            images_response_header_timeout_seconds: number;
             /** Format: int64 */
             stream_idle_timeout_seconds: number;
         };
@@ -1840,6 +1891,7 @@ export interface components {
             id: string;
             name: string;
             api_format: components["schemas"]["ApiFormat"];
+            priority: number;
             enabled: boolean;
         };
         SelfApiKeyChannelOption: {
@@ -1848,6 +1900,8 @@ export interface components {
             /** Format: uuid */
             channel_group_id: string;
             channel_group_name: string;
+            /** @description Whether the parent channel group is enabled. */
+            channel_group_enabled: boolean;
             api_format: components["schemas"]["ApiFormat"];
             name: string;
             enabled: boolean;
@@ -1895,6 +1949,12 @@ export interface components {
             /** Format: uuid */
             default_api_key_policy_id: string | null;
             /**
+             * @description Canonical Codex OAuth Responses channel groups whose credential
+             *     quota windows are visible to members through the read-only
+             *     `/me/codex-quotas` endpoints.
+             */
+            visible_codex_quota_group_ids: string[];
+            /**
              * @description Non-null only for the protected built-in group used when a user of
              *     that role is invited without an explicit group.
              * @enum {string|null}
@@ -1937,6 +1997,8 @@ export interface components {
             priority: number;
             selection_strategy: components["schemas"]["SelectionStrategy"];
             enabled: boolean;
+            /** @description Includes this channel group in the authenticated channel-group status report. */
+            status_statistics_enabled: boolean;
             updated_at: components["schemas"]["DateTime"];
         };
         ChannelView: {
@@ -1953,8 +2015,6 @@ export interface components {
             enabled: boolean;
             /** @description Whether this OpenAI Responses channel accepts WebSocket upgrades. */
             supports_websocket: boolean;
-            /** @description Includes this channel in the administrator channel-status report. */
-            status_statistics_enabled: boolean;
             auto_disabled: boolean;
             auto_disabled_reason: string | null;
             /** @description Allows system automatic-disable rules to temporarily remove this channel from routing. */
@@ -1996,8 +2056,9 @@ export interface components {
             channel_group_id: string;
             label: string;
             email: string | null;
-            account_id: string;
-            /** @description ChatGPT workspace member identifier from `chatgpt_user_id` or `user_id`. */
+            /** @description Optional ChatGPT workspace identifier. Personal credentials may omit it. */
+            account_id: string | null;
+            /** @description ChatGPT user identifier from `chatgpt_user_id`, `user_id`, or the JWT `sub` fallback. */
             user_id: string | null;
             plan_type: string | null;
             is_fedramp: boolean;
@@ -2063,6 +2124,53 @@ export interface components {
             credential_id: string;
             periods: components["schemas"]["CodexQuotaWindowPeriod"][];
         };
+        /**
+         * @description Sanitized, read-only Codex quota snapshot. The stored credential
+         *     label and account identity are deliberately omitted.
+         */
+        SelfCodexQuotaCredentialView: {
+            /** Format: uuid */
+            id: string;
+            /** @description Credential UUID rendered as a name; never the administrator label. */
+            name: string;
+            /**
+             * Format: uuid
+             * @description Canonical Codex OAuth Responses channel group granting visibility.
+             */
+            channel_group_id: string;
+            /** @description Provider-reported subscription tier. */
+            plan_type: string | null;
+            primary_used_percent: number | null;
+            primary_window_seconds: number | null;
+            primary_reset_at: components["schemas"]["DateTimeNullable"];
+            secondary_used_percent: number | null;
+            secondary_window_seconds: number | null;
+            secondary_reset_at: components["schemas"]["DateTimeNullable"];
+            quota_checked_at: components["schemas"]["DateTimeNullable"];
+        };
+        /** @description Sanitized quota-window period without internal row identifiers. */
+        SelfCodexQuotaWindowPeriod: {
+            window_kind: components["schemas"]["CodexQuotaWindowKind"];
+            window_seconds: number;
+            started_at: components["schemas"]["DateTime"];
+            scheduled_reset_at: components["schemas"]["DateTime"];
+            ended_at: components["schemas"]["DateTimeNullable"];
+            reset_reason: components["schemas"]["CodexQuotaResetReason"] | null;
+            initial_used_percent: number;
+            last_used_percent: number;
+            first_observed_at: components["schemas"]["DateTime"];
+            last_observed_at: components["schemas"]["DateTime"];
+        };
+        SelfCodexQuotaWindowHistory: {
+            /** Format: uuid */
+            credential_id: string;
+            /** @description Credential UUID rendered as a name; never the administrator label. */
+            name: string;
+            /** Format: uuid */
+            channel_group_id: string;
+            plan_type: string | null;
+            periods: components["schemas"]["SelfCodexQuotaWindowPeriod"][];
+        };
         /** @enum {string} */
         CodexQuotaResetOutcome: "reset" | "nothing_to_reset" | "no_credit" | "already_redeemed";
         CodexQuotaResetResponse: {
@@ -2104,9 +2212,9 @@ export interface components {
             id_token?: string;
             access_token: string;
             refresh_token: string;
-            /** @description Optional fallback when the ID token has no account claim; mismatches are rejected. */
+            /** @description Optional workspace fallback. Personal credentials may omit it; mismatches are rejected. */
             account_id?: string | null;
-            /** @description Optional member fallback when the token has no user claim; mismatches are rejected. */
+            /** @description Optional user fallback. Accountless credentials require a token or override user ID; mismatches are rejected. */
             user_id?: string | null;
         };
         CodexCredentialExportInput: {
@@ -2143,7 +2251,7 @@ export interface components {
         CodexCredentialExportItem: {
             label: string;
             email: string | null;
-            account_id: string;
+            account_id: string | null;
             user_id: string | null;
             plan_type: string | null;
             is_fedramp: boolean;
@@ -2304,7 +2412,7 @@ export interface components {
             /** @description Final request cost in USD, or null when not priced. */
             cost_amount: components["schemas"]["DecimalNullable"];
             error_code: string | null;
-            /** @description Bounded, cleaned upstream error message when available. */
+            /** @description Bounded upstream response or gateway/transport error detail when available. */
             error_summary: string | null;
             billed_at: components["schemas"]["DateTimeNullable"];
         };
@@ -2339,15 +2447,15 @@ export interface components {
             date: string;
             request_count: number;
         };
-        ChannelStatusReport: {
-            window: components["schemas"]["ChannelStatusWindow"];
+        ChannelGroupStatusReport: {
+            window: components["schemas"]["ChannelGroupStatusWindow"];
             started_at: components["schemas"]["DateTime"];
             ended_at: components["schemas"]["DateTime"];
             bucket_seconds: number;
-            models: components["schemas"]["ChannelStatusModelMetric"][];
-            channels: components["schemas"]["ChannelStatusChannel"][];
+            models: components["schemas"]["ChannelGroupStatusModelMetric"][];
+            groups: components["schemas"]["ChannelGroupStatusGroup"][];
         };
-        ChannelStatusModelMetric: {
+        ChannelGroupStatusModelMetric: {
             api_format: components["schemas"]["ApiFormat"];
             model: string;
             request_count: number;
@@ -2361,22 +2469,18 @@ export interface components {
             /** Format: double */
             p50_tps: number | null;
         };
-        ChannelStatusChannel: {
+        ChannelGroupStatusGroup: {
             /** Format: uuid */
             id: string;
-            /** Format: uuid */
-            channel_group_id: string;
-            channel_group_name: string;
             api_format: components["schemas"]["ApiFormat"];
             name: string;
             enabled: boolean;
-            auto_disabled: boolean;
-            models: components["schemas"]["ChannelStatusChannelModel"][];
+            models: components["schemas"]["ChannelGroupStatusGroupModel"][];
         };
-        ChannelStatusChannelModel: components["schemas"]["ChannelStatusModelMetric"] & {
-            history: components["schemas"]["ChannelStatusBucket"][];
+        ChannelGroupStatusGroupModel: components["schemas"]["ChannelGroupStatusModelMetric"] & {
+            history: components["schemas"]["ChannelGroupStatusBucket"][];
         };
-        ChannelStatusBucket: {
+        ChannelGroupStatusBucket: {
             started_at: components["schemas"]["DateTime"];
             request_count: number;
             /**
@@ -2746,6 +2850,11 @@ export interface components {
             description?: string | null;
             /** Format: uuid */
             default_api_key_policy_id: string | null;
+            /**
+             * @description Canonical `codex_oauth` Responses channel groups whose shared
+             *     credential quota windows may be read by group members.
+             */
+            visible_codex_quota_group_ids: string[];
         };
         ApiKeyPolicyInput: {
             name: string;
@@ -2825,6 +2934,8 @@ export interface components {
             priority: number;
             selection_strategy: components["schemas"]["SelectionStrategy"];
             enabled: boolean;
+            /** @description Includes this channel group in the authenticated channel-group status report. Omission defaults to false on create and preserves the current value on update. */
+            status_statistics_enabled?: boolean;
         };
         ChannelCreateInput: {
             /** Format: uuid */
@@ -2842,11 +2953,6 @@ export interface components {
              * @default false
              */
             supports_websocket: boolean;
-            /**
-             * @description Includes this channel in the administrator channel-status report.
-             * @default false
-             */
-            status_statistics_enabled: boolean;
             /**
              * @description Allows configured automatic-disable rules to temporarily remove this channel from routing.
              * @default false
@@ -2889,11 +2995,6 @@ export interface components {
              * @default false
              */
             supports_websocket: boolean;
-            /**
-             * @description Includes this channel in the administrator channel-status report.
-             * @default false
-             */
-            status_statistics_enabled: boolean;
             /**
              * @description Allows configured automatic-disable rules to temporarily remove this channel from routing.
              * @default false
@@ -2950,7 +3051,6 @@ export interface components {
         /** @description At least one property must be supplied. */
         ChannelBatchChanges: {
             enabled?: boolean;
-            status_statistics_enabled?: boolean;
             auto_disable_allowed?: boolean;
             weight?: number;
             /** @description Non-negative multiplier applied to upstream model prices for settlement. */
@@ -3134,7 +3234,7 @@ export interface components {
         RequestLogStartedAfter: components["schemas"]["DateTime"];
         RequestLogStartedBefore: components["schemas"]["DateTime"];
         RequestLogBilled: boolean;
-        StatisticsWindow: components["schemas"]["ChannelStatusWindow"];
+        StatisticsWindow: components["schemas"]["ChannelGroupStatusWindow"];
         /** @description Inclusive range start; defaults to seven days before the end. */
         StatisticsStartedAfter: components["schemas"]["DateTime"];
         /** @description Natural Asia/Shanghai period to rank: day (00:00–next 00:00), week (Monday–Sunday), or month (day 1–final day). */
@@ -3806,6 +3906,55 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthorized"];
+        };
+    };
+    listOwnCodexQuotas: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Read-only Codex quota snapshots visible to the current user. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SelfCodexQuotaCredentialView"][];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+        };
+    };
+    getOwnCodexQuotaWindowHistory: {
+        parameters: {
+            query?: {
+                /** @description Maximum periods returned independently for each window. */
+                limit?: components["parameters"]["CodexQuotaHistoryLimit"];
+            };
+            header?: never;
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Sanitized quota-window history visible to the current user. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SelfCodexQuotaWindowHistory"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+            422: components["responses"]["Unprocessable"];
         };
     };
     listUsers: {
@@ -5916,7 +6065,7 @@ export interface operations {
             404: components["responses"]["NotFound"];
         };
     };
-    getChannelStatusStatistics: {
+    getChannelGroupStatusStatistics: {
         parameters: {
             query?: {
                 window?: components["parameters"]["StatisticsWindow"];
@@ -5927,13 +6076,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Channel and model status metrics. */
+            /** @description Channel-group and model status metrics. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ChannelStatusReport"];
+                    "application/json": components["schemas"]["ChannelGroupStatusReport"];
                 };
             };
             401: components["responses"]["Unauthorized"];

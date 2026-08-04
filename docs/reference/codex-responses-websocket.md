@@ -188,7 +188,7 @@ Codex WebSocket 测试至少覆盖：
 `supports_websocket = true`，但系统和用户开关仍默认关闭。Connector 在通用 JSON/Header
 变换之后强制 `stream=true`、`store=false`，保留 `previous_response_id`、`generate` 和
 `client_metadata`，把目标改为 Codex base URL 下的 `/responses`，并最后注入当前
-Bearer/account、FedRAMP、Codex Session/thread、User-Agent、`originator` 和版本 Header。
+Bearer、可选 account、FedRAMP、Codex Session/thread、User-Agent、`originator` 和版本 Header。
 HTTP SSE 专用的 `Accept`、`Accept-Encoding` 与 `Content-Type` 不进入上游 WebSocket 握手。
 
 因此，`ai-gateway` 不会为普通 OpenAI-compatible channel 全局删除

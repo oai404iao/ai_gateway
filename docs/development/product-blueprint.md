@@ -133,6 +133,7 @@ enum ApiFormat {
 ```text
 Host
 Content-Length
+Accept-Encoding（由网关逐跳协商）
 Connection
 Transfer-Encoding
 Authorization（客户端）
@@ -144,7 +145,8 @@ Proxy-Authorization
 ## Streaming 策略
 
 - 请求体：读取并限制大小，因为必须识别 `model`。
-- 上游响应：使用 `reqwest_response.bytes_stream()` 直接转成 Axum `Body`，不缓冲。
+- 上游响应：使用 `reqwest_response.bytes_stream()`，必要时经过增量 content decoder 后转成
+  Axum `Body`，不缓冲完整响应。
 - 客户端断开时，丢弃流以取消上游请求。
 - 一旦响应头或首个流块已经发送，绝不能切换渠道或重试。
 - 非流式响应变换可以完整缓冲 JSON；普通流式响应绝不能为变换而整体缓冲。
@@ -171,8 +173,9 @@ Proxy-Authorization
 
 每个渠道保存非负的计费倍率，默认 `1`。请求最终选定渠道后，模型价格先乘以该倍率，
 再写入请求日志的有效价格快照并用于费用结算；后续修改倍率不会改写历史请求费用。
-Console 支持按列表中的 `updated_at` 版本原子批量修改渠道的启用状态、状态统计、
-自动禁用授权、权重和计费倍率；任一版本冲突或完整路由校验失败时整批回滚。
+Console 支持按列表中的 `updated_at` 版本原子批量修改渠道的启用状态、自动禁用授权、
+权重和计费倍率；任一版本冲突或完整路由校验失败时整批回滚。渠道组独立配置
+`status_statistics_enabled`，用于决定是否进入渠道组状态监控。
 
 生成请求的自动重试风险很高，可能重复扣费。只允许在“尚未收到上游响应头”时，
 对连接拒绝/建连失败、连接超时和等待响应头超时按配置重试。每次重试必须排除本请求

@@ -672,7 +672,7 @@ export function RequestLogsView({
           <CardTitle>{t("Requests")}</CardTitle>
           <CardDescription>
             {t(
-              "The gateway does not store request or response bodies. Sanitized upstream error messages may be retained.",
+              "The gateway does not store request bodies or successful response bodies. Bounded upstream error details may be retained.",
             )}
           </CardDescription>
         </CardHeader>
@@ -741,9 +741,9 @@ export function RequestLogsView({
               <DetailField label={t("HTTP")} value={detail.data.response_status_code ?? "—"} />
               <DetailField label={t("Error code")} value={detail.data.error_code ?? "—"} mono />
               <DetailField
-                label={t("Error message")}
+                label={t("Error detail")}
                 value={
-                  <span className="whitespace-pre-wrap">
+                  <span className="whitespace-pre-wrap break-words">
                     {detail.data.error_summary ?? "—"}
                   </span>
                 }

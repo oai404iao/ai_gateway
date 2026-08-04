@@ -19,6 +19,10 @@ use ai_gateway::{
     },
     runtime_config::{RuntimeConfig, UpstreamConfig, compile_control_plane_with_system_settings},
 };
+use async_compression::tokio::{
+    bufread::{BrotliDecoder, GzipDecoder, ZlibDecoder, ZstdDecoder},
+    write::{BrotliEncoder, GzipEncoder, ZlibEncoder, ZstdEncoder},
+};
 use axum::{
     Router,
     body::{Body, Bytes, to_bytes},
@@ -32,7 +36,7 @@ use regex::Regex;
 use reqwest::header::HeaderName;
 use serde_json::Value;
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncReadExt, AsyncWriteExt, BufReader},
     net::{TcpListener, TcpStream},
     task::JoinHandle,
 };
@@ -44,6 +48,25 @@ const CHAT_ONLY_KEY: &str = "chat-only-key";
 const MODELS_READ_ONLY_KEY: &str = "models-read-only-key";
 const NO_REACHABLE_MODELS_KEY: &str = "no-reachable-models-key";
 const UPSTREAM_KEY: &str = "upstream-key";
+const UPSTREAM_ACCEPT_ENCODING: &str = "gzip, deflate, br, zstd";
+const FORWARDING_METADATA_HEADERS: &[&str] = &[
+    "forwarded",
+    "via",
+    "x-forwarded-for",
+    "x-forwarded-host",
+    "x-forwarded-proto",
+    "x-forwarded-port",
+    "x-real-ip",
+    "x-client-ip",
+    "x-original-forwarded-for",
+    "true-client-ip",
+    "cf-connecting-ip",
+    "cf-connecting-ipv6",
+    "cf-pseudo-ipv4",
+    "cf-ipcountry",
+    "cf-ray",
+    "cf-visitor",
+];
 
 #[derive(Clone)]
 struct MockUpstream {
@@ -58,6 +81,137 @@ struct CapturedRequest {
     body: Vec<u8>,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum TestContentCoding {
+    Gzip,
+    Deflate,
+    Brotli,
+    Zstd,
+}
+
+impl TestContentCoding {
+    const ALL: [Self; 4] = [Self::Gzip, Self::Deflate, Self::Brotli, Self::Zstd];
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Gzip => "gzip",
+            Self::Deflate => "deflate",
+            Self::Brotli => "br",
+            Self::Zstd => "zstd",
+        }
+    }
+}
+
+#[derive(Clone)]
+struct EncodedUpstream {
+    requests: Arc<Mutex<Vec<CapturedRequest>>>,
+    content_encoding: &'static str,
+    body: Arc<Vec<u8>>,
+}
+
+struct EncodedHarness {
+    _upstream: TestServer,
+    app: Router,
+    requests: Arc<Mutex<Vec<CapturedRequest>>>,
+    logs: RecordingRequestLogSink,
+}
+
+async fn capture_encoded_upstream(
+    State(upstream): State<EncodedUpstream>,
+    request: Request,
+) -> Response {
+    let (parts, body) = request.into_parts();
+    let body = to_bytes(body, usize::MAX).await.unwrap().to_vec();
+    upstream.requests.lock().unwrap().push(CapturedRequest {
+        headers: parts.headers,
+        body,
+    });
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "application/json")
+        .header("content-encoding", upstream.content_encoding)
+        .header("content-length", upstream.body.len())
+        .header("accept-ranges", "bytes")
+        .header("etag", "\"encoded-etag\"")
+        .header("content-md5", "encoded-md5")
+        .header("digest", "sha-256=:ZW5jb2RlZA==:")
+        .header("content-digest", "sha-256=:ZW5jb2RlZA==:")
+        .header("repr-digest", "sha-256=:ZW5jb2RlZA==:")
+        .body(Body::from(upstream.body.as_ref().clone()))
+        .unwrap()
+}
+
+async fn encoded_harness(content_encoding: &'static str, body: Vec<u8>) -> EncodedHarness {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let upstream = start_server(
+        Router::new()
+            .route("/v1/images/generations", post(capture_encoded_upstream))
+            .with_state(EncodedUpstream {
+                requests: Arc::clone(&requests),
+                content_encoding,
+                body: Arc::new(body),
+            }),
+    )
+    .await;
+    let logs = RecordingRequestLogSink::default();
+    let configured = proxy_service_with_policy(
+        &format!("http://{}", upstream.address),
+        logs.clone(),
+        None,
+        None,
+        None,
+        Default::default(),
+    );
+    EncodedHarness {
+        _upstream: upstream,
+        app: http::router(configured.proxy),
+        requests,
+        logs,
+    }
+}
+
+async fn encode_test_body(coding: TestContentCoding, body: &[u8]) -> Vec<u8> {
+    macro_rules! encode {
+        ($encoder:ident, $input:expr) => {{
+            let mut encoder = $encoder::new(Vec::new());
+            encoder.write_all($input).await.unwrap();
+            encoder.shutdown().await.unwrap();
+            encoder.into_inner()
+        }};
+    }
+
+    match coding {
+        TestContentCoding::Gzip => encode!(GzipEncoder, body),
+        TestContentCoding::Deflate => encode!(ZlibEncoder, body),
+        TestContentCoding::Brotli => encode!(BrotliEncoder, body),
+        TestContentCoding::Zstd => {
+            let midpoint = body.len() / 2;
+            let mut encoded = encode!(ZstdEncoder, &body[..midpoint]);
+            encoded.extend(encode!(ZstdEncoder, &body[midpoint..]));
+            encoded
+        }
+    }
+}
+
+async fn decode_test_body(coding: TestContentCoding, body: &[u8]) -> Vec<u8> {
+    macro_rules! decode {
+        ($decoder:ident) => {{
+            let mut decoder = $decoder::new(BufReader::new(body));
+            let mut decoded = Vec::new();
+            decoder.read_to_end(&mut decoded).await.unwrap();
+            decoded
+        }};
+    }
+
+    match coding {
+        TestContentCoding::Gzip => decode!(GzipDecoder),
+        TestContentCoding::Deflate => decode!(ZlibDecoder),
+        TestContentCoding::Brotli => decode!(BrotliDecoder),
+        TestContentCoding::Zstd => decode!(ZstdDecoder),
+    }
+}
+
 async fn capture_upstream(State(upstream): State<MockUpstream>, request: Request) -> Response {
     let (parts, body) = request.into_parts();
     let body = to_bytes(body, usize::MAX).await.unwrap().to_vec();
@@ -69,6 +223,23 @@ async fn capture_upstream(State(upstream): State<MockUpstream>, request: Request
     Response::builder()
         .status(upstream.status)
         .header("x-upstream", "mock")
+        .body(Body::from(upstream.body))
+        .unwrap()
+}
+
+async fn delayed_upstream_response(
+    State(upstream): State<MockUpstream>,
+    request: Request,
+) -> Response {
+    let (parts, body) = request.into_parts();
+    let body = to_bytes(body, usize::MAX).await.unwrap().to_vec();
+    upstream.requests.lock().unwrap().push(CapturedRequest {
+        headers: parts.headers,
+        body,
+    });
+    tokio::time::sleep(Duration::from_millis(2_100)).await;
+    Response::builder()
+        .status(upstream.status)
         .body(Body::from(upstream.body))
         .unwrap()
 }
@@ -453,6 +624,7 @@ async fn harness_with_transforms(transforms: TransformDocuments) -> Harness {
         UpstreamConfig {
             connect_timeout_seconds: 1,
             response_header_timeout_seconds: 2,
+            images_response_header_timeout_seconds: 2,
             stream_idle_timeout_seconds: 1,
         },
         transforms,
@@ -526,6 +698,7 @@ fn proxy_service_with_policy(
         UpstreamConfig {
             connect_timeout_seconds: 1,
             response_header_timeout_seconds: 2,
+            images_response_header_timeout_seconds: 2,
             stream_idle_timeout_seconds: 1,
         },
     )
@@ -815,7 +988,10 @@ fn configured_proxy_with_policy_and_transforms(
                     Duration::from_secs(upstream_config.connect_timeout_seconds),
                     Duration::from_secs(upstream_config.response_header_timeout_seconds),
                     Duration::from_secs(upstream_config.stream_idle_timeout_seconds),
-                ),
+                )
+                .with_images_response_header(Duration::from_secs(
+                    upstream_config.images_response_header_timeout_seconds,
+                )),
                 PassiveHealthSettings::default(),
             ),
         )
@@ -848,6 +1024,13 @@ fn authorized_post(
         .header("authorization", format!("Bearer {key}"))
         .header("content-type", "application/json")
         .body(body.into())
+}
+
+fn with_forwarding_metadata(mut request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    for name in FORWARDING_METADATA_HEADERS {
+        request = request.header(*name, "discard");
+    }
+    request
 }
 
 fn multipart_edit_body(
@@ -1173,6 +1356,10 @@ async fn unknown_model_returns_not_found_without_upstream_contact() {
     assert_eq!(logs[0].response_status_code, Some(404));
     assert_eq!(logs[0].reasoning_effort.as_deref(), Some("high"));
     assert!(logs[0].fast_mode);
+    assert_eq!(logs[0].error_code.as_deref(), Some("model_not_found"));
+    let summary = logs[0].error_summary.as_deref().unwrap();
+    assert!(summary.starts_with("The model `unknown-model` does not exist or is unavailable."));
+    assert!(summary.contains("\"type\": \"invalid_request_error\""));
 }
 
 #[tokio::test]
@@ -1209,6 +1396,7 @@ async fn configured_model_with_only_disabled_channels_returns_service_unavailabl
         UpstreamConfig {
             connect_timeout_seconds: 1,
             response_header_timeout_seconds: 2,
+            images_response_header_timeout_seconds: 2,
             stream_idle_timeout_seconds: 1,
         },
         TransformDocuments::default(),
@@ -1234,6 +1422,11 @@ async fn configured_model_with_only_disabled_channels_returns_service_unavailabl
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].response_status_code, Some(503));
     assert_eq!(events[0].error_code.as_deref(), Some("no_healthy_channel"));
+    let summary = events[0].error_summary.as_deref().unwrap();
+    assert!(
+        summary.starts_with("No healthy upstream channel is currently available for this model.")
+    );
+    assert!(summary.contains("\"code\": \"no_healthy_channel\""));
 }
 
 #[tokio::test]
@@ -1324,6 +1517,93 @@ async fn matching_chat_model_preserves_body_and_forwards_response_safely() {
 }
 
 #[tokio::test]
+async fn common_forwarding_metadata_is_filtered_for_every_http_operation() {
+    let harness = harness(StatusCode::OK, br#"{}"#.to_vec()).await;
+    let client = client();
+
+    let requests = [
+        with_forwarding_metadata(authorized_post(
+            &client,
+            harness.url("/v1/chat/completions"),
+            CLIENT_KEY,
+            br#"{"model":"same-model"}"#.to_vec(),
+        )),
+        with_forwarding_metadata(authorized_post(
+            &client,
+            harness.url("/v1/responses"),
+            CLIENT_KEY,
+            br#"{"model":"responses-model"}"#.to_vec(),
+        )),
+        with_forwarding_metadata(authorized_post(
+            &client,
+            harness.url("/v1/images/generations"),
+            CLIENT_KEY,
+            br#"{"model":"gpt-image-2","prompt":"test"}"#.to_vec(),
+        )),
+    ];
+    for request in requests {
+        assert_eq!(request.send().await.unwrap().status(), StatusCode::OK);
+    }
+
+    let boundary = "gateway-forwarding-header-filter-boundary";
+    let edit = with_forwarding_metadata(authorized_multipart_post(
+        &client,
+        harness.url("/v1/images/edits"),
+        CLIENT_KEY,
+        boundary,
+        multipart_edit_body(boundary, "gpt-image-2", &[], b"image"),
+    ))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(edit.status(), StatusCode::OK);
+
+    let requests = harness.upstream_requests();
+    assert_eq!(requests.len(), 4);
+    for request in requests {
+        for name in FORWARDING_METADATA_HEADERS {
+            assert!(request.headers.get(*name).is_none(), "{name} was forwarded");
+        }
+        assert_eq!(
+            request
+                .headers
+                .get("accept-encoding")
+                .and_then(|value| value.to_str().ok()),
+            Some(UPSTREAM_ACCEPT_ENCODING)
+        );
+    }
+}
+
+#[tokio::test]
+async fn range_requests_force_identity_content_coding_upstream() {
+    let harness = harness(StatusCode::OK, br#"{}"#.to_vec()).await;
+
+    let response = authorized_post(
+        &client(),
+        harness.url("/v1/chat/completions"),
+        CLIENT_KEY,
+        br#"{"model":"same-model"}"#.to_vec(),
+    )
+    .header("accept-encoding", "br")
+    .header("range", "bytes=0-10")
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(response.headers().get("content-encoding").is_none());
+    let requests = harness.upstream_requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0]
+            .headers
+            .get("accept-encoding")
+            .and_then(|value| value.to_str().ok()),
+        Some("identity")
+    );
+}
+
+#[tokio::test]
 async fn images_generation_preserves_json_and_collects_top_level_usage() {
     let upstream_body = br#"{"created":1,"data":[{"b64_json":"aW1hZ2U="}],"usage":{"input_tokens":7,"output_tokens":11,"input_tokens_details":{"image_tokens":0,"text_tokens":7},"output_tokens_details":{"image_tokens":11,"text_tokens":0}}}"#.to_vec();
     let harness = harness(StatusCode::OK, upstream_body.clone()).await;
@@ -1372,6 +1652,293 @@ async fn images_generation_preserves_json_and_collects_top_level_usage() {
         logs[0].billing.as_ref().unwrap().output_tokens_per_second,
         None
     );
+}
+
+#[tokio::test]
+async fn independently_negotiates_supported_upstream_and_downstream_content_codings() {
+    for coding in TestContentCoding::ALL {
+        let upstream_body = serde_json::to_vec(&serde_json::json!({
+            "created": 1,
+            "data": [{"b64_json": "a".repeat(4_096)}],
+            "usage": {
+                "input_tokens": 7,
+                "output_tokens": 11,
+                "input_tokens_details": {"image_tokens": 0, "text_tokens": 7},
+                "output_tokens_details": {"image_tokens": 11, "text_tokens": 0}
+            }
+        }))
+        .unwrap();
+        let encoded_body = encode_test_body(coding, &upstream_body).await;
+        let harness = encoded_harness(coding.name(), encoded_body).await;
+        let gateway = start_server(harness.app.clone()).await;
+
+        let downstream_accept_encoding = if matches!(coding, TestContentCoding::Brotli) {
+            "gzip;q=0.2, br;q=1, zstd;q=0.5, identity;q=0.1"
+        } else {
+            coding.name()
+        };
+        let response = authorized_post(
+            &client(),
+            format!("http://{}/v1/images/generations", gateway.address),
+            CLIENT_KEY,
+            br#"{"model":"gpt-image-2","prompt":"test"}"#.to_vec(),
+        )
+        .header("accept-encoding", downstream_accept_encoding)
+        .send()
+        .await
+        .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK, "{coding:?}");
+        assert_eq!(
+            response
+                .headers()
+                .get("content-encoding")
+                .and_then(|value| value.to_str().ok()),
+            Some(coding.name()),
+            "{coding:?}"
+        );
+        assert!(
+            response.headers().get_all("vary").iter().any(|value| value
+                .to_str()
+                .is_ok_and(|value| value.eq_ignore_ascii_case("accept-encoding"))),
+            "{coding:?}"
+        );
+        for name in [
+            "content-length",
+            "accept-ranges",
+            "etag",
+            "content-md5",
+            "digest",
+            "content-digest",
+            "repr-digest",
+        ] {
+            assert!(response.headers().get(name).is_none(), "{coding:?}: {name}");
+        }
+        let encoded_downstream = response.bytes().await.unwrap();
+        assert_eq!(
+            decode_test_body(coding, &encoded_downstream).await,
+            upstream_body,
+            "{coding:?}"
+        );
+
+        let requests = harness.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1, "{coding:?}");
+        assert_eq!(
+            requests[0]
+                .headers
+                .get("accept-encoding")
+                .and_then(|value| value.to_str().ok()),
+            Some(UPSTREAM_ACCEPT_ENCODING),
+            "{coding:?}"
+        );
+        drop(requests);
+
+        let events = harness.logs.events();
+        assert_eq!(events.len(), 1, "{coding:?}");
+        assert_eq!(
+            events[0].billing.as_ref().unwrap().usage,
+            Some(ai_gateway::domain::RequestUsage {
+                input_tokens: 7,
+                cached_input_tokens: 0,
+                cache_write_tokens: 0,
+                output_tokens: 11,
+                reasoning_tokens: 0,
+            }),
+            "{coding:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn compressed_upstream_response_can_be_forwarded_as_downstream_identity() {
+    let upstream_body = serde_json::to_vec(&serde_json::json!({
+        "created": 1,
+        "data": [{"b64_json": "a".repeat(4_096)}],
+        "usage": {"input_tokens": 7, "output_tokens": 11}
+    }))
+    .unwrap();
+    let encoded_body = encode_test_body(TestContentCoding::Brotli, &upstream_body).await;
+    let harness = encoded_harness("br", encoded_body).await;
+    let gateway = start_server(harness.app.clone()).await;
+
+    let response = authorized_post(
+        &client(),
+        format!("http://{}/v1/images/generations", gateway.address),
+        CLIENT_KEY,
+        br#"{"model":"gpt-image-2","prompt":"test"}"#.to_vec(),
+    )
+    .header(
+        "accept-encoding",
+        "gzip;q=0, deflate;q=0, br;q=0, zstd;q=0, identity;q=1",
+    )
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(response.headers().get("content-encoding").is_none());
+    assert_eq!(response.bytes().await.unwrap().as_ref(), upstream_body);
+    assert_eq!(
+        harness.logs.events()[0].billing.as_ref().unwrap().usage,
+        Some(ai_gateway::domain::RequestUsage {
+            input_tokens: 7,
+            cached_input_tokens: 0,
+            cache_write_tokens: 0,
+            output_tokens: 11,
+            reasoning_tokens: 0,
+        })
+    );
+}
+
+#[tokio::test]
+async fn stacked_supported_upstream_content_codings_decode_in_reverse_order() {
+    let upstream_body = serde_json::to_vec(&serde_json::json!({
+        "created": 1,
+        "data": [{"b64_json": "a".repeat(4_096)}],
+        "usage": {"input_tokens": 7, "output_tokens": 11}
+    }))
+    .unwrap();
+    let gzip = encode_test_body(TestContentCoding::Gzip, &upstream_body).await;
+    let gzip_then_brotli = encode_test_body(TestContentCoding::Brotli, &gzip).await;
+    let harness = encoded_harness("gzip, br", gzip_then_brotli).await;
+    let gateway = start_server(harness.app.clone()).await;
+
+    let response = authorized_post(
+        &client(),
+        format!("http://{}/v1/images/generations", gateway.address),
+        CLIENT_KEY,
+        br#"{"model":"gpt-image-2","prompt":"test"}"#.to_vec(),
+    )
+    .header("accept-encoding", "gzip")
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get("content-encoding")
+            .and_then(|value| value.to_str().ok()),
+        Some("gzip")
+    );
+    assert_eq!(
+        decode_test_body(TestContentCoding::Gzip, &response.bytes().await.unwrap()).await,
+        upstream_body
+    );
+    assert_eq!(
+        harness.logs.events()[0].billing.as_ref().unwrap().usage,
+        Some(ai_gateway::domain::RequestUsage {
+            input_tokens: 7,
+            cached_input_tokens: 0,
+            cache_write_tokens: 0,
+            output_tokens: 11,
+            reasoning_tokens: 0,
+        })
+    );
+}
+
+#[tokio::test]
+async fn corrupt_upstream_content_coding_terminates_the_stream_and_fails_the_log() {
+    let harness = encoded_harness("gzip", b"not a gzip stream".to_vec()).await;
+    let response = harness
+        .app
+        .oneshot(
+            Request::post("/v1/images/generations")
+                .header("authorization", format!("Bearer {CLIENT_KEY}"))
+                .header("content-type", "application/json")
+                .header("accept-encoding", "identity")
+                .body(Body::from(
+                    br#"{"model":"gpt-image-2","prompt":"test"}"#.to_vec(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(to_bytes(response.into_body(), usize::MAX).await.is_err());
+    let events = harness.logs.events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].outcome.as_str(), "failed");
+    assert_eq!(events[0].error_code.as_deref(), Some("upstream_body_error"));
+}
+
+#[tokio::test]
+async fn unsupported_upstream_content_coding_fails_before_downstream_headers() {
+    let harness = encoded_harness("compress", br#"{"created":1,"data":[]}"#.to_vec()).await;
+    let gateway = start_server(harness.app.clone()).await;
+
+    let response = authorized_post(
+        &client(),
+        format!("http://{}/v1/images/generations", gateway.address),
+        CLIENT_KEY,
+        br#"{"model":"gpt-image-2","prompt":"test"}"#.to_vec(),
+    )
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let body: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+    assert_eq!(
+        body["error"]["code"],
+        "upstream_content_encoding_unsupported"
+    );
+    let events = harness.logs.events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(
+        events[0].error_code.as_deref(),
+        Some("upstream_content_encoding_unsupported")
+    );
+}
+
+#[tokio::test]
+async fn images_generation_uses_the_longer_images_response_header_timeout() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let upstream = start_server(
+        Router::new()
+            .route("/v1/images/generations", post(delayed_upstream_response))
+            .with_state(MockUpstream {
+                requests: Arc::clone(&requests),
+                status: StatusCode::OK,
+                body: br#"{"data":[]}"#.to_vec(),
+            }),
+    )
+    .await;
+    let configured = configured_proxy_with_policy(
+        &format!("http://{}", upstream.address),
+        RecordingRequestLogSink::default(),
+        None,
+        None,
+        None,
+        Default::default(),
+        None,
+        UpstreamConfig {
+            connect_timeout_seconds: 1,
+            response_header_timeout_seconds: 2,
+            images_response_header_timeout_seconds: 3,
+            stream_idle_timeout_seconds: 1,
+        },
+    );
+    let gateway = start_server(http::router(configured.proxy)).await;
+    let timeout_client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    let response = authorized_post(
+        &timeout_client,
+        format!("http://{}/v1/images/generations", gateway.address),
+        CLIENT_KEY,
+        br#"{"model":"gpt-image-2","prompt":"test"}"#.to_vec(),
+    )
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(requests.lock().unwrap().len(), 1);
 }
 
 #[tokio::test]
@@ -1701,7 +2268,14 @@ async fn images_edit_rejects_json_transforms_after_routing_without_forwarding_se
         logs[0].api_operation,
         ai_gateway::domain::ApiOperation::ImagesEdit
     );
-    assert_eq!(logs[0].error_summary, None);
+    assert_eq!(logs[0].error_code.as_deref(), Some("invalid_request"));
+    let summary = logs[0].error_summary.as_deref().unwrap();
+    assert!(
+        summary.starts_with("Images edit multipart bodies do not support request JSON transforms.")
+    );
+    assert!(summary.contains("\"code\": \"image_edit_json_transform_unsupported\""));
+    assert!(!summary.contains("do not log this"));
+    assert!(!summary.contains("sensitive-image"));
 }
 
 #[tokio::test]
@@ -1906,10 +2480,10 @@ async fn protocol_sse_errors_fail_logs_before_client_disconnect() {
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].outcome.as_str(), "failed");
     assert_eq!(events[0].error_code.as_deref(), Some("provider_error"));
-    assert_eq!(
-        events[0].error_summary.as_deref(),
-        Some("sensitive upstream detail")
-    );
+    let summary = events[0].error_summary.as_deref().unwrap();
+    assert!(summary.starts_with("sensitive upstream detail\n\n{"));
+    assert!(summary.contains("\"type\": \"server_error\""));
+    assert!(summary.contains("\"code\": \"provider_error\""));
     assert_eq!(
         events[0].response_status_code,
         Some(StatusCode::OK.as_u16())
@@ -1940,10 +2514,10 @@ async fn protocol_sse_errors_fail_logs_before_client_disconnect() {
     assert_eq!(events.len(), 2);
     assert_eq!(events[1].outcome.as_str(), "failed");
     assert_eq!(events[1].error_code.as_deref(), Some("server_error"));
-    assert_eq!(
-        events[1].error_summary.as_deref(),
-        Some("sensitive upstream detail")
-    );
+    let summary = events[1].error_summary.as_deref().unwrap();
+    assert!(summary.starts_with("sensitive upstream detail\n\n{"));
+    assert!(summary.contains("\"param\": null"));
+    assert!(summary.contains("\"sequence_number\": 3"));
     assert_eq!(
         events[1].response_status_code,
         Some(StatusCode::OK.as_u16())
@@ -2446,6 +3020,7 @@ async fn admission_keeps_streaming_work_across_snapshot_replacement_and_consumes
         UpstreamConfig {
             connect_timeout_seconds: 1,
             response_header_timeout_seconds: 2,
+            images_response_header_timeout_seconds: 2,
             stream_idle_timeout_seconds: 1,
         },
     );
@@ -2460,6 +3035,7 @@ async fn admission_keeps_streaming_work_across_snapshot_replacement_and_consumes
         UpstreamConfig {
             connect_timeout_seconds: 1,
             response_header_timeout_seconds: 2,
+            images_response_header_timeout_seconds: 2,
             stream_idle_timeout_seconds: 1,
         },
     );
@@ -2586,6 +3162,7 @@ async fn admission_releases_capacity_after_response_header_timeout() {
         UpstreamConfig {
             connect_timeout_seconds: 1,
             response_header_timeout_seconds: 2,
+            images_response_header_timeout_seconds: 2,
             stream_idle_timeout_seconds: 1,
         },
     );
@@ -2620,6 +3197,7 @@ async fn invalid_effective_timeout_policy_never_contacts_upstream_or_cools_the_c
         UpstreamConfig {
             connect_timeout_seconds: 1,
             response_header_timeout_seconds: 2,
+            images_response_header_timeout_seconds: 2,
             stream_idle_timeout_seconds: 1,
         },
         OutboundTestPolicy {
@@ -2660,6 +3238,7 @@ async fn http_proxy_routes_nonmatching_targets_and_explicit_no_proxy_hosts_bypas
     let defaults = UpstreamConfig {
         connect_timeout_seconds: 1,
         response_header_timeout_seconds: 2,
+        images_response_header_timeout_seconds: 2,
         stream_idle_timeout_seconds: 1,
     };
     let logs = RecordingRequestLogSink::default();
@@ -2770,6 +3349,7 @@ async fn dead_configured_proxy_returns_safe_bad_gateway_without_direct_upstream_
         UpstreamConfig {
             connect_timeout_seconds: 1,
             response_header_timeout_seconds: 2,
+            images_response_header_timeout_seconds: 2,
             stream_idle_timeout_seconds: 1,
         },
         OutboundTestPolicy {
@@ -2822,6 +3402,7 @@ async fn socks5_proxy_connects_and_keeps_credentials_out_of_upstream_and_logs() 
         UpstreamConfig {
             connect_timeout_seconds: 1,
             response_header_timeout_seconds: 2,
+            images_response_header_timeout_seconds: 2,
             stream_idle_timeout_seconds: 1,
         },
         OutboundTestPolicy {
@@ -2873,7 +3454,8 @@ async fn socks5_proxy_connects_and_keeps_credentials_out_of_upstream_and_logs() 
 
 #[tokio::test]
 async fn rejected_upstream_response_is_attempted_once_without_automatic_retry() {
-    let harness = harness(StatusCode::SERVICE_UNAVAILABLE, b"unavailable".to_vec()).await;
+    let upstream_body = br#"{"error":{"message":"provider overloaded","type":"server_error","param":"capacity","code":"overloaded"},"request_id":"req_123"}"#.to_vec();
+    let harness = harness(StatusCode::SERVICE_UNAVAILABLE, upstream_body.clone()).await;
 
     let response = authorized_post(
         &client(),
@@ -2886,7 +3468,15 @@ async fn rejected_upstream_response_is_attempted_once_without_automatic_retry() 
     .unwrap();
 
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(response.bytes().await.unwrap().as_ref(), upstream_body);
     assert_eq!(harness.upstream_requests().len(), 1);
+    let logs = harness.logs();
+    assert_eq!(logs.len(), 1);
+    assert_eq!(logs[0].error_code.as_deref(), Some("overloaded"));
+    let summary = logs[0].error_summary.as_deref().unwrap();
+    assert!(summary.starts_with("provider overloaded\n\n{"));
+    assert!(summary.contains("\"param\": \"capacity\""));
+    assert!(summary.contains("\"request_id\": \"req_123\""));
 }
 
 #[tokio::test]
@@ -2910,6 +3500,7 @@ async fn snapshot_replacement_uses_new_proxy_policy_after_cancelling_an_existing
     let defaults = UpstreamConfig {
         connect_timeout_seconds: 1,
         response_header_timeout_seconds: 2,
+        images_response_header_timeout_seconds: 2,
         stream_idle_timeout_seconds: 2,
     };
     let current = configured_proxy_with_policy(

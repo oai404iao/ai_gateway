@@ -164,7 +164,6 @@ describe("ChannelDetailPage", () => {
     });
     expect(submitted?.override_document).toEqual(CHANNEL_DETAIL.override_document);
     expect(submitted?.upstream_api_key).toBe(CHANNEL_DETAIL.upstream_api_key);
-    expect(submitted?.status_statistics_enabled).toBe(true);
     expect(submitted?.auto_disable_allowed).toBe(true);
     expect(submitted?.supports_websocket).toBe(false);
     expect(submitted?.billing_multiplier).toBe(CHANNEL.billing_multiplier);

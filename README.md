@@ -257,7 +257,7 @@ Configuration is split into two layers:
 
 | Layer | Source | Examples |
 | --- | --- | --- |
-| Process/bootstrap | TOML | Listeners, PostgreSQL, request limits, default timeouts, durable spool, Console JWT key paths. |
+| Process/bootstrap | TOML | Listeners, PostgreSQL, request limits, default and Images-specific response-header timeouts, durable spool, Console JWT key paths. |
 | Dynamic control plane | PostgreSQL through the Console | Users, API keys, models, routes, channels, proxies, transforms, and forwarding settings. |
 
 Console writes validate the complete candidate configuration before commit and
@@ -292,6 +292,9 @@ starting the stack.
 - Requests are authenticated and admitted before their body is read.
 - Original request bytes are preserved unless a model alias or configured body
   transform requires reserialization.
+- Client credentials, hop-by-hop headers, `Connection`-declared headers, and
+  common reverse-proxy/CDN forwarding metadata are removed before every
+  upstream channel request.
 - Multipart Images edits use dedicated total/file limits and spill to
   anonymous temporary files after the configured memory threshold.
 - Upstream responses are streamed; the gateway does not buffer the complete

@@ -506,6 +506,49 @@ paths:
               schema: { $ref: "#/components/schemas/PersonalUsageReport" }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  /me/codex-quotas:
+    get:
+      tags: [Self, CodexOAuth]
+      operationId: listOwnCodexQuotas
+      description: |
+        Returns current quota-window snapshots for Codex credentials in the
+        canonical Responses channel groups granted to the authenticated
+        user's user group. Credential labels and account identity are never
+        returned; `name` is the credential UUID string.
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Read-only Codex quota snapshots visible to the current user.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/SelfCodexQuotaCredentialView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /me/codex-quotas/{id}/windows:
+    get:
+      tags: [Self, CodexOAuth]
+      operationId: getOwnCodexQuotaWindowHistory
+      description: |
+        Returns read-only primary and secondary quota-window history only
+        when the credential belongs to a Codex channel group granted through
+        the authenticated user's user group. Hidden and missing credentials
+        both return `404`.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+        - $ref: "#/components/parameters/CodexQuotaHistoryLimit"
+      responses:
+        "200":
+          description: Sanitized quota-window history visible to the current user.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SelfCodexQuotaWindowHistory" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
   /users:
     get:
       tags: [Users]
@@ -2072,26 +2115,27 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
 
-  /statistics/channel-status:
+  /statistics/channel-group-status:
     get:
       tags: [Statistics]
-      operationId: getChannelStatusStatistics
+      operationId: getChannelGroupStatusStatistics
       description: |
         Available to every authenticated Console user.
         Aggregates P90 TTFT, P50 output TPS, and terminal success rate for
-        channels whose `status_statistics_enabled` flag is true. Model
-        identifiers prefer the selected upstream model and retain the API
-        format dimension. Client-cancelled requests do not participate in the
-        success-rate denominator.
+        channel groups whose `status_statistics_enabled` flag is true. Each
+        monitored group aggregates all requests and available models from its
+        member channels. Model identifiers prefer the selected upstream model
+        and retain the API format dimension. Client-cancelled requests do not
+        participate in the success-rate denominator.
       security: [{ bearerAuth: [] }]
       parameters:
         - $ref: "#/components/parameters/StatisticsWindow"
       responses:
         "200":
-          description: Channel and model status metrics.
+          description: Channel-group and model status metrics.
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/ChannelStatusReport" }
+              schema: { $ref: "#/components/schemas/ChannelGroupStatusReport" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/Unprocessable" }
@@ -2391,7 +2435,7 @@ components:
       in: query
       required: false
       schema:
-        $ref: "#/components/schemas/ChannelStatusWindow"
+        $ref: "#/components/schemas/ChannelGroupStatusWindow"
         default: 24h
     StatisticsStartedAfter:
       name: started_after
@@ -2532,7 +2576,7 @@ components:
     ModelSyncAction:
       type: string
       enum: [price_update, import]
-    ChannelStatusWindow:
+    ChannelGroupStatusWindow:
       type: string
       enum: [24h, 3d, 7d]
     StatisticsGranularity:
@@ -2732,10 +2776,17 @@ components:
     SystemUpstreamSettings:
       type: object
       required:
-        [connect_timeout_seconds, response_header_timeout_seconds, stream_idle_timeout_seconds]
+        [connect_timeout_seconds, response_header_timeout_seconds,
+         images_response_header_timeout_seconds, stream_idle_timeout_seconds]
       properties:
         connect_timeout_seconds: { type: integer, format: int64, minimum: 1 }
         response_header_timeout_seconds: { type: integer, format: int64, minimum: 1 }
+        images_response_header_timeout_seconds:
+          type: integer
+          format: int64
+          minimum: 1
+          default: 300
+          description: Used by Images generation and edit when the channel has no explicit response-header timeout.
         stream_idle_timeout_seconds: { type: integer, format: int64, minimum: 1 }
 
     SystemRequestRetrySettings:
@@ -3264,21 +3315,26 @@ components:
 
     SelfApiKeyGroupOption:
       type: object
-      required: [id, name, api_format, enabled]
+      required: [id, name, api_format, priority, enabled]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
         api_format: { $ref: "#/components/schemas/ApiFormat" }
+        priority: { type: integer }
         enabled: { type: boolean }
 
     SelfApiKeyChannelOption:
       type: object
       required:
-        [id, channel_group_id, channel_group_name, api_format, name, enabled, auto_disabled]
+        [id, channel_group_id, channel_group_name, channel_group_enabled,
+         api_format, name, enabled, auto_disabled]
       properties:
         id: { type: string, format: uuid }
         channel_group_id: { type: string, format: uuid }
         channel_group_name: { type: string }
+        channel_group_enabled:
+          type: boolean
+          description: Whether the parent channel group is enabled.
         api_format: { $ref: "#/components/schemas/ApiFormat" }
         name: { type: string }
         enabled: { type: boolean }
@@ -3330,13 +3386,21 @@ components:
     UserGroupView:
       type: object
       required:
-        [id, name, description, default_api_key_policy_id, system_role,
-         member_count, created_at, updated_at]
+        [id, name, description, default_api_key_policy_id,
+         visible_codex_quota_group_ids, system_role, member_count, created_at,
+         updated_at]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
         description: { type: string, nullable: true }
         default_api_key_policy_id: { type: string, format: uuid, nullable: true }
+        visible_codex_quota_group_ids:
+          type: array
+          description: |
+            Canonical Codex OAuth Responses channel groups whose credential
+            quota windows are visible to members through the read-only
+            `/me/codex-quotas` endpoints.
+          items: { type: string, format: uuid }
         system_role:
           type: string
           enum: [user, admin]
@@ -3377,7 +3441,7 @@ components:
 
     ChannelGroupView:
       type: object
-      required: [id, name, api_format, connector_kind, connector_pool_id, priority, selection_strategy, enabled, updated_at]
+      required: [id, name, api_format, connector_kind, connector_pool_id, priority, selection_strategy, enabled, status_statistics_enabled, updated_at]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
@@ -3391,13 +3455,16 @@ components:
         priority: { type: integer }
         selection_strategy: { $ref: "#/components/schemas/SelectionStrategy" }
         enabled: { type: boolean }
+        status_statistics_enabled:
+          type: boolean
+          description: Includes this channel group in the authenticated channel-group status report.
         updated_at: { $ref: "#/components/schemas/DateTime" }
 
     ChannelView:
       type: object
       required:
         [id, channel_group_id, api_format, connector_kind, provider_managed, name, base_url, enabled, supports_websocket,
-         status_statistics_enabled, auto_disabled, auto_disabled_reason, auto_disable_allowed,
+         auto_disabled, auto_disabled_reason, auto_disable_allowed,
          weight, billing_multiplier, proxy_id,
          config_template_id, connect_timeout_ms, response_header_timeout_ms,
          stream_idle_timeout_ms, upstream_auth_kind, upstream_auth_header_name,
@@ -3416,9 +3483,6 @@ components:
         supports_websocket:
           type: boolean
           description: Whether this OpenAI Responses channel accepts WebSocket upgrades.
-        status_statistics_enabled:
-          type: boolean
-          description: Includes this channel in the administrator channel-status report.
         auto_disabled: { type: boolean }
         auto_disabled_reason: { type: string, nullable: true }
         auto_disable_allowed:
@@ -3483,11 +3547,14 @@ components:
           description: Stable primary Responses group retained for credential-management compatibility.
         label: { type: string }
         email: { type: string, nullable: true }
-        account_id: { type: string }
+        account_id:
+          type: string
+          nullable: true
+          description: Optional ChatGPT workspace identifier. Personal credentials may omit it.
         user_id:
           type: string
           nullable: true
-          description: ChatGPT workspace member identifier from `chatgpt_user_id` or `user_id`.
+          description: ChatGPT user identifier from `chatgpt_user_id`, `user_id`, or the JWT `sub` fallback.
         plan_type: { type: string, nullable: true }
         is_fedramp: { type: boolean }
         access_token_expires_at: { $ref: "#/components/schemas/DateTimeNullable" }
@@ -3567,6 +3634,71 @@ components:
           type: array
           items: { $ref: "#/components/schemas/CodexQuotaWindowPeriod" }
 
+    SelfCodexQuotaCredentialView:
+      type: object
+      description: |
+        Sanitized, read-only Codex quota snapshot. The stored credential
+        label and account identity are deliberately omitted.
+      required:
+        [id, name, channel_group_id, plan_type, primary_used_percent,
+         primary_window_seconds, primary_reset_at, secondary_used_percent,
+         secondary_window_seconds, secondary_reset_at, quota_checked_at]
+      properties:
+        id: { type: string, format: uuid }
+        name:
+          type: string
+          description: Credential UUID rendered as a name; never the administrator label.
+        channel_group_id:
+          type: string
+          format: uuid
+          description: Canonical Codex OAuth Responses channel group granting visibility.
+        plan_type:
+          type: string
+          nullable: true
+          description: Provider-reported subscription tier.
+        primary_used_percent: { type: integer, minimum: 0, maximum: 100, nullable: true }
+        primary_window_seconds: { type: integer, minimum: 1, nullable: true }
+        primary_reset_at: { $ref: "#/components/schemas/DateTimeNullable" }
+        secondary_used_percent: { type: integer, minimum: 0, maximum: 100, nullable: true }
+        secondary_window_seconds: { type: integer, minimum: 1, nullable: true }
+        secondary_reset_at: { $ref: "#/components/schemas/DateTimeNullable" }
+        quota_checked_at: { $ref: "#/components/schemas/DateTimeNullable" }
+
+    SelfCodexQuotaWindowPeriod:
+      type: object
+      description: Sanitized quota-window period without internal row identifiers.
+      required:
+        [window_kind, window_seconds, started_at, scheduled_reset_at, ended_at,
+         reset_reason, initial_used_percent, last_used_percent,
+         first_observed_at, last_observed_at]
+      properties:
+        window_kind: { $ref: "#/components/schemas/CodexQuotaWindowKind" }
+        window_seconds: { type: integer, minimum: 1 }
+        started_at: { $ref: "#/components/schemas/DateTime" }
+        scheduled_reset_at: { $ref: "#/components/schemas/DateTime" }
+        ended_at: { $ref: "#/components/schemas/DateTimeNullable" }
+        reset_reason:
+          allOf: [{ $ref: "#/components/schemas/CodexQuotaResetReason" }]
+          nullable: true
+        initial_used_percent: { type: integer, minimum: 0, maximum: 100 }
+        last_used_percent: { type: integer, minimum: 0, maximum: 100 }
+        first_observed_at: { $ref: "#/components/schemas/DateTime" }
+        last_observed_at: { $ref: "#/components/schemas/DateTime" }
+
+    SelfCodexQuotaWindowHistory:
+      type: object
+      required: [credential_id, name, channel_group_id, plan_type, periods]
+      properties:
+        credential_id: { type: string, format: uuid }
+        name:
+          type: string
+          description: Credential UUID rendered as a name; never the administrator label.
+        channel_group_id: { type: string, format: uuid }
+        plan_type: { type: string, nullable: true }
+        periods:
+          type: array
+          items: { $ref: "#/components/schemas/SelfCodexQuotaWindowPeriod" }
+
     CodexQuotaResetOutcome:
       type: string
       enum: [reset, nothing_to_reset, no_credit, already_redeemed]
@@ -3639,12 +3771,12 @@ components:
               type: string
               maxLength: 300
               nullable: true
-              description: Optional fallback when the ID token has no account claim; mismatches are rejected.
+              description: Optional workspace fallback. Personal credentials may omit it; mismatches are rejected.
             user_id:
               type: string
               maxLength: 300
               nullable: true
-              description: Optional member fallback when the token has no user claim; mismatches are rejected.
+              description: Optional user fallback. Accountless credentials require a token or override user ID; mismatches are rejected.
 
     CodexCredentialExportInput:
       type: object
@@ -3704,7 +3836,9 @@ components:
       properties:
         label: { type: string }
         email: { type: string, nullable: true }
-        account_id: { type: string }
+        account_id:
+          type: string
+          nullable: true
         user_id: { type: string, nullable: true }
         plan_type: { type: string, nullable: true }
         is_fedramp: { type: boolean }
@@ -3928,9 +4062,9 @@ components:
         error_code: { type: string, maxLength: 100, nullable: true }
         error_summary:
           type: string
-          maxLength: 1000
+          maxLength: 16384
           nullable: true
-          description: Bounded, cleaned upstream error message when available.
+          description: Bounded upstream response or gateway/transport error detail when available.
         billed_at: { $ref: "#/components/schemas/DateTimeNullable" }
 
     RequestLogSource:
@@ -3992,22 +4126,22 @@ components:
           type: integer
           minimum: 0
 
-    ChannelStatusReport:
+    ChannelGroupStatusReport:
       type: object
-      required: [window, started_at, ended_at, bucket_seconds, models, channels]
+      required: [window, started_at, ended_at, bucket_seconds, models, groups]
       properties:
-        window: { $ref: "#/components/schemas/ChannelStatusWindow" }
+        window: { $ref: "#/components/schemas/ChannelGroupStatusWindow" }
         started_at: { $ref: "#/components/schemas/DateTime" }
         ended_at: { $ref: "#/components/schemas/DateTime" }
         bucket_seconds: { type: integer }
         models:
           type: array
-          items: { $ref: "#/components/schemas/ChannelStatusModelMetric" }
-        channels:
+          items: { $ref: "#/components/schemas/ChannelGroupStatusModelMetric" }
+        groups:
           type: array
-          items: { $ref: "#/components/schemas/ChannelStatusChannel" }
+          items: { $ref: "#/components/schemas/ChannelGroupStatusGroup" }
 
-    ChannelStatusModelMetric:
+    ChannelGroupStatusModelMetric:
       type: object
       required:
         [api_format, model, request_count, success_rate, p90_ttft_ms, p50_tps]
@@ -4033,34 +4167,29 @@ components:
           minimum: 0
           nullable: true
 
-    ChannelStatusChannel:
+    ChannelGroupStatusGroup:
       type: object
-      required:
-        [id, channel_group_id, channel_group_name, api_format, name, enabled,
-         auto_disabled, models]
+      required: [id, api_format, name, enabled, models]
       properties:
         id: { type: string, format: uuid }
-        channel_group_id: { type: string, format: uuid }
-        channel_group_name: { type: string }
         api_format: { $ref: "#/components/schemas/ApiFormat" }
         name: { type: string }
         enabled: { type: boolean }
-        auto_disabled: { type: boolean }
         models:
           type: array
-          items: { $ref: "#/components/schemas/ChannelStatusChannelModel" }
+          items: { $ref: "#/components/schemas/ChannelGroupStatusGroupModel" }
 
-    ChannelStatusChannelModel:
+    ChannelGroupStatusGroupModel:
       allOf:
-        - $ref: "#/components/schemas/ChannelStatusModelMetric"
+        - $ref: "#/components/schemas/ChannelGroupStatusModelMetric"
         - type: object
           required: [history]
           properties:
             history:
               type: array
-              items: { $ref: "#/components/schemas/ChannelStatusBucket" }
+              items: { $ref: "#/components/schemas/ChannelGroupStatusBucket" }
 
-    ChannelStatusBucket:
+    ChannelGroupStatusBucket:
       type: object
       required: [started_at, request_count, success_rate, p90_ttft_ms, p50_tps]
       properties:
@@ -4618,7 +4747,8 @@ components:
 
     UserGroupInput:
       type: object
-      required: [name, default_api_key_policy_id]
+      required:
+        [name, default_api_key_policy_id, visible_codex_quota_group_ids]
       properties:
         name: { type: string, minLength: 1, maxLength: 100 }
         description: { type: string, maxLength: 500, nullable: true }
@@ -4626,6 +4756,12 @@ components:
           type: string
           format: uuid
           nullable: true
+        visible_codex_quota_group_ids:
+          type: array
+          description: |
+            Canonical `codex_oauth` Responses channel groups whose shared
+            credential quota windows may be read by group members.
+          items: { type: string, format: uuid }
 
     ApiKeyPolicyInput:
       type: object
@@ -4772,6 +4908,9 @@ components:
         priority: { type: integer, minimum: 0 }
         selection_strategy: { $ref: "#/components/schemas/SelectionStrategy" }
         enabled: { type: boolean }
+        status_statistics_enabled:
+          type: boolean
+          description: Includes this channel group in the authenticated channel-group status report. Omission defaults to false on create and preserves the current value on update.
 
     ChannelCreateInput:
       type: object
@@ -4790,10 +4929,6 @@ components:
           type: boolean
           default: false
           description: Valid only for open_ai_responses channels.
-        status_statistics_enabled:
-          type: boolean
-          default: false
-          description: Includes this channel in the administrator channel-status report.
         auto_disable_allowed:
           type: boolean
           default: false
@@ -4837,10 +4972,6 @@ components:
           type: boolean
           default: false
           description: Valid only for open_ai_responses channels.
-        status_statistics_enabled:
-          type: boolean
-          default: false
-          description: Includes this channel in the administrator channel-status report.
         auto_disable_allowed:
           type: boolean
           default: false
@@ -4911,7 +5042,6 @@ components:
       description: At least one property must be supplied.
       properties:
         enabled: { type: boolean }
-        status_statistics_enabled: { type: boolean }
         auto_disable_allowed: { type: boolean }
         weight: { type: integer, minimum: 1 }
         billing_multiplier:
