@@ -588,7 +588,7 @@ API Key 和小时/天聚合粒度，不提供用户或渠道筛选，响应中�
 - `request_retry.max_retries`：首次请求失败后的最大自动重试次数，范围 `1..=10`，默认 `1`。同一客户端请求不会重复尝试同一渠道。
 - `automatic_disable.enabled`：自动禁用总开关。关闭时，即使渠道允许自动禁用也不会执行状态变更。
 - `automatic_disable.error_status_codes`：触发临时禁用的上游 HTTP 状态码列表。
-- `automatic_disable.error_message_keywords`：触发临时禁用的上游错误消息关键字；匹配大小写不敏感。自动禁用扫描器不会保存被扫描的响应正文；仅当 SSE 协议解析器识别出结构化错误事件时，请求日志才保存受限、已清洗的错误代码与消息摘要。
+- `automatic_disable.error_message_keywords`：触发临时禁用的上游错误消息关键字；匹配大小写不敏感。自动禁用扫描器本身不保存正文；请求日志会为失败的非流式 HTTP、SSE 和 Responses WebSocket 请求保存最长 16KiB、已清理控制字符的文本或结构化错误详情。
 - `scheduled_testing.mode`：`global` 测试全部启用渠道；`failure_only` 只测试临时自动禁用的渠道。
 - `scheduled_testing.auto_recover`：测试成功后是否自动清除临时禁用。
 - `scheduled_testing.interval_minutes`：测试间隔，默认 `5`。
@@ -652,7 +652,8 @@ Responses、Images generation 与 Images edit；同时显示渠道组名称。�
 始终只查询当前 JWT 用户；即使当前用户是管理员，
 服务端也会将用户名称、具体 `channel_id` 和渠道名称置空。个人列表固定显示开始时间、模型、
 请求协议、渠道组、结果、Token、成本和耗时；模型旁可显示思考等级和 `Fast` 标记，耗时同时包含
-TTFT、总耗时和 TPS。详情再显示 API operation、HTTP 状态、错误代码、错误消息和完成时间。
+TTFT、总耗时和 TPS。详情再显示 API operation、HTTP 状态、错误代码、错误详情和完成时间。错误详情
+可能包含上游返回的完整结构化错误对象、文本错误正文前缀或网关/传输诊断，并最多保留 16KiB。
 
 只有管理员“系统”栏下的全局“请求日志”可以读取所有用户的日志。该页面调用管理员接口
 `GET /console/v1/request-logs`，并在上述字段基础上额外显示

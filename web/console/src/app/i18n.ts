@@ -894,8 +894,8 @@ const zhCN: Record<string, string> = {
   "No channel group models": "渠道组没有模型",
   "Add available upstream models to channels in this group.":
     "请为此渠道组中的渠道添加可用上游模型。",
-  "The gateway does not store request or response bodies. Sanitized upstream error messages may be retained.":
-    "网关不会存储请求或响应正文，但可能保留已清洗的上游错误消息。",
+  "The gateway does not store request bodies or successful response bodies. Bounded upstream error details may be retained.":
+    "网关不会存储请求正文或成功响应正文，但可能保留受限长度的上游错误详情。",
   "No request logs": "没有请求日志",
   "There are no logged requests matching these filters.": "没有符合这些筛选条件的请求日志。",
   "Started": "开始时间",
@@ -927,7 +927,7 @@ const zhCN: Record<string, string> = {
   "Cache rate": "缓存率",
   "Billed at": "结算时间",
   "Error code": "错误代码",
-  "Error message": "错误消息",
+  "Error detail": "错误详情",
   "Channel group": "渠道组",
   "Channel": "渠道",
   "Channel ID": "渠道 ID",

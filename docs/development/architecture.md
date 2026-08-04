@@ -72,7 +72,8 @@ Browser or Console client
 9. 清理客户端鉴权、hop-by-hop headers 和常见反向代理/CDN 转发元数据；该规则位于所有普通、
    Codex、HTTP/SSE、Images 与 Responses WebSocket 渠道共享的请求清理层。随后使用按代理、TLS
    和超时策略复用的 reqwest client 直接转发，不经过 sidecar、Unix Socket RPC 或第二个 HTTP 服务。
-10. 转发上游状态、响应头和响应流；仅在配置的响应/SSE 变换需要时改写。
+10. 转发上游状态、响应头和响应流；仅在配置的响应/SSE 变换需要时改写。失败的文本响应会旁路保留
+    最长 16KiB 供请求日志诊断，成功响应和二进制媒体响应仍不缓冲。
 11. 将终态事件写入本地 spool，并异步投影、提取 usage 和结算。
 
 没有 body 变换或模型别名时，原始请求字节保持不变。普通响应不会为了 usage 采集而整体缓冲。

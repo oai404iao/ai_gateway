@@ -1,8 +1,12 @@
-//! Bounded, format-specific response usage and SSE terminal-state extraction.
+//! Bounded, format-specific response usage, terminal-state, and error-detail
+//! extraction.
 //!
 //! The collector never buffers an ordinary response body. For JSON it retains
-//! only the top-level `usage` object; for SSE it retains one event frame at a
-//! time and inspects its event name and `data:` JSON payload.
+//! only the top-level `usage` object, plus a bounded prefix when error-body
+//! capture is explicitly enabled. For SSE it retains one event frame at a time
+//! and inspects its event name and `data:` JSON payload.
+
+use std::io::{self, Write};
 
 use axum::body::Bytes;
 use serde::Deserialize;
@@ -13,7 +17,7 @@ use crate::domain::ApiFormat;
 const MAX_USAGE_OBJECT_BYTES: usize = 64 * 1_024;
 const MAX_SSE_FRAME_BYTES: usize = 8 * 1_024 * 1_024;
 const MAX_ERROR_CODE_BYTES: usize = 100;
-const MAX_ERROR_SUMMARY_BYTES: usize = 1_000;
+const MAX_ERROR_SUMMARY_BYTES: usize = 16 * 1_024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ResponseUsage {
@@ -92,7 +96,8 @@ pub struct UsageCollector {
     latest: Option<ResponseUsage>,
     terminal: Option<ResponseUsage>,
     sse_terminal_outcome: Option<SseTerminalOutcome>,
-    sse_error: Option<SseErrorDetails>,
+    response_error: Option<ResponseErrorDetails>,
+    error_body: Option<ErrorBodyCapture>,
 }
 
 enum CollectorMode {
@@ -107,9 +112,25 @@ pub(crate) enum SseTerminalOutcome {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) struct SseErrorDetails {
+pub(crate) struct ResponseErrorDetails {
     pub code: Option<String>,
     pub summary: Option<String>,
+}
+
+impl ResponseErrorDetails {
+    #[must_use]
+    pub(crate) fn from_message(code: Option<&str>, message: &str) -> Self {
+        Self {
+            code: code
+                .and_then(|code| sanitize_error_text(code, MAX_ERROR_CODE_BYTES, false, false)),
+            summary: sanitize_error_text(message, MAX_ERROR_SUMMARY_BYTES, true, false),
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn from_json(value: &Value) -> Self {
+        extract_response_error(Some(value))
+    }
 }
 
 impl UsageCollector {
@@ -125,11 +146,25 @@ impl UsageCollector {
             latest: None,
             terminal: None,
             sse_terminal_outcome: None,
-            sse_error: None,
+            response_error: None,
+            error_body: None,
+        }
+    }
+
+    /// Retains a bounded prefix of an ordinary response body for diagnostics.
+    ///
+    /// Callers enable this only after receiving an unsuccessful upstream
+    /// status, so successful JSON and Images responses remain unbuffered.
+    pub fn capture_error_body(&mut self) {
+        if matches!(self.mode, CollectorMode::Json(_)) && self.error_body.is_none() {
+            self.error_body = Some(ErrorBodyCapture::default());
         }
     }
 
     pub fn observe(&mut self, bytes: &Bytes) {
+        if let Some(error_body) = &mut self.error_body {
+            error_body.push(bytes);
+        }
         let api_format = self.api_format;
         let (values, terminal_outcome, error) = match &mut self.mode {
             CollectorMode::Json(scanner) => (scanner.push(bytes), None, None),
@@ -137,7 +172,7 @@ impl UsageCollector {
         };
         if self.sse_terminal_outcome.is_none() {
             self.sse_terminal_outcome = terminal_outcome;
-            self.sse_error = error;
+            self.response_error = error;
         }
         self.record(values);
     }
@@ -169,8 +204,8 @@ impl UsageCollector {
         };
         if self.sse_terminal_outcome.is_none() {
             self.sse_terminal_outcome = Some(terminal_outcome);
-            self.sse_error = (terminal_outcome == SseTerminalOutcome::Failed)
-                .then(|| extract_sse_error(Some(&value)));
+            self.response_error = (terminal_outcome == SseTerminalOutcome::Failed)
+                .then(|| extract_response_error(Some(&value)));
         }
         self.record(vec![value]);
         Some(terminal_outcome)
@@ -187,7 +222,7 @@ impl UsageCollector {
         };
         if self.sse_terminal_outcome.is_none() {
             self.sse_terminal_outcome = terminal_outcome;
-            self.sse_error = error;
+            self.response_error = error;
         }
         self.record(values);
     }
@@ -219,11 +254,44 @@ impl UsageCollector {
         self.sse_terminal_outcome
     }
 
-    /// Returns the bounded, control-character-cleaned upstream error fields
-    /// extracted from the first failing SSE terminal event.
+    /// Returns bounded upstream error fields extracted from the first failing
+    /// SSE/WebSocket terminal event or captured non-streaming error body.
     #[must_use]
-    pub fn sse_error(&self) -> Option<&SseErrorDetails> {
-        self.sse_error.as_ref()
+    pub fn error_details(&self) -> Option<ResponseErrorDetails> {
+        self.response_error
+            .clone()
+            .or_else(|| self.error_body.as_ref().and_then(ErrorBodyCapture::details))
+    }
+}
+
+#[derive(Default)]
+struct ErrorBodyCapture {
+    bytes: Vec<u8>,
+    truncated: bool,
+}
+
+impl ErrorBodyCapture {
+    fn push(&mut self, bytes: &Bytes) {
+        let remaining = MAX_ERROR_SUMMARY_BYTES.saturating_sub(self.bytes.len());
+        let copied = remaining.min(bytes.len());
+        self.bytes.extend_from_slice(&bytes[..copied]);
+        self.truncated |= copied < bytes.len();
+    }
+
+    fn details(&self) -> Option<ResponseErrorDetails> {
+        if self.bytes.is_empty() {
+            return None;
+        }
+        if !self.truncated
+            && let Ok(value) = serde_json::from_slice::<Value>(&self.bytes)
+        {
+            return Some(extract_response_error(Some(&value)));
+        }
+        let text = String::from_utf8_lossy(&self.bytes);
+        Some(ResponseErrorDetails {
+            code: None,
+            summary: sanitize_error_text(&text, MAX_ERROR_SUMMARY_BYTES, true, self.truncated),
+        })
     }
 }
 
@@ -398,7 +466,7 @@ impl SseUsageScanner {
     ) -> (
         Vec<Value>,
         Option<SseTerminalOutcome>,
-        Option<SseErrorDetails>,
+        Option<ResponseErrorDetails>,
     ) {
         if self.disabled {
             return (Vec::new(), None, None);
@@ -433,7 +501,7 @@ impl SseUsageScanner {
     ) -> (
         Vec<Value>,
         Option<SseTerminalOutcome>,
-        Option<SseErrorDetails>,
+        Option<ResponseErrorDetails>,
     ) {
         if self.disabled {
             return (Vec::new(), None, None);
@@ -472,7 +540,7 @@ fn sse_frame_end(bytes: &[u8]) -> Option<usize> {
 struct SseFrameObservation {
     value: Option<Value>,
     terminal_outcome: Option<SseTerminalOutcome>,
-    error: Option<SseErrorDetails>,
+    error: Option<ResponseErrorDetails>,
 }
 
 fn observe_sse_frame(frame: &[u8], api_format: ApiFormat) -> SseFrameObservation {
@@ -527,7 +595,12 @@ fn observe_sse_frame(frame: &[u8], api_format: ApiFormat) -> SseFrameObservation
     } else {
         None
     };
-    let error = failed.then(|| extract_sse_error(value.as_ref()));
+    let error = failed.then(|| {
+        value.as_ref().map_or_else(
+            || ResponseErrorDetails::from_message(None, &String::from_utf8_lossy(data.as_slice())),
+            |value| extract_response_error(Some(value)),
+        )
+    });
     SseFrameObservation {
         value,
         terminal_outcome,
@@ -535,9 +608,9 @@ fn observe_sse_frame(frame: &[u8], api_format: ApiFormat) -> SseFrameObservation
     }
 }
 
-fn extract_sse_error(value: Option<&Value>) -> SseErrorDetails {
+fn extract_response_error(value: Option<&Value>) -> ResponseErrorDetails {
     let Some(value) = value else {
-        return SseErrorDetails::default();
+        return ResponseErrorDetails::default();
     };
     let nested_error = value
         .get("error")
@@ -556,16 +629,82 @@ fn extract_sse_error(value: Option<&Value>) -> SseErrorDetails {
                 .or_else(|| error.get("type").and_then(error_scalar))
         })
         .or_else(|| value.get("code").and_then(error_scalar))
-        .and_then(|code| sanitize_error_text(&code, MAX_ERROR_CODE_BYTES, false));
-    let summary = nested_error
+        .and_then(|code| sanitize_error_text(&code, MAX_ERROR_CODE_BYTES, false, false));
+    let message = nested_error
         .and_then(|error| match error {
             Value::String(message) => Some(message.as_str()),
             Value::Object(_) => error.get("message").and_then(Value::as_str),
             _ => None,
         })
-        .or_else(|| value.get("message").and_then(Value::as_str))
-        .and_then(|message| sanitize_error_text(message, MAX_ERROR_SUMMARY_BYTES, true));
-    SseErrorDetails { code, summary }
+        .or_else(|| value.get("message").and_then(Value::as_str));
+    let summary = render_error_summary(value, message);
+    ResponseErrorDetails { code, summary }
+}
+
+fn render_error_summary(value: &Value, message: Option<&str>) -> Option<String> {
+    if let Value::String(value) = value {
+        return sanitize_error_text(value, MAX_ERROR_SUMMARY_BYTES, true, false);
+    }
+
+    let mut summary = message
+        .and_then(|message| sanitize_error_text(message, MAX_ERROR_SUMMARY_BYTES, true, false))
+        .unwrap_or_default();
+    if summary.len() < MAX_ERROR_SUMMARY_BYTES && !summary.is_empty() {
+        summary.push_str("\n\n");
+    }
+    let remaining = MAX_ERROR_SUMMARY_BYTES.saturating_sub(summary.len());
+    let mut writer = BoundedJsonWriter::new(remaining);
+    let result = serde_json::to_writer_pretty(&mut writer, value);
+    summary.push_str(&String::from_utf8_lossy(&writer.bytes));
+    sanitize_error_text(
+        &summary,
+        MAX_ERROR_SUMMARY_BYTES,
+        true,
+        result.is_err() || writer.truncated,
+    )
+}
+
+struct BoundedJsonWriter {
+    bytes: Vec<u8>,
+    limit: usize,
+    truncated: bool,
+}
+
+impl BoundedJsonWriter {
+    fn new(limit: usize) -> Self {
+        Self {
+            bytes: Vec::with_capacity(limit.min(4 * 1_024)),
+            limit,
+            truncated: false,
+        }
+    }
+}
+
+impl Write for BoundedJsonWriter {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        let remaining = self.limit.saturating_sub(self.bytes.len());
+        if remaining == 0 {
+            self.truncated = !buffer.is_empty();
+            return if buffer.is_empty() {
+                Ok(0)
+            } else {
+                Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    "bounded error detail is full",
+                ))
+            };
+        }
+        let copied = remaining.min(buffer.len());
+        self.bytes.extend_from_slice(&buffer[..copied]);
+        if copied < buffer.len() {
+            self.truncated = true;
+        }
+        Ok(copied)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 fn error_scalar(value: &Value) -> Option<String> {
@@ -577,10 +716,15 @@ fn error_scalar(value: &Value) -> Option<String> {
     }
 }
 
-fn sanitize_error_text(value: &str, maximum_bytes: usize, multiline: bool) -> Option<String> {
+fn sanitize_error_text(
+    value: &str,
+    maximum_bytes: usize,
+    multiline: bool,
+    force_truncated: bool,
+) -> Option<String> {
     let mut sanitized = String::new();
     let mut previous_was_cr = false;
-    let mut truncated = false;
+    let mut truncated = force_truncated;
     for character in value.chars() {
         let character = match character {
             '\r' if multiline => {
@@ -765,13 +909,12 @@ mod tests {
             )),
             Some(SseTerminalOutcome::Failed)
         );
-        assert_eq!(
-            collector.sse_error(),
-            Some(&super::SseErrorDetails {
-                code: Some("previous_response_not_found".into()),
-                summary: Some("retry full request".into()),
-            })
-        );
+        let error = collector.error_details().unwrap();
+        assert_eq!(error.code.as_deref(), Some("previous_response_not_found"));
+        let summary = error.summary.unwrap();
+        assert!(summary.starts_with("retry full request\n\n{"));
+        assert!(summary.contains("\"status\": 400"));
+        assert!(summary.contains("\"previous_response_not_found\""));
     }
 
     #[test]
@@ -798,13 +941,12 @@ mod tests {
             collector.sse_terminal_outcome(),
             Some(SseTerminalOutcome::Failed)
         );
-        assert_eq!(
-            collector.sse_error(),
-            Some(&super::SseErrorDetails {
-                code: Some("server_error".into()),
-                summary: Some("failed".into()),
-            })
-        );
+        let error = collector.error_details().unwrap();
+        assert_eq!(error.code.as_deref(), Some("server_error"));
+        let summary = error.summary.unwrap();
+        assert!(summary.starts_with("failed\n\n{"));
+        assert!(summary.contains("\"param\": null"));
+        assert!(summary.contains("\"sequence_number\": 3"));
     }
 
     #[test]
@@ -827,13 +969,12 @@ mod tests {
                 reasoning_tokens: 0,
             })
         );
-        assert_eq!(
-            collector.sse_error(),
-            Some(&super::SseErrorDetails {
-                code: Some("model_error".into()),
-                summary: Some("generation failed".into()),
-            })
-        );
+        let error = collector.error_details().unwrap();
+        assert_eq!(error.code.as_deref(), Some("model_error"));
+        let summary = error.summary.unwrap();
+        assert!(summary.starts_with("generation failed\n\n{"));
+        assert!(summary.contains("\"input_tokens\": 7"));
+        assert!(summary.contains("\"output_tokens\": 1"));
     }
 
     #[test]
@@ -850,19 +991,18 @@ mod tests {
             collector.sse_terminal_outcome(),
             Some(SseTerminalOutcome::Failed)
         );
-        assert_eq!(
-            collector.sse_error(),
-            Some(&super::SseErrorDetails {
-                code: Some("server_error".into()),
-                summary: Some("upstream failed".into()),
-            })
-        );
+        let error = collector.error_details().unwrap();
+        assert_eq!(error.code.as_deref(), Some("server_error"));
+        let summary = error.summary.unwrap();
+        assert!(summary.starts_with("upstream failed\n\n{"));
+        assert!(summary.contains("\"type\": \"server_error\""));
+        assert!(summary.contains("\"code\": null"));
     }
 
     #[test]
     fn sanitizes_and_bounds_sse_error_fields() {
         let mut collector = UsageCollector::new(ApiFormat::OpenAiResponses, true);
-        let message = format!("first\r\nsecond\0{}", "界".repeat(400));
+        let message = format!("first\r\nsecond\0{}", "界".repeat(10_000));
         collector.observe(&Bytes::from(
             format!(
                 "event: error\ndata: {}\n\n",
@@ -874,7 +1014,7 @@ mod tests {
             )
             .into_bytes(),
         ));
-        let error = collector.sse_error().unwrap();
+        let error = collector.error_details().unwrap();
         assert_eq!(error.code.as_deref(), Some("provider code"));
         assert!(
             error
@@ -885,6 +1025,39 @@ mod tests {
         );
         assert!(error.summary.as_ref().unwrap().ends_with('…'));
         assert!(error.summary.as_ref().unwrap().len() <= super::MAX_ERROR_SUMMARY_BYTES);
+    }
+
+    #[test]
+    fn captures_complete_nonstreaming_json_error_details() {
+        let mut collector = UsageCollector::new(ApiFormat::OpenAiChatCompletions, false);
+        collector.capture_error_body();
+        collector.observe(&Bytes::from_static(
+            br#"{"error":{"message":"quota exhausted","type":"rate_limit_error","#,
+        ));
+        collector.observe(&Bytes::from_static(
+            br#""param":"organization","code":"insufficient_quota"},"request_id":"req_123"}"#,
+        ));
+
+        let error = collector.error_details().unwrap();
+        assert_eq!(error.code.as_deref(), Some("insufficient_quota"));
+        let summary = error.summary.unwrap();
+        assert!(summary.starts_with("quota exhausted\n\n{"));
+        assert!(summary.contains("\"param\": \"organization\""));
+        assert!(summary.contains("\"request_id\": \"req_123\""));
+    }
+
+    #[test]
+    fn bounds_plain_text_error_bodies() {
+        let mut collector = UsageCollector::new(ApiFormat::OpenAiResponses, false);
+        collector.capture_error_body();
+        collector.observe(&Bytes::from("failure ".repeat(4_096)));
+
+        let error = collector.error_details().unwrap();
+        assert_eq!(error.code, None);
+        let summary = error.summary.unwrap();
+        assert!(summary.starts_with("failure failure"));
+        assert!(summary.ends_with('…'));
+        assert!(summary.len() <= super::MAX_ERROR_SUMMARY_BYTES);
     }
 
     #[test]

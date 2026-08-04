@@ -1220,6 +1220,10 @@ async fn unknown_model_returns_not_found_without_upstream_contact() {
     assert_eq!(logs[0].response_status_code, Some(404));
     assert_eq!(logs[0].reasoning_effort.as_deref(), Some("high"));
     assert!(logs[0].fast_mode);
+    assert_eq!(logs[0].error_code.as_deref(), Some("model_not_found"));
+    let summary = logs[0].error_summary.as_deref().unwrap();
+    assert!(summary.starts_with("The model `unknown-model` does not exist or is unavailable."));
+    assert!(summary.contains("\"type\": \"invalid_request_error\""));
 }
 
 #[tokio::test]
@@ -1282,6 +1286,11 @@ async fn configured_model_with_only_disabled_channels_returns_service_unavailabl
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].response_status_code, Some(503));
     assert_eq!(events[0].error_code.as_deref(), Some("no_healthy_channel"));
+    let summary = events[0].error_summary.as_deref().unwrap();
+    assert!(
+        summary.starts_with("No healthy upstream channel is currently available for this model.")
+    );
+    assert!(summary.contains("\"code\": \"no_healthy_channel\""));
 }
 
 #[tokio::test]
@@ -1848,7 +1857,14 @@ async fn images_edit_rejects_json_transforms_after_routing_without_forwarding_se
         logs[0].api_operation,
         ai_gateway::domain::ApiOperation::ImagesEdit
     );
-    assert_eq!(logs[0].error_summary, None);
+    assert_eq!(logs[0].error_code.as_deref(), Some("invalid_request"));
+    let summary = logs[0].error_summary.as_deref().unwrap();
+    assert!(
+        summary.starts_with("Images edit multipart bodies do not support request JSON transforms.")
+    );
+    assert!(summary.contains("\"code\": \"image_edit_json_transform_unsupported\""));
+    assert!(!summary.contains("do not log this"));
+    assert!(!summary.contains("sensitive-image"));
 }
 
 #[tokio::test]
@@ -2053,10 +2069,10 @@ async fn protocol_sse_errors_fail_logs_before_client_disconnect() {
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].outcome.as_str(), "failed");
     assert_eq!(events[0].error_code.as_deref(), Some("provider_error"));
-    assert_eq!(
-        events[0].error_summary.as_deref(),
-        Some("sensitive upstream detail")
-    );
+    let summary = events[0].error_summary.as_deref().unwrap();
+    assert!(summary.starts_with("sensitive upstream detail\n\n{"));
+    assert!(summary.contains("\"type\": \"server_error\""));
+    assert!(summary.contains("\"code\": \"provider_error\""));
     assert_eq!(
         events[0].response_status_code,
         Some(StatusCode::OK.as_u16())
@@ -2087,10 +2103,10 @@ async fn protocol_sse_errors_fail_logs_before_client_disconnect() {
     assert_eq!(events.len(), 2);
     assert_eq!(events[1].outcome.as_str(), "failed");
     assert_eq!(events[1].error_code.as_deref(), Some("server_error"));
-    assert_eq!(
-        events[1].error_summary.as_deref(),
-        Some("sensitive upstream detail")
-    );
+    let summary = events[1].error_summary.as_deref().unwrap();
+    assert!(summary.starts_with("sensitive upstream detail\n\n{"));
+    assert!(summary.contains("\"param\": null"));
+    assert!(summary.contains("\"sequence_number\": 3"));
     assert_eq!(
         events[1].response_status_code,
         Some(StatusCode::OK.as_u16())
@@ -3027,7 +3043,8 @@ async fn socks5_proxy_connects_and_keeps_credentials_out_of_upstream_and_logs() 
 
 #[tokio::test]
 async fn rejected_upstream_response_is_attempted_once_without_automatic_retry() {
-    let harness = harness(StatusCode::SERVICE_UNAVAILABLE, b"unavailable".to_vec()).await;
+    let upstream_body = br#"{"error":{"message":"provider overloaded","type":"server_error","param":"capacity","code":"overloaded"},"request_id":"req_123"}"#.to_vec();
+    let harness = harness(StatusCode::SERVICE_UNAVAILABLE, upstream_body.clone()).await;
 
     let response = authorized_post(
         &client(),
@@ -3040,7 +3057,15 @@ async fn rejected_upstream_response_is_attempted_once_without_automatic_retry() 
     .unwrap();
 
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(response.bytes().await.unwrap().as_ref(), upstream_body);
     assert_eq!(harness.upstream_requests().len(), 1);
+    let logs = harness.logs();
+    assert_eq!(logs.len(), 1);
+    assert_eq!(logs[0].error_code.as_deref(), Some("overloaded"));
+    let summary = logs[0].error_summary.as_deref().unwrap();
+    assert!(summary.starts_with("provider overloaded\n\n{"));
+    assert!(summary.contains("\"param\": \"capacity\""));
+    assert!(summary.contains("\"request_id\": \"req_123\""));
 }
 
 #[tokio::test]

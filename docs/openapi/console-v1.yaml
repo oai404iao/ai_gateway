@@ -4062,9 +4062,9 @@ components:
         error_code: { type: string, maxLength: 100, nullable: true }
         error_summary:
           type: string
-          maxLength: 1000
+          maxLength: 16384
           nullable: true
-          description: Bounded, cleaned upstream error message when available.
+          description: Bounded upstream response or gateway/transport error detail when available.
         billed_at: { $ref: "#/components/schemas/DateTimeNullable" }
 
     RequestLogSource:

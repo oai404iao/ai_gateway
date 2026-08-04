@@ -54,4 +54,4 @@ pub use request_log::{
     RequestLogPipelineMonitor, RequestLogSink,
 };
 pub use system_metrics::{SystemLoadReport, SystemMetricsService};
-pub(crate) use usage::{ResponseUsage, UsageCollector};
+pub(crate) use usage::{ResponseErrorDetails, ResponseUsage, UsageCollector};

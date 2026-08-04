@@ -7,6 +7,13 @@ Versioning.
 
 ## [Unreleased]
 
+### Changed
+
+- Retain up to 16KiB of cleaned request-log error detail for failed
+  non-streaming HTTP responses, SSE/Responses WebSocket terminal events, and
+  gateway or transport failures, instead of recording only short structured
+  SSE messages.
+
 ## [0.9.3] - 2026-08-04
 
 ### Added

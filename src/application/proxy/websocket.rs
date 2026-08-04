@@ -487,9 +487,10 @@ impl ResponsesWebSocketSession {
                     }
                     if connector_affinity_hit {
                         completion.set_preserve_affinity_on_failure(true);
-                        completion.finish(RequestOutcome::UpstreamUnavailable);
-                        send_proxy_error(client, ProxyError::sticky_connector_unavailable(error))
-                            .await;
+                        let error = ProxyError::sticky_connector_unavailable(error);
+                        completion
+                            .finish_with_proxy_error(RequestOutcome::UpstreamUnavailable, &error);
+                        send_proxy_error(client, error).await;
                         return SessionAction::Close;
                     }
                     let retry_route = select_websocket_route(
@@ -502,8 +503,10 @@ impl ResponsesWebSocketSession {
                         attempted_channel_slots.as_slice(),
                     );
                     let SelectionResult::Selected(route) = retry_route else {
-                        completion.finish(RequestOutcome::UpstreamUnavailable);
-                        send_proxy_error(client, ProxyError::connector_unavailable(error)).await;
+                        let error = ProxyError::connector_unavailable(error);
+                        completion
+                            .finish_with_proxy_error(RequestOutcome::UpstreamUnavailable, &error);
+                        send_proxy_error(client, error).await;
                         return SessionAction::Close;
                     };
                     let crate::routing::SelectedRoute {
@@ -545,11 +548,12 @@ impl ResponsesWebSocketSession {
             ) {
                 Ok(prepared) => prepared,
                 Err(error) => {
-                    completion.finish(if error.status.is_client_error() {
+                    let outcome = if error.status.is_client_error() {
                         RequestOutcome::ClientRequestError
                     } else {
                         RequestOutcome::UpstreamUnavailable
-                    });
+                    };
+                    completion.finish_with_proxy_error(outcome, &error);
                     send_proxy_error(client, error).await;
                     return SessionAction::Close;
                 }
@@ -559,7 +563,11 @@ impl ResponsesWebSocketSession {
                 .as_ref()
                 .is_some_and(|existing| existing.key != prepared.key && parsed.previous_response_id)
             {
-                completion.finish(RequestOutcome::ClientRequestError);
+                completion.finish_with_message(
+                    RequestOutcome::ClientRequestError,
+                    Some("previous_response_not_found"),
+                    "Previous response state is unavailable on the selected upstream connection.",
+                );
                 send_error(
                     client,
                     400,
@@ -606,7 +614,13 @@ impl ResponsesWebSocketSession {
                                 }
                                 completion.set_upstream_status(status);
                                 completion.response_headers_received();
-                                completion.finish(RequestOutcome::UpstreamHttpError);
+                                completion.finish_with_message(
+                                    RequestOutcome::UpstreamHttpError,
+                                    Some("upstream_websocket_handshake_failed"),
+                                    &format!(
+                                        "The upstream rejected the WebSocket handshake with HTTP {status}."
+                                    ),
+                                );
                                 send_error(
                                     client,
                                     status,
@@ -634,7 +648,13 @@ impl ResponsesWebSocketSession {
                                 });
                             let Some(SelectionResult::Selected(route)) = next else {
                                 let (outcome, status, code) = connection_failure_response(error);
-                                completion.finish(outcome);
+                                completion.finish_with_message(
+                                    outcome,
+                                    Some(code),
+                                    &format!(
+                                        "The selected upstream channel could not establish a WebSocket connection: {error}"
+                                    ),
+                                );
                                 send_error(
                                     client,
                                     status,
@@ -689,7 +709,11 @@ impl ResponsesWebSocketSession {
             }
 
             let Some(active) = pinned.as_mut() else {
-                completion.finish(RequestOutcome::UpstreamUnavailable);
+                completion.finish_with_message(
+                    RequestOutcome::UpstreamUnavailable,
+                    Some("upstream_unavailable"),
+                    "The selected upstream WebSocket connection is unavailable.",
+                );
                 return SessionAction::Close;
             };
             active.reusable = false;
@@ -697,7 +721,11 @@ impl ResponsesWebSocketSession {
             let request = match UpstreamUtf8Bytes::try_from(prepared.body) {
                 Ok(request) => request,
                 Err(_) => {
-                    completion.finish(RequestOutcome::ClientRequestError);
+                    completion.finish_with_message(
+                        RequestOutcome::ClientRequestError,
+                        Some("invalid_websocket_message"),
+                        "Responses WebSocket requests must contain valid UTF-8 JSON.",
+                    );
                     send_error(
                         client,
                         400,
@@ -717,9 +745,15 @@ impl ResponsesWebSocketSession {
             .await
             {
                 Ok(Ok(())) => {}
-                Ok(Err(_)) => {
+                Ok(Err(error)) => {
                     completion.connection_failed();
-                    completion.finish(RequestOutcome::UpstreamUnavailable);
+                    completion.finish_with_message(
+                        RequestOutcome::UpstreamUnavailable,
+                        Some("upstream_unavailable"),
+                        &format!(
+                            "The upstream WebSocket closed before the request could be sent: {error}"
+                        ),
+                    );
                     self.release_pinned(pinned.take());
                     send_error(
                         client,
@@ -733,7 +767,11 @@ impl ResponsesWebSocketSession {
                     return SessionAction::Close;
                 }
                 Err(_) => {
-                    completion.finish(RequestOutcome::StreamIdleTimeout);
+                    completion.finish_with_message(
+                        RequestOutcome::StreamIdleTimeout,
+                        Some("stream_idle_timeout"),
+                        "Sending the request to the upstream WebSocket timed out.",
+                    );
                     self.release_pinned(pinned.take());
                     send_error(
                         client,
@@ -1007,9 +1045,32 @@ async fn relay_upstream_response(
                 reset_idle(idle.as_mut(), idle_timeout);
                 let message = match incoming {
                     Some(Ok(message)) => message,
-                    Some(Err(_)) | None => {
+                    Some(Err(error)) => {
                         upstream.reusable = false;
-                        completion.finish(RequestOutcome::UpstreamBodyError);
+                        completion.finish_with_message(
+                            RequestOutcome::UpstreamBodyError,
+                            Some("upstream_websocket_closed"),
+                            &format!(
+                                "The upstream WebSocket failed before response.completed: {error}"
+                            ),
+                        );
+                        send_error(
+                            client,
+                            502,
+                            "api_error",
+                            "upstream_websocket_closed",
+                            "The upstream WebSocket closed before response.completed.",
+                            None,
+                        ).await;
+                        return SessionAction::Close;
+                    }
+                    None => {
+                        upstream.reusable = false;
+                        completion.finish_with_message(
+                            RequestOutcome::UpstreamBodyError,
+                            Some("upstream_websocket_closed"),
+                            "The upstream WebSocket closed before response.completed.",
+                        );
                         send_error(
                             client,
                             502,
@@ -1047,9 +1108,15 @@ async fn relay_upstream_response(
                             response_plan,
                         ) {
                             Ok(transformed) => transformed,
-                            Err(_) => {
+                            Err(error) => {
                                 upstream.reusable = false;
-                                completion.finish(RequestOutcome::ResponseTransformFailed);
+                                completion.finish_with_message(
+                                    RequestOutcome::ResponseTransformFailed,
+                                    Some("response_transform_failed"),
+                                    &format!(
+                                        "Upstream WebSocket event transformation failed: {error}"
+                                    ),
+                                );
                                 send_error(
                                     client,
                                     502,
@@ -1065,7 +1132,11 @@ async fn relay_upstream_response(
                             Ok(text) => text,
                             Err(_) => {
                                 upstream.reusable = false;
-                                completion.finish(RequestOutcome::UpstreamBodyError);
+                                completion.finish_with_message(
+                                    RequestOutcome::UpstreamBodyError,
+                                    Some("invalid_upstream_websocket_message"),
+                                    "The upstream returned a text WebSocket message that could not be forwarded as UTF-8.",
+                                );
                                 return SessionAction::Close;
                             }
                         };
@@ -1093,7 +1164,11 @@ async fn relay_upstream_response(
                     }
                     UpstreamMessage::Binary(_) => {
                         upstream.reusable = false;
-                        completion.finish(RequestOutcome::UpstreamBodyError);
+                        completion.finish_with_message(
+                            RequestOutcome::UpstreamBodyError,
+                            Some("invalid_upstream_websocket_message"),
+                            "The upstream returned an unsupported binary WebSocket message.",
+                        );
                         send_error(
                             client,
                             502,
@@ -1106,7 +1181,11 @@ async fn relay_upstream_response(
                     }
                     UpstreamMessage::Close(_) => {
                         upstream.reusable = false;
-                        completion.finish(RequestOutcome::UpstreamBodyError);
+                        completion.finish_with_message(
+                            RequestOutcome::UpstreamBodyError,
+                            Some("upstream_websocket_closed"),
+                            "The upstream WebSocket closed before response.completed.",
+                        );
                         send_error(
                             client,
                             502,
@@ -1132,7 +1211,11 @@ async fn relay_upstream_response(
                     }
                     Some(Ok(ClientMessage::Text(_) | ClientMessage::Binary(_))) => {
                         upstream.reusable = false;
-                        completion.finish(RequestOutcome::ClientRequestError);
+                        completion.finish_with_message(
+                            RequestOutcome::ClientRequestError,
+                            Some("websocket_request_in_progress"),
+                            "Only one response.create may be in flight on a WebSocket connection.",
+                        );
                         send_error(
                             client,
                             400,
@@ -1148,7 +1231,11 @@ async fn relay_upstream_response(
             }
             _ = &mut idle => {
                 upstream.reusable = false;
-                completion.finish(RequestOutcome::StreamIdleTimeout);
+                completion.finish_with_message(
+                    RequestOutcome::StreamIdleTimeout,
+                    Some("stream_idle_timeout"),
+                    "The upstream WebSocket was idle for too long.",
+                );
                 send_error(
                     client,
                     504,

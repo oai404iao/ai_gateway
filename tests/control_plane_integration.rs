@@ -3641,6 +3641,36 @@ async fn request_log_insert_is_idempotent_and_worker_continues_after_failure() {
 }
 
 #[tokio::test]
+async fn request_log_persists_extended_error_details() {
+    let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
+    let repository = RequestLogRepository::new(database.pool.clone());
+    let mut event = request_log_event(&seed, RequestLogOutcome::Failed);
+    let summary = format!(
+        "provider returned an extended diagnostic\n\n{}",
+        "stack frame\n".repeat(1_000)
+    );
+    assert!(summary.len() > 1_000);
+    assert!(summary.len() < 16 * 1_024);
+    event.error_code = Some("provider_error".into());
+    event.error_summary = Some(summary.clone());
+
+    assert_eq!(
+        repository.insert(&event).await.unwrap(),
+        RequestLogInsertOutcome::Inserted
+    );
+    let persisted: Option<String> =
+        sqlx::query_scalar("SELECT error_summary FROM request_logs WHERE id = $1")
+            .bind(event.id)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert_eq!(persisted.as_deref(), Some(summary.as_str()));
+
+    database.cleanup().await;
+}
+
+#[tokio::test]
 async fn request_log_batch_insert_isolates_duplicates_and_invalid_statuses() {
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
@@ -6863,10 +6893,9 @@ async fn proxy_request_logs_reach_postgres_for_terminal_and_rejected_requests() 
     .await;
     assert_eq!(sse_error.response_status_code, Some(200));
     assert_eq!(sse_error.request_protocol, "sse");
-    assert_eq!(
-        sse_error.error_summary.as_deref(),
-        Some("upstream quota exhausted")
-    );
+    let summary = sse_error.error_summary.as_deref().unwrap();
+    assert!(summary.starts_with("upstream quota exhausted\n\n{"));
+    assert!(summary.contains("\"code\": \"provider_error\""));
 
     *state.0.lock().unwrap() = UpstreamMode::Immediate(StatusCode::TOO_MANY_REQUESTS);
     let response = request(&seed.secret, &seed.client_model, false)
@@ -6885,6 +6914,7 @@ async fn proxy_request_logs_reach_postgres_for_terminal_and_rejected_requests() 
     .await;
     assert_eq!(upstream_failure.response_status_code, Some(429));
     assert_eq!(upstream_failure.request_protocol, "non_stream");
+    assert_eq!(upstream_failure.error_summary.as_deref(), Some("upstream"));
 
     *state.0.lock().unwrap() = UpstreamMode::HeaderDelay;
     let response = request(&seed.secret, &seed.client_model, false)
@@ -6905,6 +6935,12 @@ async fn proxy_request_logs_reach_postgres_for_terminal_and_rejected_requests() 
     assert_eq!(
         header_timeout.error_code.as_deref(),
         Some("response_header_timeout")
+    );
+    assert!(
+        header_timeout
+            .error_summary
+            .as_deref()
+            .is_some_and(|summary| summary.contains("did not return response headers in time"))
     );
 
     *state.0.lock().unwrap() = UpstreamMode::OneChunkThenIdle;
