@@ -2,17 +2,27 @@
 
 > 类型：外部参考。
 >
-> 最近核对：2026-07-23。
+> 最近核对：2026-08-04。
 >
-> 权威来源：[Create chat completion](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)。
+> 权威来源：[OpenAI Create chat completion](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)、
+> [DeepSeek Create Chat Completion](https://api-docs.deepseek.com/api/create-chat-completion)、
+> [DeepSeek Context Caching](https://api-docs.deepseek.com/guides/kv_cache)。
 
 ## 外部接口关键语义
 
 - 请求路径是 `POST /v1/chat/completions`。
 - 请求以 `model` 和 `messages` 为核心；具体可用字段和角色取决于模型与上游实现。
 - 非流式响应通常是一个 Chat Completion JSON 对象。
+- OpenAI usage 使用 `prompt_tokens`、`completion_tokens` 与 `total_tokens`；缓存命中和
+  reasoning 细分位于 `prompt_tokens_details.cached_tokens` 与
+  `completion_tokens_details.reasoning_tokens`。`completion_tokens` 是包含 reasoning 的输出总量。
+- DeepSeek 同样使用 `prompt_tokens` 与 `completion_tokens`，并可额外返回
+  `prompt_cache_hit_tokens`、`prompt_cache_miss_tokens` 和
+  `completion_tokens_details.reasoning_tokens`。
 - `stream=true` 时，响应使用 server-sent events，逐步返回 Chat Completion chunk；OpenAI 风格流通常以 `data: [DONE]` 结束。
-- 流式 usage 依赖上游支持；OpenAI 兼容实现常通过 `stream_options.include_usage=true` 在终端前提供 usage。
+- 流式 usage 依赖上游支持。OpenAI 在 `stream_options.include_usage=true` 时于
+  `[DONE]` 前发送 `choices: []` 的 usage 汇总 chunk；DeepSeek 兼容响应也可能把 usage
+  直接附加在带非空 `finish_reason` 的最终内容 chunk。
 
 完整字段、工具调用、结构化输出和模型限制必须查阅官方文档及目标上游文档。
 
@@ -24,7 +34,13 @@
 - 无变换时，请求 JSON 的空白、键顺序和原始字节保持不变。
 - 普通响应状态和 body 默认透传。
 - SSE 无变换时按原始字节转发；启用变换时按完整 SSE frame 应用格式专属规则。
-- usage 采集识别 `prompt_tokens`、`completion_tokens`、`prompt_tokens_details.cached_tokens`，并兼容部分上游的缓存字段别名。
+- usage 采集把 `prompt_tokens` 记录为输入总量，把 `completion_tokens` 原样记录为输出总量，
+  并把 `completion_tokens_details.reasoning_tokens` 作为输出子集单独保留，不从输出总量中扣除。
+- 缓存命中优先读取 DeepSeek 的 `prompt_cache_hit_tokens`，否则读取 OpenAI 的
+  `prompt_tokens_details.cached_tokens`；`prompt_cache_miss_tokens` 不单独存储，未缓存输入由
+  输入总量减缓存命中得到。
+- SSE 同时接受 OpenAI 的空 `choices` usage 汇总 chunk 与 DeepSeek 的
+  `finish_reason` usage chunk；若两者都出现，以后到达的最终汇总为准。
 - 日志把 `[DONE]` 视为 Chat Completions 流的成功终止信号之一。
 
 ## 接入检查

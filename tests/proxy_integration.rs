@@ -1517,6 +1517,61 @@ async fn matching_chat_model_preserves_body_and_forwards_response_safely() {
 }
 
 #[tokio::test]
+async fn deepseek_chat_nonstream_usage_preserves_total_output_and_reasoning() {
+    let upstream_body = br#"{
+        "id":"b6de8b7e-d52a-4e36-9032-7362d940c5fd",
+        "object":"chat.completion",
+        "created":1785837502,
+        "model":"deepseek-v4-flash",
+        "choices":[{
+            "index":0,
+            "message":{
+                "role":"assistant",
+                "content":"pong",
+                "reasoning_content":"The answer is pong."
+            },
+            "finish_reason":"stop"
+        }],
+        "usage":{
+            "prompt_tokens":11,
+            "completion_tokens":49,
+            "total_tokens":60,
+            "prompt_tokens_details":{"cached_tokens":0},
+            "completion_tokens_details":{"reasoning_tokens":46},
+            "prompt_cache_hit_tokens":0,
+            "prompt_cache_miss_tokens":11
+        }
+    }"#
+    .to_vec();
+    let harness = harness(StatusCode::OK, upstream_body.clone()).await;
+
+    let response = authorized_post(
+        &client(),
+        harness.url("/v1/chat/completions"),
+        CLIENT_KEY,
+        br#"{"model":"same-model","messages":[{"role":"user","content":"ping"}]}"#.to_vec(),
+    )
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.bytes().await.unwrap().as_ref(), upstream_body);
+    let logs = harness.logs();
+    assert_eq!(logs.len(), 1);
+    assert_eq!(
+        logs[0].billing.as_ref().unwrap().usage,
+        Some(ai_gateway::domain::RequestUsage {
+            input_tokens: 11,
+            cached_input_tokens: 0,
+            cache_write_tokens: 0,
+            output_tokens: 49,
+            reasoning_tokens: 46,
+        })
+    );
+}
+
+#[tokio::test]
 async fn common_forwarding_metadata_is_filtered_for_every_http_operation() {
     let harness = harness(StatusCode::OK, br#"{}"#.to_vec()).await;
     let client = client();

@@ -84,7 +84,7 @@ describe("RequestLogsView", () => {
     expect(screen.queryByText(CHANNEL.id)).not.toBeInTheDocument();
     expect(screen.getByLabelText("Uncached input: 10")).toHaveTextContent("10");
     expect(screen.getByLabelText("Cached input: 2")).toHaveTextContent("2");
-    expect(screen.getByLabelText("Non-reasoning output: 3")).toHaveTextContent("3");
+    expect(screen.getByLabelText("Output tokens: 4")).toHaveTextContent("4");
     expect(screen.getByLabelText("Reasoning tokens: 1")).toHaveTextContent("1");
     expect(screen.getByLabelText("Reasoning effort: High")).toHaveTextContent("High");
     expect(screen.getByLabelText("Fast mode")).toHaveTextContent("Fast");
