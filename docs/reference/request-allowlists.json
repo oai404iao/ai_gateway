@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "verified_at": "2026-08-04",
+  "verified_at": "2026-08-05",
   "sources": {
     "openai_node_commit": "854892a0580980449ce1ed04aa5e3831d3330383",
     "codex_commit": "5af85998c24fb3353ddd8164c3ed472057b03cb3"
@@ -68,6 +68,7 @@
         "unknown": "reject",
         "allow": [
           "audio",
+          "enable_thinking",
           "frequency_penalty",
           "function_call",
           "functions",
@@ -97,6 +98,7 @@
           "stream",
           "stream_options",
           "temperature",
+          "thinking",
           "tool_choice",
           "tools",
           "top_logprobs",

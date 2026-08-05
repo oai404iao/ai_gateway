@@ -4,7 +4,7 @@
 >
 > 状态：当前。
 >
-> 最近核对：2026-08-04。
+> 最近核对：2026-08-05。
 >
 > 机器可读权威契约：
 > [`request-allowlists.json`](request-allowlists.json)。
@@ -16,7 +16,10 @@
 > [Images](https://github.com/openai/openai-node/blob/854892a0580980449ce1ed04aa5e3831d3330383/src/resources/images.ts) 请求类型；
 > [`openai/codex@5af8599`](https://github.com/openai/codex/tree/5af85998c24fb3353ddd8164c3ed472057b03cb3) 的
 > [Responses wire type](https://github.com/openai/codex/blob/5af85998c24fb3353ddd8164c3ed472057b03cb3/codex-rs/codex-api/src/common.rs) 与
-> [Images wire type](https://github.com/openai/codex/blob/5af85998c24fb3353ddd8164c3ed472057b03cb3/codex-rs/codex-api/src/images.rs)。
+> [Images wire type](https://github.com/openai/codex/blob/5af85998c24fb3353ddd8164c3ed472057b03cb3/codex-rs/codex-api/src/images.rs)；
+> [DeepSeek Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode) 与
+> [阿里云百炼深度思考](https://help.aliyun.com/zh/model-studio/deep-thinking) 的
+> Chat Completions 兼容扩展。
 
 ## 目标
 
@@ -93,6 +96,10 @@ Header 与 Cloudflare 转发 Header。这些名称既在客户端入口删除，
 各接口的 `client_body.allow` 是当前支持的完整顶层字段白名单。未知顶层字段返回
 `request_body_field_unsupported`。字段已知但值不能按契约忽略时返回
 `request_body_field_value_unsupported`。
+
+Chat Completions 额外允许第三方 OpenAI-compatible 上游常用的顶层扩展字段 `thinking` 和
+`enable_thinking`。网关不解释或校验这两个字段的值，只按普通允许字段保留并转发；具体结构、
+开关语义和模型支持范围由选中的上游决定。
 
 Images edit 额外兼容部分通用表单会提交、但当前公开 edit 类型未声明的
 `moderation=auto`：该默认值在客户端入口层被删除；`moderation=low` 或其他值返回错误。
@@ -171,7 +178,8 @@ part，不把图片整体读回内存。
 
 新增或修改请求字段时：
 
-1. 先核对 OpenAI 官方请求类型与本机 `/home/u/dev/research/codex` 的当前 wire type；
+1. 先核对 OpenAI 官方请求类型、涉及的第三方官方兼容文档与本机
+   `/home/u/dev/research/codex` 的当前 wire type；
 2. 首先编辑 `request-allowlists.json`，更新 `verified_at` 和 source commit；
 3. 对每个字段明确选择 `allow`、`ignore` 或 `reject`，不得依赖未列出字段的默认动作表达已知
    provider 差异；
