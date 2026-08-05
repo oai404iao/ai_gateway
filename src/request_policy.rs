@@ -822,6 +822,21 @@ mod tests {
     }
 
     #[test]
+    fn responses_http_client_policy_preserves_codex_client_metadata() {
+        let original = Bytes::from_static(
+            br#"{"model":"gpt-5-codex","input":[],"client_metadata":{"session_id":"session","thread_id":"thread"},"stream":true,"store":false}"#,
+        );
+        let allowed = apply_json_body_policy(
+            RequestPolicyLayer::Client,
+            RequestInterface::ResponsesHttp,
+            original.clone(),
+        )
+        .unwrap();
+        assert!(!allowed.changed);
+        assert_eq!(allowed.body, original);
+    }
+
+    #[test]
     fn every_client_interface_rejects_unknown_top_level_body_fields() {
         for interface in REQUIRED_INTERFACES {
             let error = if interface == RequestInterface::ImagesEdit {

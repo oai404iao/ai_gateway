@@ -116,6 +116,7 @@
         "unknown": "reject",
         "allow": [
           "background",
+          "client_metadata",
           "context_management",
           "conversation",
           "include",

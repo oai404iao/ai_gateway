@@ -118,6 +118,7 @@ Images edit 额外兼容部分通用表单会提交、但当前公开 edit 类�
 ### Responses HTTP
 
 - 只允许 Codex `ResponsesApiRequest` 声明的字段；
+- 保留 Codex 客户端生成的 `client_metadata`，包括安装、窗口、线程与请求追踪元数据；
 - `metadata`、`user`、`safety_identifier` 与 `max_output_tokens` 被忽略；
 - `previous_response_id` 仅允许 `null` 或空字符串后删除，非空值返回错误；
 - provider 未支持的状态、采样、prompt template、moderation 和缓存选项仅接受契约列出的
