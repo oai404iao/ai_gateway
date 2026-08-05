@@ -419,6 +419,7 @@ fn gateway(
         }],
         proxies: vec![],
         templates: vec![],
+        mcp_servers: vec![],
     };
     let upstream = UpstreamTimeoutDefaults::new(
         Duration::from_secs(settings.timeout.as_secs().saturating_sub(1).clamp(1, 10)),

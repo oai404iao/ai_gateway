@@ -25,7 +25,8 @@
 
 > **Status:** Current implementation, under active development. The public
 > data plane supports Chat Completions, Responses, Codex standalone web
-> search, non-streaming JSON Images generation, and multipart Images edits.
+> search, non-streaming JSON Images generation, multipart Images edits, and
+> an optional stateless Search MCP transport.
 
 `ai-gateway` is a self-hosted LLM request gateway built with Rust, Axum,
 Tokio, SQLx, and PostgreSQL. It keeps routing on an immutable in-memory
@@ -37,6 +38,10 @@ separate management Console for users and administrators.
 - **OpenAI-compatible data plane** for Chat Completions, Responses, the Codex
   standalone web-search extension, Images generation, and multipart Images
   edits over HTTP, SSE, and Responses WebSocket where applicable.
+- **Optional stateless MCP transport** built with the `mcp-server` feature.
+  PostgreSQL-managed `/mcp/{slug}` instances expose Codex-compatible
+  `web.run` while reusing Gateway API keys, routing, admission, billing, and
+  durable request logs.
 - **Priority and weighted routing** with passive health, optional session
   affinity, and controlled failover before upstream response headers arrive.
 - **In-process upstream connectors** keep provider-specific authentication and
@@ -74,6 +79,7 @@ separate management Console for users and administrators.
 | `GET /v1/responses` + Upgrade | Client API key | Proxies sequential Responses requests over WebSocket. |
 | `POST /v1/images/generations` | Client API key | Proxies non-streaming JSON Images generation requests. |
 | `POST /v1/images/edits` | Client API key | Proxies non-streaming multipart Images edit requests. |
+| `POST /mcp/{slug}` | Client API key | Optional stateless MCP `2026-07-28` transport; currently exposes managed Search `web.run` instances. |
 
 Each API format uses separate routing rules and never falls back or transforms
 into another format. JSON/data-URL Images edits, image streaming, embeddings,
@@ -95,6 +101,14 @@ Public listener (/v1/*)
   → reusable HTTP client or pinned Responses WebSocket
   → streamed upstream response
   → durable asynchronous logging, usage, and settlement
+
+MCP client
+  │  Same Bearer API key
+  ▼
+Public listener (/mcp/{slug}, optional)
+  → stateless protocol / Host / Origin validation
+  → immutable MCP registry and API-key route authorization
+  → existing standalone-search proxy operation
 
 Browser or Console client
   │  JWT through an HTTPS reverse proxy
@@ -258,8 +272,8 @@ Configuration is split into two layers:
 
 | Layer | Source | Examples |
 | --- | --- | --- |
-| Process/bootstrap | TOML | Listeners, PostgreSQL, request limits, default and Images-specific response-header timeouts, durable spool, Console JWT key paths. |
-| Dynamic control plane | PostgreSQL through the Console | Users, API keys, models, routes, channels, proxies, transforms, and forwarding settings. |
+| Process/bootstrap | TOML | Listeners, PostgreSQL, request limits, optional MCP transport, default and Images-specific response-header timeouts, durable spool, Console JWT key paths. |
+| Dynamic control plane | PostgreSQL through the Console | Users, API keys, models, routes, channels, proxies, transforms, MCP instances, and forwarding settings. |
 
 Console writes validate the complete candidate configuration before commit and
 publish a new immutable snapshot immediately afterward. A periodic reload
@@ -268,6 +282,8 @@ worker provides cross-process convergence.
 Start with [`config.example.toml`](config.example.toml). Production sizing,
 PostgreSQL tuning, storage, and operational metrics are covered in the
 [production configuration guide](docs/user/production-configuration.md).
+The optional stateless Search MCP transport is documented in the
+[MCP service guide](docs/user/mcp-services.md).
 
 ## 🐳 Production deployment
 

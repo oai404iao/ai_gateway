@@ -37,11 +37,11 @@ use crate::{
         CodexCredentialImportInput, CodexCredentialUpdateInput, CodexCredentialView,
         CodexOauthStartInput, CodexQuotaWindowHistory, ConfigTemplateCreateInput,
         ConfigTemplateInput, ConsoleApiKey, ControlPlaneMutation, CostStatisticsFilter,
-        InviteUserInput, ModelInput, ModelRuleInput, ProxyCreateInput, ProxyInput,
-        RequestLogFilter, RequestLogRepository, SelfApiKeyCreate, SelfApiKeyUpdate,
-        SelfCodexQuotaCredentialView, SelfCodexQuotaWindowHistory, SpendLeaderboardFilter,
-        SpendLeaderboardPeriod, StatisticsGranularity, SystemSettingsInput, UserBatchUpdateInput,
-        UserGroupInput, UserInput, UserSettingsInput, UserUpdateInput,
+        InviteUserInput, McpServerCreateInput, McpServerInput, ModelInput, ModelRuleInput,
+        ProxyCreateInput, ProxyInput, RequestLogFilter, RequestLogRepository, SelfApiKeyCreate,
+        SelfApiKeyUpdate, SelfCodexQuotaCredentialView, SelfCodexQuotaWindowHistory,
+        SpendLeaderboardFilter, SpendLeaderboardPeriod, StatisticsGranularity, SystemSettingsInput,
+        UserBatchUpdateInput, UserGroupInput, UserInput, UserSettingsInput, UserUpdateInput,
     },
     runtime_config::ConfigError,
 };
@@ -283,6 +283,16 @@ pub fn router(state: ConsoleState) -> Router {
         .route(
             "/console/v1/transforms/templates/{id}",
             get(get_config_template).put(update_config_template),
+        )
+        .route(
+            "/console/v1/mcp-servers",
+            get(list_mcp_servers).post(create_mcp_server),
+        )
+        .route(
+            "/console/v1/mcp-servers/{id}",
+            get(get_mcp_server)
+                .put(update_mcp_server)
+                .delete(delete_mcp_server),
         )
         .route("/console/v1/request-logs", get(list_all_request_logs))
         .route("/console/v1/request-logs/{id}", get(get_request_log))
@@ -2084,6 +2094,77 @@ async fn update_config_template(
     .await
 }
 
+async fn list_mcp_servers(
+    State(state): State<ConsoleState>,
+) -> Result<Json<serde_json::Value>, ConsoleError> {
+    Ok(Json(
+        serde_json::to_value(state.coordinator.lists().await?.mcp_servers)
+            .expect("Console MCP server DTO serializes"),
+    ))
+}
+
+async fn create_mcp_server(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Json(input): Json<McpServerCreateInput>,
+) -> Result<(StatusCode, Json<MutationResponse>), ConsoleError> {
+    mutate_created(
+        &state,
+        principal,
+        ControlPlaneMutation::CreateMcpServer(input),
+    )
+    .await
+}
+
+async fn get_mcp_server(
+    State(state): State<ConsoleState>,
+    Path(id): Path<Uuid>,
+) -> Result<Response, ConsoleError> {
+    let value = state
+        .coordinator
+        .mcp_server(id)
+        .await?
+        .map(to_json)
+        .ok_or(ConsoleError::NotFound)?;
+    resource_response(value)
+}
+
+async fn update_mcp_server(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(input): Json<McpServerInput>,
+) -> Result<Json<MutationResponse>, ConsoleError> {
+    mutate(
+        &state,
+        principal,
+        ControlPlaneMutation::UpdateMcpServer {
+            id,
+            input,
+            expected_updated_at: if_match(&headers)?,
+        },
+    )
+    .await
+}
+
+async fn delete_mcp_server(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Json<MutationResponse>, ConsoleError> {
+    mutate(
+        &state,
+        principal,
+        ControlPlaneMutation::DeleteMcpServer {
+            id,
+            expected_updated_at: if_match(&headers)?,
+        },
+    )
+    .await
+}
+
 async fn list_all_request_logs(
     State(state): State<ConsoleState>,
     Query(query): Query<LogQuery>,
@@ -2717,6 +2798,7 @@ fn repository_error_message(error: &crate::persistence::RepositoryError) -> &'st
         crate::persistence::RepositoryError::RegistrationInvitationCodeConflict => {
             "registration_invitation_code_conflict"
         }
+        crate::persistence::RepositoryError::McpServerSlugConflict => "mcp_server_slug_conflict",
         _ => "Console operation rejected",
     }
 }
@@ -2732,9 +2814,8 @@ fn repository_status(error: &crate::persistence::RepositoryError) -> StatusCode 
         | crate::persistence::RepositoryError::LastAdministrator
         | crate::persistence::RepositoryError::CannotDisableSelf
         | crate::persistence::RepositoryError::CannotResetSelf
-        | crate::persistence::RepositoryError::RegistrationInvitationCodeConflict => {
-            StatusCode::CONFLICT
-        }
+        | crate::persistence::RepositoryError::RegistrationInvitationCodeConflict
+        | crate::persistence::RepositoryError::McpServerSlugConflict => StatusCode::CONFLICT,
         crate::persistence::RepositoryError::Validation => StatusCode::UNPROCESSABLE_ENTITY,
         crate::persistence::RepositoryError::TemporaryPasswordUnavailable => {
             StatusCode::UNPROCESSABLE_ENTITY

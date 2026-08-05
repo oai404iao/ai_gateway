@@ -28,7 +28,7 @@ use crate::{
     admission::AdmissionError,
     domain::{
         ApiFormat, ApiKeyPermission, ApiOperation, CompiledApiKey, CompiledChannel,
-        CompiledModelRule, RequestProtocol,
+        CompiledModelRule, RequestLogSource, RequestProtocol,
     },
     request_policy::{
         RequestInterface, RequestPolicyLayer, apply_json_body_policy, filter_client_headers,
@@ -397,6 +397,7 @@ impl ResponsesWebSocketSession {
             SelectionResult::UnknownOrInaccessibleModel => {
                 self.proxy.record_rejected(
                     &api_key,
+                    RequestLogSource::Client,
                     OPENAI_RESPONSES_FORMAT,
                     ApiOperation::Responses,
                     &parsed.model,
@@ -419,6 +420,7 @@ impl ResponsesWebSocketSession {
             SelectionResult::NoHealthyChannel { rule } => {
                 self.proxy.record_no_healthy_channel(
                     &api_key,
+                    RequestLogSource::Client,
                     OPENAI_RESPONSES_FORMAT,
                     ApiOperation::Responses,
                     &parsed.model,
@@ -446,6 +448,7 @@ impl ResponsesWebSocketSession {
         let mut completion = CompletionGuard::new(
             Arc::clone(&self.proxy.request_log_sink),
             &api_key,
+            RequestLogSource::Client,
             &parsed.model,
             &parsed.log_metadata,
             RequestProtocol::WebSocket,

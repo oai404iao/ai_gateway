@@ -102,6 +102,8 @@ verification_key_path = "./config/console-jwt-public.pem"
 - `image_edit_spool_directory` 必须位于容量足够的本地文件系统。Unix 上目录和临时文件分别使用
   `0700` 与 `0600`；图片字节不会进入请求日志。
 - `console_body_bytes` 限制已认证 Console 写操作；`auth_body_bytes` 限制登录、注册、刷新和邀请激活请求。
+- 启用 `mcp-server` feature 和 `[mcp]` 后，`request_body_bytes` 限制 MCP JSON-RPC
+  envelope，`search_result_bytes` 限制 Search MCP 有界收集的上游结果。
 
 ## 上游超时
 
@@ -139,9 +141,17 @@ Completions、Responses 和其他辅助上游请求继续使用 `response_header
   路由规则；当前只支持非流式 generation。
 - `POST /v1/images/edits`：接受带 `model`、一个或多个 `image`/`image[]` 和可选
   `mask` 的 `multipart/form-data`，仅匹配 Images 路由规则。
+- 可选 `POST /mcp/{slug}`：无状态 MCP `2026-07-28` transport。当前已实现的
+  `web_search` kind 暴露 `web.run`，并在同一不可变快照内调用既有 standalone search
+  Proxy use case。
 
 三个 OpenAI 格式绝不互相回退。客户端 `Authorization` 不会转发给上游；网关清理
 hop-by-hop headers 后，按渠道配置最后注入上游认证。
+
+MCP 不是第四种 `ApiFormat`，也不会通过本机 HTTP 回环到 `/v1/alpha/search`。它复用同一个
+Gateway API Key、Responses `proxy` 权限、模型规则和 Channel 可达性。Search ref-id 的跨请求
+连续性通过客户端显式回传 `search_session_id`，服务端不保存 MCP Session。完整配置、协议
+Header 和工具边界见[无状态 MCP 服务](mcp-services.md)。
 
 所有公开数据面请求先应用客户端入口白名单：未列出的 Header 被忽略，未列出的顶层 JSON 或
 multipart 字段返回 `400 request_body_field_unsupported`。当前只检查顶层字段，允许字段内部的
@@ -516,6 +526,7 @@ refresh、reset、编辑或导出操作；未授权凭证与不存在的凭证�
 - 渠道批量修改：`POST /console/v1/routing/channels/batch`
 - 网络：`/console/v1/network/proxies`、`POST /console/v1/network/proxies/test`
 - 变换模板：`/console/v1/transforms/templates`
+- MCP 实例：`/console/v1/mcp-servers`
 - 观测事实：`GET /console/v1/request-logs`、`GET /console/v1/audit-logs`
 - 花费排行榜：`GET /console/v1/statistics/spend-leaderboard`
 - 系统负载：`GET /console/v1/system/load`（当前实例的 CPU、内存、运行时、队列、日志积压、Responses WebSocket Session/连接池和数据库连接池压力；Console 页面位于“运维”下的 `/admin/system-load`）
@@ -641,6 +652,9 @@ API Key 和小时/天聚合粒度，不提供用户或渠道筛选，响应中�
 `available_models` 中选择，并匹配已配置模型的 `source_model_id`，以便保存价格快照。定时测试按渠道 API 格式发出非流式 Chat Completions 或 Responses 请求，
 并复用该渠道的代理、超时、变换和上游鉴权配置。Images 渠道不能配置 `test_model`，
 不会被定时测试。手工禁用的渠道与禁用渠道组不会被测试。
+
+MCP 转发日志的 `request_source` 为 `mcp`；它们仍按底层
+`standalone_web_search` operation 计费，并且不保存 tool arguments 或结果。
 
 定时测试日志写入 `request_logs`，`request_source` 为 `scheduled_test`。它们使用系统内置、
 管理员角色的内部 API Key。网关会解析响应中的 token 用量，并按该模型的不可变价格快照、模型高级计费规则和渠道计费倍率计算成本；结算会扣减该系统管理员账户余额并累计其内部 API Key 的额度用量，不会归属到任何普通用户。系统内部身份不会出现在用户和 API Key 管理列表中。自动禁用和自动恢复都会写入系统审计日志并立即发布新的路由快照。

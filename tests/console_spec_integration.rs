@@ -3667,6 +3667,281 @@ async fn model_rule_uses_its_upstream_model_as_the_price_source() {
     database.cleanup().await;
 }
 
+#[tokio::test]
+async fn mcp_server_crud_publishes_registry_and_uses_etags() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+    let model = request(
+        &app,
+        "POST",
+        "/console/v1/models",
+        serde_json::json!({
+            "source_model_id": "mcp-search-upstream",
+            "display_name": "MCP search upstream",
+            "enabled": true,
+            "price_unit_tokens": 1000000,
+            "input_unit_price": "0",
+            "cached_input_unit_price": "0",
+            "cache_write_unit_price": "0",
+            "output_unit_price": "0",
+            "price_effective_at": chrono::Utc::now().to_rfc3339(),
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(model.status(), StatusCode::CREATED);
+    let model_id = body_json(model).await["id"].as_str().unwrap().to_owned();
+
+    let group = request(
+        &app,
+        "POST",
+        "/console/v1/routing/channel-groups",
+        serde_json::json!({
+            "name": "mcp-search-group",
+            "api_format": "open_ai_responses",
+            "priority": 1,
+            "selection_strategy": "weighted_random",
+            "enabled": true,
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(group.status(), StatusCode::CREATED);
+    let group_id = body_json(group).await["id"].as_str().unwrap().to_owned();
+
+    let channel = request(
+        &app,
+        "POST",
+        "/console/v1/routing/channels",
+        serde_json::json!({
+            "channel_group_id": group_id,
+            "api_format": "open_ai_responses",
+            "name": "mcp-search-channel",
+            "base_url": "https://search.example.test",
+            "enabled": true,
+            "supports_standalone_web_search": true,
+            "weight": 1,
+            "upstream_auth_kind": "none",
+            "available_models": ["mcp-search-upstream"],
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(channel.status(), StatusCode::CREATED);
+    let channel_id = body_json(channel).await["id"].as_str().unwrap().to_owned();
+
+    let rule = request(
+        &app,
+        "POST",
+        "/console/v1/routing/model-rules",
+        serde_json::json!({
+            "client_model": "mcp-search-client",
+            "api_format": "open_ai_responses",
+            "upstream_model_id": model_id,
+            "channel_ids": [channel_id],
+            "enabled": true,
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(rule.status(), StatusCode::CREATED);
+    let rule_id = body_json(rule).await["id"].as_str().unwrap().to_owned();
+
+    let created = request(
+        &app,
+        "POST",
+        "/console/v1/mcp-servers",
+        serde_json::json!({
+            "slug": "search",
+            "kind": "web_search",
+            "name": "Search MCP",
+            "description": "Search through the gateway",
+            "model_rule_id": rule_id,
+            "settings": {
+                "external_web_access": "live",
+                "search_context_size": "medium",
+                "allowed_domains": ["example.test"],
+                "blocked_domains": [],
+                "max_output_tokens": {
+                    "short": 1000,
+                    "medium": 3000,
+                    "long": 6000
+                }
+            },
+            "enabled": true,
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let mcp_id = body_json(created).await["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        app.runtime
+            .snapshot()
+            .mcp_server("search")
+            .unwrap()
+            .model_rule()
+            .client_model(),
+        "mcp-search-client"
+    );
+
+    let duplicate = request(
+        &app,
+        "POST",
+        "/console/v1/mcp-servers",
+        serde_json::json!({
+            "slug": "search",
+            "kind": "web_search",
+            "name": "Duplicate",
+            "model_rule_id": rule_id,
+            "settings": {},
+            "enabled": false,
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(duplicate.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        body_json(duplicate).await["error"],
+        "mcp_server_slug_conflict"
+    );
+
+    let listed = request(
+        &app,
+        "GET",
+        "/console/v1/mcp-servers",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(listed.status(), StatusCode::OK);
+    let listed = body_json(listed).await;
+    assert_eq!(listed.as_array().unwrap().len(), 1);
+    assert_eq!(listed[0]["slug"], "search");
+    assert_eq!(listed[0]["kind"], "web_search");
+    assert_eq!(listed[0]["api_format"], "open_ai_responses");
+
+    let detail = request(
+        &app,
+        "GET",
+        &format!("/console/v1/mcp-servers/{mcp_id}"),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(detail.status(), StatusCode::OK);
+    let first_etag = detail
+        .headers()
+        .get(header::ETAG)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(body_json(detail).await["settings_version"], 1);
+
+    let updated = request(
+        &app,
+        "PUT",
+        &format!("/console/v1/mcp-servers/{mcp_id}"),
+        serde_json::json!({
+            "name": "Restricted Search MCP",
+            "description": null,
+            "model_rule_id": rule_id,
+            "settings": {
+                "external_web_access": "indexed",
+                "search_context_size": "low",
+                "allowed_domains": ["example.test"],
+                "blocked_domains": [],
+                "max_output_tokens": {
+                    "short": 500,
+                    "medium": 1000,
+                    "long": 2000
+                }
+            },
+            "enabled": true,
+        }),
+        &[("if-match", &first_etag)],
+    )
+    .await;
+    assert_eq!(updated.status(), StatusCode::OK);
+    assert_eq!(
+        app.runtime.snapshot().mcp_server("search").unwrap().name(),
+        "Restricted Search MCP"
+    );
+
+    let stale = request(
+        &app,
+        "PUT",
+        &format!("/console/v1/mcp-servers/{mcp_id}"),
+        serde_json::json!({
+            "name": "Stale",
+            "description": null,
+            "model_rule_id": rule_id,
+            "settings": {},
+            "enabled": true,
+        }),
+        &[("if-match", &first_etag)],
+    )
+    .await;
+    assert_eq!(stale.status(), StatusCode::CONFLICT);
+
+    let detail = request(
+        &app,
+        "GET",
+        &format!("/console/v1/mcp-servers/{mcp_id}"),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    let current_etag = detail
+        .headers()
+        .get(header::ETAG)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let deleted = request(
+        &app,
+        "DELETE",
+        &format!("/console/v1/mcp-servers/{mcp_id}"),
+        serde_json::json!({}),
+        &[("if-match", &current_etag)],
+    )
+    .await;
+    assert_eq!(deleted.status(), StatusCode::OK);
+    assert!(app.runtime.snapshot().mcp_server("search").is_none());
+    let deleted_at: Option<chrono::DateTime<chrono::Utc>> =
+        sqlx::query_scalar("SELECT deleted_at FROM mcp_servers WHERE id=$1")
+            .bind(Uuid::parse_str(&mcp_id).unwrap())
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert!(deleted_at.is_some());
+
+    let reused_slug = request(
+        &app,
+        "POST",
+        "/console/v1/mcp-servers",
+        serde_json::json!({
+            "slug": "search",
+            "kind": "web_search",
+            "name": "Reused tombstone",
+            "model_rule_id": rule_id,
+            "settings": {},
+            "enabled": false,
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(reused_slug.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        body_json(reused_slug).await["error"],
+        "mcp_server_slug_conflict"
+    );
+
+    database.cleanup().await;
+}
+
 /// Model prices may define immutable advanced billing policy: input-price
 /// tiers and request-body JSON Pointer multipliers are model-level facts, not
 /// channel transforms. Invalid policy is rejected before it can be persisted.

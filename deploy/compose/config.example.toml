@@ -33,6 +33,16 @@ console_body_bytes = 262_144
 # Login, refresh, password, and invitation payloads.
 auth_body_bytes = 16_384
 
+[mcp]
+# Requires a binary built with --features mcp-server. Endpoints remain on the
+# public listener and use existing Gateway API keys.
+enabled = false
+public_base_url = "https://api.example.com"
+allowed_origins = []
+allow_legacy_2025_11_25 = false
+request_body_bytes = 4_194_304
+search_result_bytes = 4_194_304
+
 [database]
 # Prefer a password file over embedding credentials in TOML. Relative paths
 # are resolved from the process working directory. Inline URL passwords remain

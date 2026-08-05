@@ -4,6 +4,8 @@ pub mod admission;
 pub mod application;
 pub mod domain;
 pub mod http;
+#[cfg(feature = "mcp-server")]
+pub mod mcp;
 pub mod models_dev;
 pub mod observability;
 pub mod persistence;

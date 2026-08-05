@@ -18,6 +18,10 @@ Responses、standalone web search、Images generation 与 Images edit。Standalo
 复用 `OpenAiResponses` 路由与授权维度，但拥有独立 capability、请求契约、目标路径和日志
 operation；当前 Images 实现非流式 JSON generation 和非流式 multipart edit。
 
+可选 `mcp-server` feature 不是第四种数据面格式。它在公共 listener 上提供无状态
+`POST /mcp/{slug}` transport；当前 `web_search` kind 把 `web.run` 参数编译为
+`ApiOperation::StandaloneWebSearch`，随后进入同一认证后 Proxy 执行核心。
+
 客户端 API 格式与上游接入方式是两个维度。Channel Group 另有
 `ConnectorKind`：普通渠道使用 `openai_compatible`，Codex 订阅凭证使用
 `codex_oauth`；后者可投影为 `OpenAiResponses` 与 `OpenAiImages` 渠道，但不会新增
@@ -36,6 +40,14 @@ OpenAI-compatible client
   -> reusable reqwest client or pinned Responses WebSocket
   -> streamed HTTP/SSE response or WebSocket events
   -> durable asynchronous request logging and settlement
+
+MCP client
+  -> optional public /mcp/{slug}
+  -> Host / Origin / MCP metadata validation
+  -> API-key authentication and immutable MCP registry lookup
+  -> built-in web.run adapter
+  -> authenticated standalone-search Proxy execution
+  -> bounded MCP CallToolResult
 
 Browser or Console client
   -> HTTPS reverse proxy
@@ -101,6 +113,20 @@ Browser or Console client
 
 客户端和 Connector policy 均未删除/覆盖字段、且没有模型别名或 body Transform 时，原始请求
 字节保持不变。普通响应不会为了 usage 采集而整体缓冲。
+
+### 无状态 MCP adapter
+
+`src/mcp/mod.rs` 使用 feature-gated `rmcp` Streamable HTTP transport。每个请求只获取一次
+`ArcSwap` 快照并认证一次 Gateway API Key，然后把 `CompiledMcpServer`、`CompiledApiKey` 和同一
+快照放入 request extension。`src/mcp/search.rs` 只负责静态 `web.run` schema、typed validation、
+显式 `search_session_id`、域名策略和 Search body/result 映射；它不查询 PostgreSQL、不回环
+HTTP，也不保存 MCP Session。
+
+启用的 MCP 定义随其他控制面记录编译进按 slug 索引的不可变 registry。数据库不能上传任意工具
+代码或 schema；`kind` 只选择二进制中已链接的实现。Transport 保持
+`legacy_session_mode = false`，默认只支持 `2026-07-28` 每请求 metadata，不发
+`Mcp-Session-Id`。Search 结果按独立上限有界收集，底层转发日志使用
+`request_source = "mcp"`，但不保存 tool arguments 或结果。
 
 ### Images edit replayable body
 
@@ -276,6 +302,7 @@ generation/edit 可以保持独立观测和迁移兼容性。
 | --- | --- |
 | 支持的 API 格式 | `src/domain/api_format.rs` |
 | 公共路由 | `src/http/mod.rs` |
+| 可选 MCP transport 与 Search adapter | `src/mcp/mod.rs`、`src/mcp/search.rs` |
 | Images multipart/replay | `src/application/request_body.rs` |
 | Responses WebSocket 转发与连接池 | `src/application/proxy/websocket.rs`、`src/upstream/websocket.rs` |
 | Upstream Connector registry | `src/application/connector.rs` |

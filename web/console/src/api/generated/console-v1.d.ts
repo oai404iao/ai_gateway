@@ -1125,6 +1125,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/mcp-servers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listMcpServers"];
+        put?: never;
+        post: operations["createMcpServer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/mcp-servers/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getMcpServer"];
+        put: operations["updateMcpServer"];
+        post?: never;
+        delete: operations["deleteMcpServer"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/request-logs": {
         parameters: {
             query?: never;
@@ -1230,7 +1262,8 @@ export interface paths {
          *     refreshed snapshot instead of aggregating request logs at request time.
          *     Rankings use Asia/Shanghai boundaries: a day is 00:00 inclusive through
          *     the following 00:00 exclusive; a week is Monday through Sunday; and a
-         *     month is the 1st through its final day. Only client requests participate.
+         *     month is the 1st through its final day. Client and MCP requests participate;
+         *     scheduled tests do not.
          *     Omit `period_start` for the current period, or use the adjacent period
          *     values in the response to browse retained history. Users without any priced
          *     request in the selected period are omitted.
@@ -2369,6 +2402,53 @@ export interface components {
             /** @description Stored transform template document returned for administrator editing. */
             document: components["schemas"]["JsonValue"];
         };
+        /** @enum {string} */
+        McpServerKind: "web_search";
+        /** @enum {string} */
+        McpSearchExternalWebAccess: "cached" | "indexed" | "live";
+        /** @enum {string} */
+        McpSearchContextSize: "low" | "medium" | "high";
+        /** @description Values must be ordered as short <= medium <= long. */
+        McpSearchTokenLimits: {
+            /** Format: int64 */
+            short: number;
+            /** Format: int64 */
+            medium: number;
+            /** Format: int64 */
+            long: number;
+        };
+        WebSearchMcpSettings: {
+            /** @description Defaults to `live` when omitted. */
+            external_web_access?: components["schemas"]["McpSearchExternalWebAccess"];
+            /** @description Defaults to `medium` when omitted. */
+            search_context_size?: components["schemas"]["McpSearchContextSize"];
+            /** @description Defaults to an empty list. */
+            allowed_domains?: string[];
+            /** @description Defaults to an empty list. */
+            blocked_domains?: string[];
+            /** @description Defaults to short=1000, medium=3000, and long=6000. */
+            max_output_tokens?: components["schemas"]["McpSearchTokenLimits"];
+        };
+        McpServerView: {
+            /** Format: uuid */
+            id: string;
+            /** @description Immutable public endpoint segment under `/mcp/{slug}`. */
+            slug: string;
+            kind: components["schemas"]["McpServerKind"];
+            name: string;
+            description: string | null;
+            /** Format: uuid */
+            model_rule_id: string;
+            client_model: string;
+            /** @description open_ai_responses for the currently implemented web-search kind. */
+            api_format: components["schemas"]["ApiFormat"];
+            /** Format: int32 */
+            settings_version: number;
+            settings: components["schemas"]["WebSearchMcpSettings"];
+            enabled: boolean;
+            created_at: components["schemas"]["DateTime"];
+            updated_at: components["schemas"]["DateTime"];
+        };
         RequestLogView: {
             /** Format: uuid */
             id: string;
@@ -2425,7 +2505,7 @@ export interface components {
             billed_at: components["schemas"]["DateTimeNullable"];
         };
         /** @enum {string} */
-        RequestLogSource: "client" | "scheduled_test";
+        RequestLogSource: "client" | "mcp" | "scheduled_test";
         /** @enum {string} */
         RequestProtocol: "non_stream" | "sse" | "websocket";
         PersonalUsageReport: {
@@ -2439,9 +2519,9 @@ export interface components {
              * @description Inclusive current UTC date.
              */
             ended_on: string;
-            /** @description Client requests made by the authenticated user in the window. */
+            /** @description Client and MCP requests made by the authenticated user in the window. */
             total_request_count: number;
-            /** @description UTC dates with at least one client request. */
+            /** @description UTC dates with at least one client or MCP request. */
             active_day_count: number;
             /** @description Consecutive active UTC dates ending on `ended_on`. */
             current_streak_days: number;
@@ -3136,6 +3216,25 @@ export interface components {
             description?: string | null;
             /** @description Omit to preserve the stored document; send `{}` to clear it. */
             document?: components["schemas"]["JsonValue"];
+            enabled: boolean;
+        };
+        McpServerCreateInput: {
+            slug: string;
+            kind: components["schemas"]["McpServerKind"];
+            name: string;
+            description?: string | null;
+            /** Format: uuid */
+            model_rule_id: string;
+            /** @description Omission stores an empty object and applies all server defaults. */
+            settings?: components["schemas"]["WebSearchMcpSettings"];
+            enabled: boolean;
+        };
+        McpServerInput: {
+            name: string;
+            description?: string | null;
+            /** Format: uuid */
+            model_rule_id: string;
+            settings: components["schemas"]["WebSearchMcpSettings"];
             enabled: boolean;
         };
         ModelSyncPreviewRequest: {
@@ -6009,6 +6108,146 @@ export interface operations {
         };
         responses: {
             /** @description Updated. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MutationResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
+        };
+    };
+    listMcpServers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Configured stateless MCP server instances. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpServerView"][];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    createMcpServer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["McpServerCreateInput"];
+            };
+        };
+        responses: {
+            /** @description Created and published to the immutable runtime snapshot. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MutationResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
+        };
+    };
+    getMcpServer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description MCP server detail. */
+            200: {
+                headers: {
+                    ETag: components["headers"]["ETag"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpServerView"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    updateMcpServer: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description ETag from the preceding GET; stale values yield `409`. */
+                "If-Match": components["parameters"]["IfMatch"];
+            };
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["McpServerInput"];
+            };
+        };
+        responses: {
+            /** @description Updated and published to the immutable runtime snapshot. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MutationResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
+        };
+    };
+    deleteMcpServer: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description ETag from the preceding GET; stale values yield `409`. */
+                "If-Match": components["parameters"]["IfMatch"];
+            };
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Soft-deleted and removed from the runtime registry. */
             200: {
                 headers: {
                     [name: string]: unknown;

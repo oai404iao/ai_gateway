@@ -85,7 +85,7 @@ def cargo_packages() -> list[tuple[str, str, str | None, Path, list[str]]]:
             "--format-version",
             "1",
             "--features",
-            "embedded-console-ui",
+            "embedded-console-ui,mcp-server",
         )
     )
     packages = {package["id"]: package for package in metadata["packages"]}

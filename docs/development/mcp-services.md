@@ -1,7 +1,8 @@
 # MCP 服务架构与实施提案
 
-> 状态：提案。本文定义尚未实现的 MCP 服务方案；当前行为仍以代码、测试、migration 和
-> OpenAPI 契约为准。
+> 状态：部分实现。Transport、registry、Search MCP、Console CRUD 和
+> `request_source = "mcp"` 已实现；Images、专用 MCP 日志维度、管理页面和 Tasks 仍是后续阶段。
+> 当前行为以代码、测试、migration 和 OpenAPI 契约为准。
 
 ## 目标
 
@@ -82,7 +83,7 @@ MCP 外部语义与最近核对日期见
 MCP client
   -> public listener
   -> POST /mcp/{slug}
-  -> Origin / Target-URI / MCP metadata validation
+  -> Host / Origin / MCP metadata validation
   -> Gateway API-key authentication
   -> CompiledMcpRegistry lookup
   -> server/discover | tools/list | tools/call
@@ -138,7 +139,7 @@ POST /mcp/{slug}
 mcp-server = ["dep:rmcp"]
 
 [dependencies]
-rmcp = { version = "3.1", default-features = false, optional = true, features = [
+rmcp = { version = "=3.1.1", default-features = false, optional = true, features = [
   "server",
   "transport-streamable-http-server",
 ] }
@@ -147,10 +148,10 @@ rmcp = { version = "3.1", default-features = false, optional = true, features = 
 `rmcp` 负责协议模型、发现、Header 校验和 Axum transport。业务鉴权、MCP registry、工具策略、
 内部 Proxy 调用和日志仍由本项目实现，不把这些职责交给 SDK。
 
-### 公开 URL 校验
+### 公开 Host 与 URL
 
-MCP `MCP-Target-URI` 必须与实际 endpoint 一致。由于生产通常位于 TLS 反向代理之后，配置中需要
-显式公开 URL：
+MCP transport 必须验证 `Host` 和 `Origin`。由于生产通常位于 TLS 反向代理之后，配置中需要
+显式公开 URL，用于派生允许的 Host 并向 Console 展示完整 endpoint：
 
 ```toml
 [mcp]
@@ -160,7 +161,7 @@ allowed_origins = []
 allow_legacy_2025_11_25 = false
 ```
 
-有效 target 为 `${public_base_url}/mcp/{slug}`。默认不信任 `X-Forwarded-Host`、
+公开 endpoint 为 `${public_base_url}/mcp/{slug}`。默认不信任 `X-Forwarded-Host`、
 `X-Forwarded-Proto` 或其他客户端可伪造的 forwarding Header。没有 `Origin` 的非浏览器客户端
 可以访问；存在 `Origin` 时必须匹配 `allowed_origins`。
 
@@ -186,8 +187,9 @@ Images:
   edit tools/call -> arguments.referenced_image_urls[]
 ```
 
-任一请求都可以被负载均衡到另一实例。`search_session_id` 不查数据库；Gateway 使用 API Key ID
-和该值确定性派生 provider `id`，使不同 API Key 即使提交相同值也不会共享 Search 上下文。
+任一请求都可以被负载均衡到另一实例。`search_session_id` 不查数据库；Gateway 使用 API Key
+ID、MCP server ID、当前模型/策略 scope 和该值确定性派生 provider `id`，使不同 API Key、
+不同 MCP endpoint 或不同策略版本即使提交相同值也不会共享 Search 上下文。
 
 ## 鉴权与授权
 
@@ -333,7 +335,8 @@ Codex 内部可直接使用线程 `session_id`；无状态 MCP 没有隐式线�
 - 使用 Search ref id 的 `open`、`click`、`find` 或 `screenshot` 必须带前一次返回的
   `search_session_id`；
 - 直接打开完整 `https://` URL 可以不带 Search Session；
-- 管理员可按 MCP 实例关闭 command family；关闭后该 property 不出现在 `inputSchema`。
+- 当前实现固定启用 Codex 的全部 command family；按 MCP 实例关闭 command family 并动态缩减
+  `inputSchema` 仍是后续管理能力。
 
 ### 请求编译
 
@@ -353,10 +356,11 @@ Codex 内部可直接使用线程 `session_id`；无状态 MCP 没有隐式线�
 规则：
 
 1. 缺少 `search_session_id` 时生成随机 UUID，并在结果中返回；
-2. provider `id` 由 domain separation、API Key ID 和 `search_session_id` 确定性派生；
+2. provider `id` 由 domain separation、API Key ID、MCP server ID、当前模型/策略 scope 和
+   `search_session_id` 确定性派生；修改绑定模型或 Search 策略会使旧 ref id 失效；
 3. `response_length` 映射为管理员配置的 token 上限，且不允许调用方突破实例上限；
 4. `settings.allowed_callers = ["direct"]`；
-5. `external_web_access`、location、context size、允许/阻止域名由实例 settings 生成；
+5. `external_web_access`、context size、允许/阻止域名由实例 settings 生成；
 6. 调用方 query domains 与管理员 allowlist 取交集，并继续应用 blocklist；
 7. 不接受调用方直接提交上游 `model`、`id`、`settings` 或 `max_output_tokens`；
 8. 最终请求继续经过现有 standalone search client policy、模型别名、Header Transform、
@@ -561,7 +565,7 @@ operation-specific 上限：
 | 错误 | 返回方式 |
 | --- | --- |
 | 缺失/无效 API Key | HTTP `401` + `WWW-Authenticate: Bearer` |
-| Origin / Target URI / MCP metadata 无效 | HTTP `400` 或 `403` |
+| Host / Origin / MCP metadata 无效 | HTTP `400` 或 `403` |
 | endpoint slug 不存在、禁用或删除 | HTTP `404` |
 | 不支持的 MCP 方法或协议结构 | JSON-RPC error |
 | 未知工具 | JSON-RPC method/invalid params error |
@@ -605,7 +609,7 @@ image_result_bytes = 33_554_432
 
 ## Console 管理
 
-权威契约仍从 `docs/openapi/console-v1.yaml` 开始。建议新增管理员接口：
+权威契约仍从 `docs/openapi/console-v1.yaml` 开始。当前已实现管理员接口：
 
 ```text
 GET    /console/v1/mcp-servers
@@ -613,17 +617,19 @@ POST   /console/v1/mcp-servers
 GET    /console/v1/mcp-servers/{id}
 PUT    /console/v1/mcp-servers/{id}
 DELETE /console/v1/mcp-servers/{id}
-POST   /console/v1/mcp-servers/{id}/validate
 ```
 
-要求：
+已实现：
 
 - GET detail 返回 `ETag`；
 - PUT/DELETE 使用 `If-Match`；
 - create/update/delete 在 serializable transaction 中校验完整候选快照、写 audit、提交后发布；
-- `validate` 只做编译和路由可用性检查，不发起付费上游请求；
 - 删除使用 tombstone，slug 不复用；
 - Console 不接收或展示额外 MCP secret，因为客户端复用现有 API Key；
+
+后续管理能力：
+
+- `POST /console/v1/mcp-servers/{id}/validate` 只做编译和路由可用性检查，不发起付费上游请求；
 - 页面位于 `/admin/mcp-servers`，显示 endpoint、kind、模型、启用状态和配置错误；
 - 用户 API Key 页面可显示可复制 endpoint，但不改变“一次性显示 Key secret”的规则。
 
@@ -635,10 +641,15 @@ POST   /console/v1/mcp-servers/{id}/validate
 - generation：`images_generation`
 - edit：`images_edit`
 
-建议扩展请求日志：
+当前已实现：
 
 ```text
 request_source = mcp
+```
+
+后续建议增加：
+
+```text
 mcp_server_id
 mcp_server_slug
 mcp_tool_name
@@ -664,7 +675,7 @@ mcp_tool_name
 
 ## 安全边界
 
-1. **同源/目标校验。** 验证 `Origin` 和完整 `MCP-Target-URI`，不默认信任 forwarded Header。
+1. **Host/Origin 校验。** 验证 `Host` 和 `Origin`，不默认信任 forwarded Header。
 2. **最小权限。** MCP 继续使用 API Key format、route、group/channel 位图和现有额度。
 3. **无 Header 穿透。** `MCP-*`、Origin、Host 和客户端 Authorization 永不进入上游请求。
 4. **无动态代码。** MCP kind 和工具实现静态链接；数据库只保存 typed settings。
@@ -672,8 +683,10 @@ mcp_tool_name
 6. **独立限制。** Search JSON、MCP envelope、inline edit 和 MCP image result 分别限流/限大小。
 7. **无 SSRF 首期范围。** Images edit 只接受受限 data URL，不抓取远程 URL。
 8. **Search 域策略。** 调用方 domain filter 不能扩大管理员 allowlist。
-9. **取消传播。** MCP HTTP 客户端断开必须丢弃上游 body 并取消当前调用。
-10. **关闭排空。** 停止接受新 MCP 请求；现有普通调用与 HTTP forwarding 一起受全局 grace
+9. **Tracing 脱敏。** RMCP 会在 debug/trace 级别格式化完整请求和结果，因此 Gateway 必须把
+   对应依赖 target 强制限制到 `info`，不能让全局 verbose filter 记录 Search 参数或结果。
+10. **取消传播。** MCP HTTP 客户端断开必须丢弃上游 body 并取消当前调用。
+11. **关闭排空。** 停止接受新 MCP 请求；现有普通调用与 HTTP forwarding 一起受全局 grace
     period 约束。
 
 ## 代码组织建议
@@ -706,14 +719,15 @@ workspace gate；不要为绕过冲突复制一套不完整 JSON-RPC/MCP parser�
 
 ### PR 1：Transport、registry 与 Search
 
-- Cargo/runtime feature gate；
-- `rmcp` Streamable HTTP；
-- `/mcp/{slug}`；
-- `mcp_servers` migration、Console OpenAPI/CRUD 和 snapshot；
-- API Key auth；
-- `web.run`；
-- request log MCP metadata；
-- protocol、auth、Search 和多实例无状态测试。
+- [x] Cargo/runtime feature gate；
+- [x] `rmcp` Streamable HTTP；
+- [x] `/mcp/{slug}`；
+- [x] `mcp_servers` migration、Console OpenAPI/CRUD 和 snapshot；
+- [x] API Key auth；
+- [x] `web.run`；
+- [x] `request_source = "mcp"`；
+- [x] deterministic protocol、auth 与 Search integration tests；
+- [ ] 专用 MCP 日志维度、Console 管理页面、command-family 策略与多进程接续测试。
 
 ### PR 2：Images generation
 
@@ -749,7 +763,7 @@ Tasks 或 artifact 可以使用外部持久化，但 transport 仍不得恢复 M
 
 - `server/discover`、`tools/list`、`tools/call`；
 - `2026-07-28` 必需 Header；
-- target URI、Origin 和 Host 反向代理场景；
+- Host、Origin 和反向代理场景；
 - 无 `Mcp-Session-Id`、无 GET SSE；
 - modern-only 与可选 legacy stateless 模式；
 - 官方 MCP conformance tests；
@@ -768,7 +782,7 @@ Tasks 或 artifact 可以使用外部持久化，但 transport 仍不得恢复 M
 - Codex command schema 与批量限制；
 - 生成/回传 `search_session_id`；
 - ref id 跨请求接续；
-- per-key 派生隔离；
+- per-key、per-MCP-server、per-policy-version 派生隔离；
 - operation capability；
 - domain policy 交集；
 - opaque `results` 与 text output；
@@ -799,13 +813,11 @@ cargo test --locked --workspace
 Images forwarding path 时，除 deterministic integration tests 外，完成前还必须按项目规则获得
 明确授权并执行付费 real-upstream smoke；未获授权时只能报告为未完成或保持 draft。
 
-## 需要在实现前锁定的产品参数
+## 当前采用的产品参数
 
-下列参数应在 PR 1 开始前由维护者确认，但不改变总体架构：
-
-1. production 镜像是否默认编译 `mcp-server` feature；
-2. modern-only 是否允许管理员开启旧协议无 Session 兼容；
-3. MCP inline image envelope 和结果的默认大小；
-4. Search 各 `response_length` 对应的 `max_output_tokens`；
-5. 哪些 `web.run` command family 默认开启；
-6. 普通用户 Console 是否显示 MCP endpoint，或只由管理员分发。
+1. production 镜像编译 `mcp-server` feature，但 `[mcp].enabled` 默认关闭；
+2. modern-only 为默认值，管理员可显式开启 `2025-11-25` 无 Session 兼容；
+3. Search request/result 默认上限均为 4 MiB；Images envelope/result 上限在后续 PR 锁定；
+4. Search `short` / `medium` / `long` 默认映射为 1000 / 3000 / 6000 tokens；
+5. 当前启用 Codex 的全部 `web.run` command family，实例级关闭策略后续实现；
+6. 当前只有管理员 Console API 管理 MCP；普通用户 endpoint 展示和管理页面后续实现。

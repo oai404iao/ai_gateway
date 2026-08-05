@@ -74,6 +74,8 @@ Compose 将 PostgreSQL 端口默认绑定到 `127.0.0.1`。只有 Gateway 位于
 | `request_limits.image_edit_file_bytes` | 50 MiB | 单个 image/mask part 上限 |
 | `request_limits.image_edit_memory_bytes` | 1 MiB | edit 转入匿名临时文件前的内存阈值 |
 | `request_limits.image_edit_spool_directory` | `/var/lib/ai-gateway/image-edit-spool` | Compose 的独立本地 scratch volume |
+| `mcp.request_body_bytes` | 4 MiB | 单个 MCP JSON-RPC POST envelope 上限 |
+| `mcp.search_result_bytes` | 4 MiB | Search MCP 收集上游 JSON 结果的上限 |
 
 PostgreSQL 的连接预算至少应满足：
 
@@ -86,6 +88,16 @@ Gateway 实例数
 默认 PostgreSQL `max_connections=50` 可容纳三个默认 Gateway 实例并保留少量管理余量。同一主机上的多个 Gateway 实例必须使用不同的 spool 目录；同一 spool 目录不能被多个进程共享。
 
 不要仅通过增加日志连接数扩大吞吐。当前日志流水线的投影与结算并发受到刻意限制；连接过多会增加 WAL、索引、CPU 和热账户行锁竞争。
+
+### 可选 MCP transport
+
+Search MCP 需要使用 `mcp-server` Cargo feature 构建，并在 `[mcp]` 中同时启用。`public_base_url`
+必须与反向代理对外暴露的 HTTP(S) origin 一致；Gateway 依据它校验 `Host`。浏览器请求的
+`Origin` 还必须出现在 `allowed_origins`，空列表会拒绝所有带 `Origin` 的请求。
+
+MCP 定义、绑定模型规则和 Search 策略存储在 PostgreSQL，通过 Console API 热更新；TOML 只控制
+进程级 transport 与 body/result 限制。完整配置和权限边界见
+[无状态 MCP 服务](mcp-services.md)。
 
 ### 日志级别
 

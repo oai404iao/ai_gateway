@@ -524,6 +524,7 @@ async fn gateway_harness_with_controls(
         }],
         proxies: outbound_proxy.into_iter().collect(),
         templates: vec![],
+        mcp_servers: vec![],
     };
     let runtime = Arc::new(RuntimeConfig::new(
         compile_control_plane_with_system_settings(

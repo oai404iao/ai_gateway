@@ -13,6 +13,9 @@ repository = "https://github.com/oai404iao/ai_gateway"
 # with this feature requires `pnpm --dir web/console build` to have produced
 # `web/console/dist` first.
 embedded-console-ui = ["dep:rust-embed", "dep:mime_guess"]
+# Serves stateless remote MCP endpoints from the public listener. Runtime
+# activation additionally requires `[mcp].enabled = true`.
+mcp-server = ["dep:rmcp", "dep:schemars", "tokio-util/rt"]
 
 [dependencies]
 arc-swap = "1.7"
@@ -35,8 +38,10 @@ multer = "3.1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "socks", "stream"] }
 regex = "1.11"
 rand = "0.9"
+rmcp = { version = "=3.1.1", default-features = false, optional = true, features = ["server", "transport-streamable-http-server"] }
 rust_decimal = { version = "1.36", features = ["serde"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+schemars = { version = "1.0", optional = true }
 secrecy = "0.10"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["raw_value"] }

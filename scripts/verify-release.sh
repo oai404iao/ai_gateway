@@ -14,7 +14,10 @@ fi
 
 cargo fmt --check
 cargo clippy --locked --workspace --all-targets
+cargo clippy --locked --all-targets --features mcp-server
 cargo test --locked --workspace
+cargo test --locked --features mcp-server --lib
+cargo test --locked --features mcp-server --test mcp_integration
 
 pnpm --dir web/console install --frozen-lockfile
 pnpm --dir web/console generate:api:check
@@ -23,7 +26,7 @@ pnpm --dir web/console lint
 pnpm --dir web/console test
 pnpm --dir web/console build
 
-cargo clippy --locked --all-targets --features embedded-console-ui
+cargo clippy --locked --all-targets --features embedded-console-ui,mcp-server
 cargo test --locked --features embedded-console-ui --lib console_ui
 
 docker compose -f docker-compose.prd.yaml config --quiet
@@ -43,6 +46,7 @@ docker run --rm --entrypoint /bin/sh "$image" -ec '
     test -s /usr/share/doc/ai-gateway/LICENSE
     test -s /usr/share/doc/ai-gateway/THIRD_PARTY_NOTICES.md
     test -s /usr/share/doc/ai-gateway/LICENSES/cargo/axum_0.8.9/LICENSE
+    test -s /usr/share/doc/ai-gateway/LICENSES/cargo/rmcp_3.1.1/UPSTREAM_Cargo.toml
     test -s /usr/share/doc/ai-gateway/LICENSES/npm/fontsource-variable_geist_5.3.0/LICENSE
 '
 
