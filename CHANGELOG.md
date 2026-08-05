@@ -7,6 +7,25 @@ Versioning.
 
 ## [Unreleased]
 
+## [0.9.7] - 2026-08-05
+
+### Added
+
+- Allow the `thinking` and `enable_thinking` top-level Chat Completions
+  extensions used by OpenAI-compatible providers, preserving their values
+  unchanged for the selected upstream.
+
+### Fixed
+
+- Allow Codex HTTP Responses requests to retain top-level `client_metadata`
+  through client ingress and Codex OAuth forwarding, matching the existing
+  Responses WebSocket wire behavior.
+
+### Security
+
+- Update Console tooling dependency overrides for patched `fast-uri`,
+  `brace-expansion`, and `hono` releases and restore a clean pnpm audit.
+
 ## [0.9.6] - 2026-08-04
 
 ### Fixed
