@@ -137,6 +137,7 @@ fn bootstrap_system_settings() -> SystemSettingsInput {
             connect_timeout_seconds: 1,
             response_header_timeout_seconds: 2,
             images_response_header_timeout_seconds: 300,
+            standalone_web_search_response_header_timeout_seconds: 300,
             stream_idle_timeout_seconds: 3,
         },
         request_retry: Default::default(),
@@ -400,6 +401,7 @@ async fn system_settings_bootstrap_initializes_once_without_overwriting_database
             connect_timeout_seconds: 5,
             response_header_timeout_seconds: 10,
             images_response_header_timeout_seconds: 300,
+            standalone_web_search_response_header_timeout_seconds: 300,
             stream_idle_timeout_seconds: 15,
         },
         request_retry: Default::default(),
@@ -3957,7 +3959,7 @@ async fn channel_and_template_details_return_stored_editable_values() {
 }
 
 #[tokio::test]
-async fn channel_websocket_support_is_responses_only_and_defaults_to_opt_in() {
+async fn channel_responses_capabilities_are_responses_only_and_default_to_opt_in() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
 
@@ -3990,6 +3992,7 @@ async fn channel_websocket_support_is_responses_only_and_defaults_to_opt_in() {
             "base_url": "https://responses-websocket.example.test",
             "enabled": true,
             "supports_websocket": true,
+            "supports_standalone_web_search": true,
             "weight": 1,
             "upstream_auth_kind": "none",
         }),
@@ -4011,7 +4014,9 @@ async fn channel_websocket_support_is_responses_only_and_defaults_to_opt_in() {
     )
     .await;
     assert_eq!(detail.status(), StatusCode::OK);
-    assert_eq!(body_json(detail).await["supports_websocket"], true);
+    let detail = body_json(detail).await;
+    assert_eq!(detail["supports_websocket"], true);
+    assert_eq!(detail["supports_standalone_web_search"], true);
 
     let chat_group = request(
         &app,
@@ -4049,6 +4054,25 @@ async fn channel_websocket_support_is_responses_only_and_defaults_to_opt_in() {
     )
     .await;
     assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let invalid_search = request(
+        &app,
+        "POST",
+        "/console/v1/routing/channels",
+        serde_json::json!({
+            "channel_group_id": chat_group_id,
+            "api_format": "open_ai_chat_completions",
+            "name": "invalid-search-chat",
+            "base_url": "https://chat-search.example.test",
+            "enabled": true,
+            "supports_standalone_web_search": true,
+            "weight": 1,
+            "upstream_auth_kind": "none",
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(invalid_search.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
     database.cleanup().await;
 }

@@ -98,6 +98,9 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
                 images_response_header_timeout_seconds: config
                     .upstream
                     .images_response_header_timeout_seconds,
+                standalone_web_search_response_header_timeout_seconds: config
+                    .upstream
+                    .standalone_web_search_response_header_timeout_seconds,
                 stream_idle_timeout_seconds: config.upstream.stream_idle_timeout_seconds,
             },
             request_retry: SystemRequestRetrySettingsInput {

@@ -14,7 +14,8 @@ instance whose selected Responses channel uses `connector_kind = codex_oauth`.
 Responses WebSocket can optionally use a separate channel base URL and API key
 while retaining `REAL_UPSTREAM_RESPONSES_MODEL`. A complete optional Images
 configuration enables two additional paid tests for non-streaming generation
-and multipart edit. Omitting all Images settings skips those two tests.
+and multipart edit. A complete optional Search configuration enables one paid
+standalone `/v1/alpha/search` test. Omitting an optional group skips its tests.
 
 The test constructs an in-memory control-plane snapshot and drives the public
 Axum router. It verifies the production forwarding path—model aliasing,
@@ -46,6 +47,9 @@ Fill these values in `.env.real-upstream`:
 | `REAL_UPSTREAM_RESPONSES_PROFILE` | Optional Responses behavior profile. Defaults to `openai_compatible`; set `codex_oauth` when the URL/key targets an `ai-gateway` instance backed by a Codex managed Responses channel. |
 | `REAL_UPSTREAM_WEBSOCKET_BASE_URL` | Optional Responses WebSocket channel base URL override. Must be paired with `REAL_UPSTREAM_WEBSOCKET_API_KEY`; otherwise WebSocket uses the default URL/key. |
 | `REAL_UPSTREAM_WEBSOCKET_API_KEY` | Optional Responses WebSocket credential override. Must be paired with `REAL_UPSTREAM_WEBSOCKET_BASE_URL`. |
+| `REAL_UPSTREAM_SEARCH_BASE_URL` | Optional standalone web-search channel base URL. Setting any Search value requires all three Search settings. The Gateway appends `/v1/alpha/search`. |
+| `REAL_UPSTREAM_SEARCH_API_KEY` | Optional dedicated standalone web-search credential. |
+| `REAL_UPSTREAM_SEARCH_MODEL` | Optional Search-capable Responses model. The target channel must declare standalone web-search support. |
 | `REAL_UPSTREAM_IMAGES_BASE_URL` | Optional Images channel base URL. Setting any Images value requires all three Images settings and enables both paid Images tests. |
 | `REAL_UPSTREAM_IMAGES_API_KEY` | Optional dedicated Images credential. |
 | `REAL_UPSTREAM_IMAGES_MODEL` | Optional low-budget model supporting both `/v1/images/generations` and multipart `/v1/images/edits`. |
@@ -57,8 +61,15 @@ Run:
 ./scripts/run-real-upstream-smoke.sh
 ```
 
-The default `--all` mode runs the five baseline tests and both Images tests
-when Images settings are present. For an explicitly authorized, lower-cost
+The default `--all` mode runs the five baseline tests plus Search and Images
+tests when their settings are present. For an explicitly authorized,
+Search-only diagnostic:
+
+```bash
+./scripts/run-real-upstream-smoke.sh --search-only
+```
+
+For an explicitly authorized, lower-cost
 diagnostic rerun of only the paid Images edit case:
 
 ```bash
@@ -76,8 +87,8 @@ The script sources only this developer-controlled shell assignment file, never
 prints its values, disables shell tracing, validates the required settings and
 optional setting groups, and then runs the ignored tests with
 `RUN_REAL_UPSTREAM_SMOKE=1`. With no Images settings it passes a test-harness
-skip filter for the Images module; partially configured WebSocket or Images
-overrides or an unknown Responses profile fail before Cargo starts.
+skip filters for optional modules; partially configured WebSocket, Search, or
+Images overrides or an unknown Responses profile fail before Cargo starts.
 
 With `REAL_UPSTREAM_RESPONSES_PROFILE=codex_oauth`, the Responses SSE and
 WebSocket fixtures keep the ordinary client field `max_output_tokens`. A
@@ -124,6 +135,11 @@ complete successfully and retain usage in their terminal request logs.
   these two tests; it never prints image data or credentials. Provider minimum
   pricing and output behavior still apply, so use a credential with an
   Images-specific spending cap.
+- When Search settings are present, one non-streaming request asks for a single
+  authoritative Rust source. It asserts a nonempty `output`, preserves opaque
+  optional `results`, verifies the distinct `standalone_web_search` log
+  operation, and prints only elapsed time, output character count, and result
+  count. Use a credential with a Search-specific spending cap.
 - Do not run it in ordinary PR checks. CI automation is intentionally not part
   of this change.
 - Do not add real credentials to `./config/*`, test source, shell history, or

@@ -13,7 +13,8 @@ attributions that must accompany binary redistribution live in `LICENSES/`
 and `web/console/NOTICES.md`.
 
 The implemented backend includes OpenAI-compatible Chat Completions, HTTP
-Responses, Responses WebSocket, non-streaming JSON Images generation, and
+Responses, Responses WebSocket, Codex standalone web search through
+`POST /v1/alpha/search`, non-streaming JSON Images generation, and
 non-streaming multipart Images edit proxy routes, including ordinary
 OpenAI-compatible and Codex OAuth Images channels, plus PostgreSQL-backed
 control-plane snapshots, a separate JWT-authenticated Console API with
@@ -229,7 +230,7 @@ Axum HTTP
 
 ### Load-bearing rules
 
-- Support `OpenAiChatCompletions`, `OpenAiResponses`, and `OpenAiImages` (`src/domain/api_format.rs`). Keep their validation and routing paths separate: never fall back or transform between formats. `OpenAiImages` exposes JSON `POST /v1/images/generations` and multipart `POST /v1/images/edits`; image streaming and public JSON/data-URL edits are not implemented.
+- Support `OpenAiChatCompletions`, `OpenAiResponses`, and `OpenAiImages` (`src/domain/api_format.rs`). Keep their validation and routing paths separate: never fall back or transform between formats. `ApiOperation::StandaloneWebSearch` maps to `OpenAiResponses` but keeps its request policy, channel capability, target path, non-streaming protocol, and logging operation isolated. `OpenAiImages` exposes JSON `POST /v1/images/generations` and multipart `POST /v1/images/edits`; image streaming and public JSON/data-URL edits are not implemented.
 - `model_rules`, channel groups, and channels must agree on `api_format`; a model rule is unique by `(client_model, api_format)`.
 - Treat `docs/reference/request-allowlists.json` as the source of truth for accepted and explicitly
   stripped client Headers, public top-level body fields, and Codex outbound Header/body actions.
@@ -323,7 +324,7 @@ Axum HTTP
    `docs/reference/request-allowlists.md`.
 2. Add or update deterministic local and PostgreSQL tests as appropriate.
 3. Run `cargo fmt --check`, `cargo clippy --all-targets`, and `cargo test`.
-4. Run `./scripts/run-real-upstream-smoke.sh` before considering the change complete. It requires the ignored `.env.real-upstream` file and always makes paid Chat Completions and Responses calls. Optional paired WebSocket settings can select a separate Responses WebSocket URL/key, and a complete `REAL_UPSTREAM_IMAGES_*` setting group additionally enables paid Images generation/edit calls. Images changes still require deterministic proxy integration coverage.
+4. Run `./scripts/run-real-upstream-smoke.sh` before considering the change complete. It requires the ignored `.env.real-upstream` file and always makes paid Chat Completions and Responses calls. Optional paired WebSocket settings can select a separate Responses WebSocket URL/key; complete `REAL_UPSTREAM_SEARCH_*` and `REAL_UPSTREAM_IMAGES_*` setting groups additionally enable paid standalone web-search and Images generation/edit calls. Search and Images changes still require deterministic proxy integration coverage.
 5. Do not print, commit, or copy credentials from `.env.real-upstream` into TOML, source, tests, or logs.
 
 For Responses WebSocket changes, also run

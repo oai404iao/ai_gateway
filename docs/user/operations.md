@@ -110,6 +110,7 @@ verification_key_path = "./config/console-jwt-public.pem"
 connect_timeout_seconds = 10
 response_header_timeout_seconds = 30
 images_response_header_timeout_seconds = 300
+standalone_web_search_response_header_timeout_seconds = 300
 stream_idle_timeout_seconds = 90
 ```
 
@@ -117,8 +118,11 @@ stream_idle_timeout_seconds = 90
 的“系统设置”页面修改。Images generation/edit 使用独立的
 `images_response_header_timeout_seconds`，因为上游通常要完成图片处理后才返回响应头。Chat
 Completions、Responses 和其他辅助上游请求继续使用 `response_header_timeout_seconds`。
+非流式 `/v1/alpha/search` 使用
+`standalone_web_search_response_header_timeout_seconds`，因为 provider 可能在返回响应头前执行
+多个 Search command。
 渠道显式 `response_header_timeout_ms` 始终优先于对应的系统默认值；Images 仍与其他格式共享建连
-超时和流空闲超时。两个响应头超时都必须大于有效建连超时。
+超时和流空闲超时。所有响应头超时都必须大于有效建连超时。
 
 ## 公共数据面
 
@@ -126,6 +130,9 @@ Completions、Responses 和其他辅助上游请求继续使用 `response_header
 - `GET /v1/models`：列出当前 API Key 可达的模型；需要相应格式的 `proxy` 和 `models.read` 权限。
 - `POST /v1/chat/completions`：仅匹配 Chat Completions 路由规则。
 - `POST /v1/responses`：仅匹配 Responses 路由规则。
+- `POST /v1/alpha/search`：Codex standalone web search 扩展；复用 Responses 路由规则和权限，
+  但只选择显式声明 `supports_standalone_web_search = true` 的 Responses 渠道，并固定使用
+  非流式 JSON。
 - 带 WebSocket Upgrade 的 `GET /v1/responses`：接受顺序的 Responses
   `response.create` 文本消息，仅匹配 Responses 路由规则。
 - `POST /v1/images/generations`：接受带顶层 `model` 的 JSON 请求，仅匹配 Images
@@ -159,6 +166,12 @@ Images generation/edit 是例外：请求一旦开始尝试上游，就不会自
 不会提高全局 JSON 内存上限。未配置渠道级响应头超时时，generation/edit 使用系统设置中的
 Images 专用响应头超时，而不是 Chat Completions/Responses 的普通响应头超时。
 
+Standalone web search 允许顶层 `id`、`model`、`reasoning`、`input`、`commands`、
+`settings` 和 `max_output_tokens`；结果 JSON 中的 `output`、`encrypted_output` 和
+`results` 原样流式转发，不解释 `results` DTO。该操作允许模型别名和 Header/响应 Header
+Transform，但不应用 Request JSON Transform。开启 Search 能力的渠道若组合出非空 Request JSON
+Transform，控制面编译失败。
+
 multipart edit 最多接受 64 个 part、16 张输入图片和一个 mask；普通文本字段最多
 单项 `64 KiB`、合计 `1 MiB`；boundary 最多 70 bytes，preamble、单个 part Header block 和
 boundary padding 分别最多 `8 KiB`、`16 KiB` 与 `1 KiB`，防止畸形 framing 放大 parser
@@ -177,7 +190,8 @@ JSON/data URL 形式的公开客户端 edit 请求。
 
 管理员可以把 ChatGPT Codex 订阅凭证作为共享 Connector pool 接入，而不增加 sidecar 或第二个
 转发服务。同一凭证会投影为独立的 Responses 与 Images managed channels。客户端可以调用标准
-`POST /v1/responses`、带 WebSocket Upgrade 的 `GET /v1/responses`、非流式 JSON
+`POST /v1/responses`、`POST /v1/alpha/search`、带 WebSocket Upgrade 的
+`GET /v1/responses`、非流式 JSON
 `POST /v1/images/generations`，或 multipart `POST /v1/images/edits`；控制面用
 `connector_kind = codex_oauth` 区分特殊上游方式，各 projection 的 `api_format` 仍分别是
 `open_ai_responses` 与 `open_ai_images`。
@@ -208,13 +222,17 @@ JSON/data URL 形式的公开客户端 edit 请求。
      服务端凭证验证与导入接口，因此失败条目可在保留其他草稿的情况下修正和重试。
 4. 为返回的 Codex model slug 创建或启用本地 model，并创建 Responses model rule，
    将 Responses Channel Group 作为候选。
-5. 如需图片生成或编辑，为 `gpt-image-2` 创建或启用本地 model，创建
+5. Codex OAuth Responses managed channel 自动声明 standalone web search 能力。客户端若使用
+   Codex 自定义 provider，还必须把 provider base URL 指向 Gateway 的 `/v1`，并设置
+   `supports_standalone_web_search = true`。
+6. 如需图片生成或编辑，为 `gpt-image-2` 创建或启用本地 model，创建
    `open_ai_images` model rule，选择自动创建的 Images Channel Group，并显式启用该 group。
-6. 确保调用方 API Key 允许所需格式、`proxy` 权限和对应格式的 Channel Group。服务不会自动把
+7. 确保调用方 API Key 允许所需格式、`proxy` 权限和对应格式的 Channel Group。服务不会自动把
    Images format、group 或 channel 加入现有 API Key、Policy 或规则。
-7. 需要跨 Responses 请求固定同一订阅账户时，在系统设置中启用 Session affinity，并为目标模型配置稳定
-   key source，例如请求 Header `session-id` 或 JSON Pointer `/prompt_cache_key`。Header source
-   还必须位于客户端 Header 白名单中，否则系统设置编译失败。
+8. 需要跨 Responses 与 Search 请求固定同一订阅账户时，在系统设置中启用 Session affinity，并
+   为目标模型配置稳定 key source，例如 Responses 的 `/prompt_cache_key`、Search 的 `/id`
+   或请求 Header `session-id`。Header source 还必须位于客户端 Header 白名单中，否则系统设置
+   编译失败。
 
 每个凭证自动创建 Responses 与 Images 两个 provider-managed channels。既有 Responses Channel ID
 继续作为稳定的凭证 ID；Images 使用独立 Channel ID，因此两个格式的被动健康和日志不会混合。
@@ -227,7 +245,7 @@ channels 保留为路由壳，使已绑定 Responses Session
 
 凭证状态含义：
 
-- `active`：可接收新的 Responses Session 或 Images generation/edit；
+- `active`：可接收新的 Responses Session、standalone web search 或 Images generation/edit；
 - `draining`：primary/secondary quota 用量达到 threshold；只允许已命中 affinity 的既有
   Responses Session，Images projection 在发送前被排除；
 - `unavailable`：quota 不允许、额度耗尽或 refresh token 永久失效；
@@ -280,6 +298,13 @@ Responses WebSocket 能力；WebSocket `response.create` 同样强制 `stream: t
 的请求可以换到同组其他凭证；HTTP 请求或 WebSocket 消息一旦发送到 Codex，不做跨凭证自动重试。
 已命中 affinity 的凭证处于 `unavailable`、`disabled` 或 Token 过期时，会在 affinity TTL
 内持续 fail closed；已经固定到 managed channel 的 WebSocket Session 也不会改用其他订阅账户。
+
+Codex standalone web search 使用同一 Responses managed channel 和凭证，公共目标为
+`POST /v1/alpha/search`，Connector 将上游目标改为 managed base URL 下的 `/alpha/search`。
+该请求固定为非流式 JSON；保留合法的 `originator` 与 `x-codex-turn-metadata`，注入共享
+Bearer、可选 account/FedRAMP、版本和 User-Agent，并删除 Responses Session Header。发送前不可用
+且未命中 affinity 时可以重选凭证；命中 affinity 后 fail closed；请求发送后不重试。上游没有
+返回可识别 usage 时，日志不估算 token 或费用。
 
 Codex Images generation 在模型别名和受限变换后只保留 Codex wire type 声明的 JSON 字段，请求目标改为
 `/backend-api/codex/images/generations`。Connector 注入共享凭证的 Bearer、可选
@@ -635,7 +660,8 @@ API Key 和小时/天聚合粒度，不提供用户或渠道筛选，响应中�
 - 命中的渠道仍须满足当前授权、模型候选、最低可用优先级和被动健康状态，否则删除旧映射并执行普通选路。
 - 只有完整成功的 2xx 请求才写入或刷新映射；上游失败会删除本次命中的旧映射。
 - Session 粘性本身不增加尝试次数；如果全局请求故障转移已启用，失败的粘性渠道会从本次请求的候选中排除，并清除命中的旧映射。
-- JSON 来源使用 RFC 6901 Pointer，例如 Responses 请求的 `/prompt_cache_key`。
+- JSON 来源使用 RFC 6901 Pointer，例如 Responses 请求的 `/prompt_cache_key` 和
+  standalone web search 请求的 `/id`。
 
 管理员 Console 会按规则显示当前进程中尚未过期的有效缓存数量，并可清理单条规则或
 整个进程的 Session 粘性缓存。对应接口是
@@ -668,7 +694,8 @@ spool 中的事件。spool 写入失败和磁盘空间耗尽仍是必须告警�
 
 Console 请求日志会显示请求协议，将请求区分为非流式 HTTP、SSE 或 Responses
 WebSocket，并在 API 响应中返回独立的 `api_operation`，区分 Chat Completions、
-Responses、Images generation 与 Images edit；同时显示渠道组名称。个人“请求日志”
+Responses、standalone web search、Images generation 与 Images edit；同时显示渠道组名称。
+个人“请求日志”
 始终只查询当前 JWT 用户；即使当前用户是管理员，
 服务端也会将用户名称、具体 `channel_id` 和渠道名称置空。个人列表固定显示开始时间、模型、
 请求协议、渠道组、结果、Token、成本和耗时；模型旁可显示思考等级和 `Fast` 标记，耗时同时包含

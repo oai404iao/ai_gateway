@@ -151,8 +151,9 @@ function codexRule(rules: SystemSessionAffinityRule[]): SystemSessionAffinityRul
     model_regex: ["^gpt-.*$"],
     key_sources: [
       { type: "json_pointer", pointer: "/prompt_cache_key" },
-      { type: "request_header", name: "session_id" },
-      { type: "request_header", name: "thread_id" },
+      { type: "json_pointer", pointer: "/id" },
+      { type: "request_header", name: "session-id" },
+      { type: "request_header", name: "thread-id" },
     ],
     value_regex: null,
     ttl_seconds: null,

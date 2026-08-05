@@ -59,6 +59,9 @@ const zhCN: Record<string, string> = {
   "Connect timeout (seconds)": "连接超时（秒）",
   "Response header timeout (seconds)": "响应头超时（秒）",
   "Images response header timeout (seconds)": "Images 响应头超时（秒）",
+  "Web search response header timeout (seconds)": "Web Search 响应头超时（秒）",
+  "Used only when a channel does not define an explicit timeout. Images and standalone web search use longer response header timeouts; every response header timeout must exceed connect timeout.":
+    "仅当渠道未设置显式超时时使用。Images 和独立 Web Search 使用更长的响应头超时；所有响应头超时都必须大于连接超时。",
   "Stream idle timeout (seconds)": "流空闲超时（秒）",
   "Request failover": "请求故障转移",
   "Before response headers arrive, connection failures, connect timeouts, and response-header timeouts can retry on distinct healthy channels. A timed-out upstream may still process the original request.":
@@ -200,6 +203,8 @@ const zhCN: Record<string, string> = {
   "Response header timeout must exceed connect timeout.": "响应头超时必须大于连接超时。",
   "Images response header timeout must exceed connect timeout.":
     "Images 响应头超时必须大于连接超时。",
+  "Web search response header timeout must exceed connect timeout.":
+    "Web Search 响应头超时必须大于连接超时。",
   "Control plane reloaded": "控制面已重载",
   "Reload failed": "重载失败",
   "Reload control plane": "重载控制面",
@@ -1627,6 +1632,15 @@ const zhCN: Record<string, string> = {
   "Maximum WebSocket age must exceed the idle timeout.":
     "WebSocket 最长寿命必须大于空闲超时。",
   "Supports Responses WebSocket": "支持 Responses WebSocket",
+  "Standalone web search": "独立 Web Search",
+  "Supports standalone web search": "支持独立 Web Search",
+  "Web search": "Web Search",
+  "Allow this channel to receive Codex standalone alpha/search requests. Request JSON transforms are not supported.":
+    "允许此渠道接收 Codex 独立 alpha/search 请求。不支持请求 JSON 转换。",
+  "Only OpenAI Responses channels can enable standalone web search.":
+    "只有 OpenAI Responses 渠道可以启用独立 Web Search。",
+  "Only Responses channels can support standalone web search.":
+    "只有 Responses 渠道可以支持独立 Web Search。",
   "Allow this channel to receive WebSocket requests when the system and user are also enabled.":
     "当系统和用户开关也启用时，允许此渠道接收 WebSocket 请求。",
   "Only OpenAI Responses channels can enable WebSocket forwarding.":

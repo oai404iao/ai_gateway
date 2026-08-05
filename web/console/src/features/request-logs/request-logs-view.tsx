@@ -145,6 +145,8 @@ function requestOperationLabel(
       return t("Chat Completions");
     case "responses":
       return t("Responses");
+    case "standalone_web_search":
+      return t("Standalone web search");
     case "images_generation":
       return t("Image generation");
     case "images_edit":

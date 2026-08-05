@@ -28,11 +28,12 @@ use crate::{
         CompiledChannel, CompiledChannelGroup, CompiledChannelUpstreamPolicy,
         CompiledConfigTemplate, CompiledModelRule, CompiledProxy, CompiledRouteTier,
         CompiledRuntimeConfig, CompiledScheduledTestModel, ConnectorKind,
-        DEFAULT_IMAGES_RESPONSE_HEADER_TIMEOUT_SECONDS, MAX_REQUEST_RETRIES, ModelPriceSnapshot,
-        ModelRouteKey, NoProxyHost, PassiveHealthSettings, RequestRetrySettings,
-        ResponsesWebSocketSettings, ScheduledTestingMode, ScheduledTestingSettings,
-        SelectionStrategy, SessionAffinityKeySource, SessionAffinityRule, SessionAffinitySettings,
-        SystemRuntimeSettings, UpstreamAuth, UpstreamTimeoutDefaults,
+        DEFAULT_IMAGES_RESPONSE_HEADER_TIMEOUT_SECONDS,
+        DEFAULT_STANDALONE_WEB_SEARCH_RESPONSE_HEADER_TIMEOUT_SECONDS, MAX_REQUEST_RETRIES,
+        ModelPriceSnapshot, ModelRouteKey, NoProxyHost, PassiveHealthSettings,
+        RequestRetrySettings, ResponsesWebSocketSettings, ScheduledTestingMode,
+        ScheduledTestingSettings, SelectionStrategy, SessionAffinityKeySource, SessionAffinityRule,
+        SessionAffinitySettings, SystemRuntimeSettings, UpstreamAuth, UpstreamTimeoutDefaults,
     },
     persistence::{
         ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ConfigTemplateRecord, ControlPlaneRecords,
@@ -229,6 +230,8 @@ pub struct UpstreamConfig {
     pub response_header_timeout_seconds: u64,
     #[serde(default = "default_images_response_header_timeout_seconds")]
     pub images_response_header_timeout_seconds: u64,
+    #[serde(default = "default_standalone_web_search_response_header_timeout_seconds")]
+    pub standalone_web_search_response_header_timeout_seconds: u64,
     pub stream_idle_timeout_seconds: u64,
 }
 /// One-time bootstrap source for pre-header request failover.
@@ -615,6 +618,9 @@ const fn default_request_retry_enabled() -> bool {
 const fn default_images_response_header_timeout_seconds() -> u64 {
     DEFAULT_IMAGES_RESPONSE_HEADER_TIMEOUT_SECONDS
 }
+const fn default_standalone_web_search_response_header_timeout_seconds() -> u64 {
+    DEFAULT_STANDALONE_WEB_SEARCH_RESPONSE_HEADER_TIMEOUT_SECONDS
+}
 const fn default_request_retry_max_retries() -> u32 {
     1
 }
@@ -785,6 +791,13 @@ pub fn compile_control_plane_with_system_settings(
             );
             let effective_transforms = TransformPlan::compose(&defaults, &channel_override)
                 .map_err(transform_error("channel effective transform plan"))?;
+            if channel.supports_standalone_web_search
+                && !effective_transforms.request_json().is_empty()
+            {
+                return Err(ConfigError::Compile(
+                    "standalone web search channels do not support request JSON transforms".into(),
+                ));
+            }
             let upstream_policy = CompiledChannelUpstreamPolicy::new_with_default_connect_timeout(
                 proxy,
                 template,
@@ -811,6 +824,7 @@ pub fn compile_control_plane_with_system_settings(
                         .map(|model| Arc::<str>::from(model.as_str()))
                         .collect(),
                     channel.supports_websocket,
+                    channel.supports_standalone_web_search,
                     channel.auto_disable_allowed,
                     channel.auto_disabled,
                     channel.test_model.as_deref().map(Arc::<str>::from),
@@ -887,6 +901,8 @@ pub fn compile_system_settings_input(
         || upstream.connect_timeout_seconds == 0
         || upstream.response_header_timeout_seconds <= upstream.connect_timeout_seconds
         || upstream.images_response_header_timeout_seconds <= upstream.connect_timeout_seconds
+        || upstream.standalone_web_search_response_header_timeout_seconds
+            <= upstream.connect_timeout_seconds
         || upstream.stream_idle_timeout_seconds == 0
         || request_retry.max_retries == 0
         || request_retry.max_retries > MAX_REQUEST_RETRIES
@@ -938,6 +954,9 @@ pub fn compile_system_settings_input(
         )
         .with_images_response_header(std::time::Duration::from_secs(
             upstream.images_response_header_timeout_seconds,
+        ))
+        .with_standalone_web_search_response_header(std::time::Duration::from_secs(
+            upstream.standalone_web_search_response_header_timeout_seconds,
         )),
         RequestRetrySettings::new(request_retry.enabled, request_retry.max_retries),
         PassiveHealthSettings::new(
@@ -2000,6 +2019,11 @@ fn validate_channel(
             "only Responses channels can support WebSocket forwarding".into(),
         ));
     }
+    if record.supports_standalone_web_search && format != ApiFormat::OpenAiResponses {
+        return Err(ConfigError::Compile(
+            "only Responses channels can support standalone web search".into(),
+        ));
+    }
     compile_document(&record.override_document, format)
         .map_err(transform_error("channel override document"))?;
     compile_timeouts(record)?;
@@ -2053,7 +2077,9 @@ fn validate_channel(
     let connector_kind = parse_connector_kind(&group.connector_kind)?;
     let codex_protocol_valid = match format {
         ApiFormat::OpenAiResponses => record.supports_websocket,
-        ApiFormat::OpenAiImages => !record.supports_websocket,
+        ApiFormat::OpenAiImages => {
+            !record.supports_websocket && !record.supports_standalone_web_search
+        }
         ApiFormat::OpenAiChatCompletions => false,
     };
     if connector_kind == ConnectorKind::CodexOauth
@@ -2357,6 +2383,8 @@ fn validate_upstream(upstream: &UpstreamConfig) -> Result<(), ConfigError> {
     if upstream.connect_timeout_seconds == 0
         || upstream.response_header_timeout_seconds <= upstream.connect_timeout_seconds
         || upstream.images_response_header_timeout_seconds <= upstream.connect_timeout_seconds
+        || upstream.standalone_web_search_response_header_timeout_seconds
+            <= upstream.connect_timeout_seconds
         || upstream.stream_idle_timeout_seconds == 0
     {
         return Err(ConfigError::Compile(
@@ -2595,6 +2623,7 @@ mod tests {
             base_url: format!("https://{id}.test"),
             enabled: true,
             supports_websocket: false,
+            supports_standalone_web_search: false,
             auto_disabled: false,
             auto_disable_allowed: false,
             weight: 1,
@@ -2657,6 +2686,33 @@ mod tests {
         let mut records = route_records(0, "weighted_random", 1, "weighted_random", false);
         records.model_rules[0].upstream_model_currency = "EUR".into();
         assert!(compile_control_plane(records).is_err());
+    }
+
+    #[test]
+    fn compiler_rejects_request_json_transforms_on_standalone_search_channels() {
+        let mut records = route_records(0, "weighted_random", 1, "weighted_random", false);
+        for group in &mut records.groups {
+            group.api_format = "open_ai_responses".into();
+        }
+        for channel in &mut records.channels {
+            channel.api_format = "open_ai_responses".into();
+            channel.supports_standalone_web_search = true;
+        }
+        records.channels[0].override_document = serde_json::json!({
+            "version": 1,
+            "api_format": "open_ai_responses",
+            "request_json": [
+                {"op": "add", "path": "/settings/test", "value": true}
+            ]
+        });
+        records.model_rules[0].api_format = "open_ai_responses".into();
+
+        let error = compile_control_plane(records).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("standalone web search channels do not support request JSON transforms")
+        );
     }
 
     #[test]
@@ -2736,13 +2792,19 @@ mod tests {
     }
 
     #[test]
-    fn bootstrap_defaults_the_images_response_header_timeout_for_older_toml() {
+    fn bootstrap_defaults_long_running_response_header_timeouts_for_older_toml() {
         let value = "[server]\nhost='x'\nport=1\n[database]\nurl='postgres://x'\nmax_connections=1\nconnect_timeout_seconds=1\n[upstream]\nconnect_timeout_seconds=1\nresponse_header_timeout_seconds=2\nstream_idle_timeout_seconds=1\n[runtime_config]\nreload_interval_seconds=1\n[observability]\nfilter='info'";
         let config = toml::from_str::<AppConfig>(value).unwrap();
 
         assert_eq!(
             config.upstream.images_response_header_timeout_seconds,
             DEFAULT_IMAGES_RESPONSE_HEADER_TIMEOUT_SECONDS
+        );
+        assert_eq!(
+            config
+                .upstream
+                .standalone_web_search_response_header_timeout_seconds,
+            DEFAULT_STANDALONE_WEB_SEARCH_RESPONSE_HEADER_TIMEOUT_SECONDS
         );
     }
 
@@ -2751,6 +2813,7 @@ mod tests {
         let example = include_str!("../../config.example.toml");
         assert!(example.contains(r#"name = "session-id""#));
         assert!(example.contains(r#"name = "thread-id""#));
+        assert!(example.contains(r#"pointer = "/id""#));
         assert!(!example.contains(r#"name = "session_id""#));
         assert!(!example.contains(r#"name = "thread_id""#));
         toml::from_str::<AppConfig>(example)
@@ -2764,6 +2827,7 @@ mod tests {
         let example = include_str!("../../deploy/compose/config.example.toml");
         assert!(example.contains(r#"name = "session-id""#));
         assert!(example.contains(r#"name = "thread-id""#));
+        assert!(example.contains(r#"pointer = "/id""#));
         assert!(!example.contains(r#"name = "session_id""#));
         assert!(!example.contains(r#"name = "thread_id""#));
         let file = toml::from_str::<AppConfig>(example).unwrap();
@@ -2803,6 +2867,7 @@ mod tests {
                         connect_timeout_seconds: 2,
                         response_header_timeout_seconds: 5,
                         images_response_header_timeout_seconds: 300,
+                        standalone_web_search_response_header_timeout_seconds: 300,
                         stream_idle_timeout_seconds: 8,
                     },
                     request_retry: SystemRequestRetrySettingsInput {
@@ -2845,6 +2910,12 @@ mod tests {
             settings.upstream_timeouts().images_response_header(),
             std::time::Duration::from_secs(300)
         );
+        assert_eq!(
+            settings
+                .upstream_timeouts()
+                .standalone_web_search_response_header(),
+            std::time::Duration::from_secs(300)
+        );
         assert!(settings.request_retry().enabled());
         assert_eq!(settings.request_retry().max_retries(), 3);
         assert_eq!(settings.passive_health().connection_failure_threshold(), 4);
@@ -2872,6 +2943,7 @@ mod tests {
                 connect_timeout_seconds: 1,
                 response_header_timeout_seconds: 2,
                 images_response_header_timeout_seconds: 300,
+                standalone_web_search_response_header_timeout_seconds: 300,
                 stream_idle_timeout_seconds: 3,
             },
             request_retry: Default::default(),

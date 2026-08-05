@@ -12,6 +12,7 @@ use super::ApiFormat;
 pub enum ApiOperation {
     ChatCompletions,
     Responses,
+    StandaloneWebSearch,
     ImagesGeneration,
     ImagesEdit,
 }
@@ -21,7 +22,7 @@ impl ApiOperation {
     pub const fn api_format(self) -> ApiFormat {
         match self {
             Self::ChatCompletions => ApiFormat::OpenAiChatCompletions,
-            Self::Responses => ApiFormat::OpenAiResponses,
+            Self::Responses | Self::StandaloneWebSearch => ApiFormat::OpenAiResponses,
             Self::ImagesGeneration | Self::ImagesEdit => ApiFormat::OpenAiImages,
         }
     }
@@ -31,6 +32,7 @@ impl ApiOperation {
         match self {
             Self::ChatCompletions => "chat_completions",
             Self::Responses => "responses",
+            Self::StandaloneWebSearch => "standalone_web_search",
             Self::ImagesGeneration => "images_generation",
             Self::ImagesEdit => "images_edit",
         }

@@ -326,10 +326,10 @@ impl ProxyService {
                 .map(Bytes::as_ref)
                 .unwrap_or_default(),
         );
-        let route = match self.routing.select_with_affinity(
+        let route = match self.routing.select_operation_with_affinity(
             &snapshot,
             &api_key,
-            api_format,
+            api_operation,
             &parsed.model,
             session_affinity.clone(),
         ) {
@@ -427,10 +427,10 @@ impl ProxyService {
                             .finish_with_proxy_error(RequestOutcome::UpstreamUnavailable, &error);
                         return Err(error);
                     }
-                    let retry_route = self.routing.select_with_affinity_excluding(
+                    let retry_route = self.routing.select_operation_with_affinity_excluding(
                         &snapshot,
                         &api_key,
-                        api_format,
+                        api_operation,
                         &parsed.model,
                         session_affinity.clone(),
                         attempted_channel_slots.as_slice(),
@@ -471,6 +471,17 @@ impl ProxyService {
             completion
                 .set_preserve_affinity_on_failure(prepared_attempt.preserves_affinity_on_failure());
             let transforms = current_channel.upstream_policy().effective_transforms();
+            if api_operation == ApiOperation::StandaloneWebSearch
+                && !transforms.request_json().is_empty()
+            {
+                let error = ProxyError::invalid_request_with_code(
+                    "Standalone web search does not support request JSON transforms.",
+                    "body",
+                    "standalone_web_search_json_transform_unsupported",
+                );
+                completion.finish_with_proxy_error(RequestOutcome::ClientRequestError, &error);
+                return Err(error);
+            }
             let model_rewritten = parsed.model != current_rule.upstream_model();
             let body = match original_body
                 .clone()
@@ -559,8 +570,8 @@ impl ProxyService {
                 },
             );
             strip_explicitly_ignored_client_headers(&mut headers);
-            let upstream_policy = match ResolvedUpstreamPolicy::try_resolve_for(
-                api_format,
+            let upstream_policy = match ResolvedUpstreamPolicy::try_resolve_for_operation(
+                api_operation,
                 &snapshot.system_settings().upstream_timeouts(),
                 current_channel.upstream_policy(),
             ) {
@@ -634,10 +645,10 @@ impl ProxyService {
                         && api_operation.permits_automatic_retry()
                         && attempt < max_attempts)
                         .then(|| {
-                            self.routing.select_with_affinity_excluding(
+                            self.routing.select_operation_with_affinity_excluding(
                                 &snapshot,
                                 &api_key,
-                                api_format,
+                                api_operation,
                                 &parsed.model,
                                 session_affinity.clone(),
                                 attempted_channel_slots.as_slice(),
@@ -2839,7 +2850,7 @@ mod tests {
     fn extracts_session_affinity_from_ordered_header_and_json_sources() {
         let settings = affinity_settings(vec![
             SessionAffinityKeySource::RequestHeader(HeaderName::from_static("x-session-id")),
-            SessionAffinityKeySource::JsonPointer(Arc::from("/prompt_cache_key")),
+            SessionAffinityKeySource::JsonPointer(Arc::from("/id")),
         ]);
         let headers = HeaderMap::new();
         let matched = match_session_affinity(
@@ -2847,7 +2858,7 @@ mod tests {
             ApiFormat::OpenAiResponses,
             "gpt-5",
             &headers,
-            br#"{"model":"gpt-5","prompt_cache_key":"session-body"}"#,
+            br#"{"id":"session-body","model":"gpt-5"}"#,
         );
         assert!(matched.is_some());
     }

@@ -963,7 +963,7 @@ impl ControlPlaneRepository {
             sqlx::query(
                 "UPDATE channels SET \
                  name=$2,base_url=$3,enabled=true,weight=$4,proxy_id=$5,available_models=$6, \
-                 supports_websocket=true \
+                 supports_websocket=true,supports_standalone_web_search=true \
                  WHERE id=$1",
             )
             .bind(channel_id)
@@ -1060,8 +1060,8 @@ impl ControlPlaneRepository {
             "INSERT INTO channels \
              (id,channel_group_id,api_format,name,base_url,enabled,weight,billing_multiplier, \
               proxy_id,override_document,upstream_auth_kind,available_models, \
-              auto_disable_allowed,supports_websocket) \
-             VALUES ($1,$2,$3::api_format,$4,$5,true,$6,1,$7,'{}','none',$8,false,true) \
+              auto_disable_allowed,supports_websocket,supports_standalone_web_search) \
+             VALUES ($1,$2,$3::api_format,$4,$5,true,$6,1,$7,'{}','none',$8,false,true,true) \
              RETURNING updated_at",
         )
         .bind(channel_id)
@@ -2026,7 +2026,8 @@ async fn codex_credential_audit(
                          'channel_id',projection.channel_id, \
                          'channel_group_id',projection_channel.channel_group_id, \
                          'available_models',projection_channel.available_models, \
-                         'supports_websocket',projection_channel.supports_websocket \
+                         'supports_websocket',projection_channel.supports_websocket, \
+                         'supports_standalone_web_search',projection_channel.supports_standalone_web_search \
                      ) ORDER BY projection.api_format \
                  ) \
                  FROM codex_oauth_credential_channels AS projection \

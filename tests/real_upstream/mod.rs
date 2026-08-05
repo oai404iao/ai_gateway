@@ -3,4 +3,5 @@
 mod chat_completions;
 mod images;
 mod responses;
+mod search;
 mod support;

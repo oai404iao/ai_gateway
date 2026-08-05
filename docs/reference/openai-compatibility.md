@@ -9,6 +9,8 @@
 > 相关字段来源：[OpenAI Reasoning](https://developers.openai.com/api/docs/guides/reasoning)、
 > [OpenAI Priority processing](https://developers.openai.com/api/docs/guides/priority-processing)、
 > [OpenAI Images API](https://developers.openai.com/api/reference/resources/images)、
+> [`openai/codex@5af85998c24fb3353ddd8164c3ed472057b03cb3` Search endpoint](https://github.com/openai/codex/blob/5af85998c24fb3353ddd8164c3ed472057b03cb3/codex-rs/codex-api/src/endpoint/search.rs)、
+> [Search wire types](https://github.com/openai/codex/blob/5af85998c24fb3353ddd8164c3ed472057b03cb3/codex-rs/codex-api/src/search.rs)、
 > [DeepSeek Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode)、
 > [阿里云百炼深度思考](https://help.aliyun.com/zh/model-studio/deep-thinking)。
 
@@ -20,12 +22,17 @@
 | `GET /v1/models` | 返回当前 API Key 可达的客户端模型名，不返回完整上游目录。 |
 | `POST /v1/chat/completions` | 仅按 Chat Completions 格式选路并转发。 |
 | `POST /v1/responses` | 仅按 Responses 格式选路并转发。 |
+| `POST /v1/alpha/search` | Codex standalone web search 扩展；复用 Responses 路由，但只选择显式支持该操作的渠道。 |
 | 带 WebSocket Upgrade 的 `GET /v1/responses` | 顺序转发 Responses WebSocket `response.create`；不做并发多路复用。 |
 | `POST /v1/images/generations` | 仅按 Images 格式转发非流式 JSON generation 请求。 |
 | `POST /v1/images/edits` | 仅按 Images 格式转发非流式 multipart edit 请求。 |
 
 不支持 Images JSON edit 请求、图片流式响应、embeddings、audio、files、batches、
 assistants、fine-tuning 等其他 OpenAI 路径。
+
+`/v1/alpha/search` 不是稳定的 OpenAI 公共 API；其外部契约来自固定 Codex source commit。Codex
+自定义 provider 的 base URL 指向 Gateway `/v1` 且声明
+`supports_standalone_web_search = true` 时，Codex 会调用该路径。
 
 ## 请求兼容策略
 
@@ -44,6 +51,9 @@ assistants、fine-tuning 等其他 OpenAI 路径。
   过长或未知形状不会增加本地拒绝条件。
 - 客户端 policy 未删除字段、且没有模型别名或 body 变换时，网关保留原始请求字节。
 - 模型别名只改写顶层 `model`。
+- Standalone web search 固定为非流式 JSON，允许顶层 `id`、`model`、`reasoning`、`input`、
+  `commands`、`settings` 和 `max_output_tokens`。它不应用 Request JSON Transform；渠道必须
+  显式声明 `supports_standalone_web_search`。
 - Images generation/edit 的 `stream: true` 在本地返回
   `400 image_streaming_unsupported`；当前不会联系上游。
 - Images edit 要求带合法 boundary 的 `multipart/form-data`，最多接受 16 张
@@ -79,7 +89,8 @@ assistants、fine-tuning 等其他 OpenAI 路径。
   长度、range、ETag 和 digest 元数据。
 - 上游 HTTP 错误不会触发自动重试。
 - Chat Completions 与 Responses 的自动故障转移仅发生在响应头前的连接失败、建连超时或
-  响应头超时。Images generation/edit 一旦开始上游尝试就不自动重试或切换渠道。
+  响应头超时。普通 standalone web search 使用相同的 pre-header 故障转移边界；Codex OAuth
+  Connector 发送后不重试。Images generation/edit 一旦开始上游尝试就不自动重试或切换渠道。
 - 网关生成的本地错误使用 OpenAI 风格的 `{ "error": { ... } }` JSON 结构，但错误代码是本项目契约。
 
 Responses WebSocket 的上游事件以 JSON 文本消息透传；配置的 Responses SSE 事件规则会应用到
@@ -92,6 +103,11 @@ Codex OAuth managed channel 也走同一 Responses WebSocket 路径，但由 Con
 `/responses` 目标、强制 `stream=true`/`store=false` 并注入订阅凭证与 Codex Header；
 `previous_response_id` 仍只在同一条可复用上游连接上有效。
 
+Codex OAuth standalone web search 使用同一 Responses managed channel、模型规则、API Key 权限
+和凭证。Connector 把公共 `/v1/alpha/search` 改写为 managed base URL 下的 `/alpha/search`，
+保留 `originator` 与 `x-codex-turn-metadata`，删除 Responses Session Header，并按普通 JSON
+处理响应。`results` 中未知 DTO 和字段透明转发；没有 usage 时不估算 token 或费用。
+
 Codex OAuth Images projection 仍使用标准客户端 `/v1/images/generations`，Connector 将上游目标
 改为 `/images/generations`，注入共享订阅凭证和 `x-codex-image-turn-id`，并按非流式 JSON
 而不是 SSE 处理响应。它不会把 Responses 输入转换成 Images。
@@ -102,7 +118,8 @@ body，把最多五张输入图片编码为 Codex JSON `images[].image_url` data
 入口 policy 删除，`output_format=png` 在 Codex policy 删除。这些限制不改变普通
 OpenAI-compatible edit 的最多 16 张输入边界。
 
-Codex Responses HTTP、Responses WebSocket、Images generation/edit 都在普通 Transform 后执行
+Codex Responses HTTP、Responses WebSocket、standalone web search、Images generation/edit
+都在普通 Transform 后执行
 独立的 provider body/Header 白名单。已知字段必须显式归类为转发、忽略或报错；未知 Codex body
 字段报错，未知 Codex Header 被删除。最终 OAuth/account/Session/image-turn Header 在白名单之后
 注入，不能由客户端或 Transform 覆盖。
@@ -116,6 +133,10 @@ Codex Responses HTTP、Responses WebSocket、Images generation/edit 都在普通
 - 将 Responses 输入转换为 messages；
 - 将 Responses 或 Chat Completions 请求转换为 Images generation；
 - 在一个格式无可用路由时回退到另一格式。
+
+Standalone web search 是 `ApiOperation`，不是第四种 `ApiFormat`：它复用
+`open_ai_responses` 模型规则与授权，但 operation capability、请求白名单、目标路径、协议和日志
+保持独立。
 
 ## SDK 使用
 
@@ -139,6 +160,7 @@ Codex Responses HTTP、Responses WebSocket、Images generation/edit 都在普通
 | `400` | `codex_request_body_field_value_unsupported` | Codex 无法等价表达该字段的非默认值。 |
 | `400` | `image_streaming_unsupported` | Images generation/edit 请求设置了 `stream: true`。 |
 | `400` | `image_edit_json_transform_unsupported` | multipart edit 选中了请求 JSON Transform。 |
+| `400` | `standalone_web_search_json_transform_unsupported` | standalone web search 选中了请求 JSON Transform。 |
 | `400` | `codex_image_edit_*` | Codex edit 的图片数量、必填/重复/无效文本字段或 MIME 不符合 adapter 契约。 |
 | `401` | `invalid_api_key` | 缺少或无法认证 Gateway API Key。 |
 | `403` | `permission_denied` | API Key 没有当前格式或模型列表权限。 |

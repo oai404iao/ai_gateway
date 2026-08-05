@@ -14,8 +14,9 @@
 
 三种格式共享鉴权、选路、上游客户端和日志基础设施，但路由、变换、协议操作和 usage
 解析保持隔离，禁止跨格式回退或转换。`ApiOperation` 进一步区分 Chat Completions、
-Responses、Images generation 与 Images edit；当前 Images 实现非流式 JSON generation 和
-非流式 multipart edit。
+Responses、standalone web search、Images generation 与 Images edit。Standalone web search
+复用 `OpenAiResponses` 路由与授权维度，但拥有独立 capability、请求契约、目标路径和日志
+operation；当前 Images 实现非流式 JSON generation 和非流式 multipart edit。
 
 客户端 API 格式与上游接入方式是两个维度。Channel Group 另有
 `ConnectorKind`：普通渠道使用 `openai_compatible`，Codex 订阅凭证使用
@@ -52,8 +53,8 @@ Browser or Console client
 1. 从请求头读取客户端 Bearer API Key。
 2. 从一次性获取的不可变快照完成鉴权和格式权限判断。
 3. 在读取 body 前执行进程内 RPM、并发和软额度准入。
-4. 按操作和 Content-Type 读取请求体。Chat Completions、Responses 与 Images generation
-   在 `proxy_body_bytes` 内读取 JSON；Images edit 在独立总大小/单文件限制内接收 multipart，
+4. 按操作和 Content-Type 读取请求体。Chat Completions、Responses、standalone web search 与
+   Images generation 在 `proxy_body_bytes` 内读取 JSON；Images edit 在独立总大小/单文件限制内接收 multipart，
    超过内存阈值后写入匿名临时文件。两者都要求路由用 `model` 为非空、最多 300 字符；
    Images streaming fail closed。请求日志还会宽松提取客户端显式提供的
    `reasoning.effort`、`reasoning_effort` 和 `service_tier = "priority"`，但这些元数据不会
@@ -66,10 +67,13 @@ Browser or Console client
    成员已经按规则 `upstream_model` 与 `channels.available_models` 求交并划分
    优先级 tier。
 7. 先用 API Key 的 `accessible_routes` 位图完成 O(1) 模型可达性判断，再使用渠道
-   授权位图过滤候选，并依次应用 Session 粘性、最低优先级、权重策略和被动健康过滤。
+   授权位图过滤候选，并依次应用 operation capability、Session 粘性、最低优先级、权重策略和
+   被动健康过滤。Standalone web search 只允许
+   `supports_standalone_web_search = true` 的 Responses 渠道。
 8. 必要时改写顶层模型别名，并按“模板默认值 → 渠道覆盖”应用受限变换。普通 JSON 沿用
    JSON Patch；multipart edit 在无需别名时原样回放，需要别名时流式等价重建，只执行 Header
-   变换而不执行请求 JSON Transform。只要 body 被别名、JSON Transform 或 provider adapter
+   变换而不执行请求 JSON Transform。Standalone web search 同样禁止 Request JSON Transform，
+   但保留模型别名和 Header/响应 Header Transform。只要 body 被别名、JSON Transform 或 provider adapter
    改变，客户端完整性 Header 会先被移除，随后 Header Transform 才能设置与新 body 匹配的值。
 9. 由进程内 Connector 的 `PreparedUpstreamAttempt` 完成 provider 特定 body、目标路径和最终
    Header/鉴权准备。Codex Connector 在普通 Transform 之后再次执行 provider body 白名单，
@@ -131,7 +135,7 @@ observation 接口，不包含 provider 的 OAuth claim、路径或 Header 细�
 - `OpenAiCompatible` attempt 是无状态路径：保留现有请求字节、API 路径和
   `UpstreamAuth` 注入。
 - `CodexOauth` attempt 的实现位于 `src/application/codex/attempt.rs`：读取独立凭证快照，
-  按操作分派 Responses HTTP SSE、Responses WebSocket、Images generation 或 Images edit
+  按操作分派 Responses HTTP SSE、Responses WebSocket、standalone web search、Images generation 或 Images edit
   约束，改写目标并注入 OAuth/account 与协议专用 Header。
 - `ConnectorKind` 编译进 group/channel 快照。新增 provider 时扩展 registry 和独立 provider
   模块，不能在标准 Chat Completions/Responses/Images 逻辑中再建一套路由器。
@@ -186,6 +190,8 @@ grace period 内完成，截止时强制取消，避免 Upgrade 脱离 Hyper con
 - Images generation/edit 不使用自动故障转移；上游尝试一旦开始即只返回该尝试结果。
 - Images generation/edit 在渠道没有显式响应头超时时使用独立的系统 Images 响应头超时；
   建连和流空闲超时仍与其他格式共享。
+- Standalone web search 在渠道没有显式响应头超时时使用独立的系统 Search 响应头超时；普通
+  Connector 仍可在响应头前故障转移，Codex Connector 发送后不重试。
 - Responses WebSocket 只在上游 Upgrade/建连完成前故障转移；`response.create`
   一旦发送就不再切换连接或渠道。
 - 每次后续尝试排除已经尝试过的渠道，并重新遵守授权、优先级、健康和权重规则。

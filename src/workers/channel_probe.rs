@@ -827,6 +827,7 @@ mod tests {
             false,
             false,
             false,
+            false,
             Some(Arc::from("probe-model")),
             CompiledChannelUpstreamPolicy::transparent(ApiFormat::OpenAiChatCompletions),
         );

@@ -6,13 +6,15 @@ use std::{sync::Arc, time::Duration};
 use regex::Regex;
 use reqwest::header::HeaderName;
 
-use super::ApiFormat;
+use super::{ApiFormat, ApiOperation};
 
 /// Hard ceiling for one client request's automatic failover retries.
 pub const MAX_REQUEST_RETRIES: u32 = 10;
 
 /// Default Images response-header timeout for newly bootstrapped settings.
 pub const DEFAULT_IMAGES_RESPONSE_HEADER_TIMEOUT_SECONDS: u64 = 300;
+/// Default standalone web-search response-header timeout for newly bootstrapped settings.
+pub const DEFAULT_STANDALONE_WEB_SEARCH_RESPONSE_HEADER_TIMEOUT_SECONDS: u64 = 300;
 
 /// Global timeout defaults used when a channel has no explicit override.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -20,6 +22,7 @@ pub struct UpstreamTimeoutDefaults {
     connect: Duration,
     response_header: Duration,
     images_response_header: Duration,
+    standalone_web_search_response_header: Duration,
     stream_idle: Duration,
 }
 
@@ -30,6 +33,7 @@ impl UpstreamTimeoutDefaults {
             connect,
             response_header,
             images_response_header: response_header,
+            standalone_web_search_response_header: response_header,
             stream_idle,
         }
     }
@@ -37,6 +41,15 @@ impl UpstreamTimeoutDefaults {
     #[must_use]
     pub const fn with_images_response_header(mut self, images_response_header: Duration) -> Self {
         self.images_response_header = images_response_header;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_standalone_web_search_response_header(
+        mut self,
+        response_header: Duration,
+    ) -> Self {
+        self.standalone_web_search_response_header = response_header;
         self
     }
 
@@ -56,10 +69,26 @@ impl UpstreamTimeoutDefaults {
     }
 
     #[must_use]
+    pub const fn standalone_web_search_response_header(self) -> Duration {
+        self.standalone_web_search_response_header
+    }
+
+    #[must_use]
     pub const fn response_header_for(self, api_format: ApiFormat) -> Duration {
         match api_format {
             ApiFormat::OpenAiImages => self.images_response_header,
             ApiFormat::OpenAiChatCompletions | ApiFormat::OpenAiResponses => self.response_header,
+        }
+    }
+
+    #[must_use]
+    pub const fn response_header_for_operation(self, operation: ApiOperation) -> Duration {
+        match operation {
+            ApiOperation::StandaloneWebSearch => self.standalone_web_search_response_header,
+            ApiOperation::ChatCompletions
+            | ApiOperation::Responses
+            | ApiOperation::ImagesGeneration
+            | ApiOperation::ImagesEdit => self.response_header_for(operation.api_format()),
         }
     }
 
@@ -78,6 +107,9 @@ impl Default for UpstreamTimeoutDefaults {
         )
         .with_images_response_header(Duration::from_secs(
             DEFAULT_IMAGES_RESPONSE_HEADER_TIMEOUT_SECONDS,
+        ))
+        .with_standalone_web_search_response_header(Duration::from_secs(
+            DEFAULT_STANDALONE_WEB_SEARCH_RESPONSE_HEADER_TIMEOUT_SECONDS,
         ))
     }
 }

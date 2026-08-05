@@ -6,13 +6,15 @@
 
 特殊上游使用**静态链接、进程内 Connector**，不增加 sidecar、Unix Socket RPC、动态
 `.so` 或 WASM。客户端使用标准 `POST /v1/responses`、带 Upgrade 的
-`GET /v1/responses`、非流式 JSON `POST /v1/images/generations` 或 multipart
-`POST /v1/images/edits`；Connector 只改变选中 format-specific channel 之后的上游准备过程。
+`GET /v1/responses`、Codex 扩展 `POST /v1/alpha/search`、非流式 JSON
+`POST /v1/images/generations` 或 multipart `POST /v1/images/edits`；Connector 只改变选中
+format-specific channel 之后的上游准备过程。
 
 `ApiFormat` 与 `ConnectorKind` 必须分离：
 
 ```text
-client protocol: OpenAiResponses | OpenAiImages
+client format: OpenAiResponses | OpenAiImages
+client operation: Responses | StandaloneWebSearch | ImagesGeneration | ImagesEdit
 upstream connector: CodexOauth
 ```
 
@@ -25,7 +27,7 @@ upstream connector: CodexOauth
 统一 attempt 接口：
 
 1. `prepare`：在发送前验证动态凭证与 affinity 状态；
-2. `adapt_body`：按 HTTP SSE、Responses WebSocket、Images JSON 或 multipart edit 应用
+2. `adapt_body`：按 HTTP SSE、Responses WebSocket、standalone web search、Images JSON 或 multipart edit 应用
    provider 请求约束；
 3. `upstream_url`：解析最终目标；
 4. `inject_headers`：在通用变换和 hop-by-hop 清理之后注入最终认证；
@@ -151,6 +153,10 @@ Affinity binding 只在成功终态后写入。首次选择后若凭证进入 `d
 账户，也不会因本次失败删除 affinity；绑定会保留到正常 TTL/清理边界，以免后续请求静默切换
 provider 账户。
 
+Standalone web search 使用 Responses affinity：Codex 请求 body 的 `/id` 与触发 Search 的
+Responses Session ID 相同，推荐规则同时配置 `/prompt_cache_key` 和 `/id`。已命中 affinity
+的 Search 请求沿用 Responses fail-closed 边界。
+
 Images 不使用 Session affinity。Images 请求在发送前遇到 draining/unavailable/disabled 凭证时，
 可以排除当前 projection 并选择同一 Images group 的其他凭证；一旦发送则不再换账户。
 
@@ -190,6 +196,19 @@ Codex WebSocket attempt：
 - 成功终态后只复用无残留的同一上游连接，保留 connection-local
   `previous_response_id` 状态。
 
+Codex standalone web search attempt：
+
+- 只接受 `ApiOperation::StandaloneWebSearch` 的非流式 JSON；
+- 在模型别名之后应用独立 Search body 白名单，允许 `id`、`model`、`reasoning`、`input`、
+  `commands`、`settings` 与 `max_output_tokens`，不添加 body override；
+- 不允许 Request JSON Transform，但继续应用 Header 和响应 Header Transform；
+- 目标固定为 managed Responses channel base URL 下的 `/alpha/search`；
+- 保留客户端 `originator` 与 `x-codex-turn-metadata`，originator 缺失时使用 Connector 默认值；
+- 注入 Bearer、存在时的 account、可选 FedRAMP、User-Agent 和版本，删除
+  `session-id`、`thread-id` 与 image-turn Header；
+- 成功响应按非流式 JSON 处理，`results` DTO 不解释、不重写；没有可识别 usage 时不估算 token
+  或费用。
+
 Codex Images generation attempt：
 
 - 只接受 `ApiOperation::ImagesGeneration` 的非流式 JSON；
@@ -215,7 +234,7 @@ Codex Images edit attempt：
   `x-codex-image-turn-id`，不发送 Responses Session Header；
 - 成功响应继续按普通 JSON 与 Images usage collector 处理。
 
-preparation 失败可以在发送前换凭证。HTTP Codex attempt 不启用普通 transport retry，因为
+preparation 失败可以在发送前换凭证。HTTP Codex attempt（包括 standalone web search）不启用普通 transport retry，因为
 reqwest 返回 pre-header error 时不能证明请求体未被上游接收。WebSocket 只允许在上游 Upgrade
 完成且尚未发送 `response.create` 前按全局重试策略换 channel；已经命中 affinity 或下游
 WebSocket pin 的 Codex Session fail closed，不换账户。消息发出后不重试。Responses 或 Images

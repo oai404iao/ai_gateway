@@ -92,6 +92,7 @@ const schema = z.object({
   ),
   enabled: z.boolean(),
   supports_websocket: z.boolean(),
+  supports_standalone_web_search: z.boolean(),
   auto_disable_allowed: z.boolean(),
   weight: z.number().int().min(1, "Weight must be at least 1."),
   billing_multiplier: z
@@ -148,6 +149,16 @@ const schema = z.object({
       message: "Only Responses channels can support WebSocket forwarding.",
     });
   }
+  if (
+    value.supports_standalone_web_search &&
+    value.api_format !== "open_ai_responses"
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["supports_standalone_web_search"],
+      message: "Only Responses channels can support standalone web search.",
+    });
+  }
 });
 
 type FormState = z.infer<typeof schema>;
@@ -159,6 +170,7 @@ const empty: FormState = {
   base_url: "",
   enabled: true,
   supports_websocket: false,
+  supports_standalone_web_search: false,
   auto_disable_allowed: false,
   weight: 100,
   billing_multiplier: "1",
@@ -214,6 +226,7 @@ export function ChannelDetailPage() {
         base_url: data.data.base_url,
         enabled: data.data.enabled,
         supports_websocket: data.data.supports_websocket,
+        supports_standalone_web_search: data.data.supports_standalone_web_search,
         auto_disable_allowed: data.data.auto_disable_allowed,
         weight: data.data.weight,
         billing_multiplier: data.data.billing_multiplier,
@@ -428,6 +441,8 @@ export function ChannelDetailPage() {
           base_url: parsed.data.base_url,
           enabled: parsed.data.enabled,
           supports_websocket: parsed.data.supports_websocket,
+          supports_standalone_web_search:
+            parsed.data.supports_standalone_web_search,
           auto_disable_allowed: parsed.data.auto_disable_allowed,
           weight: parsed.data.weight,
           billing_multiplier: parsed.data.billing_multiplier,
@@ -461,6 +476,8 @@ export function ChannelDetailPage() {
           base_url: parsed.data.base_url,
           enabled: parsed.data.enabled,
           supports_websocket: parsed.data.supports_websocket,
+          supports_standalone_web_search:
+            parsed.data.supports_standalone_web_search,
           auto_disable_allowed: parsed.data.auto_disable_allowed,
           weight: parsed.data.weight,
           billing_multiplier: parsed.data.billing_multiplier,
@@ -532,6 +549,12 @@ export function ChannelDetailPage() {
                   value={<StatusBadge value={data.data.supports_websocket} />}
                 />
                 <DetailField
+                  label={t("Standalone web search")}
+                  value={
+                    <StatusBadge value={data.data.supports_standalone_web_search} />
+                  }
+                />
+                <DetailField
                   label={t("Auto-disabled")}
                   value={<StatusBadge value={data.data.auto_disabled} />}
                 />
@@ -599,6 +622,10 @@ export function ChannelDetailPage() {
                           supports_websocket:
                             group?.api_format === "open_ai_responses"
                               ? state.supports_websocket
+                              : false,
+                          supports_standalone_web_search:
+                            group?.api_format === "open_ai_responses"
+                              ? state.supports_standalone_web_search
                               : false,
                           test_model:
                             group?.api_format === "open_ai_images" ? null : state.test_model,
@@ -978,6 +1005,42 @@ export function ChannelDetailPage() {
                       disabled={state.api_format !== "open_ai_responses"}
                       onCheckedChange={(checked) =>
                         patch({ supports_websocket: Boolean(checked) })
+                      }
+                    />
+                  </Field>
+                  <Field
+                    orientation="horizontal"
+                    data-invalid={Boolean(
+                      fieldError("supports_standalone_web_search"),
+                    )}
+                  >
+                    <FieldContent>
+                      <FieldLabel htmlFor="supports_standalone_web_search">
+                        {t("Supports standalone web search")}
+                      </FieldLabel>
+                      <FieldDescription>
+                        {state.api_format === "open_ai_responses"
+                          ? t(
+                              "Allow this channel to receive Codex standalone alpha/search requests. Request JSON transforms are not supported.",
+                            )
+                          : t(
+                              "Only OpenAI Responses channels can enable standalone web search.",
+                            )}
+                      </FieldDescription>
+                      {fieldError("supports_standalone_web_search") ? (
+                        <FieldError>
+                          {fieldError("supports_standalone_web_search")}
+                        </FieldError>
+                      ) : null}
+                    </FieldContent>
+                    <Switch
+                      id="supports_standalone_web_search"
+                      checked={state.supports_standalone_web_search}
+                      disabled={state.api_format !== "open_ai_responses"}
+                      onCheckedChange={(checked) =>
+                        patch({
+                          supports_standalone_web_search: Boolean(checked),
+                        })
                       }
                     />
                   </Field>

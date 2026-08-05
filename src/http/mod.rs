@@ -28,6 +28,7 @@ pub fn router(proxy: ProxyService) -> Router {
         .route("/v1/models", get(models))
         .route("/v1/chat/completions", post(chat_completions))
         .route("/v1/responses", post(responses).get(responses_websocket))
+        .route("/v1/alpha/search", post(standalone_web_search))
         .route("/v1/images/generations", post(images_generations))
         .route("/v1/images/edits", post(images_edits))
         .with_state(proxy)
@@ -60,6 +61,15 @@ async fn responses(
     request: Request,
 ) -> Result<Response, ProxyError> {
     proxy.proxy(ApiOperation::Responses, request).await
+}
+
+async fn standalone_web_search(
+    State(proxy): State<ProxyService>,
+    request: Request,
+) -> Result<Response, ProxyError> {
+    proxy
+        .proxy(ApiOperation::StandaloneWebSearch, request)
+        .await
 }
 
 async fn images_generations(

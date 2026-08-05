@@ -704,6 +704,7 @@ pub struct CompiledChannel {
     base_url: Url,
     connectivity_fingerprint: Arc<str>,
     supports_websocket: bool,
+    supports_standalone_web_search: bool,
     weight: i32,
     billing_multiplier: Decimal,
     upstream_auth: UpstreamAuth,
@@ -741,6 +742,10 @@ impl CompiledChannel {
     #[must_use]
     pub const fn supports_websocket(&self) -> bool {
         self.supports_websocket
+    }
+    #[must_use]
+    pub const fn supports_standalone_web_search(&self) -> bool {
+        self.supports_standalone_web_search
     }
     #[must_use]
     pub fn weight(&self) -> i32 {
@@ -845,6 +850,7 @@ impl CompiledChannel {
             upstream_auth,
             available_models,
             false,
+            false,
             auto_disable_allowed,
             auto_disabled,
             test_model,
@@ -862,6 +868,7 @@ impl CompiledChannel {
         upstream_auth: UpstreamAuth,
         available_models: HashSet<Arc<str>>,
         supports_websocket: bool,
+        supports_standalone_web_search: bool,
         auto_disable_allowed: bool,
         auto_disabled: bool,
         test_model: Option<Arc<str>>,
@@ -878,6 +885,7 @@ impl CompiledChannel {
             upstream_auth,
             available_models,
             supports_websocket,
+            supports_standalone_web_search,
             auto_disable_allowed,
             auto_disabled,
             test_model,
@@ -896,6 +904,7 @@ impl CompiledChannel {
         upstream_auth: UpstreamAuth,
         available_models: HashSet<Arc<str>>,
         supports_websocket: bool,
+        supports_standalone_web_search: bool,
         auto_disable_allowed: bool,
         auto_disabled: bool,
         test_model: Option<Arc<str>>,
@@ -910,6 +919,7 @@ impl CompiledChannel {
             base_url,
             connectivity_fingerprint,
             supports_websocket,
+            supports_standalone_web_search,
             weight,
             billing_multiplier,
             upstream_auth,

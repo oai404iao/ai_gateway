@@ -1,7 +1,7 @@
 # Codex OAuth 与订阅后端接入参考
 
 > 类型：外部参考
-> 最近核对：2026-08-04
+> 最近核对：2026-08-05
 > 权威来源：
 > [`openai/codex` 0.146.0 release](https://github.com/openai/codex/releases/tag/rust-v0.146.0)、
 > [OAuth server](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/login/src/server.rs)、
@@ -36,6 +36,13 @@
 > [Images wire types](https://github.com/openai/codex/blob/aa064463458adbef10400c74174107fc4b3550f0/codex-rs/codex-api/src/images.rs)、
 > [image backend](https://github.com/openai/codex/blob/aa064463458adbef10400c74174107fc4b3550f0/codex-rs/ext/image-generation/src/backend.rs)
 > 和 [image tool](https://github.com/openai/codex/blob/aa064463458adbef10400c74174107fc4b3550f0/codex-rs/ext/image-generation/src/tool.rs)。
+> Standalone web search 行为另外核对
+> [`openai/codex@5af85998c24fb3353ddd8164c3ed472057b03cb3`](https://github.com/openai/codex/tree/5af85998c24fb3353ddd8164c3ed472057b03cb3)：
+> [Search endpoint](https://github.com/openai/codex/blob/5af85998c24fb3353ddd8164c3ed472057b03cb3/codex-rs/codex-api/src/endpoint/search.rs)、
+> [Search wire types](https://github.com/openai/codex/blob/5af85998c24fb3353ddd8164c3ed472057b03cb3/codex-rs/codex-api/src/search.rs)
+> [Search tool Header](https://github.com/openai/codex/blob/5af85998c24fb3353ddd8164c3ed472057b03cb3/codex-rs/ext/web-search/src/tool.rs)
+> 和
+> [provider capability](https://github.com/openai/codex/blob/5af85998c24fb3353ddd8164c3ed472057b03cb3/codex-rs/model-provider-info/src/lib.rs)。
 > HTTP content-coding 基线另外核对当前
 > [`openai/codex@5af85998c23ddb9cc21c43ef41db44712b481611`](https://github.com/openai/codex/tree/5af85998c23ddb9cc21c43ef41db44712b481611)：
 > [default client](https://github.com/openai/codex/blob/5af85998c23ddb9cc21c43ef41db44712b481611/codex-rs/login/src/auth/default_client.rs)、
@@ -97,6 +104,7 @@ Token claim 不同，网关拒绝导入。
 | --- | --- |
 | Responses | `POST /backend-api/codex/responses` |
 | Responses WebSocket | `GET wss://chatgpt.com/backend-api/codex/responses` Upgrade |
+| Standalone web search | `POST /backend-api/codex/alpha/search` |
 | Images generation | `POST /backend-api/codex/images/generations` |
 | Images edit | `POST /backend-api/codex/images/edits` |
 | Models | `GET /backend-api/codex/models?client_version=...` |
@@ -111,6 +119,11 @@ Token claim 不同，网关拒绝导入。
 - `originator: codex_cli_rs`；
 - 以 `codex_cli_rs/0.146.0` 为基础值的 `User-Agent` 和独立的版本标识；
 - Responses 请求的 `session-id`、`thread-id` 与 `x-client-request-id`。
+
+Standalone web search 额外保留 `x-codex-turn-metadata`，并使用客户端提供的
+`originator` 做请求来源归因；缺失时使用默认 `codex_cli_rs`。请求顶层字段为 `id`、`model`
+以及可选 `reasoning`、`input`、`commands`、`settings`、`max_output_tokens`。响应为非流式
+JSON，`output` 是最终文本，`encrypted_output` 和 `results` 为可选 opaque 数据。
 
 Codex 的 image tool 当前对 generation 使用 `gpt-image-2`，请求字段包含
 `prompt`、`background`、`model`、可选 `n`、`quality` 与 `size`。Images 请求额外发送
@@ -155,7 +168,7 @@ provider-managed `channels` 记录。因此普通优先级、权重、API Key �
 
 ### 请求准备
 
-客户端可以调用 `POST /v1/responses` 或带 WebSocket Upgrade 的
+客户端可以调用 `POST /v1/responses`、`POST /v1/alpha/search` 或带 WebSocket Upgrade 的
 `GET /v1/responses`。选中 Codex managed channel 后，HTTP 路径：
 
 1. 要求请求本身为 SSE streaming；
@@ -186,6 +199,17 @@ WebSocket 路径：
 7. 顺序转发事件，并把成功、无残留的连接放回 Session 隔离池，使后续请求可以继续使用
    connection-local `previous_response_id`。
 
+Standalone web search 路径：
+
+1. 使用现有 `open_ai_responses` 模型规则和 API Key 权限，但只选择
+   `supports_standalone_web_search = true` 的 Responses channel；
+2. 固定为非流式 JSON，在模型别名后应用独立 Search body/Header 白名单；
+3. 不应用 Request JSON Transform；Header 和响应 Header Transform 仍有效；
+4. 将目标改为 managed channel base URL 下的 `/alpha/search`；
+5. 保留 `originator`、`x-codex-turn-metadata` 和可选 `x-client-request-id`，注入
+   Bearer/可选 account/FedRAMP、版本和 User-Agent，删除 Responses Session Header；
+6. `results` DTO 透明转发；没有 usage 时不估算 token 或费用。
+
 客户端也可以调用非流式 JSON `POST /v1/images/generations`。选中 Codex Images projection 后：
 
 1. 在模型别名和受限变换后应用 Codex Images generation body 白名单，只保留 wire type 字段；
@@ -207,11 +231,14 @@ WebSocket 路径：
 4. 将目标改为 `/backend-api/codex/images/edits`；
 5. 注入与 generation 相同的 credential 和 image-turn Header，并按非流式 JSON 处理响应。
 
-客户端提供的合法 `session-id` / `thread-id` 会被保留。缺少时，HTTP 请求如果匹配已配置的
+Responses 客户端提供的合法 `session-id` / `thread-id` 会被保留。缺少时，HTTP 请求如果匹配已配置的
 Session affinity 规则，网关从该规则的不可逆 session hash 派生稳定、opaque 的 UUID；
 没有匹配 affinity 的 HTTP 请求使用本次请求 UUID。WebSocket Session 从下游握手身份派生稳定
 seed，使顺序请求和池化重连保持一致的身份。缺失的
 `x-client-request-id` 使用最终 `thread-id`。
+
+Standalone web search 的 body `id` 是同一 Codex Session ID。推荐 affinity 规则同时使用
+Responses `/prompt_cache_key` 和 Search `/id`，使两种 operation 固定到同一个订阅凭证。
 
 Codex 成功响应按 Connector 契约视为 SSE，而不只依赖上游
 `Content-Type`。网关在转发 `response.completed` / `response.failed` 的同时完成
@@ -243,7 +270,7 @@ workspace 的不同 `user_id` 会创建独立凭证，不会互相覆盖。
 
 Quota 状态由两个 projection 共享，并映射为：
 
-- `active`：可接收新的 Responses Session 或 Images generation/edit；
+- `active`：可接收新的 Responses Session、standalone web search 或 Images generation/edit；
 - `draining`：达到管理员阈值，只允许已命中 affinity 的既有 Responses Session；Images
   projection 在发送前被排除；
 - `unavailable`：quota 不允许、额度耗尽或永久 refresh 失败；
@@ -264,8 +291,8 @@ WebSocket 错误会触发按 refresh generation 去重的后台 token refresh。
 
 ## 差异与限制
 
-- Codex Connector 支持 Responses HTTP SSE、Responses WebSocket、非流式 Images generation
-  与 multipart Images edit；
+- Codex Connector 支持 Responses HTTP SSE、Responses WebSocket、非流式 standalone web
+  search、非流式 Images generation 与 multipart Images edit；
   Responses HTTP 仍拒绝非空 `previous_response_id`，WebSocket 保留该字段并依赖同一条上游连接
   的增量状态；两种传输都通过独立 allowlist 明确分类已知字段，未知 body 字段不再透明转发。
 - edit adapter 最多接受五张图片，不接受 mask 或无法等价表达的 Codex wire type 外字段；

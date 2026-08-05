@@ -1385,7 +1385,7 @@ export interface components {
         /** @enum {string} */
         ApiFormat: "open_ai_chat_completions" | "open_ai_responses" | "open_ai_images";
         /** @enum {string} */
-        ApiOperation: "chat_completions" | "responses" | "images_generation" | "images_edit";
+        ApiOperation: "chat_completions" | "responses" | "standalone_web_search" | "images_generation" | "images_edit";
         /** @enum {string} */
         SelectionStrategy: "weighted_random" | "weighted_round_robin";
         /** @enum {string} */
@@ -1543,6 +1543,12 @@ export interface components {
              * @default 300
              */
             images_response_header_timeout_seconds: number;
+            /**
+             * Format: int64
+             * @description Used by standalone web search when the channel has no explicit response-header timeout.
+             * @default 300
+             */
+            standalone_web_search_response_header_timeout_seconds: number;
             /** Format: int64 */
             stream_idle_timeout_seconds: number;
         };
@@ -2015,6 +2021,8 @@ export interface components {
             enabled: boolean;
             /** @description Whether this OpenAI Responses channel accepts WebSocket upgrades. */
             supports_websocket: boolean;
+            /** @description Whether this OpenAI Responses channel accepts the standalone alpha/search operation. */
+            supports_standalone_web_search: boolean;
             auto_disabled: boolean;
             auto_disabled_reason: string | null;
             /** @description Allows system automatic-disable rules to temporarily remove this channel from routing. */
@@ -2954,6 +2962,11 @@ export interface components {
              */
             supports_websocket: boolean;
             /**
+             * @description Valid only for open_ai_responses channels. Channels with request JSON transforms cannot enable it.
+             * @default false
+             */
+            supports_standalone_web_search: boolean;
+            /**
              * @description Allows configured automatic-disable rules to temporarily remove this channel from routing.
              * @default false
              */
@@ -2995,6 +3008,11 @@ export interface components {
              * @default false
              */
             supports_websocket: boolean;
+            /**
+             * @description Valid only for open_ai_responses channels. Channels with request JSON transforms cannot enable it.
+             * @default false
+             */
+            supports_standalone_web_search: boolean;
             /**
              * @description Allows configured automatic-disable rules to temporarily remove this channel from routing.
              * @default false

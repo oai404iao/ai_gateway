@@ -3,7 +3,8 @@
 中文 | [English](README.md)
 
 `ai-gateway` 是一个单二进制 Rust 网关，用于转发 OpenAI 兼容请求。它向客户端提供
-Chat Completions、Responses、非流式 JSON Images generation 与 multipart Images edit API，
+Chat Completions、Responses、Codex standalone web search、非流式 JSON Images generation
+与 multipart Images edit API，
 根据 PostgreSQL 控制面完成路由，并将请求转发到已配置的上游提供商。
 
 文档已按读者分类整理，统一入口见[文档中心](docs/README.md)：用户文档、开发与
@@ -16,13 +17,13 @@ Chat Completions、Responses、非流式 JSON Images generation 与 multipart Im
 
 ## 特性
 
-- 支持 OpenAI Chat Completions、Responses、非流式 JSON Images generation 和 multipart
-  Images edit；
+- 支持 OpenAI Chat Completions、Responses、Codex standalone web search、非流式 JSON
+  Images generation 和 multipart Images edit；
   三种格式绝不相互回退。
 - 按 `(客户端模型名, API 格式)` 路由，支持渠道组优先级和渠道权重选择。
 - 特殊上游通过单进程内 Connector 接入，不增加 sidecar 或第二次网络跳转。首个
   Codex OAuth Connector 支持订阅凭证、每账户代理、Token 刷新、额度感知 draining
-  以及共享凭证的 provider-managed Responses HTTP/SSE/WebSocket 与 Images
+  以及共享凭证的 provider-managed Responses HTTP/SSE/WebSocket/Search 与 Images
   generation/edit 渠道。
 - multipart edit 超过内存阈值后写入受限匿名临时文件，不提高全局 JSON body 上限；Console
   系统负载页显示活跃落盘字节、可用容量和失败次数。
@@ -219,6 +220,7 @@ docker compose up -d
 | `GET /v1/models` | 列出此 API Key 可达的模型；至少一个格式需要同时拥有 `proxy` 与 `models.read`。 |
 | `POST /v1/chat/completions` | 仅代理 Chat Completions 请求。 |
 | `POST /v1/responses` | 仅代理 Responses 请求。 |
+| `POST /v1/alpha/search` | 通过显式支持的 Responses 渠道代理非流式 Codex standalone web search 请求。 |
 | 带 WebSocket Upgrade 的 `GET /v1/responses` | 通过 WebSocket 顺序代理 Responses `response.create` 消息。 |
 | `POST /v1/images/generations` | 仅代理非流式 JSON Images generation 请求。 |
 | `POST /v1/images/edits` | 仅代理非流式 multipart Images edit 请求。 |

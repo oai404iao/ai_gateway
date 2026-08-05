@@ -290,6 +290,7 @@ export const CHANNEL: ChannelView = {
   base_url: "https://api.upstream.example",
   enabled: true,
   supports_websocket: false,
+  supports_standalone_web_search: false,
   auto_disabled: false,
   auto_disabled_reason: null,
   auto_disable_allowed: true,
@@ -489,6 +490,7 @@ export const SYSTEM_SETTINGS: SystemSettings = {
     connect_timeout_seconds: 10,
     response_header_timeout_seconds: 30,
     images_response_header_timeout_seconds: 300,
+    standalone_web_search_response_header_timeout_seconds: 300,
     stream_idle_timeout_seconds: 90,
   },
   request_retry: {

@@ -12,7 +12,7 @@ use std::{
 };
 
 use crate::domain::{
-    ApiFormat, CompiledApiKey, CompiledChannel, CompiledModelRule, CompiledRouteTier,
+    ApiFormat, ApiOperation, CompiledApiKey, CompiledChannel, CompiledModelRule, CompiledRouteTier,
     CompiledRuntimeConfig, OutboundNetworkPolicyFingerprint, SelectionStrategy,
 };
 use serde::Serialize;
@@ -88,6 +88,7 @@ pub struct RoutingRuntime {
 enum ChannelCapability {
     Any,
     ResponsesWebSocket,
+    StandaloneWebSearch,
 }
 
 impl ChannelCapability {
@@ -95,6 +96,17 @@ impl ChannelCapability {
         match self {
             Self::Any => true,
             Self::ResponsesWebSocket => channel.supports_websocket(),
+            Self::StandaloneWebSearch => channel.supports_standalone_web_search(),
+        }
+    }
+
+    fn for_operation(operation: ApiOperation) -> Self {
+        match operation {
+            ApiOperation::StandaloneWebSearch => Self::StandaloneWebSearch,
+            ApiOperation::ChatCompletions
+            | ApiOperation::Responses
+            | ApiOperation::ImagesGeneration
+            | ApiOperation::ImagesEdit => Self::Any,
         }
     }
 }
@@ -612,6 +624,26 @@ impl RoutingRuntime {
         self.select_with_affinity_excluding(snapshot, key, format, model, affinity, &[])
     }
 
+    #[must_use]
+    pub fn select_operation_with_affinity(
+        &self,
+        snapshot: &CompiledRuntimeConfig,
+        key: &CompiledApiKey,
+        operation: ApiOperation,
+        model: &str,
+        affinity: Option<SessionAffinityMatch>,
+    ) -> SelectionResult {
+        self.select_with_affinity_excluding_capability(
+            snapshot,
+            key,
+            operation.api_format(),
+            model,
+            affinity,
+            &[],
+            ChannelCapability::for_operation(operation),
+        )
+    }
+
     /// Tries to pin a stateful transport to one specific channel while still
     /// enforcing the current model rule, API-key authorization, exclusions,
     /// passive health, highest usable priority tier, and session-affinity
@@ -769,6 +801,27 @@ impl RoutingRuntime {
             affinity,
             excluded_channel_slots,
             ChannelCapability::Any,
+        )
+    }
+
+    #[must_use]
+    pub fn select_operation_with_affinity_excluding(
+        &self,
+        snapshot: &CompiledRuntimeConfig,
+        key: &CompiledApiKey,
+        operation: ApiOperation,
+        model: &str,
+        affinity: Option<SessionAffinityMatch>,
+        excluded_channel_slots: &[usize],
+    ) -> SelectionResult {
+        self.select_with_affinity_excluding_capability(
+            snapshot,
+            key,
+            operation.api_format(),
+            model,
+            affinity,
+            excluded_channel_slots,
+            ChannelCapability::for_operation(operation),
         )
     }
 
@@ -1562,6 +1615,7 @@ mod tests {
                         .unwrap_or_else(|| format!("https://{id}.test")),
                     enabled: true,
                     supports_websocket: false,
+                    supports_standalone_web_search: false,
                     auto_disabled: false,
                     auto_disable_allowed: false,
                     weight: *weight,
@@ -1703,6 +1757,7 @@ mod tests {
                 base_url: "https://upstream.test".into(),
                 enabled: true,
                 supports_websocket: false,
+                supports_standalone_web_search: false,
                 auto_disabled: false,
                 auto_disable_allowed: false,
                 weight: 1,

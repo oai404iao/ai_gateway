@@ -295,6 +295,32 @@ describe("RequestLogsView", () => {
     expect(detailRequests).toBe(1);
   });
 
+  it("labels standalone web-search request details", async () => {
+    seedAuthenticatedSession();
+    const log = {
+      ...REQUEST_LOG,
+      id: "11111111-2222-4333-8444-666666666666",
+      api_format: "open_ai_responses",
+      api_operation: "standalone_web_search",
+      request_protocol: "non_stream",
+      client_model: "search-model",
+      streamed: false,
+    } as const;
+    server.use(
+      http.get("/console/v1/request-logs", () => HttpResponse.json([log])),
+      http.get("/console/v1/request-logs/:id", () => HttpResponse.json(log)),
+    );
+
+    const user = userEvent.setup();
+    renderAppAt("/admin/request-logs");
+
+    await user.click(await screen.findByText("search-model"));
+    expect(
+      await screen.findByText("Standalone web search", { selector: "dd" }),
+    ).toBeInTheDocument();
+    expect(await screen.findByText("Non-stream", { selector: "dd" })).toBeInTheDocument();
+  });
+
   it("limits personal details to the standardized owner-visible fields", async () => {
     seedUserSession();
     const ownLog = {

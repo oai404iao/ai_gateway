@@ -57,6 +57,7 @@ describe("SystemPage", () => {
         connect_timeout_seconds: 12,
         response_header_timeout_seconds: 30,
         images_response_header_timeout_seconds: 300,
+        standalone_web_search_response_header_timeout_seconds: 300,
         stream_idle_timeout_seconds: 90,
       },
       request_retry: {
@@ -90,8 +91,9 @@ describe("SystemPage", () => {
             model_regex: ["^gpt-.*$"],
             key_sources: [
               { type: "json_pointer", pointer: "/prompt_cache_key" },
-              { type: "request_header", name: "session_id" },
-              { type: "request_header", name: "thread_id" },
+              { type: "json_pointer", pointer: "/id" },
+              { type: "request_header", name: "session-id" },
+              { type: "request_header", name: "thread-id" },
             ],
             value_regex: null,
             ttl_seconds: null,
@@ -140,6 +142,25 @@ describe("SystemPage", () => {
 
     expect(
       await screen.findByText("Images response header timeout must exceed connect timeout."),
+    ).toBeInTheDocument();
+  });
+
+  it("requires the web-search response-header timeout to exceed the connect timeout", async () => {
+    seedAuthenticatedSession();
+    const user = userEvent.setup();
+    renderApp();
+
+    const responseHeaderTimeout = await screen.findByLabelText(
+      "Web search response header timeout (seconds)",
+    );
+    await user.clear(responseHeaderTimeout);
+    await user.type(responseHeaderTimeout, "10");
+    await user.click(screen.getByRole("button", { name: /save system settings/i }));
+
+    expect(
+      await screen.findByText(
+        "Web search response header timeout must exceed connect timeout.",
+      ),
     ).toBeInTheDocument();
   });
 

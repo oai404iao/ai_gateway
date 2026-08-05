@@ -61,6 +61,9 @@ response_header_timeout_seconds = 30
 # Images generation/edit often completes before the upstream sends response
 # headers, so it uses this longer format-specific default.
 images_response_header_timeout_seconds = 300
+# Unary standalone web search can perform several provider operations before
+# returning response headers.
+standalone_web_search_response_header_timeout_seconds = 300
 stream_idle_timeout_seconds = 90
 
 [request_retry]
@@ -160,6 +163,7 @@ rules = []
 # model_regex = ["^gpt-.*$"]
 # key_sources = [
 #   { type = "json_pointer", pointer = "/prompt_cache_key" },
+#   { type = "json_pointer", pointer = "/id" },
 #   { type = "request_header", name = "session-id" },
 #   { type = "request_header", name = "thread-id" },
 # ]

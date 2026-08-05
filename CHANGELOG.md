@@ -7,6 +7,13 @@ Versioning.
 
 ## [Unreleased]
 
+### Added
+
+- Add non-streaming `POST /v1/alpha/search` forwarding for Codex standalone
+  web search, reusing Responses routing while requiring an explicit channel
+  capability, preserving Codex search metadata, supporting Codex OAuth target
+  adaptation, and recording a distinct request-log operation.
+
 ## [0.9.7] - 2026-08-05
 
 ### Added

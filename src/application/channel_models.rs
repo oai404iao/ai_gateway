@@ -142,6 +142,7 @@ impl ChannelModelDiscoveryInput {
             base_url: self.base_url,
             enabled: true,
             supports_websocket: false,
+            supports_standalone_web_search: false,
             auto_disabled: false,
             auto_disable_allowed: false,
             weight: 1,

@@ -470,6 +470,13 @@ export function ChannelsPage() {
       header: t("WebSocket"),
       render: (channel) => <StatusBadge value={channel.supports_websocket} />,
     },
+    {
+      key: "standalone_search",
+      header: t("Web search"),
+      render: (channel) => (
+        <StatusBadge value={channel.supports_standalone_web_search} />
+      ),
+    },
     { key: "weight", header: t("Weight"), render: (channel) => channel.weight },
     {
       key: "billing_multiplier",
