@@ -1486,7 +1486,7 @@ async fn api_key_and_model_rules_do_not_fall_back_between_formats() {
 async fn matching_chat_model_preserves_body_and_forwards_response_safely() {
     let upstream_body = br#"{"id":"upstream-result","ok":true}"#.to_vec();
     let harness = harness(StatusCode::CREATED, upstream_body.clone()).await;
-    let request_body = br#"{ "messages": [{"role":"user","content":{"nested":{"a":1}}}], "model" : "same-model", "reasoning_effort": "high", "service_tier": "priority", "metadata": { "key": "value" } }"#.to_vec();
+    let request_body = br#"{ "messages": [{"role":"user","content":{"nested":{"a":1}}}], "model" : "same-model", "thinking": {"type":"enabled"}, "enable_thinking": true, "reasoning_effort": "high", "service_tier": "priority", "metadata": { "key": "value" } }"#.to_vec();
 
     let response = authorized_post(
         &client(),

@@ -2,14 +2,15 @@
 
 > 类型：外部参考与项目兼容契约。
 >
-> 最近核对：2026-08-04。
+> 最近核对：2026-08-05。
 >
 > 权威来源：[OpenAI API Reference](https://developers.openai.com/api/reference/overview)。
 >
 > 相关字段来源：[OpenAI Reasoning](https://developers.openai.com/api/docs/guides/reasoning)、
 > [OpenAI Priority processing](https://developers.openai.com/api/docs/guides/priority-processing)、
 > [OpenAI Images API](https://developers.openai.com/api/reference/resources/images)、
-> [DeepSeek Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode)。
+> [DeepSeek Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode)、
+> [阿里云百炼深度思考](https://help.aliyun.com/zh/model-studio/deep-thinking)。
 
 ## 支持范围
 
@@ -34,6 +35,8 @@ assistants、fine-tuning 等其他 OpenAI 路径。
 - 所有公开接口使用顶层客户端 body 白名单。未列出字段返回
   `request_body_field_unsupported`；字段已知但不能按契约忽略的值返回
   `request_body_field_value_unsupported`。允许字段内部的嵌套结构不递归校验。
+- Chat Completions 额外允许第三方兼容扩展 `thinking` 和 `enable_thinking`；网关不解释其值，
+  由选中的上游决定是否支持。
 - 客户端 Header 使用共享白名单；未知 Header 被删除。官方 SDK 的 `x-stainless-*`、OpenAI
   组织/项目 Header、Gateway Session Header 和 W3C trace Header 显式列入契约。
 - 仅为请求日志元数据，网关会宽松识别 Responses 的 `reasoning.effort`、兼容

@@ -2,11 +2,13 @@
 
 > 类型：外部参考。
 >
-> 最近核对：2026-08-04。
+> 最近核对：2026-08-05。
 >
 > 权威来源：[OpenAI Create chat completion](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)、
 > [DeepSeek Create Chat Completion](https://api-docs.deepseek.com/api/create-chat-completion)、
-> [DeepSeek Context Caching](https://api-docs.deepseek.com/guides/kv_cache)。
+> [DeepSeek Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode)、
+> [DeepSeek Context Caching](https://api-docs.deepseek.com/guides/kv_cache) 与
+> [阿里云百炼深度思考](https://help.aliyun.com/zh/model-studio/deep-thinking)。
 
 ## 外部接口关键语义
 
@@ -19,6 +21,8 @@
 - DeepSeek 同样使用 `prompt_tokens` 与 `completion_tokens`，并可额外返回
   `prompt_cache_hit_tokens`、`prompt_cache_miss_tokens` 和
   `completion_tokens_details.reasoning_tokens`。
+- 部分 OpenAI-compatible 上游使用额外顶层字段控制思考模式，例如 `thinking` 或
+  `enable_thinking`；字段结构和可用模型由对应上游定义。
 - `stream=true` 时，响应使用 server-sent events，逐步返回 Chat Completion chunk；OpenAI 风格流通常以 `data: [DONE]` 结束。
 - 流式 usage 依赖上游支持。OpenAI 在 `stream_options.include_usage=true` 时于
   `[DONE]` 前发送 `choices: []` 的 usage 汇总 chunk；DeepSeek 兼容响应也可能把 usage
@@ -30,6 +34,8 @@
 
 - 此路径只匹配 `open_ai_chat_completions` 模型规则、渠道组和渠道。
 - 顶层字段必须进入 `chat_completions.client_body` 白名单；未知顶层字段返回本地 `400`。
+- `thinking` 和 `enable_thinking` 已作为第三方兼容扩展列入白名单；网关不解释其值，并在没有
+  其他 body 改写时按原始请求字节转发。
 - 网关不递归校验 `messages`、tools 或模型专属嵌套结构；顶层检查后仍由目标上游解释。
 - 模型别名只改写顶层 `model`，嵌套对象中的同名字段不变。
 - 客户端 policy 未删除字段且无变换时，请求 JSON 的空白、键顺序和原始字节保持不变。

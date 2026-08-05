@@ -798,9 +798,10 @@ mod tests {
     }
 
     #[test]
-    fn client_json_policy_preserves_allowed_bytes_and_rejects_unknown_fields() {
-        let original =
-            Bytes::from_static(br#"{ "model" : "gpt-5", "messages" : [], "stream" : false }"#);
+    fn client_json_policy_preserves_chat_thinking_extensions_and_rejects_unknown_fields() {
+        let original = Bytes::from_static(
+            br#"{ "model" : "deepseek-chat", "messages" : [], "thinking" : {"type":"enabled"}, "enable_thinking" : true, "stream" : false }"#,
+        );
         let allowed = apply_json_body_policy(
             RequestPolicyLayer::Client,
             RequestInterface::ChatCompletions,
