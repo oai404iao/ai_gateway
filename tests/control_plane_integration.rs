@@ -2801,6 +2801,10 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
                 "store": true,
                 "max_output_tokens": 1,
                 "metadata": {"client": "ignored by Codex"},
+                "client_metadata": {
+                    "session_id": "session-123",
+                    "thread_id": "thread-456"
+                },
                 "input": responses_message_input("hello")
             }),
         ))
@@ -2862,6 +2866,11 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
     assert_eq!(forwarded.body["model"], "upstream-v1");
     assert_eq!(forwarded.body["stream"], true);
     assert_eq!(forwarded.body["store"], false);
+    assert_eq!(
+        forwarded.body["client_metadata"]["session_id"],
+        "session-123"
+    );
+    assert_eq!(forwarded.body["client_metadata"]["thread_id"], "thread-456");
     assert!(forwarded.body.get("max_output_tokens").is_none());
     assert!(forwarded.body.get("metadata").is_none());
     assert!(forwarded.stainless_lang.is_none());
