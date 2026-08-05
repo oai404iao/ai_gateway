@@ -24,8 +24,8 @@
 </p>
 
 > **Status:** Current implementation, under active development. The public
-> data plane supports Chat Completions, Responses, non-streaming JSON Images
-> generation, and multipart Images edits.
+> data plane supports Chat Completions, Responses, Codex standalone web
+> search, non-streaming JSON Images generation, and multipart Images edits.
 
 `ai-gateway` is a self-hosted LLM request gateway built with Rust, Axum,
 Tokio, SQLx, and PostgreSQL. It keeps routing on an immutable in-memory
@@ -34,16 +34,16 @@ separate management Console for users and administrators.
 
 ## ✨ Features
 
-- **OpenAI-compatible data plane** for Chat Completions, Responses, Images
-  generation, and multipart Images edits over HTTP, SSE, and Responses
-  WebSocket where applicable.
+- **OpenAI-compatible data plane** for Chat Completions, Responses, the Codex
+  standalone web-search extension, Images generation, and multipart Images
+  edits over HTTP, SSE, and Responses WebSocket where applicable.
 - **Priority and weighted routing** with passive health, optional session
   affinity, and controlled failover before upstream response headers arrive.
 - **In-process upstream connectors** keep provider-specific authentication and
   request preparation inside the single Rust service. The first connector,
   Codex OAuth, adds subscription credentials, per-account proxies, token
   refresh, quota-aware draining, and shared provider-managed Responses
-  HTTP/SSE/WebSocket plus Images generation/edit channels.
+  HTTP/SSE/WebSocket/search plus Images generation/edit channels.
 - **Bounded Images uploads** spill multipart edits from memory to anonymous
   permission-restricted temporary files without raising the global JSON body
   limit, and expose spool capacity/failure metrics in the Console.
@@ -70,6 +70,7 @@ separate management Console for users and administrators.
 | `GET /v1/models` | Client API key | Lists models reachable by the key. |
 | `POST /v1/chat/completions` | Client API key | Proxies Chat Completions requests. |
 | `POST /v1/responses` | Client API key | Proxies Responses requests over HTTP or SSE. |
+| `POST /v1/alpha/search` | Client API key | Proxies non-streaming Codex standalone web-search requests through capable Responses channels. |
 | `GET /v1/responses` + Upgrade | Client API key | Proxies sequential Responses requests over WebSocket. |
 | `POST /v1/images/generations` | Client API key | Proxies non-streaming JSON Images generation requests. |
 | `POST /v1/images/edits` | Client API key | Proxies non-streaming multipart Images edit requests. |

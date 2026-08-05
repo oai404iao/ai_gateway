@@ -231,6 +231,8 @@ hop-by-hop Header → Codex Header 白名单（如适用）→ 上游鉴权注�
 | `name` | `varchar(100)` | 同一渠道组内唯一。 |
 | `base_url` | `text` | 非空；必须为绝对 HTTP(S) URL。 |
 | `enabled` | `boolean` | 非空，默认 `true`；管理启停。 |
+| `supports_websocket` | `boolean` | 非空，默认 `false`；仅 Responses channel 可启用。 |
+| `supports_standalone_web_search` | `boolean` | 非空，默认 `false`；仅 Responses channel 可启用，作为 `/v1/alpha/search` operation capability。 |
 | `auto_disabled` | `boolean` | 非空，默认 `false`；持久化的不可用标记，运行时会排除该渠道。 |
 | `auto_disabled_reason` | `varchar(500)` | 可空；仅 `auto_disabled = true` 时使用。 |
 | `weight` | `integer` | 非空、正数。 |
@@ -259,7 +261,8 @@ CHECK (jsonb_typeof(override_document) = 'object');
 
 每类超时按以下优先级取值：渠道显式列 → `system_settings.forwarding_policy.upstream` 默认值。
 Images generation/edit 在渠道未显式配置 `response_header_timeout_ms` 时使用独立的
-`images_response_header_timeout_seconds`；其他 HTTP 请求使用
+`images_response_header_timeout_seconds`；standalone web search 使用
+`standalone_web_search_response_header_timeout_seconds`；其他 HTTP 请求使用
 `response_header_timeout_seconds`。建连和流空闲默认值仍跨格式共享。只允许建连、响应头和流
 空闲超时，禁止总响应超时。首次启动时，若该系统配置行不存在，二进制会用 TOML `[upstream]`
 的值一次性初始化；后续 TOML 变更不会覆盖数据库。

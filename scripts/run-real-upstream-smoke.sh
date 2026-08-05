@@ -9,13 +9,13 @@ cd "$repo_root"
 
 mode="${1:---all}"
 if (( $# > 1 )); then
-  printf 'Usage: %s [--all|--images-edit-only]\n' "$0" >&2
+  printf 'Usage: %s [--all|--search-only|--images-edit-only]\n' "$0" >&2
   exit 2
 fi
 case "$mode" in
-  --all | --images-edit-only) ;;
+  --all | --search-only | --images-edit-only) ;;
   *)
-    printf 'Usage: %s [--all|--images-edit-only]\n' "$0" >&2
+    printf 'Usage: %s [--all|--search-only|--images-edit-only]\n' "$0" >&2
     exit 2
     ;;
 esac
@@ -79,6 +79,21 @@ if (( images_configured != 0 && images_configured != ${#images_settings[@]} )); 
   exit 2
 fi
 
+search_settings=(
+  REAL_UPSTREAM_SEARCH_BASE_URL
+  REAL_UPSTREAM_SEARCH_API_KEY
+  REAL_UPSTREAM_SEARCH_MODEL
+)
+search_configured=0
+for name in "${search_settings[@]}"; do
+  [[ -n "${!name:-}" ]] && ((search_configured += 1))
+done
+if (( search_configured != 0 && search_configured != ${#search_settings[@]} )); then
+  printf '%s\n' \
+    'REAL_UPSTREAM_SEARCH_BASE_URL, REAL_UPSTREAM_SEARCH_API_KEY, and REAL_UPSTREAM_SEARCH_MODEL must be set together.' >&2
+  exit 2
+fi
+
 export RUN_REAL_UPSTREAM_SMOKE=1
 cargo_args=(test --test real_upstream)
 test_args=(--ignored --test-threads=1 --show-output)
@@ -87,6 +102,18 @@ case "$mode" in
     if (( images_configured == 0 )); then
       test_args+=(--skip suite::images)
     fi
+    if (( search_configured == 0 )); then
+      test_args+=(--skip suite::search)
+    fi
+    ;;
+  --search-only)
+    if (( search_configured == 0 )); then
+      printf '%s\n' \
+        '--search-only requires all REAL_UPSTREAM_SEARCH_* settings.' >&2
+      exit 2
+    fi
+    cargo_args+=(suite::search::forwards_standalone_web_search_to_a_real_upstream)
+    test_args+=(--exact)
     ;;
   --images-edit-only)
     if (( images_configured == 0 )); then

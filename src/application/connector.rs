@@ -249,6 +249,11 @@ impl From<CodexAttemptError> for ConnectorAttemptError {
                 param: "stream",
                 code: "codex_streaming_required",
             },
+            CodexAttemptError::SearchStreamingUnsupported => Self::ClientRequest {
+                message: "Standalone web search does not support streaming.",
+                param: "stream",
+                code: "standalone_web_search_streaming_unsupported",
+            },
             CodexAttemptError::ImageStreamingUnsupported => Self::ClientRequest {
                 message: "Codex OAuth Images generation does not support streaming.",
                 param: "stream",

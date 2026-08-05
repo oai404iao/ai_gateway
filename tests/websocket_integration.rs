@@ -456,6 +456,7 @@ async fn gateway_harness_with_controls(
             base_url: upstream.base_url(),
             enabled: true,
             supports_websocket: controls.channel_supported,
+            supports_standalone_web_search: false,
             auto_disabled: false,
             auto_disable_allowed: false,
             weight: 1,

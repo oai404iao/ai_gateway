@@ -33,8 +33,9 @@ pub use request_log::{
 };
 pub use system_settings::{
     AutomaticDisableSettings, AutomaticDisableTrigger,
-    DEFAULT_IMAGES_RESPONSE_HEADER_TIMEOUT_SECONDS, MAX_REQUEST_RETRIES, PassiveHealthSettings,
-    RequestRetrySettings, ResponsesWebSocketSettings, ScheduledTestingMode,
+    DEFAULT_IMAGES_RESPONSE_HEADER_TIMEOUT_SECONDS,
+    DEFAULT_STANDALONE_WEB_SEARCH_RESPONSE_HEADER_TIMEOUT_SECONDS, MAX_REQUEST_RETRIES,
+    PassiveHealthSettings, RequestRetrySettings, ResponsesWebSocketSettings, ScheduledTestingMode,
     ScheduledTestingSettings, SessionAffinityKeySource, SessionAffinityRule,
     SessionAffinitySettings, SystemRuntimeSettings, UpstreamTimeoutDefaults,
 };

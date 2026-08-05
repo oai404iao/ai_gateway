@@ -569,6 +569,7 @@ async fn harness_with_policy(
         Router::new()
             .route("/v1/chat/completions", post(capture_upstream))
             .route("/v1/responses", post(capture_upstream))
+            .route("/v1/alpha/search", post(capture_upstream))
             .route("/v1/images/generations", post(capture_upstream))
             .route("/v1/images/edits", post(capture_upstream))
             .with_state(MockUpstream {
@@ -603,6 +604,7 @@ async fn harness_with_transforms(transforms: TransformDocuments) -> Harness {
         Router::new()
             .route("/v1/chat/completions", post(capture_upstream))
             .route("/v1/responses", post(capture_upstream))
+            .route("/v1/alpha/search", post(capture_upstream))
             .route("/v1/images/generations", post(capture_upstream))
             .route("/v1/images/edits", post(capture_upstream))
             .with_state(MockUpstream {
@@ -625,6 +627,7 @@ async fn harness_with_transforms(transforms: TransformDocuments) -> Harness {
             connect_timeout_seconds: 1,
             response_header_timeout_seconds: 2,
             images_response_header_timeout_seconds: 2,
+            standalone_web_search_response_header_timeout_seconds: 2,
             stream_idle_timeout_seconds: 1,
         },
         transforms,
@@ -651,6 +654,7 @@ struct TransformDocuments {
     template: Option<Value>,
     chat_override: Value,
     responses_override: Value,
+    responses_search_supported: bool,
     images_override: Value,
     upstream_auth_kind: &'static str,
     upstream_auth_header_name: Option<&'static str>,
@@ -671,6 +675,7 @@ impl Default for TransformDocuments {
             template: None,
             chat_override: serde_json::json!({}),
             responses_override: serde_json::json!({}),
+            responses_search_supported: true,
             images_override: serde_json::json!({}),
             upstream_auth_kind: "bearer",
             upstream_auth_header_name: None,
@@ -699,6 +704,7 @@ fn proxy_service_with_policy(
             connect_timeout_seconds: 1,
             response_header_timeout_seconds: 2,
             images_response_header_timeout_seconds: 2,
+            standalone_web_search_response_header_timeout_seconds: 2,
             stream_idle_timeout_seconds: 1,
         },
     )
@@ -791,6 +797,8 @@ fn configured_proxy_with_policy_and_transforms(
         base_url: upstream_url.into(),
         enabled: true,
         supports_websocket: false,
+        supports_standalone_web_search: api_format == "open_ai_responses"
+            && transforms.responses_search_supported,
         auto_disabled: false,
         auto_disable_allowed: false,
         weight: 1,
@@ -928,6 +936,12 @@ fn configured_proxy_with_policy_and_transforms(
                 "open_ai_responses",
                 responses,
             ),
+            rule(
+                "search-alias",
+                "responses-model",
+                "open_ai_responses",
+                responses,
+            ),
             {
                 let mut rule = rule("gpt-image-2", "gpt-image-2", "open_ai_images", images);
                 rule.channel_ids.push(images_alt);
@@ -991,6 +1005,9 @@ fn configured_proxy_with_policy_and_transforms(
                 )
                 .with_images_response_header(Duration::from_secs(
                     upstream_config.images_response_header_timeout_seconds,
+                ))
+                .with_standalone_web_search_response_header(Duration::from_secs(
+                    upstream_config.standalone_web_search_response_header_timeout_seconds,
                 )),
                 PassiveHealthSettings::default(),
             ),
@@ -1130,6 +1147,7 @@ fn session_affinity_proxy(first_upstream_url: &str, second_upstream_url: &str) -
         base_url: base_url.into(),
         enabled: true,
         supports_websocket: false,
+        supports_standalone_web_search: false,
         auto_disabled: false,
         auto_disable_allowed: false,
         weight: 1,
@@ -1409,6 +1427,7 @@ async fn configured_model_with_only_disabled_channels_returns_service_unavailabl
             connect_timeout_seconds: 1,
             response_header_timeout_seconds: 2,
             images_response_header_timeout_seconds: 2,
+            standalone_web_search_response_header_timeout_seconds: 2,
             stream_idle_timeout_seconds: 1,
         },
         TransformDocuments::default(),
@@ -1528,6 +1547,119 @@ async fn matching_chat_model_preserves_body_and_forwards_response_safely() {
     assert!(request.headers.get("x-internal-hop").is_none());
     assert_eq!(request.headers.get("x-request-id").unwrap(), "forward-me");
     assert!(request.headers.get("x-unlisted-client-header").is_none());
+}
+
+#[tokio::test]
+async fn standalone_web_search_forwards_alias_headers_opaque_results_and_logs_operation() {
+    let upstream_body = br#"{
+        "encrypted_output":"opaque-state",
+        "output":"Search summary",
+        "results":[
+            {"type":"computer_initialize_state","id":"future-result","future":{"nested":true}},
+            {"type":"search_query","sources":[{"url":"https://example.test","title":"Example"}]}
+        ]
+    }"#
+    .to_vec();
+    let harness = harness(StatusCode::OK, upstream_body.clone()).await;
+    let request_body = serde_json::json!({
+        "id": "session-search-123",
+        "model": "search-alias",
+        "reasoning": {"effort": "medium"},
+        "input": "Find the current source.",
+        "commands": {"search_query": [{"q": "example"}]},
+        "settings": {"external_web_access": true},
+        "max_output_tokens": 300
+    });
+
+    let response = authorized_post(
+        &client(),
+        harness.url("/v1/alpha/search?trace=1"),
+        CLIENT_KEY,
+        serde_json::to_vec(&request_body).unwrap(),
+    )
+    .header("originator", "codex_cli_rs")
+    .header(
+        "x-codex-turn-metadata",
+        r#"{"search_context_size":"medium","model_id":"search-alias"}"#,
+    )
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.bytes().await.unwrap().as_ref(), upstream_body);
+
+    let requests = harness.upstream_requests();
+    assert_eq!(requests.len(), 1);
+    let forwarded = &requests[0];
+    assert_eq!(forwarded.headers.get("originator").unwrap(), "codex_cli_rs");
+    assert_eq!(
+        forwarded.headers.get("x-codex-turn-metadata").unwrap(),
+        r#"{"search_context_size":"medium","model_id":"search-alias"}"#
+    );
+    let forwarded_body: Value = serde_json::from_slice(&forwarded.body).unwrap();
+    assert_eq!(forwarded_body["model"], "responses-model");
+    assert_eq!(forwarded_body["id"], "session-search-123");
+    assert_eq!(forwarded_body["commands"], request_body["commands"]);
+    assert_eq!(forwarded_body["settings"], request_body["settings"]);
+
+    let logs = harness.logs();
+    assert_eq!(logs.len(), 1);
+    assert_eq!(
+        logs[0].api_operation,
+        ai_gateway::domain::ApiOperation::StandaloneWebSearch
+    );
+    assert_eq!(logs[0].request_protocol.as_str(), "non_stream");
+    assert_eq!(logs[0].reasoning_effort.as_deref(), Some("medium"));
+    assert_eq!(
+        logs[0].billing.as_ref().and_then(|billing| billing.usage),
+        None
+    );
+}
+
+#[tokio::test]
+async fn standalone_web_search_requires_explicit_channel_capability() {
+    let harness = harness_with_transforms(TransformDocuments {
+        responses_search_supported: false,
+        ..Default::default()
+    })
+    .await;
+
+    let response = authorized_post(
+        &client(),
+        harness.url("/v1/alpha/search"),
+        CLIENT_KEY,
+        br#"{"id":"session-search-123","model":"responses-model","commands":{}}"#.to_vec(),
+    )
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+    assert_eq!(body["error"]["code"], "no_healthy_channel");
+    assert!(harness.upstream_requests().is_empty());
+}
+
+#[tokio::test]
+async fn standalone_web_search_rejects_unknown_top_level_fields_before_upstream_contact() {
+    let harness = harness(StatusCode::OK, Vec::new()).await;
+
+    let response = authorized_post(
+        &client(),
+        harness.url("/v1/alpha/search"),
+        CLIENT_KEY,
+        br#"{"id":"session-search-123","model":"responses-model","commands":{},"future_field":true}"#
+            .to_vec(),
+    )
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+    assert_eq!(body["error"]["code"], "request_body_field_unsupported");
+    assert!(harness.upstream_requests().is_empty());
 }
 
 #[tokio::test]
@@ -1996,6 +2128,7 @@ async fn images_generation_uses_the_longer_images_response_header_timeout() {
             connect_timeout_seconds: 1,
             response_header_timeout_seconds: 2,
             images_response_header_timeout_seconds: 3,
+            standalone_web_search_response_header_timeout_seconds: 3,
             stream_idle_timeout_seconds: 1,
         },
     );
@@ -2010,6 +2143,55 @@ async fn images_generation_uses_the_longer_images_response_header_timeout() {
         format!("http://{}/v1/images/generations", gateway.address),
         CLIENT_KEY,
         br#"{"model":"gpt-image-2","prompt":"test"}"#.to_vec(),
+    )
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(requests.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn standalone_web_search_uses_its_longer_response_header_timeout() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let upstream = start_server(
+        Router::new()
+            .route("/v1/alpha/search", post(delayed_upstream_response))
+            .with_state(MockUpstream {
+                requests: Arc::clone(&requests),
+                status: StatusCode::OK,
+                body: br#"{"output":"done","results":[]}"#.to_vec(),
+            }),
+    )
+    .await;
+    let configured = configured_proxy_with_policy(
+        &format!("http://{}", upstream.address),
+        RecordingRequestLogSink::default(),
+        None,
+        None,
+        None,
+        Default::default(),
+        None,
+        UpstreamConfig {
+            connect_timeout_seconds: 1,
+            response_header_timeout_seconds: 2,
+            images_response_header_timeout_seconds: 3,
+            standalone_web_search_response_header_timeout_seconds: 3,
+            stream_idle_timeout_seconds: 1,
+        },
+    );
+    let gateway = start_server(http::router(configured.proxy)).await;
+    let timeout_client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    let response = authorized_post(
+        &timeout_client,
+        format!("http://{}/v1/alpha/search", gateway.address),
+        CLIENT_KEY,
+        br#"{"id":"session-search-123","model":"responses-model","commands":{}}"#.to_vec(),
     )
     .send()
     .await
@@ -3188,6 +3370,7 @@ async fn admission_keeps_streaming_work_across_snapshot_replacement_and_consumes
             connect_timeout_seconds: 1,
             response_header_timeout_seconds: 2,
             images_response_header_timeout_seconds: 2,
+            standalone_web_search_response_header_timeout_seconds: 2,
             stream_idle_timeout_seconds: 1,
         },
     );
@@ -3203,6 +3386,7 @@ async fn admission_keeps_streaming_work_across_snapshot_replacement_and_consumes
             connect_timeout_seconds: 1,
             response_header_timeout_seconds: 2,
             images_response_header_timeout_seconds: 2,
+            standalone_web_search_response_header_timeout_seconds: 2,
             stream_idle_timeout_seconds: 1,
         },
     );
@@ -3330,6 +3514,7 @@ async fn admission_releases_capacity_after_response_header_timeout() {
             connect_timeout_seconds: 1,
             response_header_timeout_seconds: 2,
             images_response_header_timeout_seconds: 2,
+            standalone_web_search_response_header_timeout_seconds: 2,
             stream_idle_timeout_seconds: 1,
         },
     );
@@ -3365,6 +3550,7 @@ async fn invalid_effective_timeout_policy_never_contacts_upstream_or_cools_the_c
             connect_timeout_seconds: 1,
             response_header_timeout_seconds: 2,
             images_response_header_timeout_seconds: 2,
+            standalone_web_search_response_header_timeout_seconds: 2,
             stream_idle_timeout_seconds: 1,
         },
         OutboundTestPolicy {
@@ -3406,6 +3592,7 @@ async fn http_proxy_routes_nonmatching_targets_and_explicit_no_proxy_hosts_bypas
         connect_timeout_seconds: 1,
         response_header_timeout_seconds: 2,
         images_response_header_timeout_seconds: 2,
+        standalone_web_search_response_header_timeout_seconds: 2,
         stream_idle_timeout_seconds: 1,
     };
     let logs = RecordingRequestLogSink::default();
@@ -3517,6 +3704,7 @@ async fn dead_configured_proxy_returns_safe_bad_gateway_without_direct_upstream_
             connect_timeout_seconds: 1,
             response_header_timeout_seconds: 2,
             images_response_header_timeout_seconds: 2,
+            standalone_web_search_response_header_timeout_seconds: 2,
             stream_idle_timeout_seconds: 1,
         },
         OutboundTestPolicy {
@@ -3570,6 +3758,7 @@ async fn socks5_proxy_connects_and_keeps_credentials_out_of_upstream_and_logs() 
             connect_timeout_seconds: 1,
             response_header_timeout_seconds: 2,
             images_response_header_timeout_seconds: 2,
+            standalone_web_search_response_header_timeout_seconds: 2,
             stream_idle_timeout_seconds: 1,
         },
         OutboundTestPolicy {
@@ -3668,6 +3857,7 @@ async fn snapshot_replacement_uses_new_proxy_policy_after_cancelling_an_existing
         connect_timeout_seconds: 1,
         response_header_timeout_seconds: 2,
         images_response_header_timeout_seconds: 2,
+        standalone_web_search_response_header_timeout_seconds: 2,
         stream_idle_timeout_seconds: 2,
     };
     let current = configured_proxy_with_policy(

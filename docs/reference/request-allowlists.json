@@ -25,6 +25,7 @@
       "openai-beta",
       "openai-organization",
       "openai-project",
+      "originator",
       "range",
       "repr-digest",
       "session-id",
@@ -35,6 +36,7 @@
       "tracestate",
       "user-agent",
       "x-client-request-id",
+      "x-codex-turn-metadata",
       "x-openai-client-user-agent",
       "x-request-id",
       "x-session-id"
@@ -447,6 +449,66 @@
           "stream": true,
           "type": "response.create"
         },
+        "generated_body_fields": []
+      }
+    },
+    "standalone_web_search": {
+      "client_body": {
+        "unknown": "reject",
+        "allow": [
+          "commands",
+          "id",
+          "input",
+          "max_output_tokens",
+          "model",
+          "reasoning",
+          "settings"
+        ],
+        "ignore": {},
+        "reject": []
+      },
+      "codex_oauth": {
+        "headers": {
+          "unknown": "ignore",
+          "allow": [
+            "baggage",
+            "originator",
+            "traceparent",
+            "tracestate",
+            "x-client-request-id",
+            "x-codex-turn-metadata"
+          ],
+          "allow_prefixes": [],
+          "ignore": [],
+          "generated": [
+            "accept",
+            "accept-encoding",
+            "authorization",
+            "chatgpt-account-id",
+            "content-length",
+            "content-type",
+            "host",
+            "originator",
+            "user-agent",
+            "version",
+            "x-openai-fedramp"
+          ]
+        },
+        "body": {
+          "unknown": "reject",
+          "allow": [
+            "commands",
+            "id",
+            "input",
+            "max_output_tokens",
+            "model",
+            "reasoning",
+            "settings"
+          ],
+          "ignore": {},
+          "reject": []
+        },
+        "body_overrides": {},
         "generated_body_fields": []
       }
     },

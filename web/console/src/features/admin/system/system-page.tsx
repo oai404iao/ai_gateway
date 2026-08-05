@@ -109,6 +109,10 @@ const systemSettingsSchema = z
         .number()
         .int()
         .min(1, "Enter a positive number of seconds."),
+      standalone_web_search_response_header_timeout_seconds: z
+        .number()
+        .int()
+        .min(1, "Enter a positive number of seconds."),
       stream_idle_timeout_seconds: z.number().int().min(1, "Enter a positive number of seconds."),
     }),
     request_retry: z.object({
@@ -232,6 +236,19 @@ const systemSettingsSchema = z
         message: "Images response header timeout must exceed connect timeout.",
       });
     }
+    if (
+      value.upstream.standalone_web_search_response_header_timeout_seconds <=
+      value.upstream.connect_timeout_seconds
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [
+          "upstream",
+          "standalone_web_search_response_header_timeout_seconds",
+        ],
+        message: "Web search response header timeout must exceed connect timeout.",
+      });
+    }
     if (value.websocket.idle_timeout_seconds >= value.websocket.max_connection_age_seconds) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
@@ -249,6 +266,7 @@ const defaultValues: SystemSettingsValues = {
     connect_timeout_seconds: 10,
     response_header_timeout_seconds: 30,
     images_response_header_timeout_seconds: 300,
+    standalone_web_search_response_header_timeout_seconds: 300,
     stream_idle_timeout_seconds: 90,
   },
   request_retry: {
@@ -415,7 +433,7 @@ export function SystemPage() {
                 <CardTitle>{t("Default upstream timeouts")}</CardTitle>
                 <CardDescription>
                   {t(
-                    "Used only when a channel does not define an explicit timeout. Images use their own longer response header timeout; both response header timeouts must exceed connect timeout.",
+                    "Used only when a channel does not define an explicit timeout. Images and standalone web search use longer response header timeouts; every response header timeout must exceed connect timeout.",
                   )}
                 </CardDescription>
               </CardHeader>
@@ -488,6 +506,39 @@ export function SystemPage() {
                       <FieldError>
                         {errorMessage(
                           form.formState.errors.upstream.images_response_header_timeout_seconds
+                            .message,
+                        )}
+                      </FieldError>
+                    ) : null}
+                  </Field>
+                  <Field
+                    data-invalid={Boolean(
+                      form.formState.errors.upstream
+                        ?.standalone_web_search_response_header_timeout_seconds,
+                    )}
+                  >
+                    <FieldLabel htmlFor="standalone_web_search_response_header_timeout_seconds">
+                      {t("Web search response header timeout (seconds)")}
+                    </FieldLabel>
+                    <Input
+                      id="standalone_web_search_response_header_timeout_seconds"
+                      type="number"
+                      min={1}
+                      aria-invalid={Boolean(
+                        form.formState.errors.upstream
+                          ?.standalone_web_search_response_header_timeout_seconds,
+                      )}
+                      {...form.register(
+                        "upstream.standalone_web_search_response_header_timeout_seconds",
+                        { valueAsNumber: true },
+                      )}
+                    />
+                    {form.formState.errors.upstream
+                      ?.standalone_web_search_response_header_timeout_seconds ? (
+                      <FieldError>
+                        {errorMessage(
+                          form.formState.errors.upstream
+                            .standalone_web_search_response_header_timeout_seconds
                             .message,
                         )}
                       </FieldError>

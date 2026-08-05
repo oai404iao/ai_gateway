@@ -2563,7 +2563,7 @@ components:
       enum: [open_ai_chat_completions, open_ai_responses, open_ai_images]
     ApiOperation:
       type: string
-      enum: [chat_completions, responses, images_generation, images_edit]
+      enum: [chat_completions, responses, standalone_web_search, images_generation, images_edit]
     SelectionStrategy:
       type: string
       enum: [weighted_random, weighted_round_robin]
@@ -2777,7 +2777,9 @@ components:
       type: object
       required:
         [connect_timeout_seconds, response_header_timeout_seconds,
-         images_response_header_timeout_seconds, stream_idle_timeout_seconds]
+         images_response_header_timeout_seconds,
+         standalone_web_search_response_header_timeout_seconds,
+         stream_idle_timeout_seconds]
       properties:
         connect_timeout_seconds: { type: integer, format: int64, minimum: 1 }
         response_header_timeout_seconds: { type: integer, format: int64, minimum: 1 }
@@ -2787,6 +2789,12 @@ components:
           minimum: 1
           default: 300
           description: Used by Images generation and edit when the channel has no explicit response-header timeout.
+        standalone_web_search_response_header_timeout_seconds:
+          type: integer
+          format: int64
+          minimum: 1
+          default: 300
+          description: Used by standalone web search when the channel has no explicit response-header timeout.
         stream_idle_timeout_seconds: { type: integer, format: int64, minimum: 1 }
 
     SystemRequestRetrySettings:
@@ -3464,6 +3472,7 @@ components:
       type: object
       required:
         [id, channel_group_id, api_format, connector_kind, provider_managed, name, base_url, enabled, supports_websocket,
+         supports_standalone_web_search,
          auto_disabled, auto_disabled_reason, auto_disable_allowed,
          weight, billing_multiplier, proxy_id,
          config_template_id, connect_timeout_ms, response_header_timeout_ms,
@@ -3483,6 +3492,9 @@ components:
         supports_websocket:
           type: boolean
           description: Whether this OpenAI Responses channel accepts WebSocket upgrades.
+        supports_standalone_web_search:
+          type: boolean
+          description: Whether this OpenAI Responses channel accepts the standalone alpha/search operation.
         auto_disabled: { type: boolean }
         auto_disabled_reason: { type: string, nullable: true }
         auto_disable_allowed:
@@ -4929,6 +4941,10 @@ components:
           type: boolean
           default: false
           description: Valid only for open_ai_responses channels.
+        supports_standalone_web_search:
+          type: boolean
+          default: false
+          description: Valid only for open_ai_responses channels. Channels with request JSON transforms cannot enable it.
         auto_disable_allowed:
           type: boolean
           default: false
@@ -4972,6 +4988,10 @@ components:
           type: boolean
           default: false
           description: Valid only for open_ai_responses channels.
+        supports_standalone_web_search:
+          type: boolean
+          default: false
+          description: Valid only for open_ai_responses channels. Channels with request JSON transforms cannot enable it.
         auto_disable_allowed:
           type: boolean
           default: false

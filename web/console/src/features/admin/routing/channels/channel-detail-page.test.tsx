@@ -170,7 +170,7 @@ describe("ChannelDetailPage", () => {
     expect(submitted?.test_model).toBe(CHANNEL.test_model);
   });
 
-  it("enables WebSocket support only for a Responses channel", async () => {
+  it("enables Responses-only capabilities for a Responses channel", async () => {
     seedAuthenticatedSession();
     const responsesGroup: ChannelGroupView = {
       ...CHANNEL_GROUP,
@@ -221,9 +221,18 @@ describe("ChannelDetailPage", () => {
     expect(toggle).not.toBeDisabled();
     expect(toggle).not.toBeChecked();
     await user.click(toggle);
+    const searchToggle = screen.getByRole("switch", {
+      name: "Supports standalone web search",
+    });
+    expect(searchToggle).not.toBeDisabled();
+    expect(searchToggle).not.toBeChecked();
+    await user.click(searchToggle);
     await user.click(screen.getByRole("button", { name: /save channel/i }));
 
-    await waitFor(() => expect(submitted?.supports_websocket).toBe(true));
+    await waitFor(() => {
+      expect(submitted?.supports_websocket).toBe(true);
+      expect(submitted?.supports_standalone_web_search).toBe(true);
+    });
   });
 
   it("disables scheduled probes for an Images channel", async () => {
@@ -288,6 +297,7 @@ describe("ChannelDetailPage", () => {
     expect(submitted?.api_format).toBe("open_ai_images");
     expect(submitted?.test_model).toBeNull();
     expect(submitted?.supports_websocket).toBe(false);
+    expect(submitted?.supports_standalone_web_search).toBe(false);
   });
 
   it("explains a routing dependency rejection instead of showing an opaque error", async () => {

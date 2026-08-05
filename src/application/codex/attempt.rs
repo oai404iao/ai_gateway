@@ -26,6 +26,7 @@ pub(crate) struct PreparedCodexAttempt {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CodexAttemptError {
     StreamingRequired,
+    SearchStreamingUnsupported,
     ImageStreamingUnsupported,
     UnsupportedOperation,
     InvalidRequestBody,
@@ -36,6 +37,7 @@ pub(crate) enum CodexAttemptError {
 #[derive(Clone)]
 enum CodexRequestContext {
     Responses(CodexRequestIdentity),
+    StandaloneWebSearch,
     ImagesGeneration { turn_id: String },
     ImagesEdit { turn_id: String },
     Unsupported,
@@ -55,6 +57,7 @@ impl PreparedCodexAttempt {
                 client_headers,
                 affinity_hash,
             )),
+            ApiOperation::StandaloneWebSearch => CodexRequestContext::StandaloneWebSearch,
             ApiOperation::ImagesGeneration => CodexRequestContext::ImagesGeneration {
                 turn_id: Uuid::new_v4().to_string(),
             },
@@ -85,6 +88,13 @@ impl PreparedCodexAttempt {
             CodexRequestContext::ImagesEdit { .. } => {
                 return Err(CodexAttemptError::InvalidRequestBody);
             }
+            CodexRequestContext::StandaloneWebSearch => {
+                return if request_protocol == RequestProtocol::NonStream {
+                    Ok(body)
+                } else {
+                    Err(CodexAttemptError::SearchStreamingUnsupported)
+                };
+            }
             CodexRequestContext::Unsupported => {
                 return Err(CodexAttemptError::UnsupportedOperation);
             }
@@ -107,6 +117,7 @@ impl PreparedCodexAttempt {
             .map_or_else(String::new, |query| format!("?{query}"));
         let path = match &self.request {
             CodexRequestContext::Responses(_) => "responses",
+            CodexRequestContext::StandaloneWebSearch => "alpha/search",
             CodexRequestContext::ImagesGeneration { .. } => "images/generations",
             CodexRequestContext::ImagesEdit { .. } => "images/edits",
             CodexRequestContext::Unsupported => {
@@ -139,7 +150,11 @@ impl PreparedCodexAttempt {
             USER_AGENT,
             HeaderValue::from_str(&codex_user_agent()).map_err(invalid)?,
         );
-        headers.insert("originator", HeaderValue::from_static(CODEX_ORIGINATOR));
+        if !matches!(self.request, CodexRequestContext::StandaloneWebSearch)
+            || !headers.contains_key("originator")
+        {
+            headers.insert("originator", HeaderValue::from_static(CODEX_ORIGINATOR));
+        }
         headers.insert("version", HeaderValue::from_static(CODEX_CLIENT_VERSION));
         if self.credential.is_fedramp() {
             headers.insert("X-OpenAI-Fedramp", HeaderValue::from_static("true"));
@@ -184,6 +199,13 @@ impl PreparedCodexAttempt {
                     HeaderValue::from_str(turn_id).map_err(invalid)?,
                 );
             }
+            CodexRequestContext::StandaloneWebSearch => {
+                headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
+                headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+                headers.remove("session-id");
+                headers.remove("thread-id");
+                headers.remove("x-codex-image-turn-id");
+            }
             CodexRequestContext::Unsupported => {
                 return Err(CodexAttemptError::UnsupportedOperation);
             }
@@ -200,7 +222,10 @@ impl PreparedCodexAttempt {
     }
 
     pub(crate) fn preserves_affinity_on_failure(&self) -> bool {
-        matches!(self.request, CodexRequestContext::Responses(_))
+        matches!(
+            self.request,
+            CodexRequestContext::Responses(_) | CodexRequestContext::StandaloneWebSearch
+        )
     }
 
     pub(crate) fn successful_response_is_sse(&self) -> bool {
@@ -220,6 +245,7 @@ impl PreparedCodexAttempt {
                 Ok(RequestInterface::ResponsesWebSocket)
             }
             CodexRequestContext::Responses(_) => Ok(RequestInterface::ResponsesHttp),
+            CodexRequestContext::StandaloneWebSearch => Ok(RequestInterface::StandaloneWebSearch),
             CodexRequestContext::ImagesGeneration { .. } => Ok(RequestInterface::ImagesGeneration),
             CodexRequestContext::ImagesEdit { .. } => Ok(RequestInterface::ImagesEdit),
             CodexRequestContext::Unsupported => Err(CodexAttemptError::UnsupportedOperation),
@@ -227,7 +253,12 @@ impl PreparedCodexAttempt {
     }
 
     pub(crate) fn changes_request_body(&self) -> bool {
-        !matches!(self.request, CodexRequestContext::Unsupported)
+        matches!(
+            self.request,
+            CodexRequestContext::Responses(_)
+                | CodexRequestContext::ImagesGeneration { .. }
+                | CodexRequestContext::ImagesEdit { .. }
+        )
     }
 }
 
@@ -476,6 +507,93 @@ mod tests {
             .unwrap();
 
         assert!(!headers.contains_key("chatgpt-account-id"));
+    }
+
+    #[test]
+    fn standalone_web_search_uses_alpha_target_and_preserves_search_headers() {
+        let attempt = PreparedCodexAttempt::prepare(
+            &runtime(),
+            Uuid::from_u128(1),
+            ApiOperation::StandaloneWebSearch,
+            true,
+            &HeaderMap::new(),
+            Some([7; 32]),
+        )
+        .unwrap();
+        let original = Bytes::from_static(
+            br#"{ "id" : "session-123", "model" : "gpt-5-codex", "commands" : {} }"#,
+        );
+        assert_eq!(
+            attempt
+                .adapt_body(original.clone(), RequestProtocol::NonStream)
+                .unwrap(),
+            original
+        );
+        assert_eq!(
+            attempt
+                .adapt_body(
+                    Bytes::from_static(br#"{"model":"gpt-5-codex"}"#),
+                    RequestProtocol::Sse,
+                )
+                .unwrap_err(),
+            CodexAttemptError::SearchStreamingUnsupported
+        );
+
+        let channel = CompiledChannel::new(
+            Uuid::from_u128(1),
+            Uuid::from_u128(2),
+            crate::domain::ApiFormat::OpenAiResponses,
+            Url::parse("https://chatgpt.example/backend-api/codex").unwrap(),
+            100,
+            crate::domain::UpstreamAuth::None,
+            std::collections::HashSet::new(),
+        );
+        let target = attempt
+            .upstream_url(
+                &channel,
+                &"/v1/alpha/search?trace=1".parse::<Uri>().unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            target.as_str(),
+            "https://chatgpt.example/backend-api/codex/alpha/search?trace=1"
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert("originator", HeaderValue::from_static("codex_cli_rs"));
+        headers.insert(
+            "x-codex-turn-metadata",
+            HeaderValue::from_static(r#"{"search_context_size":"medium"}"#),
+        );
+        headers.insert("session-id", HeaderValue::from_static("remove-session"));
+        headers.insert("thread-id", HeaderValue::from_static("remove-thread"));
+        headers.insert(
+            "x-client-request-id",
+            HeaderValue::from_static("request-123"),
+        );
+        attempt
+            .inject_headers(&mut headers, RequestProtocol::NonStream)
+            .unwrap();
+
+        assert_eq!(headers.get("originator").unwrap(), "codex_cli_rs");
+        assert_eq!(
+            headers.get("x-codex-turn-metadata").unwrap(),
+            r#"{"search_context_size":"medium"}"#
+        );
+        assert_eq!(headers.get("x-client-request-id").unwrap(), "request-123");
+        assert_eq!(headers.get(ACCEPT).unwrap(), "application/json");
+        assert_eq!(headers.get(CONTENT_TYPE).unwrap(), "application/json");
+        assert!(!headers.contains_key("session-id"));
+        assert!(!headers.contains_key("thread-id"));
+        assert!(attempt.preserves_affinity_on_failure());
+        assert!(!attempt.successful_response_is_sse());
+        assert!(!attempt.changes_request_body());
+        assert_eq!(
+            attempt
+                .request_interface(RequestProtocol::NonStream)
+                .unwrap(),
+            RequestInterface::StandaloneWebSearch
+        );
     }
 
     #[test]

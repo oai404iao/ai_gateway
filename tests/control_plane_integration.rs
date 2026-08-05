@@ -95,6 +95,7 @@ fn system_settings() -> SystemSettingsInput {
             connect_timeout_seconds: 1,
             response_header_timeout_seconds: 2,
             images_response_header_timeout_seconds: 300,
+            standalone_web_search_response_header_timeout_seconds: 300,
             stream_idle_timeout_seconds: 3,
         },
         request_retry: Default::default(),
@@ -546,6 +547,21 @@ struct CapturedCodexImageRequest {
 }
 
 #[derive(Clone, Debug)]
+struct CapturedCodexSearchRequest {
+    authorization: Option<String>,
+    account_id: Option<String>,
+    originator: Option<String>,
+    user_agent: Option<String>,
+    version: Option<String>,
+    turn_metadata: Option<String>,
+    session_id: Option<String>,
+    thread_id: Option<String>,
+    client_request_id: Option<String>,
+    content_type: Option<String>,
+    body: serde_json::Value,
+}
+
+#[derive(Clone, Debug)]
 struct CapturedCodexWebSocketHandshake {
     authorization: Option<String>,
     account_id: Option<String>,
@@ -563,6 +579,7 @@ struct CapturedCodexWebSocketHandshake {
 #[derive(Clone, Default)]
 struct CodexUpstreamState {
     http_requests: Arc<Mutex<Vec<CapturedCodexRequest>>>,
+    search_requests: Arc<Mutex<Vec<CapturedCodexSearchRequest>>>,
     image_requests: Arc<Mutex<Vec<CapturedCodexImageRequest>>>,
     websocket_handshakes: Arc<Mutex<Vec<CapturedCodexWebSocketHandshake>>>,
     websocket_requests: Arc<Mutex<Vec<serde_json::Value>>>,
@@ -616,6 +633,44 @@ async fn codex_responses_upstream(
     } else {
         response.body(Body::from(terminal)).unwrap()
     }
+}
+
+async fn codex_search_upstream(
+    State(state): State<CodexUpstreamState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let header = |name: &'static str| {
+        headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned)
+    };
+    state
+        .search_requests
+        .lock()
+        .unwrap()
+        .push(CapturedCodexSearchRequest {
+            authorization: header("authorization"),
+            account_id: header("chatgpt-account-id"),
+            originator: header("originator"),
+            user_agent: header("user-agent"),
+            version: header("version"),
+            turn_metadata: header("x-codex-turn-metadata"),
+            session_id: header("session-id"),
+            thread_id: header("thread-id"),
+            client_request_id: header("x-client-request-id"),
+            content_type: header("content-type"),
+            body: serde_json::from_slice(&body).unwrap(),
+        });
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "application/json")
+        .body(Body::from(
+            br#"{"encrypted_output":"opaque-state","output":"search summary","results":[{"type":"future_search_result","future":{"nested":true}}]}"#
+                .as_slice(),
+        ))
+        .unwrap()
 }
 
 async fn codex_images_upstream(
@@ -2560,6 +2615,10 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
                 get(codex_responses_websocket_upstream).post(codex_responses_upstream),
             )
             .route(
+                "/backend-api/codex/alpha/search",
+                post(codex_search_upstream),
+            )
+            .route(
                 "/backend-api/codex/images/generations",
                 post(codex_images_upstream),
             )
@@ -2677,6 +2736,13 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
         )
         .await
         .unwrap();
+    let responses_search_supported: bool =
+        sqlx::query_scalar("SELECT supports_standalone_web_search FROM channels WHERE id=$1")
+            .bind(credential.id)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert!(responses_search_supported);
     let images_channel: Uuid = sqlx::query_scalar(
         "SELECT channel_id FROM codex_oauth_credential_channels \
          WHERE credential_id=$1 AND api_format='open_ai_images'::api_format",
@@ -2920,6 +2986,113 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
             .contains("codex_request_body_field_value_unsupported")
     );
     assert_eq!(captured.http_requests.lock().unwrap().len(), 1);
+
+    let search_response = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/v1/alpha/search?trace=1")
+                .header("authorization", format!("Bearer {}", seed.secret))
+                .header("content-type", "application/json")
+                .header("originator", "codex_cli_rs")
+                .header(
+                    "x-codex-turn-metadata",
+                    r#"{"search_context_size":"medium","model_id":"client-model"}"#,
+                )
+                .header("session-id", "remove-search-session")
+                .header("thread-id", "remove-search-thread")
+                .header("x-client-request-id", "search-request-123")
+                .body(Body::from(
+                    serde_json::to_vec(&serde_json::json!({
+                        "id": "session-123",
+                        "model": client_model.clone(),
+                        "reasoning": {"effort": "medium"},
+                        "input": "Find the source.",
+                        "commands": {"search_query": [{"q": "example"}]},
+                        "settings": {"external_web_access": true},
+                        "max_output_tokens": 300
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(search_response.status(), StatusCode::OK);
+    let search_response_body = search_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    assert_eq!(
+        search_response_body,
+        Bytes::from_static(
+            br#"{"encrypted_output":"opaque-state","output":"search summary","results":[{"type":"future_search_result","future":{"nested":true}}]}"#
+        )
+    );
+
+    let search_requests = captured.search_requests.lock().unwrap().clone();
+    assert_eq!(search_requests.len(), 1);
+    let search_request = &search_requests[0];
+    assert_eq!(
+        search_request.authorization.as_deref(),
+        Some("Bearer access-token")
+    );
+    assert_eq!(search_request.account_id, None);
+    assert_eq!(search_request.originator.as_deref(), Some("codex_cli_rs"));
+    assert_eq!(
+        search_request.user_agent.as_deref(),
+        Some(codex_user_agent().as_str())
+    );
+    assert_eq!(
+        search_request.version.as_deref(),
+        codex_user_agent()
+            .split_once('/')
+            .map(|(_, version)| version)
+    );
+    assert_eq!(
+        search_request.turn_metadata.as_deref(),
+        Some(r#"{"search_context_size":"medium","model_id":"client-model"}"#)
+    );
+    assert!(search_request.session_id.is_none());
+    assert!(search_request.thread_id.is_none());
+    assert_eq!(
+        search_request.client_request_id.as_deref(),
+        Some("search-request-123")
+    );
+    assert_eq!(
+        search_request.content_type.as_deref(),
+        Some("application/json")
+    );
+    assert_eq!(search_request.body["model"], "upstream-v1");
+    assert_eq!(search_request.body["id"], "session-123");
+    assert_eq!(
+        search_request.body["commands"]["search_query"][0]["q"],
+        "example"
+    );
+
+    let search_events = logs
+        .events()
+        .into_iter()
+        .filter(|event| event.api_operation == ApiOperation::StandaloneWebSearch)
+        .collect::<Vec<_>>();
+    assert_eq!(search_events.len(), 1);
+    assert_eq!(search_events[0].channel_id, Some(credential.id));
+    assert_eq!(search_events[0].outcome, RequestLogOutcome::Succeeded);
+    assert_eq!(
+        search_events[0].request_protocol,
+        RequestProtocol::NonStream
+    );
+    assert_eq!(search_events[0].reasoning_effort.as_deref(), Some("medium"));
+    assert_eq!(
+        search_events[0]
+            .billing
+            .as_ref()
+            .and_then(|billing| billing.usage),
+        None
+    );
 
     let image_request_body = Bytes::from_static(
         br#"{ "model" : "gpt-image-2", "prompt" : "a red fox in a field", "output_format":"png", "moderation":"auto", "user":"ignored" }"#,
@@ -3609,6 +3782,27 @@ async fn request_log_insert_is_idempotent_and_worker_continues_after_failure() {
             "sse".into(),
         )
     );
+
+    let mut search_event = request_log_event(&seed, RequestLogOutcome::Succeeded);
+    search_event.id = Uuid::new_v4();
+    search_event.api_format = ApiFormat::OpenAiResponses;
+    search_event.api_operation = ApiOperation::StandaloneWebSearch;
+    search_event.request_protocol = RequestProtocol::NonStream;
+    search_event.streamed = false;
+    search_event.model_rule_id = None;
+    search_event.channel_group_id = None;
+    search_event.channel_id = None;
+    assert_eq!(
+        repository.insert(&search_event).await.unwrap(),
+        RequestLogInsertOutcome::Inserted
+    );
+    let persisted_search_operation: String =
+        sqlx::query_scalar("SELECT api_operation FROM request_logs WHERE id=$1")
+            .bind(search_event.id)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert_eq!(persisted_search_operation, "standalone_web_search");
 
     let mut conflicting = event.clone();
     conflicting.error_code = Some("different_terminal_fact".into());
@@ -6311,6 +6505,107 @@ async fn images_timeout_migration_adds_the_default_without_overwriting_an_existi
 }
 
 #[tokio::test]
+async fn standalone_web_search_migration_backfills_codex_capability_and_timeout() {
+    let database = TestDatabase::new_unmigrated().await;
+    for migration in MIGRATOR.iter().filter(|migration| migration.version <= 43) {
+        sqlx::raw_sql(migration.sql.as_ref())
+            .execute(&database.pool)
+            .await
+            .unwrap_or_else(|error| panic!("migration {} failed: {error}", migration.version));
+    }
+    sqlx::query(
+        "INSERT INTO system_settings (setting_key,value) VALUES \
+         ('forwarding_policy','{\"upstream\":{\"connect_timeout_seconds\":10,\
+          \"response_header_timeout_seconds\":30,\
+          \"images_response_header_timeout_seconds\":300,\
+          \"stream_idle_timeout_seconds\":90}}'::jsonb)",
+    )
+    .execute(&database.pool)
+    .await
+    .unwrap();
+
+    let ordinary_group = Uuid::new_v4();
+    let codex_group = Uuid::new_v4();
+    for (group_id, name, connector_kind) in [
+        (ordinary_group, "ordinary-responses", "openai_compatible"),
+        (codex_group, "codex-responses", "codex_oauth"),
+    ] {
+        sqlx::query(
+            "INSERT INTO channel_groups \
+             (id,name,api_format,connector_kind,priority,selection_strategy,enabled) \
+             VALUES ($1,$2,'open_ai_responses',$3,1,'weighted_random',true)",
+        )
+        .bind(group_id)
+        .bind(name)
+        .bind(connector_kind)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    }
+    let ordinary_channel = Uuid::new_v4();
+    let codex_channel = Uuid::new_v4();
+    for (channel_id, group_id, name, supports_websocket) in [
+        (ordinary_channel, ordinary_group, "ordinary-channel", false),
+        (codex_channel, codex_group, "codex-channel", true),
+    ] {
+        sqlx::query(
+            "INSERT INTO channels \
+             (id,channel_group_id,api_format,name,base_url,enabled,weight, \
+              upstream_auth_kind,supports_websocket) \
+             VALUES ($1,$2,'open_ai_responses',$3,$4,true,1,'none',$5)",
+        )
+        .bind(channel_id)
+        .bind(group_id)
+        .bind(name)
+        .bind(format!("https://{name}.example.test"))
+        .bind(supports_websocket)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    }
+
+    sqlx::raw_sql(include_str!("../migrations/0044_standalone_web_search.sql"))
+        .execute(&database.pool)
+        .await
+        .expect("standalone web-search migration must apply");
+
+    let capabilities = sqlx::query_as::<_, (Uuid, bool)>(
+        "SELECT id,supports_standalone_web_search \
+         FROM channels WHERE id=ANY($1) ORDER BY id",
+    )
+    .bind(vec![ordinary_channel, codex_channel])
+    .fetch_all(&database.pool)
+    .await
+    .unwrap()
+    .into_iter()
+    .collect::<std::collections::HashMap<_, _>>();
+    assert_eq!(capabilities.get(&ordinary_channel), Some(&false));
+    assert_eq!(capabilities.get(&codex_channel), Some(&true));
+
+    let timeout: i64 = sqlx::query_scalar(
+        "SELECT (value #>> \
+         '{upstream,standalone_web_search_response_header_timeout_seconds}')::bigint \
+         FROM system_settings WHERE setting_key='forwarding_policy'",
+    )
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(timeout, 300);
+
+    let constraint: String = sqlx::query_scalar(
+        "SELECT pg_get_constraintdef(oid) FROM pg_constraint \
+         WHERE conrelid='request_logs'::regclass \
+           AND conname='request_logs_api_operation_format_check'",
+    )
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert!(constraint.contains("standalone_web_search"));
+
+    database.cleanup().await;
+}
+
+#[tokio::test]
 async fn codex_images_migration_backfills_existing_credentials_without_replacing_responses() {
     let database = TestDatabase::new_unmigrated().await;
     for migration in MIGRATOR.iter().filter(|migration| migration.version <= 35) {
@@ -6448,6 +6743,10 @@ async fn codex_images_migration_backfills_existing_credentials_without_replacing
     .unwrap();
     assert_eq!(credential_pool, connector_pool);
 
+    sqlx::raw_sql(include_str!("../migrations/0044_standalone_web_search.sql"))
+        .execute(&database.pool)
+        .await
+        .expect("standalone web-search migration must extend the legacy projection");
     let repository = ControlPlaneRepository::new(database.pool.clone());
     repository
         .ensure_system_settings(system_settings())

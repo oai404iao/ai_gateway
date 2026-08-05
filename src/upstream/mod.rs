@@ -15,7 +15,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::domain::{
-    ApiFormat, CompiledChannelUpstreamPolicy, CompiledRuntimeConfig, NoProxyHost,
+    ApiFormat, ApiOperation, CompiledChannelUpstreamPolicy, CompiledRuntimeConfig, NoProxyHost,
     ResponsesWebSocketSettings, UpstreamTimeoutDefaults,
 };
 
@@ -62,6 +62,19 @@ impl ResolvedUpstreamTimeouts {
     ) -> Self {
         Self::resolve_with_response_header(
             upstream.response_header_for(api_format),
+            upstream,
+            channel,
+        )
+    }
+
+    #[must_use]
+    pub fn resolve_for_operation(
+        operation: ApiOperation,
+        upstream: &UpstreamTimeoutDefaults,
+        channel: &CompiledChannelUpstreamPolicy,
+    ) -> Self {
+        Self::resolve_with_response_header(
+            upstream.response_header_for_operation(operation),
             upstream,
             channel,
         )
@@ -131,6 +144,18 @@ impl ResolvedUpstreamPolicy {
         }
     }
 
+    #[must_use]
+    pub fn resolve_for_operation(
+        operation: ApiOperation,
+        upstream: &UpstreamTimeoutDefaults,
+        channel: &CompiledChannelUpstreamPolicy,
+    ) -> Self {
+        Self {
+            timeouts: ResolvedUpstreamTimeouts::resolve_for_operation(operation, upstream, channel),
+            tls: UpstreamTlsPolicy::RustlsWebPkiRoots,
+        }
+    }
+
     /// Resolves and validates the effective policy before it is used for any
     /// outbound request work.
     pub fn try_resolve(
@@ -146,6 +171,14 @@ impl ResolvedUpstreamPolicy {
         channel: &CompiledChannelUpstreamPolicy,
     ) -> Result<Self, ResolvedUpstreamPolicyError> {
         Self::resolve_for(api_format, upstream, channel).validate()
+    }
+
+    pub fn try_resolve_for_operation(
+        operation: ApiOperation,
+        upstream: &UpstreamTimeoutDefaults,
+        channel: &CompiledChannelUpstreamPolicy,
+    ) -> Result<Self, ResolvedUpstreamPolicyError> {
+        Self::resolve_for_operation(operation, upstream, channel).validate()
     }
 
     /// Requires enough time for a connection attempt to complete before the
@@ -744,6 +777,7 @@ mod tests {
                     base_url: "https://upstream.test".into(),
                     enabled: true,
                     supports_websocket: false,
+                    supports_standalone_web_search: false,
                     auto_disabled: false,
                     auto_disable_allowed: false,
                     weight: 1,
@@ -838,6 +872,49 @@ mod tests {
             ResolvedUpstreamPolicy::resolve_for(ApiFormat::OpenAiImages, &defaults, &overridden,)
                 .timeouts()
                 .response_header(),
+            Duration::from_secs(9)
+        );
+    }
+
+    #[test]
+    fn standalone_web_search_uses_its_operation_specific_response_header_default() {
+        let defaults =
+            upstream().with_standalone_web_search_response_header(Duration::from_secs(30));
+        let inherited = policy(None, ChannelTimeoutPolicy::default());
+
+        assert_eq!(
+            ResolvedUpstreamPolicy::resolve_for_operation(
+                ApiOperation::Responses,
+                &defaults,
+                &inherited,
+            )
+            .timeouts()
+            .response_header(),
+            Duration::from_secs(5)
+        );
+        assert_eq!(
+            ResolvedUpstreamPolicy::resolve_for_operation(
+                ApiOperation::StandaloneWebSearch,
+                &defaults,
+                &inherited,
+            )
+            .timeouts()
+            .response_header(),
+            Duration::from_secs(30)
+        );
+
+        let overridden = policy(
+            None,
+            ChannelTimeoutPolicy::new(None, Some(Duration::from_secs(9)), None),
+        );
+        assert_eq!(
+            ResolvedUpstreamPolicy::resolve_for_operation(
+                ApiOperation::StandaloneWebSearch,
+                &defaults,
+                &overridden,
+            )
+            .timeouts()
+            .response_header(),
             Duration::from_secs(9)
         );
     }

@@ -190,6 +190,7 @@ fn system_settings() -> SystemSettingsInput {
             connect_timeout_seconds: 5,
             response_header_timeout_seconds: 30,
             images_response_header_timeout_seconds: 300,
+            standalone_web_search_response_header_timeout_seconds: 300,
             stream_idle_timeout_seconds: 60,
         },
         request_retry: Default::default(),

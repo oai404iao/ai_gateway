@@ -17,7 +17,10 @@
 - `GET /v1/models`
 - `POST /v1/chat/completions`
 - `POST /v1/responses`
+- `POST /v1/alpha/search`
 - 带 WebSocket Upgrade 的 `GET /v1/responses`
+- `POST /v1/images/generations`
+- `POST /v1/images/edits`
 
 接口兼容范围和与 OpenAI 官方语义的关系见 [外部参考文档](../reference/README.md)。
 

@@ -168,6 +168,7 @@ fn proxy_fixture_with_retry(
                 base_url: base_url.clone(),
                 enabled: true,
                 supports_websocket: false,
+                supports_standalone_web_search: false,
                 auto_disabled: false,
                 auto_disable_allowed: false,
                 weight: 1,
@@ -251,6 +252,7 @@ fn upstream_config(headers: u64, idle: u64) -> UpstreamConfig {
         connect_timeout_seconds: 1,
         response_header_timeout_seconds: headers,
         images_response_header_timeout_seconds: headers,
+        standalone_web_search_response_header_timeout_seconds: headers,
         stream_idle_timeout_seconds: idle,
     }
 }

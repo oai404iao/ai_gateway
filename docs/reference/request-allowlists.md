@@ -16,7 +16,9 @@
 > [Images](https://github.com/openai/openai-node/blob/854892a0580980449ce1ed04aa5e3831d3330383/src/resources/images.ts) 请求类型；
 > [`openai/codex@5af8599`](https://github.com/openai/codex/tree/5af85998c24fb3353ddd8164c3ed472057b03cb3) 的
 > [Responses wire type](https://github.com/openai/codex/blob/5af85998c24fb3353ddd8164c3ed472057b03cb3/codex-rs/codex-api/src/common.rs) 与
-> [Images wire type](https://github.com/openai/codex/blob/5af85998c24fb3353ddd8164c3ed472057b03cb3/codex-rs/codex-api/src/images.rs)；
+> [Images wire type](https://github.com/openai/codex/blob/5af85998c24fb3353ddd8164c3ed472057b03cb3/codex-rs/codex-api/src/images.rs)、
+> [Search wire type](https://github.com/openai/codex/blob/5af85998c24fb3353ddd8164c3ed472057b03cb3/codex-rs/codex-api/src/search.rs) 与
+> [Search tool Header](https://github.com/openai/codex/blob/5af85998c24fb3353ddd8164c3ed472057b03cb3/codex-rs/ext/web-search/src/tool.rs)；
 > [DeepSeek Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode) 与
 > [阿里云百炼深度思考](https://help.aliyun.com/zh/model-studio/deep-thinking) 的
 > Chat Completions 兼容扩展。
@@ -66,6 +68,8 @@ hop-by-hop 清理和上游鉴权覆盖约束。
   `openai-organization`、`openai-project`、`idempotency-key`；
 - Gateway/Codex Session Header，例如 `session-id`、`thread-id`、
   `x-client-request-id`、`x-session-id`；
+- Codex 请求归因和 Search 上下文 Header：`originator` 与
+  `x-codex-turn-metadata`；
 - 为兼容 0.9.4 示例配置而保留的 `session_id`、`thread_id`；新配置应使用上面的连字符形式；
 - W3C trace Header；
 - 官方 SDK 使用的 `x-stainless-*` 前缀。
@@ -90,6 +94,7 @@ Header 与 Cloudflare 转发 Header。这些名称既在客户端入口删除，
 | `chat_completions` | `POST /v1/chat/completions` |
 | `responses_http` | HTTP/SSE `POST /v1/responses` |
 | `responses_websocket` | WebSocket `response.create` |
+| `standalone_web_search` | 非流式 `POST /v1/alpha/search` |
 | `images_generation` | `POST /v1/images/generations` |
 | `images_edit` | multipart `POST /v1/images/edits` |
 
@@ -132,6 +137,18 @@ Images edit 额外兼容部分通用表单会提交、但当前公开 edit 类�
 - 保留 `previous_response_id`；
 - `max_output_tokens`、纯遥测字段按契约忽略，其他 provider 不支持的非默认值返回错误；
 - 最终强制 `type=response.create`、`stream=true`、`store=false`。
+
+### Standalone web search
+
+- 允许 `id`、`model`、`reasoning`、`input`、`commands`、`settings` 和
+  `max_output_tokens`；
+- Gateway 只检查顶层字段；Search command、settings 和 result DTO 的嵌套结构由 Codex
+  上游解释；
+- 保留客户端 `originator` 与 `x-codex-turn-metadata`，前者缺失时由 Connector 补充默认
+  originator；
+- 固定使用非流式 JSON，不添加 body override；
+- 当前不支持 Request JSON Transform；支持该操作的渠道若组合出非空 Request JSON
+  Transform，控制面编译会失败。
 
 ### Images generation
 
@@ -192,7 +209,7 @@ part，不把图片整体读回内存。
 
 Rust 单元测试会拒绝以下契约漂移：
 
-- 缺少五个公共接口之一；
+- 缺少六个公共接口之一；
 - 未知客户端/Codex body 不再默认拒绝；
 - 未知 Header 不再默认忽略；
 - Header 的精确 `allow`/`ignore` 动作重叠；

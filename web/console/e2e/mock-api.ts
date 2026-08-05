@@ -224,6 +224,7 @@ function routingChannel({
     base_url: "https://upstream.e2e.example.test",
     enabled: true,
     supports_websocket: apiFormat === "open_ai_responses",
+    supports_standalone_web_search: apiFormat === "open_ai_responses",
     auto_disabled: false,
     auto_disabled_reason: null,
     auto_disable_allowed: !providerManaged,

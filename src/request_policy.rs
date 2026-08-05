@@ -24,10 +24,11 @@ static CONTRACT: LazyLock<RequestPolicyContract> = LazyLock::new(|| {
     contract
 });
 
-const REQUIRED_INTERFACES: [RequestInterface; 5] = [
+const REQUIRED_INTERFACES: [RequestInterface; 6] = [
     RequestInterface::ChatCompletions,
     RequestInterface::ResponsesHttp,
     RequestInterface::ResponsesWebSocket,
+    RequestInterface::StandaloneWebSearch,
     RequestInterface::ImagesGeneration,
     RequestInterface::ImagesEdit,
 ];
@@ -37,6 +38,7 @@ pub(crate) enum RequestInterface {
     ChatCompletions,
     ResponsesHttp,
     ResponsesWebSocket,
+    StandaloneWebSearch,
     ImagesGeneration,
     ImagesEdit,
 }
@@ -47,6 +49,7 @@ impl RequestInterface {
         match api_operation {
             ApiOperation::ChatCompletions => Self::ChatCompletions,
             ApiOperation::Responses => Self::ResponsesHttp,
+            ApiOperation::StandaloneWebSearch => Self::StandaloneWebSearch,
             ApiOperation::ImagesGeneration => Self::ImagesGeneration,
             ApiOperation::ImagesEdit => Self::ImagesEdit,
         }
@@ -58,6 +61,7 @@ impl RequestInterface {
             Self::ChatCompletions => "chat_completions",
             Self::ResponsesHttp => "responses_http",
             Self::ResponsesWebSocket => "responses_websocket",
+            Self::StandaloneWebSearch => "standalone_web_search",
             Self::ImagesGeneration => "images_generation",
             Self::ImagesEdit => "images_edit",
         }
@@ -590,7 +594,7 @@ fn validate_contract(contract: &RequestPolicyContract) -> Result<(), String> {
         return Err("unknown client headers must be ignored".into());
     }
     if contract.interfaces.len() != REQUIRED_INTERFACES.len() {
-        return Err("request allowlist contract must define exactly five interfaces".into());
+        return Err("request allowlist contract must define exactly six interfaces".into());
     }
     for interface in REQUIRED_INTERFACES {
         let policy = contract
@@ -837,6 +841,41 @@ mod tests {
     }
 
     #[test]
+    fn standalone_web_search_policy_preserves_current_codex_fields_and_rejects_unknowns() {
+        let original = Bytes::from_static(
+            br#"{"id":"session-123","model":"gpt-5-codex","reasoning":{"effort":"medium"},"input":"find it","commands":{"search_query":[{"q":"example"}]},"settings":{"external_web_access":true},"max_output_tokens":300}"#,
+        );
+        let client = apply_json_body_policy(
+            RequestPolicyLayer::Client,
+            RequestInterface::StandaloneWebSearch,
+            original.clone(),
+        )
+        .unwrap();
+        assert!(!client.changed);
+        assert_eq!(client.body, original);
+
+        let codex = apply_json_body_policy(
+            RequestPolicyLayer::CodexOauth,
+            RequestInterface::StandaloneWebSearch,
+            client.body,
+        )
+        .unwrap();
+        assert!(!codex.changed);
+        assert_eq!(codex.body, original);
+
+        let error = apply_json_body_policy(
+            RequestPolicyLayer::Client,
+            RequestInterface::StandaloneWebSearch,
+            Bytes::from_static(
+                br#"{"id":"session-123","model":"gpt-5-codex","future_field":true}"#,
+            ),
+        )
+        .unwrap_err();
+        assert_eq!(error.code(), "request_body_field_unsupported");
+        assert!(error.message().contains("future_field"));
+    }
+
+    #[test]
     fn every_client_interface_rejects_unknown_top_level_body_fields() {
         for interface in REQUIRED_INTERFACES {
             let error = if interface == RequestInterface::ImagesEdit {
@@ -952,12 +991,19 @@ mod tests {
         headers.insert("x-unknown", HeaderValue::from_static("drop"));
         headers.insert("x-stainless-lang", HeaderValue::from_static("rust"));
         headers.insert("traceparent", HeaderValue::from_static("trace"));
+        headers.insert("originator", HeaderValue::from_static("codex_cli_rs"));
+        headers.insert(
+            "x-codex-turn-metadata",
+            HeaderValue::from_static(r#"{"search_context_size":"medium"}"#),
+        );
 
         let client = filter_client_headers(RequestInterface::ResponsesHttp, &headers).unwrap();
         assert!(client.contains_key(CONNECTION));
         assert!(client.contains_key("x-hop"));
         assert!(client.contains_key("x-stainless-lang"));
         assert!(client.contains_key("traceparent"));
+        assert!(client.contains_key("originator"));
+        assert!(client.contains_key("x-codex-turn-metadata"));
         assert!(!client.contains_key("forwarded"));
         assert!(!client.contains_key("x-unknown"));
 
@@ -965,6 +1011,13 @@ mod tests {
         assert!(codex.contains_key("traceparent"));
         assert!(!codex.contains_key("x-hop"));
         assert!(!codex.contains_key("x-stainless-lang"));
+
+        let search = filter_codex_headers(RequestInterface::StandaloneWebSearch, &client).unwrap();
+        assert_eq!(search.get("originator").unwrap(), "codex_cli_rs");
+        assert_eq!(
+            search.get("x-codex-turn-metadata").unwrap(),
+            r#"{"search_context_size":"medium"}"#
+        );
     }
 
     #[test]

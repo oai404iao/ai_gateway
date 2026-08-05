@@ -52,6 +52,7 @@ const IMAGE_EDIT_PNG_BASE64: &str = include_str!("fixtures/solid-1024.png.b64");
 pub(super) enum SmokeFormat {
     ChatCompletions,
     Responses,
+    StandaloneWebSearch,
     Images,
 }
 
@@ -77,7 +78,7 @@ impl SmokeFormat {
     const fn api_format(self) -> ApiFormat {
         match self {
             Self::ChatCompletions => ApiFormat::OpenAiChatCompletions,
-            Self::Responses => ApiFormat::OpenAiResponses,
+            Self::Responses | Self::StandaloneWebSearch => ApiFormat::OpenAiResponses,
             Self::Images => ApiFormat::OpenAiImages,
         }
     }
@@ -85,7 +86,7 @@ impl SmokeFormat {
     const fn api_format_name(self) -> &'static str {
         match self {
             Self::ChatCompletions => "open_ai_chat_completions",
-            Self::Responses => "open_ai_responses",
+            Self::Responses | Self::StandaloneWebSearch => "open_ai_responses",
             Self::Images => "open_ai_images",
         }
     }
@@ -94,6 +95,7 @@ impl SmokeFormat {
         match self {
             Self::ChatCompletions => "/v1/chat/completions",
             Self::Responses => "/v1/responses",
+            Self::StandaloneWebSearch => "/v1/alpha/search",
             Self::Images => "/v1/images/generations",
         }
     }
@@ -102,6 +104,7 @@ impl SmokeFormat {
         match self {
             Self::ChatCompletions => ApiOperation::ChatCompletions,
             Self::Responses => ApiOperation::Responses,
+            Self::StandaloneWebSearch => ApiOperation::StandaloneWebSearch,
             Self::Images => ApiOperation::ImagesGeneration,
         }
     }
@@ -131,6 +134,19 @@ impl SmokeFormat {
                 "max_output_tokens": 1,
                 "stream": streamed,
             }),
+            Self::StandaloneWebSearch => json!({
+                "id": "gateway-real-upstream-search-session",
+                "model": CLIENT_MODEL,
+                "input": "Find one authoritative source about Rust.",
+                "commands": {
+                    "search_query": [{
+                        "q": "official Rust programming language",
+                        "domains": ["rust-lang.org"]
+                    }]
+                },
+                "settings": {"external_web_access": true},
+                "max_output_tokens": 300,
+            }),
             Self::Images => json!({
                 "model": CLIENT_MODEL,
                 "prompt": "Create a solid red square.",
@@ -153,10 +169,16 @@ struct ImagesSmokeSettings {
     model: String,
 }
 
+struct SearchSmokeSettings {
+    upstream: SmokeUpstream,
+    model: String,
+}
+
 pub(super) struct SmokeSettings {
     default_upstream: SmokeUpstream,
     websocket_upstream: SmokeUpstream,
     images: Option<ImagesSmokeSettings>,
+    search: Option<SearchSmokeSettings>,
     pub(super) chat_completions_model: String,
     pub(super) responses_model: String,
     responses_profile: ResponsesUpstreamProfile,
@@ -196,6 +218,12 @@ impl SmokeSettings {
             optional_environment("REAL_UPSTREAM_IMAGES_MODEL"),
         )
         .unwrap_or_else(|message| panic!("{message}"));
+        let search = optional_search_settings(
+            optional_environment("REAL_UPSTREAM_SEARCH_BASE_URL"),
+            optional_environment("REAL_UPSTREAM_SEARCH_API_KEY"),
+            optional_environment("REAL_UPSTREAM_SEARCH_MODEL"),
+        )
+        .unwrap_or_else(|message| panic!("{message}"));
         let responses_profile = ResponsesUpstreamProfile::from_environment(optional_environment(
             "REAL_UPSTREAM_RESPONSES_PROFILE",
         ))
@@ -204,6 +232,7 @@ impl SmokeSettings {
             default_upstream,
             websocket_upstream,
             images,
+            search,
             chat_completions_model: required_environment("REAL_UPSTREAM_CHAT_COMPLETIONS_MODEL"),
             responses_model: required_environment("REAL_UPSTREAM_RESPONSES_MODEL"),
             responses_profile,
@@ -246,6 +275,23 @@ fn optional_images_settings(
         })),
         _ => Err(
             "REAL_UPSTREAM_IMAGES_BASE_URL, REAL_UPSTREAM_IMAGES_API_KEY, and REAL_UPSTREAM_IMAGES_MODEL must be set together",
+        ),
+    }
+}
+
+fn optional_search_settings(
+    base_url: Option<String>,
+    api_key: Option<String>,
+    model: Option<String>,
+) -> Result<Option<SearchSmokeSettings>, &'static str> {
+    match (base_url, api_key, model) {
+        (None, None, None) => Ok(None),
+        (Some(base_url), Some(api_key), Some(model)) => Ok(Some(SearchSmokeSettings {
+            upstream: SmokeUpstream { base_url, api_key },
+            model,
+        })),
+        _ => Err(
+            "REAL_UPSTREAM_SEARCH_BASE_URL, REAL_UPSTREAM_SEARCH_API_KEY, and REAL_UPSTREAM_SEARCH_MODEL must be set together",
         ),
     }
 }
@@ -331,6 +377,7 @@ fn gateway(
             base_url: upstream_settings.base_url.clone(),
             enabled: true,
             supports_websocket: matches!(format, SmokeFormat::Responses),
+            supports_standalone_web_search: matches!(format, SmokeFormat::StandaloneWebSearch),
             auto_disabled: false,
             auto_disable_allowed: false,
             weight: 1,
@@ -470,6 +517,77 @@ pub(super) async fn smoke_nonstreaming_format(
     let _ =
         complete_nonstreaming_request(settings, gateway, request, format, format.api_operation())
             .await;
+}
+
+pub(super) async fn smoke_standalone_web_search(settings: &SmokeSettings) {
+    let search = settings
+        .search
+        .as_ref()
+        .expect("standalone web-search smoke settings must be configured");
+    let gateway = gateway(
+        settings,
+        &search.upstream,
+        SmokeFormat::StandaloneWebSearch,
+        CLIENT_MODEL,
+        &search.model,
+    );
+    let request = Request::post(SmokeFormat::StandaloneWebSearch.path())
+        .header(header::AUTHORIZATION, format!("Bearer {CLIENT_KEY}"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .header("originator", "codex_cli_rs")
+        .header(
+            "x-codex-turn-metadata",
+            r#"{"search_context_size":"low","model_id":"gateway-real-upstream-smoke-model"}"#,
+        )
+        .body(Body::from(
+            serde_json::to_vec(&SmokeFormat::StandaloneWebSearch.request_body(false))
+                .expect("standalone web-search smoke request serializes"),
+        ))
+        .expect("standalone web-search smoke request builds");
+    let started = Instant::now();
+    let response = timeout(settings.timeout, gateway.app.oneshot(request))
+        .await
+        .expect("standalone web-search smoke timed out")
+        .expect("standalone web-search gateway request failed");
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "standalone web-search upstream returned a non-success status"
+    );
+    let bytes = timeout(settings.timeout, response.into_body().collect())
+        .await
+        .expect("standalone web-search response body timed out")
+        .expect("standalone web-search response body failed")
+        .to_bytes();
+    let value: Value =
+        serde_json::from_slice(&bytes).expect("standalone web-search response must be JSON");
+    let output = value
+        .get("output")
+        .and_then(Value::as_str)
+        .filter(|output| !output.trim().is_empty())
+        .expect("standalone web-search response must contain nonempty output");
+    let result_count = value
+        .get("results")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+
+    let events = gateway.logs.events();
+    assert_eq!(events.len(), 1);
+    let event = &events[0];
+    assert_eq!(event.api_format, ApiFormat::OpenAiResponses);
+    assert_eq!(event.api_operation, ApiOperation::StandaloneWebSearch);
+    assert_eq!(event.request_protocol, RequestProtocol::NonStream);
+    assert_eq!(event.outcome, RequestLogOutcome::Succeeded);
+    assert!(
+        event.billing.is_some(),
+        "the selected search route must retain its price snapshot"
+    );
+
+    eprintln!(
+        "standalone web-search smoke succeeded: elapsed_ms={} output_chars={} results={result_count}",
+        started.elapsed().as_millis(),
+        output.chars().count(),
+    );
 }
 
 async fn complete_nonstreaming_request(
@@ -976,6 +1094,7 @@ fn assert_response_has_usage(format: SmokeFormat, value: &Value) {
                 .get("response")
                 .and_then(|response| response.get("usage"))
         }),
+        SmokeFormat::StandaloneWebSearch => return,
         SmokeFormat::Images => value.get("usage"),
     };
     assert!(
@@ -1044,7 +1163,9 @@ fn assert_usage_was_logged(
                 "Images request logs do not derive output TPS"
             );
         }
-        SmokeFormat::ChatCompletions | SmokeFormat::Responses => {
+        SmokeFormat::ChatCompletions
+        | SmokeFormat::Responses
+        | SmokeFormat::StandaloneWebSearch => {
             assert!(
                 billing
                     .output_tokens_per_second
@@ -1129,6 +1250,9 @@ fn sse_frame_json(frame: &[u8]) -> Option<Value> {
 }
 
 fn usage_from_sse_value(format: SmokeFormat, value: &Value) -> Option<RequestUsage> {
+    if matches!(format, SmokeFormat::StandaloneWebSearch) {
+        return None;
+    }
     let usage = value
         .get("usage")
         .or_else(|| {
@@ -1150,6 +1274,7 @@ fn usage_from_sse_value(format: SmokeFormat, value: &Value) -> Option<RequestUsa
             "input_tokens_details",
             "output_tokens_details",
         ),
+        SmokeFormat::StandaloneWebSearch => unreachable!("handled above"),
         SmokeFormat::Images => (
             "input_tokens",
             "output_tokens",
@@ -1168,6 +1293,7 @@ fn usage_from_sse_value(format: SmokeFormat, value: &Value) -> Option<RequestUsa
         SmokeFormat::Responses | SmokeFormat::Images => {
             input_details.and_then(|details| nonnegative_token(details.get("cached_tokens")))
         }
+        SmokeFormat::StandaloneWebSearch => unreachable!("handled above"),
     }
     .unwrap_or(0);
     let cache_write_tokens = input_details
@@ -1214,6 +1340,7 @@ fn is_terminal_sse_usage(format: SmokeFormat, value: &Value) -> bool {
         SmokeFormat::Responses => {
             value.get("type").and_then(Value::as_str) == Some("response.completed")
         }
+        SmokeFormat::StandaloneWebSearch => false,
         SmokeFormat::Images => false,
     }
 }
@@ -1380,6 +1507,50 @@ mod tests {
     }
 
     #[test]
+    fn search_settings_are_optional_but_must_be_complete() {
+        assert!(
+            optional_search_settings(None, None, None)
+                .unwrap()
+                .is_none()
+        );
+        let configured = optional_search_settings(
+            Some("https://search.example.invalid".into()),
+            Some("search-key".into()),
+            Some("search-model".into()),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            configured.upstream.base_url,
+            "https://search.example.invalid"
+        );
+        assert_eq!(configured.upstream.api_key, "search-key");
+        assert_eq!(configured.model, "search-model");
+        assert!(
+            optional_search_settings(
+                Some("https://search.example.invalid".into()),
+                None,
+                Some("search-model".into()),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn standalone_search_request_uses_the_typed_commands_object() {
+        let body = SmokeFormat::StandaloneWebSearch.request_body(false);
+        assert_eq!(
+            body["commands"]["search_query"][0]["q"],
+            "official Rust programming language"
+        );
+        assert_eq!(
+            body["commands"]["search_query"][0]["domains"][0],
+            "rust-lang.org"
+        );
+        assert!(body["commands"].is_object());
+    }
+
+    #[test]
     fn responses_requests_use_explicit_message_arrays() {
         let body = SmokeFormat::Responses.request_body(false);
         assert_eq!(body["input"][0]["type"], "message");
@@ -1451,6 +1622,7 @@ mod tests {
                 upstream: images_upstream,
                 model: "images-upstream-model".into(),
             }),
+            search: None,
             chat_completions_model: "unused-chat-model".into(),
             responses_model: "unused-responses-model".into(),
             responses_profile: ResponsesUpstreamProfile::OpenAiCompatible,
@@ -1513,6 +1685,7 @@ mod tests {
             default_upstream: upstream.clone(),
             websocket_upstream: upstream,
             images: None,
+            search: None,
             chat_completions_model: "unused-chat-model".into(),
             responses_model: "gateway-codex-model".into(),
             responses_profile: ResponsesUpstreamProfile::CodexOauth,
