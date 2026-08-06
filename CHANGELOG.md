@@ -18,10 +18,10 @@ Versioning.
   managed Search `web.run` forwarding through the existing proxy core, and
   `request_source = "mcp"` attribution.
 - Add the managed `image` MCP kind with Codex-compatible
-  `image_gen.imagegen` generation, fixed single-image PNG/base64 output,
-  instance-controlled model/background/quality/size, MCP `ImageContent`, and
-  an independent bounded result limit. Stateless image editing remains a
-  later phase.
+  `image_gen.imagegen` generation and stateless editing, fixed single-image
+  PNG/base64 output, instance-controlled model/background/quality/size, MCP
+  `ImageContent`, explicit data-URL references, and independent request/result
+  limits.
 
 ### Security
 
@@ -30,6 +30,10 @@ Versioning.
   RMCP payload-formatting trace targets at `info`.
 - Validate generated image base64 and PNG signatures without returning or
   logging provider payloads, prompts, or image bytes.
+- Restrict MCP image edits to five explicit PNG/JPEG/WebP base64 data URLs,
+  verify declared content signatures, bound decoded per-image and total bytes,
+  and stream them into the existing replayable multipart path without remote
+  URL or filesystem access.
 
 ## [0.9.7] - 2026-08-05
 

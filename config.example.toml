@@ -51,8 +51,11 @@ allowed_origins = []
 allow_legacy_2025_11_25 = false
 # Independent limits for MCP JSON-RPC envelopes and bounded tool results.
 request_body_bytes = 4_194_304
+# Image MCP endpoints accept larger JSON envelopes for bounded inline edit data URLs.
+# The hard maximum is 64 MiB.
+image_request_body_bytes = 33_554_432
 search_result_bytes = 4_194_304
-# Bounded JSON/base64 response collected for one Images generation tool call.
+# Bounded JSON/base64 response collected for one Images generation/edit tool call.
 # The hard maximum is 64 MiB.
 image_result_bytes = 33_554_432
 

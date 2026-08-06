@@ -102,9 +102,10 @@ verification_key_path = "./config/console-jwt-public.pem"
 - `image_edit_spool_directory` 必须位于容量足够的本地文件系统。Unix 上目录和临时文件分别使用
   `0700` 与 `0600`；图片字节不会进入请求日志。
 - `console_body_bytes` 限制已认证 Console 写操作；`auth_body_bytes` 限制登录、注册、刷新和邀请激活请求。
-- 启用 `mcp-server` feature 和 `[mcp]` 后，`request_body_bytes` 限制 MCP JSON-RPC
-  envelope，`search_result_bytes` 限制 Search MCP 有界收集的上游结果，
-  `image_result_bytes` 限制 Images generation MCP 的单图 JSON/base64 结果。
+- 启用 `mcp-server` feature 和 `[mcp]` 后，`request_body_bytes` 限制 Search MCP JSON-RPC
+  envelope，`image_request_body_bytes` 独立限制 Image MCP inline edit envelope，
+  `search_result_bytes` 限制 Search MCP 有界收集的上游结果，`image_result_bytes` 限制
+  Images generation/edit MCP 的单图 JSON/base64 结果。
 
 ## 上游超时
 
@@ -144,17 +145,17 @@ Completions、Responses 和其他辅助上游请求继续使用 `response_header
   `mask` 的 `multipart/form-data`，仅匹配 Images 路由规则。
 - 可选 `POST /mcp/{slug}`：无状态 MCP `2026-07-28` transport。当前已实现的
   `web_search` kind 暴露 `web.run`，`image` kind 暴露单图 `image_gen.imagegen`
-  generation，并在同一不可变快照内调用既有 standalone search 或 Images generation
-  Proxy use case。
+  generation/edit，并在同一不可变快照内调用既有 standalone search、Images generation
+  或 Images edit Proxy use case。
 
 三个 OpenAI 格式绝不互相回退。客户端 `Authorization` 不会转发给上游；网关清理
 hop-by-hop headers 后，按渠道配置最后注入上游认证。
 
 MCP 不是第四种 `ApiFormat`，也不会通过本机 HTTP 回环到 `/v1/*`。它复用同一个 Gateway API
-Key：Search 使用 Responses `proxy` 权限，Images generation 使用 Images `proxy` 权限，并继续
-执行模型规则和 Channel 可达性。Search ref-id 的跨请求连续性通过客户端显式回传
-`search_session_id`；Images generation 不保存最近图片或文件。完整配置、协议 Header 和工具
-边界见[无状态 MCP 服务](mcp-services.md)。
+Key：Search 使用 Responses `proxy` 权限，Images generation/edit 使用 Images `proxy` 权限，
+并继续执行模型规则和 Channel 可达性。Search ref-id 的跨请求连续性通过客户端显式回传
+`search_session_id`；Images 不保存最近图片或文件，edit 只接受客户端显式回传的受限 data URL。
+完整配置、协议 Header 和工具边界见[无状态 MCP 服务](mcp-services.md)。
 
 所有公开数据面请求先应用客户端入口白名单：未列出的 Header 被忽略，未列出的顶层 JSON 或
 multipart 字段返回 `400 request_body_field_unsupported`。当前只检查顶层字段，允许字段内部的
@@ -657,8 +658,8 @@ API Key 和小时/天聚合粒度，不提供用户或渠道筛选，响应中�
 不会被定时测试。手工禁用的渠道与禁用渠道组不会被测试。
 
 MCP 转发日志的 `request_source` 为 `mcp`；它们仍按底层
-`standalone_web_search` 或 `images_generation` operation 计费，并且不保存 tool arguments、
-prompt、图片或结果。
+`standalone_web_search`、`images_generation` 或 `images_edit` operation 计费，并且不保存
+tool arguments、prompt、图片或结果。
 
 定时测试日志写入 `request_logs`，`request_source` 为 `scheduled_test`。它们使用系统内置、
 管理员角色的内部 API Key。网关会解析响应中的 token 用量，并按该模型的不可变价格快照、模型高级计费规则和渠道计费倍率计算成本；结算会扣减该系统管理员账户余额并累计其内部 API Key 的额度用量，不会归属到任何普通用户。系统内部身份不会出现在用户和 API Key 管理列表中。自动禁用和自动恢复都会写入系统审计日志并立即发布新的路由快照。
@@ -727,8 +728,8 @@ TTFT、总耗时和 TPS。详情再显示 API operation、HTTP 状态、错误�
 ## 已知边界
 
 - 支持 Chat Completions、Responses、非流式 JSON Images generation 与非流式 multipart
-  Images edit；不提供 JSON/data URL Images edit、图片流式响应、embeddings、audio、files、
-  batches、assistants 或 fine-tuning API。
+  Images edit；公开 `/v1/images/edits` 不提供 JSON/data URL edit，也不提供图片流式响应、
+  embeddings、audio、files、batches、assistants 或 fine-tuning API。
 - 所有余额、额度、模型价格和请求费用统一使用 USD；没有跨实例限流、健康状态或 Session
   粘性协调。Chat Completions 与 Responses 的自动重试仅覆盖收到响应头前的连接失败、连接超时
   和响应头超时，不覆盖 HTTP 错误、SSE 流中断或流空闲超时；Images generation/edit 不自动重试。

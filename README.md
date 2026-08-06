@@ -26,7 +26,7 @@
 > **Status:** Current implementation, under active development. The public
 > data plane supports Chat Completions, Responses, Codex standalone web
 > search, non-streaming JSON Images generation, multipart Images edits, and
-> optional stateless Search and Images-generation MCP services.
+> optional stateless Search and Images MCP services.
 
 `ai-gateway` is a self-hosted LLM request gateway built with Rust, Axum,
 Tokio, SQLx, and PostgreSQL. It keeps routing on an immutable in-memory
@@ -40,8 +40,8 @@ separate management Console for users and administrators.
   edits over HTTP, SSE, and Responses WebSocket where applicable.
 - **Optional stateless MCP transport** built with the `mcp-server` feature.
   PostgreSQL-managed `/mcp/{slug}` instances expose Codex-compatible
-  `web.run` and `image_gen.imagegen` generation while reusing Gateway API
-  keys, routing, admission, billing, and durable request logs.
+  `web.run` and `image_gen.imagegen` generation/edit while reusing Gateway
+  API keys, routing, admission, billing, and durable request logs.
 - **Priority and weighted routing** with passive health, optional session
   affinity, and controlled failover before upstream response headers arrive.
 - **In-process upstream connectors** keep provider-specific authentication and
@@ -79,10 +79,10 @@ separate management Console for users and administrators.
 | `GET /v1/responses` + Upgrade | Client API key | Proxies sequential Responses requests over WebSocket. |
 | `POST /v1/images/generations` | Client API key | Proxies non-streaming JSON Images generation requests. |
 | `POST /v1/images/edits` | Client API key | Proxies non-streaming multipart Images edit requests. |
-| `POST /mcp/{slug}` | Client API key | Optional stateless MCP `2026-07-28` transport; exposes managed Search `web.run` and single-image `image_gen.imagegen` generation instances. |
+| `POST /mcp/{slug}` | Client API key | Optional stateless MCP `2026-07-28` transport; exposes managed Search `web.run` and single-image `image_gen.imagegen` generation/edit instances. |
 
 Each API format uses separate routing rules and never falls back or transforms
-into another format. JSON/data-URL Images edits, image streaming, embeddings,
+into another format. Public `/v1/images/edits` JSON/data-URL edits, image streaming, embeddings,
 audio, files, batches, assistants, and fine-tuning APIs are outside the
 current scope. See the
 [OpenAI compatibility reference](docs/reference/openai-compatibility.md) for
@@ -108,7 +108,7 @@ MCP client
 Public listener (/mcp/{slug}, optional)
   → stateless protocol / Host / Origin validation
   → immutable MCP registry and API-key route authorization
-  → existing standalone-search or Images-generation proxy operation
+  → existing standalone-search or Images generation/edit proxy operation
 
 Browser or Console client
   │  JWT through an HTTPS reverse proxy
@@ -282,7 +282,7 @@ worker provides cross-process convergence.
 Start with [`config.example.toml`](config.example.toml). Production sizing,
 PostgreSQL tuning, storage, and operational metrics are covered in the
 [production configuration guide](docs/user/production-configuration.md).
-The optional stateless Search and Images-generation MCP services are documented in the
+The optional stateless Search and Images MCP services are documented in the
 [MCP service guide](docs/user/mcp-services.md).
 
 ## 🐳 Production deployment

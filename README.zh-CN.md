@@ -4,7 +4,7 @@
 
 `ai-gateway` 是一个单二进制 Rust 网关，用于转发 OpenAI 兼容请求。它向客户端提供
 Chat Completions、Responses、Codex standalone web search、非流式 JSON Images generation
-与 multipart Images edit API，并可选提供无状态 Search 和 Images generation MCP，
+与 multipart Images edit API，并可选提供无状态 Search 和 Images MCP，
 根据 PostgreSQL 控制面完成路由，并将请求转发到已配置的上游提供商。
 
 文档已按读者分类整理，统一入口见[文档中心](docs/README.md)：用户文档、开发与
@@ -22,7 +22,7 @@ Chat Completions、Responses、Codex standalone web search、非流式 JSON Imag
   三种格式绝不相互回退。
 - 通过可选 `mcp-server` feature 在公共 listener 提供 PostgreSQL 管理的
   `POST /mcp/{slug}`；当前 Search kind 暴露 Codex 兼容 `web.run`，Image kind 暴露
-  单图 `image_gen.imagegen` generation，并复用现有 API Key、路由、准入、计费和耐久日志。
+  单图 `image_gen.imagegen` generation/edit，并复用现有 API Key、路由、准入、计费和耐久日志。
 - 按 `(客户端模型名, API 格式)` 路由，支持渠道组优先级和渠道权重选择。
 - 特殊上游通过单进程内 Connector 接入，不增加 sidecar 或第二次网络跳转。首个
   Codex OAuth Connector 支持订阅凭证、每账户代理、Token 刷新、额度感知 draining
@@ -57,7 +57,7 @@ MCP 客户端
 公共监听器（可选 /mcp/{slug}）
   → 无状态协议 / Host / Origin 校验
   → 不可变 MCP registry 与 API Key 路由授权
-  → 既有 standalone search 或 Images generation 转发操作
+  → 既有 standalone search 或 Images generation/edit 转发操作
 
 Console 客户端
   │ JWT
@@ -331,7 +331,7 @@ PostgreSQL 入口表，随后异步投影和结算。耐久保证、故障边界
 
 生产机器规格分档、PostgreSQL 参数、密码文件、存储和容量验证方式见
 [生产配置与容量调优](docs/user/production-configuration.md)。
-可选 Search 与 Images generation MCP 的构建、配置、鉴权和管理见
+可选 Search 与 Images MCP 的构建、配置、鉴权和管理见
 [无状态 MCP 服务](docs/user/mcp-services.md)。
 
 ## Console API
@@ -431,7 +431,8 @@ pnpm --dir web/console generate:api:check   # OpenAPI spec/类型漂移门禁
   已结算用量的软预检查，不会在转发前预留本次成本。
 - 请求日志不保存 prompt、completion、完整 Header、API Key、Cookie 或未经脱敏的上游错误内容。
 
-当前范围不包含 JSON/data URL Images edit、图片流式响应、embeddings、audio、files、batches、
+当前公开 `/v1/images/edits` 范围不包含 JSON/data URL edit；项目也不包含图片流式响应、
+embeddings、audio、files、batches、
 assistants、fine-tuning、通用自动重试、TLS 终止、独立财务账本、充值/退款或多币种兑换。
 
 ## 开发与验证

@@ -41,11 +41,13 @@ use ai_gateway::{
     upstream::UpstreamClientRegistry,
     workers::{ControlPlaneReloader, DurableRequestLogWorker, RequestLogWorker},
 };
+#[cfg(feature = "mcp-server")]
+use ai_gateway::{mcp::McpService, runtime_config::McpRuntimeConfig};
 use axum::{
     Router,
     body::{Body, Bytes},
     extract::{
-        State,
+        OriginalUri, State,
         ws::{Message as UpstreamWebSocketMessage, WebSocket, WebSocketUpgrade},
     },
     http::{
@@ -71,6 +73,10 @@ use uuid::Uuid;
 
 const DEFAULT_ADMIN_URL: &str = "postgres://ai_gateway:ai_gateway@127.0.0.1:5432/postgres";
 const PASSWORD_FILE_ADMIN_URL: &str = "postgres://ai_gateway@127.0.0.1:5432/postgres";
+const TEST_PNG_BASE64: &str =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+#[cfg(feature = "mcp-server")]
+const MCP_VERSION: &str = "2026-07-28";
 
 fn default_admin_url() -> String {
     let Ok(mut password) = std::fs::read_to_string("./config/postgres-password") else {
@@ -531,6 +537,7 @@ struct CapturedCodexRequest {
 
 #[derive(Clone, Debug)]
 struct CapturedCodexImageRequest {
+    path: String,
     authorization: Option<String>,
     accept_encoding: Option<String>,
     account_id: Option<String>,
@@ -675,6 +682,7 @@ async fn codex_search_upstream(
 
 async fn codex_images_upstream(
     State(state): State<CodexUpstreamState>,
+    OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
@@ -689,6 +697,7 @@ async fn codex_images_upstream(
         .lock()
         .unwrap()
         .push(CapturedCodexImageRequest {
+            path: uri.path().to_owned(),
             authorization: header("authorization"),
             accept_encoding: header("accept-encoding"),
             account_id: header("chatgpt-account-id"),
@@ -706,10 +715,9 @@ async fn codex_images_upstream(
     Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "application/json")
-        .body(Body::from(
-            br#"{"created":1,"data":[{"b64_json":"aW1hZ2U="}],"usage":{"input_tokens":7,"output_tokens":11,"input_tokens_details":{"image_tokens":0,"text_tokens":7},"output_tokens_details":{"image_tokens":11,"text_tokens":0}}}"#
-                .as_slice(),
-        ))
+        .body(Body::from(format!(
+            r#"{{"created":1,"data":[{{"b64_json":"{TEST_PNG_BASE64}"}}],"usage":{{"input_tokens":7,"output_tokens":11,"input_tokens_details":{{"image_tokens":0,"text_tokens":7}},"output_tokens_details":{{"image_tokens":11,"text_tokens":0}}}}}}"#
+        )))
         .unwrap()
 }
 
@@ -2791,14 +2799,26 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
     .execute(&database.pool)
     .await
     .unwrap();
+    let images_rule = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO model_rules \
          (id,client_model,api_format,upstream_model_id,channel_group_ids,enabled) \
          VALUES ($1,'gpt-image-2','open_ai_images',$2,ARRAY[$3]::uuid[],true)",
     )
-    .bind(Uuid::new_v4())
+    .bind(images_rule)
     .bind(images_model)
     .bind(images_group)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO mcp_servers \
+         (id,slug,kind,name,description,model_rule_id,settings_version,settings,enabled) \
+         VALUES ($1,'codex-image','image','Codex image','Codex image generation and edit',$2,1, \
+                 '{\"background\":\"auto\",\"quality\":\"high\",\"size\":\"1024x1024\"}'::jsonb,true)",
+    )
+    .bind(Uuid::new_v4())
+    .bind(images_rule)
     .execute(&database.pool)
     .await
     .unwrap();
@@ -2842,7 +2862,7 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
     )
     .unwrap()
     .with_connector_registry(connectors);
-    let app = ai_gateway::http::router(proxy);
+    let app = ai_gateway::http::router(proxy.clone());
     let request = |session_id: &'static str, body: serde_json::Value| {
         axum::http::Request::builder()
             .method("POST")
@@ -3124,14 +3144,15 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
         .to_bytes();
     assert_eq!(
         image_response_body,
-        Bytes::from_static(
-            br#"{"created":1,"data":[{"b64_json":"aW1hZ2U="}],"usage":{"input_tokens":7,"output_tokens":11,"input_tokens_details":{"image_tokens":0,"text_tokens":7},"output_tokens_details":{"image_tokens":11,"text_tokens":0}}}"#
-        )
+        Bytes::from(format!(
+            r#"{{"created":1,"data":[{{"b64_json":"{TEST_PNG_BASE64}"}}],"usage":{{"input_tokens":7,"output_tokens":11,"input_tokens_details":{{"image_tokens":0,"text_tokens":7}},"output_tokens_details":{{"image_tokens":11,"text_tokens":0}}}}}}"#
+        ))
     );
 
     let image_requests = captured.image_requests.lock().unwrap().clone();
     assert_eq!(image_requests.len(), 1);
     let image_request = &image_requests[0];
+    assert_eq!(image_request.path, "/backend-api/codex/images/generations");
     assert_eq!(
         image_request.authorization.as_deref(),
         Some("Bearer access-token")
@@ -3255,6 +3276,7 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
     let image_requests = captured.image_requests.lock().unwrap().clone();
     assert_eq!(image_requests.len(), 2);
     let edit_request = &image_requests[1];
+    assert_eq!(edit_request.path, "/backend-api/codex/images/edits");
     assert_eq!(
         edit_request.authorization.as_deref(),
         Some("Bearer access-token")
@@ -3304,6 +3326,110 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
     assert_eq!(edit_events[0].channel_id, Some(images_channel));
     assert_eq!(edit_events[0].channel_group_id, Some(images_group));
     assert_eq!(edit_events[0].outcome, RequestLogOutcome::Succeeded);
+
+    #[cfg(feature = "mcp-server")]
+    {
+        let mcp = McpService::new(
+            proxy.clone(),
+            &McpRuntimeConfig {
+                public_base_url: "https://mcp.example.test".into(),
+                allowed_hosts: vec!["mcp.example.test".into()],
+                allowed_origins: vec![],
+                allow_legacy_2025_11_25: false,
+                request_body_bytes: 64 * 1_024,
+                image_request_body_bytes: 512 * 1_024,
+                search_result_bytes: 64 * 1_024,
+                image_result_bytes: 512 * 1_024,
+            },
+        )
+        .router();
+        let mcp_edit = mcp
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/mcp/codex-image")
+                    .header("host", "mcp.example.test")
+                    .header("authorization", format!("Bearer {}", seed.secret))
+                    .header("content-type", "application/json")
+                    .header("accept", "application/json, text/event-stream")
+                    .header("mcp-protocol-version", MCP_VERSION)
+                    .header("mcp-method", "tools/call")
+                    .header("mcp-name", "image_gen.imagegen")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": 1,
+                            "method": "tools/call",
+                            "params": {
+                                "_meta": {
+                                    "io.modelcontextprotocol/protocolVersion": MCP_VERSION,
+                                    "io.modelcontextprotocol/clientInfo": {
+                                        "name": "ai-gateway-test",
+                                        "version": "1.0.0"
+                                    },
+                                    "io.modelcontextprotocol/clientCapabilities": {}
+                                },
+                                "name": "image_gen.imagegen",
+                                "arguments": {
+                                    "prompt": "add a blue hat",
+                                    "referenced_image_urls": [
+                                        format!("data:image/png;base64,{TEST_PNG_BASE64}")
+                                    ]
+                                }
+                            }
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(mcp_edit.status(), StatusCode::OK);
+        let mcp_edit: serde_json::Value =
+            serde_json::from_slice(&mcp_edit.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(mcp_edit["result"]["content"][0]["data"], TEST_PNG_BASE64);
+        assert_eq!(
+            mcp_edit["result"]["content"][0]["_meta"]["codex/imageDetail"],
+            "original"
+        );
+
+        let image_requests = captured.image_requests.lock().unwrap().clone();
+        assert_eq!(image_requests.len(), 3);
+        let mcp_request = &image_requests[2];
+        assert_eq!(mcp_request.path, "/backend-api/codex/images/edits");
+        assert_eq!(
+            mcp_request.authorization.as_deref(),
+            Some("Bearer access-token")
+        );
+        assert_eq!(
+            mcp_request.content_type.as_deref(),
+            Some("application/json")
+        );
+        let mcp_json: serde_json::Value = serde_json::from_slice(&mcp_request.body).unwrap();
+        assert_eq!(mcp_json["model"], "gpt-image-2");
+        assert_eq!(mcp_json["prompt"], "add a blue hat");
+        assert_eq!(mcp_json["background"], "auto");
+        assert_eq!(mcp_json["quality"], "high");
+        assert_eq!(mcp_json["size"], "1024x1024");
+        assert_eq!(mcp_json["n"], 1);
+        assert_eq!(
+            mcp_json["images"][0]["image_url"],
+            format!("data:image/png;base64,{TEST_PNG_BASE64}")
+        );
+
+        let mcp_events = logs
+            .events()
+            .into_iter()
+            .filter(|event| {
+                event.request_source == RequestLogSource::Mcp
+                    && event.api_operation == ApiOperation::ImagesEdit
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(mcp_events.len(), 1);
+        assert_eq!(mcp_events[0].channel_id, Some(images_channel));
+        assert_eq!(mcp_events[0].outcome, RequestLogOutcome::Succeeded);
+    }
 
     let gateway = start_server(app.clone()).await;
     let websocket_request = || {
@@ -3500,6 +3626,7 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
     let new_session_body = new_session.into_body().collect().await.unwrap().to_bytes();
     assert!(String::from_utf8_lossy(&new_session_body).contains("codex_credential_draining"));
     assert_eq!(captured.http_requests.lock().unwrap().len(), 2);
+    let image_requests_before_draining = captured.image_requests.lock().unwrap().len();
     let draining_image = app
         .clone()
         .oneshot(
@@ -3545,7 +3672,10 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
         .unwrap()
         .to_bytes();
     assert!(String::from_utf8_lossy(&draining_edit_body).contains("codex_credential_draining"));
-    assert_eq!(captured.image_requests.lock().unwrap().len(), 2);
+    assert_eq!(
+        captured.image_requests.lock().unwrap().len(),
+        image_requests_before_draining
+    );
 
     repository
         .persist_codex_quota(

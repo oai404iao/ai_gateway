@@ -7,10 +7,10 @@
 - [当前架构](architecture.md)：运行拓扑、请求链路、模块边界和来源优先级。
 - [Codex OAuth Connector 设计记录](codex-oauth-connector.md)：进程内 Connector、
   managed channel、凭证快照、quota 与粘性边界。
-- [MCP 服务架构与实施记录](mcp-services.md)：已实现的无状态 Search 与 Images generation
-  transport、多 MCP registry、API Key 鉴权，以及后续 Images edit 阶段。
-- [OpenAI Images 转发设计与分阶段实施](openai-images.md)：格式/操作拆分、PR 1 当前范围、
-  Codex 凭证共享投影，以及 edit 大 body 的后续边界。
+- [MCP 服务架构与实施记录](mcp-services.md)：已实现的无状态 Search 与 Images
+  generation/edit transport、多 MCP registry 和 API Key 鉴权。
+- [OpenAI Images 转发设计与分阶段实施](openai-images.md)：格式/操作拆分、generation/edit
+  转发、Codex 凭证共享投影，以及 replayable 大 body 边界。
 - [产品与架构蓝图](product-blueprint.md)：未来方向和设计背景；不能替代当前实现。
 - [数据库设计](database-design.md)
 - [Console 认证与授权设计记录](console-auth.md)

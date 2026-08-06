@@ -1,8 +1,7 @@
 # MCP 服务架构与实施提案
 
-> 状态：部分实现。Transport、registry、Search MCP、Images generation MCP、Console CRUD 和
-> `request_source = "mcp"` 已实现；Images edit、专用 MCP 日志维度、管理页面和 Tasks
-> 仍是后续阶段。
+> 状态：部分实现。Transport、registry、Search MCP、Images generation/edit MCP、Console CRUD
+> 和 `request_source = "mcp"` 已实现；专用 MCP 日志维度、管理页面和 Tasks 仍是后续阶段。
 > 当前行为以代码、测试、migration 和 OpenAPI 契约为准。
 
 ## 目标
@@ -75,7 +74,7 @@ MCP 外部语义与最近核对日期见
 - `codex-rs/codex-api/src/search.rs`
 - `codex-rs/codex-api/src/images.rs`
 
-参考的是工具名称、命令形状、Images 默认值、单图结果处理，以及后续 edit 最多五张输入的边界；
+参考的是工具名称、命令形状、Images 默认值、单图结果处理，以及 edit 最多五张输入的边界；
 Codex 中依赖本地线程历史或本地文件系统的部分必须改成显式无状态参数，不能原样复制。
 
 ## 运行拓扑
@@ -214,8 +213,7 @@ Gateway 用户/授权范围，而不改变工具 Schema。
 | 工具操作 | 必需 Gateway 权限 |
 | --- | --- |
 | `web.run` | `open_ai_responses` + `proxy` |
-| `image_gen.imagegen` generation | `open_ai_images` + `proxy` |
-| `image_gen.imagegen` edit | `open_ai_images` + `proxy` |
+| `image_gen.imagegen` generation/edit | `open_ai_images` + `proxy` |
 
 不新增 `ApiFormat::Mcp`。首期也不要求新增 `mcp.call` 权限，因为 MCP 只是现有数据面能力的另一种
 协议表达；API Key 仍只能访问它已经允许的格式、模型、Channel Group 和 Channel。
@@ -290,7 +288,7 @@ enum CompiledMcpServer {
 - `image` 模型存在 `OpenAiImages` rule；
 - settings version 和字段合法；
 - Search domain policy 不冲突；
-- Images generation 结果上限不超过文件级运行配置；后续 edit 输入还必须受独立文件级限制；
+- Images request/result 上限不超过文件级运行配置；edit 输入还受独立单图和解码总量限制；
 - 启用的 MCP 至少能编译出一个全局候选路由。
 
 API Key 的实际可达性仍在请求时按其 authorization bitmap 判断。
@@ -398,19 +396,17 @@ Search 工具声明 read-only/open-world 提示，但这些 annotation 只用于
 image_gen.imagegen
 ```
 
-当前已实现 generation 阶段，并保留 Codex 的工具名称：
+当前 generation 与 edit 共用 Codex 工具名称：
 
-- 当前输入只接受 `prompt`；任何参考图片字段都作为未知字段 fail closed；
+- 缺少或传入空 `referenced_image_urls` 时执行 generation；
+- 传入一到五个 `referenced_image_urls` 时执行 edit；
 - 只返回第一张生成结果；
 - 固定 `n = 1`；
 - `background`、`quality`、`size` 由实例设置决定，默认均为 `auto`；
 - 输出格式固定为 PNG/base64；
 - 模型由 MCP 实例固定，调用方不能任意指定。
 
-后续 edit 阶段将在同一个工具上增加 `referenced_image_urls`：缺少引用时 generation，存在引用时
-edit，最多五张。该扩展尚未实现。
-
-### 当前 generation 输入
+### Generation 输入
 
 ```json
 {
@@ -421,10 +417,10 @@ edit，最多五张。该扩展尚未实现。
 `prompt` 必填、禁止未知字段，最多 32,000 个字符且最多 `64 KiB`。工具是非幂等付费操作：
 Gateway 不自动重试，但客户端在网络结果不确定时重发仍可能生成第二张图片并再次计费。
 
-### 后续 edit 的无状态输入
+### Edit 的无状态输入
 
 Codex 的 `referenced_image_paths` 和 `num_last_images_to_include` 依赖本地文件系统与对话历史，不能
-直接用于远程无状态 MCP。edit 阶段计划把工具参数扩展为：
+直接用于远程无状态 MCP。远程工具改为显式 data URL：
 
 ```json
 {
@@ -438,18 +434,20 @@ Codex 的 `referenced_image_paths` 和 `num_last_images_to_include` 依赖本地
 规则：
 
 - `prompt` 必填并限制长度；
-- `referenced_image_urls` 可省略，最多五项；
-- 首期只接受 `data:image/png`、`data:image/jpeg` 和 `data:image/webp`；
+- `referenced_image_urls` 可省略或为空，最多五项；
+- 只接受标准 base64 的 `data:image/png`、`data:image/jpeg` 和 `data:image/webp`；
+- 核对 MIME 与 PNG/JPEG/WebP signature，拒绝空白、URL-safe base64 和额外 data URL 参数；
 - 不接受 `file:`、本机路径、任意远程 URL 或 SVG，避免把 SSRF 和文件系统访问引入首期；
-- 每张图片、解码后总大小和整个 MCP JSON envelope 都有独立硬上限；
+- 单张图片解码后最多 `16 MiB`，解码后总计最多 `24 MiB`；
+- Image MCP JSON envelope 默认上限 `32 MiB`、硬上限 `64 MiB`，Search MCP 仍使用独立的
+  `request_body_bytes`；
 - 不提供 `num_last_images_to_include`；客户端若要编辑上一张结果，必须把返回图片显式传回。
 
-后续 inline edit 应采用保守 MCP body 上限。它不能提高普通
-`request_limits.proxy_body_bytes`，也不能改变公共 multipart edit 的
+Inline edit 不提高普通 `request_limits.proxy_body_bytes`，也不改变公共 multipart edit 的
 `image_edit_*` 限制。若客户需要超过 inline 上限的大图片，后续应增加受控 artifact upload/URI，
-而不是无限提高 JSON 内存上限。
+而不是继续提高 JSON 内存上限。
 
-### 当前 generation 请求编译
+### 请求编译
 
 generation 生成规范化 JSON：
 
@@ -468,9 +466,11 @@ generation 生成规范化 JSON：
 `b64_json`；`stream` 缺省即为非流式。Gateway 仍把工具输出契约固定为 PNG/base64：上游若返回
 URL、无效 base64 或非 PNG 数据，工具调用失败关闭，不抓取远程 URL。
 
-后续 edit 对每个 data URL 做 MIME、base64 和大小校验，构造
-`PreparedRequestBody::ImageEdit` 可消费的 multipart 等价输入，再进入既有 Images edit policy
-和 Connector adapter。不得绕过：
+edit 在验证阶段按 `64 KiB` base64 chunk 计算解码大小与 signature，然后生成随机 multipart
+boundary，逐块解码图片并构造 `model`、`prompt`、`n`、`background`、`quality`、`size` 和
+`image[]` parts。该流由既有 `ImageEditBodyPolicy::capture` 接收为
+`PreparedRequestBody::ImageEdit`，超过公共内存阈值时落入匿名临时文件，再进入普通或 Codex
+Connector adapter。取消或 Drop 会释放当前流、base64 参数和临时文件。该路径不得绕过：
 
 - multipart 字段 allowlist；
 - 单文件、总 body 和图片数量限制；
@@ -592,7 +592,7 @@ operation-specific 上限：
 数据、完整请求参数或未清理上游正文。
 
 Images 无 exactly-once 保证。Gateway 本身不自动重试，但客户端在网络不确定时重发
-`tools/call` 仍可能产生第二次生成和费用；文档与工具描述必须明确这一点。
+`tools/call` 仍可能产生第二次生成/edit 和费用；文档与工具描述必须明确这一点。
 
 ## 配置
 
@@ -605,13 +605,14 @@ public_base_url = "https://api.example.com"
 allowed_origins = []
 allow_legacy_2025_11_25 = false
 request_body_bytes = 4_194_304
+image_request_body_bytes = 33_554_432
 search_result_bytes = 4_194_304
 image_result_bytes = 33_554_432
 ```
 
 具体 MCP 实例、模型和工具策略保存在 PostgreSQL，并通过控制面快照热更新。
-`image_request_body_bytes` 留到 Images edit 阶段再引入；generation 的小型 JSON envelope 继续
-使用 `request_body_bytes`。
+Search 与其他普通 MCP endpoint 使用 `request_body_bytes`；Image endpoint 使用独立的
+`image_request_body_bytes`，默认 `32 MiB`、硬上限 `64 MiB`。
 
 配置同步要求：
 
@@ -716,7 +717,7 @@ src/
     auth.rs                # Gateway API-key principal
     error.rs               # HTTP、JSON-RPC、CallToolResult 映射
     search.rs              # web.run schema、编译、结果映射
-    image.rs               # imagegen generation schema、结果边界与 ImageContent 映射
+    image.rs               # imagegen generation/edit schema、data URL、multipart 与结果映射
   application/
     proxy.rs               # 抽取 execute_authenticated
     request_body.rs        # MCP edit 到 replayable multipart 的安全 builder
@@ -756,11 +757,11 @@ workspace gate；不要为绕过冲突复制一套不完整 JSON-RPC/MCP parser�
 
 ### PR 3：Images edit
 
-- 最多五个受限 data URL；
-- 独立 MCP envelope/body limits；
-- 安全 decode 和 replayable multipart builder；
-- 普通/Codex edit deterministic integration tests；
-- 取消、Drop、临时文件和无泄漏测试。
+- [x] 最多五个受限 data URL；
+- [x] 独立 MCP envelope、单图、解码总量和 result limits；
+- [x] 安全 chunked decode 和 replayable multipart builder；
+- [x] 普通 Connector integration 与 Codex adapter deterministic tests；
+- [x] 继承取消边界并覆盖 Drop、临时文件与无泄漏测试。
 
 ### 后续：Tasks、artifact 与标准 OAuth
 
@@ -834,8 +835,9 @@ Images forwarding path 时，除 deterministic integration tests 外，完成前
 
 1. production 镜像编译 `mcp-server` feature，但 `[mcp].enabled` 默认关闭；
 2. modern-only 为默认值，管理员可显式开启 `2025-11-25` 无 Session 兼容；
-3. Search request/result 默认上限均为 4 MiB；Images generation result 默认 32 MiB、硬上限
-   64 MiB；Images edit envelope/body 上限在后续 PR 锁定；
+3. Search request/result 默认上限均为 4 MiB；Image request/result 默认上限均为 32 MiB、
+   硬上限 64 MiB；edit 单图解码后最多 16 MiB、合计最多 24 MiB，并继续受公共
+   `request_limits.image_edit_*` 约束；
 4. Search `short` / `medium` / `long` 默认映射为 1000 / 3000 / 6000 tokens；
 5. 当前启用 Codex 的全部 `web.run` command family，实例级关闭策略后续实现；
 6. 当前只有管理员 Console API 管理 MCP；普通用户 endpoint 展示和管理页面后续实现。

@@ -76,6 +76,7 @@ jobs:
       - run: cargo test --locked --workspace
       - run: cargo test --locked --features mcp-server --lib
       - run: cargo test --locked --features mcp-server --test mcp_integration
+      - run: cargo test --locked --features mcp-server --test control_plane_integration codex_connector_forwards_responses_and_images_with_shared_credentials -- --exact
 
   msrv:
     if: ${{ inputs.run_msrv }}
@@ -112,6 +113,7 @@ jobs:
       - run: cargo +1.92.0 test --locked --workspace
       - run: cargo +1.92.0 test --locked --features mcp-server --lib
       - run: cargo +1.92.0 test --locked --features mcp-server --test mcp_integration
+      - run: cargo +1.92.0 test --locked --features mcp-server --test control_plane_integration codex_connector_forwards_responses_and_images_with_shared_credentials -- --exact
 
   console:
     if: ${{ inputs.run_console }}

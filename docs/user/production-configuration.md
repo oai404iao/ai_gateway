@@ -75,8 +75,9 @@ Compose 将 PostgreSQL 端口默认绑定到 `127.0.0.1`。只有 Gateway 位于
 | `request_limits.image_edit_memory_bytes` | 1 MiB | edit 转入匿名临时文件前的内存阈值 |
 | `request_limits.image_edit_spool_directory` | `/var/lib/ai-gateway/image-edit-spool` | Compose 的独立本地 scratch volume |
 | `mcp.request_body_bytes` | 4 MiB | 单个 MCP JSON-RPC POST envelope 上限 |
+| `mcp.image_request_body_bytes` | 32 MiB | Image MCP inline edit JSON/data URL envelope 上限；硬上限 64 MiB |
 | `mcp.search_result_bytes` | 4 MiB | Search MCP 收集上游 JSON 结果的上限 |
-| `mcp.image_result_bytes` | 32 MiB | Images generation MCP 收集单图 JSON/base64 的上限；硬上限 64 MiB |
+| `mcp.image_result_bytes` | 32 MiB | Images generation/edit MCP 收集单图 JSON/base64 的上限；硬上限 64 MiB |
 
 PostgreSQL 的连接预算至少应满足：
 
@@ -92,13 +93,14 @@ Gateway 实例数
 
 ### 可选 MCP transport
 
-Search 与 Images generation MCP 需要使用 `mcp-server` Cargo feature 构建，并在 `[mcp]` 中
+Search 与 Images generation/edit MCP 需要使用 `mcp-server` Cargo feature 构建，并在 `[mcp]` 中
 同时启用。`public_base_url` 必须与反向代理对外暴露的 HTTP(S) origin 一致；Gateway 依据它
 校验 `Host`。浏览器请求的 `Origin` 还必须出现在 `allowed_origins`，空列表会拒绝所有带
 `Origin` 的请求。
 
 MCP 定义、绑定模型规则以及 Search/Images 策略存储在 PostgreSQL，通过 Console API 热更新；
-TOML 只控制进程级 transport 与 body/result 限制。完整配置和权限边界见
+TOML 只控制进程级 transport 与 body/result 限制。Image MCP 的 inline edit 另外固定为单张
+解码后 16 MiB、合计 24 MiB，并继续受公共 `request_limits.image_edit_*` 限制。完整配置和权限边界见
 [无状态 MCP 服务](mcp-services.md)。
 
 ### 日志级别
