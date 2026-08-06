@@ -3942,6 +3942,146 @@ async fn mcp_server_crud_publishes_registry_and_uses_etags() {
     database.cleanup().await;
 }
 
+#[tokio::test]
+async fn image_mcp_servers_compile_typed_settings_and_require_images_routes() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+    let model = request(
+        &app,
+        "POST",
+        "/console/v1/models",
+        serde_json::json!({
+            "source_model_id": "mcp-image-upstream",
+            "display_name": "MCP image upstream",
+            "enabled": true,
+            "price_unit_tokens": 1000000,
+            "input_unit_price": "0",
+            "cached_input_unit_price": "0",
+            "cache_write_unit_price": "0",
+            "output_unit_price": "0",
+            "price_effective_at": chrono::Utc::now().to_rfc3339(),
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(model.status(), StatusCode::CREATED);
+    let model_id = body_json(model).await["id"].as_str().unwrap().to_owned();
+
+    let group = request(
+        &app,
+        "POST",
+        "/console/v1/routing/channel-groups",
+        serde_json::json!({
+            "name": "mcp-image-group",
+            "api_format": "open_ai_images",
+            "priority": 1,
+            "selection_strategy": "weighted_random",
+            "enabled": true,
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(group.status(), StatusCode::CREATED);
+    let group_id = body_json(group).await["id"].as_str().unwrap().to_owned();
+
+    let channel = request(
+        &app,
+        "POST",
+        "/console/v1/routing/channels",
+        serde_json::json!({
+            "channel_group_id": group_id,
+            "api_format": "open_ai_images",
+            "name": "mcp-image-channel",
+            "base_url": "https://images.example.test",
+            "enabled": true,
+            "weight": 1,
+            "upstream_auth_kind": "none",
+            "available_models": ["mcp-image-upstream"],
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(channel.status(), StatusCode::CREATED);
+    let channel_id = body_json(channel).await["id"].as_str().unwrap().to_owned();
+
+    let rule = request(
+        &app,
+        "POST",
+        "/console/v1/routing/model-rules",
+        serde_json::json!({
+            "client_model": "mcp-image-client",
+            "api_format": "open_ai_images",
+            "upstream_model_id": model_id,
+            "channel_ids": [channel_id],
+            "enabled": true,
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(rule.status(), StatusCode::CREATED);
+    let rule_id = body_json(rule).await["id"].as_str().unwrap().to_owned();
+
+    let created = request(
+        &app,
+        "POST",
+        "/console/v1/mcp-servers",
+        serde_json::json!({
+            "slug": "image",
+            "kind": "image",
+            "name": "Image generation",
+            "model_rule_id": rule_id,
+            "settings": {
+                "background": "opaque",
+                "quality": "high",
+                "size": "1536x1024"
+            },
+            "enabled": true,
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let server = app.runtime.snapshot().mcp_server("image").unwrap();
+    assert_eq!(server.kind().as_str(), "image");
+    assert_eq!(server.model_rule().api_format().as_str(), "open_ai_images");
+    assert_eq!(server.image_settings().unwrap().size, "1536x1024");
+
+    let invalid_size = request(
+        &app,
+        "POST",
+        "/console/v1/mcp-servers",
+        serde_json::json!({
+            "slug": "image-invalid-size",
+            "kind": "image",
+            "name": "Invalid image size",
+            "model_rule_id": rule_id,
+            "settings": {"size": "63x1024"},
+            "enabled": false,
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(invalid_size.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let wrong_kind = request(
+        &app,
+        "POST",
+        "/console/v1/mcp-servers",
+        serde_json::json!({
+            "slug": "search-on-images",
+            "kind": "web_search",
+            "name": "Wrong route format",
+            "model_rule_id": rule_id,
+            "settings": {},
+            "enabled": true,
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(wrong_kind.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    database.cleanup().await;
+}
+
 /// Model prices may define immutable advanced billing policy: input-price
 /// tiers and request-body JSON Pointer multipliers are model-level facts, not
 /// channel transforms. Invalid policy is rejected before it can be persisted.

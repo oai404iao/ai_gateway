@@ -22,8 +22,9 @@ control-plane snapshots, a separate JWT-authenticated Console API with
 forwarding, passive health, admission controls, durable spooled request logs,
 and reusable upstream clients. The optional `mcp-server` Cargo feature adds
 stateless MCP `2026-07-28` endpoints at `POST /mcp/{slug}`; the currently
-implemented built-in kind exposes Codex-compatible `web.run` through the
-existing standalone-search forwarding path. A React + TypeScript
+implemented built-in kinds expose Codex-compatible `web.run` and single-image
+`image_gen.imagegen` generation through the existing standalone-search and
+Images forwarding paths. A React + TypeScript
 Console web UI lives under `web/console/` and can be embedded into the binary
 as static assets via the optional `embedded-console-ui` cargo feature, served
 only from the Console listener. `docs/development/architecture.md` describes
@@ -48,7 +49,7 @@ repo/
 |   |   |-- mod.rs              # Public API-key data-plane router (/v1/*)
 |   |   |-- console.rs          # Separate JWT-authenticated Console router (/console/v1/*)
 |   |   `-- console_ui.rs       # Embedded SPA assets + SPA fallback + cache/security headers (embedded-console-ui feature only)
-|   |-- mcp/                    # Feature-gated stateless RMCP transport and built-in web.run adapter
+|   |-- mcp/                    # Feature-gated stateless RMCP transport and built-in Search/Images adapters
 |   |-- admission/              # Process-local RPM, concurrency, and soft quota admission
 |   |-- domain/                 # API formats, compiled routing, credentials, request-log events
 |   |-- runtime_config/         # TOML deserialization and ArcSwap configuration snapshots; [console].ui_enabled validation
@@ -110,10 +111,10 @@ not a production runtime). Plain `cargo` commands use Rust 1.97.1 from
 cargo check
 cargo fmt --check
 cargo clippy --all-targets               # also run with --features embedded-console-ui when that path changes
-cargo clippy --all-targets --features mcp-server # required when MCP transport/registry/search changes
+cargo clippy --all-targets --features mcp-server # required when MCP transport/registry/tooling changes
 cargo test                                # unit + local/PostgreSQL integration (needs `docker compose up -d`)
 cargo test --features mcp-server --lib    # MCP feature-gated unit coverage
-cargo test --features mcp-server --test mcp_integration # deterministic stateless MCP/Search forwarding coverage
+cargo test --features mcp-server --test mcp_integration # deterministic stateless MCP Search/Images forwarding coverage
 cargo test --lib console_ui               # embedded-UI serving tests (needs --features embedded-console-ui + built web/console/dist)
 cargo test --test console_spec_integration # OpenAPI spec/Console-API drift tests (needs PostgreSQL)
 cargo test --package ai-gateway-perf       # Fast unit tests for the manual performance tooling; does not run a benchmark
@@ -285,9 +286,11 @@ Axum HTTP
   or allow database-configured arbitrary tool code/schema. Search ref-id
   continuation is explicit through `search_session_id`; derive provider Search
   IDs from API Key ID, MCP server ID, and the current model/policy scope so
-  endpoints and policy versions cannot share context. Request logs use
-  `request_source = "mcp"` without storing tool arguments, provider error
-  details, or results.
+  endpoints and policy versions cannot share context. Images generation fixes
+  model, single-image PNG/base64 output, background, quality, and size from the
+  MCP instance; enforce the independent result limit and never store prompts
+  or image bytes. Request logs use `request_source = "mcp"` without storing
+  tool arguments, provider error details, or results.
 
 ### Console API and embedded UI
 
@@ -455,8 +458,8 @@ pool isolation, transforms, and configured outbound proxies.
 | Product direction and design background | `docs/development/product-blueprint.md` |
 | Supported client formats | `src/domain/api_format.rs` |
 | Public data-plane route registry | `src/http/mod.rs` |
-| Stateless MCP transport, auth handoff, and tools | `src/mcp/mod.rs`, `src/mcp/search.rs`, and `docs/user/mcp-services.md` |
-| MCP persisted/compiled registry | `migrations/0045_mcp_servers.sql`, `src/domain/mcp.rs`, `src/persistence/mod.rs`, and `src/runtime_config/mod.rs` |
+| Stateless MCP transport, auth handoff, and tools | `src/mcp/mod.rs`, `src/mcp/search.rs`, `src/mcp/image.rs`, and `docs/user/mcp-services.md` |
+| MCP persisted/compiled registry | `migrations/0045_mcp_servers.sql`, `migrations/0046_mcp_image_kind.sql`, `src/domain/mcp.rs`, `src/persistence/mod.rs`, and `src/runtime_config/mod.rs` |
 | Client/Codex request Header and body policy | `docs/reference/request-allowlists.json`, `docs/reference/request-allowlists.md`, and `src/request_policy.rs` |
 | Images multipart capture/replay and Codex edit adaptation | `src/application/request_body.rs` |
 | Responses WebSocket proxy and pooling | `src/application/proxy/websocket.rs` and `src/upstream/websocket.rs` |

@@ -4101,7 +4101,7 @@ components:
 
     McpServerKind:
       type: string
-      enum: [web_search]
+      enum: [web_search, image]
 
     McpSearchExternalWebAccess:
       type: string
@@ -4147,6 +4147,35 @@ components:
           allOf: [{ $ref: "#/components/schemas/McpSearchTokenLimits" }]
           description: Defaults to short=1000, medium=3000, and long=6000.
 
+    McpImageBackground:
+      type: string
+      enum: [auto, opaque, transparent]
+
+    McpImageQuality:
+      type: string
+      enum: [auto, low, medium, high]
+
+    ImageMcpSettings:
+      type: object
+      additionalProperties: false
+      properties:
+        background:
+          allOf: [{ $ref: "#/components/schemas/McpImageBackground" }]
+          description: Defaults to `auto`.
+        quality:
+          allOf: [{ $ref: "#/components/schemas/McpImageQuality" }]
+          description: Defaults to `auto`.
+        size:
+          type: string
+          pattern: "^(auto|[1-9][0-9]{1,4}x[1-9][0-9]{1,4})$"
+          description: Defaults to `auto`; numeric dimensions must each be from 64 through 8192.
+
+    McpServerSettings:
+      anyOf:
+        - $ref: "#/components/schemas/WebSearchMcpSettings"
+        - $ref: "#/components/schemas/ImageMcpSettings"
+      description: The valid object shape is selected by the immutable MCP server kind.
+
     McpServerView:
       type: object
       required:
@@ -4165,9 +4194,9 @@ components:
         client_model: { type: string }
         api_format:
           allOf: [{ $ref: "#/components/schemas/ApiFormat" }]
-          description: "open_ai_responses for the currently implemented web-search kind."
+          description: "open_ai_responses for web search or open_ai_images for image generation."
         settings_version: { type: integer, format: int32, minimum: 1 }
-        settings: { $ref: "#/components/schemas/WebSearchMcpSettings" }
+        settings: { $ref: "#/components/schemas/McpServerSettings" }
         enabled: { type: boolean }
         created_at: { $ref: "#/components/schemas/DateTime" }
         updated_at: { $ref: "#/components/schemas/DateTime" }
@@ -5364,7 +5393,7 @@ components:
         description: { type: string, maxLength: 1000, nullable: true }
         model_rule_id: { type: string, format: uuid }
         settings:
-          allOf: [{ $ref: "#/components/schemas/WebSearchMcpSettings" }]
+          allOf: [{ $ref: "#/components/schemas/McpServerSettings" }]
           description: Omission stores an empty object and applies all server defaults.
         enabled: { type: boolean }
 
@@ -5376,7 +5405,7 @@ components:
         name: { type: string, minLength: 1, maxLength: 100 }
         description: { type: string, maxLength: 1000, nullable: true }
         model_rule_id: { type: string, format: uuid }
-        settings: { $ref: "#/components/schemas/WebSearchMcpSettings" }
+        settings: { $ref: "#/components/schemas/McpServerSettings" }
         enabled: { type: boolean }
 
     ModelSyncPreviewRequest:

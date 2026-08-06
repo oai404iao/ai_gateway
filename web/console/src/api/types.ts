@@ -33,6 +33,8 @@ export type SpendLeaderboardPeriod = S["SpendLeaderboardPeriod"];
 export type McpServerKind = S["McpServerKind"];
 export type McpSearchExternalWebAccess = S["McpSearchExternalWebAccess"];
 export type McpSearchContextSize = S["McpSearchContextSize"];
+export type McpImageBackground = S["McpImageBackground"];
+export type McpImageQuality = S["McpImageQuality"];
 
 // Auth + shared responses
 export type ErrorBody = S["ErrorBody"];
@@ -111,6 +113,8 @@ export type ConfigTemplateView = S["ConfigTemplateView"];
 export type ConfigTemplateDetailView = S["ConfigTemplateDetailView"];
 export type McpSearchTokenLimits = S["McpSearchTokenLimits"];
 export type WebSearchMcpSettings = S["WebSearchMcpSettings"];
+export type ImageMcpSettings = S["ImageMcpSettings"];
+export type McpServerSettings = S["McpServerSettings"];
 export type McpServerView = S["McpServerView"];
 
 // Observability + catalog

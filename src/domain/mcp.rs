@@ -13,6 +13,7 @@ use super::CompiledModelRule;
 #[serde(rename_all = "snake_case")]
 pub enum McpServerKind {
     WebSearch,
+    Image,
 }
 
 impl McpServerKind {
@@ -20,6 +21,7 @@ impl McpServerKind {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::WebSearch => "web_search",
+            Self::Image => "image",
         }
     }
 
@@ -27,6 +29,7 @@ impl McpServerKind {
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "web_search" => Some(Self::WebSearch),
+            "image" => Some(Self::Image),
             _ => None,
         }
     }
@@ -86,6 +89,50 @@ pub struct WebSearchMcpSettings {
     pub max_output_tokens: McpSearchTokenLimits,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum McpImageBackground {
+    #[default]
+    Auto,
+    Opaque,
+    Transparent,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum McpImageQuality {
+    #[default]
+    Auto,
+    Low,
+    Medium,
+    High,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImageMcpSettings {
+    #[serde(default)]
+    pub background: McpImageBackground,
+    #[serde(default)]
+    pub quality: McpImageQuality,
+    #[serde(default = "default_image_size")]
+    pub size: String,
+}
+
+impl Default for ImageMcpSettings {
+    fn default() -> Self {
+        Self {
+            background: McpImageBackground::default(),
+            quality: McpImageQuality::default(),
+            size: default_image_size(),
+        }
+    }
+}
+
+fn default_image_size() -> String {
+    "auto".into()
+}
+
 const fn default_short_output_tokens() -> u64 {
     1_000
 }
@@ -99,15 +146,23 @@ const fn default_long_output_tokens() -> u64 {
 }
 
 #[derive(Clone, Debug)]
+enum CompiledMcpServerSettings {
+    WebSearch {
+        settings: WebSearchMcpSettings,
+        #[cfg(feature = "mcp-server")]
+        continuation_scope: [u8; 32],
+    },
+    Image(ImageMcpSettings),
+}
+
+#[derive(Clone, Debug)]
 pub struct CompiledMcpServer {
     id: Uuid,
     slug: Arc<str>,
     name: Arc<str>,
     description: Option<Arc<str>>,
     model_rule: Arc<CompiledModelRule>,
-    settings: WebSearchMcpSettings,
-    #[cfg(feature = "mcp-server")]
-    continuation_scope: [u8; 32],
+    settings: CompiledMcpServerSettings,
 }
 
 impl CompiledMcpServer {
@@ -128,9 +183,30 @@ impl CompiledMcpServer {
             name,
             description,
             model_rule,
-            settings,
-            #[cfg(feature = "mcp-server")]
-            continuation_scope,
+            settings: CompiledMcpServerSettings::WebSearch {
+                settings,
+                #[cfg(feature = "mcp-server")]
+                continuation_scope,
+            },
+        }
+    }
+
+    #[must_use]
+    pub fn new_image(
+        id: Uuid,
+        slug: Arc<str>,
+        name: Arc<str>,
+        description: Option<Arc<str>>,
+        model_rule: Arc<CompiledModelRule>,
+        settings: ImageMcpSettings,
+    ) -> Self {
+        Self {
+            id,
+            slug,
+            name,
+            description,
+            model_rule,
+            settings: CompiledMcpServerSettings::Image(settings),
         }
     }
 
@@ -155,8 +231,11 @@ impl CompiledMcpServer {
     }
 
     #[must_use]
-    pub const fn kind(&self) -> McpServerKind {
-        McpServerKind::WebSearch
+    pub fn kind(&self) -> McpServerKind {
+        match &self.settings {
+            CompiledMcpServerSettings::WebSearch { .. } => McpServerKind::WebSearch,
+            CompiledMcpServerSettings::Image(_) => McpServerKind::Image,
+        }
     }
 
     #[must_use]
@@ -165,14 +244,30 @@ impl CompiledMcpServer {
     }
 
     #[must_use]
-    pub const fn web_search_settings(&self) -> &WebSearchMcpSettings {
-        &self.settings
+    pub fn web_search_settings(&self) -> Option<&WebSearchMcpSettings> {
+        match &self.settings {
+            CompiledMcpServerSettings::WebSearch { settings, .. } => Some(settings),
+            CompiledMcpServerSettings::Image(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn image_settings(&self) -> Option<&ImageMcpSettings> {
+        match &self.settings {
+            CompiledMcpServerSettings::Image(settings) => Some(settings),
+            CompiledMcpServerSettings::WebSearch { .. } => None,
+        }
     }
 
     #[cfg(feature = "mcp-server")]
     #[must_use]
-    pub(crate) const fn continuation_scope(&self) -> &[u8; 32] {
-        &self.continuation_scope
+    pub(crate) fn continuation_scope(&self) -> Option<&[u8; 32]> {
+        match &self.settings {
+            CompiledMcpServerSettings::WebSearch {
+                continuation_scope, ..
+            } => Some(continuation_scope),
+            CompiledMcpServerSettings::Image(_) => None,
+        }
     }
 }
 

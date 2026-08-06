@@ -6751,6 +6751,10 @@ async fn codex_images_migration_backfills_existing_credentials_without_replacing
         .execute(&database.pool)
         .await
         .expect("MCP registry migration must bring the runtime schema current");
+    sqlx::raw_sql(include_str!("../migrations/0046_mcp_image_kind.sql"))
+        .execute(&database.pool)
+        .await
+        .expect("MCP image-kind migration must bring the runtime schema current");
     let repository = ControlPlaneRepository::new(database.pool.clone());
     repository
         .ensure_system_settings(system_settings())

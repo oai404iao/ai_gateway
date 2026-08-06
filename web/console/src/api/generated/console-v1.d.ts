@@ -2403,7 +2403,7 @@ export interface components {
             document: components["schemas"]["JsonValue"];
         };
         /** @enum {string} */
-        McpServerKind: "web_search";
+        McpServerKind: "web_search" | "image";
         /** @enum {string} */
         McpSearchExternalWebAccess: "cached" | "indexed" | "live";
         /** @enum {string} */
@@ -2429,6 +2429,20 @@ export interface components {
             /** @description Defaults to short=1000, medium=3000, and long=6000. */
             max_output_tokens?: components["schemas"]["McpSearchTokenLimits"];
         };
+        /** @enum {string} */
+        McpImageBackground: "auto" | "opaque" | "transparent";
+        /** @enum {string} */
+        McpImageQuality: "auto" | "low" | "medium" | "high";
+        ImageMcpSettings: {
+            /** @description Defaults to `auto`. */
+            background?: components["schemas"]["McpImageBackground"];
+            /** @description Defaults to `auto`. */
+            quality?: components["schemas"]["McpImageQuality"];
+            /** @description Defaults to `auto`; numeric dimensions must each be from 64 through 8192. */
+            size?: string;
+        };
+        /** @description The valid object shape is selected by the immutable MCP server kind. */
+        McpServerSettings: components["schemas"]["WebSearchMcpSettings"] | components["schemas"]["ImageMcpSettings"];
         McpServerView: {
             /** Format: uuid */
             id: string;
@@ -2440,11 +2454,11 @@ export interface components {
             /** Format: uuid */
             model_rule_id: string;
             client_model: string;
-            /** @description open_ai_responses for the currently implemented web-search kind. */
+            /** @description open_ai_responses for web search or open_ai_images for image generation. */
             api_format: components["schemas"]["ApiFormat"];
             /** Format: int32 */
             settings_version: number;
-            settings: components["schemas"]["WebSearchMcpSettings"];
+            settings: components["schemas"]["McpServerSettings"];
             enabled: boolean;
             created_at: components["schemas"]["DateTime"];
             updated_at: components["schemas"]["DateTime"];
@@ -3226,7 +3240,7 @@ export interface components {
             /** Format: uuid */
             model_rule_id: string;
             /** @description Omission stores an empty object and applies all server defaults. */
-            settings?: components["schemas"]["WebSearchMcpSettings"];
+            settings?: components["schemas"]["McpServerSettings"];
             enabled: boolean;
         };
         McpServerInput: {
@@ -3234,7 +3248,7 @@ export interface components {
             description?: string | null;
             /** Format: uuid */
             model_rule_id: string;
-            settings: components["schemas"]["WebSearchMcpSettings"];
+            settings: components["schemas"]["McpServerSettings"];
             enabled: boolean;
         };
         ModelSyncPreviewRequest: {

@@ -317,11 +317,18 @@ pub(super) async fn execute_web_run(
     mut arguments: WebRunArguments,
     result_limit: usize,
 ) -> Result<CallToolResult, ErrorData> {
+    let settings = principal
+        .server
+        .web_search_settings()
+        .ok_or_else(|| ErrorData::internal_error("MCP search kind mismatch", None))?;
+    let continuation_scope = principal
+        .server
+        .continuation_scope()
+        .ok_or_else(|| ErrorData::internal_error("MCP search scope is unavailable", None))?;
     if let Err(error) = validate_arguments(&arguments) {
         return Ok(tool_error(error.message.into_owned()));
     }
-    if let Err(error) = apply_domain_policy(&mut arguments, principal.server.web_search_settings())
-    {
+    if let Err(error) = apply_domain_policy(&mut arguments, settings) {
         return Ok(tool_error(error.message.into_owned()));
     }
 
@@ -339,11 +346,11 @@ pub(super) async fn execute_web_run(
     }
 
     let response_length = arguments.response_length.unwrap_or_default();
-    let max_output_tokens = output_tokens(response_length, principal.server.web_search_settings());
+    let max_output_tokens = output_tokens(response_length, settings);
     let provider_id = provider_search_id(
         principal.api_key.id(),
         principal.server.id(),
-        principal.server.continuation_scope(),
+        continuation_scope,
         search_session_id,
     );
     let commands = command_value(&arguments)?;
@@ -352,7 +359,7 @@ pub(super) async fn execute_web_run(
         "model": principal.server.model_rule().client_model(),
         "input": command_summary(&arguments),
         "commands": commands,
-        "settings": search_settings(principal.server.web_search_settings()),
+        "settings": search_settings(settings),
         "max_output_tokens": max_output_tokens,
     });
     let body = serde_json::to_vec(&body)

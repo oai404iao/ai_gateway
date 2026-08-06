@@ -2,7 +2,7 @@
 
 > 类型：外部参考与项目兼容契约。
 >
-> 最近核对：2026-08-04。
+> 最近核对：2026-08-06。
 >
 > 权威来源：
 > [OpenAI Images API Reference](https://developers.openai.com/api/reference/resources/images)、
@@ -20,6 +20,8 @@ OpenAI Images API 将图片生成和图片编辑作为独立操作。请求与�
 - edit 使用独立的 Images edit 路径，并接收一个或多个输入图片；公开客户端通常使用
   `multipart/form-data` 上传 `image`/`image[]` 和可选 `mask`；
 - 请求包含顶层模型名，其他 generation 字段由上游解释；
+- GPT Image 模型直接返回 base64 图片数据，不支持 DALL-E 专用的 `response_format` 参数；
+  `output_format` 缺省为 PNG；
 - 响应是上游定义的 JSON；图片数据可能很大，网关不能为了检查输出而整体缓冲；
 - 支持 usage 的上游可以在顶层返回输入和输出 token 统计；
 - OpenAI 文档描述了图片 generation 的流式能力，但是否可用仍取决于模型和请求。

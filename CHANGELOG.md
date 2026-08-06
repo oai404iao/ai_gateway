@@ -16,13 +16,20 @@ Versioning.
 - Add an optional stateless MCP `2026-07-28` transport with PostgreSQL-backed
   multi-instance registry and Console CRUD, Gateway API-key authorization,
   managed Search `web.run` forwarding through the existing proxy core, and
-  `request_source = "mcp"` attribution. Images MCP remains a later phase.
+  `request_source = "mcp"` attribution.
+- Add the managed `image` MCP kind with Codex-compatible
+  `image_gen.imagegen` generation, fixed single-image PNG/base64 output,
+  instance-controlled model/background/quality/size, MCP `ImageContent`, and
+  an independent bounded result limit. Stateless image editing remains a
+  later phase.
 
 ### Security
 
 - Validate MCP Host, Origin, per-request protocol metadata, and the absence of
   session headers; strip client credentials before handler dispatch and cap
   RMCP payload-formatting trace targets at `info`.
+- Validate generated image base64 and PNG signatures without returning or
+  logging provider payloads, prompts, or image bytes.
 
 ## [0.9.7] - 2026-08-05
 
