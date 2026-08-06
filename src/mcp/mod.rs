@@ -1,16 +1,19 @@
-//! Optional stateless MCP transport and built-in tool dispatch.
+//! Optional MCP transport, legacy Session compatibility, and built-in tool dispatch.
 
 mod image;
 mod search;
 
-use std::{borrow::Cow, sync::Arc};
+use std::{
+    borrow::Cow,
+    sync::{Arc, Mutex},
+};
 
 use axum::{
     Router,
     body::Body,
     extract::{Path, State},
     http::{
-        HeaderValue, Method, Request, Response, StatusCode,
+        HeaderName, HeaderValue, Method, Request, Response, StatusCode,
         header::{AUTHORIZATION, COOKIE, HOST, ORIGIN, PROXY_AUTHORIZATION},
         uri::Authority,
     },
@@ -26,7 +29,8 @@ use rmcp::{
     },
     service::{RequestContext, RoleServer},
     transport::streamable_http_server::{
-        StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
+        StreamableHttpServerConfig, StreamableHttpService,
+        session::{SessionManager, local::LocalSessionManager},
     },
 };
 use tokio_util::sync::CancellationToken;
@@ -37,9 +41,9 @@ use crate::{
     application::ProxyService,
     domain::{
         ApiFormat, ApiKeyPermission, CompiledApiKey, CompiledMcpServer, CompiledRuntimeConfig,
-        McpServerKind,
+        McpServerKind, McpTransportSettings,
     },
-    runtime_config::McpRuntimeConfig,
+    runtime_config::RuntimeConfig,
 };
 
 use self::image::{IMAGEGEN_TOOL_NAME, execute_imagegen, imagegen_tool};
@@ -47,147 +51,289 @@ use self::search::{WEB_RUN_TOOL_NAME, execute_web_run, web_run_tool};
 
 type McpTransport = StreamableHttpService<McpHandler, LocalSessionManager>;
 
-/// Public-listener MCP service. Every request is independently authenticated
-/// and carries its immutable runtime snapshot into the RMCP handler.
+/// Public-listener MCP service. Every HTTP request is authenticated against one
+/// immutable runtime snapshot; optional legacy protocol state remains confined
+/// to the RMCP transport.
 #[derive(Clone)]
 pub struct McpService {
-    transport: McpTransport,
-    image_transport: McpTransport,
     proxy: ProxyService,
+    runtime: Arc<RuntimeConfig>,
     cancellation_token: CancellationToken,
-    allowed_hosts: Arc<[String]>,
-    allowed_origins: Arc<[String]>,
+    active: Arc<Mutex<Option<ActiveMcpTransports>>>,
+}
+
+struct ActiveMcpTransports {
+    settings: McpTransportSettings,
+    cancellation_token: CancellationToken,
+    search: McpTransport,
+    image: McpTransport,
+    search_sessions: Arc<LocalSessionManager>,
+    image_sessions: Arc<LocalSessionManager>,
+}
+
+impl ActiveMcpTransports {
+    fn close_legacy_sessions(self) {
+        tokio::spawn(async move {
+            close_all_sessions(self.search_sessions).await;
+            close_all_sessions(self.image_sessions).await;
+        });
+    }
 }
 
 impl McpService {
     #[must_use]
-    pub fn new(proxy: ProxyService, config: &McpRuntimeConfig) -> Self {
+    pub fn new(proxy: ProxyService, runtime: Arc<RuntimeConfig>) -> Self {
+        let updates = runtime.subscribe();
         let cancellation_token = CancellationToken::new();
-        let handler = McpHandler {
-            proxy: proxy.clone(),
-            allow_legacy_2025_11_25: config.allow_legacy_2025_11_25,
-            search_result_bytes: config.search_result_bytes,
-            image_result_bytes: config.image_result_bytes,
-        };
-        let transport = build_transport(
-            handler.clone(),
-            config,
-            config.request_body_bytes,
-            cancellation_token.clone(),
-        );
-        let image_transport = build_transport(
-            handler,
-            config,
-            config.image_request_body_bytes,
-            cancellation_token.clone(),
-        );
-        Self {
-            transport,
-            image_transport,
+        let service = Self {
             proxy,
+            runtime,
             cancellation_token,
-            allowed_hosts: Arc::from(config.allowed_hosts.clone()),
-            allowed_origins: Arc::from(config.allowed_origins.clone()),
-        }
+            active: Arc::new(Mutex::new(None)),
+        };
+        service.reconcile(updates.borrow().system_settings().mcp());
+        service.spawn_reconciler(updates);
+        service
     }
 
     /// Builds the optional public data-plane routes.
     pub fn router(self) -> Router {
-        let allowed_origins = self
-            .allowed_origins
-            .iter()
-            .map(|origin| HeaderValue::from_str(origin).expect("validated MCP origin"))
-            .collect::<Vec<_>>();
-        let router = Router::new()
-            .route("/mcp/{slug}", post(handle_mcp_request))
-            .with_state(self);
-        if allowed_origins.is_empty() {
-            router
-        } else {
-            router.layer(
-                CorsLayer::new()
-                    .allow_origin(AllowOrigin::list(allowed_origins))
-                    .allow_methods([Method::POST])
-                    .allow_headers(AllowHeaders::mirror_request()),
+        let runtime = Arc::clone(&self.runtime);
+        Router::new()
+            .route(
+                "/mcp/{slug}",
+                post(handle_mcp_request)
+                    .get(handle_mcp_request)
+                    .delete(handle_mcp_request),
             )
-        }
+            .with_state(self)
+            .layer(
+                CorsLayer::new()
+                    .allow_origin(AllowOrigin::predicate(move |origin, _| {
+                        let snapshot = runtime.snapshot();
+                        let settings = snapshot.system_settings().mcp();
+                        settings.enabled() && origin_is_allowed(origin, settings.allowed_origins())
+                    }))
+                    .allow_methods([Method::POST, Method::GET, Method::DELETE])
+                    .allow_headers(AllowHeaders::mirror_request())
+                    .expose_headers([HeaderName::from_static("mcp-session-id")]),
+            )
     }
 
     /// Cancels active RMCP work after listener shutdown has stopped acceptance.
     pub fn begin_shutdown(&self) {
         self.cancellation_token.cancel();
+        if let Some(active) = self
+            .active
+            .lock()
+            .expect("MCP transport state lock poisoned")
+            .take()
+        {
+            active.cancellation_token.cancel();
+        }
+    }
+
+    fn spawn_reconciler(
+        &self,
+        mut updates: tokio::sync::watch::Receiver<Arc<CompiledRuntimeConfig>>,
+    ) {
+        let service = self.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = service.cancellation_token.cancelled() => break,
+                    changed = updates.changed() => {
+                        if changed.is_err() {
+                            break;
+                        }
+                        let snapshot = updates.borrow_and_update().clone();
+                        service.reconcile(snapshot.system_settings().mcp());
+                    }
+                }
+            }
+        });
+    }
+
+    fn reconcile(&self, settings: &McpTransportSettings) {
+        let mut active = self
+            .active
+            .lock()
+            .expect("MCP transport state lock poisoned");
+        if active
+            .as_ref()
+            .is_some_and(|active| active.settings == *settings)
+        {
+            return;
+        }
+        if let Some(previous) = active.take() {
+            previous.close_legacy_sessions();
+        }
+        if !settings.enabled() || self.cancellation_token.is_cancelled() {
+            return;
+        }
+        let cancellation_token = self.cancellation_token.child_token();
+        let handler = McpHandler {
+            proxy: self.proxy.clone(),
+            allow_legacy_2025_11_25: settings.allow_legacy_2025_11_25(),
+            search_result_bytes: settings.search_result_bytes(),
+            image_result_bytes: settings.image_result_bytes(),
+        };
+        let search_sessions = Arc::new(LocalSessionManager::default());
+        let image_sessions = Arc::new(LocalSessionManager::default());
+        let search = build_transport(
+            handler.clone(),
+            settings,
+            settings.request_body_bytes(),
+            Arc::clone(&search_sessions),
+            cancellation_token.clone(),
+        );
+        let image = build_transport(
+            handler,
+            settings,
+            settings.image_request_body_bytes(),
+            Arc::clone(&image_sessions),
+            cancellation_token.clone(),
+        );
+        *active = Some(ActiveMcpTransports {
+            settings: settings.clone(),
+            cancellation_token,
+            search,
+            image,
+            search_sessions,
+            image_sessions,
+        });
+    }
+
+    fn transport(
+        &self,
+        snapshot: &Arc<CompiledRuntimeConfig>,
+        kind: McpServerKind,
+    ) -> Option<McpTransport> {
+        let latest = self.runtime.snapshot();
+        if !Arc::ptr_eq(snapshot, &latest) {
+            return None;
+        }
+        let settings = snapshot.system_settings().mcp();
+        self.reconcile(settings);
+        let active = self
+            .active
+            .lock()
+            .expect("MCP transport state lock poisoned");
+        active.as_ref().map(|active| match kind {
+            McpServerKind::WebSearch => active.search.clone(),
+            McpServerKind::Image => active.image.clone(),
+        })
     }
 
     async fn handle(&self, slug: String, mut request: Request<Body>) -> Response<Body> {
-        match optional_single_header(request.headers(), HOST) {
-            Ok(Some(host)) if header_authority_is_allowed(host, &self.allowed_hosts) => {}
-            Ok(None)
-                if request.uri().authority().is_some_and(|authority| {
-                    authority_is_allowed(authority, &self.allowed_hosts)
-                }) => {}
-            Ok(Some(_)) | Ok(None) | Err(()) => return StatusCode::FORBIDDEN.into_response(),
-        }
-        let origin = match optional_single_header(request.headers(), ORIGIN) {
-            Ok(origin) => origin,
-            Err(()) => return StatusCode::FORBIDDEN.into_response(),
-        };
-        if origin.is_some_and(|origin| !origin_is_allowed(origin, &self.allowed_origins)) {
-            return StatusCode::FORBIDDEN.into_response();
-        }
-        if request.headers().contains_key("mcp-session-id") {
-            return StatusCode::BAD_REQUEST.into_response();
-        }
+        loop {
+            let snapshot = self.runtime.snapshot();
+            let settings = snapshot.system_settings().mcp();
+            if !settings.enabled() {
+                self.reconcile(settings);
+                return StatusCode::NOT_FOUND.into_response();
+            }
+            match optional_single_header(request.headers(), HOST) {
+                Ok(Some(host)) if header_authority_is_allowed(host, settings.allowed_hosts()) => {}
+                Ok(None)
+                    if request.uri().authority().is_some_and(|authority| {
+                        authority_is_allowed(authority, settings.allowed_hosts())
+                    }) => {}
+                Ok(Some(_)) | Ok(None) | Err(()) => return StatusCode::FORBIDDEN.into_response(),
+            }
+            let origin = match optional_single_header(request.headers(), ORIGIN) {
+                Ok(origin) => origin,
+                Err(()) => return StatusCode::FORBIDDEN.into_response(),
+            };
+            if origin.is_some_and(|origin| !origin_is_allowed(origin, settings.allowed_origins())) {
+                return StatusCode::FORBIDDEN.into_response();
+            }
+            let session_id = match optional_single_header(
+                request.headers(),
+                HeaderName::from_static("mcp-session-id"),
+            ) {
+                Ok(session_id) => session_id,
+                Err(()) => return StatusCode::BAD_REQUEST.into_response(),
+            };
+            if session_id.is_some()
+                && (!settings.allow_legacy_2025_11_25()
+                    || request
+                        .headers()
+                        .get("mcp-protocol-version")
+                        .and_then(|value| value.to_str().ok())
+                        .is_some_and(|version| version != ProtocolVersion::V_2025_11_25.as_str()))
+            {
+                return StatusCode::BAD_REQUEST.into_response();
+            }
 
-        let (snapshot, api_key) = match self.proxy.authenticate_api_key(request.headers()) {
-            Ok(principal) => principal,
-            Err(error) => return error.into_response(),
-        };
-        let Some(server) = snapshot.mcp_server(&slug) else {
-            return StatusCode::NOT_FOUND.into_response();
-        };
-        let transport = match server.kind() {
-            McpServerKind::WebSearch => self.transport.clone(),
-            McpServerKind::Image => self.image_transport.clone(),
-        };
-        request.headers_mut().remove(AUTHORIZATION);
-        request.headers_mut().remove(PROXY_AUTHORIZATION);
-        request.headers_mut().remove(COOKIE);
-        request.extensions_mut().insert(McpRequestPrincipal {
-            snapshot,
-            api_key,
-            server,
-        });
+            let api_key = match self
+                .proxy
+                .authenticate_api_key_in_snapshot(request.headers(), &snapshot)
+            {
+                Ok(principal) => principal,
+                Err(error) => return error.into_response(),
+            };
+            let Some(server) = snapshot.mcp_server(&slug) else {
+                return StatusCode::NOT_FOUND.into_response();
+            };
+            let Some(transport) = self.transport(&snapshot, server.kind()) else {
+                if !Arc::ptr_eq(&snapshot, &self.runtime.snapshot()) {
+                    continue;
+                }
+                return StatusCode::SERVICE_UNAVAILABLE.into_response();
+            };
+            request.headers_mut().remove(AUTHORIZATION);
+            request.headers_mut().remove(PROXY_AUTHORIZATION);
+            request.headers_mut().remove(COOKIE);
+            request.extensions_mut().insert(McpRequestPrincipal {
+                snapshot,
+                api_key,
+                server,
+            });
 
-        let response = match transport.oneshot(request).await {
-            Ok(response) => response,
-            Err(error) => match error {},
-        };
-        let (parts, body) = response.into_parts();
-        Response::from_parts(parts, Body::new(body))
+            let response = match transport.oneshot(request).await {
+                Ok(response) => response,
+                Err(error) => match error {},
+            };
+            let (parts, body) = response.into_parts();
+            return Response::from_parts(parts, Body::new(body));
+        }
     }
 }
 
 fn build_transport(
     handler: McpHandler,
-    config: &McpRuntimeConfig,
+    settings: &McpTransportSettings,
     request_body_bytes: usize,
+    session_manager: Arc<LocalSessionManager>,
     cancellation_token: CancellationToken,
 ) -> McpTransport {
     let transport_config = StreamableHttpServerConfig::default()
-        .with_legacy_session_mode(false)
+        .with_legacy_session_mode(settings.allow_legacy_2025_11_25())
         .with_json_response(true)
-        .with_sse_keep_alive(None)
-        .with_sse_retry(None)
-        .with_allowed_hosts(config.allowed_hosts.clone())
-        .with_allowed_origins(config.allowed_origins.clone())
+        .with_allowed_hosts(settings.allowed_hosts().iter().cloned())
+        .with_allowed_origins(settings.allowed_origins().iter().cloned())
         .with_max_request_body_bytes(request_body_bytes)
-        .with_stateless_protocol_metadata_required(!config.allow_legacy_2025_11_25)
+        .with_stateless_protocol_metadata_required(true)
         .with_cancellation_token(cancellation_token);
     StreamableHttpService::new(
         move || Ok(handler.clone()),
-        Default::default(),
+        session_manager,
         transport_config,
     )
+}
+
+async fn close_all_sessions(manager: Arc<LocalSessionManager>) {
+    let sessions = manager
+        .sessions
+        .read()
+        .await
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    for session_id in sessions {
+        let _ = manager.close_session(&session_id).await;
+    }
 }
 
 fn optional_single_header(

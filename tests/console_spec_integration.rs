@@ -23,8 +23,8 @@ use ai_gateway::{
     models_dev::ModelsDevClient,
     persistence::{
         AuthRepository, ControlPlaneRepository, DEFAULT_USER_GROUP_ID, MIGRATOR,
-        RequestLogRepository, SystemPassiveHealthSettingsInput, SystemSettingsInput,
-        SystemUpstreamSettingsInput,
+        RequestLogRepository, SystemMcpSettingsInput, SystemPassiveHealthSettingsInput,
+        SystemSettingsInput, SystemUpstreamSettingsInput,
     },
     routing::{PassiveHealthPolicy, RoutingRuntime},
     runtime_config::{AuthConfig, ModelsSyncConfig, RuntimeConfig, compile_runtime_config},
@@ -149,6 +149,7 @@ fn bootstrap_system_settings() -> SystemSettingsInput {
         scheduled_testing: Default::default(),
         session_affinity: Default::default(),
         websocket: Default::default(),
+        mcp: Default::default(),
     }
 }
 
@@ -413,6 +414,7 @@ async fn system_settings_bootstrap_initializes_once_without_overwriting_database
         scheduled_testing: Default::default(),
         session_affinity: Default::default(),
         websocket: Default::default(),
+        mcp: Default::default(),
     };
 
     repository
@@ -447,6 +449,66 @@ async fn system_settings_bootstrap_initializes_once_without_overwriting_database
     .await
     .unwrap();
     assert_eq!(initializations, 1);
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn system_settings_bootstrap_backfills_mcp_once_for_upgraded_databases() {
+    let database = TestDatabase::new().await;
+    let repository = ControlPlaneRepository::new(database.pool.clone());
+    repository
+        .ensure_system_settings(bootstrap_system_settings())
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE system_settings SET value=value-'mcp' WHERE setting_key='forwarding_policy'",
+    )
+    .execute(&database.pool)
+    .await
+    .unwrap();
+
+    let mut bootstrap = bootstrap_system_settings();
+    bootstrap.mcp = SystemMcpSettingsInput {
+        enabled: false,
+        public_base_url: Some("https://mcp.example.test".into()),
+        allowed_origins: vec!["https://client.example.test".into()],
+        allow_legacy_2025_11_25: true,
+        request_body_bytes: 1_024,
+        image_request_body_bytes: 2_048,
+        search_result_bytes: 3_072,
+        image_result_bytes: 4_096,
+    };
+    repository.ensure_system_settings(bootstrap).await.unwrap();
+
+    let stored = repository.system_settings().await.unwrap();
+    assert_eq!(
+        stored.settings.mcp.public_base_url.as_deref(),
+        Some("https://mcp.example.test")
+    );
+    assert_eq!(
+        stored.settings.mcp.allowed_origins,
+        ["https://client.example.test"]
+    );
+    assert!(stored.settings.mcp.allow_legacy_2025_11_25);
+    assert_eq!(stored.settings.mcp.image_result_bytes, 4_096);
+
+    let mut replacement = bootstrap_system_settings();
+    replacement.mcp.public_base_url = Some("https://replacement.example.test".into());
+    repository
+        .ensure_system_settings(replacement)
+        .await
+        .unwrap();
+    assert_eq!(
+        repository
+            .system_settings()
+            .await
+            .unwrap()
+            .settings
+            .mcp
+            .public_base_url
+            .as_deref(),
+        Some("https://mcp.example.test")
+    );
     database.cleanup().await;
 }
 
@@ -3432,6 +3494,16 @@ async fn system_settings_are_versioned_audited_and_updated_via_console() {
         "idle_timeout_seconds": 120,
         "max_connection_age_seconds": 3300,
     });
+    input["mcp"] = serde_json::json!({
+        "enabled": false,
+        "public_base_url": "https://mcp.example.test",
+        "allowed_origins": ["https://client.example.test"],
+        "allow_legacy_2025_11_25": true,
+        "request_body_bytes": 4194304,
+        "image_request_body_bytes": 33554432,
+        "search_result_bytes": 4194304,
+        "image_result_bytes": 33554432,
+    });
     input.as_object_mut().unwrap().remove("updated_at");
 
     let mut invalid_retry = input.clone();
@@ -3478,6 +3550,19 @@ async fn system_settings_are_versioned_audited_and_updated_via_console() {
         "PUT",
         "/console/v1/system/settings",
         invalid_api_host,
+        &[("if-match", &etag)],
+    )
+    .await;
+    assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let mut invalid_mcp_origin = input.clone();
+    invalid_mcp_origin["mcp"]["public_base_url"] =
+        serde_json::json!("https://mcp.example.test/path");
+    let invalid = request(
+        &app,
+        "PUT",
+        "/console/v1/system/settings",
+        invalid_mcp_origin,
         &[("if-match", &etag)],
     )
     .await;
@@ -3547,6 +3632,16 @@ async fn system_settings_are_versioned_audited_and_updated_via_console() {
     assert_eq!(
         published.websocket().idle_timeout(),
         std::time::Duration::from_secs(120)
+    );
+    assert!(!published.mcp().enabled());
+    assert_eq!(
+        published.mcp().public_base_url(),
+        Some("https://mcp.example.test")
+    );
+    assert!(published.mcp().allow_legacy_2025_11_25());
+    assert_eq!(
+        published.mcp().allowed_origins(),
+        ["https://client.example.test"]
     );
     let audit: serde_json::Value = sqlx::query_scalar(
         "SELECT after_redacted FROM audit_logs \

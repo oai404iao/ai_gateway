@@ -21,10 +21,12 @@ control-plane snapshots, a separate JWT-authenticated Console API with
 `user`/`admin` roles, constrained transforms, streaming/SSE/WebSocket
 forwarding, passive health, admission controls, durable spooled request logs,
 and reusable upstream clients. The optional `mcp-server` Cargo feature adds
-stateless MCP `2026-07-28` endpoints at `POST /mcp/{slug}`; the currently
-implemented built-in kinds expose Codex-compatible `web.run` and single-image
-`image_gen.imagegen` generation/edit through the existing standalone-search
-and Images forwarding paths. A React + TypeScript
+MCP endpoints at `/mcp/{slug}`: stateless `2026-07-28` is the default, while a
+database setting can also enable complete process-local `2025-11-25`
+Session/SSE compatibility. The currently implemented built-in kinds expose
+Codex-compatible `web.run` and single-image `image_gen.imagegen`
+generation/edit through the existing standalone-search and Images forwarding
+paths. A React + TypeScript
 Console web UI lives under `web/console/` and can be embedded into the binary
 as static assets via the optional `embedded-console-ui` cargo feature, served
 only from the Console listener. `docs/development/architecture.md` describes
@@ -49,7 +51,7 @@ repo/
 |   |   |-- mod.rs              # Public API-key data-plane router (/v1/*)
 |   |   |-- console.rs          # Separate JWT-authenticated Console router (/console/v1/*)
 |   |   `-- console_ui.rs       # Embedded SPA assets + SPA fallback + cache/security headers (embedded-console-ui feature only)
-|   |-- mcp/                    # Feature-gated stateless RMCP transport and built-in Search/Images adapters
+|   |-- mcp/                    # Feature-gated RMCP transport, optional legacy Sessions, and built-in Search/Images adapters
 |   |-- admission/              # Process-local RPM, concurrency, and soft quota admission
 |   |-- domain/                 # API formats, compiled routing, credentials, request-log events
 |   |-- runtime_config/         # TOML deserialization and ArcSwap configuration snapshots; [console].ui_enabled validation
@@ -114,7 +116,7 @@ cargo clippy --all-targets               # also run with --features embedded-con
 cargo clippy --all-targets --features mcp-server # required when MCP transport/registry/tooling changes
 cargo test                                # unit + local/PostgreSQL integration (needs `docker compose up -d`)
 cargo test --features mcp-server --lib    # MCP feature-gated unit coverage
-cargo test --features mcp-server --test mcp_integration # deterministic stateless MCP Search/Images forwarding coverage
+cargo test --features mcp-server --test mcp_integration # deterministic MCP protocol/session/Search/Images coverage
 cargo test --features mcp-server --test control_plane_integration codex_connector_forwards_responses_and_images_with_shared_credentials -- --exact # MCP Images edit through the Codex connector
 cargo test --lib console_ui               # embedded-UI serving tests (needs --features embedded-console-ui + built web/console/dist)
 cargo test --test console_spec_integration # OpenAPI spec/Console-API drift tests (needs PostgreSQL)
@@ -127,7 +129,7 @@ cargo +1.92.0 test --locked --workspace    # MSRV test gate
 cargo run                                 # loads ignored ./config/config.toml
 cargo run -- ./config/other-config.toml   # explicit TOML path
 cargo run --release --features embedded-console-ui   # production binary with embedded Console UI
-cargo run --release --features mcp-server             # production binary with optional stateless MCP transport
+cargo run --release --features mcp-server             # production binary with optional MCP transport
 
 # One-time first Console administrator; password is read only from stdin
 cargo run -- bootstrap-admin --email admin@example.com --display-name "Initial Admin" --password-stdin < password.txt
@@ -200,7 +202,7 @@ performance run.** Building the tool or running
 - `./config/config.toml` and Console JWT key files under `./config/` are ignored. A different current-directory TOML path can be passed explicitly. The binary never loads `.env` files. The sole exception is the ignored `.env.real-upstream` file, which `scripts/run-real-upstream-smoke.sh` may source for opt-in test credentials.
 - Configuration changes intended for live reload should preserve the immutable-snapshot pattern: construct a complete `AppConfig`, then replace it atomically through `RuntimeConfig`.
 - `[console].ui_enabled = true` mounts the embedded Console UI on the Console listener, but requires building with the `embedded-console-ui` cargo feature (and a built `web/console/dist`). Setting `ui_enabled = true` without the feature compiled in is rejected at startup with a `ConfigError` (`src/runtime_config/mod.rs`). The UI is served only from the Console listener, never from the public `/v1/*` data-plane listener.
-- `[mcp].enabled = true` mounts stateless `POST /mcp/{slug}` endpoints on the public listener and requires the `mcp-server` Cargo feature. `public_base_url` supplies the allowed Host authority; browser requests with `Origin` fail closed unless it appears in `allowed_origins`. MCP instance definitions remain PostgreSQL control-plane state, not TOML.
+- `[mcp]` is a one-time bootstrap source for database-backed MCP transport settings. Runtime enablement, `public_base_url`, browser origins, legacy compatibility, and MCP request/result limits are edited through Console System settings and published in immutable snapshots. Enabling requires the `mcp-server` Cargo feature. MCP instance definitions are also PostgreSQL control-plane state.
 
 ## Documentation Rules
 
@@ -282,9 +284,13 @@ Axum HTTP
 - Compile database-backed control-plane configuration into immutable runtime snapshots; the data plane must not query the database on every request.
 - MCP is an adapter, not a fourth `ApiFormat`: built-in handlers authenticate
   the Gateway API Key once, retain the same immutable snapshot, and call the
-  authenticated existing `ApiOperation`. Do not loop back over HTTP, persist
-  MCP Sessions, forward MCP/Origin/Host/client Authorization Headers upstream,
-  or allow database-configured arbitrary tool code/schema. Search ref-id
+  authenticated existing `ApiOperation`. Do not loop back over HTTP, forward
+  MCP/Origin/Host/client Authorization Headers upstream, or allow
+  database-configured arbitrary tool code/schema. Modern `2026-07-28` requests
+  remain stateless. Optional `2025-11-25` compatibility may keep only
+  process-local RMCP lifecycle Sessions and must terminate them when global MCP
+  transport settings change; never put Search history, prompts, images, tool
+  arguments, or results into protocol Session state. Search ref-id
   continuation is explicit through `search_session_id`; derive provider Search
   IDs from API Key ID, MCP server ID, and the current model/policy scope so
   endpoints and policy versions cannot share context. Images fixes model,
@@ -426,13 +432,16 @@ pool isolation, transforms, and configured outbound proxies.
     `docs/reference/request-allowlists.json` as allow/ignore/reject, keep every public interface and
     Codex projection explicit, and use `src/request_policy.rs` for ingress and shared outbound
     enforcement.
-21. **MCP is stateless and feature-gated.** Empty RMCP origin allowlists normally disable
-    validation, so the Gateway boundary explicitly rejects any present `Origin` when
-    `[mcp].allowed_origins` is empty. Keep `legacy_session_mode = false`, require modern
-    per-request metadata by default, reject `Mcp-Session-Id`, and keep disabled/deleted MCP
-    slugs out of the compiled registry. RMCP debug/trace events can format complete tool requests
-    and results, so preserve the hard `info` cap for its sensitive tracing targets in
-    `src/observability/mod.rs`.
+21. **MCP is feature-gated and modern requests are stateless.** Empty RMCP origin allowlists
+    normally disable validation, so the Gateway boundary explicitly rejects any present `Origin`
+    when database `mcp.allowed_origins` is empty. Require modern per-request metadata by default.
+    When `allow_legacy_2025_11_25` is enabled, use RMCP's complete process-local Session lifecycle
+    (`initialize`/`initialized`, `Mcp-Session-Id`, GET SSE, DELETE) while keeping `2026-07-28`
+    requests stateless. Global MCP setting changes, disable, shutdown, and restart must terminate
+    legacy Sessions; multi-instance deployments require sticky `/mcp/*` routing. Keep
+    disabled/deleted MCP slugs out of the compiled registry. RMCP debug/trace events can format
+    complete tool requests and results, so preserve the hard `info` cap for its sensitive tracing
+    targets in `src/observability/mod.rs`.
 
 ## Code Style
 
@@ -462,7 +471,7 @@ pool isolation, transforms, and configured outbound proxies.
 | Product direction and design background | `docs/development/product-blueprint.md` |
 | Supported client formats | `src/domain/api_format.rs` |
 | Public data-plane route registry | `src/http/mod.rs` |
-| Stateless MCP transport, auth handoff, and tools | `src/mcp/mod.rs`, `src/mcp/search.rs`, `src/mcp/image.rs`, and `docs/user/mcp-services.md` |
+| MCP transport, legacy Session lifecycle, auth handoff, and tools | `src/mcp/mod.rs`, `src/domain/system_settings.rs`, `src/mcp/search.rs`, `src/mcp/image.rs`, and `docs/user/mcp-services.md` |
 | MCP persisted/compiled registry | `migrations/0045_mcp_servers.sql`, `migrations/0046_mcp_image_kind.sql`, `src/domain/mcp.rs`, `src/persistence/mod.rs`, and `src/runtime_config/mod.rs` |
 | Client/Codex request Header and body policy | `docs/reference/request-allowlists.json`, `docs/reference/request-allowlists.md`, and `src/request_policy.rs` |
 | Images multipart capture/replay and Codex edit adaptation | `src/application/request_body.rs` |

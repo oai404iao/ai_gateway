@@ -49,7 +49,7 @@ const zhCN: Record<string, string> = {
   "Enter a valid HTTP(S) API host.": "请输入有效的 HTTP(S) API 地址。",
   "Configure at most 32 API hosts.": "最多配置 32 个 API 地址。",
   "API hosts must be unique.": "API 地址不能重复。",
-  "Database-backed forwarding defaults for future requests.": "面向后续请求的数据库转发默认配置。",
+  "Database-backed runtime settings for future requests.": "面向后续请求的数据库运行时设置。",
   "Applies immediately": "立即生效",
   "Saving validates the full routing configuration and publishes a new runtime snapshot. Requests already in flight retain their original settings.":
     "保存时会校验完整路由配置并发布新的运行时快照。已在处理中的请求会保留原有设置。",
@@ -200,6 +200,40 @@ const zhCN: Record<string, string> = {
   "System settings changed elsewhere. Reloading.": "系统设置已在其他位置修改，正在重新加载。",
   "Enter a positive number of seconds.": "请输入正整数秒数。",
   "Enter a positive failure threshold.": "请输入正整数失败阈值。",
+  "Enter a positive byte limit.": "请输入正整数字节上限。",
+  "MCP public base URL must be at most 2048 characters.":
+    "MCP 公开基础 URL 最多 2048 个字符。",
+  "Enter a valid HTTP(S) origin without a path.":
+    "请输入不含路径的有效 HTTP(S) Origin。",
+  "MCP origin cannot be blank.": "MCP Origin 不能为空。",
+  "MCP origin must be at most 2048 characters.": "MCP Origin 最多 2048 个字符。",
+  "Configure at most 64 MCP browser origins.": "最多配置 64 个 MCP 浏览器 Origin。",
+  "MCP browser origins must be unique.": "MCP 浏览器 Origin 必须唯一。",
+  "Images MCP request limit cannot exceed 67108864 bytes.":
+    "Images MCP 请求上限不能超过 67108864 字节。",
+  "Images MCP result limit cannot exceed 67108864 bytes.":
+    "Images MCP 结果上限不能超过 67108864 字节。",
+  "MCP public base URL is required when the transport is enabled.":
+    "启用 MCP transport 时必须填写 MCP 公开基础 URL。",
+  "MCP transport": "MCP Transport",
+  "Publishes managed Search and Images MCP endpoints on the public listener. The binary must include the mcp-server feature.":
+    "在公共监听器上发布受管 Search 与 Images MCP endpoint；二进制必须包含 mcp-server feature。",
+  "Enable MCP transport": "启用 MCP Transport",
+  "Disabled transports return 404 for every /mcp/{slug} endpoint and close active legacy sessions.":
+    "禁用后所有 /mcp/{slug} endpoint 返回 404，并关闭当前旧协议 Session。",
+  "MCP public base URL": "MCP 公开基础 URL",
+  "HTTP(S) origin used to validate Host and publish /mcp/{slug} URLs. Do not include a path.":
+    "用于校验 Host 并发布 /mcp/{slug} URL 的 HTTP(S) Origin；请勿包含路径。",
+  "Allowed MCP browser origins": "允许的 MCP 浏览器 Origin",
+  "One exact HTTP(S) origin per line. Empty rejects requests carrying Origin while allowing non-browser clients.":
+    "每行一个精确 HTTP(S) Origin；留空时拒绝所有携带 Origin 的请求，但允许不带 Origin 的非浏览器客户端。",
+  "Enable MCP 2025-11-25 compatibility": "启用 MCP 2025-11-25 兼容",
+  "Adds initialize/initialized, Mcp-Session-Id, GET SSE, and DELETE alongside stateless 2026-07-28. Legacy sessions are process-local and require sticky routing in multi-instance deployments.":
+    "在无状态 2026-07-28 之外启用 initialize/initialized、Mcp-Session-Id、GET SSE 与 DELETE。旧协议 Session 仅在当前进程内有效，多实例部署需要粘性路由。",
+  "Search request limit (bytes)": "Search 请求上限（字节）",
+  "Images request limit (bytes)": "Images 请求上限（字节）",
+  "Search result limit (bytes)": "Search 结果上限（字节）",
+  "Images result limit (bytes)": "Images 结果上限（字节）",
   "Response header timeout must exceed connect timeout.": "响应头超时必须大于连接超时。",
   "Images response header timeout must exceed connect timeout.":
     "Images 响应头超时必须大于连接超时。",
@@ -1637,8 +1671,8 @@ const zhCN: Record<string, string> = {
   "Web search": "Web Search",
   "MCP Servers": "MCP 服务",
   "MCP server": "MCP 服务",
-  "Manage stateless public MCP endpoints backed by existing model rules and Gateway API keys.":
-    "管理由现有模型规则和网关 API 密钥支持的无状态公共 MCP 端点。",
+  "Manage public MCP endpoints backed by existing model rules and Gateway API keys.":
+    "管理由现有模型规则和网关 API 密钥支持的公共 MCP 端点。",
   "New MCP server": "新建 MCP 服务",
   "Create MCP server": "创建 MCP 服务",
   "Edit MCP server": "编辑 MCP 服务",
@@ -1646,10 +1680,10 @@ const zhCN: Record<string, string> = {
   "Delete MCP server": "删除 MCP 服务",
   "Delete MCP server?": "删除 MCP 服务？",
   "Back to MCP servers": "返回 MCP 服务",
-  "Expose one stateless MCP tool through an existing Gateway model rule.":
-    "通过现有网关模型规则公开一个无状态 MCP 工具。",
-  "The process-level MCP transport must also be compiled and enabled before public endpoints are reachable.":
-    "还必须编译并启用进程级 MCP 传输，公共端点才能访问。",
+  "Expose one managed MCP tool through an existing Gateway model rule.":
+    "通过现有网关模型规则公开一个受管 MCP 工具。",
+  "The binary must include the mcp-server feature and the MCP transport must be enabled in System settings before public endpoints are reachable.":
+    "公共端点可访问前，二进制必须包含 mcp-server feature，并在系统设置中启用 MCP transport。",
   "Endpoint slug": "端点 Slug",
   "Creates the immutable public path /mcp/{slug}.":
     "创建不可变的公共路径 /mcp/{slug}。",

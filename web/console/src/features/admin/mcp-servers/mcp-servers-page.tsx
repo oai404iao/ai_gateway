@@ -28,7 +28,7 @@ export function McpServersPage() {
     <AdminListPage
       title={t("MCP Servers")}
       description={t(
-        "Manage stateless public MCP endpoints backed by existing model rules and Gateway API keys.",
+        "Manage public MCP endpoints backed by existing model rules and Gateway API keys.",
       )}
       query={query}
       rowKey={(server) => server.id}

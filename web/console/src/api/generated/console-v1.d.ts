@@ -1687,6 +1687,49 @@ export interface components {
              */
             max_connection_age_seconds: number;
         };
+        SystemMcpSettings: {
+            /**
+             * @description Mounts configured MCP endpoints on the public listener when the binary includes the mcp-server feature.
+             * @default false
+             */
+            enabled: boolean;
+            /**
+             * Format: uri
+             * @description Public HTTP(S) origin used to derive the accepted Host authority. Required when enabled; paths, credentials, query strings, and fragments are forbidden.
+             */
+            public_base_url: string | null;
+            /** @description Exact browser origins allowed to call MCP endpoints. An empty list rejects every request carrying Origin while allowing non-browser clients without Origin. */
+            allowed_origins: string[];
+            /**
+             * @description Enables the complete MCP 2025-11-25 initialize/session/SSE lifecycle alongside stateless 2026-07-28 requests.
+             * @default false
+             */
+            allow_legacy_2025_11_25: boolean;
+            /**
+             * Format: int64
+             * @description Maximum Search MCP JSON-RPC request envelope size.
+             * @default 4194304
+             */
+            request_body_bytes: number;
+            /**
+             * Format: int64
+             * @description Maximum Images MCP JSON-RPC request envelope size.
+             * @default 33554432
+             */
+            image_request_body_bytes: number;
+            /**
+             * Format: int64
+             * @description Maximum collected Search MCP upstream result size.
+             * @default 4194304
+             */
+            search_result_bytes: number;
+            /**
+             * Format: int64
+             * @description Maximum collected Images MCP JSON/base64 result size.
+             * @default 33554432
+             */
+            image_result_bytes: number;
+        };
         SystemSettingsInput: {
             /** @description User-visible HTTP(S) base URLs for the OpenAI-compatible data plane. */
             api_hosts: string[];
@@ -1697,6 +1740,7 @@ export interface components {
             scheduled_testing: components["schemas"]["SystemScheduledTestingSettings"];
             session_affinity: components["schemas"]["SystemSessionAffinitySettings"];
             websocket: components["schemas"]["SystemWebSocketSettings"];
+            mcp: components["schemas"]["SystemMcpSettings"];
         };
         SystemSettings: components["schemas"]["SystemSettingsInput"] & {
             updated_at: components["schemas"]["DateTime"];
@@ -6146,7 +6190,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Configured stateless MCP server instances. */
+            /** @description Configured MCP server instances. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -6563,7 +6607,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Database-backed forwarding, retry, health, automation, scheduled-test, session-affinity, and Responses WebSocket defaults. */
+            /** @description Database-backed forwarding, retry, health, automation, scheduled-test, session-affinity, Responses WebSocket, and MCP transport defaults. */
             200: {
                 headers: {
                     ETag: components["headers"]["ETag"];

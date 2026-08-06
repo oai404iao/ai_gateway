@@ -313,11 +313,12 @@ Token 只存在于页面 state，不写入 URL、Web Storage 或 React Query cac
 Responses 与 Images 渠道组组合成一个凭证池卡片，并与普通 OpenAI-compatible 渠道组分区展示。
 普通渠道组采用可搜索、可筛选、按需展开的紧凑列表，避免渠道组数量增加后同时渲染大量展开表格。
 
-`/admin/mcp-servers` 当前管理无状态 MCP endpoint。列表展示 `/mcp/{slug}`、固定工具、绑定模型
+`/admin/mcp-servers` 当前管理 MCP endpoint。列表展示 `/mcp/{slug}`、固定工具、绑定模型
 规则和 kind-specific 设置；创建/编辑页按 Search 或 Images 提供 typed 表单，并只列出兼容
 `open_ai_responses` 或 `open_ai_images` 的模型规则。`slug` 与 `kind` 创建后不可修改，PUT/DELETE
-使用详情 ETag，软删除后 slug 保持保留。该页面只管理数据库实例；构建时 `mcp-server` feature、
-进程级 `[mcp].enabled` 和 `public_base_url` 仍由部署配置负责。
+使用详情 ETag，软删除后 slug 保持保留。该页面管理 endpoint 实例；`/admin/system` 管理数据库
+中的全局 MCP transport enable、公开 URL、Origins、旧协议兼容和 request/result limits。
+构建时 `mcp-server` feature 仍由部署负责，TOML `[mcp]` 只提供系统设置首次引导值。
 
 `/account/sessions` 当前按“活跃会话”和可折叠历史分组，使用后端返回的 `is_current` 与明确
 session 状态标记当前设备、已过期和已撤销记录。活跃会话提供逐设备退出，页面还可一次撤销除当前

@@ -8,13 +8,16 @@ use std::{
 
 use ai_gateway::{
     application::{ProxyService, RequestLogSink},
-    domain::{ApiOperation, RequestLogEvent, RequestLogOutcome, RequestLogSource},
+    domain::{
+        ApiOperation, McpTransportSettings, RequestLogEvent, RequestLogOutcome, RequestLogSource,
+        SystemRuntimeSettings,
+    },
     mcp::McpService,
     persistence::{
         ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ControlPlaneRecords, McpServerRecord,
         ModelRuleRecord,
     },
-    runtime_config::{McpRuntimeConfig, RuntimeConfig, compile_control_plane},
+    runtime_config::{RuntimeConfig, compile_control_plane_with_system_settings},
 };
 use axum::{
     Json, Router,
@@ -24,8 +27,8 @@ use axum::{
         HeaderMap, Request, StatusCode,
         header::{
             ACCEPT, ACCESS_CONTROL_ALLOW_HEADERS, ACCESS_CONTROL_ALLOW_ORIGIN,
-            ACCESS_CONTROL_REQUEST_HEADERS, ACCESS_CONTROL_REQUEST_METHOD, AUTHORIZATION,
-            CONTENT_TYPE, HOST, ORIGIN,
+            ACCESS_CONTROL_EXPOSE_HEADERS, ACCESS_CONTROL_REQUEST_HEADERS,
+            ACCESS_CONTROL_REQUEST_METHOD, AUTHORIZATION, CONTENT_TYPE, HOST, ORIGIN,
         },
     },
     response::IntoResponse,
@@ -149,6 +152,21 @@ async fn harness_with_options(
     Arc<Mutex<Option<Value>>>,
     RecordingRequestLogSink,
     TestServer,
+) {
+    let (router, captured, logs, upstream, _) =
+        harness_with_options_and_runtime(allowed_origins, allow_legacy_2025_11_25).await;
+    (router, captured, logs, upstream)
+}
+
+async fn harness_with_options_and_runtime(
+    allowed_origins: Vec<String>,
+    allow_legacy_2025_11_25: bool,
+) -> (
+    Router,
+    Arc<Mutex<Option<Value>>>,
+    RecordingRequestLogSink,
+    TestServer,
+    Arc<RuntimeConfig>,
 ) {
     let captured = Arc::new(Mutex::new(None));
     let upstream = start_server(
@@ -282,23 +300,30 @@ async fn harness_with_options(
             },
         ],
     };
-    let runtime = Arc::new(RuntimeConfig::new(compile_control_plane(records).unwrap()));
-    let logs = RecordingRequestLogSink::default();
-    let proxy = ProxyService::with_log_sink(runtime, 1_048_576, Arc::new(logs.clone())).unwrap();
-    let service = McpService::new(
-        proxy,
-        &McpRuntimeConfig {
-            public_base_url: "https://mcp.example.test".into(),
-            allowed_hosts: vec!["mcp.example.test".into()],
-            allowed_origins,
-            allow_legacy_2025_11_25,
-            request_body_bytes: 64 * 1024,
-            image_request_body_bytes: 512 * 1024,
-            search_result_bytes: 64 * 1024,
-            image_result_bytes: 64 * 1024,
-        },
+    let mcp_settings = McpTransportSettings::new(
+        true,
+        Some(Arc::from("https://mcp.example.test")),
+        vec!["mcp.example.test".into()].into(),
+        allowed_origins.into(),
+        allow_legacy_2025_11_25,
+        64 * 1024,
+        512 * 1024,
+        64 * 1024,
+        64 * 1024,
     );
-    (service.router(), captured, logs, upstream)
+    let runtime = Arc::new(RuntimeConfig::new(
+        compile_control_plane_with_system_settings(
+            records,
+            SystemRuntimeSettings::default().with_mcp(mcp_settings),
+        )
+        .unwrap(),
+    ));
+    let logs = RecordingRequestLogSink::default();
+    let proxy =
+        ProxyService::with_log_sink(Arc::clone(&runtime), 1_048_576, Arc::new(logs.clone()))
+            .unwrap();
+    let service = McpService::new(proxy, Arc::clone(&runtime));
+    (service.router(), captured, logs, upstream, runtime)
 }
 
 #[derive(Clone, Default)]
@@ -522,22 +547,29 @@ async fn image_harness_with_limits(
             enabled: true,
         }],
     };
-    let runtime = Arc::new(RuntimeConfig::new(compile_control_plane(records).unwrap()));
-    let logs = RecordingRequestLogSink::default();
-    let proxy = ProxyService::with_log_sink(runtime, 1_048_576, Arc::new(logs.clone())).unwrap();
-    let service = McpService::new(
-        proxy,
-        &McpRuntimeConfig {
-            public_base_url: "https://mcp.example.test".into(),
-            allowed_hosts: vec!["mcp.example.test".into()],
-            allowed_origins: vec![],
-            allow_legacy_2025_11_25: false,
-            request_body_bytes,
-            image_request_body_bytes,
-            search_result_bytes: 64 * 1024,
-            image_result_bytes,
-        },
+    let mcp_settings = McpTransportSettings::new(
+        true,
+        Some(Arc::from("https://mcp.example.test")),
+        vec!["mcp.example.test".into()].into(),
+        Arc::from([]),
+        false,
+        request_body_bytes,
+        image_request_body_bytes,
+        64 * 1024,
+        image_result_bytes,
     );
+    let runtime = Arc::new(RuntimeConfig::new(
+        compile_control_plane_with_system_settings(
+            records,
+            SystemRuntimeSettings::default().with_mcp(mcp_settings),
+        )
+        .unwrap(),
+    ));
+    let logs = RecordingRequestLogSink::default();
+    let proxy =
+        ProxyService::with_log_sink(Arc::clone(&runtime), 1_048_576, Arc::new(logs.clone()))
+            .unwrap();
+    let service = McpService::new(proxy, runtime);
     (service.router(), captured, logs, upstream)
 }
 
@@ -582,6 +614,24 @@ fn mcp_request_at(
     builder.body(Body::from(body.to_string())).unwrap()
 }
 
+async fn mcp_response_json(response: axum::response::Response) -> Value {
+    let content_type = response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    let bytes = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+    if content_type.starts_with("application/json") {
+        return serde_json::from_slice(&bytes).unwrap();
+    }
+    let body = std::str::from_utf8(&bytes).unwrap();
+    body.lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .find_map(|data| serde_json::from_str::<Value>(data).ok())
+        .expect("SSE response contains a JSON-RPC data event")
+}
+
 struct ParsedImageEdit {
     fields: BTreeMap<String, String>,
     images: Vec<(String, Bytes)>,
@@ -611,6 +661,75 @@ async fn parse_image_edit(captured: &CapturedImageEdit) -> ParsedImageEdit {
         }
     }
     ParsedImageEdit { fields, images }
+}
+
+#[tokio::test]
+async fn database_backed_transport_settings_apply_without_a_restart() {
+    let runtime = Arc::new(RuntimeConfig::new(
+        compile_control_plane_with_system_settings(
+            ControlPlaneRecords::default(),
+            SystemRuntimeSettings::default(),
+        )
+        .unwrap(),
+    ));
+    let proxy = ProxyService::new(Arc::clone(&runtime), 1_048_576).unwrap();
+    let router = McpService::new(proxy, Arc::clone(&runtime)).router();
+    let request = || {
+        Request::post("/mcp/missing")
+            .header(HOST, "mcp.example.test")
+            .header(CONTENT_TYPE, "application/json")
+            .header(ACCEPT, "application/json, text/event-stream")
+            .body(Body::from(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "server/discover",
+                    "params": {}
+                })
+                .to_string(),
+            ))
+            .unwrap()
+    };
+
+    assert_eq!(
+        router.clone().oneshot(request()).await.unwrap().status(),
+        StatusCode::NOT_FOUND
+    );
+
+    let enabled = McpTransportSettings::new(
+        true,
+        Some(Arc::from("https://mcp.example.test")),
+        vec!["mcp.example.test".into()].into(),
+        Arc::from([]),
+        true,
+        64 * 1024,
+        512 * 1024,
+        64 * 1024,
+        64 * 1024,
+    );
+    runtime.replace_snapshot(Arc::new(
+        compile_control_plane_with_system_settings(
+            ControlPlaneRecords::default(),
+            SystemRuntimeSettings::default().with_mcp(enabled),
+        )
+        .unwrap(),
+    ));
+    assert_eq!(
+        router.clone().oneshot(request()).await.unwrap().status(),
+        StatusCode::UNAUTHORIZED
+    );
+
+    runtime.replace_snapshot(Arc::new(
+        compile_control_plane_with_system_settings(
+            ControlPlaneRecords::default(),
+            SystemRuntimeSettings::default(),
+        )
+        .unwrap(),
+    ));
+    assert_eq!(
+        router.oneshot(request()).await.unwrap().status(),
+        StatusCode::NOT_FOUND
+    );
 }
 
 #[tokio::test]
@@ -1461,8 +1580,8 @@ async fn mcp_boundary_rejects_untrusted_requests_and_filters_tools() {
 }
 
 #[tokio::test]
-async fn optional_legacy_mode_accepts_initialize_without_creating_a_session() {
-    let (router, _, _, _upstream) = harness_with_options(vec![], true).await;
+async fn transport_setting_changes_close_active_legacy_sse_sessions() {
+    let (router, _, _, _upstream, runtime) = harness_with_options_and_runtime(vec![], true).await;
     let initialize = Request::post("/mcp/search")
         .header(HOST, "mcp.example.test")
         .header(AUTHORIZATION, format!("Bearer {CLIENT_KEY}"))
@@ -1483,13 +1602,278 @@ async fn optional_legacy_mode_accepts_initialize_without_creating_a_session() {
             .to_string(),
         ))
         .unwrap();
+    let response = router.clone().oneshot(initialize).await.unwrap();
+    let session_id = response
+        .headers()
+        .get("Mcp-Session-Id")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let _ = mcp_response_json(response).await;
 
-    let response = router.oneshot(initialize).await.unwrap();
+    let initialized = router
+        .clone()
+        .oneshot(
+            Request::post("/mcp/search")
+                .header(HOST, "mcp.example.test")
+                .header(AUTHORIZATION, format!("Bearer {CLIENT_KEY}"))
+                .header(CONTENT_TYPE, "application/json")
+                .header(ACCEPT, "application/json, text/event-stream")
+                .header("MCP-Protocol-Version", "2025-11-25")
+                .header("Mcp-Session-Id", &session_id)
+                .body(Body::from(
+                    json!({
+                        "jsonrpc": "2.0",
+                        "method": "notifications/initialized"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(initialized.status(), StatusCode::ACCEPTED);
+
+    let stream = router
+        .oneshot(
+            Request::get("/mcp/search")
+                .header(HOST, "mcp.example.test")
+                .header(AUTHORIZATION, format!("Bearer {CLIENT_KEY}"))
+                .header(ACCEPT, "text/event-stream")
+                .header("MCP-Protocol-Version", "2025-11-25")
+                .header("Mcp-Session-Id", session_id)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(stream.status(), StatusCode::OK);
+
+    runtime.replace_snapshot(Arc::new(
+        compile_control_plane_with_system_settings(
+            ControlPlaneRecords::default(),
+            SystemRuntimeSettings::default(),
+        )
+        .unwrap(),
+    ));
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        to_bytes(stream.into_body(), 64 * 1024),
+    )
+    .await
+    .expect("legacy SSE stream closes after transport settings change")
+    .unwrap();
+}
+
+#[tokio::test]
+async fn optional_legacy_mode_supports_the_complete_session_lifecycle() {
+    let browser_origin = "https://client.example.test";
+    let (router, captured, _, _upstream) =
+        harness_with_options(vec![browser_origin.into()], true).await;
+    let initialize = Request::post("/mcp/search")
+        .header(HOST, "mcp.example.test")
+        .header(ORIGIN, browser_origin)
+        .header(AUTHORIZATION, format!("Bearer {CLIENT_KEY}"))
+        .header(CONTENT_TYPE, "application/json")
+        .header(ACCEPT, "application/json, text/event-stream")
+        .header("MCP-Protocol-Version", "2025-11-25")
+        .body(Body::from(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {},
+                    "clientInfo": {"name": "legacy-client", "version": "1.0.0"}
+                }
+            })
+            .to_string(),
+        ))
+        .unwrap();
+
+    let response = router.clone().oneshot(initialize).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    assert!(response.headers().get("Mcp-Session-Id").is_none());
-    let response: Value =
-        serde_json::from_slice(&to_bytes(response.into_body(), 64 * 1024).await.unwrap()).unwrap();
+    assert_eq!(
+        response.headers().get(ACCESS_CONTROL_ALLOW_ORIGIN),
+        Some(&browser_origin.parse().unwrap())
+    );
+    assert_eq!(
+        response.headers().get(ACCESS_CONTROL_EXPOSE_HEADERS),
+        Some(&"mcp-session-id".parse().unwrap())
+    );
+    let session_id = response
+        .headers()
+        .get("Mcp-Session-Id")
+        .expect("legacy initialize returns a session ID")
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let response = mcp_response_json(response).await;
     assert_eq!(response["result"]["protocolVersion"], "2025-11-25");
+
+    let initialized = router
+        .clone()
+        .oneshot(
+            Request::post("/mcp/search")
+                .header(HOST, "mcp.example.test")
+                .header(AUTHORIZATION, format!("Bearer {CLIENT_KEY}"))
+                .header(CONTENT_TYPE, "application/json")
+                .header(ACCEPT, "application/json, text/event-stream")
+                .header("MCP-Protocol-Version", "2025-11-25")
+                .header("Mcp-Session-Id", &session_id)
+                .body(Body::from(
+                    json!({
+                        "jsonrpc": "2.0",
+                        "method": "notifications/initialized"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(initialized.status(), StatusCode::ACCEPTED);
+
+    let tools = router
+        .clone()
+        .oneshot(
+            Request::post("/mcp/search")
+                .header(HOST, "mcp.example.test")
+                .header(AUTHORIZATION, format!("Bearer {CLIENT_KEY}"))
+                .header(CONTENT_TYPE, "application/json")
+                .header(ACCEPT, "application/json, text/event-stream")
+                .header("MCP-Protocol-Version", "2025-11-25")
+                .header("Mcp-Session-Id", &session_id)
+                .body(Body::from(
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": 3,
+                        "method": "tools/list",
+                        "params": {}
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(tools.status(), StatusCode::OK);
+    let tools = mcp_response_json(tools).await;
+    assert_eq!(tools["result"]["tools"][0]["name"], "web.run");
+
+    let call = router
+        .clone()
+        .oneshot(
+            Request::post("/mcp/search")
+                .header(HOST, "mcp.example.test")
+                .header(AUTHORIZATION, format!("Bearer {CLIENT_KEY}"))
+                .header(CONTENT_TYPE, "application/json")
+                .header(ACCEPT, "application/json, text/event-stream")
+                .header("MCP-Protocol-Version", "2025-11-25")
+                .header("Mcp-Session-Id", &session_id)
+                .body(Body::from(
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": 4,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "web.run",
+                            "arguments": {
+                                "search_query": [{"q": "legacy session search"}]
+                            }
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(call.status(), StatusCode::OK);
+    let call = mcp_response_json(call).await;
+    assert_eq!(call["result"]["isError"], false);
+    assert_eq!(
+        captured.lock().unwrap().as_ref().unwrap()["commands"]["search_query"][0]["q"],
+        "legacy session search"
+    );
+
+    let modern = router
+        .clone()
+        .oneshot(mcp_request(
+            CLIENT_KEY,
+            "tools/list",
+            None,
+            json!({"_meta": request_meta()}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(modern.status(), StatusCode::OK);
+    assert!(modern.headers().get("Mcp-Session-Id").is_none());
+
+    let stream = router
+        .clone()
+        .oneshot(
+            Request::get("/mcp/search")
+                .header(HOST, "mcp.example.test")
+                .header(AUTHORIZATION, format!("Bearer {CLIENT_KEY}"))
+                .header(ACCEPT, "text/event-stream")
+                .header("MCP-Protocol-Version", "2025-11-25")
+                .header("Mcp-Session-Id", &session_id)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(stream.status(), StatusCode::OK);
+    assert_eq!(
+        stream
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("text/event-stream")
+    );
+    drop(stream);
+
+    let deleted = router
+        .clone()
+        .oneshot(
+            Request::delete("/mcp/search")
+                .header(HOST, "mcp.example.test")
+                .header(AUTHORIZATION, format!("Bearer {CLIENT_KEY}"))
+                .header("MCP-Protocol-Version", "2025-11-25")
+                .header("Mcp-Session-Id", &session_id)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(deleted.status(), StatusCode::ACCEPTED);
+
+    let closed = router
+        .oneshot(
+            Request::post("/mcp/search")
+                .header(HOST, "mcp.example.test")
+                .header(AUTHORIZATION, format!("Bearer {CLIENT_KEY}"))
+                .header(CONTENT_TYPE, "application/json")
+                .header(ACCEPT, "application/json, text/event-stream")
+                .header("MCP-Protocol-Version", "2025-11-25")
+                .header("Mcp-Session-Id", session_id)
+                .body(Body::from(
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": 5,
+                        "method": "tools/list",
+                        "params": {}
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(closed.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

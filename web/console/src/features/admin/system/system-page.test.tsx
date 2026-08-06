@@ -106,6 +106,16 @@ describe("SystemPage", () => {
         idle_timeout_seconds: 300,
         max_connection_age_seconds: 3300,
       },
+      mcp: {
+        enabled: false,
+        public_base_url: "https://mcp.example.test",
+        allowed_origins: ["https://client.example.test"],
+        allow_legacy_2025_11_25: true,
+        request_body_bytes: 4194304,
+        image_request_body_bytes: 33554432,
+        search_result_bytes: 4194304,
+        image_result_bytes: 33554432,
+      },
     });
     expect(ifMatch).toBe('"2026-01-02T00:00:00.000Z"');
     expect(await screen.findByText("System settings saved and applied.")).toBeInTheDocument();
@@ -125,6 +135,25 @@ describe("SystemPage", () => {
 
     expect(
       await screen.findByText("Response header timeout must exceed connect timeout."),
+    ).toBeInTheDocument();
+  });
+
+  it("requires a public origin before enabling the MCP transport", async () => {
+    seedAuthenticatedSession();
+    const user = userEvent.setup();
+    renderApp();
+
+    const publicBaseUrl = await screen.findByLabelText("MCP public base URL");
+    await user.clear(publicBaseUrl);
+    await user.click(
+      screen.getByRole("switch", { name: "Enable MCP transport" }),
+    );
+    await user.click(screen.getByRole("button", { name: /save system settings/i }));
+
+    expect(
+      await screen.findByText(
+        "MCP public base URL is required when the transport is enabled.",
+      ),
     ).toBeInTheDocument();
   });
 

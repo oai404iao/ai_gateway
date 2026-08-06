@@ -207,6 +207,7 @@ fn system_settings() -> SystemSettingsInput {
         },
         session_affinity: Default::default(),
         websocket: Default::default(),
+        mcp: Default::default(),
     }
 }
 

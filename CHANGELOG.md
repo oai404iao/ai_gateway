@@ -13,25 +13,27 @@ Versioning.
   web search, reusing Responses routing while requiring an explicit channel
   capability, preserving Codex search metadata, supporting Codex OAuth target
   adaptation, and recording a distinct request-log operation.
-- Add an optional stateless MCP `2026-07-28` transport with PostgreSQL-backed
-  multi-instance registry and Console CRUD, Gateway API-key authorization,
-  managed Search `web.run` forwarding through the existing proxy core, and
-  `request_source = "mcp"` attribution.
+- Add an optional MCP transport with stateless `2026-07-28` by default,
+  complete opt-in process-local `2025-11-25` Session/SSE compatibility,
+  PostgreSQL-backed transport settings and multi-instance endpoint registry,
+  Console management, Gateway API-key authorization, managed Search `web.run`
+  forwarding through the existing proxy core, and `request_source = "mcp"`
+  attribution.
 - Add the managed `image` MCP kind with Codex-compatible
   `image_gen.imagegen` generation and stateless editing, fixed single-image
   PNG/base64 output, instance-controlled model/background/quality/size, MCP
   `ImageContent`, explicit data-URL references, and independent request/result
   limits.
-- Add an administrator Console page for listing, creating, editing, and
-  soft-deleting stateless MCP instances, with kind-compatible model-rule
-  selection, typed Search and Images settings, immutable endpoint identity,
-  and ETag conflict handling.
+- Add administrator Console controls for the global MCP transport and for
+  listing, creating, editing, and soft-deleting MCP instances, with
+  kind-compatible model-rule selection, typed Search and Images settings,
+  immutable endpoint identity, and ETag conflict handling.
 
 ### Security
 
-- Validate MCP Host, Origin, per-request protocol metadata, and the absence of
-  session headers; strip client credentials before handler dispatch and cap
-  RMCP payload-formatting trace targets at `info`.
+- Validate MCP Host, Origin, strict modern per-request protocol metadata, and
+  protocol-appropriate Session headers; strip client credentials before
+  handler dispatch and cap RMCP payload-formatting trace targets at `info`.
 - Validate generated image base64 and PNG signatures without returning or
   logging provider payloads, prompts, or image bytes.
 - Restrict MCP image edits to five explicit PNG/JPEG/WebP base64 data URLs,

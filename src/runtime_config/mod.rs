@@ -18,6 +18,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use sqlx::postgres::PgConnectOptions;
 use thiserror::Error;
+use tokio::sync::watch;
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
@@ -28,20 +29,23 @@ use crate::{
         CompiledChannel, CompiledChannelGroup, CompiledChannelUpstreamPolicy,
         CompiledConfigTemplate, CompiledMcpServer, CompiledModelRule, CompiledProxy,
         CompiledRouteTier, CompiledRuntimeConfig, CompiledScheduledTestModel, ConnectorKind,
-        DEFAULT_IMAGES_RESPONSE_HEADER_TIMEOUT_SECONDS,
+        DEFAULT_IMAGES_RESPONSE_HEADER_TIMEOUT_SECONDS, DEFAULT_MCP_IMAGE_REQUEST_BODY_BYTES,
+        DEFAULT_MCP_IMAGE_RESULT_BYTES, DEFAULT_MCP_REQUEST_BODY_BYTES,
+        DEFAULT_MCP_SEARCH_RESULT_BYTES,
         DEFAULT_STANDALONE_WEB_SEARCH_RESPONSE_HEADER_TIMEOUT_SECONDS, ImageMcpSettings,
-        MAX_REQUEST_RETRIES, McpServerKind, ModelPriceSnapshot, ModelRouteKey, NoProxyHost,
-        PassiveHealthSettings, RequestRetrySettings, ResponsesWebSocketSettings,
-        ScheduledTestingMode, ScheduledTestingSettings, SelectionStrategy,
-        SessionAffinityKeySource, SessionAffinityRule, SessionAffinitySettings,
-        SystemRuntimeSettings, UpstreamAuth, UpstreamTimeoutDefaults, WebSearchMcpSettings,
+        MAX_MCP_IMAGE_BYTES, MAX_REQUEST_RETRIES, McpServerKind, McpTransportSettings,
+        ModelPriceSnapshot, ModelRouteKey, NoProxyHost, PassiveHealthSettings,
+        RequestRetrySettings, ResponsesWebSocketSettings, ScheduledTestingMode,
+        ScheduledTestingSettings, SelectionStrategy, SessionAffinityKeySource, SessionAffinityRule,
+        SessionAffinitySettings, SystemRuntimeSettings, UpstreamAuth, UpstreamTimeoutDefaults,
+        WebSearchMcpSettings,
     },
     persistence::{
         ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ConfigTemplateRecord, ControlPlaneRecords,
         FORWARDING_SETTINGS_KEY, McpServerRecord, ModelRecord, ModelRuleRecord, ProxyRecord,
-        RuntimeConfigRecords, SystemSessionAffinityKeySourceInput, SystemSessionAffinityRuleInput,
-        SystemSessionAffinitySettingsInput, SystemSettingsInput, SystemSettingsRecord,
-        valid_api_hosts,
+        RuntimeConfigRecords, SystemMcpSettingsInput, SystemSessionAffinityKeySourceInput,
+        SystemSessionAffinityRuleInput, SystemSessionAffinitySettingsInput, SystemSettingsInput,
+        SystemSettingsRecord, valid_api_hosts,
     },
     request_policy::{client_header_allowed, client_header_explicitly_ignored},
     transforms::{TransformCompileError, TransformPlan, compile_document, declared_api_format},
@@ -177,7 +181,7 @@ pub struct BootstrapConfig {
     pub session_affinity: SessionAffinityConfig,
     pub models_sync: ModelsSyncConfig,
     pub request_limits: RequestLimitsConfig,
-    pub mcp: Option<McpRuntimeConfig>,
+    pub mcp: SystemMcpSettingsInput,
     pub console: Option<ConsoleListenerConfig>,
     pub observability: ObservabilityConfig,
 }
@@ -525,8 +529,8 @@ pub struct ConsoleFileConfig {
     pub ui_enabled: bool,
 }
 
-/// Optional stateless MCP service mounted on the public listener.
-#[derive(Default, Deserialize)]
+/// One-time bootstrap source for database-backed MCP transport settings.
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpFileConfig {
     #[serde(default)]
@@ -544,6 +548,21 @@ pub struct McpFileConfig {
     pub search_result_bytes: usize,
     #[serde(default = "default_mcp_image_result_bytes")]
     pub image_result_bytes: usize,
+}
+
+impl Default for McpFileConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            public_base_url: None,
+            allowed_origins: Vec::new(),
+            allow_legacy_2025_11_25: false,
+            request_body_bytes: default_mcp_request_body_bytes(),
+            image_request_body_bytes: default_mcp_image_request_body_bytes(),
+            search_result_bytes: default_mcp_search_result_bytes(),
+            image_result_bytes: default_mcp_image_result_bytes(),
+        }
+    }
 }
 
 /// File-only JWT setup. Private key material remains in a separate protected
@@ -566,18 +585,6 @@ pub struct ConsoleListenerConfig {
     pub allowed_origins: Vec<String>,
     pub auth: AuthConfig,
     pub ui_enabled: bool,
-}
-
-#[derive(Clone, Debug)]
-pub struct McpRuntimeConfig {
-    pub public_base_url: String,
-    pub allowed_hosts: Vec<String>,
-    pub allowed_origins: Vec<String>,
-    pub allow_legacy_2025_11_25: bool,
-    pub request_body_bytes: usize,
-    pub image_request_body_bytes: usize,
-    pub search_result_bytes: usize,
-    pub image_result_bytes: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -616,16 +623,16 @@ const fn default_auth_body_bytes() -> usize {
     16_384
 }
 const fn default_mcp_request_body_bytes() -> usize {
-    4 * 1_024 * 1_024
+    DEFAULT_MCP_REQUEST_BODY_BYTES
 }
 const fn default_mcp_image_request_body_bytes() -> usize {
-    32 * 1_024 * 1_024
+    DEFAULT_MCP_IMAGE_REQUEST_BODY_BYTES
 }
 const fn default_mcp_search_result_bytes() -> usize {
-    4 * 1_024 * 1_024
+    DEFAULT_MCP_SEARCH_RESULT_BYTES
 }
 const fn default_mcp_image_result_bytes() -> usize {
-    32 * 1_024 * 1_024
+    DEFAULT_MCP_IMAGE_RESULT_BYTES
 }
 const fn default_request_log_queue_capacity() -> usize {
     1_024
@@ -714,12 +721,16 @@ const fn default_models_sync_max_selections() -> usize {
 
 pub struct RuntimeConfig {
     current: ArcSwap<CompiledRuntimeConfig>,
+    updates: watch::Sender<Arc<CompiledRuntimeConfig>>,
 }
 impl RuntimeConfig {
     #[must_use]
     pub fn new(initial: CompiledRuntimeConfig) -> Self {
+        let initial = Arc::new(initial);
+        let (updates, _) = watch::channel(Arc::clone(&initial));
         Self {
-            current: ArcSwap::from_pointee(initial),
+            current: ArcSwap::from(initial),
+            updates,
         }
     }
     #[must_use]
@@ -727,7 +738,13 @@ impl RuntimeConfig {
         self.current.load_full()
     }
     pub fn replace_snapshot(&self, next: Arc<CompiledRuntimeConfig>) {
-        self.current.store(next);
+        self.current.store(Arc::clone(&next));
+        self.updates.send_replace(next);
+    }
+
+    #[cfg(feature = "mcp-server")]
+    pub(crate) fn subscribe(&self) -> watch::Receiver<Arc<CompiledRuntimeConfig>> {
+        self.updates.subscribe()
     }
 }
 
@@ -741,7 +758,7 @@ pub fn compile_control_plane(
 }
 
 /// Compiles one complete database runtime snapshot, including the singleton
-/// forwarding policy stored in `system_settings`.
+/// process-wide policy stored in `system_settings`.
 pub fn compile_runtime_config(
     records: RuntimeConfigRecords,
 ) -> Result<CompiledRuntimeConfig, ConfigError> {
@@ -1140,15 +1157,15 @@ fn compile_system_settings(
 ) -> Result<SystemRuntimeSettings, ConfigError> {
     if record.setting_key != FORWARDING_SETTINGS_KEY {
         return Err(ConfigError::Compile(
-            "required forwarding system settings are missing".into(),
+            "required system settings are missing".into(),
         ));
     }
     let input = serde_json::from_value::<SystemSettingsInput>(record.value)
-        .map_err(|_| ConfigError::Compile("invalid forwarding system settings".into()))?;
+        .map_err(|_| ConfigError::Compile("invalid system settings".into()))?;
     compile_system_settings_input(&input)
 }
 
-/// Validates a decoded `system_settings` forwarding-policy document.
+/// Validates a decoded process-wide `system_settings` document.
 pub fn compile_system_settings_input(
     input: &SystemSettingsInput,
 ) -> Result<SystemRuntimeSettings, ConfigError> {
@@ -1159,6 +1176,7 @@ pub fn compile_system_settings_input(
     let scheduled_testing = &input.scheduled_testing;
     let session_affinity = compile_session_affinity_settings(&input.session_affinity)?;
     let websocket = &input.websocket;
+    let mcp = compile_mcp_transport_settings(&input.mcp)?;
     if !valid_api_hosts(&input.api_hosts)
         || upstream.connect_timeout_seconds == 0
         || upstream.response_header_timeout_seconds <= upstream.connect_timeout_seconds
@@ -1189,9 +1207,7 @@ pub fn compile_system_settings_input(
         || websocket.max_connection_age_seconds > 3_600
         || websocket.idle_timeout_seconds >= websocket.max_connection_age_seconds
     {
-        return Err(ConfigError::Compile(
-            "invalid forwarding system settings".into(),
-        ));
+        return Err(ConfigError::Compile("invalid system settings".into()));
     }
     let mut status_codes = automatic_disable.error_status_codes.clone();
     status_codes.sort_unstable();
@@ -1247,6 +1263,105 @@ pub fn compile_system_settings_input(
             std::time::Duration::from_secs(websocket.idle_timeout_seconds),
             std::time::Duration::from_secs(websocket.max_connection_age_seconds),
         ),
+    )
+    .with_mcp(mcp))
+}
+
+fn compile_mcp_transport_settings(
+    input: &SystemMcpSettingsInput,
+) -> Result<McpTransportSettings, ConfigError> {
+    if input.request_body_bytes == 0
+        || input.image_request_body_bytes == 0
+        || input.search_result_bytes == 0
+        || input.image_result_bytes == 0
+    {
+        return Err(ConfigError::Compile(
+            "mcp request and result limits must be greater than zero".into(),
+        ));
+    }
+    if input.image_result_bytes > MAX_MCP_IMAGE_BYTES {
+        return Err(ConfigError::Compile(
+            "mcp image_result_bytes must not exceed 67108864".into(),
+        ));
+    }
+    if input.image_request_body_bytes > MAX_MCP_IMAGE_BYTES {
+        return Err(ConfigError::Compile(
+            "mcp image_request_body_bytes must not exceed 67108864".into(),
+        ));
+    }
+    if input.allowed_origins.len() > 64 {
+        return Err(ConfigError::Compile(
+            "mcp allowed_origins must contain at most 64 entries".into(),
+        ));
+    }
+    if input.enabled && !cfg!(feature = "mcp-server") {
+        return Err(ConfigError::Compile(
+            "mcp enabled requires building with the mcp-server cargo feature".into(),
+        ));
+    }
+    let parsed = input
+        .public_base_url
+        .as_deref()
+        .map(|value| {
+            if value.trim() != value || value.chars().count() > 2_048 {
+                return Err(ConfigError::Compile(
+                    "mcp public_base_url is invalid".into(),
+                ));
+            }
+            parse_http_origin(value, "mcp public_base_url")
+        })
+        .transpose()?;
+    if input.enabled && parsed.is_none() {
+        return Err(ConfigError::Compile(
+            "enabled mcp public_base_url is required".into(),
+        ));
+    }
+    let allowed_origins = input
+        .allowed_origins
+        .iter()
+        .map(|origin| {
+            if origin.trim() != origin || origin.chars().count() > 2_048 {
+                return Err(ConfigError::Compile("mcp allowed origin is invalid".into()));
+            }
+            canonical_http_origin(origin, "mcp allowed origin")
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    unique(&allowed_origins, "mcp allowed origin")?;
+    let mut allowed_hosts = Vec::new();
+    let public_base_url = parsed.map(|parsed| {
+        let host = parsed
+            .host_str()
+            .expect("validated MCP public URL has a host");
+        let mut authority = if host.contains(':') {
+            format!("[{host}]")
+        } else {
+            host.to_owned()
+        };
+        if let Some(port) = parsed.port() {
+            authority.push(':');
+            authority.push_str(&port.to_string());
+        }
+        allowed_hosts.push(authority.clone());
+        if parsed.port().is_none() {
+            let default_port = match parsed.scheme() {
+                "https" => 443,
+                "http" => 80,
+                _ => unreachable!("validated MCP URL scheme"),
+            };
+            allowed_hosts.push(format!("{authority}:{default_port}"));
+        }
+        Arc::<str>::from(parsed.origin().ascii_serialization())
+    });
+    Ok(McpTransportSettings::new(
+        input.enabled,
+        public_base_url,
+        allowed_hosts.into(),
+        allowed_origins.into(),
+        input.allow_legacy_2025_11_25,
+        input.request_body_bytes,
+        input.image_request_body_bytes,
+        input.search_result_bytes,
+        input.image_result_bytes,
     ))
 }
 
@@ -2794,91 +2909,19 @@ fn validate_console(
     }))
 }
 
-fn validate_mcp(config: McpFileConfig) -> Result<Option<McpRuntimeConfig>, ConfigError> {
-    if !config.enabled {
-        return Ok(None);
-    }
-    #[cfg(not(feature = "mcp-server"))]
-    return Err(ConfigError::Compile(
-        "mcp enabled requires building with the mcp-server cargo feature".into(),
-    ));
-
-    #[cfg(feature = "mcp-server")]
-    {
-        if config.request_body_bytes == 0
-            || config.image_request_body_bytes == 0
-            || config.search_result_bytes == 0
-            || config.image_result_bytes == 0
-        {
-            return Err(ConfigError::Compile(
-                "enabled mcp request and result limits must be greater than zero".into(),
-            ));
-        }
-        if config.image_result_bytes > 64 * 1_024 * 1_024 {
-            return Err(ConfigError::Compile(
-                "enabled mcp image_result_bytes must not exceed 67108864".into(),
-            ));
-        }
-        if config.image_request_body_bytes > 64 * 1_024 * 1_024 {
-            return Err(ConfigError::Compile(
-                "enabled mcp image_request_body_bytes must not exceed 67108864".into(),
-            ));
-        }
-        let public_base_url = config.public_base_url.ok_or_else(|| {
-            ConfigError::Compile("enabled mcp public_base_url is required".into())
-        })?;
-        let parsed = Url::parse(&public_base_url)
-            .map_err(|_| ConfigError::Compile("mcp public_base_url is invalid".into()))?;
-        if !matches!(parsed.scheme(), "https" | "http")
-            || parsed.host().is_none()
-            || parsed.username() != ""
-            || parsed.password().is_some()
-            || parsed.path() != "/"
-            || parsed.query().is_some()
-            || parsed.fragment().is_some()
-        {
-            return Err(ConfigError::Compile(
-                "mcp public_base_url must be an HTTP(S) origin without path or credentials".into(),
-            ));
-        }
-        let allowed_origins = config
-            .allowed_origins
-            .iter()
-            .map(|origin| canonical_http_origin(origin, "mcp allowed origin"))
-            .collect::<Result<Vec<_>, _>>()?;
-        unique(&allowed_origins, "mcp allowed origin")?;
-        let host = parsed
-            .host_str()
-            .expect("validated MCP public URL has a host");
-        let mut authority = if host.contains(':') {
-            format!("[{host}]")
-        } else {
-            host.to_owned()
-        };
-        if let Some(port) = parsed.port() {
-            authority.push(':');
-            authority.push_str(&port.to_string());
-        }
-        let mut allowed_hosts = vec![authority.clone()];
-        if parsed.port().is_none() {
-            let default_port = match parsed.scheme() {
-                "https" => 443,
-                "http" => 80,
-                _ => unreachable!("validated MCP URL scheme"),
-            };
-            allowed_hosts.push(format!("{authority}:{default_port}"));
-        }
-        Ok(Some(McpRuntimeConfig {
-            public_base_url: parsed.origin().ascii_serialization(),
-            allowed_hosts,
-            allowed_origins,
-            allow_legacy_2025_11_25: config.allow_legacy_2025_11_25,
-            request_body_bytes: config.request_body_bytes,
-            image_request_body_bytes: config.image_request_body_bytes,
-            search_result_bytes: config.search_result_bytes,
-            image_result_bytes: config.image_result_bytes,
-        }))
-    }
+fn validate_mcp(config: McpFileConfig) -> Result<SystemMcpSettingsInput, ConfigError> {
+    let input = SystemMcpSettingsInput {
+        enabled: config.enabled,
+        public_base_url: config.public_base_url,
+        allowed_origins: config.allowed_origins,
+        allow_legacy_2025_11_25: config.allow_legacy_2025_11_25,
+        request_body_bytes: config.request_body_bytes,
+        image_request_body_bytes: config.image_request_body_bytes,
+        search_result_bytes: config.search_result_bytes,
+        image_result_bytes: config.image_result_bytes,
+    };
+    compile_mcp_transport_settings(&input)?;
+    Ok(input)
 }
 
 fn required_auth_value(value: Option<String>, field: &str) -> Result<String, ConfigError> {
@@ -2896,7 +2939,6 @@ fn validate_http_origin(origin: &str, field: &str) -> Result<(), ConfigError> {
     parse_http_origin(origin, field).map(|_| ())
 }
 
-#[cfg(feature = "mcp-server")]
 fn canonical_http_origin(origin: &str, field: &str) -> Result<String, ConfigError> {
     Ok(parse_http_origin(origin, field)?
         .origin()
@@ -3231,7 +3273,7 @@ mod tests {
     #[test]
     #[cfg(feature = "mcp-server")]
     fn bootstrap_validates_mcp_public_origin_and_limits() {
-        let config = validate_mcp(McpFileConfig {
+        let input = validate_mcp(McpFileConfig {
             enabled: true,
             public_base_url: Some("https://MCP.example.test:443/".into()),
             allowed_origins: vec!["https://CLIENT.example.test/".into()],
@@ -3241,18 +3283,18 @@ mod tests {
             search_result_bytes: 2048,
             image_result_bytes: 4096,
         })
-        .unwrap()
         .unwrap();
+        let config = compile_mcp_transport_settings(&input).unwrap();
 
         assert_eq!(
-            config.allowed_hosts,
+            config.allowed_hosts(),
             ["mcp.example.test", "mcp.example.test:443"]
         );
-        assert_eq!(config.public_base_url, "https://mcp.example.test");
-        assert_eq!(config.allowed_origins, ["https://client.example.test"]);
-        assert_eq!(config.image_request_body_bytes, 3072);
-        assert_eq!(config.search_result_bytes, 2048);
-        assert_eq!(config.image_result_bytes, 4096);
+        assert_eq!(config.public_base_url(), Some("https://mcp.example.test"));
+        assert_eq!(config.allowed_origins(), ["https://client.example.test"]);
+        assert_eq!(config.image_request_body_bytes(), 3072);
+        assert_eq!(config.search_result_bytes(), 2048);
+        assert_eq!(config.image_result_bytes(), 4096);
 
         assert!(
             validate_mcp(McpFileConfig {
@@ -3492,6 +3534,7 @@ mod tests {
                     },
                     session_affinity: Default::default(),
                     websocket: Default::default(),
+                    mcp: Default::default(),
                 })
                 .unwrap(),
                 updated_at: chrono::Utc::now(),
@@ -3579,6 +3622,7 @@ mod tests {
                 }],
             },
             websocket: Default::default(),
+            mcp: Default::default(),
         })
         .unwrap();
 
