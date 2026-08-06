@@ -1,7 +1,8 @@
 # MCP 服务架构与实施提案
 
 > 状态：部分实现。Transport、registry、Search MCP、Images generation/edit MCP、完整
-> `2025-11-25` 可选 Session/SSE 兼容、数据库系统设置、Console CRUD、管理页面和
+> `2025-11-25` 可选 Session/SSE 兼容、Codex 旧版 `2025-06-18` 协商、数据库系统设置、
+> Console CRUD、管理页面和
 > `request_source = "mcp"` 已实现；专用 MCP 日志维度和 Tasks 仍是后续阶段。
 > 当前行为以代码、测试、migration 和 OpenAPI 契约为准。
 
@@ -29,7 +30,8 @@ standalone web search 和 Images generation/edit 能力。
 3. **默认采用 MCP `2026-07-28` 无状态 Streamable HTTP。** 使用
    `server/discover`、`tools/list` 和 `tools/call`，普通结果返回 JSON。管理员可同时开启
    完整 `2025-11-25` 兼容：`initialize` / `notifications/initialized`、
-   `Mcp-Session-Id`、请求级/独立 GET SSE 和 DELETE。
+   `Mcp-Session-Id`、请求级/独立 GET SSE 和 DELETE；同一开关也接受 Codex 旧版模式的
+   `2025-06-18` 协商。
 4. **复用现有 Gateway API Key。** HTTP 使用
    `Authorization: Bearer <gateway-api-key>`；Search 继续要求 Responses `proxy` 权限，
    Images 继续要求 Images `proxy` 权限。
@@ -130,7 +132,8 @@ POST /mcp/{slug}
 - 不提供独立 SSE GET；
 - 每个请求创建轻量 handler，请求结束即释放。
 
-`allow_legacy_2025_11_25` 默认关闭。开启后 RMCP 使用 `legacy_session_mode = true`，完整支持：
+`allow_legacy_2025_11_25` 默认关闭。开启后 RMCP 使用 `legacy_session_mode = true`，
+完整支持 `2025-11-25`，并接受 Codex 旧版模式固定使用的 `2025-06-18`。两种协商都支持：
 
 - `initialize` 与 `notifications/initialized`；
 - 初始化响应签发 `Mcp-Session-Id`，后续请求携带相同 Header；
@@ -775,7 +778,8 @@ workspace gate；不要为绕过冲突复制一套不完整 JSON-RPC/MCP parser�
 - [x] `request_source = "mcp"`；
 - [x] deterministic protocol、auth 与 Search integration tests；
 - [x] Console 管理页面；
-- [x] 数据库全局 transport 设置与完整 `2025-11-25` Session/SSE 兼容；
+- [x] 数据库全局 transport 设置、完整 `2025-11-25` Session/SSE 兼容与 Codex
+  `2025-06-18` 协商；
 - [ ] 专用 MCP 日志维度、command-family 策略与多进程接续测试。
 
 ### PR 2：Images generation
@@ -869,7 +873,8 @@ Images forwarding path 时，除 deterministic integration tests 外，完成前
 ## 当前采用的产品参数
 
 1. production 镜像编译 `mcp-server` feature，但数据库 `mcp.enabled` 默认关闭；TOML 只做首次引导；
-2. modern-only 为默认值，管理员可显式开启完整 `2025-11-25` 进程内 Session/SSE 兼容；
+2. modern-only 为默认值，管理员可显式开启完整 `2025-11-25` 进程内 Session/SSE 兼容及
+   Codex `2025-06-18` 协商；
 3. Search request/result 默认上限均为 4 MiB；Image request/result 默认上限均为 32 MiB、
    硬上限 64 MiB；edit 单图解码后最多 16 MiB、合计最多 24 MiB，并继续受公共
    `request_limits.image_edit_*` 约束；

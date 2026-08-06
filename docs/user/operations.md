@@ -145,7 +145,8 @@ Completions、Responses 和其他辅助上游请求继续使用 `response_header
 - `POST /v1/images/edits`：接受带 `model`、一个或多个 `image`/`image[]` 和可选
   `mask` 的 `multipart/form-data`，仅匹配 Images 路由规则。
 - 可选 `/mcp/{slug}`：默认接受无状态 MCP `2026-07-28` POST；启用旧协议兼容后还支持
-  `2025-11-25` 的 Session POST、GET SSE 和 DELETE。当前已实现的
+  `2025-11-25` 的 Session POST、GET SSE 和 DELETE，并接受 Codex 旧版模式使用的
+  `2025-06-18` 初始化协商。当前已实现的
   `web_search` kind 暴露 `web.run`，`image` kind 暴露单图 `image_gen.imagegen`
   generation/edit，并在同一不可变快照内调用既有 standalone search、Images generation
   或 Images edit Proxy use case。

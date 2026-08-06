@@ -1063,11 +1063,11 @@ export function SystemPage() {
                     <Field orientation="horizontal">
                       <FieldContent>
                         <FieldLabel htmlFor="mcp_allow_legacy">
-                          {t("Enable MCP 2025-11-25 compatibility")}
+                          {t("Enable legacy MCP compatibility")}
                         </FieldLabel>
                         <FieldDescription>
                           {t(
-                            "Adds initialize/initialized, Mcp-Session-Id, GET SSE, and DELETE alongside stateless 2026-07-28. Legacy sessions are process-local and require sticky routing in multi-instance deployments.",
+                            "Adds 2025-11-25 sessions and the Codex legacy 2025-06-18 negotiation alongside stateless 2026-07-28. Legacy sessions are process-local and require sticky routing in multi-instance deployments.",
                           )}
                         </FieldDescription>
                       </FieldContent>

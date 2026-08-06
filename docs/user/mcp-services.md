@@ -1,7 +1,8 @@
 # MCP 服务
 
 > 状态：当前实现。已提供 Search 与 Images generation/edit MCP；默认使用无状态
-> `2026-07-28`，也可启用完整的 `2025-11-25` Session/SSE 兼容。
+> `2026-07-28`，也可启用完整的 `2025-11-25` Session/SSE 兼容以及 Codex
+> 旧版模式使用的 `2025-06-18` 协商。
 
 ## 适用范围
 
@@ -47,9 +48,10 @@ image_result_bytes = 33554432
 - 请求带有 `Origin` 时，必须精确匹配非空的 `allowed_origins`；空列表会拒绝所有带
   `Origin` 的请求，而不是放开浏览器来源。
 - `allow_legacy_2025_11_25` 默认关闭。关闭时只接受 MCP `2026-07-28` 的每请求 metadata
-  和标准 `Mcp-Method` / `Mcp-Name` Header。开启后同时完整支持 `2025-11-25` 的
+  和标准 `Mcp-Method` / `Mcp-Name` Header。开启后完整支持 `2025-11-25` 的
   `initialize` / `notifications/initialized`、`Mcp-Session-Id`、请求级 SSE、独立 GET SSE
-  和 DELETE Session。
+  和 DELETE Session，同时接受 Codex 旧版 MCP 客户端发送的 `2025-06-18` 初始化与后续
+  Session Header。字段名保持不变，以兼容已部署的数据库和配置。
 - `request_body_bytes` 限制 Search MCP 的 JSON-RPC envelope，默认 4 MiB。
 - `image_request_body_bytes` 独立限制 Image MCP 的 JSON-RPC envelope，使 inline data URL
   edit 不会提高 Search 上限；默认 32 MiB、硬上限 64 MiB。

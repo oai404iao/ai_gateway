@@ -22,8 +22,9 @@ Chat Completions、Responses、Codex standalone web search、非流式 JSON Imag
   三种格式绝不相互回退。
 - 通过可选 `mcp-server` feature 在公共 listener 提供 PostgreSQL 管理的
   `/mcp/{slug}`；默认使用无状态 `2026-07-28`，也可启用完整的进程内
-  `2025-11-25` Session/SSE 兼容。当前 Search kind 暴露 Codex 兼容 `web.run`，Image kind 暴露
-  单图 `image_gen.imagegen` generation/edit，并复用现有 API Key、路由、准入、计费和耐久日志。
+  `2025-11-25` Session/SSE 兼容，并接受 Codex 旧版模式使用的 `2025-06-18` 初始化协商。
+  当前 Search kind 暴露 Codex 兼容 `web.run`，Image kind 暴露单图
+  `image_gen.imagegen` generation/edit，并复用现有 API Key、路由、准入、计费和耐久日志。
 - 按 `(客户端模型名, API 格式)` 路由，支持渠道组优先级和渠道权重选择。
 - 特殊上游通过单进程内 Connector 接入，不增加 sidecar 或第二次网络跳转。首个
   Codex OAuth Connector 支持订阅凭证、每账户代理、Token 刷新、额度感知 draining

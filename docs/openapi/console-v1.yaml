@@ -3096,7 +3096,7 @@ components:
         allow_legacy_2025_11_25:
           type: boolean
           default: false
-          description: Enables the complete MCP 2025-11-25 initialize/session/SSE lifecycle alongside stateless 2026-07-28 requests.
+          description: Enables the complete MCP 2025-11-25 initialize/session/SSE lifecycle and the Codex legacy 2025-06-18 negotiation alongside stateless 2026-07-28 requests.
         request_body_bytes:
           type: integer
           format: int64

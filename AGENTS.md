@@ -22,8 +22,9 @@ control-plane snapshots, a separate JWT-authenticated Console API with
 forwarding, passive health, admission controls, durable spooled request logs,
 and reusable upstream clients. The optional `mcp-server` Cargo feature adds
 MCP endpoints at `/mcp/{slug}`: stateless `2026-07-28` is the default, while a
-database setting can also enable complete process-local `2025-11-25`
-Session/SSE compatibility. The currently implemented built-in kinds expose
+database setting can also enable process-local `2025-11-25` Session/SSE
+compatibility plus the `2025-06-18` negotiation used by Codex legacy mode. The
+currently implemented built-in kinds expose
 Codex-compatible `web.run` and single-image `image_gen.imagegen`
 generation/edit through the existing standalone-search and Images forwarding
 paths. A React + TypeScript
@@ -287,10 +288,11 @@ Axum HTTP
   authenticated existing `ApiOperation`. Do not loop back over HTTP, forward
   MCP/Origin/Host/client Authorization Headers upstream, or allow
   database-configured arbitrary tool code/schema. Modern `2026-07-28` requests
-  remain stateless. Optional `2025-11-25` compatibility may keep only
-  process-local RMCP lifecycle Sessions and must terminate them when global MCP
-  transport settings change; never put Search history, prompts, images, tool
-  arguments, or results into protocol Session state. Search ref-id
+  remain stateless. Optional legacy compatibility accepts `2025-11-25` and the
+  Codex legacy client's `2025-06-18` initialize negotiation, may keep only
+  process-local RMCP lifecycle Sessions, and must terminate them when global
+  MCP transport settings change; never put Search history, prompts, images,
+  tool arguments, or results into protocol Session state. Search ref-id
   continuation is explicit through `search_session_id`; derive provider Search
   IDs from API Key ID, MCP server ID, and the current model/policy scope so
   endpoints and policy versions cannot share context. Images fixes model,
@@ -435,10 +437,11 @@ pool isolation, transforms, and configured outbound proxies.
 21. **MCP is feature-gated and modern requests are stateless.** Empty RMCP origin allowlists
     normally disable validation, so the Gateway boundary explicitly rejects any present `Origin`
     when database `mcp.allowed_origins` is empty. Require modern per-request metadata by default.
-    When `allow_legacy_2025_11_25` is enabled, use RMCP's complete process-local Session lifecycle
-    (`initialize`/`initialized`, `Mcp-Session-Id`, GET SSE, DELETE) while keeping `2026-07-28`
-    requests stateless. Global MCP setting changes, disable, shutdown, and restart must terminate
-    legacy Sessions; multi-instance deployments require sticky `/mcp/*` routing. Keep
+    When `allow_legacy_2025_11_25` is enabled, accept `2025-11-25` and Codex legacy
+    `2025-06-18` negotiation through RMCP's complete process-local Session lifecycle
+    (`initialize`/`initialized`, `Mcp-Session-Id`, GET SSE, DELETE) while keeping
+    `2026-07-28` requests stateless. Global MCP setting changes, disable, shutdown, and restart
+    must terminate legacy Sessions; multi-instance deployments require sticky `/mcp/*` routing. Keep
     disabled/deleted MCP slugs out of the compiled registry. RMCP debug/trace events can format
     complete tool requests and results, so preserve the hard `info` cap for its sensitive tracing
     targets in `src/observability/mod.rs`.
