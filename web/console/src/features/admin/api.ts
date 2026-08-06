@@ -34,6 +34,9 @@ import type {
   ModelRuleView,
   ModelSyncPreview,
   ModelSyncPreviewRequest,
+  McpServerCreateInput,
+  McpServerInput,
+  McpServerView,
   MutationResponse,
   ProxyCreateInput,
   ProxyInput,
@@ -488,6 +491,41 @@ export const useUpdateConfigTemplate = makeUpdate<ConfigTemplateInput>(
   TEMPLATES_KEY,
   templateDetailKey,
 );
+
+// ---- MCP Servers ----
+const MCP_SERVERS_KEY = ["console", "mcp-servers"] as const;
+const mcpServerDetailKey = (id: string) =>
+  ["console", "mcp-servers", id] as const;
+export const useMcpServers = makeList<McpServerView>(
+  "/mcp-servers",
+  MCP_SERVERS_KEY,
+);
+export const useMcpServer = makeDetail<McpServerView>(
+  "/mcp-servers",
+  mcpServerDetailKey,
+);
+export const useCreateMcpServer = makeCreate<
+  McpServerCreateInput,
+  MutationResponse
+>("/mcp-servers", MCP_SERVERS_KEY);
+export const useUpdateMcpServer = makeUpdate<McpServerInput>(
+  "/mcp-servers",
+  MCP_SERVERS_KEY,
+  mcpServerDetailKey,
+);
+export function useDeleteMcpServer(id: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ ifMatch }: { ifMatch: string }) =>
+      apiSend<MutationResponse>(`/mcp-servers/${id}`, "DELETE", undefined, {
+        ifMatch,
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: MCP_SERVERS_KEY });
+      void queryClient.removeQueries({ queryKey: mcpServerDetailKey(id) });
+    },
+  });
+}
 
 // ---- Catalog sync ----
 export function useModelSyncPreview() {

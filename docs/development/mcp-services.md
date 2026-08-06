@@ -1,7 +1,7 @@
 # MCP 服务架构与实施提案
 
-> 状态：部分实现。Transport、registry、Search MCP、Images generation/edit MCP、Console CRUD
-> 和 `request_source = "mcp"` 已实现；专用 MCP 日志维度、管理页面和 Tasks 仍是后续阶段。
+> 状态：部分实现。Transport、registry、Search MCP、Images generation/edit MCP、Console CRUD、
+> 管理页面和 `request_source = "mcp"` 已实现；专用 MCP 日志维度和 Tasks 仍是后续阶段。
 > 当前行为以代码、测试、migration 和 OpenAPI 契约为准。
 
 ## 目标
@@ -644,11 +644,14 @@ DELETE /console/v1/mcp-servers/{id}
 - create/update/delete 在 serializable transaction 中校验完整候选快照、写 audit、提交后发布；
 - 删除使用 tombstone，slug 不复用；
 - Console 不接收或展示额外 MCP secret，因为客户端复用现有 API Key；
+- 管理页面位于 `/admin/mcp-servers`，显示 endpoint、kind、固定工具、模型规则、API 格式、设置和
+  启用状态；
+- create/edit 表单按 kind 提供 typed Search/Images 设置，只允许选择兼容 API 格式的模型规则；
+- slug 与 kind 创建后只读，更新和软删除使用详情 `ETag`，并在 `409` 时重新加载。
 
 后续管理能力：
 
 - `POST /console/v1/mcp-servers/{id}/validate` 只做编译和路由可用性检查，不发起付费上游请求；
-- 页面位于 `/admin/mcp-servers`，显示 endpoint、kind、模型、启用状态和配置错误；
 - 用户 API Key 页面可显示可复制 endpoint，但不改变“一次性显示 Key secret”的规则。
 
 ## 日志、计费与负载
@@ -745,7 +748,8 @@ workspace gate；不要为绕过冲突复制一套不完整 JSON-RPC/MCP parser�
 - [x] `web.run`；
 - [x] `request_source = "mcp"`；
 - [x] deterministic protocol、auth 与 Search integration tests；
-- [ ] 专用 MCP 日志维度、Console 管理页面、command-family 策略与多进程接续测试。
+- [x] Console 管理页面；
+- [ ] 专用 MCP 日志维度、command-family 策略与多进程接续测试。
 
 ### PR 2：Images generation
 
@@ -840,4 +844,5 @@ Images forwarding path 时，除 deterministic integration tests 外，完成前
    `request_limits.image_edit_*` 约束；
 4. Search `short` / `medium` / `long` 默认映射为 1000 / 3000 / 6000 tokens；
 5. 当前启用 Codex 的全部 `web.run` command family，实例级关闭策略后续实现；
-6. 当前只有管理员 Console API 管理 MCP；普通用户 endpoint 展示和管理页面后续实现。
+6. 当前由管理员 Console API 和 `/admin/mcp-servers` 页面管理 MCP；普通用户 API Key 页面展示
+   可复制 endpoint 仍是后续能力。

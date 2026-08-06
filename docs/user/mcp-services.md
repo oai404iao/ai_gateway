@@ -58,7 +58,27 @@ MCP 路由只挂载到公共 listener；Console listener 不提供 MCP transport
 
 ## 管理 MCP 实例
 
-管理员通过 Console API 管理实例：
+管理员可以在 Console 的“路由 → MCP 服务”中打开：
+
+```text
+/admin/mcp-servers
+```
+
+该页面提供：
+
+- Search 与 Images MCP 实例列表，包括相对 endpoint、固定工具名、绑定模型规则、API 格式、
+  kind-specific 设置和启用状态；
+- 创建表单，只显示与 kind 兼容的模型规则；
+- Search 的外部网络访问、上下文大小、允许/屏蔽域名和短/中/长输出 Token 上限；
+- Images 的 background、quality 和规范 `WIDTHxHEIGHT` 默认值；
+- 使用详情响应 `ETag` 的更新与删除；遇到并发修改时重新加载，而不是静默覆盖；
+- 删除前明确提示软删除会立即移出运行时 registry，但 `slug` 永久保留、不能复用。
+
+`slug` 与 `kind` 创建后不可修改。页面只显示相对路径 `/mcp/{slug}`；客户端使用的完整公开
+origin 仍由进程级 `[mcp].public_base_url` 决定。浏览器页面不会替代构建时的 `mcp-server`
+feature 或 TOML 中的 `[mcp].enabled` transport 开关。
+
+同一资源也可以通过管理员 Console API 管理：
 
 ```text
 GET    /console/v1/mcp-servers

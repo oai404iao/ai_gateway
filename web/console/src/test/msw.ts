@@ -20,6 +20,7 @@ import {
   COST_STATISTICS_REPORT,
   DEFAULT_USER_GROUP,
   EXPIRED_SESSION,
+  IMAGE_MCP_SERVER,
   MODEL,
   MODEL_RULE,
   NEW_API_KEY_SECRET,
@@ -33,6 +34,7 @@ import {
   PROXY_TEST_RESULT,
   REGISTRATION_INVITATION_CODE,
   REVOKED_SESSION,
+  SEARCH_MCP_SERVER,
   SESSION_AFFINITY_CACHE_REPORT,
   SPEND_LEADERBOARD_REPORT,
   SYSTEM_SETTINGS,
@@ -219,6 +221,39 @@ export const handlers = [
   http.get("/console/v1/routing/model-rules/:id", () =>
     HttpResponse.json(MODEL_RULE, {
       headers: { ETag: `"${MODEL_RULE.updated_at}"` },
+    }),
+  ),
+  http.get("/console/v1/mcp-servers", () =>
+    HttpResponse.json([SEARCH_MCP_SERVER, IMAGE_MCP_SERVER]),
+  ),
+  http.get("/console/v1/mcp-servers/:id", ({ params }) => {
+    const server =
+      String(params.id) === IMAGE_MCP_SERVER.id
+        ? IMAGE_MCP_SERVER
+        : SEARCH_MCP_SERVER;
+    return HttpResponse.json(server, {
+      headers: { ETag: `"${server.updated_at}"` },
+    });
+  }),
+  http.post("/console/v1/mcp-servers", () =>
+    HttpResponse.json(
+      {
+        id: SEARCH_MCP_SERVER.id,
+        correlation_id: "99999999-0000-0000-0000-000000000127",
+      },
+      { status: 201 },
+    ),
+  ),
+  http.put("/console/v1/mcp-servers/:id", ({ params }) =>
+    HttpResponse.json({
+      id: String(params.id),
+      correlation_id: "99999999-0000-0000-0000-000000000128",
+    }),
+  ),
+  http.delete("/console/v1/mcp-servers/:id", ({ params }) =>
+    HttpResponse.json({
+      id: String(params.id),
+      correlation_id: "99999999-0000-0000-0000-000000000129",
     }),
   ),
   http.get("/console/v1/network/proxies", () => HttpResponse.json([PROXY])),
