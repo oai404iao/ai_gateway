@@ -40,8 +40,9 @@ auth_body_bytes = 16_384
 enabled = false
 public_base_url = "https://api.example.com"
 allowed_origins = []
-# Full 2025-11-25 process-local Session/SSE compatibility. Multi-instance
-# deployments must use sticky routing while this is enabled.
+# Full 2025-11-25 process-local Session/SSE compatibility plus the 2025-06-18
+# negotiation used by Codex legacy mode. Multi-instance deployments must use
+# sticky routing while this is enabled.
 allow_legacy_2025_11_25 = false
 request_body_bytes = 4_194_304
 image_request_body_bytes = 33_554_432

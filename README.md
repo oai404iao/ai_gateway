@@ -40,8 +40,9 @@ separate management Console for users and administrators.
   edits over HTTP, SSE, and Responses WebSocket where applicable.
 - **Optional MCP transport** built with the `mcp-server` feature. It defaults
   to stateless `2026-07-28` and can also provide complete process-local
-  `2025-11-25` Session/SSE compatibility. PostgreSQL-managed `/mcp/{slug}`
-  instances expose Codex-compatible
+  `2025-11-25` Session/SSE compatibility, including the `2025-06-18`
+  initialize negotiation used by Codex legacy mode. PostgreSQL-managed
+  `/mcp/{slug}` instances expose Codex-compatible
   `web.run` and `image_gen.imagegen` generation/edit while reusing Gateway
   API keys, routing, admission, billing, and durable request logs.
 - **Priority and weighted routing** with passive health, optional session
@@ -82,7 +83,7 @@ separate management Console for users and administrators.
 | `GET /v1/responses` + Upgrade | Client API key | Proxies sequential Responses requests over WebSocket. |
 | `POST /v1/images/generations` | Client API key | Proxies non-streaming JSON Images generation requests. |
 | `POST /v1/images/edits` | Client API key | Proxies non-streaming multipart Images edit requests. |
-| `/mcp/{slug}` | Client API key | Optional MCP transport; stateless `2026-07-28` uses POST, while enabled `2025-11-25` compatibility also provides Session POST, GET SSE, and DELETE. |
+| `/mcp/{slug}` | Client API key | Optional MCP transport; stateless `2026-07-28` uses POST, while enabled legacy compatibility provides `2025-11-25`/Codex `2025-06-18` Session POST, GET SSE, and DELETE. |
 
 Each API format uses separate routing rules and never falls back or transforms
 into another format. Public `/v1/images/edits` JSON/data-URL edits, image streaming, embeddings,

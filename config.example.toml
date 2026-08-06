@@ -48,9 +48,9 @@ public_base_url = "https://api.example.com"
 # Browser Origin headers are rejected unless explicitly listed. Non-browser
 # MCP clients normally omit Origin.
 allowed_origins = []
-# Enables the complete 2025-11-25 initialize/session/SSE lifecycle alongside
-# stateless 2026-07-28. Legacy sessions are process-local and require sticky
-# routing in multi-instance deployments.
+# Enables the complete 2025-11-25 initialize/session/SSE lifecycle and accepts
+# the 2025-06-18 negotiation used by Codex legacy mode, alongside stateless
+# 2026-07-28. Legacy sessions are process-local and require sticky routing.
 allow_legacy_2025_11_25 = false
 # Independent limits for MCP JSON-RPC envelopes and bounded tool results.
 request_body_bytes = 4_194_304

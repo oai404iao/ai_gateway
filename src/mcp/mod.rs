@@ -261,7 +261,7 @@ impl McpService {
                         .headers()
                         .get("mcp-protocol-version")
                         .and_then(|value| value.to_str().ok())
-                        .is_some_and(|version| version != ProtocolVersion::V_2025_11_25.as_str()))
+                        .is_some_and(|version| !supported_legacy_protocol_version_str(version)))
             {
                 return StatusCode::BAD_REQUEST.into_response();
             }
@@ -381,6 +381,15 @@ fn origin_is_allowed(value: &HeaderValue, allowed_origins: &[String]) -> bool {
         .is_some_and(|origin| allowed_origins.iter().any(|allowed| allowed == &origin))
 }
 
+fn supported_legacy_protocol_version(version: &ProtocolVersion) -> bool {
+    version == &ProtocolVersion::V_2025_11_25 || version == &ProtocolVersion::V_2025_06_18
+}
+
+fn supported_legacy_protocol_version_str(version: &str) -> bool {
+    version == ProtocolVersion::V_2025_11_25.as_str()
+        || version == ProtocolVersion::V_2025_06_18.as_str()
+}
+
 async fn handle_mcp_request(
     State(service): State<McpService>,
     Path(slug): Path<String>,
@@ -466,7 +475,11 @@ impl McpHandler {
 
     fn versions(&self) -> Cow<'static, [ProtocolVersion]> {
         if self.allow_legacy_2025_11_25 {
-            Cow::Borrowed(&[ProtocolVersion::V_2026_07_28, ProtocolVersion::V_2025_11_25])
+            Cow::Borrowed(&[
+                ProtocolVersion::V_2026_07_28,
+                ProtocolVersion::V_2025_11_25,
+                ProtocolVersion::V_2025_06_18,
+            ])
         } else {
             Cow::Borrowed(&[ProtocolVersion::V_2026_07_28])
         }
@@ -488,17 +501,18 @@ impl ServerHandler for McpHandler {
         context: RequestContext<RoleServer>,
     ) -> Result<InitializeResult, ErrorData> {
         if !self.allow_legacy_2025_11_25
-            || request.protocol_version != ProtocolVersion::V_2025_11_25
+            || !supported_legacy_protocol_version(&request.protocol_version)
         {
             return Err(ErrorData::invalid_request(
-                "initialize is not supported by the stateless MCP 2026-07-28 transport",
+                "initialize is not supported for this MCP protocol version",
                 None,
             ));
         }
+        let protocol_version = request.protocol_version.clone();
         context.peer.set_peer_info(request.clone());
         let principal = Self::principal(&context)?;
         let mut info = Self::server_info(Some(principal));
-        info.protocol_version = ProtocolVersion::V_2025_11_25;
+        info.protocol_version = protocol_version;
         Ok(info)
     }
 

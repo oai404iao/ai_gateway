@@ -227,9 +227,9 @@ const zhCN: Record<string, string> = {
   "Allowed MCP browser origins": "允许的 MCP 浏览器 Origin",
   "One exact HTTP(S) origin per line. Empty rejects requests carrying Origin while allowing non-browser clients.":
     "每行一个精确 HTTP(S) Origin；留空时拒绝所有携带 Origin 的请求，但允许不带 Origin 的非浏览器客户端。",
-  "Enable MCP 2025-11-25 compatibility": "启用 MCP 2025-11-25 兼容",
-  "Adds initialize/initialized, Mcp-Session-Id, GET SSE, and DELETE alongside stateless 2026-07-28. Legacy sessions are process-local and require sticky routing in multi-instance deployments.":
-    "在无状态 2026-07-28 之外启用 initialize/initialized、Mcp-Session-Id、GET SSE 与 DELETE。旧协议 Session 仅在当前进程内有效，多实例部署需要粘性路由。",
+  "Enable legacy MCP compatibility": "启用旧版 MCP 兼容",
+  "Adds 2025-11-25 sessions and the Codex legacy 2025-06-18 negotiation alongside stateless 2026-07-28. Legacy sessions are process-local and require sticky routing in multi-instance deployments.":
+    "在无状态 2026-07-28 之外启用 2025-11-25 Session，以及 Codex 旧版模式使用的 2025-06-18 协商。旧协议 Session 仅在当前进程内有效，多实例部署需要粘性路由。",
   "Search request limit (bytes)": "Search 请求上限（字节）",
   "Images request limit (bytes)": "Images 请求上限（字节）",
   "Search result limit (bytes)": "Search 结果上限（字节）",

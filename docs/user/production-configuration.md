@@ -103,10 +103,11 @@ MCP 定义、绑定模型规则以及 Search/Images 策略存储在 PostgreSQL�
 `[mcp]` 只在数据库首次缺少该设置时提供一次性引导值。Image MCP 的 inline edit 另外固定为
 单张解码后 16 MiB、合计 24 MiB，并继续受公共 `request_limits.image_edit_*` 限制。
 
-默认 `2026-07-28` 请求保持无状态。开启 `allow_legacy_2025_11_25` 后会同时提供完整旧协议
-Session/SSE 生命周期；这些 Session 只保存在当前 Gateway 进程中，重启后失效，多实例必须为
-`/mcp/*` 配置粘性路由。修改任一全局 MCP transport 设置会关闭当前旧协议 Session。完整配置和
-权限边界见 [MCP 服务](mcp-services.md)。
+默认 `2026-07-28` 请求保持无状态。开启 `allow_legacy_2025_11_25` 后会同时提供完整
+`2025-11-25` Session/SSE 生命周期，并接受 Codex 旧版模式使用的 `2025-06-18` 协商；这些
+Session 只保存在当前 Gateway 进程中，重启后失效，多实例必须为 `/mcp/*` 配置粘性路由。
+修改任一全局 MCP transport 设置会关闭当前旧协议 Session。完整配置和权限边界见
+[MCP 服务](mcp-services.md)。
 
 ### 日志级别
 

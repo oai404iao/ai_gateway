@@ -1701,7 +1701,7 @@ export interface components {
             /** @description Exact browser origins allowed to call MCP endpoints. An empty list rejects every request carrying Origin while allowing non-browser clients without Origin. */
             allowed_origins: string[];
             /**
-             * @description Enables the complete MCP 2025-11-25 initialize/session/SSE lifecycle alongside stateless 2026-07-28 requests.
+             * @description Enables the complete MCP 2025-11-25 initialize/session/SSE lifecycle and the Codex legacy 2025-06-18 negotiation alongside stateless 2026-07-28 requests.
              * @default false
              */
             allow_legacy_2025_11_25: boolean;

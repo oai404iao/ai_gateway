@@ -29,6 +29,12 @@ Versioning.
   kind-compatible model-rule selection, typed Search and Images settings,
   immutable endpoint identity, and ETag conflict handling.
 
+### Fixed
+
+- Accept the `2025-06-18` initialize/session negotiation used by Codex legacy
+  MCP mode whenever `allow_legacy_2025_11_25` is enabled, while continuing to
+  support complete `2025-11-25` sessions and stateless `2026-07-28` requests.
+
 ### Security
 
 - Validate MCP Host, Origin, strict modern per-request protocol metadata, and

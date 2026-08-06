@@ -1877,6 +1877,99 @@ async fn optional_legacy_mode_supports_the_complete_session_lifecycle() {
 }
 
 #[tokio::test]
+async fn codex_legacy_2025_06_18_client_completes_the_session_handshake() {
+    let (router, _, _, _upstream) = harness_with_options(vec![], true).await;
+    let initialize = Request::post("/mcp/search")
+        .header(HOST, "mcp.example.test")
+        .header(AUTHORIZATION, format!("Bearer {CLIENT_KEY}"))
+        .header(CONTENT_TYPE, "application/json")
+        .header(ACCEPT, "application/json, text/event-stream")
+        .header("MCP-Protocol-Version", "2025-06-18")
+        .body(Body::from(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {"elicitation": {}},
+                    "clientInfo": {
+                        "name": "codex-mcp-client",
+                        "title": "Codex",
+                        "version": "0.146.0"
+                    }
+                }
+            })
+            .to_string(),
+        ))
+        .unwrap();
+
+    let response = router.clone().oneshot(initialize).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let session_id = response
+        .headers()
+        .get("Mcp-Session-Id")
+        .expect("Codex-compatible initialize returns a session ID")
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let response = mcp_response_json(response).await;
+    assert_eq!(
+        response["result"]["protocolVersion"], "2025-06-18",
+        "{response}"
+    );
+
+    let initialized = router
+        .clone()
+        .oneshot(
+            Request::post("/mcp/search")
+                .header(HOST, "mcp.example.test")
+                .header(AUTHORIZATION, format!("Bearer {CLIENT_KEY}"))
+                .header(CONTENT_TYPE, "application/json")
+                .header(ACCEPT, "application/json, text/event-stream")
+                .header("MCP-Protocol-Version", "2025-06-18")
+                .header("Mcp-Session-Id", &session_id)
+                .body(Body::from(
+                    json!({
+                        "jsonrpc": "2.0",
+                        "method": "notifications/initialized"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(initialized.status(), StatusCode::ACCEPTED);
+
+    let tools = router
+        .oneshot(
+            Request::post("/mcp/search")
+                .header(HOST, "mcp.example.test")
+                .header(AUTHORIZATION, format!("Bearer {CLIENT_KEY}"))
+                .header(CONTENT_TYPE, "application/json")
+                .header(ACCEPT, "application/json, text/event-stream")
+                .header("MCP-Protocol-Version", "2025-06-18")
+                .header("Mcp-Session-Id", session_id)
+                .body(Body::from(
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "method": "tools/list",
+                        "params": {}
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(tools.status(), StatusCode::OK);
+    let tools = mcp_response_json(tools).await;
+    assert_eq!(tools["result"]["tools"][0]["name"], "web.run");
+}
+
+#[tokio::test]
 async fn configured_browser_origin_receives_cors_and_passes_origin_validation() {
     let origin = "https://client.example.test";
     let (router, _, _, _upstream) = harness_with_origins(vec![origin.into()]).await;

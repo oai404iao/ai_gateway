@@ -20,7 +20,8 @@ operation；当前 Images 实现非流式 JSON generation 和非流式 multipart
 
 可选 `mcp-server` feature 不是第四种数据面格式。它在公共 listener 上提供
 `/mcp/{slug}` transport；默认使用无状态 `2026-07-28` POST，可选兼容完整
-`2025-11-25` Session/SSE。当前 `web_search` kind 把 `web.run` 参数编译为
+`2025-11-25` Session/SSE，并接受 Codex 旧版模式使用的 `2025-06-18` 协商。当前
+`web_search` kind 把 `web.run` 参数编译为
 `ApiOperation::StandaloneWebSearch`，`image` kind 把 `image_gen.imagegen` 参数编译为
 `ApiOperation::ImagesGeneration` 或 `ApiOperation::ImagesEdit`，随后进入同一认证后 Proxy
 执行核心。
@@ -134,7 +135,8 @@ PNG/JPEG/WebP base64 data URL，并逐块解码为既有 replayable multipart ed
 `system_settings` 并随快照热更新；TOML 只在该节首次缺失时引导。默认只支持
 `2026-07-28` 每请求 metadata，不发 `Mcp-Session-Id`。开启
 `allow_legacy_2025_11_25` 后，RMCP 同时提供 `initialize` / `notifications/initialized`、
-`Mcp-Session-Id`、请求级/独立 GET SSE 和 DELETE；现代请求仍无状态。旧 Session 使用进程内
+`Mcp-Session-Id`、请求级/独立 GET SSE 和 DELETE；它协商 `2025-11-25`，也接受 Codex
+旧版模式固定发送的 `2025-06-18`。现代请求仍无状态。旧 Session 使用进程内
 `LocalSessionManager`，设置变更、关闭或重启会终止，集群部署必须在入口层保持粘性路由。
 
 Search 使用普通 MCP envelope 上限；Image endpoint 使用独立 inline-edit envelope 上限。
