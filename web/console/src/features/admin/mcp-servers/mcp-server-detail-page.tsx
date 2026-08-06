@@ -187,7 +187,7 @@ export function McpServerDetailPage() {
             : form.watch("name") || t("MCP server")
         }
         description={t(
-          "Expose one stateless MCP tool through an existing Gateway model rule.",
+          "Expose one managed MCP tool through an existing Gateway model rule.",
         )}
         backPath="/admin/mcp-servers"
         backLabel={t("Back to MCP servers")}
@@ -251,7 +251,7 @@ export function McpServerDetailPage() {
                 </CardTitle>
                 <CardDescription>
                   {t(
-                    "The process-level MCP transport must also be compiled and enabled before public endpoints are reachable.",
+                    "The binary must include the mcp-server feature and the MCP transport must be enabled in System settings before public endpoints are reachable.",
                   )}
                 </CardDescription>
               </CardHeader>

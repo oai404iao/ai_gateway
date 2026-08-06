@@ -262,15 +262,24 @@ impl ProxyService {
         ),
         ProxyError,
     > {
+        let snapshot = self.runtime.snapshot();
+        let api_key = self.authenticate_api_key_in_snapshot(headers, &snapshot)?;
+        Ok((snapshot, api_key))
+    }
+
+    pub(crate) fn authenticate_api_key_in_snapshot(
+        &self,
+        headers: &HeaderMap,
+        snapshot: &Arc<crate::domain::CompiledRuntimeConfig>,
+    ) -> Result<Arc<CompiledApiKey>, ProxyError> {
         let client_key = parse_bearer_token(headers).inspect_err(|_| {
             trace_unlogged("invalid_api_key");
         })?;
-        let snapshot = self.runtime.snapshot();
         let api_key = snapshot.authenticate(client_key).ok_or_else(|| {
             trace_unlogged("invalid_or_expired_api_key");
             ProxyError::invalid_api_key()
         })?;
-        Ok((snapshot, api_key))
+        Ok(api_key)
     }
 
     #[cfg(feature = "mcp-server")]

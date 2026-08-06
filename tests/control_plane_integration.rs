@@ -6,6 +6,10 @@ use std::{
     time::Duration,
 };
 
+#[cfg(feature = "mcp-server")]
+use ai_gateway::mcp::McpService;
+#[cfg(feature = "mcp-server")]
+use ai_gateway::persistence::SystemMcpSettingsInput;
 use ai_gateway::{
     admission::AdmissionRuntime,
     application::{
@@ -41,8 +45,6 @@ use ai_gateway::{
     upstream::UpstreamClientRegistry,
     workers::{ControlPlaneReloader, DurableRequestLogWorker, RequestLogWorker},
 };
-#[cfg(feature = "mcp-server")]
-use ai_gateway::{mcp::McpService, runtime_config::McpRuntimeConfig};
 use axum::{
     Router,
     body::{Body, Bytes},
@@ -113,6 +115,7 @@ fn system_settings() -> SystemSettingsInput {
         scheduled_testing: Default::default(),
         session_affinity: Default::default(),
         websocket: Default::default(),
+        mcp: Default::default(),
     }
 }
 
@@ -2680,6 +2683,19 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
         }],
     };
     settings.websocket.enabled = true;
+    #[cfg(feature = "mcp-server")]
+    {
+        settings.mcp = SystemMcpSettingsInput {
+            enabled: true,
+            public_base_url: Some("https://mcp.example.test".into()),
+            allowed_origins: Vec::new(),
+            allow_legacy_2025_11_25: false,
+            request_body_bytes: 64 * 1_024,
+            image_request_body_bytes: 512 * 1_024,
+            search_result_bytes: 64 * 1_024,
+            image_result_bytes: 512 * 1_024,
+        };
+    }
     sqlx::query("UPDATE system_settings SET value=$2 WHERE setting_key=$1")
         .bind("forwarding_policy")
         .bind(serde_json::to_value(settings).unwrap())
@@ -2853,7 +2869,7 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
     let connectors = UpstreamConnectorRegistry::default().with_codex(codex_connector.clone());
     let logs = RecordingRequestLogSink::default();
     let proxy = ProxyService::with_dependencies_and_registry(
-        runtime,
+        Arc::clone(&runtime),
         1_048_576,
         upstream_clients,
         Arc::new(logs.clone()),
@@ -3329,20 +3345,7 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
 
     #[cfg(feature = "mcp-server")]
     {
-        let mcp = McpService::new(
-            proxy.clone(),
-            &McpRuntimeConfig {
-                public_base_url: "https://mcp.example.test".into(),
-                allowed_hosts: vec!["mcp.example.test".into()],
-                allowed_origins: vec![],
-                allow_legacy_2025_11_25: false,
-                request_body_bytes: 64 * 1_024,
-                image_request_body_bytes: 512 * 1_024,
-                search_result_bytes: 64 * 1_024,
-                image_result_bytes: 512 * 1_024,
-            },
-        )
-        .router();
+        let mcp = McpService::new(proxy.clone(), Arc::clone(&runtime)).router();
         let mcp_edit = mcp
             .oneshot(
                 axum::http::Request::builder()

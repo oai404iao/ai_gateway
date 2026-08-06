@@ -102,10 +102,11 @@ verification_key_path = "./config/console-jwt-public.pem"
 - `image_edit_spool_directory` 必须位于容量足够的本地文件系统。Unix 上目录和临时文件分别使用
   `0700` 与 `0600`；图片字节不会进入请求日志。
 - `console_body_bytes` 限制已认证 Console 写操作；`auth_body_bytes` 限制登录、注册、刷新和邀请激活请求。
-- 启用 `mcp-server` feature 和 `[mcp]` 后，`request_body_bytes` 限制 Search MCP JSON-RPC
-  envelope，`image_request_body_bytes` 独立限制 Image MCP inline edit envelope，
-  `search_result_bytes` 限制 Search MCP 有界收集的上游结果，`image_result_bytes` 限制
-  Images generation/edit MCP 的单图 JSON/base64 结果。
+- 启用 `mcp-server` feature 和数据库系统设置中的 MCP transport 后，`request_body_bytes`
+  限制 Search MCP JSON-RPC envelope，`image_request_body_bytes` 独立限制 Image MCP
+  inline edit envelope，`search_result_bytes` 限制 Search MCP 有界收集的上游结果，
+  `image_result_bytes` 限制 Images generation/edit MCP 的单图 JSON/base64 结果。TOML
+  `[mcp]` 只提供首次引导值。
 
 ## 上游超时
 
@@ -143,7 +144,8 @@ Completions、Responses 和其他辅助上游请求继续使用 `response_header
   路由规则；当前只支持非流式 generation。
 - `POST /v1/images/edits`：接受带 `model`、一个或多个 `image`/`image[]` 和可选
   `mask` 的 `multipart/form-data`，仅匹配 Images 路由规则。
-- 可选 `POST /mcp/{slug}`：无状态 MCP `2026-07-28` transport。当前已实现的
+- 可选 `/mcp/{slug}`：默认接受无状态 MCP `2026-07-28` POST；启用旧协议兼容后还支持
+  `2025-11-25` 的 Session POST、GET SSE 和 DELETE。当前已实现的
   `web_search` kind 暴露 `web.run`，`image` kind 暴露单图 `image_gen.imagegen`
   generation/edit，并在同一不可变快照内调用既有 standalone search、Images generation
   或 Images edit Proxy use case。
@@ -155,7 +157,8 @@ MCP 不是第四种 `ApiFormat`，也不会通过本机 HTTP 回环到 `/v1/*`�
 Key：Search 使用 Responses `proxy` 权限，Images generation/edit 使用 Images `proxy` 权限，
 并继续执行模型规则和 Channel 可达性。Search ref-id 的跨请求连续性通过客户端显式回传
 `search_session_id`；Images 不保存最近图片或文件，edit 只接受客户端显式回传的受限 data URL。
-完整配置、协议 Header 和工具边界见[无状态 MCP 服务](mcp-services.md)。
+旧协议 Session 只保存在当前进程中，多实例需要粘性路由；Search ref-id 与图片输入仍必须显式
+回传，不依赖协议 Session。完整配置、协议 Header 和工具边界见 [MCP 服务](mcp-services.md)。
 
 所有公开数据面请求先应用客户端入口白名单：未列出的 Header 被忽略，未列出的顶层 JSON 或
 multipart 字段返回 `400 request_body_field_unsupported`。当前只检查顶层字段，允许字段内部的

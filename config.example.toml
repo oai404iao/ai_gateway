@@ -37,9 +37,10 @@ console_body_bytes = 262_144
 auth_body_bytes = 16_384
 
 [mcp]
-# Stateless MCP 2026-07-28 endpoints are mounted as /mcp/{slug} on the public
-# listener only when the binary includes --features mcp-server and this switch
-# is enabled. Individual endpoints are managed in PostgreSQL through Console.
+# One-time bootstrap values for the database-backed MCP transport settings.
+# They are inserted when the system-settings row or its MCP section is absent;
+# after startup, edit them through Console System settings. The binary must
+# include --features mcp-server before an enabled transport can start.
 enabled = false
 # Public HTTP(S) origin used to publish endpoint URLs and derive the accepted
 # Host header. Do not include a path.
@@ -47,7 +48,9 @@ public_base_url = "https://api.example.com"
 # Browser Origin headers are rejected unless explicitly listed. Non-browser
 # MCP clients normally omit Origin.
 allowed_origins = []
-# Optional compatibility for pre-2026 clients; the server remains sessionless.
+# Enables the complete 2025-11-25 initialize/session/SSE lifecycle alongside
+# stateless 2026-07-28. Legacy sessions are process-local and require sticky
+# routing in multi-instance deployments.
 allow_legacy_2025_11_25 = false
 # Independent limits for MCP JSON-RPC envelopes and bounded tool results.
 request_body_bytes = 4_194_304

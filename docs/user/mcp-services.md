@@ -1,22 +1,23 @@
-# 无状态 MCP 服务
+# MCP 服务
 
-> 状态：当前实现。已提供可选的 Search MCP 与无状态 Images generation/edit MCP。
+> 状态：当前实现。已提供 Search 与 Images generation/edit MCP；默认使用无状态
+> `2026-07-28`，也可启用完整的 `2025-11-25` Session/SSE 兼容。
 
 ## 适用范围
 
-启用 `mcp-server` Cargo feature 后，Gateway 可以在公共 listener 上提供无状态
-Streamable HTTP MCP endpoint，使只适配 MCP 的客户端复用现有 API Key、Responses
-与 Images 路由、Connector、准入、计费和请求日志。
+启用 `mcp-server` Cargo feature 后，Gateway 可以在公共 listener 上提供 Streamable HTTP
+MCP endpoint，使只适配 MCP 的客户端复用现有 API Key、Responses 与 Images 路由、Connector、
+准入、计费和请求日志。
 
 当前实现：
 
 | kind | endpoint | tool | Gateway 操作 |
 | --- | --- | --- | --- |
-| `web_search` | `POST /mcp/{slug}` | `web.run` | `StandaloneWebSearch` |
-| `image` | `POST /mcp/{slug}` | `image_gen.imagegen` | `ImagesGeneration` 或 `ImagesEdit` |
+| `web_search` | `/mcp/{slug}` | `web.run` | `StandaloneWebSearch` |
+| `image` | `/mcp/{slug}` | `image_gen.imagegen` | `ImagesGeneration` 或 `ImagesEdit` |
 
-当前不提供 MCP OAuth、stdio transport、服务端 Session、独立 SSE GET、prompts、resources
-或 Tasks。
+当前不提供 MCP OAuth、stdio transport、prompts、resources 或 Tasks。现代协议不创建 Session；
+只有管理员显式开启旧协议兼容时才提供进程内 Session、GET SSE 和 DELETE。
 
 ## 构建与启用
 
@@ -26,7 +27,7 @@ MCP 代码默认不编入二进制。构建时启用：
 cargo build --release --features mcp-server
 ```
 
-然后在 TOML 中启用进程级 transport：
+`[mcp]` 是数据库系统设置首次缺失时的一次性引导值：
 
 ```toml
 [mcp]
@@ -45,16 +46,23 @@ image_result_bytes = 33554432
 - 缺少 `Origin` 的非浏览器客户端可以访问。
 - 请求带有 `Origin` 时，必须精确匹配非空的 `allowed_origins`；空列表会拒绝所有带
   `Origin` 的请求，而不是放开浏览器来源。
-- `allow_legacy_2025_11_25` 默认关闭。关闭时要求 MCP `2026-07-28` 的每请求 metadata
-  和标准 `Mcp-Method` / `Mcp-Name` Header。
+- `allow_legacy_2025_11_25` 默认关闭。关闭时只接受 MCP `2026-07-28` 的每请求 metadata
+  和标准 `Mcp-Method` / `Mcp-Name` Header。开启后同时完整支持 `2025-11-25` 的
+  `initialize` / `notifications/initialized`、`Mcp-Session-Id`、请求级 SSE、独立 GET SSE
+  和 DELETE Session。
 - `request_body_bytes` 限制 Search MCP 的 JSON-RPC envelope，默认 4 MiB。
 - `image_request_body_bytes` 独立限制 Image MCP 的 JSON-RPC envelope，使 inline data URL
   edit 不会提高 Search 上限；默认 32 MiB、硬上限 64 MiB。
 - `image_result_bytes` 限制单次 Images generation/edit 收集的上游 JSON/base64，默认 32 MiB，
   硬上限 64 MiB。
-- 如果 TOML 启用了 MCP，但二进制未编译 `mcp-server` feature，启动会被拒绝。
+- 如果数据库中的 MCP transport 已启用，但二进制未编译 `mcp-server` feature，候选配置会被拒绝。
 
-MCP 路由只挂载到公共 listener；Console listener 不提供 MCP transport。
+首次启动或升级完成后，到 Console 的“系统 → 系统设置”（`/admin/system`）修改这些字段；保存
+后会发布新的运行时快照，无需重启。修改 transport 设置或关闭 MCP 会终止当前进程中的旧协议 Session。旧协议
+Session 不写入 PostgreSQL，重启后失效；多实例部署启用旧协议时必须对 `/mcp/*` 使用粘性路由。
+
+MCP 路由只挂载到公共 listener；Console listener 不提供 MCP transport。生产镜像仍必须编译
+`mcp-server` feature，数据库开关不能动态加载未编入二进制的代码。
 
 ## 管理 MCP 实例
 
@@ -75,8 +83,8 @@ MCP 路由只挂载到公共 listener；Console listener 不提供 MCP transport
 - 删除前明确提示软删除会立即移出运行时 registry，但 `slug` 永久保留、不能复用。
 
 `slug` 与 `kind` 创建后不可修改。页面只显示相对路径 `/mcp/{slug}`；客户端使用的完整公开
-origin 仍由进程级 `[mcp].public_base_url` 决定。浏览器页面不会替代构建时的 `mcp-server`
-feature 或 TOML 中的 `[mcp].enabled` transport 开关。
+origin 由 Console“系统设置”中的 `mcp.public_base_url` 决定。MCP 实例页面不会替代构建时的
+`mcp-server` feature 或数据库中的全局 MCP transport 开关。
 
 同一资源也可以通过管理员 Console API 管理：
 
@@ -183,7 +191,8 @@ Search/Images 请求 body、上游 Header 或请求日志。
 
 首次调用会在 `structuredContent.search_session_id` 返回一个 UUID。后续使用 Search ref id
 执行 `open`、`click`、`find` 或 `screenshot` 时，客户端必须把它作为
-`arguments.search_session_id` 回传。服务端不保存 Session；Gateway 根据 API Key ID、MCP
+`arguments.search_session_id` 回传。服务端不保存 Search 历史或 provider Search Session；
+Gateway 根据 API Key ID、MCP
 server ID、当前模型/策略 scope 和该 UUID 确定性派生上游 Search ID，因此请求可以由任意
 Gateway 实例处理，并且同一 API Key 在不同 MCP endpoint 复用相同 UUID 时也不会共享 Search
 上下文。管理员更改绑定模型或 Search 策略后，旧 ref id 会自然失效，不能跨策略版本继续使用。

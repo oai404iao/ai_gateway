@@ -2074,7 +2074,7 @@ paths:
       security: [{ bearerAuth: [] }]
       responses:
         "200":
-          description: Configured stateless MCP server instances.
+          description: Configured MCP server instances.
           content:
             application/json:
               schema:
@@ -2415,7 +2415,7 @@ paths:
       security: [{ bearerAuth: [] }]
       responses:
         "200":
-          description: Database-backed forwarding, retry, health, automation, scheduled-test, session-affinity, and Responses WebSocket defaults.
+          description: Database-backed forwarding, retry, health, automation, scheduled-test, session-affinity, Responses WebSocket, and MCP transport defaults.
           headers:
             ETag: { $ref: "#/components/headers/ETag" }
           content:
@@ -3069,11 +3069,66 @@ components:
           default: 3300
           description: Must be greater than idle_timeout_seconds.
 
+    SystemMcpSettings:
+      type: object
+      required:
+        [enabled, public_base_url, allowed_origins, allow_legacy_2025_11_25,
+         request_body_bytes, image_request_body_bytes, search_result_bytes, image_result_bytes]
+      properties:
+        enabled:
+          type: boolean
+          default: false
+          description: Mounts configured MCP endpoints on the public listener when the binary includes the mcp-server feature.
+        public_base_url:
+          type: string
+          format: uri
+          maxLength: 2048
+          nullable: true
+          description: Public HTTP(S) origin used to derive the accepted Host authority. Required when enabled; paths, credentials, query strings, and fragments are forbidden.
+        allowed_origins:
+          type: array
+          maxItems: 64
+          description: Exact browser origins allowed to call MCP endpoints. An empty list rejects every request carrying Origin while allowing non-browser clients without Origin.
+          items:
+            type: string
+            format: uri
+            maxLength: 2048
+        allow_legacy_2025_11_25:
+          type: boolean
+          default: false
+          description: Enables the complete MCP 2025-11-25 initialize/session/SSE lifecycle alongside stateless 2026-07-28 requests.
+        request_body_bytes:
+          type: integer
+          format: int64
+          minimum: 1
+          default: 4194304
+          description: Maximum Search MCP JSON-RPC request envelope size.
+        image_request_body_bytes:
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 67108864
+          default: 33554432
+          description: Maximum Images MCP JSON-RPC request envelope size.
+        search_result_bytes:
+          type: integer
+          format: int64
+          minimum: 1
+          default: 4194304
+          description: Maximum collected Search MCP upstream result size.
+        image_result_bytes:
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 67108864
+          default: 33554432
+          description: Maximum collected Images MCP JSON/base64 result size.
+
     SystemSettingsInput:
       type: object
       required:
         [api_hosts, upstream, request_retry, passive_health, automatic_disable, scheduled_testing,
-         session_affinity, websocket]
+         session_affinity, websocket, mcp]
       properties:
         api_hosts:
           type: array
@@ -3090,6 +3145,7 @@ components:
         scheduled_testing: { $ref: "#/components/schemas/SystemScheduledTestingSettings" }
         session_affinity: { $ref: "#/components/schemas/SystemSessionAffinitySettings" }
         websocket: { $ref: "#/components/schemas/SystemWebSocketSettings" }
+        mcp: { $ref: "#/components/schemas/SystemMcpSettings" }
 
     SystemSettings:
       allOf:

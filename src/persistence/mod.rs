@@ -36,15 +36,17 @@ use uuid::Uuid;
 use crate::{
     domain::{
         ApiFormat, AutomaticDisableTrigger, DEFAULT_IMAGES_RESPONSE_HEADER_TIMEOUT_SECONDS,
-        DEFAULT_STANDALONE_WEB_SEARCH_RESPONSE_HEADER_TIMEOUT_SECONDS, MAX_REQUEST_RETRIES,
-        McpServerKind, RequestLogEvent,
+        DEFAULT_MCP_IMAGE_REQUEST_BODY_BYTES, DEFAULT_MCP_IMAGE_RESULT_BYTES,
+        DEFAULT_MCP_REQUEST_BODY_BYTES, DEFAULT_MCP_SEARCH_RESULT_BYTES,
+        DEFAULT_STANDALONE_WEB_SEARCH_RESPONSE_HEADER_TIMEOUT_SECONDS, MAX_MCP_IMAGE_BYTES,
+        MAX_REQUEST_RETRIES, McpServerKind, RequestLogEvent,
     },
     request_log_journal::EncodedRequestLog,
 };
 
 pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
-/// Singleton row that supplies runtime forwarding defaults.
+/// Singleton row that supplies database-backed process-wide runtime settings.
 pub const FORWARDING_SETTINGS_KEY: &str = "forwarding_policy";
 pub const SYSTEM_PROBE_USER_ID: Uuid = Uuid::from_u128(0x2c2e_3fd5_07e6_4c44_b5c7_cfe4_7bda_2b10);
 pub const SYSTEM_PROBE_API_KEY_ID: Uuid =
@@ -109,6 +111,8 @@ pub struct SystemSettingsInput {
     pub session_affinity: SystemSessionAffinitySettingsInput,
     #[serde(default)]
     pub websocket: SystemWebSocketSettingsInput,
+    #[serde(default)]
+    pub mcp: SystemMcpSettingsInput,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -229,6 +233,42 @@ impl Default for SystemWebSocketSettingsInput {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+pub struct SystemMcpSettingsInput {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub public_base_url: Option<String>,
+    #[serde(default)]
+    pub allowed_origins: Vec<String>,
+    #[serde(default)]
+    pub allow_legacy_2025_11_25: bool,
+    #[serde(default = "default_mcp_request_body_bytes")]
+    pub request_body_bytes: usize,
+    #[serde(default = "default_mcp_image_request_body_bytes")]
+    pub image_request_body_bytes: usize,
+    #[serde(default = "default_mcp_search_result_bytes")]
+    pub search_result_bytes: usize,
+    #[serde(default = "default_mcp_image_result_bytes")]
+    pub image_result_bytes: usize,
+}
+
+impl Default for SystemMcpSettingsInput {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            public_base_url: None,
+            allowed_origins: Vec::new(),
+            allow_legacy_2025_11_25: false,
+            request_body_bytes: default_mcp_request_body_bytes(),
+            image_request_body_bytes: default_mcp_image_request_body_bytes(),
+            search_result_bytes: default_mcp_search_result_bytes(),
+            image_result_bytes: default_mcp_image_result_bytes(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct SystemSessionAffinityRuleInput {
     pub name: String,
     pub enabled: bool,
@@ -287,6 +327,22 @@ const fn default_websocket_idle_timeout_seconds() -> u64 {
 
 const fn default_websocket_max_connection_age_seconds() -> u64 {
     55 * 60
+}
+
+const fn default_mcp_request_body_bytes() -> usize {
+    DEFAULT_MCP_REQUEST_BODY_BYTES
+}
+
+const fn default_mcp_image_request_body_bytes() -> usize {
+    DEFAULT_MCP_IMAGE_REQUEST_BODY_BYTES
+}
+
+const fn default_mcp_search_result_bytes() -> usize {
+    DEFAULT_MCP_SEARCH_RESULT_BYTES
+}
+
+const fn default_mcp_image_result_bytes() -> usize {
+    DEFAULT_MCP_IMAGE_RESULT_BYTES
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -4372,10 +4428,12 @@ impl ControlPlaneRepository {
         })
     }
 
-    /// Inserts the first database-backed forwarding policy from bootstrap TOML.
+    /// Inserts the first database-backed system policy from bootstrap TOML.
     ///
-    /// Existing rows are never overwritten, so all later runtime reads use the
-    /// database as the sole source of truth.
+    /// Existing fields are never overwritten. The MCP section is filled once
+    /// from bootstrap values when upgrading a row that predates database-backed
+    /// MCP settings; all later runtime reads use the database as the sole
+    /// source of truth.
     pub async fn ensure_system_settings(
         &self,
         input: SystemSettingsInput,
@@ -4402,6 +4460,46 @@ impl ControlPlaneRepository {
             .bind(system_settings_audit_value(&value))
             .execute(&mut *transaction)
             .await?;
+        } else {
+            let before = sqlx::query_scalar::<_, Value>(
+                "SELECT value FROM system_settings WHERE setting_key=$1 FOR UPDATE",
+            )
+            .bind(FORWARDING_SETTINGS_KEY)
+            .fetch_optional(&mut *transaction)
+            .await?
+            .ok_or(RepositoryError::NotFound)?;
+            if !before
+                .as_object()
+                .is_some_and(|value| value.contains_key("mcp"))
+            {
+                let mut after = before.clone();
+                after
+                    .as_object_mut()
+                    .ok_or(RepositoryError::Validation)?
+                    .insert(
+                        "mcp".into(),
+                        serde_json::to_value(&input.mcp).expect("MCP settings serialize"),
+                    );
+                let settings: SystemSettingsInput = serde_json::from_value(after.clone())
+                    .map_err(|_| RepositoryError::Validation)?;
+                validate_system_settings_input(&settings)?;
+                sqlx::query("UPDATE system_settings SET value=$2 WHERE setting_key=$1")
+                    .bind(FORWARDING_SETTINGS_KEY)
+                    .bind(&after)
+                    .execute(&mut *transaction)
+                    .await?;
+                sqlx::query(
+                    "INSERT INTO audit_logs \
+                     (id,actor_type,action,object_type,object_id,before_redacted,after_redacted) \
+                     VALUES ($1,'system','initialize','system_settings',$2,$3,$4)",
+                )
+                .bind(Uuid::new_v4())
+                .bind(forwarding_settings_object_id())
+                .bind(system_settings_audit_value(&before))
+                .bind(system_settings_audit_value(&after))
+                .execute(&mut *transaction)
+                .await?;
+            }
         }
         transaction.commit().await?;
         Ok(())
@@ -7478,6 +7576,7 @@ fn validate_system_settings_input(input: &SystemSettingsInput) -> Result<(), Rep
     let scheduled_testing = &input.scheduled_testing;
     let session_affinity = &input.session_affinity;
     let websocket = &input.websocket;
+    let mcp = &input.mcp;
     if !valid_api_hosts(api_hosts)
         || upstream.connect_timeout_seconds == 0
         || upstream.response_header_timeout_seconds <= upstream.connect_timeout_seconds
@@ -7508,10 +7607,55 @@ fn validate_system_settings_input(input: &SystemSettingsInput) -> Result<(), Rep
         || websocket.max_connection_age_seconds < 60
         || websocket.max_connection_age_seconds > 3_600
         || websocket.idle_timeout_seconds >= websocket.max_connection_age_seconds
+        || !valid_mcp_settings_input(mcp)
     {
         return Err(RepositoryError::Validation);
     }
     Ok(())
+}
+
+fn valid_mcp_settings_input(input: &SystemMcpSettingsInput) -> bool {
+    if input.request_body_bytes == 0
+        || input.image_request_body_bytes == 0
+        || input.search_result_bytes == 0
+        || input.image_result_bytes == 0
+        || input.image_request_body_bytes > MAX_MCP_IMAGE_BYTES
+        || input.image_result_bytes > MAX_MCP_IMAGE_BYTES
+        || input.allowed_origins.len() > 64
+        || (input.enabled && input.public_base_url.is_none())
+    {
+        return false;
+    }
+    if input
+        .public_base_url
+        .as_deref()
+        .is_some_and(|value| canonical_mcp_origin(value).is_none())
+    {
+        return false;
+    }
+    let mut origins = HashSet::new();
+    input
+        .allowed_origins
+        .iter()
+        .all(|origin| canonical_mcp_origin(origin).is_some_and(|origin| origins.insert(origin)))
+}
+
+fn canonical_mcp_origin(value: &str) -> Option<String> {
+    if value.trim() != value || value.is_empty() || value.chars().count() > 2_048 || value == "*" {
+        return None;
+    }
+    let url = reqwest::Url::parse(value).ok()?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.path() != "/"
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return None;
+    }
+    Some(url.origin().ascii_serialization())
 }
 
 pub fn valid_api_hosts(api_hosts: &[String]) -> bool {

@@ -599,6 +599,16 @@ export const SYSTEM_SETTINGS: SystemSettings = {
     idle_timeout_seconds: 300,
     max_connection_age_seconds: 3_300,
   },
+  mcp: {
+    enabled: false,
+    public_base_url: "https://mcp.example.test",
+    allowed_origins: ["https://client.example.test"],
+    allow_legacy_2025_11_25: true,
+    request_body_bytes: 4_194_304,
+    image_request_body_bytes: 33_554_432,
+    search_result_bytes: 4_194_304,
+    image_result_bytes: 33_554_432,
+  },
   updated_at: "2026-01-02T00:00:00.000Z",
 };
 

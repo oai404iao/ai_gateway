@@ -6,7 +6,7 @@
 
 1. 根目录 [`README.zh-CN.md`](../../README.zh-CN.md) 或 [`README.md`](../../README.md)：项目概览和本地快速启动。
 2. [运行与接口说明](operations.md)：完整运行时边界、公共数据面、Console、日志和结算行为。
-3. [无状态 MCP 服务](mcp-services.md)：可选 Search 与 Images generation/edit MCP 的构建、配置、鉴权和管理。
+3. [MCP 服务](mcp-services.md)：可选 Search 与 Images generation/edit MCP 的构建、配置、协议兼容、鉴权和管理。
 4. [生产配置与容量调优](production-configuration.md)：单节点基线、PostgreSQL、存储和观测。
 5. [Docker Compose 生产部署](production-deployment.md)：密钥、启动、升级和回滚边界。
 
@@ -22,7 +22,7 @@
 - 带 WebSocket Upgrade 的 `GET /v1/responses`
 - `POST /v1/images/generations`
 - `POST /v1/images/edits`
-- 启用 `mcp-server` feature 与 `[mcp]` 后的 `POST /mcp/{slug}`
+- 启用 `mcp-server` feature 与数据库 MCP 系统设置后的 `/mcp/{slug}`
 
 接口兼容范围和与 OpenAI 官方语义的关系见 [外部参考文档](../reference/README.md)。
 

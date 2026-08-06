@@ -34,11 +34,14 @@ console_body_bytes = 262_144
 auth_body_bytes = 16_384
 
 [mcp]
-# Requires a binary built with --features mcp-server. Endpoints remain on the
-# public listener and use existing Gateway API keys.
+# One-time bootstrap values for database-backed MCP transport settings.
+# After startup, edit them through Console System settings. Enabling still
+# requires a binary built with --features mcp-server.
 enabled = false
 public_base_url = "https://api.example.com"
 allowed_origins = []
+# Full 2025-11-25 process-local Session/SSE compatibility. Multi-instance
+# deployments must use sticky routing while this is enabled.
 allow_legacy_2025_11_25 = false
 request_body_bytes = 4_194_304
 image_request_body_bytes = 33_554_432

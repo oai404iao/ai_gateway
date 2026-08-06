@@ -300,7 +300,7 @@ test.describe("Console SPA smoke", () => {
     await expect(page.getByText("E2E ISP")).toBeVisible();
   });
 
-  test("administrators can create a typed stateless image MCP endpoint", async ({
+  test("administrators can create a typed image MCP endpoint", async ({
     page,
   }) => {
     await mockConsoleApi(page);

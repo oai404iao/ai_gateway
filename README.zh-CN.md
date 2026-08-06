@@ -4,7 +4,7 @@
 
 `ai-gateway` 是一个单二进制 Rust 网关，用于转发 OpenAI 兼容请求。它向客户端提供
 Chat Completions、Responses、Codex standalone web search、非流式 JSON Images generation
-与 multipart Images edit API，并可选提供无状态 Search 和 Images MCP，
+与 multipart Images edit API，并可选提供 Search 和 Images MCP，
 根据 PostgreSQL 控制面完成路由，并将请求转发到已配置的上游提供商。
 
 文档已按读者分类整理，统一入口见[文档中心](docs/README.md)：用户文档、开发与
@@ -21,7 +21,8 @@ Chat Completions、Responses、Codex standalone web search、非流式 JSON Imag
   Images generation 和 multipart Images edit；
   三种格式绝不相互回退。
 - 通过可选 `mcp-server` feature 在公共 listener 提供 PostgreSQL 管理的
-  `POST /mcp/{slug}`；当前 Search kind 暴露 Codex 兼容 `web.run`，Image kind 暴露
+  `/mcp/{slug}`；默认使用无状态 `2026-07-28`，也可启用完整的进程内
+  `2025-11-25` Session/SSE 兼容。当前 Search kind 暴露 Codex 兼容 `web.run`，Image kind 暴露
   单图 `image_gen.imagegen` generation/edit，并复用现有 API Key、路由、准入、计费和耐久日志。
 - 按 `(客户端模型名, API 格式)` 路由，支持渠道组优先级和渠道权重选择。
 - 特殊上游通过单进程内 Connector 接入，不增加 sidecar 或第二次网络跳转。首个
@@ -35,7 +36,7 @@ Chat Completions、Responses、Codex standalone web search、非流式 JSON Imag
 - 转发前会移除客户端凭据、hop-by-hop Header 和常见反向代理/CDN 转发元数据，再注入渠道专属的上游鉴权。
 - 上游响应以流式方式转发，不缓冲完整响应；一旦发送响应头或任何响应字节，绝不重试或切换渠道。
 - 提供进程内 RPM、并发和软额度准入控制、被动连接健康、异步请求日志、用量提取与结算。
-- 提供独立的 JWT Console API 与 Web 管理台，包括按用户邀请、可复用邀请码自助注册、管理员辅助临时密码恢复、轮换 refresh session、用户/管理员角色、typed 无状态 MCP 实例管理、审计日志，以及大多数可变资源的乐观并发控制。
+- 提供独立的 JWT Console API 与 Web 管理台，包括按用户邀请、可复用邀请码自助注册、管理员辅助临时密码恢复、轮换 refresh session、用户/管理员角色、typed MCP transport/实例管理、审计日志，以及大多数可变资源的乐观并发控制。
 
 ## 架构
 
@@ -55,7 +56,7 @@ MCP 客户端
   │ 同一个 Bearer API Key
   ▼
 公共监听器（可选 /mcp/{slug}）
-  → 无状态协议 / Host / Origin 校验
+  → 现代无状态或可选旧 Session 协议 / Host / Origin 校验
   → 不可变 MCP registry 与 API Key 路由授权
   → 既有 standalone search 或 Images generation/edit 转发操作
 
@@ -318,10 +319,10 @@ TOML 仅保存进程级 bootstrap 配置。二进制默认读取
 | `[runtime_config]` | PostgreSQL 控制面定时重载间隔。 |
 | `[passive_health]` | 连接失败阈值和冷却时间。 |
 | `[request_logging]` | 本地耐久 spool、独立数据库池、COPY 入口、投影、结算与观测参数。 |
-| `[mcp]` | 可选的无状态 MCP transport、公开 origin 和独立 body/result 限制；还需编译 `mcp-server` feature。 |
+| `[mcp]` | 数据库 MCP 系统设置的一次性引导值；运行时在 Console 中管理，仍需编译 `mcp-server` feature。 |
 | `[console]` 与 `[auth]` | 可选的独立 Console 监听器与 JWT 密钥文件设置。 |
 
-用户、API Key、模型、模型规则、渠道组、渠道、代理、变换模板和 MCP 实例等动态数据面配置保存在 PostgreSQL 中，并被编译为不可变运行时快照。项目刻意不支持 `[[api_keys]]`、`[[channels]]`、`[[model_rules]]` 之类的动态 TOML 表。
+用户、API Key、模型、模型规则、渠道组、渠道、代理、变换模板、MCP transport 和 MCP 实例等动态数据面配置保存在 PostgreSQL 中，并被编译为不可变运行时快照。项目刻意不支持 `[[api_keys]]`、`[[channels]]`、`[[model_rules]]` 之类的动态 TOML 表。
 
 通过 Console API 写入配置时，服务会校验完整候选快照，并在提交后立即发布；定时重载器也会从 PostgreSQL 刷新快照。
 
@@ -332,7 +333,7 @@ PostgreSQL 入口表，随后异步投影和结算。耐久保证、故障边界
 生产机器规格分档、PostgreSQL 参数、密码文件、存储和容量验证方式见
 [生产配置与容量调优](docs/user/production-configuration.md)。
 可选 Search 与 Images MCP 的构建、配置、鉴权和管理见
-[无状态 MCP 服务](docs/user/mcp-services.md)。
+[MCP 服务](docs/user/mcp-services.md)。
 
 ## Console API
 

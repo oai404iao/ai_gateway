@@ -1,7 +1,8 @@
 # MCP 服务架构与实施提案
 
-> 状态：部分实现。Transport、registry、Search MCP、Images generation/edit MCP、Console CRUD、
-> 管理页面和 `request_source = "mcp"` 已实现；专用 MCP 日志维度和 Tasks 仍是后续阶段。
+> 状态：部分实现。Transport、registry、Search MCP、Images generation/edit MCP、完整
+> `2025-11-25` 可选 Session/SSE 兼容、数据库系统设置、Console CRUD、管理页面和
+> `request_source = "mcp"` 已实现；专用 MCP 日志维度和 Tasks 仍是后续阶段。
 > 当前行为以代码、测试、migration 和 OpenAPI 契约为准。
 
 ## 目标
@@ -25,9 +26,10 @@ standalone web search 和 Images generation/edit 能力。
    Socket RPC、动态 `.so` 或 WASM。
 2. **一个逻辑 MCP 一个 endpoint。** 使用 `/mcp/{slug}`，不把全部工具强制合并到一个全局
    `/mcp`。
-3. **采用 MCP `2026-07-28` 无状态 Streamable HTTP。** 只使用
-   `server/discover`、`tools/list` 和 `tools/call`，普通结果返回 JSON；不创建
-   `Mcp-Session-Id`，不挂独立 SSE GET。
+3. **默认采用 MCP `2026-07-28` 无状态 Streamable HTTP。** 使用
+   `server/discover`、`tools/list` 和 `tools/call`，普通结果返回 JSON。管理员可同时开启
+   完整 `2025-11-25` 兼容：`initialize` / `notifications/initialized`、
+   `Mcp-Session-Id`、请求级/独立 GET SSE 和 DELETE。
 4. **复用现有 Gateway API Key。** HTTP 使用
    `Authorization: Bearer <gateway-api-key>`；Search 继续要求 Responses `proxy` 权限，
    Images 继续要求 Images `proxy` 权限。
@@ -82,7 +84,7 @@ Codex 中依赖本地线程历史或本地文件系统的部分必须改成显�
 ```text
 MCP client
   -> public listener
-  -> POST /mcp/{slug}
+  -> /mcp/{slug}
   -> Host / Origin / MCP metadata validation
   -> Gateway API-key authentication
   -> CompiledMcpRegistry lookup
@@ -108,14 +110,15 @@ MCP 路由属于公共数据面，不进入 Console listener。Console listener 
 POST /mcp/{slug}
 ```
 
-`slug` 创建后不可修改，建议限制为：
+旧协议兼容开启时，同一路径还接受 `GET` SSE 和 `DELETE` Session。`slug` 创建后不可修改，
+限制为：
 
 ```text
 [a-z0-9][a-z0-9-]{0,62}
 ```
 
-`GET`、`PUT`、`PATCH`、`DELETE` 返回 `405`。禁用或已删除的 slug 返回 `404`，避免对未授权调用方
-泄露配置状态。
+默认 modern-only 模式下 `GET`、`DELETE` 返回 `405`；`PUT`、`PATCH` 始终返回 `405`。禁用或
+已删除的 slug 返回 `404`，避免对未授权调用方泄露配置状态。
 
 ### 协议模式
 
@@ -127,8 +130,18 @@ POST /mcp/{slug}
 - 不提供独立 SSE GET；
 - 每个请求创建轻量 handler，请求结束即释放。
 
-可以预留默认关闭的 `allow_legacy_2025_11_25` 兼容开关。即使开启，也必须保持
-`legacy_session_mode = false`，不能恢复服务端 Session。
+`allow_legacy_2025_11_25` 默认关闭。开启后 RMCP 使用 `legacy_session_mode = true`，完整支持：
+
+- `initialize` 与 `notifications/initialized`；
+- 初始化响应签发 `Mcp-Session-Id`，后续请求携带相同 Header；
+- request-wise SSE；
+- 独立 `GET` SSE；
+- `DELETE` 结束 Session。
+
+`2026-07-28` 请求即使在兼容开关开启时仍走严格的现代无状态 metadata 校验，不进入旧 Session。
+旧 Session 使用进程内 `LocalSessionManager`；关闭 transport、修改任一全局 MCP transport
+设置、进程关闭或重启都会终止 Session。多实例部署必须为 `/mcp/*` 使用粘性路由，不能把旧
+Session 请求随机发送到其他实例。
 
 ### SDK
 
@@ -150,8 +163,9 @@ rmcp = { version = "=3.1.1", default-features = false, optional = true, features
 
 ### 公开 Host 与 URL
 
-MCP transport 必须验证 `Host` 和 `Origin`。由于生产通常位于 TLS 反向代理之后，配置中需要
-显式公开 URL，用于派生允许的 Host 并向 Console 展示完整 endpoint：
+MCP transport 必须验证 `Host` 和 `Origin`。由于生产通常位于 TLS 反向代理之后，数据库系统
+设置中需要显式公开 URL，用于派生允许的 Host 并向 Console 展示完整 endpoint。TOML 仅提供
+首次引导值：
 
 ```toml
 [mcp]
@@ -165,11 +179,11 @@ allow_legacy_2025_11_25 = false
 `X-Forwarded-Proto` 或其他客户端可伪造的 forwarding Header。没有 `Origin` 的非浏览器客户端
 可以访问；存在 `Origin` 时必须匹配 `allowed_origins`。
 
-## “无状态”的具体含义
+## 工具状态仍保持显式
 
-首期不保存 MCP Session，也不把下列内容放入进程内跨请求 Map：
+现代协议不保存 MCP Session；旧协议兼容只保存 RMCP lifecycle/transport Session。无论使用
+哪种协议，都不会把下列业务内容放入 Session 或其他进程内跨请求 Map：
 
-- client initialization state；
 - Search ref-id Session；
 - 最近图片；
 - tool call continuation；
@@ -187,9 +201,10 @@ Images:
   edit tools/call -> arguments.referenced_image_urls[]
 ```
 
-任一请求都可以被负载均衡到另一实例。`search_session_id` 不查数据库；Gateway 使用 API Key
-ID、MCP server ID、当前模型/策略 scope 和该值确定性派生 provider `id`，使不同 API Key、
-不同 MCP endpoint 或不同策略版本即使提交相同值也不会共享 Search 上下文。
+现代请求可以被负载均衡到任意实例。旧协议 lifecycle 请求必须粘性路由，但工具业务状态仍由
+客户端显式回传。`search_session_id` 不查数据库；Gateway 使用 API Key ID、MCP server ID、
+当前模型/策略 scope 和该值确定性派生 provider `id`，使不同 API Key、不同 MCP endpoint 或
+不同策略版本即使提交相同值也不会共享 Search 上下文。
 
 ## 鉴权与授权
 
@@ -321,7 +336,8 @@ web.run
 search_session_id
 ```
 
-Codex 内部可直接使用线程 `session_id`；无状态 MCP 没有隐式线程，因此必须把该值显式化。
+Codex 内部可直接使用线程 `session_id`；MCP 工具契约不依赖隐式线程（旧协议 transport Session
+也不承载 Search 历史），因此必须把该值显式化。
 
 ### 输入约束
 
@@ -419,8 +435,8 @@ Gateway 不自动重试，但客户端在网络结果不确定时重发仍可能
 
 ### Edit 的无状态输入
 
-Codex 的 `referenced_image_paths` 和 `num_last_images_to_include` 依赖本地文件系统与对话历史，不能
-直接用于远程无状态 MCP。远程工具改为显式 data URL：
+Codex 的 `referenced_image_paths` 和 `num_last_images_to_include` 依赖本地文件系统与对话历史，
+不能直接用于远程 MCP；旧协议 transport Session 也不保存这些内容。远程工具改为显式 data URL：
 
 ```json
 {
@@ -596,7 +612,8 @@ Images 无 exactly-once 保证。Gateway 本身不自动重试，但客户端在
 
 ## 配置
 
-文件级配置只保存安装/网络/大小等进程参数：
+全局 MCP transport 配置属于 PostgreSQL `system_settings`，由 Console“系统设置”读取和修改。
+TOML `[mcp]` 只在系统设置行或其 `mcp` 节首次缺失时提供一次性引导值：
 
 ```toml
 [mcp]
@@ -610,20 +627,27 @@ search_result_bytes = 4_194_304
 image_result_bytes = 33_554_432
 ```
 
-具体 MCP 实例、模型和工具策略保存在 PostgreSQL，并通过控制面快照热更新。
+全局 transport 与具体 MCP 实例、模型和工具策略都保存在 PostgreSQL，并通过控制面快照热更新。
 Search 与其他普通 MCP endpoint 使用 `request_body_bytes`；Image endpoint 使用独立的
 `image_request_body_bytes`，默认 `32 MiB`、硬上限 `64 MiB`。
+修改全局 transport 设置会重建 RMCP transport 并终止当前旧协议 Session；不相关的模型、渠道
+或 MCP 实例快照更新不会重建 transport。
 
 配置同步要求：
 
 - `src/runtime_config/mod.rs`
+- `src/domain/system_settings.rs`
+- `src/persistence/mod.rs`
+- `docs/openapi/console-v1.yaml`
+- `web/console/src/features/admin/system/system-page.tsx`
 - `config.example.toml`
 - `deploy/compose/config.example.toml`
 - `docs/user/`
 - Docker feature/build 参数
 
-设置 `[mcp].enabled = true` 但二进制没有编译 `mcp-server` feature 时，启动必须返回明确
-`ConfigError`，与 embedded Console UI 的 feature gate 一致。
+数据库系统设置 `mcp.enabled = true` 但二进制没有编译 `mcp-server` feature 时，候选快照必须
+返回明确 `ConfigError`，与 embedded Console UI 的 feature gate 一致。TOML 首次引导启用时
+同样会在启动编译该数据库设置时失败。
 
 ## Console 管理
 
@@ -639,6 +663,8 @@ DELETE /console/v1/mcp-servers/{id}
 
 已实现：
 
+- `/console/v1/system/settings` 管理全局 transport enable、公开 URL、Origins、旧协议兼容和
+  request/result limits，保存后立即发布；
 - GET detail 返回 `ETag`；
 - PUT/DELETE 使用 `If-Match`；
 - create/update/delete 在 serializable transaction 中校验完整候选快照、写 audit、提交后发布；
@@ -749,6 +775,7 @@ workspace gate；不要为绕过冲突复制一套不完整 JSON-RPC/MCP parser�
 - [x] `request_source = "mcp"`；
 - [x] deterministic protocol、auth 与 Search integration tests；
 - [x] Console 管理页面；
+- [x] 数据库全局 transport 设置与完整 `2025-11-25` Session/SSE 兼容；
 - [ ] 专用 MCP 日志维度、command-family 策略与多进程接续测试。
 
 ### PR 2：Images generation
@@ -777,7 +804,8 @@ workspace gate；不要为绕过冲突复制一套不完整 JSON-RPC/MCP parser�
 - 多工具 MCP kind；
 - subscriptions 或其他 server capability。
 
-Tasks 或 artifact 可以使用外部持久化，但 transport 仍不得恢复 MCP Session。
+Tasks 或 artifact 可以使用外部持久化。旧协议 Session 当前仍是进程内兼容层；若未来需要跨实例
+恢复，应单独设计受界 Session store，而不能把 Search 历史、最近图片或工具结果塞入协议 Session。
 
 ## 测试与验收
 
@@ -786,16 +814,19 @@ Tasks 或 artifact 可以使用外部持久化，但 transport 仍不得恢复 M
 - `server/discover`、`tools/list`、`tools/call`；
 - `2026-07-28` 必需 Header；
 - Host、Origin 和反向代理场景；
-- 无 `Mcp-Session-Id`、无 GET SSE；
-- modern-only 与可选 legacy stateless 模式；
+- modern-only 无 `Mcp-Session-Id`、无 GET SSE；
+- 可选 legacy `initialize` / `notifications/initialized`、Session ID、request-wise/GET SSE 和
+  DELETE；
+- legacy 开关开启时现代请求仍严格无状态；
 - 官方 MCP conformance tests；
-- 两个 Gateway 实例之间无状态接续。
+- 两个 Gateway 实例之间的现代无状态接续，以及旧协议粘性路由约束。
 
 ### 鉴权与控制面
 
 - API Key 缺失、撤销、过期、格式不允许、路由不允许；
 - tools/list 按 Key 过滤；
 - ETag/`If-Match`、admin-only、audit、tombstone；
+- 全局 MCP transport 系统设置首次从 TOML 引导、热更新和 feature gate；
 - 多个同 kind slug；
 - snapshot 热更新不查询数据面数据库。
 
@@ -837,12 +868,12 @@ Images forwarding path 时，除 deterministic integration tests 外，完成前
 
 ## 当前采用的产品参数
 
-1. production 镜像编译 `mcp-server` feature，但 `[mcp].enabled` 默认关闭；
-2. modern-only 为默认值，管理员可显式开启 `2025-11-25` 无 Session 兼容；
+1. production 镜像编译 `mcp-server` feature，但数据库 `mcp.enabled` 默认关闭；TOML 只做首次引导；
+2. modern-only 为默认值，管理员可显式开启完整 `2025-11-25` 进程内 Session/SSE 兼容；
 3. Search request/result 默认上限均为 4 MiB；Image request/result 默认上限均为 32 MiB、
    硬上限 64 MiB；edit 单图解码后最多 16 MiB、合计最多 24 MiB，并继续受公共
    `request_limits.image_edit_*` 约束；
 4. Search `short` / `medium` / `long` 默认映射为 1000 / 3000 / 6000 tokens；
 5. 当前启用 Codex 的全部 `web.run` command family，实例级关闭策略后续实现；
-6. 当前由管理员 Console API 和 `/admin/mcp-servers` 页面管理 MCP；普通用户 API Key 页面展示
-   可复制 endpoint 仍是后续能力。
+6. `/admin/system` 管理全局 transport，管理员 Console API 和 `/admin/mcp-servers` 页面管理
+   endpoint 实例；普通用户 API Key 页面展示可复制 endpoint 仍是后续能力。
