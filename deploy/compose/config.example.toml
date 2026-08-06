@@ -42,6 +42,7 @@ allowed_origins = []
 allow_legacy_2025_11_25 = false
 request_body_bytes = 4_194_304
 search_result_bytes = 4_194_304
+image_result_bytes = 33_554_432
 
 [database]
 # Prefer a password file over embedding credentials in TOML. Relative paths

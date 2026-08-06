@@ -1,5 +1,6 @@
 //! Optional stateless MCP transport and built-in tool dispatch.
 
+mod image;
 mod search;
 
 use std::{borrow::Cow, sync::Arc};
@@ -41,6 +42,7 @@ use crate::{
     runtime_config::McpRuntimeConfig,
 };
 
+use self::image::{IMAGEGEN_TOOL_NAME, execute_imagegen, imagegen_tool};
 use self::search::{WEB_RUN_TOOL_NAME, execute_web_run, web_run_tool};
 
 type McpTransport = StreamableHttpService<McpHandler, LocalSessionManager>;
@@ -64,6 +66,7 @@ impl McpService {
             proxy: proxy.clone(),
             allow_legacy_2025_11_25: config.allow_legacy_2025_11_25,
             search_result_bytes: config.search_result_bytes,
+            image_result_bytes: config.image_result_bytes,
         };
         let transport_config = StreamableHttpServerConfig::default()
             .with_legacy_session_mode(false)
@@ -236,6 +239,19 @@ impl McpRequestPrincipal {
                 })
             })
     }
+
+    fn permits_image_generation(&self) -> bool {
+        matches!(self.server.kind(), McpServerKind::Image)
+            && self
+                .api_key
+                .permits(ApiFormat::OpenAiImages, ApiKeyPermission::Proxy)
+            && self.server.model_rule().tiers().iter().any(|tier| {
+                tier.candidates().iter().any(|candidate| {
+                    self.api_key
+                        .permits_route_candidate(candidate.channel_slot())
+                })
+            })
+    }
 }
 
 #[derive(Clone)]
@@ -243,6 +259,7 @@ struct McpHandler {
     proxy: ProxyService,
     allow_legacy_2025_11_25: bool,
     search_result_bytes: usize,
+    image_result_bytes: usize,
 }
 
 impl McpHandler {
@@ -325,7 +342,11 @@ impl ServerHandler for McpHandler {
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
-        (name == WEB_RUN_TOOL_NAME).then(web_run_tool)
+        match name {
+            WEB_RUN_TOOL_NAME => Some(web_run_tool()),
+            IMAGEGEN_TOOL_NAME => Some(imagegen_tool()),
+            _ => None,
+        }
     }
 
     async fn list_tools(
@@ -338,6 +359,11 @@ impl ServerHandler for McpHandler {
             McpServerKind::WebSearch => principal
                 .permits_web_search()
                 .then(web_run_tool)
+                .into_iter()
+                .collect(),
+            McpServerKind::Image => principal
+                .permits_image_generation()
+                .then(imagegen_tool)
                 .into_iter()
                 .collect(),
         };
@@ -376,6 +402,36 @@ impl ServerHandler for McpHandler {
                     Err(result) => return Ok(result.into()),
                 };
                 execute_web_run(&self.proxy, principal, arguments, self.search_result_bytes)
+                    .await
+                    .map(Into::into)
+            }
+            (McpServerKind::Image, IMAGEGEN_TOOL_NAME) => {
+                if !principal.permits_image_generation() {
+                    return Ok(rmcp::model::CallToolResult::error(vec![
+                        rmcp::model::ContentBlock::text(
+                            "This API key cannot access the configured MCP tool.",
+                        ),
+                    ])
+                    .into());
+                }
+                let arguments = serde_json::from_value(
+                    request
+                        .arguments
+                        .map(serde_json::Value::Object)
+                        .unwrap_or_else(|| serde_json::json!({})),
+                );
+                let arguments = match arguments {
+                    Ok(arguments) => arguments,
+                    Err(_) => {
+                        return Ok(rmcp::model::CallToolResult::error(vec![
+                            rmcp::model::ContentBlock::text(
+                                "Invalid image_gen.imagegen arguments.",
+                            ),
+                        ])
+                        .into());
+                    }
+                };
+                execute_imagegen(&self.proxy, principal, arguments, self.image_result_bytes)
                     .await
                     .map(Into::into)
             }

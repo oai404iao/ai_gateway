@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use ai_gateway::{
     application::{ProxyService, RequestLogSink},
-    domain::{RequestLogEvent, RequestLogSource},
+    domain::{ApiOperation, RequestLogEvent, RequestLogOutcome, RequestLogSource},
     mcp::McpService,
     persistence::{
         ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ControlPlaneRecords, McpServerRecord,
@@ -17,7 +17,7 @@ use axum::{
     body::{Body, to_bytes},
     extract::State,
     http::{
-        Request, StatusCode,
+        HeaderMap, Request, StatusCode,
         header::{
             ACCEPT, ACCESS_CONTROL_ALLOW_HEADERS, ACCESS_CONTROL_ALLOW_ORIGIN,
             ACCESS_CONTROL_REQUEST_HEADERS, ACCESS_CONTROL_REQUEST_METHOD, AUTHORIZATION,
@@ -35,7 +35,11 @@ use uuid::Uuid;
 
 const CLIENT_KEY: &str = "mcp-client-key";
 const NO_ROUTE_KEY: &str = "mcp-no-route-key";
+const IMAGE_CLIENT_KEY: &str = "mcp-image-client-key";
+const IMAGE_NO_ROUTE_KEY: &str = "mcp-image-no-route-key";
 const MCP_VERSION: &str = "2026-07-28";
+const PNG_BASE64: &str =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 
 #[derive(Clone, Default)]
 struct RecordingRequestLogSink {
@@ -284,6 +288,185 @@ async fn harness_with_options(
             allow_legacy_2025_11_25,
             request_body_bytes: 64 * 1024,
             search_result_bytes: 64 * 1024,
+            image_result_bytes: 64 * 1024,
+        },
+    );
+    (service.router(), captured, logs, upstream)
+}
+
+#[derive(Clone)]
+struct MockImage {
+    request: Arc<Mutex<Option<Value>>>,
+}
+
+async fn image_upstream(
+    State(state): State<MockImage>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> impl IntoResponse {
+    *state.request.lock().unwrap() = Some(body.clone());
+    if headers
+        .get(AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        != Some("Bearer upstream-image-key")
+    {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": {"message": "wrong upstream credential"}})),
+        );
+    }
+    if body["prompt"] == "sensitive image prompt" {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": {
+                    "code": "invalid_image_prompt",
+                    "message": "sensitive image prompt must never enter logs"
+                }
+            })),
+        );
+    }
+    (
+        StatusCode::OK,
+        Json(json!({
+            "created": 1,
+            "data": [{"b64_json": PNG_BASE64}],
+            "usage": {"input_tokens": 7, "output_tokens": 11}
+        })),
+    )
+}
+
+async fn image_harness(
+    image_result_bytes: usize,
+) -> (
+    Router,
+    Arc<Mutex<Option<Value>>>,
+    RecordingRequestLogSink,
+    TestServer,
+) {
+    let captured = Arc::new(Mutex::new(None));
+    let upstream = start_server(
+        Router::new()
+            .route("/v1/images/generations", post(image_upstream))
+            .with_state(MockImage {
+                request: Arc::clone(&captured),
+            }),
+    )
+    .await;
+
+    let group_id = Uuid::new_v4();
+    let channel_id = Uuid::new_v4();
+    let model_rule_id = Uuid::new_v4();
+    let api_key = |id, secret: &str, allowed_group_ids: Vec<Uuid>| ApiKeyRecord {
+        id,
+        user_id: Uuid::new_v4(),
+        user_status: "active".into(),
+        user_websocket_enabled: false,
+        secret_value: secret.into(),
+        status: "active".into(),
+        expires_at: None,
+        allowed_api_formats: vec!["open_ai_images".into()],
+        permissions: vec!["proxy".into()],
+        allowed_group_ids,
+        allowed_channel_ids: vec![],
+        requests_per_minute: None,
+        max_concurrent_requests: None,
+        quota_limit_amount: None,
+        quota_used_amount: Decimal::ZERO,
+    };
+    let records = ControlPlaneRecords {
+        api_keys: vec![
+            api_key(Uuid::new_v4(), IMAGE_CLIENT_KEY, vec![group_id]),
+            api_key(Uuid::new_v4(), IMAGE_NO_ROUTE_KEY, vec![]),
+        ],
+        models: vec![],
+        model_rules: vec![ModelRuleRecord {
+            id: model_rule_id,
+            client_model: "mcp-image".into(),
+            api_format: "open_ai_images".into(),
+            upstream_model_id: Uuid::new_v4(),
+            upstream_model_enabled: true,
+            upstream_model_currency: "USD".into(),
+            price_unit_tokens: 1_000_000,
+            price_effective_at: chrono::Utc::now(),
+            input_unit_price: Decimal::ZERO,
+            cached_input_unit_price: Decimal::ZERO,
+            cache_write_unit_price: Decimal::ZERO,
+            output_unit_price: Decimal::ZERO,
+            advanced_billing: json!({
+                "long_context_tiers": [],
+                "request_multipliers": []
+            }),
+            upstream_model: "provider-image".into(),
+            channel_group_ids: vec![group_id],
+            channel_ids: vec![],
+            enabled: true,
+        }],
+        groups: vec![ChannelGroupRecord {
+            id: group_id,
+            name: "images".into(),
+            api_format: "open_ai_images".into(),
+            connector_kind: "openai_compatible".into(),
+            priority: 0,
+            selection_strategy: "weighted_random".into(),
+            enabled: true,
+        }],
+        channels: vec![ChannelRecord {
+            id: channel_id,
+            channel_group_id: group_id,
+            api_format: "open_ai_images".into(),
+            name: "images".into(),
+            base_url: format!("http://{}", upstream.address),
+            enabled: true,
+            supports_websocket: false,
+            supports_standalone_web_search: false,
+            auto_disabled: false,
+            auto_disable_allowed: false,
+            weight: 1,
+            billing_multiplier: Decimal::ONE,
+            proxy_id: None,
+            config_template_id: None,
+            override_document: json!({}),
+            connect_timeout_ms: None,
+            response_header_timeout_ms: None,
+            stream_idle_timeout_ms: None,
+            upstream_auth_kind: "bearer".into(),
+            upstream_auth_header_name: None,
+            upstream_api_key: Some("upstream-image-key".into()),
+            available_models: vec!["provider-image".into()],
+            test_model: None,
+        }],
+        proxies: vec![],
+        templates: vec![],
+        mcp_servers: vec![McpServerRecord {
+            id: Uuid::new_v4(),
+            slug: "image".into(),
+            kind: "image".into(),
+            name: "Image generation".into(),
+            description: Some("Generate one managed PNG image.".into()),
+            model_rule_id,
+            settings_version: 1,
+            settings: json!({
+                "background": "opaque",
+                "quality": "high",
+                "size": "1536x1024"
+            }),
+            enabled: true,
+        }],
+    };
+    let runtime = Arc::new(RuntimeConfig::new(compile_control_plane(records).unwrap()));
+    let logs = RecordingRequestLogSink::default();
+    let proxy = ProxyService::with_log_sink(runtime, 1_048_576, Arc::new(logs.clone())).unwrap();
+    let service = McpService::new(
+        proxy,
+        &McpRuntimeConfig {
+            public_base_url: "https://mcp.example.test".into(),
+            allowed_hosts: vec!["mcp.example.test".into()],
+            allowed_origins: vec![],
+            allow_legacy_2025_11_25: false,
+            request_body_bytes: 64 * 1024,
+            search_result_bytes: 64 * 1024,
+            image_result_bytes,
         },
     );
     (service.router(), captured, logs, upstream)
@@ -301,13 +484,23 @@ fn request_meta() -> Value {
 }
 
 fn mcp_request(key: &str, method: &str, name: Option<&str>, params: Value) -> Request<Body> {
+    mcp_request_at("/mcp/search", key, method, name, params)
+}
+
+fn mcp_request_at(
+    path: &str,
+    key: &str,
+    method: &str,
+    name: Option<&str>,
+    params: Value,
+) -> Request<Body> {
     let body = json!({
         "jsonrpc": "2.0",
         "id": 1,
         "method": method,
         "params": params
     });
-    let mut builder = Request::post("/mcp/search")
+    let mut builder = Request::post(path)
         .header(HOST, "mcp.example.test")
         .header(AUTHORIZATION, format!("Bearer {key}"))
         .header(CONTENT_TYPE, "application/json")
@@ -456,6 +649,231 @@ async fn mcp_upstream_errors_do_not_expose_or_log_provider_messages() {
         Some("The upstream returned HTTP 400.")
     );
     assert_eq!(events[0].error_code.as_deref(), Some("upstream_http_error"));
+}
+
+#[tokio::test]
+async fn stateless_imagegen_returns_one_mcp_image_and_attributes_logs() {
+    let (router, captured, logs, _upstream) = image_harness(64 * 1024).await;
+    let tools = router
+        .clone()
+        .oneshot(mcp_request_at(
+            "/mcp/image",
+            IMAGE_CLIENT_KEY,
+            "tools/list",
+            None,
+            json!({"_meta": request_meta()}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(tools.status(), StatusCode::OK);
+    let tools: Value =
+        serde_json::from_slice(&to_bytes(tools.into_body(), 64 * 1024).await.unwrap()).unwrap();
+    assert_eq!(tools["result"]["tools"][0]["name"], "image_gen.imagegen");
+    assert_eq!(
+        tools["result"]["tools"][0]["inputSchema"]["additionalProperties"],
+        false
+    );
+    assert!(tools["result"]["tools"][0]["inputSchema"]["properties"]["prompt"].is_object());
+    assert_eq!(
+        tools["result"]["tools"][0]["inputSchema"]["properties"]["prompt"]["maxLength"],
+        32_000
+    );
+    assert!(
+        tools["result"]["tools"][0]["inputSchema"]["properties"]
+            .get("referenced_image_urls")
+            .is_none()
+    );
+
+    let response = router
+        .oneshot(mcp_request_at(
+            "/mcp/image",
+            IMAGE_CLIENT_KEY,
+            "tools/call",
+            Some("image_gen.imagegen"),
+            json!({
+                "_meta": request_meta(),
+                "name": "image_gen.imagegen",
+                "arguments": {"prompt": "paint a moonlit lake"}
+            }),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(response.headers().get("Mcp-Session-Id").is_none());
+    let response: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 256 * 1024).await.unwrap()).unwrap();
+    assert_eq!(response["result"]["content"][0]["type"], "image");
+    assert_eq!(response["result"]["content"][0]["data"], PNG_BASE64);
+    assert_eq!(response["result"]["content"][0]["mimeType"], "image/png");
+    assert_eq!(
+        response["result"]["content"][0]["_meta"]["codex/imageDetail"],
+        "original"
+    );
+    assert_eq!(
+        response["result"]["structuredContent"],
+        json!({"status": "completed", "mime_type": "image/png"})
+    );
+    assert!(
+        !response["result"]["structuredContent"]
+            .to_string()
+            .contains(PNG_BASE64)
+    );
+
+    let upstream = captured.lock().unwrap().clone().unwrap();
+    assert_eq!(upstream["model"], "provider-image");
+    assert_eq!(upstream["prompt"], "paint a moonlit lake");
+    assert_eq!(upstream["n"], 1);
+    assert_eq!(upstream["background"], "opaque");
+    assert_eq!(upstream["quality"], "high");
+    assert_eq!(upstream["size"], "1536x1024");
+    assert!(upstream.get("output_format").is_none());
+    assert!(upstream.get("response_format").is_none());
+    assert!(upstream.get("stream").is_none());
+
+    let events = logs.events.lock().unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].request_source, RequestLogSource::Mcp);
+    assert_eq!(events[0].api_operation, ApiOperation::ImagesGeneration);
+    assert!(
+        !serde_json::to_string(&events[0])
+            .unwrap()
+            .contains("moonlit")
+    );
+    assert!(
+        !serde_json::to_string(&events[0])
+            .unwrap()
+            .contains(PNG_BASE64)
+    );
+}
+
+#[tokio::test]
+async fn imagegen_filters_tools_and_hides_provider_error_payloads() {
+    let (router, captured, logs, _upstream) = image_harness(64 * 1024).await;
+    let hidden = router
+        .clone()
+        .oneshot(mcp_request_at(
+            "/mcp/image",
+            IMAGE_NO_ROUTE_KEY,
+            "tools/list",
+            None,
+            json!({"_meta": request_meta()}),
+        ))
+        .await
+        .unwrap();
+    let hidden: Value =
+        serde_json::from_slice(&to_bytes(hidden.into_body(), 64 * 1024).await.unwrap()).unwrap();
+    assert_eq!(hidden["result"]["tools"], json!([]));
+
+    let denied = router
+        .clone()
+        .oneshot(mcp_request_at(
+            "/mcp/image",
+            IMAGE_NO_ROUTE_KEY,
+            "tools/call",
+            Some("image_gen.imagegen"),
+            json!({
+                "_meta": request_meta(),
+                "name": "image_gen.imagegen",
+                "arguments": {"prompt": "must not execute"}
+            }),
+        ))
+        .await
+        .unwrap();
+    let denied: Value =
+        serde_json::from_slice(&to_bytes(denied.into_body(), 64 * 1024).await.unwrap()).unwrap();
+    assert_eq!(denied["result"]["isError"], true);
+    assert!(captured.lock().unwrap().is_none());
+
+    let override_attempt = router
+        .clone()
+        .oneshot(mcp_request_at(
+            "/mcp/image",
+            IMAGE_CLIENT_KEY,
+            "tools/call",
+            Some("image_gen.imagegen"),
+            json!({
+                "_meta": request_meta(),
+                "name": "image_gen.imagegen",
+                "arguments": {
+                    "prompt": "must not override the configured model",
+                    "model": "caller-selected-model"
+                }
+            }),
+        ))
+        .await
+        .unwrap();
+    let override_attempt: Value = serde_json::from_slice(
+        &to_bytes(override_attempt.into_body(), 64 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(override_attempt["result"]["isError"], true);
+    assert!(captured.lock().unwrap().is_none());
+
+    let failed = router
+        .oneshot(mcp_request_at(
+            "/mcp/image",
+            IMAGE_CLIENT_KEY,
+            "tools/call",
+            Some("image_gen.imagegen"),
+            json!({
+                "_meta": request_meta(),
+                "name": "image_gen.imagegen",
+                "arguments": {"prompt": "sensitive image prompt"}
+            }),
+        ))
+        .await
+        .unwrap();
+    let failed: Value =
+        serde_json::from_slice(&to_bytes(failed.into_body(), 64 * 1024).await.unwrap()).unwrap();
+    assert_eq!(failed["result"]["isError"], true);
+    assert!(!failed.to_string().contains("sensitive image prompt"));
+    assert!(!failed.to_string().contains("invalid_image_prompt"));
+
+    let events = logs.events.lock().unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].request_source, RequestLogSource::Mcp);
+    assert_eq!(
+        events[0].error_summary.as_deref(),
+        Some("The upstream returned HTTP 400.")
+    );
+    assert_eq!(events[0].error_code.as_deref(), Some("upstream_http_error"));
+}
+
+#[tokio::test]
+async fn imagegen_enforces_the_independent_result_limit() {
+    let (router, captured, logs, _upstream) = image_harness(64).await;
+    let response = router
+        .oneshot(mcp_request_at(
+            "/mcp/image",
+            IMAGE_CLIENT_KEY,
+            "tools/call",
+            Some("image_gen.imagegen"),
+            json!({
+                "_meta": request_meta(),
+                "name": "image_gen.imagegen",
+                "arguments": {"prompt": "bounded result"}
+            }),
+        ))
+        .await
+        .unwrap();
+    let response: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 64 * 1024).await.unwrap()).unwrap();
+
+    assert_eq!(response["result"]["isError"], true);
+    assert!(
+        response["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("result limit")
+    );
+    assert!(!response.to_string().contains(PNG_BASE64));
+    assert!(captured.lock().unwrap().is_some());
+    let events = logs.events.lock().unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].outcome, RequestLogOutcome::Succeeded);
 }
 
 #[tokio::test]

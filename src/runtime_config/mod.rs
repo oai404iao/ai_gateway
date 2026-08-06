@@ -29,12 +29,12 @@ use crate::{
         CompiledConfigTemplate, CompiledMcpServer, CompiledModelRule, CompiledProxy,
         CompiledRouteTier, CompiledRuntimeConfig, CompiledScheduledTestModel, ConnectorKind,
         DEFAULT_IMAGES_RESPONSE_HEADER_TIMEOUT_SECONDS,
-        DEFAULT_STANDALONE_WEB_SEARCH_RESPONSE_HEADER_TIMEOUT_SECONDS, MAX_REQUEST_RETRIES,
-        McpServerKind, ModelPriceSnapshot, ModelRouteKey, NoProxyHost, PassiveHealthSettings,
-        RequestRetrySettings, ResponsesWebSocketSettings, ScheduledTestingMode,
-        ScheduledTestingSettings, SelectionStrategy, SessionAffinityKeySource, SessionAffinityRule,
-        SessionAffinitySettings, SystemRuntimeSettings, UpstreamAuth, UpstreamTimeoutDefaults,
-        WebSearchMcpSettings,
+        DEFAULT_STANDALONE_WEB_SEARCH_RESPONSE_HEADER_TIMEOUT_SECONDS, ImageMcpSettings,
+        MAX_REQUEST_RETRIES, McpServerKind, ModelPriceSnapshot, ModelRouteKey, NoProxyHost,
+        PassiveHealthSettings, RequestRetrySettings, ResponsesWebSocketSettings,
+        ScheduledTestingMode, ScheduledTestingSettings, SelectionStrategy,
+        SessionAffinityKeySource, SessionAffinityRule, SessionAffinitySettings,
+        SystemRuntimeSettings, UpstreamAuth, UpstreamTimeoutDefaults, WebSearchMcpSettings,
     },
     persistence::{
         ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ConfigTemplateRecord, ControlPlaneRecords,
@@ -540,6 +540,8 @@ pub struct McpFileConfig {
     pub request_body_bytes: usize,
     #[serde(default = "default_mcp_search_result_bytes")]
     pub search_result_bytes: usize,
+    #[serde(default = "default_mcp_image_result_bytes")]
+    pub image_result_bytes: usize,
 }
 
 /// File-only JWT setup. Private key material remains in a separate protected
@@ -572,6 +574,7 @@ pub struct McpRuntimeConfig {
     pub allow_legacy_2025_11_25: bool,
     pub request_body_bytes: usize,
     pub search_result_bytes: usize,
+    pub image_result_bytes: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -614,6 +617,9 @@ const fn default_mcp_request_body_bytes() -> usize {
 }
 const fn default_mcp_search_result_bytes() -> usize {
     4 * 1_024 * 1_024
+}
+const fn default_mcp_image_result_bytes() -> usize {
+    32 * 1_024 * 1_024
 }
 const fn default_request_log_queue_capacity() -> usize {
     1_024
@@ -961,7 +967,13 @@ fn compile_mcp_servers(
                 let mut settings = serde_json::from_value::<WebSearchMcpSettings>(record.settings)
                     .map_err(|_| ConfigError::Compile("invalid web-search MCP settings".into()))?;
                 validate_web_search_mcp_settings(&mut settings)?;
-                settings
+                ValidatedMcpSettings::WebSearch(settings)
+            }
+            McpServerKind::Image => {
+                let mut settings = serde_json::from_value::<ImageMcpSettings>(record.settings)
+                    .map_err(|_| ConfigError::Compile("invalid image MCP settings".into()))?;
+                validate_image_mcp_settings(&mut settings)?;
+                ValidatedMcpSettings::Image(settings)
             }
         };
         if !record.enabled {
@@ -973,35 +985,98 @@ fn compile_mcp_servers(
             .ok_or_else(|| {
                 ConfigError::Compile("enabled MCP server references a missing model rule".into())
             })?;
-        if model_rule.api_format() != ApiFormat::OpenAiResponses {
-            return Err(ConfigError::Compile(
-                "web-search MCP servers require an OpenAI Responses model rule".into(),
-            ));
-        }
-        if !channels.values().any(|channel| {
-            channel.supports_standalone_web_search
-                && channel_slots
-                    .get(&channel.id)
-                    .is_some_and(|slot| model_rule.has_configured_candidate(*slot))
-        }) {
-            return Err(ConfigError::Compile(
-                "web-search MCP servers require a model rule with a search-capable channel".into(),
-            ));
-        }
         let slug = Arc::<str>::from(record.slug);
-        let compiled = Arc::new(CompiledMcpServer::new_web_search(
-            record.id,
-            Arc::clone(&slug),
-            Arc::from(record.name),
-            record.description.map(Arc::<str>::from),
-            model_rule,
-            settings,
-        ));
+        let name = Arc::<str>::from(record.name);
+        let description = record.description.map(Arc::<str>::from);
+        let compiled = match settings {
+            ValidatedMcpSettings::WebSearch(settings) => {
+                if model_rule.api_format() != ApiFormat::OpenAiResponses {
+                    return Err(ConfigError::Compile(
+                        "web-search MCP servers require an OpenAI Responses model rule".into(),
+                    ));
+                }
+                if !channels.values().any(|channel| {
+                    channel.supports_standalone_web_search
+                        && channel_slots
+                            .get(&channel.id)
+                            .is_some_and(|slot| model_rule.has_configured_candidate(*slot))
+                }) {
+                    return Err(ConfigError::Compile(
+                        "web-search MCP servers require a model rule with a search-capable channel"
+                            .into(),
+                    ));
+                }
+                CompiledMcpServer::new_web_search(
+                    record.id,
+                    Arc::clone(&slug),
+                    name,
+                    description,
+                    model_rule,
+                    settings,
+                )
+            }
+            ValidatedMcpSettings::Image(settings) => {
+                if model_rule.api_format() != ApiFormat::OpenAiImages {
+                    return Err(ConfigError::Compile(
+                        "image MCP servers require an OpenAI Images model rule".into(),
+                    ));
+                }
+                if !channels.values().any(|channel| {
+                    channel.api_format == "open_ai_images"
+                        && channel_slots
+                            .get(&channel.id)
+                            .is_some_and(|slot| model_rule.has_configured_candidate(*slot))
+                }) {
+                    return Err(ConfigError::Compile(
+                        "image MCP servers require a model rule with an Images channel".into(),
+                    ));
+                }
+                CompiledMcpServer::new_image(
+                    record.id,
+                    Arc::clone(&slug),
+                    name,
+                    description,
+                    model_rule,
+                    settings,
+                )
+            }
+        };
+        let compiled = Arc::new(compiled);
         if result.insert(slug, compiled).is_some() {
             return Err(dup("enabled MCP server slug"));
         }
     }
     Ok(result)
+}
+
+enum ValidatedMcpSettings {
+    WebSearch(WebSearchMcpSettings),
+    Image(ImageMcpSettings),
+}
+
+fn validate_image_mcp_settings(settings: &mut ImageMcpSettings) -> Result<(), ConfigError> {
+    if settings.size == "auto" {
+        return Ok(());
+    }
+    let Some((width, height)) = settings.size.split_once('x') else {
+        return Err(ConfigError::Compile(
+            "image MCP size must be auto or WIDTHxHEIGHT".into(),
+        ));
+    };
+    if !valid_image_dimension(width) || !valid_image_dimension(height) {
+        return Err(ConfigError::Compile(
+            "image MCP dimensions must be canonical integers from 64 to 8192".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn valid_image_dimension(value: &str) -> bool {
+    !value.is_empty()
+        && (value.len() == 1 || !value.starts_with('0'))
+        && value
+            .parse::<u32>()
+            .is_ok_and(|dimension| (64..=8_192).contains(&dimension))
 }
 
 fn validate_web_search_mcp_settings(
@@ -2724,9 +2799,17 @@ fn validate_mcp(config: McpFileConfig) -> Result<Option<McpRuntimeConfig>, Confi
 
     #[cfg(feature = "mcp-server")]
     {
-        if config.request_body_bytes == 0 || config.search_result_bytes == 0 {
+        if config.request_body_bytes == 0
+            || config.search_result_bytes == 0
+            || config.image_result_bytes == 0
+        {
             return Err(ConfigError::Compile(
                 "enabled mcp request and result limits must be greater than zero".into(),
+            ));
+        }
+        if config.image_result_bytes > 64 * 1_024 * 1_024 {
+            return Err(ConfigError::Compile(
+                "enabled mcp image_result_bytes must not exceed 67108864".into(),
             ));
         }
         let public_base_url = config.public_base_url.ok_or_else(|| {
@@ -2780,6 +2863,7 @@ fn validate_mcp(config: McpFileConfig) -> Result<Option<McpRuntimeConfig>, Confi
             allow_legacy_2025_11_25: config.allow_legacy_2025_11_25,
             request_body_bytes: config.request_body_bytes,
             search_result_bytes: config.search_result_bytes,
+            image_result_bytes: config.image_result_bytes,
         }))
     }
 }
@@ -3027,9 +3111,62 @@ mod tests {
         assert_eq!(server.model_rule().client_model(), "client");
         assert_eq!(docs.name(), "Documentation search");
         assert_eq!(
-            docs.web_search_settings().allowed_domains,
+            docs.web_search_settings().unwrap().allowed_domains,
             ["docs.example.test"]
         );
+    }
+
+    #[test]
+    fn compiler_registers_enabled_image_mcp_servers() {
+        let mut records = route_records(0, "weighted_random", 1, "weighted_random", false);
+        for group in &mut records.groups {
+            group.api_format = "open_ai_images".into();
+        }
+        for channel in &mut records.channels {
+            channel.api_format = "open_ai_images".into();
+        }
+        records.model_rules[0].api_format = "open_ai_images".into();
+        records.mcp_servers.push(McpServerRecord {
+            id: Uuid::from_u128(30),
+            slug: "image".into(),
+            kind: "image".into(),
+            name: "Image generation".into(),
+            description: None,
+            model_rule_id: records.model_rules[0].id,
+            settings_version: 1,
+            settings: serde_json::json!({
+                "background": "opaque",
+                "quality": "high",
+                "size": "1536x1024"
+            }),
+            enabled: true,
+        });
+
+        let snapshot = compile_control_plane(records).unwrap();
+        let server = snapshot.mcp_server("image").unwrap();
+        let settings = server.image_settings().unwrap();
+
+        assert_eq!(server.kind(), McpServerKind::Image);
+        assert_eq!(server.model_rule().api_format(), ApiFormat::OpenAiImages);
+        assert_eq!(settings.size, "1536x1024");
+    }
+
+    #[test]
+    fn compiler_rejects_invalid_image_mcp_settings() {
+        let mut records = route_records(0, "weighted_random", 1, "weighted_random", false);
+        records.mcp_servers.push(McpServerRecord {
+            id: Uuid::from_u128(30),
+            slug: "image".into(),
+            kind: "image".into(),
+            name: "Image generation".into(),
+            description: None,
+            model_rule_id: records.model_rules[0].id,
+            settings_version: 1,
+            settings: serde_json::json!({"size": "00064x1024"}),
+            enabled: false,
+        });
+
+        assert!(compile_control_plane(records).is_err());
     }
 
     #[test]
@@ -3088,6 +3225,7 @@ mod tests {
             allow_legacy_2025_11_25: false,
             request_body_bytes: 1024,
             search_result_bytes: 2048,
+            image_result_bytes: 4096,
         })
         .unwrap()
         .unwrap();
@@ -3099,6 +3237,7 @@ mod tests {
         assert_eq!(config.public_base_url, "https://mcp.example.test");
         assert_eq!(config.allowed_origins, ["https://client.example.test"]);
         assert_eq!(config.search_result_bytes, 2048);
+        assert_eq!(config.image_result_bytes, 4096);
 
         assert!(
             validate_mcp(McpFileConfig {
@@ -3111,6 +3250,19 @@ mod tests {
                 allow_legacy_2025_11_25: false,
                 request_body_bytes: 1024,
                 search_result_bytes: 2048,
+                image_result_bytes: 4096,
+            })
+            .is_err()
+        );
+        assert!(
+            validate_mcp(McpFileConfig {
+                enabled: true,
+                public_base_url: Some("https://mcp.example.test".into()),
+                allowed_origins: vec![],
+                allow_legacy_2025_11_25: false,
+                request_body_bytes: 1024,
+                search_result_bytes: 2048,
+                image_result_bytes: 64 * 1_024 * 1_024 + 1,
             })
             .is_err()
         );
@@ -3127,6 +3279,7 @@ mod tests {
                 allow_legacy_2025_11_25: false,
                 request_body_bytes: 1024,
                 search_result_bytes: 2048,
+                image_result_bytes: 4096,
             })
             .is_err()
         );
