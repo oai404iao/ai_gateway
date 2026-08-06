@@ -235,25 +235,82 @@ impl ProxyService {
         api_operation: ApiOperation,
         request: Request<Body>,
     ) -> Result<AxumResponse, ProxyError> {
-        let api_format = api_operation.api_format();
         let started_at = Instant::now();
         let started_wall_at = chrono::Utc::now();
         let (parts, body) = request.into_parts();
-        let client_key = match parse_bearer_token(&parts.headers) {
-            Ok(value) => value,
-            Err(error) => {
-                trace_unlogged("invalid_api_key");
-                return Err(error);
-            }
-        };
+        let (snapshot, api_key) = self.authenticate_api_key(&parts.headers)?;
+        self.proxy_authenticated_parts(
+            api_operation,
+            parts,
+            body,
+            snapshot,
+            api_key,
+            RequestLogSource::Client,
+            started_wall_at,
+            started_at,
+        )
+        .await
+    }
+
+    pub(crate) fn authenticate_api_key(
+        &self,
+        headers: &HeaderMap,
+    ) -> Result<
+        (
+            Arc<crate::domain::CompiledRuntimeConfig>,
+            Arc<CompiledApiKey>,
+        ),
+        ProxyError,
+    > {
+        let client_key = parse_bearer_token(headers).inspect_err(|_| {
+            trace_unlogged("invalid_api_key");
+        })?;
         let snapshot = self.runtime.snapshot();
-        let api_key = match snapshot.authenticate(client_key) {
-            Some(value) => value,
-            None => {
-                trace_unlogged("invalid_or_expired_api_key");
-                return Err(ProxyError::invalid_api_key());
-            }
-        };
+        let api_key = snapshot.authenticate(client_key).ok_or_else(|| {
+            trace_unlogged("invalid_or_expired_api_key");
+            ProxyError::invalid_api_key()
+        })?;
+        Ok((snapshot, api_key))
+    }
+
+    #[cfg(feature = "mcp-server")]
+    pub(crate) async fn proxy_authenticated(
+        &self,
+        api_operation: ApiOperation,
+        request: Request<Body>,
+        snapshot: Arc<crate::domain::CompiledRuntimeConfig>,
+        api_key: Arc<CompiledApiKey>,
+        request_source: RequestLogSource,
+    ) -> Result<AxumResponse, ProxyError> {
+        let started_at = Instant::now();
+        let started_wall_at = chrono::Utc::now();
+        let (parts, body) = request.into_parts();
+        self.proxy_authenticated_parts(
+            api_operation,
+            parts,
+            body,
+            snapshot,
+            api_key,
+            request_source,
+            started_wall_at,
+            started_at,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn proxy_authenticated_parts(
+        &self,
+        api_operation: ApiOperation,
+        parts: axum::http::request::Parts,
+        body: Body,
+        snapshot: Arc<crate::domain::CompiledRuntimeConfig>,
+        api_key: Arc<CompiledApiKey>,
+        request_source: RequestLogSource,
+        started_wall_at: chrono::DateTime<chrono::Utc>,
+        started_at: Instant,
+    ) -> Result<AxumResponse, ProxyError> {
+        let api_format = api_operation.api_format();
         if !api_key.permits(api_format, ApiKeyPermission::Proxy) {
             trace_unlogged("proxy_permission_denied");
             return Err(ProxyError::forbidden(
@@ -337,6 +394,7 @@ impl ProxyService {
             SelectionResult::UnknownOrInaccessibleModel => {
                 self.record_rejected(
                     &api_key,
+                    request_source,
                     api_format,
                     api_operation,
                     &parsed.model,
@@ -350,6 +408,7 @@ impl ProxyService {
             SelectionResult::NoHealthyChannel { rule } => {
                 self.record_no_healthy_channel(
                     &api_key,
+                    request_source,
                     api_format,
                     api_operation,
                     &parsed.model,
@@ -378,6 +437,7 @@ impl ProxyService {
         let mut completion = CompletionGuard::new(
             Arc::clone(&self.request_log_sink),
             &api_key,
+            request_source,
             &parsed.model,
             &parsed.log_metadata,
             parsed.request_protocol,
@@ -719,6 +779,7 @@ impl ProxyService {
     fn record_rejected(
         &self,
         api_key: &CompiledApiKey,
+        request_source: RequestLogSource,
         api_format: ApiFormat,
         api_operation: ApiOperation,
         client_model: &str,
@@ -735,7 +796,7 @@ impl ProxyService {
             completed_at: completed_at(started_at, started.elapsed()),
             user_id: api_key.user_id(),
             api_key_id: api_key.id(),
-            request_source: RequestLogSource::Client,
+            request_source,
             api_format,
             api_operation,
             request_protocol,
@@ -764,6 +825,7 @@ impl ProxyService {
     fn record_no_healthy_channel(
         &self,
         api_key: &CompiledApiKey,
+        request_source: RequestLogSource,
         api_format: ApiFormat,
         api_operation: ApiOperation,
         client_model: &str,
@@ -780,7 +842,7 @@ impl ProxyService {
             completed_at: completed_at(started_at, started.elapsed()),
             user_id: api_key.user_id(),
             api_key_id: api_key.id(),
-            request_source: RequestLogSource::Client,
+            request_source,
             api_format,
             api_operation,
             request_protocol,
@@ -866,6 +928,18 @@ pub struct ProxyError {
 }
 
 impl ProxyError {
+    #[cfg(feature = "mcp-server")]
+    #[must_use]
+    pub(crate) const fn status(&self) -> StatusCode {
+        self.status
+    }
+
+    #[cfg(feature = "mcp-server")]
+    #[must_use]
+    pub(crate) fn message(&self) -> &str {
+        &self.message
+    }
+
     fn invalid_api_key() -> Self {
         Self {
             status: StatusCode::UNAUTHORIZED,
@@ -2266,6 +2340,7 @@ struct CompletionContext {
     model_id: Uuid,
     api_format: ApiFormat,
     api_operation: ApiOperation,
+    request_source: RequestLogSource,
     request_protocol: RequestProtocol,
     started_wall_at: chrono::DateTime<chrono::Utc>,
     started_at: Instant,
@@ -2306,6 +2381,7 @@ impl CompletionGuard {
     fn new(
         sink: Arc<dyn RequestLogSink>,
         api_key: &CompiledApiKey,
+        request_source: RequestLogSource,
         client_model: &str,
         log_metadata: &RequestLogMetadata,
         request_protocol: RequestProtocol,
@@ -2337,6 +2413,7 @@ impl CompletionGuard {
                 model_id: rule.upstream_model_id(),
                 api_format,
                 api_operation,
+                request_source,
                 request_protocol,
                 started_wall_at,
                 started_at,
@@ -2595,6 +2672,21 @@ impl CompletionGuard {
         let usage = context.usage.latest();
         let upstream_error = context.usage.error_details().unwrap_or_default();
         let explicit_error = context.error_details.unwrap_or_default();
+        let error_summary = if context.request_source == RequestLogSource::Mcp {
+            outcome.default_error_summary(context.upstream_status)
+        } else {
+            upstream_error
+                .summary
+                .or(explicit_error.summary)
+                .or_else(|| outcome.default_error_summary(context.upstream_status))
+        };
+        let error_code = if context.request_source == RequestLogSource::Mcp {
+            outcome.error_code().map(str::to_owned)
+        } else {
+            upstream_error
+                .code
+                .or_else(|| outcome.error_code().map(str::to_owned))
+        };
         let total_duration_ms = clamp_duration_ms(context.started_at.elapsed());
         let billing_ttft_ms = (!context.api_operation.is_images())
             .then(|| context.first_byte_at.map(clamp_duration_ms))
@@ -2634,7 +2726,7 @@ impl CompletionGuard {
             completed_at: completed_at(context.started_wall_at, context.started_at.elapsed()),
             user_id: context.user_id,
             api_key_id: context.api_key_id,
-            request_source: RequestLogSource::Client,
+            request_source: context.request_source,
             api_format: context.api_format,
             api_operation: context.api_operation,
             request_protocol: context.request_protocol,
@@ -2655,13 +2747,8 @@ impl CompletionGuard {
             ttft_ms: context.first_byte_at.map(clamp_duration_ms),
             total_duration_ms,
             billing: Some(billing),
-            error_code: upstream_error
-                .code
-                .or_else(|| outcome.error_code().map(str::to_owned)),
-            error_summary: upstream_error
-                .summary
-                .or(explicit_error.summary)
-                .or_else(|| outcome.default_error_summary(context.upstream_status)),
+            error_code,
+            error_summary,
         };
         context.sink.try_record(event);
     }

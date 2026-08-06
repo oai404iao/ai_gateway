@@ -54,12 +54,13 @@ where
     Option::<String>::deserialize(deserializer)
 }
 
-/// Identifies whether a row came from an external client request or the
-/// system's periodic direct upstream test worker.
+/// Identifies whether a row came from the OpenAI-compatible data plane, an MCP
+/// adapter, or the system's periodic direct upstream test worker.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RequestLogSource {
     Client,
+    Mcp,
     ScheduledTest,
 }
 
@@ -68,6 +69,7 @@ impl RequestLogSource {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Client => "client",
+            Self::Mcp => "mcp",
             Self::ScheduledTest => "scheduled_test",
         }
     }

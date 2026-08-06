@@ -55,7 +55,7 @@ COPY --from=planner /workspace/recipe.json recipe.json
 RUN cargo chef cook \
       --locked \
       --release \
-      --features embedded-console-ui \
+      --features embedded-console-ui,mcp-server \
       --package ai-gateway \
       --recipe-path recipe.json
 
@@ -67,7 +67,7 @@ COPY --from=console-builder /workspace/web/console/production-dependencies.json 
 RUN cargo build \
       --locked \
       --release \
-      --features embedded-console-ui \
+      --features embedded-console-ui,mcp-server \
       --package ai-gateway \
     && python3 scripts/generate-third-party-notices.py --output /out/licenses \
     && install -D -m 0755 target/release/ai-gateway /out/ai-gateway

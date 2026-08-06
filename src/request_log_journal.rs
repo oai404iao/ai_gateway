@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use crate::domain::{ApiFormat, ApiOperation, RequestLogEvent, RequestProtocol};
 
-pub(crate) const REQUEST_LOG_SCHEMA_VERSION: i16 = 4;
+pub(crate) const REQUEST_LOG_SCHEMA_VERSION: i16 = 5;
 
 #[derive(Clone, Debug)]
 pub(crate) struct EncodedRequestLog {
@@ -27,6 +27,8 @@ impl EncodedRequestLog {
         let event = match self.schema_version {
             2 => decode_v2(&self.payload)?,
             3 => decode_v3(&self.payload)?,
+            4 => serde_json::from_slice::<RequestLogEvent>(&self.payload)
+                .map_err(JournalCodecError::Deserialize)?,
             REQUEST_LOG_SCHEMA_VERSION => serde_json::from_slice::<RequestLogEvent>(&self.payload)
                 .map_err(JournalCodecError::Deserialize)?,
             version => return Err(JournalCodecError::UnsupportedVersion { version }),
@@ -110,7 +112,7 @@ mod tests {
     use uuid::Uuid;
 
     use super::{EncodedRequestLog, JournalCodecError};
-    use crate::domain::RequestProtocol;
+    use crate::domain::{RequestLogSource, RequestProtocol};
 
     fn usage_payload(
         id: Uuid,
@@ -279,5 +281,31 @@ mod tests {
         .unwrap_err();
 
         assert!(matches!(error, JournalCodecError::Deserialize(_)));
+    }
+
+    #[test]
+    fn current_schema_round_trips_mcp_request_sources() {
+        let id = Uuid::new_v4();
+        let mut value: serde_json::Value = serde_json::from_slice(&usage_payload(
+            id,
+            Some("non_stream"),
+            Some("chat_completions"),
+            false,
+        ))
+        .unwrap();
+        value.as_object_mut().unwrap().insert(
+            "request_source".into(),
+            serde_json::Value::String("mcp".into()),
+        );
+        let encoded = EncodedRequestLog {
+            request_log_id: id,
+            schema_version: super::REQUEST_LOG_SCHEMA_VERSION,
+            payload: serde_json::to_vec(&value).unwrap(),
+        };
+
+        assert_eq!(
+            encoded.decode().unwrap().request_source,
+            RequestLogSource::Mcp
+        );
     }
 }

@@ -13,6 +13,16 @@ Versioning.
   web search, reusing Responses routing while requiring an explicit channel
   capability, preserving Codex search metadata, supporting Codex OAuth target
   adaptation, and recording a distinct request-log operation.
+- Add an optional stateless MCP `2026-07-28` transport with PostgreSQL-backed
+  multi-instance registry and Console CRUD, Gateway API-key authorization,
+  managed Search `web.run` forwarding through the existing proxy core, and
+  `request_source = "mcp"` attribution. Images MCP remains a later phase.
+
+### Security
+
+- Validate MCP Host, Origin, per-request protocol metadata, and the absence of
+  session headers; strip client credentials before handler dispatch and cap
+  RMCP payload-formatting trace targets at `info`.
 
 ## [0.9.7] - 2026-08-05
 

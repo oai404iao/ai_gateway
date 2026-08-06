@@ -11,10 +11,10 @@ use crate::{
     persistence::{
         ApiHostsView, ChannelBatchUpdateInput, CodexCredentialBatchInput, CodexCredentialCreate,
         CodexCredentialUpdateInput, ConsoleApiKey, ConsoleAuditLog, ControlPlaneChannelDetail,
-        ControlPlaneConfigTemplateDetail, ControlPlaneLists, ControlPlaneMutation,
-        ControlPlaneRepository, MutationResult, RepositoryError, SelfApiKeyCreate,
-        SelfApiKeyOptions, SelfApiKeyUpdate, SyncedModelInput, SystemSettingsView,
-        UserBatchUpdateInput, UserSettingsInput, UserSettingsView,
+        ControlPlaneConfigTemplateDetail, ControlPlaneLists, ControlPlaneMcpServer,
+        ControlPlaneMutation, ControlPlaneRepository, MutationResult, RepositoryError,
+        SelfApiKeyCreate, SelfApiKeyOptions, SelfApiKeyUpdate, SyncedModelInput,
+        SystemSettingsView, UserBatchUpdateInput, UserSettingsInput, UserSettingsView,
     },
     routing::{
         PassiveHealthPolicy, RoutingRuntime, SessionAffinityCacheClearResult,
@@ -138,6 +138,13 @@ impl ControlPlaneCoordinator {
             .repository
             .control_plane_config_template_detail(id)
             .await?)
+    }
+
+    pub async fn mcp_server(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<ControlPlaneMcpServer>, ControlPlaneError> {
+        Ok(self.repository.control_plane_mcp_server(id).await?)
     }
 
     pub async fn system_settings(&self) -> Result<SystemSettingsView, ControlPlaneError> {

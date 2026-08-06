@@ -6747,6 +6747,10 @@ async fn codex_images_migration_backfills_existing_credentials_without_replacing
         .execute(&database.pool)
         .await
         .expect("standalone web-search migration must extend the legacy projection");
+    sqlx::raw_sql(include_str!("../migrations/0045_mcp_servers.sql"))
+        .execute(&database.pool)
+        .await
+        .expect("MCP registry migration must bring the runtime schema current");
     let repository = ControlPlaneRepository::new(database.pool.clone());
     repository
         .ensure_system_settings(system_settings())

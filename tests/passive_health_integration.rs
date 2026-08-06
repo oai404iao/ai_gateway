@@ -211,6 +211,7 @@ fn proxy_fixture_with_retry(
         }],
         proxies: vec![],
         templates: vec![],
+        mcp_servers: vec![],
     };
     let runtime = Arc::new(RuntimeConfig::new(
         compile_control_plane_with_system_settings(

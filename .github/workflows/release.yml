@@ -92,8 +92,10 @@ jobs:
 
       - run: pnpm --dir web/console install --frozen-lockfile
       - run: pnpm --dir web/console build
-      - run: cargo clippy --locked --all-targets --features embedded-console-ui
+      - run: cargo clippy --locked --all-targets --features embedded-console-ui,mcp-server
       - run: cargo test --locked --features embedded-console-ui --lib console_ui
+      - run: cargo test --locked --features mcp-server --lib
+      - run: cargo test --locked --features mcp-server --test mcp_integration
 
   publish-platform-images:
     name: publish-platform-image (${{ matrix.arch }})
@@ -210,6 +212,7 @@ jobs:
           chmod 0755 target/release/ai-gateway
           test -s target/image-license-materials/THIRD_PARTY_NOTICES.md
           test -d target/image-license-materials/LICENSES
+          test -s target/image-license-materials/LICENSES/cargo/rmcp_3.1.1/UPSTREAM_Cargo.toml
 
       - name: Package release assets
         if: ${{ matrix.arch == 'amd64' }}

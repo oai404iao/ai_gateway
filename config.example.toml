@@ -36,6 +36,23 @@ console_body_bytes = 262_144
 # Login, refresh, password, and invitation payloads.
 auth_body_bytes = 16_384
 
+[mcp]
+# Stateless MCP 2026-07-28 endpoints are mounted as /mcp/{slug} on the public
+# listener only when the binary includes --features mcp-server and this switch
+# is enabled. Individual endpoints are managed in PostgreSQL through Console.
+enabled = false
+# Public HTTP(S) origin used to publish endpoint URLs and derive the accepted
+# Host header. Do not include a path.
+public_base_url = "https://api.example.com"
+# Browser Origin headers are rejected unless explicitly listed. Non-browser
+# MCP clients normally omit Origin.
+allowed_origins = []
+# Optional compatibility for pre-2026 clients; the server remains sessionless.
+allow_legacy_2025_11_25 = false
+# Independent limits for MCP JSON-RPC envelopes and buffered Search results.
+request_body_bytes = 4_194_304
+search_result_bytes = 4_194_304
+
 [database]
 # Prefer a password file over embedding credentials in TOML. Relative paths
 # are resolved from the process working directory. Inline URL passwords remain

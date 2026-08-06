@@ -45,7 +45,7 @@
 
 - Rust format、workspace-wide clippy 与完整测试（包括性能工具的轻量单元测试）。
 - Console API 类型漂移检查、TypeScript、lint、组件测试与生产构建。
-- 启用 `embedded-console-ui` feature 的 Rust lint/测试。
+- 启用 `embedded-console-ui,mcp-server` feature 的 Rust lint，并执行各自的定向测试。
 - Production Compose 解析。
 - 完整 Docker 镜像构建与容器内 `--version` smoke test。
 
