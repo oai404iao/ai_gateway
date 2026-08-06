@@ -52,6 +52,7 @@ type McpTransport = StreamableHttpService<McpHandler, LocalSessionManager>;
 #[derive(Clone)]
 pub struct McpService {
     transport: McpTransport,
+    image_transport: McpTransport,
     proxy: ProxyService,
     cancellation_token: CancellationToken,
     allowed_hosts: Arc<[String]>,
@@ -68,23 +69,21 @@ impl McpService {
             search_result_bytes: config.search_result_bytes,
             image_result_bytes: config.image_result_bytes,
         };
-        let transport_config = StreamableHttpServerConfig::default()
-            .with_legacy_session_mode(false)
-            .with_json_response(true)
-            .with_sse_keep_alive(None)
-            .with_sse_retry(None)
-            .with_allowed_hosts(config.allowed_hosts.clone())
-            .with_allowed_origins(config.allowed_origins.clone())
-            .with_max_request_body_bytes(config.request_body_bytes)
-            .with_stateless_protocol_metadata_required(!config.allow_legacy_2025_11_25)
-            .with_cancellation_token(cancellation_token.clone());
-        let transport = StreamableHttpService::new(
-            move || Ok(handler.clone()),
-            Default::default(),
-            transport_config,
+        let transport = build_transport(
+            handler.clone(),
+            config,
+            config.request_body_bytes,
+            cancellation_token.clone(),
+        );
+        let image_transport = build_transport(
+            handler,
+            config,
+            config.image_request_body_bytes,
+            cancellation_token.clone(),
         );
         Self {
             transport,
+            image_transport,
             proxy,
             cancellation_token,
             allowed_hosts: Arc::from(config.allowed_hosts.clone()),
@@ -146,6 +145,10 @@ impl McpService {
         let Some(server) = snapshot.mcp_server(&slug) else {
             return StatusCode::NOT_FOUND.into_response();
         };
+        let transport = match server.kind() {
+            McpServerKind::WebSearch => self.transport.clone(),
+            McpServerKind::Image => self.image_transport.clone(),
+        };
         request.headers_mut().remove(AUTHORIZATION);
         request.headers_mut().remove(PROXY_AUTHORIZATION);
         request.headers_mut().remove(COOKIE);
@@ -155,13 +158,36 @@ impl McpService {
             server,
         });
 
-        let response = match self.transport.clone().oneshot(request).await {
+        let response = match transport.oneshot(request).await {
             Ok(response) => response,
             Err(error) => match error {},
         };
         let (parts, body) = response.into_parts();
         Response::from_parts(parts, Body::new(body))
     }
+}
+
+fn build_transport(
+    handler: McpHandler,
+    config: &McpRuntimeConfig,
+    request_body_bytes: usize,
+    cancellation_token: CancellationToken,
+) -> McpTransport {
+    let transport_config = StreamableHttpServerConfig::default()
+        .with_legacy_session_mode(false)
+        .with_json_response(true)
+        .with_sse_keep_alive(None)
+        .with_sse_retry(None)
+        .with_allowed_hosts(config.allowed_hosts.clone())
+        .with_allowed_origins(config.allowed_origins.clone())
+        .with_max_request_body_bytes(request_body_bytes)
+        .with_stateless_protocol_metadata_required(!config.allow_legacy_2025_11_25)
+        .with_cancellation_token(cancellation_token);
+    StreamableHttpService::new(
+        move || Ok(handler.clone()),
+        Default::default(),
+        transport_config,
+    )
 }
 
 fn optional_single_header(
@@ -240,7 +266,7 @@ impl McpRequestPrincipal {
             })
     }
 
-    fn permits_image_generation(&self) -> bool {
+    fn permits_image_tool(&self) -> bool {
         matches!(self.server.kind(), McpServerKind::Image)
             && self
                 .api_key
@@ -362,7 +388,7 @@ impl ServerHandler for McpHandler {
                 .into_iter()
                 .collect(),
             McpServerKind::Image => principal
-                .permits_image_generation()
+                .permits_image_tool()
                 .then(imagegen_tool)
                 .into_iter()
                 .collect(),
@@ -406,7 +432,7 @@ impl ServerHandler for McpHandler {
                     .map(Into::into)
             }
             (McpServerKind::Image, IMAGEGEN_TOOL_NAME) => {
-                if !principal.permits_image_generation() {
+                if !principal.permits_image_tool() {
                     return Ok(rmcp::model::CallToolResult::error(vec![
                         rmcp::model::ContentBlock::text(
                             "This API key cannot access the configured MCP tool.",

@@ -76,6 +76,9 @@ Codex image tool 声明 `gpt-image-2`，管理员仍须创建对应本地模型�
 ## 差异与限制
 
 - edit 当前只接受 multipart，不接受 JSON/data URL 形式的公开客户端 edit 请求。
+- 可选 MCP `image_gen.imagegen` 是独立 adapter：它只接受最多五个显式 PNG/JPEG/WebP
+  base64 data URL，验证并逐块解码为上述 multipart 路径；这不会为公开
+  `/v1/images/edits` 增加 JSON edit 契约。
 - generation JSON 和 edit multipart 中的 `stream: true` 都返回本地
   `400 image_streaming_unsupported`，不会发送上游请求。
 - Images generation 不使用自动上游重试或跨渠道故障转移；一次上游尝试开始后直接返回该尝试

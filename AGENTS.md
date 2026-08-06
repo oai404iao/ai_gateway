@@ -23,8 +23,8 @@ forwarding, passive health, admission controls, durable spooled request logs,
 and reusable upstream clients. The optional `mcp-server` Cargo feature adds
 stateless MCP `2026-07-28` endpoints at `POST /mcp/{slug}`; the currently
 implemented built-in kinds expose Codex-compatible `web.run` and single-image
-`image_gen.imagegen` generation through the existing standalone-search and
-Images forwarding paths. A React + TypeScript
+`image_gen.imagegen` generation/edit through the existing standalone-search
+and Images forwarding paths. A React + TypeScript
 Console web UI lives under `web/console/` and can be embedded into the binary
 as static assets via the optional `embedded-console-ui` cargo feature, served
 only from the Console listener. `docs/development/architecture.md` describes
@@ -115,6 +115,7 @@ cargo clippy --all-targets --features mcp-server # required when MCP transport/r
 cargo test                                # unit + local/PostgreSQL integration (needs `docker compose up -d`)
 cargo test --features mcp-server --lib    # MCP feature-gated unit coverage
 cargo test --features mcp-server --test mcp_integration # deterministic stateless MCP Search/Images forwarding coverage
+cargo test --features mcp-server --test control_plane_integration codex_connector_forwards_responses_and_images_with_shared_credentials -- --exact # MCP Images edit through the Codex connector
 cargo test --lib console_ui               # embedded-UI serving tests (needs --features embedded-console-ui + built web/console/dist)
 cargo test --test console_spec_integration # OpenAPI spec/Console-API drift tests (needs PostgreSQL)
 cargo test --package ai-gateway-perf       # Fast unit tests for the manual performance tooling; does not run a benchmark
@@ -286,11 +287,14 @@ Axum HTTP
   or allow database-configured arbitrary tool code/schema. Search ref-id
   continuation is explicit through `search_session_id`; derive provider Search
   IDs from API Key ID, MCP server ID, and the current model/policy scope so
-  endpoints and policy versions cannot share context. Images generation fixes
-  model, single-image PNG/base64 output, background, quality, and size from the
-  MCP instance; enforce the independent result limit and never store prompts
-  or image bytes. Request logs use `request_source = "mcp"` without storing
-  tool arguments, provider error details, or results.
+  endpoints and policy versions cannot share context. Images fixes model,
+  single-image PNG/base64 output, background, quality, and size from the MCP
+  instance. Edit accepts at most five explicitly supplied PNG/JPEG/WebP data
+  URLs, streams validated decoded bytes into the existing replayable multipart
+  path, never fetches remote URLs, and applies independent envelope,
+  per-image, decoded-total, and result limits. Never store prompts or image
+  bytes. Request logs use `request_source = "mcp"` without storing tool
+  arguments, provider error details, or results.
 
 ### Console API and embedded UI
 

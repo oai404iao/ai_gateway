@@ -39,8 +39,9 @@ Docker image job 只依赖快速的路径分类，与 Rust、Console 和 E2E 并
 `.github/workflows/reusable-quality.yml` 是普通 CI 的可复用质量门禁，包含：
 
 - 文档检查；
-- Rust 1.97.1 format、默认 workspace 与 `mcp-server` feature 的 Clippy/测试；
-- Rust 1.92.0 MSRV 默认 workspace 与 `mcp-server` feature 的 check/测试；
+- Rust 1.97.1 format、默认 workspace 与 `mcp-server` feature 的
+  Clippy/测试，包括无状态 MCP 集成和 MCP Images 经 Codex Images 适配器的路径；
+- Rust 1.92.0 MSRV 默认 workspace 与相同 `mcp-server` 集成路径的 check/测试；
 - Console API 类型漂移、TypeScript、lint、组件测试和生产构建；
 - Chromium Playwright E2E，并在失败时上传 trace/test results。
 

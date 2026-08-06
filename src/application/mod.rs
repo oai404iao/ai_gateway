@@ -49,6 +49,8 @@ pub use model_sync::{
 pub use proxy::{ModelsResponse, ProxyError, ProxyService};
 pub use proxy_test::{ProxyTestError, ProxyTestInput, ProxyTestResponse, ProxyTestService};
 pub use request_body::ProxyRequestBodyLimits;
+#[cfg(all(test, feature = "mcp-server"))]
+pub(crate) use request_body::{PreparedRequestBody, ReplayableRequestBody};
 pub use request_log::{
     DurableRequestLogSink, NoopRequestLogSink, QueueRequestLogSink, RecordingRequestLogSink,
     RequestLogPipelineMonitor, RequestLogSink,

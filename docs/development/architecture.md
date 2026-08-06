@@ -21,7 +21,8 @@ operation；当前 Images 实现非流式 JSON generation 和非流式 multipart
 可选 `mcp-server` feature 不是第四种数据面格式。它在公共 listener 上提供无状态
 `POST /mcp/{slug}` transport；当前 `web_search` kind 把 `web.run` 参数编译为
 `ApiOperation::StandaloneWebSearch`，`image` kind 把 `image_gen.imagegen` 参数编译为
-`ApiOperation::ImagesGeneration`，随后进入同一认证后 Proxy 执行核心。
+`ApiOperation::ImagesGeneration` 或 `ApiOperation::ImagesEdit`，随后进入同一认证后 Proxy
+执行核心。
 
 客户端 API 格式与上游接入方式是两个维度。Channel Group 另有
 `ConnectorKind`：普通渠道使用 `openai_compatible`，Codex 订阅凭证使用
@@ -47,7 +48,7 @@ MCP client
   -> Host / Origin / MCP metadata validation
   -> API-key authentication and immutable MCP registry lookup
   -> built-in web.run or image_gen.imagegen adapter
-  -> authenticated standalone-search or Images-generation Proxy execution
+  -> authenticated standalone-search or Images generation/edit Proxy execution
   -> bounded MCP CallToolResult
 
 Browser or Console client
@@ -121,15 +122,19 @@ Browser or Console client
 `ArcSwap` 快照并认证一次 Gateway API Key，然后把 `CompiledMcpServer`、`CompiledApiKey` 和同一
 快照放入 request extension。`src/mcp/search.rs` 只负责静态 `web.run` schema、typed validation、
 显式 `search_session_id`、域名策略和 Search body/result 映射；它不查询 PostgreSQL、不回环
-HTTP，也不保存 MCP Session。`src/mcp/image.rs` 提供静态 `image_gen.imagegen` generation
-schema，把实例固定的模型、background、quality 和 size 编译为单图 PNG/base64 Images 请求，
-并返回带 `codex/imageDetail = original` 的 MCP `ImageContent`；它不保存图片或服务端文件。
+HTTP，也不保存 MCP Session。`src/mcp/image.rs` 提供静态 `image_gen.imagegen`
+generation/edit schema：无引用时编译 JSON generation；有引用时验证最多五个显式
+PNG/JPEG/WebP base64 data URL，并逐块解码为既有 replayable multipart edit。两种操作都固定
+实例的模型、background、quality、size 和单图 PNG/base64 输出，并返回带
+`codex/imageDetail = original` 的 MCP `ImageContent`；它不抓取远程 URL，也不保存图片或服务端文件。
 
 启用的 MCP 定义随其他控制面记录编译进按 slug 索引的不可变 registry。数据库不能上传任意工具
 代码或 schema；`kind` 只选择二进制中已链接的实现。Transport 保持
 `legacy_session_mode = false`，默认只支持 `2026-07-28` 每请求 metadata，不发
-`Mcp-Session-Id`。Search 与 Images generation 结果分别按独立上限有界收集，底层转发日志使用
-`request_source = "mcp"`，但不保存 tool arguments、prompt、图片字节或结果。
+`Mcp-Session-Id`。Search 使用普通 MCP envelope 上限；Image endpoint 使用独立 inline-edit
+envelope 上限。Images 输入还限制单图/解码总字节，Search 与 Images 结果分别按独立上限有界
+收集。底层转发日志使用 `request_source = "mcp"`，但不保存 tool arguments、prompt、图片字节
+或结果。
 
 ### Images edit replayable body
 

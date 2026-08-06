@@ -1,6 +1,10 @@
 #![cfg(feature = "mcp-server")]
 
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::BTreeMap,
+    io,
+    sync::{Arc, Mutex},
+};
 
 use ai_gateway::{
     application::{ProxyService, RequestLogSink},
@@ -14,7 +18,7 @@ use ai_gateway::{
 };
 use axum::{
     Json, Router,
-    body::{Body, to_bytes},
+    body::{Body, Bytes, to_bytes},
     extract::State,
     http::{
         HeaderMap, Request, StatusCode,
@@ -27,6 +31,8 @@ use axum::{
     response::IntoResponse,
     routing::post,
 };
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64_STANDARD};
+use futures_util::stream;
 use rust_decimal::Decimal;
 use serde_json::{Value, json};
 use tokio::{net::TcpListener, task::JoinHandle};
@@ -287,6 +293,7 @@ async fn harness_with_options(
             allowed_origins,
             allow_legacy_2025_11_25,
             request_body_bytes: 64 * 1024,
+            image_request_body_bytes: 512 * 1024,
             search_result_bytes: 64 * 1024,
             image_result_bytes: 64 * 1024,
         },
@@ -294,9 +301,17 @@ async fn harness_with_options(
     (service.router(), captured, logs, upstream)
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct MockImage {
-    request: Arc<Mutex<Option<Value>>>,
+    generation: Arc<Mutex<Option<Value>>>,
+    edit: Arc<Mutex<Option<CapturedImageEdit>>>,
+}
+
+#[derive(Clone)]
+struct CapturedImageEdit {
+    authorization: Option<String>,
+    content_type: String,
+    body: Bytes,
 }
 
 async fn image_upstream(
@@ -304,7 +319,7 @@ async fn image_upstream(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> impl IntoResponse {
-    *state.request.lock().unwrap() = Some(body.clone());
+    *state.generation.lock().unwrap() = Some(body.clone());
     if headers
         .get(AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
@@ -336,21 +351,74 @@ async fn image_upstream(
     )
 }
 
+async fn image_edit_upstream(
+    State(state): State<MockImage>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> impl IntoResponse {
+    let authorization = headers
+        .get(AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let content_type = headers
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    *state.edit.lock().unwrap() = Some(CapturedImageEdit {
+        authorization: authorization.clone(),
+        content_type,
+        body,
+    });
+    if authorization.as_deref() != Some("Bearer upstream-image-key") {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": {"message": "wrong upstream credential"}})),
+        );
+    }
+    if state.edit.lock().unwrap().as_ref().is_some_and(|request| {
+        request
+            .body
+            .windows(b"sensitive edit prompt".len())
+            .any(|window| window == b"sensitive edit prompt")
+    }) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": {
+                    "code": "invalid_edit_prompt",
+                    "message": "sensitive edit prompt must never enter logs"
+                }
+            })),
+        );
+    }
+    (
+        StatusCode::OK,
+        Json(json!({
+            "created": 1,
+            "data": [{"b64_json": PNG_BASE64}],
+            "usage": {"input_tokens": 13, "output_tokens": 17}
+        })),
+    )
+}
+
 async fn image_harness(
     image_result_bytes: usize,
-) -> (
-    Router,
-    Arc<Mutex<Option<Value>>>,
-    RecordingRequestLogSink,
-    TestServer,
-) {
-    let captured = Arc::new(Mutex::new(None));
+) -> (Router, MockImage, RecordingRequestLogSink, TestServer) {
+    image_harness_with_limits(image_result_bytes, 64 * 1024, 512 * 1024).await
+}
+
+async fn image_harness_with_limits(
+    image_result_bytes: usize,
+    request_body_bytes: usize,
+    image_request_body_bytes: usize,
+) -> (Router, MockImage, RecordingRequestLogSink, TestServer) {
+    let captured = MockImage::default();
     let upstream = start_server(
         Router::new()
             .route("/v1/images/generations", post(image_upstream))
-            .with_state(MockImage {
-                request: Arc::clone(&captured),
-            }),
+            .route("/v1/images/edits", post(image_edit_upstream))
+            .with_state(captured.clone()),
     )
     .await;
 
@@ -464,7 +532,8 @@ async fn image_harness(
             allowed_hosts: vec!["mcp.example.test".into()],
             allowed_origins: vec![],
             allow_legacy_2025_11_25: false,
-            request_body_bytes: 64 * 1024,
+            request_body_bytes,
+            image_request_body_bytes,
             search_result_bytes: 64 * 1024,
             image_result_bytes,
         },
@@ -511,6 +580,37 @@ fn mcp_request_at(
         builder = builder.header("Mcp-Name", name);
     }
     builder.body(Body::from(body.to_string())).unwrap()
+}
+
+struct ParsedImageEdit {
+    fields: BTreeMap<String, String>,
+    images: Vec<(String, Bytes)>,
+}
+
+async fn parse_image_edit(captured: &CapturedImageEdit) -> ParsedImageEdit {
+    let boundary = multer::parse_boundary(&captured.content_type).unwrap();
+    let body = captured.body.clone();
+    let stream = stream::once(async move { Ok::<Bytes, io::Error>(body) });
+    let mut multipart = multer::Multipart::new(stream, boundary);
+    let mut fields = BTreeMap::new();
+    let mut images = Vec::new();
+    while let Some(field) = multipart.next_field().await.unwrap() {
+        let name = field.name().unwrap().to_owned();
+        let content_type = field
+            .content_type()
+            .map(|value| value.essence_str().to_owned());
+        let bytes = field.bytes().await.unwrap();
+        if matches!(name.as_str(), "image" | "image[]") {
+            images.push((content_type.unwrap(), bytes));
+        } else {
+            assert!(
+                fields
+                    .insert(name, String::from_utf8(bytes.to_vec()).unwrap())
+                    .is_none()
+            );
+        }
+    }
+    ParsedImageEdit { fields, images }
 }
 
 #[tokio::test]
@@ -678,10 +778,9 @@ async fn stateless_imagegen_returns_one_mcp_image_and_attributes_logs() {
         tools["result"]["tools"][0]["inputSchema"]["properties"]["prompt"]["maxLength"],
         32_000
     );
-    assert!(
-        tools["result"]["tools"][0]["inputSchema"]["properties"]
-            .get("referenced_image_urls")
-            .is_none()
+    assert_eq!(
+        tools["result"]["tools"][0]["inputSchema"]["properties"]["referenced_image_urls"]["maxItems"],
+        5
     );
 
     let response = router
@@ -720,7 +819,7 @@ async fn stateless_imagegen_returns_one_mcp_image_and_attributes_logs() {
             .contains(PNG_BASE64)
     );
 
-    let upstream = captured.lock().unwrap().clone().unwrap();
+    let upstream = captured.generation.lock().unwrap().clone().unwrap();
     assert_eq!(upstream["model"], "provider-image");
     assert_eq!(upstream["prompt"], "paint a moonlit lake");
     assert_eq!(upstream["n"], 1);
@@ -745,6 +844,206 @@ async fn stateless_imagegen_returns_one_mcp_image_and_attributes_logs() {
             .unwrap()
             .contains(PNG_BASE64)
     );
+}
+
+#[tokio::test]
+async fn stateless_imagegen_edits_explicit_data_urls_through_the_images_proxy() {
+    let (router, captured, logs, _upstream) = image_harness(64 * 1024).await;
+    let jpeg = vec![0xff, 0xd8, 0xff, 0xe0, 0xff, 0xd9];
+    let jpeg_url = format!("data:image/jpeg;base64,{}", BASE64_STANDARD.encode(&jpeg));
+    let response = router
+        .oneshot(mcp_request_at(
+            "/mcp/image",
+            IMAGE_CLIENT_KEY,
+            "tools/call",
+            Some("image_gen.imagegen"),
+            json!({
+                "_meta": request_meta(),
+                "name": "image_gen.imagegen",
+                "arguments": {
+                    "prompt": "add a red hat",
+                    "referenced_image_urls": [
+                        format!("data:image/png;base64,{PNG_BASE64}"),
+                        jpeg_url
+                    ]
+                }
+            }),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let response: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 256 * 1024).await.unwrap()).unwrap();
+    assert_eq!(response["result"]["content"][0]["type"], "image");
+    assert_eq!(response["result"]["content"][0]["data"], PNG_BASE64);
+    assert_eq!(
+        response["result"]["structuredContent"]["status"],
+        "completed"
+    );
+
+    assert!(captured.generation.lock().unwrap().is_none());
+    let edit = captured.edit.lock().unwrap().clone().unwrap();
+    assert_eq!(
+        edit.authorization.as_deref(),
+        Some("Bearer upstream-image-key")
+    );
+    let edit = parse_image_edit(&edit).await;
+    assert_eq!(edit.fields["model"], "provider-image");
+    assert_eq!(edit.fields["prompt"], "add a red hat");
+    assert_eq!(edit.fields["n"], "1");
+    assert_eq!(edit.fields["background"], "opaque");
+    assert_eq!(edit.fields["quality"], "high");
+    assert_eq!(edit.fields["size"], "1536x1024");
+    assert_eq!(edit.images.len(), 2);
+    assert_eq!(edit.images[0].0, "image/png");
+    assert_eq!(
+        edit.images[0].1,
+        Bytes::from(BASE64_STANDARD.decode(PNG_BASE64).unwrap())
+    );
+    assert_eq!(edit.images[1], ("image/jpeg".into(), Bytes::from(jpeg)));
+
+    let events = logs.events.lock().unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].request_source, RequestLogSource::Mcp);
+    assert_eq!(events[0].api_operation, ApiOperation::ImagesEdit);
+    let logged = serde_json::to_string(&events[0]).unwrap();
+    assert!(!logged.contains("red hat"));
+    assert!(!logged.contains(PNG_BASE64));
+}
+
+#[tokio::test]
+async fn imagegen_edit_errors_hide_provider_payloads() {
+    let (router, _, logs, _upstream) = image_harness(64 * 1024).await;
+    let response = router
+        .oneshot(mcp_request_at(
+            "/mcp/image",
+            IMAGE_CLIENT_KEY,
+            "tools/call",
+            Some("image_gen.imagegen"),
+            json!({
+                "_meta": request_meta(),
+                "name": "image_gen.imagegen",
+                "arguments": {
+                    "prompt": "sensitive edit prompt",
+                    "referenced_image_urls": [format!("data:image/png;base64,{PNG_BASE64}")]
+                }
+            }),
+        ))
+        .await
+        .unwrap();
+    let response: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 64 * 1024).await.unwrap()).unwrap();
+
+    assert_eq!(response["result"]["isError"], true);
+    assert!(!response.to_string().contains("sensitive edit prompt"));
+    assert!(!response.to_string().contains("invalid_edit_prompt"));
+    let events = logs.events.lock().unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].api_operation, ApiOperation::ImagesEdit);
+    assert_eq!(
+        events[0].error_summary.as_deref(),
+        Some("The upstream returned HTTP 400.")
+    );
+    assert_eq!(events[0].error_code.as_deref(), Some("upstream_http_error"));
+}
+
+#[tokio::test]
+async fn imagegen_rejects_untrusted_edit_references_before_forwarding() {
+    let (router, captured, logs, _upstream) = image_harness(64 * 1024).await;
+    let cases = [
+        json!(["https://example.test/image.png"]),
+        json!([format!("data:image/jpeg;base64,{PNG_BASE64}")]),
+        Value::Array(
+            (0..6)
+                .map(|_| Value::String(format!("data:image/png;base64,{PNG_BASE64}")))
+                .collect(),
+        ),
+    ];
+
+    for referenced_image_urls in cases {
+        let response = router
+            .clone()
+            .oneshot(mcp_request_at(
+                "/mcp/image",
+                IMAGE_CLIENT_KEY,
+                "tools/call",
+                Some("image_gen.imagegen"),
+                json!({
+                    "_meta": request_meta(),
+                    "name": "image_gen.imagegen",
+                    "arguments": {
+                        "prompt": "must not execute",
+                        "referenced_image_urls": referenced_image_urls
+                    }
+                }),
+            ))
+            .await
+            .unwrap();
+        let response: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 64 * 1024).await.unwrap())
+                .unwrap();
+        assert_eq!(response["result"]["isError"], true);
+    }
+
+    assert!(captured.generation.lock().unwrap().is_none());
+    assert!(captured.edit.lock().unwrap().is_none());
+    assert!(logs.events.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn image_mcp_uses_its_independent_request_envelope_limit() {
+    let (router, captured, _, _upstream) =
+        image_harness_with_limits(64 * 1024, 1_024, 8 * 1_024).await;
+    let mut accepted_image = BASE64_STANDARD.decode(PNG_BASE64).unwrap();
+    accepted_image.resize(2 * 1_024, 0);
+    let accepted = router
+        .clone()
+        .oneshot(mcp_request_at(
+            "/mcp/image",
+            IMAGE_CLIENT_KEY,
+            "tools/call",
+            Some("image_gen.imagegen"),
+            json!({
+                "_meta": request_meta(),
+                "name": "image_gen.imagegen",
+                "arguments": {
+                    "prompt": "accept the image-specific envelope",
+                    "referenced_image_urls": [format!(
+                        "data:image/png;base64,{}",
+                        BASE64_STANDARD.encode(&accepted_image)
+                    )]
+                }
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(accepted.status(), StatusCode::OK);
+    assert!(captured.edit.lock().unwrap().is_some());
+
+    let mut rejected_image = BASE64_STANDARD.decode(PNG_BASE64).unwrap();
+    rejected_image.resize(8 * 1_024, 0);
+    let rejected = router
+        .oneshot(mcp_request_at(
+            "/mcp/image",
+            IMAGE_CLIENT_KEY,
+            "tools/call",
+            Some("image_gen.imagegen"),
+            json!({
+                "_meta": request_meta(),
+                "name": "image_gen.imagegen",
+                "arguments": {
+                    "prompt": "exceed the image envelope",
+                    "referenced_image_urls": [format!(
+                        "data:image/png;base64,{}",
+                        BASE64_STANDARD.encode(&rejected_image)
+                    )]
+                }
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(rejected.status(), StatusCode::PAYLOAD_TOO_LARGE);
 }
 
 #[tokio::test]
@@ -783,7 +1082,8 @@ async fn imagegen_filters_tools_and_hides_provider_error_payloads() {
     let denied: Value =
         serde_json::from_slice(&to_bytes(denied.into_body(), 64 * 1024).await.unwrap()).unwrap();
     assert_eq!(denied["result"]["isError"], true);
-    assert!(captured.lock().unwrap().is_none());
+    assert!(captured.generation.lock().unwrap().is_none());
+    assert!(captured.edit.lock().unwrap().is_none());
 
     let override_attempt = router
         .clone()
@@ -810,7 +1110,8 @@ async fn imagegen_filters_tools_and_hides_provider_error_payloads() {
     )
     .unwrap();
     assert_eq!(override_attempt["result"]["isError"], true);
-    assert!(captured.lock().unwrap().is_none());
+    assert!(captured.generation.lock().unwrap().is_none());
+    assert!(captured.edit.lock().unwrap().is_none());
 
     let failed = router
         .oneshot(mcp_request_at(
@@ -870,7 +1171,7 @@ async fn imagegen_enforces_the_independent_result_limit() {
             .contains("result limit")
     );
     assert!(!response.to_string().contains(PNG_BASE64));
-    assert!(captured.lock().unwrap().is_some());
+    assert!(captured.generation.lock().unwrap().is_some());
     let events = logs.events.lock().unwrap();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].outcome, RequestLogOutcome::Succeeded);

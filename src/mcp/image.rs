@@ -1,4 +1,8 @@
-use std::sync::OnceLock;
+use std::{
+    collections::VecDeque,
+    io::{self, Read},
+    sync::OnceLock,
+};
 
 use axum::{
     body::Body,
@@ -6,6 +10,7 @@ use axum::{
 };
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use bytes::{Bytes, BytesMut};
+use futures_util::stream;
 use http_body_util::BodyExt;
 use rmcp::{
     ErrorData,
@@ -15,6 +20,7 @@ use rmcp::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use uuid::Uuid;
 
 use crate::{
     application::ProxyService,
@@ -27,21 +33,29 @@ use super::McpRequestPrincipal;
 
 pub(super) const IMAGEGEN_TOOL_NAME: &str = "image_gen.imagegen";
 static IMAGEGEN_TOOL: OnceLock<Tool> = OnceLock::new();
-const IMAGEGEN_DESCRIPTION: &str = "Generate one image from a text description. The configured \
-MCP server fixes the model, background, quality, and size; callers cannot override them. The \
-result is one original-detail PNG image. Generation can take several minutes and is \
-non-idempotent: retrying after an uncertain network outcome can create and bill another image.";
+const IMAGEGEN_DESCRIPTION: &str = "Generate one image from a text description, or edit up to \
+five explicitly supplied PNG, JPEG, or WebP data URLs. The configured MCP server fixes the \
+model, background, quality, and size; callers cannot override them. The result is one \
+original-detail PNG image. Image operations can take several minutes and are non-idempotent: \
+retrying after an uncertain network outcome can create and bill another image.";
 const IMAGE_MIME_TYPE: &str = "image/png";
 const MAX_PROMPT_CHARS: usize = 32_000;
 const MAX_PROMPT_BYTES: usize = 64 * 1_024;
+const MAX_EDIT_IMAGES: usize = 5;
+const MAX_EDIT_IMAGE_BYTES: usize = 16 * 1_024 * 1_024;
+const MAX_EDIT_TOTAL_BYTES: usize = 24 * 1_024 * 1_024;
+const BASE64_CHUNK_CHARS: usize = 64 * 1_024;
 const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
 
 #[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ImagegenArguments {
-    /// Complete description of the image to generate.
+    /// Complete description of the image to generate or the edits to apply.
     #[schemars(length(min = 1, max = 32000))]
     pub prompt: String,
+    /// Explicit stateless edit inputs. Omit or pass an empty array to generate a new image.
+    #[schemars(length(max = 5))]
+    pub referenced_image_urls: Option<Vec<String>>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, JsonSchema)]
@@ -79,10 +93,10 @@ fn build_imagegen_tool() -> Tool {
         IMAGEGEN_DESCRIPTION,
         schema_for_input::<ImagegenArguments>().expect("imagegen input schema is an object"),
     )
-    .with_title("Image generation")
+    .with_title("Image generation and editing")
     .with_output_schema::<ImagegenOutput>()
     .with_annotations(
-        ToolAnnotations::with_title("Image generation")
+        ToolAnnotations::with_title("Image generation and editing")
             .read_only(false)
             .destructive(false)
             .idempotent(false)
@@ -109,21 +123,39 @@ pub(super) async fn execute_imagegen(
         .server
         .image_settings()
         .ok_or_else(|| ErrorData::internal_error("MCP image kind mismatch", None))?;
-    let body = generation_body(
-        principal.server.model_rule().client_model(),
-        &arguments.prompt,
-        settings,
-    );
-    let body = serde_json::to_vec(&body)
-        .map_err(|_| ErrorData::internal_error("failed to encode image request", None))?;
-    let request = Request::post("/v1/images/generations")
-        .header(CONTENT_TYPE, "application/json")
-        .body(Body::from(body))
-        .map_err(|_| ErrorData::internal_error("failed to build image request", None))?;
+    let images = match validate_edit_images(arguments.referenced_image_urls.unwrap_or_default()) {
+        Ok(images) => images,
+        Err(error) => return Ok(tool_error(error.message())),
+    };
+    let (operation, request) = if images.is_empty() {
+        (
+            ApiOperation::ImagesGeneration,
+            generation_request(
+                principal.server.model_rule().client_model(),
+                &arguments.prompt,
+                settings,
+            )?,
+        )
+    } else {
+        (
+            ApiOperation::ImagesEdit,
+            edit_request(
+                principal.server.model_rule().client_model(),
+                &arguments.prompt,
+                settings,
+                images,
+            )?,
+        )
+    };
+    let action = match operation {
+        ApiOperation::ImagesEdit => "editing",
+        ApiOperation::ImagesGeneration => "generation",
+        _ => unreachable!("image MCP selects only Images operations"),
+    };
 
     let response = match proxy
         .proxy_authenticated(
-            ApiOperation::ImagesGeneration,
+            operation,
             request,
             principal.snapshot,
             principal.api_key,
@@ -134,7 +166,7 @@ pub(super) async fn execute_imagegen(
         Ok(response) => response,
         Err(error) => {
             return Ok(tool_error(format!(
-                "Image generation failed ({}): {}",
+                "Image {action} failed ({}): {}",
                 error.status().as_u16(),
                 error.message()
             )));
@@ -153,7 +185,7 @@ pub(super) async fn execute_imagegen(
         }
     };
     if !status.is_success() {
-        return Ok(tool_error(image_error_message(status)));
+        return Ok(tool_error(image_error_message(status, action)));
     }
     let parsed = match serde_json::from_slice::<ImagesResponse>(&bytes) {
         Ok(parsed) => parsed,
@@ -219,33 +251,305 @@ async fn collect_bounded_body(body: Body, limit: usize) -> Result<Bytes, Bounded
     }
 }
 
+fn generation_request(
+    model: &str,
+    prompt: &str,
+    settings: &ImageMcpSettings,
+) -> Result<Request<Body>, ErrorData> {
+    let body = serde_json::to_vec(&generation_body(model, prompt, settings))
+        .map_err(|_| ErrorData::internal_error("failed to encode image request", None))?;
+    Request::post("/v1/images/generations")
+        .header(CONTENT_TYPE, "application/json")
+        .body(Body::from(body))
+        .map_err(|_| ErrorData::internal_error("failed to build image request", None))
+}
+
 fn generation_body(model: &str, prompt: &str, settings: &ImageMcpSettings) -> Value {
     json!({
         "model": model,
         "prompt": prompt,
         "n": 1,
-        "background": match settings.background {
-            McpImageBackground::Auto => "auto",
-            McpImageBackground::Opaque => "opaque",
-            McpImageBackground::Transparent => "transparent",
-        },
-        "quality": match settings.quality {
-            McpImageQuality::Auto => "auto",
-            McpImageQuality::Low => "low",
-            McpImageQuality::Medium => "medium",
-            McpImageQuality::High => "high",
-        },
+        "background": image_background(settings.background),
+        "quality": image_quality(settings.quality),
         "size": settings.size.as_str(),
     })
+}
+
+fn edit_request(
+    model: &str,
+    prompt: &str,
+    settings: &ImageMcpSettings,
+    images: Vec<ValidatedEditImage>,
+) -> Result<Request<Body>, ErrorData> {
+    let boundary = format!("ai-gateway-mcp-{}", Uuid::new_v4().simple());
+    let mut segments = VecDeque::new();
+    push_text_part(&mut segments, &boundary, "model", model);
+    push_text_part(&mut segments, &boundary, "prompt", prompt);
+    push_text_part(&mut segments, &boundary, "n", "1");
+    push_text_part(
+        &mut segments,
+        &boundary,
+        "background",
+        image_background(settings.background),
+    );
+    push_text_part(
+        &mut segments,
+        &boundary,
+        "quality",
+        image_quality(settings.quality),
+    );
+    push_text_part(&mut segments, &boundary, "size", &settings.size);
+    for (index, image) in images.into_iter().enumerate() {
+        segments.push_back(MultipartSegment::Bytes(Bytes::from(format!(
+            "--{boundary}\r\n\
+             Content-Disposition: form-data; name=\"image[]\"; filename=\"image-{}.{}\"\r\n\
+             Content-Type: {}\r\n\r\n",
+            index + 1,
+            image.mime.extension(),
+            image.mime.as_str(),
+        ))));
+        segments.push_back(MultipartSegment::Base64 {
+            encoded: image.encoded,
+            offset: 0,
+        });
+        segments.push_back(MultipartSegment::Bytes(Bytes::from_static(b"\r\n")));
+    }
+    segments.push_back(MultipartSegment::Bytes(Bytes::from(format!(
+        "--{boundary}--\r\n"
+    ))));
+    let body = Body::from_stream(stream::try_unfold(segments, |mut segments| async move {
+        loop {
+            let Some(segment) = segments.pop_front() else {
+                return Ok::<_, io::Error>(None);
+            };
+            match segment {
+                MultipartSegment::Bytes(bytes) if bytes.is_empty() => {}
+                MultipartSegment::Bytes(bytes) => return Ok(Some((bytes, segments))),
+                MultipartSegment::Base64 { encoded, offset } => {
+                    let end = offset.saturating_add(BASE64_CHUNK_CHARS).min(encoded.len());
+                    let decoded = BASE64_STANDARD
+                        .decode(&encoded.as_bytes()[offset..end])
+                        .map_err(|_| {
+                            io::Error::new(io::ErrorKind::InvalidData, "invalid image input")
+                        })?;
+                    if end < encoded.len() {
+                        segments.push_front(MultipartSegment::Base64 {
+                            encoded,
+                            offset: end,
+                        });
+                    }
+                    if decoded.is_empty() {
+                        continue;
+                    }
+                    return Ok(Some((Bytes::from(decoded), segments)));
+                }
+            }
+        }
+    }));
+    Request::post("/v1/images/edits")
+        .header(
+            CONTENT_TYPE,
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .body(body)
+        .map_err(|_| ErrorData::internal_error("failed to build image edit request", None))
+}
+
+fn push_text_part(
+    segments: &mut VecDeque<MultipartSegment>,
+    boundary: &str,
+    name: &str,
+    value: &str,
+) {
+    let mut bytes =
+        format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n")
+            .into_bytes();
+    bytes.extend_from_slice(value.as_bytes());
+    bytes.extend_from_slice(b"\r\n");
+    segments.push_back(MultipartSegment::Bytes(Bytes::from(bytes)));
+}
+
+enum MultipartSegment {
+    Bytes(Bytes),
+    Base64 { encoded: String, offset: usize },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EditImageMime {
+    Png,
+    Jpeg,
+    Webp,
+}
+
+impl EditImageMime {
+    fn parse(metadata: &str) -> Option<Self> {
+        if metadata.eq_ignore_ascii_case("data:image/png;base64") {
+            Some(Self::Png)
+        } else if metadata.eq_ignore_ascii_case("data:image/jpeg;base64") {
+            Some(Self::Jpeg)
+        } else if metadata.eq_ignore_ascii_case("data:image/webp;base64") {
+            Some(Self::Webp)
+        } else {
+            None
+        }
+    }
+
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Png => "image/png",
+            Self::Jpeg => "image/jpeg",
+            Self::Webp => "image/webp",
+        }
+    }
+
+    const fn extension(self) -> &'static str {
+        match self {
+            Self::Png => "png",
+            Self::Jpeg => "jpg",
+            Self::Webp => "webp",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ValidatedEditImage {
+    mime: EditImageMime,
+    encoded: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EditInputError {
+    TooManyImages,
+    InvalidDataUrl,
+    InvalidBase64,
+    ImageTooLarge,
+    TotalTooLarge,
+    ContentTypeMismatch,
+}
+
+impl EditInputError {
+    const fn message(self) -> &'static str {
+        match self {
+            Self::TooManyImages => "referenced_image_urls must contain at most five images.",
+            Self::InvalidDataUrl => {
+                "Referenced images must be base64 data URLs with image/png, image/jpeg, or image/webp."
+            }
+            Self::InvalidBase64 => "A referenced image contains invalid standard base64 data.",
+            Self::ImageTooLarge => {
+                "A referenced image exceeds the 16777216-byte decoded size limit."
+            }
+            Self::TotalTooLarge => {
+                "Referenced images exceed the 25165824-byte decoded total size limit."
+            }
+            Self::ContentTypeMismatch => {
+                "A referenced image does not match its declared image content type."
+            }
+        }
+    }
+}
+
+fn validate_edit_images(urls: Vec<String>) -> Result<Vec<ValidatedEditImage>, EditInputError> {
+    validate_edit_images_with_limits(urls, MAX_EDIT_IMAGE_BYTES, MAX_EDIT_TOTAL_BYTES)
+}
+
+fn validate_edit_images_with_limits(
+    urls: Vec<String>,
+    max_image_bytes: usize,
+    max_total_bytes: usize,
+) -> Result<Vec<ValidatedEditImage>, EditInputError> {
+    if urls.len() > MAX_EDIT_IMAGES {
+        return Err(EditInputError::TooManyImages);
+    }
+    let mut total_bytes = 0_usize;
+    let mut images = Vec::with_capacity(urls.len());
+    for mut url in urls {
+        let comma = url.find(',').ok_or(EditInputError::InvalidDataUrl)?;
+        let mime = EditImageMime::parse(&url[..comma]).ok_or(EditInputError::InvalidDataUrl)?;
+        url.drain(..=comma);
+        let encoded = url;
+        if encoded.is_empty()
+            || encoded.len() % 4 != 0
+            || encoded.bytes().any(|byte| byte.is_ascii_whitespace())
+        {
+            return Err(EditInputError::InvalidBase64);
+        }
+        let decoded_bytes = validate_encoded_image(mime, &encoded, max_image_bytes)?;
+        total_bytes = total_bytes
+            .checked_add(decoded_bytes)
+            .ok_or(EditInputError::TotalTooLarge)?;
+        if total_bytes > max_total_bytes {
+            return Err(EditInputError::TotalTooLarge);
+        }
+        images.push(ValidatedEditImage { mime, encoded });
+    }
+    Ok(images)
+}
+
+fn validate_encoded_image(
+    mime: EditImageMime,
+    encoded: &str,
+    max_image_bytes: usize,
+) -> Result<usize, EditInputError> {
+    let mut total_bytes = 0_usize;
+    let mut first_bytes = Vec::with_capacity(12);
+    let mut decoder = base64::read::DecoderReader::new(encoded.as_bytes(), &BASE64_STANDARD);
+    let mut decoded = [0_u8; 16 * 1_024];
+    loop {
+        let decoded_bytes = decoder
+            .read(&mut decoded)
+            .map_err(|_| EditInputError::InvalidBase64)?;
+        if decoded_bytes == 0 {
+            break;
+        }
+        total_bytes = total_bytes
+            .checked_add(decoded_bytes)
+            .ok_or(EditInputError::ImageTooLarge)?;
+        if total_bytes > max_image_bytes {
+            return Err(EditInputError::ImageTooLarge);
+        }
+        let first_remaining = 12_usize.saturating_sub(first_bytes.len());
+        first_bytes.extend_from_slice(&decoded[..decoded_bytes.min(first_remaining)]);
+    }
+    if !image_signature_matches(mime, &first_bytes) {
+        return Err(EditInputError::ContentTypeMismatch);
+    }
+    Ok(total_bytes)
+}
+
+fn image_signature_matches(mime: EditImageMime, first: &[u8]) -> bool {
+    match mime {
+        EditImageMime::Png => first.starts_with(PNG_SIGNATURE),
+        EditImageMime::Jpeg => first.starts_with(&[0xff, 0xd8, 0xff]),
+        EditImageMime::Webp => {
+            first.len() >= 12 && &first[..4] == b"RIFF" && &first[8..12] == b"WEBP"
+        }
+    }
+}
+
+const fn image_background(background: McpImageBackground) -> &'static str {
+    match background {
+        McpImageBackground::Auto => "auto",
+        McpImageBackground::Opaque => "opaque",
+        McpImageBackground::Transparent => "transparent",
+    }
+}
+
+const fn image_quality(quality: McpImageQuality) -> &'static str {
+    match quality {
+        McpImageQuality::Auto => "auto",
+        McpImageQuality::Low => "low",
+        McpImageQuality::Medium => "medium",
+        McpImageQuality::High => "high",
+    }
 }
 
 fn tool_error(message: impl Into<String>) -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(message.into())])
 }
 
-fn image_error_message(status: StatusCode) -> String {
+fn image_error_message(status: StatusCode, action: &str) -> String {
     format!(
-        "Image generation failed ({}): The image upstream rejected the request.",
+        "Image {action} failed ({}): The image upstream rejected the request.",
         status.as_u16()
     )
 }
@@ -265,19 +569,28 @@ fn validate_png_base64(encoded: &str) -> Result<(), &'static str> {
 
 #[cfg(test)]
 mod tests {
+    use crate::{
+        application::{PreparedRequestBody, ProxyRequestBodyLimits, ReplayableRequestBody},
+        runtime_config::RequestLimitsConfig,
+    };
+
     use super::*;
+
+    fn data_url(mime: &str, bytes: &[u8]) -> String {
+        format!("data:{mime};base64,{}", BASE64_STANDARD.encode(bytes))
+    }
+
+    fn settings() -> ImageMcpSettings {
+        ImageMcpSettings {
+            background: McpImageBackground::Opaque,
+            quality: McpImageQuality::High,
+            size: "1536x1024".into(),
+        }
+    }
 
     #[test]
     fn generation_body_uses_fixed_model_and_settings() {
-        let body = generation_body(
-            "image-model",
-            "paint a moonlit lake",
-            &ImageMcpSettings {
-                background: McpImageBackground::Opaque,
-                quality: McpImageQuality::High,
-                size: "1536x1024".into(),
-            },
-        );
+        let body = generation_body("image-model", "paint a moonlit lake", &settings());
 
         assert_eq!(
             body,
@@ -290,6 +603,165 @@ mod tests {
                 "size": "1536x1024",
             })
         );
+    }
+
+    #[test]
+    fn edit_inputs_are_strictly_typed_and_bounded() {
+        let png = data_url("image/png", PNG_SIGNATURE);
+        let jpeg = data_url("image/jpeg", &[0xff, 0xd8, 0xff, 0xe0, 0xff, 0xd9]);
+        let webp = data_url(
+            "image/webp",
+            &[b'R', b'I', b'F', b'F', 4, 0, 0, 0, b'W', b'E', b'B', b'P'],
+        );
+        let images = validate_edit_images(vec![png, jpeg, webp]).unwrap();
+        assert_eq!(images.len(), 3);
+        assert_eq!(images[0].mime, EditImageMime::Png);
+        assert_eq!(images[1].mime, EditImageMime::Jpeg);
+        assert_eq!(images[2].mime, EditImageMime::Webp);
+
+        assert_eq!(
+            validate_edit_images(vec!["https://example.test/image.png".into()]).unwrap_err(),
+            EditInputError::InvalidDataUrl
+        );
+        assert_eq!(
+            validate_edit_images(vec!["data:image/png;charset=utf-8;base64,aGVsbG8=".into()])
+                .unwrap_err(),
+            EditInputError::InvalidDataUrl
+        );
+        assert_eq!(
+            validate_edit_images(vec!["data:image/png;base64,%%%%".into()]).unwrap_err(),
+            EditInputError::InvalidBase64
+        );
+        let mut embedded_padding = BASE64_STANDARD.encode(PNG_SIGNATURE);
+        embedded_padding
+            .push_str(&"AAAA".repeat((BASE64_CHUNK_CHARS - 4 - embedded_padding.len()) / 4));
+        embedded_padding.push_str("AA==AAAA");
+        assert_eq!(
+            validate_edit_images(vec![format!("data:image/png;base64,{embedded_padding}")])
+                .unwrap_err(),
+            EditInputError::InvalidBase64
+        );
+        assert_eq!(
+            validate_edit_images(vec![data_url("image/jpeg", PNG_SIGNATURE)]).unwrap_err(),
+            EditInputError::ContentTypeMismatch
+        );
+        assert_eq!(
+            validate_edit_images(
+                (0..=MAX_EDIT_IMAGES)
+                    .map(|_| data_url("image/png", PNG_SIGNATURE))
+                    .collect()
+            )
+            .unwrap_err(),
+            EditInputError::TooManyImages
+        );
+
+        let mut bounded = PNG_SIGNATURE.to_vec();
+        bounded.extend_from_slice(&[0; 8]);
+        assert_eq!(
+            validate_edit_images_with_limits(
+                vec![data_url("image/png", &bounded)],
+                PNG_SIGNATURE.len(),
+                1_024,
+            )
+            .unwrap_err(),
+            EditInputError::ImageTooLarge
+        );
+        assert_eq!(
+            validate_edit_images_with_limits(
+                vec![
+                    data_url("image/png", PNG_SIGNATURE),
+                    data_url("image/png", PNG_SIGNATURE),
+                ],
+                1_024,
+                PNG_SIGNATURE.len(),
+            )
+            .unwrap_err(),
+            EditInputError::TotalTooLarge
+        );
+    }
+
+    #[tokio::test]
+    async fn edit_multipart_feeds_the_existing_codex_adapter() {
+        let first = PNG_SIGNATURE.to_vec();
+        let second = vec![0xff, 0xd8, 0xff, 0xe0, 0xff, 0xd9];
+        let images = validate_edit_images(vec![
+            data_url("image/png", &first),
+            data_url("image/jpeg", &second),
+        ])
+        .unwrap();
+        let request = edit_request("image-model", "add a red hat", &settings(), images).unwrap();
+        let (parts, body) = request.into_parts();
+        let directory = tempfile::tempdir().unwrap();
+        let limits = ProxyRequestBodyLimits::from(RequestLimitsConfig {
+            proxy_body_bytes: 1_024,
+            image_edit_body_bytes: 512 * 1_024,
+            image_edit_file_bytes: 256 * 1_024,
+            image_edit_memory_bytes: 512 * 1_024,
+            image_edit_spool_directory: directory.path().join("spool"),
+            console_body_bytes: 1_024,
+            auth_body_bytes: 1_024,
+        });
+        let edit = limits
+            .image_edit()
+            .capture(&parts.headers, body)
+            .await
+            .unwrap();
+        let adapted = edit.to_codex_json().await.unwrap();
+        let ReplayableRequestBody::Memory(adapted) = adapted else {
+            panic!("small Codex edit JSON should remain in memory");
+        };
+        let adapted: Value = serde_json::from_slice(&adapted).unwrap();
+
+        assert_eq!(adapted["model"], "image-model");
+        assert_eq!(adapted["prompt"], "add a red hat");
+        assert_eq!(adapted["n"], 1);
+        assert_eq!(adapted["background"], "opaque");
+        assert_eq!(adapted["quality"], "high");
+        assert_eq!(adapted["size"], "1536x1024");
+        assert_eq!(
+            adapted["images"][0]["image_url"],
+            data_url("image/png", &first)
+        );
+        assert_eq!(
+            adapted["images"][1]["image_url"],
+            data_url("image/jpeg", &second)
+        );
+    }
+
+    #[tokio::test]
+    async fn edit_multipart_spills_and_releases_the_existing_temp_file() {
+        let mut png = PNG_SIGNATURE.to_vec();
+        png.resize(96 * 1_024, 0);
+        let images =
+            validate_edit_images(vec![data_url("image/png", &png)]).expect("input must validate");
+        let request =
+            edit_request("image-model", "preserve the image", &settings(), images).unwrap();
+        let (parts, body) = request.into_parts();
+        let directory = tempfile::tempdir().unwrap();
+        let limits = ProxyRequestBodyLimits::from(RequestLimitsConfig {
+            proxy_body_bytes: 1_024,
+            image_edit_body_bytes: 512 * 1_024,
+            image_edit_file_bytes: 256 * 1_024,
+            image_edit_memory_bytes: 1_024,
+            image_edit_spool_directory: directory.path().join("spool"),
+            console_body_bytes: 1_024,
+            auth_body_bytes: 1_024,
+        });
+        let policy = limits.image_edit().clone();
+        let edit = policy.capture(&parts.headers, body).await.unwrap();
+        assert_eq!(policy.spool_snapshot().await.active_files, 1);
+
+        let replay = PreparedRequestBody::ImageEdit(edit)
+            .into_openai_replayable()
+            .await
+            .unwrap();
+        assert!(matches!(replay, ReplayableRequestBody::TempFile { .. }));
+        drop(replay);
+
+        let released = policy.spool_snapshot().await;
+        assert_eq!(released.active_files, 0);
+        assert_eq!(released.active_bytes, 0);
+        assert_eq!(released.spooled_total, 1);
     }
 
     #[test]

@@ -538,6 +538,8 @@ pub struct McpFileConfig {
     pub allow_legacy_2025_11_25: bool,
     #[serde(default = "default_mcp_request_body_bytes")]
     pub request_body_bytes: usize,
+    #[serde(default = "default_mcp_image_request_body_bytes")]
+    pub image_request_body_bytes: usize,
     #[serde(default = "default_mcp_search_result_bytes")]
     pub search_result_bytes: usize,
     #[serde(default = "default_mcp_image_result_bytes")]
@@ -573,6 +575,7 @@ pub struct McpRuntimeConfig {
     pub allowed_origins: Vec<String>,
     pub allow_legacy_2025_11_25: bool,
     pub request_body_bytes: usize,
+    pub image_request_body_bytes: usize,
     pub search_result_bytes: usize,
     pub image_result_bytes: usize,
 }
@@ -614,6 +617,9 @@ const fn default_auth_body_bytes() -> usize {
 }
 const fn default_mcp_request_body_bytes() -> usize {
     4 * 1_024 * 1_024
+}
+const fn default_mcp_image_request_body_bytes() -> usize {
+    32 * 1_024 * 1_024
 }
 const fn default_mcp_search_result_bytes() -> usize {
     4 * 1_024 * 1_024
@@ -2800,6 +2806,7 @@ fn validate_mcp(config: McpFileConfig) -> Result<Option<McpRuntimeConfig>, Confi
     #[cfg(feature = "mcp-server")]
     {
         if config.request_body_bytes == 0
+            || config.image_request_body_bytes == 0
             || config.search_result_bytes == 0
             || config.image_result_bytes == 0
         {
@@ -2810,6 +2817,11 @@ fn validate_mcp(config: McpFileConfig) -> Result<Option<McpRuntimeConfig>, Confi
         if config.image_result_bytes > 64 * 1_024 * 1_024 {
             return Err(ConfigError::Compile(
                 "enabled mcp image_result_bytes must not exceed 67108864".into(),
+            ));
+        }
+        if config.image_request_body_bytes > 64 * 1_024 * 1_024 {
+            return Err(ConfigError::Compile(
+                "enabled mcp image_request_body_bytes must not exceed 67108864".into(),
             ));
         }
         let public_base_url = config.public_base_url.ok_or_else(|| {
@@ -2862,6 +2874,7 @@ fn validate_mcp(config: McpFileConfig) -> Result<Option<McpRuntimeConfig>, Confi
             allowed_origins,
             allow_legacy_2025_11_25: config.allow_legacy_2025_11_25,
             request_body_bytes: config.request_body_bytes,
+            image_request_body_bytes: config.image_request_body_bytes,
             search_result_bytes: config.search_result_bytes,
             image_result_bytes: config.image_result_bytes,
         }))
@@ -3224,6 +3237,7 @@ mod tests {
             allowed_origins: vec!["https://CLIENT.example.test/".into()],
             allow_legacy_2025_11_25: false,
             request_body_bytes: 1024,
+            image_request_body_bytes: 3072,
             search_result_bytes: 2048,
             image_result_bytes: 4096,
         })
@@ -3236,6 +3250,7 @@ mod tests {
         );
         assert_eq!(config.public_base_url, "https://mcp.example.test");
         assert_eq!(config.allowed_origins, ["https://client.example.test"]);
+        assert_eq!(config.image_request_body_bytes, 3072);
         assert_eq!(config.search_result_bytes, 2048);
         assert_eq!(config.image_result_bytes, 4096);
 
@@ -3249,6 +3264,7 @@ mod tests {
                 ],
                 allow_legacy_2025_11_25: false,
                 request_body_bytes: 1024,
+                image_request_body_bytes: 3072,
                 search_result_bytes: 2048,
                 image_result_bytes: 4096,
             })
@@ -3261,8 +3277,22 @@ mod tests {
                 allowed_origins: vec![],
                 allow_legacy_2025_11_25: false,
                 request_body_bytes: 1024,
+                image_request_body_bytes: 3072,
                 search_result_bytes: 2048,
                 image_result_bytes: 64 * 1_024 * 1_024 + 1,
+            })
+            .is_err()
+        );
+        assert!(
+            validate_mcp(McpFileConfig {
+                enabled: true,
+                public_base_url: Some("https://mcp.example.test".into()),
+                allowed_origins: vec![],
+                allow_legacy_2025_11_25: false,
+                request_body_bytes: 1024,
+                image_request_body_bytes: 64 * 1_024 * 1_024 + 1,
+                search_result_bytes: 2048,
+                image_result_bytes: 4096,
             })
             .is_err()
         );
@@ -3278,6 +3308,7 @@ mod tests {
                 allowed_origins: vec![],
                 allow_legacy_2025_11_25: false,
                 request_body_bytes: 1024,
+                image_request_body_bytes: 3072,
                 search_result_bytes: 2048,
                 image_result_bytes: 4096,
             })

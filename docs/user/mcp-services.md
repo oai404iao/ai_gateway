@@ -1,7 +1,6 @@
 # 无状态 MCP 服务
 
-> 状态：部分实现。当前已实现可选的 Search MCP 与 Images generation MCP；Images edit
-> 仍在后续阶段。
+> 状态：当前实现。已提供可选的 Search MCP 与无状态 Images generation/edit MCP。
 
 ## 适用范围
 
@@ -14,10 +13,10 @@ Streamable HTTP MCP endpoint，使只适配 MCP 的客户端复用现有 API Key
 | kind | endpoint | tool | Gateway 操作 |
 | --- | --- | --- | --- |
 | `web_search` | `POST /mcp/{slug}` | `web.run` | `StandaloneWebSearch` |
-| `image` | `POST /mcp/{slug}` | `image_gen.imagegen` | `ImagesGeneration` |
+| `image` | `POST /mcp/{slug}` | `image_gen.imagegen` | `ImagesGeneration` 或 `ImagesEdit` |
 
-当前不提供 Images edit MCP、MCP OAuth、stdio transport、服务端 Session、独立 SSE GET、
-prompts、resources 或 Tasks。
+当前不提供 MCP OAuth、stdio transport、服务端 Session、独立 SSE GET、prompts、resources
+或 Tasks。
 
 ## 构建与启用
 
@@ -36,6 +35,7 @@ public_base_url = "https://api.example.com"
 allowed_origins = []
 allow_legacy_2025_11_25 = false
 request_body_bytes = 4194304
+image_request_body_bytes = 33554432
 search_result_bytes = 4194304
 image_result_bytes = 33554432
 ```
@@ -47,7 +47,10 @@ image_result_bytes = 33554432
   `Origin` 的请求，而不是放开浏览器来源。
 - `allow_legacy_2025_11_25` 默认关闭。关闭时要求 MCP `2026-07-28` 的每请求 metadata
   和标准 `Mcp-Method` / `Mcp-Name` Header。
-- `image_result_bytes` 限制单次 Images generation 收集的上游 JSON/base64，默认 32 MiB，
+- `request_body_bytes` 限制 Search MCP 的 JSON-RPC envelope，默认 4 MiB。
+- `image_request_body_bytes` 独立限制 Image MCP 的 JSON-RPC envelope，使 inline data URL
+  edit 不会提高 Search 上限；默认 32 MiB、硬上限 64 MiB。
+- `image_result_bytes` 限制单次 Images generation/edit 收集的上游 JSON/base64，默认 32 MiB，
   硬上限 64 MiB。
 - 如果 TOML 启用了 MCP，但二进制未编译 `mcp-server` feature，启动会被拒绝。
 
@@ -104,14 +107,14 @@ registry 移除。
 https://api.example.com/mcp/search
 ```
 
-### Images generation 实例
+### Images 实例
 
 ```json
 {
   "slug": "image",
   "kind": "image",
-  "name": "Image generation",
-  "description": "Generate one managed PNG image",
+  "name": "Image generation and editing",
+  "description": "Generate or edit one managed PNG image",
   "model_rule_id": "00000000-0000-0000-0000-000000000000",
   "settings": {
     "background": "auto",
@@ -140,7 +143,7 @@ Search MCP 要求 API Key：
 - 具有 `proxy` 权限；
 - 能访问 MCP 实例绑定模型规则的至少一个候选路由。
 
-Images generation MCP 要求 API Key：
+Images MCP 要求 API Key：
 
 - 允许 `open_ai_images`；
 - 具有 `proxy` 权限；
@@ -168,7 +171,7 @@ Gateway 实例处理，并且同一 API Key 在不同 MCP endpoint 复用相同 
 直接打开完整 `https://` URL 不要求已有 Search Session。`http://` URL、未知字段、空 command
 集合、超限 command 数量和被实例域名策略完全排除的 query domains 会失败关闭。
 
-## Images generation
+## Images generation 与 edit
 
 Images endpoint 暴露：
 
@@ -176,7 +179,7 @@ Images endpoint 暴露：
 image_gen.imagegen
 ```
 
-当前 generation 阶段只接受：
+省略图片引用时执行 generation：
 
 ```json
 {
@@ -184,27 +187,47 @@ image_gen.imagegen
 }
 ```
 
-工具行为：
+提供显式图片引用时执行 edit：
+
+```json
+{
+  "prompt": "add a red hat",
+  "referenced_image_urls": [
+    "data:image/png;base64,...",
+    "data:image/jpeg;base64,..."
+  ]
+}
+```
+
+输入规则：
 
 - `prompt` 必填，最多 32,000 个字符且最多 64 KiB，未知字段失败关闭；
+- `referenced_image_urls` 可省略或为空，最多五项；
+- edit 只接受标准 base64 的 `data:image/png`、`data:image/jpeg` 和
+  `data:image/webp`，并核对声明 MIME 与 PNG/JPEG/WebP signature；
+- 不接受 HTTP(S)、`file:`、本机路径、SVG、额外 data URL 参数或 URL-safe/带空白 base64；
+- 单张图片解码后最多 16 MiB，全部引用解码后合计最多 24 MiB；整个 Image MCP JSON
+  envelope 还受 `image_request_body_bytes` 限制；
 - 模型、background、quality 和 size 由 MCP 实例固定；
 - 固定 `n = 1`，省略 `stream` 以保持非流式，并使用与 Codex 内置 generation 相同的最小
   Images 字段集合；
-- 继续经过现有 `ImagesGeneration` policy、模型别名、Transforms、Connector、Images 专用超时、
-  被动健康、usage、计费和无自动重试边界；
+- generation 进入现有 `ImagesGeneration` policy；edit 把验证后的图片逐块解码为 replayable
+  multipart，再进入现有 `ImagesEdit` policy、模型别名、普通/Codex Connector、Images 专用
+  超时、被动健康、usage、计费和无自动重试边界；
+- edit 输入超过公共 `request_limits.image_edit_*` 限制时仍会失败；MCP 不提高公共 Images
+  edit 的 body/file 上限；
 - 只取第一张结果；要求上游直接返回 `b64_json`，并验证标准 base64 与 PNG signature；
 - 返回一个 MCP `ImageContent`，`mimeType = image/png`，并设置
   `_meta["codex/imageDetail"] = "original"`；
 - `structuredContent` 只包含完成状态和 MIME，不重复 base64；
-- Gateway 不保存文件或最近图片。
+- Gateway 不保存文件或最近图片；客户端若要继续编辑，必须显式回传前一次结果。
 
 该工具是非幂等付费操作。Gateway 不会自动重试 Images，但客户端若在网络结果不确定时重新发送
-`tools/call`，仍可能生成第二张图片并再次计费。Images edit 尚未实现；当前提交
-`referenced_image_urls` 或其他引用字段会作为未知字段拒绝。
+`tools/call`，仍可能重复生成/编辑并再次计费。
 
 ## 日志与结果边界
 
-- Search 与 Images generation 工具继续通过现有 Proxy use case，保留模型别名、Channel
+- Search 与 Images generation/edit 工具继续通过现有 Proxy use case，保留模型别名、Channel
   选择、被动健康、超时、准入、额度、计费和 Connector policy。
 - 请求日志使用 `request_source = "mcp"`，不保存 tool 参数、搜索内容、prompt、图片、
   API Key 或完整结果。
@@ -216,7 +239,7 @@ image_gen.imagegen
 - 结果 body 按 `search_result_bytes` 有界收集；超过限制会返回 caller-visible tool error。
 - Images JSON/base64 按 `image_result_bytes` 有界收集；超过限制、base64 无效或结果不是 PNG
   都返回 caller-visible tool error，不回传 provider body。
-- 当前 MCP Search 与 Images generation 调用都同步完成，不创建后台 Task。
+- 当前 MCP Search 与 Images generation/edit 调用都同步完成，不创建后台 Task。
 
 ## 相关文档
 
