@@ -35,7 +35,7 @@ Chat Completions、Responses、Codex standalone web search、非流式 JSON Imag
 - 转发前会移除客户端凭据、hop-by-hop Header 和常见反向代理/CDN 转发元数据，再注入渠道专属的上游鉴权。
 - 上游响应以流式方式转发，不缓冲完整响应；一旦发送响应头或任何响应字节，绝不重试或切换渠道。
 - 提供进程内 RPM、并发和软额度准入控制、被动连接健康、异步请求日志、用量提取与结算。
-- 提供独立的 JWT Console API，包括按用户邀请、可复用邀请码自助注册、管理员辅助临时密码恢复、轮换 refresh session、用户/管理员角色、审计日志，以及大多数可变资源的乐观并发控制。
+- 提供独立的 JWT Console API 与 Web 管理台，包括按用户邀请、可复用邀请码自助注册、管理员辅助临时密码恢复、轮换 refresh session、用户/管理员角色、typed 无状态 MCP 实例管理、审计日志，以及大多数可变资源的乐观并发控制。
 
 ## 架构
 

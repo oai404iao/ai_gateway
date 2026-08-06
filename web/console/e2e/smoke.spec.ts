@@ -5,6 +5,8 @@ import {
   E2E_CODEX_CREDENTIAL,
   E2E_CODEX_CREDENTIAL_ID,
   E2E_CODEX_GROUP_ID,
+  E2E_IMAGE_MODEL_RULE,
+  E2E_MCP_SERVER,
   E2E_STANDARD_GROUP_ID,
   mockConsoleApi,
 } from "./mock-api";
@@ -296,6 +298,61 @@ test.describe("Console SPA smoke", () => {
     await expect(page.getByText("Proxy test result")).toBeVisible();
     await expect(page.getByText("203.0.113.10")).toBeVisible();
     await expect(page.getByText("E2E ISP")).toBeVisible();
+  });
+
+  test("administrators can create a typed stateless image MCP endpoint", async ({
+    page,
+  }) => {
+    await mockConsoleApi(page);
+    await page.goto("/login");
+    await page.getByLabel(/email/i).fill("admin@example.com");
+    await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
+    await page.getByRole("button", { name: /sign in/i }).click();
+    await page.getByRole("link", { name: "MCP Servers" }).click();
+
+    await expect(page).toHaveURL(/\/admin\/mcp-servers$/);
+    await expect(page.getByText(`/mcp/${E2E_MCP_SERVER.slug}`)).toBeVisible();
+    await page.getByRole("button", { name: "New MCP server" }).click();
+
+    await page.getByLabel("Endpoint slug").fill("image-lab");
+    await page.getByLabel("Name").fill("Image lab");
+    await page.getByRole("combobox", { name: "Kind" }).click();
+    await page.getByRole("option", { name: "Images" }).click();
+    await page.getByRole("combobox", { name: "Model rule" }).click();
+    await page
+      .getByRole("option", {
+        name: `${E2E_IMAGE_MODEL_RULE.client_model} → ${E2E_IMAGE_MODEL_RULE.upstream_model}`,
+      })
+      .click();
+    await page.getByRole("combobox", { name: "Background" }).click();
+    await page.getByRole("option", { name: "Transparent" }).click();
+    await page.getByRole("combobox", { name: "Quality" }).click();
+    await page.getByRole("option", { name: "High" }).click();
+    await page.getByLabel("Size").fill("1536x1024");
+
+    const createRequest = page.waitForRequest(
+      (request) =>
+        request.url().endsWith("/console/v1/mcp-servers") &&
+        request.method() === "POST",
+    );
+    await page.getByRole("button", { name: "Create MCP server" }).click();
+    expect((await createRequest).postDataJSON()).toEqual({
+      slug: "image-lab",
+      kind: "image",
+      name: "Image lab",
+      description: null,
+      model_rule_id: E2E_IMAGE_MODEL_RULE.id,
+      settings: {
+        background: "transparent",
+        quality: "high",
+        size: "1536x1024",
+      },
+      enabled: true,
+    });
+
+    await expect(page).toHaveURL(/\/admin\/mcp-servers$/);
+    await expect(page.getByText("MCP server created")).toBeVisible();
+    await expect(page.getByText("/mcp/image-lab")).toBeVisible();
   });
 
   test("administrators can browse large channel inventories with paired Codex pools", async ({

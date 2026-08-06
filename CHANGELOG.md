@@ -22,6 +22,10 @@ Versioning.
   PNG/base64 output, instance-controlled model/background/quality/size, MCP
   `ImageContent`, explicit data-URL references, and independent request/result
   limits.
+- Add an administrator Console page for listing, creating, editing, and
+  soft-deleting stateless MCP instances, with kind-compatible model-rule
+  selection, typed Search and Images settings, immutable endpoint identity,
+  and ETag conflict handling.
 
 ### Security
 

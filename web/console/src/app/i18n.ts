@@ -1635,6 +1635,100 @@ const zhCN: Record<string, string> = {
   "Standalone web search": "独立 Web Search",
   "Supports standalone web search": "支持独立 Web Search",
   "Web search": "Web Search",
+  "MCP Servers": "MCP 服务",
+  "MCP server": "MCP 服务",
+  "Manage stateless public MCP endpoints backed by existing model rules and Gateway API keys.":
+    "管理由现有模型规则和网关 API 密钥支持的无状态公共 MCP 端点。",
+  "New MCP server": "新建 MCP 服务",
+  "Create MCP server": "创建 MCP 服务",
+  "Edit MCP server": "编辑 MCP 服务",
+  "Save MCP server": "保存 MCP 服务",
+  "Delete MCP server": "删除 MCP 服务",
+  "Delete MCP server?": "删除 MCP 服务？",
+  "Back to MCP servers": "返回 MCP 服务",
+  "Expose one stateless MCP tool through an existing Gateway model rule.":
+    "通过现有网关模型规则公开一个无状态 MCP 工具。",
+  "The process-level MCP transport must also be compiled and enabled before public endpoints are reachable.":
+    "还必须编译并启用进程级 MCP 传输，公共端点才能访问。",
+  "Endpoint slug": "端点 Slug",
+  "Creates the immutable public path /mcp/{slug}.":
+    "创建不可变的公共路径 /mcp/{slug}。",
+  "Kind": "类型",
+  "Kind selects a statically compiled tool and cannot be changed later.":
+    "类型用于选择静态编译的工具，创建后不可更改。",
+  "Model rule": "模型规则",
+  "Pick a compatible model rule": "请选择兼容的模型规则",
+  "Pick a compatible model rule.": "请选择兼容的模型规则。",
+  "An enabled server requires an enabled {format} rule with at least one eligible channel.":
+    "启用服务需要一条已启用的 {format} 规则，且至少包含一个符合条件的渠道。",
+  "Optional instructions shown to MCP clients during discovery.":
+    "可选说明，会在 MCP 客户端发现服务时显示。",
+  "Tool": "工具",
+  "Settings": "设置",
+  "Settings version": "设置版本",
+  "Images": "Images",
+  "Web search policy": "Web Search 策略",
+  "Control search freshness, context size, domain policy, and bounded output tokens.":
+    "控制搜索新鲜度、上下文大小、域名策略和有界输出 Token。",
+  "External web access": "外部网络访问",
+  "Search context size": "搜索上下文大小",
+  "Allowed domains": "允许的域名",
+  "Blocked domains": "屏蔽的域名",
+  "Optional allowlist. Enter bare DNS names, one per line.":
+    "可选允许列表。每行输入一个不含协议和路径的 DNS 域名。",
+  "These domains are always excluded and cannot also be allowed.":
+    "这些域名始终会被排除，不能同时出现在允许列表中。",
+  "Maximum output tokens": "最大输出 Token",
+  "The selected response length maps to ordered short, medium, and long limits.":
+    "所选响应长度会映射到依次递增的短、中、长输出限制。",
+  "Short": "短",
+  "Medium": "中",
+  "Long": "长",
+  "Low": "低",
+  "High": "高",
+  "Cached": "缓存",
+  "Indexed": "索引",
+  "Image defaults": "图像默认设置",
+  "These values are fixed by the MCP instance and cannot be overridden by callers.":
+    "这些值由 MCP 实例固定，调用方不能覆盖。",
+  "Background": "背景",
+  "Quality": "质量",
+  "Size": "尺寸",
+  "Auto": "自动",
+  "Opaque": "不透明",
+  "Transparent": "透明",
+  "Use auto or WIDTHxHEIGHT; each dimension must be 64-8192.":
+    "使用 auto 或 WIDTHxHEIGHT；每个维度必须在 64 至 8192 之间。",
+  "Endpoint slug remains reserved": "端点 Slug 会保持保留",
+  "Deleting removes this endpoint from the runtime registry, but the slug cannot be reused.":
+    "删除会将此端点移出运行时注册表，但该 Slug 不能重复使用。",
+  "This removes /mcp/{slug} from the runtime registry. The reserved slug cannot be reused.":
+    "这会将 /mcp/{slug} 移出运行时注册表。保留的 Slug 不能重复使用。",
+  "MCP server created": "MCP 服务已创建",
+  "MCP server updated": "MCP 服务已更新",
+  "MCP server deleted": "MCP 服务已删除",
+  "This MCP endpoint slug is already reserved, including by a deleted server.":
+    "此 MCP 端点 Slug 已被保留，包括已删除服务使用过的 Slug。",
+  "This MCP server was changed elsewhere. Reloading.":
+    "此 MCP 服务已在其他位置修改，正在重新加载。",
+  "Check the server kind, model rule, route eligibility, and tool settings.":
+    "请检查服务类型、模型规则、路由可用性和工具设置。",
+  "Use 1-63 lowercase letters, digits, or hyphens, starting with a letter or digit.":
+    "请使用 1 至 63 个小写字母、数字或连字符，并以字母或数字开头。",
+  "Each domain list supports at most 100 entries.":
+    "每个域名列表最多支持 100 项。",
+  "Enter valid DNS domain names without schemes, paths, or wildcards.":
+    "请输入不含协议、路径或通配符的有效 DNS 域名。",
+  "Domain lists cannot contain duplicate entries.": "域名列表不能包含重复项。",
+  "A domain cannot appear in both allowed and blocked lists.":
+    "同一域名不能同时出现在允许和屏蔽列表中。",
+  "Token limits must be whole numbers.": "Token 限制必须为整数。",
+  "Token limits must be at least 1.": "Token 限制必须至少为 1。",
+  "Token limits must not exceed 100000.": "Token 限制不能超过 100000。",
+  "Token limits must be ordered as short ≤ medium ≤ long.":
+    "Token 限制必须按短 ≤ 中 ≤ 长排序。",
+  "Use auto or WIDTHxHEIGHT with canonical dimensions from 64 to 8192.":
+    "请使用 auto 或规范的 WIDTHxHEIGHT，且每个维度在 64 至 8192 之间。",
   "Allow this channel to receive Codex standalone alpha/search requests. Request JSON transforms are not supported.":
     "允许此渠道接收 Codex 独立 alpha/search 请求。不支持请求 JSON 转换。",
   "Only OpenAI Responses channels can enable standalone web search.":

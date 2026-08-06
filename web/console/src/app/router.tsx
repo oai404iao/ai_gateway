@@ -153,6 +153,16 @@ const ModelRuleDetailPage = lazy(() =>
     default: m.ModelRuleDetailPage,
   })),
 );
+const McpServersPage = lazy(() =>
+  import("@/features/admin/mcp-servers/mcp-servers-page").then((m) => ({
+    default: m.McpServersPage,
+  })),
+);
+const McpServerDetailPage = lazy(() =>
+  import("@/features/admin/mcp-servers/mcp-server-detail-page").then((m) => ({
+    default: m.McpServerDetailPage,
+  })),
+);
 const CodexOauthPage = lazy(
   () => import("@/features/admin/providers/codex-oauth/codex-oauth-page"),
 );
@@ -295,6 +305,11 @@ export function AppRouter() {
               <Route
                 path="/admin/routing/model-rules/:id"
                 element={<ModelRuleDetailPage />}
+              />
+              <Route path="/admin/mcp-servers" element={<McpServersPage />} />
+              <Route
+                path="/admin/mcp-servers/:id"
+                element={<McpServerDetailPage />}
               />
               <Route
                 path="/admin/providers/codex-oauth/:id"

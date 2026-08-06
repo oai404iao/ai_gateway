@@ -49,8 +49,9 @@ pnpm e2e:install            # install Playwright Chromium + OS deps (first run)
   proxy egress-IP diagnostics, user-group-scoped read-only Codex quota windows,
   administrator Codex OAuth credential/quota management,
   Business workspace-member identity, single/batch credential deletion and
-  state changes, Codex credential export/import review with in-page proxy management, and the
-  remaining admin control plane).
+  state changes, Codex credential export/import review with in-page proxy
+  management, typed stateless MCP server management, and the remaining admin
+  control plane).
 - `src/components/` — shadcn/ui primitives (`ui/`) and shared app components.
 - `src/test/` — vitest setup, MSW server, deterministic fixtures.
 - `e2e/` — Playwright browser smoke tests (API mocked at the network layer).

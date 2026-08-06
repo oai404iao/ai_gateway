@@ -282,6 +282,7 @@ API 集成测试应同时验证实现与该规范的关键请求/响应示例，
 | 用户、用户组、注册邀请码与策略 | `/admin/users`、`/admin/user-groups`、`/admin/registration-invitation-codes`、`/admin/api-key-policies` | `/console/v1/users*`、`/user-groups*`、`/registration-invitation-codes*`、`/api-key-policies*` | admin |
 | 模型和目录 | `/admin/models`、`/admin/catalog` | `/console/v1/models*`、`/catalog/models/*` | admin |
 | 路由 | `/admin/routing/*` | `/console/v1/routing/*` | admin |
+| MCP 服务 | `/admin/mcp-servers`、`/admin/mcp-servers/:id` | `/console/v1/mcp-servers*` | admin |
 | Provider 凭证 | `/admin/providers/codex-oauth/:groupId`、`/admin/providers/codex-oauth/:groupId/import` | `/console/v1/providers/codex-oauth/*` | admin |
 | 网络与变换 | `/admin/network/proxies`、`/admin/transforms/templates` | `/console/v1/network/*`、`/transforms/*` | admin |
 | 可观测性与系统 | `/admin/request-logs`、`/admin/cost-statistics`、`/admin/audit-logs`、`/admin/system-load`、`/admin/system` | `/console/v1/request-logs`、`/system/statistics/costs`、`/audit-logs`、`/system/load`、`/system/reload` | admin |
@@ -311,6 +312,12 @@ Token 只存在于页面 state，不写入 URL、Web Storage 或 React Query cac
 渠道管理页使用 `ChannelGroupView.connector_pool_id` 将同一 Codex 凭证池派生出的
 Responses 与 Images 渠道组组合成一个凭证池卡片，并与普通 OpenAI-compatible 渠道组分区展示。
 普通渠道组采用可搜索、可筛选、按需展开的紧凑列表，避免渠道组数量增加后同时渲染大量展开表格。
+
+`/admin/mcp-servers` 当前管理无状态 MCP endpoint。列表展示 `/mcp/{slug}`、固定工具、绑定模型
+规则和 kind-specific 设置；创建/编辑页按 Search 或 Images 提供 typed 表单，并只列出兼容
+`open_ai_responses` 或 `open_ai_images` 的模型规则。`slug` 与 `kind` 创建后不可修改，PUT/DELETE
+使用详情 ETag，软删除后 slug 保持保留。该页面只管理数据库实例；构建时 `mcp-server` feature、
+进程级 `[mcp].enabled` 和 `public_base_url` 仍由部署配置负责。
 
 `/account/sessions` 当前按“活跃会话”和可折叠历史分组，使用后端返回的 `is_current` 与明确
 session 状态标记当前设备、已过期和已撤销记录。活跃会话提供逐设备退出，页面还可一次撤销除当前

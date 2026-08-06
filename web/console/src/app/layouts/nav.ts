@@ -17,6 +17,7 @@ import {
   TicketCheck,
   UsersRound,
   Settings2,
+  Blocks,
   type LucideIcon,
 } from "lucide-react";
 import type { UserRole } from "@/api/types";
@@ -74,6 +75,7 @@ export const NAV_SECTIONS: NavSection[] = [
     items: [
       { label: "Channels", path: "/admin/routing/channels", icon: Network },
       { label: "Model Rules", path: "/admin/routing/model-rules", icon: Route },
+      { label: "MCP Servers", path: "/admin/mcp-servers", icon: Blocks },
     ],
   },
   {
