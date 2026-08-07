@@ -7,6 +7,8 @@ Versioning.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-08-07
+
 ### Added
 
 - Add non-streaming `POST /v1/alpha/search` forwarding for Codex standalone
