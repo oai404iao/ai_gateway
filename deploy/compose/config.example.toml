@@ -120,8 +120,10 @@ spool_sync_interval_milliseconds = 10
 # 256 MiB avoids frequent truncate/sync pauses at high request rates. Lower it
 # when disk capacity is tight; raise it when p99 latency shows compaction spikes.
 spool_compaction_threshold_bytes = 268_435_456
-# Structured `request_log_metrics` events are emitted at this interval.
-metrics_interval_seconds = 10
+# Optional full `request_log_metrics` INFO heartbeat. Zero disables periodic
+# snapshots; the Console system-load panel and transition-based health events
+# remain active. Headless deployments can use 300-900 seconds if needed.
+metrics_interval_seconds = 0
 # Remaining spool/ingress/settlement work stays durable when this expires.
 shutdown_drain_seconds = 60
 
@@ -211,10 +213,10 @@ signing_key_path = "/run/ai-gateway/secrets/console_jwt_private"
 verification_key_path = "/run/ai-gateway/secrets/console_jwt_public"
 
 [observability]
-# Keep lifecycle/control-plane/metrics INFO records while suppressing the
-# per-request proxy completion event in production. Temporarily use
-# ai_gateway=debug only while diagnosing a bounded incident.
-filter = "ai_gateway=info,ai_gateway::application::proxy=warn,ai_gateway::request_log_metrics=info,tower_http=warn"
+# Keep lifecycle, control-plane, and anomaly/recovery INFO records while
+# suppressing the per-request proxy completion event in production.
+# Temporarily use ai_gateway=debug only while diagnosing a bounded incident.
+filter = "ai_gateway=info,ai_gateway::application::proxy=warn,tower_http=warn"
 
 # API keys, models, routing rules, groups, channels, and upstream credentials
 # are loaded only from PostgreSQL into immutable runtime snapshots. TOML is

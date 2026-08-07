@@ -129,12 +129,18 @@ impl AppConfig {
             || self.request_logging.settlement_interval_milliseconds == 0
             || self.request_logging.spool_sync_interval_milliseconds == 0
             || self.request_logging.spool_compaction_threshold_bytes == 0
-            || self.request_logging.metrics_interval_seconds == 0
             || self.request_logging.shutdown_drain_seconds == 0
             || self.request_logging.spool_directory.as_os_str().is_empty()
         {
             return Err(ConfigError::Compile(
                 "request_logging limits and spool_directory must be nonzero and nonempty".into(),
+            ));
+        }
+        if self.request_logging.metrics_interval_seconds > 0
+            && self.request_logging.metrics_interval_seconds < 10
+        {
+            return Err(ConfigError::Compile(
+                "request_logging metrics_interval_seconds must be zero or at least 10".into(),
             ));
         }
         if self.passive_health.connection_failure_threshold == 0
@@ -279,6 +285,9 @@ pub struct RequestLoggingConfig {
     pub spool_sync_interval_milliseconds: u64,
     #[serde(default = "default_request_log_spool_compaction_threshold_bytes")]
     pub spool_compaction_threshold_bytes: u64,
+    /// Optional structured INFO heartbeat interval. Zero disables periodic
+    /// snapshots; nonzero values must be at least ten seconds. Transition-
+    /// based request-log health events remain active.
     #[serde(default = "default_request_log_metrics_interval_seconds")]
     pub metrics_interval_seconds: u64,
     #[serde(default = "default_request_log_shutdown_drain_seconds")]
@@ -662,7 +671,7 @@ const fn default_request_log_spool_compaction_threshold_bytes() -> u64 {
     256 * 1_024 * 1_024
 }
 const fn default_request_log_metrics_interval_seconds() -> u64 {
-    10
+    0
 }
 const fn default_request_log_shutdown_drain_seconds() -> u64 {
     60
@@ -3762,6 +3771,7 @@ mod tests {
             config.request_logging.spool_compaction_threshold_bytes,
             256 * 1_024 * 1_024
         );
+        assert_eq!(config.request_logging.metrics_interval_seconds, 0);
         assert!(config.request_retry.enabled);
         assert_eq!(config.request_retry.max_retries, 1);
         assert_eq!(config.passive_health.connection_failure_threshold, 3);
@@ -3793,6 +3803,17 @@ mod tests {
         );
         assert_eq!(config.request_limits.console_body_bytes, 262_144);
         assert_eq!(config.request_limits.auth_body_bytes, 16_384);
+    }
+
+    #[test]
+    fn bootstrap_rejects_sub_ten_second_request_log_metrics_heartbeat() {
+        let value = "[server]\nhost='x'\nport=1\n[database]\nurl='postgres://x'\nmax_connections=1\nconnect_timeout_seconds=1\n[upstream]\nconnect_timeout_seconds=1\nresponse_header_timeout_seconds=2\nstream_idle_timeout_seconds=1\n[runtime_config]\nreload_interval_seconds=1\n[request_logging]\nmetrics_interval_seconds=9\n[observability]\nfilter='info'";
+        assert!(
+            toml::from_str::<AppConfig>(value)
+                .unwrap()
+                .validate()
+                .is_err()
+        );
     }
 
     #[test]

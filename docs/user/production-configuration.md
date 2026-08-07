@@ -63,13 +63,14 @@ Compose 将 PostgreSQL 端口默认绑定到 `127.0.0.1`。只有 Gateway 位于
 | 参数 | 默认值 | 说明 |
 | --- | ---: | --- |
 | `[database].max_connections` | 10 | migration、Console、控制面与重载 |
-| `request_logging.database_max_connections` | 4 | COPY、投影、结算、指标各有连接余量 |
+| `request_logging.database_max_connections` | 4 | COPY、投影、结算和健康采样的连接余量 |
 | `ingest_batch_size` | 4096 | 本地 spool 到入口表的 COPY 批次 |
 | `projection_batch_size` | 2048 | 单 Worker 投影最终宽表 |
 | `settlement_batch_size` | 4096 | 一次 claim/聚合的结算行数 |
 | `settlement_interval_milliseconds` | 500 | 默认软额度更新延迟 |
 | `spool_sync_interval_milliseconds` | 10 | 主机掉电时的默认 group-sync 窗口 |
 | `spool_compaction_threshold_bytes` | 256 MiB | 降低高流量下的截断与同步频率 |
+| `metrics_interval_seconds` | 0 | 默认关闭完整 INFO 心跳；非零值至少为 10 秒 |
 | `request_limits.image_edit_body_bytes` | 64 MiB | 单个 multipart edit 总 body 上限 |
 | `request_limits.image_edit_file_bytes` | 50 MiB | 单个 image/mask part 上限 |
 | `request_limits.image_edit_memory_bytes` | 1 MiB | edit 转入匿名临时文件前的内存阈值 |
@@ -111,12 +112,19 @@ Session 只保存在当前 Gateway 进程中，重启后失效，多实例必须
 
 ### 日志级别
 
-默认过滤器保留生命周期、控制面和请求日志流水线指标，同时关闭逐请求完成日志：
+默认过滤器保留生命周期、控制面、异常和恢复事件，同时关闭逐请求完成日志：
 
 ```toml
 [observability]
-filter = "ai_gateway=info,ai_gateway::application::proxy=warn,ai_gateway::request_log_metrics=info,tower_http=warn"
+filter = "ai_gateway=info,ai_gateway::application::proxy=warn,tower_http=warn"
 ```
+
+请求日志流水线的完整 `request_log_metrics` INFO 心跳默认关闭。管理员应优先使用 Console
+“系统负载”页面查看当前实例；无 Console 的部署如需周期日志，可将
+`request_logging.metrics_interval_seconds` 设置为 `300`–`900`。无论是否启用完整心跳，
+backlog 停滞、日志数据库池持续饱和、健康查询不可用及其恢复都会按状态变化输出一次日志。
+升级不会重写已有 TOML；从旧模板复制了显式值 `10` 的部署如需采用新默认行为，必须手工改为
+`0` 后重启 Gateway。
 
 高流量生产环境不应长期启用全局 `debug`。故障排查时应限制时间和范围，并确保容器或服务管理器具有日志轮转。
 

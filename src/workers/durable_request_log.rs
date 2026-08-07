@@ -2,6 +2,7 @@
 
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
+use chrono::{DateTime, Utc};
 use thiserror::Error;
 use tokio::{
     sync::{mpsc, oneshot},
@@ -12,7 +13,7 @@ use tokio::{
 use crate::{
     admission::AdmissionRuntime,
     application::{DurableRequestLogSink, RequestLogPipelineMonitor},
-    observability::RequestLogPipelineMetrics,
+    observability::{RequestLogPipelineMetrics, RequestLogPipelineMetricsSnapshot},
     persistence::{
         RequestLogBatchInsertOutcome, RequestLogIngestRecord, RequestLogRepository,
         RequestLogSettlementOutcome,
@@ -26,6 +27,9 @@ const INGEST_RETRY_DELAY: Duration = Duration::from_millis(50);
 const PROJECTION_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const FIRST_PROJECTION_RETRY_SECONDS: i64 = 1;
 const ISOLATED_PROJECTION_RETRY_SECONDS: i64 = 60;
+const TELEMETRY_CHECK_INTERVAL: Duration = Duration::from_secs(10);
+const BACKLOG_STALE_AFTER: Duration = Duration::from_secs(30);
+const DATABASE_POOL_SATURATED_AFTER: Duration = Duration::from_secs(30);
 
 pub struct DurableRequestLogWorker {
     spool_shutdown: oneshot::Sender<()>,
@@ -35,8 +39,8 @@ pub struct DurableRequestLogWorker {
     projection_task: JoinHandle<()>,
     settlement_shutdown: oneshot::Sender<()>,
     settlement_task: JoinHandle<()>,
-    metrics_shutdown: oneshot::Sender<()>,
-    metrics_task: JoinHandle<()>,
+    telemetry_shutdown: oneshot::Sender<()>,
+    telemetry_task: JoinHandle<()>,
     spool: Arc<RequestLogSpool>,
     monitor: RequestLogPipelineMonitor,
     shutdown_drain: Duration,
@@ -88,7 +92,7 @@ impl DurableRequestLogWorker {
         let (spool_shutdown, spool_shutdown_requested) = oneshot::channel();
         let (spool_sync_shutdown, spool_sync_shutdown_requested) = oneshot::channel();
         let (settlement_shutdown, settlement_shutdown_requested) = oneshot::channel();
-        let (metrics_shutdown, metrics_shutdown_requested) = oneshot::channel();
+        let (telemetry_shutdown, telemetry_shutdown_requested) = oneshot::channel();
         let monitor = RequestLogPipelineMonitor::new(
             repository.clone(),
             Arc::clone(&spool),
@@ -129,10 +133,10 @@ impl DurableRequestLogWorker {
             admission,
             Arc::clone(&metrics),
         ));
-        let metrics_task = tokio::spawn(run_metrics_reporter(
+        let telemetry_task = tokio::spawn(run_telemetry_reporter(
             repository,
             Arc::clone(&spool),
-            metrics_shutdown_requested,
+            telemetry_shutdown_requested,
             settings.clone(),
             Arc::clone(&metrics),
         ));
@@ -142,6 +146,7 @@ impl DurableRequestLogWorker {
             database_max_connections = config.database_max_connections,
             ingest_batch_size = config.ingest_batch_size,
             projection_batch_size = config.projection_batch_size,
+            metrics_interval_seconds = config.metrics_interval_seconds,
             "durable request-log pipeline started"
         );
         Ok((
@@ -154,8 +159,8 @@ impl DurableRequestLogWorker {
                 projection_task,
                 settlement_shutdown,
                 settlement_task,
-                metrics_shutdown,
-                metrics_task,
+                telemetry_shutdown,
+                telemetry_task,
                 spool,
                 monitor,
                 shutdown_drain: settings.shutdown_drain,
@@ -177,8 +182,8 @@ impl DurableRequestLogWorker {
             mut projection_task,
             settlement_shutdown,
             mut settlement_task,
-            metrics_shutdown,
-            mut metrics_task,
+            telemetry_shutdown,
+            mut telemetry_task,
             spool,
             monitor,
             shutdown_drain,
@@ -212,8 +217,8 @@ impl DurableRequestLogWorker {
             remaining_until(drain_deadline),
         )
         .await;
-        let _ = metrics_shutdown.send(());
-        await_or_abort("metrics", &mut metrics_task, DATABASE_OPERATION_TIMEOUT).await;
+        let _ = telemetry_shutdown.send(());
+        await_or_abort("telemetry", &mut telemetry_task, DATABASE_OPERATION_TIMEOUT).await;
         match timeout(DATABASE_OPERATION_TIMEOUT, sync_spool(Arc::clone(&spool))).await {
             Ok(Ok(())) => {}
             Ok(Err(error)) => {
@@ -260,7 +265,8 @@ struct DurableRequestLogSettings {
     settlement_interval: Duration,
     spool_sync_interval: Duration,
     spool_compaction_threshold_bytes: u64,
-    metrics_interval: Duration,
+    database_max_connections: u32,
+    metrics_interval: Option<Duration>,
     shutdown_drain: Duration,
 }
 
@@ -274,7 +280,9 @@ impl From<&RequestLoggingConfig> for DurableRequestLogSettings {
             settlement_interval: Duration::from_millis(config.settlement_interval_milliseconds),
             spool_sync_interval: Duration::from_millis(config.spool_sync_interval_milliseconds),
             spool_compaction_threshold_bytes: config.spool_compaction_threshold_bytes,
-            metrics_interval: Duration::from_secs(config.metrics_interval_seconds),
+            database_max_connections: config.database_max_connections,
+            metrics_interval: (config.metrics_interval_seconds > 0)
+                .then(|| Duration::from_secs(config.metrics_interval_seconds)),
             shutdown_drain: Duration::from_secs(config.shutdown_drain_seconds),
         }
     }
@@ -892,81 +900,424 @@ async fn drain_settlements(
     }
 }
 
-async fn run_metrics_reporter(
+async fn run_telemetry_reporter(
     repository: RequestLogRepository,
     spool: Arc<RequestLogSpool>,
     mut shutdown_requested: oneshot::Receiver<()>,
     settings: DurableRequestLogSettings,
     metrics: Arc<RequestLogPipelineMetrics>,
 ) {
-    let mut ticker = interval(settings.metrics_interval);
+    let poll_interval = settings
+        .metrics_interval
+        .map_or(TELEMETRY_CHECK_INTERVAL, |interval| {
+            interval.min(TELEMETRY_CHECK_INTERVAL)
+        });
+    let mut ticker = interval(poll_interval);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
     ticker.tick().await;
+    let mut state = RequestLogTelemetryState::default();
+    let mut next_metrics_at = settings
+        .metrics_interval
+        .map(|interval| Instant::now() + interval);
     loop {
         tokio::select! {
-            _ = ticker.tick() => emit_metrics(&repository, &spool, &metrics).await,
+            _ = ticker.tick() => {
+                let sample = load_telemetry_sample(
+                    &repository,
+                    &spool,
+                    &metrics,
+                    settings.database_max_connections,
+                ).await;
+                let now = Instant::now();
+                emit_telemetry_transitions(&state.observe(&sample, now), &sample);
+                if metrics_heartbeat_due(
+                    &mut next_metrics_at,
+                    settings.metrics_interval,
+                    now,
+                ) {
+                    emit_metrics(&sample);
+                }
+            }
             _ = &mut shutdown_requested => {
-                emit_metrics(&repository, &spool, &metrics).await;
+                if settings.metrics_interval.is_some() {
+                    let sample = load_telemetry_sample(
+                        &repository,
+                        &spool,
+                        &metrics,
+                        settings.database_max_connections,
+                    ).await;
+                    emit_metrics(&sample);
+                }
                 return;
             }
         }
     }
 }
 
-async fn emit_metrics(
+async fn load_telemetry_sample(
     repository: &RequestLogRepository,
     spool: &RequestLogSpool,
     metrics: &RequestLogPipelineMetrics,
-) {
-    let snapshot = metrics.snapshot();
+    database_pool_capacity: u32,
+) -> RequestLogTelemetrySample {
+    let sampled_at = Utc::now();
+    let (ingress, settlement) = tokio::join!(
+        timeout(DATABASE_OPERATION_TIMEOUT, repository.ingest_backlog()),
+        timeout(DATABASE_OPERATION_TIMEOUT, repository.settlement_backlog())
+    );
     let pool = repository.pool_status();
-    let backlog = repository.ingest_backlog().await;
-    match backlog {
-        Ok(backlog) => {
-            let oldest_ingress_age_seconds = backlog
-                .oldest_staged_at
-                .map(|oldest| (chrono::Utc::now() - oldest).num_seconds().max(0))
-                .unwrap_or(0);
-            tracing::info!(
-                target: "ai_gateway::request_log_metrics",
-                event = "request_log_metrics",
-                recorded_total = snapshot.recorded_total,
-                spooled_total = snapshot.spooled_total,
-                spool_append_failures_total = snapshot.spool_append_failures_total,
-                spool_bytes_total = snapshot.spool_bytes_total,
-                spool_pending_bytes = spool.pending_bytes(),
-                ingress_batches_total = snapshot.ingress_batches_total,
-                ingress_rows_total = snapshot.ingress_rows_total,
-                ingress_failures_total = snapshot.ingress_failures_total,
-                ingress_duration_micros_total = snapshot.ingress_duration_micros_total,
-                ingress_duration_micros_max = snapshot.ingress_duration_micros_max,
-                ingress_backlog_rows_estimate = backlog.row_count,
-                oldest_ingress_age_seconds,
-                projected_rows_total = snapshot.projected_rows_total,
-                projection_deferred_total = snapshot.projection_deferred_total,
-                projection_failures_total = snapshot.projection_failures_total,
-                projection_duration_micros_total = snapshot.projection_duration_micros_total,
-                projection_duration_micros_max = snapshot.projection_duration_micros_max,
-                settled_rows_total = snapshot.settled_rows_total,
-                settlement_failures_total = snapshot.settlement_failures_total,
-                settlement_duration_micros_total = snapshot.settlement_duration_micros_total,
-                settlement_duration_micros_max = snapshot.settlement_duration_micros_max,
-                database_pool_size = pool.size,
-                database_pool_idle = pool.idle,
-                "request-log pipeline metrics"
-            );
+    RequestLogTelemetrySample {
+        metrics: metrics.snapshot(),
+        spool_pending_bytes: spool.pending_bytes(),
+        ingress: match ingress {
+            Ok(Ok(backlog)) => BacklogSample::Available(backlog_health(
+                backlog.row_count,
+                backlog.oldest_staged_at,
+                sampled_at,
+            )),
+            Ok(Err(error)) => BacklogSample::Unavailable {
+                error: error.to_string(),
+            },
+            Err(_) => BacklogSample::Unavailable {
+                error: "query timed out".into(),
+            },
+        },
+        settlement: match settlement {
+            Ok(Ok(backlog)) => BacklogSample::Available(backlog_health(
+                backlog.row_count,
+                backlog.oldest_completed_at,
+                sampled_at,
+            )),
+            Ok(Err(error)) => BacklogSample::Unavailable {
+                error: error.to_string(),
+            },
+            Err(_) => BacklogSample::Unavailable {
+                error: "query timed out".into(),
+            },
+        },
+        database_pool_size: pool.size,
+        database_pool_idle: pool.idle,
+        database_pool_capacity,
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct BacklogHealth {
+    row_count: u64,
+    oldest_age_seconds: u64,
+}
+
+#[derive(Debug)]
+enum BacklogSample {
+    Available(BacklogHealth),
+    Unavailable { error: String },
+}
+
+impl BacklogSample {
+    const fn health(&self) -> Option<BacklogHealth> {
+        match self {
+            Self::Available(health) => Some(*health),
+            Self::Unavailable { .. } => None,
         }
-        Err(error) => {
-            tracing::warn!(
-                target: "ai_gateway::request_log_metrics",
-                event = "request_log_metrics",
-                %error,
-                spool_pending_bytes = spool.pending_bytes(),
-                database_pool_size = pool.size,
-                database_pool_idle = pool.idle,
-                "request-log pipeline metrics could not load the ingress backlog"
-            );
+    }
+
+    const fn is_available(&self) -> bool {
+        matches!(self, Self::Available(_))
+    }
+
+    fn error(&self) -> Option<&str> {
+        match self {
+            Self::Available(_) => None,
+            Self::Unavailable { error } => Some(error),
         }
+    }
+}
+
+#[derive(Debug)]
+struct RequestLogTelemetrySample {
+    metrics: RequestLogPipelineMetricsSnapshot,
+    spool_pending_bytes: u64,
+    ingress: BacklogSample,
+    settlement: BacklogSample,
+    database_pool_size: u32,
+    database_pool_idle: usize,
+    database_pool_capacity: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TelemetryTransition {
+    IngressQueryUnavailable,
+    IngressQueryRecovered,
+    IngressBacklogStalled,
+    IngressBacklogRecovered,
+    SettlementQueryUnavailable,
+    SettlementQueryRecovered,
+    SettlementBacklogStalled,
+    SettlementBacklogRecovered,
+    DatabasePoolSaturated,
+    DatabasePoolRecovered,
+}
+
+#[derive(Debug, Default)]
+struct RequestLogTelemetryState {
+    ingress_query_unavailable: bool,
+    ingress_backlog_stalled: bool,
+    settlement_query_unavailable: bool,
+    settlement_backlog_stalled: bool,
+    database_pool_saturated_since: Option<Instant>,
+    database_pool_saturated: bool,
+}
+
+impl RequestLogTelemetryState {
+    fn observe(
+        &mut self,
+        sample: &RequestLogTelemetrySample,
+        now: Instant,
+    ) -> Vec<TelemetryTransition> {
+        let mut transitions = Vec::new();
+        observe_backlog(
+            sample.ingress.health(),
+            &mut self.ingress_query_unavailable,
+            &mut self.ingress_backlog_stalled,
+            TelemetryTransition::IngressQueryUnavailable,
+            TelemetryTransition::IngressQueryRecovered,
+            TelemetryTransition::IngressBacklogStalled,
+            TelemetryTransition::IngressBacklogRecovered,
+            &mut transitions,
+        );
+        observe_backlog(
+            sample.settlement.health(),
+            &mut self.settlement_query_unavailable,
+            &mut self.settlement_backlog_stalled,
+            TelemetryTransition::SettlementQueryUnavailable,
+            TelemetryTransition::SettlementQueryRecovered,
+            TelemetryTransition::SettlementBacklogStalled,
+            TelemetryTransition::SettlementBacklogRecovered,
+            &mut transitions,
+        );
+
+        let pool_saturated = sample.database_pool_capacity > 0
+            && sample.database_pool_size >= sample.database_pool_capacity
+            && sample.database_pool_idle == 0;
+        if pool_saturated {
+            let saturated_since = self.database_pool_saturated_since.get_or_insert(now);
+            if !self.database_pool_saturated
+                && now.saturating_duration_since(*saturated_since) >= DATABASE_POOL_SATURATED_AFTER
+            {
+                self.database_pool_saturated = true;
+                transitions.push(TelemetryTransition::DatabasePoolSaturated);
+            }
+        } else {
+            self.database_pool_saturated_since = None;
+            if std::mem::take(&mut self.database_pool_saturated) {
+                transitions.push(TelemetryTransition::DatabasePoolRecovered);
+            }
+        }
+        transitions
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn observe_backlog(
+    health: Option<BacklogHealth>,
+    query_unavailable: &mut bool,
+    backlog_stalled: &mut bool,
+    unavailable: TelemetryTransition,
+    query_recovered: TelemetryTransition,
+    stalled: TelemetryTransition,
+    backlog_recovered: TelemetryTransition,
+    transitions: &mut Vec<TelemetryTransition>,
+) {
+    let Some(health) = health else {
+        if !std::mem::replace(query_unavailable, true) {
+            transitions.push(unavailable);
+        }
+        return;
+    };
+
+    if std::mem::take(query_unavailable) {
+        transitions.push(query_recovered);
+    }
+    let is_stalled =
+        health.row_count > 0 && health.oldest_age_seconds >= BACKLOG_STALE_AFTER.as_secs();
+    match (is_stalled, *backlog_stalled) {
+        (true, false) => {
+            *backlog_stalled = true;
+            transitions.push(stalled);
+        }
+        (false, true) => {
+            *backlog_stalled = false;
+            transitions.push(backlog_recovered);
+        }
+        _ => {}
+    }
+}
+
+fn emit_telemetry_transitions(
+    transitions: &[TelemetryTransition],
+    sample: &RequestLogTelemetrySample,
+) {
+    for transition in transitions {
+        match transition {
+            TelemetryTransition::IngressQueryUnavailable => {
+                tracing::warn!(
+                    target: "ai_gateway::request_log_health",
+                    event = "request_log_ingress_query_unavailable",
+                    error = sample.ingress.error().unwrap_or("unknown error"),
+                    "request-log ingress backlog telemetry is unavailable"
+                );
+            }
+            TelemetryTransition::IngressQueryRecovered => {
+                tracing::info!(
+                    target: "ai_gateway::request_log_health",
+                    event = "request_log_ingress_query_recovered",
+                    "request-log ingress backlog telemetry recovered"
+                );
+            }
+            TelemetryTransition::IngressBacklogStalled => {
+                let backlog = sample.ingress.health().unwrap_or_default();
+                tracing::warn!(
+                    target: "ai_gateway::request_log_health",
+                    event = "request_log_ingress_backlog_stalled",
+                    backlog_rows_estimate = backlog.row_count,
+                    oldest_age_seconds = backlog.oldest_age_seconds,
+                    spool_pending_bytes = sample.spool_pending_bytes,
+                    stale_after_seconds = BACKLOG_STALE_AFTER.as_secs(),
+                    "request-log ingress backlog is not draining within the health threshold"
+                );
+            }
+            TelemetryTransition::IngressBacklogRecovered => {
+                tracing::info!(
+                    target: "ai_gateway::request_log_health",
+                    event = "request_log_ingress_backlog_recovered",
+                    "request-log ingress backlog recovered"
+                );
+            }
+            TelemetryTransition::SettlementQueryUnavailable => {
+                tracing::warn!(
+                    target: "ai_gateway::request_log_health",
+                    event = "request_log_settlement_query_unavailable",
+                    error = sample.settlement.error().unwrap_or("unknown error"),
+                    "request-log settlement backlog telemetry is unavailable"
+                );
+            }
+            TelemetryTransition::SettlementQueryRecovered => {
+                tracing::info!(
+                    target: "ai_gateway::request_log_health",
+                    event = "request_log_settlement_query_recovered",
+                    "request-log settlement backlog telemetry recovered"
+                );
+            }
+            TelemetryTransition::SettlementBacklogStalled => {
+                let backlog = sample.settlement.health().unwrap_or_default();
+                tracing::warn!(
+                    target: "ai_gateway::request_log_health",
+                    event = "request_log_settlement_backlog_stalled",
+                    backlog_rows = backlog.row_count,
+                    oldest_age_seconds = backlog.oldest_age_seconds,
+                    stale_after_seconds = BACKLOG_STALE_AFTER.as_secs(),
+                    "request-log settlement backlog is not draining within the health threshold"
+                );
+            }
+            TelemetryTransition::SettlementBacklogRecovered => {
+                tracing::info!(
+                    target: "ai_gateway::request_log_health",
+                    event = "request_log_settlement_backlog_recovered",
+                    "request-log settlement backlog recovered"
+                );
+            }
+            TelemetryTransition::DatabasePoolSaturated => {
+                tracing::warn!(
+                    target: "ai_gateway::request_log_health",
+                    event = "request_log_database_pool_saturated",
+                    database_pool_size = sample.database_pool_size,
+                    database_pool_idle = sample.database_pool_idle,
+                    database_pool_capacity = sample.database_pool_capacity,
+                    saturated_after_seconds = DATABASE_POOL_SATURATED_AFTER.as_secs(),
+                    "request-log database pool remains saturated"
+                );
+            }
+            TelemetryTransition::DatabasePoolRecovered => {
+                tracing::info!(
+                    target: "ai_gateway::request_log_health",
+                    event = "request_log_database_pool_recovered",
+                    database_pool_size = sample.database_pool_size,
+                    database_pool_idle = sample.database_pool_idle,
+                    database_pool_capacity = sample.database_pool_capacity,
+                    "request-log database pool recovered"
+                );
+            }
+        }
+    }
+}
+
+fn emit_metrics(sample: &RequestLogTelemetrySample) {
+    let snapshot = sample.metrics;
+    let ingress = sample.ingress.health().unwrap_or_default();
+    let settlement = sample.settlement.health().unwrap_or_default();
+    tracing::info!(
+        target: "ai_gateway::request_log_metrics",
+        event = "request_log_metrics",
+        recorded_total = snapshot.recorded_total,
+        spooled_total = snapshot.spooled_total,
+        spool_append_failures_total = snapshot.spool_append_failures_total,
+        spool_bytes_total = snapshot.spool_bytes_total,
+        spool_pending_bytes = sample.spool_pending_bytes,
+        ingress_batches_total = snapshot.ingress_batches_total,
+        ingress_rows_total = snapshot.ingress_rows_total,
+        ingress_failures_total = snapshot.ingress_failures_total,
+        ingress_duration_micros_total = snapshot.ingress_duration_micros_total,
+        ingress_duration_micros_max = snapshot.ingress_duration_micros_max,
+        ingress_backlog_query_available = sample.ingress.is_available(),
+        ingress_backlog_rows_estimate = ingress.row_count,
+        oldest_ingress_age_seconds = ingress.oldest_age_seconds,
+        projected_rows_total = snapshot.projected_rows_total,
+        projection_deferred_total = snapshot.projection_deferred_total,
+        projection_failures_total = snapshot.projection_failures_total,
+        projection_duration_micros_total = snapshot.projection_duration_micros_total,
+        projection_duration_micros_max = snapshot.projection_duration_micros_max,
+        settled_rows_total = snapshot.settled_rows_total,
+        settlement_failures_total = snapshot.settlement_failures_total,
+        settlement_duration_micros_total = snapshot.settlement_duration_micros_total,
+        settlement_duration_micros_max = snapshot.settlement_duration_micros_max,
+        settlement_backlog_query_available = sample.settlement.is_available(),
+        settlement_backlog_rows = settlement.row_count,
+        settlement_oldest_age_seconds = settlement.oldest_age_seconds,
+        database_pool_size = sample.database_pool_size,
+        database_pool_idle = sample.database_pool_idle,
+        database_pool_capacity = sample.database_pool_capacity,
+        "request-log pipeline metrics"
+    );
+}
+
+fn metrics_heartbeat_due(
+    next_metrics_at: &mut Option<Instant>,
+    interval: Option<Duration>,
+    now: Instant,
+) -> bool {
+    let (Some(mut next), Some(interval)) = (*next_metrics_at, interval) else {
+        return false;
+    };
+    if now < next {
+        return false;
+    }
+    while next <= now {
+        next += interval;
+    }
+    *next_metrics_at = Some(next);
+    true
+}
+
+fn backlog_health(
+    row_count: i64,
+    oldest_at: Option<DateTime<Utc>>,
+    sampled_at: DateTime<Utc>,
+) -> BacklogHealth {
+    BacklogHealth {
+        row_count: u64::try_from(row_count.max(0)).unwrap_or(u64::MAX),
+        oldest_age_seconds: oldest_at.map_or(0, |oldest| {
+            u64::try_from((sampled_at - oldest).num_seconds().max(0)).unwrap_or(u64::MAX)
+        }),
     }
 }
 
@@ -1000,6 +1351,140 @@ async fn compact_spool(spool: Arc<RequestLogSpool>) -> Result<bool, SpoolTaskErr
     tokio::task::spawn_blocking(move || spool.compact_if_drained())
         .await?
         .map_err(SpoolTaskError::from)
+}
+
+#[cfg(test)]
+mod telemetry_tests {
+    use super::{
+        BACKLOG_STALE_AFTER, BacklogHealth, BacklogSample, DurableRequestLogSettings,
+        RequestLogTelemetrySample, RequestLogTelemetryState, TelemetryTransition,
+        metrics_heartbeat_due,
+    };
+    use crate::{
+        observability::RequestLogPipelineMetricsSnapshot, runtime_config::RequestLoggingConfig,
+    };
+    use std::time::Duration;
+    use tokio::time::Instant;
+
+    fn sample() -> RequestLogTelemetrySample {
+        RequestLogTelemetrySample {
+            metrics: RequestLogPipelineMetricsSnapshot::default(),
+            spool_pending_bytes: 0,
+            ingress: BacklogSample::Available(BacklogHealth::default()),
+            settlement: BacklogSample::Available(BacklogHealth::default()),
+            database_pool_size: 3,
+            database_pool_idle: 3,
+            database_pool_capacity: 4,
+        }
+    }
+
+    #[test]
+    fn stale_backlog_logs_once_and_then_recovers() {
+        let now = Instant::now();
+        let mut state = RequestLogTelemetryState::default();
+        let mut sample = sample();
+        sample.ingress = BacklogSample::Available(BacklogHealth {
+            row_count: 7,
+            oldest_age_seconds: BACKLOG_STALE_AFTER.as_secs(),
+        });
+
+        assert_eq!(
+            state.observe(&sample, now),
+            vec![TelemetryTransition::IngressBacklogStalled]
+        );
+        assert!(state.observe(&sample, now).is_empty());
+
+        sample.ingress = BacklogSample::Available(BacklogHealth::default());
+        assert_eq!(
+            state.observe(&sample, now),
+            vec![TelemetryTransition::IngressBacklogRecovered]
+        );
+    }
+
+    #[test]
+    fn backlog_query_outage_and_recovery_are_transition_based() {
+        let now = Instant::now();
+        let mut state = RequestLogTelemetryState::default();
+        let mut sample = sample();
+        sample.settlement = BacklogSample::Unavailable {
+            error: "database unavailable".into(),
+        };
+
+        assert_eq!(
+            state.observe(&sample, now),
+            vec![TelemetryTransition::SettlementQueryUnavailable]
+        );
+        assert!(state.observe(&sample, now).is_empty());
+
+        sample.settlement = BacklogSample::Available(BacklogHealth::default());
+        assert_eq!(
+            state.observe(&sample, now),
+            vec![TelemetryTransition::SettlementQueryRecovered]
+        );
+    }
+
+    #[test]
+    fn database_pool_requires_sustained_saturation() {
+        let started = Instant::now();
+        let mut state = RequestLogTelemetryState::default();
+        let mut sample = sample();
+        sample.database_pool_size = 4;
+        sample.database_pool_idle = 0;
+
+        assert!(state.observe(&sample, started).is_empty());
+        assert!(
+            state
+                .observe(
+                    &sample,
+                    started + super::DATABASE_POOL_SATURATED_AFTER - Duration::from_secs(1),
+                )
+                .is_empty()
+        );
+        assert_eq!(
+            state.observe(&sample, started + super::DATABASE_POOL_SATURATED_AFTER),
+            vec![TelemetryTransition::DatabasePoolSaturated]
+        );
+        assert!(
+            state
+                .observe(&sample, started + super::DATABASE_POOL_SATURATED_AFTER)
+                .is_empty()
+        );
+
+        sample.database_pool_idle = 1;
+        assert_eq!(
+            state.observe(&sample, started + super::DATABASE_POOL_SATURATED_AFTER),
+            vec![TelemetryTransition::DatabasePoolRecovered]
+        );
+    }
+
+    #[test]
+    fn periodic_metrics_are_disabled_by_default() {
+        let config = RequestLoggingConfig::default();
+        let settings = DurableRequestLogSettings::from(&config);
+        assert!(settings.metrics_interval.is_none());
+
+        let now = Instant::now();
+        let mut next = None;
+        assert!(!metrics_heartbeat_due(&mut next, None, now));
+    }
+
+    #[test]
+    fn configured_metrics_heartbeat_advances_after_emission() {
+        let interval = Duration::from_secs(300);
+        let started = Instant::now();
+        let mut next = Some(started + interval);
+        assert!(!metrics_heartbeat_due(
+            &mut next,
+            Some(interval),
+            started + Duration::from_secs(299)
+        ));
+        assert!(metrics_heartbeat_due(
+            &mut next,
+            Some(interval),
+            started + interval
+        ));
+        assert_eq!(next, Some(started + interval + interval));
+    }
 }
 
 #[derive(Debug, Error)]

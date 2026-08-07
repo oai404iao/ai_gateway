@@ -29,11 +29,21 @@ Versioning.
   kind-compatible model-rule selection, typed Search and Images settings,
   immutable endpoint identity, and ETag conflict handling.
 
+### Changed
+
+- Make full request-log pipeline INFO heartbeats opt-in and disabled by
+  default, keep the Console system-load page as the primary live view, and
+  emit one-shot warning/recovery events for stale ingress or settlement
+  backlogs, sustained request-log database-pool saturation, and health-query
+  outages.
+
 ### Fixed
 
 - Accept the `2025-06-18` initialize/session negotiation used by Codex legacy
   MCP mode whenever `allow_legacy_2025_11_25` is enabled, while continuing to
   support complete `2025-11-25` sessions and stateless `2026-07-28` requests.
+- Preserve target-scoped application INFO events while retaining the hard
+  RMCP debug/trace payload cap.
 
 ### Security
 
