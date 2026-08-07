@@ -5,10 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tracing::{Level, Metadata};
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::{
-    EnvFilter, Layer,
-    filter::{FilterExt, filter_fn},
-    layer::SubscriberExt,
-    util::SubscriberInitExt,
+    EnvFilter, Layer, filter::filter_fn, layer::SubscriberExt, util::SubscriberInitExt,
 };
 
 /// Initializes a lossy, nonblocking stderr writer. Keeping the returned guard
@@ -20,9 +17,16 @@ pub fn init(filter: &str) -> WorkerGuard {
     let layer = tracing_subscriber::fmt::layer()
         .with_target(false)
         .with_writer(writer)
-        .with_filter(filter.and(payload_filter));
+        .with_filter(payload_filter);
 
-    let _ = tracing_subscriber::registry().with(layer).try_init();
+    // Keep the operator-supplied EnvFilter global. Composing it into the fmt
+    // layer caused target-scoped application directives to miss some events
+    // in the full runtime. The per-layer predicate remains a final safety cap
+    // for dependency targets that can format complete MCP payloads.
+    let _ = tracing_subscriber::registry()
+        .with(filter)
+        .with(layer)
+        .try_init();
     guard
 }
 
@@ -172,7 +176,7 @@ fn record_duration(total: &AtomicU64, maximum: &AtomicU64, duration_micros: u64)
     maximum.fetch_max(duration_micros, Ordering::Relaxed);
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct RequestLogPipelineMetricsSnapshot {
     pub recorded_total: u64,
     pub spooled_total: u64,
@@ -196,11 +200,90 @@ pub(crate) struct RequestLogPipelineMetricsSnapshot {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        io::{self, Write},
+        sync::{Arc, Mutex},
+    };
+
     #[cfg(feature = "mcp-server")]
     use tracing::Level;
+    use tracing_subscriber::{EnvFilter, Layer, filter::filter_fn, layer::SubscriberExt};
 
     #[cfg(feature = "mcp-server")]
     use super::mcp_payload_level_allowed;
+    use super::mcp_payload_trace_allowed;
+
+    #[derive(Clone, Default)]
+    struct BufferWriter {
+        bytes: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl BufferWriter {
+        fn contents(&self) -> String {
+            String::from_utf8(
+                self.bytes
+                    .lock()
+                    .expect("test log buffer lock poisoned")
+                    .clone(),
+            )
+            .expect("test log output is UTF-8")
+        }
+    }
+
+    impl Write for BufferWriter {
+        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+            self.bytes
+                .lock()
+                .expect("test log buffer lock poisoned")
+                .extend_from_slice(buffer);
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'writer> tracing_subscriber::fmt::MakeWriter<'writer> for BufferWriter {
+        type Writer = Self;
+
+        fn make_writer(&'writer self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    fn capture(filter: &str, emit: impl FnOnce()) -> String {
+        let writer = BufferWriter::default();
+        let output = writer.clone();
+        let layer = tracing_subscriber::fmt::layer()
+            .without_time()
+            .with_ansi(false)
+            .with_target(false)
+            .with_writer(writer)
+            .with_filter(filter_fn(mcp_payload_trace_allowed));
+        let subscriber = tracing_subscriber::registry()
+            .with(EnvFilter::new(filter))
+            .with(layer);
+        tracing::subscriber::with_default(subscriber, emit);
+        output.contents()
+    }
+
+    #[test]
+    fn target_scoped_filter_preserves_application_info() {
+        let output = capture(
+            "ai_gateway=info,ai_gateway::application::proxy=warn,tower_http=warn",
+            || {
+                tracing::info!(
+                    target: "ai_gateway::request_log_metrics",
+                    "request-log heartbeat"
+                );
+                tracing::info!(target: "dependency", "dependency info");
+            },
+        );
+
+        assert!(output.contains("request-log heartbeat"));
+        assert!(!output.contains("dependency info"));
+    }
 
     #[cfg(feature = "mcp-server")]
     #[test]
@@ -212,5 +295,17 @@ mod tests {
         ));
         assert!(mcp_payload_level_allowed("rmcp::service", &Level::INFO));
         assert!(mcp_payload_level_allowed("ai_gateway::mcp", &Level::TRACE));
+    }
+
+    #[cfg(feature = "mcp-server")]
+    #[test]
+    fn mcp_payload_filter_blocks_dependency_debug_output() {
+        let output = capture("trace", || {
+            tracing::debug!(target: "rmcp::service", "sensitive payload");
+            tracing::info!(target: "rmcp::service", "safe lifecycle");
+        });
+
+        assert!(!output.contains("sensitive payload"));
+        assert!(output.contains("safe lifecycle"));
     }
 }

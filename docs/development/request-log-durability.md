@@ -53,7 +53,7 @@ payload 缺少该字段时按 `0` 解码，因此这一扩展不要求排空现�
   `[request_logging].database_max_connections`。
 - 增加日志连接数不会自动提升总吞吐；同一 PostgreSQL 实例仍共享 CPU、WAL、磁盘和行锁。
 
-默认日志池为四个连接，分别覆盖 COPY ingestion、低并发投影、结算和周期指标。最终表投影保持单 Worker，避免重新出现多个写 Worker 抢占转发资源的问题。
+默认日志池为四个连接，分别覆盖 COPY ingestion、低并发投影、结算和健康采样。最终表投影保持单 Worker，避免重新出现多个写 Worker 抢占转发资源的问题。
 
 生产模板默认使用 4096 条 COPY、2048 条投影、4096 条结算批次与
 500ms 结算间隔。较小机器可以将三种批次减半；较大机器应先扩大批次并验证
@@ -83,21 +83,27 @@ Migration `0012_request_log_ingest.sql` 创建 `request_log_ingest`：
 
 数据库行是恢复来源，因此结算允许落后于日志投影。关闭时会在配置的 drain deadline 内继续结算；未完成记录由下次启动恢复。
 
-## 结构化指标
+## 实时面板与状态变化日志
 
-日志目标 `ai_gateway::request_log_metrics` 周期输出：
+Console `GET /console/v1/system/load` 是当前实例的主要实时视图，按请求读取队列、spool、
+ingress/settlement backlog、累计失败数和数据库池压力。页面默认每 5 秒刷新，但不保存历史，也不做
+多实例聚合。
 
-- `recorded_total`
-- `spooled_total`
-- `spool_append_failures_total`
-- `spool_pending_bytes`
-- COPY 批次、行数、失败数及总/最大耗时
-- `ingress_backlog_rows_estimate` 与最老 backlog 年龄
-- 投影成功、延迟重试、失败及耗时
-- 结算成功、失败及耗时
-- 独立日志连接池 size/idle
+后台健康采样固定每 10 秒运行，并只在状态变化时输出日志目标
+`ai_gateway::request_log_health`：
 
-`spool_append_failures_total` 必须为零。入口 backlog 持续增长表示最终表投影能力低于持续流量；spool pending 持续增长表示 PostgreSQL 入口本身不可用或 COPY 能力不足。
+- ingress 或 settlement backlog 的最老记录达到 30 秒时输出一次 `WARN`，恢复后输出一次 `INFO`；
+- 日志数据库池达到配置容量且无空闲连接持续 30 秒时输出一次 `WARN`，恢复后输出一次 `INFO`；
+- backlog 健康查询不可用时输出一次 `WARN`，查询恢复后输出一次 `INFO`。
+
+spool append、COPY、投影和结算操作本身的失败仍在发生时直接输出 `ERROR`。其中
+`spool_append_failures_total` 必须为零；入口 backlog 持续增长表示最终表投影能力低于持续流量，
+spool pending 持续增长表示 PostgreSQL 入口本身不可用或 COPY 能力不足。
+
+完整日志目标 `ai_gateway::request_log_metrics` 改为可选 INFO 心跳。
+`request_logging.metrics_interval_seconds = 0`（默认）关闭周期快照，但不会关闭面板、内存计数或
+状态变化日志。无 Console 的部署如需日志历史，可设置为 `300`–`900` 秒。快照继续包含接收、spool、
+COPY、投影、结算、backlog、耗时和日志数据库池累计字段。
 
 ## 关闭与容量
 
