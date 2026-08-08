@@ -42,7 +42,7 @@ pub use runtime::{CodexCredentialRuntime, CodexCredentialUnavailable, CompiledCo
 const OAUTH_FLOW_TTL: chrono::Duration = chrono::Duration::minutes(15);
 const ACCESS_TOKEN_REFRESH_WINDOW: chrono::Duration = chrono::Duration::minutes(5);
 const REFRESH_FALLBACK_AGE: chrono::Duration = chrono::Duration::days(8);
-const QUOTA_REFRESH_INTERVAL: chrono::Duration = chrono::Duration::minutes(5);
+const QUOTA_REFRESH_INTERVAL: chrono::Duration = chrono::Duration::minutes(15);
 const MAINTENANCE_CONCURRENCY: usize = 8;
 
 type CredentialRefreshLocks = Arc<Mutex<HashMap<Uuid, Arc<Mutex<()>>>>>;
@@ -918,9 +918,11 @@ fn refresh_due(record: &CodexCredentialRecord) -> bool {
 }
 
 fn quota_due(record: &CodexCredentialRecord) -> bool {
-    record
-        .quota_checked_at
-        .is_none_or(|checked_at| checked_at <= Utc::now() - QUOTA_REFRESH_INTERVAL)
+    quota_due_at(record.quota_checked_at, Utc::now())
+}
+
+fn quota_due_at(quota_checked_at: Option<DateTime<Utc>>, now: DateTime<Utc>) -> bool {
+    quota_checked_at.is_none_or(|checked_at| checked_at <= now - QUOTA_REFRESH_INTERVAL)
 }
 
 fn validate_quota_credential(record: &CodexCredentialRecord) -> Result<(), CodexConnectorError> {
@@ -1060,5 +1062,18 @@ mod tests {
             ),
             Err(CodexConnectorError::AccountChanged)
         ));
+    }
+
+    #[test]
+    fn quota_refresh_becomes_due_every_fifteen_minutes() {
+        let now = DateTime::parse_from_rfc3339("2026-08-08T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        assert!(quota_due_at(None, now));
+        assert!(!quota_due_at(
+            Some(now - chrono::Duration::minutes(14)),
+            now
+        ));
+        assert!(quota_due_at(Some(now - chrono::Duration::minutes(15)), now));
     }
 }

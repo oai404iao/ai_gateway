@@ -288,7 +288,7 @@ OpenAI token revocation endpoint，若还需要使外部 Token 失效，应在�
 高级导入页允许删除代理，但服务端要求 `If-Match`，并且只有当代理未被普通渠道或未完成的 Codex
 OAuth 流引用时才会删除；否则返回 `proxy_in_use`。已分配给导入草稿的代理还必须存在且已启用。
 
-后台 worker 每分钟检查凭证；access token 接近过期时刷新，quota 默认每 5 分钟重新读取。手动
+后台 worker 每分钟检查凭证；access token 接近过期时刷新，quota 默认每 15 分钟重新读取。手动
 refresh token / quota 也可从凭证页执行。同一凭证的 refresh 在实例内和 PostgreSQL 行锁层面串行，
 并核对 generation，避免 rotating refresh token 被并发重复使用。上游请求返回 `401` 时会触发一次
 generation 去重的后台刷新。
@@ -297,8 +297,11 @@ generation 去重的后台刷新。
 调用 OpenAI reset-credit 接口并消费可用 credit，随后匹配到的换窗显示为“手动 reset credit”；
 没有对应手动事件却提前换窗时显示为“OpenAI 官方重置”。最后一种是根据提前换窗推断的故障补偿等
 provider-side 重置，因为 OpenAI usage 响应本身不返回重置原因。Gateway 不会自动消费
-reset credit。手动 reset-credit 操作会写审计；如果调用成功但紧随其后的 quota 刷新失败，后台
-轮询会继续补齐当前状态和窗口历史。
+reset credit。窗口使用率一直为 `0%` 时，Provider 可能按每次查询时间重新计算 `reset_at`；
+Gateway 会把这类滑动时间合并为同一个未使用周期，首次出现非零使用率时再固定周期边界，不会把
+每次查询误记为“OpenAI 官方重置”；历史查询也会隐藏升级前已产生的 `0% → 0%`
+“OpenAI 官方重置”误报。手动 reset-credit 操作会写审计；如果调用成功但紧随其后的 quota
+刷新失败，后台轮询会继续补齐当前状态和窗口历史。
 
 Codex Responses HTTP Connector 只接受 `stream: true` 的 SSE 请求，强制上游
 `store: false`，并拒绝非空 `previous_response_id`。客户端仍可发送

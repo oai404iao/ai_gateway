@@ -409,6 +409,8 @@ struct CurrentCodexQuotaWindowPeriod {
     window_seconds: i32,
     started_at: DateTime<Utc>,
     scheduled_reset_at: DateTime<Utc>,
+    initial_used_percent: i32,
+    last_used_percent: i32,
     last_observed_at: DateTime<Utc>,
 }
 
@@ -530,6 +532,11 @@ impl ControlPlaneRepository {
                         ) AS window_rank \
                  FROM codex_quota_window_periods \
                  WHERE credential_id=$1 \
+                   AND ( \
+                       reset_reason IS DISTINCT FROM 'openai_official' \
+                       OR initial_used_percent<>0 \
+                       OR last_used_percent<>0 \
+                   ) \
              ) \
              SELECT id,credential_id,window_kind,window_seconds,started_at, \
                     scheduled_reset_at,ended_at,reset_reason,initial_used_percent, \
@@ -648,6 +655,11 @@ impl ControlPlaneRepository {
                   AND console_user.deleted_at IS NULL \
                  WHERE console_user.id=$1 \
                    AND credential.channel_id=$2 \
+                   AND ( \
+                       period.reset_reason IS DISTINCT FROM 'openai_official' \
+                       OR period.initial_used_percent<>0 \
+                       OR period.last_used_percent<>0 \
+                   ) \
              ) \
              SELECT window_kind,window_seconds,started_at,scheduled_reset_at, \
                     ended_at,reset_reason,initial_used_percent,last_used_percent, \
@@ -1562,7 +1574,8 @@ async fn reconcile_codex_quota_window(
         .checked_sub_signed(Duration::seconds(i64::from(observation.window_seconds)))
         .ok_or(RepositoryError::Validation)?;
     let current = sqlx::query_as::<_, CurrentCodexQuotaWindowPeriod>(
-        "SELECT id,window_seconds,started_at,scheduled_reset_at,last_observed_at \
+        "SELECT id,window_seconds,started_at,scheduled_reset_at, \
+                initial_used_percent,last_used_percent,last_observed_at \
          FROM codex_quota_window_periods \
          WHERE credential_id=$1 AND window_kind=$2 AND ended_at IS NULL \
          FOR UPDATE",
@@ -1623,11 +1636,38 @@ async fn reconcile_codex_quota_window(
         .scheduled_reset_at
         .checked_sub_signed(QUOTA_WINDOW_IDENTITY_TOLERANCE)
         .unwrap_or(current.scheduled_reset_at);
+    let manual_reset = if started_at < natural_boundary {
+        claim_manual_codex_quota_reset(transaction, channel_id, kind, started_at, checked_at)
+            .await?
+    } else {
+        false
+    };
+
+    if current.initial_used_percent == 0
+        && current.last_used_percent == 0
+        && started_at < natural_boundary
+        && !manual_reset
+    {
+        sqlx::query(
+            "UPDATE codex_quota_window_periods \
+             SET window_seconds=$2,started_at=$3,scheduled_reset_at=$4, \
+                 last_used_percent=$5,last_observed_at=GREATEST(last_observed_at,$6) \
+             WHERE id=$1",
+        )
+        .bind(current.id)
+        .bind(observation.window_seconds)
+        .bind(started_at)
+        .bind(observation.reset_at)
+        .bind(observation.used_percent)
+        .bind(checked_at)
+        .execute(&mut **transaction)
+        .await?;
+        return Ok(());
+    }
+
     let (reset_reason, ended_at) = if started_at >= natural_boundary {
         ("natural", current.scheduled_reset_at)
-    } else if claim_manual_codex_quota_reset(transaction, channel_id, kind, started_at, checked_at)
-        .await?
-    {
+    } else if manual_reset {
         ("manual", started_at)
     } else {
         ("openai_official", started_at)

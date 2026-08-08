@@ -91,7 +91,7 @@ worker 每分钟加载数据库记录并先替换本地凭证快照，使其他�
 更新最终收敛。需要维护的凭证以有界并发执行：
 
 - access token 在过期前 5 分钟刷新；没有 `exp` 时使用保守 fallback age；
-- quota 默认 5 分钟刷新；
+- quota 默认 15 分钟刷新；
 - 完成或过期的 OAuth flow 清理；
 - 单凭证先获取进程内 mutex，再在 PostgreSQL transaction 中
   `SELECT ... FOR UPDATE`，锁内核对 `refresh_generation` 后才调用 token endpoint；
@@ -104,7 +104,10 @@ worker 每分钟加载数据库记录并先替换本地凭证快照，使其他�
 开启新周期。计划边界附近的换窗优先归类为自然重置；提前换窗再按推导出的实际周期起点匹配附近的
 手动 reset-credit 事件，因此即使 quota 观察延迟，仍可在恢复后补齐手动重置分类。quota
 请求发起时间同时作为快照版本，较晚返回的旧请求不能覆盖更新的凭证状态或窗口历史。历史不进入
-运行时凭证快照，也不参与数据面选路。
+运行时凭证快照，也不参与数据面选路。Provider 在窗口始终为 `0%` 时可能按查询时间滑动
+`reset_at`；在首次观察到非零使用率之前，这些快照会更新同一个未锚定周期，而不会生成连续的
+`openai_official` 历史记录。历史读取还会过滤旧版本已经写入的零使用率
+`openai_official` 误报。
 
 worker、上游 `401` 恢复和多实例并发均传递 observed generation；如果其他执行者已经成功轮换，
 后续执行者直接结束，不能再次消费旧 refresh token。管理员显式手动刷新不带 observed generation，

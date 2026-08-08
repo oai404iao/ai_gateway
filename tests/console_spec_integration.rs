@@ -2315,6 +2315,22 @@ async fn user_group_codex_quota_visibility_is_scoped_sanitized_and_read_only() {
     .execute(&database.pool)
     .await
     .unwrap();
+    let legacy_zero_started_at = period_started_at - chrono::Duration::minutes(30);
+    sqlx::query(
+        "INSERT INTO codex_quota_window_periods \
+         (id,credential_id,window_kind,window_seconds,started_at,scheduled_reset_at, \
+          ended_at,reset_reason,initial_used_percent,last_used_percent, \
+          first_observed_at,last_observed_at) \
+         VALUES ($1,$2,'primary',10800,$3,$4,$5,'openai_official',0,0,$3,$5)",
+    )
+    .bind(Uuid::new_v4())
+    .bind(visible_credential_id)
+    .bind(legacy_zero_started_at)
+    .bind(legacy_zero_started_at + chrono::Duration::hours(3))
+    .bind(period_started_at - chrono::Duration::minutes(15))
+    .execute(&database.pool)
+    .await
+    .unwrap();
 
     let group_path = format!("/console/v1/user-groups/{user_group_id}");
     let detail = request(&app, "GET", &group_path, serde_json::json!({}), &[]).await;
@@ -2435,6 +2451,7 @@ async fn user_group_codex_quota_visibility_is_scoped_sanitized_and_read_only() {
     assert_eq!(history["name"], visible_credential_id.to_string());
     assert_eq!(history["channel_group_id"], visible_group_id.to_string());
     assert_eq!(history["plan_type"], "plus");
+    assert_eq!(history["periods"].as_array().unwrap().len(), 1);
     let period = history["periods"][0].as_object().unwrap();
     assert_eq!(period.len(), 10);
     assert!(!period.contains_key("id"));
