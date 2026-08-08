@@ -735,19 +735,21 @@ OpenAI Responses 的 `reasoning.effort`、DeepSeek/OpenAI Chat Completions 兼�
 终态请求日志先同步追加到本地 durable spool，后台通知队列饱和只会合并唤醒，不会丢弃
 spool 中的事件。spool 写入失败和磁盘空间耗尽仍是必须告警的耐久边界。
 
-Console 请求日志会显示请求协议，将请求区分为非流式 HTTP、SSE 或 Responses
-WebSocket，并在 API 响应中返回独立的 `api_operation`，区分 Chat Completions、
-Responses、standalone web search、Images generation 与 Images edit；同时显示渠道组名称。
+Console 请求日志列表会在同一列上下显示 `api_operation` 和请求协议，并支持按
+`api_operation` 筛选。操作区分 Chat Completions、Responses、standalone web search、
+Images generation 与 Images edit；协议区分非流式 HTTP、SSE 或 Responses WebSocket。
+列表同时显示渠道组名称。
 个人“请求日志”
 始终只查询当前 JWT 用户；即使当前用户是管理员，
 服务端也会将用户名称、具体 `channel_id` 和渠道名称置空。个人列表固定显示开始时间、模型、
-请求协议、渠道组、结果、Token、成本和耗时；模型旁可显示思考等级和 `Fast` 标记，耗时同时包含
-TTFT、总耗时和 TPS。详情再显示 API operation、HTTP 状态、错误代码、错误详情和完成时间。错误详情
+操作/请求协议、渠道组、结果、Token、成本和耗时；模型旁可显示思考等级和 `Fast` 标记，耗时同时包含
+TTFT、总耗时和 TPS。详情再显示 HTTP 状态、错误代码、错误详情和完成时间。错误详情
 可能包含上游返回的完整结构化错误对象、文本错误正文前缀或网关/传输诊断，并最多保留 16KiB。
 
 只有管理员“系统”栏下的全局“请求日志”可以读取所有用户的日志。该页面调用管理员接口
 `GET /console/v1/request-logs`，并在上述字段基础上额外显示
-当前用户名称和渠道名称；Console 列表与详情不显示用户、渠道或请求日志 ID。
+当前用户名称和渠道名称；过长的渠道组、渠道和用户名称会在列表中省略，悬浮后显示完整值。
+Console 列表与详情不显示用户、渠道或请求日志 ID。
 
 ## 已知边界
 

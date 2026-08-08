@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  ArrowLeft,
   CheckCheck,
   Download,
   ExternalLink,
@@ -683,6 +684,14 @@ export default function CodexOauthPage() {
         )}
         actions={
           <>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => navigate("/admin/routing/channels")}
+            >
+              <ArrowLeft data-icon="inline-start" />
+              {t("Back to channels")}
+            </Button>
             <Button
               variant="outline"
               disabled={!managementEnabled || exportCredentials.isPending}

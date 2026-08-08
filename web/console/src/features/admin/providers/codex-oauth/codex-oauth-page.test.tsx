@@ -92,6 +92,21 @@ afterEach(() => {
 });
 
 describe("CodexOauthPage", () => {
+  it("returns to the channels page", async () => {
+    seedAuthenticatedSession();
+    server.use(...baseHandlers([]));
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(
+      await screen.findByRole("button", { name: "Back to channels" }),
+    );
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe("/admin/routing/channels");
+    });
+  });
+
   it("shows quota state and manually refreshes a credential quota", async () => {
     seedAuthenticatedSession();
     let refreshedId: string | undefined;

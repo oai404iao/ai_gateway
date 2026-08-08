@@ -5568,6 +5568,42 @@ async fn request_log_filters_match_the_console_contract() {
     assert_eq!(images.as_array().unwrap().len(), 1);
     assert_eq!(images[0]["id"], image_log_id.to_string());
     assert_eq!(images[0]["api_operation"], "images_generation");
+
+    let standalone_search_log_id = Uuid::new_v4();
+    for (id, operation) in [
+        (Uuid::new_v4(), "responses"),
+        (standalone_search_log_id, "standalone_web_search"),
+    ] {
+        sqlx::query(
+            "INSERT INTO request_logs \
+             (id,started_at,completed_at,user_id,api_key_id,api_format,api_operation,client_model,outcome) \
+             VALUES ($1,$2,$2,$3,$4,'open_ai_responses',$5,'operation-filter-model','succeeded')",
+        )
+        .bind(id)
+        .bind(now)
+        .bind(app.user_id)
+        .bind(api_key_id)
+        .bind(operation)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    }
+    let operation_filtered = request(
+        &app,
+        "GET",
+        "/console/v1/request-logs?api_operation=standalone_web_search",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(operation_filtered.status(), StatusCode::OK);
+    let operation_filtered = body_json(operation_filtered).await;
+    assert_eq!(operation_filtered.as_array().unwrap().len(), 1);
+    assert_eq!(
+        operation_filtered[0]["id"],
+        standalone_search_log_id.to_string()
+    );
+
     let mismatched_operation = sqlx::query(
         "INSERT INTO request_logs \
          (id,started_at,completed_at,user_id,api_key_id,api_format,api_operation,client_model,outcome) \
@@ -5620,6 +5656,15 @@ async fn request_log_filters_match_the_console_contract() {
     )
     .await;
     assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let invalid_operation = request(
+        &app,
+        "GET",
+        "/console/v1/request-logs?api_operation=not-an-operation",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(invalid_operation.status(), StatusCode::UNPROCESSABLE_ENTITY);
     database.cleanup().await;
 }
 

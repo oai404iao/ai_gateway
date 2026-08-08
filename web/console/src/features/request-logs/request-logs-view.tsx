@@ -14,6 +14,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
   Sheet,
   SheetContent,
   SheetDescription,
@@ -40,8 +45,16 @@ import { useI18n } from "@/app/i18n";
 
 const LIMITS = [25, 50, 100] as const;
 const OUTCOMES = ["succeeded", "failed", "rejected", "cancelled"] as const;
+const API_OPERATIONS = [
+  "chat_completions",
+  "responses",
+  "standalone_web_search",
+  "images_generation",
+  "images_edit",
+] as const satisfies readonly RequestLogView["api_operation"][];
 
 type ApiFormatFilter = NonNullable<ListQuery["api_format"]>;
+type ApiOperationFilter = NonNullable<ListQuery["api_operation"]>;
 type OutcomeFilter = NonNullable<ListQuery["outcome"]>;
 
 interface RequestLogListResult {
@@ -64,6 +77,7 @@ interface RequestLogFilterDraft {
   api_key_id: string;
   model: string;
   api_format: "" | ApiFormatFilter;
+  api_operation: "" | ApiOperationFilter;
   outcome: "" | OutcomeFilter;
   started_after: string;
   started_before: string;
@@ -76,6 +90,7 @@ const emptyFilters: RequestLogFilterDraft = {
   api_key_id: "",
   model: "",
   api_format: "",
+  api_operation: "",
   outcome: "",
   started_after: "",
   started_before: "",
@@ -88,6 +103,7 @@ const REQUEST_LOG_FILTER_KEYS = [
   "api_key_id",
   "model",
   "api_format",
+  "api_operation",
   "outcome",
   "started_after",
   "started_before",
@@ -152,6 +168,34 @@ function requestOperationLabel(
     case "images_edit":
       return t("Image edit");
   }
+}
+
+function TruncatedName({
+  value,
+  className,
+}: {
+  value: string | null;
+  className: string;
+}) {
+  if (!value) return "—";
+  return (
+    <Tooltip disableHoverablePopup>
+      <TooltipTrigger
+        render={
+          <span
+            tabIndex={0}
+            className={cn(
+              "block truncate outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              className,
+            )}
+          />
+        }
+      >
+        {value}
+      </TooltipTrigger>
+      <TooltipContent className="break-words">{value}</TooltipContent>
+    </Tooltip>
+  );
 }
 
 function TokenUsage({ log }: { log: RequestLogView }) {
@@ -274,6 +318,7 @@ function toQuery(draft: RequestLogFilterDraft): ListQuery {
     api_key_id: optionalText(draft.api_key_id),
     model: optionalText(draft.model),
     api_format: draft.api_format || undefined,
+    api_operation: draft.api_operation || undefined,
     outcome: draft.outcome || undefined,
     started_after: dateTimeLocalToIso(draft.started_after) ?? undefined,
     started_before: dateTimeLocalToIso(draft.started_before) ?? undefined,
@@ -370,28 +415,44 @@ export function RequestLogsView({
       render: (log) => <RequestModel log={log} />,
     },
     {
-      key: "protocol",
-      header: t("Protocol"),
+      key: "operation-protocol",
+      header: t("Operation / protocol"),
       render: (log) => (
-        <Badge variant="outline">{requestProtocolLabel(log.request_protocol, t)}</Badge>
+        <span className="flex flex-col items-start gap-1">
+          <span className="font-medium">
+            {requestOperationLabel(log.api_operation, t)}
+          </span>
+          <Badge variant="outline">
+            {requestProtocolLabel(log.request_protocol, t)}
+          </Badge>
+        </span>
       ),
     },
     {
       key: "channel-group",
       header: t("Channel group"),
-      render: (log) => log.channel_group_name ?? "—",
+      className: "w-44 max-w-44",
+      render: (log) => (
+        <TruncatedName value={log.channel_group_name} className="max-w-44" />
+      ),
     },
     ...(isSystemView
       ? [
           {
             key: "channel",
             header: t("Channel"),
-            render: (log: RequestLogView) => log.channel_name ?? "—",
+            className: "w-36 max-w-36",
+            render: (log: RequestLogView) => (
+              <TruncatedName value={log.channel_name} className="max-w-36" />
+            ),
           },
           {
             key: "user",
             header: t("User"),
-            render: (log: RequestLogView) => log.user_name ?? "—",
+            className: "w-36 max-w-36",
+            render: (log: RequestLogView) => (
+              <TruncatedName value={log.user_name} className="max-w-36" />
+            ),
           },
         ]
       : []),
@@ -427,7 +488,9 @@ export function RequestLogsView({
         <CardHeader className="border-b">
           <CardTitle>{t("Filters")}</CardTitle>
           <CardDescription>
-            {t("Filter by exact model, request outcome, format, time range, and settlement state.")}
+            {t(
+              "Filter by exact model, request operation, outcome, format, time range, and settlement state.",
+            )}
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -438,7 +501,7 @@ export function RequestLogsView({
               applyFilters();
             }}
           >
-            <FieldGroup className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+            <FieldGroup className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-7">
               {isSystemView ? (
                 <Field>
                   <FieldLabel htmlFor="request-log-user">{t("User")}</FieldLabel>
@@ -544,6 +607,34 @@ export function RequestLogsView({
                       {API_FORMATS.map((format) => (
                         <SelectItem key={format} value={format}>
                           {apiFormatLabel(format)}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="request-log-operation">{t("Operation")}</FieldLabel>
+                <Select
+                  value={draft.api_operation || "__all__"}
+                  onValueChange={(value) =>
+                    updateDraft({
+                      api_operation:
+                        value === "__all__"
+                          ? ""
+                          : (value as ApiOperationFilter),
+                    })
+                  }
+                >
+                  <SelectTrigger id="request-log-operation" className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      <SelectItem value="__all__">{t("All operations")}</SelectItem>
+                      {API_OPERATIONS.map((operation) => (
+                        <SelectItem key={operation} value={operation}>
+                          {requestOperationLabel(operation, t)}
                         </SelectItem>
                       ))}
                     </SelectGroup>

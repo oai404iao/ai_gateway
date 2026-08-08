@@ -3325,6 +3325,7 @@ export interface components {
             api_key_id?: string;
             model?: string;
             api_format?: components["schemas"]["ApiFormat"];
+            api_operation?: components["schemas"]["ApiOperation"];
             /** @enum {string} */
             outcome?: "succeeded" | "failed" | "rejected" | "cancelled";
             started_after?: components["schemas"]["DateTime"];
@@ -3417,6 +3418,7 @@ export interface components {
         /** @description Exact client-model or upstream-model identifier. */
         RequestLogModel: string;
         RequestLogApiFormat: components["schemas"]["ApiFormat"];
+        RequestLogApiOperation: components["schemas"]["ApiOperation"];
         RequestLogOutcome: "succeeded" | "failed" | "rejected" | "cancelled";
         RequestLogStartedAfter: components["schemas"]["DateTime"];
         RequestLogStartedBefore: components["schemas"]["DateTime"];
@@ -4027,6 +4029,7 @@ export interface operations {
                 /** @description Exact client-model or upstream-model identifier. */
                 model?: components["parameters"]["RequestLogModel"];
                 api_format?: components["parameters"]["RequestLogApiFormat"];
+                api_operation?: components["parameters"]["RequestLogApiOperation"];
                 outcome?: components["parameters"]["RequestLogOutcome"];
                 started_after?: components["parameters"]["RequestLogStartedAfter"];
                 started_before?: components["parameters"]["RequestLogStartedBefore"];
@@ -6343,6 +6346,7 @@ export interface operations {
                 /** @description Exact client-model or upstream-model identifier. */
                 model?: components["parameters"]["RequestLogModel"];
                 api_format?: components["parameters"]["RequestLogApiFormat"];
+                api_operation?: components["parameters"]["RequestLogApiOperation"];
                 outcome?: components["parameters"]["RequestLogOutcome"];
                 started_after?: components["parameters"]["RequestLogStartedAfter"];
                 started_before?: components["parameters"]["RequestLogStartedBefore"];

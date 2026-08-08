@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { BrowserRouter } from "react-router";
 import { http, HttpResponse } from "msw";
@@ -72,13 +72,14 @@ describe("RequestLogsView", () => {
     ).toEqual([
       "Started",
       "Model",
-      "Protocol",
+      "Operation / protocol",
       "Channel group",
       "Outcome",
       "Tokens",
       "Cost",
       "Duration",
     ]);
+    expect(screen.getByText("Chat Completions")).toBeInTheDocument();
     expect(screen.getByText("SSE")).toBeInTheDocument();
     expect(screen.queryByText(CHANNEL.name)).not.toBeInTheDocument();
     expect(screen.queryByText(CHANNEL.id)).not.toBeInTheDocument();
@@ -109,6 +110,12 @@ describe("RequestLogsView", () => {
     await user.click(
       await screen.findByRole("option", { name: REQUEST_LOG.client_model }),
     );
+
+    const operation = screen.getByRole("combobox", { name: "Operation" });
+    await user.click(operation);
+    await user.click(
+      await screen.findByRole("option", { name: "Chat Completions" }),
+    );
     await user.click(screen.getByRole("button", { name: "Apply" }));
 
     await waitFor(() => {
@@ -116,7 +123,8 @@ describe("RequestLogsView", () => {
         queries.some(
           (query) =>
             query.get("api_key_id") === OWN_API_KEY.id &&
-            query.get("model") === REQUEST_LOG.client_model,
+            query.get("model") === REQUEST_LOG.client_model &&
+            query.get("api_operation") === REQUEST_LOG.api_operation,
         ),
       ).toBe(true);
     });
@@ -162,7 +170,7 @@ describe("RequestLogsView", () => {
     ).toEqual([
       "Started",
       "Model",
-      "Protocol",
+      "Operation / protocol",
       "Channel group",
       "Channel",
       "User",
@@ -212,6 +220,42 @@ describe("RequestLogsView", () => {
         ),
       ).toBe(true);
     });
+  });
+
+  it("truncates long routing and user names with full-value tooltips", async () => {
+    seedAuthenticatedSession();
+    const longGroupName =
+      "channel-group-name-that-is-long-enough-to-overflow-the-column";
+    const longChannelName =
+      "channel-name-that-is-long-enough-to-overflow-the-column";
+    const longUserName =
+      "user-name-that-is-long-enough-to-overflow-the-column";
+    server.use(
+      http.get("/console/v1/request-logs", () =>
+        HttpResponse.json([
+          {
+            ...REQUEST_LOG,
+            channel_group_name: longGroupName,
+            channel_name: longChannelName,
+            user_name: longUserName,
+          },
+        ]),
+      ),
+    );
+
+    renderAppAt("/admin/request-logs");
+
+    const groupName = await screen.findByText(longGroupName);
+    expect(groupName).toHaveClass("truncate", "max-w-44");
+    expect(screen.getByText(longChannelName)).toHaveClass("truncate", "max-w-36");
+    expect(screen.getByText(longUserName)).toHaveClass("truncate", "max-w-36");
+
+    fireEvent.focus(groupName);
+    expect(
+      await screen.findByText(longGroupName, {
+        selector: '[data-slot="tooltip-content"]',
+      }),
+    ).toBeVisible();
   });
 
   it("loads administrator request-log details from the admin detail endpoint", async () => {
@@ -347,7 +391,7 @@ describe("RequestLogsView", () => {
     ).toEqual([
       "Started",
       "Model",
-      "Protocol",
+      "Operation / protocol",
       "Channel group",
       "Outcome",
       "Tokens",

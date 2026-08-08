@@ -470,6 +470,9 @@ test.describe("Console SPA smoke", () => {
     await expect(
       page.getByRole("heading", { name: "Codex subscriptions" }),
     ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Back to channels" }),
+    ).toBeVisible();
     await expect(page.getByText("Personal Plus")).toBeVisible();
     await expect(page.getByText("96% used")).toBeVisible();
     await expect(page.getByText("Draining", { exact: true })).toBeVisible();
@@ -643,13 +646,14 @@ test.describe("Console SPA smoke", () => {
     expect(await page.getByRole("columnheader").allTextContents()).toEqual([
       "Started",
       "Model",
-      "Protocol",
+      "Operation / protocol",
       "Channel group",
       "Outcome",
       "Tokens",
       "Cost",
       "Duration",
     ]);
+    await expect(page.getByText("Responses", { exact: true })).toBeVisible();
     await expect(page.getByText("upstream-a", { exact: true })).toHaveCount(0);
     await expect(page.getByLabel("Reasoning effort: High")).toBeVisible();
     await expect(page.getByLabel("Fast mode")).toBeVisible();
@@ -672,6 +676,14 @@ test.describe("Console SPA smoke", () => {
     repeatedQuery = waitForPersonalLogQuery();
     await applyFilters.click();
     await repeatedQuery;
+
+    await page.getByRole("combobox", { name: "Operation" }).click();
+    await page.getByRole("option", { name: "Responses", exact: true }).click();
+    const operationQuery = waitForPersonalLogQuery();
+    await applyFilters.click();
+    expect(
+      new URL((await operationQuery).url()).searchParams.get("api_operation"),
+    ).toBe("responses");
 
     await page.getByRole("cell", { name: "gateway-e2e-model" }).click();
     const personalDetail = page.getByRole("dialog");
@@ -709,7 +721,7 @@ test.describe("Console SPA smoke", () => {
     expect(await page.getByRole("columnheader").allTextContents()).toEqual([
       "Started",
       "Model",
-      "Protocol",
+      "Operation / protocol",
       "Channel group",
       "Channel",
       "User",

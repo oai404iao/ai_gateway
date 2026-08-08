@@ -672,6 +672,8 @@ struct LogQuery {
     #[serde(default)]
     api_format: Option<String>,
     #[serde(default)]
+    api_operation: Option<String>,
+    #[serde(default)]
     outcome: Option<String>,
     #[serde(default)]
     started_after: Option<DateTime<Utc>>,
@@ -740,6 +742,7 @@ impl LogQuery {
             api_key_id: self.api_key_id,
             model: self.model,
             api_format: self.api_format,
+            api_operation: self.api_operation,
             outcome: self.outcome,
             started_after: self.started_after,
             started_before: self.started_before,

@@ -770,6 +770,8 @@ const zhCN: Record<string, string> = {
   "Save failed": "保存失败",
   "Map (client model, API format) to one priced upstream model and routing targets.":
     "将客户端模型和 API 格式映射到一个带价格的上游模型及路由目标。",
+  "Map (client model, API format) to one priced upstream model and routing targets. Rules are grouped by upstream-model provider and model ID.":
+    "将客户端模型和 API 格式映射到一个带价格的上游模型及路由目标，并按上游模型提供商与模型 ID 聚合显示。",
   "New rule": "新建规则",
   "Quick add": "快速批量添加",
   "Quick add model rules": "快速批量添加模型规则",
@@ -901,6 +903,8 @@ const zhCN: Record<string, string> = {
   "Filters": "筛选",
   "Filter by exact model, request outcome, format, time range, and settlement state.":
     "按精确模型、请求结果、格式、时间范围和结算状态筛选。",
+  "Filter by exact model, request operation, outcome, format, time range, and settlement state.":
+    "按精确模型、请求操作、结果、格式、时间范围和结算状态筛选。",
   "User ID": "用户 ID",
   "API key ID": "API 密钥 ID",
   "Exact client or upstream model": "精确客户端模型或上游模型",
@@ -949,6 +953,8 @@ const zhCN: Record<string, string> = {
   "HTTP": "HTTP",
   "Protocol": "请求协议",
   "Operation": "操作",
+  "Operation / protocol": "操作 / 请求协议",
+  "All operations": "全部操作",
   "Image generation": "图片生成",
   "Image edit": "图片编辑",
   "Non-stream": "非流式",
