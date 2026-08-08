@@ -469,6 +469,11 @@ impl AuthorizationProfile {
     }
 
     #[must_use]
+    fn allowed_channel_slots(&self) -> &[u64] {
+        &self.allowed_channel_slots
+    }
+
+    #[must_use]
     const fn fingerprint(&self) -> [u8; 32] {
         self.fingerprint
     }
@@ -536,6 +541,10 @@ impl CompiledApiKey {
     #[must_use]
     pub(crate) fn permits_route(&self, slot: usize) -> bool {
         self.authorization.permits_route(slot)
+    }
+    #[must_use]
+    pub(crate) fn permits_model_capable_route(&self, rule: &CompiledModelRule) -> bool {
+        rule.model_capable_candidates_intersect(self.authorization.allowed_channel_slots())
     }
     #[must_use]
     pub(crate) fn routing_scope_fingerprint(&self) -> [u8; 32] {
@@ -1099,7 +1108,8 @@ pub struct CompiledModelRule {
     advanced_billing: CompiledAdvancedBilling,
     tiers: Arc<[CompiledRouteTier]>,
     unavailable_candidates: Arc<[CompiledUnavailableRouteCandidate]>,
-    configured_candidates: Arc<[u64]>,
+    target_candidates: Arc<[u64]>,
+    model_capable_candidates: Arc<[u64]>,
 }
 
 /// Immutable billable-model facts used by scheduled channel tests. Unlike a
@@ -1210,15 +1220,41 @@ impl CompiledModelRule {
         &self.unavailable_candidates
     }
     #[must_use]
-    pub(crate) fn configured_candidates_intersect(&self, allowed_channel_slots: &[u64]) -> bool {
-        self.configured_candidates
+    pub(crate) fn authorization_candidates_intersect(&self, allowed_channel_slots: &[u64]) -> bool {
+        let candidates = if self.model_capable_candidates.iter().any(|word| *word != 0) {
+            &self.model_capable_candidates
+        } else {
+            &self.target_candidates
+        };
+        candidates
             .iter()
             .zip(allowed_channel_slots)
-            .any(|(configured, allowed)| configured & allowed != 0)
+            .any(|(candidate, allowed)| candidate & allowed != 0)
     }
     #[must_use]
-    pub(crate) fn has_configured_candidate(&self, slot: usize) -> bool {
-        bit_is_set(&self.configured_candidates, slot)
+    pub(crate) fn model_capable_candidates_intersect(&self, allowed_channel_slots: &[u64]) -> bool {
+        self.model_capable_candidates
+            .iter()
+            .zip(allowed_channel_slots)
+            .any(|(capable, allowed)| capable & allowed != 0)
+    }
+    #[must_use]
+    pub fn target_candidate_count(&self) -> usize {
+        self.target_candidates
+            .iter()
+            .map(|word| word.count_ones() as usize)
+            .sum()
+    }
+    #[must_use]
+    pub fn model_capable_candidate_count(&self) -> usize {
+        self.model_capable_candidates
+            .iter()
+            .map(|word| word.count_ones() as usize)
+            .sum()
+    }
+    #[must_use]
+    pub fn active_candidate_count(&self) -> usize {
+        self.tiers.iter().map(|tier| tier.candidates().len()).sum()
     }
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_with_unavailable_candidates(
@@ -1232,7 +1268,8 @@ impl CompiledModelRule {
         advanced_billing: CompiledAdvancedBilling,
         tiers: Arc<[CompiledRouteTier]>,
         unavailable_candidates: Arc<[CompiledUnavailableRouteCandidate]>,
-        configured_candidates: Arc<[u64]>,
+        target_candidates: Arc<[u64]>,
+        model_capable_candidates: Arc<[u64]>,
     ) -> Self {
         Self {
             route_slot,
@@ -1245,7 +1282,8 @@ impl CompiledModelRule {
             advanced_billing,
             tiers,
             unavailable_candidates,
-            configured_candidates,
+            target_candidates,
+            model_capable_candidates,
         }
     }
 }
@@ -1549,7 +1587,11 @@ impl CompiledRuntimeConfig {
         let mut models = self
             .model_rules
             .values()
-            .filter(|rule| rule.api_format == format && key.permits_route(rule.route_slot))
+            .filter(|rule| {
+                rule.api_format == format
+                    && key.permits_route(rule.route_slot)
+                    && key.permits_model_capable_route(rule)
+            })
             .map(|rule| Arc::clone(&rule.client_model))
             .collect::<Vec<_>>();
         models.sort_unstable();

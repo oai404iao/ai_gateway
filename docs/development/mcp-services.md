@@ -676,6 +676,8 @@ DELETE /console/v1/mcp-servers/{id}
 - 管理页面位于 `/admin/mcp-servers`，显示 endpoint、kind、固定工具、模型规则、API 格式、设置和
   启用状态；
 - create/edit 表单按 kind 提供 typed Search/Images 设置，只允许选择兼容 API 格式的模型规则；
+- MCP 实例不会因为关联模型规则当前缺少模型兼容、Search-capable 或 Images 活跃渠道而阻止其他
+  控制面修改；实例仍保留在 registry，工具调用时复用普通路由错误并失败；
 - slug 与 kind 创建后只读，更新和软删除使用详情 `ETag`，并在 `409` 时重新加载。
 
 后续管理能力：

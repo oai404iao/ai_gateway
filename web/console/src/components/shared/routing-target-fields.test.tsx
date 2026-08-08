@@ -80,6 +80,32 @@ function Harness() {
   );
 }
 
+function DegradedRoutingHarness() {
+  const [groupIds, setGroupIds] = useState<string[]>([]);
+  const [channelIds, setChannelIds] = useState<string[]>([]);
+  return (
+    <RoutingTargetFields
+      groups={GROUPS.map((group) =>
+        group.id === "images-disabled"
+          ? { ...group, model_capable: false }
+          : group,
+      )}
+      channels={CHANNELS.map((channel) =>
+        channel.id === "channel-disabled"
+          ? { ...channel, model_capable: false }
+          : channel,
+      )}
+      selectedGroupIds={groupIds}
+      selectedChannelIds={channelIds}
+      allowUnavailableSelection
+      onChange={(nextGroupIds, nextChannelIds) => {
+        setGroupIds(nextGroupIds);
+        setChannelIds(nextChannelIds);
+      }}
+    />
+  );
+}
+
 describe("RoutingTargetFields", () => {
   it("groups and sorts targets, hides disabled targets, and keeps channels advanced", async () => {
     const user = userEvent.setup();
@@ -133,5 +159,31 @@ describe("RoutingTargetFields", () => {
         name: "channel-disabled (hidden-disabled-group)",
       }),
     ).toHaveAttribute("aria-disabled", "true");
+  });
+
+  it("allows administrators to select unavailable or model-incompatible targets", async () => {
+    const user = userEvent.setup();
+    render(
+      <I18nProvider>
+        <DegradedRoutingHarness />
+      </I18nProvider>,
+    );
+
+    await user.click(screen.getByRole("checkbox", { name: "Show disabled targets (2)" }));
+    const disabledGroup = screen.getByRole("checkbox", {
+      name: "images-disabled (Images)",
+    });
+    expect(disabledGroup).not.toBeDisabled();
+    await user.click(disabledGroup);
+    expect(screen.getByText("1 groups selected")).toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("button", { name: "Show individual channels (2)" }),
+    );
+    const disabledChannel = screen.getByRole("checkbox", {
+      name: "channel-disabled (hidden-disabled-group)",
+    });
+    expect(disabledChannel).not.toBeDisabled();
+    expect(screen.getAllByText("Model unavailable")).toHaveLength(2);
   });
 });

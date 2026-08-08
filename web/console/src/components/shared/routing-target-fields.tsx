@@ -44,6 +44,7 @@ export interface RoutingTargetGroup {
   api_format: ApiFormat;
   enabled: boolean;
   priority?: number;
+  model_capable?: boolean;
 }
 
 export interface RoutingTargetChannel {
@@ -55,6 +56,7 @@ export interface RoutingTargetChannel {
   api_format: ApiFormat;
   enabled: boolean;
   auto_disabled: boolean;
+  model_capable?: boolean;
 }
 
 interface RoutingTargetFieldsProps {
@@ -65,6 +67,7 @@ interface RoutingTargetFieldsProps {
   onChange: (groupIds: string[], channelIds: string[]) => void;
   error?: string;
   className?: string;
+  allowUnavailableSelection?: boolean;
 }
 
 const FORMAT_ORDER: Record<ApiFormat, number> = {
@@ -89,6 +92,7 @@ export function RoutingTargetFields({
   onChange,
   error,
   className,
+  allowUnavailableSelection = false,
 }: RoutingTargetFieldsProps) {
   const { t } = useI18n();
   const idPrefix = useId();
@@ -288,7 +292,8 @@ export function RoutingTargetFields({
                 <FieldGroup data-slot="checkbox-group" className="gap-3">
                   {category.items.map((group) => {
                     const checked = selectedGroupSet.has(group.id);
-                    const disabled = !group.enabled && !checked;
+                    const disabled =
+                      !allowUnavailableSelection && !group.enabled && !checked;
                     const inputId = `${idPrefix}-group-${group.id}`;
                     return (
                       <Field
@@ -317,6 +322,9 @@ export function RoutingTargetFields({
                                 </Badge>
                               ) : null}
                               {!group.enabled ? <StatusBadge value={false} /> : null}
+                              {group.model_capable === false ? (
+                                <Badge variant="warning">{t("Model unavailable")}</Badge>
+                              ) : null}
                             </span>
                           </FieldLabel>
                         </FieldContent>
@@ -378,7 +386,8 @@ export function RoutingTargetFields({
                           );
                           const available = channelAvailable(channel);
                           const disabled =
-                            (coveredByGroup && !checked) || (!available && !checked);
+                            (coveredByGroup && !checked) ||
+                            (!allowUnavailableSelection && !available && !checked);
                           const inputId = `${idPrefix}-channel-${channel.id}`;
                           const groupName =
                             channel.channel_group_name ??
@@ -406,6 +415,9 @@ export function RoutingTargetFields({
                                   <span className="flex flex-wrap items-center gap-2">
                                     <span>{channel.name}</span>
                                     {!available ? <StatusBadge value={false} /> : null}
+                                    {channel.model_capable === false ? (
+                                      <Badge variant="warning">{t("Model unavailable")}</Badge>
+                                    ) : null}
                                     {channel.auto_disabled ? (
                                       <Badge variant="destructive">
                                         {t("auto-disabled")}

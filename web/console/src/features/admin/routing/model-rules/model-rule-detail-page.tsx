@@ -133,23 +133,22 @@ export function ModelRuleDetailPage() {
           api_format: group.api_format,
           enabled: group.enabled,
           priority: group.priority,
+          model_capable: selectedUpstreamModel
+            ? (channels.data ?? []).some(
+                (channel) =>
+                  channel.channel_group_id === group.id &&
+                  channel.available_models.includes(
+                    selectedUpstreamModel.source_model_id,
+                  ),
+              )
+            : undefined,
         })),
-    [groups.data, state.api_format],
+    [channels.data, groups.data, selectedUpstreamModel, state.api_format],
   );
   const targetChannels = useMemo<RoutingTargetChannel[]>(() => {
     const groupById = new Map((groups.data ?? []).map((group) => [group.id, group]));
     return (channels.data ?? [])
-      .filter(
-        (channel) => {
-          const selected = state.channel_ids.includes(channel.id);
-          return (
-          channel.api_format === state.api_format &&
-          (!selectedUpstreamModel ||
-            channel.available_models.includes(selectedUpstreamModel.source_model_id) ||
-            selected)
-          );
-        },
-      )
+      .filter((channel) => channel.api_format === state.api_format)
       .map((channel) => {
         const group = groupById.get(channel.channel_group_id);
         return {
@@ -161,6 +160,11 @@ export function ModelRuleDetailPage() {
           api_format: channel.api_format,
           enabled: channel.enabled,
           auto_disabled: channel.auto_disabled,
+          model_capable: selectedUpstreamModel
+            ? channel.available_models.includes(
+                selectedUpstreamModel.source_model_id,
+              )
+            : undefined,
         };
       });
   }, [
@@ -168,7 +172,6 @@ export function ModelRuleDetailPage() {
     groups.data,
     selectedUpstreamModel,
     state.api_format,
-    state.channel_ids,
   ]);
 
   const submit = async () => {
@@ -239,6 +242,18 @@ export function ModelRuleDetailPage() {
                 <DetailField
                   label={t("Enabled")}
                   value={<StatusBadge value={data.data.enabled} />}
+                />
+                <DetailField
+                  label={t("Routing status")}
+                  value={<StatusBadge value={data.data.routing_status} />}
+                />
+                <DetailField
+                  label={t("Routing candidates")}
+                  value={t("Active {active} · Capable {capable} · Targets {target}", {
+                    active: data.data.active_channel_count,
+                    capable: data.data.model_capable_channel_count,
+                    target: data.data.target_channel_count,
+                  })}
                 />
               </dl>
             </CardContent>
@@ -378,6 +393,7 @@ export function ModelRuleDetailPage() {
                   error={
                     fieldError("channel_group_ids") ?? fieldError("channel_ids")
                   }
+                  allowUnavailableSelection
                 />
                 <Field orientation="horizontal">
                   <FieldLabel htmlFor="model_rule_enabled">{t("Enabled")}</FieldLabel>

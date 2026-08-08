@@ -784,6 +784,7 @@ const zhCN: Record<string, string> = {
   "Already configured": "已配置",
   "Manual setup required": "需要手动配置",
   "Model disabled": "模型已禁用",
+  "Model unavailable": "不支持此模型",
   "Upstream model is disabled.": "上游模型已禁用。",
   "Routing groups at the same priority use different selection strategies.":
     "同一优先级的路由组使用了不同的选择策略，需要手动配置。",
@@ -809,6 +810,13 @@ const zhCN: Record<string, string> = {
   "This rule was changed elsewhere. Reloading.": "此规则已在其他位置修改，正在重新加载。",
   "Routes a client model and API format to one priced upstream model and channels.":
     "将客户端模型和 API 格式路由到一个带价格的上游模型和渠道。",
+  "Routing status": "路由状态",
+  "Routing candidates": "路由候选",
+  "Ready": "可路由",
+  "Temporarily unavailable": "暂时不可用",
+  "Disconnected": "已断开",
+  "Active {active} · Capable {capable} · Targets {target}":
+    "活跃 {active} · 兼容 {capable} · 目标 {target}",
   "Client model": "客户端模型",
   "Pick a client model": "选择客户端模型",
   "Custom client model": "自定义客户端模型",
@@ -1207,7 +1215,6 @@ const zhCN: Record<string, string> = {
     "当前文档已脱敏。留空以保留它；输入 {} 以清空它。",
   "Override document is not valid JSON.": "覆盖文档不是有效的 JSON。",
   "Override document must be a JSON object.": "覆盖文档必须是 JSON 对象。",
-  "Choose an enabled channel group before enabling this channel.": "启用此渠道前，请先选择已启用的渠道组。",
   "An upstream API key is required when upstream auth is enabled.": "启用上游认证时必须提供上游 API 密钥。",
   "Enter an HTTP(S) URL without credentials, query parameters, or a fragment.":
     "请输入不含凭据、查询参数或片段的 HTTP(S) URL。",
@@ -1388,10 +1395,12 @@ const zhCN: Record<string, string> = {
   "Unable to load API key target options.": "无法加载 API 密钥可选目标。",
   "Create failed": "创建失败",
   "Pick at least one channel group or channel.": "请至少选择一个渠道组或渠道。",
-  "Save blocked: this change would make the routing configuration invalid. Keep an eligible channel and compatible enabled resources, or update dependent rules first.":
-    "无法保存：此更改会使路由配置无效。请保留符合条件的渠道及兼容的已启用资源，或先更新依赖规则。",
-  "Save blocked: this change would make the routing configuration invalid. Keep an eligible channel or update dependent rules first.":
-    "无法保存：此更改会使路由配置无效。请保留符合条件的渠道，或先更新依赖规则。",
+  "Save blocked: the routing graph contains a missing, cross-format, or otherwise structurally invalid dependency.":
+    "无法保存：路由图包含缺失、跨格式或其他结构非法的依赖。",
+  "Save routing degradation?": "保存会降低路由可用性的更改？",
+  "This channel change will make enabled model rules less available. The configuration remains valid, but new requests may fail until compatible channels are restored.":
+    "此渠道更改会降低已启用模型规则的可用性。配置仍然有效，但在恢复兼容渠道前，新请求可能失败。",
+  "Save anyway": "仍然保存",
   "Base URL": "基础 URL",
   "Filter by time range, user, API key, and aggregation granularity.":
     "按时间区间、用户、API 密钥和聚合颗粒度筛选。",
@@ -1693,8 +1702,8 @@ const zhCN: Record<string, string> = {
   "Model rule": "模型规则",
   "Pick a compatible model rule": "请选择兼容的模型规则",
   "Pick a compatible model rule.": "请选择兼容的模型规则。",
-  "An enabled server requires an enabled {format} rule with at least one eligible channel.":
-    "启用服务需要一条已启用的 {format} 规则，且至少包含一个符合条件的渠道。",
+  "An enabled server requires an enabled {format} rule. Disconnected or temporarily unavailable routing is allowed, and calls fail until routing recovers.":
+    "启用服务需要一条已启用的 {format} 规则。允许路由处于已断开或暂时不可用状态，在路由恢复前调用会失败。",
   "Optional instructions shown to MCP clients during discovery.":
     "可选说明，会在 MCP 客户端发现服务时显示。",
   "Tool": "工具",

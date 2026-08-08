@@ -50,7 +50,7 @@ export async function readApiError(response: Response): Promise<ApiError> {
 export function controlPlaneMutationErrorMessage(error: unknown, fallback = "Save failed"): string {
   if (error instanceof ApiError && error.code === "routing_dependency_invalid") {
     return translate(
-      "Save blocked: this change would make the routing configuration invalid. Keep an eligible channel and compatible enabled resources, or update dependent rules first.",
+      "Save blocked: the routing graph contains a missing, cross-format, or otherwise structurally invalid dependency.",
     );
   }
   return error instanceof Error ? error.message : fallback;

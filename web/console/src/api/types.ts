@@ -21,6 +21,7 @@ export type UserRole = S["UserRole"];
 export type ApiFormat = S["ApiFormat"];
 export type ApiOperation = S["ApiOperation"];
 export type SelectionStrategy = S["SelectionStrategy"];
+export type ModelRuleRoutingStatus = S["ModelRuleRoutingStatus"];
 export type ConnectorKind = S["ConnectorKind"];
 export type UpstreamAuthKind = S["UpstreamAuthKind"];
 export type ScheduledTestingMode = S["ScheduledTestingMode"];

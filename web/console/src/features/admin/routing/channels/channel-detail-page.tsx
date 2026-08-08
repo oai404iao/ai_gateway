@@ -31,6 +31,7 @@ import { ApiKeyValue } from "@/components/shared/api-key-value";
 import { StringListField } from "@/components/shared/string-list-field";
 import { DecimalField, NullableNumberField } from "@/components/shared/decimal-field";
 import { StatusBadge } from "@/components/shared/status-badge";
+import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { ChannelModelPickerDialog } from "@/features/admin/routing/channels/channel-model-picker-dialog";
 import {
   useChannel,
@@ -52,7 +53,10 @@ import type {
   UpstreamAuthKind,
 } from "@/api/types";
 import { UPSTREAM_AUTH_KINDS, apiFormatLabel, upstreamAuthKindLabel } from "@/lib/permissions";
-import { channelUpdateInvalidatesRouting } from "@/features/admin/routing/routing-validation";
+import {
+  channelUpdateRoutingImpact,
+  type ChannelRoutingImpact,
+} from "@/features/admin/routing/routing-validation";
 import { useI18n } from "@/app/i18n";
 import { formatDecimal } from "@/lib/formatters";
 
@@ -207,6 +211,7 @@ export function ChannelDetailPage() {
   const modelPickerTriggerId = "channel-model-picker-trigger";
   const [discoveredModels, setDiscoveredModels] = useState<string[]>([]);
   const [validation, setValidation] = useState<z.ZodError | null>(null);
+  const [routingImpact, setRoutingImpact] = useState<ChannelRoutingImpact[]>([]);
   const [overrideDocumentValidation, setOverrideDocumentValidation] = useState<string | null>(
     null,
   );
@@ -367,7 +372,7 @@ export function ChannelDetailPage() {
     }
   };
 
-  const submit = async () => {
+  const submit = async (routingImpactConfirmed = false) => {
     if (overrideDocumentValidation) {
       toast.error(t(overrideDocumentValidation));
       return;
@@ -397,29 +402,22 @@ export function ChannelDetailPage() {
       setValidation(parsed.error);
       return;
     }
-    if (parsed.data.enabled && !selectedGroup?.enabled) {
-      toast.error(t("Choose an enabled channel group before enabling this channel."));
-      return;
-    }
-    if (
+    const impact =
       !isNew &&
       data &&
       channels.data &&
       groups.data &&
-      rules.data &&
-      channelUpdateInvalidatesRouting(
-        data.data.id,
-        parsed.data,
-        channels.data,
-        groups.data,
-        rules.data,
-      )
-    ) {
-      toast.error(
-        t(
-          "Save blocked: this change would make the routing configuration invalid. Keep an eligible channel or update dependent rules first.",
-        ),
-      );
+      rules.data
+        ? channelUpdateRoutingImpact(
+            data.data.id,
+            parsed.data,
+            channels.data,
+            groups.data,
+            rules.data,
+          )
+        : [];
+    if (!routingImpactConfirmed && impact.length > 0) {
+      setRoutingImpact(impact);
       return;
     }
     if (
@@ -430,6 +428,7 @@ export function ChannelDetailPage() {
       toast.error(t("An upstream API key is required when upstream auth is enabled."));
       return;
     }
+    setRoutingImpact([]);
     setValidation(null);
     setSubmitting(true);
     try {
@@ -644,9 +643,9 @@ export function ChannelDetailPage() {
                             <SelectItem
                               key={group.id}
                               value={group.id}
-                              disabled={state.enabled && !group.enabled}
                             >
                               {group.name} ({apiFormatLabel(group.api_format)})
+                              {!group.enabled ? ` · ${t("Disabled")}` : ""}
                             </SelectItem>
                             ))}
                         </SelectGroup>
@@ -1077,7 +1076,7 @@ export function ChannelDetailPage() {
 
             <Button
               className="w-fit xl:col-span-2"
-              onClick={submit}
+              onClick={() => void submit()}
               disabled={submitting}
             >
               {submitting ? <Spinner data-icon="inline-start" /> : null}
@@ -1100,6 +1099,42 @@ export function ChannelDetailPage() {
                 ? null
                 : state.test_model,
           })
+        }
+      />
+      <ConfirmDialog
+        open={routingImpact.length > 0}
+        onOpenChange={(open) => {
+          if (!open) setRoutingImpact([]);
+        }}
+        title={t("Save routing degradation?")}
+        description={t(
+          "This channel change will make enabled model rules less available. The configuration remains valid, but new requests may fail until compatible channels are restored.",
+        )}
+        confirmLabel={t("Save anyway")}
+        confirmDisabled={submitting}
+        onConfirm={() => {
+          setRoutingImpact([]);
+          void submit(true);
+        }}
+        content={
+          <ul className="flex max-h-64 flex-col gap-2 overflow-y-auto text-sm">
+            {routingImpact.map((impact) => (
+              <li
+                key={impact.ruleId}
+                className="flex items-center justify-between gap-3"
+              >
+                <span className="flex min-w-0 flex-col">
+                  <span className="truncate font-mono text-xs">
+                    {impact.clientModel}
+                  </span>
+                  <span className="text-xs text-muted-foreground">
+                    {apiFormatLabel(impact.apiFormat)}
+                  </span>
+                </span>
+                <StatusBadge value={impact.nextStatus} />
+              </li>
+            ))}
+          </ul>
         }
       />
     </>

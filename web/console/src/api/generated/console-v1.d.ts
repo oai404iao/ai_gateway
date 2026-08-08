@@ -1421,6 +1421,11 @@ export interface components {
         ApiOperation: "chat_completions" | "responses" | "standalone_web_search" | "images_generation" | "images_edit";
         /** @enum {string} */
         SelectionStrategy: "weighted_random" | "weighted_round_robin";
+        /**
+         * @description `ready` has at least one active model-capable channel; `temporarily_unavailable` has a model-capable target but none is currently active; `disconnected` has no target channel advertising the upstream model; `disabled` means the rule itself is disabled.
+         * @enum {string}
+         */
+        ModelRuleRoutingStatus: "ready" | "temporarily_unavailable" | "disconnected" | "disabled";
         /** @enum {string} */
         ConnectorKind: "openai_compatible" | "codex_oauth";
         /** @enum {string} */
@@ -2387,6 +2392,13 @@ export interface components {
             channel_group_ids: string[];
             channel_ids: string[];
             enabled: boolean;
+            routing_status: components["schemas"]["ModelRuleRoutingStatus"];
+            /** @description Distinct channels selected directly or through a target group. */
+            target_channel_count: number;
+            /** @description Target channels whose available_models contain the upstream model. */
+            model_capable_channel_count: number;
+            /** @description Model-capable target channels currently eligible for routing. */
+            active_channel_count: number;
             updated_at: components["schemas"]["DateTime"];
         };
         ProxyView: {

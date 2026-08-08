@@ -5779,6 +5779,128 @@ async fn manual_channel_disable_publishes_an_unavailable_route() {
 }
 
 #[tokio::test]
+async fn disabled_only_group_channel_can_remove_the_last_routed_model() {
+    let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
+    sqlx::query(
+        "UPDATE model_rules SET channel_group_ids=ARRAY[$1]::uuid[], channel_ids='{}' WHERE id=$2",
+    )
+    .bind(seed.group)
+    .bind(seed.rule)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE channels SET enabled=false WHERE id=$1")
+        .bind(seed.channel)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+
+    let (app, runtime) = admin_app(database.pool.clone(), seed.user).await;
+    let path = format!("/console/v1/routing/channels/{}", seed.channel);
+    let detail = admin_request(app.clone(), "GET", &path, serde_json::json!({})).await;
+    assert_eq!(detail.status(), StatusCode::OK);
+    let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
+    let response = admin_request_with_headers(
+        app.clone(),
+        "PUT",
+        &path,
+        serde_json::json!({
+            "channel_group_id": seed.group,
+            "api_format": "open_ai_chat_completions",
+            "name": format!("test-channel-{}", seed.channel),
+            "base_url": "https://example.test",
+            "enabled": false,
+            "weight": 1,
+            "upstream_auth_kind": "bearer",
+            "available_models": ["different-upstream"]
+        }),
+        &[("if-match", &etag)],
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let snapshot = runtime.snapshot();
+    let rule = snapshot
+        .model_rule(ApiFormat::OpenAiChatCompletions, &seed.client_model)
+        .unwrap();
+    assert_eq!(rule.target_candidate_count(), 1);
+    assert_eq!(rule.model_capable_candidate_count(), 0);
+    assert_eq!(rule.active_candidate_count(), 0);
+    let key = snapshot.authenticate(&seed.secret).unwrap();
+    assert!(
+        snapshot
+            .models_for(&key, ApiFormat::OpenAiChatCompletions)
+            .is_empty()
+    );
+    assert!(matches!(
+        routing::select(
+            &snapshot,
+            &key,
+            ApiFormat::OpenAiChatCompletions,
+            &seed.client_model,
+        ),
+        ai_gateway::routing::SelectionResult::NoHealthyChannel { .. }
+    ));
+
+    let rule_detail = admin_request(
+        app.clone(),
+        "GET",
+        &format!("/console/v1/routing/model-rules/{}", seed.rule),
+        serde_json::json!({}),
+    )
+    .await;
+    let rule_detail: serde_json::Value =
+        serde_json::from_slice(&rule_detail.into_body().collect().await.unwrap().to_bytes())
+            .unwrap();
+    assert_eq!(rule_detail["routing_status"], "disconnected");
+
+    let detail = admin_request(app.clone(), "GET", &path, serde_json::json!({})).await;
+    let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
+    let response = admin_request_with_headers(
+        app.clone(),
+        "PUT",
+        &path,
+        serde_json::json!({
+            "channel_group_id": seed.group,
+            "api_format": "open_ai_chat_completions",
+            "name": format!("test-channel-{}", seed.channel),
+            "base_url": "https://example.test",
+            "enabled": false,
+            "weight": 1,
+            "upstream_auth_kind": "bearer",
+            "available_models": ["upstream-v1"]
+        }),
+        &[("if-match", &etag)],
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let snapshot = runtime.snapshot();
+    let rule = snapshot
+        .model_rule(ApiFormat::OpenAiChatCompletions, &seed.client_model)
+        .unwrap();
+    assert_eq!(rule.model_capable_candidate_count(), 1);
+    assert_eq!(rule.active_candidate_count(), 0);
+    let key = snapshot.authenticate(&seed.secret).unwrap();
+    assert_eq!(
+        snapshot.models_for(&key, ApiFormat::OpenAiChatCompletions),
+        vec![Arc::from(seed.client_model.as_str())]
+    );
+    let rule_detail = admin_request(
+        app,
+        "GET",
+        &format!("/console/v1/routing/model-rules/{}", seed.rule),
+        serde_json::json!({}),
+    )
+    .await;
+    let rule_detail: serde_json::Value =
+        serde_json::from_slice(&rule_detail.into_body().collect().await.unwrap().to_bytes())
+            .unwrap();
+    assert_eq!(rule_detail["routing_status"], "temporarily_unavailable");
+    database.cleanup().await;
+}
+
+#[tokio::test]
 async fn adding_a_group_channel_for_another_model_preserves_existing_routes() {
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
@@ -5824,7 +5946,7 @@ async fn adding_a_group_channel_for_another_model_preserves_existing_routes() {
 }
 
 #[tokio::test]
-async fn model_incompatible_direct_channel_rolls_back_database_audit_and_snapshot() {
+async fn model_incompatible_direct_channel_publishes_a_disconnected_route() {
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
     let (app, runtime) = admin_app(database.pool.clone(), seed.user).await;
@@ -5836,7 +5958,7 @@ async fn model_incompatible_direct_channel_rolls_back_database_audit_and_snapsho
     let detail = admin_request(app.clone(), "GET", &path, serde_json::json!({})).await;
     let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
     let response = admin_request_with_headers(
-        app,
+        app.clone(),
         "PUT",
         &path,
         serde_json::json!({
@@ -5849,22 +5971,58 @@ async fn model_incompatible_direct_channel_rolls_back_database_audit_and_snapsho
         &[("if-match", &etag)],
     )
     .await;
-    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-    let body = response.into_body().collect().await.unwrap().to_bytes();
-    assert_eq!(body.as_ref(), br#"{"error":"routing_dependency_invalid"}"#);
+    assert_eq!(response.status(), StatusCode::OK);
     let available_models: Vec<String> =
         sqlx::query_scalar("SELECT available_models FROM channels WHERE id=$1")
             .bind(seed.channel)
             .fetch_one(&database.pool)
             .await
             .unwrap();
-    assert_eq!(available_models, vec!["upstream-v1"]);
+    assert_eq!(available_models, vec!["different-upstream"]);
     let audit_after: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_logs")
         .fetch_one(&database.pool)
         .await
         .unwrap();
-    assert_eq!(audit_before, audit_after);
+    assert_eq!(audit_after, audit_before + 1);
     assert!(runtime.snapshot().channel(seed.channel).is_some());
+    let snapshot = runtime.snapshot();
+    let rule = snapshot
+        .model_rule(ApiFormat::OpenAiChatCompletions, &seed.client_model)
+        .unwrap();
+    assert_eq!(rule.target_candidate_count(), 1);
+    assert_eq!(rule.model_capable_candidate_count(), 0);
+    assert_eq!(rule.active_candidate_count(), 0);
+    assert!(rule.tiers().is_empty());
+    let key = snapshot.authenticate(&seed.secret).unwrap();
+    assert!(
+        snapshot
+            .models_for(&key, ApiFormat::OpenAiChatCompletions)
+            .is_empty()
+    );
+    assert!(matches!(
+        routing::select(
+            &snapshot,
+            &key,
+            ApiFormat::OpenAiChatCompletions,
+            &seed.client_model,
+        ),
+        ai_gateway::routing::SelectionResult::NoHealthyChannel { .. }
+    ));
+
+    let detail = admin_request(
+        app,
+        "GET",
+        &format!("/console/v1/routing/model-rules/{}", seed.rule),
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(detail.status(), StatusCode::OK);
+    let detail: serde_json::Value =
+        serde_json::from_slice(&detail.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(detail["routing_status"], "disconnected");
+    assert_eq!(detail["target_channel_count"], 1);
+    assert_eq!(detail["model_capable_channel_count"], 0);
+    assert_eq!(detail["active_channel_count"], 0);
     database.cleanup().await;
 }
 
@@ -7375,7 +7533,28 @@ async fn admission_controls_and_overlapping_group_targets_are_compiled() {
         .load()
         .await
         .unwrap();
-    assert!(compile_control_plane(records).is_err());
+    let disconnected = compile_control_plane(records).unwrap();
+    let key = disconnected.authenticate(&seed.secret).unwrap();
+    let rule = disconnected
+        .model_rule(ApiFormat::OpenAiChatCompletions, &seed.client_model)
+        .unwrap();
+    assert_eq!(rule.target_candidate_count(), 1);
+    assert_eq!(rule.model_capable_candidate_count(), 0);
+    assert_eq!(rule.active_candidate_count(), 0);
+    assert!(
+        disconnected
+            .models_for(&key, ApiFormat::OpenAiChatCompletions)
+            .is_empty()
+    );
+    assert!(matches!(
+        routing::select(
+            &disconnected,
+            &key,
+            ApiFormat::OpenAiChatCompletions,
+            &seed.client_model,
+        ),
+        ai_gateway::routing::SelectionResult::NoHealthyChannel { .. }
+    ));
     sqlx::query(
         "UPDATE channels SET available_models = ARRAY['upstream-v1']::text[] WHERE id = $1",
     )

@@ -22,10 +22,11 @@ info:
       returned only at issuance and are never retrievable again.
     - Every error body is `{"error":"<code>"}`.
     - `routing_dependency_invalid` means a mutation would make the routing
-      graph structurally invalid (for example, by leaving an enabled model
-      rule without any configured channel that supports its upstream model).
-      Disabled and automatically disabled channels remain valid configured
-      candidates but are excluded from active selection.
+      graph structurally invalid, such as by introducing a missing or
+      cross-format reference or an ambiguous active priority tier. A model
+      rule with no model-capable or active channel is valid and is reported as
+      disconnected or temporarily unavailable instead of blocking the
+      mutation.
     - `limit` query parameters are clamped to `1..=100` (default `50`).
 
 servers:
@@ -2664,6 +2665,14 @@ components:
     SelectionStrategy:
       type: string
       enum: [weighted_random, weighted_round_robin]
+    ModelRuleRoutingStatus:
+      type: string
+      enum: [ready, temporarily_unavailable, disconnected, disabled]
+      description: >
+        `ready` has at least one active model-capable channel;
+        `temporarily_unavailable` has a model-capable target but none is
+        currently active; `disconnected` has no target channel advertising
+        the upstream model; `disabled` means the rule itself is disabled.
     ConnectorKind:
       type: string
       enum: [openai_compatible, codex_oauth]
@@ -4063,7 +4072,8 @@ components:
       type: object
       required:
         [id, client_model, api_format, upstream_model_id, upstream_model_enabled, upstream_model,
-         description, channel_group_ids, channel_ids, enabled, updated_at]
+         description, channel_group_ids, channel_ids, enabled, routing_status,
+         target_channel_count, model_capable_channel_count, active_channel_count, updated_at]
       properties:
         id: { type: string, format: uuid }
         client_model: { type: string }
@@ -4079,6 +4089,19 @@ components:
           type: array
           items: { type: string, format: uuid }
         enabled: { type: boolean }
+        routing_status: { $ref: "#/components/schemas/ModelRuleRoutingStatus" }
+        target_channel_count:
+          type: integer
+          minimum: 0
+          description: Distinct channels selected directly or through a target group.
+        model_capable_channel_count:
+          type: integer
+          minimum: 0
+          description: Target channels whose available_models contain the upstream model.
+        active_channel_count:
+          type: integer
+          minimum: 0
+          description: Model-capable target channels currently eligible for routing.
         updated_at: { $ref: "#/components/schemas/DateTime" }
 
     ProxyView:

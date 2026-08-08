@@ -11,6 +11,7 @@ import {
   CHANNEL_DETAIL,
   CHANNEL_GROUP,
   CONFIG_TEMPLATE,
+  MODEL_RULE,
 } from "@/test/fixtures";
 import type {
   ChannelDetailView,
@@ -314,16 +315,16 @@ describe("ChannelDetailPage", () => {
     await user.click(screen.getByRole("button", { name: /save channel/i }));
 
     expect(
-      await screen.findByText(/would make the routing configuration invalid/i),
+      await screen.findByText(/structurally invalid dependency/i),
     ).toBeInTheDocument();
   });
 
-  it("blocks disabling the only eligible channel before sending the update", async () => {
+  it("warns before disabling the only active channel and saves after confirmation", async () => {
     seedAuthenticatedSession();
-    let putHit = false;
+    let submitted: ChannelInput | undefined;
     server.use(
-      http.put("/console/v1/routing/channels/:id", () => {
-        putHit = true;
+      http.put("/console/v1/routing/channels/:id", async ({ request }) => {
+        submitted = (await request.json()) as ChannelInput;
         return HttpResponse.json({
           id: CHANNEL.id,
           correlation_id: "44444444-0000-0000-0000-000000000000",
@@ -338,9 +339,70 @@ describe("ChannelDetailPage", () => {
     await user.click(screen.getByRole("button", { name: /save channel/i }));
 
     expect(
-      await screen.findByText(/would make the routing configuration invalid/i),
+      await screen.findByRole("alertdialog", {
+        name: /save routing degradation/i,
+      }),
     ).toBeInTheDocument();
-    expect(putHit).toBe(false);
+    expect(submitted).toBeUndefined();
+    await user.click(screen.getByRole("button", { name: /save anyway/i }));
+    await waitFor(() => expect(submitted?.enabled).toBe(false));
+  });
+
+  it("allows a disabled sole target to remove its routed model after confirmation", async () => {
+    seedAuthenticatedSession();
+    const disabledChannel: ChannelDetailView = {
+      ...CHANNEL_DETAIL,
+      enabled: false,
+    };
+    let submitted: ChannelInput | undefined;
+    server.use(
+      http.get("/console/v1/routing/channels", () =>
+        HttpResponse.json([disabledChannel]),
+      ),
+      http.get("/console/v1/routing/channels/:id", () =>
+        HttpResponse.json(disabledChannel, {
+          headers: { ETag: `"${disabledChannel.updated_at}"` },
+        }),
+      ),
+      http.get("/console/v1/routing/model-rules", () =>
+        HttpResponse.json([
+          {
+            ...MODEL_RULE,
+            routing_status: "temporarily_unavailable",
+            active_channel_count: 0,
+          },
+        ]),
+      ),
+      http.put("/console/v1/routing/channels/:id", async ({ request }) => {
+        submitted = (await request.json()) as ChannelInput;
+        return HttpResponse.json({
+          id: CHANNEL.id,
+          correlation_id: "45454545-0000-0000-0000-000000000000",
+        });
+      }),
+    );
+    const user = userEvent.setup();
+    renderAppAt(`/admin/routing/channels/${CHANNEL.id}`);
+
+    await waitForHydratedChannelForm(CHANNEL.name);
+    await user.click(
+      screen.getByRole("button", {
+        name: `Remove ${CHANNEL.available_models[0]}`,
+      }),
+    );
+    await user.click(screen.getByRole("button", { name: /save channel/i }));
+
+    expect(
+      await screen.findByRole("alertdialog", {
+        name: /save routing degradation/i,
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(MODEL_RULE.client_model)).toBeInTheDocument();
+    expect(screen.getByText("Disconnected")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /save anyway/i }));
+
+    await waitFor(() => expect(submitted?.available_models).toEqual([]));
+    expect(submitted?.test_model).toBeNull();
   });
 
   it("adds and removes available upstream models as a token list", async () => {
