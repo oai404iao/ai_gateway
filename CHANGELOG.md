@@ -7,6 +7,31 @@ Versioning.
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-08-08
+
+### Added
+
+- Show compiled routing status and candidate counts in the Console, require
+  confirmation before channel edits degrade enabled routes, and group model
+  rules by upstream provider and model ID.
+- Add request-log operation filtering and protocol-aware operation labels,
+  truncate long routing and user names with full-value tooltips, and add a
+  direct return-to-channels action to the Codex credential manager.
+
+### Changed
+
+- Allow administrators to intentionally publish disconnected or temporarily
+  unavailable model rules while continuing to reject structural routing
+  errors; omit disconnected rules from `/v1/models` and return
+  `503 no_healthy_channel` for otherwise authorized direct requests.
+
+### Fixed
+
+- Coalesce Codex quota-window reset timestamps while usage remains at zero,
+  hide legacy zero-to-zero official-reset misclassifications from quota
+  history, and reduce scheduled quota polling from every 5 minutes to every
+  15 minutes.
+
 ## [0.10.0] - 2026-08-07
 
 ### Added
