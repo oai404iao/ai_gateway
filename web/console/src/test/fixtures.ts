@@ -383,6 +383,10 @@ export const MODEL_RULE: ModelRuleView = {
   channel_group_ids: [CHANNEL_GROUP.id],
   channel_ids: [],
   enabled: true,
+  routing_status: "ready",
+  target_channel_count: 1,
+  model_capable_channel_count: 1,
+  active_channel_count: 1,
   updated_at: "2026-01-02T00:00:00.000Z",
 };
 
@@ -397,6 +401,10 @@ export const SEARCH_MODEL_RULE: ModelRuleView = {
   channel_group_ids: [CODEX_QUOTA_GROUP.id],
   channel_ids: [],
   enabled: true,
+  routing_status: "ready",
+  target_channel_count: 1,
+  model_capable_channel_count: 1,
+  active_channel_count: 1,
   updated_at: "2026-08-05T00:00:00.000Z",
 };
 
@@ -411,6 +419,10 @@ export const IMAGE_MODEL_RULE: ModelRuleView = {
   channel_group_ids: [],
   channel_ids: [],
   enabled: true,
+  routing_status: "disconnected",
+  target_channel_count: 0,
+  model_capable_channel_count: 0,
+  active_channel_count: 0,
   updated_at: "2026-08-05T00:00:00.000Z",
 };
 

@@ -1948,7 +1948,16 @@ impl From<ControlPlaneChannelRow> for ControlPlaneChannel {
         }
     }
 }
-#[derive(Serialize, FromRow)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelRuleRoutingStatus {
+    Ready,
+    TemporarilyUnavailable,
+    Disconnected,
+    Disabled,
+}
+
+#[derive(Serialize)]
 pub struct ControlPlaneModelRule {
     pub id: Uuid,
     pub client_model: String,
@@ -1960,7 +1969,100 @@ pub struct ControlPlaneModelRule {
     pub channel_group_ids: Vec<Uuid>,
     pub channel_ids: Vec<Uuid>,
     pub enabled: bool,
+    pub routing_status: ModelRuleRoutingStatus,
+    pub target_channel_count: usize,
+    pub model_capable_channel_count: usize,
+    pub active_channel_count: usize,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(FromRow)]
+struct ControlPlaneModelRuleRow {
+    id: Uuid,
+    client_model: String,
+    api_format: String,
+    upstream_model_id: Uuid,
+    upstream_model_enabled: bool,
+    upstream_model: String,
+    description: Option<String>,
+    channel_group_ids: Vec<Uuid>,
+    channel_ids: Vec<Uuid>,
+    enabled: bool,
+    updated_at: DateTime<Utc>,
+}
+
+impl ControlPlaneModelRule {
+    fn from_row(
+        row: ControlPlaneModelRuleRow,
+        groups: &[ControlPlaneChannelGroup],
+        channels: &[ControlPlaneChannel],
+    ) -> Self {
+        let group_targets = row
+            .channel_group_ids
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>();
+        let direct_targets = row.channel_ids.iter().copied().collect::<HashSet<_>>();
+        let enabled_groups = groups
+            .iter()
+            .map(|group| (group.id, group.enabled))
+            .collect::<HashMap<_, _>>();
+        let mut target_channel_count = 0;
+        let mut model_capable_channel_count = 0;
+        let mut active_channel_count = 0;
+        for channel in channels {
+            if channel.api_format != row.api_format
+                || (!direct_targets.contains(&channel.id)
+                    && !group_targets.contains(&channel.channel_group_id))
+            {
+                continue;
+            }
+            target_channel_count += 1;
+            if !channel
+                .available_models
+                .iter()
+                .any(|model| model == &row.upstream_model)
+            {
+                continue;
+            }
+            model_capable_channel_count += 1;
+            if channel.enabled
+                && !channel.auto_disabled
+                && enabled_groups
+                    .get(&channel.channel_group_id)
+                    .copied()
+                    .unwrap_or(false)
+            {
+                active_channel_count += 1;
+            }
+        }
+        let routing_status = if !row.enabled {
+            ModelRuleRoutingStatus::Disabled
+        } else if row.upstream_model_enabled && active_channel_count > 0 {
+            ModelRuleRoutingStatus::Ready
+        } else if row.upstream_model_enabled && model_capable_channel_count > 0 {
+            ModelRuleRoutingStatus::TemporarilyUnavailable
+        } else {
+            ModelRuleRoutingStatus::Disconnected
+        };
+        Self {
+            id: row.id,
+            client_model: row.client_model,
+            api_format: row.api_format,
+            upstream_model_id: row.upstream_model_id,
+            upstream_model_enabled: row.upstream_model_enabled,
+            upstream_model: row.upstream_model,
+            description: row.description,
+            channel_group_ids: row.channel_group_ids,
+            channel_ids: row.channel_ids,
+            enabled: row.enabled,
+            routing_status,
+            target_channel_count,
+            model_capable_channel_count,
+            active_channel_count,
+            updated_at: row.updated_at,
+        }
+    }
 }
 #[derive(Serialize, FromRow)]
 pub struct ControlPlaneProxy {
@@ -4785,7 +4887,12 @@ impl ControlPlaneRepository {
         let api_key_policies = sqlx::query_as::<_, ControlPlaneApiKeyPolicy>("SELECT id,name,allowed_group_ids,allowed_channel_ids,enabled,created_at,updated_at FROM api_key_policies ORDER BY id").fetch_all(&self.pool).await?;
         let channel_groups = sqlx::query_as::<_, ControlPlaneChannelGroup>("SELECT id,name,api_format::text AS api_format,connector_kind,connector_pool_id,priority,selection_strategy,enabled,status_statistics_enabled,updated_at FROM channel_groups ORDER BY id").fetch_all(&self.pool).await?;
         let channels = sqlx::query_as::<_, ControlPlaneChannelRow>("SELECT c.id,c.channel_group_id,c.api_format::text AS api_format,g.connector_kind,(g.connector_kind <> 'openai_compatible') AS provider_managed,c.name,c.base_url,CASE WHEN g.connector_kind='codex_oauth' THEN (c.enabled AND COALESCE(co.enabled,false)) ELSE c.enabled END AS enabled,c.supports_websocket,c.supports_standalone_web_search,c.auto_disabled,c.auto_disabled_reason,c.auto_disable_allowed,c.weight,c.billing_multiplier,c.proxy_id,c.config_template_id,c.connect_timeout_ms,c.response_header_timeout_ms,c.stream_idle_timeout_ms,c.upstream_auth_kind,c.upstream_auth_header_name,(c.upstream_api_key IS NOT NULL) AS upstream_credential_configured,c.available_models,c.test_model,c.created_at,c.updated_at FROM channels c JOIN channel_groups g ON g.id=c.channel_group_id LEFT JOIN codex_oauth_credential_channels projection ON projection.channel_id=c.id LEFT JOIN codex_oauth_credentials co ON co.channel_id=projection.credential_id WHERE g.connector_kind <> 'codex_oauth' OR (co.channel_id IS NOT NULL AND co.deleted_at IS NULL) ORDER BY c.id").fetch_all(&self.pool).await?;
-        let model_rules = sqlx::query_as::<_, ControlPlaneModelRule>("SELECT r.id,r.client_model,r.api_format::text AS api_format,r.upstream_model_id,m.enabled AS upstream_model_enabled,m.source_model_id AS upstream_model,r.description,r.channel_group_ids,r.channel_ids,r.enabled,r.updated_at FROM model_rules r JOIN models m ON m.id=r.upstream_model_id ORDER BY r.id").fetch_all(&self.pool).await?;
+        let channels = channels.into_iter().map(Into::into).collect::<Vec<_>>();
+        let model_rule_rows = sqlx::query_as::<_, ControlPlaneModelRuleRow>("SELECT r.id,r.client_model,r.api_format::text AS api_format,r.upstream_model_id,m.enabled AS upstream_model_enabled,m.source_model_id AS upstream_model,r.description,r.channel_group_ids,r.channel_ids,r.enabled,r.updated_at FROM model_rules r JOIN models m ON m.id=r.upstream_model_id ORDER BY r.id").fetch_all(&self.pool).await?;
+        let model_rules = model_rule_rows
+            .into_iter()
+            .map(|row| ControlPlaneModelRule::from_row(row, &channel_groups, &channels))
+            .collect();
         let proxies = sqlx::query_as::<_, ControlPlaneProxy>("SELECT id,name,regexp_replace(regexp_replace(proxy_url, '^([^:/?#]+://)[^/?#]*@', E'\\1'), '[?#].*$', '') AS proxy_url,no_proxy_hosts,enabled,(username IS NOT NULL OR password IS NOT NULL) AS credential_configured,created_at,updated_at FROM proxies ORDER BY id").fetch_all(&self.pool).await?;
         let config_templates = sqlx::query_as::<_, ControlPlaneConfigTemplate>("SELECT id,name,description,document->>'api_format' AS api_format,enabled,created_at,updated_at FROM config_templates ORDER BY id").fetch_all(&self.pool).await?;
         let mcp_servers = sqlx::query_as::<_, ControlPlaneMcpServer>(
@@ -4806,7 +4913,7 @@ impl ControlPlaneRepository {
             api_keys,
             api_key_policies,
             channel_groups,
-            channels: channels.into_iter().map(Into::into).collect(),
+            channels,
             model_rules,
             proxies,
             config_templates,

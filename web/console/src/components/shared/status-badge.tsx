@@ -49,6 +49,12 @@ function statusLabel(value: string | boolean | null | undefined): string {
       return translate("Rejected");
     case "cancelled":
       return translate("Cancelled");
+    case "ready":
+      return translate("Ready");
+    case "temporarily_unavailable":
+      return translate("Temporarily unavailable");
+    case "disconnected":
+      return translate("Disconnected");
     case "admin":
       return translate("Administrator");
     case "user":
@@ -63,10 +69,23 @@ function statusVariant(value: string | boolean | null | undefined): Variant {
   if (value === false) return "destructive";
   if (typeof value !== "string") return "default";
   if (value === "active" || value === "enabled" || value === "succeeded") return "success";
-  if (value === "suspended" || value === "invited" || value === "rejected") return "warning";
-  if (value === "revoked" || value === "disabled" || value === "failed") {
+  if (
+    value === "suspended" ||
+    value === "invited" ||
+    value === "rejected" ||
+    value === "temporarily_unavailable"
+  ) {
+    return "warning";
+  }
+  if (
+    value === "revoked" ||
+    value === "disabled" ||
+    value === "failed" ||
+    value === "disconnected"
+  ) {
     return "destructive";
   }
+  if (value === "ready") return "success";
   if (value === "admin") return "info";
   return "default";
 }

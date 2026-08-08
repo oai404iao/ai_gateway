@@ -402,7 +402,7 @@ export function McpServerDetailPage() {
                         </Select>
                         <FieldDescription>
                           {t(
-                            "An enabled server requires an enabled {format} rule with at least one eligible channel.",
+                            "An enabled server requires an enabled {format} rule. Disconnected or temporarily unavailable routing is allowed, and calls fail until routing recovers.",
                             { format: apiFormatLabel(expectedApiFormat) },
                           )}
                         </FieldDescription>

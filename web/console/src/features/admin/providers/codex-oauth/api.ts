@@ -91,6 +91,7 @@ export function useCompleteCodexOauth(groupId: string) {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: credentialsKey(groupId) });
       void queryClient.invalidateQueries({ queryKey: ["console", "channels"] });
+      void queryClient.invalidateQueries({ queryKey: ["console", "model-rules"] });
       void queryClient.invalidateQueries({
         queryKey: ["console", "control-plane-lists"],
       });
@@ -109,6 +110,7 @@ export function useImportCodexCredential(groupId: string) {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: credentialsKey(groupId) });
       void queryClient.invalidateQueries({ queryKey: ["console", "channels"] });
+      void queryClient.invalidateQueries({ queryKey: ["console", "model-rules"] });
       void queryClient.invalidateQueries({
         queryKey: ["console", "control-plane-lists"],
       });
@@ -145,6 +147,7 @@ export function useUpdateCodexCredential(groupId: string, id: string) {
       void queryClient.invalidateQueries({ queryKey: credentialsKey(groupId) });
       void queryClient.invalidateQueries({ queryKey: credentialKey(id) });
       void queryClient.invalidateQueries({ queryKey: ["console", "channels"] });
+      void queryClient.invalidateQueries({ queryKey: ["console", "model-rules"] });
       void queryClient.invalidateQueries({
         queryKey: ["console", "control-plane-lists"],
       });
@@ -166,6 +169,7 @@ export function useDeleteCodexCredential(groupId: string) {
       void queryClient.invalidateQueries({ queryKey: credentialsKey(groupId) });
       void queryClient.removeQueries({ queryKey: credentialKey(id) });
       void queryClient.invalidateQueries({ queryKey: ["console", "channels"] });
+      void queryClient.invalidateQueries({ queryKey: ["console", "model-rules"] });
       void queryClient.invalidateQueries({
         queryKey: ["console", "control-plane-lists"],
       });
@@ -187,6 +191,7 @@ export function useBatchUpdateCodexCredentials(groupId: string) {
         queryKey: ["console", "codex-oauth", "credential"],
       });
       void queryClient.invalidateQueries({ queryKey: ["console", "channels"] });
+      void queryClient.invalidateQueries({ queryKey: ["console", "model-rules"] });
       void queryClient.invalidateQueries({
         queryKey: ["console", "control-plane-lists"],
       });

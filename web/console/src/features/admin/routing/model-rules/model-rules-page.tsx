@@ -73,6 +73,22 @@ export function ModelRulesPage() {
             ),
           },
           {
+            key: "routing",
+            header: t("Routing status"),
+            render: (rule) => (
+              <span className="flex flex-col gap-1">
+                <StatusBadge value={rule.routing_status} />
+                <span className="text-xs text-muted-foreground">
+                  {t("Active {active} · Capable {capable} · Targets {target}", {
+                    active: rule.active_channel_count,
+                    capable: rule.model_capable_channel_count,
+                    target: rule.target_channel_count,
+                  })}
+                </span>
+              </span>
+            ),
+          },
+          {
             key: "enabled",
             header: t("Enabled"),
             render: (rule) => <StatusBadge value={rule.enabled} />,

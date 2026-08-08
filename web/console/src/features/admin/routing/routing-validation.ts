@@ -1,4 +1,9 @@
-import type { ChannelGroupView, ChannelView, ModelRuleView } from "@/api/types";
+import type {
+  ChannelGroupView,
+  ChannelView,
+  ModelRuleRoutingStatus,
+  ModelRuleView,
+} from "@/api/types";
 
 interface ChannelDraft {
   channel_group_id: string;
@@ -7,34 +12,75 @@ interface ChannelDraft {
   available_models: string[];
 }
 
-function eligibleForRule(
-  channel: ChannelView,
+export interface ChannelRoutingImpact {
+  ruleId: string;
+  clientModel: string;
+  apiFormat: ModelRuleView["api_format"];
+  previousStatus: ModelRuleRoutingStatus;
+  nextStatus: ModelRuleRoutingStatus;
+}
+
+function routingStatus(
   rule: ModelRuleView,
-  groups: ChannelGroupView[],
-): boolean {
-  const group = groups.find((item) => item.id === channel.channel_group_id);
-  return (
-    channel.enabled &&
-    !channel.auto_disabled &&
-    group?.enabled === true &&
-    channel.api_format === rule.api_format &&
-    group.api_format === rule.api_format &&
-    channel.available_models.includes(rule.upstream_model)
-  );
+  channels: readonly ChannelView[],
+  groups: readonly ChannelGroupView[],
+): ModelRuleRoutingStatus {
+  if (!rule.enabled) return "disabled";
+
+  const groupsById = new Map(groups.map((group) => [group.id, group]));
+  let modelCapableCount = 0;
+  let activeCount = 0;
+  for (const channel of channels) {
+    if (
+      channel.api_format !== rule.api_format ||
+      (!rule.channel_ids.includes(channel.id) &&
+        !rule.channel_group_ids.includes(channel.channel_group_id)) ||
+      !channel.available_models.includes(rule.upstream_model)
+    ) {
+      continue;
+    }
+    modelCapableCount += 1;
+    if (
+      channel.enabled &&
+      !channel.auto_disabled &&
+      groupsById.get(channel.channel_group_id)?.enabled === true
+    ) {
+      activeCount += 1;
+    }
+  }
+  if (rule.upstream_model_enabled && activeCount > 0) return "ready";
+  if (rule.upstream_model_enabled && modelCapableCount > 0) {
+    return "temporarily_unavailable";
+  }
+  return "disconnected";
+}
+
+function degradationRank(status: ModelRuleRoutingStatus): number {
+  switch (status) {
+    case "ready":
+      return 0;
+    case "temporarily_unavailable":
+      return 1;
+    case "disconnected":
+      return 2;
+    case "disabled":
+      return -1;
+  }
 }
 
 /**
- * Returns whether updating one channel would make a currently enabled model
- * rule invalid. The server remains authoritative; this only prevents the
- * common local edit that would otherwise end in an opaque-looking 422.
+ * Returns enabled model rules whose effective routing state would degrade
+ * after updating one channel. This is a best-effort impact preview only:
+ * degradation remains a valid administrator action and the server remains
+ * authoritative for structural validation.
  */
-export function channelUpdateInvalidatesRouting(
+export function channelUpdateRoutingImpact(
   channelId: string,
   draft: ChannelDraft,
-  channels: ChannelView[],
-  groups: ChannelGroupView[],
-  rules: ModelRuleView[],
-): boolean {
+  channels: readonly ChannelView[],
+  groups: readonly ChannelGroupView[],
+  rules: readonly ModelRuleView[],
+): ChannelRoutingImpact[] {
   const effectiveChannels = channels.map((channel) =>
     channel.id === channelId
       ? {
@@ -46,28 +92,21 @@ export function channelUpdateInvalidatesRouting(
         }
       : channel,
   );
-  const draftChannel = effectiveChannels.find((channel) => channel.id === channelId);
-  if (!draftChannel) return false;
+  if (!effectiveChannels.some((channel) => channel.id === channelId)) return [];
 
-  return rules.some((rule) => {
-    if (!rule.enabled) return false;
-    if (
-      rule.channel_ids.includes(channelId) &&
-      !eligibleForRule(draftChannel, rule, groups)
-    ) {
-      return true;
-    }
-    if (
-      rule.channel_ids.includes(channelId) &&
-      rule.channel_group_ids.includes(draft.channel_group_id)
-    ) {
-      return true;
-    }
-    return !effectiveChannels.some(
-      (channel) =>
-        (rule.channel_ids.includes(channel.id) ||
-          rule.channel_group_ids.includes(channel.channel_group_id)) &&
-        eligibleForRule(channel, rule, groups),
-    );
+  return rules.flatMap((rule) => {
+    if (!rule.enabled) return [];
+    const previousStatus = routingStatus(rule, channels, groups);
+    const nextStatus = routingStatus(rule, effectiveChannels, groups);
+    if (degradationRank(nextStatus) <= degradationRank(previousStatus)) return [];
+    return [
+      {
+        ruleId: rule.id,
+        clientModel: rule.client_model,
+        apiFormat: rule.api_format,
+        previousStatus,
+        nextStatus,
+      },
+    ];
   });
 }

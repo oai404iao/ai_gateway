@@ -921,6 +921,7 @@ pub fn compile_control_plane_with_system_settings(
         records.model_rules,
         &all_groups,
         &all_channels,
+        &channels_by_group,
         &channels_by_group_model,
         &channel_slots,
         &groups,
@@ -935,12 +936,7 @@ pub fn compile_control_plane_with_system_settings(
         &model_rules,
         &routes_by_channel_slot,
     )?;
-    let mcp_servers = compile_mcp_servers(
-        records.mcp_servers,
-        &model_rules,
-        &all_channels,
-        &channel_slots,
-    )?;
+    let mcp_servers = compile_mcp_servers(records.mcp_servers, &model_rules)?;
     Ok(
         CompiledRuntimeConfig::with_resources_system_settings_and_probe_channels(
             api_keys,
@@ -960,8 +956,6 @@ pub fn compile_control_plane_with_system_settings(
 fn compile_mcp_servers(
     records: Vec<McpServerRecord>,
     model_rules: &HashMap<ModelRouteKey, Arc<CompiledModelRule>>,
-    channels: &HashMap<Uuid, ChannelRecord>,
-    channel_slots: &HashMap<Uuid, usize>,
 ) -> Result<HashMap<Arc<str>, Arc<CompiledMcpServer>>, ConfigError> {
     let mut result = HashMap::new();
     let mut ids = HashSet::new();
@@ -1027,17 +1021,6 @@ fn compile_mcp_servers(
                         "web-search MCP servers require an OpenAI Responses model rule".into(),
                     ));
                 }
-                if !channels.values().any(|channel| {
-                    channel.supports_standalone_web_search
-                        && channel_slots
-                            .get(&channel.id)
-                            .is_some_and(|slot| model_rule.has_configured_candidate(*slot))
-                }) {
-                    return Err(ConfigError::Compile(
-                        "web-search MCP servers require a model rule with a search-capable channel"
-                            .into(),
-                    ));
-                }
                 CompiledMcpServer::new_web_search(
                     record.id,
                     Arc::clone(&slug),
@@ -1051,16 +1034,6 @@ fn compile_mcp_servers(
                 if model_rule.api_format() != ApiFormat::OpenAiImages {
                     return Err(ConfigError::Compile(
                         "image MCP servers require an OpenAI Images model rule".into(),
-                    ));
-                }
-                if !channels.values().any(|channel| {
-                    channel.api_format == "open_ai_images"
-                        && channel_slots
-                            .get(&channel.id)
-                            .is_some_and(|slot| model_rule.has_configured_candidate(*slot))
-                }) {
-                    return Err(ConfigError::Compile(
-                        "image MCP servers require a model rule with an Images channel".into(),
                     ));
                 }
                 CompiledMcpServer::new_image(
@@ -1940,7 +1913,7 @@ fn compile_accessible_route_slots(
         let accessible = words
             .get(rule.route_slot() / u64::BITS as usize)
             .is_some_and(|bits| bits & (1_u64 << (rule.route_slot() % u64::BITS as usize)) != 0);
-        accessible == rule.configured_candidates_intersect(allowed_channel_slots)
+        accessible == rule.authorization_candidates_intersect(allowed_channel_slots)
     }));
     words
 }
@@ -2064,10 +2037,12 @@ struct CompiledRules {
     routes_by_channel_slot: Vec<Vec<usize>>,
 }
 
+#[allow(clippy::too_many_arguments)] // immutable route compilation consumes prebuilt indexes
 fn compile_rules(
     records: Vec<ModelRuleRecord>,
     all_groups: &HashMap<Uuid, ChannelGroupRecord>,
     all_channels: &HashMap<Uuid, ChannelRecord>,
+    channels_by_group: &HashMap<Uuid, Vec<Uuid>>,
     channels_by_group_model: &HashMap<Uuid, HashMap<String, Vec<Uuid>>>,
     channel_slots: &HashMap<Uuid, usize>,
     groups: &HashMap<Uuid, Arc<CompiledChannelGroup>>,
@@ -2093,7 +2068,8 @@ fn compile_rules(
         let format = parse_format(&record.api_format)?;
         let mut candidates = HashSet::new();
         let mut unavailable_candidates = HashMap::<Uuid, Uuid>::new();
-        let mut selected_candidates = HashSet::new();
+        let mut target_candidates = HashSet::new();
+        let mut model_capable_candidates = HashSet::new();
         let mut tier_strategies = HashMap::<i32, SelectionStrategy>::new();
         for group_id in &record.channel_group_ids {
             let group = all_groups.get(group_id).ok_or_else(|| {
@@ -2104,6 +2080,13 @@ fn compile_rules(
                     "enabled model rule references a cross-format channel group".into(),
                 ));
             }
+            target_candidates.extend(
+                channels_by_group
+                    .get(group_id)
+                    .into_iter()
+                    .flatten()
+                    .copied(),
+            );
             for channel_id in channels_by_group_model
                 .get(group_id)
                 .and_then(|models| models.get(&record.upstream_model))
@@ -2112,11 +2095,11 @@ fn compile_rules(
             {
                 let channel = &all_channels[channel_id];
                 validate_effective_channel_prices(&record, channel.billing_multiplier)?;
-                validate_route_tier_strategy(&mut tier_strategies, group)?;
-                if !selected_candidates.insert(*channel_id) {
+                if !model_capable_candidates.insert(*channel_id) {
                     continue;
                 }
                 if group.enabled && channel.enabled && !channel.auto_disabled {
+                    validate_route_tier_strategy(&mut tier_strategies, group)?;
                     candidates.insert(*channel_id);
                 } else {
                     unavailable_candidates.insert(*channel_id, *group_id);
@@ -2132,34 +2115,27 @@ fn compile_rules(
                     "enabled model rule references a cross-format channel".into(),
                 ));
             }
+            target_candidates.insert(*channel_id);
+            let group = all_groups.get(&channel.channel_group_id).ok_or_else(|| {
+                ConfigError::Compile("direct channel candidate references a missing group".into())
+            })?;
             if !channel
                 .available_models
                 .iter()
                 .any(|model| model == &record.upstream_model)
             {
-                return Err(ConfigError::Compile(
-                    "direct channel candidate does not support the model rule upstream model"
-                        .into(),
-                ));
+                continue;
             }
-            let group = all_groups.get(&channel.channel_group_id).ok_or_else(|| {
-                ConfigError::Compile("direct channel candidate references a missing group".into())
-            })?;
-            validate_route_tier_strategy(&mut tier_strategies, group)?;
             validate_effective_channel_prices(&record, channel.billing_multiplier)?;
-            if !selected_candidates.insert(*channel_id) {
+            if !model_capable_candidates.insert(*channel_id) {
                 continue;
             }
             if group.enabled && channel.enabled && !channel.auto_disabled {
+                validate_route_tier_strategy(&mut tier_strategies, group)?;
                 candidates.insert(*channel_id);
             } else {
                 unavailable_candidates.insert(*channel_id, channel.channel_group_id);
             }
-        }
-        if selected_candidates.is_empty() {
-            return Err(ConfigError::Compile(
-                "each enabled model rule must have at least one distinct model-capable candidate channel".into(),
-            ));
         }
         let mut tier_channels: HashMap<i32, Vec<CompiledCandidate>> = HashMap::new();
         for candidate in candidates {
@@ -2213,16 +2189,28 @@ fn compile_rules(
             .collect::<Vec<_>>();
         unavailable_candidates
             .sort_unstable_by_key(crate::domain::CompiledUnavailableRouteCandidate::channel_id);
-        let mut configured_candidates =
+        let mut target_candidate_slots =
             vec![0_u64; channel_slots.len().div_ceil(u64::BITS as usize)];
-        for channel_id in &selected_candidates {
+        for channel_id in &target_candidates {
             let slot = channel_slots[channel_id];
-            configured_candidates[slot / u64::BITS as usize] |=
+            target_candidate_slots[slot / u64::BITS as usize] |=
+                1_u64 << (slot % u64::BITS as usize);
+        }
+        let mut model_capable_candidate_slots =
+            vec![0_u64; channel_slots.len().div_ceil(u64::BITS as usize)];
+        for channel_id in &model_capable_candidates {
+            let slot = channel_slots[channel_id];
+            model_capable_candidate_slots[slot / u64::BITS as usize] |=
                 1_u64 << (slot % u64::BITS as usize);
         }
         let key = ModelRouteKey::new(format, Arc::<str>::from(record.client_model.as_str()));
         let route_slot = result.len();
-        for channel_id in &selected_candidates {
+        let authorization_candidates = if model_capable_candidates.is_empty() {
+            &target_candidates
+        } else {
+            &model_capable_candidates
+        };
+        for channel_id in authorization_candidates {
             routes_by_channel_slot[channel_slots[channel_id]].push(route_slot);
         }
         let price_snapshot = compile_model_price_snapshot(&record)?;
@@ -2238,7 +2226,8 @@ fn compile_rules(
             advanced_billing,
             Arc::from(tiers),
             Arc::from(unavailable_candidates),
-            Arc::from(configured_candidates),
+            Arc::from(target_candidate_slots),
+            Arc::from(model_capable_candidate_slots),
         ));
         if result.insert(key, rule).is_some() {
             return Err(ConfigError::Compile(
@@ -3254,13 +3243,14 @@ mod tests {
     }
 
     #[test]
-    fn compiler_requires_search_capability_for_enabled_mcp_servers() {
+    fn compiler_keeps_enabled_mcp_servers_when_search_routing_is_unavailable() {
         let mut records = route_records(0, "weighted_random", 1, "weighted_random", false);
         for group in &mut records.groups {
             group.api_format = "open_ai_responses".into();
         }
         for channel in &mut records.channels {
             channel.api_format = "open_ai_responses".into();
+            channel.available_models = vec!["different-upstream".into()];
         }
         records.model_rules[0].api_format = "open_ai_responses".into();
         records.mcp_servers.push(McpServerRecord {
@@ -3275,8 +3265,15 @@ mod tests {
             enabled: true,
         });
 
-        let error = compile_control_plane(records).unwrap_err().to_string();
-        assert!(error.contains("search-capable channel"));
+        let snapshot = compile_control_plane(records).unwrap();
+        assert!(snapshot.mcp_server("search").is_some());
+        assert_eq!(
+            snapshot
+                .model_rule(ApiFormat::OpenAiResponses, "client")
+                .unwrap()
+                .model_capable_candidate_count(),
+            0
+        );
     }
 
     #[test]
@@ -3940,6 +3937,19 @@ mod tests {
     }
 
     #[test]
+    fn disabled_candidates_do_not_create_an_active_strategy_conflict() {
+        let mut records = route_records(0, "weighted_random", 0, "weighted_round_robin", false);
+        records.channels[1].enabled = false;
+
+        let snapshot = compile_control_plane(records).unwrap();
+        let rule = snapshot
+            .model_rule(ApiFormat::OpenAiChatCompletions, "client")
+            .unwrap();
+        assert_eq!(rule.active_candidate_count(), 1);
+        assert_eq!(rule.model_capable_candidate_count(), 2);
+    }
+
+    #[test]
     fn compiler_deduplicates_direct_candidate_already_reached_through_group() {
         let snapshot = compile_control_plane(route_records(
             0,
@@ -4014,6 +4024,94 @@ mod tests {
     }
 
     #[test]
+    fn target_scope_keeps_a_disconnected_route_known_without_advertising_it() {
+        let mut records = route_records(0, "weighted_random", 1, "weighted_random", false);
+        let shared_group = records.groups[0].id;
+        let incompatible_channel = records.channels[1].id;
+        records.channels[1].channel_group_id = shared_group;
+        records.channels[0].available_models = vec!["different-upstream".into()];
+        records.channels[1].available_models = vec!["different-upstream".into()];
+        records.model_rules[0].channel_group_ids = vec![shared_group];
+        records.api_keys.push(ApiKeyRecord {
+            id: Uuid::from_u128(33),
+            user_id: Uuid::from_u128(133),
+            user_status: "active".into(),
+            user_websocket_enabled: false,
+            secret_value: "incompatible-channel-key".into(),
+            status: "active".into(),
+            expires_at: None,
+            allowed_api_formats: vec!["open_ai_chat_completions".into()],
+            permissions: vec!["proxy".into(), "models.read".into()],
+            allowed_group_ids: vec![],
+            allowed_channel_ids: vec![incompatible_channel],
+            requests_per_minute: None,
+            max_concurrent_requests: None,
+            quota_limit_amount: None,
+            quota_used_amount: Default::default(),
+        });
+
+        let snapshot = compile_control_plane(records).unwrap();
+        let key = snapshot.authenticate("incompatible-channel-key").unwrap();
+        let rule = snapshot
+            .model_rule(ApiFormat::OpenAiChatCompletions, "client")
+            .unwrap();
+        assert!(key.permits_route(rule.route_slot()));
+        assert!(
+            snapshot
+                .models_for(&key, ApiFormat::OpenAiChatCompletions)
+                .is_empty()
+        );
+        assert!(matches!(
+            crate::routing::select(&snapshot, &key, ApiFormat::OpenAiChatCompletions, "client",),
+            crate::routing::SelectionResult::NoHealthyChannel { .. }
+        ));
+    }
+
+    #[test]
+    fn incompatible_scope_does_not_reveal_a_rule_with_other_capable_targets() {
+        let mut records = route_records(0, "weighted_random", 1, "weighted_random", false);
+        let shared_group = records.groups[0].id;
+        let incompatible_channel = records.channels[1].id;
+        records.channels[1].channel_group_id = shared_group;
+        records.channels[0].available_models = vec!["upstream".into()];
+        records.channels[1].available_models = vec!["different-upstream".into()];
+        records.model_rules[0].channel_group_ids = vec![shared_group];
+        records.api_keys.push(ApiKeyRecord {
+            id: Uuid::from_u128(34),
+            user_id: Uuid::from_u128(134),
+            user_status: "active".into(),
+            user_websocket_enabled: false,
+            secret_value: "incompatible-only-key".into(),
+            status: "active".into(),
+            expires_at: None,
+            allowed_api_formats: vec!["open_ai_chat_completions".into()],
+            permissions: vec!["proxy".into(), "models.read".into()],
+            allowed_group_ids: vec![],
+            allowed_channel_ids: vec![incompatible_channel],
+            requests_per_minute: None,
+            max_concurrent_requests: None,
+            quota_limit_amount: None,
+            quota_used_amount: Default::default(),
+        });
+
+        let snapshot = compile_control_plane(records).unwrap();
+        let key = snapshot.authenticate("incompatible-only-key").unwrap();
+        let rule = snapshot
+            .model_rule(ApiFormat::OpenAiChatCompletions, "client")
+            .unwrap();
+        assert!(!key.permits_route(rule.route_slot()));
+        assert!(
+            snapshot
+                .models_for(&key, ApiFormat::OpenAiChatCompletions)
+                .is_empty()
+        );
+        assert!(matches!(
+            crate::routing::select(&snapshot, &key, ApiFormat::OpenAiChatCompletions, "client",),
+            crate::routing::SelectionResult::UnknownOrInaccessibleModel
+        ));
+    }
+
+    #[test]
     fn group_targets_filter_channels_by_upstream_model() {
         let mut records = route_records(0, "weighted_random", 1, "weighted_random", false);
         let shared_group = records.groups[0].id;
@@ -4085,15 +4183,22 @@ mod tests {
     }
 
     #[test]
-    fn compiler_rejects_model_incompatible_direct_channel() {
+    fn compiler_keeps_model_incompatible_direct_channel_as_a_disconnected_target() {
         let mut records = route_records(0, "weighted_random", 1, "weighted_random", false);
         let channel_id = records.channels[0].id;
         records.channels[0].available_models = vec!["different-upstream".into()];
         records.model_rules[0].channel_group_ids.clear();
         records.model_rules[0].channel_ids = vec![channel_id];
 
-        let error = compile_control_plane(records).unwrap_err().to_string();
-        assert!(error.contains("direct channel candidate does not support"));
+        let snapshot = compile_control_plane(records).unwrap();
+        let rule = snapshot
+            .model_rule(ApiFormat::OpenAiChatCompletions, "client")
+            .unwrap();
+        assert_eq!(rule.target_candidate_count(), 1);
+        assert_eq!(rule.model_capable_candidate_count(), 0);
+        assert_eq!(rule.active_candidate_count(), 0);
+        assert!(rule.tiers().is_empty());
+        assert!(rule.unavailable_candidates().is_empty());
     }
 
     #[test]

@@ -389,10 +389,20 @@ bootstrap 配置初始化，之后数据库为唯一运行时来源。
 以下规则涉及数组、JSONB 或当前内存状态，必须在保存配置及构建快照时验证：
 
 1. `model_rules` 中所有渠道组/渠道 ID 存在、无重复且与规则 `api_format` 相同；禁止跨格式回退。目标资源可以处于禁用状态。
-2. 渠道组目标按 `channels.available_models` 与规则 `upstream_model` 求交，不支持该模型的组成员不会进入该模型的候选池；显式 `channel_ids` 必须支持该模型。直接渠道和渠道组产生的重复候选按渠道 ID 去重。
-3. 每个启用规则至少有一个配置上支持模型的候选渠道；渠道组、渠道禁用或自动禁用只会使候选暂时不可选。同一优先级内所有配置候选组的选路策略必须一致。
+2. 模型规则分别编译目标渠道、模型兼容渠道和活跃候选。目标渠道由显式 `channel_ids` 与
+   `channel_group_ids` 的当前成员展开；模型兼容渠道再按 `channels.available_models` 与规则
+   `upstream_model` 求交；活跃候选还要求渠道组、渠道均启用且渠道未被自动禁用。直接渠道和
+   渠道组产生的重复目标按渠道 ID 去重。
+3. 启用规则可以没有模型兼容渠道，或暂时没有活跃候选；前者为 `disconnected`，后者为
+   `temporarily_unavailable`，都可以保存和发布。只有实际进入同一活跃优先级 tier 的渠道组
+   必须使用相同选路策略。缺失引用、跨格式引用和无法确定活跃 tier 策略仍是结构错误。
 4. API Key 的 `allowed_group_ids` / `allowed_channel_ids` 均存在、无重复，并且 Key 的自动推导格式覆盖这些目标；`proxy` 权限用于代理，`/v1/models` 还需要 `models.read`。
-5. API Key 的渠道组/渠道范围展开为 dense channel slot 位图；相同范围共享一个 `AuthorizationProfile`，并预计算 `accessible_routes` 位图。API Key 可以没有可达路由；`/v1/models` 只输出配置可达规则的 `client_model`，不返回全局 `models`，也不受临时健康冷却影响。
+5. API Key 的渠道组/渠道范围展开为 dense channel slot 位图；相同范围共享一个
+   `AuthorizationProfile`。`accessible_routes` 通常按模型兼容渠道预计算；只有规则全局没有
+   模型兼容渠道时才退回目标渠道，因此原本已授权客户端直接请求断开规则会得到路由不可用，
+   同时不会向仅获准其他不兼容渠道的 Key 暴露仍可由别处提供的模型。`/v1/models` 还要求
+   API Key 范围与模型兼容渠道相交，因此不会公布 `disconnected` 规则。临时禁用和被动健康冷却
+   不会把仍有模型兼容目标的规则从模型列表移除。
 6. 模板和渠道覆盖符合受限 DSL、Header 保护、SSE 逐事件处理、URL 和超时规则；
    `forwarding_policy` 的字段必须为正数，普通与 Images 响应头超时都必须大于建连超时，且所有
    渠道覆盖与对应格式默认值合并后的有效超时均有效。

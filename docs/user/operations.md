@@ -583,6 +583,20 @@ Group；普通 OpenAI-compatible group、Codex Images projection、重复 ID 或
 写入在 serializable 事务中再次确认 actor 仍为 active admin，校验完整候选快照、写入脱敏
 审计记录，并在提交后立即发布运行时快照。
 
+模型路由把结构错误与可用性下降分开处理。缺失目标、跨 API 格式引用或无法确定活跃优先级 tier
+的选路策略仍会返回 `routing_dependency_invalid` 并回滚；但管理员可以禁用最后一个活跃渠道，
+也可以从目标渠道的 `available_models` 中移除规则使用的最后一个上游模型。Console 会在此类
+修改前列出受影响规则并要求确认，但不会阻止保存。模型规则详情使用以下状态：
+
+- `ready`：至少一个模型兼容渠道当前可选；
+- `temporarily_unavailable`：仍有模型兼容目标，但全部因渠道组、渠道或自动禁用而暂不可选；
+- `disconnected`：当前没有目标渠道声明支持该规则的上游模型；
+- `disabled`：规则自身已禁用。
+
+`disconnected` 规则不出现在 `/v1/models`；已授权客户端仍直接请求该规则时会收到
+`503 no_healthy_channel`。恢复渠道的模型列表或启用状态后，下一次快照发布会自动恢复对应状态。
+已在处理中的请求继续使用取得请求时的旧快照。
+
 代理编辑页可以在保存前测试当前 HTTP、HTTPS 或 SOCKS 代理草稿。测试接口固定通过该代理请求
 ip-api.com，并显示观察到的出口 IP、位置、ISP、自治系统、网络类型和请求耗时；它刻意忽略
 `enabled` 与 `no_proxy_hosts`，也不会修改渠道健康或运行时快照。已有代理的隐藏凭据只会在代理

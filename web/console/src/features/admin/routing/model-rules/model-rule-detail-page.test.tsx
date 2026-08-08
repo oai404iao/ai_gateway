@@ -37,6 +37,8 @@ describe("ModelRuleDetailPage", () => {
     renderAppAt(`/admin/routing/model-rules/${MODEL_RULE.id}`);
 
     const clientModelSelect = await screen.findByRole("combobox", { name: "Client model" });
+    expect(screen.getByText("Ready")).toBeInTheDocument();
+    expect(screen.getByText("Active 1 · Capable 1 · Targets 1")).toBeInTheDocument();
     await user.click(clientModelSelect);
     const listbox = await screen.findByRole("listbox");
     expect(within(listbox).getByText(MODEL.provider_name ?? "")).toBeInTheDocument();

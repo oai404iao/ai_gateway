@@ -3775,6 +3775,10 @@ async fn model_rule_uses_its_upstream_model_as_the_price_source() {
     let detail = body_json(detail).await;
     assert_eq!(detail["upstream_model_id"], model_id);
     assert_eq!(detail["upstream_model"], "spec-upstream-model");
+    assert_eq!(detail["routing_status"], "ready");
+    assert_eq!(detail["target_channel_count"], 1);
+    assert_eq!(detail["model_capable_channel_count"], 1);
+    assert_eq!(detail["active_channel_count"], 1);
     assert!(detail.get("model_id").is_none());
     database.cleanup().await;
 }

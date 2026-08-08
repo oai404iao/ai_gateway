@@ -79,12 +79,15 @@ Browser or Console client
    白名单：未列出的 Header 被忽略，常见反向代理/CDN 转发元数据作为显式 Header `ignore`
    条目删除，未列出的顶层 JSON/multipart 字段返回 `400`；显式 body `ignore` 字段只在值满足
    契约时删除。当前只校验顶层字段，允许字段内部的嵌套结构仍由上游解释。
-6. 从分 API 格式索引按 `(api_format, client_model)` 取得预编译模型路由；渠道组
-   成员已经按规则 `upstream_model` 与 `channels.available_models` 求交并划分
-   优先级 tier。
-7. 先用 API Key 的 `accessible_routes` 位图完成 O(1) 模型可达性判断，再使用渠道
-   授权位图过滤候选，并依次应用 operation capability、Session 粘性、最低优先级、权重策略和
-   被动健康过滤。Standalone web search 只允许
+6. 从分 API 格式索引按 `(api_format, client_model)` 取得预编译模型路由。规则分别保存目标
+   渠道位图、与 `channels.available_models` 求交后的模型兼容位图，以及由当前启用状态构成的
+   优先级 tier。没有模型兼容渠道的规则仍保留为可发布的断开状态。
+7. `accessible_routes` 通常按模型兼容渠道完成 O(1) 授权判断；只有规则全局没有任何模型兼容
+   渠道时，才退回目标渠道位图，使原本已授权的断开规则仍可识别。随后使用渠道授权位图过滤
+   实际模型兼容候选，并依次应用 operation capability、Session 粘性、最低优先级、权重策略和
+   被动健康过滤。授权范围内没有可选候选时返回 `503 no_healthy_channel`。
+   `/v1/models` 额外要求 API Key 范围与模型兼容位图相交，所以不公布断开规则。
+   Standalone web search 只允许
    `supports_standalone_web_search = true` 的 Responses 渠道。
 8. 必要时改写顶层模型别名，并按“模板默认值 → 渠道覆盖”应用受限变换。普通 JSON 沿用
    JSON Patch；multipart edit 在无需别名时原样回放，需要别名时流式等价重建，只执行 Header
@@ -277,9 +280,11 @@ API Key 不受影响。临时密码登录只创建 `purpose = password_change` �
 
 路由快照为渠道和模型路由分配进程内 dense slot。模型 tier 保存连续的
 `CompiledCandidate(slot, channel, weight)` 数组；相同授权范围的 API Key 共享
-`AuthorizationProfile`，其中包含允许渠道和可达路由两个位图。模型查找、模型可达性
-判断和候选授权均不创建请求级集合，也不按候选 UUID 回查快照。`/v1/models` 只读取
-配置可达位图，不受临时健康冷却影响。
+`AuthorizationProfile`，其中包含允许渠道和预计算的可达路由位图。可达路由通常按模型兼容
+渠道授权；规则全局断开时改用目标渠道，以便原本已授权的请求得到明确的运行时不可用结果。
+模型规则另存模型兼容渠道位图，用于 `/v1/models` 可见性；因此删除最后一个渠道模型不会阻止
+发布，但会把规则标记为 `disconnected` 并从模型列表移除。模型查找、模型可达性判断和候选授权
+均不创建请求级集合，也不按候选 UUID 回查快照；临时禁用和被动健康冷却不影响模型列表。
 
 渠道健康、in-flight 和 half-open claim 使用渠道级原子状态；渠道状态注册表和平滑
 加权轮询游标分别按 64 个 shard 隔离。加权随机使用无分配两遍扫描，重试使用固定
