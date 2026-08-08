@@ -2186,6 +2186,140 @@ async fn codex_credentials_create_managed_channels_and_recompute_quota_state() {
 }
 
 #[tokio::test]
+async fn codex_quota_window_history_coalesces_sliding_zero_usage_windows() {
+    let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
+    let codex_group = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO channel_groups \
+         (id,name,api_format,connector_kind,priority,selection_strategy,enabled) \
+         VALUES ($1,'codex-zero-window-history','open_ai_responses','codex_oauth',0, \
+                 'weighted_random',true)",
+    )
+    .bind(codex_group)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let repository = ControlPlaneRepository::new(database.pool.clone());
+    let runtime = Arc::new(RuntimeConfig::new(
+        compile_runtime_config(repository.load_runtime().await.unwrap()).unwrap(),
+    ));
+    let coordinator = ControlPlaneCoordinator::new(
+        repository.clone(),
+        runtime,
+        RoutingRuntime::new(PassiveHealthPolicy::default()),
+    );
+    let base = DateTime::parse_from_rfc3339("2026-08-08T00:00:00Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    let primary_seconds = 5 * 60 * 60;
+    let secondary_seconds = 7 * 24 * 60 * 60;
+    let mut input = business_codex_credential(
+        codex_group,
+        "zero-window-history",
+        "zero-window-history@example.test",
+        "zero-window-history-user",
+    );
+    input.quota = Some(CodexQuotaUpdate {
+        allowed: true,
+        limit_reached: false,
+        primary_used_percent: Some(0),
+        primary_window_seconds: Some(primary_seconds),
+        primary_reset_at: Some(base + chrono::Duration::hours(5)),
+        secondary_used_percent: Some(0),
+        secondary_window_seconds: Some(secondary_seconds),
+        secondary_reset_at: Some(base + chrono::Duration::days(7)),
+        reset_credits_available: Some(2),
+        checked_at: base,
+    });
+    let credential = coordinator
+        .create_codex_credential(seed.user, input, None)
+        .await
+        .unwrap();
+
+    for (minutes, used_percent, reset_anchor_minutes) in [(15, 0, 15), (30, 1, 30), (45, 1, 30)] {
+        let anchor = base + chrono::Duration::minutes(minutes);
+        let reset_anchor = base + chrono::Duration::minutes(reset_anchor_minutes);
+        repository
+            .persist_codex_quota(
+                credential.id,
+                CodexQuotaUpdate {
+                    allowed: true,
+                    limit_reached: false,
+                    primary_used_percent: Some(used_percent),
+                    primary_window_seconds: Some(primary_seconds),
+                    primary_reset_at: Some(reset_anchor + chrono::Duration::hours(5)),
+                    secondary_used_percent: Some(used_percent),
+                    secondary_window_seconds: Some(secondary_seconds),
+                    secondary_reset_at: Some(reset_anchor + chrono::Duration::days(7)),
+                    reset_credits_available: Some(2),
+                    checked_at: anchor,
+                },
+            )
+            .await
+            .unwrap();
+    }
+
+    for (kind, window_seconds) in [
+        ("primary", primary_seconds),
+        ("secondary", secondary_seconds),
+    ] {
+        let started_at = base - chrono::Duration::minutes(30);
+        sqlx::query(
+            "INSERT INTO codex_quota_window_periods \
+             (id,credential_id,window_kind,window_seconds,started_at,scheduled_reset_at, \
+              ended_at,reset_reason,initial_used_percent,last_used_percent, \
+              first_observed_at,last_observed_at) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,'openai_official',0,0,$5,$7)",
+        )
+        .bind(Uuid::new_v4())
+        .bind(credential.id)
+        .bind(kind)
+        .bind(window_seconds)
+        .bind(started_at)
+        .bind(started_at + chrono::Duration::seconds(i64::from(window_seconds)))
+        .bind(base - chrono::Duration::minutes(15))
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    }
+    let stored_periods: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM codex_quota_window_periods WHERE credential_id=$1",
+    )
+    .bind(credential.id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(stored_periods, 4);
+
+    let history = repository
+        .codex_quota_window_history(credential.id, 100)
+        .await
+        .unwrap();
+    for kind in ["primary", "secondary"] {
+        let periods = history
+            .periods
+            .iter()
+            .filter(|period| period.window_kind == kind)
+            .collect::<Vec<_>>();
+        assert_eq!(periods.len(), 1);
+        let period = periods[0];
+        assert_eq!(period.initial_used_percent, 0);
+        assert_eq!(period.last_used_percent, 1);
+        assert_eq!(period.started_at, base + chrono::Duration::minutes(30));
+        assert_eq!(period.first_observed_at, base);
+        assert_eq!(
+            period.last_observed_at,
+            base + chrono::Duration::minutes(45)
+        );
+        assert!(period.ended_at.is_none());
+        assert!(period.reset_reason.is_none());
+    }
+
+    database.cleanup().await;
+}
+
+#[tokio::test]
 async fn codex_quota_window_history_classifies_natural_manual_and_openai_resets() {
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
