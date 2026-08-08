@@ -32,6 +32,11 @@ Versioning.
   history, and reduce scheduled quota polling from every 5 minutes to every
   15 minutes.
 
+### Security
+
+- Update Console tooling overrides to patched `js-yaml` 4.3.1 and
+  `nanoid` 3.3.17.
+
 ## [0.10.0] - 2026-08-07
 
 ### Added
