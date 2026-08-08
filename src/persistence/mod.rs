@@ -1439,6 +1439,7 @@ pub struct RequestLogFilter {
     pub api_key_id: Option<Uuid>,
     pub model: Option<String>,
     pub api_format: Option<String>,
+    pub api_operation: Option<String>,
     pub outcome: Option<String>,
     pub started_after: Option<DateTime<Utc>>,
     pub started_before: Option<DateTime<Utc>>,
@@ -3544,6 +3545,16 @@ async fn query_console_request_logs(
         .api_format
         .as_deref()
         .is_some_and(|value| ApiFormat::parse(value).is_none())
+        || filter.api_operation.as_deref().is_some_and(|value| {
+            !matches!(
+                value,
+                "chat_completions"
+                    | "responses"
+                    | "standalone_web_search"
+                    | "images_generation"
+                    | "images_edit"
+            )
+        })
         || filter.outcome.as_deref().is_some_and(|value| {
             !matches!(value, "succeeded" | "failed" | "rejected" | "cancelled")
         })
@@ -3585,6 +3596,11 @@ async fn query_console_request_logs(
         query
             .push(" AND log.api_format::text = ")
             .push_bind(api_format);
+    }
+    if let Some(api_operation) = filter.api_operation {
+        query
+            .push(" AND log.api_operation = ")
+            .push_bind(api_operation);
     }
     if let Some(outcome) = filter.outcome {
         query.push(" AND log.outcome = ").push_bind(outcome);

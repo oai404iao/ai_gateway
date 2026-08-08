@@ -457,6 +457,7 @@ paths:
         - $ref: "#/components/parameters/RequestLogApiKeyId"
         - $ref: "#/components/parameters/RequestLogModel"
         - $ref: "#/components/parameters/RequestLogApiFormat"
+        - $ref: "#/components/parameters/RequestLogApiOperation"
         - $ref: "#/components/parameters/RequestLogOutcome"
         - $ref: "#/components/parameters/RequestLogStartedAfter"
         - $ref: "#/components/parameters/RequestLogStartedBefore"
@@ -2177,6 +2178,7 @@ paths:
         - $ref: "#/components/parameters/RequestLogApiKeyId"
         - $ref: "#/components/parameters/RequestLogModel"
         - $ref: "#/components/parameters/RequestLogApiFormat"
+        - $ref: "#/components/parameters/RequestLogApiOperation"
         - $ref: "#/components/parameters/RequestLogOutcome"
         - $ref: "#/components/parameters/RequestLogStartedAfter"
         - $ref: "#/components/parameters/RequestLogStartedBefore"
@@ -2506,6 +2508,11 @@ components:
       in: query
       required: false
       schema: { $ref: "#/components/schemas/ApiFormat" }
+    RequestLogApiOperation:
+      name: api_operation
+      in: query
+      required: false
+      schema: { $ref: "#/components/schemas/ApiOperation" }
     RequestLogOutcome:
       name: outcome
       in: query
@@ -5517,6 +5524,7 @@ components:
         api_key_id: { type: string, format: uuid }
         model: { type: string, maxLength: 300 }
         api_format: { $ref: "#/components/schemas/ApiFormat" }
+        api_operation: { $ref: "#/components/schemas/ApiOperation" }
         outcome:
           type: string
           enum: [succeeded, failed, rejected, cancelled]
