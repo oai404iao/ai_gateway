@@ -961,11 +961,14 @@ async fn load_telemetry_sample(
     database_pool_capacity: u32,
 ) -> RequestLogTelemetrySample {
     let sampled_at = Utc::now();
+    // Capture pressure before issuing the two health queries. SQLx returns
+    // dropped pool connections asynchronously, so sampling afterward can
+    // briefly count this probe's own connections as busy.
+    let pool_before_queries = repository.pool_status();
     let (ingress, settlement) = tokio::join!(
         timeout(DATABASE_OPERATION_TIMEOUT, repository.ingest_backlog()),
         timeout(DATABASE_OPERATION_TIMEOUT, repository.settlement_backlog())
     );
-    let pool = repository.pool_status();
     RequestLogTelemetrySample {
         metrics: metrics.snapshot(),
         spool_pending_bytes: spool.pending_bytes(),
@@ -995,8 +998,8 @@ async fn load_telemetry_sample(
                 error: "query timed out".into(),
             },
         },
-        database_pool_size: pool.size,
-        database_pool_idle: pool.idle,
+        database_pool_size: pool_before_queries.size,
+        database_pool_idle: pool_before_queries.idle,
         database_pool_capacity,
     }
 }
@@ -1454,6 +1457,22 @@ mod telemetry_tests {
         assert_eq!(
             state.observe(&sample, started + super::DATABASE_POOL_SATURATED_AFTER),
             vec![TelemetryTransition::DatabasePoolRecovered]
+        );
+    }
+
+    #[test]
+    fn database_pool_with_idle_headroom_never_enters_saturation() {
+        let started = Instant::now();
+        let mut state = RequestLogTelemetryState::default();
+        let mut sample = sample();
+        sample.database_pool_size = 4;
+        sample.database_pool_idle = 2;
+
+        assert!(state.observe(&sample, started).is_empty());
+        assert!(
+            state
+                .observe(&sample, started + super::DATABASE_POOL_SATURATED_AFTER,)
+                .is_empty()
         );
     }
 

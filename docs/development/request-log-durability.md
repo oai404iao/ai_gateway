@@ -96,6 +96,9 @@ ingress/settlement backlog、累计失败数和数据库池压力。页面默认
 - 日志数据库池达到配置容量且无空闲连接持续 30 秒时输出一次 `WARN`，恢复后输出一次 `INFO`；
 - backlog 健康查询不可用时输出一次 `WARN`，查询恢复后输出一次 `INFO`。
 
+连接池压力在发起 backlog 健康查询前采样。SQLx 会异步归还查询连接，因此该顺序避免后台采样器
+和 Console 实时快照把自身的两个查询短暂计为日志连接池占用。
+
 spool append、COPY、投影和结算操作本身的失败仍在发生时直接输出 `ERROR`。其中
 `spool_append_failures_total` 必须为零；入口 backlog 持续增长表示最终表投影能力低于持续流量，
 spool pending 持续增长表示 PostgreSQL 入口本身不可用或 COPY 能力不足。
