@@ -7,6 +7,12 @@ Versioning.
 
 ## [Unreleased]
 
+### Fixed
+
+- Sample request-log database-pool pressure before backlog probes so health
+  events and Console load snapshots do not count their own asynchronously
+  returned SQLx connections as pool saturation.
+
 ## [0.10.1] - 2026-08-08
 
 ### Added

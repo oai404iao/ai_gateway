@@ -148,13 +148,15 @@ impl RequestLogPipelineMonitor {
 
     pub(crate) async fn snapshot(&self) -> RequestLogPipelineSnapshot {
         let metrics = self.metrics.snapshot();
+        // Measure pool pressure before the backlog queries so this monitoring
+        // request does not count its own asynchronously returned connections.
+        let pool_before_queries = self.repository.pool_status();
         let (ingress, settlement) = tokio::join!(
             tokio::time::timeout(MONITOR_QUERY_TIMEOUT, self.repository.ingest_backlog()),
             tokio::time::timeout(MONITOR_QUERY_TIMEOUT, self.repository.settlement_backlog())
         );
         let ingress = ingress.ok().and_then(Result::ok);
         let settlement = settlement.ok().and_then(Result::ok);
-        let pool = self.repository.pool_status();
         RequestLogPipelineSnapshot {
             notification_queue_depth: queue_depth(
                 &self.notification_sender,
@@ -188,8 +190,8 @@ impl RequestLogPipelineMonitor {
             ingress_failures_total: metrics.ingress_failures_total,
             projection_failures_total: metrics.projection_failures_total,
             settlement_failures_total: metrics.settlement_failures_total,
-            database_pool_size: u64::from(pool.size),
-            database_pool_idle: usize_to_u64(pool.idle),
+            database_pool_size: u64::from(pool_before_queries.size),
+            database_pool_idle: usize_to_u64(pool_before_queries.idle),
             database_pool_capacity: u64::from(self.database_capacity),
         }
     }

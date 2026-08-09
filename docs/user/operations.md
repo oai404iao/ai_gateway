@@ -629,6 +629,7 @@ HTTP、仅允许非商业用途并带独立限流，因此结果只适合作为�
 采样主机与网关进程 CPU、内存、load average、RSS、文件描述符和线程数；不支持的平台将对应字段
 返回 `null`。它还返回进程内准入与路由 in-flight 状态、请求日志通知/投影队列、自动禁用队列、
 本地 spool pending bytes、PostgreSQL ingress/settlement backlog 以及控制面和请求日志连接池占用。
+请求日志连接池占用在快照触发 backlog 查询前采样，避免监控查询自身的短暂连接占用污染结果。
 Responses WebSocket 部分返回全局启用状态、活跃下游 Session、空闲和借出的上游连接、空闲池容量/
 占用、命中/未命中/丢弃累计计数以及当前空闲超时和连接最长寿命。
 `image_body_spool` 另外返回 multipart edit 的活跃临时文件/字节、文件系统可用容量、累计落盘
