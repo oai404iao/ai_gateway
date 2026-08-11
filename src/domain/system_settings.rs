@@ -15,6 +15,10 @@ pub const MAX_REQUEST_RETRIES: u32 = 10;
 pub const DEFAULT_IMAGES_RESPONSE_HEADER_TIMEOUT_SECONDS: u64 = 300;
 /// Default standalone web-search response-header timeout for newly bootstrapped settings.
 pub const DEFAULT_STANDALONE_WEB_SEARCH_RESPONSE_HEADER_TIMEOUT_SECONDS: u64 = 300;
+/// Default privacy-preserving workspace path projected into Codex request metadata.
+pub const DEFAULT_CODEX_WORKSPACE_PATH: &str = "/workspace";
+/// Default privacy-preserving Git remote projected into Codex request metadata.
+pub const DEFAULT_CODEX_GIT_REMOTE_URL: &str = "https://github.com/oai404iao/ai_gateway";
 /// Default MCP JSON-RPC request envelope limit for Search endpoints.
 pub const DEFAULT_MCP_REQUEST_BODY_BYTES: usize = 4 * 1_024 * 1_024;
 /// Default MCP JSON-RPC request envelope limit for Images endpoints.
@@ -624,6 +628,42 @@ impl Default for McpTransportSettings {
     }
 }
 
+/// Immutable privacy-preserving metadata projected into Codex Connect requests.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CodexRequestMetadataSettings {
+    workspace_path: Arc<str>,
+    git_remote_url: Arc<str>,
+}
+
+impl CodexRequestMetadataSettings {
+    #[must_use]
+    pub fn new(workspace_path: Arc<str>, git_remote_url: Arc<str>) -> Self {
+        Self {
+            workspace_path,
+            git_remote_url,
+        }
+    }
+
+    #[must_use]
+    pub fn workspace_path(&self) -> &str {
+        &self.workspace_path
+    }
+
+    #[must_use]
+    pub fn git_remote_url(&self) -> &str {
+        &self.git_remote_url
+    }
+}
+
+impl Default for CodexRequestMetadataSettings {
+    fn default() -> Self {
+        Self::new(
+            Arc::from(DEFAULT_CODEX_WORKSPACE_PATH),
+            Arc::from(DEFAULT_CODEX_GIT_REMOTE_URL),
+        )
+    }
+}
+
 /// Immutable global runtime policy published with each configuration snapshot.
 #[derive(Clone, Debug)]
 pub struct SystemRuntimeSettings {
@@ -635,6 +675,7 @@ pub struct SystemRuntimeSettings {
     session_affinity: SessionAffinitySettings,
     websocket: ResponsesWebSocketSettings,
     mcp: McpTransportSettings,
+    codex: CodexRequestMetadataSettings,
 }
 
 impl SystemRuntimeSettings {
@@ -652,6 +693,7 @@ impl SystemRuntimeSettings {
             session_affinity: SessionAffinitySettings::default(),
             websocket: ResponsesWebSocketSettings::default(),
             mcp: McpTransportSettings::default(),
+            codex: CodexRequestMetadataSettings::default(),
         }
     }
 
@@ -670,6 +712,7 @@ impl SystemRuntimeSettings {
             session_affinity: SessionAffinitySettings::default(),
             websocket,
             mcp: McpTransportSettings::default(),
+            codex: CodexRequestMetadataSettings::default(),
         }
     }
 
@@ -689,6 +732,7 @@ impl SystemRuntimeSettings {
             session_affinity: SessionAffinitySettings::default(),
             websocket: ResponsesWebSocketSettings::default(),
             mcp: McpTransportSettings::default(),
+            codex: CodexRequestMetadataSettings::default(),
         }
     }
 
@@ -710,6 +754,7 @@ impl SystemRuntimeSettings {
             session_affinity,
             websocket: ResponsesWebSocketSettings::default(),
             mcp: McpTransportSettings::default(),
+            codex: CodexRequestMetadataSettings::default(),
         }
     }
 
@@ -733,12 +778,19 @@ impl SystemRuntimeSettings {
             session_affinity,
             websocket,
             mcp: McpTransportSettings::default(),
+            codex: CodexRequestMetadataSettings::default(),
         }
     }
 
     #[must_use]
     pub fn with_mcp(mut self, mcp: McpTransportSettings) -> Self {
         self.mcp = mcp;
+        self
+    }
+
+    #[must_use]
+    pub fn with_codex(mut self, codex: CodexRequestMetadataSettings) -> Self {
+        self.codex = codex;
         self
     }
 
@@ -780,6 +832,11 @@ impl SystemRuntimeSettings {
     #[must_use]
     pub const fn mcp(&self) -> &McpTransportSettings {
         &self.mcp
+    }
+
+    #[must_use]
+    pub const fn codex(&self) -> &CodexRequestMetadataSettings {
+        &self.codex
     }
 }
 

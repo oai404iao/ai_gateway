@@ -98,13 +98,14 @@ Browser or Console client
    Header/鉴权准备。Codex Connector 在普通 Transform 之后再次执行 provider body 白名单，
    只保留 wire type 声明的字段或显式兼容项；随后把
    `client_metadata["x-codex-installation-id"]` 和 turn metadata 的 `installation_id` 归一化为
-   按逻辑凭证稳定的 opaque UUID，并把存在的 `workspaces` 折叠为固定
-   `{"/workspace":{}}`，不改变其他 metadata 或 W3C trace/baggage。普通 Connector 保持相同 API
-   路径和认证行为。
+   按逻辑凭证稳定的 opaque UUID，并把 `workspaces` 强制替换为系统设置中的单一合成 Git
+   工作区。Responses HTTP/WebSocket 缺少 `client_metadata`、`prompt_cache_key` 或安全身份字段时
+   会补齐；不伪造 request kind、sandbox、beta、subagent、attestation 或 turn-state，也不改变
+   其他 metadata 和 W3C trace/baggage。普通 Connector 保持相同 API 路径和认证行为。
 10. 清理客户端鉴权、hop-by-hop headers，并再次应用客户端 Header policy 中显式 `ignore` 的
    常见反向代理/CDN 转发元数据，防止 Header Transform 重新引入；Codex Connector 还会在该结果
    上执行 provider Header 白名单，并对 standalone web search 的合法
-   `x-codex-turn-metadata` 应用相同安装/工作区归一化，再注入最终
+   `x-codex-turn-metadata` 应用相同安装/工作区归一化并在缺失时安全合成，再注入最终
    OAuth/account/protocol Header。该共享清理规则
    覆盖所有普通、Codex、HTTP/SSE、Images 与 Responses WebSocket 渠道共享的请求清理层。Connector
    鉴权和网关自有 coding Header 准备完成后，还会在交给 transport 前再次执行显式 `ignore`

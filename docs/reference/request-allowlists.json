@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "verified_at": "2026-08-11",
   "sources": {
     "openai_node_commit": "854892a0580980449ce1ed04aa5e3831d3330383",
@@ -7,6 +7,8 @@
   },
   "codex_fingerprint_normalization": {
     "client_metadata_body_field": "client_metadata",
+    "prompt_cache_key_body_field": "prompt_cache_key",
+    "window_header_field": "x-codex-window-id",
     "installation_id": {
       "scope": "credential",
       "client_metadata_fields": [
@@ -23,11 +25,7 @@
       "header_fields": [
         "x-codex-turn-metadata"
       ],
-      "field_replacements": {
-        "workspaces": {
-          "/workspace": {}
-        }
-      }
+      "workspace_field": "workspaces"
     }
   },
   "client_headers": {
@@ -62,6 +60,7 @@
       "user-agent",
       "x-client-request-id",
       "x-codex-turn-metadata",
+      "x-codex-window-id",
       "x-openai-client-user-agent",
       "x-request-id",
       "x-session-id"
@@ -184,7 +183,9 @@
             "baggage",
             "traceparent",
             "tracestate",
-            "x-client-request-id"
+            "x-client-request-id",
+            "x-codex-turn-metadata",
+            "x-codex-window-id"
           ],
           "allow_prefixes": [],
           "ignore": [],
@@ -202,6 +203,8 @@
             "user-agent",
             "version",
             "x-client-request-id",
+            "x-codex-turn-metadata",
+            "x-codex-window-id",
             "x-openai-fedramp"
           ]
         },
@@ -300,7 +303,10 @@
           "store": false,
           "stream": true
         },
-        "generated_body_fields": []
+        "generated_body_fields": [
+          "client_metadata",
+          "prompt_cache_key"
+        ]
       }
     },
     "responses_websocket": {
@@ -353,7 +359,9 @@
             "openai-beta",
             "traceparent",
             "tracestate",
-            "x-client-request-id"
+            "x-client-request-id",
+            "x-codex-turn-metadata",
+            "x-codex-window-id"
           ],
           "allow_prefixes": [],
           "ignore": [],
@@ -373,6 +381,8 @@
             "user-agent",
             "version",
             "x-client-request-id",
+            "x-codex-turn-metadata",
+            "x-codex-window-id",
             "x-openai-fedramp"
           ]
         },
@@ -474,7 +484,10 @@
           "stream": true,
           "type": "response.create"
         },
-        "generated_body_fields": []
+        "generated_body_fields": [
+          "client_metadata",
+          "prompt_cache_key"
+        ]
       }
     },
     "standalone_web_search": {
@@ -516,6 +529,7 @@
             "originator",
             "user-agent",
             "version",
+            "x-codex-turn-metadata",
             "x-openai-fedramp"
           ]
         },

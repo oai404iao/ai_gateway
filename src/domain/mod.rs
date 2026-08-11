@@ -37,7 +37,8 @@ pub use request_log::{
     RequestProtocol, RequestUsage,
 };
 pub use system_settings::{
-    AutomaticDisableSettings, AutomaticDisableTrigger,
+    AutomaticDisableSettings, AutomaticDisableTrigger, CodexRequestMetadataSettings,
+    DEFAULT_CODEX_GIT_REMOTE_URL, DEFAULT_CODEX_WORKSPACE_PATH,
     DEFAULT_IMAGES_RESPONSE_HEADER_TIMEOUT_SECONDS, DEFAULT_MCP_IMAGE_REQUEST_BODY_BYTES,
     DEFAULT_MCP_IMAGE_RESULT_BYTES, DEFAULT_MCP_REQUEST_BODY_BYTES,
     DEFAULT_MCP_SEARCH_RESULT_BYTES, DEFAULT_STANDALONE_WEB_SEARCH_RESPONSE_HEADER_TIMEOUT_SECONDS,

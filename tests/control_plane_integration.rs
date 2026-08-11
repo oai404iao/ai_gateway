@@ -115,6 +115,7 @@ fn system_settings() -> SystemSettingsInput {
         scheduled_testing: Default::default(),
         session_affinity: Default::default(),
         websocket: Default::default(),
+        codex: Default::default(),
         mcp: Default::default(),
     }
 }
@@ -534,6 +535,8 @@ struct CapturedCodexRequest {
     session_id: Option<String>,
     thread_id: Option<String>,
     client_request_id: Option<String>,
+    window_id: Option<String>,
+    turn_metadata: Option<String>,
     stainless_lang: Option<String>,
     body: serde_json::Value,
 }
@@ -581,6 +584,8 @@ struct CapturedCodexWebSocketHandshake {
     session_id: Option<String>,
     thread_id: Option<String>,
     client_request_id: Option<String>,
+    window_id: Option<String>,
+    turn_metadata: Option<String>,
     openai_beta: Option<String>,
     accept_encoding: Option<String>,
     stainless_lang: Option<String>,
@@ -618,6 +623,8 @@ async fn codex_responses_upstream(
             session_id: header("session-id"),
             thread_id: header("thread-id"),
             client_request_id: header("x-client-request-id"),
+            window_id: header("x-codex-window-id"),
+            turn_metadata: header("x-codex-turn-metadata"),
             stainless_lang: header("x-stainless-lang"),
             body: serde_json::from_slice(&body).unwrap(),
         });
@@ -748,6 +755,8 @@ async fn codex_responses_websocket_upstream(
             session_id: header("session-id"),
             thread_id: header("thread-id"),
             client_request_id: header("x-client-request-id"),
+            window_id: header("x-codex-window-id"),
+            turn_metadata: header("x-codex-turn-metadata"),
             openai_beta: header("openai-beta"),
             accept_encoding: header("accept-encoding"),
             stainless_lang: header("x-stainless-lang"),
@@ -2924,6 +2933,8 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
             .await
             .unwrap();
     assert!(!images_group_monitoring);
+    let synthetic_workspace_path = "/synthetic/project";
+    let synthetic_git_remote = "https://github.com/example/synthetic-project";
     let client_model = format!("codex-client-{}", Uuid::new_v4());
     sqlx::query(
         "INSERT INTO model_rules \
@@ -2987,6 +2998,19 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
     .bind(seed.group)
     .bind(codex_group)
     .bind(images_group)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE system_settings \
+         SET value=jsonb_set( \
+             jsonb_set(value,'{codex,workspace_path}',to_jsonb($1::text),true), \
+             '{codex,git_remote_url}',to_jsonb($2::text),true \
+         ) \
+         WHERE setting_key='forwarding_policy'",
+    )
+    .bind(synthetic_workspace_path)
+    .bind(synthetic_git_remote)
     .execute(&database.pool)
     .await
     .unwrap();
@@ -3117,14 +3141,28 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
     assert_eq!(forwarded.session_id.as_deref(), Some("session-123"));
     assert_eq!(forwarded.thread_id.as_deref(), Some("thread-456"));
     assert_eq!(forwarded.client_request_id.as_deref(), Some("thread-456"));
+    assert_eq!(forwarded.window_id.as_deref(), Some("thread-456:0"));
     assert_eq!(forwarded.body["model"], "upstream-v1");
     assert_eq!(forwarded.body["stream"], true);
     assert_eq!(forwarded.body["store"], false);
+    assert_eq!(forwarded.body["prompt_cache_key"], "session-123");
     assert_eq!(
         forwarded.body["client_metadata"]["session_id"],
         "session-123"
     );
     assert_eq!(forwarded.body["client_metadata"]["thread_id"], "thread-456");
+    assert!(
+        Uuid::parse_str(
+            forwarded.body["client_metadata"]["turn_id"]
+                .as_str()
+                .unwrap()
+        )
+        .is_ok()
+    );
+    assert_eq!(
+        forwarded.body["client_metadata"]["x-codex-window-id"],
+        "thread-456:0"
+    );
     let platform_installation_id = forwarded.body["client_metadata"]["x-codex-installation-id"]
         .as_str()
         .unwrap()
@@ -3144,7 +3182,13 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
     assert_eq!(turn_metadata["sandbox"], "seatbelt");
     assert_eq!(
         turn_metadata["workspaces"],
-        serde_json::json!({"/workspace": {}})
+        serde_json::json!({
+            (synthetic_workspace_path): {
+                "associated_remote_urls": {
+                    "origin": synthetic_git_remote
+                }
+            }
+        })
     );
     assert_eq!(turn_metadata["app_server_extra"], "preserve-me");
     assert!(
@@ -3159,6 +3203,26 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
             .to_string()
             .contains("git@github.com:alice/private-repo.git")
     );
+    let header_turn_metadata: serde_json::Value =
+        serde_json::from_str(forwarded.turn_metadata.as_deref().unwrap()).unwrap();
+    assert_eq!(
+        header_turn_metadata["installation_id"],
+        platform_installation_id
+    );
+    assert_eq!(header_turn_metadata["session_id"], "session-123");
+    assert_eq!(header_turn_metadata["thread_id"], "thread-456");
+    assert_eq!(header_turn_metadata["window_id"], "thread-456:0");
+    assert_eq!(
+        header_turn_metadata["workspaces"],
+        serde_json::json!({
+            (synthetic_workspace_path): {
+                "associated_remote_urls": {
+                    "origin": synthetic_git_remote
+                }
+            }
+        })
+    );
+    assert!(header_turn_metadata.get("request_kind").is_none());
     assert!(forwarded.body.get("max_output_tokens").is_none());
     assert!(forwarded.body.get("metadata").is_none());
     assert!(forwarded.stainless_lang.is_none());
@@ -3218,21 +3282,6 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
                 .header("authorization", format!("Bearer {}", seed.secret))
                 .header("content-type", "application/json")
                 .header("originator", "codex_cli_rs")
-                .header(
-                    "x-codex-turn-metadata",
-                    serde_json::json!({
-                        "installation_id": "search-client-installation-id",
-                        "workspaces": {
-                            "/Users/alice/search-repo": {
-                                "latest_git_commit_hash": "fedcba654321",
-                                "has_changes": false
-                            }
-                        },
-                        "search_context_size": "medium",
-                        "model_id": "client-model"
-                    })
-                    .to_string(),
-                )
                 .header("session-id", "remove-search-session")
                 .header("thread-id", "remove-search-thread")
                 .header("x-client-request-id", "search-request-123")
@@ -3293,10 +3342,19 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
     );
     assert_eq!(
         search_turn_metadata["workspaces"],
-        serde_json::json!({"/workspace": {}})
+        serde_json::json!({
+            (synthetic_workspace_path): {
+                "associated_remote_urls": {
+                    "origin": synthetic_git_remote
+                }
+            }
+        })
     );
-    assert_eq!(search_turn_metadata["search_context_size"], "medium");
-    assert_eq!(search_turn_metadata["model_id"], "client-model");
+    assert_eq!(search_turn_metadata["session_id"], "remove-search-session");
+    assert_eq!(search_turn_metadata["thread_id"], "remove-search-thread");
+    assert_eq!(search_turn_metadata["window_id"], "remove-search-thread:0");
+    assert!(Uuid::parse_str(search_turn_metadata["turn_id"].as_str().unwrap()).is_ok());
+    assert!(search_turn_metadata.get("request_kind").is_none());
     assert!(search_request.session_id.is_none());
     assert!(search_request.thread_id.is_none());
     assert_eq!(
@@ -3770,6 +3828,27 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
     assert_eq!(handshake.session_id.as_deref(), Some("session-123"));
     assert_eq!(handshake.thread_id.as_deref(), Some("thread-456"));
     assert_eq!(handshake.client_request_id.as_deref(), Some("thread-456"));
+    assert_eq!(handshake.window_id.as_deref(), Some("thread-456:0"));
+    let handshake_turn_metadata: serde_json::Value =
+        serde_json::from_str(handshake.turn_metadata.as_deref().unwrap()).unwrap();
+    assert_eq!(
+        handshake_turn_metadata["installation_id"],
+        platform_installation_id
+    );
+    assert_eq!(handshake_turn_metadata["session_id"], "session-123");
+    assert_eq!(handshake_turn_metadata["thread_id"], "thread-456");
+    assert_eq!(handshake_turn_metadata["window_id"], "thread-456:0");
+    assert!(handshake_turn_metadata.get("turn_id").is_none());
+    assert_eq!(
+        handshake_turn_metadata["workspaces"],
+        serde_json::json!({
+            (synthetic_workspace_path): {
+                "associated_remote_urls": {
+                    "origin": synthetic_git_remote
+                }
+            }
+        })
+    );
     assert_eq!(
         handshake.openai_beta.as_deref(),
         Some("responses_websockets=2026-02-06")
@@ -3783,6 +3862,7 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
     assert_eq!(websocket_requests[0]["model"], "upstream-v1");
     assert_eq!(websocket_requests[0]["stream"], true);
     assert_eq!(websocket_requests[0]["store"], false);
+    assert_eq!(websocket_requests[0]["prompt_cache_key"], "session-123");
     assert_eq!(websocket_requests[0]["generate"], false);
     assert!(websocket_requests[0].get("max_output_tokens").is_none());
     assert!(websocket_requests[0].get("metadata").is_none());
@@ -3806,7 +3886,13 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
     );
     assert_eq!(
         websocket_turn_metadata["workspaces"],
-        serde_json::json!({"/workspace": {}})
+        serde_json::json!({
+            (synthetic_workspace_path): {
+                "associated_remote_urls": {
+                    "origin": synthetic_git_remote
+                }
+            }
+        })
     );
     assert_eq!(websocket_turn_metadata["request_kind"], "prewarm");
     assert_eq!(
@@ -3817,6 +3903,44 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
         websocket_requests[1]["previous_response_id"],
         "resp_codex_ws_1"
     );
+    assert_eq!(websocket_requests[1]["prompt_cache_key"], "session-123");
+    assert_eq!(
+        websocket_requests[1]["client_metadata"]["x-codex-installation-id"],
+        platform_installation_id
+    );
+    assert_eq!(
+        websocket_requests[1]["client_metadata"]["session_id"],
+        "session-123"
+    );
+    assert_eq!(
+        websocket_requests[1]["client_metadata"]["thread_id"],
+        "thread-456"
+    );
+    assert_eq!(
+        websocket_requests[1]["client_metadata"]["x-codex-window-id"],
+        "thread-456:0"
+    );
+    let synthesized_websocket_turn: serde_json::Value = serde_json::from_str(
+        websocket_requests[1]["client_metadata"]["x-codex-turn-metadata"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        synthesized_websocket_turn["installation_id"],
+        platform_installation_id
+    );
+    assert_eq!(
+        synthesized_websocket_turn["workspaces"],
+        serde_json::json!({
+            (synthetic_workspace_path): {
+                "associated_remote_urls": {
+                    "origin": synthetic_git_remote
+                }
+            }
+        })
+    );
+    assert!(synthesized_websocket_turn.get("request_kind").is_none());
     assert_eq!(
         websocket_requests[2]["previous_response_id"],
         "resp_codex_ws_2"
@@ -3863,6 +3987,42 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
         .unwrap();
     assert_eq!(sticky.status(), StatusCode::OK);
     let _ = sticky.into_body().collect().await.unwrap();
+    let http_requests = captured.http_requests.lock().unwrap().clone();
+    assert_eq!(http_requests.len(), 2);
+    let synthesized_http = &http_requests[1];
+    assert_eq!(synthesized_http.body["prompt_cache_key"], "session-123");
+    assert_eq!(
+        synthesized_http.body["client_metadata"]["x-codex-installation-id"],
+        platform_installation_id
+    );
+    assert_eq!(
+        synthesized_http.body["client_metadata"]["session_id"],
+        "session-123"
+    );
+    assert_eq!(
+        synthesized_http.body["client_metadata"]["thread_id"],
+        "thread-456"
+    );
+    assert_eq!(
+        synthesized_http.body["client_metadata"]["x-codex-window-id"],
+        "thread-456:0"
+    );
+    let synthesized_http_turn: serde_json::Value = serde_json::from_str(
+        synthesized_http.body["client_metadata"]["x-codex-turn-metadata"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        synthesized_http_turn["workspaces"],
+        serde_json::json!({
+            (synthetic_workspace_path): {
+                "associated_remote_urls": {
+                    "origin": synthetic_git_remote
+                }
+            }
+        })
+    );
 
     let new_session = app
         .clone()
@@ -7156,6 +7316,14 @@ async fn codex_images_migration_backfills_existing_credentials_without_replacing
             .await
             .unwrap_or_else(|error| panic!("migration {} failed: {error}", migration.version));
     }
+    let mut legacy_settings = serde_json::to_value(system_settings()).unwrap();
+    legacy_settings.as_object_mut().unwrap().remove("codex");
+    sqlx::query("INSERT INTO system_settings (setting_key,value) VALUES ($1,$2)")
+        .bind("forwarding_policy")
+        .bind(legacy_settings)
+        .execute(&database.pool)
+        .await
+        .unwrap();
 
     let responses_group = Uuid::new_v4();
     let responses_channel = Uuid::new_v4();
@@ -7297,6 +7465,21 @@ async fn codex_images_migration_backfills_existing_credentials_without_replacing
         .execute(&database.pool)
         .await
         .expect("MCP image-kind migration must bring the runtime schema current");
+    sqlx::raw_sql(include_str!(
+        "../migrations/0047_codex_request_metadata.sql"
+    ))
+    .execute(&database.pool)
+    .await
+    .expect("Codex request-metadata migration must bring the runtime schema current");
+    let codex_defaults: (String, String) = sqlx::query_as(
+        "SELECT value #>> '{codex,workspace_path}', value #>> '{codex,git_remote_url}' \
+         FROM system_settings WHERE setting_key='forwarding_policy'",
+    )
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(codex_defaults.0, "/workspace");
+    assert_eq!(codex_defaults.1, "https://github.com/oai404iao/ai_gateway");
     let repository = ControlPlaneRepository::new(database.pool.clone());
     repository
         .ensure_system_settings(system_settings())

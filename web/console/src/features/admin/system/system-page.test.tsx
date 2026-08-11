@@ -106,6 +106,10 @@ describe("SystemPage", () => {
         idle_timeout_seconds: 300,
         max_connection_age_seconds: 3300,
       },
+      codex: {
+        workspace_path: "/workspace",
+        git_remote_url: "https://github.com/oai404iao/ai_gateway",
+      },
       mcp: {
         enabled: false,
         public_base_url: "https://mcp.example.test",
@@ -205,6 +209,23 @@ describe("SystemPage", () => {
 
     expect(
       await screen.findByText("Maximum retries must be between 1 and 10."),
+    ).toBeInTheDocument();
+  });
+
+  it("requires a synthetic HTTPS Codex Git remote", async () => {
+    seedAuthenticatedSession();
+    const user = userEvent.setup();
+    renderApp();
+
+    const gitRemote = await screen.findByLabelText("Synthetic Git origin");
+    await user.clear(gitRemote);
+    await user.type(gitRemote, "http://github.com/private/repo");
+    await user.click(screen.getByRole("button", { name: /save system settings/i }));
+
+    expect(
+      await screen.findByText(
+        "Enter a valid HTTPS repository URL without credentials, query, or fragment.",
+      ),
     ).toBeInTheDocument();
   });
 

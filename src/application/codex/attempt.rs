@@ -8,8 +8,8 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::{
-    domain::{ApiOperation, CompiledChannel, RequestProtocol},
-    request_policy::RequestInterface,
+    domain::{ApiOperation, CodexRequestMetadataSettings, CompiledChannel, RequestProtocol},
+    request_policy::{CodexRequestMetadata, RequestInterface},
 };
 
 use super::{
@@ -37,7 +37,7 @@ pub(crate) enum CodexAttemptError {
 #[derive(Clone)]
 enum CodexRequestContext {
     Responses(CodexRequestIdentity),
-    StandaloneWebSearch,
+    StandaloneWebSearch(CodexRequestIdentity),
     ImagesGeneration { turn_id: String },
     ImagesEdit { turn_id: String },
     Unsupported,
@@ -57,7 +57,9 @@ impl PreparedCodexAttempt {
                 client_headers,
                 affinity_hash,
             )),
-            ApiOperation::StandaloneWebSearch => CodexRequestContext::StandaloneWebSearch,
+            ApiOperation::StandaloneWebSearch => CodexRequestContext::StandaloneWebSearch(
+                CodexRequestIdentity::new(client_headers, affinity_hash),
+            ),
             ApiOperation::ImagesGeneration => CodexRequestContext::ImagesGeneration {
                 turn_id: Uuid::new_v4().to_string(),
             },
@@ -88,7 +90,7 @@ impl PreparedCodexAttempt {
             CodexRequestContext::ImagesEdit { .. } => {
                 return Err(CodexAttemptError::InvalidRequestBody);
             }
-            CodexRequestContext::StandaloneWebSearch => {
+            CodexRequestContext::StandaloneWebSearch(_) => {
                 return if request_protocol == RequestProtocol::NonStream {
                     Ok(body)
                 } else {
@@ -117,7 +119,7 @@ impl PreparedCodexAttempt {
             .map_or_else(String::new, |query| format!("?{query}"));
         let path = match &self.request {
             CodexRequestContext::Responses(_) => "responses",
-            CodexRequestContext::StandaloneWebSearch => "alpha/search",
+            CodexRequestContext::StandaloneWebSearch(_) => "alpha/search",
             CodexRequestContext::ImagesGeneration { .. } => "images/generations",
             CodexRequestContext::ImagesEdit { .. } => "images/edits",
             CodexRequestContext::Unsupported => {
@@ -150,7 +152,7 @@ impl PreparedCodexAttempt {
             USER_AGENT,
             HeaderValue::from_str(&codex_user_agent()).map_err(invalid)?,
         );
-        if !matches!(self.request, CodexRequestContext::StandaloneWebSearch)
+        if !matches!(self.request, CodexRequestContext::StandaloneWebSearch(_))
             || !headers.contains_key("originator")
         {
             headers.insert("originator", HeaderValue::from_static(CODEX_ORIGINATOR));
@@ -199,7 +201,7 @@ impl PreparedCodexAttempt {
                     HeaderValue::from_str(turn_id).map_err(invalid)?,
                 );
             }
-            CodexRequestContext::StandaloneWebSearch => {
+            CodexRequestContext::StandaloneWebSearch(_) => {
                 headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
                 headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
                 headers.remove("session-id");
@@ -224,6 +226,28 @@ impl PreparedCodexAttempt {
         )
     }
 
+    pub(crate) fn request_metadata(
+        &self,
+        settings: &CodexRequestMetadataSettings,
+    ) -> Option<CodexRequestMetadata> {
+        let identity = match &self.request {
+            CodexRequestContext::Responses(identity)
+            | CodexRequestContext::StandaloneWebSearch(identity) => identity,
+            CodexRequestContext::ImagesGeneration { .. }
+            | CodexRequestContext::ImagesEdit { .. }
+            | CodexRequestContext::Unsupported => return None,
+        };
+        Some(CodexRequestMetadata::new(
+            self.platform_installation_id(),
+            identity.session_id.clone(),
+            identity.thread_id.clone(),
+            identity.turn_id.clone(),
+            identity.window_id.clone(),
+            settings.workspace_path().to_owned(),
+            settings.git_remote_url().to_owned(),
+        ))
+    }
+
     pub(crate) fn refresh_generation(&self) -> i64 {
         self.credential.refresh_generation()
     }
@@ -231,7 +255,7 @@ impl PreparedCodexAttempt {
     pub(crate) fn preserves_affinity_on_failure(&self) -> bool {
         matches!(
             self.request,
-            CodexRequestContext::Responses(_) | CodexRequestContext::StandaloneWebSearch
+            CodexRequestContext::Responses(_) | CodexRequestContext::StandaloneWebSearch(_)
         )
     }
 
@@ -252,7 +276,9 @@ impl PreparedCodexAttempt {
                 Ok(RequestInterface::ResponsesWebSocket)
             }
             CodexRequestContext::Responses(_) => Ok(RequestInterface::ResponsesHttp),
-            CodexRequestContext::StandaloneWebSearch => Ok(RequestInterface::StandaloneWebSearch),
+            CodexRequestContext::StandaloneWebSearch(_) => {
+                Ok(RequestInterface::StandaloneWebSearch)
+            }
             CodexRequestContext::ImagesGeneration { .. } => Ok(RequestInterface::ImagesGeneration),
             CodexRequestContext::ImagesEdit { .. } => Ok(RequestInterface::ImagesEdit),
             CodexRequestContext::Unsupported => Err(CodexAttemptError::UnsupportedOperation),
@@ -273,32 +299,33 @@ impl PreparedCodexAttempt {
 struct CodexRequestIdentity {
     session_id: String,
     thread_id: String,
+    turn_id: String,
+    window_id: String,
 }
 
 impl CodexRequestIdentity {
     fn new(headers: &HeaderMap, affinity_hash: Option<[u8; 32]>) -> Self {
         let session_id = valid_identity_header(headers, "session-id");
         let thread_id = valid_identity_header(headers, "thread-id");
-        match (session_id, thread_id) {
-            (Some(session_id), Some(thread_id)) => Self {
-                session_id,
-                thread_id,
-            },
-            (Some(session_id), None) => Self {
-                thread_id: session_id.clone(),
-                session_id,
-            },
-            (None, Some(thread_id)) => Self {
-                session_id: thread_id.clone(),
-                thread_id,
-            },
+        let (session_id, thread_id) = match (session_id, thread_id) {
+            (Some(session_id), Some(thread_id)) => (session_id, thread_id),
+            (Some(session_id), None) => (session_id.clone(), session_id),
+            (None, Some(thread_id)) => (thread_id.clone(), thread_id),
             (None, None) => {
                 let seed = affinity_hash.unwrap_or_else(random_identity_seed);
-                Self {
-                    session_id: opaque_uuid(&seed, b"codex-session"),
-                    thread_id: opaque_uuid(&seed, b"codex-thread"),
-                }
+                (
+                    opaque_uuid(&seed, b"codex-session"),
+                    opaque_uuid(&seed, b"codex-thread"),
+                )
             }
+        };
+        let window_id = valid_identity_header(headers, "x-codex-window-id")
+            .unwrap_or_else(|| format!("{thread_id}:0"));
+        Self {
+            session_id,
+            thread_id,
+            turn_id: Uuid::new_v4().to_string(),
+            window_id,
         }
     }
 }

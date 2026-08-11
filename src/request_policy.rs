@@ -2,6 +2,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
+    fmt::Write as _,
     sync::LazyLock,
 };
 
@@ -295,48 +296,97 @@ pub(crate) fn apply_json_body_policy(
     })
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct CodexRequestMetadata {
+    installation_id: String,
+    session_id: String,
+    thread_id: String,
+    turn_id: String,
+    window_id: String,
+    workspace_path: String,
+    git_remote_url: String,
+}
+
+impl CodexRequestMetadata {
+    #[must_use]
+    pub(crate) fn new(
+        installation_id: String,
+        session_id: String,
+        thread_id: String,
+        turn_id: String,
+        window_id: String,
+        workspace_path: String,
+        git_remote_url: String,
+    ) -> Self {
+        Self {
+            installation_id,
+            session_id,
+            thread_id,
+            turn_id,
+            window_id,
+            workspace_path,
+            git_remote_url,
+        }
+    }
+}
+
 pub(crate) fn normalize_codex_fingerprints_in_json(
     interface: RequestInterface,
     body: Bytes,
-    installation_id: &str,
+    metadata: &CodexRequestMetadata,
 ) -> Result<AppliedJsonBody, RequestPolicyError> {
-    let policy = &contract().codex_fingerprint_normalization;
-    let raw_fields = serde_json::from_slice::<BTreeMap<String, &RawValue>>(&body)
-        .map_err(|_| RequestPolicyError::invalid_body(RequestPolicyLayer::CodexOauth, interface))?;
-    if !raw_fields.contains_key(&policy.client_metadata_body_field) {
+    if !matches!(
+        interface,
+        RequestInterface::ResponsesHttp | RequestInterface::ResponsesWebSocket
+    ) {
         return Ok(AppliedJsonBody {
             body,
             changed: false,
         });
     }
-
+    let policy = &contract().codex_fingerprint_normalization;
     let mut value = serde_json::from_slice::<Value>(&body)
         .map_err(|_| RequestPolicyError::invalid_body(RequestPolicyLayer::CodexOauth, interface))?;
     let object = value.as_object_mut().ok_or_else(|| {
         RequestPolicyError::invalid_body(RequestPolicyLayer::CodexOauth, interface)
     })?;
-    let Some(client_metadata) = object.get_mut(&policy.client_metadata_body_field) else {
-        return Ok(AppliedJsonBody {
-            body,
-            changed: false,
-        });
-    };
-    if client_metadata.is_null() {
-        return Ok(AppliedJsonBody {
-            body,
-            changed: false,
-        });
+    let mut changed = false;
+    if object
+        .get(&policy.client_metadata_body_field)
+        .is_none_or(Value::is_null)
+    {
+        object.insert(
+            policy.client_metadata_body_field.clone(),
+            Value::Object(serde_json::Map::new()),
+        );
+        changed = true;
     }
-    let client_metadata = client_metadata.as_object_mut().ok_or_else(|| {
-        RequestPolicyError::field(
-            RequestPolicyLayer::CodexOauth,
-            interface,
-            RequestPolicyLocation::Body,
-            RequestPolicyFailure::UnsupportedValue,
-            &policy.client_metadata_body_field,
-        )
-    })?;
-    if !normalize_codex_client_metadata(client_metadata, installation_id) {
+    let client_metadata = object
+        .get_mut(&policy.client_metadata_body_field)
+        .expect("Codex client_metadata was inserted when missing")
+        .as_object_mut()
+        .ok_or_else(|| {
+            RequestPolicyError::field(
+                RequestPolicyLayer::CodexOauth,
+                interface,
+                RequestPolicyLocation::Body,
+                RequestPolicyFailure::UnsupportedValue,
+                &policy.client_metadata_body_field,
+            )
+        })?;
+    changed |= normalize_codex_client_metadata(client_metadata, metadata);
+    let prompt_cache_key_missing = object
+        .get(&policy.prompt_cache_key_body_field)
+        .and_then(Value::as_str)
+        .is_none_or(|value| value.trim().is_empty());
+    if prompt_cache_key_missing {
+        object.insert(
+            policy.prompt_cache_key_body_field.clone(),
+            Value::String(metadata.session_id.clone()),
+        );
+        changed = true;
+    }
+    if !changed {
         return Ok(AppliedJsonBody {
             body,
             changed: false,
@@ -353,26 +403,50 @@ pub(crate) fn normalize_codex_fingerprints_in_json(
 }
 
 pub(crate) fn normalize_codex_fingerprints_in_headers(
+    interface: RequestInterface,
     headers: &mut HeaderMap,
-    installation_id: &str,
+    metadata: &CodexRequestMetadata,
 ) {
+    if !matches!(
+        interface,
+        RequestInterface::ResponsesHttp
+            | RequestInterface::ResponsesWebSocket
+            | RequestInterface::StandaloneWebSearch
+    ) {
+        return;
+    }
     let policy = &contract().codex_fingerprint_normalization;
     for name in &policy.turn_metadata.header_fields {
         let name = HeaderName::from_bytes(name.as_bytes())
             .expect("validated Codex fingerprint header name must remain valid");
-        let Some(raw) = headers
+        let raw = headers
             .get(&name)
             .and_then(|value| value.to_str().ok())
-            .map(str::to_owned)
-        else {
-            headers.remove(&name);
-            continue;
-        };
+            .map(str::to_owned);
         headers.remove(&name);
-        let Some(normalized) = normalize_codex_turn_metadata(&raw, installation_id) else {
+        let Some(normalized) = normalize_codex_turn_metadata(
+            raw.as_deref(),
+            metadata,
+            interface != RequestInterface::ResponsesWebSocket,
+        ) else {
             continue;
         };
         if let Ok(value) = HeaderValue::from_str(&normalized) {
+            headers.insert(name, value);
+        }
+    }
+    if matches!(
+        interface,
+        RequestInterface::ResponsesHttp | RequestInterface::ResponsesWebSocket
+    ) {
+        let name = HeaderName::from_bytes(policy.window_header_field.as_bytes())
+            .expect("validated Codex window header name must remain valid");
+        if headers
+            .get(&name)
+            .and_then(|value| value.to_str().ok())
+            .is_none_or(|value| value.trim().is_empty())
+            && let Ok(value) = HeaderValue::from_str(&metadata.window_id)
+        {
             headers.insert(name, value);
         }
     }
@@ -380,74 +454,130 @@ pub(crate) fn normalize_codex_fingerprints_in_headers(
 
 fn normalize_codex_client_metadata(
     client_metadata: &mut serde_json::Map<String, Value>,
-    installation_id: &str,
+    metadata: &CodexRequestMetadata,
 ) -> bool {
     let policy = &contract().codex_fingerprint_normalization;
     let mut changed = false;
-    let normalized_installation_id = Value::String(installation_id.to_owned());
     for field in &policy.installation_id.client_metadata_fields {
-        let Some(value) = client_metadata.get_mut(field) else {
-            continue;
-        };
-        if *value != normalized_installation_id {
-            *value = normalized_installation_id.clone();
-            changed = true;
-        }
+        changed |= replace_string_field(client_metadata, field, &metadata.installation_id);
     }
+    changed |= fill_string_field(client_metadata, "session_id", &metadata.session_id);
+    changed |= fill_string_field(client_metadata, "thread_id", &metadata.thread_id);
+    changed |= fill_string_field(client_metadata, "turn_id", &metadata.turn_id);
+    changed |= fill_string_field(
+        client_metadata,
+        &policy.window_header_field,
+        &metadata.window_id,
+    );
     for field in &policy.turn_metadata.client_metadata_fields {
-        let Some(raw) = client_metadata
+        let raw = client_metadata
             .get(field)
             .and_then(Value::as_str)
-            .map(str::to_owned)
-        else {
-            if client_metadata.remove(field).is_some() {
-                changed = true;
-            }
-            continue;
-        };
-        match normalize_codex_turn_metadata(&raw, installation_id) {
-            Some(normalized) if normalized != raw => {
+            .map(str::to_owned);
+        match normalize_codex_turn_metadata(raw.as_deref(), metadata, true) {
+            Some(normalized) if raw.as_deref() != Some(normalized.as_str()) => {
                 client_metadata.insert(field.clone(), Value::String(normalized));
                 changed = true;
             }
             Some(_) => {}
-            None => {
-                client_metadata.remove(field);
-                changed = true;
-            }
+            None => {}
         }
     }
     changed
 }
 
-fn normalize_codex_turn_metadata(raw: &str, installation_id: &str) -> Option<String> {
+fn normalize_codex_turn_metadata(
+    raw: Option<&str>,
+    metadata: &CodexRequestMetadata,
+    fill_turn_id: bool,
+) -> Option<String> {
     let policy = &contract().codex_fingerprint_normalization;
-    let mut value = serde_json::from_str::<Value>(raw).ok()?;
-    let object = value.as_object_mut()?;
-    let mut changed = false;
-    let normalized_installation_id = Value::String(installation_id.to_owned());
+    let (mut object, mut changed) = match raw
+        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+        .and_then(|value| value.as_object().cloned())
+    {
+        Some(object) => (object, false),
+        None => (serde_json::Map::new(), true),
+    };
     for field in &policy.installation_id.turn_metadata_fields {
-        let Some(current) = object.get_mut(field) else {
-            continue;
-        };
-        if *current != normalized_installation_id {
-            *current = normalized_installation_id.clone();
-            changed = true;
-        }
+        changed |= replace_string_field(&mut object, field, &metadata.installation_id);
     }
-    for (field, replacement) in &policy.turn_metadata.field_replacements {
-        let Some(current) = object.get_mut(field) else {
-            continue;
-        };
-        if current != replacement {
-            *current = replacement.clone();
-            changed = true;
-        }
+    changed |= fill_string_field(&mut object, "session_id", &metadata.session_id);
+    changed |= fill_string_field(&mut object, "thread_id", &metadata.thread_id);
+    if fill_turn_id {
+        changed |= fill_string_field(&mut object, "turn_id", &metadata.turn_id);
+    }
+    changed |= fill_string_field(&mut object, "window_id", &metadata.window_id);
+    let workspaces = codex_workspaces(metadata);
+    if object.get(&policy.turn_metadata.workspace_field) != Some(&workspaces) {
+        object.insert(policy.turn_metadata.workspace_field.clone(), workspaces);
+        changed = true;
     }
     if !changed {
-        return Some(raw.to_owned());
+        return raw.map(str::to_owned);
     }
-    serde_json::to_string(&value).ok()
+    serialize_ascii_json(&Value::Object(object))
+}
+
+fn replace_string_field(
+    object: &mut serde_json::Map<String, Value>,
+    field: &str,
+    value: &str,
+) -> bool {
+    let replacement = Value::String(value.to_owned());
+    if object.get(field) == Some(&replacement) {
+        return false;
+    }
+    object.insert(field.to_owned(), replacement);
+    true
+}
+
+fn fill_string_field(
+    object: &mut serde_json::Map<String, Value>,
+    field: &str,
+    value: &str,
+) -> bool {
+    if object
+        .get(field)
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        return false;
+    }
+    object.insert(field.to_owned(), Value::String(value.to_owned()));
+    true
+}
+
+fn codex_workspaces(metadata: &CodexRequestMetadata) -> Value {
+    let mut remote_urls = serde_json::Map::new();
+    remote_urls.insert(
+        "origin".into(),
+        Value::String(metadata.git_remote_url.clone()),
+    );
+    let mut workspace = serde_json::Map::new();
+    workspace.insert("associated_remote_urls".into(), Value::Object(remote_urls));
+    let mut workspaces = serde_json::Map::new();
+    workspaces.insert(metadata.workspace_path.clone(), Value::Object(workspace));
+    Value::Object(workspaces)
+}
+
+fn serialize_ascii_json(value: &Value) -> Option<String> {
+    let serialized = serde_json::to_string(value).ok()?;
+    if serialized.is_ascii() {
+        return Some(serialized);
+    }
+    let mut ascii = String::with_capacity(serialized.len());
+    for character in serialized.chars() {
+        if character.is_ascii() {
+            ascii.push(character);
+            continue;
+        }
+        let mut encoded = [0; 2];
+        for unit in character.encode_utf16(&mut encoded) {
+            write!(&mut ascii, "\\u{unit:04x}").ok()?;
+        }
+    }
+    Some(ascii)
 }
 
 pub(crate) fn body_field_disposition(
@@ -675,6 +805,8 @@ struct RequestPolicySources {
 #[serde(deny_unknown_fields)]
 struct CodexFingerprintNormalizationPolicy {
     client_metadata_body_field: String,
+    prompt_cache_key_body_field: String,
+    window_header_field: String,
     installation_id: CodexInstallationIdNormalizationPolicy,
     turn_metadata: CodexTurnMetadataNormalizationPolicy,
 }
@@ -692,7 +824,7 @@ struct CodexInstallationIdNormalizationPolicy {
 struct CodexTurnMetadataNormalizationPolicy {
     client_metadata_fields: Vec<String>,
     header_fields: Vec<String>,
-    field_replacements: BTreeMap<String, Value>,
+    workspace_field: String,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
@@ -753,8 +885,8 @@ enum UnknownAction {
 }
 
 fn validate_contract(contract: &RequestPolicyContract) -> Result<(), String> {
-    if contract.version != 2 {
-        return Err("request allowlist contract version must be 2".into());
+    if contract.version != 3 {
+        return Err("request allowlist contract version must be 3".into());
     }
     let verified = contract.verified_at.as_bytes();
     if verified.len() != 10
@@ -891,6 +1023,12 @@ fn validate_codex_fingerprint_normalization(
     if policy.client_metadata_body_field != "client_metadata" {
         return Err("Codex fingerprint normalization must target `client_metadata`".into());
     }
+    if policy.prompt_cache_key_body_field != "prompt_cache_key" {
+        return Err("Codex request enrichment must target `prompt_cache_key`".into());
+    }
+    if policy.window_header_field != "x-codex-window-id" {
+        return Err("Codex request enrichment must target `x-codex-window-id`".into());
+    }
     if policy.installation_id.scope != CodexFingerprintScope::Credential {
         return Err("Codex installation ID normalization must be credential-scoped".into());
     }
@@ -926,13 +1064,8 @@ fn validate_codex_fingerprint_normalization(
             ));
         }
     }
-    if policy.turn_metadata.field_replacements.get("workspaces")
-        != Some(&serde_json::json!({"/workspace": {}}))
-    {
-        return Err(
-            "Codex workspace fingerprint normalization must use the canonical `/workspace` map"
-                .into(),
-        );
+    if policy.turn_metadata.workspace_field != "workspaces" {
+        return Err("Codex workspace fingerprint normalization must target `workspaces`".into());
     }
     for interface in [
         RequestInterface::ResponsesHttp,
@@ -959,6 +1092,35 @@ fn validate_codex_fingerprint_normalization(
                 interface.as_str()
             ));
         }
+        let codex = interface_policy
+            .codex_oauth
+            .as_ref()
+            .ok_or_else(|| format!("missing Codex policy for `{}`", interface.as_str()))?;
+        for field in [
+            &policy.client_metadata_body_field,
+            &policy.prompt_cache_key_body_field,
+        ] {
+            if !contains_sorted(&codex.generated_body_fields, field) {
+                return Err(format!(
+                    "Codex request enrichment must generate `{field}` for `{}`",
+                    interface.as_str()
+                ));
+            }
+        }
+        for name in [
+            policy.window_header_field.as_str(),
+            policy.turn_metadata.header_fields[0].as_str(),
+        ] {
+            if !contains_sorted(&contract.client_headers.allow, name)
+                || !contains_sorted(&codex.headers.allow, name)
+                || !contains_sorted(&codex.headers.generated, name)
+            {
+                return Err(format!(
+                    "Codex request enrichment header `{name}` must be allowed and generated for `{}`",
+                    interface.as_str()
+                ));
+            }
+        }
     }
     let search_headers = &contract
         .interfaces
@@ -969,9 +1131,10 @@ fn validate_codex_fingerprint_normalization(
     for name in &policy.turn_metadata.header_fields {
         if !contains_sorted(&contract.client_headers.allow, name)
             || !contains_sorted(&search_headers.allow, name)
+            || !contains_sorted(&search_headers.generated, name)
         {
             return Err(format!(
-                "Codex fingerprint normalization header `{name}` must be allowed for clients and standalone search"
+                "Codex fingerprint normalization header `{name}` must be allowed and generated for standalone search"
             ));
         }
     }
@@ -1071,9 +1234,21 @@ mod tests {
 
     use super::*;
 
+    fn codex_metadata() -> CodexRequestMetadata {
+        CodexRequestMetadata::new(
+            "11111111-1111-4111-8111-111111111111".into(),
+            "session-123".into(),
+            "thread-456".into(),
+            "turn-789".into(),
+            "thread-456:0".into(),
+            "/workspace".into(),
+            "https://github.com/oai404iao/ai_gateway".into(),
+        )
+    }
+
     #[test]
     fn embedded_contract_is_complete_and_current() {
-        assert_eq!(contract().version, 2);
+        assert_eq!(contract().version, 3);
         assert_eq!(contract().verified_at.len(), 10);
         assert_eq!(contract().sources.openai_node_commit.len(), 40);
         assert_eq!(contract().sources.codex_commit.len(), 40);
@@ -1083,7 +1258,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_fingerprint_normalization_replaces_only_installation_and_workspaces() {
+    fn codex_fingerprint_normalization_replaces_private_fields_and_fills_safe_metadata() {
         let raw_turn_metadata = json!({
             "installation_id": "client-installation",
             "session_id": "session-123",
@@ -1099,7 +1274,7 @@ mod tests {
                     "has_changes": true
                 }
             },
-            "app_server_extra": "preserve-me"
+            "app_server_extra": "保留"
         })
         .to_string();
         let body = Bytes::from(
@@ -1114,37 +1289,47 @@ mod tests {
             }))
             .unwrap(),
         );
-        let platform_installation_id = "11111111-1111-4111-8111-111111111111";
+        let metadata = codex_metadata();
 
-        let normalized = normalize_codex_fingerprints_in_json(
-            RequestInterface::ResponsesHttp,
-            body,
-            platform_installation_id,
-        )
-        .unwrap();
+        let normalized =
+            normalize_codex_fingerprints_in_json(RequestInterface::ResponsesHttp, body, &metadata)
+                .unwrap();
         assert!(normalized.changed);
         let normalized: Value = serde_json::from_slice(&normalized.body).unwrap();
         let client_metadata = normalized["client_metadata"].as_object().unwrap();
         assert_eq!(
             client_metadata["x-codex-installation-id"],
-            platform_installation_id
+            metadata.installation_id
         );
         assert_eq!(client_metadata["session_id"], "session-123");
-        let turn_metadata: Value =
-            serde_json::from_str(client_metadata["x-codex-turn-metadata"].as_str().unwrap())
-                .unwrap();
-        assert_eq!(turn_metadata["installation_id"], platform_installation_id);
+        assert_eq!(client_metadata["thread_id"], "thread-456");
+        assert_eq!(client_metadata["turn_id"], "turn-789");
+        assert_eq!(client_metadata["x-codex-window-id"], "thread-456:0");
+        assert_eq!(normalized["prompt_cache_key"], "session-123");
+        let raw_turn_metadata = client_metadata["x-codex-turn-metadata"].as_str().unwrap();
+        assert!(raw_turn_metadata.is_ascii());
+        let turn_metadata: Value = serde_json::from_str(raw_turn_metadata).unwrap();
+        assert_eq!(turn_metadata["installation_id"], metadata.installation_id);
         assert_eq!(turn_metadata["session_id"], "session-123");
         assert_eq!(turn_metadata["thread_id"], "thread-456");
         assert_eq!(turn_metadata["request_kind"], "turn");
         assert_eq!(turn_metadata["sandbox"], "seatbelt");
-        assert_eq!(turn_metadata["workspaces"], json!({"/workspace": {}}));
-        assert_eq!(turn_metadata["app_server_extra"], "preserve-me");
+        assert_eq!(
+            turn_metadata["workspaces"],
+            json!({
+                "/workspace": {
+                    "associated_remote_urls": {
+                        "origin": "https://github.com/oai404iao/ai_gateway"
+                    }
+                }
+            })
+        );
+        assert_eq!(turn_metadata["app_server_extra"], "保留");
     }
 
     #[test]
-    fn codex_fingerprint_normalization_updates_search_headers_and_drops_malformed_metadata() {
-        let platform_installation_id = "11111111-1111-4111-8111-111111111111";
+    fn codex_fingerprint_normalization_updates_and_synthesizes_search_headers() {
+        let metadata = codex_metadata();
         let mut headers = HeaderMap::new();
         headers.insert(
             "x-codex-turn-metadata",
@@ -1160,7 +1345,11 @@ mod tests {
         );
         headers.insert("traceparent", HeaderValue::from_static("preserve-trace"));
 
-        normalize_codex_fingerprints_in_headers(&mut headers, platform_installation_id);
+        normalize_codex_fingerprints_in_headers(
+            RequestInterface::StandaloneWebSearch,
+            &mut headers,
+            &metadata,
+        );
 
         let turn_metadata: Value = serde_json::from_str(
             headers
@@ -1170,8 +1359,21 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        assert_eq!(turn_metadata["installation_id"], platform_installation_id);
-        assert_eq!(turn_metadata["workspaces"], json!({"/workspace": {}}));
+        assert_eq!(turn_metadata["installation_id"], metadata.installation_id);
+        assert_eq!(turn_metadata["session_id"], "session-123");
+        assert_eq!(turn_metadata["thread_id"], "thread-456");
+        assert_eq!(turn_metadata["turn_id"], "turn-789");
+        assert_eq!(turn_metadata["window_id"], "thread-456:0");
+        assert_eq!(
+            turn_metadata["workspaces"],
+            json!({
+                "/workspace": {
+                    "associated_remote_urls": {
+                        "origin": "https://github.com/oai404iao/ai_gateway"
+                    }
+                }
+            })
+        );
         assert_eq!(turn_metadata["request_kind"], "turn");
         assert_eq!(headers.get("traceparent").unwrap(), "preserve-trace");
 
@@ -1179,8 +1381,24 @@ mod tests {
             "x-codex-turn-metadata",
             HeaderValue::from_static("not-json"),
         );
-        normalize_codex_fingerprints_in_headers(&mut headers, platform_installation_id);
-        assert!(!headers.contains_key("x-codex-turn-metadata"));
+        normalize_codex_fingerprints_in_headers(
+            RequestInterface::StandaloneWebSearch,
+            &mut headers,
+            &metadata,
+        );
+        let turn_metadata: Value = serde_json::from_str(
+            headers
+                .get("x-codex-turn-metadata")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(turn_metadata["installation_id"], metadata.installation_id);
+        assert_eq!(
+            turn_metadata["workspaces"]["/workspace"]["associated_remote_urls"]["origin"],
+            "https://github.com/oai404iao/ai_gateway"
+        );
     }
 
     #[test]
@@ -1391,6 +1609,7 @@ mod tests {
 
         let codex = filter_codex_headers(RequestInterface::ResponsesHttp, &client).unwrap();
         assert!(codex.contains_key("traceparent"));
+        assert!(codex.contains_key("x-codex-turn-metadata"));
         assert!(!codex.contains_key("x-hop"));
         assert!(!codex.contains_key("x-stainless-lang"));
 

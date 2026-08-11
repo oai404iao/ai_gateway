@@ -10,9 +10,17 @@ Versioning.
 ### Security
 
 - Normalize Codex OAuth installation identifiers to a credential-scoped
-  opaque UUID and replace reported local workspaces with a fixed `/workspace`
-  projection before forwarding, while preserving other Codex metadata and
-  trace context.
+  opaque UUID and replace reported local workspaces with a configurable
+  synthetic Git workspace before forwarding, while preserving other Codex
+  metadata and trace context.
+
+### Added
+
+- Fill missing safe Codex Connect request metadata for Responses HTTP,
+  Responses WebSocket, and standalone web search, including
+  `client_metadata`, cache/session/thread/turn/window identities, and
+  compatibility headers. Administrators can configure the synthetic
+  workspace path and HTTPS origin remote in Console System settings.
 
 ### Fixed
 

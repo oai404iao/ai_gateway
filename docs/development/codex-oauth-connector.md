@@ -176,8 +176,10 @@ Codex HTTP attempt：
 - 强制 `stream=true`、`store=false`；
 - 在通用 JSON Transform 之后应用 Codex Responses HTTP body 白名单；
 - 把 flat `x-codex-installation-id` 与 turn metadata 中的 `installation_id` 替换为按逻辑凭证
-  稳定的 opaque UUID；存在的 `workspaces` 折叠为固定 `{"/workspace":{}}`，其他 metadata 和
-  W3C trace/baggage 保留；
+  稳定的 opaque UUID；`workspaces` 强制替换为系统设置中的单一合成 Git 工作区；
+- 缺失时创建 `client_metadata`，补齐 session/thread/turn/window、turn metadata 和
+  `prompt_cache_key`；已有非空身份值保留，不推测 request kind、sandbox、beta、subagent、
+  attestation、turn-state 或 residency，其他 metadata 和 W3C trace/baggage 保留；
 - 删除显式兼容的 `max_output_tokens` 和纯遥测字段；`previous_response_id` 只允许空值后删除；
   其他已知但 provider 无法表达的非默认值以及未知字段返回客户端错误；
 - 目标固定为 managed channel base URL 下的 `/responses`；
@@ -195,8 +197,8 @@ Codex WebSocket attempt：
 - 在通用 JSON Transform 之后应用独立的 Codex Responses WebSocket body 白名单，并删除
   `max_output_tokens` 与显式纯遥测字段；
 - 保留客户端的 `previous_response_id`、`generate` 和 `client_metadata`；
-- 对 `client_metadata` 应用与 HTTP 相同的安装 ID/工作区归一化，不改写 Session/thread、
-  turn-state 或其他 metadata；
+- 对 `client_metadata` 应用与 HTTP 相同的安装 ID/工作区归一化和缺失字段补全，不改写已有
+  Session/thread、turn-state 或其他 metadata；
 - 把 managed channel base URL 转成 `/responses` 的 `ws`/`wss` 目标；
 - 使用 Codex 同源的 WebSocket Beta、Bearer/可选 account、FedRAMP、session/thread、
   User-Agent、`originator` 和版本 Header，不发送 HTTP SSE 专用的 `Accept`、
@@ -212,7 +214,7 @@ Codex standalone web search attempt：
 - 不允许 Request JSON Transform，但继续应用 Header 和响应 Header Transform；
 - 目标固定为 managed Responses channel base URL 下的 `/alpha/search`；
 - 保留客户端 `originator` 与合法的 `x-codex-turn-metadata`，originator 缺失时使用 Connector
-  默认值；turn metadata 的安装 ID 与工作区使用同一凭证级固定投影；
+  默认值；turn metadata 缺失或无效时安全合成，安装 ID 与工作区使用同一凭证级/系统设置投影；
 - 注入 Bearer、存在时的 account、可选 FedRAMP、User-Agent 和版本，删除
   `session-id`、`thread-id` 与 image-turn Header；
 - 成功响应按非流式 JSON 处理，`results` DTO 不解释、不重写；没有可识别 usage 时不估算 token

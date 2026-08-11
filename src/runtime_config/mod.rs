@@ -25,13 +25,13 @@ use zeroize::Zeroizing;
 use crate::{
     domain::{
         AdvancedBilling, ApiFormat, ApiKeyHash, ApiKeyPermission, AuthorizationProfile,
-        AutomaticDisableSettings, ChannelTimeoutPolicy, CompiledApiKey, CompiledCandidate,
-        CompiledChannel, CompiledChannelGroup, CompiledChannelUpstreamPolicy,
-        CompiledConfigTemplate, CompiledMcpServer, CompiledModelRule, CompiledProxy,
-        CompiledRouteTier, CompiledRuntimeConfig, CompiledScheduledTestModel, ConnectorKind,
-        DEFAULT_IMAGES_RESPONSE_HEADER_TIMEOUT_SECONDS, DEFAULT_MCP_IMAGE_REQUEST_BODY_BYTES,
-        DEFAULT_MCP_IMAGE_RESULT_BYTES, DEFAULT_MCP_REQUEST_BODY_BYTES,
-        DEFAULT_MCP_SEARCH_RESULT_BYTES,
+        AutomaticDisableSettings, ChannelTimeoutPolicy, CodexRequestMetadataSettings,
+        CompiledApiKey, CompiledCandidate, CompiledChannel, CompiledChannelGroup,
+        CompiledChannelUpstreamPolicy, CompiledConfigTemplate, CompiledMcpServer,
+        CompiledModelRule, CompiledProxy, CompiledRouteTier, CompiledRuntimeConfig,
+        CompiledScheduledTestModel, ConnectorKind, DEFAULT_IMAGES_RESPONSE_HEADER_TIMEOUT_SECONDS,
+        DEFAULT_MCP_IMAGE_REQUEST_BODY_BYTES, DEFAULT_MCP_IMAGE_RESULT_BYTES,
+        DEFAULT_MCP_REQUEST_BODY_BYTES, DEFAULT_MCP_SEARCH_RESULT_BYTES,
         DEFAULT_STANDALONE_WEB_SEARCH_RESPONSE_HEADER_TIMEOUT_SECONDS, ImageMcpSettings,
         MAX_MCP_IMAGE_BYTES, MAX_REQUEST_RETRIES, McpServerKind, McpTransportSettings,
         ModelPriceSnapshot, ModelRouteKey, NoProxyHost, PassiveHealthSettings,
@@ -43,9 +43,10 @@ use crate::{
     persistence::{
         ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ConfigTemplateRecord, ControlPlaneRecords,
         FORWARDING_SETTINGS_KEY, McpServerRecord, ModelRecord, ModelRuleRecord, ProxyRecord,
-        RuntimeConfigRecords, SystemMcpSettingsInput, SystemSessionAffinityKeySourceInput,
-        SystemSessionAffinityRuleInput, SystemSessionAffinitySettingsInput, SystemSettingsInput,
-        SystemSettingsRecord, valid_api_hosts,
+        RuntimeConfigRecords, SystemCodexSettingsInput, SystemMcpSettingsInput,
+        SystemSessionAffinityKeySourceInput, SystemSessionAffinityRuleInput,
+        SystemSessionAffinitySettingsInput, SystemSettingsInput, SystemSettingsRecord,
+        valid_api_hosts, valid_codex_settings_input,
     },
     request_policy::{client_header_allowed, client_header_explicitly_ignored},
     transforms::{TransformCompileError, TransformPlan, compile_document, declared_api_format},
@@ -1158,6 +1159,7 @@ pub fn compile_system_settings_input(
     let scheduled_testing = &input.scheduled_testing;
     let session_affinity = compile_session_affinity_settings(&input.session_affinity)?;
     let websocket = &input.websocket;
+    let codex = compile_codex_request_metadata_settings(&input.codex)?;
     let mcp = compile_mcp_transport_settings(&input.mcp)?;
     if !valid_api_hosts(&input.api_hosts)
         || upstream.connect_timeout_seconds == 0
@@ -1246,7 +1248,20 @@ pub fn compile_system_settings_input(
             std::time::Duration::from_secs(websocket.max_connection_age_seconds),
         ),
     )
-    .with_mcp(mcp))
+    .with_mcp(mcp)
+    .with_codex(codex))
+}
+
+fn compile_codex_request_metadata_settings(
+    input: &SystemCodexSettingsInput,
+) -> Result<CodexRequestMetadataSettings, ConfigError> {
+    if !valid_codex_settings_input(input) {
+        return Err(ConfigError::Compile("invalid system settings".into()));
+    }
+    Ok(CodexRequestMetadataSettings::new(
+        Arc::from(input.workspace_path.as_str()),
+        Arc::from(input.git_remote_url.as_str()),
+    ))
 }
 
 fn compile_mcp_transport_settings(
@@ -3540,6 +3555,10 @@ mod tests {
                     },
                     session_affinity: Default::default(),
                     websocket: Default::default(),
+                    codex: SystemCodexSettingsInput {
+                        workspace_path: "/synthetic/project".into(),
+                        git_remote_url: "https://github.com/example/synthetic-project".into(),
+                    },
                     mcp: Default::default(),
                 })
                 .unwrap(),
@@ -3582,6 +3601,11 @@ mod tests {
         assert_eq!(
             settings.scheduled_testing().interval(),
             std::time::Duration::from_secs(7 * 60)
+        );
+        assert_eq!(settings.codex().workspace_path(), "/synthetic/project");
+        assert_eq!(
+            settings.codex().git_remote_url(),
+            "https://github.com/example/synthetic-project"
         );
     }
 
@@ -3628,6 +3652,7 @@ mod tests {
                 }],
             },
             websocket: Default::default(),
+            codex: Default::default(),
             mcp: Default::default(),
         })
         .unwrap();

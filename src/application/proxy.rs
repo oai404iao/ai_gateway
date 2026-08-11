@@ -486,6 +486,7 @@ impl ProxyService {
                 session_affinity
                     .as_ref()
                     .map(SessionAffinityMatch::session_hash),
+                snapshot.system_settings().codex(),
             ) {
                 Ok(attempt) => attempt,
                 Err(error) => {

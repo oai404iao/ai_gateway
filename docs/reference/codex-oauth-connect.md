@@ -181,16 +181,19 @@ provider-managed `channels` 记录。因此普通优先级、权重、API Key �
 3. 在普通 Transform 后应用 Codex Responses HTTP body/Header 白名单，删除
    `max_output_tokens`、纯遥测和契约列出的空值/no-op；其他 provider-unsupported 非默认值报错；
 4. 把 `client_metadata["x-codex-installation-id"]` 和 turn metadata 中的
-   `installation_id` 替换为按逻辑凭证稳定的 opaque UUID；存在的 `workspaces` 折叠为固定
-   `{"/workspace":{}}`，其他 metadata 与 W3C trace/baggage 保留；
-5. 强制写入 `stream=true`、`store=false`；
-6. 将目标改为 `/backend-api/codex/responses`；
-7. `Accept-Encoding` 由通用代理层独立设置为 `gzip, deflate, br, zstd`，上游响应在终态 SSE
+   `installation_id` 替换为按逻辑凭证稳定的 opaque UUID；`workspaces` 强制替换为系统设置中的
+   单一合成 Git 工作区；
+5. 缺失时创建 `client_metadata` 并补齐 session/thread/turn/window、turn metadata 与
+   `prompt_cache_key`；不推测 request kind、sandbox、beta、subagent、attestation、turn-state
+   或 residency，其他 metadata 与 W3C trace/baggage 保留；
+6. 强制写入 `stream=true`、`store=false`；
+7. 将目标改为 `/backend-api/codex/responses`；
+8. `Accept-Encoding` 由通用代理层独立设置为 `gzip, deflate, br, zstd`，上游响应在终态 SSE
    与 usage 解析前流式解码；
-8. 最后注入当前凭证的 Bearer、可选 account、FedRAMP 和 Codex 会话 Header；
-9. 成功响应按 SSE 分类，并将客户端可见 `Content-Type` 规范化为
+9. 最后注入当前凭证的 Bearer、可选 account、FedRAMP 和 Codex 会话 Header；
+10. 成功响应按 SSE 分类，并将客户端可见 `Content-Type` 规范化为
    `text/event-stream`，即使 Codex 上游缺少或改写了该 Header；
-10. 逐块转发解码后的上游 SSE，不在 Connector 中缓冲整条响应；下游 SSE 保持 identity。
+11. 逐块转发解码后的上游 SSE，不在 Connector 中缓冲整条响应；下游 SSE 保持 identity。
 
 WebSocket 路径：
 
@@ -198,8 +201,8 @@ WebSocket 路径：
 2. 在普通 Transform 后应用独立的 Codex Responses WebSocket body/Header 白名单，删除
    `max_output_tokens` 和契约列出的纯遥测/no-op，未知 body 字段报错；
 3. 强制 `stream=true`、`store=false`，但保留
-   `previous_response_id`、`generate` 和 `client_metadata`；其中 installation/workspace 指纹按
-   HTTP 相同规则归一化；
+   `previous_response_id`、`generate` 和 `client_metadata`；缺失的 `client_metadata` 与
+   `prompt_cache_key` 会补齐，installation/workspace 指纹按 HTTP 相同规则归一化；
 4. 把目标改为 managed channel base URL 下的 `/responses`，再将
    `http`/`https` 转成 `ws`/`wss`；
 5. 注入 `OpenAI-Beta: responses_websockets=2026-02-06`、Bearer/可选 account、
@@ -215,8 +218,9 @@ Standalone web search 路径：
 2. 固定为非流式 JSON，在模型别名后应用独立 Search body/Header 白名单；
 3. 不应用 Request JSON Transform；Header 和响应 Header Transform 仍有效；
 4. 将目标改为 managed channel base URL 下的 `/alpha/search`；
-5. 保留 `originator`、合法的 `x-codex-turn-metadata` 和可选 `x-client-request-id`；
-   turn metadata 的 installation/workspace 指纹按同一凭证规则归一化，再注入
+5. 保留 `originator`、合法的 `x-codex-turn-metadata` 和可选 `x-client-request-id`；缺失或
+   无效的 turn metadata 会安全合成，installation/workspace 指纹按同一凭证/系统设置规则归一化，
+   再注入
    Bearer/可选 account/FedRAMP、版本和 User-Agent，删除 Responses Session Header；
 6. `results` DTO 透明转发；没有 usage 时不估算 token 或费用。
 
@@ -263,11 +267,13 @@ usage 与请求终态记录；客户端随后立即停止读取时，不会把�
 
 原生 Codex 还会通过 flat `client_metadata` 和 JSON 字符串形式的
 `x-codex-turn-metadata` 上报持久 installation ID，以及 workspace 根路径、Git remote、HEAD
-commit 和 dirty 状态。`ai-gateway` 只归一化这两类指纹：installation ID 按稳定 credential ID
-派生 opaque UUID，同一逻辑凭证跨 Responses HTTP/WebSocket/Search 保持一致；存在的
-`workspaces` 整体替换为 `{"/workspace":{}}`。Session/thread/turn/window、request kind、
-compaction、sandbox、子 Agent、App Server extra metadata 和 W3C trace/baggage 均保持现有转发
-行为。无法解析为 JSON 对象的 turn metadata 会被删除，不以 opaque 字符串绕过归一化。
+commit 和 dirty 状态。`ai-gateway` 将 installation ID 按稳定 credential ID 派生 opaque UUID，
+同一逻辑凭证跨 Responses HTTP/WebSocket/Search 保持一致；`workspaces` 始终替换为
+`forwarding_policy.codex` 配置的单一合成工作区。默认 path 为 `/workspace`，默认 origin 为
+`https://github.com/oai404iao/ai_gateway`。缺失的 Responses 身份 metadata 与 Search turn
+metadata 会安全补齐；无法解析的 turn metadata 会被替换而不是 opaque 转发。已有
+Session/thread/turn/window、request kind、compaction、sandbox、子 Agent、App Server extra
+metadata 和 W3C trace/baggage 保留。
 
 ### 凭证运行时与维护
 
@@ -345,5 +351,5 @@ WebSocket 错误会触发按 refresh generation 去重的后台 token refresh。
 7. reset-credit available count、consume 路径、请求幂等键、结果 code 与 `windows_reset`；
 8. Images generation/edit JSON shape、当前 image model 和 usage 响应；
 9. User-Agent/originator 变化是否会影响授权或后端兼容性。
-10. `client_metadata` 与 `x-codex-turn-metadata` 中 installation/workspace 字段的位置、类型和
-    保留必要性是否变化。
+10. `client_metadata` 与 `x-codex-turn-metadata` 中 installation/workspace/identity 字段的位置、
+    类型和保留必要性，以及缺失字段补全和系统合成 workspace 是否仍与上游兼容。

@@ -103,12 +103,13 @@ Codex OAuth managed channel 也走同一 Responses WebSocket 路径，但由 Con
 `/responses` 目标、强制 `stream=true`/`store=false` 并注入订阅凭证与 Codex Header；
 `previous_response_id` 仍只在同一条可复用上游连接上有效。Responses HTTP/WebSocket 的
 `client_metadata` 会把客户端 installation ID 替换为按凭证稳定的 opaque UUID，并把 turn
-metadata 中存在的 `workspaces` 折叠为固定 `/workspace` 投影；其余 metadata 保留。
+metadata 的 `workspaces` 强制替换为系统设置中的单一合成 Git 工作区。缺失的安全身份
+metadata 与 `prompt_cache_key` 会补齐；其余已有 metadata 保留。
 
 Codex OAuth standalone web search 使用同一 Responses managed channel、模型规则、API Key 权限
 和凭证。Connector 把公共 `/v1/alpha/search` 改写为 managed base URL 下的 `/alpha/search`，
-保留 `originator` 与 `x-codex-turn-metadata`，删除 Responses Session Header，并按普通 JSON
-处理响应。合法 turn metadata 使用与 Responses 相同的 installation/workspace 归一化；
+保留 `originator` 与 `x-codex-turn-metadata`，缺失时安全补齐，删除 Responses Session Header，
+并按普通 JSON 处理响应。Turn metadata 使用与 Responses 相同的 installation/workspace 归一化；
 `results` 中未知 DTO 和字段透明转发；没有 usage 时不估算 token 或费用。
 
 Codex OAuth Images projection 仍使用标准客户端 `/v1/images/generations`，Connector 将上游目标
