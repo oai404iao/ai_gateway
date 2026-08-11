@@ -310,6 +310,10 @@ Codex Responses HTTP Connector 只接受 `stream: true` 的 SSE 请求，强制�
 适用于 HTTP SSE 与 WebSocket `response.create`，普通 OpenAI-compatible channel 不受影响。
 Codex body/Header 在普通 Transform 之后还会应用独立 provider 白名单：纯遥测、空值和明确
 no-op 可以按契约删除；无法表达的非默认语义和未知 body 字段返回 `400`，未知 Header 被删除。
+此外，Codex OAuth 出站会把 `client_metadata["x-codex-installation-id"]` 和 turn metadata 中的
+`installation_id` 替换为按逻辑凭证稳定的 opaque UUID；turn metadata 中存在的 `workspaces`
+统一折叠为 `{"/workspace":{}}`，因此本地路径、Git remote、commit 和 dirty 状态不会发送给
+订阅后端。Session/thread、request kind、其他 metadata 和 W3C trace/baggage 保持不变。
 Codex HTTP 成功响应即使缺少或错误声明上游 `Content-Type`，Gateway 也会向客户端规范化为
 `text/event-stream`；非成功 JSON 错误响应仍保留原内容类型。
 Codex managed channel 会自动启用
@@ -322,7 +326,8 @@ Responses WebSocket 能力；WebSocket `response.create` 同样强制 `stream: t
 
 Codex standalone web search 使用同一 Responses managed channel 和凭证，公共目标为
 `POST /v1/alpha/search`，Connector 将上游目标改为 managed base URL 下的 `/alpha/search`。
-该请求固定为非流式 JSON；保留合法的 `originator` 与 `x-codex-turn-metadata`，注入共享
+该请求固定为非流式 JSON；保留合法的 `originator` 与 `x-codex-turn-metadata`，并对后者应用
+相同 installation/workspace 归一化；随后注入共享
 Bearer、可选 account/FedRAMP、版本和 User-Agent，并删除 Responses Session Header。发送前不可用
 且未命中 affinity 时可以重选凭证；命中 affinity 后 fail closed；请求发送后不重试。上游没有
 返回可识别 usage 时，日志不估算 token 或费用。

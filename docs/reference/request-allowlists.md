@@ -4,7 +4,7 @@
 >
 > 状态：当前。
 >
-> 最近核对：2026-08-05。
+> 最近核对：2026-08-11。
 >
 > 机器可读权威契约：
 > [`request-allowlists.json`](request-allowlists.json)。
@@ -14,28 +14,33 @@
 > [Chat Completions](https://github.com/openai/openai-node/blob/854892a0580980449ce1ed04aa5e3831d3330383/src/resources/chat/completions/completions.ts)、
 > [Responses](https://github.com/openai/openai-node/blob/854892a0580980449ce1ed04aa5e3831d3330383/src/resources/responses/responses.ts) 与
 > [Images](https://github.com/openai/openai-node/blob/854892a0580980449ce1ed04aa5e3831d3330383/src/resources/images.ts) 请求类型；
-> [`openai/codex@5af8599`](https://github.com/openai/codex/tree/5af85998c24fb3353ddd8164c3ed472057b03cb3) 的
-> [Responses wire type](https://github.com/openai/codex/blob/5af85998c24fb3353ddd8164c3ed472057b03cb3/codex-rs/codex-api/src/common.rs) 与
-> [Images wire type](https://github.com/openai/codex/blob/5af85998c24fb3353ddd8164c3ed472057b03cb3/codex-rs/codex-api/src/images.rs)、
-> [Search wire type](https://github.com/openai/codex/blob/5af85998c24fb3353ddd8164c3ed472057b03cb3/codex-rs/codex-api/src/search.rs) 与
-> [Search tool Header](https://github.com/openai/codex/blob/5af85998c24fb3353ddd8164c3ed472057b03cb3/codex-rs/ext/web-search/src/tool.rs)；
+> [`openai/codex@7a0e974`](https://github.com/openai/codex/tree/7a0e974e08c798d1e8d59d407aeb6e24db1313af) 的
+> [Responses wire type](https://github.com/openai/codex/blob/7a0e974e08c798d1e8d59d407aeb6e24db1313af/codex-rs/codex-api/src/common.rs)、
+> [Responses metadata](https://github.com/openai/codex/blob/7a0e974e08c798d1e8d59d407aeb6e24db1313af/codex-rs/core/src/responses_metadata.rs)、
+> [Images wire type](https://github.com/openai/codex/blob/7a0e974e08c798d1e8d59d407aeb6e24db1313af/codex-rs/codex-api/src/images.rs)、
+> [Search wire type](https://github.com/openai/codex/blob/7a0e974e08c798d1e8d59d407aeb6e24db1313af/codex-rs/codex-api/src/search.rs) 与
+> [Search tool Header](https://github.com/openai/codex/blob/7a0e974e08c798d1e8d59d407aeb6e24db1313af/codex-rs/ext/web-search/src/tool.rs)；
 > [DeepSeek Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode) 与
 > [阿里云百炼深度思考](https://help.aliyun.com/zh/model-studio/deep-thinking) 的
 > Chat Completions 兼容扩展。
 
 ## 目标
 
-数据面请求使用两层独立白名单：
+数据面请求使用两层独立白名单和一层 Codex 指纹归一化：
 
 1. **客户端入口策略**：在路由和 Transform 前约束客户端提供的请求 Header 与顶层 body 字段；
 2. **Codex 出口策略**：选中 `connector_kind = codex_oauth` 后，在普通 Transform 之后再次约束
-   发往 Codex 后端的 Header 与顶层 body 字段。
+   发往 Codex 后端的 Header 与顶层 body 字段；
+3. **Codex 指纹归一化**：只改写已知的安装与工作区指纹，其他
+   `client_metadata`、turn metadata 和 W3C trace/baggage 保持现有行为。
 
 普通 `openai_compatible` Connector 不执行第二层 provider 白名单，但仍受客户端入口策略、
 hop-by-hop 清理和上游鉴权覆盖约束。
 
-当前只校验 JSON 对象或 multipart 表单的**顶层字段名**。`messages`、`input`、`tools`、
+当前白名单只校验 JSON 对象或 multipart 表单的**顶层字段名**。`messages`、`input`、`tools`、
 `metadata` 等已允许字段内部的嵌套结构仍由目标上游解释；网关不会递归实现完整 OpenAI schema。
+唯一的嵌套例外是机器契约中的 `codex_fingerprint_normalization`：它只定位
+`client_metadata` 与 `x-codex-turn-metadata` 中的安装 ID 和 `workspaces`。
 
 ## 动作语义
 
@@ -46,6 +51,7 @@ hop-by-hop 清理和上游鉴权覆盖约束。
 | `allow` | 保留字段；若没有其他 Transform，JSON 原始字节保持不变。 |
 | `ignore` | 删除字段后继续；body 的 `accepted_values` 存在时，仅这些等价值可以被删除。 |
 | `reject` | 返回客户端 `400`，不联系上游。 |
+| 指纹归一化 | 按机器契约替换已知 Codex 安装/工作区值；不改变字段的 allow/ignore/reject 分类。 |
 | 未列出字段 | 客户端或 Codex body 默认 `reject`；Header 默认 `ignore`。 |
 
 `ignore` 只能用于以下情况：
@@ -120,10 +126,23 @@ Images edit 额外兼容部分通用表单会提交、但当前公开 edit 类�
 - `body_overrides`：Connector 强制写入的字段；
 - `generated_body_fields`：adapter 生成而不是直接来自客户端的字段。
 
+根级 `codex_fingerprint_normalization` 另行维护以下固定行为：
+
+- `client_metadata["x-codex-installation-id"]` 和 turn metadata 中的
+  `installation_id` 被替换为按 Codex 凭证稳定派生的 opaque UUID。同一逻辑凭证的 Responses 与
+  Images projection 使用同一值，不同凭证使用不同值；客户端原始 installation ID 不发往上游。
+- turn metadata 中只要存在 `workspaces`，其完整路径、Git remote、commit、dirty 状态和 workspace
+  数量都会折叠为固定的 `{"/workspace":{}}`。没有 `workspaces` 时不会新增。
+- 该归一化同时覆盖 Responses HTTP/WebSocket 的 `client_metadata`，以及 standalone web search
+  的 `x-codex-turn-metadata` Header。其余字段原样保留。
+- 无法解析为 JSON 对象的 `x-codex-turn-metadata` 不会作为 opaque 值继续转发；对应 metadata
+  项或 Header 会被删除。W3C `traceparent`、`tracestate` 与 `baggage` 不受影响。
+
 ### Responses HTTP
 
 - 只允许 Codex `ResponsesApiRequest` 声明的字段；
-- 保留 Codex 客户端生成的 `client_metadata`，包括安装、窗口、线程与请求追踪元数据；
+- 保留 Codex 客户端生成的 `client_metadata`；其中安装 ID 与 turn metadata 的工作区信息按上面的
+  指纹规则归一化，窗口、线程与其他请求追踪元数据保持不变；
 - `metadata`、`user`、`safety_identifier` 与 `max_output_tokens` 被忽略；
 - `previous_response_id` 仅允许 `null` 或空字符串后删除，非空值返回错误；
 - provider 未支持的状态、采样、prompt template、moderation 和缓存选项仅接受契约列出的
@@ -133,7 +152,8 @@ Images edit 额外兼容部分通用表单会提交、但当前公开 edit 类�
 ### Responses WebSocket
 
 - 只允许 Codex `ResponseCreateWsRequest` 声明的字段，以及客户端事件 `type`；
-- Gateway 扩展字段 `generate`、`client_metadata` 明确列入客户端与 Codex 白名单；
+- Gateway 扩展字段 `generate`、`client_metadata` 明确列入客户端与 Codex 白名单；安装 ID 和
+  turn metadata 工作区信息在发送前归一化；
 - 保留 `previous_response_id`；
 - `max_output_tokens`、纯遥测字段按契约忽略，其他 provider 不支持的非默认值返回错误；
 - 最终强制 `type=response.create`、`stream=true`、`store=false`。
@@ -144,8 +164,8 @@ Images edit 额外兼容部分通用表单会提交、但当前公开 edit 类�
   `max_output_tokens`；
 - Gateway 只检查顶层字段；Search command、settings 和 result DTO 的嵌套结构由 Codex
   上游解释；
-- 保留客户端 `originator` 与 `x-codex-turn-metadata`，前者缺失时由 Connector 补充默认
-  originator；
+- 保留客户端 `originator` 与合法的 `x-codex-turn-metadata`，前者缺失时由 Connector 补充默认
+  originator；后者的安装 ID 与工作区信息在发送前归一化；
 - 固定使用非流式 JSON，不添加 body override；
 - 当前不支持 Request JSON Transform；支持该操作的渠道若组合出非空 Request JSON
   Transform，控制面编译会失败。
@@ -181,8 +201,10 @@ raw request
   -> model routing and alias
   -> configured JSON/Header Transform
   -> Codex top-level body allowlist (Codex only)
+  -> Codex body fingerprint normalization (Codex only)
   -> common hop-by-hop and explicit client Header ignore cleanup
   -> Codex Header allowlist (Codex only)
+  -> Codex Header fingerprint normalization (Codex only)
   -> connector auth/protocol headers
   -> final explicit client Header ignore guard
   -> transport framing headers
@@ -199,8 +221,8 @@ part，不把图片整体读回内存。
 1. 先核对 OpenAI 官方请求类型、涉及的第三方官方兼容文档与本机
    `/home/u/dev/research/codex` 的当前 wire type；
 2. 首先编辑 `request-allowlists.json`，更新 `verified_at` 和 source commit；
-3. 对每个字段明确选择 `allow`、`ignore` 或 `reject`，不得依赖未列出字段的默认动作表达已知
-   provider 差异；
+3. 对每个字段明确选择 `allow`、`ignore` 或 `reject`，并在涉及已知安装/工作区指纹时同步
+   `codex_fingerprint_normalization`；不得依赖未列出字段的默认动作表达已知 provider 差异；
 4. 常见反向代理/CDN 转发 Header 必须放入 `client_headers.ignore`，不得在代理转发模块另建
    一份运行时名单；
 5. 更新本说明及相关接口文档；
@@ -216,4 +238,5 @@ Rust 单元测试会拒绝以下契约漂移：
 - Codex 生成 Header 与客户端显式 `ignore` 动作冲突；
 - 一个字段同时出现在多个动作集合；
 - 客户端已知字段在对应 Codex policy 中没有显式动作；
+- Codex 安装 ID 不再按凭证作用域归一化，或 `workspaces` 不再使用固定 `/workspace` 投影；
 - Header 名、排序、重复项、source commit 或日期格式无效。

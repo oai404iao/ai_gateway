@@ -7,6 +7,13 @@ Versioning.
 
 ## [Unreleased]
 
+### Security
+
+- Normalize Codex OAuth installation identifiers to a credential-scoped
+  opaque UUID and replace reported local workspaces with a fixed `/workspace`
+  projection before forwarding, while preserving other Codex metadata and
+  trace context.
+
 ### Fixed
 
 - Sample request-log database-pool pressure before backlog probes so health

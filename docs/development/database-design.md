@@ -220,8 +220,8 @@ CHECK (cardinality(channel_group_ids) + cardinality(channel_ids) > 0);
 ### 4.6 `channels`
 
 渠道的请求/响应变换和测试配置采用 JSONB，避免为每种 DSL 操作再建立表。最终请求顺序固定为：
-**客户端白名单 → 模板默认值 → 渠道覆盖 → Codex body 白名单（如适用）→ 网关移除客户端鉴权和
-hop-by-hop Header → Codex Header 白名单（如适用）→ 上游鉴权注入**。
+**客户端白名单 → 模板默认值 → 渠道覆盖 → Codex body 白名单与指纹归一化（如适用）→ 网关移除
+客户端鉴权和 hop-by-hop Header → Codex Header 白名单与指纹归一化（如适用）→ 上游鉴权注入**。
 
 | 列 | 类型 | 说明 |
 | --- | --- | --- |
@@ -420,7 +420,8 @@ Bearer Key
   → 使用已编译的模型候选 tier，按渠道授权位图、组优先级、渠道权重和内存健康状态选择渠道
   → 模板默认值 + 渠道覆盖
   → Codex body 白名单（Codex only）
-  → Header 清理 + Codex Header 白名单（Codex only）+ 上游鉴权
+  → Codex installation/workspace body 指纹归一化（Codex only）
+  → Header 清理 + Codex Header 白名单和指纹归一化（Codex only）+ 上游鉴权
   → 原路径流式转发
   → 异步写入一条 request_logs；对已持久化的可结算成本幂等更新余额和已用额度
 ```

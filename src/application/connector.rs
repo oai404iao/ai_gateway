@@ -7,7 +7,8 @@ use reqwest::{StatusCode, Url};
 use crate::domain::{ApiOperation, CompiledChannel, ConnectorKind, RequestProtocol, UpstreamAuth};
 use crate::request_policy::{
     RequestInterface, RequestPolicyError, RequestPolicyLayer, apply_json_body_policy,
-    filter_codex_headers,
+    filter_codex_headers, normalize_codex_fingerprints_in_headers,
+    normalize_codex_fingerprints_in_json,
 };
 
 use super::codex::{
@@ -111,6 +112,13 @@ impl PreparedUpstreamAttempt {
                 let body = apply_json_body_policy(RequestPolicyLayer::CodexOauth, interface, body)
                     .map_err(ConnectorAttemptError::RequestPolicy)?
                     .body;
+                let body = normalize_codex_fingerprints_in_json(
+                    interface,
+                    body,
+                    &attempt.platform_installation_id(),
+                )
+                .map_err(ConnectorAttemptError::RequestPolicy)?
+                .body;
                 attempt
                     .adapt_body(body, request_protocol)
                     .map_err(ConnectorAttemptError::from)
@@ -145,6 +153,10 @@ impl PreparedUpstreamAttempt {
                     .map_err(ConnectorAttemptError::from)?;
                 *headers = filter_codex_headers(interface, headers)
                     .map_err(ConnectorAttemptError::RequestPolicy)?;
+                normalize_codex_fingerprints_in_headers(
+                    headers,
+                    &attempt.platform_installation_id(),
+                );
                 attempt
                     .inject_headers(headers, request_protocol)
                     .map_err(ConnectorAttemptError::from)

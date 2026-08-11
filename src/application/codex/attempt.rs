@@ -217,6 +217,13 @@ impl PreparedCodexAttempt {
         self.credential.credential_id()
     }
 
+    pub(crate) fn platform_installation_id(&self) -> String {
+        opaque_uuid(
+            self.credential.credential_id().as_bytes(),
+            b"ai-gateway-codex-installation",
+        )
+    }
+
     pub(crate) fn refresh_generation(&self) -> i64 {
         self.credential.refresh_generation()
     }
@@ -442,6 +449,35 @@ mod tests {
         assert_ne!(first.session_id, first.thread_id);
         assert!(Uuid::parse_str(&first.session_id).is_ok());
         assert!(Uuid::parse_str(&first.thread_id).is_ok());
+    }
+
+    #[test]
+    fn platform_installation_id_is_stable_for_credential_projections() {
+        let runtime = runtime();
+        let responses = PreparedCodexAttempt::prepare(
+            &runtime,
+            Uuid::from_u128(1),
+            ApiOperation::Responses,
+            false,
+            &HeaderMap::new(),
+            None,
+        )
+        .unwrap();
+        let images = PreparedCodexAttempt::prepare(
+            &runtime,
+            Uuid::from_u128(3),
+            ApiOperation::ImagesGeneration,
+            false,
+            &HeaderMap::new(),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            responses.platform_installation_id(),
+            images.platform_installation_id()
+        );
+        assert!(Uuid::parse_str(&responses.platform_installation_id()).is_ok());
     }
 
     #[test]

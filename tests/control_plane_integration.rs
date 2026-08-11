@@ -3038,8 +3038,26 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
                 "max_output_tokens": 1,
                 "metadata": {"client": "ignored by Codex"},
                 "client_metadata": {
+                    "x-codex-installation-id": "client-installation-id",
                     "session_id": "session-123",
-                    "thread_id": "thread-456"
+                    "thread_id": "thread-456",
+                    "x-codex-turn-metadata": serde_json::json!({
+                        "installation_id": "client-installation-id",
+                        "session_id": "session-123",
+                        "thread_id": "thread-456",
+                        "request_kind": "turn",
+                        "sandbox": "seatbelt",
+                        "workspaces": {
+                            "/home/alice/private-repo": {
+                                "associated_remote_urls": {
+                                    "origin": "git@github.com:alice/private-repo.git"
+                                },
+                                "latest_git_commit_hash": "abcdef123456",
+                                "has_changes": true
+                            }
+                        },
+                        "app_server_extra": "preserve-me"
+                    }).to_string()
                 },
                 "input": responses_message_input("hello")
             }),
@@ -3107,6 +3125,40 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
         "session-123"
     );
     assert_eq!(forwarded.body["client_metadata"]["thread_id"], "thread-456");
+    let platform_installation_id = forwarded.body["client_metadata"]["x-codex-installation-id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(platform_installation_id, "client-installation-id");
+    assert!(Uuid::parse_str(&platform_installation_id).is_ok());
+    let turn_metadata: serde_json::Value = serde_json::from_str(
+        forwarded.body["client_metadata"]["x-codex-turn-metadata"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(turn_metadata["installation_id"], platform_installation_id);
+    assert_eq!(turn_metadata["session_id"], "session-123");
+    assert_eq!(turn_metadata["thread_id"], "thread-456");
+    assert_eq!(turn_metadata["request_kind"], "turn");
+    assert_eq!(turn_metadata["sandbox"], "seatbelt");
+    assert_eq!(
+        turn_metadata["workspaces"],
+        serde_json::json!({"/workspace": {}})
+    );
+    assert_eq!(turn_metadata["app_server_extra"], "preserve-me");
+    assert!(
+        !forwarded
+            .body
+            .to_string()
+            .contains("/home/alice/private-repo")
+    );
+    assert!(
+        !forwarded
+            .body
+            .to_string()
+            .contains("git@github.com:alice/private-repo.git")
+    );
     assert!(forwarded.body.get("max_output_tokens").is_none());
     assert!(forwarded.body.get("metadata").is_none());
     assert!(forwarded.stainless_lang.is_none());
@@ -3168,7 +3220,18 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
                 .header("originator", "codex_cli_rs")
                 .header(
                     "x-codex-turn-metadata",
-                    r#"{"search_context_size":"medium","model_id":"client-model"}"#,
+                    serde_json::json!({
+                        "installation_id": "search-client-installation-id",
+                        "workspaces": {
+                            "/Users/alice/search-repo": {
+                                "latest_git_commit_hash": "fedcba654321",
+                                "has_changes": false
+                            }
+                        },
+                        "search_context_size": "medium",
+                        "model_id": "client-model"
+                    })
+                    .to_string(),
                 )
                 .header("session-id", "remove-search-session")
                 .header("thread-id", "remove-search-thread")
@@ -3222,10 +3285,18 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
             .split_once('/')
             .map(|(_, version)| version)
     );
+    let search_turn_metadata: serde_json::Value =
+        serde_json::from_str(search_request.turn_metadata.as_deref().unwrap()).unwrap();
     assert_eq!(
-        search_request.turn_metadata.as_deref(),
-        Some(r#"{"search_context_size":"medium","model_id":"client-model"}"#)
+        search_turn_metadata["installation_id"],
+        platform_installation_id
     );
+    assert_eq!(
+        search_turn_metadata["workspaces"],
+        serde_json::json!({"/workspace": {}})
+    );
+    assert_eq!(search_turn_metadata["search_context_size"], "medium");
+    assert_eq!(search_turn_metadata["model_id"], "client-model");
     assert!(search_request.session_id.is_none());
     assert!(search_request.thread_id.is_none());
     assert_eq!(
@@ -3604,6 +3675,25 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
             "generate": false,
             "max_output_tokens": 1,
             "metadata": {"client": "ignored by Codex"},
+            "client_metadata": {
+                "x-codex-installation-id": "websocket-client-installation-id",
+                "session_id": "session-123",
+                "thread_id": "thread-456",
+                "x-codex-turn-metadata": serde_json::json!({
+                    "installation_id": "websocket-client-installation-id",
+                    "session_id": "session-123",
+                    "thread_id": "thread-456",
+                    "request_kind": "prewarm",
+                    "workspaces": {
+                        "C:\\Users\\alice\\private-repo": {
+                            "associated_remote_urls": {
+                                "origin": "https://example.test/alice/private-repo.git"
+                            }
+                        }
+                    },
+                    "app_server_extra": "keep-websocket-extra"
+                }).to_string()
+            },
             "input": [{"type": "message", "role": "user", "content": []}]
         }),
     )
@@ -3696,6 +3786,33 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
     assert_eq!(websocket_requests[0]["generate"], false);
     assert!(websocket_requests[0].get("max_output_tokens").is_none());
     assert!(websocket_requests[0].get("metadata").is_none());
+    assert_eq!(
+        websocket_requests[0]["client_metadata"]["x-codex-installation-id"],
+        platform_installation_id
+    );
+    assert_eq!(
+        websocket_requests[0]["client_metadata"]["session_id"],
+        "session-123"
+    );
+    let websocket_turn_metadata: serde_json::Value = serde_json::from_str(
+        websocket_requests[0]["client_metadata"]["x-codex-turn-metadata"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        websocket_turn_metadata["installation_id"],
+        platform_installation_id
+    );
+    assert_eq!(
+        websocket_turn_metadata["workspaces"],
+        serde_json::json!({"/workspace": {}})
+    );
+    assert_eq!(websocket_turn_metadata["request_kind"], "prewarm");
+    assert_eq!(
+        websocket_turn_metadata["app_server_extra"],
+        "keep-websocket-extra"
+    );
     assert_eq!(
         websocket_requests[1]["previous_response_id"],
         "resp_codex_ws_1"

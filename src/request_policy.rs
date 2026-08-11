@@ -5,7 +5,7 @@ use std::{
     sync::LazyLock,
 };
 
-use axum::http::{HeaderMap, HeaderName, header::CONNECTION};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, header::CONNECTION};
 use bytes::Bytes;
 use serde::Deserialize;
 use serde_json::{Value, value::RawValue};
@@ -295,6 +295,161 @@ pub(crate) fn apply_json_body_policy(
     })
 }
 
+pub(crate) fn normalize_codex_fingerprints_in_json(
+    interface: RequestInterface,
+    body: Bytes,
+    installation_id: &str,
+) -> Result<AppliedJsonBody, RequestPolicyError> {
+    let policy = &contract().codex_fingerprint_normalization;
+    let raw_fields = serde_json::from_slice::<BTreeMap<String, &RawValue>>(&body)
+        .map_err(|_| RequestPolicyError::invalid_body(RequestPolicyLayer::CodexOauth, interface))?;
+    if !raw_fields.contains_key(&policy.client_metadata_body_field) {
+        return Ok(AppliedJsonBody {
+            body,
+            changed: false,
+        });
+    }
+
+    let mut value = serde_json::from_slice::<Value>(&body)
+        .map_err(|_| RequestPolicyError::invalid_body(RequestPolicyLayer::CodexOauth, interface))?;
+    let object = value.as_object_mut().ok_or_else(|| {
+        RequestPolicyError::invalid_body(RequestPolicyLayer::CodexOauth, interface)
+    })?;
+    let Some(client_metadata) = object.get_mut(&policy.client_metadata_body_field) else {
+        return Ok(AppliedJsonBody {
+            body,
+            changed: false,
+        });
+    };
+    if client_metadata.is_null() {
+        return Ok(AppliedJsonBody {
+            body,
+            changed: false,
+        });
+    }
+    let client_metadata = client_metadata.as_object_mut().ok_or_else(|| {
+        RequestPolicyError::field(
+            RequestPolicyLayer::CodexOauth,
+            interface,
+            RequestPolicyLocation::Body,
+            RequestPolicyFailure::UnsupportedValue,
+            &policy.client_metadata_body_field,
+        )
+    })?;
+    if !normalize_codex_client_metadata(client_metadata, installation_id) {
+        return Ok(AppliedJsonBody {
+            body,
+            changed: false,
+        });
+    }
+
+    let body = serde_json::to_vec(&value)
+        .map(Bytes::from)
+        .map_err(|_| RequestPolicyError::invalid_body(RequestPolicyLayer::CodexOauth, interface))?;
+    Ok(AppliedJsonBody {
+        body,
+        changed: true,
+    })
+}
+
+pub(crate) fn normalize_codex_fingerprints_in_headers(
+    headers: &mut HeaderMap,
+    installation_id: &str,
+) {
+    let policy = &contract().codex_fingerprint_normalization;
+    for name in &policy.turn_metadata.header_fields {
+        let name = HeaderName::from_bytes(name.as_bytes())
+            .expect("validated Codex fingerprint header name must remain valid");
+        let Some(raw) = headers
+            .get(&name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned)
+        else {
+            headers.remove(&name);
+            continue;
+        };
+        headers.remove(&name);
+        let Some(normalized) = normalize_codex_turn_metadata(&raw, installation_id) else {
+            continue;
+        };
+        if let Ok(value) = HeaderValue::from_str(&normalized) {
+            headers.insert(name, value);
+        }
+    }
+}
+
+fn normalize_codex_client_metadata(
+    client_metadata: &mut serde_json::Map<String, Value>,
+    installation_id: &str,
+) -> bool {
+    let policy = &contract().codex_fingerprint_normalization;
+    let mut changed = false;
+    let normalized_installation_id = Value::String(installation_id.to_owned());
+    for field in &policy.installation_id.client_metadata_fields {
+        let Some(value) = client_metadata.get_mut(field) else {
+            continue;
+        };
+        if *value != normalized_installation_id {
+            *value = normalized_installation_id.clone();
+            changed = true;
+        }
+    }
+    for field in &policy.turn_metadata.client_metadata_fields {
+        let Some(raw) = client_metadata
+            .get(field)
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+        else {
+            if client_metadata.remove(field).is_some() {
+                changed = true;
+            }
+            continue;
+        };
+        match normalize_codex_turn_metadata(&raw, installation_id) {
+            Some(normalized) if normalized != raw => {
+                client_metadata.insert(field.clone(), Value::String(normalized));
+                changed = true;
+            }
+            Some(_) => {}
+            None => {
+                client_metadata.remove(field);
+                changed = true;
+            }
+        }
+    }
+    changed
+}
+
+fn normalize_codex_turn_metadata(raw: &str, installation_id: &str) -> Option<String> {
+    let policy = &contract().codex_fingerprint_normalization;
+    let mut value = serde_json::from_str::<Value>(raw).ok()?;
+    let object = value.as_object_mut()?;
+    let mut changed = false;
+    let normalized_installation_id = Value::String(installation_id.to_owned());
+    for field in &policy.installation_id.turn_metadata_fields {
+        let Some(current) = object.get_mut(field) else {
+            continue;
+        };
+        if *current != normalized_installation_id {
+            *current = normalized_installation_id.clone();
+            changed = true;
+        }
+    }
+    for (field, replacement) in &policy.turn_metadata.field_replacements {
+        let Some(current) = object.get_mut(field) else {
+            continue;
+        };
+        if current != replacement {
+            *current = replacement.clone();
+            changed = true;
+        }
+    }
+    if !changed {
+        return Some(raw.to_owned());
+    }
+    serde_json::to_string(&value).ok()
+}
+
 pub(crate) fn body_field_disposition(
     layer: RequestPolicyLayer,
     interface: RequestInterface,
@@ -504,6 +659,7 @@ struct RequestPolicyContract {
     version: u32,
     verified_at: String,
     sources: RequestPolicySources,
+    codex_fingerprint_normalization: CodexFingerprintNormalizationPolicy,
     client_headers: HeaderPolicy,
     interfaces: BTreeMap<String, InterfacePolicy>,
 }
@@ -513,6 +669,36 @@ struct RequestPolicyContract {
 struct RequestPolicySources {
     openai_node_commit: String,
     codex_commit: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CodexFingerprintNormalizationPolicy {
+    client_metadata_body_field: String,
+    installation_id: CodexInstallationIdNormalizationPolicy,
+    turn_metadata: CodexTurnMetadataNormalizationPolicy,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CodexInstallationIdNormalizationPolicy {
+    scope: CodexFingerprintScope,
+    client_metadata_fields: Vec<String>,
+    turn_metadata_fields: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CodexTurnMetadataNormalizationPolicy {
+    client_metadata_fields: Vec<String>,
+    header_fields: Vec<String>,
+    field_replacements: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum CodexFingerprintScope {
+    Credential,
 }
 
 #[derive(Debug, Deserialize)]
@@ -567,8 +753,8 @@ enum UnknownAction {
 }
 
 fn validate_contract(contract: &RequestPolicyContract) -> Result<(), String> {
-    if contract.version != 1 {
-        return Err("request allowlist contract version must be 1".into());
+    if contract.version != 2 {
+        return Err("request allowlist contract version must be 2".into());
     }
     let verified = contract.verified_at.as_bytes();
     if verified.len() != 10
@@ -589,6 +775,7 @@ fn validate_contract(contract: &RequestPolicyContract) -> Result<(), String> {
             return Err("request allowlist source commits must be full Git SHAs".into());
         }
     }
+    validate_codex_fingerprint_normalization(contract)?;
     validate_header_policy(&contract.client_headers)?;
     if contract.client_headers.unknown != UnknownAction::Ignore {
         return Err("unknown client headers must be ignored".into());
@@ -697,6 +884,100 @@ fn validate_contract(contract: &RequestPolicyContract) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_codex_fingerprint_normalization(
+    contract: &RequestPolicyContract,
+) -> Result<(), String> {
+    let policy = &contract.codex_fingerprint_normalization;
+    if policy.client_metadata_body_field != "client_metadata" {
+        return Err("Codex fingerprint normalization must target `client_metadata`".into());
+    }
+    if policy.installation_id.scope != CodexFingerprintScope::Credential {
+        return Err("Codex installation ID normalization must be credential-scoped".into());
+    }
+    validate_sorted_unique(
+        "Codex installation client_metadata fields",
+        &policy.installation_id.client_metadata_fields,
+    )?;
+    validate_sorted_unique(
+        "Codex installation turn metadata fields",
+        &policy.installation_id.turn_metadata_fields,
+    )?;
+    validate_sorted_unique(
+        "Codex turn metadata client_metadata fields",
+        &policy.turn_metadata.client_metadata_fields,
+    )?;
+    validate_sorted_unique(
+        "Codex turn metadata headers",
+        &policy.turn_metadata.header_fields,
+    )?;
+    if policy.installation_id.client_metadata_fields.is_empty()
+        || policy.installation_id.turn_metadata_fields.is_empty()
+        || policy.turn_metadata.client_metadata_fields.is_empty()
+        || policy.turn_metadata.header_fields.is_empty()
+    {
+        return Err("Codex fingerprint normalization fields must not be empty".into());
+    }
+    for name in &policy.turn_metadata.header_fields {
+        let parsed = HeaderName::from_bytes(name.as_bytes())
+            .map_err(|_| format!("invalid Codex turn metadata header `{name}`"))?;
+        if parsed.as_str() != name {
+            return Err(format!(
+                "Codex turn metadata header `{name}` must be lowercase"
+            ));
+        }
+    }
+    if policy.turn_metadata.field_replacements.get("workspaces")
+        != Some(&serde_json::json!({"/workspace": {}}))
+    {
+        return Err(
+            "Codex workspace fingerprint normalization must use the canonical `/workspace` map"
+                .into(),
+        );
+    }
+    for interface in [
+        RequestInterface::ResponsesHttp,
+        RequestInterface::ResponsesWebSocket,
+    ] {
+        let interface_policy = contract
+            .interfaces
+            .get(interface.as_str())
+            .ok_or_else(|| format!("missing request interface `{}`", interface.as_str()))?;
+        if !contains_sorted(
+            &interface_policy.client_body.allow,
+            &policy.client_metadata_body_field,
+        ) || !contains_sorted(
+            &interface_policy
+                .codex_oauth
+                .as_ref()
+                .ok_or_else(|| format!("missing Codex policy for `{}`", interface.as_str()))?
+                .body
+                .allow,
+            &policy.client_metadata_body_field,
+        ) {
+            return Err(format!(
+                "Codex fingerprint normalization requires allowed `client_metadata` for `{}`",
+                interface.as_str()
+            ));
+        }
+    }
+    let search_headers = &contract
+        .interfaces
+        .get(RequestInterface::StandaloneWebSearch.as_str())
+        .and_then(|policy| policy.codex_oauth.as_ref())
+        .ok_or_else(|| "missing Codex standalone web search policy".to_owned())?
+        .headers;
+    for name in &policy.turn_metadata.header_fields {
+        if !contains_sorted(&contract.client_headers.allow, name)
+            || !contains_sorted(&search_headers.allow, name)
+        {
+            return Err(format!(
+                "Codex fingerprint normalization header `{name}` must be allowed for clients and standalone search"
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn validate_header_policy(policy: &HeaderPolicy) -> Result<(), String> {
     validate_sorted_unique("allowed headers", &policy.allow)?;
     validate_sorted_unique("allowed header prefixes", &policy.allow_prefixes)?;
@@ -792,13 +1073,114 @@ mod tests {
 
     #[test]
     fn embedded_contract_is_complete_and_current() {
-        assert_eq!(contract().version, 1);
+        assert_eq!(contract().version, 2);
         assert_eq!(contract().verified_at.len(), 10);
         assert_eq!(contract().sources.openai_node_commit.len(), 40);
         assert_eq!(contract().sources.codex_commit.len(), 40);
         for interface in REQUIRED_INTERFACES {
             assert!(contract().interfaces.contains_key(interface.as_str()));
         }
+    }
+
+    #[test]
+    fn codex_fingerprint_normalization_replaces_only_installation_and_workspaces() {
+        let raw_turn_metadata = json!({
+            "installation_id": "client-installation",
+            "session_id": "session-123",
+            "thread_id": "thread-456",
+            "request_kind": "turn",
+            "sandbox": "seatbelt",
+            "workspaces": {
+                "/home/alice/private-repo": {
+                    "associated_remote_urls": {
+                        "origin": "git@github.com:alice/private-repo.git"
+                    },
+                    "latest_git_commit_hash": "abc123",
+                    "has_changes": true
+                }
+            },
+            "app_server_extra": "preserve-me"
+        })
+        .to_string();
+        let body = Bytes::from(
+            serde_json::to_vec(&json!({
+                "model": "gpt-5-codex",
+                "input": [],
+                "client_metadata": {
+                    "x-codex-installation-id": "client-installation",
+                    "session_id": "session-123",
+                    "x-codex-turn-metadata": raw_turn_metadata
+                }
+            }))
+            .unwrap(),
+        );
+        let platform_installation_id = "11111111-1111-4111-8111-111111111111";
+
+        let normalized = normalize_codex_fingerprints_in_json(
+            RequestInterface::ResponsesHttp,
+            body,
+            platform_installation_id,
+        )
+        .unwrap();
+        assert!(normalized.changed);
+        let normalized: Value = serde_json::from_slice(&normalized.body).unwrap();
+        let client_metadata = normalized["client_metadata"].as_object().unwrap();
+        assert_eq!(
+            client_metadata["x-codex-installation-id"],
+            platform_installation_id
+        );
+        assert_eq!(client_metadata["session_id"], "session-123");
+        let turn_metadata: Value =
+            serde_json::from_str(client_metadata["x-codex-turn-metadata"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(turn_metadata["installation_id"], platform_installation_id);
+        assert_eq!(turn_metadata["session_id"], "session-123");
+        assert_eq!(turn_metadata["thread_id"], "thread-456");
+        assert_eq!(turn_metadata["request_kind"], "turn");
+        assert_eq!(turn_metadata["sandbox"], "seatbelt");
+        assert_eq!(turn_metadata["workspaces"], json!({"/workspace": {}}));
+        assert_eq!(turn_metadata["app_server_extra"], "preserve-me");
+    }
+
+    #[test]
+    fn codex_fingerprint_normalization_updates_search_headers_and_drops_malformed_metadata() {
+        let platform_installation_id = "11111111-1111-4111-8111-111111111111";
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-codex-turn-metadata",
+            HeaderValue::from_str(
+                &json!({
+                    "installation_id": "client-installation",
+                    "workspaces": {"/private/repo": {"has_changes": true}},
+                    "request_kind": "turn"
+                })
+                .to_string(),
+            )
+            .unwrap(),
+        );
+        headers.insert("traceparent", HeaderValue::from_static("preserve-trace"));
+
+        normalize_codex_fingerprints_in_headers(&mut headers, platform_installation_id);
+
+        let turn_metadata: Value = serde_json::from_str(
+            headers
+                .get("x-codex-turn-metadata")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(turn_metadata["installation_id"], platform_installation_id);
+        assert_eq!(turn_metadata["workspaces"], json!({"/workspace": {}}));
+        assert_eq!(turn_metadata["request_kind"], "turn");
+        assert_eq!(headers.get("traceparent").unwrap(), "preserve-trace");
+
+        headers.insert(
+            "x-codex-turn-metadata",
+            HeaderValue::from_static("not-json"),
+        );
+        normalize_codex_fingerprints_in_headers(&mut headers, platform_installation_id);
+        assert!(!headers.contains_key("x-codex-turn-metadata"));
     }
 
     #[test]

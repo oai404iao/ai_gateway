@@ -187,7 +187,9 @@ Codex WebSocket 测试至少覆盖：
 对于 `connector_kind = codex_oauth`，managed channel 在创建和 migration 时自动设置
 `supports_websocket = true`，但系统和用户开关仍默认关闭。Connector 在通用 JSON/Header
 变换之后强制 `stream=true`、`store=false`，保留 `previous_response_id`、`generate` 和
-`client_metadata`，把目标改为 Codex base URL 下的 `/responses`，并最后注入当前
+`client_metadata`；其中 flat installation ID 和 turn metadata installation ID 会替换为按逻辑
+凭证稳定的 opaque UUID，存在的 `workspaces` 会折叠为固定 `{"/workspace":{}}`，其他 metadata
+保持不变。随后 Connector 把目标改为 Codex base URL 下的 `/responses`，并最后注入当前
 Bearer、可选 account、FedRAMP、Codex Session/thread、User-Agent、`originator` 和版本 Header。
 HTTP SSE 专用的 `Accept`、`Accept-Encoding` 与 `Content-Type` 不进入上游 WebSocket 握手。
 

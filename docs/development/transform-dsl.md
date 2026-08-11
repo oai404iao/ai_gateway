@@ -12,9 +12,10 @@ DSL 内部顺序固定：
 模板默认规则 → 渠道覆写规则
 ```
 
-完整请求顺序为：客户端白名单 → 上述 DSL → Codex body 白名单（如适用）→ Header 清理 →
-Codex Header 白名单（如适用）→ 上游鉴权注入。因此 Transform 可以添加普通 upstream 字段，
-但不能绕过 Codex provider policy。
+完整请求顺序为：客户端白名单 → 上述 DSL → Codex body 白名单与 body 指纹归一化（如适用）→
+Header 清理 → Codex Header 白名单与 Header 指纹归一化（如适用）→ 上游鉴权注入。因此
+Transform 可以添加普通 upstream 字段，但不能绕过 Codex provider policy 或恢复客户端原始
+installation/workspace 指纹。
 
 所有请求体规则都不能修改 `model` 或 `stream`；请求和响应 Header 均有受保护
 名称；响应体规则只作用于受支持的 SSE JSON 事件。

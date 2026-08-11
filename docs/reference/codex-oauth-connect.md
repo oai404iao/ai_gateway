@@ -1,7 +1,7 @@
 # Codex OAuth 与订阅后端接入参考
 
 > 类型：外部参考
-> 最近核对：2026-08-05
+> 最近核对：2026-08-11
 > 权威来源：
 > [`openai/codex` 0.146.0 release](https://github.com/openai/codex/releases/tag/rust-v0.146.0)、
 > [OAuth server](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/login/src/server.rs)、
@@ -43,6 +43,11 @@
 > [Search tool Header](https://github.com/openai/codex/blob/5af85998c24fb3353ddd8164c3ed472057b03cb3/codex-rs/ext/web-search/src/tool.rs)
 > 和
 > [provider capability](https://github.com/openai/codex/blob/5af85998c24fb3353ddd8164c3ed472057b03cb3/codex-rs/model-provider-info/src/lib.rs)。
+> Codex 请求指纹另外核对本地
+> [`openai/codex@7a0e974e08c798d1e8d59d407aeb6e24db1313af`](https://github.com/openai/codex/tree/7a0e974e08c798d1e8d59d407aeb6e24db1313af)：
+> [Responses metadata](https://github.com/openai/codex/blob/7a0e974e08c798d1e8d59d407aeb6e24db1313af/codex-rs/core/src/responses_metadata.rs)、
+> [Responses wire types](https://github.com/openai/codex/blob/7a0e974e08c798d1e8d59d407aeb6e24db1313af/codex-rs/codex-api/src/common.rs) 和
+> [default client fingerprint](https://github.com/openai/codex/blob/7a0e974e08c798d1e8d59d407aeb6e24db1313af/codex-rs/login/src/auth/default_client.rs)。
 > HTTP content-coding 基线另外核对当前
 > [`openai/codex@5af85998c23ddb9cc21c43ef41db44712b481611`](https://github.com/openai/codex/tree/5af85998c23ddb9cc21c43ef41db44712b481611)：
 > [default client](https://github.com/openai/codex/blob/5af85998c23ddb9cc21c43ef41db44712b481611/codex-rs/login/src/auth/default_client.rs)、
@@ -175,14 +180,17 @@ provider-managed `channels` 记录。因此普通优先级、权重、API Key �
 2. 拒绝非空 `previous_response_id`；
 3. 在普通 Transform 后应用 Codex Responses HTTP body/Header 白名单，删除
    `max_output_tokens`、纯遥测和契约列出的空值/no-op；其他 provider-unsupported 非默认值报错；
-4. 强制写入 `stream=true`、`store=false`；
-5. 将目标改为 `/backend-api/codex/responses`；
-6. `Accept-Encoding` 由通用代理层独立设置为 `gzip, deflate, br, zstd`，上游响应在终态 SSE
+4. 把 `client_metadata["x-codex-installation-id"]` 和 turn metadata 中的
+   `installation_id` 替换为按逻辑凭证稳定的 opaque UUID；存在的 `workspaces` 折叠为固定
+   `{"/workspace":{}}`，其他 metadata 与 W3C trace/baggage 保留；
+5. 强制写入 `stream=true`、`store=false`；
+6. 将目标改为 `/backend-api/codex/responses`；
+7. `Accept-Encoding` 由通用代理层独立设置为 `gzip, deflate, br, zstd`，上游响应在终态 SSE
    与 usage 解析前流式解码；
-7. 最后注入当前凭证的 Bearer、可选 account、FedRAMP 和 Codex 会话 Header；
-8. 成功响应按 SSE 分类，并将客户端可见 `Content-Type` 规范化为
+8. 最后注入当前凭证的 Bearer、可选 account、FedRAMP 和 Codex 会话 Header；
+9. 成功响应按 SSE 分类，并将客户端可见 `Content-Type` 规范化为
    `text/event-stream`，即使 Codex 上游缺少或改写了该 Header；
-9. 逐块转发解码后的上游 SSE，不在 Connector 中缓冲整条响应；下游 SSE 保持 identity。
+10. 逐块转发解码后的上游 SSE，不在 Connector 中缓冲整条响应；下游 SSE 保持 identity。
 
 WebSocket 路径：
 
@@ -190,7 +198,8 @@ WebSocket 路径：
 2. 在普通 Transform 后应用独立的 Codex Responses WebSocket body/Header 白名单，删除
    `max_output_tokens` 和契约列出的纯遥测/no-op，未知 body 字段报错；
 3. 强制 `stream=true`、`store=false`，但保留
-   `previous_response_id`、`generate` 和 `client_metadata`；
+   `previous_response_id`、`generate` 和 `client_metadata`；其中 installation/workspace 指纹按
+   HTTP 相同规则归一化；
 4. 把目标改为 managed channel base URL 下的 `/responses`，再将
    `http`/`https` 转成 `ws`/`wss`；
 5. 注入 `OpenAI-Beta: responses_websockets=2026-02-06`、Bearer/可选 account、
@@ -206,7 +215,8 @@ Standalone web search 路径：
 2. 固定为非流式 JSON，在模型别名后应用独立 Search body/Header 白名单；
 3. 不应用 Request JSON Transform；Header 和响应 Header Transform 仍有效；
 4. 将目标改为 managed channel base URL 下的 `/alpha/search`；
-5. 保留 `originator`、`x-codex-turn-metadata` 和可选 `x-client-request-id`，注入
+5. 保留 `originator`、合法的 `x-codex-turn-metadata` 和可选 `x-client-request-id`；
+   turn metadata 的 installation/workspace 指纹按同一凭证规则归一化，再注入
    Bearer/可选 account/FedRAMP、版本和 User-Agent，删除 Responses Session Header；
 6. `results` DTO 透明转发；没有 usage 时不估算 token 或费用。
 
@@ -250,6 +260,14 @@ usage 与请求终态记录；客户端随后立即停止读取时，不会把�
 `codex_cli_rs/0.146.0`。原生 Codex 还会在该基础值后附加操作系统和终端信息；网关不伪造这些
 不属于服务进程的交互式客户端元数据。Codex `client_version`/`version` 同样报告独立维护的
 兼容版本。OAuth 公共 client ID、scope、redirect URI 和后端路径与核对版本保持一致。
+
+原生 Codex 还会通过 flat `client_metadata` 和 JSON 字符串形式的
+`x-codex-turn-metadata` 上报持久 installation ID，以及 workspace 根路径、Git remote、HEAD
+commit 和 dirty 状态。`ai-gateway` 只归一化这两类指纹：installation ID 按稳定 credential ID
+派生 opaque UUID，同一逻辑凭证跨 Responses HTTP/WebSocket/Search 保持一致；存在的
+`workspaces` 整体替换为 `{"/workspace":{}}`。Session/thread/turn/window、request kind、
+compaction、sandbox、子 Agent、App Server extra metadata 和 W3C trace/baggage 均保持现有转发
+行为。无法解析为 JSON 对象的 turn metadata 会被删除，不以 opaque 字符串绕过归一化。
 
 ### 凭证运行时与维护
 
@@ -327,3 +345,5 @@ WebSocket 错误会触发按 refresh generation 去重的后台 token refresh。
 7. reset-credit available count、consume 路径、请求幂等键、结果 code 与 `windows_reset`；
 8. Images generation/edit JSON shape、当前 image model 和 usage 响应；
 9. User-Agent/originator 变化是否会影响授权或后端兼容性。
+10. `client_metadata` 与 `x-codex-turn-metadata` 中 installation/workspace 字段的位置、类型和
+    保留必要性是否变化。
