@@ -125,10 +125,11 @@ Token claim 不同，网关拒绝导入。
 - 以 `codex_cli_rs/0.146.0` 为基础值的 `User-Agent` 和独立的版本标识；
 - Responses 请求的 `session-id`、`thread-id` 与 `x-client-request-id`。
 
-Standalone web search 额外保留 `x-codex-turn-metadata`，并使用客户端提供的
-`originator` 做请求来源归因；缺失时使用默认 `codex_cli_rs`。请求顶层字段为 `id`、`model`
-以及可选 `reasoning`、`input`、`commands`、`settings`、`max_output_tokens`。响应为非流式
-JSON，`output` 是最终文本，`encrypted_output` 和 `results` 为可选 opaque 数据。
+Standalone web search 额外保留 `x-codex-turn-metadata`，但发送前会把客户端
+`originator` 和 `User-Agent` 统一覆盖为 Gateway 的 `codex_cli_rs` Connector 身份。请求顶层
+字段为 `id`、`model` 以及可选 `reasoning`、`input`、`commands`、`settings`、
+`max_output_tokens`。响应为非流式 JSON，`output` 是最终文本，`encrypted_output` 和
+`results` 为可选 opaque 数据。
 
 Codex 的 image tool 当前对 generation 使用 `gpt-image-2`，请求字段包含
 `prompt`、`background`、`model`、可选 `n`、`quality` 与 `size`。Images 请求额外发送
@@ -218,10 +219,10 @@ Standalone web search 路径：
 2. 固定为非流式 JSON，在模型别名后应用独立 Search body/Header 白名单；
 3. 不应用 Request JSON Transform；Header 和响应 Header Transform 仍有效；
 4. 将目标改为 managed channel base URL 下的 `/alpha/search`；
-5. 保留 `originator`、合法的 `x-codex-turn-metadata` 和可选 `x-client-request-id`；缺失或
-   无效的 turn metadata 会安全合成，installation/workspace 指纹按同一凭证/系统设置规则归一化，
-   再注入
-   Bearer/可选 account/FedRAMP、版本和 User-Agent，删除 Responses Session Header；
+5. 保留合法的 `x-codex-turn-metadata` 和可选 `x-client-request-id`；缺失或无效的 turn metadata
+   会安全合成，installation/workspace 指纹按同一凭证/系统设置规则归一化；客户端
+   `originator` 和 `User-Agent` 固定覆盖为 Gateway 的 `codex_cli_rs` Connector 身份，再注入
+   Bearer/可选 account/FedRAMP 和版本，删除 Responses Session Header；
 6. `results` DTO 透明转发；没有 usage 时不估算 token 或费用。
 
 客户端也可以调用非流式 JSON `POST /v1/images/generations`。选中 Codex Images projection 后：

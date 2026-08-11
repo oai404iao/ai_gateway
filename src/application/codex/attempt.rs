@@ -152,11 +152,7 @@ impl PreparedCodexAttempt {
             USER_AGENT,
             HeaderValue::from_str(&codex_user_agent()).map_err(invalid)?,
         );
-        if !matches!(self.request, CodexRequestContext::StandaloneWebSearch(_))
-            || !headers.contains_key("originator")
-        {
-            headers.insert("originator", HeaderValue::from_static(CODEX_ORIGINATOR));
-        }
+        headers.insert("originator", HeaderValue::from_static(CODEX_ORIGINATOR));
         headers.insert("version", HeaderValue::from_static(CODEX_CLIENT_VERSION));
         if self.credential.is_fedramp() {
             headers.insert("X-OpenAI-Fedramp", HeaderValue::from_static("true"));
@@ -573,7 +569,7 @@ mod tests {
     }
 
     #[test]
-    fn standalone_web_search_uses_alpha_target_and_preserves_search_headers() {
+    fn standalone_web_search_uses_alpha_target_and_pins_connector_identity() {
         let attempt = PreparedCodexAttempt::prepare(
             &runtime(),
             Uuid::from_u128(1),
@@ -623,7 +619,8 @@ mod tests {
         );
 
         let mut headers = HeaderMap::new();
-        headers.insert("originator", HeaderValue::from_static("codex_cli_rs"));
+        headers.insert("originator", HeaderValue::from_static("codex_vscode"));
+        headers.insert(USER_AGENT, HeaderValue::from_static("private-client/1.0"));
         headers.insert(
             "x-codex-turn-metadata",
             HeaderValue::from_static(r#"{"search_context_size":"medium"}"#),
@@ -638,7 +635,11 @@ mod tests {
             .inject_headers(&mut headers, RequestProtocol::NonStream)
             .unwrap();
 
-        assert_eq!(headers.get("originator").unwrap(), "codex_cli_rs");
+        assert_eq!(headers.get("originator").unwrap(), CODEX_ORIGINATOR);
+        assert_eq!(
+            headers.get(USER_AGENT).unwrap(),
+            codex_user_agent().as_str()
+        );
         assert_eq!(
             headers.get("x-codex-turn-metadata").unwrap(),
             r#"{"search_context_size":"medium"}"#

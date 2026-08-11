@@ -213,9 +213,10 @@ Codex standalone web search attempt：
   `commands`、`settings` 与 `max_output_tokens`，不添加 body override；
 - 不允许 Request JSON Transform，但继续应用 Header 和响应 Header Transform；
 - 目标固定为 managed Responses channel base URL 下的 `/alpha/search`；
-- 保留客户端 `originator` 与合法的 `x-codex-turn-metadata`，originator 缺失时使用 Connector
-  默认值；turn metadata 缺失或无效时安全合成，安装 ID 与工作区使用同一凭证级/系统设置投影；
-- 注入 Bearer、存在时的 account、可选 FedRAMP、User-Agent 和版本，删除
+- 保留合法的 `x-codex-turn-metadata`；turn metadata 缺失或无效时安全合成，安装 ID 与工作区
+  使用同一凭证级/系统设置投影；
+- 无条件把 `originator` 和 `User-Agent` 固定为 Gateway 的 `codex_cli_rs` Connector 身份，
+  并注入 Bearer、存在时的 account、可选 FedRAMP 和版本，删除
   `session-id`、`thread-id` 与 image-turn Header；
 - 成功响应按非流式 JSON 处理，`results` DTO 不解释、不重写；没有可识别 usage 时不估算 token
   或费用。

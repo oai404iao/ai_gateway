@@ -108,9 +108,11 @@ metadata 与 `prompt_cache_key` 会补齐；其余已有 metadata 保留。
 
 Codex OAuth standalone web search 使用同一 Responses managed channel、模型规则、API Key 权限
 和凭证。Connector 把公共 `/v1/alpha/search` 改写为 managed base URL 下的 `/alpha/search`，
-保留 `originator` 与 `x-codex-turn-metadata`，缺失时安全补齐，删除 Responses Session Header，
-并按普通 JSON 处理响应。Turn metadata 使用与 Responses 相同的 installation/workspace 归一化；
-`results` 中未知 DTO 和字段透明转发；没有 usage 时不估算 token 或费用。
+保留合法的 `x-codex-turn-metadata`，缺失时安全补齐，并把客户端 `originator` 与
+`User-Agent` 固定覆盖为 Gateway 的 `codex_cli_rs` Connector 身份。Responses Session Header
+会被删除，响应按普通 JSON 处理。Turn metadata 使用与 Responses 相同的
+installation/workspace 归一化；`results` 中未知 DTO 和字段透明转发；没有 usage 时不估算
+token 或费用。
 
 Codex OAuth Images projection 仍使用标准客户端 `/v1/images/generations`，Connector 将上游目标
 改为 `/images/generations`，注入共享订阅凭证和 `x-codex-image-turn-id`，并按非流式 JSON

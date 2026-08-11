@@ -331,11 +331,12 @@ Responses WebSocket 能力；WebSocket `response.create` 同样强制 `stream: t
 
 Codex standalone web search 使用同一 Responses managed channel 和凭证，公共目标为
 `POST /v1/alpha/search`，Connector 将上游目标改为 managed base URL 下的 `/alpha/search`。
-该请求固定为非流式 JSON；保留合法的 `originator` 与 `x-codex-turn-metadata`，缺失时由
-Connector 安全补齐，并对后者应用相同 installation/workspace 归一化；随后注入共享
-Bearer、可选 account/FedRAMP、版本和 User-Agent，并删除 Responses Session Header。发送前不可用
-且未命中 affinity 时可以重选凭证；命中 affinity 后 fail closed；请求发送后不重试。上游没有
-返回可识别 usage 时，日志不估算 token 或费用。
+该请求固定为非流式 JSON；保留合法的 `x-codex-turn-metadata`，缺失时由 Connector 安全补齐，
+并对其应用相同 installation/workspace 归一化；客户端 `originator` 和 `User-Agent` 始终替换为
+Gateway 的 `codex_cli_rs` Connector 身份。随后注入共享 Bearer、可选 account/FedRAMP 和版本，
+并删除 Responses Session Header。发送前不可用且未命中 affinity 时可以重选凭证；命中
+affinity 后 fail closed；请求发送后不重试。上游没有返回可识别 usage 时，日志不估算 token
+或费用。
 
 Codex Images generation 在模型别名和受限变换后只保留 Codex wire type 声明的 JSON 字段，请求目标改为
 `/backend-api/codex/images/generations`。Connector 注入共享凭证的 Bearer、可选

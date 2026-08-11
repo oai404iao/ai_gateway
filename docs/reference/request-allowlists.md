@@ -173,8 +173,9 @@ Images edit 额外兼容部分通用表单会提交、但当前公开 edit 类�
   `max_output_tokens`；
 - Gateway 只检查顶层字段；Search command、settings 和 result DTO 的嵌套结构由 Codex
   上游解释；
-- 保留客户端 `originator` 与合法的 `x-codex-turn-metadata`；缺失时分别补默认 originator 和
-  安全合成 turn metadata，安装 ID 与工作区信息在发送前归一化；
+- 客户端 `originator` 和 `User-Agent` 不作为上游身份保留，发送前统一覆盖为 Gateway 的
+  `codex_cli_rs` Connector 身份；合法的 `x-codex-turn-metadata` 保留，缺失时安全合成，
+  安装 ID 与工作区信息在发送前归一化；
 - 固定使用非流式 JSON，不添加 body override；
 - 当前不支持 Request JSON Transform；支持该操作的渠道若组合出非空 Request JSON
   Transform，控制面编译会失败。

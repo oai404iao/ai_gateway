@@ -11,8 +11,10 @@ Versioning.
 
 - Normalize Codex OAuth installation identifiers to a credential-scoped
   opaque UUID and replace reported local workspaces with a configurable
-  synthetic Git workspace before forwarding, while preserving other Codex
-  metadata and trace context.
+  synthetic Git workspace before forwarding. Codex Connect also replaces
+  client `originator` and `User-Agent` values with the Gateway's fixed
+  `codex_cli_rs` connector identity while preserving other Codex metadata and
+  trace context.
 
 ### Added
 
