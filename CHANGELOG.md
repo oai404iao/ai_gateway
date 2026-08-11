@@ -7,6 +7,8 @@ Versioning.
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-08-11
+
 ### Security
 
 - Normalize Codex OAuth installation identifiers to a credential-scoped
