@@ -3085,6 +3085,26 @@ components:
           default: 3300
           description: Must be greater than idle_timeout_seconds.
 
+    SystemCodexSettings:
+      type: object
+      required: [workspace_path, git_remote_url]
+      properties:
+        workspace_path:
+          type: string
+          minLength: 1
+          maxLength: 1024
+          pattern: ^/
+          default: /workspace
+          description: Synthetic absolute workspace path that replaces every client-reported Codex workspace path.
+        git_remote_url:
+          type: string
+          format: uri
+          minLength: 1
+          maxLength: 2048
+          pattern: ^https://
+          default: https://github.com/oai404iao/ai_gateway
+          description: Synthetic HTTPS origin remote written to workspaces[workspace_path].associated_remote_urls.origin.
+
     SystemMcpSettings:
       type: object
       required:
@@ -3144,7 +3164,7 @@ components:
       type: object
       required:
         [api_hosts, upstream, request_retry, passive_health, automatic_disable, scheduled_testing,
-         session_affinity, websocket, mcp]
+         session_affinity, websocket, codex, mcp]
       properties:
         api_hosts:
           type: array
@@ -3161,6 +3181,7 @@ components:
         scheduled_testing: { $ref: "#/components/schemas/SystemScheduledTestingSettings" }
         session_affinity: { $ref: "#/components/schemas/SystemSessionAffinitySettings" }
         websocket: { $ref: "#/components/schemas/SystemWebSocketSettings" }
+        codex: { $ref: "#/components/schemas/SystemCodexSettings" }
         mcp: { $ref: "#/components/schemas/SystemMcpSettings" }
 
     SystemSettings:

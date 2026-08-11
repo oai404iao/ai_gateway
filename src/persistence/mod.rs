@@ -112,6 +112,8 @@ pub struct SystemSettingsInput {
     #[serde(default)]
     pub websocket: SystemWebSocketSettingsInput,
     #[serde(default)]
+    pub codex: SystemCodexSettingsInput,
+    #[serde(default)]
     pub mcp: SystemMcpSettingsInput,
 }
 
@@ -233,6 +235,24 @@ impl Default for SystemWebSocketSettingsInput {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+pub struct SystemCodexSettingsInput {
+    #[serde(default = "default_codex_workspace_path")]
+    pub workspace_path: String,
+    #[serde(default = "default_codex_git_remote_url")]
+    pub git_remote_url: String,
+}
+
+impl Default for SystemCodexSettingsInput {
+    fn default() -> Self {
+        Self {
+            workspace_path: default_codex_workspace_path(),
+            git_remote_url: default_codex_git_remote_url(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct SystemMcpSettingsInput {
     #[serde(default)]
     pub enabled: bool,
@@ -327,6 +347,14 @@ const fn default_websocket_idle_timeout_seconds() -> u64 {
 
 const fn default_websocket_max_connection_age_seconds() -> u64 {
     55 * 60
+}
+
+fn default_codex_workspace_path() -> String {
+    crate::domain::DEFAULT_CODEX_WORKSPACE_PATH.into()
+}
+
+fn default_codex_git_remote_url() -> String {
+    crate::domain::DEFAULT_CODEX_GIT_REMOTE_URL.into()
 }
 
 const fn default_mcp_request_body_bytes() -> usize {
@@ -4548,10 +4576,9 @@ impl ControlPlaneRepository {
 
     /// Inserts the first database-backed system policy from bootstrap TOML.
     ///
-    /// Existing fields are never overwritten. The MCP section is filled once
-    /// from bootstrap values when upgrading a row that predates database-backed
-    /// MCP settings; all later runtime reads use the database as the sole
-    /// source of truth.
+    /// Existing fields are never overwritten. Sections introduced after the
+    /// original row are filled once from bootstrap values; all later runtime
+    /// reads use the database as the sole source of truth.
     pub async fn ensure_system_settings(
         &self,
         input: SystemSettingsInput,
@@ -4586,18 +4613,25 @@ impl ControlPlaneRepository {
             .fetch_optional(&mut *transaction)
             .await?
             .ok_or(RepositoryError::NotFound)?;
-            if !before
-                .as_object()
-                .is_some_and(|value| value.contains_key("mcp"))
-            {
-                let mut after = before.clone();
-                after
-                    .as_object_mut()
-                    .ok_or(RepositoryError::Validation)?
-                    .insert(
-                        "mcp".into(),
-                        serde_json::to_value(&input.mcp).expect("MCP settings serialize"),
-                    );
+            let mut after = before.clone();
+            let after_object = after.as_object_mut().ok_or(RepositoryError::Validation)?;
+            let mut changed = false;
+            for (key, value) in [
+                (
+                    "codex",
+                    serde_json::to_value(&input.codex).expect("Codex settings serialize"),
+                ),
+                (
+                    "mcp",
+                    serde_json::to_value(&input.mcp).expect("MCP settings serialize"),
+                ),
+            ] {
+                if !after_object.contains_key(key) {
+                    after_object.insert(key.into(), value);
+                    changed = true;
+                }
+            }
+            if changed {
                 let settings: SystemSettingsInput = serde_json::from_value(after.clone())
                     .map_err(|_| RepositoryError::Validation)?;
                 validate_system_settings_input(&settings)?;
@@ -7699,6 +7733,7 @@ fn validate_system_settings_input(input: &SystemSettingsInput) -> Result<(), Rep
     let scheduled_testing = &input.scheduled_testing;
     let session_affinity = &input.session_affinity;
     let websocket = &input.websocket;
+    let codex = &input.codex;
     let mcp = &input.mcp;
     if !valid_api_hosts(api_hosts)
         || upstream.connect_timeout_seconds == 0
@@ -7730,11 +7765,41 @@ fn validate_system_settings_input(input: &SystemSettingsInput) -> Result<(), Rep
         || websocket.max_connection_age_seconds < 60
         || websocket.max_connection_age_seconds > 3_600
         || websocket.idle_timeout_seconds >= websocket.max_connection_age_seconds
+        || !valid_codex_settings_input(codex)
         || !valid_mcp_settings_input(mcp)
     {
         return Err(RepositoryError::Validation);
     }
     Ok(())
+}
+
+pub fn valid_codex_settings_input(input: &SystemCodexSettingsInput) -> bool {
+    let workspace_path = input.workspace_path.as_str();
+    if workspace_path.trim() != workspace_path
+        || workspace_path.is_empty()
+        || workspace_path.chars().count() > 1_024
+        || !workspace_path.starts_with('/')
+        || workspace_path.chars().any(char::is_control)
+    {
+        return false;
+    }
+    let git_remote_url = input.git_remote_url.as_str();
+    if git_remote_url.trim() != git_remote_url
+        || git_remote_url.is_empty()
+        || git_remote_url.chars().count() > 2_048
+    {
+        return false;
+    }
+    let Ok(url) = reqwest::Url::parse(git_remote_url) else {
+        return false;
+    };
+    url.scheme() == "https"
+        && url.host_str().is_some()
+        && url.path() != "/"
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none()
 }
 
 fn valid_mcp_settings_input(input: &SystemMcpSettingsInput) -> bool {

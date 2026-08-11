@@ -1692,6 +1692,19 @@ export interface components {
              */
             max_connection_age_seconds: number;
         };
+        SystemCodexSettings: {
+            /**
+             * @description Synthetic absolute workspace path that replaces every client-reported Codex workspace path.
+             * @default /workspace
+             */
+            workspace_path: string;
+            /**
+             * Format: uri
+             * @description Synthetic HTTPS origin remote written to workspaces[workspace_path].associated_remote_urls.origin.
+             * @default https://github.com/oai404iao/ai_gateway
+             */
+            git_remote_url: string;
+        };
         SystemMcpSettings: {
             /**
              * @description Mounts configured MCP endpoints on the public listener when the binary includes the mcp-server feature.
@@ -1745,6 +1758,7 @@ export interface components {
             scheduled_testing: components["schemas"]["SystemScheduledTestingSettings"];
             session_affinity: components["schemas"]["SystemSessionAffinitySettings"];
             websocket: components["schemas"]["SystemWebSocketSettings"];
+            codex: components["schemas"]["SystemCodexSettings"];
             mcp: components["schemas"]["SystemMcpSettings"];
         };
         SystemSettings: components["schemas"]["SystemSettingsInput"] & {

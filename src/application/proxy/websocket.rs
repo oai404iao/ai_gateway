@@ -496,6 +496,7 @@ impl ResponsesWebSocketSession {
                 connector_affinity_hit,
                 &self.request_headers,
                 Some(connector_seed),
+                snapshot.system_settings().codex(),
             ) {
                 Ok(connector) => connector,
                 Err(error) => {

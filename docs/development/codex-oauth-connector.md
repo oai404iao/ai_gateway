@@ -175,6 +175,11 @@ Codex HTTP attempt：
 - 要求 SSE streaming；
 - 强制 `stream=true`、`store=false`；
 - 在通用 JSON Transform 之后应用 Codex Responses HTTP body 白名单；
+- 把 flat `x-codex-installation-id` 与 turn metadata 中的 `installation_id` 替换为按逻辑凭证
+  稳定的 opaque UUID；`workspaces` 强制替换为系统设置中的单一合成 Git 工作区；
+- 缺失时创建 `client_metadata`，补齐 session/thread/turn/window、turn metadata 和
+  `prompt_cache_key`；已有非空身份值保留，不推测 request kind、sandbox、beta、subagent、
+  attestation、turn-state 或 residency，其他 metadata 和 W3C trace/baggage 保留；
 - 删除显式兼容的 `max_output_tokens` 和纯遥测字段；`previous_response_id` 只允许空值后删除；
   其他已知但 provider 无法表达的非默认值以及未知字段返回客户端错误；
 - 目标固定为 managed channel base URL 下的 `/responses`；
@@ -192,6 +197,8 @@ Codex WebSocket attempt：
 - 在通用 JSON Transform 之后应用独立的 Codex Responses WebSocket body 白名单，并删除
   `max_output_tokens` 与显式纯遥测字段；
 - 保留客户端的 `previous_response_id`、`generate` 和 `client_metadata`；
+- 对 `client_metadata` 应用与 HTTP 相同的安装 ID/工作区归一化和缺失字段补全，不改写已有
+  Session/thread、turn-state 或其他 metadata；
 - 把 managed channel base URL 转成 `/responses` 的 `ws`/`wss` 目标；
 - 使用 Codex 同源的 WebSocket Beta、Bearer/可选 account、FedRAMP、session/thread、
   User-Agent、`originator` 和版本 Header，不发送 HTTP SSE 专用的 `Accept`、
@@ -206,8 +213,10 @@ Codex standalone web search attempt：
   `commands`、`settings` 与 `max_output_tokens`，不添加 body override；
 - 不允许 Request JSON Transform，但继续应用 Header 和响应 Header Transform；
 - 目标固定为 managed Responses channel base URL 下的 `/alpha/search`；
-- 保留客户端 `originator` 与 `x-codex-turn-metadata`，originator 缺失时使用 Connector 默认值；
-- 注入 Bearer、存在时的 account、可选 FedRAMP、User-Agent 和版本，删除
+- 保留合法的 `x-codex-turn-metadata`；turn metadata 缺失或无效时安全合成，安装 ID 与工作区
+  使用同一凭证级/系统设置投影；
+- 无条件把 `originator` 和 `User-Agent` 固定为 Gateway 的 `codex_cli_rs` Connector 身份，
+  并注入 Bearer、存在时的 account、可选 FedRAMP 和版本，删除
   `session-id`、`thread-id` 与 image-turn Header；
 - 成功响应按非流式 JSON 处理，`results` DTO 不解释、不重写；没有可识别 usage 时不估算 token
   或费用。
@@ -257,6 +266,9 @@ generation 去重 refresh；已经发送的图片请求不会重放。
 - credential `Debug`、audit before/after 和错误摘要必须脱敏。
 - 删除必须在提交前清除持久化 OAuth Token；tombstone 不得继续引用 proxy 或出现在凭证列表/导出。
 - callback URL、authorization code 和导入 token 不进入日志或浏览器持久化状态。
+- Codex 客户端原始 installation ID、本地 workspace 路径、Git remote、commit 和 dirty 状态不
+  发往订阅后端。安装 ID 按逻辑凭证稳定，workspace 统一投影为 `/workspace`；其他
+  `client_metadata`、turn metadata 和 W3C trace/baggage 不在本功能中改写。
 - 当前 token 与普通 upstream API key 一样以数据库明文列保存；部署者必须保护 PostgreSQL、备份、
   主机和 Console 管理权限。若未来增加列级加密，应使用明确的进程主密钥配置和轮换设计，不能在
   Connector 内临时引入不可恢复的本地密钥。

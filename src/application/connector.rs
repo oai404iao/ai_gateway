@@ -4,10 +4,14 @@ use axum::http::{HeaderMap, HeaderValue, Uri, header::AUTHORIZATION};
 use bytes::Bytes;
 use reqwest::{StatusCode, Url};
 
-use crate::domain::{ApiOperation, CompiledChannel, ConnectorKind, RequestProtocol, UpstreamAuth};
+use crate::domain::{
+    ApiOperation, CodexRequestMetadataSettings, CompiledChannel, ConnectorKind, RequestProtocol,
+    UpstreamAuth,
+};
 use crate::request_policy::{
-    RequestInterface, RequestPolicyError, RequestPolicyLayer, apply_json_body_policy,
-    filter_codex_headers,
+    CodexRequestMetadata, RequestInterface, RequestPolicyError, RequestPolicyLayer,
+    apply_json_body_policy, filter_codex_headers, normalize_codex_fingerprints_in_headers,
+    normalize_codex_fingerprints_in_json,
 };
 
 use super::codex::{
@@ -34,6 +38,7 @@ impl UpstreamConnectorRegistry {
         affinity_cache_hit: bool,
         client_headers: &HeaderMap,
         affinity_hash: Option<[u8; 32]>,
+        codex_metadata_settings: &CodexRequestMetadataSettings,
     ) -> Result<PreparedUpstreamAttempt, ConnectorUnavailable> {
         match channel.connector_kind() {
             ConnectorKind::OpenAiCompatible => Ok(PreparedUpstreamAttempt::OpenAiCompatible),
@@ -48,8 +53,12 @@ impl UpstreamConnectorRegistry {
                     affinity_hash,
                 )
                 .map_err(ConnectorUnavailable::Codex)?;
+                let request_metadata = attempt
+                    .request_metadata(codex_metadata_settings)
+                    .map(Box::new);
                 Ok(PreparedUpstreamAttempt::Codex {
-                    attempt,
+                    attempt: Box::new(attempt),
+                    request_metadata,
                     service: service.clone(),
                 })
             }
@@ -60,7 +69,8 @@ impl UpstreamConnectorRegistry {
 pub(crate) enum PreparedUpstreamAttempt {
     OpenAiCompatible,
     Codex {
-        attempt: PreparedCodexAttempt,
+        attempt: Box<PreparedCodexAttempt>,
+        request_metadata: Option<Box<CodexRequestMetadata>>,
         service: CodexConnectorService,
     },
 }
@@ -104,13 +114,24 @@ impl PreparedUpstreamAttempt {
     ) -> Result<Bytes, ConnectorAttemptError> {
         match self {
             Self::OpenAiCompatible => Ok(body),
-            Self::Codex { attempt, .. } => {
+            Self::Codex {
+                attempt,
+                request_metadata,
+                ..
+            } => {
                 let interface = attempt
                     .request_interface(request_protocol)
                     .map_err(ConnectorAttemptError::from)?;
                 let body = apply_json_body_policy(RequestPolicyLayer::CodexOauth, interface, body)
                     .map_err(ConnectorAttemptError::RequestPolicy)?
                     .body;
+                let body = if let Some(metadata) = request_metadata {
+                    normalize_codex_fingerprints_in_json(interface, body, metadata)
+                        .map_err(ConnectorAttemptError::RequestPolicy)?
+                        .body
+                } else {
+                    body
+                };
                 attempt
                     .adapt_body(body, request_protocol)
                     .map_err(ConnectorAttemptError::from)
@@ -139,12 +160,19 @@ impl PreparedUpstreamAttempt {
     ) -> Result<(), ConnectorAttemptError> {
         match self {
             Self::OpenAiCompatible => inject_standard_auth(headers, channel),
-            Self::Codex { attempt, .. } => {
+            Self::Codex {
+                attempt,
+                request_metadata,
+                ..
+            } => {
                 let interface = attempt
                     .request_interface(request_protocol)
                     .map_err(ConnectorAttemptError::from)?;
                 *headers = filter_codex_headers(interface, headers)
                     .map_err(ConnectorAttemptError::RequestPolicy)?;
+                if let Some(metadata) = request_metadata {
+                    normalize_codex_fingerprints_in_headers(interface, headers, metadata);
+                }
                 attempt
                     .inject_headers(headers, request_protocol)
                     .map_err(ConnectorAttemptError::from)
@@ -187,7 +215,10 @@ impl PreparedUpstreamAttempt {
         if status != StatusCode::UNAUTHORIZED {
             return;
         }
-        if let Self::Codex { attempt, service } = self {
+        if let Self::Codex {
+            attempt, service, ..
+        } = self
+        {
             let service = service.clone();
             let credential_id = attempt.credential_id();
             let refresh_generation = attempt.refresh_generation();

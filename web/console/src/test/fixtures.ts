@@ -611,6 +611,10 @@ export const SYSTEM_SETTINGS: SystemSettings = {
     idle_timeout_seconds: 300,
     max_connection_age_seconds: 3_300,
   },
+  codex: {
+    workspace_path: "/workspace",
+    git_remote_url: "https://github.com/oai404iao/ai_gateway",
+  },
   mcp: {
     enabled: false,
     public_base_url: "https://mcp.example.test",

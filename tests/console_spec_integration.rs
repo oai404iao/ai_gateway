@@ -149,6 +149,7 @@ fn bootstrap_system_settings() -> SystemSettingsInput {
         scheduled_testing: Default::default(),
         session_affinity: Default::default(),
         websocket: Default::default(),
+        codex: Default::default(),
         mcp: Default::default(),
     }
 }
@@ -414,6 +415,7 @@ async fn system_settings_bootstrap_initializes_once_without_overwriting_database
         scheduled_testing: Default::default(),
         session_affinity: Default::default(),
         websocket: Default::default(),
+        codex: Default::default(),
         mcp: Default::default(),
     };
 
@@ -453,7 +455,7 @@ async fn system_settings_bootstrap_initializes_once_without_overwriting_database
 }
 
 #[tokio::test]
-async fn system_settings_bootstrap_backfills_mcp_once_for_upgraded_databases() {
+async fn system_settings_bootstrap_backfills_late_sections_once_for_upgraded_databases() {
     let database = TestDatabase::new().await;
     let repository = ControlPlaneRepository::new(database.pool.clone());
     repository
@@ -461,13 +463,15 @@ async fn system_settings_bootstrap_backfills_mcp_once_for_upgraded_databases() {
         .await
         .unwrap();
     sqlx::query(
-        "UPDATE system_settings SET value=value-'mcp' WHERE setting_key='forwarding_policy'",
+        "UPDATE system_settings SET value=value-'codex'-'mcp' WHERE setting_key='forwarding_policy'",
     )
     .execute(&database.pool)
     .await
     .unwrap();
 
     let mut bootstrap = bootstrap_system_settings();
+    bootstrap.codex.workspace_path = "/synthetic/project".into();
+    bootstrap.codex.git_remote_url = "https://github.com/example/synthetic-project".into();
     bootstrap.mcp = SystemMcpSettingsInput {
         enabled: false,
         public_base_url: Some("https://mcp.example.test".into()),
@@ -481,6 +485,11 @@ async fn system_settings_bootstrap_backfills_mcp_once_for_upgraded_databases() {
     repository.ensure_system_settings(bootstrap).await.unwrap();
 
     let stored = repository.system_settings().await.unwrap();
+    assert_eq!(stored.settings.codex.workspace_path, "/synthetic/project");
+    assert_eq!(
+        stored.settings.codex.git_remote_url,
+        "https://github.com/example/synthetic-project"
+    );
     assert_eq!(
         stored.settings.mcp.public_base_url.as_deref(),
         Some("https://mcp.example.test")
@@ -493,6 +502,8 @@ async fn system_settings_bootstrap_backfills_mcp_once_for_upgraded_databases() {
     assert_eq!(stored.settings.mcp.image_result_bytes, 4_096);
 
     let mut replacement = bootstrap_system_settings();
+    replacement.codex.workspace_path = "/replacement".into();
+    replacement.codex.git_remote_url = "https://github.com/example/replacement".into();
     replacement.mcp.public_base_url = Some("https://replacement.example.test".into());
     repository
         .ensure_system_settings(replacement)
@@ -508,6 +519,12 @@ async fn system_settings_bootstrap_backfills_mcp_once_for_upgraded_databases() {
             .public_base_url
             .as_deref(),
         Some("https://mcp.example.test")
+    );
+    let stored = repository.system_settings().await.unwrap();
+    assert_eq!(stored.settings.codex.workspace_path, "/synthetic/project");
+    assert_eq!(
+        stored.settings.codex.git_remote_url,
+        "https://github.com/example/synthetic-project"
     );
     database.cleanup().await;
 }
@@ -3511,6 +3528,10 @@ async fn system_settings_are_versioned_audited_and_updated_via_console() {
         "idle_timeout_seconds": 120,
         "max_connection_age_seconds": 3300,
     });
+    input["codex"] = serde_json::json!({
+        "workspace_path": "/synthetic/project",
+        "git_remote_url": "https://github.com/example/synthetic-project",
+    });
     input["mcp"] = serde_json::json!({
         "enabled": false,
         "public_base_url": "https://mcp.example.test",
@@ -3585,6 +3606,19 @@ async fn system_settings_are_versioned_audited_and_updated_via_console() {
     .await;
     assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
+    let mut invalid_codex_remote = input.clone();
+    invalid_codex_remote["codex"]["git_remote_url"] =
+        serde_json::json!("git@github.com:private/repo.git");
+    let invalid = request(
+        &app,
+        "PUT",
+        "/console/v1/system/settings",
+        invalid_codex_remote,
+        &[("if-match", &etag)],
+    )
+    .await;
+    assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
     let updated = request(
         &app,
         "PUT",
@@ -3649,6 +3683,11 @@ async fn system_settings_are_versioned_audited_and_updated_via_console() {
     assert_eq!(
         published.websocket().idle_timeout(),
         std::time::Duration::from_secs(120)
+    );
+    assert_eq!(published.codex().workspace_path(), "/synthetic/project");
+    assert_eq!(
+        published.codex().git_remote_url(),
+        "https://github.com/example/synthetic-project"
     );
     assert!(!published.mcp().enabled());
     assert_eq!(
