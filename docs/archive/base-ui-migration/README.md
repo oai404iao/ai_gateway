@@ -1,4 +1,6 @@
-# project
+# Console Radix 到 Base UI 迁移记录
+
+> 状态：历史归档。记录 2026-07-23 Console 从 Radix 完整迁移到 Base UI 的总览、组件差异和人工验证项；当前实现以 `web/console/` 为准。
 
 2026-07-23 — whole-project golden-pair migration plus consumer sweep; all Console Radix wrappers and direct usages now use Base UI or the documented native replacement.
 
@@ -6,7 +8,7 @@
 
 - `web/console/components.json` now uses the `base-nova` shadcn style.
 - `web/console/package.json` and `web/console/pnpm-lock.yaml` add `@base-ui/react@1.6.0` and remove the direct `radix-ui` dependency after the final wrapper migration.
-- Twenty wrapper reports in `.migration/` record the component-by-component golden-pair, merge, and consumer work for Label, Separator, Toggle, Checkbox, Switch, Avatar, Progress, Collapsible, Tabs, ScrollArea, Tooltip, DropdownMenu, Select, Dialog, Sheet, AlertDialog, Button, Badge, ToggleGroup, and Sidebar.
+- The twenty sibling component reports record the component-by-component golden-pair, merge, and consumer work for Label, Separator, Toggle, Checkbox, Switch, Avatar, Progress, Collapsible, Tabs, ScrollArea, Tooltip, DropdownMenu, Select, Dialog, Sheet, AlertDialog, Button, Badge, ToggleGroup, and Sidebar.
 - The application-wide consumer sweep replaced `asChild`, Radix value shapes, popup anatomy, state hooks, and positioning props. Controlled external dialogs now identify their trigger, clickable tables ignore interactive descendants, and test setup supplies the browser animation API used by Base UI.
 - Final dependency and source scans found no `radix-ui` or `@radix-ui` matches in `web/console/package.json`, `web/console/pnpm-lock.yaml`, `web/console/components.json`, `web/console/src`, or `web/console/e2e`.
 - Verification passed: TypeScript typecheck, oxlint with 0 errors and the 5 existing Fast Refresh warnings, 76 Vitest tests in 26 files, production build, OpenAPI generated-type drift check, and 5 Playwright Chromium smoke tests.

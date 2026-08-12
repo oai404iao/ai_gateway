@@ -127,9 +127,11 @@ DELETE /console/v1/mcp-servers/{id}
 }
 ```
 
-`model_rule_id` 必须指向启用的 `open_ai_responses` 模型规则，并且候选 Channel 必须支持
-standalone web search。`slug` 与 `kind` 创建后不可修改；删除采用软删除并立即从运行时
-registry 移除。
+`model_rule_id` 必须指向启用并可编译的 `open_ai_responses` 模型规则。创建或更新实例时不要求
+当前已经存在模型兼容、Search-capable 或 active Channel；这种暂时不可用的实例仍保留在运行时
+registry，实际工具调用按普通路由错误失败。要成功执行 `web.run`，请求时必须至少有一个获授权且
+支持 standalone web search 的可用候选 Channel。`slug` 与 `kind` 创建后不可修改；删除采用软删除
+并立即从运行时 registry 移除。
 
 最终 MCP URL 为：
 
@@ -155,9 +157,11 @@ https://api.example.com/mcp/search
 }
 ```
 
-`model_rule_id` 必须指向启用的 `open_ai_images` 模型规则。`background` 允许 `auto`、
-`opaque`、`transparent`；`quality` 允许 `auto`、`low`、`medium`、`high`；`size` 可以为
-`auto` 或每个维度在 64 到 8192 之间的规范 `WIDTHxHEIGHT`。实际值仍须由绑定的上游模型支持。
+`model_rule_id` 必须指向启用的 `open_ai_images` 模型规则。创建或更新时同样不要求当前存在
+active Images route；实例仍可保存并进入 registry，但工具调用会按普通路由错误失败。
+`background` 允许 `auto`、`opaque`、`transparent`；`quality` 允许 `auto`、`low`、
+`medium`、`high`；`size` 可以为 `auto` 或每个维度在 64 到 8192 之间的规范
+`WIDTHxHEIGHT`。实际值仍须由绑定的上游模型支持。
 
 ## 鉴权与授权
 
@@ -171,13 +175,13 @@ Search MCP 要求 API Key：
 
 - 允许 `open_ai_responses`；
 - 具有 `proxy` 权限；
-- 能访问 MCP 实例绑定模型规则的至少一个候选路由。
+- 调用时能访问 MCP 实例绑定模型规则的至少一个可用且 Search-capable 的候选路由。
 
 Images MCP 要求 API Key：
 
 - 允许 `open_ai_images`；
 - 具有 `proxy` 权限；
-- 能访问 MCP 实例绑定模型规则的至少一个候选 Images 路由。
+- 调用时能访问 MCP 实例绑定模型规则的至少一个可用 Images 候选路由。
 
 `tools/list` 会按 API Key 路由权限过滤。原始 API Key 不会进入 MCP handler 的业务参数、
 Search/Images 请求 body、上游 Header 或请求日志。
@@ -274,6 +278,6 @@ image_gen.imagegen
 
 ## 相关文档
 
-- [MCP 服务架构与实施记录](../development/mcp-services.md)
+- [MCP 服务架构与扩展边界](../development/mcp-services.md)
 - [MCP 2026-07-28 外部语义](../reference/mcp-2026-07-28.md)
 - [运行与接口说明](operations.md)

@@ -1,5 +1,7 @@
 # tooltip
 
+> 状态：历史归档。记录 2026-07-23 Console Radix → Base UI 迁移的组件级差异；当前实现以 `web/console/` 为准。
+
 2026-07-23 — golden pair via CLI plus consumer and animation rewrites; migrated Tooltip to Base UI while preserving the console's zero-delay provider default.
 
 ## Changed
@@ -13,7 +15,7 @@
 
 ## Left alone
 
-- Other polymorphic `asChild` uses in `web/console/src/components/ui/sidebar.tsx` belong to the sidebar wrapper and were intentionally deferred to `.migration/sidebar.md`.
+- Other polymorphic `asChild` uses in `web/console/src/components/ui/sidebar.tsx` belong to the sidebar wrapper and were intentionally deferred to the sibling `sidebar.md` migration record.
 
 ## Behavior changes
 

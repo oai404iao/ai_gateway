@@ -1,5 +1,7 @@
 # collapsible
 
+> 状态：历史归档。记录 2026-07-23 Console Radix → Base UI 迁移的组件级差异；当前实现以 `web/console/` 为准。
+
 2026-07-23 — golden pair via CLI with a consumer prop migration; migrated Collapsible to Base UI and updated the JSON viewer trigger composition.
 
 ## Changed

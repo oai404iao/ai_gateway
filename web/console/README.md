@@ -1,8 +1,11 @@
 # ai-gateway Console UI
 
+> Status: Current frontend development and build guide.
+
 Embedded admin console for `ai-gateway`: a React 19 + TypeScript single-page
-app built with Vite, Tailwind CSS v4, and shadcn/ui (Radix). The production
-build is embedded into the Rust binary via `rust-embed` (see the
+app built with Vite, Tailwind CSS v4, and shadcn/ui `base-nova` backed by
+Base UI. The production build is embedded into the Rust binary via
+`rust-embed` (see the
 `embedded-console-ui` cargo feature) and served only on the Console listener,
 never on the public `/v1/*` data plane. See [`docs/development/console-ui.md`](../../docs/development/console-ui.md)
 for the architecture and [`docs/openapi/console-v1.yaml`](../../docs/openapi/console-v1.yaml)
@@ -10,8 +13,10 @@ for the API contract this UI consumes.
 
 ## Prerequisites
 
-- Node.js 24 and pnpm 11.17.0 (pinned by `packageManager`)
-- For component/e2e tests: a POSIX shell; Playwright installs its own Chromium
+- Node.js 24 (declared in `engines`) and pnpm 11.17.0 (pinned by
+  `packageManager`)
+- For component/e2e tests: a POSIX shell; install Playwright Chromium once with
+  `pnpm e2e:install`
 
 ## Common commands
 
@@ -39,8 +44,8 @@ pnpm e2e:install            # install Playwright Chromium + OS deps (first run)
 ## Layout
 
 - `src/api/` — typed Console client, session store, MSW/test helpers, generated
-  OpenAPI types (`generated/console-v1.d.ts` is the single source of truth;
-  `types.ts` re-exports it).
+  OpenAPI types (`generated/console-v1.d.ts` is generated from the authoritative
+  repository spec; `types.ts` re-exports it).
 - `src/app/` — providers, router, layouts, theme.
 - `src/features/` — feature modules (auth, profile, sessions, api-keys,
   owner-scoped request logs and cost statistics, administrator system request

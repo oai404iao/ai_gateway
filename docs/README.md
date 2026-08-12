@@ -1,5 +1,7 @@
 # ai-gateway 文档中心
 
+> 状态：当前索引。
+
 本目录按读者和用途分组。开始阅读前，先选择与你当前任务对应的入口。
 
 ## 文档分类
@@ -11,7 +13,7 @@
 | [外部参考](reference/README.md) | 兼容性开发者、上游接入人员 | OpenAI 接口语义、网关兼容边界和权威外部链接 |
 | [OpenAPI 契约](openapi/console-v1.yaml) | Console 后端与前端开发者 | Console API 请求/响应的机器可读权威规范 |
 | [请求白名单契约](reference/request-allowlists.json) | 数据面与 Connector 维护者 | 客户端/Codex Header、顶层 body 字段动作和 Codex 隐私归一化/安全补全 |
-| [历史归档](archive/README.md) | 追溯历史决策的维护者 | 已完成 MVP 清单；不能作为当前行为依据 |
+| [历史归档](archive/README.md) | 追溯历史决策的维护者 | 已完成 MVP 清单和已被替代的早期蓝图/实施计划；不能作为当前行为依据 |
 
 仓库根目录的 [`AGENTS.md`](../AGENTS.md) 是编码 Agent 的操作手册，不是用户文档或架构文档。
 

@@ -1,5 +1,7 @@
 # dropdown-menu
 
+> 状态：历史归档。记录 2026-07-23 Console Radix → Base UI 迁移的组件级差异；当前实现以 `web/console/` 为准。
+
 2026-07-23 — golden pair via CLI plus consumer and transition rewrites; migrated DropdownMenu to Base UI Menu while preserving the project's Lucide icons and visual treatment.
 
 ## Changed

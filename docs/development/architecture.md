@@ -353,4 +353,5 @@ generation/edit 可以保持独立观测和迁移兼容性。
 | 当前用户行为 | `docs/user/operations.md` |
 | OpenAI 兼容边界 | `docs/reference/openai-compatibility.md` |
 
-未来方向和设计背景见 [产品与架构蓝图](product-blueprint.md)，但不能用蓝图覆盖当前代码行为。
+早期产品方向和已经失效的架构假设保存在
+[产品与架构蓝图归档](../archive/product-blueprint.md)，不能用它覆盖当前代码行为。

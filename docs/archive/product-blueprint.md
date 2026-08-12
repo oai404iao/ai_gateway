@@ -1,7 +1,9 @@
 # 产品与架构蓝图
 
-> 状态：提案/设计蓝图。本文保留产品方向、设计动机和未来约束；当前运行时行为以
-> [当前架构](architecture.md)、代码、测试、migration 和 OpenAPI 为准。
+> 状态：历史归档。本文保存项目早期产品方向和架构假设，其中两格式、单实例、
+> Radix UI、计划中的 Console 和非流式 JSON 响应变换等内容均已过时或未实现。
+> 当前行为以[当前架构](../development/architecture.md)、代码、测试、migration 和 OpenAPI
+> 为准；不要从本文恢复旧约束。
 
 ## 项目描述
 
@@ -229,7 +231,7 @@ https://console.example.com/
 - 不引入 SSR、Next.js、常驻 Node 服务或生产环境的文件系统静态目录。
 
 详细的目录、接口契约、构建、安全和分阶段实施计划见
-[Console Web UI 设计与实施计划](console-ui.md)。
+[Console Web UI 原始设计与实施计划](console-ui-implementation-plan.md)。
 
 ## 代码组织
 

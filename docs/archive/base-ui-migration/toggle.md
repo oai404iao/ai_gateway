@@ -1,5 +1,7 @@
 # toggle
 
+> 状态：历史归档。记录 2026-07-23 Console Radix → Base UI 迁移的组件级差异；当前实现以 `web/console/` 为准。
+
 2026-07-23 — golden pair via CLI plus a class-hook cleanup; migrated the toggle primitive to Base UI while preserving the shared variant export.
 
 ## Changed

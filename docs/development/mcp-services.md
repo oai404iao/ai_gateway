@@ -1,4 +1,4 @@
-# MCP 服务架构与实施提案
+# MCP 服务架构与扩展边界
 
 > 状态：部分实现。Transport、registry、Search MCP、Images generation/edit MCP、完整
 > `2025-11-25` 可选 Session/SSE 兼容、Codex 旧版 `2025-06-18` 协商、数据库系统设置、
@@ -307,9 +307,11 @@ enum CompiledMcpServer {
 - settings version 和字段合法；
 - Search domain policy 不冲突；
 - Images request/result 上限不超过文件级运行配置；edit 输入还受独立单图和解码总量限制；
-- 启用的 MCP 至少能编译出一个全局候选路由。
+- 启用的 MCP 所引用规则可以暂时没有模型兼容、operation-capable 或 active Channel；实例仍进入
+  registry，实际调用复用普通路由不可用错误。
 
-API Key 的实际可达性仍在请求时按其 authorization bitmap 判断。
+API Key 的实际可达性以及 operation capability 仍在请求时按 authorization bitmap 和普通
+路由选择判断。
 
 ## Search MCP
 
