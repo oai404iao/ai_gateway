@@ -7,6 +7,8 @@ Versioning.
 
 ## [Unreleased]
 
+## [0.10.3] - 2026-08-12
+
 ### Changed
 
 - Add a channel-group **Request compression** setting. `default` keeps
