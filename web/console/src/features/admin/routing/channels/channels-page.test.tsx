@@ -310,6 +310,7 @@ describe("ChannelsPage", () => {
       name: CHANNEL_GROUP.name,
       api_format: CHANNEL_GROUP.api_format,
       connector_kind: CHANNEL_GROUP.connector_kind,
+      request_compression: CHANNEL_GROUP.request_compression,
       priority: CHANNEL_GROUP.priority,
       selection_strategy: CHANNEL_GROUP.selection_strategy,
       enabled: false,

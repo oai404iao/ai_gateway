@@ -36,14 +36,17 @@ import type {
   ApiFormat,
   ChannelGroupInput,
   ConnectorKind,
+  RequestCompression,
   SelectionStrategy,
 } from "@/api/types";
 import {
   API_FORMATS,
   CONNECTOR_KINDS,
+  REQUEST_COMPRESSIONS,
   SELECTION_STRATEGIES,
   apiFormatLabel,
   connectorKindLabel,
+  requestCompressionLabel,
   selectionStrategyLabel,
 } from "@/lib/permissions";
 import { useI18n } from "@/app/i18n";
@@ -52,6 +55,7 @@ const schema = z.object({
   name: z.string().min(1, "Name is required.").max(100),
   api_format: z.enum(["open_ai_chat_completions", "open_ai_responses", "open_ai_images"]),
   connector_kind: z.enum(["openai_compatible", "codex_oauth"]),
+  request_compression: z.enum(["default", "zstd"]),
   priority: z.number().int().min(0, "Priority must be zero or greater."),
   selection_strategy: z.enum(["weighted_random", "weighted_round_robin"]),
   enabled: z.boolean(),
@@ -64,6 +68,7 @@ const empty: FormState = {
   name: "",
   api_format: "open_ai_chat_completions",
   connector_kind: "openai_compatible",
+  request_compression: "default",
   priority: 1,
   selection_strategy: "weighted_random",
   enabled: true,
@@ -88,6 +93,7 @@ export function ChannelGroupDetailPage() {
         name: data.data.name,
         api_format: data.data.api_format,
         connector_kind: data.data.connector_kind,
+        request_compression: data.data.request_compression,
         priority: data.data.priority,
         selection_strategy: data.data.selection_strategy,
         enabled: data.data.enabled,
@@ -110,6 +116,7 @@ export function ChannelGroupDetailPage() {
       name: parsed.data.name,
       api_format: parsed.data.api_format as ApiFormat,
       connector_kind: parsed.data.connector_kind as ConnectorKind,
+      request_compression: parsed.data.request_compression as RequestCompression,
       priority: parsed.data.priority,
       selection_strategy: parsed.data.selection_strategy as SelectionStrategy,
       enabled: parsed.data.enabled,
@@ -166,6 +173,10 @@ export function ChannelGroupDetailPage() {
                 <DetailField
                   label={t("Strategy")}
                   value={selectionStrategyLabel(data.data.selection_strategy)}
+                />
+                <DetailField
+                  label={t("Request compression")}
+                  value={requestCompressionLabel(data.data.request_compression)}
                 />
                 <DetailField
                   label={t("Enabled")}
@@ -233,7 +244,16 @@ export function ChannelGroupDetailPage() {
                   <Select
                     value={state.api_format}
                     disabled={state.connector_kind === "codex_oauth"}
-                    onValueChange={(value) => patch({ api_format: value as ApiFormat })}
+                    onValueChange={(value) => {
+                      const apiFormat = value as ApiFormat;
+                      patch({
+                        api_format: apiFormat,
+                        request_compression:
+                          apiFormat === "open_ai_responses"
+                            ? state.request_compression
+                            : "default",
+                      });
+                    }}
                   >
                     <SelectTrigger>
                       <SelectValue />
@@ -252,6 +272,38 @@ export function ChannelGroupDetailPage() {
                     <FieldDescription>
                       {t(
                         "A disabled Images group is created with the Responses group so credentials can be shared without granting Images access.",
+                      )}
+                    </FieldDescription>
+                  ) : null}
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="request_compression">
+                    {t("Request compression")}
+                  </FieldLabel>
+                  <Select
+                    value={state.request_compression}
+                    disabled={state.api_format !== "open_ai_responses"}
+                    onValueChange={(value) =>
+                      patch({ request_compression: value as RequestCompression })
+                    }
+                  >
+                    <SelectTrigger id="request_compression">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectGroup>
+                        {REQUEST_COMPRESSIONS.map((compression) => (
+                          <SelectItem key={compression} value={compression}>
+                            {requestCompressionLabel(compression)}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                  {state.api_format !== "open_ai_responses" ? (
+                    <FieldDescription>
+                      {t(
+                        "Request compression is available only for Responses channel groups.",
                       )}
                     </FieldDescription>
                   ) : null}

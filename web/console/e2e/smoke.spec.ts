@@ -105,12 +105,20 @@ test.describe("Console SPA smoke", () => {
   test("the login UI switches to Simplified Chinese and retains the preference", async ({
     page,
   }) => {
+    await mockConsoleApi(page);
     await page.goto("/login");
 
     await page.getByRole("button", { name: "Language" }).click();
     await page.getByRole("menuitemradio", { name: "简体中文" }).click();
     await expect(page.getByRole("button", { name: "登录" })).toBeVisible();
     await expect(page.getByLabel("邮箱")).toBeVisible();
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          window.localStorage.getItem("ai-gateway-console.locale"),
+        ),
+      )
+      .toBe("zh-CN");
 
     await page.reload();
     await expect(page.getByRole("button", { name: "登录" })).toBeVisible();
@@ -410,6 +418,7 @@ test.describe("Console SPA smoke", () => {
       name: "standard-group-1",
       api_format: "open_ai_chat_completions",
       connector_kind: "openai_compatible",
+      request_compression: "default",
       priority: 0,
       selection_strategy: "weighted_random",
       enabled: false,

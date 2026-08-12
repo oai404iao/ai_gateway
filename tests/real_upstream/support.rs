@@ -365,6 +365,7 @@ fn gateway(
             name: "real-upstream-smoke".into(),
             api_format: format.api_format_name().into(),
             connector_kind: "openai_compatible".into(),
+            request_compression: "default".into(),
             priority: 0,
             selection_strategy: "weighted_random".into(),
             enabled: true,
@@ -450,14 +451,23 @@ fn gateway(
     }
 }
 
-fn request(format: SmokeFormat, streamed: bool) -> Request<Body> {
-    Request::post(format.path())
+fn request(format: SmokeFormat, streamed: bool, request_compression: bool) -> Request<Body> {
+    let body = serde_json::to_vec(&format.request_body(streamed))
+        .expect("smoke-test request JSON serializes");
+    let body = if request_compression {
+        zstd::stream::encode_all(std::io::Cursor::new(body), 3)
+            .expect("smoke-test request JSON compresses")
+    } else {
+        body
+    };
+    let mut request = Request::post(format.path())
         .header(header::AUTHORIZATION, format!("Bearer {CLIENT_KEY}"))
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(
-            serde_json::to_vec(&format.request_body(streamed))
-                .expect("smoke-test request JSON serializes"),
-        ))
+        .header(header::CONTENT_TYPE, "application/json");
+    if request_compression {
+        request = request.header(header::CONTENT_ENCODING, "zstd");
+    }
+    request
+        .body(Body::from(body))
         .expect("smoke-test request builds")
 }
 
@@ -508,7 +518,12 @@ pub(super) async fn smoke_nonstreaming_format(
         CLIENT_MODEL,
         upstream_model,
     );
-    let request = request(format, false);
+    let request = request(
+        format,
+        false,
+        matches!(format, SmokeFormat::Responses)
+            && settings.responses_profile == ResponsesUpstreamProfile::CodexOauth,
+    );
     if matches!(format, SmokeFormat::Responses)
         && settings.responses_profile == ResponsesUpstreamProfile::CodexOauth
     {
@@ -708,10 +723,18 @@ pub(super) async fn smoke_streaming_format(
         CLIENT_MODEL,
         upstream_model,
     );
-    let response = timeout(settings.timeout, gateway.app.oneshot(request(format, true)))
-        .await
-        .expect("streaming gateway request timed out")
-        .expect("streaming gateway request completed");
+    let response = timeout(
+        settings.timeout,
+        gateway.app.oneshot(request(
+            format,
+            true,
+            matches!(format, SmokeFormat::Responses)
+                && settings.responses_profile == ResponsesUpstreamProfile::CodexOauth,
+        )),
+    )
+    .await
+    .expect("streaming gateway request timed out")
+    .expect("streaming gateway request completed");
     let status = response.status();
     if !status.is_success() {
         let body = timeout(settings.timeout, response.into_body().collect())
@@ -780,7 +803,7 @@ pub(super) async fn smoke_images_generation(settings: &SmokeSettings) {
     let result = complete_nonstreaming_request(
         settings,
         gateway,
-        request(SmokeFormat::Images, false),
+        request(SmokeFormat::Images, false, false),
         SmokeFormat::Images,
         ApiOperation::ImagesGeneration,
     )
@@ -1409,8 +1432,22 @@ mod tests {
 
     async fn mock_codex_responses(
         State(captured): State<Arc<Mutex<Vec<Value>>>>,
-        Json(body): Json<Value>,
+        headers: HeaderMap,
+        body: Bytes,
     ) -> axum::response::Response {
+        let body = match headers
+            .get(header::CONTENT_ENCODING)
+            .and_then(|value| value.to_str().ok())
+        {
+            Some(value) if value.eq_ignore_ascii_case("zstd") => {
+                zstd::stream::decode_all(std::io::Cursor::new(body))
+                    .expect("Codex Responses request body should be valid zstd")
+            }
+            None => body.to_vec(),
+            Some(value) => panic!("unexpected Codex request content encoding: {value}"),
+        };
+        let body: Value =
+            serde_json::from_slice(&body).expect("Codex Responses request should be JSON");
         captured.lock().unwrap().push(body.clone());
         if body.get("stream").and_then(Value::as_bool) != Some(true) {
             return (

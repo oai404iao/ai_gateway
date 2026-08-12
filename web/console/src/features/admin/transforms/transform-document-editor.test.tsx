@@ -79,6 +79,18 @@ describe("TransformDocumentEditor", () => {
     ).not.toHaveProperty("authorization");
   });
 
+  it("keeps gateway-owned request content encoding out of configuration", async () => {
+    const user = userEvent.setup();
+    renderEditor();
+
+    await user.click(screen.getByRole("button", { name: "Add request header rule" }));
+    await user.type(screen.getByLabelText("Header name"), "content-encoding");
+
+    expect(screen.getByTestId("transform-validation")).toHaveTextContent(
+      "Header names must be valid and cannot be protected headers.",
+    );
+  });
+
   it("generates a version-two array operation from the visual editor", async () => {
     const user = userEvent.setup();
     renderEditor();

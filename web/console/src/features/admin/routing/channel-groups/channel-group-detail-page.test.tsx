@@ -50,4 +50,45 @@ describe("ChannelGroupDetailPage", () => {
       expect(submitted?.status_statistics_enabled).toBe(false);
     });
   });
+
+  it("edits Responses request compression", async () => {
+    seedAuthenticatedSession();
+    const responsesGroup = {
+      ...CHANNEL_GROUP,
+      id: "00000000-0000-0000-0000-000000000122",
+      name: "responses-compression",
+      api_format: "open_ai_responses" as const,
+      request_compression: "default" as const,
+    };
+    let submitted: ChannelGroupInput | undefined;
+    server.use(
+      http.get("/console/v1/routing/channel-groups/:id", () =>
+        HttpResponse.json(responsesGroup, {
+          headers: { ETag: `"${responsesGroup.updated_at}"` },
+        }),
+      ),
+      http.put("/console/v1/routing/channel-groups/:id", async ({ request }) => {
+        submitted = (await request.json()) as ChannelGroupInput;
+        return HttpResponse.json({
+          id: responsesGroup.id,
+          correlation_id: "99999999-0000-0000-0000-000000000002",
+        });
+      }),
+    );
+    const user = userEvent.setup();
+    renderAppAt(`/admin/routing/channel-groups/${responsesGroup.id}`);
+
+    await waitFor(() => {
+      expect(screen.getByRole("textbox", { name: "Name" })).toHaveValue(
+        responsesGroup.name,
+      );
+    });
+    await user.click(screen.getByRole("combobox", { name: "Request compression" }));
+    await user.click(screen.getByRole("option", { name: "Zstandard (zstd)" }));
+    await user.click(screen.getByRole("button", { name: /save group/i }));
+
+    await waitFor(() => {
+      expect(submitted?.request_compression).toBe("zstd");
+    });
+  });
 });

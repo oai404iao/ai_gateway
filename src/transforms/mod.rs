@@ -1994,6 +1994,7 @@ fn is_protected_header(name: &str, scope: HeaderScope) -> bool {
             name,
             "host"
                 | "content-length"
+                | "content-encoding"
                 | "authorization"
                 | "proxy-authorization"
                 | "cookie"
@@ -2966,15 +2967,17 @@ mod tests {
 
     #[test]
     fn response_header_plans_apply_in_layer_order_and_protect_static_and_dynamic_hops() {
-        let request_document = json!({
-            "version": 1,
-            "api_format": "open_ai_chat_completions",
-            "request_headers": {"set": {"accept-encoding": "identity"}}
-        });
-        assert!(matches!(
-            compile_document(&request_document, CHAT),
-            Err(TransformCompileError::ProtectedHeader)
-        ));
+        for protected in ["accept-encoding", "content-encoding"] {
+            let request_document = json!({
+                "version": 1,
+                "api_format": "open_ai_chat_completions",
+                "request_headers": {"set": {protected: "identity"}}
+            });
+            assert!(matches!(
+                compile_document(&request_document, CHAT),
+                Err(TransformCompileError::ProtectedHeader)
+            ));
+        }
 
         let template = compile_document(
             &json!({

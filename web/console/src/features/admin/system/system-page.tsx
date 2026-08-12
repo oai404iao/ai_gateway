@@ -82,6 +82,23 @@ function canonicalHttpOrigin(value: string): string {
   }
 }
 
+function isHttpsRepositoryUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (
+      url.protocol === "https:" &&
+      Boolean(url.hostname) &&
+      !url.username &&
+      !url.password &&
+      url.pathname !== "/" &&
+      !url.search &&
+      !url.hash
+    );
+  } catch {
+    return false;
+  }
+}
+
 const systemSettingsSchema = z
   .object({
     api_hosts: z
@@ -242,6 +259,23 @@ const systemSettingsSchema = z
         .min(60, "Maximum WebSocket age must be between 60 and 3600 seconds.")
         .max(3600, "Maximum WebSocket age must be between 60 and 3600 seconds."),
     }),
+    codex: z.object({
+      workspace_path: z
+        .string()
+        .trim()
+        .min(1, "Codex workspace path is required.")
+        .max(1024, "Codex workspace path must be at most 1024 characters.")
+        .startsWith("/", "Codex workspace path must be absolute."),
+      git_remote_url: z
+        .string()
+        .trim()
+        .min(1, "Codex Git remote URL is required.")
+        .max(2048, "Codex Git remote URL must be at most 2048 characters.")
+        .refine(
+          isHttpsRepositoryUrl,
+          "Enter a valid HTTPS repository URL without credentials, query, or fragment.",
+        ),
+    }),
     mcp: z.object({
       enabled: z.boolean(),
       public_base_url: z
@@ -371,6 +405,10 @@ const defaultValues: SystemSettingsValues = {
     idle_timeout_seconds: 300,
     max_connection_age_seconds: 3300,
   },
+  codex: {
+    workspace_path: "/workspace",
+    git_remote_url: "https://github.com/oai404iao/ai_gateway",
+  },
   mcp: {
     enabled: false,
     public_base_url: "",
@@ -409,6 +447,7 @@ export function SystemPage() {
         scheduled_testing: settings.data.data.scheduled_testing,
         session_affinity: settings.data.data.session_affinity,
         websocket: settings.data.data.websocket,
+        codex: settings.data.data.codex,
         mcp: {
           ...settings.data.data.mcp,
           public_base_url: settings.data.data.mcp.public_base_url ?? "",
@@ -435,6 +474,7 @@ export function SystemPage() {
         scheduled_testing: values.scheduled_testing,
         session_affinity: values.session_affinity,
         websocket: values.websocket,
+        codex: values.codex,
         mcp: {
           ...values.mcp,
           public_base_url: values.mcp.public_base_url || null,
@@ -513,6 +553,64 @@ export function SystemPage() {
                     )}
                     error={errorMessage(form.formState.errors.api_hosts?.message)}
                   />
+                </FieldGroup>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>{t("Codex privacy metadata")}</CardTitle>
+                <CardDescription>
+                  {t(
+                    "Codex Connect replaces every client-reported workspace with this synthetic Git workspace and fills safe request metadata when it is missing.",
+                  )}
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <FieldGroup>
+                  <Field data-invalid={Boolean(form.formState.errors.codex?.workspace_path)}>
+                    <FieldLabel htmlFor="codex_workspace_path">
+                      {t("Synthetic workspace path")}
+                    </FieldLabel>
+                    <Input
+                      id="codex_workspace_path"
+                      placeholder="/workspace"
+                      aria-invalid={Boolean(form.formState.errors.codex?.workspace_path)}
+                      {...form.register("codex.workspace_path")}
+                    />
+                    <FieldDescription>
+                      {t(
+                        "An absolute synthetic path. Real client paths and workspace counts are never forwarded through Codex Connect.",
+                      )}
+                    </FieldDescription>
+                    {form.formState.errors.codex?.workspace_path ? (
+                      <FieldError>
+                        {errorMessage(form.formState.errors.codex.workspace_path.message)}
+                      </FieldError>
+                    ) : null}
+                  </Field>
+                  <Field data-invalid={Boolean(form.formState.errors.codex?.git_remote_url)}>
+                    <FieldLabel htmlFor="codex_git_remote_url">
+                      {t("Synthetic Git origin")}
+                    </FieldLabel>
+                    <Input
+                      id="codex_git_remote_url"
+                      type="url"
+                      placeholder="https://github.com/example/project"
+                      aria-invalid={Boolean(form.formState.errors.codex?.git_remote_url)}
+                      {...form.register("codex.git_remote_url")}
+                    />
+                    <FieldDescription>
+                      {t(
+                        "Written as associated_remote_urls.origin for the synthetic workspace. Commit hashes and dirty state are omitted.",
+                      )}
+                    </FieldDescription>
+                    {form.formState.errors.codex?.git_remote_url ? (
+                      <FieldError>
+                        {errorMessage(form.formState.errors.codex.git_remote_url.message)}
+                      </FieldError>
+                    ) : null}
+                  </Field>
                 </FieldGroup>
               </CardContent>
             </Card>
