@@ -60,6 +60,7 @@ const E2E_USER = {
   user_group_id: "00000000-0000-0000-0000-000000000101",
   default_api_key_policy_id: null,
   effective_api_key_policy_id: "00000000-0000-0000-0000-000000000031",
+  websocket_enabled: false,
   balance_amount: "10.00",
   created_at: "2026-01-01T00:00:00.000Z",
   updated_at: "2026-01-02T00:00:00.000Z",
@@ -75,6 +76,7 @@ const E2E_USER_GROUPS = [
     description: "Default group for newly invited users.",
     default_api_key_policy_id: "00000000-0000-0000-0000-000000000031",
     visible_codex_quota_group_ids: [],
+    filter_fast_mode: false,
     system_role: "user",
     member_count: 1,
     created_at: "2026-01-01T00:00:00.000Z",
@@ -86,6 +88,7 @@ const E2E_USER_GROUPS = [
     description: "Default group for newly invited administrators.",
     default_api_key_policy_id: "00000000-0000-0000-0000-000000000031",
     visible_codex_quota_group_ids: [],
+    filter_fast_mode: false,
     system_role: "admin",
     member_count: 1,
     created_at: "2026-01-01T00:00:00.000Z",
@@ -763,6 +766,28 @@ export async function mockConsoleApi(page: Page): Promise<void> {
     }
     if (path === "/console/v1/users" && method === "GET") {
       return route.fulfill({ status: 200, json: [E2E_USER] });
+    }
+    if (
+      path === `/console/v1/users/${E2E_USER.id}` &&
+      method === "GET"
+    ) {
+      return route.fulfill({
+        status: 200,
+        headers: { ETag: `"${E2E_USER.updated_at}"` },
+        json: E2E_USER,
+      });
+    }
+    if (
+      path === `/console/v1/users/${E2E_USER.id}` &&
+      method === "PATCH"
+    ) {
+      return route.fulfill({
+        status: 200,
+        json: {
+          id: E2E_USER.id,
+          correlation_id: "00000000-0000-0000-0000-000000000092",
+        },
+      });
     }
     if (path === "/console/v1/api-keys" && method === "GET") {
       return route.fulfill({ status: 200, json: [] });

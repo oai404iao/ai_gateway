@@ -9,8 +9,8 @@ use crate::domain::{
 
 use super::usage::ResponseUsage;
 
-/// Resolves model-level request billing rules against an unmodified request
-/// body. Callers only pass validated JSON bodies.
+/// Resolves model-level request billing rules against the validated request
+/// body after client policy filters have run.
 pub(crate) fn request_billing_multiplier(
     advanced_billing: &CompiledAdvancedBilling,
     body: &[u8],

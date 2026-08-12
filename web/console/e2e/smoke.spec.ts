@@ -196,6 +196,7 @@ test.describe("Console SPA smoke", () => {
     });
     await expect(visibility).toBeVisible();
     await visibility.click();
+    await page.getByRole("switch", { name: "Filter Fast mode" }).click();
     const update = page.waitForRequest(
       (request) =>
         request.url().endsWith(
@@ -208,6 +209,7 @@ test.describe("Console SPA smoke", () => {
       description: "Default group for newly invited administrators.",
       default_api_key_policy_id: "00000000-0000-0000-0000-000000000031",
       visible_codex_quota_group_ids: [E2E_CODEX_GROUP_ID],
+      filter_fast_mode: true,
     });
   });
 
@@ -899,6 +901,39 @@ test.describe("Console SPA smoke", () => {
       },
     });
     await expect(page.getByText("Updated 1 users.")).toBeVisible();
+  });
+
+  test("administrators manage a user's personal WebSocket setting", async ({
+    page,
+  }) => {
+    await mockConsoleApi(page);
+    await page.goto("/login");
+    await page.getByLabel(/email/i).fill("admin@example.com");
+    await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
+    await page.getByRole("button", { name: /sign in/i }).click();
+    await page.getByRole("link", { name: "Users" }).click();
+    await page
+      .getByRole("cell", { name: /Batch User batch-user@example/ })
+      .click();
+
+    const websocket = page.getByRole("switch", {
+      name: "Enable Responses WebSocket",
+    });
+    await expect(websocket).not.toBeChecked();
+    await websocket.click();
+    const requestPromise = page.waitForRequest(
+      (request) =>
+        request.url().endsWith(
+          "/console/v1/users/00000000-0000-0000-0000-000000000090",
+        ) && request.method() === "PATCH",
+    );
+    await page
+      .getByRole("button", { name: "Save personal settings" })
+      .click();
+    expect((await requestPromise).postDataJSON()).toEqual({
+      websocket_enabled: true,
+    });
+    await expect(page.getByText("Personal settings updated")).toBeVisible();
   });
 
   test("administrators create reusable registration invitation codes", async ({

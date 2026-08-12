@@ -370,7 +370,8 @@ impl ProxyService {
             let (value, decoded) = value;
             (PreparedRequestBody::Json(value), decoded)
         };
-        let parsed = match parse_request(api_operation, &original_body) {
+        let parsed = match parse_request(api_operation, &original_body, api_key.filter_fast_mode())
+        {
             Ok(value) => value,
             Err(error) => {
                 trace_unlogged("malformed_or_overlength_model");
@@ -380,6 +381,14 @@ impl ProxyService {
         let interface = RequestInterface::for_http(api_operation);
         let (original_body, client_body_changed) =
             match original_body.apply_policy(RequestPolicyLayer::Client, interface) {
+                Ok(value) => value,
+                Err(error) => {
+                    trace_unlogged("request_policy_rejected");
+                    return Err(ProxyError::request_policy(error));
+                }
+            };
+        let (original_body, fast_mode_filtered) =
+            match original_body.filter_fast_mode(api_key.filter_fast_mode(), interface) {
                 Ok(value) => value,
                 Err(error) => {
                     trace_unlogged("request_policy_rejected");
@@ -619,6 +628,7 @@ impl ProxyService {
                 }
             };
             let request_body_changed = client_body_changed
+                || fast_mode_filtered
                 || client_body_decoded
                 || model_rewritten
                 || !transforms.request_json().is_empty()
@@ -1563,6 +1573,7 @@ struct RequestLogMetadata {
 fn parse_request(
     api_operation: ApiOperation,
     body: &PreparedRequestBody,
+    filter_fast_mode: bool,
 ) -> Result<ParsedRequest, ProxyError> {
     let api_format = api_operation.api_format();
     if let Some(edit) = body.image_edit() {
@@ -1608,7 +1619,11 @@ fn parse_request(
             api_format,
             &probe.reasoning_effort,
             &probe.reasoning,
-            &probe.service_tier,
+            if filter_fast_mode {
+                &Value::Null
+            } else {
+                &probe.service_tier
+            },
         ),
         request_protocol: RequestProtocol::from_http_streamed(probe.stream),
     })
@@ -3075,6 +3090,7 @@ mod tests {
                 "service_tier":"priority"
             }"#,
             )),
+            false,
         )
         .unwrap();
 
@@ -3094,6 +3110,7 @@ mod tests {
                 "service_tier":"default"
             }"#,
             )),
+            false,
         )
         .unwrap();
 
@@ -3116,6 +3133,7 @@ mod tests {
                 "service_tier":42
             }"#,
             )),
+            false,
         )
         .unwrap();
 
@@ -3130,6 +3148,7 @@ mod tests {
             &PreparedRequestBody::Json(Bytes::from_static(
                 br#"{"model":"gpt-image-2","prompt":"test","stream":true}"#,
             )),
+            false,
         ) else {
             panic!("streaming Images request should be rejected");
         };

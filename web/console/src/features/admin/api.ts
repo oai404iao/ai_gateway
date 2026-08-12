@@ -165,6 +165,7 @@ export function useUpdateUser(id: string) {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: USERS_KEY });
       void queryClient.invalidateQueries({ queryKey: userDetailKey(id) });
+      void queryClient.invalidateQueries({ queryKey: ["console", "me", "settings"] });
     },
   });
 }

@@ -403,6 +403,7 @@ pub struct ApiKeyRecord {
     pub user_id: Uuid,
     pub user_status: String,
     pub user_websocket_enabled: bool,
+    pub user_filter_fast_mode: bool,
     pub secret_value: String,
     pub status: String,
     pub expires_at: Option<DateTime<Utc>>,
@@ -423,6 +424,7 @@ impl fmt::Debug for ApiKeyRecord {
             .field("user_id", &self.user_id)
             .field("user_status", &self.user_status)
             .field("user_websocket_enabled", &self.user_websocket_enabled)
+            .field("user_filter_fast_mode", &self.user_filter_fast_mode)
             .field("secret_value", &"REDACTED")
             .field("status", &self.status)
             .field("expires_at", &self.expires_at)
@@ -659,6 +661,8 @@ pub struct UserGroupInput {
     pub default_api_key_policy_id: Option<Uuid>,
     #[serde(default)]
     pub visible_codex_quota_group_ids: Vec<Uuid>,
+    #[serde(default)]
+    pub filter_fast_mode: bool,
 }
 
 #[derive(Clone, Deserialize)]
@@ -731,6 +735,8 @@ pub struct UserUpdateInput {
     pub user_group_id: Option<Uuid>,
     #[serde(default, deserialize_with = "deserialize_optional_uuid")]
     pub default_api_key_policy_id: Option<Option<Uuid>>,
+    #[serde(default)]
+    pub websocket_enabled: Option<bool>,
 }
 
 impl UserUpdateInput {
@@ -742,6 +748,7 @@ impl UserUpdateInput {
             && self.balance_amount.is_none()
             && self.user_group_id.is_none()
             && self.default_api_key_policy_id.is_none()
+            && self.websocket_enabled.is_none()
     }
 }
 
@@ -755,6 +762,7 @@ impl From<UserInput> for UserUpdateInput {
             balance_amount: Some(value.balance_amount),
             user_group_id: value.user_group_id,
             default_api_key_policy_id: Some(value.default_api_key_policy_id),
+            websocket_enabled: None,
         }
     }
 }
@@ -1332,6 +1340,7 @@ pub struct ControlPlaneUser {
     pub user_group_id: Uuid,
     pub default_api_key_policy_id: Option<Uuid>,
     pub effective_api_key_policy_id: Option<Uuid>,
+    pub websocket_enabled: bool,
     pub balance_amount: rust_decimal::Decimal,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -1343,6 +1352,7 @@ pub struct ControlPlaneUserGroup {
     pub description: Option<String>,
     pub default_api_key_policy_id: Option<Uuid>,
     pub visible_codex_quota_group_ids: Vec<Uuid>,
+    pub filter_fast_mode: bool,
     pub system_role: Option<String>,
     pub member_count: i64,
     pub created_at: DateTime<Utc>,
@@ -4753,7 +4763,7 @@ impl ControlPlaneRepository {
     pub async fn load_transaction(
         transaction: &mut Transaction<'_, Postgres>,
     ) -> Result<ControlPlaneRecords, RepositoryError> {
-        let api_keys = sqlx::query_as::<_, ApiKeyRecord>("SELECT k.id, k.user_id, u.status AS user_status, u.websocket_enabled AS user_websocket_enabled, k.secret_value, k.status, k.expires_at, k.allowed_api_formats::text[] AS allowed_api_formats, k.permissions, k.allowed_group_ids, k.allowed_channel_ids, k.requests_per_minute, k.max_concurrent_requests, k.quota_limit_amount, k.quota_used_amount FROM api_keys k JOIN users u ON u.id = k.user_id WHERE NOT k.is_system ORDER BY k.id").fetch_all(&mut **transaction).await?;
+        let api_keys = sqlx::query_as::<_, ApiKeyRecord>("SELECT k.id, k.user_id, u.status AS user_status, u.websocket_enabled AS user_websocket_enabled, g.filter_fast_mode AS user_filter_fast_mode, k.secret_value, k.status, k.expires_at, k.allowed_api_formats::text[] AS allowed_api_formats, k.permissions, k.allowed_group_ids, k.allowed_channel_ids, k.requests_per_minute, k.max_concurrent_requests, k.quota_limit_amount, k.quota_used_amount FROM api_keys k JOIN users u ON u.id = k.user_id JOIN user_groups g ON g.id=u.user_group_id WHERE NOT k.is_system ORDER BY k.id").fetch_all(&mut **transaction).await?;
         let models = sqlx::query_as::<_, ModelRecord>("SELECT id,source_model_id,currency,price_unit_tokens,price_effective_at,input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,advanced_billing FROM models ORDER BY id").fetch_all(&mut **transaction).await?;
         let model_rules = sqlx::query_as::<_, ModelRuleRecord>("SELECT r.id, r.client_model, r.api_format::text AS api_format, r.upstream_model_id, m.enabled AS upstream_model_enabled, m.currency AS upstream_model_currency, m.price_unit_tokens, m.price_effective_at, m.input_unit_price, m.cached_input_unit_price, m.cache_write_unit_price, m.output_unit_price, m.advanced_billing, m.source_model_id AS upstream_model, r.channel_group_ids, r.channel_ids, r.enabled FROM model_rules r JOIN models m ON m.id = r.upstream_model_id ORDER BY r.id").fetch_all(&mut **transaction).await?;
         let groups = sqlx::query_as::<_, ChannelGroupRecord>("SELECT id, name, api_format::text AS api_format, connector_kind, request_compression, priority, selection_strategy, enabled FROM channel_groups ORDER BY id").fetch_all(&mut **transaction).await?;
@@ -4913,7 +4923,7 @@ impl ControlPlaneRepository {
                     u.password_change_required,u.temporary_password_expires_at, \
                     u.user_group_id,u.default_api_key_policy_id, \
                     COALESCE(u.default_api_key_policy_id,g.default_api_key_policy_id) AS effective_api_key_policy_id, \
-                    u.balance_amount,u.created_at,u.updated_at \
+                    u.websocket_enabled,u.balance_amount,u.created_at,u.updated_at \
              FROM users AS u \
              JOIN user_groups AS g ON g.id=u.user_group_id \
              WHERE NOT u.is_system AND u.deleted_at IS NULL ORDER BY u.id",
@@ -4928,6 +4938,7 @@ impl ControlPlaneRepository {
                         WHERE visibility.user_group_id=g.id \
                         ORDER BY visibility.channel_group_id \
                     ) AS visible_codex_quota_group_ids, \
+                    g.filter_fast_mode, \
                     g.system_role, \
                     count(u.id) FILTER (WHERE u.deleted_at IS NULL AND NOT u.is_system) AS member_count, \
                     g.created_at,g.updated_at \
@@ -6062,6 +6073,7 @@ async fn user_audit(
             'user_group_system_role',g.system_role, \
             'default_api_key_policy_id',u.default_api_key_policy_id, \
             'effective_api_key_policy_id',COALESCE(u.default_api_key_policy_id,g.default_api_key_policy_id), \
+            'websocket_enabled',u.websocket_enabled, \
             'balance_amount',u.balance_amount, \
             'deleted_at',u.deleted_at, \
             'deleted_by',u.deleted_by, \
@@ -6100,6 +6112,7 @@ async fn user_group_audit(
                 WHERE visibility.user_group_id=g.id \
                 ORDER BY visibility.channel_group_id \
             ), \
+            'filter_fast_mode',g.filter_fast_mode, \
             'system_role',g.system_role, \
             'member_count',count(u.id) FILTER (WHERE u.deleted_at IS NULL AND NOT u.is_system), \
             'created_at',g.created_at, \
@@ -6509,25 +6522,27 @@ async fn user_group_insert(
     let updated_at = if create {
         sqlx::query_scalar(
             "INSERT INTO user_groups \
-             (id,name,description,default_api_key_policy_id) \
-             VALUES ($1,$2,$3,$4) RETURNING updated_at",
+             (id,name,description,default_api_key_policy_id,filter_fast_mode) \
+             VALUES ($1,$2,$3,$4,$5) RETURNING updated_at",
         )
         .bind(id)
         .bind(&input.name)
         .bind(&input.description)
         .bind(input.default_api_key_policy_id)
+        .bind(input.filter_fast_mode)
         .fetch_one(&mut **transaction)
         .await?
     } else {
         sqlx::query_scalar(
             "UPDATE user_groups SET \
-             name=$2,description=$3,default_api_key_policy_id=$4 \
-             WHERE id=$1 AND updated_at=$5 RETURNING updated_at",
+             name=$2,description=$3,default_api_key_policy_id=$4,filter_fast_mode=$5 \
+             WHERE id=$1 AND updated_at=$6 RETURNING updated_at",
         )
         .bind(id)
         .bind(&input.name)
         .bind(&input.description)
         .bind(input.default_api_key_policy_id)
+        .bind(input.filter_fast_mode)
         .bind(expected_updated_at.expect("PUT version"))
         .fetch_optional(&mut **transaction)
         .await?
@@ -6687,6 +6702,7 @@ async fn user_update(
         balance_amount,
         user_group_id: _,
         default_api_key_policy_id,
+        websocket_enabled,
     } = input;
     let email_present = email.is_some();
     let email = email.flatten();
@@ -6702,8 +6718,9 @@ async fn user_update(
          balance_amount=COALESCE($7,balance_amount), \
          user_group_id=COALESCE($8,user_group_id), \
          default_api_key_policy_id=CASE WHEN $9 THEN $10::uuid ELSE default_api_key_policy_id END, \
-         auth_version=auth_version+CASE WHEN $11 THEN 1 ELSE 0 END \
-         WHERE id=$1 AND updated_at=$12 AND deleted_at IS NULL RETURNING updated_at",
+         websocket_enabled=COALESCE($11,websocket_enabled), \
+         auth_version=auth_version+CASE WHEN $12 THEN 1 ELSE 0 END \
+         WHERE id=$1 AND updated_at=$13 AND deleted_at IS NULL RETURNING updated_at",
     )
     .bind(id)
     .bind(email_present)
@@ -6715,6 +6732,7 @@ async fn user_update(
     .bind(resolved_group_id)
     .bind(policy_present)
     .bind(default_api_key_policy_id)
+    .bind(websocket_enabled)
     .bind(invalidates_sessions)
     .bind(expected_updated_at)
     .fetch_optional(&mut **transaction)

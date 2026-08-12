@@ -105,6 +105,14 @@ updated_at timestamptz not null
 
 `balance_amount` 是余额投影列。可结算终态日志由后台 worker 在同一事务中以 `billed_at` 条件更新取得唯一结算权，并扣减该列；本阶段没有硬余额预留，余额可以为负。管理接口仍不提供充值、退款或人工修正；若未来保留无独立账本的方案，这些操作必须写入 `audit_logs`，需要严格财务账本时再新增相应实体。
 
+`users.websocket_enabled` 保存用户级 Responses WebSocket 偏好。用户本人通过
+`/console/v1/me/settings` 修改，管理员也可以通过版本化用户资源修改；两条路径都会重新编译并发布
+该用户所有 API Key。
+
+`user_groups.filter_fast_mode` 保存组级静默 Fast 过滤策略。运行时加载 API Key 时联表读取该值并
+写入不可变 `CompiledApiKey`；启用后，数据面在客户端白名单之后删除顶层 `service_tier`，因此该
+字段既不进入上游，也不参与 `fast_mode` 日志标记或模型 `request_multipliers` 匹配。
+
 ### 4.2 `api_keys`
 
 一行包含 API Key 的全部授权与限制，不建立 scope、permission 或 quota 关联表。
@@ -318,7 +326,7 @@ Images generation/edit 在渠道未显式配置 `response_header_timeout_ms` 时
 | `request_protocol` | `text` | `non_stream`、`sse` 或 `websocket`；表示客户端请求使用的传输方式。 |
 | `client_model` / `upstream_model` | `varchar(300)` | 客户端与实际发送模型名。 |
 | `reasoning_effort` | `varchar(32)` | 可空；从客户端原始请求的 `reasoning.effort` 或 `reasoning_effort` 提取并规范化。 |
-| `fast_mode` | `boolean` | 客户端是否显式请求 `service_tier = "priority"`；历史和定时测试日志默认为 `false`。 |
+| `fast_mode` | `boolean` | 未被用户组策略过滤的客户端是否显式请求 `service_tier = "priority"`；历史、定时测试和已过滤日志默认为 `false`。 |
 | `model_rule_id` | `uuid` | 使用的模型规则。 |
 | `channel_group_id` / `channel_id` | `uuid` | 最终命中的组和渠道；拒绝请求时可空。 |
 | `outcome` | `text` | `succeeded`、`failed`、`rejected` 或 `cancelled`。 |

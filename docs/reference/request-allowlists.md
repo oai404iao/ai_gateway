@@ -123,6 +123,10 @@ Chat Completions 额外允许第三方 OpenAI-compatible 上游常用的顶层�
 `enable_thinking`。网关不解释或校验这两个字段的值，只按普通允许字段保留并转发；具体结构、
 开关语义和模型支持范围由选中的上游决定。
 
+客户端 body 契约仍把 `service_tier` 分类为 `allow`。在该契约通过之后，运行时可以按用户组
+`filter_fast_mode` 策略执行额外的产品级静默过滤：删除顶层 `service_tier` 后继续请求，不改变
+机器契约的字段分类。这样 Connector、请求日志和请求计费倍率都只观察过滤后的请求。
+
 Images edit 额外兼容部分通用表单会提交、但当前公开 edit 类型未声明的
 `moderation=auto`：该默认值在客户端入口层被删除；`moderation=low` 或其他值返回错误。
 `output_format` 是公开 edit 字段，因此入口层保留，并由选中的 provider 决定后续动作。

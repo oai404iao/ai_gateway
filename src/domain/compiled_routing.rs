@@ -507,6 +507,7 @@ pub struct CompiledApiKey {
     id: Uuid,
     user_id: Uuid,
     websocket_enabled: bool,
+    filter_fast_mode: bool,
     allowed_api_formats: HashSet<ApiFormat>,
     permissions: HashSet<ApiKeyPermission>,
     authorization: Arc<AuthorizationProfile>,
@@ -528,6 +529,10 @@ impl CompiledApiKey {
     #[must_use]
     pub const fn websocket_enabled(&self) -> bool {
         self.websocket_enabled
+    }
+    #[must_use]
+    pub const fn filter_fast_mode(&self) -> bool {
+        self.filter_fast_mode
     }
     #[must_use]
     pub fn permits(&self, format: ApiFormat, permission: ApiKeyPermission) -> bool {
@@ -602,6 +607,7 @@ impl CompiledApiKey {
             id,
             user_id,
             false,
+            false,
             formats,
             permissions,
             Arc::new(AuthorizationProfile::legacy(groups, channels)),
@@ -617,6 +623,7 @@ impl CompiledApiKey {
         id: Uuid,
         user_id: Uuid,
         websocket_enabled: bool,
+        filter_fast_mode: bool,
         formats: HashSet<ApiFormat>,
         permissions: HashSet<ApiKeyPermission>,
         authorization: Arc<AuthorizationProfile>,
@@ -630,6 +637,7 @@ impl CompiledApiKey {
             id,
             user_id,
             websocket_enabled,
+            filter_fast_mode,
             allowed_api_formats: formats,
             permissions,
             authorization,

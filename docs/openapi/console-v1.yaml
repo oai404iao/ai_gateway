@@ -3550,7 +3550,7 @@ components:
         [id, email, display_name, role, status, can_reissue_invitation,
          password_change_required, temporary_password_expires_at,
          user_group_id, default_api_key_policy_id, effective_api_key_policy_id,
-         balance_amount, created_at, updated_at]
+         websocket_enabled, balance_amount, created_at, updated_at]
       properties:
         id: { type: string, format: uuid }
         email: { type: string, nullable: true }
@@ -3581,6 +3581,9 @@ components:
           format: uuid
           nullable: true
           description: Resolved user override or group default policy.
+        websocket_enabled:
+          type: boolean
+          description: User opt-in for Responses WebSocket forwarding; administrators may update it.
         balance_amount:
           allOf: [{ $ref: "#/components/schemas/Decimal" }]
           description: Current account balance in USD.
@@ -3591,8 +3594,8 @@ components:
       type: object
       required:
         [id, name, description, default_api_key_policy_id,
-         visible_codex_quota_group_ids, system_role, member_count, created_at,
-         updated_at]
+         visible_codex_quota_group_ids, filter_fast_mode, system_role,
+         member_count, created_at, updated_at]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
@@ -3605,6 +3608,12 @@ components:
             quota windows are visible to members through the read-only
             `/me/codex-quotas` endpoints.
           items: { type: string, format: uuid }
+        filter_fast_mode:
+          type: boolean
+          description: |
+            Silently removes client `service_tier` before forwarding for every
+            member API key. Filtered requests are not marked Fast and do not
+            match service-tier billing multipliers.
         system_role:
           type: string
           enum: [user, admin]
@@ -5023,6 +5032,11 @@ components:
           description: |
             Set to null to inherit the group policy; omit to preserve the
             current user-level override.
+        websocket_enabled:
+          type: boolean
+          description: |
+            Enables or disables the target user's personal Responses WebSocket
+            preference; omit to preserve it.
 
     UserBatchUpdateTarget:
       type: object
@@ -5073,7 +5087,8 @@ components:
     UserGroupInput:
       type: object
       required:
-        [name, default_api_key_policy_id, visible_codex_quota_group_ids]
+        [name, default_api_key_policy_id, visible_codex_quota_group_ids,
+         filter_fast_mode]
       properties:
         name: { type: string, minLength: 1, maxLength: 100 }
         description: { type: string, maxLength: 500, nullable: true }
@@ -5087,6 +5102,11 @@ components:
             Canonical `codex_oauth` Responses channel groups whose shared
             credential quota windows may be read by group members.
           items: { type: string, format: uuid }
+        filter_fast_mode:
+          type: boolean
+          description: |
+            Silently strips client `service_tier` for all group members so
+            Fast metadata and service-tier request multipliers are not applied.
 
     ApiKeyPolicyInput:
       type: object

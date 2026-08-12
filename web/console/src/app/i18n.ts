@@ -573,6 +573,11 @@ const zhCN: Record<string, string> = {
   "Save account details": "保存账户资料",
   "Account details updated": "账户资料已更新",
   "No account changes to save.": "没有需要保存的账户资料变更。",
+  "Manage the same optional capabilities available in the user's personal settings.":
+    "管理用户个人设置中可用的同一组可选能力。",
+  "This preference applies to all active API keys owned by the user's account.":
+    "此偏好适用于该用户账户拥有的全部有效 API 密钥。",
+  "Personal settings updated": "个人设置已更新",
   "Balance management": "额度管理",
   "Adjust only this user's current USD balance. Other fields are preserved.":
     "仅调整该用户当前的 USD 额度，其他字段保持不变。",
@@ -694,6 +699,10 @@ const zhCN: Record<string, string> = {
     "成员只能只读查看额度窗口和订阅等级；凭证名称显示为 ID。",
   "No Codex OAuth credential groups are configured.":
     "尚未配置 Codex OAuth 凭证组。",
+  "Fast mode filtering": "Fast 模式过滤",
+  "Filter Fast mode": "过滤 Fast 模式",
+  "Silently remove client service_tier before forwarding. Filtered requests are not marked Fast and do not use service-tier billing multipliers.":
+    "转发前静默移除客户端的 service_tier。被过滤的请求不会标记为 Fast，也不会应用 service_tier 计费倍率。",
   "Save user group": "保存用户组",
   "User group created": "用户组已创建",
   "User group updated": "用户组已更新",

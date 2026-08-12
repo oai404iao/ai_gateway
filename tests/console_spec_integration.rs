@@ -1799,6 +1799,72 @@ async fn personal_websocket_setting_is_published_to_owned_api_keys() {
     database.cleanup().await;
 }
 
+#[tokio::test]
+async fn administrator_can_manage_a_users_personal_websocket_setting() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+    let managed_user_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO users (id,email,display_name,role,status) \
+         VALUES ($1,$2,'Managed user','user','active')",
+    )
+    .bind(managed_user_id)
+    .bind(format!("managed-settings-{managed_user_id}@example.test"))
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let secret = format!("sk-admin-user-settings-{}", Uuid::new_v4().simple());
+    sqlx::query(
+        "INSERT INTO api_keys
+         (id,user_id,name,secret_value,status,allowed_api_formats,permissions,
+          allowed_group_ids,allowed_channel_ids)
+         VALUES ($1,$2,$3,$4,'active',
+                 ARRAY['open_ai_responses']::api_format[],
+                 ARRAY['proxy']::text[],'{}'::uuid[],'{}'::uuid[])",
+    )
+    .bind(Uuid::new_v4())
+    .bind(managed_user_id)
+    .bind(format!("admin-user-settings-{}", Uuid::new_v4()))
+    .bind(&secret)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+
+    let path = format!("/console/v1/users/{managed_user_id}");
+    let detail = request(&app, "GET", &path, serde_json::json!({}), &[]).await;
+    assert_eq!(detail.status(), StatusCode::OK);
+    let etag = detail.headers()[header::ETAG].to_str().unwrap().to_owned();
+    assert_eq!(body_json(detail).await["websocket_enabled"], false);
+
+    let updated = request(
+        &app,
+        "PATCH",
+        &path,
+        serde_json::json!({"websocket_enabled": true}),
+        &[("if-match", &etag)],
+    )
+    .await;
+    assert_eq!(updated.status(), StatusCode::OK);
+
+    let compiled = app
+        .runtime
+        .snapshot()
+        .authenticate(&secret)
+        .expect("newly loaded API key");
+    assert!(compiled.websocket_enabled());
+    let audit: serde_json::Value = sqlx::query_scalar(
+        "SELECT after_redacted FROM audit_logs \
+         WHERE object_type='user' AND object_id=$1 ORDER BY occurred_at DESC LIMIT 1",
+    )
+    .bind(managed_user_id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(audit["websocket_enabled"], true);
+
+    database.cleanup().await;
+}
+
 /// Currency is a system-wide USD invariant rather than a mutable Console
 /// field, so legacy currency properties are rejected by request decoding.
 #[tokio::test]
@@ -2078,11 +2144,18 @@ async fn user_groups_supply_role_defaults_and_inherited_api_policy() {
             "description": group["description"],
             "default_api_key_policy_id": policy_id,
             "visible_codex_quota_group_ids": group["visible_codex_quota_group_ids"],
+            "filter_fast_mode": true,
         }),
         &[("if-match", &etag)],
     )
     .await;
     assert_eq!(update.status(), StatusCode::OK);
+    let compiled: bool = sqlx::query_scalar("SELECT filter_fast_mode FROM user_groups WHERE id=$1")
+        .bind(DEFAULT_USER_GROUP_ID)
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    assert!(compiled);
 
     let email = format!("group-invite-{policy_id}@example.test");
     let invite = request(
@@ -2115,6 +2188,35 @@ async fn user_groups_supply_role_defaults_and_inherited_api_policy() {
         .execute(&database.pool)
         .await
         .unwrap();
+    let inherited_secret = format!("sk-fast-filter-{}", Uuid::new_v4().simple());
+    sqlx::query(
+        "INSERT INTO api_keys
+         (id,user_id,name,secret_value,status,allowed_api_formats,permissions,
+          allowed_group_ids,allowed_channel_ids)
+         VALUES ($1,$2,$3,$4,'active',
+                 ARRAY['open_ai_responses']::api_format[],
+                 ARRAY['proxy']::text[],'{}'::uuid[],'{}'::uuid[])",
+    )
+    .bind(Uuid::new_v4())
+    .bind(invited_user_id)
+    .bind(format!("fast-filter-{}", Uuid::new_v4()))
+    .bind(&inherited_secret)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let runtime = compile_runtime_config(
+        ControlPlaneRepository::new(database.pool.clone())
+            .load_runtime()
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        runtime
+            .authenticate(&inherited_secret)
+            .expect("group member API key compiles")
+            .filter_fast_mode()
+    );
     let options = ControlPlaneRepository::new(database.pool.clone())
         .own_api_key_options(invited_user_id)
         .await
@@ -2369,6 +2471,7 @@ async fn user_group_codex_quota_visibility_is_scoped_sanitized_and_read_only() {
                 "description": group["description"],
                 "default_api_key_policy_id": null,
                 "visible_codex_quota_group_ids": [invalid_group_id],
+                "filter_fast_mode": group["filter_fast_mode"],
             }),
             &[("if-match", &group_etag)],
         )
@@ -2397,6 +2500,7 @@ async fn user_group_codex_quota_visibility_is_scoped_sanitized_and_read_only() {
             "description": group["description"],
             "default_api_key_policy_id": null,
             "visible_codex_quota_group_ids": [visible_group_id],
+            "filter_fast_mode": group["filter_fast_mode"],
         }),
         &[("if-match", &group_etag)],
     )

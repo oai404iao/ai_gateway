@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import { Controller, useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -10,7 +10,14 @@ import { clearSession, setSession } from "@/api/session-store";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Field, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
+import {
+  Field,
+  FieldContent,
+  FieldDescription,
+  FieldError,
+  FieldGroup,
+  FieldLabel,
+} from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -21,6 +28,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
+import { Switch } from "@/components/ui/switch";
 import { DecimalField } from "@/components/shared/decimal-field";
 import { DetailField } from "@/components/shared/detail-field";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
@@ -67,7 +75,7 @@ type AccountValues = z.infer<typeof accountSchema>;
 type BalanceValues = z.infer<typeof balanceSchema>;
 type StatusValues = z.infer<typeof statusSchema>;
 type ManageableStatus = StatusValues["status"];
-type SubmittingAction = "account" | "balance" | "status";
+type SubmittingAction = "account" | "balance" | "status" | "settings";
 
 const manageableStatuses = USER_STATUSES.filter(
   (status): status is ManageableStatus => status !== "invited",
@@ -111,9 +119,16 @@ export function UserDetailPage() {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [invitationToken, setInvitationToken] = useState<string | null>(null);
   const [adminPassword, setAdminPassword] = useState("");
+  const [websocketEnabled, setWebsocketEnabled] = useState(false);
   const [temporaryPassword, setTemporaryPassword] =
     useState<TemporaryPasswordResponse | null>(null);
   const user = data?.data;
+
+  useEffect(() => {
+    if (user) {
+      setWebsocketEnabled(user.websocket_enabled);
+    }
+  }, [user]);
 
   const accountValues: AccountValues = user
     ? {
@@ -248,6 +263,15 @@ export function UserDetailPage() {
     });
   };
 
+  const savePersonalSettings = async () => {
+    if (!user || websocketEnabled === user.websocket_enabled) return;
+    await applyUpdate({
+      action: "settings",
+      input: { websocket_enabled: websocketEnabled },
+      successMessage: "Personal settings updated",
+    });
+  };
+
   const onInvalidAccount = () => {
     toast.error(t("Review the highlighted account fields."));
   };
@@ -354,6 +378,10 @@ export function UserDetailPage() {
                 <DetailField
                   label={t("Effective API policy")}
                   value={effectivePolicyName}
+                />
+                <DetailField
+                  label={t("Responses WebSocket")}
+                  value={t(user.websocket_enabled ? "Enabled" : "Disabled")}
                 />
                 <DetailField label={t("Balance")} value={formatUsd(user.balance_amount)} />
                 <DetailField label={t("Created")} value={formatDateTime(user.created_at)} />
@@ -595,6 +623,53 @@ export function UserDetailPage() {
                 </CardContent>
               </Card>
             ) : null}
+
+            <Card>
+              <CardHeader>
+                <CardTitle>{t("Personal settings")}</CardTitle>
+                <CardDescription>
+                  {t(
+                    "Manage the same optional capabilities available in the user's personal settings.",
+                  )}
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <Field orientation="horizontal">
+                  <FieldContent>
+                    <FieldLabel htmlFor="admin_user_websocket_enabled">
+                      {t("Enable Responses WebSocket")}
+                    </FieldLabel>
+                    <FieldDescription>
+                      {t(
+                        "This preference applies to all active API keys owned by the user's account.",
+                      )}
+                    </FieldDescription>
+                  </FieldContent>
+                  <Switch
+                    id="admin_user_websocket_enabled"
+                    checked={websocketEnabled}
+                    disabled={submitting !== null}
+                    onCheckedChange={(checked) =>
+                      setWebsocketEnabled(Boolean(checked))
+                    }
+                  />
+                </Field>
+                <Button
+                  type="button"
+                  className="mt-6"
+                  disabled={
+                    submitting !== null ||
+                    websocketEnabled === user.websocket_enabled
+                  }
+                  onClick={() => void savePersonalSettings()}
+                >
+                  {submitting === "settings" ? (
+                    <Spinner data-icon="inline-start" />
+                  ) : null}
+                  {t("Save personal settings")}
+                </Button>
+              </CardContent>
+            </Card>
 
             <Card>
               <CardHeader>

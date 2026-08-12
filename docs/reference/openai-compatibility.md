@@ -48,7 +48,8 @@ assistants、fine-tuning 等其他 OpenAI 路径。
   组织/项目 Header、Gateway Session Header 和 W3C trace Header 显式列入契约。
 - 仅为请求日志元数据，网关会宽松识别 Responses 的 `reasoning.effort`、兼容
   Chat Completions 的 `reasoning_effort`，以及 `service_tier = "priority"`；非字符串、
-  过长或未知形状不会增加本地拒绝条件。
+  过长或未知形状不会增加本地拒绝条件。若调用方所属用户组启用 Fast 过滤，网关会在客户端
+  白名单之后静默删除顶层 `service_tier`，不报错、不转发、不记录 Fast，也不匹配该字段的请求倍率。
 - 客户端 policy 未删除字段、且没有模型别名或 body 变换时，网关保留原始请求字节。
 - 模型别名只改写顶层 `model`。
 - Standalone web search 固定为非流式 JSON，允许顶层 `id`、`model`、`reasoning`、`input`、

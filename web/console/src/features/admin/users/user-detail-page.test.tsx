@@ -21,6 +21,48 @@ function renderAppAt(path: string) {
 }
 
 describe("UserDetailPage", () => {
+  it("updates the user's personal WebSocket setting", async () => {
+    seedAuthenticatedSession();
+    const managedUser = {
+      ...CONTROL_PLANE_USER,
+      id: "00000000-0000-0000-0000-000000000094",
+      role: "user" as const,
+      websocket_enabled: false,
+    };
+    let submitted: UserUpdateInput | undefined;
+    server.use(
+      http.get("/console/v1/users/:id", () =>
+        HttpResponse.json(managedUser, {
+          headers: { ETag: `"${managedUser.updated_at}"` },
+        }),
+      ),
+      http.patch("/console/v1/users/:id", async ({ request }) => {
+        submitted = (await request.json()) as UserUpdateInput;
+        return HttpResponse.json({
+          id: managedUser.id,
+          correlation_id: "11111111-0000-0000-0000-000000000094",
+        });
+      }),
+    );
+    const user = userEvent.setup();
+    renderAppAt(`/admin/users/${managedUser.id}`);
+
+    await user.click(
+      await screen.findByRole("switch", {
+        name: "Enable Responses WebSocket",
+      }),
+    );
+    await user.click(
+      screen.getByRole("button", {
+        name: "Save personal settings",
+      }),
+    );
+
+    await waitFor(() => {
+      expect(submitted).toEqual({ websocket_enabled: true });
+    });
+  });
+
   it("updates only the balance without resubmitting account or status fields", async () => {
     seedAuthenticatedSession();
     const managedUser = {
