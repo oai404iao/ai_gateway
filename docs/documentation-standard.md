@@ -130,6 +130,9 @@ git diff --check
 python3 scripts/check-docs.py
 ```
 
+该脚本校验根文档与 `docs/user`、`docs/development`、`docs/archive` 的状态元数据、
+每个 Markdown 文件的单一 H1，以及本地 Markdown 链接目标。
+
 并检查：
 
 1. 文档中引用的仓库路径都存在。

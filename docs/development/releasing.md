@@ -28,7 +28,9 @@
 版本一致性可单独检查：
 
 ```bash
-./scripts/check-release-version.sh 0.1.0
+# 在更新 Cargo.toml 后，从主 package 读取本次目标版本。
+VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
+./scripts/check-release-version.sh "$VERSION"
 ```
 
 发布构建使用 `rust-toolchain.toml` 固定的 Rust 1.97.1；源码 MSRV 为 1.92，
@@ -38,7 +40,8 @@
 ## 本地发布门禁
 
 ```bash
-./scripts/verify-release.sh 0.1.0
+VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
+./scripts/verify-release.sh "$VERSION"
 ```
 
 该脚本执行：
@@ -58,11 +61,12 @@ PostgreSQL 集成测试要求先启动 `docker compose up -d`。性能 Harness �
 提交发布变更后，确保工作树干净：
 
 ```bash
-./scripts/release.sh 0.1.0 --push
+VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
+./scripts/release.sh "$VERSION" --push
 ```
 
 该命令要求本地 `main` 与 `origin/main` 完全一致，验证目标 SHA 的 `main`
-push 已有成功的 `ci-gate`，再创建 annotated tag `v0.1.0`，然后通过 atomic
+push 已有成功的 `ci-gate`，再创建 annotated tag `v${VERSION}`，然后通过 atomic
 push 同时推送 `main` 与 tag。发布准备阶段已经运行完整本地发布门禁，因此默认
 不会在打 tag 前重复执行；需要人工再次验证时可显式增加 `--verify`。没有
 `--push` 时只创建本地 tag。查询 `ci-gate` 需要已认证的 GitHub CLI。
@@ -127,10 +131,11 @@ Release 不会被工作流覆盖；修复发布问题应使用新的 patch 版�
 ## 发布后验证
 
 ```bash
-git ls-remote --tags origin refs/tags/v0.1.0
+VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
+git ls-remote --tags origin "refs/tags/v${VERSION}"
 
-docker pull ghcr.io/oai404iao/ai_gateway:0.1.0
-docker run --rm ghcr.io/oai404iao/ai_gateway:0.1.0 --version
+docker pull "ghcr.io/oai404iao/ai_gateway:${VERSION}"
+docker run --rm "ghcr.io/oai404iao/ai_gateway:${VERSION}" --version
 ```
 
 随后在隔离环境按 `docs/user/production-deployment.md` 启动完整 Compose，验证

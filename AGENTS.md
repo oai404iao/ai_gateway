@@ -1,5 +1,7 @@
 # AGENTS.md - ai-gateway
 
+> Status: Current operational handbook.
+>
 > Operational context for coding agents. Start with `docs/README.md` for the
 > document map and verify current behavior in code, tests, migrations, and
 > machine-readable contracts.
@@ -31,8 +33,8 @@ paths. A React + TypeScript
 Console web UI lives under `web/console/` and can be embedded into the binary
 as static assets via the optional `embedded-console-ui` cargo feature, served
 only from the Console listener. `docs/development/architecture.md` describes
-the current architecture; `docs/development/product-blueprint.md` preserves
-product direction and design background but never overrides the runtime.
+the current architecture; superseded product assumptions and implementation
+plans live under `docs/archive/` and never override the runtime.
 
 The Console API contract is an authoritative OpenAPI spec at
 `docs/openapi/console-v1.yaml`; the frontend's TypeScript types are generated
@@ -62,14 +64,14 @@ repo/
 |   |-- request_log_journal.rs  # Versioned safe request-log payload encoding
 |   |-- request_log_spool.rs    # CRC-protected local append log and checkpoints
 |   |-- routing/                # Priority/weight selection and passive health state
-|   |-- transforms/             # Compiled constrained JSON/header/SSE transform DSL
+|   |-- transforms/             # Compiled constrained JSON/header/SSE/WebSocket-event transform DSL
 |   |-- upstream/               # Reused reqwest clients, Responses WebSocket pool/dialer, proxy policy, timeout resolution
 |   |-- persistence/            # SQLx repositories, Console auth/session state, control-plane mutations, logs
 |   `-- workers/                # Snapshot reload plus spool ingestion, DB projection, and settlement
 |-- migrations/                 # PostgreSQL control-plane and log schema migrations
 |-- tests/                      # Local, PostgreSQL, proxy, streaming, real-upstream, and console-spec integration tests
 |-- tools/forwarding-perf/      # Manual isolated forwarding benchmark orchestrator, Mock LLM, load client, and report generator
-|-- web/console/                # React 19 + TypeScript + Vite + Tailwind v4 + shadcn/ui (Radix) SPA, the Console web UI
+|-- web/console/                # React 19 + TypeScript + Vite + Tailwind v4 + shadcn/ui base-nova (Base UI) SPA
 |   |-- src/api/                # Typed Console client, session store, MSW/test helpers, generated OpenAPI types (generated/console-v1.d.ts)
 |   |-- src/app/                # Providers, router, layouts, theme
 |   |-- src/features/           # Feature modules (auth, profile, sessions, api-keys, request-logs, admin control plane)
@@ -119,7 +121,7 @@ cargo test                                # unit + local/PostgreSQL integration 
 cargo test --features mcp-server --lib    # MCP feature-gated unit coverage
 cargo test --features mcp-server --test mcp_integration # deterministic MCP protocol/session/Search/Images coverage
 cargo test --features mcp-server --test control_plane_integration codex_connector_forwards_responses_and_images_with_shared_credentials -- --exact # MCP Images edit through the Codex connector
-cargo test --lib console_ui               # embedded-UI serving tests (needs --features embedded-console-ui + built web/console/dist)
+cargo test --features embedded-console-ui --lib console_ui # embedded-UI serving tests (needs built web/console/dist)
 cargo test --test console_spec_integration # OpenAPI spec/Console-API drift tests (needs PostgreSQL)
 cargo test --package ai-gateway-perf       # Fast unit tests for the manual performance tooling; does not run a benchmark
 cargo clippy --package ai-gateway-perf --all-targets # Lint the separate performance-tool package
@@ -135,6 +137,9 @@ cargo run --release --features mcp-server             # production binary with o
 # One-time first Console administrator; password is read only from stdin
 cargo run -- bootstrap-admin --email admin@example.com --display-name "Initial Admin" --password-stdin < password.txt
 
+# Emergency reset for an existing active administrator; also stdin-only
+cargo run -- reset-admin-password --email admin@example.com --password-stdin < new-password.txt
+
 # First use: generate the ignored database password file, then start PostgreSQL
 mkdir -p ./config
 openssl rand -hex 32 > ./config/postgres-password
@@ -145,8 +150,9 @@ docker compose up -d
 docker compose -f docker-compose.prd.yaml config --quiet
 docker build -t ai-gateway:local .
 docker run --rm ai-gateway:local --version
-./scripts/check-release-version.sh 0.1.0
-./scripts/verify-release.sh 0.1.0
+VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
+./scripts/check-release-version.sh "$VERSION"
+./scripts/verify-release.sh "$VERSION"
 
 # --- Manual performance harness: run only when the user explicitly requests it ---
 ./scripts/run-forwarding-perf.sh --profile quick
@@ -156,7 +162,8 @@ docker run --rm ai-gateway:local --version
 pnpm --dir web/console typecheck          # tsc --noEmit (strict)
 pnpm --dir web/console lint               # oxlint (5 shadcn fast-refresh warnings are acceptable)
 pnpm --dir web/console test               # vitest component tests (jsdom + MSW)
-pnpm --dir web/console e2e                # Playwright browser tests (installs Chromium; runs an HTTP dev server on :5174)
+pnpm --dir web/console e2e:install        # first run only: install Playwright Chromium + OS dependencies
+pnpm --dir web/console e2e                # Playwright browser tests; runs an HTTP dev server on :5174
 pnpm --dir web/console build              # tsc -b && vite build -> web/console/dist (embedded by rust-embed)
 pnpm --dir web/console generate:api       # regenerate src/api/generated/console-v1.d.ts from docs/openapi/console-v1.yaml
 pnpm --dir web/console generate:api:check # CI drift gate: fails if generated types differ from the committed spec
@@ -196,12 +203,15 @@ performance run.** Building the tool or running
 
 ## Configuration Rules
 
-- The normal serve command loads the first CLI argument as TOML, defaulting to ignored `./config/config.toml` in the current working directory (`src/main.rs`). It does not use an XDG configuration directory. `bootstrap-admin` is a separate one-time CLI subcommand and requires `--password-stdin`. There is no dotenv support or automatic local-override merge.
+- The normal serve command loads the first CLI argument as TOML, defaulting to ignored `./config/config.toml` in the current working directory (`src/main.rs`). It does not use an XDG configuration directory. `bootstrap-admin` is a one-time first-admin CLI and `reset-admin-password` is an emergency active-admin recovery CLI; both require `--password-stdin`. There is no dotenv support or automatic local-override merge.
 - Keep `config.example.toml`, `deploy/compose/config.example.toml`, and the deserialization types in `src/runtime_config/mod.rs` synchronized whenever configuration changes. The container template deliberately differs only in listener/database/spool/secret paths and enabled embedded Console settings.
 - The canonical Compose setup reads its password from ignored
   `./config/postgres-password`; do not reintroduce an inline default password.
 - `./config/config.toml` and Console JWT key files under `./config/` are ignored. A different current-directory TOML path can be passed explicitly. The binary never loads `.env` files. The sole exception is the ignored `.env.real-upstream` file, which `scripts/run-real-upstream-smoke.sh` may source for opt-in test credentials.
-- Configuration changes intended for live reload should preserve the immutable-snapshot pattern: construct a complete `AppConfig`, then replace it atomically through `RuntimeConfig`.
+- Database control-plane changes intended for live reload must load complete
+  `RuntimeConfigRecords`, compile one `CompiledRuntimeConfig`, and replace it
+  atomically through `RuntimeConfig::replace_snapshot`. `AppConfig` is the
+  TOML bootstrap/process configuration, not the live database snapshot.
 - `[console].ui_enabled = true` mounts the embedded Console UI on the Console listener, but requires building with the `embedded-console-ui` cargo feature (and a built `web/console/dist`). Setting `ui_enabled = true` without the feature compiled in is rejected at startup with a `ConfigError` (`src/runtime_config/mod.rs`). The UI is served only from the Console listener, never from the public `/v1/*` data-plane listener.
 - `[mcp]` is a one-time bootstrap source for database-backed MCP transport settings. Runtime enablement, `public_base_url`, browser origins, legacy compatibility, and MCP request/result limits are edited through Console System settings and published in immutable snapshots. Enabling requires the `mcp-server` Cargo feature. MCP instance definitions are also PostgreSQL control-plane state.
 
@@ -232,7 +242,9 @@ performance run.** Building the tool or running
 ```text
 Axum HTTP
   -> client API-key authentication
-  -> client Header/top-level body allowlist
+  -> client top-level body allowlist
+  -> user-group Fast filtering
+  -> client Header allowlist
   -> API-format and model-rule resolution
   -> healthy channel selection (priority, then weight)
   -> request transformation
@@ -254,15 +266,38 @@ Axum HTTP
   the explicit ignore set. Unknown client/Codex body fields fail closed; unknown Headers are
   ignored. Only top-level fields are checked. When neither policy deletes/overrides a field and no
   transform or model alias applies, preserve the original request bytes without reserialization.
+- User-group `filter_fast_mode` runs immediately after the client body
+  allowlist and silently removes top-level `service_tier`. Request-log
+  metadata, request billing multipliers, Session affinity, transforms, and
+  Connectors must observe only the filtered body; do not reintroduce the field
+  later in the pipeline.
 - Keep multipart Images edits behind `ReplayableRequestBody::{Memory, TempFile}` and the dedicated `image_edit_*` limits. Never raise the global JSON body limit to accommodate images, require complete input images/data-URL JSON to remain in memory beyond the configured threshold, retain named upload files, or put multipart values in logs/errors/audit.
 - Multipart edit request JSON transforms fail closed; ordinary connectors replay exact bytes or
   rebuild only the model/explicitly ignored client fields, while Codex adapts at most five images
   to streamed base64 data URLs and rejects masks or non-equivalent provider fields.
-- Keep the fixed request order: client allowlist → template defaults → channel overrides → Codex
-  body allowlist (Codex only) → shared hop-by-hop/explicit-ignore Header cleanup → Codex Header
-  allowlist (Codex only) → upstream authentication → final explicit-ignore guard → transport
-  dispatch. Configurable transforms must not alter protected or hop-by-hop headers and cannot
-  bypass the client forwarding-metadata block or the Codex outbound policy.
+- Keep the fixed request order: client body allowlist → user-group Fast
+  filtering → client Header allowlist → template defaults → channel overrides
+  → Codex body allowlist (Codex only) → shared
+  hop-by-hop/explicit-ignore Header cleanup → Codex Header allowlist (Codex
+  only) → upstream authentication → final explicit-ignore guard → transport
+  dispatch. Configurable transforms must not alter protected or hop-by-hop
+  headers and cannot bypass the client forwarding-metadata block or the Codex
+  outbound policy.
+- `POST /v1/responses` may accept a downstream `Content-Encoding: zstd` JSON
+  body; decode it within the configured JSON limit before parsing and policy.
+  Other JSON operations accept identity only, and multipart Images edit
+  rejects encoded bodies. A Responses channel group may set
+  `request_compression = zstd`; encode only the final HTTP Responses JSON body
+  after Connector adaptation at Zstandard level 3. Do not apply that outbound
+  encoding to Responses WebSocket, standalone search, or Images.
+- Codex request privacy normalization is a security boundary. Replace
+  client-local installation IDs with a credential-stable opaque UUID, replace
+  turn metadata workspaces with the single database-configured synthetic Git
+  workspace, and safely fill only the documented missing identity/cache
+  metadata. Apply the same policy to Responses HTTP, Responses WebSocket,
+  standalone search Headers, and paired Images projections; never forward
+  client workspace paths, Git remotes, commits, dirty state, or raw
+  installation fingerprints.
 - A Codex OAuth logical credential belongs to one `connector_pools` record and projects through
   `codex_oauth_credential_channels` to separate Responses and Images managed channels. Preserve the
   legacy Responses channel/credential ID, share token/quota/proxy state, keep format health and
@@ -316,10 +351,16 @@ Axum HTTP
 
 ### Add a configuration setting
 
-1. Add the field to the appropriate TOML-deserialized type in `src/runtime_config/mod.rs`.
-2. Add its documented default to the tracked `config.example.toml`; do not commit local `./config/config.toml` or JWT files under `./config/`.
-3. Wire the setting at its use site; preserve atomic snapshot replacement for runtime configuration.
-4. Add tests for parsing/default behavior and run the standard Rust checks.
+First decide which configuration layer owns the value:
+
+- **Process/bootstrap TOML:** add the field to the appropriate
+  `AppConfig`-related type in `src/runtime_config/mod.rs`, synchronize
+  `config.example.toml` and `deploy/compose/config.example.toml`, then test
+  parsing/defaults. Do not commit local `./config/config.toml` or JWT files.
+- **Database runtime policy:** update the ordered migration/default
+  `system_settings` document, persistence DTOs, Console OpenAPI/generated
+  types, runtime compiler, UI/docs, and tests together. Compile the complete
+  `CompiledRuntimeConfig` before atomically replacing the snapshot.
 
 ### Add an HTTP endpoint
 
@@ -346,7 +387,7 @@ Axum HTTP
 ### Change the Console web UI
 
 1. Work inside `web/console/` (React 19 + TypeScript + Vite + Tailwind v4 + shadcn/ui). Keep `src/api/types.ts` as a re-export shim; do not hand-edit `src/api/generated/console-v1.d.ts`.
-2. For forms driven by Radix `Select` with `react-hook-form`, every `Select`-backed field must be seeded in `useForm({ defaultValues })` (or `register`ed), or `reset()` values are absent from validation and the form silently fails to submit. See the api-key and user detail pages for the pattern.
+2. For forms driven by the Base UI-backed `Select` wrapper with `react-hook-form`, every `Select`-backed field must be seeded in `useForm({ defaultValues })` (or `register`ed), or `reset()` values are absent from validation and the form silently fails to submit. See the api-key and user detail pages for the pattern.
 3. Construct the React Query `QueryClient` per `AppProviders` mount (it already is); do not make it a module singleton, or cached query state leaks across mounts (HMR and component tests).
 4. Add a vitest component test (deterministic `src/test/fixtures.ts` + `src/test/msw.ts` handlers use relative paths) and/or a Playwright e2e flow in `e2e/`. Component tests live under `src/**`; e2e specs live under `e2e/` and are excluded from vitest.
 5. Run `pnpm --dir web/console typecheck && pnpm --dir web/console lint && pnpm --dir web/console test && pnpm --dir web/console build`. If the Rust embedding path changed, also `cargo test --features embedded-console-ui --lib console_ui`.
@@ -405,14 +446,17 @@ pool isolation, transforms, and configured outbound proxies.
 
 ## Gotchas
 
-1. **The product blueprint is not the runtime.** It includes roadmap and historical language. Use `docs/development/architecture.md`, code, tests, migrations, and OpenAPI for current behavior.
+1. **Archived blueprints are not the runtime.** Early product, database, and
+   Console plans under `docs/archive/` contain superseded assumptions. Use
+   `docs/development/architecture.md`, code, tests, migrations, and OpenAPI for
+   current behavior.
 2. **Public and Console routes are separate.** `src/http/mod.rs` exposes the API-key data plane; `src/http/console.rs` is bound by `main` only when `[console].enabled` is set. Console is intended for an HTTPS reverse proxy, and `admin` is a role rather than a route namespace or static bearer token.
 3. **Migrations are authoritative.** Add ordered SQL migrations for schema changes; there is no SQLx offline cache.
 4. **`./config/config.toml` is auto-loaded.** It is intentionally ignored by Git; invoke `cargo run -- ./config/other-config.toml` only when using another file.
-5. **Runtime configuration is TOML-only.** Do not add dotenv loading to the binary. Console Ed25519 keys are supplied by protected file paths, not TOML values. `.env.real-upstream` is test-script-only and must remain ignored.
+5. **Bootstrap/process configuration is TOML-only; dynamic runtime policy is PostgreSQL-backed.** Do not add dotenv loading to the binary. Console Ed25519 keys are supplied by protected file paths, not TOML values. `.env.real-upstream` is test-script-only and must remain ignored.
 6. **Embedded UI needs a built dist and the feature.** `[console].ui_enabled = true` is rejected at startup unless the binary is built with `--features embedded-console-ui`. In debug builds `rust-embed` reads `web/console/dist` from disk at runtime, so `pnpm --dir web/console build` must have run; release builds embed dist into the binary. Without `web/console/dist`, the UI router serves a placeholder error instead of `index.html`.
 7. **The OpenAPI spec is the Console API source of truth.** `docs/openapi/console-v1.yaml` drives `web/console/src/api/generated/console-v1.d.ts` via `pnpm --dir web/console generate:api`. `generate:api:check` fails if the generated file drifts from the committed spec, so regenerate and commit both together. Never hand-edit the generated file.
-8. **react-hook-form `Select` fields must be seeded.** Radix `Select` components driven by `form.watch`/`form.setValue` are not registered with react-hook-form unless their values appear in `useForm({ defaultValues })`. Without `defaultValues`, `form.reset()` values are missing from validation and submitting without re-selecting the dropdown silently fails (and there is no `FieldError` render). Always seed every `Select`-backed enum/optional field.
+8. **react-hook-form `Select` fields must be seeded.** The Base UI-backed `Select` wrapper driven by `form.watch`/`form.setValue` is not registered with react-hook-form unless its value appears in `useForm({ defaultValues })`. Without `defaultValues`, `form.reset()` values are missing from validation and submitting without re-selecting the dropdown silently fails (and there is no `FieldError` render). Always seed every `Select`-backed enum/optional field.
 9. **Frontend TS is strict and `erasableSyntaxOnly`.** `verbatimModuleSyntax`, `noUnusedLocals`, `noUnusedParameters`, and `erasableSyntaxOnly` are on: use `import type`, no TypeScript enums, no unused locals/params, and no runtime-only TS syntax. oxlint (not ESLint) is the linter; the 5 shadcn fast-refresh warnings are expected and acceptable.
 10. **Component tests vs. e2e are scoped.** vitest `include` is `src/**/*.{test,spec}.{ts,tsx}` and `exclude`s `e2e`, so Playwright specs (`e2e/*.spec.ts`) are not collected by vitest. e2e uses `vite.e2e.config.ts` (plain HTTP on `127.0.0.1:5174`) because Playwright's webServer readiness probe cannot ignore the dev server's self-signed HTTPS.
 11. **Performance runs are always opt-in.** `tools/forwarding-perf/` is a separate workspace package and its unit tests are lightweight, but `scripts/run-forwarding-perf.sh` starts release processes and generates sustained concurrent traffic. Do not invoke either the `quick` or `standard` profile without an explicit user request. The harness must keep using random `ai_gateway_perf_*` databases and must never point its admin URL at the normal `ai_gateway` database.
@@ -455,7 +499,12 @@ pool isolation, transforms, and configured outbound proxies.
 
 ### Frontend (`web/console/`)
 
-- React 19 + TypeScript (strict), Vite, Tailwind CSS v4, shadcn/ui (Radix) components kept as version-controlled source under `src/components/ui/`. Use pnpm; the lockfile and `components.json` are committed, `node_modules/` and `dist/` are ignored.
+- React 19 + TypeScript (strict), Vite, Tailwind CSS v4, and shadcn/ui
+  `base-nova` components backed by Base UI are kept as version-controlled
+  source under `src/components/ui/`. Use pnpm; the lockfile and
+  `components.json` are committed, `node_modules/` and `dist/` are ignored.
+  Do not reintroduce Radix-only `asChild`, imports, state hooks, or popup
+  anatomy; Base UI custom triggers use `render`.
 - Model form validation with `zod` + `react-hook-form` (`zodResolver`); seed every `Select`-backed field in `defaultValues`. Server data fetching/mutation via `@tanstack/react-query`; optimistic-concurrency edits send `If-Match` from the GET `ETag` and render a 409 reload toast.
 - API access goes through `src/api/client.ts` (`Bearer` access token, single-flight refresh, `ETag`/`If-Match`); types come from `@/api/types` (a re-export of the generated OpenAPI types). Access tokens are memory-only; never persist them to `localStorage`.
 - Routes are lazy-loaded via `React.lazy` + `Suspense` for per-route code splitting; auth/admin guards are `RequireAuth`/`RequireAdmin`. The `QueryClient` is created per `AppProviders` mount, not as a module singleton.
@@ -471,7 +520,8 @@ pool isolation, transforms, and configured outbound proxies.
 | Documentation map and rules | `docs/README.md` and `docs/documentation-standard.md` |
 | Documentation validation | `python3 scripts/check-docs.py` |
 | Current architecture and constraints | `docs/development/architecture.md` |
-| Product direction and design background | `docs/development/product-blueprint.md` |
+| Current database/control-plane architecture | `docs/development/database-architecture.md` and `migrations/` |
+| Superseded product/design history | `docs/archive/` |
 | Supported client formats | `src/domain/api_format.rs` |
 | Public data-plane route registry | `src/http/mod.rs` |
 | MCP transport, legacy Session lifecycle, auth handoff, and tools | `src/mcp/mod.rs`, `src/domain/system_settings.rs`, `src/mcp/search.rs`, `src/mcp/image.rs`, and `docs/user/mcp-services.md` |
@@ -491,8 +541,8 @@ pool isolation, transforms, and configured outbound proxies.
 | Project and third-party licensing | `LICENSE`, `LICENSES/`, and `web/console/NOTICES.md` |
 | Console API contract (request/response shapes) | `docs/openapi/console-v1.yaml` |
 | Console UI generated TypeScript types | `web/console/src/api/generated/console-v1.d.ts` (regenerate via `pnpm --dir web/console generate:api`) |
-| Console UI architecture and implementation plan | `docs/development/console-ui.md` |
-| Console/JWT design and execution plan | `docs/development/console-auth.md` |
+| Console UI architecture and development guide | `docs/development/console-ui.md` |
+| Console/JWT design record | `docs/development/console-auth.md` |
 | Current operational API documentation | `docs/user/operations.md` |
 | OpenAI compatibility and external semantics | `docs/reference/` |
 | Images staged design and Codex projection | `docs/development/openai-images.md` |

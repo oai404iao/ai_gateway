@@ -4,6 +4,11 @@
 
 # ai-gateway
 
+> **Status:** Current implementation, under active development. The public
+> data plane supports Chat Completions, Responses, Codex standalone web
+> search, non-streaming JSON Images generation, multipart Images edits, and
+> optional Search and Images MCP services that are stateless by default.
+
 <p align="center">
   A production-oriented, single-binary Rust gateway for OpenAI-compatible LLM traffic.
 </p>
@@ -22,11 +27,6 @@
   ·
   <a href="docs/README.md">Documentation</a>
 </p>
-
-> **Status:** Current implementation, under active development. The public
-> data plane supports Chat Completions, Responses, Codex standalone web
-> search, non-streaming JSON Images generation, multipart Images edits, and
-> optional stateless Search and Images MCP services.
 
 `ai-gateway` is a self-hosted LLM request gateway built with Rust, Axum,
 Tokio, SQLx, and PostgreSQL. It keeps routing on an immutable in-memory
@@ -57,9 +57,10 @@ separate management Console for users and administrators.
   limit, and expose spool capacity/failure metrics in the Console.
 - **Database-backed control plane** compiled into immutable runtime snapshots;
   proxy requests do not query PostgreSQL on the hot path.
-- **Constrained transforms** for request JSON, headers, normal responses, and
-  SSE events, with protected-header enforcement and upstream credential
-  injection.
+- **Constrained transforms** for request JSON, request/response headers, and
+  SSE/WebSocket JSON events, with protected-header enforcement and upstream
+  credential injection. Ordinary non-streaming response bodies pass through
+  without JSON rewriting.
 - **Admission and accounting** with process-local RPM/concurrency limits, soft
   USD quotas, durable request-log spooling, usage extraction, and asynchronous
   settlement.
@@ -200,6 +201,10 @@ cargo run -- bootstrap-admin \
   --password-stdin < /secure/path/admin-password.txt
 ```
 
+If an existing active administrator is locked out, use the stdin-only
+`reset-admin-password` recovery command documented in the
+[operations guide](docs/user/operations.md#紧急重置管理员密码).
+
 Restart the gateway after enabling the Console. By default, the public API is
 available at `http://127.0.0.1:3000` and the Console API at
 `http://127.0.0.1:3001`.
@@ -213,7 +218,9 @@ Use the Console UI or API to create:
    OAuth Responses group also creates a disabled Images group backed by the
    same credential pool.
 3. A channel with its upstream URL, credentials, and available models.
-4. A model rule mapping the client model to the upstream model and route.
+4. A model rule mapping the client model to one model record and route. That
+   model record's source ID is both the upstream wire model name and the
+   request's price source.
 5. A client API key with `proxy` permission; add `models.read` for
    `/v1/models`.
 
@@ -316,6 +323,15 @@ starting the stack.
   body fields fail closed while unknown Headers are ignored.
 - Original request bytes are preserved when neither request policy nor a model
   alias/configured body transform changes them.
+- `POST /v1/responses` accepts `identity` or `zstd` request bodies. A Responses
+  channel group may independently compress the final upstream HTTP JSON body
+  with zstd; WebSocket, standalone search, and Images remain uncompressed.
+- A user group can enable Fast filtering, which removes top-level
+  `service_tier` immediately after ingress allowlist validation so it does not
+  affect logs, billing multipliers, affinity, transforms, or upstream requests.
+- Codex connectors replace client-local installation/workspace fingerprints
+  with credential-stable and administrator-configured synthetic metadata
+  before forwarding.
 - Client credentials, hop-by-hop headers, `Connection`-declared headers, and
   common reverse-proxy/CDN forwarding metadata are removed before every
   upstream channel request.

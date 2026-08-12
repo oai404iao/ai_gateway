@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate repository Markdown structure and local links."""
+"""Validate repository Markdown structure, status metadata, and local links."""
 
 from __future__ import annotations
 
@@ -10,6 +10,18 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 MARKDOWN_LINK = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
+STATUS_LINE = re.compile(
+    r"^>\s+(?:\*\*(?:状态|Status)[:：]\*\*|(?:状态|Status)[:：])",
+    re.MULTILINE,
+)
+ROOT_STATUS_FILES = {
+    Path("README.md"),
+    Path("README.zh-CN.md"),
+    Path("AGENTS.md"),
+    Path("web/console/README.md"),
+    Path("docs/README.md"),
+    Path("docs/documentation-standard.md"),
+}
 
 
 def markdown_files() -> list[Path]:
@@ -64,11 +76,15 @@ def check_file(path: Path) -> list[str]:
 
     relative = path.relative_to(REPO_ROOT)
     first_lines = "\n".join(lines[:12])
-    if relative.parts[:2] in {
-        ("docs", "user"),
-        ("docs", "development"),
-        ("docs", "archive"),
-    } and not re.search(r"^> (状态|Status)[:：]", first_lines, re.MULTILINE):
+    if (
+        relative in ROOT_STATUS_FILES
+        or relative.parts[:2]
+        in {
+            ("docs", "user"),
+            ("docs", "development"),
+            ("docs", "archive"),
+        }
+    ) and not STATUS_LINE.search(first_lines):
         errors.append(f"{relative}: missing status metadata in the first 12 lines")
 
     if relative.parts[:2] == ("docs", "reference"):

@@ -7,17 +7,20 @@
 - [当前架构](architecture.md)：运行拓扑、请求链路、模块边界和来源优先级。
 - [Codex OAuth Connector 设计记录](codex-oauth-connector.md)：进程内 Connector、
   managed channel、凭证快照、quota 与粘性边界。
-- [MCP 服务架构与实施记录](mcp-services.md)：已实现的无状态 Search 与 Images
-  generation/edit transport、多 MCP registry 和 API Key 鉴权。
+- [MCP 服务架构与扩展边界](mcp-services.md)：已实现的无状态 Search 与 Images
+  generation/edit transport、多 MCP registry、API Key 鉴权和后续非目标。
 - [OpenAI Images 转发设计与分阶段实施](openai-images.md)：格式/操作拆分、generation/edit
   转发、Codex 凭证共享投影，以及 replayable 大 body 边界。
-- [产品与架构蓝图](product-blueprint.md)：未来方向和设计背景；不能替代当前实现。
-- [数据库设计](database-design.md)
+- [数据库与控制面架构](database-architecture.md)：当前持久化实体组、快照编译和 schema
+  修改流程；逐列结构以 migration 为准。
 - [Console 认证与授权设计记录](console-auth.md)
-- [Console Web UI 设计](console-ui.md)
+- [Console Web UI 架构与开发指南](console-ui.md)：当前 Base UI 技术栈、会话、安全、构建和测试。
 - [请求日志耐久化流水线](request-log-durability.md)
 - [统计功能设计](statistics.md)
 - [Transform DSL](transform-dsl.md)
+
+早期的产品蓝图、11 表数据库方案和 Console UI 分阶段计划已移入
+[`docs/archive/`](../archive/README.md)，只用于追溯。
 
 ## 测试、性能与发布
 

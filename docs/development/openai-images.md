@@ -27,6 +27,7 @@ OpenAiImages <-> open_ai_images
 ```text
 ChatCompletions
 Responses
+StandaloneWebSearch
 ImagesGeneration
 ImagesEdit
 ```

@@ -7,7 +7,7 @@
 当前运行时同时提供 Console API 和可选的浏览器管理界面。Console API 仍是程序化接口；
 浏览器管理界面已实现于 `web/console/`，可通过 `embedded-console-ui` Cargo feature 嵌入并由
 Console listener 提供。无论是否启用 UI，本文件描述的 API 行为与边界保持不变。设计详情见
-[Console Web UI 设计与实施计划](../development/console-ui.md)。
+[Console Web UI 架构与开发指南](../development/console-ui.md)。
 公共接口与 OpenAI 官方语义的兼容范围见
 [OpenAI API 兼容性总览](../reference/openai-compatibility.md)。
 

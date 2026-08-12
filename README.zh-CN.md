@@ -2,6 +2,8 @@
 
 中文 | [English](README.md)
 
+> **状态：** 当前实现，持续开发中。
+
 `ai-gateway` 是一个单二进制 Rust 网关，用于转发 OpenAI 兼容请求。它向客户端提供
 Chat Completions、Responses、Codex standalone web search、非流式 JSON Images generation
 与 multipart Images edit API，并可选提供 Search 和 Images MCP，
@@ -33,7 +35,10 @@ Chat Completions、Responses、Codex standalone web search、非流式 JSON Imag
 - multipart edit 超过内存阈值后写入受限匿名临时文件，不提高全局 JSON body 上限；Console
   系统负载页显示活跃落盘字节、可用容量和失败次数。
 - 将 PostgreSQL 控制面记录编译为不可变内存快照，因此代理请求不需要逐次查询数据库。
-- 可按配置执行模型别名、受限 JSON/Header/响应/SSE 变换。
+- 可按配置执行模型别名、请求 JSON、请求/响应 Header，以及 SSE/WebSocket JSON 事件变换；
+  普通非流式响应 body 不做 JSON 改写。
+- Codex Connector 会将客户端本地 installation ID 替换为凭证稳定的 opaque UUID，并把
+  workspace/Git 指纹替换为管理员配置的单一合成工作区后再转发。
 - 转发前会移除客户端凭据、hop-by-hop Header 和常见反向代理/CDN 转发元数据，再注入渠道专属的上游鉴权。
 - 上游响应以流式方式转发，不缓冲完整响应；一旦发送响应头或任何响应字节，绝不重试或切换渠道。
 - 提供进程内 RPM、并发和软额度准入控制、被动连接健康、异步请求日志、用量提取与结算。
@@ -78,6 +83,7 @@ Console 客户端
 - Docker Compose（可选；`docker-compose.yml` 提供开发用 PostgreSQL，
   `docker-compose.prd.yaml` 可通过拉取或本地构建 Gateway 镜像运行完整生产栈）
 - 建议安装 OpenSSL，用于生成本地数据库密码与 Console Ed25519 密钥
+- 仅开发或构建 Console UI 时需要 Node.js 24 与 pnpm 11.17
 
 ## 快速开始 / Quick start
 
@@ -138,6 +144,10 @@ cargo run -- bootstrap-admin \
   --password-stdin < /secure/path/admin-password.txt
 ```
 
+若现有 active 管理员无法登录，可使用只从标准输入读取新密码的
+`reset-admin-password` 恢复命令；完整边界见
+[运行与接口说明](docs/user/operations.md#紧急重置管理员密码)。
+
 ### 4. 启动网关
 
 ```bash
@@ -169,7 +179,8 @@ curl --request POST http://127.0.0.1:3001/console/v1/auth/login \
 2. 所需 API 格式与 Connector 的**渠道组**。新建 Codex OAuth Responses 组时会同时创建一个
    共享凭证池、默认停用的 Images 组。
 3. 该渠道组内的**渠道**：配置上游 URL、上游凭据和支持的上游模型名。
-4. 一个**模型规则**：将客户端模型名映射到计价模型、上游模型名和路由目标。
+4. 一个**模型规则**：将客户端模型名映射到一个模型记录和路由目标；该模型记录的
+   `source_model_id` 同时是上游 wire 模型名和请求计价来源。
 5. 一个客户端 **API Key**：至少授予 `proxy` 权限；如需调用 `/v1/models`，还要授予 `models.read`。
 
 即使使用同一个上游提供商或模型名，Chat Completions、Responses 与 Images 路由仍是
@@ -317,11 +328,17 @@ TOML 仅保存进程级 bootstrap 配置。二进制默认读取
 | `[request_limits]` | 代理、Console 和认证接口各自独立的请求体大小限制。 |
 | `[database]` | PostgreSQL URL、连接池大小和连接超时。 |
 | `[upstream]` | 默认建连、普通响应头、Images 响应头和流空闲超时。 |
+| `[request_retry]` | 收到上游响应头前的自动故障转移初始值。 |
 | `[runtime_config]` | PostgreSQL 控制面定时重载间隔。 |
 | `[passive_health]` | 连接失败阈值和冷却时间。 |
+| `[automatic_disable]` | 按状态码/错误关键词自动停用的初始值。 |
+| `[scheduled_testing]` | 定时直接上游测试的初始值。 |
+| `[session_affinity]` | 进程内成功渠道粘性的初始值与规则。 |
+| `[models_sync]` | 管理员触发的 models.dev 同步限制。 |
 | `[request_logging]` | 本地耐久 spool、独立数据库池、COPY 入口、投影、结算与观测参数。 |
 | `[mcp]` | 数据库 MCP 系统设置的一次性引导值；运行时在 Console 中管理，仍需编译 `mcp-server` feature。 |
 | `[console]` 与 `[auth]` | 可选的独立 Console 监听器与 JWT 密钥文件设置。 |
+| `[observability]` | tracing filter。 |
 
 用户、API Key、模型、模型规则、渠道组、渠道、代理、变换模板、MCP transport 和 MCP 实例等动态数据面配置保存在 PostgreSQL 中，并被编译为不可变运行时快照。项目刻意不支持 `[[api_keys]]`、`[[channels]]`、`[[model_rules]]` 之类的动态 TOML 表。
 
@@ -351,7 +368,8 @@ Console 监听器独立于公共监听器，使用短期 JWT access token。登�
 
 ## Console Web UI
 
-Console 管理台是 **React + TypeScript + Vite + Tailwind CSS + shadcn/ui（Radix）**
+Console 管理台是 **React + TypeScript + Vite + Tailwind CSS + shadcn/ui
+`base-nova`（Base UI）**
 单页应用，源码位于 `web/console/`。发布构建可将 Vite 静态产物嵌入 Rust 二进制，并只通过
 独立的 Console listener 同源提供：
 
@@ -408,12 +426,14 @@ cargo run --release --features embedded-console-ui
 pnpm --dir web/console typecheck   # tsc --noEmit（严格）
 pnpm --dir web/console lint         # oxlint
 pnpm --dir web/console test         # vitest 组件测试（jsdom + MSW）
-pnpm --dir web/console e2e          # Playwright 浏览器测试（会安装 Chromium）
+pnpm --dir web/console e2e:install  # 首次运行：安装 Chromium 与系统依赖
+pnpm --dir web/console e2e          # Playwright 浏览器测试
 pnpm --dir web/console generate:api:check   # OpenAPI spec/类型漂移门禁
 ```
 
-完整命令列表、目录结构与 OpenAPI 契约流程见 `web/console/README.md`；目录布局、认证/缓存模型、shadcn 使用规范和分阶段实施计划见
-[Console Web UI 设计与实施计划](docs/development/console-ui.md)。
+完整命令列表、目录结构与 OpenAPI 契约流程见 `web/console/README.md`；目录布局、认证/缓存模型、
+Base UI 组件规范和嵌入式交付边界见
+[Console Web UI 架构与开发指南](docs/development/console-ui.md)。
 
 ## 运行行为与边界
 
@@ -422,7 +442,13 @@ pnpm --dir web/console generate:api:check   # OpenAPI spec/类型漂移门禁
   [请求白名单契约](docs/reference/request-allowlists.md)检查；未知 body 字段 fail closed，
   未知 Header 被忽略。
 - 只有请求 policy、模型别名或变换确有需要时才重新序列化请求；否则转发原始请求字节。
-- 顺序固定为：客户端白名单 → 模板默认值 → 渠道覆盖 → Codex body 白名单（如适用）→
+- Responses HTTP 可接收 `Content-Encoding: zstd`，并在解码后执行白名单；Responses 渠道组也可
+  把最终上游 HTTP JSON body 压缩为 zstd。WebSocket、standalone search 和 Images 不使用该出站
+  请求压缩。
+- 用户组 `filter_fast_mode` 在客户端白名单后删除顶层 `service_tier`，后续日志、计费倍率、
+  Session affinity、Transform 和 Connector 都只能看到过滤后的 body。
+- 顺序固定为：客户端 body 白名单 → 可选 Fast 过滤 → 客户端 Header 白名单 → 模板默认值 →
+  渠道覆盖 → Codex body 白名单与 installation/workspace 隐私归一化（如适用）→
   受保护 Header 清理 → Codex Header 白名单（如适用）→ 上游鉴权。
 - 客户端 `Authorization`、hop-by-hop Header、`Connection` 声明的 Header，以及常见反向代理/CDN
   转发元数据永不转发给任何上游渠道。
@@ -434,8 +460,8 @@ pnpm --dir web/console generate:api:check   # OpenAPI spec/类型漂移门禁
 - 请求日志不保存 prompt、completion、完整 Header、API Key、Cookie 或未经脱敏的上游错误内容。
 
 当前公开 `/v1/images/edits` 范围不包含 JSON/data URL edit；项目也不包含图片流式响应、
-embeddings、audio、files、batches、
-assistants、fine-tuning、通用自动重试、TLS 终止、独立财务账本、充值/退款或多币种兑换。
+embeddings、audio、files、batches、assistants、fine-tuning、收到响应头/首字节后的自动重试、
+TLS 终止、独立财务账本、充值/退款或多币种兑换。
 
 ## 开发与验证
 
@@ -451,7 +477,8 @@ cargo test
 发布准备与 tag 发布流程见 [`docs/development/releasing.md`](docs/development/releasing.md)。本地发布门禁：
 
 ```bash
-./scripts/verify-release.sh 0.1.0
+VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
+./scripts/verify-release.sh "$VERSION"
 ```
 
 修改请求转发路径后，还必须运行可选的付费真实上游 smoke test。请使用低额度的专用凭据，并只将其保存在已忽略的本地密钥文件中：
@@ -475,7 +502,7 @@ src/
   persistence/       SQLx 仓储与 migration 集成
   runtime_config/    TOML bootstrap 配置与 ArcSwap 快照
   routing/           优先级/权重选择与被动健康
-  transforms/        受限 JSON、Header、响应与 SSE 变换
+  transforms/        受限请求 JSON、请求/响应 Header 与 SSE/WebSocket 事件变换
   upstream/          可复用 reqwest 客户端与代理/超时策略
   workers/           快照重载与异步请求日志 worker
 migrations/          PostgreSQL schema migration
@@ -504,10 +531,10 @@ tests/               本地与 PostgreSQL 集成测试
 - [OpenAI 兼容性参考](docs/reference/openai-compatibility.md)
 - [当前架构](docs/development/architecture.md)
 - [版本发布流程](docs/development/releasing.md)
-- [Console Web UI 设计与实施计划](docs/development/console-ui.md)
-- [数据库与控制面设计](docs/development/database-design.md)
+- [Console Web UI 架构与开发指南](docs/development/console-ui.md)
+- [数据库与控制面架构](docs/development/database-architecture.md)
 - [真实上游 smoke test 说明](docs/development/real-upstream-smoke.md)
-- [产品与架构蓝图](docs/development/product-blueprint.md)
+- [历史归档](docs/archive/README.md)
 
 ## 许可证
 

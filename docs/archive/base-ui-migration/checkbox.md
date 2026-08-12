@@ -1,5 +1,7 @@
 # checkbox
 
+> 状态：历史归档。记录 2026-07-23 Console Radix → Base UI 迁移的组件级差异；当前实现以 `web/console/` 为准。
+
 2026-07-23 — golden pair via CLI plus a state-selector fix; migrated Checkbox to Base UI and preserved the project's Lucide check icon.
 
 ## Changed

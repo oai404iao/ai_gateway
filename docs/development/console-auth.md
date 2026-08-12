@@ -1,4 +1,4 @@
-# Console API、JWT 与角色授权重构计划
+# Console API、JWT 与角色授权设计记录
 
 > 状态：已完成设计记录。本文记录将静态管理 Bearer 接口重构为用户登录、JWT 鉴权及角色授权 Console API 的设计与实施清单。
 >
