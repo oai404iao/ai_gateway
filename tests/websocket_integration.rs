@@ -444,6 +444,7 @@ async fn gateway_harness_with_controls(
             name: "responses".into(),
             api_format: "open_ai_responses".into(),
             connector_kind: "openai_compatible".into(),
+            request_compression: "default".into(),
             priority: 0,
             selection_strategy: "weighted_random".into(),
             enabled: true,

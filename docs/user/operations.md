@@ -166,6 +166,11 @@ multipart 字段返回 `400 request_body_field_unsupported`。当前只检查顶
 嵌套结构仍由上游解释。完整字段和动作见
 [`请求字段与 Header 白名单`](../reference/request-allowlists.md)。
 
+`POST /v1/responses` 支持客户端以 `Content-Encoding: zstd` 发送 JSON body；网关会先解码，
+再执行模型解析、入口白名单和路由。压缩后的请求和解压后的 JSON 都不能超过
+`request_limits.proxy_body_bytes`。其他 JSON 数据面路由只接受 identity，Images edit 继续只
+接受未编码 multipart body。
+
 数据面在认证后、读取请求体前执行 RPM、并发与已结算软额度预检查。客户端/Connector policy
 均未删除或覆盖字段、且没有模型别名或 JSON 变换时才保留原始请求字节。客户端
 `Accept-Encoding` 不直接转发；网关独立向上游声明
@@ -218,7 +223,9 @@ JSON/data URL 形式的公开客户端 edit 请求。
 
 1. 在“渠道”页新建 Channel Group，Connector 选择 **Codex OAuth**。创建请求使用
    Responses 格式；保存时服务会在同一 Connector pool 自动创建一个**默认停用**的 Images
-   Channel Group。两个 group 的 Connector 类型和格式保存后不可修改。
+   Channel Group。两个 group 的 Connector 类型和格式保存后不可修改。Responses group 的
+   **请求压缩**默认是 `Default`（不压缩）；需要匹配 Codex 客户端的 HTTP 请求编码时选择
+   `Zstandard (zstd)`。自动创建的 Images group 始终使用默认值。
 2. 从渠道组详情或渠道列表进入
    `/admin/providers/codex-oauth/<channel-group-id>`。
 3. 选择一种凭证添加方式：
@@ -304,12 +311,24 @@ Gateway 会把这类滑动时间合并为同一个未使用周期，首次出现
 刷新失败，后台轮询会继续补齐当前状态和窗口历史。
 
 Codex Responses HTTP Connector 只接受 `stream: true` 的 SSE 请求，强制上游
-`store: false`，并拒绝非空 `previous_response_id`。客户端仍可发送
+`store: false`，并拒绝非空 `previous_response_id`。当 Responses group 的**请求压缩**选择
+`Zstandard (zstd)` 时，发往 Codex 的最终 JSON body 使用 Zstandard level 3 编码，并设置
+`Content-Encoding: zstd` 与 `Content-Type: application/json`；默认 `Default` 不压缩，
+WebSocket、standalone search 和 Images 请求也不使用该请求编码。客户端仍可发送
 `max_output_tokens`，但选中 Codex managed channel 后，Connector 会在最终上游请求中静默删除
 该字段，因为当前 Codex 订阅请求类型不支持它；该值因此不会限制 Codex 输出。这个兼容处理同时
 适用于 HTTP SSE 与 WebSocket `response.create`，普通 OpenAI-compatible channel 不受影响。
 Codex body/Header 在普通 Transform 之后还会应用独立 provider 白名单：纯遥测、空值和明确
 no-op 可以按契约删除；无法表达的非默认语义和未知 body 字段返回 `400`，未知 Header 被删除。
+此外，Codex OAuth 出站会把 `client_metadata["x-codex-installation-id"]` 和 turn metadata 中的
+`installation_id` 替换为按逻辑凭证稳定的 opaque UUID；turn metadata 的 `workspaces` 始终替换
+为 Console“系统设置”中的单一合成 Git 工作区。默认 path 为 `/workspace`，默认
+`associated_remote_urls.origin` 为 `https://github.com/oai404iao/ai_gateway`；本地路径、真实
+Git remote、workspace 数量、commit 和 dirty 状态不会发送给订阅后端。
+Responses HTTP/WebSocket 缺少 `client_metadata` 时，Gateway 会创建并补齐 installation、
+session、thread、turn、window、turn metadata 和 `prompt_cache_key`；已有非空身份值保留。
+Gateway 不推测 request kind、sandbox、beta、subagent、attestation、turn-state 或 residency。
+其他 metadata 和 W3C trace/baggage 保持不变。
 Codex HTTP 成功响应即使缺少或错误声明上游 `Content-Type`，Gateway 也会向客户端规范化为
 `text/event-stream`；非成功 JSON 错误响应仍保留原内容类型。
 Codex managed channel 会自动启用
@@ -322,10 +341,12 @@ Responses WebSocket 能力；WebSocket `response.create` 同样强制 `stream: t
 
 Codex standalone web search 使用同一 Responses managed channel 和凭证，公共目标为
 `POST /v1/alpha/search`，Connector 将上游目标改为 managed base URL 下的 `/alpha/search`。
-该请求固定为非流式 JSON；保留合法的 `originator` 与 `x-codex-turn-metadata`，注入共享
-Bearer、可选 account/FedRAMP、版本和 User-Agent，并删除 Responses Session Header。发送前不可用
-且未命中 affinity 时可以重选凭证；命中 affinity 后 fail closed；请求发送后不重试。上游没有
-返回可识别 usage 时，日志不估算 token 或费用。
+该请求固定为非流式 JSON；保留合法的 `x-codex-turn-metadata`，缺失时由 Connector 安全补齐，
+并对其应用相同 installation/workspace 归一化；客户端 `originator` 和 `User-Agent` 始终替换为
+Gateway 的 `codex_cli_rs` Connector 身份。随后注入共享 Bearer、可选 account/FedRAMP 和版本，
+并删除 Responses Session Header。发送前不可用且未命中 affinity 时可以重选凭证；命中
+affinity 后 fail closed；请求发送后不重试。上游没有返回可识别 usage 时，日志不估算 token
+或费用。
 
 Codex Images generation 在模型别名和受限变换后只保留 Codex wire type 声明的 JSON 字段，请求目标改为
 `/backend-api/codex/images/generations`。Connector 注入共享凭证的 Bearer、可选

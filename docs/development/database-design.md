@@ -210,6 +210,8 @@ CHECK (cardinality(channel_group_ids) + cardinality(channel_ids) > 0);
 | `id` | `uuid` | 主键。 |
 | `name` | `varchar(100)` | 非空、唯一。 |
 | `api_format` | `api_format` | 非空。 |
+| `connector_kind` | `text` | `openai_compatible` 或 `codex_oauth`。 |
+| `request_compression` | `text` | `default` 或 `zstd`；默认 `default`，`zstd` 只允许 Responses group。 |
 | `priority` | `integer` | 非空、非负；数值越小优先级越高。 |
 | `selection_strategy` | `text` | `weighted_random` 或 `weighted_round_robin`。 |
 | `enabled` | `boolean` | 非空，默认 `true`。 |
@@ -220,8 +222,13 @@ CHECK (cardinality(channel_group_ids) + cardinality(channel_ids) > 0);
 ### 4.6 `channels`
 
 渠道的请求/响应变换和测试配置采用 JSONB，避免为每种 DSL 操作再建立表。最终请求顺序固定为：
-**客户端白名单 → 模板默认值 → 渠道覆盖 → Codex body 白名单（如适用）→ 网关移除客户端鉴权和
-hop-by-hop Header → Codex Header 白名单（如适用）→ 上游鉴权注入**。
+**客户端白名单 → 模板默认值 → 渠道覆盖 → Codex body 白名单、隐私归一化与安全补全（如适用）→
+网关移除客户端鉴权和 hop-by-hop Header → Codex Header 白名单、隐私归一化与安全补全（如适用）
+→ 上游鉴权注入**。
+
+请求 `content-encoding` 与 `accept-encoding` 由网关拥有，不能由 Transform 修改。Responses
+group 选择 `request_compression = zstd` 时，最终 HTTP JSON body 在 Connector 适配后使用
+Zstandard level 3 编码。
 
 | 列 | 类型 | 说明 |
 | --- | --- | --- |
@@ -366,8 +373,9 @@ Images generation/edit 在渠道未显式配置 `response_header_timeout_ms` 时
 | `updated_at` | `timestamptz` | 非空。 |
 
 `forwarding_policy.upstream` 保存建连、普通响应头、Images 响应头和流空闲默认超时，单位秒；
-其余对象保存请求重试、被动健康、自动禁用、定时测试、Session affinity 和 Responses
-WebSocket 等系统策略。Console 管理员通过 `GET`/`PUT /console/v1/system/settings` 读取和更新，
+其余对象保存请求重试、被动健康、自动禁用、定时测试、Session affinity、Responses
+WebSocket、MCP transport，以及 Codex 合成 workspace path/HTTPS origin remote 等系统策略。
+Console 管理员通过 `GET`/`PUT /console/v1/system/settings` 读取和更新，
 使用 `ETag`/`If-Match` 并写入审计日志。保存时会和整个控制面一起编译并立即发布新快照；已在
 处理中的请求保留取得快照时的超时，新的请求使用新值。首次启动只在此行缺失时从 TOML
 bootstrap 配置初始化，之后数据库为唯一运行时来源。
@@ -404,8 +412,9 @@ bootstrap 配置初始化，之后数据库为唯一运行时来源。
    API Key 范围与模型兼容渠道相交，因此不会公布 `disconnected` 规则。临时禁用和被动健康冷却
    不会把仍有模型兼容目标的规则从模型列表移除。
 6. 模板和渠道覆盖符合受限 DSL、Header 保护、SSE 逐事件处理、URL 和超时规则；
-   `forwarding_policy` 的字段必须为正数，普通与 Images 响应头超时都必须大于建连超时，且所有
-   渠道覆盖与对应格式默认值合并后的有效超时均有效。
+   `forwarding_policy` 的字段必须有效：普通与 Images 响应头超时都必须大于建连超时，Codex
+   workspace path 必须是非空绝对路径，Codex remote 必须是无凭证/查询/fragment 的 HTTPS
+   repository URL，且所有渠道覆盖与对应格式默认值合并后的有效超时均有效。
 
 控制面在一个事务中保存变更和审计日志，完成上述全量校验并编译 `CompiledRuntimeConfig` 后提交；提交后直接替换内存 `ArcSwap` 快照。启动、定时重载和 Console 管理写入均使用 PostgreSQL 控制面；TOML 保留进程级监听、数据库、系统设置首次初始化值、日志、Console listener 和 JWT 密钥文件路径设置。
 
@@ -420,7 +429,8 @@ Bearer Key
   → 使用已编译的模型候选 tier，按渠道授权位图、组优先级、渠道权重和内存健康状态选择渠道
   → 模板默认值 + 渠道覆盖
   → Codex body 白名单（Codex only）
-  → Header 清理 + Codex Header 白名单（Codex only）+ 上游鉴权
+  → Codex installation/workspace body 隐私归一化与安全补全（Codex only）
+  → Header 清理 + Codex Header 白名单、隐私归一化与安全补全（Codex only）+ 上游鉴权
   → 原路径流式转发
   → 异步写入一条 request_logs；对已持久化的可结算成本幂等更新余额和已用额度
 ```

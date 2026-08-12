@@ -1428,6 +1428,11 @@ export interface components {
         ModelRuleRoutingStatus: "ready" | "temporarily_unavailable" | "disconnected" | "disabled";
         /** @enum {string} */
         ConnectorKind: "openai_compatible" | "codex_oauth";
+        /**
+         * @description Upstream request-body compression for Responses HTTP requests. `default` sends identity JSON; `zstd` uses Zstandard level 3.
+         * @enum {string}
+         */
+        RequestCompression: "default" | "zstd";
         /** @enum {string} */
         UpstreamAuthKind: "none" | "bearer" | "header";
         /** @enum {string} */
@@ -1692,6 +1697,19 @@ export interface components {
              */
             max_connection_age_seconds: number;
         };
+        SystemCodexSettings: {
+            /**
+             * @description Synthetic absolute workspace path that replaces every client-reported Codex workspace path.
+             * @default /workspace
+             */
+            workspace_path: string;
+            /**
+             * Format: uri
+             * @description Synthetic HTTPS origin remote written to workspaces[workspace_path].associated_remote_urls.origin.
+             * @default https://github.com/oai404iao/ai_gateway
+             */
+            git_remote_url: string;
+        };
         SystemMcpSettings: {
             /**
              * @description Mounts configured MCP endpoints on the public listener when the binary includes the mcp-server feature.
@@ -1745,6 +1763,7 @@ export interface components {
             scheduled_testing: components["schemas"]["SystemScheduledTestingSettings"];
             session_affinity: components["schemas"]["SystemSessionAffinitySettings"];
             websocket: components["schemas"]["SystemWebSocketSettings"];
+            codex: components["schemas"]["SystemCodexSettings"];
             mcp: components["schemas"]["SystemMcpSettings"];
         };
         SystemSettings: components["schemas"]["SystemSettingsInput"] & {
@@ -2082,6 +2101,7 @@ export interface components {
              * @description Shared by the format-specific channel groups derived from one provider connector pool; null for ordinary OpenAI-compatible groups.
              */
             connector_pool_id: string | null;
+            request_compression: components["schemas"]["RequestCompression"];
             priority: number;
             selection_strategy: components["schemas"]["SelectionStrategy"];
             enabled: boolean;
@@ -3089,6 +3109,8 @@ export interface components {
             /** @description New codex_oauth pools start with open_ai_responses; the server also creates a disabled open_ai_images group in the same credential pool. */
             api_format: components["schemas"]["ApiFormat"];
             connector_kind: components["schemas"]["ConnectorKind"];
+            /** @description Valid only for open_ai_responses groups. Omission defaults to `default` on create and preserves the current value on update. */
+            request_compression?: components["schemas"]["RequestCompression"];
             priority: number;
             selection_strategy: components["schemas"]["SelectionStrategy"];
             enabled: boolean;

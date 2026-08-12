@@ -91,11 +91,15 @@ skip filters for optional modules; partially configured WebSocket, Search, or
 Images overrides or an unknown Responses profile fail before Cargo starts.
 
 With `REAL_UPSTREAM_RESPONSES_PROFILE=codex_oauth`, the Responses SSE and
-WebSocket fixtures keep the ordinary client field `max_output_tokens`. A
+non-streaming HTTP fixtures additionally send their ordinary client JSON with
+`Content-Encoding: zstd`; the outer smoke Gateway decodes it before applying
+the normal request policy and forwarding it to the configured target. The SSE
+and WebSocket fixtures keep the ordinary client field `max_output_tokens`. A
 target Gateway using a Codex OAuth Responses channel must remove that
-provider-unsupported field through the Codex request allowlist before forwarding,
-so successful streamed results cover the compatibility policy rather than requiring
-provider-specific client bodies.
+provider-unsupported field through the Codex request allowlist before
+forwarding, so successful streamed results cover both client request decoding
+and the compatibility policy rather than requiring provider-specific client
+bodies.
 The Responses non-streaming case remains part of the run but succeeds by
 asserting the target gateway's documented HTTP `400`
 `codex_streaming_required` boundary. The SSE and WebSocket cases must still

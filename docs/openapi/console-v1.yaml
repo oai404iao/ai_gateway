@@ -2683,6 +2683,12 @@ components:
     ConnectorKind:
       type: string
       enum: [openai_compatible, codex_oauth]
+    RequestCompression:
+      type: string
+      enum: [default, zstd]
+      description: >
+        Upstream request-body compression for Responses HTTP requests.
+        `default` sends identity JSON; `zstd` uses Zstandard level 3.
     UpstreamAuthKind:
       type: string
       enum: [none, bearer, header]
@@ -3085,6 +3091,26 @@ components:
           default: 3300
           description: Must be greater than idle_timeout_seconds.
 
+    SystemCodexSettings:
+      type: object
+      required: [workspace_path, git_remote_url]
+      properties:
+        workspace_path:
+          type: string
+          minLength: 1
+          maxLength: 1024
+          pattern: ^/
+          default: /workspace
+          description: Synthetic absolute workspace path that replaces every client-reported Codex workspace path.
+        git_remote_url:
+          type: string
+          format: uri
+          minLength: 1
+          maxLength: 2048
+          pattern: ^https://
+          default: https://github.com/oai404iao/ai_gateway
+          description: Synthetic HTTPS origin remote written to workspaces[workspace_path].associated_remote_urls.origin.
+
     SystemMcpSettings:
       type: object
       required:
@@ -3144,7 +3170,7 @@ components:
       type: object
       required:
         [api_hosts, upstream, request_retry, passive_health, automatic_disable, scheduled_testing,
-         session_affinity, websocket, mcp]
+         session_affinity, websocket, codex, mcp]
       properties:
         api_hosts:
           type: array
@@ -3161,6 +3187,7 @@ components:
         scheduled_testing: { $ref: "#/components/schemas/SystemScheduledTestingSettings" }
         session_affinity: { $ref: "#/components/schemas/SystemSessionAffinitySettings" }
         websocket: { $ref: "#/components/schemas/SystemWebSocketSettings" }
+        codex: { $ref: "#/components/schemas/SystemCodexSettings" }
         mcp: { $ref: "#/components/schemas/SystemMcpSettings" }
 
     SystemSettings:
@@ -3618,7 +3645,7 @@ components:
 
     ChannelGroupView:
       type: object
-      required: [id, name, api_format, connector_kind, connector_pool_id, priority, selection_strategy, enabled, status_statistics_enabled, updated_at]
+      required: [id, name, api_format, connector_kind, connector_pool_id, request_compression, priority, selection_strategy, enabled, status_statistics_enabled, updated_at]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
@@ -3629,6 +3656,7 @@ components:
           format: uuid
           nullable: true
           description: Shared by the format-specific channel groups derived from one provider connector pool; null for ordinary OpenAI-compatible groups.
+        request_compression: { $ref: "#/components/schemas/RequestCompression" }
         priority: { type: integer }
         selection_strategy: { $ref: "#/components/schemas/SelectionStrategy" }
         enabled: { type: boolean }
@@ -5202,6 +5230,11 @@ components:
             New codex_oauth pools start with open_ai_responses; the server also
             creates a disabled open_ai_images group in the same credential pool.
         connector_kind: { $ref: "#/components/schemas/ConnectorKind" }
+        request_compression:
+          allOf: [{ $ref: "#/components/schemas/RequestCompression" }]
+          description: >
+            Valid only for open_ai_responses groups. Omission defaults to
+            `default` on create and preserves the current value on update.
         priority: { type: integer, minimum: 0 }
         selection_strategy: { $ref: "#/components/schemas/SelectionStrategy" }
         enabled: { type: boolean }
