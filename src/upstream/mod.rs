@@ -765,6 +765,7 @@ mod tests {
                     name: "group".into(),
                     api_format: api_format.into(),
                     connector_kind: "openai_compatible".into(),
+                    request_compression: "default".into(),
                     priority: 0,
                     selection_strategy: "weighted_random".into(),
                     enabled: true,

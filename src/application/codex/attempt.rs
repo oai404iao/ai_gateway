@@ -5,7 +5,6 @@ use axum::http::{
 use bytes::Bytes;
 use reqwest::Url;
 use sha2::{Digest, Sha256};
-use std::io;
 use uuid::Uuid;
 
 use crate::{
@@ -109,29 +108,6 @@ impl PreparedCodexAttempt {
         Ok(body)
     }
 
-    pub(crate) fn encode_http_body(
-        &self,
-        body: Bytes,
-        request_protocol: RequestProtocol,
-    ) -> io::Result<Bytes> {
-        if !matches!(self.request, CodexRequestContext::Responses(_))
-            || request_protocol == RequestProtocol::WebSocket
-        {
-            return Ok(body);
-        }
-
-        let pre_compression_bytes = body.len();
-        let compression_start = std::time::Instant::now();
-        let body = zstd::stream::encode_all(std::io::Cursor::new(body), 3).map(Bytes::from)?;
-        tracing::debug!(
-            pre_compression_bytes,
-            post_compression_bytes = body.len(),
-            compression_duration_ms = compression_start.elapsed().as_millis(),
-            "compressed Codex Responses request body with zstd"
-        );
-        Ok(body)
-    }
-
     pub(crate) fn upstream_url(
         &self,
         channel: &CompiledChannel,
@@ -192,7 +168,6 @@ impl PreparedCodexAttempt {
                     headers.remove(CONTENT_TYPE);
                 } else {
                     headers.insert(ACCEPT, HeaderValue::from_static("text/event-stream"));
-                    headers.insert(CONTENT_ENCODING, HeaderValue::from_static("zstd"));
                     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
                 }
                 headers.insert(
@@ -530,7 +505,7 @@ mod tests {
     }
 
     #[test]
-    fn responses_headers_set_request_encoding_and_leave_accept_encoding_to_the_proxy() {
+    fn responses_headers_leave_content_coding_to_the_proxy() {
         let attempt = PreparedCodexAttempt::prepare(
             &runtime(),
             Uuid::from_u128(1),
@@ -547,7 +522,7 @@ mod tests {
             .unwrap();
 
         assert!(!headers.contains_key(ACCEPT_ENCODING));
-        assert_eq!(headers.get(CONTENT_ENCODING).unwrap(), "zstd");
+        assert!(!headers.contains_key(CONTENT_ENCODING));
         assert_eq!(
             headers.get("version").and_then(|value| value.to_str().ok()),
             Some(CODEX_CLIENT_VERSION)
@@ -839,65 +814,6 @@ mod tests {
                 .get("chatgpt-account-id")
                 .and_then(|value| value.to_str().ok()),
             Some("account-123")
-        );
-    }
-
-    #[test]
-    fn responses_http_body_is_zstd_level_three_compressed() {
-        let attempt = PreparedCodexAttempt::prepare(
-            &runtime(),
-            Uuid::from_u128(1),
-            ApiOperation::Responses,
-            false,
-            &HeaderMap::new(),
-            None,
-        )
-        .unwrap();
-        let original =
-            Bytes::from_static(br#"{"model":"gpt-5-codex","stream":true,"store":false}"#);
-
-        let encoded = attempt
-            .encode_http_body(original.clone(), RequestProtocol::Sse)
-            .unwrap();
-        let decoded = zstd::stream::decode_all(std::io::Cursor::new(encoded)).unwrap();
-
-        assert_eq!(decoded, original);
-    }
-
-    #[test]
-    fn non_responses_and_websocket_bodies_are_not_http_compressed() {
-        let runtime = runtime();
-        let responses = PreparedCodexAttempt::prepare(
-            &runtime,
-            Uuid::from_u128(1),
-            ApiOperation::Responses,
-            false,
-            &HeaderMap::new(),
-            None,
-        )
-        .unwrap();
-        let images = PreparedCodexAttempt::prepare(
-            &runtime,
-            Uuid::from_u128(3),
-            ApiOperation::ImagesGeneration,
-            false,
-            &HeaderMap::new(),
-            None,
-        )
-        .unwrap();
-        let original = Bytes::from_static(br#"{"model":"gpt-5-codex"}"#);
-
-        assert_eq!(
-            responses
-                .encode_http_body(original.clone(), RequestProtocol::WebSocket)
-                .unwrap(),
-            original
-        );
-        assert_eq!(
-            images
-                .encode_http_body(original.clone(), RequestProtocol::NonStream)
-                .unwrap(),
-            original
         );
     }
 

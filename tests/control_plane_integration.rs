@@ -2192,6 +2192,7 @@ async fn codex_credentials_create_managed_channels_and_recompute_quota_state() {
                     name: "codex-managed".into(),
                     api_format: "open_ai_responses".into(),
                     connector_kind: "openai_compatible".into(),
+                    request_compression: None,
                     priority: 0,
                     selection_strategy: "weighted_random".into(),
                     enabled: true,
@@ -2798,8 +2799,9 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
     let codex_group = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO channel_groups \
-         (id,name,api_format,connector_kind,priority,selection_strategy,enabled) \
-         VALUES ($1,'codex-forwarding','open_ai_responses','codex_oauth',0,'weighted_random',true)",
+         (id,name,api_format,connector_kind,request_compression,priority,selection_strategy,enabled) \
+         VALUES ($1,'codex-forwarding','open_ai_responses','codex_oauth','zstd',0, \
+                 'weighted_random',true)",
     )
     .bind(codex_group)
     .execute(&database.pool)
@@ -2820,6 +2822,13 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
             .await
             .unwrap();
     assert!(!images_group_enabled);
+    let images_group_request_compression: String =
+        sqlx::query_scalar("SELECT request_compression FROM channel_groups WHERE id=$1")
+            .bind(images_group)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert_eq!(images_group_request_compression, "default");
     let mut settings = system_settings();
     settings.session_affinity = SystemSessionAffinitySettingsInput {
         enabled: true,
@@ -7486,6 +7495,12 @@ async fn codex_images_migration_backfills_existing_credentials_without_replacing
     .execute(&database.pool)
     .await
     .expect("Codex request-metadata migration must bring the runtime schema current");
+    sqlx::raw_sql(include_str!(
+        "../migrations/0048_channel_group_request_compression.sql"
+    ))
+    .execute(&database.pool)
+    .await
+    .expect("request-compression migration must bring the runtime schema current");
     let codex_defaults: (String, String) = sqlx::query_as(
         "SELECT value #>> '{codex,workspace_path}', value #>> '{codex,git_remote_url}' \
          FROM system_settings WHERE setting_key='forwarding_policy'",
@@ -7501,6 +7516,94 @@ async fn codex_images_migration_backfills_existing_credentials_without_replacing
         .await
         .unwrap();
     compile_runtime_config(repository.load_runtime().await.unwrap()).unwrap();
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn channel_group_request_compression_migration_defaults_and_constrains_existing_groups() {
+    let database = TestDatabase::new_unmigrated().await;
+    for migration in MIGRATOR.iter().filter(|migration| migration.version <= 47) {
+        sqlx::raw_sql(migration.sql.as_ref())
+            .execute(&database.pool)
+            .await
+            .unwrap_or_else(|error| panic!("migration {} failed: {error}", migration.version));
+    }
+
+    let chat_group = Uuid::new_v4();
+    let responses_group = Uuid::new_v4();
+    for (id, name, api_format) in [
+        (
+            chat_group,
+            "legacy-chat-compression",
+            "open_ai_chat_completions",
+        ),
+        (
+            responses_group,
+            "legacy-responses-compression",
+            "open_ai_responses",
+        ),
+    ] {
+        sqlx::query(
+            "INSERT INTO channel_groups \
+             (id,name,api_format,connector_kind,priority,selection_strategy,enabled) \
+             VALUES ($1,$2,$3::api_format,'openai_compatible',1,'weighted_random',true)",
+        )
+        .bind(id)
+        .bind(name)
+        .bind(api_format)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    }
+
+    sqlx::raw_sql(include_str!(
+        "../migrations/0048_channel_group_request_compression.sql"
+    ))
+    .execute(&database.pool)
+    .await
+    .expect("request-compression migration must apply");
+
+    let defaults = sqlx::query_as::<_, (Uuid, String)>(
+        "SELECT id,request_compression FROM channel_groups \
+         WHERE id=ANY($1) ORDER BY id",
+    )
+    .bind(vec![chat_group, responses_group])
+    .fetch_all(&database.pool)
+    .await
+    .unwrap()
+    .into_iter()
+    .collect::<std::collections::HashMap<_, _>>();
+    assert_eq!(
+        defaults.get(&chat_group).map(String::as_str),
+        Some("default")
+    );
+    assert_eq!(
+        defaults.get(&responses_group).map(String::as_str),
+        Some("default")
+    );
+
+    sqlx::query("UPDATE channel_groups SET request_compression='zstd' WHERE id=$1")
+        .bind(responses_group)
+        .execute(&database.pool)
+        .await
+        .expect("Responses groups may opt into zstd");
+    assert!(
+        sqlx::query("UPDATE channel_groups SET request_compression='zstd' WHERE id=$1")
+            .bind(chat_group)
+            .execute(&database.pool)
+            .await
+            .is_err(),
+        "non-Responses groups must remain uncompressed"
+    );
+    assert!(
+        sqlx::query("UPDATE channel_groups SET request_compression='gzip' WHERE id=$1")
+            .bind(responses_group)
+            .execute(&database.pool)
+            .await
+            .is_err(),
+        "unknown compression algorithms must fail closed"
+    );
+
     database.cleanup().await;
 }
 

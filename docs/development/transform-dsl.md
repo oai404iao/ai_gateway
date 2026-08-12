@@ -18,7 +18,8 @@ Transform 可以添加普通 upstream 字段，但不能绕过 Codex provider po
 installation/workspace 指纹。
 
 所有请求体规则都不能修改 `model` 或 `stream`；请求和响应 Header 均有受保护
-名称；响应体规则只作用于受支持的 SSE JSON 事件。
+名称。请求侧 `content-encoding` 与 `accept-encoding` 由网关拥有，不能通过 DSL 修改；
+响应体规则只作用于受支持的 SSE JSON 事件。
 
 ## 版本
 

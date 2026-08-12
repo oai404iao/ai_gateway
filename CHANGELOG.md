@@ -9,10 +9,13 @@ Versioning.
 
 ### Changed
 
-- Compress Codex OAuth Responses HTTP JSON requests with Zstandard level 3
-  and send `Content-Encoding: zstd`, matching the default Codex client
-  behavior. WebSocket, standalone search, and Images requests remain
-  unchanged.
+- Add a channel-group **Request compression** setting. `default` keeps
+  identity JSON and remains the default for every group; Responses groups can
+  opt into Zstandard level 3, which sends `Content-Encoding: zstd` and
+  `Content-Type: application/json`. WebSocket, standalone search, and Images
+  requests remain uncompressed.
+- Accept Zstandard-compressed client bodies on `POST /v1/responses`, with both
+  encoded and decoded sizes bounded by the configured JSON request limit.
 
 ## [0.10.2] - 2026-08-11
 

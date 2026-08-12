@@ -2850,6 +2850,7 @@ async fn etag_if_match_optimistic_concurrency_matches_spec() {
         .to_owned();
     let mut update = body_json(detail).await;
     assert!(update["connector_pool_id"].is_null());
+    assert_eq!(update["request_compression"], "default");
     assert_eq!(update["status_statistics_enabled"], false);
     update["name"] = serde_json::json!("spec-group-renamed");
     update["status_statistics_enabled"] = serde_json::json!(true);
@@ -2879,6 +2880,32 @@ async fn etag_if_match_optimistic_concurrency_matches_spec() {
         conflict_body.contains("\"error\""),
         "conflict body is an error body"
     );
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn request_compression_is_restricted_to_responses_channel_groups() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+
+    let invalid = request(
+        &app,
+        "POST",
+        "/console/v1/routing/channel-groups",
+        serde_json::json!({
+            "name": "spec-chat-compression",
+            "api_format": "open_ai_chat_completions",
+            "connector_kind": "openai_compatible",
+            "request_compression": "zstd",
+            "priority": 1,
+            "selection_strategy": "weighted_random",
+            "enabled": true,
+        }),
+        &[],
+    )
+    .await;
+
+    assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
     database.cleanup().await;
 }
 
@@ -2915,6 +2942,7 @@ async fn codex_oauth_flow_contract_uses_pkce_and_actor_scoped_completion() {
             "name": "spec-codex",
             "api_format": "open_ai_responses",
             "connector_kind": "codex_oauth",
+            "request_compression": "zstd",
             "priority": 1,
             "selection_strategy": "weighted_random",
             "enabled": true,
@@ -2958,6 +2986,8 @@ async fn codex_oauth_flow_contract_uses_pkce_and_actor_scoped_completion() {
         .unwrap();
     assert_eq!(responses_group["connector_pool_id"], group_id);
     assert_eq!(images_group["connector_pool_id"], group_id);
+    assert_eq!(responses_group["request_compression"], "zstd");
+    assert_eq!(images_group["request_compression"], "default");
     let group_audit: serde_json::Value = sqlx::query_scalar(
         "SELECT after_redacted FROM audit_logs \
          WHERE object_type='channel_group' AND object_id=$1 AND action='create'",
@@ -2986,6 +3016,7 @@ async fn codex_oauth_flow_contract_uses_pkce_and_actor_scoped_completion() {
     let mut images_group_update = body_json(images_group_detail).await;
     assert_eq!(images_group_update["api_format"], "open_ai_images");
     assert_eq!(images_group_update["connector_kind"], "codex_oauth");
+    assert_eq!(images_group_update["request_compression"], "default");
     assert_eq!(images_group_update["enabled"], false);
     images_group_update["enabled"] = serde_json::json!(true);
     images_group_update.as_object_mut().unwrap().remove("id");

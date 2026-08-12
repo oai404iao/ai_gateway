@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 use super::{
     ApiFormat, ApiKeyHash, CompiledAdvancedBilling, CompiledMcpServer, ConnectorKind,
-    SystemRuntimeSettings,
+    RequestCompression, SystemRuntimeSettings,
 };
 use crate::transforms::TransformPlan;
 
@@ -713,6 +713,7 @@ pub struct CompiledChannel {
     group_id: Uuid,
     api_format: ApiFormat,
     connector_kind: ConnectorKind,
+    request_compression: RequestCompression,
     base_url: Url,
     connectivity_fingerprint: Arc<str>,
     supports_websocket: bool,
@@ -742,6 +743,10 @@ impl CompiledChannel {
     #[must_use]
     pub const fn connector_kind(&self) -> ConnectorKind {
         self.connector_kind
+    }
+    #[must_use]
+    pub const fn request_compression(&self) -> RequestCompression {
+        self.request_compression
     }
     #[must_use]
     pub fn base_url(&self) -> &Url {
@@ -891,6 +896,7 @@ impl CompiledChannel {
             group_id,
             api_format,
             ConnectorKind::OpenAiCompatible,
+            RequestCompression::Default,
             base_url,
             weight,
             billing_multiplier,
@@ -910,6 +916,7 @@ impl CompiledChannel {
         group_id: Uuid,
         api_format: ApiFormat,
         connector_kind: ConnectorKind,
+        request_compression: RequestCompression,
         base_url: Url,
         weight: i32,
         billing_multiplier: Decimal,
@@ -928,6 +935,7 @@ impl CompiledChannel {
             group_id,
             api_format,
             connector_kind,
+            request_compression,
             base_url,
             connectivity_fingerprint,
             supports_websocket,

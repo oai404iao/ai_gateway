@@ -365,6 +365,13 @@ fn gateway(
             name: "real-upstream-smoke".into(),
             api_format: format.api_format_name().into(),
             connector_kind: "openai_compatible".into(),
+            request_compression: if matches!(format, SmokeFormat::Responses)
+                && settings.responses_profile == ResponsesUpstreamProfile::CodexOauth
+            {
+                "zstd".into()
+            } else {
+                "default".into()
+            },
             priority: 0,
             selection_strategy: "weighted_random".into(),
             enabled: true,

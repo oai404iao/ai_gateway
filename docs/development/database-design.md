@@ -210,6 +210,8 @@ CHECK (cardinality(channel_group_ids) + cardinality(channel_ids) > 0);
 | `id` | `uuid` | 主键。 |
 | `name` | `varchar(100)` | 非空、唯一。 |
 | `api_format` | `api_format` | 非空。 |
+| `connector_kind` | `text` | `openai_compatible` 或 `codex_oauth`。 |
+| `request_compression` | `text` | `default` 或 `zstd`；默认 `default`，`zstd` 只允许 Responses group。 |
 | `priority` | `integer` | 非空、非负；数值越小优先级越高。 |
 | `selection_strategy` | `text` | `weighted_random` 或 `weighted_round_robin`。 |
 | `enabled` | `boolean` | 非空，默认 `true`。 |
@@ -223,6 +225,10 @@ CHECK (cardinality(channel_group_ids) + cardinality(channel_ids) > 0);
 **客户端白名单 → 模板默认值 → 渠道覆盖 → Codex body 白名单、隐私归一化与安全补全（如适用）→
 网关移除客户端鉴权和 hop-by-hop Header → Codex Header 白名单、隐私归一化与安全补全（如适用）
 → 上游鉴权注入**。
+
+请求 `content-encoding` 与 `accept-encoding` 由网关拥有，不能由 Transform 修改。Responses
+group 选择 `request_compression = zstd` 时，最终 HTTP JSON body 在 Connector 适配后使用
+Zstandard level 3 编码。
 
 | 列 | 类型 | 说明 |
 | --- | --- | --- |

@@ -26,7 +26,7 @@ pub use compiled_routing::{
     ModelPriceSnapshot, ModelRouteKey, NoProxyHost, NoProxyHostError,
     OutboundNetworkPolicyFingerprint, SelectionStrategy, UpstreamAuth,
 };
-pub use connector::ConnectorKind;
+pub use connector::{ConnectorKind, RequestCompression};
 pub use console_auth::{ConsolePrincipal, ConsoleSessionPurpose, UserRole};
 pub use mcp::{
     CompiledMcpServer, ImageMcpSettings, McpImageBackground, McpImageQuality, McpSearchContextSize,

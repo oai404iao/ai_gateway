@@ -132,19 +132,9 @@ impl PreparedUpstreamAttempt {
                 } else {
                     body
                 };
-                let body = attempt
-                    .adapt_body(body, request_protocol)
-                    .map_err(ConnectorAttemptError::from)?;
                 attempt
-                    .encode_http_body(body, request_protocol)
-                    .map_err(|error| {
-                        tracing::error!(
-                            event = "codex_request_compression_failed",
-                            error = %error,
-                            "failed to compress Codex Responses request body"
-                        );
-                        ConnectorAttemptError::RequestEncoding
-                    })
+                    .adapt_body(body, request_protocol)
+                    .map_err(ConnectorAttemptError::from)
             }
         }
     }
@@ -277,7 +267,6 @@ pub(crate) enum ConnectorAttemptError {
         code: &'static str,
     },
     RequestBody(ImageEditBodyError),
-    RequestEncoding,
     RequestPolicy(RequestPolicyError),
     InvalidTarget,
     InvalidCredentials,

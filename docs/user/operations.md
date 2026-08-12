@@ -166,6 +166,11 @@ multipart 字段返回 `400 request_body_field_unsupported`。当前只检查顶
 嵌套结构仍由上游解释。完整字段和动作见
 [`请求字段与 Header 白名单`](../reference/request-allowlists.md)。
 
+`POST /v1/responses` 支持客户端以 `Content-Encoding: zstd` 发送 JSON body；网关会先解码，
+再执行模型解析、入口白名单和路由。压缩后的请求和解压后的 JSON 都不能超过
+`request_limits.proxy_body_bytes`。其他 JSON 数据面路由只接受 identity，Images edit 继续只
+接受未编码 multipart body。
+
 数据面在认证后、读取请求体前执行 RPM、并发与已结算软额度预检查。客户端/Connector policy
 均未删除或覆盖字段、且没有模型别名或 JSON 变换时才保留原始请求字节。客户端
 `Accept-Encoding` 不直接转发；网关独立向上游声明
@@ -218,7 +223,9 @@ JSON/data URL 形式的公开客户端 edit 请求。
 
 1. 在“渠道”页新建 Channel Group，Connector 选择 **Codex OAuth**。创建请求使用
    Responses 格式；保存时服务会在同一 Connector pool 自动创建一个**默认停用**的 Images
-   Channel Group。两个 group 的 Connector 类型和格式保存后不可修改。
+   Channel Group。两个 group 的 Connector 类型和格式保存后不可修改。Responses group 的
+   **请求压缩**默认是 `Default`（不压缩）；需要匹配 Codex 客户端的 HTTP 请求编码时选择
+   `Zstandard (zstd)`。自动创建的 Images group 始终使用默认值。
 2. 从渠道组详情或渠道列表进入
    `/admin/providers/codex-oauth/<channel-group-id>`。
 3. 选择一种凭证添加方式：
@@ -304,10 +311,10 @@ Gateway 会把这类滑动时间合并为同一个未使用周期，首次出现
 刷新失败，后台轮询会继续补齐当前状态和窗口历史。
 
 Codex Responses HTTP Connector 只接受 `stream: true` 的 SSE 请求，强制上游
-`store: false`，并拒绝非空 `previous_response_id`。发往 Codex 的最终 JSON body 默认使用
-Zstandard level 3 编码，并设置 `Content-Encoding: zstd` 与
-`Content-Type: application/json`；WebSocket、standalone search 和 Images 请求不使用该请求
-编码。客户端仍可发送
+`store: false`，并拒绝非空 `previous_response_id`。当 Responses group 的**请求压缩**选择
+`Zstandard (zstd)` 时，发往 Codex 的最终 JSON body 使用 Zstandard level 3 编码，并设置
+`Content-Encoding: zstd` 与 `Content-Type: application/json`；默认 `Default` 不压缩，
+WebSocket、standalone search 和 Images 请求也不使用该请求编码。客户端仍可发送
 `max_output_tokens`，但选中 Codex managed channel 后，Connector 会在最终上游请求中静默删除
 该字段，因为当前 Codex 订阅请求类型不支持它；该值因此不会限制 Codex 输出。这个兼容处理同时
 适用于 HTTP SSE 与 WebSocket `response.create`，普通 OpenAI-compatible channel 不受影响。

@@ -52,6 +52,8 @@
 > [compression selection](https://github.com/openai/codex/blob/7a0e974e08c798d1e8d59d407aeb6e24db1313af/codex-rs/core/src/client.rs)、
 > [Responses endpoint](https://github.com/openai/codex/blob/7a0e974e08c798d1e8d59d407aeb6e24db1313af/codex-rs/codex-api/src/endpoint/responses.rs) 和
 > [Zstandard encoder](https://github.com/openai/codex/blob/7a0e974e08c798d1e8d59d407aeb6e24db1313af/codex-rs/http-client/src/request.rs)。
+> 本地研究 checkout 还核对到 `openai/codex@eb9dceba1a2e658142a456c5898836774835616b`
+> 的同一 encoder 实现。
 > HTTP content-coding 基线另外核对当前
 > [`openai/codex@5af85998c23ddb9cc21c43ef41db44712b481611`](https://github.com/openai/codex/tree/5af85998c23ddb9cc21c43ef41db44712b481611)：
 > [default client](https://github.com/openai/codex/blob/5af85998c23ddb9cc21c43ef41db44712b481611/codex-rs/login/src/auth/default_client.rs)、
@@ -193,8 +195,9 @@ provider-managed `channels` 记录。因此普通优先级、权重、API Key �
    或 residency，其他 metadata 与 W3C trace/baggage 保留；
 6. 强制写入 `stream=true`、`store=false`；
 7. 将目标改为 `/backend-api/codex/responses`；
-8. 最终 JSON body 使用 Zstandard level 3 编码，并设置
-   `Content-Encoding: zstd` 与 `Content-Type: application/json`；
+8. 若 Responses 渠道组的“请求压缩”选择 `zstd`，最终 JSON body 使用 Zstandard level 3
+   编码，并设置 `Content-Encoding: zstd` 与 `Content-Type: application/json`；默认
+   `default` 保持 identity；
 9. `Accept-Encoding` 由通用代理层独立设置为 `gzip, deflate, br, zstd`，上游响应在终态 SSE
    与 usage 解析前流式解码；
 10. 最后注入当前凭证的 Bearer、可选 account、FedRAMP 和 Codex 会话 Header；

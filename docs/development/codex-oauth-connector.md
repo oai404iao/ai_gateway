@@ -182,8 +182,9 @@ Codex HTTP attempt：
   attestation、turn-state 或 residency，其他 metadata 和 W3C trace/baggage 保留；
 - 删除显式兼容的 `max_output_tokens` 和纯遥测字段；`previous_response_id` 只允许空值后删除；
   其他已知但 provider 无法表达的非默认值以及未知字段返回客户端错误；
-- 最终 JSON body 使用 Zstandard level 3 编码，并生成
-  `Content-Encoding: zstd` 与 `Content-Type: application/json`；
+- 若 Responses 渠道组的 `request_compression` 选择 `zstd`，通用代理层会在 Connector
+  完成 body 适配后使用 Zstandard level 3 编码，并生成
+  `Content-Encoding: zstd` 与 `Content-Type: application/json`；默认 `default` 不压缩；
 - 目标固定为 managed channel base URL 下的 `/responses`；
 - 注入 Bearer、存在 workspace account ID 时才注入 `ChatGPT-Account-ID`、可选 FedRAMP、
   session/thread、User-Agent、
