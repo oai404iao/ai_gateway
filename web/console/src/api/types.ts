@@ -23,6 +23,7 @@ export type ApiOperation = S["ApiOperation"];
 export type SelectionStrategy = S["SelectionStrategy"];
 export type ModelRuleRoutingStatus = S["ModelRuleRoutingStatus"];
 export type ConnectorKind = S["ConnectorKind"];
+export type RequestCompression = S["RequestCompression"];
 export type UpstreamAuthKind = S["UpstreamAuthKind"];
 export type ScheduledTestingMode = S["ScheduledTestingMode"];
 export type RequestLogSource = S["RequestLogSource"];

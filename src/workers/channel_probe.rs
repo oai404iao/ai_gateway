@@ -5,7 +5,7 @@ use std::{sync::Arc, time::Duration};
 
 use axum::http::{
     HeaderMap, HeaderValue, Method,
-    header::{AUTHORIZATION, CONTENT_TYPE},
+    header::{AUTHORIZATION, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE},
 };
 use bytes::Bytes;
 use futures_util::StreamExt;
@@ -26,8 +26,8 @@ use crate::{
     },
     domain::{
         ApiFormat, ApiOperation, AutomaticDisableTrigger, CompiledChannel,
-        CompiledScheduledTestModel, RequestLogEvent, RequestLogOutcome, RequestLogSource,
-        RequestProtocol, ScheduledTestingMode, UpstreamAuth,
+        CompiledScheduledTestModel, RequestCompression, RequestLogEvent, RequestLogOutcome,
+        RequestLogSource, RequestProtocol, ScheduledTestingMode, UpstreamAuth,
     },
     persistence::SystemProbeIdentity,
     request_policy::strip_explicitly_ignored_client_headers,
@@ -244,6 +244,23 @@ async fn probe_channel(
             );
         }
     };
+    let body = match encode_probe_body(body, channel.request_compression()) {
+        Ok(body) => body,
+        Err(()) => {
+            return finished_probe(
+                &context,
+                outcome,
+                response_status_code,
+                ttft_ms,
+                error_code,
+                error_summary(
+                    error_code,
+                    "Scheduled test request body compression failed.",
+                ),
+                None,
+            );
+        }
+    };
     let mut headers = HeaderMap::new();
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
     if apply_header_plan(&mut headers, transforms.request_headers()).is_err()
@@ -263,6 +280,16 @@ async fn probe_channel(
         );
     }
     strip_explicitly_ignored_client_headers(&mut headers);
+    if channel.request_compression() == RequestCompression::Zstd {
+        headers.insert(CONTENT_ENCODING, HeaderValue::from_static("zstd"));
+    } else {
+        headers.remove(CONTENT_ENCODING);
+    }
+    headers.insert(
+        CONTENT_LENGTH,
+        HeaderValue::from_str(&body.len().to_string())
+            .expect("scheduled probe body length is a valid header value"),
+    );
     let url = match probe_url(channel) {
         Ok(url) => url,
         Err(()) => {
@@ -543,6 +570,15 @@ fn build_probe_body(api_format: ApiFormat, model: &str, prompt: &str) -> Result<
     serde_json::to_vec(&value).map(Bytes::from).map_err(|_| ())
 }
 
+fn encode_probe_body(body: Bytes, compression: RequestCompression) -> Result<Bytes, ()> {
+    match compression {
+        RequestCompression::Default => Ok(body),
+        RequestCompression::Zstd => zstd::stream::encode_all(std::io::Cursor::new(body), 3)
+            .map(Bytes::from)
+            .map_err(|_| ()),
+    }
+}
+
 fn probe_url(channel: &CompiledChannel) -> Result<reqwest::Url, ()> {
     let path = match channel.api_format() {
         ApiFormat::OpenAiChatCompletions => "/v1/chat/completions",
@@ -648,6 +684,17 @@ mod tests {
             );
         }
         let body = to_bytes(body, usize::MAX).await.unwrap();
+        let body = match parts
+            .headers
+            .get("content-encoding")
+            .and_then(|value| value.to_str().ok())
+        {
+            Some(value) if value.eq_ignore_ascii_case("zstd") => {
+                zstd::stream::decode_all(std::io::Cursor::new(body)).unwrap()
+            }
+            None => body.to_vec(),
+            Some(value) => panic!("unexpected scheduled probe content encoding: {value}"),
+        };
         state
             .requests
             .lock()
@@ -719,6 +766,22 @@ mod tests {
                 listener,
                 Router::new()
                     .route("/v1/chat/completions", post(upstream))
+                    .with_state(state),
+            )
+            .await
+            .unwrap();
+        });
+        TestServer { address, task }
+    }
+
+    async fn start_responses_server(state: TestUpstream) -> TestServer {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new()
+                    .route("/v1/responses", post(upstream))
                     .with_state(state),
             )
             .await
@@ -871,5 +934,61 @@ mod tests {
         );
         assert_eq!(billing.cost_amount, Some(Decimal::new(555, 1)));
         assert_eq!(requests.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn scheduled_responses_probe_uses_the_group_request_compression() {
+        let requests = Arc::new(Mutex::new(vec![]));
+        let server = start_responses_server(TestUpstream {
+            requests: Arc::clone(&requests),
+            status: StatusCode::OK,
+            response_body: r#"{"usage":{"input_tokens":3,"output_tokens":1}}"#,
+        })
+        .await;
+        let model_id = Uuid::new_v4();
+        let billing_model = scheduled_test_model(model_id);
+        let channel = CompiledChannel::new_with_connector_policy_automation_and_billing(
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            ApiFormat::OpenAiResponses,
+            crate::domain::ConnectorKind::OpenAiCompatible,
+            crate::domain::RequestCompression::Zstd,
+            reqwest::Url::parse(&format!("http://{}", server.address)).unwrap(),
+            1,
+            Decimal::ONE,
+            UpstreamAuth::None,
+            HashSet::from([Arc::<str>::from("probe-model")]),
+            false,
+            false,
+            false,
+            false,
+            Some(Arc::from("probe-model")),
+            CompiledChannelUpstreamPolicy::transparent(ApiFormat::OpenAiResponses),
+        );
+        let (sender, _receiver) = mpsc::channel(1);
+        let result = probe_channel(
+            &UpstreamTimeoutDefaults::new(
+                Duration::from_secs(1),
+                Duration::from_secs(2),
+                Duration::from_secs(2),
+            ),
+            &channel,
+            &billing_model,
+            "reply '1'",
+            &UpstreamClientRegistry::new(),
+            &AutomaticDisableService::new(sender),
+            &AutomaticDisableSettings::default(),
+            SystemProbeIdentity {
+                user_id: Uuid::new_v4(),
+                api_key_id: Uuid::new_v4(),
+            },
+        )
+        .await;
+
+        assert!(result.succeeded);
+        let bodies = requests.lock().unwrap();
+        assert_eq!(bodies.len(), 1);
+        assert_eq!(bodies[0]["model"], "probe-model");
+        assert_eq!(bodies[0]["input"], "reply '1'");
     }
 }

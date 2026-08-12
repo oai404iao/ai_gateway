@@ -1,6 +1,7 @@
 import type {
   ApiFormat,
   ConnectorKind,
+  RequestCompression,
   SelectionStrategy,
   UpstreamAuthKind,
   UserRole,
@@ -22,6 +23,8 @@ export const CONNECTOR_KINDS: readonly ConnectorKind[] = [
   "openai_compatible",
   "codex_oauth",
 ];
+
+export const REQUEST_COMPRESSIONS: readonly RequestCompression[] = ["default", "zstd"];
 
 export const UPSTREAM_AUTH_KINDS: readonly UpstreamAuthKind[] = ["none", "bearer", "header"];
 
@@ -73,6 +76,10 @@ export function connectorKindLabel(value: ConnectorKind): string {
   return value === "openai_compatible"
     ? translate("OpenAI-compatible")
     : translate("Codex OAuth");
+}
+
+export function requestCompressionLabel(value: RequestCompression): string {
+  return value === "default" ? translate("Default") : "Zstandard (zstd)";
 }
 
 export function upstreamAuthKindLabel(value: UpstreamAuthKind): string {

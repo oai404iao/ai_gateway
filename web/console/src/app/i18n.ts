@@ -201,6 +201,24 @@ const zhCN: Record<string, string> = {
   "Enter a positive number of seconds.": "请输入正整数秒数。",
   "Enter a positive failure threshold.": "请输入正整数失败阈值。",
   "Enter a positive byte limit.": "请输入正整数字节上限。",
+  "Codex workspace path is required.": "Codex 工作区路径不能为空。",
+  "Codex workspace path must be at most 1024 characters.":
+    "Codex 工作区路径最多 1024 个字符。",
+  "Codex workspace path must be absolute.": "Codex 工作区路径必须为绝对路径。",
+  "Codex Git remote URL is required.": "Codex Git remote URL 不能为空。",
+  "Codex Git remote URL must be at most 2048 characters.":
+    "Codex Git remote URL 最多 2048 个字符。",
+  "Enter a valid HTTPS repository URL without credentials, query, or fragment.":
+    "请输入不含凭证、查询参数或片段的有效 HTTPS 仓库 URL。",
+  "Codex privacy metadata": "Codex 隐私元数据",
+  "Codex Connect replaces every client-reported workspace with this synthetic Git workspace and fills safe request metadata when it is missing.":
+    "Codex Connect 会用这个合成 Git 工作区替换客户端上报的所有工作区，并在缺失时补齐可安全推导的请求元数据。",
+  "Synthetic workspace path": "合成工作区路径",
+  "An absolute synthetic path. Real client paths and workspace counts are never forwarded through Codex Connect.":
+    "使用绝对的合成路径；Codex Connect 不会转发客户端真实路径或工作区数量。",
+  "Synthetic Git origin": "合成 Git origin",
+  "Written as associated_remote_urls.origin for the synthetic workspace. Commit hashes and dirty state are omitted.":
+    "写入合成工作区的 associated_remote_urls.origin；不会上报 commit hash 或工作区脏状态。",
   "MCP public base URL must be at most 2048 characters.":
     "MCP 公开基础 URL 最多 2048 个字符。",
   "Enter a valid HTTP(S) origin without a path.":
@@ -1152,6 +1170,9 @@ const zhCN: Record<string, string> = {
   "Edit group": "编辑渠道组",
   "Save group": "保存渠道组",
   "Selection strategy": "选择策略",
+  "Request compression": "请求压缩",
+  "Request compression is available only for Responses channel groups.":
+    "请求压缩仅适用于 Responses 渠道组。",
   "Priority must be zero or greater.": "优先级必须为 0 或更大。",
   "An upstream endpoint with weight, timeouts, and credential injection.":
     "具有权重、超时和凭据注入配置的上游端点。",
@@ -1558,8 +1579,8 @@ const zhCN: Record<string, string> = {
   "Add event patch": "添加事件 Patch",
   "Transform document JSON": "转换文档 JSON",
   "Transform rule limits": "转换规则限制",
-  "Request rules cannot change authorization, cookies, host, content length, model, or stream. Response rules cannot change content type, content length, encoding, or cookies. Hop-by-hop headers are always protected.":
-    "请求规则不能修改 authorization、cookie、host、content-length、model 或 stream；响应规则不能修改 content-type、content-length、content-encoding 或 set-cookie。逐跳请求头始终受保护。",
+  "Request rules cannot change authorization, cookies, host, content length, content encoding, accept encoding, model, or stream. Response rules cannot change content type, content length, encoding, or cookies. Hop-by-hop headers are always protected.":
+    "请求规则不能修改 authorization、cookie、host、content-length、content-encoding、accept-encoding、model 或 stream；响应规则不能修改 content-type、content-length、content-encoding 或 set-cookie。逐跳请求头始终受保护。",
   "Response-body scope": "响应体作用范围",
   "Response-body patches run only for the listed streaming SSE events. They do not buffer or rewrite ordinary non-streaming JSON responses.":
     "响应体 Patch 仅作用于列出的流式 SSE 事件，不会缓冲或改写普通的非流式 JSON 响应。",

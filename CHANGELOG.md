@@ -7,6 +7,37 @@ Versioning.
 
 ## [Unreleased]
 
+## [0.10.3] - 2026-08-12
+
+### Changed
+
+- Add a channel-group **Request compression** setting. `default` keeps
+  identity JSON and remains the default for every group; Responses groups can
+  opt into Zstandard level 3, which sends `Content-Encoding: zstd` and
+  `Content-Type: application/json`. WebSocket, standalone search, and Images
+  requests remain uncompressed.
+- Accept Zstandard-compressed client bodies on `POST /v1/responses`, with both
+  encoded and decoded sizes bounded by the configured JSON request limit.
+
+## [0.10.2] - 2026-08-11
+
+### Security
+
+- Normalize Codex OAuth installation identifiers to a credential-scoped
+  opaque UUID and replace reported local workspaces with a configurable
+  synthetic Git workspace before forwarding. Codex Connect also replaces
+  client `originator` and `User-Agent` values with the Gateway's fixed
+  `codex_cli_rs` connector identity while preserving other Codex metadata and
+  trace context.
+
+### Added
+
+- Fill missing safe Codex Connect request metadata for Responses HTTP,
+  Responses WebSocket, and standalone web search, including
+  `client_metadata`, cache/session/thread/turn/window identities, and
+  compatibility headers. Administrators can configure the synthetic
+  workspace path and HTTPS origin remote in Console System settings.
+
 ### Fixed
 
 - Sample request-log database-pool pressure before backlog probes so health
