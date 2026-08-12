@@ -365,13 +365,7 @@ fn gateway(
             name: "real-upstream-smoke".into(),
             api_format: format.api_format_name().into(),
             connector_kind: "openai_compatible".into(),
-            request_compression: if matches!(format, SmokeFormat::Responses)
-                && settings.responses_profile == ResponsesUpstreamProfile::CodexOauth
-            {
-                "zstd".into()
-            } else {
-                "default".into()
-            },
+            request_compression: "default".into(),
             priority: 0,
             selection_strategy: "weighted_random".into(),
             enabled: true,
@@ -457,14 +451,23 @@ fn gateway(
     }
 }
 
-fn request(format: SmokeFormat, streamed: bool) -> Request<Body> {
-    Request::post(format.path())
+fn request(format: SmokeFormat, streamed: bool, request_compression: bool) -> Request<Body> {
+    let body = serde_json::to_vec(&format.request_body(streamed))
+        .expect("smoke-test request JSON serializes");
+    let body = if request_compression {
+        zstd::stream::encode_all(std::io::Cursor::new(body), 3)
+            .expect("smoke-test request JSON compresses")
+    } else {
+        body
+    };
+    let mut request = Request::post(format.path())
         .header(header::AUTHORIZATION, format!("Bearer {CLIENT_KEY}"))
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(
-            serde_json::to_vec(&format.request_body(streamed))
-                .expect("smoke-test request JSON serializes"),
-        ))
+        .header(header::CONTENT_TYPE, "application/json");
+    if request_compression {
+        request = request.header(header::CONTENT_ENCODING, "zstd");
+    }
+    request
+        .body(Body::from(body))
         .expect("smoke-test request builds")
 }
 
@@ -515,7 +518,12 @@ pub(super) async fn smoke_nonstreaming_format(
         CLIENT_MODEL,
         upstream_model,
     );
-    let request = request(format, false);
+    let request = request(
+        format,
+        false,
+        matches!(format, SmokeFormat::Responses)
+            && settings.responses_profile == ResponsesUpstreamProfile::CodexOauth,
+    );
     if matches!(format, SmokeFormat::Responses)
         && settings.responses_profile == ResponsesUpstreamProfile::CodexOauth
     {
@@ -715,10 +723,18 @@ pub(super) async fn smoke_streaming_format(
         CLIENT_MODEL,
         upstream_model,
     );
-    let response = timeout(settings.timeout, gateway.app.oneshot(request(format, true)))
-        .await
-        .expect("streaming gateway request timed out")
-        .expect("streaming gateway request completed");
+    let response = timeout(
+        settings.timeout,
+        gateway.app.oneshot(request(
+            format,
+            true,
+            matches!(format, SmokeFormat::Responses)
+                && settings.responses_profile == ResponsesUpstreamProfile::CodexOauth,
+        )),
+    )
+    .await
+    .expect("streaming gateway request timed out")
+    .expect("streaming gateway request completed");
     let status = response.status();
     if !status.is_success() {
         let body = timeout(settings.timeout, response.into_body().collect())
@@ -787,7 +803,7 @@ pub(super) async fn smoke_images_generation(settings: &SmokeSettings) {
     let result = complete_nonstreaming_request(
         settings,
         gateway,
-        request(SmokeFormat::Images, false),
+        request(SmokeFormat::Images, false, false),
         SmokeFormat::Images,
         ApiOperation::ImagesGeneration,
     )
