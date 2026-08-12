@@ -296,6 +296,37 @@ pub(crate) fn apply_json_body_policy(
     })
 }
 
+pub(crate) fn apply_client_fast_mode_filter(
+    interface: RequestInterface,
+    body: Bytes,
+    enabled: bool,
+) -> Result<AppliedJsonBody, RequestPolicyError> {
+    if !enabled {
+        return Ok(AppliedJsonBody {
+            body,
+            changed: false,
+        });
+    }
+    let mut value = serde_json::from_slice::<Value>(&body)
+        .map_err(|_| RequestPolicyError::invalid_body(RequestPolicyLayer::Client, interface))?;
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| RequestPolicyError::invalid_body(RequestPolicyLayer::Client, interface))?;
+    if object.remove("service_tier").is_none() {
+        return Ok(AppliedJsonBody {
+            body,
+            changed: false,
+        });
+    }
+    let body = serde_json::to_vec(&value)
+        .map(Bytes::from)
+        .map_err(|_| RequestPolicyError::invalid_body(RequestPolicyLayer::Client, interface))?;
+    Ok(AppliedJsonBody {
+        body,
+        changed: true,
+    })
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct CodexRequestMetadata {
     installation_id: String,

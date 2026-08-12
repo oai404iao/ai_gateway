@@ -31,7 +31,7 @@ use tokio::{
 use crate::{
     request_policy::{
         FieldDisposition, RequestInterface, RequestPolicyError, RequestPolicyLayer,
-        apply_json_body_policy, body_field_disposition,
+        apply_client_fast_mode_filter, apply_json_body_policy, body_field_disposition,
     },
     runtime_config::RequestLimitsConfig,
 };
@@ -247,6 +247,23 @@ impl PreparedRequestBody {
                 let (body, changed) = body.apply_field_policy(layer, interface)?;
                 Ok((Self::ImageEdit(body), changed))
             }
+        }
+    }
+
+    pub(crate) fn filter_fast_mode(
+        self,
+        enabled: bool,
+        interface: RequestInterface,
+    ) -> Result<(Self, bool), RequestPolicyError> {
+        if !enabled {
+            return Ok((self, false));
+        }
+        match self {
+            Self::Json(body) => {
+                let applied = apply_client_fast_mode_filter(interface, body, true)?;
+                Ok((Self::Json(applied.body), applied.changed))
+            }
+            Self::ImageEdit(body) => Ok((Self::ImageEdit(body), false)),
         }
     }
 

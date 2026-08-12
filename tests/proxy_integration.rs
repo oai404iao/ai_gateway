@@ -34,6 +34,7 @@ use axum::{
 use futures_util::StreamExt;
 use regex::Regex;
 use reqwest::header::HeaderName;
+use rust_decimal::Decimal;
 use serde_json::Value;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, BufReader},
@@ -660,6 +661,7 @@ struct TransformDocuments {
     upstream_auth_kind: &'static str,
     upstream_auth_header_name: Option<&'static str>,
     upstream_api_key: Option<&'static str>,
+    filter_fast_mode: bool,
 }
 
 #[derive(Default)]
@@ -682,6 +684,7 @@ impl Default for TransformDocuments {
             upstream_auth_kind: "bearer",
             upstream_auth_header_name: None,
             upstream_api_key: Some(UPSTREAM_KEY),
+            filter_fast_mode: false,
         }
     }
 }
@@ -844,6 +847,7 @@ fn configured_proxy_with_policy_and_transforms(
             user_id: Uuid::new_v4(),
             user_status: "active".into(),
             user_websocket_enabled: false,
+            user_filter_fast_mode: transforms.filter_fast_mode,
             secret_value: secret.into(),
             status: "active".into(),
             expires_at: None,
@@ -866,14 +870,41 @@ fn configured_proxy_with_policy_and_transforms(
         upstream_model_currency: "USD".into(),
         price_unit_tokens: 1_000_000,
         price_effective_at: chrono::Utc::now(),
-        input_unit_price: Default::default(),
-        cached_input_unit_price: Default::default(),
-        cache_write_unit_price: Default::default(),
-        output_unit_price: Default::default(),
-        advanced_billing: serde_json::json!({
-            "long_context_tiers": [],
-            "request_multipliers": [],
-        }),
+        input_unit_price: if transforms.filter_fast_mode {
+            Decimal::ONE
+        } else {
+            Decimal::ZERO
+        },
+        cached_input_unit_price: if transforms.filter_fast_mode {
+            Decimal::ONE
+        } else {
+            Decimal::ZERO
+        },
+        cache_write_unit_price: if transforms.filter_fast_mode {
+            Decimal::ONE
+        } else {
+            Decimal::ZERO
+        },
+        output_unit_price: if transforms.filter_fast_mode {
+            Decimal::ONE
+        } else {
+            Decimal::ZERO
+        },
+        advanced_billing: if transforms.filter_fast_mode {
+            serde_json::json!({
+                "long_context_tiers": [],
+                "request_multipliers": [{
+                    "json_pointer": "/service_tier",
+                    "value": "priority",
+                    "multiplier": "2"
+                }],
+            })
+        } else {
+            serde_json::json!({
+                "long_context_tiers": [],
+                "request_multipliers": [],
+            })
+        },
         upstream_model: upstream.into(),
         channel_group_ids: vec![],
         channel_ids: vec![channel_id],
@@ -1178,6 +1209,7 @@ fn session_affinity_proxy(first_upstream_url: &str, second_upstream_url: &str) -
             user_id: Uuid::new_v4(),
             user_status: "active".into(),
             user_websocket_enabled: false,
+            user_filter_fast_mode: false,
             secret_value: CLIENT_KEY.into(),
             status: "active".into(),
             expires_at: None,
@@ -1557,6 +1589,80 @@ async fn matching_chat_model_preserves_body_and_forwards_response_safely() {
     assert!(request.headers.get("x-internal-hop").is_none());
     assert_eq!(request.headers.get("x-request-id").unwrap(), "forward-me");
     assert!(request.headers.get("x-unlisted-client-header").is_none());
+}
+
+#[tokio::test]
+async fn user_group_fast_filter_removes_service_tier_from_forwarding_logs_and_billing() {
+    let upstream_body = br#"{
+        "id":"response-id",
+        "usage":{
+            "input_tokens":9,
+            "output_tokens":3,
+            "input_tokens_details":{"cached_tokens":2},
+            "output_tokens_details":{"reasoning_tokens":1}
+        }
+    }"#
+    .to_vec();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let upstream = start_server(
+        Router::new()
+            .route("/v1/responses", post(capture_upstream))
+            .with_state(MockUpstream {
+                requests: Arc::clone(&requests),
+                status: StatusCode::OK,
+                body: upstream_body,
+            }),
+    )
+    .await;
+    let logs = RecordingRequestLogSink::default();
+    let configured = configured_proxy_with_policy_and_transforms(
+        &format!("http://{}", upstream.address),
+        logs.clone(),
+        None,
+        None,
+        None,
+        Default::default(),
+        None,
+        UpstreamConfig {
+            connect_timeout_seconds: 1,
+            response_header_timeout_seconds: 2,
+            images_response_header_timeout_seconds: 2,
+            standalone_web_search_response_header_timeout_seconds: 2,
+            stream_idle_timeout_seconds: 1,
+        },
+        TransformDocuments {
+            filter_fast_mode: true,
+            ..Default::default()
+        },
+        OutboundTestPolicy::default(),
+        true,
+    );
+    let gateway = start_server(http::router(configured.proxy)).await;
+
+    let response = authorized_post(
+        &client(),
+        format!("http://{}/v1/responses", gateway.address),
+        CLIENT_KEY,
+        br#"{"model":"responses-model","reasoning":{"effort":"high"},"service_tier":"priority"}"#
+            .to_vec(),
+    )
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    response.bytes().await.unwrap();
+    let forwarded: Value = serde_json::from_slice(&requests.lock().unwrap()[0].body).unwrap();
+    assert!(forwarded.get("service_tier").is_none());
+    assert_eq!(forwarded["reasoning"]["effort"], "high");
+
+    let events = logs.events();
+    assert_eq!(events.len(), 1);
+    assert!(!events[0].fast_mode);
+    let billing = events[0].billing.as_ref().unwrap();
+    assert_eq!(billing.price.input_unit_price, Decimal::ONE);
+    assert_eq!(billing.price.output_unit_price, Decimal::ONE);
+    assert_eq!(billing.cost_amount, Some(Decimal::new(12, 6)));
 }
 
 #[tokio::test]

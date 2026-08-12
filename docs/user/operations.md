@@ -391,6 +391,9 @@ Chat Completions 渠道不能声明 WebSocket 支持。系统或用户未开启�
 `403 websocket_disabled`；没有可用且声明支持的 Responses 渠道时，首条
 `response.create` 返回 `503 no_healthy_channel`。
 
+管理员也可以在用户详情页修改同一个 `websocket_enabled` 个人偏好。该操作走版本化用户资源，
+保存后立即重新发布数据面快照；用户仍可随后在自己的个人设置页再次调整。
+
 每个后续 `response.create` 才作为一个独立逻辑请求：
 
 - 重新检查 API Key 是否仍有效，执行 RPM、并发和软额度准入；
@@ -568,6 +571,8 @@ refresh、reset、编辑或导出操作；未授权凭证与不存在的凭证�
 用户详情支持带 `If-Match` 的 `PATCH /console/v1/users/{id}`，只修改请求中出现的字段；
 例如仅提交 `balance_amount` 不会重写邮箱、角色、用户组、策略或状态。用户级
 `default_api_key_policy_id` 是可选覆盖；显式设为 `null` 后立即恢复继承用户组默认策略。
+管理员还可以只提交 `websocket_enabled`，替用户开启或关闭个人设置中的 Responses WebSocket
+偏好，而不会改动其他账户字段。
 `invited` 是邀请流程拥有的待激活
 状态，管理员修改资料或余额时会保持该状态，只有持有邀请令牌的用户完成激活后才会变为
 `active`。兼容用的完整 `PUT` 仍保留，但新客户端应使用 `PATCH`。
@@ -585,7 +590,11 @@ refresh、reset、编辑或导出操作；未授权凭证与不存在的凭证�
 用户组通过 `/console/v1/user-groups` 管理。每个组可设置一个默认 API Key Policy，并通过
 `visible_codex_quota_group_ids` 选择成员可只读查看额度的 canonical Codex Responses Channel
 Group；普通 OpenAI-compatible group、Codex Images projection、重复 ID 或不存在的 group 都会被
-拒绝。修改后，没有用户级覆盖的组成员立即使用新策略，Codex 额度可见性也立即按当前用户组查询。
+拒绝。`filter_fast_mode = true` 会在客户端白名单通过后静默删除成员请求中的顶层
+`service_tier`：请求继续执行且不会返回错误，上游看不到该字段，请求日志不显示 `Fast`，
+`/service_tier` 请求计费倍率也不会命中。该策略适用于 Chat Completions、Responses HTTP/SSE
+和 Responses WebSocket，且不会影响其他请求字段。修改后，没有用户级覆盖的组成员立即使用新策略，
+Codex 额度可见性和 Fast 过滤也立即按当前用户组生效。
 自定义组只有在没有成员时才能删除；内置默认用户组和默认管理员组始终受保护。仍被注册邀请码引用的
 用户组同样不能删除，必须先把相关邀请码调整到其他组。
 
@@ -746,11 +755,12 @@ OpenAI 的最终空 `choices` usage chunk 和 DeepSeek 将 usage 附在 `finish_
 Console 请求日志的 `Tokens` 列将未缓存输入和输出总量作为主数字，并用紧凑标记分别展示缓存命中
 与作为输出子集的 reasoning token。
 
-对于客户端原始请求，日志还会在不改变转发校验或请求字节的前提下提取显式模式元数据：
+对于未被用户组 Fast 策略过滤的客户端原始请求，日志还会在不改变其他转发校验的前提下提取显式模式元数据：
 OpenAI Responses 的 `reasoning.effort`、DeepSeek/OpenAI Chat Completions 兼容的
 `reasoning_effort`，以及表示 OpenAI Priority processing 的
-`service_tier = "priority"`。Console 模型列按顺序显示思考等级和绿色 `Fast` 标记；未显式提供
-对应字段时不显示。耗时列第三行显示输出 TPS，计算为
+`service_tier = "priority"`。开启用户组 `filter_fast_mode` 后，`service_tier` 会在转发前删除，
+因此该请求不显示 `Fast`，也不叠加对应请求倍率。Console 模型列按顺序显示思考等级和绿色
+`Fast` 标记；未显式提供对应字段时不显示。耗时列第三行显示输出 TPS，计算为
 `output_tokens / ((total_duration_ms - ttft_ms) / 1000)`；usage 或 TTFT 不可用时显示空值。
 
 额度是软预检查：不预留金额，已结算额度达到上限后才拒绝后续请求；余额可以为负。

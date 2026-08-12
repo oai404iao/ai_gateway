@@ -34,6 +34,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
+import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { DetailField } from "@/components/shared/detail-field";
@@ -54,6 +55,7 @@ const schema = z.object({
   description: z.string().max(500),
   default_api_key_policy_id: z.string(),
   visible_codex_quota_group_ids: z.array(z.string()),
+  filter_fast_mode: z.boolean(),
 });
 
 type FormState = z.infer<typeof schema>;
@@ -63,6 +65,7 @@ const empty: FormState = {
   description: "",
   default_api_key_policy_id: "",
   visible_codex_quota_group_ids: [],
+  filter_fast_mode: false,
 };
 
 export function UserGroupDetailPage() {
@@ -89,6 +92,7 @@ export function UserGroupDetailPage() {
           detail.data.data.default_api_key_policy_id ?? "",
         visible_codex_quota_group_ids:
           detail.data.data.visible_codex_quota_group_ids,
+        filter_fast_mode: detail.data.data.filter_fast_mode,
       });
     }
   }, [detail.data]);
@@ -120,6 +124,7 @@ export function UserGroupDetailPage() {
         parsed.data.default_api_key_policy_id || null,
       visible_codex_quota_group_ids:
         parsed.data.visible_codex_quota_group_ids,
+      filter_fast_mode: parsed.data.filter_fast_mode,
     };
     try {
       if (isNew) {
@@ -215,6 +220,10 @@ export function UserGroupDetailPage() {
                     label={t("Visible Codex quota groups")}
                     value={group.visible_codex_quota_group_ids.length}
                   />
+                  <DetailField
+                    label={t("Fast mode filtering")}
+                    value={t(group.filter_fast_mode ? "Enabled" : "Disabled")}
+                  />
                 </dl>
               </CardContent>
             </Card>
@@ -303,6 +312,25 @@ export function UserGroupDetailPage() {
                       <FieldDescription>
                         {t("Users without an override inherit this policy immediately.")}
                       </FieldDescription>
+                    </Field>
+                    <Field orientation="horizontal">
+                      <FieldContent>
+                        <FieldLabel htmlFor="user_group_filter_fast_mode">
+                          {t("Filter Fast mode")}
+                        </FieldLabel>
+                        <FieldDescription>
+                          {t(
+                            "Silently remove client service_tier before forwarding. Filtered requests are not marked Fast and do not use service-tier billing multipliers.",
+                          )}
+                        </FieldDescription>
+                      </FieldContent>
+                      <Switch
+                        id="user_group_filter_fast_mode"
+                        checked={state.filter_fast_mode}
+                        onCheckedChange={(checked) =>
+                          patch({ filter_fast_mode: Boolean(checked) })
+                        }
+                      />
                     </Field>
                     <FieldSet>
                       <FieldLegend variant="label">

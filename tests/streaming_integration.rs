@@ -110,6 +110,7 @@ fn proxy_service_with_network_policy(
             user_id: Uuid::new_v4(),
             user_status: "active".into(),
             user_websocket_enabled: false,
+            user_filter_fast_mode: false,
             secret_value: CLIENT_KEY.into(),
             status: "active".into(),
             expires_at: None,

@@ -7501,6 +7501,12 @@ async fn codex_images_migration_backfills_existing_credentials_without_replacing
     .execute(&database.pool)
     .await
     .expect("request-compression migration must bring the runtime schema current");
+    sqlx::raw_sql(include_str!(
+        "../migrations/0049_user_group_fast_mode_filter.sql"
+    ))
+    .execute(&database.pool)
+    .await
+    .expect("user-group fast-mode migration must bring the runtime schema current");
     let codex_defaults: (String, String) = sqlx::query_as(
         "SELECT value #>> '{codex,workspace_path}', value #>> '{codex,git_remote_url}' \
          FROM system_settings WHERE setting_key='forwarding_policy'",

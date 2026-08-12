@@ -2043,6 +2043,8 @@ export interface components {
              * @description Resolved user override or group default policy.
              */
             effective_api_key_policy_id: string | null;
+            /** @description User opt-in for Responses WebSocket forwarding; administrators may update it. */
+            websocket_enabled: boolean;
             /** @description Current account balance in USD. */
             balance_amount: components["schemas"]["Decimal"];
             created_at: components["schemas"]["DateTime"];
@@ -2061,6 +2063,12 @@ export interface components {
              *     `/me/codex-quotas` endpoints.
              */
             visible_codex_quota_group_ids: string[];
+            /**
+             * @description Silently removes client `service_tier` before forwarding for every
+             *     member API key. Filtered requests are not marked Fast and do not
+             *     match service-tier billing multipliers.
+             */
+            filter_fast_mode: boolean;
             /**
              * @description Non-null only for the protected built-in group used when a user of
              *     that role is invited without an explicit group.
@@ -2993,6 +3001,11 @@ export interface components {
              *     current user-level override.
              */
             default_api_key_policy_id?: string | null;
+            /**
+             * @description Enables or disables the target user's personal Responses WebSocket
+             *     preference; omit to preserve it.
+             */
+            websocket_enabled?: boolean;
         };
         UserBatchUpdateTarget: {
             /** Format: uuid */
@@ -3033,6 +3046,11 @@ export interface components {
              *     credential quota windows may be read by group members.
              */
             visible_codex_quota_group_ids: string[];
+            /**
+             * @description Silently strips client `service_tier` for all group members so
+             *     Fast metadata and service-tier request multipliers are not applied.
+             */
+            filter_fast_mode: boolean;
         };
         ApiKeyPolicyInput: {
             name: string;

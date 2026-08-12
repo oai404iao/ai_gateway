@@ -7,6 +7,13 @@ Versioning.
 
 ## [Unreleased]
 
+### Added
+
+- Let user groups silently filter client `service_tier` requests so Fast
+  metadata and service-tier billing multipliers are not applied, and let
+  administrators manage a user's personal Responses WebSocket preference from
+  the user detail page.
+
 ## [0.10.3] - 2026-08-12
 
 ### Changed

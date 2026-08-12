@@ -31,8 +31,8 @@ use crate::{
         CompiledModelRule, RequestLogSource, RequestProtocol,
     },
     request_policy::{
-        RequestInterface, RequestPolicyLayer, apply_json_body_policy, filter_client_headers,
-        strip_explicitly_ignored_client_headers,
+        RequestInterface, RequestPolicyLayer, apply_client_fast_mode_filter,
+        apply_json_body_policy, filter_client_headers, strip_explicitly_ignored_client_headers,
     },
     routing::{SelectionResult, SessionAffinityMatch},
     transforms::{apply_header_plan, apply_json_patch_plan, apply_websocket_event_plan},
@@ -343,24 +343,36 @@ impl ResponsesWebSocketSession {
                 return SessionAction::Close;
             }
         };
-        let parsed = match parse_websocket_request(&original_body) {
+        let parsed = match parse_websocket_request(&original_body, api_key.filter_fast_mode()) {
             Ok(parsed) => parsed,
             Err(error) => {
                 send_proxy_error(client, error).await;
                 return SessionAction::Close;
             }
         };
-        let original_body = match apply_json_body_policy(
+        let applied = match apply_json_body_policy(
             RequestPolicyLayer::Client,
             RequestInterface::ResponsesWebSocket,
             original_body,
         ) {
-            Ok(applied) => applied.body,
+            Ok(applied) => applied,
             Err(error) => {
                 send_proxy_error(client, ProxyError::request_policy(error)).await;
                 return SessionAction::Close;
             }
         };
+        let filtered = match apply_client_fast_mode_filter(
+            RequestInterface::ResponsesWebSocket,
+            applied.body,
+            api_key.filter_fast_mode(),
+        ) {
+            Ok(filtered) => filtered,
+            Err(error) => {
+                send_proxy_error(client, ProxyError::request_policy(error)).await;
+                return SessionAction::Close;
+            }
+        };
+        let original_body = filtered.body;
 
         let affinity = match_session_affinity(
             snapshot.system_settings().session_affinity(),
@@ -566,6 +578,7 @@ impl ResponsesWebSocketSession {
                 &snapshot,
                 connector,
                 connector_affinity_hit,
+                applied.changed || filtered.changed,
             ) {
                 Ok(prepared) => prepared,
                 Err(error) => {
@@ -835,6 +848,7 @@ impl ResponsesWebSocketSession {
         snapshot: &crate::domain::CompiledRuntimeConfig,
         connector: PreparedConnectorAttempt,
         connector_affinity_hit: bool,
+        client_body_changed: bool,
     ) -> Result<PreparedWebSocketAttempt, ProxyError> {
         let transforms = channel.upstream_policy().effective_transforms();
         let body = rewrite_model_alias(original_body.clone(), &parsed.model, rule)?;
@@ -844,6 +858,9 @@ impl ResponsesWebSocketSession {
             .adapt_json_body(body, RequestProtocol::WebSocket)
             .map_err(ProxyError::connector_attempt)?;
         let mut headers = self.request_headers.clone();
+        if client_body_changed || body != *original_body {
+            super::remove_rewritten_request_entity_headers(&mut headers);
+        }
         apply_header_plan(&mut headers, transforms.request_headers())
             .map_err(|_| ProxyError::transform_failed())?;
         let mut headers = forward_websocket_request_headers(&headers);
@@ -950,7 +967,10 @@ struct ParsedWebSocketRequest {
     previous_response_id: bool,
 }
 
-fn parse_websocket_request(body: &[u8]) -> Result<ParsedWebSocketRequest, ProxyError> {
+fn parse_websocket_request(
+    body: &[u8],
+    filter_fast_mode: bool,
+) -> Result<ParsedWebSocketRequest, ProxyError> {
     let probe = serde_json::from_slice::<WebSocketRequestProbe<'_>>(body).map_err(|_| {
         ProxyError::invalid_request(
             "WebSocket message must be a response.create JSON object.",
@@ -982,7 +1002,11 @@ fn parse_websocket_request(body: &[u8]) -> Result<ParsedWebSocketRequest, ProxyE
             OPENAI_RESPONSES_FORMAT,
             &probe.reasoning_effort,
             &probe.reasoning,
-            &probe.service_tier,
+            if filter_fast_mode {
+                &serde_json::Value::Null
+            } else {
+                &probe.service_tier
+            },
         ),
         previous_response_id: probe
             .previous_response_id

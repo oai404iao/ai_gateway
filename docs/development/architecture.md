@@ -78,7 +78,9 @@ Browser or Console client
 5. 使用嵌入的 [`request-allowlists.json`](../reference/request-allowlists.json) 执行客户端入口
    白名单：未列出的 Header 被忽略，常见反向代理/CDN 转发元数据作为显式 Header `ignore`
    条目删除，未列出的顶层 JSON/multipart 字段返回 `400`；显式 body `ignore` 字段只在值满足
-   契约时删除。当前只校验顶层字段，允许字段内部的嵌套结构仍由上游解释。
+   契约时删除。当前只校验顶层字段，允许字段内部的嵌套结构仍由上游解释。随后按 API Key
+   快照中的用户组策略执行可选 Fast 过滤：启用时删除顶层 `service_tier`，因此后续日志元数据、
+   请求倍率、Session affinity、Transform 和 Connector 都只观察过滤后的请求。
 6. 从分 API 格式索引按 `(api_format, client_model)` 取得预编译模型路由。规则分别保存目标
    渠道位图、与 `channels.available_models` 求交后的模型兼容位图，以及由当前启用状态构成的
    优先级 tier。没有模型兼容渠道的规则仍保留为可发布的断开状态。

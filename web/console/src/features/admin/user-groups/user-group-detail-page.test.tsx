@@ -91,6 +91,11 @@ describe("UserGroupDetailPage", () => {
         name: CODEX_QUOTA_GROUP.name,
       }),
     );
+    await user.click(
+      screen.getByRole("switch", {
+        name: "Filter Fast mode",
+      }),
+    );
     await user.click(screen.getByRole("button", { name: "Save user group" }));
 
     await waitFor(() =>
@@ -99,6 +104,7 @@ describe("UserGroupDetailPage", () => {
         description: USER_GROUP.description,
         default_api_key_policy_id: USER_GROUP.default_api_key_policy_id,
         visible_codex_quota_group_ids: [CODEX_QUOTA_GROUP.id],
+        filter_fast_mode: true,
       }),
     );
   });

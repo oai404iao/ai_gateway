@@ -386,6 +386,7 @@ struct GatewayHarness {
 struct WebSocketControls {
     system_enabled: bool,
     user_enabled: bool,
+    filter_fast_mode: bool,
     channel_supported: bool,
     max_idle_connections: usize,
 }
@@ -395,6 +396,7 @@ impl Default for WebSocketControls {
         Self {
             system_enabled: true,
             user_enabled: true,
+            filter_fast_mode: false,
             channel_supported: true,
             max_idle_connections: 128,
         }
@@ -427,6 +429,7 @@ async fn gateway_harness_with_controls(
             user_id: Uuid::new_v4(),
             user_status: "active".into(),
             user_websocket_enabled: controls.user_enabled,
+            user_filter_fast_mode: controls.filter_fast_mode,
             secret_value: CLIENT_KEY.into(),
             status: "active".into(),
             expires_at: None,
@@ -514,10 +517,21 @@ async fn gateway_harness_with_controls(
             cached_input_unit_price: Decimal::new(5, 1),
             cache_write_unit_price: Decimal::new(25, 2),
             output_unit_price: Decimal::from(2_i64),
-            advanced_billing: json!({
-                "long_context_tiers": [],
-                "request_multipliers": [],
-            }),
+            advanced_billing: if controls.filter_fast_mode {
+                json!({
+                    "long_context_tiers": [],
+                    "request_multipliers": [{
+                        "json_pointer": "/service_tier",
+                        "value": "priority",
+                        "multiplier": "2"
+                    }],
+                })
+            } else {
+                json!({
+                    "long_context_tiers": [],
+                    "request_multipliers": [],
+                })
+            },
             upstream_model: UPSTREAM_MODEL.into(),
             channel_group_ids: vec![],
             channel_ids: vec![channel_id],
@@ -798,6 +812,42 @@ async fn responses_websocket_forwards_transforms_reuses_connection_and_logs_requ
     assert_eq!(metrics.websocket.leased_upstream_connections, 0);
     assert_eq!(metrics.websocket.pool_hits_total, 2);
     assert_eq!(metrics.websocket.pool_misses_total, 2);
+}
+
+#[tokio::test]
+async fn responses_websocket_filters_fast_mode_before_forwarding_logging_and_billing() {
+    let upstream = start_mock_upstream().await;
+    let gateway = gateway_harness_with_controls(
+        &upstream,
+        None,
+        WebSocketControls {
+            filter_fast_mode: true,
+            ..WebSocketControls::default()
+        },
+    )
+    .await;
+    let (mut websocket, _) = connect_async(websocket_request(
+        gateway.server.address,
+        CLIENT_KEY,
+        "fast-filter-session",
+    ))
+    .await
+    .unwrap();
+
+    response_create(&mut websocket, None).await;
+    close_and_wait(websocket).await;
+
+    let requests = upstream.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].body.get("service_tier").is_none());
+    assert_eq!(requests[0].body["reasoning"]["effort"], "high");
+
+    let events = gateway.logs.events();
+    assert_eq!(events.len(), 1);
+    assert!(!events[0].fast_mode);
+    let billing = events[0].billing.as_ref().unwrap();
+    assert_eq!(billing.price.input_unit_price, Decimal::ONE);
+    assert_eq!(billing.price.output_unit_price, Decimal::from(2_i64));
 }
 
 #[tokio::test]
