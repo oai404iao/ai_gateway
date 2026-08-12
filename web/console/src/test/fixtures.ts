@@ -226,6 +226,7 @@ export const CHANNEL_GROUP: ChannelGroupView = {
   api_format: "open_ai_chat_completions",
   connector_kind: "openai_compatible",
   connector_pool_id: null,
+  request_compression: "default",
   priority: 1,
   selection_strategy: "weighted_random",
   enabled: true,
@@ -239,6 +240,7 @@ export const CODEX_QUOTA_GROUP: ChannelGroupView = {
   api_format: "open_ai_responses",
   connector_kind: "codex_oauth",
   connector_pool_id: "00000000-0000-0000-0000-00000000c001",
+  request_compression: "default",
   priority: 1,
   selection_strategy: "weighted_random",
   enabled: true,
@@ -610,6 +612,10 @@ export const SYSTEM_SETTINGS: SystemSettings = {
     max_idle_connections: 128,
     idle_timeout_seconds: 300,
     max_connection_age_seconds: 3_300,
+  },
+  codex: {
+    workspace_path: "/workspace",
+    git_remote_url: "https://github.com/oai404iao/ai_gateway",
   },
   mcp: {
     enabled: false,

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -106,6 +106,16 @@ export function ApiKeysPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [copiedHost, setCopiedHost] = useState<string | null>(null);
+  const copiedHostTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(
+    () => () => {
+      if (copiedHostTimeout.current !== null) {
+        clearTimeout(copiedHostTimeout.current);
+      }
+    },
+    [],
+  );
   const options = useOwnApiKeyOptions(createOpen);
 
   const form = useForm<CreateValues>({
@@ -162,7 +172,13 @@ export function ApiKeysPage() {
       await navigator.clipboard.writeText(apiHost);
       setCopiedHost(apiHost);
       toast.success(t("API host copied"));
-      window.setTimeout(() => setCopiedHost(null), 2000);
+      if (copiedHostTimeout.current !== null) {
+        clearTimeout(copiedHostTimeout.current);
+      }
+      copiedHostTimeout.current = setTimeout(() => {
+        copiedHostTimeout.current = null;
+        setCopiedHost(null);
+      }, 2000);
     } catch {
       toast.error(t("Copy failed"));
     }
