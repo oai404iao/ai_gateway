@@ -4,7 +4,7 @@
 >
 > 状态：当前。
 >
-> 最近核对：2026-08-11。
+> 最近核对：2026-08-12。
 >
 > 机器可读权威契约：
 > [`request-allowlists.json`](request-allowlists.json)。
@@ -17,9 +17,15 @@
 > [`openai/codex@7a0e974`](https://github.com/openai/codex/tree/7a0e974e08c798d1e8d59d407aeb6e24db1313af) 的
 > [Responses wire type](https://github.com/openai/codex/blob/7a0e974e08c798d1e8d59d407aeb6e24db1313af/codex-rs/codex-api/src/common.rs)、
 > [Responses metadata](https://github.com/openai/codex/blob/7a0e974e08c798d1e8d59d407aeb6e24db1313af/codex-rs/core/src/responses_metadata.rs)、
+> [compression selection](https://github.com/openai/codex/blob/7a0e974e08c798d1e8d59d407aeb6e24db1313af/codex-rs/core/src/client.rs)、
+> [Responses endpoint](https://github.com/openai/codex/blob/7a0e974e08c798d1e8d59d407aeb6e24db1313af/codex-rs/codex-api/src/endpoint/responses.rs)、
+> [Zstandard encoder](https://github.com/openai/codex/blob/7a0e974e08c798d1e8d59d407aeb6e24db1313af/codex-rs/http-client/src/request.rs)、
 > [Images wire type](https://github.com/openai/codex/blob/7a0e974e08c798d1e8d59d407aeb6e24db1313af/codex-rs/codex-api/src/images.rs)、
 > [Search wire type](https://github.com/openai/codex/blob/7a0e974e08c798d1e8d59d407aeb6e24db1313af/codex-rs/codex-api/src/search.rs) 与
 > [Search tool Header](https://github.com/openai/codex/blob/7a0e974e08c798d1e8d59d407aeb6e24db1313af/codex-rs/ext/web-search/src/tool.rs)；
+> 请求压缩实现还与本地研究 checkout
+> `openai/codex@eb9dceba1a2e658142a456c5898836774835616b` 的
+> `codex-rs/http-client/src/request.rs` 交叉核对；
 > [DeepSeek Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode) 与
 > [阿里云百炼深度思考](https://help.aliyun.com/zh/model-studio/deep-thinking) 的
 > Chat Completions 兼容扩展。
@@ -80,6 +86,10 @@ hop-by-hop 清理和上游鉴权覆盖约束。
 - 为兼容 0.9.4 示例配置而保留的 `session_id`、`thread_id`；新配置应使用上面的连字符形式；
 - W3C trace Header；
 - 官方 SDK 使用的 `x-stainless-*` 前缀。
+
+`Content-Encoding` 只在 `POST /v1/responses` 接受 `identity` 或 `zstd`；其他 JSON
+接口只接受 identity，multipart Images edit 继续拒绝编码 body。Responses 的 zstd body 会在
+顶层字段策略前解码，压缩后和解压后的大小都受 `request_limits.proxy_body_bytes` 约束。
 
 `client_headers.ignore` 显式列出 `Forwarded`、`Via`、常用 `X-Forwarded-*`、真实客户端 IP
 Header 与 Cloudflare 转发 Header。这些名称既在客户端入口删除，也在 Header Transform 后由
@@ -157,6 +167,10 @@ Images edit 额外兼容部分通用表单会提交、但当前公开 edit 类�
 - provider 未支持的状态、采样、prompt template、moderation 和缓存选项仅接受契约列出的
   空值/no-op，其他值返回错误；
 - 最终强制 `stream=true`、`store=false`。
+- Responses 渠道组可选 `request_compression = zstd`；启用后，通用代理层在 Codex body
+  适配和白名单之后使用 Zstandard level 3 编码，并生成
+  `Content-Encoding: zstd` 与 `Content-Type: application/json`。默认 `default` 不压缩；
+  该设置只用于 Responses HTTP，不用于 WebSocket、standalone search 或 Images。
 
 ### Responses WebSocket
 

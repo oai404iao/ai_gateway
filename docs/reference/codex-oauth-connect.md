@@ -1,7 +1,7 @@
 # Codex OAuth 与订阅后端接入参考
 
 > 类型：外部参考
-> 最近核对：2026-08-11
+> 最近核对：2026-08-12
 > 权威来源：
 > [`openai/codex` 0.146.0 release](https://github.com/openai/codex/releases/tag/rust-v0.146.0)、
 > [OAuth server](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/login/src/server.rs)、
@@ -48,6 +48,12 @@
 > [Responses metadata](https://github.com/openai/codex/blob/7a0e974e08c798d1e8d59d407aeb6e24db1313af/codex-rs/core/src/responses_metadata.rs)、
 > [Responses wire types](https://github.com/openai/codex/blob/7a0e974e08c798d1e8d59d407aeb6e24db1313af/codex-rs/codex-api/src/common.rs) 和
 > [default client fingerprint](https://github.com/openai/codex/blob/7a0e974e08c798d1e8d59d407aeb6e24db1313af/codex-rs/login/src/auth/default_client.rs)。
+> Responses 请求压缩另外核对同一提交的
+> [compression selection](https://github.com/openai/codex/blob/7a0e974e08c798d1e8d59d407aeb6e24db1313af/codex-rs/core/src/client.rs)、
+> [Responses endpoint](https://github.com/openai/codex/blob/7a0e974e08c798d1e8d59d407aeb6e24db1313af/codex-rs/codex-api/src/endpoint/responses.rs) 和
+> [Zstandard encoder](https://github.com/openai/codex/blob/7a0e974e08c798d1e8d59d407aeb6e24db1313af/codex-rs/http-client/src/request.rs)。
+> 本地研究 checkout 还核对到 `openai/codex@eb9dceba1a2e658142a456c5898836774835616b`
+> 的同一 encoder 实现。
 > HTTP content-coding 基线另外核对当前
 > [`openai/codex@5af85998c23ddb9cc21c43ef41db44712b481611`](https://github.com/openai/codex/tree/5af85998c23ddb9cc21c43ef41db44712b481611)：
 > [default client](https://github.com/openai/codex/blob/5af85998c23ddb9cc21c43ef41db44712b481611/codex-rs/login/src/auth/default_client.rs)、
@@ -189,12 +195,15 @@ provider-managed `channels` 记录。因此普通优先级、权重、API Key �
    或 residency，其他 metadata 与 W3C trace/baggage 保留；
 6. 强制写入 `stream=true`、`store=false`；
 7. 将目标改为 `/backend-api/codex/responses`；
-8. `Accept-Encoding` 由通用代理层独立设置为 `gzip, deflate, br, zstd`，上游响应在终态 SSE
+8. 若 Responses 渠道组的“请求压缩”选择 `zstd`，最终 JSON body 使用 Zstandard level 3
+   编码，并设置 `Content-Encoding: zstd` 与 `Content-Type: application/json`；默认
+   `default` 保持 identity；
+9. `Accept-Encoding` 由通用代理层独立设置为 `gzip, deflate, br, zstd`，上游响应在终态 SSE
    与 usage 解析前流式解码；
-9. 最后注入当前凭证的 Bearer、可选 account、FedRAMP 和 Codex 会话 Header；
-10. 成功响应按 SSE 分类，并将客户端可见 `Content-Type` 规范化为
+10. 最后注入当前凭证的 Bearer、可选 account、FedRAMP 和 Codex 会话 Header；
+11. 成功响应按 SSE 分类，并将客户端可见 `Content-Type` 规范化为
    `text/event-stream`，即使 Codex 上游缺少或改写了该 Header；
-11. 逐块转发解码后的上游 SSE，不在 Connector 中缓冲整条响应；下游 SSE 保持 identity。
+12. 逐块转发解码后的上游 SSE，不在 Connector 中缓冲整条响应；下游 SSE 保持 identity。
 
 WebSocket 路径：
 

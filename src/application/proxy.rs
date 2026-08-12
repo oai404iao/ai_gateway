@@ -26,7 +26,9 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use tokio::io::{AsyncReadExt, BufReader};
 use tokio::time::timeout;
+use tokio_util::io::StreamReader;
 use uuid::Uuid;
 
 use crate::{
@@ -38,9 +40,9 @@ use crate::{
     domain::{
         ApiFormat, ApiKeyPermission, ApiOperation, AutomaticDisableSettings,
         AutomaticDisableTrigger, CompiledAdvancedBilling, CompiledApiKey, CompiledChannel,
-        CompiledModelRule, MAX_REQUEST_RETRIES, ModelPriceSnapshot, RequestLogEvent,
-        RequestLogOutcome, RequestLogSource, RequestProtocol, SessionAffinityKeySource,
-        SessionAffinitySettings,
+        CompiledModelRule, MAX_REQUEST_RETRIES, ModelPriceSnapshot, RequestCompression,
+        RequestLogEvent, RequestLogOutcome, RequestLogSource, RequestProtocol,
+        SessionAffinityKeySource, SessionAffinitySettings,
     },
     request_policy::{
         RequestInterface, RequestPolicyError, RequestPolicyLayer, client_header_explicitly_ignored,
@@ -65,7 +67,7 @@ use super::{
     request_billing, request_billing_multiplier, request_billing_multiplier_for_value,
     request_body::{
         ImageBodySpoolSnapshot, ImageEditBodyError, ImageEditBodyPolicy, PreparedRequestBody,
-        ProxyRequestBodyLimits,
+        ProxyRequestBodyLimits, ReplayableRequestBody,
     },
     usage::{ResponseErrorDetails, SseTerminalOutcome, UsageCollector},
 };
@@ -342,22 +344,31 @@ impl ProxyService {
             }
         };
 
-        let original_body = if api_operation == ApiOperation::ImagesEdit {
+        let (original_body, client_body_decoded) = if api_operation == ApiOperation::ImagesEdit {
             match self.image_edit_body.capture(&parts.headers, body).await {
-                Ok(value) => PreparedRequestBody::ImageEdit(value),
+                Ok(value) => (PreparedRequestBody::ImageEdit(value), false),
                 Err(error) => {
                     trace_unlogged("invalid_image_edit_body");
                     return Err(ProxyError::image_edit_body(error));
                 }
             }
         } else {
-            match to_bytes(body, self.max_request_body_bytes).await {
-                Ok(value) => PreparedRequestBody::Json(value),
+            let value = match read_json_request_body(
+                api_operation,
+                &parts.headers,
+                body,
+                self.max_request_body_bytes,
+            )
+            .await
+            {
+                Ok(value) => value,
                 Err(error) => {
-                    trace_unlogged("unreadable_or_oversized_body");
-                    return Err(request_body_error(error));
+                    trace_unlogged(error.trace_reason());
+                    return Err(error.into_proxy_error());
                 }
-            }
+            };
+            let (value, decoded) = value;
+            (PreparedRequestBody::Json(value), decoded)
         };
         let parsed = match parse_request(api_operation, &original_body) {
             Ok(value) => value,
@@ -589,10 +600,30 @@ impl ProxyService {
                     return Err(error);
                 }
             };
+            let (body, request_body_encoded) = match encode_upstream_request_body(
+                body,
+                current_channel.request_compression(),
+                api_operation,
+            ) {
+                Ok(encoded) => encoded,
+                Err(source) => {
+                    tracing::error!(
+                        event = "upstream_request_compression_failed",
+                        channel_id = %current_channel.id(),
+                        error = %source,
+                        "failed to compress upstream request body"
+                    );
+                    let error = ProxyError::upstream_request_encoding_failed();
+                    completion.finish_with_proxy_error(RequestOutcome::UpstreamUnavailable, &error);
+                    return Err(error);
+                }
+            };
             let request_body_changed = client_body_changed
+                || client_body_decoded
                 || model_rewritten
                 || !transforms.request_json().is_empty()
-                || prepared_attempt.changes_request_body();
+                || prepared_attempt.changes_request_body()
+                || request_body_encoded;
 
             // Apply the plan before hop-by-hop cleanup so `HeaderPlan` can
             // reject dynamically protected names declared by the client
@@ -630,6 +661,12 @@ impl ProxyService {
                 let error = ProxyError::connector_attempt(error);
                 completion.finish_with_proxy_error(RequestOutcome::UpstreamUnavailable, &error);
                 return Err(error);
+            }
+            if request_body_encoded {
+                headers.insert(CONTENT_ENCODING, HeaderValue::from_static("zstd"));
+                headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+            } else {
+                headers.remove(CONTENT_ENCODING);
             }
             headers.insert(
                 ACCEPT_ENCODING,
@@ -993,6 +1030,44 @@ impl ProxyError {
             error_type: "invalid_request_error",
             param: None,
             code: "request_too_large".into(),
+            authenticate: false,
+            retry_after: None,
+        }
+    }
+
+    fn request_content_encoding_unsupported() -> Self {
+        Self {
+            status: StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            message: "Request body content encoding is unsupported. POST /v1/responses accepts \
+                      identity or zstd; other JSON endpoints accept identity only."
+                .to_owned(),
+            error_type: "invalid_request_error",
+            param: Some("content_encoding"),
+            code: Some("request_content_encoding_unsupported"),
+            authenticate: false,
+            retry_after: None,
+        }
+    }
+
+    fn request_content_encoding_invalid() -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            message: "The zstd-compressed Responses request body could not be decoded.".to_owned(),
+            error_type: "invalid_request_error",
+            param: Some("body"),
+            code: Some("request_content_encoding_invalid"),
+            authenticate: false,
+            retry_after: None,
+        }
+    }
+
+    fn upstream_request_encoding_failed() -> Self {
+        Self {
+            status: StatusCode::BAD_GATEWAY,
+            message: "The selected upstream request body could not be compressed.".to_owned(),
+            error_type: "api_error",
+            param: None,
+            code: Some("upstream_request_encoding_failed"),
             authenticate: false,
             retry_after: None,
         }
@@ -1677,12 +1752,139 @@ fn trace_unlogged(reason: &'static str) {
     );
 }
 
-fn request_body_error(error: axum::Error) -> ProxyError {
-    if error.into_inner().is::<http_body_util::LengthLimitError>() {
-        ProxyError::payload_too_large()
-    } else {
-        ProxyError::invalid_request("Request body could not be read.", "body")
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum JsonRequestBodyError {
+    TooLarge,
+    Unreadable,
+    UnsupportedContentEncoding,
+    InvalidContentEncoding,
+}
+
+impl JsonRequestBodyError {
+    const fn trace_reason(self) -> &'static str {
+        match self {
+            Self::TooLarge | Self::Unreadable => "unreadable_or_oversized_body",
+            Self::UnsupportedContentEncoding | Self::InvalidContentEncoding => {
+                "invalid_request_content_encoding"
+            }
+        }
     }
+
+    fn into_proxy_error(self) -> ProxyError {
+        match self {
+            Self::TooLarge => ProxyError::payload_too_large(),
+            Self::Unreadable => {
+                ProxyError::invalid_request("Request body could not be read.", "body")
+            }
+            Self::UnsupportedContentEncoding => ProxyError::request_content_encoding_unsupported(),
+            Self::InvalidContentEncoding => ProxyError::request_content_encoding_invalid(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ClientRequestContentCoding {
+    Identity,
+    Zstd,
+}
+
+fn parse_client_request_content_coding(
+    api_operation: ApiOperation,
+    headers: &HeaderMap,
+) -> Result<ClientRequestContentCoding, JsonRequestBodyError> {
+    let mut tokens = Vec::new();
+    for value in headers.get_all(CONTENT_ENCODING) {
+        let value = value
+            .to_str()
+            .map_err(|_| JsonRequestBodyError::UnsupportedContentEncoding)?;
+        for token in value.split(',') {
+            let token = token.trim();
+            if token.is_empty() {
+                return Err(JsonRequestBodyError::UnsupportedContentEncoding);
+            }
+            tokens.push(token);
+        }
+    }
+    match tokens.as_slice() {
+        [] | ["identity"] => Ok(ClientRequestContentCoding::Identity),
+        ["zstd"] if api_operation == ApiOperation::Responses => {
+            Ok(ClientRequestContentCoding::Zstd)
+        }
+        _ => Err(JsonRequestBodyError::UnsupportedContentEncoding),
+    }
+}
+
+async fn read_json_request_body(
+    api_operation: ApiOperation,
+    headers: &HeaderMap,
+    body: Body,
+    max_bytes: usize,
+) -> Result<(Bytes, bool), JsonRequestBodyError> {
+    match parse_client_request_content_coding(api_operation, headers)? {
+        ClientRequestContentCoding::Identity => read_bounded_json_body(body, max_bytes)
+            .await
+            .map(|body| (body, false)),
+        ClientRequestContentCoding::Zstd => {
+            let encoded = read_bounded_json_body(body, max_bytes).await?;
+            let stream = stream::iter([Ok::<Bytes, io::Error>(encoded)]);
+            let reader = StreamReader::new(stream);
+            let mut decoder =
+                async_compression::tokio::bufread::ZstdDecoder::new(BufReader::new(reader));
+            decoder.multiple_members(true);
+            let mut decoded = Vec::with_capacity(max_bytes.min(64 * 1024));
+            let decoded_limit = u64::try_from(max_bytes.saturating_add(1)).unwrap_or(u64::MAX);
+            let mut limited = decoder.take(decoded_limit);
+            limited
+                .read_to_end(&mut decoded)
+                .await
+                .map_err(|_| JsonRequestBodyError::InvalidContentEncoding)?;
+            if decoded.len() > max_bytes {
+                return Err(JsonRequestBodyError::TooLarge);
+            }
+            Ok((Bytes::from(decoded), true))
+        }
+    }
+}
+
+async fn read_bounded_json_body(
+    body: Body,
+    max_bytes: usize,
+) -> Result<Bytes, JsonRequestBodyError> {
+    to_bytes(body, max_bytes).await.map_err(|error| {
+        if error.into_inner().is::<http_body_util::LengthLimitError>() {
+            JsonRequestBodyError::TooLarge
+        } else {
+            JsonRequestBodyError::Unreadable
+        }
+    })
+}
+
+fn encode_upstream_request_body(
+    body: ReplayableRequestBody,
+    compression: RequestCompression,
+    api_operation: ApiOperation,
+) -> io::Result<(ReplayableRequestBody, bool)> {
+    if compression == RequestCompression::Default {
+        return Ok((body, false));
+    }
+    if api_operation != ApiOperation::Responses {
+        return Ok((body, false));
+    }
+    let ReplayableRequestBody::Memory(body) = body else {
+        return Err(io::Error::other(
+            "Responses JSON request body unexpectedly used file storage",
+        ));
+    };
+    let pre_compression_bytes = body.len();
+    let compression_start = Instant::now();
+    let body = zstd::stream::encode_all(std::io::Cursor::new(body), 3).map(Bytes::from)?;
+    tracing::debug!(
+        pre_compression_bytes,
+        post_compression_bytes = body.len(),
+        compression_duration_ms = compression_start.elapsed().as_millis(),
+        "compressed upstream Responses request body with zstd"
+    );
+    Ok((ReplayableRequestBody::Memory(body), true))
 }
 
 fn rewrite_model_alias(
@@ -1736,6 +1938,7 @@ fn forward_response_headers(headers: &HeaderMap) -> HeaderMap {
 }
 
 fn remove_rewritten_request_entity_headers(headers: &mut HeaderMap) {
+    headers.remove(CONTENT_ENCODING);
     for name in [
         HeaderName::from_static("content-md5"),
         HeaderName::from_static("digest"),

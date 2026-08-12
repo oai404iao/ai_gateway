@@ -113,7 +113,11 @@ Browser or Console client
    scheduled probe 等会应用 Header Transform 的内部请求同样执行最终 guard。HTTP
    `Accept-Encoding` 由网关拥有：下游值不会直接转发，普通请求向上游声明
    `gzip, deflate, br, zstd`，Range 请求使用 `identity`。随后使用按代理、TLS 和超时策略复用的
-   reqwest client 直接转发，不经过 sidecar、Unix Socket RPC 或第二个 HTTP 服务。
+   reqwest client 直接转发，不经过 sidecar、Unix Socket RPC 或第二个 HTTP 服务。Responses
+   渠道组可把 `request_compression` 从默认的 `default` 改为 `zstd`；此时 HTTP
+   `POST /v1/responses` 的最终 JSON body 使用 Zstandard level 3 编码，并设置
+   `Content-Encoding: zstd` 与 `Content-Type: application/json`。WebSocket、standalone
+   search 与 Images 请求不使用该请求编码。
 11. 上游响应按 `Content-Encoding` 流式解码；支持 gzip、RFC 1950 deflate、Brotli 和
     Zstandard，已知的多层 coding 按逆序解码。usage、错误诊断和 SSE Transform 只读取解码后的
     明文流，不缓冲完整响应。公共 listener 再按下游请求的 `Accept-Encoding` 独立选择 coding；
@@ -125,8 +129,10 @@ Browser or Console client
     body，并记录 `upstream_body_error`。
 12. 将终态事件写入本地 spool，并异步投影、提取 usage 和结算。
 
-客户端和 Connector policy 均未删除/覆盖字段、且没有模型别名或 body Transform 时，原始请求
-字节保持不变。普通响应不会为了 usage 采集而整体缓冲。
+客户端和 Connector policy 均未删除/覆盖字段、且没有模型别名、body Transform、客户端请求
+解码或渠道组请求压缩时，原始请求字节保持不变。`POST /v1/responses` 另外接受客户端
+`Content-Encoding: zstd`；网关先在配置的 JSON 请求上限内解码，再执行解析、白名单与路由。
+其他 JSON 接口只接受 identity。普通响应不会为了 usage 采集而整体缓冲。
 
 ### MCP adapter
 

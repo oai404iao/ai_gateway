@@ -83,6 +83,7 @@ dependencies = [
  "uuid",
  "webpki-roots 1.0.9",
  "zeroize",
+ "zstd",
 ]
 
 [[package]]

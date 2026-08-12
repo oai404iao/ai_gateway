@@ -434,9 +434,15 @@ function isProtectedHeader(name: string, scope: HeaderScope): boolean {
   const normalized = name.toLowerCase();
   if (HOP_BY_HOP_HEADERS.has(normalized)) return true;
   if (scope === "request") {
-    return ["host", "content-length", "authorization", "proxy-authorization", "cookie"].includes(
-      normalized,
-    );
+    return [
+      "host",
+      "content-length",
+      "content-encoding",
+      "authorization",
+      "proxy-authorization",
+      "cookie",
+      "accept-encoding",
+    ].includes(normalized);
   }
   return ["content-length", "content-type", "set-cookie", "content-encoding"].includes(normalized);
 }
@@ -1694,7 +1700,7 @@ export function TransformDocumentEditor({
           <AlertTitle>{t("Transform rule limits")}</AlertTitle>
           <AlertDescription>
             {t(
-              "Request rules cannot change authorization, cookies, host, content length, model, or stream. Response rules cannot change content type, content length, encoding, or cookies. Hop-by-hop headers are always protected.",
+              "Request rules cannot change authorization, cookies, host, content length, content encoding, accept encoding, model, or stream. Response rules cannot change content type, content length, encoding, or cookies. Hop-by-hop headers are always protected.",
             )}
           </AlertDescription>
         </Alert>

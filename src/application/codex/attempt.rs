@@ -1,6 +1,6 @@
 use axum::http::{
     HeaderMap, HeaderValue, Uri,
-    header::{ACCEPT, ACCEPT_ENCODING, AUTHORIZATION, CONTENT_TYPE, USER_AGENT},
+    header::{ACCEPT, ACCEPT_ENCODING, AUTHORIZATION, CONTENT_ENCODING, CONTENT_TYPE, USER_AGENT},
 };
 use bytes::Bytes;
 use reqwest::Url;
@@ -164,6 +164,7 @@ impl PreparedCodexAttempt {
                 if request_protocol == RequestProtocol::WebSocket {
                     headers.remove(ACCEPT);
                     headers.remove(ACCEPT_ENCODING);
+                    headers.remove(CONTENT_ENCODING);
                     headers.remove(CONTENT_TYPE);
                 } else {
                     headers.insert(ACCEPT, HeaderValue::from_static("text/event-stream"));
@@ -504,7 +505,7 @@ mod tests {
     }
 
     #[test]
-    fn request_headers_leave_content_coding_to_the_proxy() {
+    fn responses_headers_leave_content_coding_to_the_proxy() {
         let attempt = PreparedCodexAttempt::prepare(
             &runtime(),
             Uuid::from_u128(1),
@@ -521,6 +522,7 @@ mod tests {
             .unwrap();
 
         assert!(!headers.contains_key(ACCEPT_ENCODING));
+        assert!(!headers.contains_key(CONTENT_ENCODING));
         assert_eq!(
             headers.get("version").and_then(|value| value.to_str().ok()),
             Some(CODEX_CLIENT_VERSION)
@@ -647,6 +649,7 @@ mod tests {
         assert_eq!(headers.get("x-client-request-id").unwrap(), "request-123");
         assert_eq!(headers.get(ACCEPT).unwrap(), "application/json");
         assert_eq!(headers.get(CONTENT_TYPE).unwrap(), "application/json");
+        assert!(!headers.contains_key(CONTENT_ENCODING));
         assert!(!headers.contains_key("session-id"));
         assert!(!headers.contains_key("thread-id"));
         assert!(attempt.preserves_affinity_on_failure());
@@ -746,6 +749,7 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("application/json")
         );
+        assert!(!headers.contains_key(CONTENT_ENCODING));
         assert!(!headers.contains_key("session-id"));
         assert!(!headers.contains_key("thread-id"));
         assert!(!headers.contains_key("x-client-request-id"));
@@ -789,6 +793,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(ACCEPT, HeaderValue::from_static("text/event-stream"));
         headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("gzip, br"));
+        headers.insert(CONTENT_ENCODING, HeaderValue::from_static("zstd"));
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         attempt
             .inject_headers(&mut headers, RequestProtocol::WebSocket)
@@ -796,6 +801,7 @@ mod tests {
 
         assert!(!headers.contains_key(ACCEPT));
         assert!(!headers.contains_key(ACCEPT_ENCODING));
+        assert!(!headers.contains_key(CONTENT_ENCODING));
         assert!(!headers.contains_key(CONTENT_TYPE));
         assert_eq!(
             headers

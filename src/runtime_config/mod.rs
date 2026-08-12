@@ -34,7 +34,7 @@ use crate::{
         DEFAULT_MCP_REQUEST_BODY_BYTES, DEFAULT_MCP_SEARCH_RESULT_BYTES,
         DEFAULT_STANDALONE_WEB_SEARCH_RESPONSE_HEADER_TIMEOUT_SECONDS, ImageMcpSettings,
         MAX_MCP_IMAGE_BYTES, MAX_REQUEST_RETRIES, McpServerKind, McpTransportSettings,
-        ModelPriceSnapshot, ModelRouteKey, NoProxyHost, PassiveHealthSettings,
+        ModelPriceSnapshot, ModelRouteKey, NoProxyHost, PassiveHealthSettings, RequestCompression,
         RequestRetrySettings, ResponsesWebSocketSettings, ScheduledTestingMode,
         ScheduledTestingSettings, SelectionStrategy, SessionAffinityKeySource, SessionAffinityRule,
         SessionAffinitySettings, SystemRuntimeSettings, UpstreamAuth, UpstreamTimeoutDefaults,
@@ -886,12 +886,16 @@ pub fn compile_control_plane_with_system_settings(
             );
             let connector_kind =
                 parse_connector_kind(&all_groups[&channel.channel_group_id].connector_kind)?;
+            let request_compression = parse_request_compression(
+                &all_groups[&channel.channel_group_id].request_compression,
+            )?;
             let compiled = Arc::new(
                 CompiledChannel::new_with_connector_policy_automation_and_billing(
                     channel.id,
                     channel.channel_group_id,
                     api_format,
                     connector_kind,
+                    request_compression,
                     parse_url(channel.id, &channel.base_url)?,
                     channel.weight,
                     channel.billing_multiplier,
@@ -2373,6 +2377,7 @@ fn validate_group(record: &ChannelGroupRecord) -> Result<(), ConfigError> {
     require("channel group name", &record.name)?;
     let api_format = parse_format(&record.api_format)?;
     let connector_kind = parse_connector_kind(&record.connector_kind)?;
+    let request_compression = parse_request_compression(&record.request_compression)?;
     if connector_kind == ConnectorKind::CodexOauth
         && !matches!(
             api_format,
@@ -2381,6 +2386,11 @@ fn validate_group(record: &ChannelGroupRecord) -> Result<(), ConfigError> {
     {
         return Err(ConfigError::Compile(
             "Codex OAuth channel groups must use Responses or Images".into(),
+        ));
+    }
+    if request_compression.is_encoded() && api_format != ApiFormat::OpenAiResponses {
+        return Err(ConfigError::Compile(
+            "request compression is supported only for Responses channel groups".into(),
         ));
     }
     if record.priority < 0 || SelectionStrategy::parse(&record.selection_strategy).is_none() {
@@ -2393,6 +2403,10 @@ fn validate_group(record: &ChannelGroupRecord) -> Result<(), ConfigError> {
 fn parse_connector_kind(value: &str) -> Result<ConnectorKind, ConfigError> {
     ConnectorKind::parse(value)
         .ok_or_else(|| ConfigError::Compile("unsupported upstream connector kind".into()))
+}
+fn parse_request_compression(value: &str) -> Result<RequestCompression, ConfigError> {
+    RequestCompression::parse(value)
+        .ok_or_else(|| ConfigError::Compile("unsupported channel group request compression".into()))
 }
 fn parse_strategy(value: &str) -> Result<SelectionStrategy, ConfigError> {
     SelectionStrategy::parse(value)
@@ -2632,8 +2646,10 @@ fn compile_auth(channel: &ChannelRecord) -> Result<UpstreamAuth, ConfigError> {
                 "authorization"
                     | "host"
                     | "content-length"
+                    | "content-encoding"
                     | "connection"
                     | "transfer-encoding"
+                    | "accept-encoding"
                     | "proxy-authorization"
                     | "proxy-authenticate"
                     | "keep-alive"
@@ -3030,6 +3046,7 @@ mod tests {
             name: id.to_string(),
             api_format: "open_ai_chat_completions".into(),
             connector_kind: "openai_compatible".into(),
+            request_compression: "default".into(),
             priority,
             selection_strategy: strategy.into(),
             enabled: true,
@@ -3106,6 +3123,30 @@ mod tests {
         let mut records = route_records(0, "weighted_random", 1, "weighted_random", false);
         records.model_rules[0].upstream_model_currency = "EUR".into();
         assert!(compile_control_plane(records).is_err());
+    }
+
+    #[test]
+    fn compiler_accepts_zstd_only_for_responses_groups() {
+        let mut records = route_records(0, "weighted_random", 1, "weighted_random", false);
+        records.groups[0].request_compression = "zstd".into();
+        let error = compile_control_plane(records).unwrap_err().to_string();
+        assert!(error.contains("request compression is supported only for Responses"));
+
+        let mut records = route_records(0, "weighted_random", 1, "weighted_random", false);
+        for group in &mut records.groups {
+            group.api_format = "open_ai_responses".into();
+        }
+        for channel in &mut records.channels {
+            channel.api_format = "open_ai_responses".into();
+        }
+        records.model_rules[0].api_format = "open_ai_responses".into();
+        records.groups[0].request_compression = "zstd".into();
+
+        let snapshot = compile_control_plane(records).unwrap();
+        let channel = snapshot
+            .channel(Uuid::from_u128(11))
+            .expect("Responses channel should compile");
+        assert_eq!(channel.request_compression(), RequestCompression::Zstd);
     }
 
     #[test]
@@ -3380,8 +3421,14 @@ mod tests {
     }
 
     #[test]
-    fn compiler_rejects_forwarding_metadata_as_custom_auth_headers() {
-        for name in ["forwarded", "x-forwarded-for", "cf-connecting-ip"] {
+    fn compiler_rejects_unsafe_custom_auth_headers() {
+        for name in [
+            "forwarded",
+            "x-forwarded-for",
+            "cf-connecting-ip",
+            "content-encoding",
+            "accept-encoding",
+        ] {
             let mut records = route_records(0, "weighted_random", 1, "weighted_random", false);
             records.channels[0].upstream_auth_kind = "header".into();
             records.channels[0].upstream_auth_header_name = Some(name.into());

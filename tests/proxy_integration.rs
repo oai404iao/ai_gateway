@@ -655,6 +655,7 @@ struct TransformDocuments {
     chat_override: Value,
     responses_override: Value,
     responses_search_supported: bool,
+    responses_request_compression: &'static str,
     images_override: Value,
     upstream_auth_kind: &'static str,
     upstream_auth_header_name: Option<&'static str>,
@@ -676,6 +677,7 @@ impl Default for TransformDocuments {
             chat_override: serde_json::json!({}),
             responses_override: serde_json::json!({}),
             responses_search_supported: true,
+            responses_request_compression: "default",
             images_override: serde_json::json!({}),
             upstream_auth_kind: "bearer",
             upstream_auth_header_name: None,
@@ -784,6 +786,11 @@ fn configured_proxy_with_policy_and_transforms(
         name: id.to_string(),
         api_format: api_format.to_owned(),
         connector_kind: "openai_compatible".into(),
+        request_compression: if api_format == "open_ai_responses" {
+            transforms.responses_request_compression.into()
+        } else {
+            "default".into()
+        },
         priority: 0,
         selection_strategy: "weighted_random".into(),
         enabled: true,
@@ -1188,6 +1195,7 @@ fn session_affinity_proxy(first_upstream_url: &str, second_upstream_url: &str) -
             name: "affinity".into(),
             api_format: "open_ai_chat_completions".into(),
             connector_kind: "openai_compatible".into(),
+            request_compression: "default".into(),
             priority: 0,
             selection_strategy: "weighted_round_robin".into(),
             enabled: true,
@@ -1549,6 +1557,187 @@ async fn matching_chat_model_preserves_body_and_forwards_response_safely() {
     assert!(request.headers.get("x-internal-hop").is_none());
     assert_eq!(request.headers.get("x-request-id").unwrap(), "forward-me");
     assert!(request.headers.get("x-unlisted-client-header").is_none());
+}
+
+#[tokio::test]
+async fn responses_accepts_zstd_request_bodies_and_forwards_identity_by_default() {
+    let harness = harness(StatusCode::OK, br#"{"id":"resp_1"}"#.to_vec()).await;
+    let request_body =
+        br#"{ "model" : "responses-model", "input": [{"role":"user","content":"hello"}] }"#;
+    let encoded_body = encode_test_body(TestContentCoding::Zstd, request_body).await;
+
+    let response = authorized_post(
+        &client(),
+        harness.url("/v1/responses"),
+        CLIENT_KEY,
+        encoded_body,
+    )
+    .header("content-encoding", "zstd")
+    .header("content-md5", "stale")
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let requests = harness.upstream_requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].body, request_body);
+    assert!(requests[0].headers.get("content-encoding").is_none());
+    assert!(requests[0].headers.get("content-md5").is_none());
+    let expected_length = request_body.len().to_string();
+    assert_eq!(
+        requests[0]
+            .headers
+            .get("content-length")
+            .and_then(|value| value.to_str().ok()),
+        Some(expected_length.as_str())
+    );
+}
+
+#[tokio::test]
+async fn responses_channel_group_can_compress_upstream_json_with_zstd() {
+    let harness = harness_with_transforms(TransformDocuments {
+        responses_request_compression: "zstd",
+        ..Default::default()
+    })
+    .await;
+    let request_body = br#"{"model":"responses-model","input":"hello"}"#;
+
+    let response = authorized_post(
+        &client(),
+        harness.url("/v1/responses"),
+        CLIENT_KEY,
+        request_body.to_vec(),
+    )
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let requests = harness.upstream_requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0]
+            .headers
+            .get("content-encoding")
+            .and_then(|value| value.to_str().ok()),
+        Some("zstd")
+    );
+    assert_eq!(
+        requests[0]
+            .headers
+            .get("content-type")
+            .and_then(|value| value.to_str().ok()),
+        Some("application/json")
+    );
+    let expected_length = requests[0].body.len().to_string();
+    assert_eq!(
+        requests[0]
+            .headers
+            .get("content-length")
+            .and_then(|value| value.to_str().ok()),
+        Some(expected_length.as_str())
+    );
+    assert_eq!(
+        zstd::stream::decode_all(std::io::Cursor::new(&requests[0].body)).unwrap(),
+        request_body
+    );
+}
+
+#[tokio::test]
+async fn zstd_request_bodies_are_rejected_outside_responses() {
+    let harness = harness(StatusCode::OK, Vec::new()).await;
+    let request_body = br#"{"model":"same-model","messages":[]}"#;
+    let encoded_body = encode_test_body(TestContentCoding::Zstd, request_body).await;
+
+    let response = authorized_post(
+        &client(),
+        harness.url("/v1/chat/completions"),
+        CLIENT_KEY,
+        encoded_body,
+    )
+    .header("content-encoding", "zstd")
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    let body: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+    assert_eq!(
+        body["error"]["code"],
+        "request_content_encoding_unsupported"
+    );
+    assert!(harness.upstream_requests().is_empty());
+    assert!(harness.logs().is_empty());
+}
+
+#[tokio::test]
+async fn responses_rejects_stacked_request_content_encodings() {
+    let harness = harness(StatusCode::OK, Vec::new()).await;
+    let request_body = br#"{"model":"responses-model","input":"hello"}"#;
+    let encoded_body = encode_test_body(TestContentCoding::Zstd, request_body).await;
+
+    let response = authorized_post(
+        &client(),
+        harness.url("/v1/responses"),
+        CLIENT_KEY,
+        encoded_body,
+    )
+    .header("content-encoding", "identity, zstd")
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    let body: Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+    assert_eq!(
+        body["error"]["code"],
+        "request_content_encoding_unsupported"
+    );
+    assert!(harness.upstream_requests().is_empty());
+    assert!(harness.logs().is_empty());
+}
+
+#[tokio::test]
+async fn responses_rejects_invalid_or_oversized_decoded_zstd_bodies() {
+    let harness = harness(StatusCode::OK, Vec::new()).await;
+
+    let invalid = authorized_post(
+        &client(),
+        harness.url("/v1/responses"),
+        CLIENT_KEY,
+        b"not-zstd".to_vec(),
+    )
+    .header("content-encoding", "zstd")
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+    let invalid: Value = serde_json::from_slice(&invalid.bytes().await.unwrap()).unwrap();
+    assert_eq!(invalid["error"]["code"], "request_content_encoding_invalid");
+
+    let oversized_body = serde_json::to_vec(&serde_json::json!({
+        "model": "responses-model",
+        "input": "x".repeat(1_048_576),
+    }))
+    .unwrap();
+    let encoded_body = zstd::stream::encode_all(std::io::Cursor::new(oversized_body), 3).unwrap();
+    let oversized = authorized_post(
+        &client(),
+        harness.url("/v1/responses"),
+        CLIENT_KEY,
+        encoded_body,
+    )
+    .header("content-encoding", "zstd")
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(oversized.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    let oversized: Value = serde_json::from_slice(&oversized.bytes().await.unwrap()).unwrap();
+    assert_eq!(oversized["error"]["code"], "request_too_large");
+
+    assert!(harness.upstream_requests().is_empty());
+    assert!(harness.logs().is_empty());
 }
 
 #[tokio::test]
