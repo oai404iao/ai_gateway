@@ -70,6 +70,7 @@ webpki-roots = "1"
 zeroize = { version = "1.8", features = ["derive"] }
 uuid = { version = "1.11", features = ["v4", "serde"] }
 urlencoding = "2.1"
+zstd = "0.13"
 rust-embed = { version = "8", optional = true }
 mime_guess = { version = "2", optional = true }
 

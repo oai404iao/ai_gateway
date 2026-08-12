@@ -529,6 +529,8 @@ struct UpstreamState(Arc<Mutex<UpstreamMode>>);
 struct CapturedCodexRequest {
     authorization: Option<String>,
     accept_encoding: Option<String>,
+    content_encoding: Option<String>,
+    content_type: Option<String>,
     account_id: Option<String>,
     originator: Option<String>,
     user_agent: Option<String>,
@@ -611,12 +613,22 @@ async fn codex_responses_upstream(
             .and_then(|value| value.to_str().ok())
             .map(str::to_owned)
     };
+    let content_encoding = header("content-encoding");
+    let decoded_body = match content_encoding.as_deref() {
+        Some(value) if value.eq_ignore_ascii_case("zstd") => {
+            Bytes::from(zstd::stream::decode_all(std::io::Cursor::new(body)).unwrap())
+        }
+        None => body,
+        Some(value) => panic!("unexpected Codex request content encoding: {value}"),
+    };
     let request_index = {
         let mut requests = state.http_requests.lock().unwrap();
         let request_index = requests.len();
         requests.push(CapturedCodexRequest {
             authorization: header("authorization"),
             accept_encoding: header("accept-encoding"),
+            content_encoding,
+            content_type: header("content-type"),
             account_id: header("chatgpt-account-id"),
             originator: header("originator"),
             user_agent: header("user-agent"),
@@ -626,7 +638,7 @@ async fn codex_responses_upstream(
             window_id: header("x-codex-window-id"),
             turn_metadata: header("x-codex-turn-metadata"),
             stainless_lang: header("x-stainless-lang"),
-            body: serde_json::from_slice(&body).unwrap(),
+            body: serde_json::from_slice(&decoded_body).unwrap(),
         });
         request_index
     };
@@ -3132,6 +3144,8 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
         forwarded.accept_encoding.as_deref(),
         Some("gzip, deflate, br, zstd")
     );
+    assert_eq!(forwarded.content_encoding.as_deref(), Some("zstd"));
+    assert_eq!(forwarded.content_type.as_deref(), Some("application/json"));
     assert_eq!(forwarded.account_id, None);
     assert_eq!(forwarded.originator.as_deref(), Some(CODEX_ORIGINATOR));
     assert_eq!(

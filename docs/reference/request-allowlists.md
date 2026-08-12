@@ -4,7 +4,7 @@
 >
 > 状态：当前。
 >
-> 最近核对：2026-08-11。
+> 最近核对：2026-08-12。
 >
 > 机器可读权威契约：
 > [`request-allowlists.json`](request-allowlists.json)。
@@ -17,6 +17,9 @@
 > [`openai/codex@7a0e974`](https://github.com/openai/codex/tree/7a0e974e08c798d1e8d59d407aeb6e24db1313af) 的
 > [Responses wire type](https://github.com/openai/codex/blob/7a0e974e08c798d1e8d59d407aeb6e24db1313af/codex-rs/codex-api/src/common.rs)、
 > [Responses metadata](https://github.com/openai/codex/blob/7a0e974e08c798d1e8d59d407aeb6e24db1313af/codex-rs/core/src/responses_metadata.rs)、
+> [compression selection](https://github.com/openai/codex/blob/7a0e974e08c798d1e8d59d407aeb6e24db1313af/codex-rs/core/src/client.rs)、
+> [Responses endpoint](https://github.com/openai/codex/blob/7a0e974e08c798d1e8d59d407aeb6e24db1313af/codex-rs/codex-api/src/endpoint/responses.rs)、
+> [Zstandard encoder](https://github.com/openai/codex/blob/7a0e974e08c798d1e8d59d407aeb6e24db1313af/codex-rs/http-client/src/request.rs)、
 > [Images wire type](https://github.com/openai/codex/blob/7a0e974e08c798d1e8d59d407aeb6e24db1313af/codex-rs/codex-api/src/images.rs)、
 > [Search wire type](https://github.com/openai/codex/blob/7a0e974e08c798d1e8d59d407aeb6e24db1313af/codex-rs/codex-api/src/search.rs) 与
 > [Search tool Header](https://github.com/openai/codex/blob/7a0e974e08c798d1e8d59d407aeb6e24db1313af/codex-rs/ext/web-search/src/tool.rs)；
@@ -157,6 +160,9 @@ Images edit 额外兼容部分通用表单会提交、但当前公开 edit 类�
 - provider 未支持的状态、采样、prompt template、moderation 和缓存选项仅接受契约列出的
   空值/no-op，其他值返回错误；
 - 最终强制 `stream=true`、`store=false`。
+- 最终 JSON 使用 Zstandard level 3 编码，并生成
+  `Content-Encoding: zstd` 与 `Content-Type: application/json`；该请求编码只用于
+  Codex Responses HTTP，不用于 WebSocket、standalone search 或 Images。
 
 ### Responses WebSocket
 

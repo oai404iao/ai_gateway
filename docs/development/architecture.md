@@ -113,7 +113,9 @@ Browser or Console client
    scheduled probe 等会应用 Header Transform 的内部请求同样执行最终 guard。HTTP
    `Accept-Encoding` 由网关拥有：下游值不会直接转发，普通请求向上游声明
    `gzip, deflate, br, zstd`，Range 请求使用 `identity`。随后使用按代理、TLS 和超时策略复用的
-   reqwest client 直接转发，不经过 sidecar、Unix Socket RPC 或第二个 HTTP 服务。
+   reqwest client 直接转发，不经过 sidecar、Unix Socket RPC 或第二个 HTTP 服务。Codex
+   Responses HTTP 的最终 JSON body 另外固定使用 Zstandard level 3 编码，并设置
+   `Content-Encoding: zstd`；WebSocket、standalone search 与 Images 请求不使用该请求编码。
 11. 上游响应按 `Content-Encoding` 流式解码；支持 gzip、RFC 1950 deflate、Brotli 和
     Zstandard，已知的多层 coding 按逆序解码。usage、错误诊断和 SSE Transform 只读取解码后的
     明文流，不缓冲完整响应。公共 listener 再按下游请求的 `Accept-Encoding` 独立选择 coding；

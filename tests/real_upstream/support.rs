@@ -1409,8 +1409,22 @@ mod tests {
 
     async fn mock_codex_responses(
         State(captured): State<Arc<Mutex<Vec<Value>>>>,
-        Json(body): Json<Value>,
+        headers: HeaderMap,
+        body: Bytes,
     ) -> axum::response::Response {
+        let body = match headers
+            .get(header::CONTENT_ENCODING)
+            .and_then(|value| value.to_str().ok())
+        {
+            Some(value) if value.eq_ignore_ascii_case("zstd") => {
+                zstd::stream::decode_all(std::io::Cursor::new(body))
+                    .expect("Codex Responses request body should be valid zstd")
+            }
+            None => body.to_vec(),
+            Some(value) => panic!("unexpected Codex request content encoding: {value}"),
+        };
+        let body: Value =
+            serde_json::from_slice(&body).expect("Codex Responses request should be JSON");
         captured.lock().unwrap().push(body.clone());
         if body.get("stream").and_then(Value::as_bool) != Some(true) {
             return (

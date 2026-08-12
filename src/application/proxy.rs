@@ -1269,6 +1269,16 @@ impl ProxyError {
                 retry_after: None,
             },
             ConnectorAttemptError::RequestBody(error) => Self::image_edit_body(error),
+            ConnectorAttemptError::RequestEncoding => Self {
+                status: StatusCode::BAD_GATEWAY,
+                message: "The selected upstream connector could not encode the request body."
+                    .to_owned(),
+                error_type: "api_error",
+                param: None,
+                code: Some("upstream_request_encoding_failed"),
+                authenticate: false,
+                retry_after: None,
+            },
             ConnectorAttemptError::RequestPolicy(error) => Self::request_policy(error),
             ConnectorAttemptError::InvalidTarget => Self {
                 status: StatusCode::BAD_GATEWAY,

@@ -7,6 +7,13 @@ Versioning.
 
 ## [Unreleased]
 
+### Changed
+
+- Compress Codex OAuth Responses HTTP JSON requests with Zstandard level 3
+  and send `Content-Encoding: zstd`, matching the default Codex client
+  behavior. WebSocket, standalone search, and Images requests remain
+  unchanged.
+
 ## [0.10.2] - 2026-08-11
 
 ### Security

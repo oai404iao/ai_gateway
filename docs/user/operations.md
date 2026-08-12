@@ -304,7 +304,10 @@ Gateway 会把这类滑动时间合并为同一个未使用周期，首次出现
 刷新失败，后台轮询会继续补齐当前状态和窗口历史。
 
 Codex Responses HTTP Connector 只接受 `stream: true` 的 SSE 请求，强制上游
-`store: false`，并拒绝非空 `previous_response_id`。客户端仍可发送
+`store: false`，并拒绝非空 `previous_response_id`。发往 Codex 的最终 JSON body 默认使用
+Zstandard level 3 编码，并设置 `Content-Encoding: zstd` 与
+`Content-Type: application/json`；WebSocket、standalone search 和 Images 请求不使用该请求
+编码。客户端仍可发送
 `max_output_tokens`，但选中 Codex managed channel 后，Connector 会在最终上游请求中静默删除
 该字段，因为当前 Codex 订阅请求类型不支持它；该值因此不会限制 Codex 输出。这个兼容处理同时
 适用于 HTTP SSE 与 WebSocket `response.create`，普通 OpenAI-compatible channel 不受影响。
