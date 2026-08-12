@@ -129,6 +129,7 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
                 rules: config.session_affinity.rules,
             },
             websocket: SystemWebSocketSettingsInput::default(),
+            codex: Default::default(),
             mcp: config.mcp,
         })
         .await?;

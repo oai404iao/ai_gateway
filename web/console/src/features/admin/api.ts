@@ -357,6 +357,7 @@ export function useSetChannelGroupEnabled() {
           name: group.name,
           api_format: group.api_format,
           connector_kind: group.connector_kind,
+          request_compression: group.request_compression,
           priority: group.priority,
           selection_strategy: group.selection_strategy,
           enabled,
