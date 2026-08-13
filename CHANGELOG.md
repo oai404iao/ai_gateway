@@ -7,12 +7,18 @@ Versioning.
 
 ## [Unreleased]
 
+## [0.10.4] - 2026-08-13
+
 ### Added
 
 - Let user groups silently filter client `service_tier` requests so Fast
   metadata and service-tier billing multipliers are not applied, and let
   administrators manage a user's personal Responses WebSocket preference from
   the user detail page.
+- Show the credential-wide Gateway-calculated USD spend for current and
+  historical Codex quota windows in both user quota views and administrator
+  credential management, aggregating all users and the credential's Responses
+  and Images projections.
 
 ## [0.10.3] - 2026-08-12
 
