@@ -1846,8 +1846,8 @@ const zhCN: Record<string, string> = {
   "OpenAI-compatible": "OpenAI 兼容",
   "Codex OAuth": "Codex OAuth",
   "Codex quotas": "Codex 额度",
-  "Read-only quota windows for Codex credential groups granted by your user group.":
-    "只读查看当前用户组获准访问的 Codex 凭证组额度窗口。",
+  "Read-only quota windows and credential-wide spend for Codex credential groups granted by your user group. Spend includes every caller and both Responses and Images.":
+    "只读查看当前用户组获准访问的 Codex 凭证组额度窗口和凭证总花费。花费包含所有调用者以及 Responses 与 Images。",
   "No Codex quota access": "暂无 Codex 额度查看权限",
   "Your user group has not been granted access to any Codex quota groups.":
     "当前用户组尚未获准查看任何 Codex 额度组。",
@@ -1856,8 +1856,8 @@ const zhCN: Record<string, string> = {
   "Quota history": "额度窗口历史",
   "Quota window history for {name}": "{name} 的额度窗口历史",
   "View quota history for {name}": "查看 {name} 的额度窗口历史",
-  "This view is read-only and contains quota windows plus the provider-reported subscription tier.":
-    "此页面为只读，仅包含额度窗口和 Provider 报告的订阅等级。",
+  "This view is read-only and contains quota windows plus the provider-reported subscription tier. Period spend covers all priced requests routed through the credential, not only your requests.":
+    "此页面为只读，包含额度窗口和 Provider 报告的订阅等级。周期花费包含经由该凭证的所有已计价请求，而不只是你的请求。",
   "Manage Codex credentials": "管理 Codex 凭证",
   "Manage credentials": "管理凭证",
   "Provider-managed credentials": "Provider 托管凭证",
@@ -1904,6 +1904,7 @@ const zhCN: Record<string, string> = {
   "{percent}% used": "已使用 {percent}%",
   "Primary window": "主窗口",
   "Secondary window": "次窗口",
+  "Period spend": "周期花费",
   "Natural reset": "自然重置",
   "Manual reset credit": "手动 reset credit",
   "OpenAI official reset": "OpenAI 官方重置",
@@ -1970,8 +1971,8 @@ const zhCN: Record<string, string> = {
     "此操作会为 {label} 调用 OpenAI reset-credit 接口，可能消费一个可用 credit，并重新开始两个额度窗口。当前可用：{count}。",
   "Consume reset credit": "消费 reset credit",
   "Quota window history for {label}": "{label} 的额度窗口历史",
-  "Natural resets follow the scheduled boundary. Manual resets consume a reset credit through this Console. An earlier unmatched rollover is recorded as an OpenAI official reset.":
-    "自然重置按计划边界发生；手动重置会通过本 Console 消费 reset credit；未匹配到手动事件的提前换窗会记录为 OpenAI 官方重置。",
+  "Natural resets follow the scheduled boundary. Manual resets consume a reset credit through this Console. An earlier unmatched rollover is recorded as an OpenAI official reset. Period spend includes every caller and both Responses and Images projections.":
+    "自然重置按计划边界发生；手动重置会通过本 Console 消费 reset credit；未匹配到手动事件的提前换窗会记录为 OpenAI 官方重置。周期花费包含所有调用者以及 Responses 与 Images projection。",
   "No quota window history": "暂无额度窗口历史",
   "History begins with the first stored quota observation.":
     "历史从首次保存的额度观察开始记录。",

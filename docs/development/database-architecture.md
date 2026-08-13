@@ -77,6 +77,8 @@ terminal RequestLogEvent
 - 本地 spool 覆盖数据库写入前的进程崩溃恢复；入口和最终表都依赖请求 UUID 幂等。
 - `request_logs` 保存最终选中路由、usage、有效价格快照、成本和有界错误诊断，不保存 prompt、
   completion、完整 Header、Cookie 或密钥。
+- Codex quota 当前与历史窗口的凭证总花费按逻辑凭证的 Responses/Images projection、周期边界和
+  `cost_amount IS NOT NULL` 从该表聚合；现有 `(channel_id, started_at)` 索引支撑该只读查询。
 - Chat Completions、Responses 和 standalone web search 可按数据库策略在收到上游响应头前自动
   重试不同渠道；Images 不自动重试，Responses WebSocket 发送上游消息后也不重试。
 - 当前每个逻辑请求仍只写一条最终 `request_logs` 记录。数据库的旧 `attempts` JSONB 列不承载

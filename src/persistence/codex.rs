@@ -276,9 +276,11 @@ pub struct CodexCredentialView {
     pub primary_used_percent: Option<i32>,
     pub primary_window_seconds: Option<i32>,
     pub primary_reset_at: Option<DateTime<Utc>>,
+    pub primary_window_cost_amount: Option<rust_decimal::Decimal>,
     pub secondary_used_percent: Option<i32>,
     pub secondary_window_seconds: Option<i32>,
     pub secondary_reset_at: Option<DateTime<Utc>>,
+    pub secondary_window_cost_amount: Option<rust_decimal::Decimal>,
     pub quota_reset_credits_available: Option<i64>,
     pub quota_checked_at: Option<DateTime<Utc>>,
     pub last_error_code: Option<String>,
@@ -319,6 +321,7 @@ pub struct CodexQuotaWindowPeriodView {
     pub last_used_percent: i32,
     pub first_observed_at: DateTime<Utc>,
     pub last_observed_at: DateTime<Utc>,
+    pub cost_amount: rust_decimal::Decimal,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -336,9 +339,11 @@ pub struct SelfCodexQuotaCredentialView {
     pub primary_used_percent: Option<i32>,
     pub primary_window_seconds: Option<i32>,
     pub primary_reset_at: Option<DateTime<Utc>>,
+    pub primary_window_cost_amount: Option<rust_decimal::Decimal>,
     pub secondary_used_percent: Option<i32>,
     pub secondary_window_seconds: Option<i32>,
     pub secondary_reset_at: Option<DateTime<Utc>>,
+    pub secondary_window_cost_amount: Option<rust_decimal::Decimal>,
     pub quota_checked_at: Option<DateTime<Utc>>,
 }
 
@@ -354,6 +359,7 @@ pub struct SelfCodexQuotaWindowPeriodView {
     pub last_used_percent: i32,
     pub first_observed_at: DateTime<Utc>,
     pub last_observed_at: DateTime<Utc>,
+    pub cost_amount: rust_decimal::Decimal,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -421,6 +427,31 @@ struct ObservedCodexQuotaWindow {
     reset_at: DateTime<Utc>,
 }
 
+const CODEX_CURRENT_WINDOW_COSTS_LATERAL: &str = "\
+LEFT JOIN LATERAL ( \
+    SELECT \
+        CASE WHEN count(period.id) FILTER ( \
+            WHERE period.window_kind='primary' \
+        )>0 THEN COALESCE(sum(log.cost_amount) FILTER ( \
+            WHERE period.window_kind='primary' \
+        ),0) END AS primary_window_cost_amount, \
+        CASE WHEN count(period.id) FILTER ( \
+            WHERE period.window_kind='secondary' \
+        )>0 THEN COALESCE(sum(log.cost_amount) FILTER ( \
+            WHERE period.window_kind='secondary' \
+        ),0) END AS secondary_window_cost_amount \
+    FROM codex_quota_window_periods AS period \
+    LEFT JOIN codex_oauth_credential_channels AS projection \
+      ON projection.credential_id=credential.channel_id \
+    LEFT JOIN request_logs AS log \
+      ON log.channel_id=projection.channel_id \
+     AND log.cost_amount IS NOT NULL \
+     AND log.started_at>=period.started_at \
+     AND log.started_at<LEAST(now(),period.scheduled_reset_at) \
+    WHERE period.credential_id=credential.channel_id \
+      AND period.ended_at IS NULL \
+) AS window_costs ON true";
+
 #[derive(Clone)]
 pub struct CodexTokenRefreshUpdate {
     pub expected_generation: i64,
@@ -451,25 +482,14 @@ impl ControlPlaneRepository {
         &self,
         channel_group_id: Uuid,
     ) -> Result<Vec<CodexCredentialView>, RepositoryError> {
-        sqlx::query_as::<_, CodexCredentialView>(
-            "SELECT c.channel_id AS id,c.channel_group_id,c.label,c.email,c.account_id,c.user_id,c.plan_type, \
-                    c.is_fedramp,c.access_token_expires_at,c.last_refreshed_at, \
-                    c.quota_threshold_percent,c.runtime_status,c.quota_allowed, \
-                    c.quota_limit_reached,c.primary_used_percent,c.primary_window_seconds, \
-                    c.primary_reset_at,c.secondary_used_percent,c.secondary_window_seconds, \
-                    c.secondary_reset_at,c.quota_reset_credits_available, \
-                    c.quota_checked_at,c.last_error_code, \
-                    c.last_error_summary,ch.proxy_id,ch.weight,c.enabled,ch.available_models, \
-                    c.created_at,c.updated_at \
-             FROM codex_oauth_credentials c \
-             JOIN channels ch ON ch.id=c.channel_id \
-             WHERE c.connector_pool_id=( \
-                       SELECT connector_pool_id FROM channel_groups \
-                       WHERE id=$1 AND connector_kind=$2 \
-                   ) \
-               AND c.deleted_at IS NULL \
-             ORDER BY c.label,c.channel_id",
-        )
+        sqlx::query_as::<_, CodexCredentialView>(&credential_view_select(
+            "WHERE credential.connector_pool_id=( \
+                 SELECT connector_pool_id FROM channel_groups \
+                 WHERE id=$1 AND connector_kind=$2 \
+             ) \
+             AND credential.deleted_at IS NULL \
+             ORDER BY credential.label,credential.channel_id",
+        ))
         .bind(channel_group_id)
         .bind(CODEX_CONNECTOR_KIND)
         .fetch_all(&self.pool)
@@ -481,20 +501,9 @@ impl ControlPlaneRepository {
         &self,
         channel_id: Uuid,
     ) -> Result<Option<CodexCredentialView>, RepositoryError> {
-        sqlx::query_as::<_, CodexCredentialView>(
-            "SELECT c.channel_id AS id,c.channel_group_id,c.label,c.email,c.account_id,c.user_id,c.plan_type, \
-                    c.is_fedramp,c.access_token_expires_at,c.last_refreshed_at, \
-                    c.quota_threshold_percent,c.runtime_status,c.quota_allowed, \
-                    c.quota_limit_reached,c.primary_used_percent,c.primary_window_seconds, \
-                    c.primary_reset_at,c.secondary_used_percent,c.secondary_window_seconds, \
-                    c.secondary_reset_at,c.quota_reset_credits_available, \
-                    c.quota_checked_at,c.last_error_code, \
-                    c.last_error_summary,ch.proxy_id,ch.weight,c.enabled,ch.available_models, \
-                    c.created_at,c.updated_at \
-             FROM codex_oauth_credentials c \
-             JOIN channels ch ON ch.id=c.channel_id \
-             WHERE c.channel_id=$1 AND c.deleted_at IS NULL",
-        )
+        sqlx::query_as::<_, CodexCredentialView>(&credential_view_select(
+            "WHERE credential.channel_id=$1 AND credential.deleted_at IS NULL",
+        ))
         .bind(channel_id)
         .fetch_optional(&self.pool)
         .await
@@ -540,8 +549,21 @@ impl ControlPlaneRepository {
              ) \
              SELECT id,credential_id,window_kind,window_seconds,started_at, \
                     scheduled_reset_at,ended_at,reset_reason,initial_used_percent, \
-                    last_used_percent,first_observed_at,last_observed_at \
-             FROM ranked \
+                    last_used_percent,first_observed_at,last_observed_at, \
+                    COALESCE(cost.cost_amount,0) AS cost_amount \
+             FROM ranked AS period \
+             LEFT JOIN LATERAL ( \
+                 SELECT sum(log.cost_amount) AS cost_amount \
+                 FROM codex_oauth_credential_channels AS projection \
+                 JOIN request_logs AS log ON log.channel_id=projection.channel_id \
+                 WHERE projection.credential_id=period.credential_id \
+                   AND log.cost_amount IS NOT NULL \
+                   AND log.started_at>=period.started_at \
+                   AND log.started_at<COALESCE( \
+                       period.ended_at, \
+                       LEAST(now(),period.scheduled_reset_at) \
+                   ) \
+             ) AS cost ON true \
              WHERE window_rank <= $2 \
              ORDER BY window_kind,started_at DESC,id DESC",
         )
@@ -559,29 +581,15 @@ impl ControlPlaneRepository {
         &self,
         user_id: Uuid,
     ) -> Result<Vec<SelfCodexQuotaCredentialView>, RepositoryError> {
-        sqlx::query_as::<_, SelfCodexQuotaCredentialView>(
-            "SELECT credential.channel_id AS id, \
-                    credential.channel_id::text AS name, \
-                    visibility.channel_group_id,credential.plan_type, \
-                    credential.primary_used_percent,credential.primary_window_seconds, \
-                    credential.primary_reset_at,credential.secondary_used_percent, \
-                    credential.secondary_window_seconds,credential.secondary_reset_at, \
-                    credential.quota_checked_at \
-             FROM users AS console_user \
-             JOIN user_group_codex_quota_visibility AS visibility \
-               ON visibility.user_group_id=console_user.user_group_id \
-             JOIN channel_groups AS visible_group \
-               ON visible_group.id=visibility.channel_group_id \
-              AND visible_group.connector_kind=$2 \
-              AND visible_group.api_format=$3::api_format \
-             JOIN codex_oauth_credentials AS credential \
-               ON credential.connector_pool_id=visible_group.connector_pool_id \
-             WHERE console_user.id=$1 \
-               AND console_user.status='active' \
-               AND console_user.deleted_at IS NULL \
-               AND credential.deleted_at IS NULL \
+        sqlx::query_as::<_, SelfCodexQuotaCredentialView>(&self_credential_view_select(
+            "WHERE console_user.id=$1 \
+             AND console_user.status='active' \
+             AND console_user.deleted_at IS NULL \
+             AND credential.deleted_at IS NULL \
              ORDER BY visibility.channel_group_id,credential.channel_id",
-        )
+            2,
+            3,
+        ))
         .bind(user_id)
         .bind(CODEX_CONNECTOR_KIND)
         .bind(CODEX_RESPONSES_API_FORMAT)
@@ -599,36 +607,23 @@ impl ControlPlaneRepository {
         if !(1..=500).contains(&limit_per_window) {
             return Err(RepositoryError::Validation);
         }
-        let credential = sqlx::query_as::<_, SelfCodexQuotaCredentialView>(
-            "SELECT credential.channel_id AS id, \
-                    credential.channel_id::text AS name, \
-                    visibility.channel_group_id,credential.plan_type, \
-                    credential.primary_used_percent,credential.primary_window_seconds, \
-                    credential.primary_reset_at,credential.secondary_used_percent, \
-                    credential.secondary_window_seconds,credential.secondary_reset_at, \
-                    credential.quota_checked_at \
-             FROM users AS console_user \
-             JOIN user_group_codex_quota_visibility AS visibility \
-               ON visibility.user_group_id=console_user.user_group_id \
-             JOIN channel_groups AS visible_group \
-               ON visible_group.id=visibility.channel_group_id \
-              AND visible_group.connector_kind=$3 \
-              AND visible_group.api_format=$4::api_format \
-             JOIN codex_oauth_credentials AS credential \
-               ON credential.connector_pool_id=visible_group.connector_pool_id \
-             WHERE console_user.id=$1 \
-               AND console_user.status='active' \
-               AND console_user.deleted_at IS NULL \
-               AND credential.channel_id=$2 \
-               AND credential.deleted_at IS NULL",
-        )
-        .bind(user_id)
-        .bind(channel_id)
-        .bind(CODEX_CONNECTOR_KIND)
-        .bind(CODEX_RESPONSES_API_FORMAT)
-        .fetch_optional(&self.pool)
-        .await?
-        .ok_or(RepositoryError::NotFound)?;
+        let credential =
+            sqlx::query_as::<_, SelfCodexQuotaCredentialView>(&self_credential_view_select(
+                "WHERE console_user.id=$1 \
+                 AND console_user.status='active' \
+                 AND console_user.deleted_at IS NULL \
+                 AND credential.channel_id=$2 \
+                 AND credential.deleted_at IS NULL",
+                3,
+                4,
+            ))
+            .bind(user_id)
+            .bind(channel_id)
+            .bind(CODEX_CONNECTOR_KIND)
+            .bind(CODEX_RESPONSES_API_FORMAT)
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or(RepositoryError::NotFound)?;
         let periods = sqlx::query_as::<_, SelfCodexQuotaWindowPeriodView>(
             "WITH ranked AS ( \
                  SELECT period.window_kind,period.window_seconds,period.started_at, \
@@ -663,8 +658,21 @@ impl ControlPlaneRepository {
              ) \
              SELECT window_kind,window_seconds,started_at,scheduled_reset_at, \
                     ended_at,reset_reason,initial_used_percent,last_used_percent, \
-                    first_observed_at,last_observed_at \
-             FROM ranked \
+                    first_observed_at,last_observed_at, \
+                    COALESCE(cost.cost_amount,0) AS cost_amount \
+             FROM ranked AS period \
+             LEFT JOIN LATERAL ( \
+                 SELECT sum(log.cost_amount) AS cost_amount \
+                 FROM codex_oauth_credential_channels AS projection \
+                 JOIN request_logs AS log ON log.channel_id=projection.channel_id \
+                 WHERE projection.credential_id=$2 \
+                   AND log.cost_amount IS NOT NULL \
+                   AND log.started_at>=period.started_at \
+                   AND log.started_at<COALESCE( \
+                       period.ended_at, \
+                       LEAST(now(),period.scheduled_reset_at) \
+                   ) \
+             ) AS cost ON true \
              WHERE window_rank <= $3 \
              ORDER BY window_kind,started_at DESC",
         )
@@ -1773,6 +1781,57 @@ async fn claim_manual_codex_quota_reset(
 
 fn timestamps_within(left: DateTime<Utc>, right: DateTime<Utc>, tolerance: Duration) -> bool {
     left.signed_duration_since(right).abs() <= tolerance
+}
+
+fn credential_view_select(suffix: &str) -> String {
+    format!(
+        "SELECT credential.channel_id AS id,credential.channel_group_id, \
+                credential.label,credential.email,credential.account_id, \
+                credential.user_id,credential.plan_type,credential.is_fedramp, \
+                credential.access_token_expires_at,credential.last_refreshed_at, \
+                credential.quota_threshold_percent,credential.runtime_status, \
+                credential.quota_allowed,credential.quota_limit_reached, \
+                credential.primary_used_percent,credential.primary_window_seconds, \
+                credential.primary_reset_at,window_costs.primary_window_cost_amount, \
+                credential.secondary_used_percent,credential.secondary_window_seconds, \
+                credential.secondary_reset_at,window_costs.secondary_window_cost_amount, \
+                credential.quota_reset_credits_available,credential.quota_checked_at, \
+                credential.last_error_code,credential.last_error_summary, \
+                channel.proxy_id,channel.weight,credential.enabled,channel.available_models, \
+                credential.created_at,credential.updated_at \
+         FROM codex_oauth_credentials AS credential \
+         JOIN channels AS channel ON channel.id=credential.channel_id \
+         {CODEX_CURRENT_WINDOW_COSTS_LATERAL} \
+         {suffix}"
+    )
+}
+
+fn self_credential_view_select(
+    suffix: &str,
+    connector_kind_parameter: u8,
+    api_format_parameter: u8,
+) -> String {
+    format!(
+        "SELECT credential.channel_id AS id, \
+                credential.channel_id::text AS name, \
+                visibility.channel_group_id,credential.plan_type, \
+                credential.primary_used_percent,credential.primary_window_seconds, \
+                credential.primary_reset_at,window_costs.primary_window_cost_amount, \
+                credential.secondary_used_percent,credential.secondary_window_seconds, \
+                credential.secondary_reset_at,window_costs.secondary_window_cost_amount, \
+                credential.quota_checked_at \
+         FROM users AS console_user \
+         JOIN user_group_codex_quota_visibility AS visibility \
+           ON visibility.user_group_id=console_user.user_group_id \
+         JOIN channel_groups AS visible_group \
+           ON visible_group.id=visibility.channel_group_id \
+          AND visible_group.connector_kind=${connector_kind_parameter} \
+          AND visible_group.api_format=${api_format_parameter}::api_format \
+         JOIN codex_oauth_credentials AS credential \
+           ON credential.connector_pool_id=visible_group.connector_pool_id \
+         {CODEX_CURRENT_WINDOW_COSTS_LATERAL} \
+         {suffix}"
+    )
 }
 
 fn credential_select(suffix: &str) -> String {

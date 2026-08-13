@@ -2434,6 +2434,99 @@ async fn user_group_codex_quota_visibility_is_scoped_sanitized_and_read_only() {
     .execute(&database.pool)
     .await
     .unwrap();
+    sqlx::query(
+        "INSERT INTO codex_quota_window_periods \
+         (id,credential_id,window_kind,window_seconds,started_at,scheduled_reset_at, \
+          ended_at,reset_reason,initial_used_percent,last_used_percent, \
+          first_observed_at,last_observed_at) \
+         VALUES ($1,$2,'secondary',604800,$3,$4,NULL,NULL,2,12,$3,$5)",
+    )
+    .bind(Uuid::new_v4())
+    .bind(visible_credential_id)
+    .bind(period_started_at - chrono::Duration::days(2))
+    .bind(period_started_at + chrono::Duration::days(5))
+    .bind(period_started_at + chrono::Duration::hours(2))
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let visible_images_channel_id: Uuid = sqlx::query_scalar(
+        "SELECT projection.channel_id \
+         FROM codex_oauth_credential_channels AS projection \
+         WHERE projection.credential_id=$1 \
+           AND projection.api_format='open_ai_images'::api_format",
+    )
+    .bind(visible_credential_id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    for (request_user_id, api_format, api_operation, channel_group_id, channel_id, logs) in [
+        (
+            viewer_id,
+            "open_ai_responses",
+            "responses",
+            visible_group_id,
+            visible_credential_id,
+            vec![
+                (period_started_at, rust_decimal::Decimal::new(125, 2)),
+                (
+                    period_started_at + chrono::Duration::hours(3),
+                    rust_decimal::Decimal::from(5),
+                ),
+                (
+                    period_started_at + chrono::Duration::days(5),
+                    rust_decimal::Decimal::from(10),
+                ),
+            ],
+        ),
+        (
+            app.user_id,
+            "open_ai_images",
+            "images_generation",
+            visible_images_group_id,
+            visible_images_channel_id,
+            vec![(
+                period_started_at + chrono::Duration::hours(1),
+                rust_decimal::Decimal::new(75, 2),
+            )],
+        ),
+    ] {
+        let request_api_key_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO api_keys \
+             (id,user_id,name,secret_value,status,allowed_api_formats,permissions) \
+             VALUES ($1,$2,$3,$4,'active',ARRAY[$5::api_format],ARRAY['proxy'])",
+        )
+        .bind(request_api_key_id)
+        .bind(request_user_id)
+        .bind(format!("quota-cost-key-{request_api_key_id}"))
+        .bind(format!("quota-cost-secret-{request_api_key_id}"))
+        .bind(api_format)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+        for (request_started_at, cost) in logs {
+            sqlx::query(
+                "INSERT INTO request_logs \
+                 (id,started_at,completed_at,user_id,api_key_id,api_format,api_operation, \
+                  client_model,channel_group_id,channel_id,outcome,response_status_code, \
+                  cost_amount) \
+                 VALUES ($1,$2,$2,$3,$4,$5::api_format,$6,'quota-cost-model',$7,$8, \
+                         'succeeded',200,$9)",
+            )
+            .bind(Uuid::new_v4())
+            .bind(request_started_at)
+            .bind(request_user_id)
+            .bind(request_api_key_id)
+            .bind(api_format)
+            .bind(api_operation)
+            .bind(channel_group_id)
+            .bind(channel_id)
+            .bind(cost)
+            .execute(&database.pool)
+            .await
+            .unwrap();
+        }
+    }
     let legacy_zero_started_at = period_started_at - chrono::Duration::minutes(30);
     sqlx::query(
         "INSERT INTO codex_quota_window_periods \
@@ -2534,13 +2627,15 @@ async fn user_group_codex_quota_visibility_is_scoped_sanitized_and_read_only() {
     let quotas = quotas.as_array().unwrap();
     assert_eq!(quotas.len(), 1);
     let quota = quotas[0].as_object().unwrap();
-    assert_eq!(quota.len(), 11);
+    assert_eq!(quota.len(), 13);
     assert_eq!(quota["id"], visible_credential_id.to_string());
     assert_eq!(quota["name"], visible_credential_id.to_string());
     assert_eq!(quota["channel_group_id"], visible_group_id.to_string());
     assert_eq!(quota["plan_type"], "plus");
     assert_eq!(quota["primary_used_percent"], 42);
+    assert_eq!(quota["primary_window_cost_amount"], "2.00000000");
     assert_eq!(quota["secondary_used_percent"], 12);
+    assert_eq!(quota["secondary_window_cost_amount"], "7.00000000");
     assert_eq!(quota["quota_checked_at"], "2026-08-03T12:00:00Z");
     for forbidden in [
         "label",
@@ -2572,13 +2667,20 @@ async fn user_group_codex_quota_visibility_is_scoped_sanitized_and_read_only() {
     assert_eq!(history["name"], visible_credential_id.to_string());
     assert_eq!(history["channel_group_id"], visible_group_id.to_string());
     assert_eq!(history["plan_type"], "plus");
-    assert_eq!(history["periods"].as_array().unwrap().len(), 1);
-    let period = history["periods"][0].as_object().unwrap();
-    assert_eq!(period.len(), 10);
-    assert!(!period.contains_key("id"));
-    assert!(!period.contains_key("credential_id"));
-    assert_eq!(period["window_kind"], "primary");
-    assert_eq!(period["last_used_percent"], 42);
+    let periods = history["periods"].as_array().unwrap();
+    assert_eq!(periods.len(), 2);
+    for period in periods {
+        let period = period.as_object().unwrap();
+        assert_eq!(period.len(), 11);
+        assert!(!period.contains_key("id"));
+        assert!(!period.contains_key("credential_id"));
+    }
+    assert_eq!(periods[0]["window_kind"], "primary");
+    assert_eq!(periods[0]["last_used_percent"], 42);
+    assert_eq!(periods[0]["cost_amount"], "2.00000000");
+    assert_eq!(periods[1]["window_kind"], "secondary");
+    assert_eq!(periods[1]["last_used_percent"], 12);
+    assert_eq!(periods[1]["cost_amount"], "7.00000000");
 
     let hidden_history = request_with_token(
         &app,

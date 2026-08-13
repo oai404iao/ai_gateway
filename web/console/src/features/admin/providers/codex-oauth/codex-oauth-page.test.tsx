@@ -47,9 +47,11 @@ const CREDENTIAL: CodexCredentialView = {
   primary_used_percent: 96,
   primary_window_seconds: 10_800,
   primary_reset_at: "2026-07-29T15:00:00.000Z",
+  primary_window_cost_amount: "4.75",
   secondary_used_percent: null,
   secondary_window_seconds: null,
   secondary_reset_at: null,
+  secondary_window_cost_amount: null,
   quota_reset_credits_available: 2,
   quota_checked_at: "2026-07-29T12:00:00.000Z",
   last_error_code: null,
@@ -126,6 +128,7 @@ describe("CodexOauthPage", () => {
     expect(await screen.findByText("Personal Plus")).toBeInTheDocument();
     expect(screen.getByText("96% used")).toBeInTheDocument();
     expect(screen.getByText("Draining")).toBeInTheDocument();
+    expect(screen.getByText("4.75 USD")).toBeInTheDocument();
 
     await user.click(
       screen.getByRole("button", {
@@ -221,6 +224,7 @@ describe("CodexOauthPage", () => {
                 last_used_percent: 96,
                 first_observed_at: "2026-07-29T09:05:00.000Z",
                 last_observed_at: "2026-07-29T11:49:00.000Z",
+                cost_amount: "4.75",
               },
               {
                 id: "00000000-0000-0000-0000-00000000c012",
@@ -235,6 +239,7 @@ describe("CodexOauthPage", () => {
                 last_used_percent: 70,
                 first_observed_at: "2026-07-22T12:05:00.000Z",
                 last_observed_at: "2026-07-29T11:55:00.000Z",
+                cost_amount: "24.50",
               },
             ],
           }),

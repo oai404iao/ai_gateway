@@ -109,6 +109,13 @@ worker 每分钟加载数据库记录并先替换本地凭证快照，使其他�
 `openai_official` 历史记录。历史读取还会过滤旧版本已经写入的零使用率
 `openai_official` 误报。
 
+Console 读取当前或历史 quota 周期时，会按该周期的半开时间范围
+`[started_at, ended_at)` 聚合 `request_logs.cost_amount`。当前周期的结束边界是
+`min(now(), scheduled_reset_at)`。聚合按逻辑凭证关联 Responses 与 Images 两个 projection，
+不按发起请求的 Gateway 用户或 API Key 过滤，因此展示的是该凭证在周期内承担的全部
+Gateway 计价 USD 花费，而不是查看者的个人花费。未计价请求不进入金额；尚无已计价请求的已知
+周期返回 `0`，尚未保存的窗口返回 `null`。主窗口与次窗口通常重叠，两个金额不可相加。
+
 worker、上游 `401` 恢复和多实例并发均传递 observed generation；如果其他执行者已经成功轮换，
 后续执行者直接结束，不能再次消费旧 refresh token。管理员显式手动刷新不带 observed generation，
 因此表示一次强制刷新。
