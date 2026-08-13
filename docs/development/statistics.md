@@ -119,6 +119,12 @@ Codex 凭证页的主/次窗口历史可直接跳转到系统花费统计。跳�
 小时/天粒度和 `codex_credential_id`，统计页从 URL 恢复筛选并同时覆盖两个 projection channel。
 当前尚未结束的窗口使用“周期起点到当前时间（不超过计划重置时间）”作为统计区间。
 
+Codex 当前额度列表和额度历史还会直接显示各主/次周期的凭证总花费。金额使用相同的
+`request_logs.cost_amount`，按该逻辑凭证的 Responses 与 Images projection 汇总，不按
+Gateway 用户或 API Key 过滤。周期使用左闭右开的时间边界；当前周期结束于
+`min(now(), scheduled_reset_at)`。该金额是 Gateway 价格快照算出的 USD 计价事实，不是 OpenAI
+账单；主、次周期重叠时不能相加。
+
 聚合桶固定使用 UTC 边界；Console 按浏览器本地时区显示时间。
 
 为限制单次聚合规模：

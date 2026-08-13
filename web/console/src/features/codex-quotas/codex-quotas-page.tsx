@@ -45,6 +45,7 @@ import {
   useOwnCodexQuotaWindowHistory,
 } from "@/features/codex-quotas/api";
 import { formatDateTime } from "@/lib/dates";
+import { formatUsd } from "@/lib/formatters";
 
 function windowDuration(seconds: number | null): string {
   if (seconds === null) return "—";
@@ -76,11 +77,13 @@ function QuotaWindow({
   percent,
   seconds,
   resetAt,
+  costAmount,
 }: {
   label: string;
   percent: number | null;
   seconds: number | null;
   resetAt: string | null;
+  costAmount: string | null;
 }) {
   const { t } = useI18n();
   return (
@@ -98,6 +101,12 @@ function QuotaWindow({
           {resetAt
             ? t("Resets {time}", { time: formatDateTime(resetAt) })
             : "—"}
+        </span>
+      </div>
+      <div className="flex items-center justify-between gap-3 text-xs">
+        <span className="text-muted-foreground">{t("Period spend")}</span>
+        <span className="font-medium tabular-nums">
+          {formatUsd(costAmount)}
         </span>
       </div>
     </div>
@@ -131,7 +140,7 @@ function QuotaHistoryDialog({
           </DialogTitle>
           <DialogDescription>
             {t(
-              "This view is read-only and contains quota windows plus the provider-reported subscription tier.",
+              "This view is read-only and contains quota windows plus the provider-reported subscription tier. Period spend covers all priced requests routed through the credential, not only your requests.",
             )}
           </DialogDescription>
         </DialogHeader>
@@ -186,6 +195,7 @@ function QuotaWindowPeriodsTable({
           <TableRow>
             <TableHead>{t("Period")}</TableHead>
             <TableHead>{t("Usage")}</TableHead>
+            <TableHead>{t("Period spend")}</TableHead>
             <TableHead>{t("Ended by")}</TableHead>
             <TableHead>{t("Last observed")}</TableHead>
           </TableRow>
@@ -216,6 +226,9 @@ function QuotaWindowPeriodsTable({
               </TableCell>
               <TableCell className="align-top tabular-nums">
                 {period.initial_used_percent}% → {period.last_used_percent}%
+              </TableCell>
+              <TableCell className="align-top tabular-nums">
+                {formatUsd(period.cost_amount)}
               </TableCell>
               <TableCell className="align-top">
                 <Badge variant={resetReasonVariant(period.reset_reason)}>
@@ -252,7 +265,7 @@ export function CodexQuotasPage() {
       <PageHeader
         title={t("Codex quotas")}
         description={t(
-          "Read-only quota windows for Codex credential groups granted by your user group.",
+          "Read-only quota windows and credential-wide spend for Codex credential groups granted by your user group. Spend includes every caller and both Responses and Images.",
         )}
       />
       <AsyncResource
@@ -301,6 +314,9 @@ export function CodexQuotasPage() {
                               percent={credential.primary_used_percent}
                               seconds={credential.primary_window_seconds}
                               resetAt={credential.primary_reset_at}
+                              costAmount={
+                                credential.primary_window_cost_amount
+                              }
                             />
                           </TableCell>
                           <TableCell>
@@ -309,6 +325,9 @@ export function CodexQuotasPage() {
                               percent={credential.secondary_used_percent}
                               seconds={credential.secondary_window_seconds}
                               resetAt={credential.secondary_reset_at}
+                              costAmount={
+                                credential.secondary_window_cost_amount
+                              }
                             />
                           </TableCell>
                           <TableCell>

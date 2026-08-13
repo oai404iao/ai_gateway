@@ -517,7 +517,9 @@ paths:
         Returns current quota-window snapshots for Codex credentials in the
         canonical Responses channel groups granted to the authenticated
         user's user group. Credential labels and account identity are never
-        returned; `name` is the credential UUID string.
+        returned; `name` is the credential UUID string. Window costs aggregate
+        all priced requests routed through the credential's Responses and
+        Images projections, regardless of the requesting user.
       security: [{ bearerAuth: [] }]
       responses:
         "200":
@@ -537,7 +539,8 @@ paths:
         Returns read-only primary and secondary quota-window history only
         when the credential belongs to a Codex channel group granted through
         the authenticated user's user group. Hidden and missing credentials
-        both return `404`.
+        both return `404`. Each period's cost is credential-wide rather than
+        scoped to the authenticated user.
       security: [{ bearerAuth: [] }]
       parameters:
         - $ref: "#/components/parameters/PathId"
@@ -3752,8 +3755,9 @@ components:
         [id, channel_group_id, label, email, account_id, user_id, plan_type, is_fedramp,
          access_token_expires_at, last_refreshed_at, quota_threshold_percent,
          runtime_status, quota_allowed, quota_limit_reached, primary_used_percent,
-         primary_window_seconds, primary_reset_at, secondary_used_percent,
-         secondary_window_seconds, secondary_reset_at,
+         primary_window_seconds, primary_reset_at, primary_window_cost_amount,
+         secondary_used_percent, secondary_window_seconds, secondary_reset_at,
+         secondary_window_cost_amount,
          quota_reset_credits_available, quota_checked_at, last_error_code,
          last_error_summary, proxy_id, weight, enabled, available_models,
          created_at, updated_at]
@@ -3784,9 +3788,23 @@ components:
         primary_used_percent: { type: integer, minimum: 0, maximum: 100, nullable: true }
         primary_window_seconds: { type: integer, minimum: 1, nullable: true }
         primary_reset_at: { $ref: "#/components/schemas/DateTimeNullable" }
+        primary_window_cost_amount:
+          allOf: [{ $ref: "#/components/schemas/DecimalNullable" }]
+          description: |
+            Gateway-calculated USD cost of all priced requests routed through
+            this logical credential during its current stored primary period,
+            across both Responses and Images projections. Null when no current
+            primary period has been stored.
         secondary_used_percent: { type: integer, minimum: 0, maximum: 100, nullable: true }
         secondary_window_seconds: { type: integer, minimum: 1, nullable: true }
         secondary_reset_at: { $ref: "#/components/schemas/DateTimeNullable" }
+        secondary_window_cost_amount:
+          allOf: [{ $ref: "#/components/schemas/DecimalNullable" }]
+          description: |
+            Gateway-calculated USD cost of all priced requests routed through
+            this logical credential during its current stored secondary period,
+            across both Responses and Images projections. Null when no current
+            secondary period has been stored.
         quota_reset_credits_available:
           type: integer
           format: int64
@@ -3825,7 +3843,7 @@ components:
       required:
         [id, credential_id, window_kind, window_seconds, started_at,
          scheduled_reset_at, ended_at, reset_reason, initial_used_percent,
-         last_used_percent, first_observed_at, last_observed_at]
+         last_used_percent, first_observed_at, last_observed_at, cost_amount]
       properties:
         id: { type: string, format: uuid }
         credential_id: { type: string, format: uuid }
@@ -3842,6 +3860,12 @@ components:
         last_used_percent: { type: integer, minimum: 0, maximum: 100 }
         first_observed_at: { $ref: "#/components/schemas/DateTime" }
         last_observed_at: { $ref: "#/components/schemas/DateTime" }
+        cost_amount:
+          allOf: [{ $ref: "#/components/schemas/Decimal" }]
+          description: |
+            Gateway-calculated USD cost of all priced requests routed through
+            the logical credential during this period, across both Responses
+            and Images projections.
 
     CodexQuotaWindowHistory:
       type: object
@@ -3859,8 +3883,9 @@ components:
         label and account identity are deliberately omitted.
       required:
         [id, name, channel_group_id, plan_type, primary_used_percent,
-         primary_window_seconds, primary_reset_at, secondary_used_percent,
-         secondary_window_seconds, secondary_reset_at, quota_checked_at]
+         primary_window_seconds, primary_reset_at, primary_window_cost_amount,
+         secondary_used_percent, secondary_window_seconds, secondary_reset_at,
+         secondary_window_cost_amount, quota_checked_at]
       properties:
         id: { type: string, format: uuid }
         name:
@@ -3877,9 +3902,21 @@ components:
         primary_used_percent: { type: integer, minimum: 0, maximum: 100, nullable: true }
         primary_window_seconds: { type: integer, minimum: 1, nullable: true }
         primary_reset_at: { $ref: "#/components/schemas/DateTimeNullable" }
+        primary_window_cost_amount:
+          allOf: [{ $ref: "#/components/schemas/DecimalNullable" }]
+          description: |
+            Credential-wide Gateway-calculated USD cost for the current stored
+            primary period. This includes every requesting user and both
+            Responses and Images projections; null means no stored period.
         secondary_used_percent: { type: integer, minimum: 0, maximum: 100, nullable: true }
         secondary_window_seconds: { type: integer, minimum: 1, nullable: true }
         secondary_reset_at: { $ref: "#/components/schemas/DateTimeNullable" }
+        secondary_window_cost_amount:
+          allOf: [{ $ref: "#/components/schemas/DecimalNullable" }]
+          description: |
+            Credential-wide Gateway-calculated USD cost for the current stored
+            secondary period. This includes every requesting user and both
+            Responses and Images projections; null means no stored period.
         quota_checked_at: { $ref: "#/components/schemas/DateTimeNullable" }
 
     SelfCodexQuotaWindowPeriod:
@@ -3888,7 +3925,7 @@ components:
       required:
         [window_kind, window_seconds, started_at, scheduled_reset_at, ended_at,
          reset_reason, initial_used_percent, last_used_percent,
-         first_observed_at, last_observed_at]
+         first_observed_at, last_observed_at, cost_amount]
       properties:
         window_kind: { $ref: "#/components/schemas/CodexQuotaWindowKind" }
         window_seconds: { type: integer, minimum: 1 }
@@ -3902,6 +3939,11 @@ components:
         last_used_percent: { type: integer, minimum: 0, maximum: 100 }
         first_observed_at: { $ref: "#/components/schemas/DateTime" }
         last_observed_at: { $ref: "#/components/schemas/DateTime" }
+        cost_amount:
+          allOf: [{ $ref: "#/components/schemas/Decimal" }]
+          description: |
+            Credential-wide Gateway-calculated USD cost for this period,
+            including every requesting user and both managed projections.
 
     SelfCodexQuotaWindowHistory:
       type: object

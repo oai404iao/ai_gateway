@@ -310,6 +310,11 @@ Gateway 会把这类滑动时间合并为同一个未使用周期，首次出现
 “OpenAI 官方重置”误报。手动 reset-credit 操作会写审计；如果调用成功但紧随其后的 quota
 刷新失败，后台轮询会继续补齐当前状态和窗口历史。
 
+当前主/次窗口和每条历史周期同时显示该逻辑凭证的 USD 周期花费。金额会合并 Responses 与
+Images 两个 managed channel 上所有用户、API Key 和请求来源的已计价请求，因此它表示凭证总花费，
+不是当前查看用户的个人花费。该值由 Gateway 保存的模型价格快照和渠道倍率计算，并不等同于 OpenAI
+账单；未能解析 usage 或没有价格的请求不会计入。主窗口与次窗口通常重叠，两个金额不能相加。
+
 Codex Responses HTTP Connector 只接受 `stream: true` 的 SSE 请求，强制上游
 `store: false`，并拒绝非空 `previous_response_id`。当 Responses group 的**请求压缩**选择
 `Zstandard (zstd)` 时，发往 Codex 的最终 JSON body 使用 Zstandard level 3 编码，并设置
@@ -541,9 +546,10 @@ Policy 不再保存额度、RPM、并发、格式、权限或最大活动 Key �
 用户组还可以授权只读查看指定 Codex 凭证池的额度窗口。管理员只配置 canonical
 `open_ai_responses` Codex Channel Group；同一 Connector pool 的 Images projection 自动共享这份
 可见性。普通用户接口只返回凭证 UUID（`name` 固定使用同一个 UUID）、Provider 报告的
-`plan_type`、当前主/次窗口以及窗口周期历史，不返回管理员 label、邮箱、可选 workspace/member
-身份、Token、代理、权重、运行状态、错误或 reset-credit 信息。接口没有写方法，也不提供
-refresh、reset、编辑或导出操作；未授权凭证与不存在的凭证统一返回 `404`。
+`plan_type`、当前主/次窗口、凭证级周期花费以及窗口周期历史，不返回管理员 label、邮箱、可选
+workspace/member 身份、Token、代理、权重、运行状态、错误或 reset-credit 信息。周期花费汇总该
+凭证全部调用者，不按当前用户过滤，但不会暴露用户、API Key、请求或渠道明细。接口没有写方法，
+也不提供 refresh、reset、编辑或导出操作；未授权凭证与不存在的凭证统一返回 `404`。
 
 ## 管理员接口
 

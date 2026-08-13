@@ -348,7 +348,9 @@ export interface paths {
          * @description Returns current quota-window snapshots for Codex credentials in the
          *     canonical Responses channel groups granted to the authenticated
          *     user's user group. Credential labels and account identity are never
-         *     returned; `name` is the credential UUID string.
+         *     returned; `name` is the credential UUID string. Window costs aggregate
+         *     all priced requests routed through the credential's Responses and
+         *     Images projections, regardless of the requesting user.
          */
         get: operations["listOwnCodexQuotas"];
         put?: never;
@@ -370,7 +372,8 @@ export interface paths {
          * @description Returns read-only primary and secondary quota-window history only
          *     when the credential belongs to a Codex channel group granted through
          *     the authenticated user's user group. Hidden and missing credentials
-         *     both return `404`.
+         *     both return `404`. Each period's cost is credential-wide rather than
+         *     scoped to the authenticated user.
          */
         get: operations["getOwnCodexQuotaWindowHistory"];
         put?: never;
@@ -2189,9 +2192,23 @@ export interface components {
             primary_used_percent: number | null;
             primary_window_seconds: number | null;
             primary_reset_at: components["schemas"]["DateTimeNullable"];
+            /**
+             * @description Gateway-calculated USD cost of all priced requests routed through
+             *     this logical credential during its current stored primary period,
+             *     across both Responses and Images projections. Null when no current
+             *     primary period has been stored.
+             */
+            primary_window_cost_amount: components["schemas"]["DecimalNullable"];
             secondary_used_percent: number | null;
             secondary_window_seconds: number | null;
             secondary_reset_at: components["schemas"]["DateTimeNullable"];
+            /**
+             * @description Gateway-calculated USD cost of all priced requests routed through
+             *     this logical credential during its current stored secondary period,
+             *     across both Responses and Images projections. Null when no current
+             *     secondary period has been stored.
+             */
+            secondary_window_cost_amount: components["schemas"]["DecimalNullable"];
             /**
              * Format: int64
              * @description Available OpenAI rate-limit reset credits reported by the usage endpoint.
@@ -2236,6 +2253,12 @@ export interface components {
             last_used_percent: number;
             first_observed_at: components["schemas"]["DateTime"];
             last_observed_at: components["schemas"]["DateTime"];
+            /**
+             * @description Gateway-calculated USD cost of all priced requests routed through
+             *     the logical credential during this period, across both Responses
+             *     and Images projections.
+             */
+            cost_amount: components["schemas"]["Decimal"];
         };
         CodexQuotaWindowHistory: {
             /** Format: uuid */
@@ -2261,9 +2284,21 @@ export interface components {
             primary_used_percent: number | null;
             primary_window_seconds: number | null;
             primary_reset_at: components["schemas"]["DateTimeNullable"];
+            /**
+             * @description Credential-wide Gateway-calculated USD cost for the current stored
+             *     primary period. This includes every requesting user and both
+             *     Responses and Images projections; null means no stored period.
+             */
+            primary_window_cost_amount: components["schemas"]["DecimalNullable"];
             secondary_used_percent: number | null;
             secondary_window_seconds: number | null;
             secondary_reset_at: components["schemas"]["DateTimeNullable"];
+            /**
+             * @description Credential-wide Gateway-calculated USD cost for the current stored
+             *     secondary period. This includes every requesting user and both
+             *     Responses and Images projections; null means no stored period.
+             */
+            secondary_window_cost_amount: components["schemas"]["DecimalNullable"];
             quota_checked_at: components["schemas"]["DateTimeNullable"];
         };
         /** @description Sanitized quota-window period without internal row identifiers. */
@@ -2278,6 +2313,11 @@ export interface components {
             last_used_percent: number;
             first_observed_at: components["schemas"]["DateTime"];
             last_observed_at: components["schemas"]["DateTime"];
+            /**
+             * @description Credential-wide Gateway-calculated USD cost for this period,
+             *     including every requesting user and both managed projections.
+             */
+            cost_amount: components["schemas"]["Decimal"];
         };
         SelfCodexQuotaWindowHistory: {
             /** Format: uuid */

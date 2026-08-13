@@ -258,9 +258,11 @@ export const OWN_CODEX_QUOTA: SelfCodexQuotaCredentialView = {
   primary_used_percent: 42,
   primary_window_seconds: 10_800,
   primary_reset_at: "2026-08-03T15:00:00.000Z",
+  primary_window_cost_amount: "3.2174",
   secondary_used_percent: 12,
   secondary_window_seconds: 604_800,
   secondary_reset_at: "2026-08-10T12:00:00.000Z",
+  secondary_window_cost_amount: "28.9103",
   quota_checked_at: "2026-08-03T12:00:00.000Z",
 };
 
@@ -281,6 +283,7 @@ export const OWN_CODEX_QUOTA_HISTORY: SelfCodexQuotaWindowHistory = {
       last_used_percent: 42,
       first_observed_at: "2026-08-03T09:01:00.000Z",
       last_observed_at: "2026-08-03T11:59:00.000Z",
+      cost_amount: "3.2174",
     },
   ],
 };

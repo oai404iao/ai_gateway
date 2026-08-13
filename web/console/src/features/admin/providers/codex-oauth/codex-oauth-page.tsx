@@ -97,6 +97,7 @@ import {
   useControlPlaneLists,
 } from "@/features/admin/api";
 import { formatDateTime } from "@/lib/dates";
+import { formatUsd } from "@/lib/formatters";
 import {
   useBatchUpdateCodexCredentials,
   useCodexCredential,
@@ -276,10 +277,12 @@ function QuotaWindow({
   label,
   percent,
   resetAt,
+  costAmount,
 }: {
   label: string;
   percent: number | null;
   resetAt: string | null;
+  costAmount: string | null;
 }) {
   const { t } = useI18n();
   return (
@@ -294,6 +297,12 @@ function QuotaWindow({
           {t("Resets {time}", { time: formatDateTime(resetAt) })}
         </p>
       ) : null}
+      <div className="flex items-center justify-between gap-3 text-xs">
+        <span className="text-muted-foreground">{t("Period spend")}</span>
+        <span className="font-medium tabular-nums">
+          {formatUsd(costAmount)}
+        </span>
+      </div>
     </div>
   );
 }
@@ -978,12 +987,18 @@ export default function CodexOauthPage() {
                             label="Primary window"
                             percent={credential.primary_used_percent}
                             resetAt={credential.primary_reset_at}
+                            costAmount={
+                              credential.primary_window_cost_amount
+                            }
                           />
                           {credential.secondary_used_percent !== null ? (
                             <QuotaWindow
                               label="Secondary window"
                               percent={credential.secondary_used_percent}
                               resetAt={credential.secondary_reset_at}
+                              costAmount={
+                                credential.secondary_window_cost_amount
+                              }
                             />
                           ) : null}
                         </div>
@@ -1515,7 +1530,7 @@ function QuotaWindowHistoryDialog({
           </DialogTitle>
           <DialogDescription>
             {t(
-              "Natural resets follow the scheduled boundary. Manual resets consume a reset credit through this Console. An earlier unmatched rollover is recorded as an OpenAI official reset.",
+              "Natural resets follow the scheduled boundary. Manual resets consume a reset credit through this Console. An earlier unmatched rollover is recorded as an OpenAI official reset. Period spend includes every caller and both Responses and Images projections.",
             )}
           </DialogDescription>
         </DialogHeader>
@@ -1572,6 +1587,7 @@ function QuotaWindowPeriodsTable({
           <TableRow>
             <TableHead>{t("Period")}</TableHead>
             <TableHead>{t("Usage")}</TableHead>
+            <TableHead>{t("Period spend")}</TableHead>
             <TableHead>{t("Ended by")}</TableHead>
             <TableHead>{t("Last observed")}</TableHead>
             <TableHead className="text-right">{t("Actions")}</TableHead>
@@ -1603,6 +1619,9 @@ function QuotaWindowPeriodsTable({
               </TableCell>
               <TableCell className="align-top tabular-nums">
                 {period.initial_used_percent}% → {period.last_used_percent}%
+              </TableCell>
+              <TableCell className="align-top tabular-nums">
+                {formatUsd(period.cost_amount)}
               </TableCell>
               <TableCell className="align-top">
                 <Badge variant={quotaResetReasonVariant(period.reset_reason)}>

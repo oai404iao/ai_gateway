@@ -35,6 +35,8 @@ describe("CodexQuotasPage", () => {
     expect(screen.getByText(OWN_CODEX_QUOTA.name)).toBeInTheDocument();
     expect(screen.getByText("plus")).toBeInTheDocument();
     expect(screen.getByText("42%")).toBeInTheDocument();
+    expect(screen.getByText("3.2174 USD")).toBeInTheDocument();
+    expect(screen.getByText("28.9103 USD")).toBeInTheDocument();
     expect(screen.queryByText("Personal Plus")).not.toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: /refresh quota/i }),
@@ -56,6 +58,7 @@ describe("CodexQuotasPage", () => {
     ).toBeInTheDocument();
     expect(within(dialog).getByText("Natural reset")).toBeInTheDocument();
     expect(within(dialog).getByText("5% → 42%")).toBeInTheDocument();
+    expect(within(dialog).getByText("3.2174 USD")).toBeInTheDocument();
     expect(
       within(dialog).queryByRole("button", { name: /view costs/i }),
     ).not.toBeInTheDocument();
