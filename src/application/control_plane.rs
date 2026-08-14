@@ -13,8 +13,9 @@ use crate::{
         CodexCredentialUpdateInput, ConsoleApiKey, ConsoleAuditLog, ControlPlaneChannelDetail,
         ControlPlaneConfigTemplateDetail, ControlPlaneLists, ControlPlaneMcpServer,
         ControlPlaneMutation, ControlPlaneRepository, MutationResult, RepositoryError,
-        SelfApiKeyCreate, SelfApiKeyOptions, SelfApiKeyUpdate, SyncedModelInput,
-        SystemSettingsView, UserBatchUpdateInput, UserSettingsInput, UserSettingsView,
+        RepositoryTransaction, SelfApiKeyCreate, SelfApiKeyOptions, SelfApiKeyUpdate,
+        SyncedModelInput, SystemSettingsView, UserBatchUpdateInput, UserSettingsInput,
+        UserSettingsView,
     },
     routing::{
         PassiveHealthPolicy, RoutingRuntime, SessionAffinityCacheClearResult,
@@ -742,7 +743,7 @@ impl ControlPlaneCoordinator {
 
     async fn compile_transaction(
         &self,
-        transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        transaction: &mut RepositoryTransaction<'_>,
     ) -> Result<Arc<crate::domain::CompiledRuntimeConfig>, ControlPlaneError> {
         Ok(Arc::new(compile_runtime_config(
             ControlPlaneRepository::load_runtime_transaction(transaction).await?,

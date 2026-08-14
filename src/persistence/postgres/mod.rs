@@ -29,9 +29,11 @@ use regex::Regex;
 use reqwest::header::HeaderName;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sqlx::{FromRow, PgPool, Postgres, QueryBuilder, Transaction, postgres::PgPoolCopyExt};
+use sqlx::{FromRow, PgPool, Postgres, QueryBuilder, postgres::PgPoolCopyExt};
 use thiserror::Error;
 use uuid::Uuid;
+
+use super::database::{DatabasePool, RepositoryTransaction};
 
 use crate::{
     domain::{
@@ -43,8 +45,6 @@ use crate::{
     },
     request_log_journal::EncodedRequestLog,
 };
-
-pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
 /// Singleton row that supplies database-backed process-wide runtime settings.
 pub const FORWARDING_SETTINGS_KEY: &str = "forwarding_policy";
@@ -607,7 +607,7 @@ pub struct McpServerRecord {
 
 #[derive(Clone)]
 pub struct ControlPlaneRepository {
-    pool: PgPool,
+    pool: DatabasePool,
 }
 
 /// Explicit, typed management inputs. HTTP owns request decoding; this module
@@ -2161,13 +2161,13 @@ pub struct ControlPlaneMcpServer {
 
 #[derive(Clone)]
 pub struct RequestLogRepository {
-    pool: PgPool,
+    pool: DatabasePool,
 }
 
 impl RequestLogRepository {
     #[must_use]
-    pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+    pub fn new(pool: impl Into<DatabasePool>) -> Self {
+        Self { pool: pool.into() }
     }
 
     /// Appends encoded terminal events to the low-index durable ingress table.
@@ -2194,6 +2194,7 @@ impl RequestLogRepository {
         }
         let mut copy = self
             .pool
+            .postgres()
             .copy_in_raw(
                 "COPY request_log_ingest (request_log_id,schema_version,payload) \
                  FROM STDIN WITH (FORMAT text)",
@@ -2218,7 +2219,7 @@ impl RequestLogRepository {
              LIMIT $1",
         )
         .bind(limit.max(1))
-        .fetch_all(&self.pool)
+        .fetch_all(self.pool.postgres())
         .await
         .map_err(RepositoryError::from)
     }
@@ -2232,7 +2233,7 @@ impl RequestLogRepository {
         }
         sqlx::query("DELETE FROM request_log_ingest WHERE sequence = ANY($1)")
             .bind(sequences)
-            .execute(&self.pool)
+            .execute(self.pool.postgres())
             .await
             .map(|result| result.rows_affected())
             .map_err(RepositoryError::from)
@@ -2257,7 +2258,7 @@ impl RequestLogRepository {
         .bind(sequences)
         .bind(retry_after_seconds.max(1))
         .bind(error_code)
-        .execute(&self.pool)
+        .execute(self.pool.postgres())
         .await
         .map(|result| result.rows_affected())
         .map_err(RepositoryError::from)
@@ -2279,7 +2280,7 @@ impl RequestLogRepository {
                      LIMIT 1
                  ) AS oldest_staged_at",
         )
-        .fetch_one(&self.pool)
+        .fetch_one(self.pool.postgres())
         .await
         .map_err(RepositoryError::from)
     }
@@ -2298,7 +2299,7 @@ impl RequestLogRepository {
              WHERE log.billed_at IS NULL
                AND log.cost_amount IS NOT NULL",
         )
-        .fetch_one(&self.pool)
+        .fetch_one(self.pool.postgres())
         .await
         .map_err(RepositoryError::from)
     }
@@ -2316,7 +2317,8 @@ impl RequestLogRepository {
         user_id: Uuid,
         filter: RequestLogFilter,
     ) -> Result<Vec<ConsoleRequestLog>, RepositoryError> {
-        let mut logs = query_console_request_logs(&self.pool, Some(user_id), filter).await?;
+        let mut logs =
+            query_console_request_logs(self.pool.postgres(), Some(user_id), filter).await?;
         for log in &mut logs {
             redact_self_service_request_log(log);
         }
@@ -2328,7 +2330,7 @@ impl RequestLogRepository {
         user_id: Uuid,
         id: Uuid,
     ) -> Result<Option<ConsoleRequestLog>, RepositoryError> {
-        let mut log = query_console_request_log(&self.pool, id, Some(user_id)).await?;
+        let mut log = query_console_request_log(self.pool.postgres(), id, Some(user_id)).await?;
         if let Some(log) = &mut log {
             redact_self_service_request_log(log);
         }
@@ -2339,11 +2341,11 @@ impl RequestLogRepository {
         &self,
         filter: RequestLogFilter,
     ) -> Result<Vec<ConsoleRequestLog>, RepositoryError> {
-        query_console_request_logs(&self.pool, None, filter).await
+        query_console_request_logs(self.pool.postgres(), None, filter).await
     }
 
     pub async fn get(&self, id: Uuid) -> Result<Option<ConsoleRequestLog>, RepositoryError> {
-        query_console_request_log(&self.pool, id, None).await
+        query_console_request_log(self.pool.postgres(), id, None).await
     }
 
     pub async fn personal_usage(
@@ -2381,7 +2383,7 @@ impl RequestLogRepository {
         .bind(user_id)
         .bind(started_at)
         .bind(ended_at)
-        .fetch_all(&self.pool)
+        .fetch_all(self.pool.postgres())
         .await?;
 
         Ok(fold_personal_usage(rows, started_on, ended_on))
@@ -2416,7 +2418,7 @@ impl RequestLogRepository {
                       channel_group.priority
              ORDER BY channel_group.priority, channel_group.name, channel_group.id",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.pool.postgres())
         .await?;
 
         let mut overall_models = BTreeMap::<(String, String), ChannelGroupStatusModelMetric>::new();
@@ -2471,7 +2473,7 @@ impl RequestLogRepository {
         )
         .bind(started_at)
         .bind(ended_at)
-        .fetch_all(&self.pool)
+        .fetch_all(self.pool.postgres())
         .await?;
         for row in overall_rows {
             let key = (row.api_format.clone(), row.model.clone());
@@ -2508,7 +2510,7 @@ impl RequestLogRepository {
         )
         .bind(started_at)
         .bind(ended_at)
-        .fetch_all(&self.pool)
+        .fetch_all(self.pool.postgres())
         .await?;
         for row in group_rows {
             let Some(index) = group_indexes.get(&row.channel_group_id).copied() else {
@@ -2562,7 +2564,7 @@ impl RequestLogRepository {
         .bind(started_at)
         .bind(ended_at)
         .bind(window.bucket_seconds())
-        .fetch_all(&self.pool)
+        .fetch_all(self.pool.postgres())
         .await?;
         for row in history_rows {
             let Some(index) = group_indexes.get(&row.channel_group_id).copied() else {
@@ -2641,7 +2643,7 @@ impl RequestLogRepository {
         .bind(filter.api_key_id)
         .bind(filter.channel_id)
         .bind(filter.codex_credential_id)
-        .fetch_one(&self.pool)
+        .fetch_one(self.pool.postgres())
         .await?;
 
         let bucket_sql = format!(
@@ -2683,7 +2685,7 @@ impl RequestLogRepository {
             .bind(filter.api_key_id)
             .bind(filter.channel_id)
             .bind(filter.codex_credential_id)
-            .fetch_all(&self.pool)
+            .fetch_all(self.pool.postgres())
             .await?;
 
         let model_rows = sqlx::query_as::<_, CostModelMetricRow>(
@@ -2725,7 +2727,7 @@ impl RequestLogRepository {
         .bind(filter.api_key_id)
         .bind(filter.channel_id)
         .bind(filter.codex_credential_id)
-        .fetch_all(&self.pool)
+        .fetch_all(self.pool.postgres())
         .await?;
 
         let channels = if filter.include_channel_details {
@@ -2778,7 +2780,7 @@ impl RequestLogRepository {
             .bind(filter.api_key_id)
             .bind(filter.channel_id)
             .bind(filter.codex_credential_id)
-            .fetch_all(&self.pool)
+            .fetch_all(self.pool.postgres())
             .await?
             .into_iter()
             .map(CostChannelMetricRow::into_metric)
@@ -2825,7 +2827,7 @@ impl RequestLogRepository {
         let mut transaction = self.pool.begin().await?;
         let acquired = sqlx::query_scalar::<_, bool>("SELECT pg_try_advisory_xact_lock($1)")
             .bind(SPEND_LEADERBOARD_REFRESH_LOCK)
-            .fetch_one(&mut *transaction)
+            .fetch_one(transaction.postgres())
             .await?;
         if !acquired {
             transaction.rollback().await?;
@@ -2867,7 +2869,7 @@ impl RequestLogRepository {
              ON CONFLICT (period, period_start) DO UPDATE
              SET refreshed_at = EXCLUDED.refreshed_at",
         )
-        .execute(&mut *transaction)
+        .execute(transaction.postgres())
         .await?;
 
         sqlx::query(
@@ -2933,7 +2935,7 @@ impl RequestLogRepository {
              )::date, log.user_id
              HAVING count(log.cost_amount) > 0",
         )
-        .execute(&mut *transaction)
+        .execute(transaction.postgres())
         .await?;
 
         sqlx::query(
@@ -2960,7 +2962,7 @@ impl RequestLogRepository {
                  refreshed_at = EXCLUDED.refreshed_at,
                  total_cost_amount = EXCLUDED.total_cost_amount",
         )
-        .execute(&mut *transaction)
+        .execute(transaction.postgres())
         .await?;
 
         sqlx::query(
@@ -3006,7 +3008,7 @@ impl RequestLogRepository {
                  EXCLUDED.cost_amount
              )",
         )
-        .execute(&mut *transaction)
+        .execute(transaction.postgres())
         .await?;
 
         transaction.commit().await?;
@@ -3031,7 +3033,7 @@ impl RequestLogRepository {
         )
         .bind(period)
         .bind(filter.period_start)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pool.postgres())
         .await?;
 
         let rows = sqlx::query_as::<_, SpendLeaderboardRow>(
@@ -3052,7 +3054,7 @@ impl RequestLogRepository {
         .bind(period)
         .bind(filter.period_start)
         .bind(filter.limit)
-        .fetch_all(&self.pool)
+        .fetch_all(self.pool.postgres())
         .await?;
 
         let previous_period_start = sqlx::query_scalar::<_, Option<NaiveDate>>(
@@ -3063,7 +3065,7 @@ impl RequestLogRepository {
         )
         .bind(period)
         .bind(filter.period_start)
-        .fetch_one(&self.pool)
+        .fetch_one(self.pool.postgres())
         .await?;
         let next_period_start = sqlx::query_scalar::<_, Option<NaiveDate>>(
             "SELECT min(period_start)
@@ -3073,7 +3075,7 @@ impl RequestLogRepository {
         )
         .bind(period)
         .bind(filter.period_start)
-        .fetch_one(&self.pool)
+        .fetch_one(self.pool.postgres())
         .await?;
 
         let period_end = snapshot.as_ref().map_or_else(
@@ -3256,7 +3258,7 @@ impl RequestLogRepository {
                 .bind(&batch.reasoning_tokens)
                 .bind(&batch.reasoning_efforts)
                 .bind(&batch.fast_modes)
-                .fetch_all(&self.pool)
+                .fetch_all(self.pool.postgres())
                 .await?
                 .into_iter()
                 .collect::<HashSet<_>>();
@@ -3288,7 +3290,7 @@ impl RequestLogRepository {
                      FROM request_logs WHERE id = ANY($1)",
                 )
                 .bind(&ids)
-                .fetch_all(&self.pool)
+                .fetch_all(self.pool.postgres())
                 .await?
                 .into_iter()
                 .map(|row| (row.id, row))
@@ -3380,7 +3382,7 @@ impl RequestLogRepository {
              RETURNING log.id, log.user_id, log.api_key_id, log.cost_amount",
         )
         .bind(&request_log_ids)
-        .fetch_all(&mut *transaction)
+        .fetch_all(transaction.postgres())
         .await?;
 
         let claimed_ids = claimed.iter().map(|row| row.id).collect::<HashSet<_>>();
@@ -3403,7 +3405,7 @@ impl RequestLogRepository {
                  WHERE log.id = ANY($1)",
             )
             .bind(&unclaimed_ids)
-            .fetch_all(&mut *transaction)
+            .fetch_all(transaction.postgres())
             .await?
             .into_iter()
             .map(|row| (row.id, row))
@@ -3436,7 +3438,7 @@ impl RequestLogRepository {
             );
             let updated_users = users
                 .build_query_scalar::<Uuid>()
-                .fetch_all(&mut *transaction)
+                .fetch_all(transaction.postgres())
                 .await?
                 .into_iter()
                 .collect::<HashSet<_>>();
@@ -3465,7 +3467,7 @@ impl RequestLogRepository {
             );
             quota_by_api_key = api_keys
                 .build_query_as::<UpdatedApiKey>()
-                .fetch_all(&mut *transaction)
+                .fetch_all(transaction.postgres())
                 .await?
                 .into_iter()
                 .map(|row| (row.id, row.quota_used_amount))
@@ -3522,7 +3524,7 @@ impl RequestLogRepository {
         // behind an administrative table lock. Immediate event persistence
         // keeps its existing longer timeout and remains the durable path.
         sqlx::query("SET LOCAL lock_timeout = '100ms'")
-            .execute(&mut *transaction)
+            .execute(transaction.postgres())
             .await?;
         let request_log_ids = sqlx::query_scalar::<_, Uuid>(
             "SELECT log.id
@@ -3536,7 +3538,7 @@ impl RequestLogRepository {
              LIMIT $1",
         )
         .bind(limit.max(1))
-        .fetch_all(&mut *transaction)
+        .fetch_all(transaction.postgres())
         .await?;
         transaction.commit().await?;
         Ok(self
@@ -4503,8 +4505,8 @@ fn generate_api_key_secret() -> String {
 
 impl ControlPlaneRepository {
     #[must_use]
-    pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+    pub fn new(pool: impl Into<DatabasePool>) -> Self {
+        Self { pool: pool.into() }
     }
 
     /// Ensures the hidden, administrator-owned identity used solely by
@@ -4524,7 +4526,7 @@ impl ControlPlaneRepository {
         .bind(SYSTEM_PROBE_USER_ID)
         .bind(SYSTEM_PROBE_DISPLAY_NAME)
         .bind(DEFAULT_ADMIN_GROUP_ID)
-        .fetch_optional(&mut *transaction)
+        .fetch_optional(transaction.postgres())
         .await?
         .unwrap_or(false);
         let key_created = sqlx::query_scalar::<_, bool>(
@@ -4544,7 +4546,7 @@ impl ControlPlaneRepository {
         .bind(SYSTEM_PROBE_USER_ID)
         .bind(SYSTEM_PROBE_API_KEY_NAME)
         .bind(generate_api_key_secret())
-        .fetch_optional(&mut *transaction)
+        .fetch_optional(transaction.postgres())
         .await?
         .unwrap_or(false);
 
@@ -4563,7 +4565,7 @@ impl ControlPlaneRepository {
         )
         .bind(SYSTEM_PROBE_API_KEY_ID)
         .bind(SYSTEM_PROBE_USER_ID)
-        .fetch_one(&mut *transaction)
+        .fetch_one(transaction.postgres())
         .await?;
         if !valid {
             return Err(RepositoryError::Validation);
@@ -4580,7 +4582,7 @@ impl ControlPlaneRepository {
                 "user_id": SYSTEM_PROBE_USER_ID,
                 "api_key_id": SYSTEM_PROBE_API_KEY_ID,
             }))
-            .execute(&mut *transaction)
+            .execute(transaction.postgres())
             .await?;
         }
         transaction.commit().await?;
@@ -4608,7 +4610,7 @@ impl ControlPlaneRepository {
         )
         .bind(FORWARDING_SETTINGS_KEY)
         .bind(&value)
-        .fetch_optional(&mut *transaction)
+        .fetch_optional(transaction.postgres())
         .await?;
         if inserted.is_some() {
             sqlx::query(
@@ -4619,14 +4621,14 @@ impl ControlPlaneRepository {
             .bind(Uuid::new_v4())
             .bind(forwarding_settings_object_id())
             .bind(system_settings_audit_value(&value))
-            .execute(&mut *transaction)
+            .execute(transaction.postgres())
             .await?;
         } else {
             let before = sqlx::query_scalar::<_, Value>(
                 "SELECT value FROM system_settings WHERE setting_key=$1 FOR UPDATE",
             )
             .bind(FORWARDING_SETTINGS_KEY)
-            .fetch_optional(&mut *transaction)
+            .fetch_optional(transaction.postgres())
             .await?
             .ok_or(RepositoryError::NotFound)?;
             let mut after = before.clone();
@@ -4654,7 +4656,7 @@ impl ControlPlaneRepository {
                 sqlx::query("UPDATE system_settings SET value=$2 WHERE setting_key=$1")
                     .bind(FORWARDING_SETTINGS_KEY)
                     .bind(&after)
-                    .execute(&mut *transaction)
+                    .execute(transaction.postgres())
                     .await?;
                 sqlx::query(
                     "INSERT INTO audit_logs \
@@ -4665,7 +4667,7 @@ impl ControlPlaneRepository {
                 .bind(forwarding_settings_object_id())
                 .bind(system_settings_audit_value(&before))
                 .bind(system_settings_audit_value(&after))
-                .execute(&mut *transaction)
+                .execute(transaction.postgres())
                 .await?;
             }
         }
@@ -4676,7 +4678,7 @@ impl ControlPlaneRepository {
     pub async fn load(&self) -> Result<ControlPlaneRecords, RepositoryError> {
         let mut transaction = self.pool.begin().await?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
-            .execute(&mut *transaction)
+            .execute(transaction.postgres())
             .await?;
         let records = Self::load_transaction(&mut transaction).await?;
         transaction.commit().await?;
@@ -4687,7 +4689,7 @@ impl ControlPlaneRepository {
     pub async fn load_runtime(&self) -> Result<RuntimeConfigRecords, RepositoryError> {
         let mut transaction = self.pool.begin().await?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
-            .execute(&mut *transaction)
+            .execute(transaction.postgres())
             .await?;
         let records = Self::load_runtime_transaction(&mut transaction).await?;
         transaction.commit().await?;
@@ -4695,7 +4697,7 @@ impl ControlPlaneRepository {
     }
 
     pub async fn load_runtime_transaction(
-        transaction: &mut Transaction<'_, Postgres>,
+        transaction: &mut RepositoryTransaction<'_>,
     ) -> Result<RuntimeConfigRecords, RepositoryError> {
         Ok(RuntimeConfigRecords {
             control_plane: Self::load_transaction(transaction).await?,
@@ -4704,13 +4706,13 @@ impl ControlPlaneRepository {
     }
 
     async fn load_system_settings_transaction(
-        transaction: &mut Transaction<'_, Postgres>,
+        transaction: &mut RepositoryTransaction<'_>,
     ) -> Result<SystemSettingsRecord, RepositoryError> {
         sqlx::query_as::<_, SystemSettingsRecord>(
             "SELECT setting_key,value,updated_at FROM system_settings WHERE setting_key=$1",
         )
         .bind(FORWARDING_SETTINGS_KEY)
-        .fetch_optional(&mut **transaction)
+        .fetch_optional(transaction.postgres())
         .await?
         .ok_or(RepositoryError::NotFound)
     }
@@ -4720,7 +4722,7 @@ impl ControlPlaneRepository {
             "SELECT setting_key,value,updated_at FROM system_settings WHERE setting_key=$1",
         )
         .bind(FORWARDING_SETTINGS_KEY)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pool.postgres())
         .await?
         .ok_or(RepositoryError::NotFound)?;
         system_settings_view(record)
@@ -4736,14 +4738,14 @@ impl ControlPlaneRepository {
              WHERE id=$1 AND status='active' AND deleted_at IS NULL",
         )
         .bind(user_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pool.postgres())
         .await
         .map_err(RepositoryError::from)
     }
 
     pub async fn update_user_settings(
         &self,
-        transaction: &mut Transaction<'_, Postgres>,
+        transaction: &mut RepositoryTransaction<'_>,
         user_id: Uuid,
         input: UserSettingsInput,
     ) -> Result<Option<UserSettingsView>, RepositoryError> {
@@ -4755,30 +4757,30 @@ impl ControlPlaneRepository {
         )
         .bind(user_id)
         .bind(input.websocket_enabled)
-        .fetch_optional(&mut **transaction)
+        .fetch_optional(transaction.postgres())
         .await
         .map_err(RepositoryError::from)
     }
 
     pub async fn load_transaction(
-        transaction: &mut Transaction<'_, Postgres>,
+        transaction: &mut RepositoryTransaction<'_>,
     ) -> Result<ControlPlaneRecords, RepositoryError> {
-        let api_keys = sqlx::query_as::<_, ApiKeyRecord>("SELECT k.id, k.user_id, u.status AS user_status, u.websocket_enabled AS user_websocket_enabled, g.filter_fast_mode AS user_filter_fast_mode, k.secret_value, k.status, k.expires_at, k.allowed_api_formats::text[] AS allowed_api_formats, k.permissions, k.allowed_group_ids, k.allowed_channel_ids, k.requests_per_minute, k.max_concurrent_requests, k.quota_limit_amount, k.quota_used_amount FROM api_keys k JOIN users u ON u.id = k.user_id JOIN user_groups g ON g.id=u.user_group_id WHERE NOT k.is_system ORDER BY k.id").fetch_all(&mut **transaction).await?;
-        let models = sqlx::query_as::<_, ModelRecord>("SELECT id,source_model_id,currency,price_unit_tokens,price_effective_at,input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,advanced_billing FROM models ORDER BY id").fetch_all(&mut **transaction).await?;
-        let model_rules = sqlx::query_as::<_, ModelRuleRecord>("SELECT r.id, r.client_model, r.api_format::text AS api_format, r.upstream_model_id, m.enabled AS upstream_model_enabled, m.currency AS upstream_model_currency, m.price_unit_tokens, m.price_effective_at, m.input_unit_price, m.cached_input_unit_price, m.cache_write_unit_price, m.output_unit_price, m.advanced_billing, m.source_model_id AS upstream_model, r.channel_group_ids, r.channel_ids, r.enabled FROM model_rules r JOIN models m ON m.id = r.upstream_model_id ORDER BY r.id").fetch_all(&mut **transaction).await?;
-        let groups = sqlx::query_as::<_, ChannelGroupRecord>("SELECT id, name, api_format::text AS api_format, connector_kind, request_compression, priority, selection_strategy, enabled FROM channel_groups ORDER BY id").fetch_all(&mut **transaction).await?;
-        let channels = sqlx::query_as::<_, ChannelRecord>("SELECT id, channel_group_id, api_format::text AS api_format, name, base_url, enabled, supports_websocket, supports_standalone_web_search, auto_disabled, auto_disable_allowed, weight, billing_multiplier, proxy_id, config_template_id, override_document, connect_timeout_ms, response_header_timeout_ms, stream_idle_timeout_ms, upstream_auth_kind, upstream_auth_header_name, upstream_api_key, available_models, test_model FROM channels ORDER BY id").fetch_all(&mut **transaction).await?;
-        let proxies = sqlx::query_as::<_, ProxyRecord>("SELECT id, name, proxy_url, username, password, no_proxy_hosts, enabled FROM proxies ORDER BY id").fetch_all(&mut **transaction).await?;
+        let api_keys = sqlx::query_as::<_, ApiKeyRecord>("SELECT k.id, k.user_id, u.status AS user_status, u.websocket_enabled AS user_websocket_enabled, g.filter_fast_mode AS user_filter_fast_mode, k.secret_value, k.status, k.expires_at, k.allowed_api_formats::text[] AS allowed_api_formats, k.permissions, k.allowed_group_ids, k.allowed_channel_ids, k.requests_per_minute, k.max_concurrent_requests, k.quota_limit_amount, k.quota_used_amount FROM api_keys k JOIN users u ON u.id = k.user_id JOIN user_groups g ON g.id=u.user_group_id WHERE NOT k.is_system ORDER BY k.id").fetch_all(transaction.postgres()).await?;
+        let models = sqlx::query_as::<_, ModelRecord>("SELECT id,source_model_id,currency,price_unit_tokens,price_effective_at,input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,advanced_billing FROM models ORDER BY id").fetch_all(transaction.postgres()).await?;
+        let model_rules = sqlx::query_as::<_, ModelRuleRecord>("SELECT r.id, r.client_model, r.api_format::text AS api_format, r.upstream_model_id, m.enabled AS upstream_model_enabled, m.currency AS upstream_model_currency, m.price_unit_tokens, m.price_effective_at, m.input_unit_price, m.cached_input_unit_price, m.cache_write_unit_price, m.output_unit_price, m.advanced_billing, m.source_model_id AS upstream_model, r.channel_group_ids, r.channel_ids, r.enabled FROM model_rules r JOIN models m ON m.id = r.upstream_model_id ORDER BY r.id").fetch_all(transaction.postgres()).await?;
+        let groups = sqlx::query_as::<_, ChannelGroupRecord>("SELECT id, name, api_format::text AS api_format, connector_kind, request_compression, priority, selection_strategy, enabled FROM channel_groups ORDER BY id").fetch_all(transaction.postgres()).await?;
+        let channels = sqlx::query_as::<_, ChannelRecord>("SELECT id, channel_group_id, api_format::text AS api_format, name, base_url, enabled, supports_websocket, supports_standalone_web_search, auto_disabled, auto_disable_allowed, weight, billing_multiplier, proxy_id, config_template_id, override_document, connect_timeout_ms, response_header_timeout_ms, stream_idle_timeout_ms, upstream_auth_kind, upstream_auth_header_name, upstream_api_key, available_models, test_model FROM channels ORDER BY id").fetch_all(transaction.postgres()).await?;
+        let proxies = sqlx::query_as::<_, ProxyRecord>("SELECT id, name, proxy_url, username, password, no_proxy_hosts, enabled FROM proxies ORDER BY id").fetch_all(transaction.postgres()).await?;
         let templates = sqlx::query_as::<_, ConfigTemplateRecord>(
             "SELECT id, name, description, document, enabled FROM config_templates ORDER BY id",
         )
-        .fetch_all(&mut **transaction)
+        .fetch_all(transaction.postgres())
         .await?;
         let mcp_servers = sqlx::query_as::<_, McpServerRecord>(
             "SELECT id,slug,kind::text AS kind,name,description,model_rule_id,settings_version,settings,enabled \
              FROM mcp_servers WHERE deleted_at IS NULL ORDER BY slug,id",
         )
-        .fetch_all(&mut **transaction)
+        .fetch_all(transaction.postgres())
         .await?;
         Ok(ControlPlaneRecords {
             api_keys,
@@ -4792,37 +4794,37 @@ impl ControlPlaneRepository {
         })
     }
 
-    pub async fn begin_serializable(&self) -> Result<Transaction<'_, Postgres>, RepositoryError> {
+    pub async fn begin_serializable(&self) -> Result<RepositoryTransaction<'_>, RepositoryError> {
         let mut transaction = self.pool.begin().await?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
-            .execute(&mut *transaction)
+            .execute(transaction.postgres())
             .await?;
         Ok(transaction)
     }
 
     pub async fn active_user_exists(
         &self,
-        transaction: &mut Transaction<'_, Postgres>,
+        transaction: &mut RepositoryTransaction<'_>,
         id: Uuid,
     ) -> Result<bool, RepositoryError> {
         Ok(sqlx::query_scalar::<_, bool>(
             "SELECT EXISTS(SELECT 1 FROM users WHERE id = $1 AND status = 'active')",
         )
         .bind(id)
-        .fetch_one(&mut **transaction)
+        .fetch_one(transaction.postgres())
         .await?)
     }
 
     pub async fn active_admin_exists(
         &self,
-        transaction: &mut Transaction<'_, Postgres>,
+        transaction: &mut RepositoryTransaction<'_>,
         id: Uuid,
     ) -> Result<bool, RepositoryError> {
         Ok(sqlx::query_scalar::<_, bool>(
             "SELECT EXISTS(SELECT 1 FROM users WHERE id = $1 AND status = 'active' AND role = 'admin')",
         )
         .bind(id)
-        .fetch_one(&mut **transaction)
+        .fetch_one(transaction.postgres())
         .await?)
     }
 
@@ -4831,7 +4833,7 @@ impl ControlPlaneRepository {
     /// trigger. The caller owns snapshot publication after a returned change.
     pub async fn automatically_disable_channel(
         &self,
-        transaction: &mut Transaction<'_, Postgres>,
+        transaction: &mut RepositoryTransaction<'_>,
         id: Uuid,
         trigger: &AutomaticDisableTrigger,
     ) -> Result<Option<MutationResult>, RepositoryError> {
@@ -4856,7 +4858,7 @@ impl ControlPlaneRepository {
         )
         .bind(id)
         .bind(&reason)
-        .fetch_optional(&mut **transaction)
+        .fetch_optional(transaction.postgres())
         .await?
         .ok_or(RepositoryError::NotFound)?;
         Ok(Some(MutationResult {
@@ -4878,7 +4880,7 @@ impl ControlPlaneRepository {
     /// returned change.
     pub async fn automatically_recover_channel(
         &self,
-        transaction: &mut Transaction<'_, Postgres>,
+        transaction: &mut RepositoryTransaction<'_>,
         id: Uuid,
     ) -> Result<Option<MutationResult>, RepositoryError> {
         let settings = system_settings_input_for_update(transaction).await?;
@@ -4900,7 +4902,7 @@ impl ControlPlaneRepository {
              RETURNING updated_at",
         )
         .bind(id)
-        .fetch_optional(&mut **transaction)
+        .fetch_optional(transaction.postgres())
         .await?
         .ok_or(RepositoryError::NotFound)?;
         Ok(Some(MutationResult {
@@ -4928,7 +4930,7 @@ impl ControlPlaneRepository {
              JOIN user_groups AS g ON g.id=u.user_group_id \
              WHERE NOT u.is_system AND u.deleted_at IS NULL ORDER BY u.id",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.pool.postgres())
         .await?;
         let user_groups = sqlx::query_as::<_, ControlPlaneUserGroup>(
             "SELECT g.id,g.name,g.description,g.default_api_key_policy_id, \
@@ -4947,21 +4949,21 @@ impl ControlPlaneRepository {
              GROUP BY g.id \
              ORDER BY g.system_role NULLS LAST,g.name,g.id",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.pool.postgres())
         .await?;
-        let models = sqlx::query_as::<_, ControlPlaneModel>("SELECT id,source_model_id,display_name,provider_name,enabled,price_unit_tokens,input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,price_effective_at,advanced_billing,last_synced_at,created_at,updated_at FROM models ORDER BY id").fetch_all(&self.pool).await?;
-        let api_keys = sqlx::query_as::<_, ControlPlaneApiKey>("SELECT k.id, k.user_id, u.status AS user_status, k.name, k.secret_value AS secret, k.status, k.expires_at, k.allowed_api_formats::text[] AS allowed_api_formats, k.permissions, k.allowed_group_ids, k.allowed_channel_ids, k.requests_per_minute, k.max_concurrent_requests, k.quota_limit_amount, k.quota_used_amount, k.updated_at FROM api_keys k JOIN users u ON u.id=k.user_id WHERE NOT k.is_system AND u.deleted_at IS NULL ORDER BY k.id").fetch_all(&self.pool).await?;
-        let api_key_policies = sqlx::query_as::<_, ControlPlaneApiKeyPolicy>("SELECT id,name,allowed_group_ids,allowed_channel_ids,enabled,created_at,updated_at FROM api_key_policies ORDER BY id").fetch_all(&self.pool).await?;
-        let channel_groups = sqlx::query_as::<_, ControlPlaneChannelGroup>("SELECT id,name,api_format::text AS api_format,connector_kind,connector_pool_id,request_compression,priority,selection_strategy,enabled,status_statistics_enabled,updated_at FROM channel_groups ORDER BY id").fetch_all(&self.pool).await?;
-        let channels = sqlx::query_as::<_, ControlPlaneChannelRow>("SELECT c.id,c.channel_group_id,c.api_format::text AS api_format,g.connector_kind,(g.connector_kind <> 'openai_compatible') AS provider_managed,c.name,c.base_url,CASE WHEN g.connector_kind='codex_oauth' THEN (c.enabled AND COALESCE(co.enabled,false)) ELSE c.enabled END AS enabled,c.supports_websocket,c.supports_standalone_web_search,c.auto_disabled,c.auto_disabled_reason,c.auto_disable_allowed,c.weight,c.billing_multiplier,c.proxy_id,c.config_template_id,c.connect_timeout_ms,c.response_header_timeout_ms,c.stream_idle_timeout_ms,c.upstream_auth_kind,c.upstream_auth_header_name,(c.upstream_api_key IS NOT NULL) AS upstream_credential_configured,c.available_models,c.test_model,c.created_at,c.updated_at FROM channels c JOIN channel_groups g ON g.id=c.channel_group_id LEFT JOIN codex_oauth_credential_channels projection ON projection.channel_id=c.id LEFT JOIN codex_oauth_credentials co ON co.channel_id=projection.credential_id WHERE g.connector_kind <> 'codex_oauth' OR (co.channel_id IS NOT NULL AND co.deleted_at IS NULL) ORDER BY c.id").fetch_all(&self.pool).await?;
+        let models = sqlx::query_as::<_, ControlPlaneModel>("SELECT id,source_model_id,display_name,provider_name,enabled,price_unit_tokens,input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,price_effective_at,advanced_billing,last_synced_at,created_at,updated_at FROM models ORDER BY id").fetch_all(self.pool.postgres()).await?;
+        let api_keys = sqlx::query_as::<_, ControlPlaneApiKey>("SELECT k.id, k.user_id, u.status AS user_status, k.name, k.secret_value AS secret, k.status, k.expires_at, k.allowed_api_formats::text[] AS allowed_api_formats, k.permissions, k.allowed_group_ids, k.allowed_channel_ids, k.requests_per_minute, k.max_concurrent_requests, k.quota_limit_amount, k.quota_used_amount, k.updated_at FROM api_keys k JOIN users u ON u.id=k.user_id WHERE NOT k.is_system AND u.deleted_at IS NULL ORDER BY k.id").fetch_all(self.pool.postgres()).await?;
+        let api_key_policies = sqlx::query_as::<_, ControlPlaneApiKeyPolicy>("SELECT id,name,allowed_group_ids,allowed_channel_ids,enabled,created_at,updated_at FROM api_key_policies ORDER BY id").fetch_all(self.pool.postgres()).await?;
+        let channel_groups = sqlx::query_as::<_, ControlPlaneChannelGroup>("SELECT id,name,api_format::text AS api_format,connector_kind,connector_pool_id,request_compression,priority,selection_strategy,enabled,status_statistics_enabled,updated_at FROM channel_groups ORDER BY id").fetch_all(self.pool.postgres()).await?;
+        let channels = sqlx::query_as::<_, ControlPlaneChannelRow>("SELECT c.id,c.channel_group_id,c.api_format::text AS api_format,g.connector_kind,(g.connector_kind <> 'openai_compatible') AS provider_managed,c.name,c.base_url,CASE WHEN g.connector_kind='codex_oauth' THEN (c.enabled AND COALESCE(co.enabled,false)) ELSE c.enabled END AS enabled,c.supports_websocket,c.supports_standalone_web_search,c.auto_disabled,c.auto_disabled_reason,c.auto_disable_allowed,c.weight,c.billing_multiplier,c.proxy_id,c.config_template_id,c.connect_timeout_ms,c.response_header_timeout_ms,c.stream_idle_timeout_ms,c.upstream_auth_kind,c.upstream_auth_header_name,(c.upstream_api_key IS NOT NULL) AS upstream_credential_configured,c.available_models,c.test_model,c.created_at,c.updated_at FROM channels c JOIN channel_groups g ON g.id=c.channel_group_id LEFT JOIN codex_oauth_credential_channels projection ON projection.channel_id=c.id LEFT JOIN codex_oauth_credentials co ON co.channel_id=projection.credential_id WHERE g.connector_kind <> 'codex_oauth' OR (co.channel_id IS NOT NULL AND co.deleted_at IS NULL) ORDER BY c.id").fetch_all(self.pool.postgres()).await?;
         let channels = channels.into_iter().map(Into::into).collect::<Vec<_>>();
-        let model_rule_rows = sqlx::query_as::<_, ControlPlaneModelRuleRow>("SELECT r.id,r.client_model,r.api_format::text AS api_format,r.upstream_model_id,m.enabled AS upstream_model_enabled,m.source_model_id AS upstream_model,r.description,r.channel_group_ids,r.channel_ids,r.enabled,r.updated_at FROM model_rules r JOIN models m ON m.id=r.upstream_model_id ORDER BY r.id").fetch_all(&self.pool).await?;
+        let model_rule_rows = sqlx::query_as::<_, ControlPlaneModelRuleRow>("SELECT r.id,r.client_model,r.api_format::text AS api_format,r.upstream_model_id,m.enabled AS upstream_model_enabled,m.source_model_id AS upstream_model,r.description,r.channel_group_ids,r.channel_ids,r.enabled,r.updated_at FROM model_rules r JOIN models m ON m.id=r.upstream_model_id ORDER BY r.id").fetch_all(self.pool.postgres()).await?;
         let model_rules = model_rule_rows
             .into_iter()
             .map(|row| ControlPlaneModelRule::from_row(row, &channel_groups, &channels))
             .collect();
-        let proxies = sqlx::query_as::<_, ControlPlaneProxy>("SELECT id,name,regexp_replace(regexp_replace(proxy_url, '^([^:/?#]+://)[^/?#]*@', E'\\1'), '[?#].*$', '') AS proxy_url,no_proxy_hosts,enabled,(username IS NOT NULL OR password IS NOT NULL) AS credential_configured,created_at,updated_at FROM proxies ORDER BY id").fetch_all(&self.pool).await?;
-        let config_templates = sqlx::query_as::<_, ControlPlaneConfigTemplate>("SELECT id,name,description,document->>'api_format' AS api_format,enabled,created_at,updated_at FROM config_templates ORDER BY id").fetch_all(&self.pool).await?;
+        let proxies = sqlx::query_as::<_, ControlPlaneProxy>("SELECT id,name,regexp_replace(regexp_replace(proxy_url, '^([^:/?#]+://)[^/?#]*@', E'\\1'), '[?#].*$', '') AS proxy_url,no_proxy_hosts,enabled,(username IS NOT NULL OR password IS NOT NULL) AS credential_configured,created_at,updated_at FROM proxies ORDER BY id").fetch_all(self.pool.postgres()).await?;
+        let config_templates = sqlx::query_as::<_, ControlPlaneConfigTemplate>("SELECT id,name,description,document->>'api_format' AS api_format,enabled,created_at,updated_at FROM config_templates ORDER BY id").fetch_all(self.pool.postgres()).await?;
         let mcp_servers = sqlx::query_as::<_, ControlPlaneMcpServer>(
             "SELECT s.id,s.slug,s.kind::text AS kind,s.name,s.description,s.model_rule_id, \
                     r.client_model,r.api_format::text AS api_format,s.settings_version,s.settings, \
@@ -4971,7 +4973,7 @@ impl ControlPlaneRepository {
              WHERE s.deleted_at IS NULL \
              ORDER BY s.slug,s.id",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.pool.postgres())
         .await?;
         Ok(ControlPlaneLists {
             users,
@@ -4997,7 +4999,7 @@ impl ControlPlaneRepository {
              FROM proxies WHERE id=$1",
         )
         .bind(id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pool.postgres())
         .await
         .map_err(RepositoryError::from)
     }
@@ -5010,7 +5012,7 @@ impl ControlPlaneRepository {
             "SELECT c.id,c.channel_group_id,c.api_format::text AS api_format,g.connector_kind,(g.connector_kind <> 'openai_compatible') AS provider_managed,c.name,c.base_url,CASE WHEN g.connector_kind='codex_oauth' THEN (c.enabled AND COALESCE(co.enabled,false)) ELSE c.enabled END AS enabled,c.supports_websocket,c.supports_standalone_web_search,c.auto_disabled,c.auto_disabled_reason,c.auto_disable_allowed,c.weight,c.billing_multiplier,c.proxy_id,c.config_template_id,c.override_document,c.connect_timeout_ms,c.response_header_timeout_ms,c.stream_idle_timeout_ms,c.upstream_auth_kind,c.upstream_auth_header_name,c.upstream_api_key,(c.upstream_api_key IS NOT NULL) AS upstream_credential_configured,c.available_models,c.test_model,c.created_at,c.updated_at FROM channels c JOIN channel_groups g ON g.id=c.channel_group_id LEFT JOIN codex_oauth_credential_channels projection ON projection.channel_id=c.id LEFT JOIN codex_oauth_credentials co ON co.channel_id=projection.credential_id WHERE c.id=$1 AND (g.connector_kind <> 'codex_oauth' OR (co.channel_id IS NOT NULL AND co.deleted_at IS NULL))",
         )
         .bind(id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pool.postgres())
         .await
         .map_err(RepositoryError::from)
     }
@@ -5023,7 +5025,7 @@ impl ControlPlaneRepository {
             "SELECT id,name,description,document->>'api_format' AS api_format,document,enabled,created_at,updated_at FROM config_templates WHERE id=$1",
         )
         .bind(id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pool.postgres())
         .await
         .map_err(RepositoryError::from)
     }
@@ -5041,7 +5043,7 @@ impl ControlPlaneRepository {
              WHERE s.id=$1 AND s.deleted_at IS NULL",
         )
         .bind(id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pool.postgres())
         .await
         .map_err(RepositoryError::from)
     }
@@ -5051,7 +5053,7 @@ impl ControlPlaneRepository {
             "SELECT id,occurred_at,actor_user_id,actor_type,actor_role,action,object_type,object_id,before_redacted,after_redacted,correlation_id,reason FROM audit_logs ORDER BY occurred_at DESC,id DESC LIMIT $1",
         )
         .bind(limit.clamp(1, 100))
-        .fetch_all(&self.pool)
+        .fetch_all(self.pool.postgres())
         .await
         .map_err(RepositoryError::from)
     }
@@ -5064,7 +5066,7 @@ impl ControlPlaneRepository {
              FROM api_keys WHERE user_id=$1 AND NOT is_system ORDER BY created_at DESC,id DESC",
         )
         .bind(user_id)
-        .fetch_all(&self.pool)
+        .fetch_all(self.pool.postgres())
         .await
         .map_err(RepositoryError::from)
     }
@@ -5082,7 +5084,7 @@ impl ControlPlaneRepository {
         )
         .bind(id)
         .bind(user_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pool.postgres())
         .await
         .map_err(RepositoryError::from)
     }
@@ -5100,7 +5102,7 @@ impl ControlPlaneRepository {
              WHERE u.id=$1 AND u.status='active' AND u.deleted_at IS NULL",
         )
         .bind(user_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pool.postgres())
         .await?
         .ok_or(RepositoryError::DefaultApiKeyPolicyRequired)?;
         ensure_policy_enabled(&policy)?;
@@ -5112,7 +5114,7 @@ impl ControlPlaneRepository {
              ORDER BY api_format,priority,name,id",
         )
         .bind(&policy.allowed_group_ids)
-        .fetch_all(&self.pool)
+        .fetch_all(self.pool.postgres())
         .await?;
         let channels = sqlx::query_as::<_, SelfApiKeyChannelOption>(
             "SELECT c.id,c.channel_group_id,g.name AS channel_group_name, \
@@ -5125,7 +5127,7 @@ impl ControlPlaneRepository {
         )
         .bind(&policy.allowed_group_ids)
         .bind(&policy.allowed_channel_ids)
-        .fetch_all(&self.pool)
+        .fetch_all(self.pool.postgres())
         .await?;
         Ok(SelfApiKeyOptions {
             policy_id: policy.id,
@@ -5137,7 +5139,7 @@ impl ControlPlaneRepository {
 
     pub async fn create_own_api_key(
         &self,
-        transaction: &mut Transaction<'_, Postgres>,
+        transaction: &mut RepositoryTransaction<'_>,
         user_id: Uuid,
         input: SelfApiKeyCreate,
     ) -> Result<MutationResult, RepositoryError> {
@@ -5181,7 +5183,7 @@ impl ControlPlaneRepository {
         .bind(input.requests_per_minute)
         .bind(input.max_concurrent_requests)
         .bind(input.quota_limit_amount)
-        .fetch_one(&mut **transaction)
+        .fetch_one(transaction.postgres())
         .await?;
         Ok(MutationResult {
             id,
@@ -5198,7 +5200,7 @@ impl ControlPlaneRepository {
 
     pub async fn update_own_api_key(
         &self,
-        transaction: &mut Transaction<'_, Postgres>,
+        transaction: &mut RepositoryTransaction<'_>,
         user_id: Uuid,
         id: Uuid,
         input: SelfApiKeyUpdate,
@@ -5214,7 +5216,7 @@ impl ControlPlaneRepository {
         )
         .bind(id)
         .bind(user_id)
-        .fetch_optional(&mut **transaction)
+        .fetch_optional(transaction.postgres())
         .await?
         .ok_or(RepositoryError::NotFound)?;
         let targets_changed = !same_uuid_set(&current.allowed_group_ids, &input.allowed_group_ids)
@@ -5265,7 +5267,7 @@ impl ControlPlaneRepository {
         .bind(input.max_concurrent_requests)
         .bind(input.quota_limit_amount)
         .bind(expected_updated_at)
-        .fetch_optional(&mut **transaction)
+        .fetch_optional(transaction.postgres())
         .await?
         .ok_or(RepositoryError::Conflict)?;
         Ok(MutationResult {
@@ -5283,7 +5285,7 @@ impl ControlPlaneRepository {
 
     pub async fn revoke_own_api_key(
         &self,
-        transaction: &mut Transaction<'_, Postgres>,
+        transaction: &mut RepositoryTransaction<'_>,
         user_id: Uuid,
         id: Uuid,
         reason: String,
@@ -5298,7 +5300,7 @@ impl ControlPlaneRepository {
         )
         .bind(id)
         .bind(user_id)
-        .fetch_optional(&mut **transaction)
+        .fetch_optional(transaction.postgres())
         .await?
         .ok_or(RepositoryError::Conflict)?;
         Ok(MutationResult {
@@ -5316,7 +5318,7 @@ impl ControlPlaneRepository {
 
     pub async fn update_users_batch(
         &self,
-        transaction: &mut Transaction<'_, Postgres>,
+        transaction: &mut RepositoryTransaction<'_>,
         actor: Uuid,
         input: UserBatchUpdateInput,
     ) -> Result<Vec<MutationResult>, RepositoryError> {
@@ -5413,7 +5415,7 @@ impl ControlPlaneRepository {
             .bind(policy_id)
             .bind(status_changed)
             .bind(item.updated_at)
-            .fetch_optional(&mut **transaction)
+            .fetch_optional(transaction.postgres())
             .await?
             .ok_or(RepositoryError::Conflict)?;
 
@@ -5423,7 +5425,7 @@ impl ControlPlaneRepository {
                      WHERE user_id=$1 AND revoked_at IS NULL",
                 )
                 .bind(item.id)
-                .execute(&mut **transaction)
+                .execute(transaction.postgres())
                 .await?;
             }
             results.push(MutationResult {
@@ -5443,7 +5445,7 @@ impl ControlPlaneRepository {
 
     pub async fn update_channels_batch(
         &self,
-        transaction: &mut Transaction<'_, Postgres>,
+        transaction: &mut RepositoryTransaction<'_>,
         input: ChannelBatchUpdateInput,
     ) -> Result<Vec<MutationResult>, RepositoryError> {
         const MAX_BATCH_SIZE: usize = 100;
@@ -5490,7 +5492,7 @@ impl ControlPlaneRepository {
             .bind(input.changes.weight)
             .bind(input.changes.billing_multiplier)
             .bind(item.updated_at)
-            .fetch_optional(&mut **transaction)
+            .fetch_optional(transaction.postgres())
             .await?
             .ok_or(RepositoryError::Conflict)?;
             results.push(MutationResult {
@@ -5510,7 +5512,7 @@ impl ControlPlaneRepository {
 
     pub async fn apply_control_plane_mutation(
         &self,
-        transaction: &mut Transaction<'_, Postgres>,
+        transaction: &mut RepositoryTransaction<'_>,
         mutation: ControlPlaneMutation,
     ) -> Result<MutationResult, RepositoryError> {
         match mutation {
@@ -5561,7 +5563,7 @@ impl ControlPlaneRepository {
                 let id = Uuid::new_v4();
                 let secret = generate_api_key_secret();
                 let updated_at = sqlx::query_scalar("INSERT INTO api_keys (id, user_id, name, secret_value, status, expires_at, allowed_api_formats, permissions, allowed_group_ids, allowed_channel_ids, requests_per_minute, max_concurrent_requests, quota_limit_amount) VALUES ($1,$2,$3,$4,'active',$5,$6::api_format[],$7,$8,$9,$10,$11,$12) RETURNING updated_at")
-                    .bind(id).bind(input.user_id).bind(&input.name).bind(&secret).bind(input.expires_at).bind(&input.allowed_api_formats).bind(&input.permissions).bind(&input.allowed_group_ids).bind(&input.allowed_channel_ids).bind(input.requests_per_minute).bind(input.max_concurrent_requests).bind(input.quota_limit_amount).fetch_one(&mut **transaction).await?;
+                    .bind(id).bind(input.user_id).bind(&input.name).bind(&secret).bind(input.expires_at).bind(&input.allowed_api_formats).bind(&input.permissions).bind(&input.allowed_group_ids).bind(&input.allowed_channel_ids).bind(input.requests_per_minute).bind(input.max_concurrent_requests).bind(input.quota_limit_amount).fetch_one(transaction.postgres()).await?;
                 Ok(MutationResult {
                     id,
                     object_type: "api_key",
@@ -5602,7 +5604,7 @@ impl ControlPlaneRepository {
                 )?;
                 let before = key_audit(transaction, id).await?;
                 let updated_at = sqlx::query_scalar("UPDATE api_keys SET name=$2,status=$3,expires_at=$4,allowed_api_formats=$5::api_format[],permissions=$6,allowed_group_ids=$7,allowed_channel_ids=$8,requests_per_minute=$9,max_concurrent_requests=$10,quota_limit_amount=$11 WHERE id=$1 AND updated_at=$12 AND NOT (status='revoked' AND $3 <> 'revoked') RETURNING updated_at")
-                    .bind(id).bind(&input.name).bind(&input.status).bind(input.expires_at).bind(&input.allowed_api_formats).bind(&input.permissions).bind(&input.allowed_group_ids).bind(&input.allowed_channel_ids).bind(input.requests_per_minute).bind(input.max_concurrent_requests).bind(input.quota_limit_amount).bind(expected_updated_at).fetch_optional(&mut **transaction).await?.ok_or(RepositoryError::Conflict)?;
+                    .bind(id).bind(&input.name).bind(&input.status).bind(input.expires_at).bind(&input.allowed_api_formats).bind(&input.permissions).bind(&input.allowed_group_ids).bind(&input.allowed_channel_ids).bind(input.requests_per_minute).bind(input.max_concurrent_requests).bind(input.quota_limit_amount).bind(expected_updated_at).fetch_optional(transaction.postgres()).await?.ok_or(RepositoryError::Conflict)?;
                 Ok(MutationResult {
                     id,
                     object_type: "api_key",
@@ -5624,7 +5626,7 @@ impl ControlPlaneRepository {
                     "UPDATE api_keys SET status='revoked' WHERE id=$1 AND status <> 'revoked' RETURNING updated_at",
                 )
                 .bind(id)
-                .fetch_optional(&mut **transaction)
+                .fetch_optional(transaction.postgres())
                 .await?
                 .ok_or(RepositoryError::Conflict)?;
                 Ok(MutationResult {
@@ -5711,7 +5713,7 @@ impl ControlPlaneRepository {
 
     pub async fn model_source_ids(&self) -> Result<Vec<String>, RepositoryError> {
         sqlx::query_scalar("SELECT source_model_id FROM models ORDER BY source_model_id")
-            .fetch_all(&self.pool)
+            .fetch_all(self.pool.postgres())
             .await
             .map_err(RepositoryError::from)
     }
@@ -5720,7 +5722,7 @@ impl ControlPlaneRepository {
     /// receive a price refresh; absent IDs are imported as new local models.
     pub async fn apply_catalog_models(
         &self,
-        transaction: &mut Transaction<'_, Postgres>,
+        transaction: &mut RepositoryTransaction<'_>,
         inputs: Vec<SyncedModelInput>,
     ) -> Result<Vec<MutationResult>, RepositoryError> {
         let synced_at = Utc::now();
@@ -5730,7 +5732,7 @@ impl ControlPlaneRepository {
                 "SELECT id FROM models WHERE source_model_id=$1 FOR UPDATE",
             )
             .bind(&input.source_model_id)
-            .fetch_optional(&mut **transaction)
+            .fetch_optional(transaction.postgres())
             .await?;
             results.push(match existing_id {
                 Some(id) => sync_model_price(transaction, id, input, synced_at).await?,
@@ -5742,29 +5744,29 @@ impl ControlPlaneRepository {
 
     pub async fn insert_audit(
         &self,
-        transaction: &mut Transaction<'_, Postgres>,
+        transaction: &mut RepositoryTransaction<'_>,
         actor: Uuid,
         mutation: &MutationResult,
         correlation_id: Uuid,
     ) -> Result<(), RepositoryError> {
         sqlx::query("INSERT INTO audit_logs (id,actor_user_id,actor_type,actor_role,action,object_type,object_id,before_redacted,after_redacted,correlation_id,reason) VALUES ($1,$2,'user','admin',$3,$4,$5,$6,$7,$8,$9)")
-            .bind(Uuid::new_v4()).bind(actor).bind(mutation.action).bind(mutation.object_type).bind(mutation.id).bind(&mutation.before_redacted).bind(&mutation.after_redacted).bind(correlation_id.to_string()).bind(&mutation.reason).execute(&mut **transaction).await?;
+            .bind(Uuid::new_v4()).bind(actor).bind(mutation.action).bind(mutation.object_type).bind(mutation.id).bind(&mutation.before_redacted).bind(&mutation.after_redacted).bind(correlation_id.to_string()).bind(&mutation.reason).execute(transaction.postgres()).await?;
         Ok(())
     }
     pub async fn insert_self_audit(
         &self,
-        transaction: &mut Transaction<'_, Postgres>,
+        transaction: &mut RepositoryTransaction<'_>,
         actor: Uuid,
         mutation: &MutationResult,
         correlation_id: Uuid,
     ) -> Result<(), RepositoryError> {
         sqlx::query("INSERT INTO audit_logs (id,actor_user_id,actor_type,actor_role,action,object_type,object_id,before_redacted,after_redacted,correlation_id,reason) VALUES ($1,$2,'user','user',$3,$4,$5,$6,$7,$8,$9)")
-            .bind(Uuid::new_v4()).bind(actor).bind(mutation.action).bind(mutation.object_type).bind(mutation.id).bind(&mutation.before_redacted).bind(&mutation.after_redacted).bind(correlation_id.to_string()).bind(&mutation.reason).execute(&mut **transaction).await?;
+            .bind(Uuid::new_v4()).bind(actor).bind(mutation.action).bind(mutation.object_type).bind(mutation.id).bind(&mutation.before_redacted).bind(&mutation.after_redacted).bind(correlation_id.to_string()).bind(&mutation.reason).execute(transaction.postgres()).await?;
         Ok(())
     }
     pub async fn insert_system_audit(
         &self,
-        transaction: &mut Transaction<'_, Postgres>,
+        transaction: &mut RepositoryTransaction<'_>,
         mutation: &MutationResult,
         correlation_id: Uuid,
     ) -> Result<(), RepositoryError> {
@@ -5781,18 +5783,18 @@ impl ControlPlaneRepository {
         .bind(&mutation.after_redacted)
         .bind(correlation_id.to_string())
         .bind(&mutation.reason)
-        .execute(&mut **transaction)
+        .execute(transaction.postgres())
         .await?;
         Ok(())
     }
     pub async fn insert_manual_reload_audit(
         &self,
-        transaction: &mut Transaction<'_, Postgres>,
+        transaction: &mut RepositoryTransaction<'_>,
         actor: Uuid,
         correlation_id: Uuid,
     ) -> Result<(), RepositoryError> {
         sqlx::query("INSERT INTO audit_logs (id,actor_user_id,actor_type,actor_role,action,object_type,object_id,before_redacted,after_redacted,correlation_id) VALUES ($1,$2,'user','admin','reload','runtime_config',$3,'{}','{}',$4)")
-            .bind(Uuid::new_v4()).bind(actor).bind(Uuid::nil()).bind(correlation_id.to_string()).execute(&mut **transaction).await?;
+            .bind(Uuid::new_v4()).bind(actor).bind(Uuid::nil()).bind(correlation_id.to_string()).execute(transaction.postgres()).await?;
         Ok(())
     }
 }
@@ -5826,7 +5828,7 @@ struct ApiKeyTargetChannel {
 }
 
 async fn load_self_api_key_policy(
-    transaction: &mut Transaction<'_, Postgres>,
+    transaction: &mut RepositoryTransaction<'_>,
     user_id: Uuid,
 ) -> Result<SelfApiKeyPolicy, RepositoryError> {
     let policy = sqlx::query_as::<_, SelfApiKeyPolicy>(
@@ -5839,7 +5841,7 @@ async fn load_self_api_key_policy(
          FOR UPDATE OF u,g,p",
     )
     .bind(user_id)
-    .fetch_optional(&mut **transaction)
+    .fetch_optional(transaction.postgres())
     .await?
     .ok_or(RepositoryError::DefaultApiKeyPolicyRequired)?;
     ensure_policy_enabled(&policy)?;
@@ -5946,7 +5948,7 @@ fn validate_admin_api_key_input(
 }
 
 async fn resolve_self_api_key_targets(
-    transaction: &mut Transaction<'_, Postgres>,
+    transaction: &mut RepositoryTransaction<'_>,
     selected_group_ids: &[Uuid],
     selected_channel_ids: &[Uuid],
     policy: &SelfApiKeyPolicy,
@@ -5957,7 +5959,7 @@ async fn resolve_self_api_key_targets(
          WHERE id = ANY($1)",
     )
     .bind(selected_group_ids)
-    .fetch_all(&mut **transaction)
+    .fetch_all(transaction.postgres())
     .await?;
     let channels = sqlx::query_as::<_, ApiKeyTargetChannel>(
         "SELECT id,channel_group_id,api_format::text AS api_format \
@@ -5965,7 +5967,7 @@ async fn resolve_self_api_key_targets(
          WHERE id = ANY($1)",
     )
     .bind(selected_channel_ids)
-    .fetch_all(&mut **transaction)
+    .fetch_all(transaction.postgres())
     .await?;
     if groups.len() != selected_group_ids.len() || channels.len() != selected_channel_ids.len() {
         return Err(RepositoryError::ApiKeyTargetNotAllowed);
@@ -6002,7 +6004,7 @@ async fn resolve_self_api_key_targets(
 }
 
 async fn validate_policy_targets(
-    transaction: &mut Transaction<'_, Postgres>,
+    transaction: &mut RepositoryTransaction<'_>,
     allowed_group_ids: &[Uuid],
     allowed_channel_ids: &[Uuid],
 ) -> Result<(), RepositoryError> {
@@ -6010,12 +6012,12 @@ async fn validate_policy_targets(
     let group_count =
         sqlx::query_scalar::<_, i64>("SELECT count(*) FROM channel_groups WHERE id = ANY($1)")
             .bind(allowed_group_ids)
-            .fetch_one(&mut **transaction)
+            .fetch_one(transaction.postgres())
             .await?;
     let channel_count =
         sqlx::query_scalar::<_, i64>("SELECT count(*) FROM channels WHERE id = ANY($1)")
             .bind(allowed_channel_ids)
-            .fetch_one(&mut **transaction)
+            .fetch_one(transaction.postgres())
             .await?;
     if group_count != allowed_group_ids.len() as i64
         || channel_count != allowed_channel_ids.len() as i64
@@ -6026,7 +6028,7 @@ async fn validate_policy_targets(
 }
 
 async fn key_audit_for_user(
-    transaction: &mut Transaction<'_, Postgres>,
+    transaction: &mut RepositoryTransaction<'_>,
     id: Uuid,
     user_id: Uuid,
 ) -> Result<Value, RepositoryError> {
@@ -6035,20 +6037,20 @@ async fn key_audit_for_user(
     )
     .bind(id)
     .bind(user_id)
-    .fetch_optional(&mut **transaction)
+    .fetch_optional(transaction.postgres())
     .await?;
     value.ok_or(RepositoryError::NotFound)
 }
 
 async fn key_audit(
-    transaction: &mut Transaction<'_, Postgres>,
+    transaction: &mut RepositoryTransaction<'_>,
     id: Uuid,
 ) -> Result<Value, RepositoryError> {
     let value = sqlx::query_scalar::<_, Value>(
         "SELECT json_build_object('id',id,'user_id',user_id,'name',name,'status',status,'expires_at',expires_at,'allowed_api_formats',allowed_api_formats,'permissions',permissions,'allowed_group_ids',allowed_group_ids,'allowed_channel_ids',allowed_channel_ids,'requests_per_minute',requests_per_minute,'max_concurrent_requests',max_concurrent_requests,'quota_limit_amount',quota_limit_amount,'quota_used_amount',quota_used_amount,'created_at',created_at,'updated_at',updated_at) FROM api_keys WHERE id=$1 AND NOT is_system FOR UPDATE",
     )
     .bind(id)
-    .fetch_optional(&mut **transaction)
+    .fetch_optional(transaction.postgres())
     .await?;
     let Some(value) = value else {
         return Err(RepositoryError::NotFound);
@@ -6056,7 +6058,7 @@ async fn key_audit(
     Ok(value)
 }
 async fn user_audit(
-    transaction: &mut Transaction<'_, Postgres>,
+    transaction: &mut RepositoryTransaction<'_>,
     id: Uuid,
 ) -> Result<Value, RepositoryError> {
     let value = sqlx::query_scalar::<_, Value>(
@@ -6084,18 +6086,18 @@ async fn user_audit(
          WHERE u.id=$1 AND NOT u.is_system FOR UPDATE OF u,g",
     )
     .bind(id)
-    .fetch_optional(&mut **transaction)
+    .fetch_optional(transaction.postgres())
     .await?;
     value.ok_or(RepositoryError::NotFound)
 }
 async fn user_group_audit(
-    transaction: &mut Transaction<'_, Postgres>,
+    transaction: &mut RepositoryTransaction<'_>,
     id: Uuid,
 ) -> Result<Value, RepositoryError> {
     let exists =
         sqlx::query_scalar::<_, bool>("SELECT true FROM user_groups WHERE id=$1 FOR UPDATE")
             .bind(id)
-            .fetch_optional(&mut **transaction)
+            .fetch_optional(transaction.postgres())
             .await?;
     if exists.is_none() {
         return Err(RepositoryError::NotFound);
@@ -6124,24 +6126,24 @@ async fn user_group_audit(
          GROUP BY g.id",
     )
     .bind(id)
-    .fetch_optional(&mut **transaction)
+    .fetch_optional(transaction.postgres())
     .await?;
     value.ok_or(RepositoryError::NotFound)
 }
 async fn model_audit(
-    transaction: &mut Transaction<'_, Postgres>,
+    transaction: &mut RepositoryTransaction<'_>,
     id: Uuid,
 ) -> Result<Value, RepositoryError> {
     let value = sqlx::query_scalar::<_, Value>(
         "SELECT json_build_object('id',id,'source_model_id',source_model_id,'display_name',display_name,'provider_name',provider_name,'enabled',enabled,'price_unit_tokens',price_unit_tokens,'input_unit_price',input_unit_price,'cached_input_unit_price',cached_input_unit_price,'cache_write_unit_price',cache_write_unit_price,'output_unit_price',output_unit_price,'price_effective_at',price_effective_at,'advanced_billing',advanced_billing,'last_synced_at',last_synced_at,'created_at',created_at,'updated_at',updated_at) FROM models WHERE id=$1 FOR UPDATE",
     )
     .bind(id)
-    .fetch_optional(&mut **transaction)
+    .fetch_optional(transaction.postgres())
     .await?;
     value.ok_or(RepositoryError::NotFound)
 }
 async fn group_audit(
-    transaction: &mut Transaction<'_, Postgres>,
+    transaction: &mut RepositoryTransaction<'_>,
     id: Uuid,
 ) -> Result<Value, RepositoryError> {
     let value = sqlx::query_scalar::<_, Value>(
@@ -6158,7 +6160,7 @@ async fn group_audit(
          WHERE selected_group.id=$1 FOR UPDATE",
     )
     .bind(id)
-    .fetch_optional(&mut **transaction)
+    .fetch_optional(transaction.postgres())
     .await?;
     let Some(value) = value else {
         return Err(RepositoryError::NotFound);
@@ -6166,7 +6168,7 @@ async fn group_audit(
     Ok(value)
 }
 async fn channel_audit(
-    transaction: &mut Transaction<'_, Postgres>,
+    transaction: &mut RepositoryTransaction<'_>,
     id: Uuid,
 ) -> Result<Value, RepositoryError> {
     // Audit snapshots remain allowlisted even though authorized detail reads
@@ -6175,7 +6177,7 @@ async fn channel_audit(
         "SELECT json_build_object('id',id,'channel_group_id',channel_group_id,'api_format',api_format,'name',name,'base_url',base_url,'enabled',enabled,'supports_websocket',supports_websocket,'supports_standalone_web_search',supports_standalone_web_search,'auto_disabled',auto_disabled,'auto_disabled_reason',auto_disabled_reason,'auto_disable_allowed',auto_disable_allowed,'weight',weight,'billing_multiplier',billing_multiplier,'proxy_id',proxy_id,'config_template_id',config_template_id,'connect_timeout_ms',connect_timeout_ms,'response_header_timeout_ms',response_header_timeout_ms,'stream_idle_timeout_ms',stream_idle_timeout_ms,'upstream_auth_kind',upstream_auth_kind,'upstream_auth_header_name',upstream_auth_header_name,'upstream_credential_configured',(upstream_api_key IS NOT NULL),'available_models',available_models,'test_model',test_model,'created_at',created_at,'updated_at',updated_at) FROM channels WHERE id=$1 FOR UPDATE",
     )
     .bind(id)
-    .fetch_optional(&mut **transaction)
+    .fetch_optional(transaction.postgres())
     .await?;
     let Some(value) = value else {
         return Err(RepositoryError::NotFound);
@@ -6183,14 +6185,14 @@ async fn channel_audit(
     Ok(value)
 }
 async fn rule_audit(
-    transaction: &mut Transaction<'_, Postgres>,
+    transaction: &mut RepositoryTransaction<'_>,
     id: Uuid,
 ) -> Result<Value, RepositoryError> {
     let value = sqlx::query_scalar::<_, Value>(
         "SELECT to_jsonb(model_rules) FROM model_rules WHERE id=$1 FOR UPDATE",
     )
     .bind(id)
-    .fetch_optional(&mut **transaction)
+    .fetch_optional(transaction.postgres())
     .await?;
     let Some(value) = value else {
         return Err(RepositoryError::NotFound);
@@ -6198,14 +6200,14 @@ async fn rule_audit(
     Ok(value)
 }
 async fn proxy_audit(
-    transaction: &mut Transaction<'_, Postgres>,
+    transaction: &mut RepositoryTransaction<'_>,
     id: Uuid,
 ) -> Result<Value, RepositoryError> {
     let value = sqlx::query_scalar::<_, Value>(
         "SELECT json_build_object('id',id,'name',name,'proxy_url',regexp_replace(regexp_replace(proxy_url, '^([^:/?#]+://)[^/?#]*@', E'\\1'), '[?#].*$', ''),'no_proxy_hosts',no_proxy_hosts,'enabled',enabled,'credential_configured',(username IS NOT NULL OR password IS NOT NULL),'created_at',created_at,'updated_at',updated_at) FROM proxies WHERE id=$1 FOR UPDATE",
     )
     .bind(id)
-    .fetch_optional(&mut **transaction)
+    .fetch_optional(transaction.postgres())
     .await?;
     let Some(value) = value else {
         return Err(RepositoryError::NotFound);
@@ -6213,14 +6215,14 @@ async fn proxy_audit(
     Ok(value)
 }
 async fn config_template_audit(
-    transaction: &mut Transaction<'_, Postgres>,
+    transaction: &mut RepositoryTransaction<'_>,
     id: Uuid,
 ) -> Result<Value, RepositoryError> {
     let value = sqlx::query_scalar::<_, Value>(
         "SELECT json_build_object('id',id,'name',name,'description',description,'enabled',enabled,'created_at',created_at,'updated_at',updated_at) FROM config_templates WHERE id=$1 FOR UPDATE",
     )
     .bind(id)
-    .fetch_optional(&mut **transaction)
+    .fetch_optional(transaction.postgres())
     .await?;
     let Some(value) = value else {
         return Err(RepositoryError::NotFound);
@@ -6228,7 +6230,7 @@ async fn config_template_audit(
     Ok(value)
 }
 async fn mcp_server_audit(
-    transaction: &mut Transaction<'_, Postgres>,
+    transaction: &mut RepositoryTransaction<'_>,
     id: Uuid,
 ) -> Result<Value, RepositoryError> {
     let value = sqlx::query_scalar::<_, Value>(
@@ -6240,25 +6242,25 @@ async fn mcp_server_audit(
          FROM mcp_servers WHERE id=$1 FOR UPDATE",
     )
     .bind(id)
-    .fetch_optional(&mut **transaction)
+    .fetch_optional(transaction.postgres())
     .await?;
     value.ok_or(RepositoryError::NotFound)
 }
 async fn api_key_policy_audit(
-    transaction: &mut Transaction<'_, Postgres>,
+    transaction: &mut RepositoryTransaction<'_>,
     id: Uuid,
 ) -> Result<Value, RepositoryError> {
     let value = sqlx::query_scalar::<_, Value>(
         "SELECT json_build_object('id',id,'name',name,'allowed_group_ids',allowed_group_ids,'allowed_channel_ids',allowed_channel_ids,'enabled',enabled,'created_at',created_at,'updated_at',updated_at) FROM api_key_policies WHERE id=$1 FOR UPDATE",
     )
     .bind(id)
-    .fetch_optional(&mut **transaction)
+    .fetch_optional(transaction.postgres())
     .await?;
     value.ok_or(RepositoryError::NotFound)
 }
 
 async fn api_key_policy_insert(
-    transaction: &mut Transaction<'_, Postgres>,
+    transaction: &mut RepositoryTransaction<'_>,
     id: Uuid,
     input: ApiKeyPolicyInput,
     create: bool,
@@ -6289,7 +6291,7 @@ async fn api_key_policy_insert(
         .bind(&input.allowed_group_ids)
         .bind(&input.allowed_channel_ids)
         .bind(input.enabled)
-        .fetch_one(&mut **transaction)
+        .fetch_one(transaction.postgres())
         .await?
     } else {
         sqlx::query_scalar(
@@ -6303,7 +6305,7 @@ async fn api_key_policy_insert(
         .bind(&input.allowed_channel_ids)
         .bind(input.enabled)
         .bind(expected_updated_at.expect("PUT version"))
-        .fetch_optional(&mut **transaction)
+        .fetch_optional(transaction.postgres())
         .await?
         .ok_or(RepositoryError::Conflict)?
     };
@@ -6321,7 +6323,7 @@ async fn api_key_policy_insert(
 }
 
 async fn group_insert(
-    transaction: &mut Transaction<'_, Postgres>,
+    transaction: &mut RepositoryTransaction<'_>,
     id: Uuid,
     input: ChannelGroupInput,
     create: bool,
@@ -6379,9 +6381,9 @@ async fn group_insert(
         return Err(RepositoryError::Validation);
     }
     let updated_at = if create {
-        sqlx::query_scalar("INSERT INTO channel_groups (id,name,api_format,connector_kind,request_compression,priority,selection_strategy,enabled,status_statistics_enabled) VALUES ($1,$2,$3::api_format,$4,$5,$6,$7,$8,$9) RETURNING updated_at").bind(id).bind(&input.name).bind(&input.api_format).bind(&input.connector_kind).bind(request_compression).bind(input.priority).bind(&input.selection_strategy).bind(input.enabled).bind(input.status_statistics_enabled.unwrap_or(false)).fetch_one(&mut **transaction).await?
+        sqlx::query_scalar("INSERT INTO channel_groups (id,name,api_format,connector_kind,request_compression,priority,selection_strategy,enabled,status_statistics_enabled) VALUES ($1,$2,$3::api_format,$4,$5,$6,$7,$8,$9) RETURNING updated_at").bind(id).bind(&input.name).bind(&input.api_format).bind(&input.connector_kind).bind(request_compression).bind(input.priority).bind(&input.selection_strategy).bind(input.enabled).bind(input.status_statistics_enabled.unwrap_or(false)).fetch_one(transaction.postgres()).await?
     } else {
-        sqlx::query_scalar("UPDATE channel_groups SET name=$2,api_format=$3::api_format,connector_kind=$4,request_compression=COALESCE($5,request_compression),priority=$6,selection_strategy=$7,enabled=$8,status_statistics_enabled=COALESCE($9,status_statistics_enabled) WHERE id=$1 AND updated_at=$10 RETURNING updated_at").bind(id).bind(&input.name).bind(&input.api_format).bind(&input.connector_kind).bind(&input.request_compression).bind(input.priority).bind(&input.selection_strategy).bind(input.enabled).bind(input.status_statistics_enabled).bind(expected_updated_at.expect("PUT version")).fetch_optional(&mut **transaction).await?.ok_or(RepositoryError::Conflict)?
+        sqlx::query_scalar("UPDATE channel_groups SET name=$2,api_format=$3::api_format,connector_kind=$4,request_compression=COALESCE($5,request_compression),priority=$6,selection_strategy=$7,enabled=$8,status_statistics_enabled=COALESCE($9,status_statistics_enabled) WHERE id=$1 AND updated_at=$10 RETURNING updated_at").bind(id).bind(&input.name).bind(&input.api_format).bind(&input.connector_kind).bind(&input.request_compression).bind(input.priority).bind(&input.selection_strategy).bind(input.enabled).bind(input.status_statistics_enabled).bind(expected_updated_at.expect("PUT version")).fetch_optional(transaction.postgres()).await?.ok_or(RepositoryError::Conflict)?
     };
     Ok(MutationResult {
         id,
@@ -6405,13 +6407,13 @@ fn default_user_group_id(role: &str) -> Result<Uuid, RepositoryError> {
 }
 
 async fn ensure_user_group_exists(
-    transaction: &mut Transaction<'_, Postgres>,
+    transaction: &mut RepositoryTransaction<'_>,
     id: Uuid,
 ) -> Result<(), RepositoryError> {
     let exists =
         sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM user_groups WHERE id=$1)")
             .bind(id)
-            .fetch_one(&mut **transaction)
+            .fetch_one(transaction.postgres())
             .await?;
     if exists {
         Ok(())
@@ -6421,7 +6423,7 @@ async fn ensure_user_group_exists(
 }
 
 async fn resolve_user_group_id(
-    transaction: &mut Transaction<'_, Postgres>,
+    transaction: &mut RepositoryTransaction<'_>,
     requested: Option<Uuid>,
     role: &str,
 ) -> Result<Uuid, RepositoryError> {
@@ -6431,12 +6433,12 @@ async fn resolve_user_group_id(
 }
 
 async fn ensure_enabled_policy(
-    transaction: &mut Transaction<'_, Postgres>,
+    transaction: &mut RepositoryTransaction<'_>,
     id: Uuid,
 ) -> Result<(), RepositoryError> {
     let enabled = sqlx::query_scalar::<_, bool>("SELECT enabled FROM api_key_policies WHERE id=$1")
         .bind(id)
-        .fetch_optional(&mut **transaction)
+        .fetch_optional(transaction.postgres())
         .await?
         .ok_or(RepositoryError::Validation)?;
     if enabled {
@@ -6447,7 +6449,7 @@ async fn ensure_enabled_policy(
 }
 
 async fn replace_user_group_codex_quota_visibility(
-    transaction: &mut Transaction<'_, Postgres>,
+    transaction: &mut RepositoryTransaction<'_>,
     user_group_id: Uuid,
     channel_group_ids: &[Uuid],
 ) -> Result<(), RepositoryError> {
@@ -6464,7 +6466,7 @@ async fn replace_user_group_codex_quota_visibility(
                AND api_format='open_ai_responses'::api_format",
         )
         .bind(channel_group_ids)
-        .fetch_one(&mut **transaction)
+        .fetch_one(transaction.postgres())
         .await?;
         if valid_count != channel_group_ids.len() as i64 {
             return Err(RepositoryError::Validation);
@@ -6473,7 +6475,7 @@ async fn replace_user_group_codex_quota_visibility(
 
     sqlx::query("DELETE FROM user_group_codex_quota_visibility WHERE user_group_id=$1")
         .bind(user_group_id)
-        .execute(&mut **transaction)
+        .execute(transaction.postgres())
         .await?;
     if !channel_group_ids.is_empty() {
         sqlx::query(
@@ -6484,14 +6486,14 @@ async fn replace_user_group_codex_quota_visibility(
         )
         .bind(user_group_id)
         .bind(channel_group_ids)
-        .execute(&mut **transaction)
+        .execute(transaction.postgres())
         .await?;
     }
     Ok(())
 }
 
 async fn user_group_insert(
-    transaction: &mut Transaction<'_, Postgres>,
+    transaction: &mut RepositoryTransaction<'_>,
     id: Uuid,
     input: UserGroupInput,
     create: bool,
@@ -6530,7 +6532,7 @@ async fn user_group_insert(
         .bind(&input.description)
         .bind(input.default_api_key_policy_id)
         .bind(input.filter_fast_mode)
-        .fetch_one(&mut **transaction)
+        .fetch_one(transaction.postgres())
         .await?
     } else {
         sqlx::query_scalar(
@@ -6544,7 +6546,7 @@ async fn user_group_insert(
         .bind(input.default_api_key_policy_id)
         .bind(input.filter_fast_mode)
         .bind(expected_updated_at.expect("PUT version"))
-        .fetch_optional(&mut **transaction)
+        .fetch_optional(transaction.postgres())
         .await?
         .ok_or(RepositoryError::Conflict)?
     };
@@ -6568,7 +6570,7 @@ async fn user_group_insert(
 }
 
 async fn user_group_delete(
-    transaction: &mut Transaction<'_, Postgres>,
+    transaction: &mut RepositoryTransaction<'_>,
     id: Uuid,
     expected_updated_at: DateTime<Utc>,
 ) -> Result<MutationResult, RepositoryError> {
@@ -6588,7 +6590,7 @@ async fn user_group_delete(
         "SELECT count(*) FROM registration_invitation_codes WHERE user_group_id=$1",
     )
     .bind(id)
-    .fetch_one(&mut **transaction)
+    .fetch_one(transaction.postgres())
     .await?;
     if registration_code_count > 0 {
         return Err(RepositoryError::UserGroupInUse);
@@ -6596,7 +6598,7 @@ async fn user_group_delete(
     let deleted = sqlx::query("DELETE FROM user_groups WHERE id=$1 AND updated_at=$2")
         .bind(id)
         .bind(expected_updated_at)
-        .execute(&mut **transaction)
+        .execute(transaction.postgres())
         .await?;
     if deleted.rows_affected() != 1 {
         return Err(RepositoryError::Conflict);
@@ -6615,7 +6617,7 @@ async fn user_group_delete(
 }
 
 async fn user_create(
-    transaction: &mut Transaction<'_, Postgres>,
+    transaction: &mut RepositoryTransaction<'_>,
     id: Uuid,
     input: UserInput,
 ) -> Result<MutationResult, RepositoryError> {
@@ -6637,7 +6639,7 @@ async fn user_create(
     .bind(input.balance_amount)
     .bind(user_group_id)
     .bind(input.default_api_key_policy_id)
-    .fetch_one(&mut **transaction)
+    .fetch_one(transaction.postgres())
     .await?;
     Ok(MutationResult {
         id,
@@ -6653,7 +6655,7 @@ async fn user_create(
 }
 
 async fn user_update(
-    transaction: &mut Transaction<'_, Postgres>,
+    transaction: &mut RepositoryTransaction<'_>,
     id: Uuid,
     input: UserUpdateInput,
     expected_updated_at: DateTime<Utc>,
@@ -6735,7 +6737,7 @@ async fn user_update(
     .bind(websocket_enabled)
     .bind(invalidates_sessions)
     .bind(expected_updated_at)
-    .fetch_optional(&mut **transaction)
+    .fetch_optional(transaction.postgres())
     .await?
     .ok_or(RepositoryError::Conflict)?;
 
@@ -6744,7 +6746,7 @@ async fn user_update(
             "UPDATE user_sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL",
         )
         .bind(id)
-        .execute(&mut **transaction)
+        .execute(transaction.postgres())
         .await?;
     }
 
@@ -6762,7 +6764,7 @@ async fn user_update(
 }
 
 async fn validate_user_update(
-    transaction: &mut Transaction<'_, Postgres>,
+    transaction: &mut RepositoryTransaction<'_>,
     before: &Value,
     input: &UserUpdateInput,
 ) -> Result<(), RepositoryError> {
@@ -6833,7 +6835,7 @@ fn validate_user_status_transition(
 }
 
 async fn user_soft_delete(
-    transaction: &mut Transaction<'_, Postgres>,
+    transaction: &mut RepositoryTransaction<'_>,
     id: Uuid,
     deleted_by: Uuid,
     expected_updated_at: DateTime<Utc>,
@@ -6857,7 +6859,7 @@ async fn user_soft_delete(
                AND deleted_at IS NULL AND id<>$1",
         )
         .bind(id)
-        .fetch_one(&mut **transaction)
+        .fetch_one(transaction.postgres())
         .await?;
         if remaining == 0 {
             return Err(RepositoryError::LastAdministrator);
@@ -6880,7 +6882,7 @@ async fn user_soft_delete(
     .bind(DEFAULT_USER_GROUP_ID)
     .bind(deleted_by)
     .bind(expected_updated_at)
-    .fetch_optional(&mut **transaction)
+    .fetch_optional(transaction.postgres())
     .await?
     .ok_or(RepositoryError::Conflict)?;
     sqlx::query(
@@ -6888,21 +6890,21 @@ async fn user_soft_delete(
          WHERE user_id=$1 AND revoked_at IS NULL",
     )
     .bind(id)
-    .execute(&mut **transaction)
+    .execute(transaction.postgres())
     .await?;
     sqlx::query(
         "UPDATE user_invitations SET revoked_at=now() \
          WHERE user_id=$1 AND accepted_at IS NULL AND revoked_at IS NULL",
     )
     .bind(id)
-    .execute(&mut **transaction)
+    .execute(transaction.postgres())
     .await?;
     sqlx::query(
         "UPDATE api_keys SET status='revoked' \
          WHERE user_id=$1 AND status<>'revoked' AND NOT is_system",
     )
     .bind(id)
-    .execute(&mut **transaction)
+    .execute(transaction.postgres())
     .await?;
 
     Ok(MutationResult {
@@ -6918,7 +6920,7 @@ async fn user_soft_delete(
     })
 }
 async fn model_insert(
-    transaction: &mut Transaction<'_, Postgres>,
+    transaction: &mut RepositoryTransaction<'_>,
     id: Uuid,
     input: ModelInput,
     create: bool,
@@ -6961,7 +6963,7 @@ async fn model_insert(
             .bind(input.price_effective_at)
             .bind(&advanced_billing)
             .bind(&source_payload)
-            .fetch_one(&mut **transaction)
+            .fetch_one(transaction.postgres())
             .await?
     } else {
         sqlx::query_scalar("UPDATE models SET source_model_id=$2,display_name=$3,provider_name=$4,enabled=$5,currency='USD',price_unit_tokens=$6,input_unit_price=$7,cached_input_unit_price=$8,cache_write_unit_price=$9,output_unit_price=$10,price_effective_at=$11,advanced_billing=CASE WHEN $12 THEN $13 ELSE advanced_billing END,source_payload=CASE WHEN $14 THEN $15 ELSE source_payload END WHERE id=$1 AND updated_at=$16 RETURNING updated_at")
@@ -6981,7 +6983,7 @@ async fn model_insert(
             .bind(source_payload_present)
             .bind(&source_payload)
             .bind(expected_updated_at.expect("PUT version"))
-            .fetch_optional(&mut **transaction)
+            .fetch_optional(transaction.postgres())
             .await?
             .ok_or(RepositoryError::Conflict)?
     };
@@ -6998,7 +7000,7 @@ async fn model_insert(
     })
 }
 async fn import_model(
-    transaction: &mut Transaction<'_, Postgres>,
+    transaction: &mut RepositoryTransaction<'_>,
     input: SyncedModelInput,
     synced_at: DateTime<Utc>,
 ) -> Result<MutationResult, RepositoryError> {
@@ -7021,7 +7023,7 @@ async fn import_model(
         .bind(&advanced_billing)
         .bind(&input.source_payload)
         .bind(synced_at)
-        .fetch_one(&mut **transaction)
+        .fetch_one(transaction.postgres())
         .await?;
     Ok(MutationResult {
         id,
@@ -7040,7 +7042,7 @@ async fn import_model(
 /// enabled state, and unmatched local request-multiplier rules remain
 /// administrator-managed.
 async fn sync_model_price(
-    transaction: &mut Transaction<'_, Postgres>,
+    transaction: &mut RepositoryTransaction<'_>,
     id: Uuid,
     input: SyncedModelInput,
     synced_at: DateTime<Utc>,
@@ -7056,7 +7058,7 @@ async fn sync_model_price(
     )
     .bind(id)
     .bind(&input.source_model_id)
-    .fetch_optional(&mut **transaction)
+    .fetch_optional(transaction.postgres())
     .await?
     .ok_or(RepositoryError::Conflict)?;
     let before = model_audit(transaction, id).await?;
@@ -7086,7 +7088,7 @@ async fn sync_model_price(
     .bind(synced_at)
     .bind(&advanced_billing)
     .bind(&input.source_payload)
-    .fetch_optional(&mut **transaction)
+    .fetch_optional(transaction.postgres())
     .await?
     .ok_or(RepositoryError::Conflict)?;
     Ok(MutationResult {
@@ -7169,7 +7171,7 @@ mod synced_advanced_billing_tests {
 }
 
 async fn channel_insert(
-    transaction: &mut Transaction<'_, Postgres>,
+    transaction: &mut RepositoryTransaction<'_>,
     id: Uuid,
     input: impl Into<ChannelMutationInput>,
     create: bool,
@@ -7182,7 +7184,7 @@ async fn channel_insert(
     let connector_kind =
         sqlx::query_scalar::<_, String>("SELECT connector_kind FROM channel_groups WHERE id=$1")
             .bind(input.channel_group_id)
-            .fetch_optional(&mut **transaction)
+            .fetch_optional(transaction.postgres())
             .await?
             .ok_or(RepositoryError::Validation)?;
     if connector_kind != "openai_compatible" {
@@ -7229,7 +7231,7 @@ async fn channel_insert(
             "SELECT EXISTS(SELECT 1 FROM models WHERE source_model_id=$1)",
         )
         .bind(test_model)
-        .fetch_one(&mut **transaction)
+        .fetch_one(transaction.postgres())
         .await?;
         if !configured {
             return Err(RepositoryError::Validation);
@@ -7243,10 +7245,10 @@ async fn channel_insert(
         channel_audit(transaction, id).await?
     };
     let updated_at = if create {
-        sqlx::query_scalar("INSERT INTO channels (id,channel_group_id,api_format,name,base_url,enabled,weight,billing_multiplier,proxy_id,config_template_id,override_document,connect_timeout_ms,response_header_timeout_ms,stream_idle_timeout_ms,upstream_auth_kind,upstream_auth_header_name,upstream_api_key,available_models,test_model,auto_disable_allowed,supports_websocket,supports_standalone_web_search) VALUES ($1,$2,$3::api_format,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) RETURNING updated_at").bind(id).bind(input.channel_group_id).bind(&input.api_format).bind(&input.name).bind(&input.base_url).bind(input.enabled).bind(input.weight).bind(input.billing_multiplier.unwrap_or_else(default_billing_multiplier)).bind(input.proxy_id).bind(input.config_template_id).bind(&override_document).bind(input.connect_timeout_ms).bind(input.response_header_timeout_ms).bind(input.stream_idle_timeout_ms).bind(&input.upstream_auth_kind).bind(&input.upstream_auth_header_name).bind(input.upstream_api_key.flatten()).bind(&input.available_models).bind(&input.test_model).bind(input.auto_disable_allowed).bind(input.supports_websocket).bind(input.supports_standalone_web_search).fetch_one(&mut **transaction).await?
+        sqlx::query_scalar("INSERT INTO channels (id,channel_group_id,api_format,name,base_url,enabled,weight,billing_multiplier,proxy_id,config_template_id,override_document,connect_timeout_ms,response_header_timeout_ms,stream_idle_timeout_ms,upstream_auth_kind,upstream_auth_header_name,upstream_api_key,available_models,test_model,auto_disable_allowed,supports_websocket,supports_standalone_web_search) VALUES ($1,$2,$3::api_format,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) RETURNING updated_at").bind(id).bind(input.channel_group_id).bind(&input.api_format).bind(&input.name).bind(&input.base_url).bind(input.enabled).bind(input.weight).bind(input.billing_multiplier.unwrap_or_else(default_billing_multiplier)).bind(input.proxy_id).bind(input.config_template_id).bind(&override_document).bind(input.connect_timeout_ms).bind(input.response_header_timeout_ms).bind(input.stream_idle_timeout_ms).bind(&input.upstream_auth_kind).bind(&input.upstream_auth_header_name).bind(input.upstream_api_key.flatten()).bind(&input.available_models).bind(&input.test_model).bind(input.auto_disable_allowed).bind(input.supports_websocket).bind(input.supports_standalone_web_search).fetch_one(transaction.postgres()).await?
     } else {
         let credential_present = input.upstream_api_key.is_some();
-        sqlx::query_scalar("UPDATE channels SET channel_group_id=$2,api_format=$3::api_format,name=$4,base_url=$5,enabled=$6,weight=$7,billing_multiplier=COALESCE($8,billing_multiplier),proxy_id=$9,config_template_id=$10,override_document=CASE WHEN $11 THEN $12 ELSE override_document END,connect_timeout_ms=$13,response_header_timeout_ms=$14,stream_idle_timeout_ms=$15,upstream_auth_kind=$16,upstream_auth_header_name=$17,upstream_api_key=CASE WHEN $18 THEN $19 ELSE upstream_api_key END,available_models=$20,test_model=$21,auto_disable_allowed=$22,supports_websocket=$23,supports_standalone_web_search=$24 WHERE id=$1 AND updated_at=$25 RETURNING updated_at").bind(id).bind(input.channel_group_id).bind(&input.api_format).bind(&input.name).bind(&input.base_url).bind(input.enabled).bind(input.weight).bind(input.billing_multiplier).bind(input.proxy_id).bind(input.config_template_id).bind(override_document_present).bind(&override_document).bind(input.connect_timeout_ms).bind(input.response_header_timeout_ms).bind(input.stream_idle_timeout_ms).bind(&input.upstream_auth_kind).bind(&input.upstream_auth_header_name).bind(credential_present).bind(input.upstream_api_key.flatten()).bind(&input.available_models).bind(&input.test_model).bind(input.auto_disable_allowed).bind(input.supports_websocket).bind(input.supports_standalone_web_search).bind(expected_updated_at.expect("PUT version")).fetch_optional(&mut **transaction).await?.ok_or(RepositoryError::Conflict)?
+        sqlx::query_scalar("UPDATE channels SET channel_group_id=$2,api_format=$3::api_format,name=$4,base_url=$5,enabled=$6,weight=$7,billing_multiplier=COALESCE($8,billing_multiplier),proxy_id=$9,config_template_id=$10,override_document=CASE WHEN $11 THEN $12 ELSE override_document END,connect_timeout_ms=$13,response_header_timeout_ms=$14,stream_idle_timeout_ms=$15,upstream_auth_kind=$16,upstream_auth_header_name=$17,upstream_api_key=CASE WHEN $18 THEN $19 ELSE upstream_api_key END,available_models=$20,test_model=$21,auto_disable_allowed=$22,supports_websocket=$23,supports_standalone_web_search=$24 WHERE id=$1 AND updated_at=$25 RETURNING updated_at").bind(id).bind(input.channel_group_id).bind(&input.api_format).bind(&input.name).bind(&input.base_url).bind(input.enabled).bind(input.weight).bind(input.billing_multiplier).bind(input.proxy_id).bind(input.config_template_id).bind(override_document_present).bind(&override_document).bind(input.connect_timeout_ms).bind(input.response_header_timeout_ms).bind(input.stream_idle_timeout_ms).bind(&input.upstream_auth_kind).bind(&input.upstream_auth_header_name).bind(credential_present).bind(input.upstream_api_key.flatten()).bind(&input.available_models).bind(&input.test_model).bind(input.auto_disable_allowed).bind(input.supports_websocket).bind(input.supports_standalone_web_search).bind(expected_updated_at.expect("PUT version")).fetch_optional(transaction.postgres()).await?.ok_or(RepositoryError::Conflict)?
     };
     Ok(MutationResult {
         id,
@@ -7262,7 +7264,7 @@ async fn channel_insert(
 }
 
 async fn channel_is_provider_managed(
-    transaction: &mut Transaction<'_, Postgres>,
+    transaction: &mut RepositoryTransaction<'_>,
     channel_id: Uuid,
 ) -> Result<bool, RepositoryError> {
     sqlx::query_scalar::<_, bool>(
@@ -7271,13 +7273,13 @@ async fn channel_is_provider_managed(
          WHERE c.id=$1",
     )
     .bind(channel_id)
-    .fetch_optional(&mut **transaction)
+    .fetch_optional(transaction.postgres())
     .await?
     .ok_or(RepositoryError::NotFound)
 }
 
 async fn channel_recover(
-    transaction: &mut Transaction<'_, Postgres>,
+    transaction: &mut RepositoryTransaction<'_>,
     id: Uuid,
     expected_updated_at: DateTime<Utc>,
 ) -> Result<MutationResult, RepositoryError> {
@@ -7297,7 +7299,7 @@ async fn channel_recover(
     )
     .bind(id)
     .bind(expected_updated_at)
-    .fetch_optional(&mut **transaction)
+    .fetch_optional(transaction.postgres())
     .await?
     .ok_or(RepositoryError::Conflict)?;
     Ok(MutationResult {
@@ -7314,7 +7316,7 @@ async fn channel_recover(
 }
 
 async fn rule_insert(
-    transaction: &mut Transaction<'_, Postgres>,
+    transaction: &mut RepositoryTransaction<'_>,
     id: Uuid,
     input: ModelRuleInput,
     create: bool,
@@ -7329,9 +7331,9 @@ async fn rule_insert(
         rule_audit(transaction, id).await?
     };
     let updated_at = if create {
-        sqlx::query_scalar("INSERT INTO model_rules (id,client_model,api_format,upstream_model_id,description,channel_group_ids,channel_ids,enabled) VALUES ($1,$2,$3::api_format,$4,$5,$6,$7,$8) RETURNING updated_at").bind(id).bind(&input.client_model).bind(&input.api_format).bind(input.upstream_model_id).bind(&input.description).bind(&input.channel_group_ids).bind(&input.channel_ids).bind(input.enabled).fetch_one(&mut **transaction).await?
+        sqlx::query_scalar("INSERT INTO model_rules (id,client_model,api_format,upstream_model_id,description,channel_group_ids,channel_ids,enabled) VALUES ($1,$2,$3::api_format,$4,$5,$6,$7,$8) RETURNING updated_at").bind(id).bind(&input.client_model).bind(&input.api_format).bind(input.upstream_model_id).bind(&input.description).bind(&input.channel_group_ids).bind(&input.channel_ids).bind(input.enabled).fetch_one(transaction.postgres()).await?
     } else {
-        sqlx::query_scalar("UPDATE model_rules SET client_model=$2,api_format=$3::api_format,upstream_model_id=$4,description=$5,channel_group_ids=$6,channel_ids=$7,enabled=$8 WHERE id=$1 AND updated_at=$9 RETURNING updated_at").bind(id).bind(&input.client_model).bind(&input.api_format).bind(input.upstream_model_id).bind(&input.description).bind(&input.channel_group_ids).bind(&input.channel_ids).bind(input.enabled).bind(expected_updated_at.expect("PUT version")).fetch_optional(&mut **transaction).await?.ok_or(RepositoryError::Conflict)?
+        sqlx::query_scalar("UPDATE model_rules SET client_model=$2,api_format=$3::api_format,upstream_model_id=$4,description=$5,channel_group_ids=$6,channel_ids=$7,enabled=$8 WHERE id=$1 AND updated_at=$9 RETURNING updated_at").bind(id).bind(&input.client_model).bind(&input.api_format).bind(input.upstream_model_id).bind(&input.description).bind(&input.channel_group_ids).bind(&input.channel_ids).bind(input.enabled).bind(expected_updated_at.expect("PUT version")).fetch_optional(transaction.postgres()).await?.ok_or(RepositoryError::Conflict)?
     };
     Ok(MutationResult {
         id,
@@ -7346,7 +7348,7 @@ async fn rule_insert(
     })
 }
 async fn proxy_insert(
-    transaction: &mut Transaction<'_, Postgres>,
+    transaction: &mut RepositoryTransaction<'_>,
     id: Uuid,
     input: ProxyCreateInput,
 ) -> Result<MutationResult, RepositoryError> {
@@ -7358,7 +7360,7 @@ async fn proxy_insert(
         .bind(&input.password)
         .bind(&input.no_proxy_hosts)
         .bind(input.enabled)
-        .fetch_one(&mut **transaction)
+        .fetch_one(transaction.postgres())
         .await?;
     Ok(MutationResult {
         id,
@@ -7373,7 +7375,7 @@ async fn proxy_insert(
     })
 }
 async fn proxy_update(
-    transaction: &mut Transaction<'_, Postgres>,
+    transaction: &mut RepositoryTransaction<'_>,
     id: Uuid,
     input: ProxyInput,
     expected_updated_at: DateTime<Utc>,
@@ -7392,7 +7394,7 @@ async fn proxy_update(
         .bind(&input.no_proxy_hosts)
         .bind(input.enabled)
         .bind(expected_updated_at)
-        .fetch_optional(&mut **transaction)
+        .fetch_optional(transaction.postgres())
         .await?
         .ok_or(RepositoryError::Conflict)?;
     Ok(MutationResult {
@@ -7408,7 +7410,7 @@ async fn proxy_update(
     })
 }
 async fn proxy_delete(
-    transaction: &mut Transaction<'_, Postgres>,
+    transaction: &mut RepositoryTransaction<'_>,
     id: Uuid,
     expected_updated_at: DateTime<Utc>,
 ) -> Result<MutationResult, RepositoryError> {
@@ -7423,7 +7425,7 @@ async fn proxy_delete(
              OR EXISTS(SELECT 1 FROM codex_oauth_flows WHERE proxy_id=$1)",
     )
     .bind(id)
-    .fetch_one(&mut **transaction)
+    .fetch_one(transaction.postgres())
     .await?;
     if in_use {
         return Err(RepositoryError::ProxyInUse);
@@ -7431,7 +7433,7 @@ async fn proxy_delete(
     let deleted = sqlx::query("DELETE FROM proxies WHERE id=$1 AND updated_at=$2")
         .bind(id)
         .bind(expected_updated_at)
-        .execute(&mut **transaction)
+        .execute(transaction.postgres())
         .await?;
     if deleted.rows_affected() != 1 {
         return Err(RepositoryError::Conflict);
@@ -7449,7 +7451,7 @@ async fn proxy_delete(
     })
 }
 async fn config_template_insert(
-    transaction: &mut Transaction<'_, Postgres>,
+    transaction: &mut RepositoryTransaction<'_>,
     id: Uuid,
     input: impl Into<ConfigTemplateMutationInput>,
     create: bool,
@@ -7473,7 +7475,7 @@ async fn config_template_insert(
             .bind(&input.description)
             .bind(&document)
             .bind(input.enabled)
-            .fetch_one(&mut **transaction)
+            .fetch_one(transaction.postgres())
             .await?
     } else {
         sqlx::query_scalar("UPDATE config_templates SET name=$2,description=$3,document=CASE WHEN $4 THEN $5 ELSE document END,enabled=$6 WHERE id=$1 AND updated_at=$7 RETURNING updated_at")
@@ -7484,7 +7486,7 @@ async fn config_template_insert(
             .bind(&document)
             .bind(input.enabled)
             .bind(expected_updated_at.expect("PUT version"))
-            .fetch_optional(&mut **transaction)
+            .fetch_optional(transaction.postgres())
             .await?
             .ok_or(RepositoryError::Conflict)?
     };
@@ -7519,7 +7521,7 @@ fn validate_mcp_server_fields(
 }
 
 async fn mcp_server_create(
-    transaction: &mut Transaction<'_, Postgres>,
+    transaction: &mut RepositoryTransaction<'_>,
     id: Uuid,
     input: McpServerCreateInput,
 ) -> Result<MutationResult, RepositoryError> {
@@ -7550,7 +7552,7 @@ async fn mcp_server_create(
     .bind(input.model_rule_id)
     .bind(&input.settings)
     .bind(input.enabled)
-    .fetch_one(&mut **transaction)
+    .fetch_one(transaction.postgres())
     .await
     {
         Ok(updated_at) => updated_at,
@@ -7573,7 +7575,7 @@ async fn mcp_server_create(
 }
 
 async fn mcp_server_update(
-    transaction: &mut Transaction<'_, Postgres>,
+    transaction: &mut RepositoryTransaction<'_>,
     id: Uuid,
     input: McpServerInput,
     expected_updated_at: DateTime<Utc>,
@@ -7604,7 +7606,7 @@ async fn mcp_server_update(
     .bind(&input.settings)
     .bind(input.enabled)
     .bind(expected_updated_at)
-    .fetch_optional(&mut **transaction)
+    .fetch_optional(transaction.postgres())
     .await?
     .ok_or(RepositoryError::Conflict)?;
     Ok(MutationResult {
@@ -7621,7 +7623,7 @@ async fn mcp_server_update(
 }
 
 async fn mcp_server_delete(
-    transaction: &mut Transaction<'_, Postgres>,
+    transaction: &mut RepositoryTransaction<'_>,
     id: Uuid,
     expected_updated_at: DateTime<Utc>,
 ) -> Result<MutationResult, RepositoryError> {
@@ -7640,7 +7642,7 @@ async fn mcp_server_delete(
     )
     .bind(id)
     .bind(expected_updated_at)
-    .fetch_optional(&mut **transaction)
+    .fetch_optional(transaction.postgres())
     .await?
     .ok_or(RepositoryError::Conflict)?;
     Ok(MutationResult {
@@ -7657,7 +7659,7 @@ async fn mcp_server_delete(
 }
 
 async fn system_settings_update(
-    transaction: &mut Transaction<'_, Postgres>,
+    transaction: &mut RepositoryTransaction<'_>,
     input: SystemSettingsInput,
     expected_updated_at: DateTime<Utc>,
 ) -> Result<MutationResult, RepositoryError> {
@@ -7671,7 +7673,7 @@ async fn system_settings_update(
     .bind(FORWARDING_SETTINGS_KEY)
     .bind(&value)
     .bind(expected_updated_at)
-    .fetch_optional(&mut **transaction)
+    .fetch_optional(transaction.postgres())
     .await?
     .ok_or(RepositoryError::Conflict)?;
     Ok(MutationResult {
@@ -7688,26 +7690,26 @@ async fn system_settings_update(
 }
 
 async fn system_settings_audit(
-    transaction: &mut Transaction<'_, Postgres>,
+    transaction: &mut RepositoryTransaction<'_>,
 ) -> Result<Value, RepositoryError> {
     let value = sqlx::query_scalar::<_, Value>(
         "SELECT value FROM system_settings WHERE setting_key=$1 FOR UPDATE",
     )
     .bind(FORWARDING_SETTINGS_KEY)
-    .fetch_optional(&mut **transaction)
+    .fetch_optional(transaction.postgres())
     .await?
     .ok_or(RepositoryError::NotFound)?;
     Ok(system_settings_audit_value(&value))
 }
 
 async fn system_settings_input_for_update(
-    transaction: &mut Transaction<'_, Postgres>,
+    transaction: &mut RepositoryTransaction<'_>,
 ) -> Result<SystemSettingsInput, RepositoryError> {
     let value = sqlx::query_scalar::<_, Value>(
         "SELECT value FROM system_settings WHERE setting_key=$1 FOR UPDATE",
     )
     .bind(FORWARDING_SETTINGS_KEY)
-    .fetch_optional(&mut **transaction)
+    .fetch_optional(transaction.postgres())
     .await?
     .ok_or(RepositoryError::NotFound)?;
     let settings = serde_json::from_value(value).map_err(|_| RepositoryError::Validation)?;
