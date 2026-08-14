@@ -67,9 +67,9 @@ repo/
 |   |-- transforms/             # Compiled constrained JSON/header/SSE/WebSocket-event transform DSL
 |   |-- upstream/               # Reused reqwest clients, Responses WebSocket pool/dialer, proxy policy, timeout resolution
 |   |-- persistence.rs          # Public persistence facade and backend-independent re-exports
-|   |-- persistence/            # Opaque database types plus PostgreSQL SQLx repositories, Console auth/session state, control-plane mutations, and logs
+|   |-- persistence/            # Opaque database types, PostgreSQL repositories, and feature-gated SQLite schema/type foundation
 |   `-- workers/                # Snapshot reload plus spool ingestion, DB projection, and settlement
-|-- migrations/                 # PostgreSQL control-plane and log schema migrations
+|-- migrations/                 # PostgreSQL history at root plus the independent SQLite baseline under sqlite/
 |-- tests/                      # Local, PostgreSQL, proxy, streaming, real-upstream, and console-spec integration tests
 |-- tools/forwarding-perf/      # Manual isolated forwarding benchmark orchestrator, Mock LLM, load client, and report generator
 |-- web/console/                # React 19 + TypeScript + Vite + Tailwind v4 + shadcn/ui base-nova (Base UI) SPA
@@ -118,9 +118,12 @@ cargo check
 cargo fmt --check
 cargo clippy --all-targets               # also run with --features embedded-console-ui when that path changes
 cargo clippy --all-targets --features mcp-server # required when MCP transport/registry/tooling changes
+cargo clippy --all-targets --features sqlite-backend # SQLite schema/type foundation
 cargo test                                # unit + local/PostgreSQL integration (needs `docker compose up -d`)
 cargo test --features mcp-server --lib    # MCP feature-gated unit coverage
 cargo test --features mcp-server --test mcp_integration # deterministic MCP protocol/session/Search/Images coverage
+cargo test --features sqlite-backend --lib # in-memory SQLite migration/storage-contract coverage
+cargo test --features sqlite-backend --test sqlite_schema_integration # PostgreSQL/SQLite table, column, affinity, FK, and index parity
 cargo test --features mcp-server --test control_plane_integration codex_connector_forwards_responses_and_images_with_shared_credentials -- --exact # MCP Images edit through the Codex connector
 cargo test --features embedded-console-ui --lib console_ui # embedded-UI serving tests (needs built web/console/dist)
 cargo test --test console_spec_integration # OpenAPI spec/Console-API drift tests (needs PostgreSQL)
@@ -373,12 +376,21 @@ First decide which configuration layer owns the value:
 ### Add persistence
 
 1. Add ordered SQL migration files in `migrations/`; do not edit database state manually as a substitute.
+   PostgreSQL migrations remain at the directory root. SQLite uses its independent history under
+   `migrations/sqlite/`; while the backend is being ported, keep its current baseline synchronized
+   with every new PostgreSQL schema change.
 2. Keep database access behind `src/persistence/` repositories and domain/application boundaries.
    Process/application modules use the opaque `DatabaseConnectOptions`, `DatabasePool`, and
    `RepositoryTransaction`; PostgreSQL-specific pools, transactions, SQL, and COPY stay under
    `src/persistence/database.rs` or `src/persistence/postgres/`.
 3. SQLx compile-time query macros require a reachable schema or a prepared `.sqlx/` cache; that cache is intentionally ignored.
 4. After creating ignored `./config/postgres-password` as shown above, start PostgreSQL with `docker compose up -d` and verify migrations and repository behavior.
+5. When SQLite schema or adapters change, also run
+   `cargo clippy --all-targets --features sqlite-backend` and
+   both `cargo test --features sqlite-backend --lib` and
+   `cargo test --features sqlite-backend --test sqlite_schema_integration`. The feature currently
+   validates migration and storage contracts only; `[database].url` remains PostgreSQL-only until
+   repository dispatch lands.
 
 ### Add or change a Console API endpoint or contract
 
@@ -524,7 +536,7 @@ pool isolation, transforms, and configured outbound proxies.
 | Documentation map and rules | `docs/README.md` and `docs/documentation-standard.md` |
 | Documentation validation | `python3 scripts/check-docs.py` |
 | Current architecture and constraints | `docs/development/architecture.md` |
-| Current database/control-plane architecture | `docs/development/database-architecture.md` and `migrations/` |
+| Current database/control-plane architecture | `docs/development/database-architecture.md`, PostgreSQL `migrations/*.sql`, and the SQLite `migrations/sqlite/` baseline |
 | Superseded product/design history | `docs/archive/` |
 | Supported client formats | `src/domain/api_format.rs` |
 | Public data-plane route registry | `src/http/mod.rs` |

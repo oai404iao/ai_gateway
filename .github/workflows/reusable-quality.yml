@@ -73,10 +73,13 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --locked --workspace --all-targets
       - run: cargo clippy --locked --all-targets --features mcp-server
+      - run: cargo clippy --locked --all-targets --features sqlite-backend
       - run: cargo test --locked --workspace
       - run: cargo test --locked --features mcp-server --lib
       - run: cargo test --locked --features mcp-server --test mcp_integration
       - run: cargo test --locked --features mcp-server --test control_plane_integration codex_connector_forwards_responses_and_images_with_shared_credentials -- --exact
+      - run: cargo test --locked --features sqlite-backend --lib
+      - run: cargo test --locked --features sqlite-backend --test sqlite_schema_integration
 
   msrv:
     if: ${{ inputs.run_msrv }}
@@ -110,10 +113,13 @@ jobs:
           save-if: ${{ inputs.save_cache }}
       - run: cargo +1.92.0 check --locked --workspace --all-targets
       - run: cargo +1.92.0 check --locked --all-targets --features mcp-server
+      - run: cargo +1.92.0 check --locked --all-targets --features sqlite-backend
       - run: cargo +1.92.0 test --locked --workspace
       - run: cargo +1.92.0 test --locked --features mcp-server --lib
       - run: cargo +1.92.0 test --locked --features mcp-server --test mcp_integration
       - run: cargo +1.92.0 test --locked --features mcp-server --test control_plane_integration codex_connector_forwards_responses_and_images_with_shared_credentials -- --exact
+      - run: cargo +1.92.0 test --locked --features sqlite-backend --lib
+      - run: cargo +1.92.0 test --locked --features sqlite-backend --test sqlite_schema_integration
 
   console:
     if: ${{ inputs.run_console }}
