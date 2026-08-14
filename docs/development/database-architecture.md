@@ -12,6 +12,18 @@
   跨进程收敛。
 - schema 只能通过新的有序 migration 演进；不得修改已经部署的 migration 来伪造当前结构。
 
+## 持久化实现边界
+
+应用层不直接持有 SQLx 的 PostgreSQL 连接、连接池或 transaction 类型。启动、系统负载和应用服务
+通过 `src/persistence/database.rs` 暴露的 `DatabaseConnectOptions`、`DatabasePool` 和
+`RepositoryTransaction` 使用不透明边界；当前唯一注册的实现仍是 PostgreSQL。具体 SQL、COPY、
+PostgreSQL 查询构造和仓储实现位于 `src/persistence/postgres/`，公共 DTO 与仓储 API 继续从
+`src/persistence.rs` 重导出。
+
+这个边界不表示当前已经支持其他数据库，也不改变 PostgreSQL migration 或事务语义。新增后端必须
+提供独立 schema/migration 和仓储实现，并通过相同应用层 API 与持久化契约测试，不能依赖
+`sqlx::AnyPool` 隐藏 SQL 方言差异。
+
 最初的 11 表方案及其当时的取舍已移入
 [首版数据库设计归档](../archive/initial-database-design.md)。它不能作为当前列名、表数量或功能边界
 的依据。
@@ -100,7 +112,8 @@ terminal RequestLogEvent
 ## 来源
 
 - schema：`migrations/`
-- 持久化记录与仓储：`src/persistence/`
+- 数据库不透明边界：`src/persistence/database.rs`
+- PostgreSQL 持久化记录与仓储：`src/persistence/postgres/`
 - 快照编译：`src/runtime_config/mod.rs`
 - 当前请求链路：[当前架构](architecture.md)
 - Console API：`docs/openapi/console-v1.yaml`

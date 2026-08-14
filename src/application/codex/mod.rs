@@ -8,7 +8,6 @@ use chrono::{DateTime, Utc};
 use futures_util::{StreamExt, stream};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use sqlx::{Postgres, Transaction};
 use thiserror::Error;
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -20,8 +19,8 @@ use crate::{
         CodexCredentialExportInput, CodexCredentialImportInput, CodexCredentialRecord,
         CodexCredentialUpdateInput, CodexCredentialView, CodexOauthStartInput,
         CodexQuotaResetOutcome, CodexQuotaWindowHistory, CodexTokenRefreshUpdate,
-        ControlPlaneRepository, MutationResult, RepositoryError, SelfCodexQuotaCredentialView,
-        SelfCodexQuotaWindowHistory,
+        ControlPlaneRepository, MutationResult, RepositoryError, RepositoryTransaction,
+        SelfCodexQuotaCredentialView, SelfCodexQuotaWindowHistory,
     },
     runtime_config::RuntimeConfig,
     transforms::TransformPlan,
@@ -728,7 +727,7 @@ impl CodexConnectorService {
 
     async fn commit_refresh_failure(
         &self,
-        mut transaction: Transaction<'_, Postgres>,
+        mut transaction: RepositoryTransaction<'_>,
         channel_id: Uuid,
         permanent: bool,
         error: &CodexConnectorError,

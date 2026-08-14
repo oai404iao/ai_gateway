@@ -6,23 +6,26 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::json;
-use sqlx::{FromRow, PgPool, Postgres, Transaction};
+use sqlx::FromRow;
 use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
 use crate::domain::{ConsoleSessionPurpose, UserRole};
 
-use super::{DEFAULT_ADMIN_GROUP_ID, DEFAULT_USER_GROUP_ID, RepositoryError};
+use super::{
+    DEFAULT_ADMIN_GROUP_ID, DEFAULT_USER_GROUP_ID, DatabasePool, RepositoryError,
+    RepositoryTransaction,
+};
 
 #[derive(Clone)]
 pub struct AuthRepository {
-    pool: PgPool,
+    pool: DatabasePool,
 }
 
 impl AuthRepository {
     #[must_use]
-    pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+    pub fn new(pool: impl Into<DatabasePool>) -> Self {
+        Self { pool: pool.into() }
     }
 
     pub async fn find_login_user(&self, email: &str) -> Result<Option<LoginUser>, RepositoryError> {
@@ -32,7 +35,7 @@ impl AuthRepository {
              FROM users WHERE lower(email) = lower($1)",
         )
         .bind(email)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pool.postgres())
         .await
         .map_err(RepositoryError::from)
     }
@@ -62,7 +65,7 @@ impl AuthRepository {
         .bind(user_id)
         .bind(session_id)
         .bind(auth_version)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pool.postgres())
         .await
         .map_err(RepositoryError::from)
     }
@@ -87,7 +90,7 @@ impl AuthRepository {
         .bind(expires_at)
         .bind(user_agent)
         .bind(purpose.as_str())
-        .execute(&self.pool)
+        .execute(self.pool.postgres())
         .await?;
         Ok(())
     }
@@ -102,7 +105,7 @@ impl AuthRepository {
              FROM users WHERE id=$1",
         )
         .bind(user_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pool.postgres())
         .await
         .map_err(RepositoryError::from)
     }
@@ -127,7 +130,7 @@ impl AuthRepository {
              WHERE s.id=$1 FOR UPDATE",
         )
         .bind(session_id)
-        .fetch_optional(&mut *transaction)
+        .fetch_optional(transaction.postgres())
         .await?;
         let Some(session) = session else {
             transaction.rollback().await?;
@@ -155,7 +158,7 @@ impl AuthRepository {
                 "UPDATE user_sessions SET revoked_at=now() WHERE id=$1 AND revoked_at IS NULL",
             )
             .bind(session_id)
-            .execute(&mut *transaction)
+            .execute(transaction.postgres())
             .await?;
             transaction.commit().await?;
             return Ok(SessionRotation::Replayed);
@@ -178,7 +181,7 @@ impl AuthRepository {
         .bind(next_hash)
         .bind(next_expires_at)
         .bind(user_agent)
-        .execute(&mut *transaction)
+        .execute(transaction.postgres())
         .await?;
         transaction.commit().await?;
         Ok(SessionRotation::Rotated {
@@ -206,7 +209,7 @@ impl AuthRepository {
         )
         .bind(session_id)
         .bind(user_id)
-        .execute(&self.pool)
+        .execute(self.pool.postgres())
         .await?;
         Ok(result.rows_affected() == 1)
     }
@@ -217,7 +220,7 @@ impl AuthRepository {
              WHERE user_id=$1 AND revoked_at IS NULL",
         )
         .bind(user_id)
-        .execute(&self.pool)
+        .execute(self.pool.postgres())
         .await?;
         Ok(())
     }
@@ -233,7 +236,7 @@ impl AuthRepository {
         )
         .bind(user_id)
         .bind(current_session_id)
-        .execute(&self.pool)
+        .execute(self.pool.postgres())
         .await?;
         Ok(result.rows_affected())
     }
@@ -252,7 +255,7 @@ impl AuthRepository {
         )
         .bind(user_id)
         .bind(current_session_id)
-        .fetch_all(&self.pool)
+        .fetch_all(self.pool.postgres())
         .await?;
         let now = Utc::now();
         Ok(sessions
@@ -282,7 +285,7 @@ impl AuthRepository {
              FROM users WHERE id=$1",
         )
         .bind(user_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pool.postgres())
         .await
         .map_err(RepositoryError::from)
     }
@@ -298,7 +301,7 @@ impl AuthRepository {
         )
         .bind(user_id)
         .bind(display_name)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pool.postgres())
         .await
         .map_err(RepositoryError::from)
     }
@@ -311,7 +314,7 @@ impl AuthRepository {
                     initial_balance_amount,created_by,last_used_at,created_at,updated_at \
              FROM registration_invitation_codes ORDER BY created_at DESC,id",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.pool.postgres())
         .await
         .map_err(RepositoryError::from)
     }
@@ -326,7 +329,7 @@ impl AuthRepository {
              FROM registration_invitation_codes WHERE id=$1",
         )
         .bind(id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.pool.postgres())
         .await
         .map_err(RepositoryError::from)
     }
@@ -346,7 +349,7 @@ impl AuthRepository {
         )
         .bind(user_id)
         .bind(password_hash)
-        .execute(&mut *transaction)
+        .execute(transaction.postgres())
         .await?;
         if changed.rows_affected() == 0 {
             transaction.rollback().await?;
@@ -356,7 +359,7 @@ impl AuthRepository {
             "UPDATE user_sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL",
         )
         .bind(user_id)
-        .execute(&mut *transaction)
+        .execute(transaction.postgres())
         .await?;
         transaction.commit().await?;
         Ok(true)
@@ -386,7 +389,7 @@ impl AuthRepository {
         )
         .bind(actor_user_id)
         .bind(actor_auth_version)
-        .fetch_one(&mut *transaction)
+        .fetch_one(transaction.postgres())
         .await?;
         if !actor_is_current_admin {
             transaction.rollback().await?;
@@ -398,7 +401,7 @@ impl AuthRepository {
              FROM users WHERE id=$1 FOR UPDATE",
         )
         .bind(user_id)
-        .fetch_optional(&mut *transaction)
+        .fetch_optional(transaction.postgres())
         .await?
         .ok_or(RepositoryError::NotFound)?;
         if target.is_system || target.deleted_at.is_some() {
@@ -427,14 +430,14 @@ impl AuthRepository {
         .bind(user_id)
         .bind(password_hash)
         .bind(expires_at)
-        .execute(&mut *transaction)
+        .execute(transaction.postgres())
         .await?;
         sqlx::query(
             "UPDATE user_sessions SET revoked_at=now() \
              WHERE user_id=$1 AND revoked_at IS NULL",
         )
         .bind(user_id)
-        .execute(&mut *transaction)
+        .execute(transaction.postgres())
         .await?;
 
         let correlation_id = Uuid::new_v4();
@@ -450,7 +453,7 @@ impl AuthRepository {
         .bind(before)
         .bind(super::user_audit(&mut transaction, user_id).await?)
         .bind(correlation_id.to_string())
-        .execute(&mut *transaction)
+        .execute(transaction.postgres())
         .await?;
         transaction.commit().await?;
         Ok(TemporaryPasswordCreated {
@@ -482,7 +485,7 @@ impl AuthRepository {
         )
         .bind(user_id)
         .bind(session_id)
-        .fetch_optional(&mut *transaction)
+        .fetch_optional(transaction.postgres())
         .await?;
         let Some(user) = user else {
             transaction.rollback().await?;
@@ -514,7 +517,7 @@ impl AuthRepository {
         .bind(user_id)
         .bind(password_hash)
         .bind(expected_auth_version)
-        .fetch_optional(&mut *transaction)
+        .fetch_optional(transaction.postgres())
         .await?;
         let Some(auth_version) = auth_version else {
             transaction.rollback().await?;
@@ -525,7 +528,7 @@ impl AuthRepository {
              WHERE user_id=$1 AND revoked_at IS NULL",
         )
         .bind(user_id)
-        .execute(&mut *transaction)
+        .execute(transaction.postgres())
         .await?;
         sqlx::query(
             "INSERT INTO audit_logs \
@@ -539,7 +542,7 @@ impl AuthRepository {
         .bind(before)
         .bind(super::user_audit(&mut transaction, user_id).await?)
         .bind(Uuid::new_v4().to_string())
-        .execute(&mut *transaction)
+        .execute(transaction.postgres())
         .await?;
         transaction.commit().await?;
         Ok(Some(SessionUser {
@@ -573,7 +576,7 @@ impl AuthRepository {
         )
         .bind(email)
         .bind(password_hash)
-        .fetch_optional(&mut *transaction)
+        .fetch_optional(transaction.postgres())
         .await?;
         let Some(admin) = admin else {
             transaction.rollback().await?;
@@ -583,7 +586,7 @@ impl AuthRepository {
             "UPDATE user_sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL",
         )
         .bind(admin.id)
-        .execute(&mut *transaction)
+        .execute(transaction.postgres())
         .await?;
         sqlx::query(
             "INSERT INTO audit_logs \
@@ -605,7 +608,7 @@ impl AuthRepository {
             "password_changed": true,
         }))
         .bind(Uuid::new_v4().to_string())
-        .execute(&mut *transaction)
+        .execute(transaction.postgres())
         .await?;
         transaction.commit().await?;
         Ok(true)
@@ -639,7 +642,7 @@ impl AuthRepository {
         .bind(input.user_group_id)
         .bind(input.initial_balance_amount)
         .bind(actor_user_id)
-        .fetch_optional(&mut *transaction)
+        .fetch_optional(transaction.postgres())
         .await?;
         if inserted.is_none() {
             transaction.rollback().await?;
@@ -693,7 +696,7 @@ impl AuthRepository {
         .bind(input.user_group_id)
         .bind(input.initial_balance_amount)
         .bind(expected_updated_at)
-        .fetch_optional(&mut *transaction)
+        .fetch_optional(transaction.postgres())
         .await;
         let updated = match updated {
             Ok(updated) => updated,
@@ -738,7 +741,7 @@ impl AuthRepository {
              FROM registration_invitation_codes WHERE code_hash=$1 FOR UPDATE",
         )
         .bind(code_hash)
-        .fetch_optional(&mut *transaction)
+        .fetch_optional(transaction.postgres())
         .await?;
         let Some(invitation) = invitation else {
             transaction.rollback().await?;
@@ -770,7 +773,7 @@ impl AuthRepository {
         .bind(password_hash)
         .bind(invitation.initial_balance_amount)
         .bind(invitation.user_group_id)
-        .fetch_optional(&mut *transaction)
+        .fetch_optional(transaction.postgres())
         .await?;
         let Some(auth_version) = auth_version else {
             transaction.rollback().await?;
@@ -782,7 +785,7 @@ impl AuthRepository {
              SET used_count=used_count+1,last_used_at=now() WHERE id=$1",
         )
         .bind(invitation.id)
-        .execute(&mut *transaction)
+        .execute(transaction.postgres())
         .await?;
         sqlx::query(
             "INSERT INTO audit_logs \
@@ -803,7 +806,7 @@ impl AuthRepository {
             "registration_invitation_code_id": invitation.id,
         }))
         .bind(Uuid::new_v4().to_string())
-        .execute(&mut *transaction)
+        .execute(transaction.postgres())
         .await?;
         transaction.commit().await?;
 
@@ -843,7 +846,7 @@ impl AuthRepository {
         let group_exists =
             sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM user_groups WHERE id=$1)")
                 .bind(user_group_id)
-                .fetch_one(&mut *transaction)
+                .fetch_one(transaction.postgres())
                 .await?;
         if !group_exists {
             transaction.rollback().await?;
@@ -854,7 +857,7 @@ impl AuthRepository {
                 "SELECT enabled FROM api_key_policies WHERE id=$1 FOR KEY SHARE",
             )
             .bind(policy_id)
-            .fetch_optional(&mut *transaction)
+            .fetch_optional(transaction.postgres())
             .await?
             .ok_or(RepositoryError::Validation)?;
             if !enabled {
@@ -875,7 +878,7 @@ impl AuthRepository {
         .bind(input.initial_balance_amount)
         .bind(user_group_id)
         .bind(input.default_api_key_policy_id)
-        .fetch_one(&mut *transaction)
+        .fetch_one(transaction.postgres())
         .await?;
         let expires_at = Utc::now()
             + chrono::Duration::from_std(invitation_ttl)
@@ -889,7 +892,7 @@ impl AuthRepository {
         .bind(actor_user_id)
         .bind(invitation_token_hash)
         .bind(expires_at)
-        .execute(&mut *transaction)
+        .execute(transaction.postgres())
         .await?;
         let correlation_id = Uuid::new_v4();
         sqlx::query(
@@ -912,7 +915,7 @@ impl AuthRepository {
             "updated_at": updated_at,
         }))
         .bind(correlation_id.to_string())
-        .execute(&mut *transaction)
+        .execute(transaction.postgres())
         .await?;
         transaction.commit().await?;
         Ok(InvitationCreated {
@@ -939,7 +942,7 @@ impl AuthRepository {
              FROM users WHERE id=$1 AND NOT is_system FOR UPDATE",
         )
         .bind(user_id)
-        .fetch_optional(&mut *transaction)
+        .fetch_optional(transaction.postgres())
         .await?
         .ok_or(RepositoryError::NotFound)?;
         if user.email.is_none()
@@ -955,21 +958,21 @@ impl AuthRepository {
              WHERE user_id=$1 AND accepted_at IS NULL AND revoked_at IS NULL",
         )
         .bind(user_id)
-        .execute(&mut *transaction)
+        .execute(transaction.postgres())
         .await?;
         let updated_at = sqlx::query_scalar::<_, DateTime<Utc>>(
             "UPDATE users SET status='invited',auth_version=auth_version+1 \
              WHERE id=$1 RETURNING updated_at",
         )
         .bind(user_id)
-        .fetch_one(&mut *transaction)
+        .fetch_one(transaction.postgres())
         .await?;
         sqlx::query(
             "UPDATE user_sessions SET revoked_at=now() \
              WHERE user_id=$1 AND revoked_at IS NULL",
         )
         .bind(user_id)
-        .execute(&mut *transaction)
+        .execute(transaction.postgres())
         .await?;
 
         let expires_at = Utc::now()
@@ -985,7 +988,7 @@ impl AuthRepository {
         .bind(actor_user_id)
         .bind(invitation_token_hash)
         .bind(expires_at)
-        .execute(&mut *transaction)
+        .execute(transaction.postgres())
         .await?;
 
         let correlation_id = Uuid::new_v4();
@@ -1024,7 +1027,7 @@ impl AuthRepository {
         .bind(before)
         .bind(after)
         .bind(correlation_id.to_string())
-        .execute(&mut *transaction)
+        .execute(transaction.postgres())
         .await?;
         transaction.commit().await?;
         Ok(InvitationCreated {
@@ -1050,7 +1053,7 @@ impl AuthRepository {
              WHERE i.id=$1 FOR UPDATE",
         )
         .bind(invitation_id)
-        .fetch_optional(&mut *transaction)
+        .fetch_optional(transaction.postgres())
         .await?;
         let Some(invitation) = invitation else {
             transaction.rollback().await?;
@@ -1074,11 +1077,11 @@ impl AuthRepository {
         )
         .bind(invitation.user_id)
         .bind(password_hash)
-        .fetch_one(&mut *transaction)
+        .fetch_one(transaction.postgres())
         .await?;
         sqlx::query("UPDATE user_invitations SET accepted_at=now() WHERE id=$1")
             .bind(invitation_id)
-            .execute(&mut *transaction)
+            .execute(transaction.postgres())
             .await?;
         sqlx::query(
             "INSERT INTO audit_logs \
@@ -1090,7 +1093,7 @@ impl AuthRepository {
         .bind(&invitation.role)
         .bind(json!({"status":"active", "auth_version": auth_version}))
         .bind(Uuid::new_v4().to_string())
-        .execute(&mut *transaction)
+        .execute(transaction.postgres())
         .await?;
         transaction.commit().await?;
         Ok(Some(SessionUser {
@@ -1114,7 +1117,7 @@ impl AuthRepository {
         let exists = sqlx::query_scalar::<_, bool>(
             "SELECT EXISTS(SELECT 1 FROM users WHERE status='active' AND role='admin')",
         )
-        .fetch_one(&mut *transaction)
+        .fetch_one(transaction.postgres())
         .await?;
         if exists {
             transaction.rollback().await?;
@@ -1135,7 +1138,7 @@ impl AuthRepository {
         .bind(display_name)
         .bind(password_hash)
         .bind(DEFAULT_ADMIN_GROUP_ID)
-        .execute(&mut *transaction)
+        .execute(transaction.postgres())
         .await?;
         sqlx::query(
             "INSERT INTO audit_logs \
@@ -1146,30 +1149,32 @@ impl AuthRepository {
         .bind(id)
         .bind(json!({"id":id,"email":email,"display_name":display_name,"role":"admin","status":"active"}))
         .bind(Uuid::new_v4().to_string())
-        .execute(&mut *transaction)
+        .execute(transaction.postgres())
         .await?;
         transaction.commit().await?;
         Ok(id)
     }
 }
 
-async fn begin_serializable(pool: &PgPool) -> Result<Transaction<'_, Postgres>, RepositoryError> {
+async fn begin_serializable(
+    pool: &DatabasePool,
+) -> Result<RepositoryTransaction<'_>, RepositoryError> {
     let mut transaction = pool.begin().await?;
     sqlx::query("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
-        .execute(&mut *transaction)
+        .execute(transaction.postgres())
         .await?;
     Ok(transaction)
 }
 
 async fn ensure_active_admin(
-    transaction: &mut Transaction<'_, Postgres>,
+    transaction: &mut RepositoryTransaction<'_>,
     user_id: Uuid,
 ) -> Result<(), RepositoryError> {
     let admin = sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS(SELECT 1 FROM users WHERE id=$1 AND status='active' AND role='admin')",
     )
     .bind(user_id)
-    .fetch_one(&mut **transaction)
+    .fetch_one(transaction.postgres())
     .await?;
     if admin {
         Ok(())
@@ -1179,13 +1184,13 @@ async fn ensure_active_admin(
 }
 
 async fn ensure_registration_user_group(
-    transaction: &mut Transaction<'_, Postgres>,
+    transaction: &mut RepositoryTransaction<'_>,
     user_group_id: Uuid,
 ) -> Result<(), RepositoryError> {
     let exists =
         sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM user_groups WHERE id=$1)")
             .bind(user_group_id)
-            .fetch_one(&mut **transaction)
+            .fetch_one(transaction.postgres())
             .await?;
     if exists {
         Ok(())
@@ -1210,7 +1215,7 @@ fn validate_registration_invitation_code_input(
 }
 
 async fn registration_invitation_code_for_update(
-    transaction: &mut Transaction<'_, Postgres>,
+    transaction: &mut RepositoryTransaction<'_>,
     id: Uuid,
 ) -> Result<RegistrationInvitationCode, RepositoryError> {
     sqlx::query_as::<_, RegistrationInvitationCode>(
@@ -1219,7 +1224,7 @@ async fn registration_invitation_code_for_update(
          FROM registration_invitation_codes WHERE id=$1 FOR UPDATE",
     )
     .bind(id)
-    .fetch_optional(&mut **transaction)
+    .fetch_optional(transaction.postgres())
     .await?
     .ok_or(RepositoryError::NotFound)
 }
@@ -1242,7 +1247,7 @@ fn registration_invitation_code_audit(code: &RegistrationInvitationCode) -> serd
 }
 
 async fn insert_registration_invitation_code_audit(
-    transaction: &mut Transaction<'_, Postgres>,
+    transaction: &mut RepositoryTransaction<'_>,
     actor_user_id: Uuid,
     action: &str,
     id: Uuid,
@@ -1263,7 +1268,7 @@ async fn insert_registration_invitation_code_audit(
     .bind(before)
     .bind(after)
     .bind(correlation_id.to_string())
-    .execute(&mut **transaction)
+    .execute(transaction.postgres())
     .await?;
     Ok(())
 }

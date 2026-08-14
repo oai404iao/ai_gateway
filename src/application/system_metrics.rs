@@ -7,10 +7,10 @@ use std::{
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
-use sqlx::PgPool;
 
 use crate::{
     admission::{AdmissionPressureSnapshot, AdmissionRuntime},
+    persistence::DatabasePool,
     routing::{RoutingPressureSnapshot, RoutingRuntime},
 };
 
@@ -27,7 +27,7 @@ pub struct SystemMetricsService {
     sampler: Arc<Mutex<ResourceSampler>>,
     started_at: DateTime<Utc>,
     started: Instant,
-    control_plane_pool: PgPool,
+    control_plane_pool: DatabasePool,
     control_plane_pool_capacity: u32,
     admission: Option<AdmissionRuntime>,
     routing: Option<RoutingRuntime>,
@@ -38,7 +38,10 @@ pub struct SystemMetricsService {
 
 impl SystemMetricsService {
     #[must_use]
-    pub fn new(control_plane_pool: PgPool, control_plane_pool_capacity: u32) -> Self {
+    pub fn new(
+        control_plane_pool: impl Into<DatabasePool>,
+        control_plane_pool_capacity: u32,
+    ) -> Self {
         Self::new_at(
             control_plane_pool,
             control_plane_pool_capacity,
@@ -49,7 +52,7 @@ impl SystemMetricsService {
 
     #[must_use]
     pub fn new_at(
-        control_plane_pool: PgPool,
+        control_plane_pool: impl Into<DatabasePool>,
         control_plane_pool_capacity: u32,
         started_at: DateTime<Utc>,
         started: Instant,
@@ -58,7 +61,7 @@ impl SystemMetricsService {
             sampler: Arc::new(Mutex::new(ResourceSampler::new())),
             started_at,
             started,
-            control_plane_pool,
+            control_plane_pool: control_plane_pool.into(),
             control_plane_pool_capacity,
             admission: None,
             routing: None,

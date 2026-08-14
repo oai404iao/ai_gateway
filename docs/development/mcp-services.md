@@ -642,7 +642,7 @@ Search 与其他普通 MCP endpoint 使用 `request_body_bytes`；Image endpoint
 
 - `src/runtime_config/mod.rs`
 - `src/domain/system_settings.rs`
-- `src/persistence/mod.rs`
+- `src/persistence.rs`
 - `docs/openapi/console-v1.yaml`
 - `web/console/src/features/admin/system/system-page.tsx`
 - `config.example.toml`

@@ -66,7 +66,8 @@ repo/
 |   |-- routing/                # Priority/weight selection and passive health state
 |   |-- transforms/             # Compiled constrained JSON/header/SSE/WebSocket-event transform DSL
 |   |-- upstream/               # Reused reqwest clients, Responses WebSocket pool/dialer, proxy policy, timeout resolution
-|   |-- persistence/            # SQLx repositories, Console auth/session state, control-plane mutations, logs
+|   |-- persistence.rs          # Public persistence facade and backend-independent re-exports
+|   |-- persistence/            # Opaque database types plus PostgreSQL SQLx repositories, Console auth/session state, control-plane mutations, and logs
 |   `-- workers/                # Snapshot reload plus spool ingestion, DB projection, and settlement
 |-- migrations/                 # PostgreSQL control-plane and log schema migrations
 |-- tests/                      # Local, PostgreSQL, proxy, streaming, real-upstream, and console-spec integration tests
@@ -373,6 +374,9 @@ First decide which configuration layer owns the value:
 
 1. Add ordered SQL migration files in `migrations/`; do not edit database state manually as a substitute.
 2. Keep database access behind `src/persistence/` repositories and domain/application boundaries.
+   Process/application modules use the opaque `DatabaseConnectOptions`, `DatabasePool`, and
+   `RepositoryTransaction`; PostgreSQL-specific pools, transactions, SQL, and COPY stay under
+   `src/persistence/database.rs` or `src/persistence/postgres/`.
 3. SQLx compile-time query macros require a reachable schema or a prepared `.sqlx/` cache; that cache is intentionally ignored.
 4. After creating ignored `./config/postgres-password` as shown above, start PostgreSQL with `docker compose up -d` and verify migrations and repository behavior.
 
@@ -525,7 +529,7 @@ pool isolation, transforms, and configured outbound proxies.
 | Supported client formats | `src/domain/api_format.rs` |
 | Public data-plane route registry | `src/http/mod.rs` |
 | MCP transport, legacy Session lifecycle, auth handoff, and tools | `src/mcp/mod.rs`, `src/domain/system_settings.rs`, `src/mcp/search.rs`, `src/mcp/image.rs`, and `docs/user/mcp-services.md` |
-| MCP persisted/compiled registry | `migrations/0045_mcp_servers.sql`, `migrations/0046_mcp_image_kind.sql`, `src/domain/mcp.rs`, `src/persistence/mod.rs`, and `src/runtime_config/mod.rs` |
+| MCP persisted/compiled registry | `migrations/0045_mcp_servers.sql`, `migrations/0046_mcp_image_kind.sql`, `src/domain/mcp.rs`, `src/persistence.rs`, and `src/runtime_config/mod.rs` |
 | Client/Codex request Header and body policy | `docs/reference/request-allowlists.json`, `docs/reference/request-allowlists.md`, and `src/request_policy.rs` |
 | Images multipart capture/replay and Codex edit adaptation | `src/application/request_body.rs` |
 | Responses WebSocket proxy and pooling | `src/application/proxy/websocket.rs` and `src/upstream/websocket.rs` |
@@ -546,7 +550,7 @@ pool isolation, transforms, and configured outbound proxies.
 | Current operational API documentation | `docs/user/operations.md` |
 | OpenAI compatibility and external semantics | `docs/reference/` |
 | Images staged design and Codex projection | `docs/development/openai-images.md` |
-| Codex OAuth connector architecture | `docs/development/codex-oauth-connector.md` |
+| Codex OAuth connector architecture | `docs/development/codex-oauth-connector.md` and `src/persistence/postgres/codex.rs` |
 | Codex Responses WebSocket source study | `docs/reference/codex-responses-websocket.md` |
 | Console spec/implementation drift tests | `tests/console_spec_integration.rs` |
 | Frontend package/scripts | `web/console/package.json` |

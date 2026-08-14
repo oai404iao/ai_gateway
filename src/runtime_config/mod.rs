@@ -16,7 +16,6 @@ use reqwest::{
 };
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use sqlx::postgres::PgConnectOptions;
 use thiserror::Error;
 use tokio::sync::watch;
 use uuid::Uuid;
@@ -42,11 +41,11 @@ use crate::{
     },
     persistence::{
         ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ConfigTemplateRecord, ControlPlaneRecords,
-        FORWARDING_SETTINGS_KEY, McpServerRecord, ModelRecord, ModelRuleRecord, ProxyRecord,
-        RuntimeConfigRecords, SystemCodexSettingsInput, SystemMcpSettingsInput,
-        SystemSessionAffinityKeySourceInput, SystemSessionAffinityRuleInput,
-        SystemSessionAffinitySettingsInput, SystemSettingsInput, SystemSettingsRecord,
-        valid_api_hosts, valid_codex_settings_input,
+        DatabaseConnectOptions, FORWARDING_SETTINGS_KEY, McpServerRecord, ModelRecord,
+        ModelRuleRecord, ProxyRecord, RuntimeConfigRecords, SystemCodexSettingsInput,
+        SystemMcpSettingsInput, SystemSessionAffinityKeySourceInput,
+        SystemSessionAffinityRuleInput, SystemSessionAffinitySettingsInput, SystemSettingsInput,
+        SystemSettingsRecord, valid_api_hosts, valid_codex_settings_input,
     },
     request_policy::{client_header_allowed, client_header_explicitly_ignored},
     transforms::{TransformCompileError, TransformPlan, compile_document, declared_api_format},
@@ -212,10 +211,10 @@ pub struct DatabaseConfig {
     pub connect_timeout_seconds: u64,
 }
 impl DatabaseConfig {
-    pub fn connect_options(&self) -> Result<PgConnectOptions, ConfigError> {
+    pub fn connect_options(&self) -> Result<DatabaseConnectOptions, ConfigError> {
         let mut options = self
             .url
-            .parse::<PgConnectOptions>()
+            .parse::<DatabaseConnectOptions>()
             .map_err(|_| ConfigError::Compile("database URL is invalid".into()))?;
         let Some(path) = self.password_file.as_ref() else {
             return Ok(options);
