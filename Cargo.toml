@@ -16,6 +16,9 @@ embedded-console-ui = ["dep:rust-embed", "dep:mime_guess"]
 # Serves stateless remote MCP endpoints from the public listener. Runtime
 # activation additionally requires `[mcp].enabled = true`.
 mcp-server = ["dep:rmcp", "dep:schemars", "tokio-util/rt"]
+# Compiles the SQLite schema/migration foundation. Runtime repository dispatch
+# remains PostgreSQL-only until the SQLite repository implementations land.
+sqlite-backend = ["sqlx/sqlite"]
 
 [dependencies]
 arc-swap = "1.7"

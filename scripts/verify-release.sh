@@ -15,9 +15,12 @@ fi
 cargo fmt --check
 cargo clippy --locked --workspace --all-targets
 cargo clippy --locked --all-targets --features mcp-server
+cargo clippy --locked --all-targets --features sqlite-backend
 cargo test --locked --workspace
 cargo test --locked --features mcp-server --lib
 cargo test --locked --features mcp-server --test mcp_integration
+cargo test --locked --features sqlite-backend --lib
+cargo test --locked --features sqlite-backend --test sqlite_schema_integration
 
 pnpm --dir web/console install --frozen-lockfile
 pnpm --dir web/console generate:api:check

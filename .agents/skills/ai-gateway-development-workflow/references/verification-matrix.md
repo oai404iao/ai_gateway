@@ -82,6 +82,16 @@ cargo test --locked --workspace
 - Add an ordered migration; never modify a deployed migration in place.
 - Test repository ownership and authorization rules in SQL, not only in
   handlers.
+- For SQLite schema or storage-adapter changes, also run:
+
+  ```bash
+  cargo clippy --locked --all-targets --features sqlite-backend
+  cargo test --locked --features sqlite-backend --lib
+  cargo test --locked --features sqlite-backend --test sqlite_schema_integration
+  ```
+
+  SQLite currently has an unreleased independent baseline under
+  `migrations/sqlite/`; runtime repository dispatch remains PostgreSQL-only.
 
 ## Forwarding path
 

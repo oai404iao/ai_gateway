@@ -3952,6 +3952,20 @@ mod tests {
         std::fs::remove_file(path).unwrap();
     }
 
+    #[cfg(feature = "sqlite-backend")]
+    #[test]
+    fn sqlite_url_remains_disabled_until_repository_dispatch_is_available() {
+        let config = DatabaseConfig {
+            url: "sqlite://data/ai-gateway.sqlite3".into(),
+            password_file: None,
+            max_connections: 1,
+            connect_timeout_seconds: 1,
+        };
+
+        let error = validate_database(&config).unwrap_err().to_string();
+        assert!(error.contains("database URL must use postgres"));
+    }
+
     #[test]
     fn database_password_file_cannot_compete_with_url_password() {
         let config = DatabaseConfig {

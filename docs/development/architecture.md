@@ -330,7 +330,7 @@ generation/edit 可以保持独立观测和迁移兼容性。
 | `src/routing/` | 渠道选择、被动健康、Session 粘性 |
 | `src/transforms/` | 受限 JSON/Header/SSE DSL |
 | `src/upstream/` | reqwest client 复用、Responses WebSocket 连接池、代理和超时策略 |
-| `src/persistence.rs`、`src/persistence/` | 公共持久化 facade、数据库不透明边界、SQLx repository、事务和查询；当前具体实现位于 `postgres/` |
+| `src/persistence.rs`、`src/persistence/` | 公共持久化 facade、数据库不透明边界、SQLx repository、事务和查询；当前运行时实现位于 `postgres/`，`sqlite.rs` 仅提供 feature-gated schema/type 基础 |
 | `src/runtime_config/` | TOML bootstrap 配置和 `ArcSwap` 快照 |
 | `src/workers/` | 重载、Connector 凭证维护、日志 ingest/投影/结算、渠道自动化、花费排行榜快照 |
 | `web/console/` | React Console SPA；仅构建/开发阶段使用 Node |
@@ -349,7 +349,7 @@ generation/edit 可以保持独立观测和迁移兼容性。
 | Console 路由 | `src/http/console.rs` |
 | Console 契约 | `docs/openapi/console-v1.yaml` |
 | 配置 schema | `src/runtime_config/mod.rs` |
-| 数据库 schema | `migrations/` |
+| 数据库 schema | PostgreSQL `migrations/*.sql`、SQLite 基线 `migrations/sqlite/*.sql` |
 | 当前用户行为 | `docs/user/operations.md` |
 | OpenAI 兼容边界 | `docs/reference/openai-compatibility.md` |
 

@@ -10,12 +10,14 @@ use sqlx::{
 
 /// Database engines understood by the persistence boundary.
 ///
-/// PostgreSQL remains the only implemented backend. Keeping this discriminator
-/// outside the PostgreSQL repository implementation gives startup and metrics
-/// code a stable place to branch when another backend is added.
+/// PostgreSQL remains the only connectable runtime repository backend. The
+/// feature-gated SQLite discriminator accompanies its schema/type foundation
+/// but is not returned by `DatabaseConnectOptions` until dispatch is added.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DatabaseBackend {
     Postgres,
+    #[cfg(feature = "sqlite-backend")]
+    Sqlite,
 }
 
 impl DatabaseBackend {
@@ -23,6 +25,8 @@ impl DatabaseBackend {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Postgres => "postgres",
+            #[cfg(feature = "sqlite-backend")]
+            Self::Sqlite => "sqlite",
         }
     }
 }
@@ -155,6 +159,12 @@ mod tests {
 
         assert_eq!(options.backend(), DatabaseBackend::Postgres);
         assert_eq!(options.backend().as_str(), "postgres");
+    }
+
+    #[cfg(feature = "sqlite-backend")]
+    #[test]
+    fn sqlite_backend_has_a_stable_discriminator() {
+        assert_eq!(DatabaseBackend::Sqlite.as_str(), "sqlite");
     }
 
     #[test]

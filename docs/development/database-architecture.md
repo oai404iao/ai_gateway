@@ -16,13 +16,36 @@
 
 应用层不直接持有 SQLx 的 PostgreSQL 连接、连接池或 transaction 类型。启动、系统负载和应用服务
 通过 `src/persistence/database.rs` 暴露的 `DatabaseConnectOptions`、`DatabasePool` 和
-`RepositoryTransaction` 使用不透明边界；当前唯一注册的实现仍是 PostgreSQL。具体 SQL、COPY、
-PostgreSQL 查询构造和仓储实现位于 `src/persistence/postgres/`，公共 DTO 与仓储 API 继续从
-`src/persistence.rs` 重导出。
+`RepositoryTransaction` 使用不透明边界；当前唯一可启动和注册仓储的实现仍是 PostgreSQL。
+具体 SQL、COPY、PostgreSQL 查询构造和仓储实现位于 `src/persistence/postgres/`，公共 DTO 与
+仓储 API 继续从 `src/persistence.rs` 重导出。
 
 这个边界不表示当前已经支持其他数据库，也不改变 PostgreSQL migration 或事务语义。新增后端必须
 提供独立 schema/migration 和仓储实现，并通过相同应用层 API 与持久化契约测试，不能依赖
 `sqlx::AnyPool` 隐藏 SQL 方言差异。
+
+### SQLite 实现状态
+
+Cargo feature `sqlite-backend` 已提供第二后端的 schema 和首批存储类型基础，但还不是用户可选的
+运行模式：
+
+- `migrations/sqlite/0001_current_schema.sql` 是对应 PostgreSQL migration `0049` 之后结构的
+  独立新基线；SQLite 从未发布过旧 schema，因此不复制 PostgreSQL 的 49 步历史。
+- `src/persistence/sqlite.rs` 暴露独立 `SQLITE_MIGRATOR`、精确十进制 TEXT adapter，以及
+  PostgreSQL `uuid[]`/`text[]` 对应的 JSON TEXT adapter。
+- UUID 使用 16-byte BLOB，UTC 时间使用 RFC 3339 TEXT，JSON/数组使用 JSON TEXT，精确金额与
+  单价使用十进制 TEXT；禁止经过 SQLite `REAL` 或 Rust `f64` 做计费运算。
+- schema 保留外键、主要 check/unique/index、审计 append-only 和 `request_logs` 单次结算边界。
+  PostgreSQL 的 Codex projection PL/pgSQL trigger 不在 SQLite 中模拟；后续 SQLite 仓储必须在
+  同一事务显式完成这些关联写入。
+- 文件连接的目标策略是 foreign keys、WAL、`synchronous=FULL` 和 busy timeout；当前测试固定
+  这些要求，运行时连接工厂会在后续仓储 PR 接入。
+- `tests/sqlite_schema_integration.rs` 在两个独立临时数据库上应用各自 migration，并固定 27 张
+  领域表、334 个列及其 SQLite storage affinity、38 个外键和显式索引的一一对应。
+
+`src/runtime_config/mod.rs` 仍只接受 `postgres://`/`postgresql://`，默认构建也不包含
+`sqlite-backend`。在 SQLite 仓储、事务和日志/结算实现完成前，不得把 `sqlite:` URL 写入配置
+模板或用户文档，也不得宣称 SQLite 已可用于部署。
 
 最初的 11 表方案及其当时的取舍已移入
 [首版数据库设计归档](../archive/initial-database-design.md)。它不能作为当前列名、表数量或功能边界
@@ -101,19 +124,25 @@ terminal RequestLogEvent
 
 ## 修改数据库的流程
 
-1. 新增有序 migration，不修改已发布 migration。
+1. 新增有序 PostgreSQL migration，不修改已发布 migration；同时新增对应的 SQLite migration
+   并保持最终语义一致。SQLite `0001` 合并前仍是未发布基线，合并后同样只能向前追加。
 2. 同步 `src/persistence/` DTO/查询、领域类型、运行时编译器和 Console mutation。
 3. 若 Console API 形状变化，先改 `docs/openapi/console-v1.yaml`，再生成并提交 TypeScript 类型。
 4. 更新本文件或相应专题设计文档，但不要复制可从 migration 直接读取的完整列清单。
 5. 使用任务专用数据库或隔离 stack 验证 migration；不要把未发布 schema 应用到其他 worktree
    共用的开发数据库。
-6. 运行 PostgreSQL 相关 Rust 门禁和 Console 契约测试。
+6. 运行 PostgreSQL 相关 Rust 门禁和 Console 契约测试；涉及 SQLite 时还要运行
+   `cargo clippy --all-targets --features sqlite-backend` 和
+   `cargo test --features sqlite-backend --lib`，再运行
+   `cargo test --features sqlite-backend --test sqlite_schema_integration`。
 
 ## 来源
 
-- schema：`migrations/`
+- PostgreSQL schema：`migrations/*.sql`
+- SQLite schema：`migrations/sqlite/*.sql`
 - 数据库不透明边界：`src/persistence/database.rs`
 - PostgreSQL 持久化记录与仓储：`src/persistence/postgres/`
+- SQLite migration 与存储 adapter：`src/persistence/sqlite.rs`
 - 快照编译：`src/runtime_config/mod.rs`
 - 当前请求链路：[当前架构](architecture.md)
 - Console API：`docs/openapi/console-v1.yaml`
