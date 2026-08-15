@@ -67,7 +67,7 @@ repo/
 |   |-- transforms/             # Compiled constrained JSON/header/SSE/WebSocket-event transform DSL
 |   |-- upstream/               # Reused reqwest clients, Responses WebSocket pool/dialer, proxy policy, timeout resolution
 |   |-- persistence.rs          # Public persistence facade and backend-independent re-exports
-|   |-- persistence/            # Opaque database types, PostgreSQL repositories, and feature-gated SQLite schema/type foundation
+|   |-- persistence/            # Shared records/errors, opaque database types, PostgreSQL repositories, and feature-gated SQLite foundation
 |   `-- workers/                # Snapshot reload plus spool ingestion, DB projection, and settlement
 |-- migrations/                 # PostgreSQL history at root plus the independent SQLite baseline under sqlite/
 |-- tests/                      # Local, PostgreSQL, proxy, streaming, real-upstream, and console-spec integration tests
@@ -381,8 +381,10 @@ First decide which configuration layer owns the value:
    with every new PostgreSQL schema change.
 2. Keep database access behind `src/persistence/` repositories and domain/application boundaries.
    Process/application modules use the opaque `DatabaseConnectOptions`, `DatabasePool`, and
-   `RepositoryTransaction`; PostgreSQL-specific pools, transactions, SQL, and COPY stay under
-   `src/persistence/database.rs` or `src/persistence/postgres/`.
+   `RepositoryTransaction`; backend-neutral runtime records and failures live in
+   `src/persistence/records.rs` and `src/persistence/error.rs`. PostgreSQL-specific row decoding,
+   pools, transactions, SQL, and COPY stay under `src/persistence/database.rs` or
+   `src/persistence/postgres/`.
 3. SQLx compile-time query macros require a reachable schema or a prepared `.sqlx/` cache; that cache is intentionally ignored.
 4. After creating ignored `./config/postgres-password` as shown above, start PostgreSQL with `docker compose up -d` and verify migrations and repository behavior.
 5. When SQLite schema or adapters change, also run
@@ -536,7 +538,7 @@ pool isolation, transforms, and configured outbound proxies.
 | Documentation map and rules | `docs/README.md` and `docs/documentation-standard.md` |
 | Documentation validation | `python3 scripts/check-docs.py` |
 | Current architecture and constraints | `docs/development/architecture.md` |
-| Current database/control-plane architecture | `docs/development/database-architecture.md`, PostgreSQL `migrations/*.sql`, and the SQLite `migrations/sqlite/` baseline |
+| Current database/control-plane architecture | `docs/development/database-architecture.md`, `src/persistence/records.rs`, PostgreSQL `migrations/*.sql`, and the SQLite `migrations/sqlite/` baseline |
 | Superseded product/design history | `docs/archive/` |
 | Supported client formats | `src/domain/api_format.rs` |
 | Public data-plane route registry | `src/http/mod.rs` |
