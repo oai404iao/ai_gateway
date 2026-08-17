@@ -17,8 +17,9 @@
 应用层不直接持有 SQLx 的 PostgreSQL 连接、连接池或 transaction 类型。启动、系统负载和应用服务
 通过 `src/persistence/database.rs` 暴露的 `DatabaseConnectOptions`、`DatabasePool` 和
 `RepositoryTransaction` 使用不透明边界；当前唯一可启动和注册仓储的实现仍是 PostgreSQL。
-具体 SQL、COPY、PostgreSQL 查询构造和仓储实现位于 `src/persistence/postgres/`，公共 DTO 与
-仓储 API 继续从 `src/persistence.rs` 重导出。
+后端中立的运行时快照记录、系统设置契约和仓储错误分别位于 `src/persistence/records.rs` 与
+`src/persistence/error.rs`。具体 SQL、COPY、PostgreSQL 查询构造、`FromRow` mapping 和仓储实现
+位于 `src/persistence/postgres/`；公共 DTO 与仓储 API 继续从 `src/persistence.rs` 重导出。
 
 这个边界不表示当前已经支持其他数据库，也不改变 PostgreSQL migration 或事务语义。新增后端必须
 提供独立 schema/migration 和仓储实现，并通过相同应用层 API 与持久化契约测试，不能依赖
@@ -141,7 +142,8 @@ terminal RequestLogEvent
 - PostgreSQL schema：`migrations/*.sql`
 - SQLite schema：`migrations/sqlite/*.sql`
 - 数据库不透明边界：`src/persistence/database.rs`
-- PostgreSQL 持久化记录与仓储：`src/persistence/postgres/`
+- 后端中立运行时记录与错误：`src/persistence/records.rs`、`src/persistence/error.rs`
+- PostgreSQL row mapping 与仓储：`src/persistence/postgres/`
 - SQLite migration 与存储 adapter：`src/persistence/sqlite.rs`
 - 快照编译：`src/runtime_config/mod.rs`
 - 当前请求链路：[当前架构](architecture.md)
