@@ -1,5 +1,5 @@
-//! SQLite schema, storage adapters, runtime-snapshot reader, and core
-//! Console login/session repository.
+//! SQLite schema, storage adapters, runtime-snapshot reader, and Console
+//! login/session/account repositories.
 //!
 //! Process-level runtime dispatch is intentionally not exposed until every
 //! repository is ported. This module keeps SQLite migrations, row mappings,

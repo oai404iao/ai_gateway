@@ -1,4 +1,6 @@
-//! SQLite persistence for the core Console login and session lifecycle.
+//! SQLite persistence for the ported Console authentication and account lifecycle.
+
+mod account;
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use sqlx::{FromRow, SqlitePool};
@@ -15,7 +17,7 @@ use super::super::{
     error::RepositoryError,
 };
 
-/// Feature-gated SQLite implementation of core Console login/session storage.
+/// Feature-gated SQLite implementation of the ported Console auth/account storage.
 ///
 /// This repository is directly constructible for backend contract tests. It
 /// is not selected by process configuration while the remaining SQLite

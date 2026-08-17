@@ -67,7 +67,7 @@ repo/
 |   |-- transforms/             # Compiled constrained JSON/header/SSE/WebSocket-event transform DSL
 |   |-- upstream/               # Reused reqwest clients, Responses WebSocket pool/dialer, proxy policy, timeout resolution
 |   |-- persistence.rs          # Public persistence facade and backend-independent re-exports
-|   |-- persistence/            # Shared records/errors/auth contracts, opaque database types, PostgreSQL repositories, and feature-gated SQLite schema/read/auth foundation
+|   |-- persistence/            # Shared records/errors/auth contracts, opaque database types, PostgreSQL repositories, and feature-gated SQLite schema/read/auth-account foundation
 |   `-- workers/                # Snapshot reload plus spool ingestion, DB projection, and settlement
 |-- migrations/                 # PostgreSQL history at root plus the independent SQLite baseline under sqlite/
 |-- tests/                      # Local, PostgreSQL, proxy, streaming, real-upstream, and console-spec integration tests
@@ -118,7 +118,7 @@ cargo check
 cargo fmt --check
 cargo clippy --all-targets               # also run with --features embedded-console-ui when that path changes
 cargo clippy --all-targets --features mcp-server # required when MCP transport/registry/tooling changes
-cargo clippy --all-targets --features sqlite-backend # SQLite schema/type/runtime-snapshot/auth foundation
+cargo clippy --all-targets --features sqlite-backend # SQLite schema/type/runtime-snapshot/auth-account foundation
 cargo test                                # unit + local/PostgreSQL integration (needs `docker compose up -d`)
 cargo test --features mcp-server --lib    # MCP feature-gated unit coverage
 cargo test --features mcp-server --test mcp_integration # deterministic MCP protocol/session/Search/Images coverage
@@ -126,6 +126,7 @@ cargo test --features sqlite-backend --lib # in-memory SQLite migration/storage-
 cargo test --features sqlite-backend --test sqlite_schema_integration # PostgreSQL/SQLite table, column, affinity, FK, and index parity
 cargo test --features sqlite-backend --test sqlite_runtime_repository_integration # SQLite runtime-record decoding and snapshot compilation
 cargo test --features sqlite-backend --test sqlite_auth_repository_integration # SQLite core Console login/session lifecycle and replay safety
+cargo test --features sqlite-backend --test sqlite_account_repository_integration # SQLite profile/password/recovery/bootstrap transactions and audit redaction
 cargo test --features mcp-server --test control_plane_integration codex_connector_forwards_responses_and_images_with_shared_credentials -- --exact # MCP Images edit through the Codex connector
 cargo test --features embedded-console-ui --lib console_ui # embedded-UI serving tests (needs built web/console/dist)
 cargo test --test console_spec_integration # OpenAPI spec/Console-API drift tests (needs PostgreSQL)
@@ -394,10 +395,11 @@ First decide which configuration layer owns the value:
    `cargo test --features sqlite-backend --lib`,
    `cargo test --features sqlite-backend --test sqlite_schema_integration`, and
    `cargo test --features sqlite-backend --test sqlite_runtime_repository_integration`, plus
-   `cargo test --features sqlite-backend --test sqlite_auth_repository_integration`. The feature
-   currently validates migration/storage contracts, the runtime-snapshot read path, and the core
-   Console login/session repository; `[database].url` remains PostgreSQL-only until complete
-   repository dispatch lands.
+   `cargo test --features sqlite-backend --test sqlite_auth_repository_integration` and
+   `cargo test --features sqlite-backend --test sqlite_account_repository_integration`. The
+   feature currently validates migration/storage contracts, the runtime-snapshot read path, and
+   Console login/session/profile/password/recovery/bootstrap persistence; `[database].url` remains
+   PostgreSQL-only until complete repository dispatch lands.
 
 ### Add or change a Console API endpoint or contract
 
