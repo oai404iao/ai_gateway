@@ -24,6 +24,7 @@ cargo test --locked --features sqlite-backend --test sqlite_schema_integration
 cargo test --locked --features sqlite-backend --test sqlite_runtime_repository_integration
 cargo test --locked --features sqlite-backend --test sqlite_auth_repository_integration
 cargo test --locked --features sqlite-backend --test sqlite_account_repository_integration
+cargo test --locked --features sqlite-backend --test sqlite_registration_repository_integration
 
 pnpm --dir web/console install --frozen-lockfile
 pnpm --dir web/console generate:api:check

@@ -330,7 +330,7 @@ generation/edit 可以保持独立观测和迁移兼容性。
 | `src/routing/` | 渠道选择、被动健康、Session 粘性 |
 | `src/transforms/` | 受限 JSON/Header/SSE DSL |
 | `src/upstream/` | reqwest client 复用、Responses WebSocket 连接池、代理和超时策略 |
-| `src/persistence.rs`、`src/persistence/` | 公共持久化 facade、后端中立 records/auth/error、数据库不透明边界、SQLx repository、事务和查询；PostgreSQL row mapping 与完整运行时实现位于 `postgres/`，SQLite feature 当前提供 schema/type、runtime-snapshot 只读仓储与 Console login/session/profile/password/recovery/bootstrap 仓储 |
+| `src/persistence.rs`、`src/persistence/` | 公共持久化 facade、后端中立 records/auth/error、数据库不透明边界、SQLx repository、事务和查询；PostgreSQL row mapping 与完整运行时实现位于 `postgres/`；SQLite feature 当前提供 schema/type、runtime-snapshot 只读仓储，以及 Console login/session/profile/password/recovery/bootstrap、注册邀请码、自助注册和 invite/reinvite/accept 仓储，但运行时数据库选择仍仅支持 PostgreSQL |
 | `src/runtime_config/` | TOML bootstrap 配置和 `ArcSwap` 快照 |
 | `src/workers/` | 重载、Connector 凭证维护、日志 ingest/投影/结算、渠道自动化、花费排行榜快照 |
 | `web/console/` | React Console SPA；仅构建/开发阶段使用 Node |
