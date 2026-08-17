@@ -17,8 +17,9 @@ embedded-console-ui = ["dep:rust-embed", "dep:mime_guess"]
 # activation additionally requires `[mcp].enabled = true`.
 mcp-server = ["dep:rmcp", "dep:schemars", "tokio-util/rt"]
 # Compiles the SQLite schema, storage adapters, runtime-snapshot reader, and
-# Console login/session/account repositories. Process-level dispatch remains
-# PostgreSQL-only until every repository lands.
+# Console login/session/account/registration repositories, including invitation
+# codes, self-registration, and invite/reinvite/accept. Runtime database
+# selection remains PostgreSQL-only until every repository lands.
 sqlite-backend = ["sqlx/sqlite"]
 
 [dependencies]

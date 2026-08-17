@@ -83,6 +83,7 @@ jobs:
       - run: cargo test --locked --features sqlite-backend --test sqlite_runtime_repository_integration
       - run: cargo test --locked --features sqlite-backend --test sqlite_auth_repository_integration
       - run: cargo test --locked --features sqlite-backend --test sqlite_account_repository_integration
+      - run: cargo test --locked --features sqlite-backend --test sqlite_registration_repository_integration
 
   msrv:
     if: ${{ inputs.run_msrv }}
@@ -126,6 +127,7 @@ jobs:
       - run: cargo +1.92.0 test --locked --features sqlite-backend --test sqlite_runtime_repository_integration
       - run: cargo +1.92.0 test --locked --features sqlite-backend --test sqlite_auth_repository_integration
       - run: cargo +1.92.0 test --locked --features sqlite-backend --test sqlite_account_repository_integration
+      - run: cargo +1.92.0 test --locked --features sqlite-backend --test sqlite_registration_repository_integration
 
   console:
     if: ${{ inputs.run_console }}

@@ -1,7 +1,7 @@
 //! Backend-neutral Console authentication and session persistence contracts.
 
 use chrono::{DateTime, Utc};
-use rust_decimal::Decimal;
+use rust_decimal::{Decimal, RoundingStrategy};
 use serde::Serialize;
 use uuid::Uuid;
 
@@ -157,4 +157,13 @@ pub enum RegistrationAttempt {
     Registered(SessionUser),
     InvalidCode,
     EmailConflict,
+}
+
+/// Applies PostgreSQL `numeric(24,8)` scale semantics without floating point.
+///
+/// PostgreSQL rounds values to the declared scale before enforcing precision.
+/// SQLite repositories must do the same explicitly before binding decimal
+/// TEXT so both backends persist and audit the same value.
+pub(super) fn normalize_numeric_24_8(value: Decimal) -> Decimal {
+    value.round_dp_with_strategy(8, RoundingStrategy::MidpointAwayFromZero)
 }

@@ -15,7 +15,7 @@ use super::super::auth::{
     ConsoleProfile, ConsoleSession, ConsoleSessionState, InvitationCreated, InviteUserInput,
     LiveConsoleIdentity, LoginUser, PasswordUser, RegistrationAttempt, RegistrationInvitationCode,
     RegistrationInvitationCodeInput, RegistrationInvitationCodeMutation, SessionRotation,
-    SessionUser, TemporaryPasswordCreated,
+    SessionUser, TemporaryPasswordCreated, normalize_numeric_24_8,
 };
 use super::{
     DEFAULT_ADMIN_GROUP_ID, DEFAULT_USER_GROUP_ID, DatabasePool, RepositoryError,
@@ -629,6 +629,7 @@ impl AuthRepository {
         ensure_active_admin(&mut transaction, actor_user_id).await?;
         validate_registration_invitation_code_input(&input, 0)?;
         ensure_registration_user_group(&mut transaction, input.user_group_id).await?;
+        let initial_balance_amount = normalize_numeric_24_8(input.initial_balance_amount);
 
         let id = Uuid::new_v4();
         let inserted = sqlx::query_scalar::<_, DateTime<Utc>>(
@@ -645,7 +646,7 @@ impl AuthRepository {
         .bind(input.expires_at)
         .bind(input.enabled)
         .bind(input.user_group_id)
-        .bind(input.initial_balance_amount)
+        .bind(initial_balance_amount)
         .bind(actor_user_id)
         .fetch_optional(transaction.postgres())
         .await?;
@@ -686,6 +687,7 @@ impl AuthRepository {
         }
         validate_registration_invitation_code_input(&input, before.used_count)?;
         ensure_registration_user_group(&mut transaction, input.user_group_id).await?;
+        let initial_balance_amount = normalize_numeric_24_8(input.initial_balance_amount);
 
         let updated = sqlx::query_scalar::<_, DateTime<Utc>>(
             "UPDATE registration_invitation_codes SET \
@@ -699,7 +701,7 @@ impl AuthRepository {
         .bind(input.expires_at)
         .bind(input.enabled)
         .bind(input.user_group_id)
-        .bind(input.initial_balance_amount)
+        .bind(initial_balance_amount)
         .bind(expected_updated_at)
         .fetch_optional(transaction.postgres())
         .await;
@@ -844,6 +846,7 @@ impl AuthRepository {
             transaction.rollback().await?;
             return Err(RepositoryError::Validation);
         }
+        let initial_balance_amount = normalize_numeric_24_8(input.initial_balance_amount);
         let user_group_id = input.user_group_id.unwrap_or(match input.role {
             UserRole::User => DEFAULT_USER_GROUP_ID,
             UserRole::Admin => DEFAULT_ADMIN_GROUP_ID,
@@ -880,7 +883,7 @@ impl AuthRepository {
         .bind(&input.email)
         .bind(&input.display_name)
         .bind(input.role.as_str())
-        .bind(input.initial_balance_amount)
+        .bind(initial_balance_amount)
         .bind(user_group_id)
         .bind(input.default_api_key_policy_id)
         .fetch_one(transaction.postgres())
@@ -914,7 +917,7 @@ impl AuthRepository {
             "display_name": input.display_name,
             "role": input.role.as_str(),
             "status": "invited",
-            "balance_amount": input.initial_balance_amount,
+            "balance_amount": initial_balance_amount,
             "user_group_id": user_group_id,
             "default_api_key_policy_id": input.default_api_key_policy_id,
             "updated_at": updated_at,

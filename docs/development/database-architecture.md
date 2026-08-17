@@ -29,7 +29,7 @@ SQL、COPY、PostgreSQL 查询构造、`FromRow` mapping 和仓储实现位于
 ### SQLite 实现状态
 
 Cargo feature `sqlite-backend` 已提供第二后端的 schema、存储类型、runtime-snapshot
-只读仓储和 Console login/session/account 仓储，但还不是用户可选的运行模式：
+只读仓储和 Console login/session/account/registration 仓储，但还不是用户可选的运行模式：
 
 - `migrations/sqlite/0001_current_schema.sql` 是对应 PostgreSQL migration `0049` 之后结构的
   独立新基线；SQLite 从未发布过旧 schema，因此不复制 PostgreSQL 的 49 步历史。
@@ -45,8 +45,10 @@ Cargo feature `sqlite-backend` 已提供第二后端的 schema、存储类型、
   精确查询；SQLite user writer 持久化同一形式。
 - 同一仓储还实现 Profile/display-name、永久与临时密码、临时密码并发完成、emergency admin
   reset 和 bootstrap-admin。所有跨 user/Session/audit 的 mutation 在 `BEGIN IMMEDIATE` transaction
-  内完成；审计 JSON 从 typed row 构建且精确 Decimal 直接写为 JSON number，不经过 `f64`。邀请、
-  registration code 和 self-registration 仍只由 PostgreSQL 仓储实现。
+  内完成；审计 JSON 从 typed row 构建且精确 Decimal 直接写为 JSON number，不经过 `f64`。
+- registration 仓储支持注册邀请码的读取、创建与更新和邀请码自助注册，并支持一次性用户邀请的
+  invite、reinvite 与 accept；相关跨 user/invitation/code/Session/audit 写入同样在 SQLite
+  transaction 中完成。
 - UUID 使用 16-byte BLOB，UTC 时间使用 RFC 3339 TEXT，JSON/数组使用 JSON TEXT，精确金额与
   单价使用十进制 TEXT；禁止经过 SQLite `REAL` 或 Rust `f64` 做计费运算。
 - schema 保留外键、主要 check/unique/index、审计 append-only 和 `request_logs` 单次结算边界。
@@ -65,10 +67,13 @@ Cargo feature `sqlite-backend` 已提供第二后端的 schema、存储类型、
 - `tests/sqlite_account_repository_integration.rs` 固定 Profile exact-decimal decoding、
   `updated_at` trigger 后重读、password/Session mutation、并发 completion/bootstrap、canonical
   email、完整 redacted audit shape 和 audit insertion 失败时的 transaction rollback。
+- `tests/sqlite_registration_repository_integration.rs` 固定注册邀请码、自助注册，以及一次性用户
+  邀请的 invite/reinvite/accept 仓储事务。
 
 `src/runtime_config/mod.rs` 仍只接受 `postgres://`/`postgresql://`，默认构建也不包含
-`sqlite-backend`。在 SQLite 仓储、事务和日志/结算实现完成前，不得把 `sqlite:` URL 写入配置
-模板或用户文档，也不得宣称 SQLite 已可用于部署。
+`sqlite-backend`。这些 registration 仓储能力不改变运行时数据库选择；在 SQLite 其余仓储、事务
+和日志/结算实现完成前，不得把 `sqlite:` URL 写入配置模板或用户文档，也不得宣称 SQLite 已可用于
+部署。
 
 最初的 11 表方案及其当时的取舍已移入
 [首版数据库设计归档](../archive/initial-database-design.md)。它不能作为当前列名、表数量或功能边界
@@ -160,7 +165,8 @@ terminal RequestLogEvent
    `cargo test --features sqlite-backend --test sqlite_schema_integration`、
    `cargo test --features sqlite-backend --test sqlite_runtime_repository_integration` 与
    `cargo test --features sqlite-backend --test sqlite_auth_repository_integration`，再运行
-   `cargo test --features sqlite-backend --test sqlite_account_repository_integration`。
+   `cargo test --features sqlite-backend --test sqlite_account_repository_integration` 与
+   `cargo test --features sqlite-backend --test sqlite_registration_repository_integration`。
 
 ## 来源
 
@@ -173,8 +179,8 @@ terminal RequestLogEvent
 - SQLite migration 与存储 adapter：`src/persistence/sqlite.rs`
 - SQLite runtime row mapping 与只读仓储：`src/persistence/sqlite/row.rs`、
   `src/persistence/sqlite/runtime.rs`
-- SQLite Console login/session/account 仓储：`src/persistence/sqlite/auth.rs`、
-  `src/persistence/sqlite/auth/account.rs`
+- SQLite Console login/session/account/registration 仓储：`src/persistence/sqlite/auth.rs`、
+  `src/persistence/sqlite/auth/`
 - 快照编译：`src/runtime_config/mod.rs`
 - 当前请求链路：[当前架构](architecture.md)
 - Console API：`docs/openapi/console-v1.yaml`

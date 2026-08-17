@@ -1,6 +1,8 @@
-//! SQLite persistence for the ported Console authentication and account lifecycle.
+//! SQLite persistence for the ported Console authentication, account, and
+//! registration lifecycle.
 
 mod account;
+mod registration;
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use sqlx::{FromRow, SqlitePool};
@@ -17,7 +19,8 @@ use super::super::{
     error::RepositoryError,
 };
 
-/// Feature-gated SQLite implementation of the ported Console auth/account storage.
+/// Feature-gated SQLite implementation of the ported Console auth/account/
+/// registration storage.
 ///
 /// This repository is directly constructible for backend contract tests. It
 /// is not selected by process configuration while the remaining SQLite
@@ -317,8 +320,8 @@ fn timestamp_text(value: DateTime<Utc>) -> String {
 
 /// SQLite's built-in `lower()` is ASCII-only, so every future SQLite user
 /// writer must persist this canonical form and lookups must compare it
-/// directly. Runtime SQLite dispatch remains disabled until those writers
-/// exist.
+/// directly. Runtime SQLite dispatch remains disabled while other repositories
+/// are incomplete.
 pub(super) fn canonical_email(value: &str) -> String {
     value.trim().to_lowercase()
 }
