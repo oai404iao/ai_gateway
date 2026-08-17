@@ -324,6 +324,7 @@ mod tests {
                 },
                 cost_amount: Some(Decimal::ZERO),
                 output_tokens_per_second: Some(Decimal::ONE),
+                peak_pricing: false,
             }),
             error_code: Some("model_not_found".into()),
             error_summary: None,

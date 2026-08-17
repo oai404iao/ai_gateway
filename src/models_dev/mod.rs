@@ -292,6 +292,7 @@ fn parse_advanced_billing(
     Ok(AdvancedBilling {
         long_context_tiers,
         request_multipliers: parse_service_tier_multipliers(model, cost),
+        time_multipliers: vec![],
     })
 }
 

@@ -18,6 +18,7 @@
 ## 其他外部服务
 
 - [Model Context Protocol 2026-07-28](mcp-2026-07-28.md)
+- [DeepSeek 峰谷定价](deepseek-peak-pricing.md)
 - [ip-api.com 代理出口 IP 查询](ip-api-proxy-test.md)
 
 ## 使用原则

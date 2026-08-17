@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use crate::domain::{ApiFormat, ApiOperation, RequestLogEvent, RequestProtocol};
 
-pub(crate) const REQUEST_LOG_SCHEMA_VERSION: i16 = 5;
+pub(crate) const REQUEST_LOG_SCHEMA_VERSION: i16 = 6;
 
 #[derive(Clone, Debug)]
 pub(crate) struct EncodedRequestLog {
@@ -28,6 +28,8 @@ impl EncodedRequestLog {
             2 => decode_v2(&self.payload)?,
             3 => decode_v3(&self.payload)?,
             4 => serde_json::from_slice::<RequestLogEvent>(&self.payload)
+                .map_err(JournalCodecError::Deserialize)?,
+            5 => serde_json::from_slice::<RequestLogEvent>(&self.payload)
                 .map_err(JournalCodecError::Deserialize)?,
             REQUEST_LOG_SCHEMA_VERSION => serde_json::from_slice::<RequestLogEvent>(&self.payload)
                 .map_err(JournalCodecError::Deserialize)?,
@@ -206,7 +208,9 @@ mod tests {
         assert_eq!(event.request_protocol, RequestProtocol::Sse);
         assert_eq!(event.reasoning_effort, None);
         assert!(!event.fast_mode);
-        assert_eq!(event.billing.unwrap().usage.unwrap().reasoning_tokens, 0);
+        let billing = event.billing.unwrap();
+        assert!(!billing.peak_pricing);
+        assert_eq!(billing.usage.unwrap().reasoning_tokens, 0);
     }
 
     #[test]
@@ -227,7 +231,23 @@ mod tests {
         );
         assert_eq!(event.reasoning_effort, None);
         assert!(!event.fast_mode);
-        assert_eq!(event.billing.unwrap().usage.unwrap().reasoning_tokens, 0);
+        let billing = event.billing.unwrap();
+        assert!(!billing.peak_pricing);
+        assert_eq!(billing.usage.unwrap().reasoning_tokens, 0);
+    }
+
+    #[test]
+    fn decodes_v5_payloads_with_default_peak_pricing() {
+        let id = Uuid::new_v4();
+        let event = EncodedRequestLog {
+            request_log_id: id,
+            schema_version: 5,
+            payload: usage_payload(id, Some("non_stream"), Some("chat_completions"), false),
+        }
+        .decode()
+        .unwrap();
+
+        assert!(!event.billing.unwrap().peak_pricing);
     }
 
     #[test]
@@ -307,5 +327,22 @@ mod tests {
             encoded.decode().unwrap().request_source,
             RequestLogSource::Mcp
         );
+    }
+
+    #[test]
+    fn current_writer_round_trips_peak_pricing_as_v6() {
+        let id = Uuid::new_v4();
+        let mut event = EncodedRequestLog {
+            request_log_id: id,
+            schema_version: 5,
+            payload: usage_payload(id, Some("non_stream"), Some("chat_completions"), false),
+        }
+        .decode()
+        .unwrap();
+        event.billing.as_mut().unwrap().peak_pricing = true;
+        let encoded = EncodedRequestLog::encode(&event).unwrap();
+
+        assert_eq!(encoded.schema_version, 6);
+        assert!(encoded.decode().unwrap().billing.unwrap().peak_pricing);
     }
 }

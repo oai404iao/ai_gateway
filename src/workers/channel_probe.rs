@@ -20,9 +20,9 @@ use uuid::Uuid;
 
 use crate::{
     application::{
-        AutomaticDisableService, ControlPlaneCoordinator, ErrorKeywordMatcher, RequestLogSink,
-        ResponseErrorDetails, ResponseUsage, UsageCollector, request_billing,
-        request_billing_multiplier,
+        AutomaticDisableService, ControlPlaneCoordinator, ErrorKeywordMatcher,
+        RequestBillingFactors, RequestLogSink, ResponseErrorDetails, ResponseUsage, UsageCollector,
+        request_billing, request_billing_multiplier,
     },
     domain::{
         ApiFormat, ApiOperation, AutomaticDisableTrigger, CompiledChannel,
@@ -500,8 +500,11 @@ fn finished_probe(
     let billing = request_billing(
         context.billing_model.price_snapshot(),
         context.billing_model.advanced_billing(),
-        context.channel.billing_multiplier(),
-        context.request_billing_multiplier,
+        RequestBillingFactors::new(
+            context.started_at,
+            context.channel.billing_multiplier(),
+            context.request_billing_multiplier,
+        ),
         usage,
         total_duration_ms,
         ttft_ms,
@@ -658,10 +661,11 @@ mod tests {
     use crate::{
         application::AutomaticDisableService,
         domain::{
-            ApiFormat, AutomaticDisableSettings, AutomaticDisableTrigger, ChannelTimeoutPolicy,
-            CompiledAdvancedBilling, CompiledChannel, CompiledChannelUpstreamPolicy,
-            CompiledScheduledTestModel, ModelPriceSnapshot, RequestLogOutcome, RequestLogSource,
-            RequestUsage, UpstreamAuth, UpstreamTimeoutDefaults,
+            AdvancedBilling, ApiFormat, AutomaticDisableSettings, AutomaticDisableTrigger,
+            BillingWeekday, ChannelTimeoutPolicy, CompiledAdvancedBilling, CompiledChannel,
+            CompiledChannelUpstreamPolicy, CompiledScheduledTestModel, ModelPriceSnapshot,
+            RequestLogOutcome, RequestLogSource, RequestUsage, TimeBillingMultiplier, UpstreamAuth,
+            UpstreamTimeoutDefaults,
         },
         persistence::SystemProbeIdentity,
         transforms::compile_document,
@@ -718,7 +722,26 @@ mod tests {
                 Decimal::from(3_i64),
                 Decimal::from(4_i64),
             ),
-            CompiledAdvancedBilling::default(),
+            CompiledAdvancedBilling::compile(AdvancedBilling {
+                time_multipliers: vec![
+                    TimeBillingMultiplier {
+                        label: "first half".into(),
+                        weekdays: BillingWeekday::ALL.to_vec(),
+                        start_time: "00:00".into(),
+                        end_time: "12:00".into(),
+                        multiplier: Decimal::from(2),
+                    },
+                    TimeBillingMultiplier {
+                        label: "second half".into(),
+                        weekdays: BillingWeekday::ALL.to_vec(),
+                        start_time: "12:00".into(),
+                        end_time: "00:00".into(),
+                        multiplier: Decimal::from(2),
+                    },
+                ],
+                ..AdvancedBilling::default()
+            })
+            .unwrap(),
         )
     }
 
@@ -932,7 +955,7 @@ mod tests {
                 reasoning_tokens: 1,
             })
         );
-        assert_eq!(billing.cost_amount, Some(Decimal::new(555, 1)));
+        assert_eq!(billing.cost_amount, Some(Decimal::from(111)));
         assert_eq!(requests.lock().unwrap().len(), 1);
     }
 

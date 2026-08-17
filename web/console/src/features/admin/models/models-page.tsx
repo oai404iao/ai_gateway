@@ -1,5 +1,7 @@
 import { useNavigate } from "react-router";
+import { Calculator } from "lucide-react";
 import { AdminListPage } from "@/features/admin/components/admin-list-page";
+import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { useModels } from "@/features/admin/api";
 import { groupModelsByProvider } from "@/features/admin/models/model-groups";
@@ -46,6 +48,24 @@ export function ModelsPage() {
           render: (model) => <StatusBadge value={model.enabled} />,
         },
         { key: "updated", header: t("Updated"), render: (model) => formatRelative(model.updated_at) },
+        {
+          key: "pricing",
+          header: t("Pricing"),
+          className: "w-0 text-right",
+          render: (model) => (
+            <Button
+              variant="outline"
+              size="sm"
+              aria-label={t("Configure pricing for {model}", {
+                model: model.display_name,
+              })}
+              onClick={() => navigate(`/admin/models/${model.id}/pricing`)}
+            >
+              <Calculator data-icon="inline-start" />
+              {t("Configure pricing")}
+            </Button>
+          ),
+        },
       ]}
     />
   );

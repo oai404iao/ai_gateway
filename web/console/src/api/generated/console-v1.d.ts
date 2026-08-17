@@ -2652,6 +2652,8 @@ export interface components {
             reasoning_tokens: number | null;
             /** @description Final request cost in USD, or null when not priced. */
             cost_amount: components["schemas"]["DecimalNullable"];
+            /** @description True when a weekly UTC time window selected a multiplier greater than one at request start. */
+            peak_pricing: boolean;
             error_code: string | null;
             /** @description Bounded upstream response or gateway/transport error detail when available. */
             error_summary: string | null;
@@ -3153,12 +3155,14 @@ export interface components {
             advanced_billing?: components["schemas"]["AdvancedBilling"];
             source_payload?: components["schemas"]["JsonValue"];
         };
-        /** @description Model-level pricing rules. Long-context tiers replace base input/cache prices and optionally the output price at or above their threshold; all matching request multipliers are multiplied together and apply to the whole request cost. */
+        /** @description Model-level pricing rules. Long-context tiers replace base input/cache prices and optionally the output price at or above their threshold; all matching request multipliers are multiplied together; one matching weekly UTC time multiplier applies according to the logical request start time. These multipliers combine with the selected channel multiplier and apply to the whole request cost. */
         AdvancedBilling: {
             /** @description Strictly ascending input-token thresholds. A threshold selects the complete request's tier prices, including an optional output price. */
             long_context_tiers: components["schemas"]["LongContextTier"][];
             /** @description Exact JSON Pointer matches evaluated against the original client request body before request transforms. */
             request_multipliers: components["schemas"]["RequestBillingMultiplier"][];
+            /** @description Optional non-overlapping weekly UTC windows. Missing or empty means every time uses multiplier 1. */
+            time_multipliers?: components["schemas"]["TimeBillingMultiplier"][];
         };
         LongContextTier: {
             /** @description Applies when reported input tokens are greater than or equal to this value. */
@@ -3175,6 +3179,21 @@ export interface components {
             /** @description Exact JSON value that activates this multiplier. */
             value: components["schemas"]["JsonValue"];
             /** @description Non-negative multiplier applied with every other matched request multiplier and the selected channel multiplier. */
+            multiplier: components["schemas"]["Decimal"];
+        };
+        /** @enum {string} */
+        BillingWeekday: "monday" | "tuesday" | "wednesday" | "thursday" | "friday" | "saturday" | "sunday";
+        /** @description A recurring weekly UTC window selected using the logical request start time. Weekdays identify the UTC day on which the window starts. Start is inclusive, end is exclusive, and a start later than the end wraps into the following UTC day. Windows must not overlap in actual weekly time and start/end must differ. */
+        TimeBillingMultiplier: {
+            /** @description Unique display label within this model's time windows. */
+            label: string;
+            /** @description UTC start weekdays. Omission preserves compatibility by applying the window every day. */
+            weekdays?: components["schemas"]["BillingWeekday"][];
+            /** @description Inclusive UTC time in HH:MM format. */
+            start_time: string;
+            /** @description Exclusive UTC time in HH:MM format. */
+            end_time: string;
+            /** @description Non-negative multiplier applied uniformly to input, cached-input, cache-write, and output unit prices in this window. */
             multiplier: components["schemas"]["Decimal"];
         };
         ChannelGroupInput: {

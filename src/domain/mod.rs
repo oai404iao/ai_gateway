@@ -15,8 +15,8 @@ pub use api_format::ApiFormat;
 pub use api_key::ApiKeyHash;
 pub use api_operation::ApiOperation;
 pub use billing::{
-    AdvancedBilling, AdvancedBillingError, CompiledAdvancedBilling, LongContextTier,
-    RequestBillingMultiplier,
+    AdvancedBilling, AdvancedBillingError, BillingWeekday, CompiledAdvancedBilling,
+    LongContextTier, RequestBillingMultiplier, TimeBillingMultiplier,
 };
 pub use compiled_routing::{
     ApiKeyPermission, AuthorizationProfile, ChannelTimeoutPolicy, CompiledApiKey,

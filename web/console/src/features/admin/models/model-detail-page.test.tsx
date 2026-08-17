@@ -56,6 +56,9 @@ describe("ModelDetailPage", () => {
     renderAppAt(`/admin/models/${MODEL.id}`);
 
     const editor = await screen.findByLabelText(/advanced billing/i);
+    expect(
+      screen.getByRole("button", { name: /configure pricing/i }),
+    ).toBeInTheDocument();
     fireEvent.change(editor, { target: { value: JSON.stringify(advancedBilling) } });
     await user.click(screen.getByRole("button", { name: /save upstream model/i }));
 

@@ -37,6 +37,7 @@ export type McpSearchExternalWebAccess = S["McpSearchExternalWebAccess"];
 export type McpSearchContextSize = S["McpSearchContextSize"];
 export type McpImageBackground = S["McpImageBackground"];
 export type McpImageQuality = S["McpImageQuality"];
+export type BillingWeekday = S["BillingWeekday"];
 
 // Auth + shared responses
 export type ErrorBody = S["ErrorBody"];
@@ -87,6 +88,7 @@ export type ControlPlaneModel = S["ControlPlaneModel"];
 export type AdvancedBilling = S["AdvancedBilling"];
 export type LongContextTier = S["LongContextTier"];
 export type RequestBillingMultiplier = S["RequestBillingMultiplier"];
+export type TimeBillingMultiplier = S["TimeBillingMultiplier"];
 export type ChannelGroupView = S["ChannelGroupView"];
 export type ChannelView = S["ChannelView"];
 export type ChannelDetailView = S["ChannelDetailView"];

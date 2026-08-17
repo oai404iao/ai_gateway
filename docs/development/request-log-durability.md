@@ -44,6 +44,14 @@ payload 缺少该字段时按 `0` 解码，因此这一扩展不要求排空现�
 分别按 `None` 和 `false` 解码，因此升级不要求排空已有 spool 或
 `request_log_ingest`。
 
+Journal v6 新增 `billing.peak_pricing`。它在请求开始时命中倍率大于 `1` 的每周 UTC
+价格窗口时写入 `true`，并投影到 `request_logs.peak_pricing`；v5 及更早 payload 按
+`false` 解码。版本号必须递增：共享数据库中仍运行的旧投影 Worker 会拒绝并保留 v6
+入口记录，而不是把未知字段忽略后错误写成 `false`；新 Worker 随后可正常投影。滚动升级
+应先完成数据库 migration 和所有实例替换，再依赖高峰标记；回滚到不支持 v6 的二进制前，
+必须排空新版本实例的本地 spool 与 `request_log_ingest`。该快照字段让 Console 的
+`Peak` 标记不依赖后来可能已修改的模型价格配置。
+
 ## 独立数据库连接池
 
 日志流水线使用独立的 SQLx PostgreSQL 连接池：

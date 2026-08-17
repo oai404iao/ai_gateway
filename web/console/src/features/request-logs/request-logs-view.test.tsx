@@ -89,6 +89,7 @@ describe("RequestLogsView", () => {
     expect(screen.getByLabelText("Reasoning tokens: 1")).toHaveTextContent("1");
     expect(screen.getByLabelText("Reasoning effort: High")).toHaveTextContent("High");
     expect(screen.getByLabelText("Fast mode")).toHaveTextContent("Fast");
+    expect(screen.queryByLabelText("Peak pricing")).not.toBeInTheDocument();
     const ttft = screen.getByLabelText("TTFT: 100 ms");
     const totalDuration = screen.getByLabelText("Total duration: 1 s");
     const tps = screen.getByLabelText("TPS: 4.4 tok/s");
@@ -149,6 +150,26 @@ describe("RequestLogsView", () => {
     await screen.findByText(REQUEST_LOG.client_model);
     expect(screen.queryByLabelText(/Reasoning effort:/)).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Fast mode")).not.toBeInTheDocument();
+  });
+
+  it("marks costs whose request start matched peak pricing", async () => {
+    seedAuthenticatedSession();
+    server.use(
+      http.get("/console/v1/me/request-logs", () =>
+        HttpResponse.json([
+          {
+            ...REQUEST_LOG,
+            peak_pricing: true,
+          },
+        ]),
+      ),
+    );
+
+    renderAppAt("/usage/request-logs");
+
+    const peak = await screen.findByLabelText("Peak pricing");
+    expect(peak).toHaveTextContent("Peak");
+    expect(peak.closest("td")).toHaveTextContent("0.0001 USD");
   });
 
   it("adds user and channel names only to the system request-log table", async () => {

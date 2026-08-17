@@ -511,6 +511,7 @@ export const REQUEST_LOG: RequestLogView = {
   output_tokens: 4,
   reasoning_tokens: 1,
   cost_amount: "0.0001",
+  peak_pricing: false,
   error_code: null,
   error_summary: null,
   billed_at: "2026-07-21T06:00:02Z",
