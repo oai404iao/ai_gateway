@@ -1,8 +1,11 @@
-//! SQLite schema and migration foundation.
+//! SQLite schema, storage adapters, and runtime-snapshot reader.
 //!
-//! Runtime repository dispatch is intentionally not exposed yet. This module
-//! owns the independent SQLite migration history so repository ports can be
-//! added without mixing SQL dialects or changing PostgreSQL checksums.
+//! Process-level runtime dispatch is intentionally not exposed until every
+//! repository is ported. This module keeps SQLite migrations, row mappings,
+//! and queries isolated from PostgreSQL dialect details and checksums.
+
+mod row;
+mod runtime;
 
 use std::{fmt, str::FromStr};
 
@@ -14,6 +17,8 @@ use sqlx::{
     types::Json,
 };
 use uuid::Uuid;
+
+pub use runtime::SqliteRuntimeConfigRepository;
 
 /// SQLite migration history for the optional backend implementation.
 pub static SQLITE_MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations/sqlite");

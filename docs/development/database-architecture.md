@@ -27,22 +27,28 @@
 
 ### SQLite 实现状态
 
-Cargo feature `sqlite-backend` 已提供第二后端的 schema 和首批存储类型基础，但还不是用户可选的
-运行模式：
+Cargo feature `sqlite-backend` 已提供第二后端的 schema、存储类型和 runtime-snapshot
+只读仓储，但还不是用户可选的运行模式：
 
 - `migrations/sqlite/0001_current_schema.sql` 是对应 PostgreSQL migration `0049` 之后结构的
   独立新基线；SQLite 从未发布过旧 schema，因此不复制 PostgreSQL 的 49 步历史。
 - `src/persistence/sqlite.rs` 暴露独立 `SQLITE_MIGRATOR`、精确十进制 TEXT adapter，以及
-  PostgreSQL `uuid[]`/`text[]` 对应的 JSON TEXT adapter。
+  PostgreSQL `uuid[]`/`text[]` 对应的 JSON TEXT adapter；`src/persistence/sqlite/row.rs`
+  把这些存储类型显式解码为后端中立记录。
+- `SqliteRuntimeConfigRepository` 已能在一个 SQLite read transaction 中加载完整
+  `RuntimeConfigRecords` 并交给相同的 runtime compiler，但进程启动仍不会选择这个仓储。
 - UUID 使用 16-byte BLOB，UTC 时间使用 RFC 3339 TEXT，JSON/数组使用 JSON TEXT，精确金额与
   单价使用十进制 TEXT；禁止经过 SQLite `REAL` 或 Rust `f64` 做计费运算。
 - schema 保留外键、主要 check/unique/index、审计 append-only 和 `request_logs` 单次结算边界。
   PostgreSQL 的 Codex projection PL/pgSQL trigger 不在 SQLite 中模拟；后续 SQLite 仓储必须在
   同一事务显式完成这些关联写入。
 - 文件连接的目标策略是 foreign keys、WAL、`synchronous=FULL` 和 busy timeout；当前测试固定
-  这些要求，运行时连接工厂会在后续仓储 PR 接入。
+  这些要求，运行时连接工厂会在其余仓储与 dispatch 完成后接入。
 - `tests/sqlite_schema_integration.rs` 在两个独立临时数据库上应用各自 migration，并固定 27 张
   领域表、334 个列及其 SQLite storage affinity、38 个外键和显式索引的一一对应。
+- `tests/sqlite_runtime_repository_integration.rs` 固定 UUID BLOB、decimal TEXT、JSON
+  list/document、时间和 secret 字段的 runtime record 解码，排除 system Key/deleted MCP 行，
+  并把读取结果送入现有 `compile_runtime_config`。
 
 `src/runtime_config/mod.rs` 仍只接受 `postgres://`/`postgresql://`，默认构建也不包含
 `sqlite-backend`。在 SQLite 仓储、事务和日志/结算实现完成前，不得把 `sqlite:` URL 写入配置
@@ -126,7 +132,7 @@ terminal RequestLogEvent
 ## 修改数据库的流程
 
 1. 新增有序 PostgreSQL migration，不修改已发布 migration；同时新增对应的 SQLite migration
-   并保持最终语义一致。SQLite `0001` 合并前仍是未发布基线，合并后同样只能向前追加。
+   并保持最终语义一致。SQLite `0001` 已是发布基线，后续同样只能向前追加。
 2. 同步 `src/persistence/` DTO/查询、领域类型、运行时编译器和 Console mutation。
 3. 若 Console API 形状变化，先改 `docs/openapi/console-v1.yaml`，再生成并提交 TypeScript 类型。
 4. 更新本文件或相应专题设计文档，但不要复制可从 migration 直接读取的完整列清单。
@@ -145,6 +151,8 @@ terminal RequestLogEvent
 - 后端中立运行时记录与错误：`src/persistence/records.rs`、`src/persistence/error.rs`
 - PostgreSQL row mapping 与仓储：`src/persistence/postgres/`
 - SQLite migration 与存储 adapter：`src/persistence/sqlite.rs`
+- SQLite runtime row mapping 与只读仓储：`src/persistence/sqlite/row.rs`、
+  `src/persistence/sqlite/runtime.rs`
 - 快照编译：`src/runtime_config/mod.rs`
 - 当前请求链路：[当前架构](architecture.md)
 - Console API：`docs/openapi/console-v1.yaml`

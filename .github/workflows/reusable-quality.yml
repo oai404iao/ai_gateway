@@ -80,6 +80,7 @@ jobs:
       - run: cargo test --locked --features mcp-server --test control_plane_integration codex_connector_forwards_responses_and_images_with_shared_credentials -- --exact
       - run: cargo test --locked --features sqlite-backend --lib
       - run: cargo test --locked --features sqlite-backend --test sqlite_schema_integration
+      - run: cargo test --locked --features sqlite-backend --test sqlite_runtime_repository_integration
 
   msrv:
     if: ${{ inputs.run_msrv }}
@@ -120,6 +121,7 @@ jobs:
       - run: cargo +1.92.0 test --locked --features mcp-server --test control_plane_integration codex_connector_forwards_responses_and_images_with_shared_credentials -- --exact
       - run: cargo +1.92.0 test --locked --features sqlite-backend --lib
       - run: cargo +1.92.0 test --locked --features sqlite-backend --test sqlite_schema_integration
+      - run: cargo +1.92.0 test --locked --features sqlite-backend --test sqlite_runtime_repository_integration
 
   console:
     if: ${{ inputs.run_console }}

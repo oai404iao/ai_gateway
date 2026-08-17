@@ -11,8 +11,9 @@ use sqlx::{
 /// Database engines understood by the persistence boundary.
 ///
 /// PostgreSQL remains the only connectable runtime repository backend. The
-/// feature-gated SQLite discriminator accompanies its schema/type foundation
-/// but is not returned by `DatabaseConnectOptions` until dispatch is added.
+/// feature-gated SQLite discriminator accompanies its schema/type and
+/// runtime-snapshot read foundation but is not returned by
+/// `DatabaseConnectOptions` until complete dispatch is added.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DatabaseBackend {
     Postgres,

@@ -15,4 +15,6 @@ pub use error::RepositoryError;
 pub use postgres::*;
 pub use records::*;
 #[cfg(feature = "sqlite-backend")]
-pub use sqlite::{SQLITE_MIGRATOR, SqliteDecimal, SqliteStringList, SqliteUuidList};
+pub use sqlite::{
+    SQLITE_MIGRATOR, SqliteDecimal, SqliteRuntimeConfigRepository, SqliteStringList, SqliteUuidList,
+};
