@@ -12,7 +12,7 @@ use sqlx::{
 ///
 /// PostgreSQL remains the only connectable runtime repository backend. The
 /// feature-gated SQLite discriminator accompanies its schema/type and
-/// runtime-snapshot/core Console auth foundation but is not returned by
+/// runtime-snapshot/Console auth-account foundation but is not returned by
 /// `DatabaseConnectOptions` until complete dispatch is added.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DatabaseBackend {

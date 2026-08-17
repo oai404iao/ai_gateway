@@ -91,10 +91,11 @@ cargo test --locked --workspace
   cargo test --locked --features sqlite-backend --test sqlite_schema_integration
   cargo test --locked --features sqlite-backend --test sqlite_runtime_repository_integration
   cargo test --locked --features sqlite-backend --test sqlite_auth_repository_integration
+  cargo test --locked --features sqlite-backend --test sqlite_account_repository_integration
   ```
 
   SQLite currently has an independent baseline, runtime-snapshot reader, and
-  directly tested core Console login/session repository, but process
+  directly tested Console login/session/account repositories, but process
   configuration and complete repository dispatch remain PostgreSQL-only.
 
 ## Forwarding path
