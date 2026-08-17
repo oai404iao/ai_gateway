@@ -49,7 +49,7 @@ VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
 - Rust format、workspace-wide clippy 与完整测试（包括性能工具的轻量单元测试）。
 - Console API 类型漂移检查、TypeScript、lint、组件测试与生产构建。
 - 启用 `embedded-console-ui,mcp-server` feature 的生产 Rust lint，同时单独验证
-  `sqlite-backend` migration/存储 adapter feature，并执行各自的定向测试。
+  `sqlite-backend` migration/存储 adapter/runtime-snapshot reader feature，并执行各自的定向测试。
 - Production Compose 解析。
 - 完整 Docker 镜像构建与容器内 `--version` smoke test。
 
