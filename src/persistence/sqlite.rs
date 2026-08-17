@@ -1,9 +1,11 @@
-//! SQLite schema, storage adapters, and runtime-snapshot reader.
+//! SQLite schema, storage adapters, runtime-snapshot reader, and core
+//! Console login/session repository.
 //!
 //! Process-level runtime dispatch is intentionally not exposed until every
 //! repository is ported. This module keeps SQLite migrations, row mappings,
 //! and queries isolated from PostgreSQL dialect details and checksums.
 
+mod auth;
 mod row;
 mod runtime;
 
@@ -18,6 +20,7 @@ use sqlx::{
 };
 use uuid::Uuid;
 
+pub use auth::SqliteAuthRepository;
 pub use runtime::SqliteRuntimeConfigRepository;
 
 /// SQLite migration history for the optional backend implementation.

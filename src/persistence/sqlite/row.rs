@@ -1,13 +1,18 @@
-//! SQLite `FromRow` mappings for backend-neutral runtime records.
+//! SQLite `FromRow` mappings for backend-neutral persistence records.
 
 use rust_decimal::Decimal;
 use serde_json::Value;
 use sqlx::{FromRow, Row, sqlite::SqliteRow, types::Json};
 use uuid::Uuid;
 
-use super::super::records::{
-    ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ConfigTemplateRecord, McpServerRecord,
-    ModelRecord, ModelRuleRecord, ProxyRecord, SystemSettingsRecord,
+use super::super::{
+    auth::{
+        ConsoleProfile, LiveConsoleIdentity, LoginUser, PasswordUser, RegistrationInvitationCode,
+    },
+    records::{
+        ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ConfigTemplateRecord, McpServerRecord,
+        ModelRecord, ModelRuleRecord, ProxyRecord, SystemSettingsRecord,
+    },
 };
 use super::{SqliteDecimal, SqliteStringList, SqliteUuidList};
 
@@ -192,6 +197,87 @@ impl<'row> FromRow<'row, SqliteRow> for McpServerRecord {
             settings_version: row.try_get("settings_version")?,
             settings: json_value(row, "settings")?,
             enabled: row.try_get("enabled")?,
+        })
+    }
+}
+
+impl<'row> FromRow<'row, SqliteRow> for LoginUser {
+    fn from_row(row: &'row SqliteRow) -> Result<Self, sqlx::Error> {
+        Ok(Self {
+            id: row.try_get("id")?,
+            email: row.try_get("email")?,
+            display_name: row.try_get("display_name")?,
+            role: row.try_get("role")?,
+            status: row.try_get("status")?,
+            password_hash: row.try_get("password_hash")?,
+            auth_version: row.try_get("auth_version")?,
+            password_change_required: row.try_get("password_change_required")?,
+            temporary_password_expires_at: row.try_get("temporary_password_expires_at")?,
+        })
+    }
+}
+
+impl<'row> FromRow<'row, SqliteRow> for LiveConsoleIdentity {
+    fn from_row(row: &'row SqliteRow) -> Result<Self, sqlx::Error> {
+        Ok(Self {
+            user_id: row.try_get("user_id")?,
+            email: row.try_get("email")?,
+            display_name: row.try_get("display_name")?,
+            role: row.try_get("role")?,
+            status: row.try_get("status")?,
+            auth_version: row.try_get("auth_version")?,
+            session_id: row.try_get("session_id")?,
+            expires_at: row.try_get("expires_at")?,
+            revoked_at: row.try_get("revoked_at")?,
+            session_purpose: row.try_get("session_purpose")?,
+        })
+    }
+}
+
+impl<'row> FromRow<'row, SqliteRow> for PasswordUser {
+    fn from_row(row: &'row SqliteRow) -> Result<Self, sqlx::Error> {
+        Ok(Self {
+            id: row.try_get("id")?,
+            password_hash: row.try_get("password_hash")?,
+            status: row.try_get("status")?,
+            role: row.try_get("role")?,
+            auth_version: row.try_get("auth_version")?,
+            password_change_required: row.try_get("password_change_required")?,
+            temporary_password_expires_at: row.try_get("temporary_password_expires_at")?,
+        })
+    }
+}
+
+impl<'row> FromRow<'row, SqliteRow> for ConsoleProfile {
+    fn from_row(row: &'row SqliteRow) -> Result<Self, sqlx::Error> {
+        Ok(Self {
+            id: row.try_get("id")?,
+            email: row.try_get("email")?,
+            display_name: row.try_get("display_name")?,
+            role: row.try_get("role")?,
+            status: row.try_get("status")?,
+            balance_amount: decimal(row, "balance_amount")?,
+            created_at: row.try_get("created_at")?,
+            updated_at: row.try_get("updated_at")?,
+        })
+    }
+}
+
+impl<'row> FromRow<'row, SqliteRow> for RegistrationInvitationCode {
+    fn from_row(row: &'row SqliteRow) -> Result<Self, sqlx::Error> {
+        Ok(Self {
+            id: row.try_get("id")?,
+            name: row.try_get("name")?,
+            max_uses: row.try_get("max_uses")?,
+            used_count: row.try_get("used_count")?,
+            expires_at: row.try_get("expires_at")?,
+            enabled: row.try_get("enabled")?,
+            user_group_id: row.try_get("user_group_id")?,
+            initial_balance_amount: decimal(row, "initial_balance_amount")?,
+            created_by: row.try_get("created_by")?,
+            last_used_at: row.try_get("last_used_at")?,
+            created_at: row.try_get("created_at")?,
+            updated_at: row.try_get("updated_at")?,
         })
     }
 }

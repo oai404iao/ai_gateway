@@ -67,7 +67,7 @@ repo/
 |   |-- transforms/             # Compiled constrained JSON/header/SSE/WebSocket-event transform DSL
 |   |-- upstream/               # Reused reqwest clients, Responses WebSocket pool/dialer, proxy policy, timeout resolution
 |   |-- persistence.rs          # Public persistence facade and backend-independent re-exports
-|   |-- persistence/            # Shared records/errors, opaque database types, PostgreSQL repositories, and feature-gated SQLite schema/read foundation
+|   |-- persistence/            # Shared records/errors/auth contracts, opaque database types, PostgreSQL repositories, and feature-gated SQLite schema/read/auth foundation
 |   `-- workers/                # Snapshot reload plus spool ingestion, DB projection, and settlement
 |-- migrations/                 # PostgreSQL history at root plus the independent SQLite baseline under sqlite/
 |-- tests/                      # Local, PostgreSQL, proxy, streaming, real-upstream, and console-spec integration tests
@@ -118,13 +118,14 @@ cargo check
 cargo fmt --check
 cargo clippy --all-targets               # also run with --features embedded-console-ui when that path changes
 cargo clippy --all-targets --features mcp-server # required when MCP transport/registry/tooling changes
-cargo clippy --all-targets --features sqlite-backend # SQLite schema/type/runtime-snapshot foundation
+cargo clippy --all-targets --features sqlite-backend # SQLite schema/type/runtime-snapshot/auth foundation
 cargo test                                # unit + local/PostgreSQL integration (needs `docker compose up -d`)
 cargo test --features mcp-server --lib    # MCP feature-gated unit coverage
 cargo test --features mcp-server --test mcp_integration # deterministic MCP protocol/session/Search/Images coverage
 cargo test --features sqlite-backend --lib # in-memory SQLite migration/storage-contract coverage
 cargo test --features sqlite-backend --test sqlite_schema_integration # PostgreSQL/SQLite table, column, affinity, FK, and index parity
 cargo test --features sqlite-backend --test sqlite_runtime_repository_integration # SQLite runtime-record decoding and snapshot compilation
+cargo test --features sqlite-backend --test sqlite_auth_repository_integration # SQLite core Console login/session lifecycle and replay safety
 cargo test --features mcp-server --test control_plane_integration codex_connector_forwards_responses_and_images_with_shared_credentials -- --exact # MCP Images edit through the Codex connector
 cargo test --features embedded-console-ui --lib console_ui # embedded-UI serving tests (needs built web/console/dist)
 cargo test --test console_spec_integration # OpenAPI spec/Console-API drift tests (needs PostgreSQL)
@@ -392,9 +393,11 @@ First decide which configuration layer owns the value:
    `cargo clippy --all-targets --features sqlite-backend` and
    `cargo test --features sqlite-backend --lib`,
    `cargo test --features sqlite-backend --test sqlite_schema_integration`, and
-   `cargo test --features sqlite-backend --test sqlite_runtime_repository_integration`. The
-   feature currently validates migration/storage contracts and the runtime-snapshot read path;
-   `[database].url` remains PostgreSQL-only until complete repository dispatch lands.
+   `cargo test --features sqlite-backend --test sqlite_runtime_repository_integration`, plus
+   `cargo test --features sqlite-backend --test sqlite_auth_repository_integration`. The feature
+   currently validates migration/storage contracts, the runtime-snapshot read path, and the core
+   Console login/session repository; `[database].url` remains PostgreSQL-only until complete
+   repository dispatch lands.
 
 ### Add or change a Console API endpoint or contract
 
@@ -540,7 +543,7 @@ pool isolation, transforms, and configured outbound proxies.
 | Documentation map and rules | `docs/README.md` and `docs/documentation-standard.md` |
 | Documentation validation | `python3 scripts/check-docs.py` |
 | Current architecture and constraints | `docs/development/architecture.md` |
-| Current database/control-plane architecture | `docs/development/database-architecture.md`, `src/persistence/records.rs`, PostgreSQL `migrations/*.sql`, and the SQLite schema/reader under `migrations/sqlite/` and `src/persistence/sqlite/` |
+| Current database/control-plane architecture | `docs/development/database-architecture.md`, `src/persistence/records.rs`, `src/persistence/auth.rs`, PostgreSQL `migrations/*.sql`, and the SQLite schema/repositories under `migrations/sqlite/` and `src/persistence/sqlite/` |
 | Superseded product/design history | `docs/archive/` |
 | Supported client formats | `src/domain/api_format.rs` |
 | Public data-plane route registry | `src/http/mod.rs` |

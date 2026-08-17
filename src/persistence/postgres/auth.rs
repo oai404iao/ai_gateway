@@ -4,7 +4,6 @@
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use serde::Serialize;
 use serde_json::json;
 use sqlx::FromRow;
 use subtle::ConstantTimeEq;
@@ -12,6 +11,12 @@ use uuid::Uuid;
 
 use crate::domain::{ConsoleSessionPurpose, UserRole};
 
+use super::super::auth::{
+    ConsoleProfile, ConsoleSession, ConsoleSessionState, InvitationCreated, InviteUserInput,
+    LiveConsoleIdentity, LoginUser, PasswordUser, RegistrationAttempt, RegistrationInvitationCode,
+    RegistrationInvitationCodeInput, RegistrationInvitationCodeMutation, SessionRotation,
+    SessionUser, TemporaryPasswordCreated,
+};
 use super::{
     DEFAULT_ADMIN_GROUP_ID, DEFAULT_USER_GROUP_ID, DatabasePool, RepositoryError,
     RepositoryTransaction,
@@ -1288,60 +1293,11 @@ fn parse_session_purpose(value: &str) -> Result<ConsoleSessionPurpose, Repositor
     ConsoleSessionPurpose::parse(value).ok_or(RepositoryError::Validation)
 }
 
-#[derive(Clone, FromRow)]
-pub struct LoginUser {
-    pub id: Uuid,
-    pub email: Option<String>,
-    pub display_name: String,
-    pub role: String,
-    pub status: String,
-    pub password_hash: Option<String>,
-    pub auth_version: i64,
-    pub password_change_required: bool,
-    pub temporary_password_expires_at: Option<DateTime<Utc>>,
-}
-
-#[derive(Clone, FromRow)]
-pub struct LiveConsoleIdentity {
-    pub user_id: Uuid,
-    pub email: Option<String>,
-    pub display_name: String,
-    pub role: String,
-    pub status: String,
-    pub auth_version: i64,
-    pub session_id: Uuid,
-    pub expires_at: DateTime<Utc>,
-    pub revoked_at: Option<DateTime<Utc>>,
-    pub session_purpose: String,
-}
-
-#[derive(FromRow)]
-pub struct PasswordUser {
-    pub id: Uuid,
-    pub password_hash: Option<String>,
-    pub status: String,
-    pub role: String,
-    pub auth_version: i64,
-    pub password_change_required: bool,
-    pub temporary_password_expires_at: Option<DateTime<Utc>>,
-}
-
 #[derive(FromRow)]
 struct PasswordResetAdmin {
     id: Uuid,
     email: Option<String>,
     auth_version: i64,
-}
-
-#[derive(Clone)]
-pub struct SessionUser {
-    pub id: Uuid,
-    pub email: Option<String>,
-    pub display_name: String,
-    pub role: UserRole,
-    pub auth_version: i64,
-    pub session_purpose: ConsoleSessionPurpose,
-    pub temporary_password_expires_at: Option<DateTime<Utc>>,
 }
 
 #[derive(FromRow)]
@@ -1358,22 +1314,6 @@ struct SessionForRotation {
     auth_version: i64,
     password_change_required: bool,
     temporary_password_expires_at: Option<DateTime<Utc>>,
-}
-
-pub enum SessionRotation {
-    Rotated {
-        user: SessionUser,
-        refresh_expires_at: DateTime<Utc>,
-    },
-    Invalid,
-    Replayed,
-}
-
-#[derive(Clone, Debug)]
-pub struct TemporaryPasswordCreated {
-    pub user_id: Uuid,
-    pub expires_at: DateTime<Utc>,
-    pub correlation_id: Uuid,
 }
 
 #[derive(FromRow)]
@@ -1398,14 +1338,6 @@ struct TemporaryPasswordCompletionUser {
     session_revoked_at: Option<DateTime<Utc>>,
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ConsoleSessionState {
-    Active,
-    Expired,
-    Revoked,
-}
-
 #[derive(Clone, Debug, FromRow)]
 struct StoredConsoleSession {
     id: Uuid,
@@ -1414,86 +1346,6 @@ struct StoredConsoleSession {
     last_seen_at: DateTime<Utc>,
     expires_at: DateTime<Utc>,
     revoked_at: Option<DateTime<Utc>>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct ConsoleSession {
-    pub id: Uuid,
-    pub user_agent: Option<String>,
-    pub created_at: DateTime<Utc>,
-    pub last_seen_at: DateTime<Utc>,
-    pub expires_at: DateTime<Utc>,
-    pub revoked_at: Option<DateTime<Utc>>,
-    pub state: ConsoleSessionState,
-    pub is_current: bool,
-}
-
-#[derive(Clone, Debug, Serialize, FromRow)]
-pub struct ConsoleProfile {
-    pub id: Uuid,
-    pub email: Option<String>,
-    pub display_name: String,
-    pub role: String,
-    pub status: String,
-    pub balance_amount: rust_decimal::Decimal,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
-#[derive(Clone)]
-pub struct InviteUserInput {
-    pub email: String,
-    pub display_name: String,
-    pub role: UserRole,
-    pub initial_balance_amount: rust_decimal::Decimal,
-    pub user_group_id: Option<Uuid>,
-    pub default_api_key_policy_id: Option<Uuid>,
-}
-
-#[derive(Clone, Debug)]
-pub struct InvitationCreated {
-    pub user_id: Uuid,
-    pub invitation_id: Uuid,
-    pub expires_at: DateTime<Utc>,
-    pub correlation_id: Uuid,
-}
-
-#[derive(Clone, Debug, Serialize, FromRow)]
-pub struct RegistrationInvitationCode {
-    pub id: Uuid,
-    pub name: String,
-    pub max_uses: Option<i64>,
-    pub used_count: i64,
-    pub expires_at: Option<DateTime<Utc>>,
-    pub enabled: bool,
-    pub user_group_id: Uuid,
-    pub initial_balance_amount: rust_decimal::Decimal,
-    pub created_by: Uuid,
-    pub last_used_at: Option<DateTime<Utc>>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
-#[derive(Clone)]
-pub struct RegistrationInvitationCodeInput {
-    pub name: String,
-    pub max_uses: Option<i64>,
-    pub expires_at: Option<DateTime<Utc>>,
-    pub enabled: bool,
-    pub user_group_id: Uuid,
-    pub initial_balance_amount: rust_decimal::Decimal,
-}
-
-#[derive(Clone, Debug)]
-pub struct RegistrationInvitationCodeMutation {
-    pub id: Uuid,
-    pub correlation_id: Uuid,
-}
-
-pub enum RegistrationAttempt {
-    Registered(SessionUser),
-    InvalidCode,
-    EmailConflict,
 }
 
 #[derive(FromRow)]

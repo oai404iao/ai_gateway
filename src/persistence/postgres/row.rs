@@ -1,10 +1,15 @@
-//! PostgreSQL `FromRow` mappings for backend-neutral runtime records.
+//! PostgreSQL `FromRow` mappings for backend-neutral persistence records.
 
 use sqlx::{FromRow, Row, postgres::PgRow};
 
-use super::super::records::{
-    ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ConfigTemplateRecord, McpServerRecord,
-    ModelRecord, ModelRuleRecord, ProxyRecord, SystemSettingsRecord, UserSettingsView,
+use super::super::{
+    auth::{
+        ConsoleProfile, LiveConsoleIdentity, LoginUser, PasswordUser, RegistrationInvitationCode,
+    },
+    records::{
+        ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ConfigTemplateRecord, McpServerRecord,
+        ModelRecord, ModelRuleRecord, ProxyRecord, SystemSettingsRecord, UserSettingsView,
+    },
 };
 
 macro_rules! impl_postgres_from_row {
@@ -147,4 +152,65 @@ impl_postgres_from_row!(McpServerRecord {
     settings_version,
     settings,
     enabled,
+});
+
+impl_postgres_from_row!(LoginUser {
+    id,
+    email,
+    display_name,
+    role,
+    status,
+    password_hash,
+    auth_version,
+    password_change_required,
+    temporary_password_expires_at,
+});
+
+impl_postgres_from_row!(LiveConsoleIdentity {
+    user_id,
+    email,
+    display_name,
+    role,
+    status,
+    auth_version,
+    session_id,
+    expires_at,
+    revoked_at,
+    session_purpose,
+});
+
+impl_postgres_from_row!(PasswordUser {
+    id,
+    password_hash,
+    status,
+    role,
+    auth_version,
+    password_change_required,
+    temporary_password_expires_at,
+});
+
+impl_postgres_from_row!(ConsoleProfile {
+    id,
+    email,
+    display_name,
+    role,
+    status,
+    balance_amount,
+    created_at,
+    updated_at,
+});
+
+impl_postgres_from_row!(RegistrationInvitationCode {
+    id,
+    name,
+    max_uses,
+    used_count,
+    expires_at,
+    enabled,
+    user_group_id,
+    initial_balance_amount,
+    created_by,
+    last_used_at,
+    created_at,
+    updated_at,
 });
