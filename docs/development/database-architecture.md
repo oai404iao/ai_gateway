@@ -17,9 +17,10 @@
 应用层不直接持有 SQLx 的 PostgreSQL 连接、连接池或 transaction 类型。启动、系统负载和应用服务
 通过 `src/persistence/database.rs` 暴露的 `DatabaseConnectOptions`、`DatabasePool` 和
 `RepositoryTransaction` 使用不透明边界；当前唯一可启动和注册仓储的实现仍是 PostgreSQL。
-后端中立的运行时快照记录、系统设置契约和仓储错误分别位于 `src/persistence/records.rs` 与
-`src/persistence/error.rs`。具体 SQL、COPY、PostgreSQL 查询构造、`FromRow` mapping 和仓储实现
-位于 `src/persistence/postgres/`；公共 DTO 与仓储 API 继续从 `src/persistence.rs` 重导出。
+后端中立的运行时快照记录、Console auth/session 契约、系统设置契约和仓储错误分别位于
+`src/persistence/records.rs`、`src/persistence/auth.rs` 与 `src/persistence/error.rs`。具体
+SQL、COPY、PostgreSQL 查询构造、`FromRow` mapping 和仓储实现位于
+`src/persistence/postgres/`；公共 DTO 与仓储 API 继续从 `src/persistence.rs` 重导出。
 
 这个边界不表示当前已经支持其他数据库，也不改变 PostgreSQL migration 或事务语义。新增后端必须
 提供独立 schema/migration 和仓储实现，并通过相同应用层 API 与持久化契约测试，不能依赖
@@ -27,8 +28,8 @@
 
 ### SQLite 实现状态
 
-Cargo feature `sqlite-backend` 已提供第二后端的 schema、存储类型和 runtime-snapshot
-只读仓储，但还不是用户可选的运行模式：
+Cargo feature `sqlite-backend` 已提供第二后端的 schema、存储类型、runtime-snapshot
+只读仓储和 core Console login/session 仓储，但还不是用户可选的运行模式：
 
 - `migrations/sqlite/0001_current_schema.sql` 是对应 PostgreSQL migration `0049` 之后结构的
   独立新基线；SQLite 从未发布过旧 schema，因此不复制 PostgreSQL 的 49 步历史。
@@ -37,6 +38,12 @@ Cargo feature `sqlite-backend` 已提供第二后端的 schema、存储类型和
   把这些存储类型显式解码为后端中立记录。
 - `SqliteRuntimeConfigRepository` 已能在一个 SQLite read transaction 中加载完整
   `RuntimeConfigRecords` 并交给相同的 runtime compiler，但进程启动仍不会选择这个仓储。
+- `SqliteAuthRepository` 已直接实现 login identity、Session 创建/校验/列举/撤销和 refresh
+  token rotation/replay 撤销。rotation 使用 `BEGIN IMMEDIATE` 在读取 hash 前取得 SQLite write
+  lock；并发提交同一旧 refresh token 时只允许一次 rotation，随后 replay 会撤销该 Session。
+  SQLite 内建 `lower()` 仅处理 ASCII，因此该仓储按 Rust Unicode lowercase 后的 canonical email
+  精确查询；后续 SQLite user writer 必须持久化同一形式。Profile、password mutation、邀请/注册
+  和审计写入仍只由 PostgreSQL 仓储实现。
 - UUID 使用 16-byte BLOB，UTC 时间使用 RFC 3339 TEXT，JSON/数组使用 JSON TEXT，精确金额与
   单价使用十进制 TEXT；禁止经过 SQLite `REAL` 或 Rust `f64` 做计费运算。
 - schema 保留外键、主要 check/unique/index、审计 append-only 和 `request_logs` 单次结算边界。
@@ -49,6 +56,9 @@ Cargo feature `sqlite-backend` 已提供第二后端的 schema、存储类型和
 - `tests/sqlite_runtime_repository_integration.rs` 固定 UUID BLOB、decimal TEXT、JSON
   list/document、时间和 secret 字段的 runtime record 解码，排除 system Key/deleted MCP 行，
   并把读取结果送入现有 `compile_runtime_config`。
+- `tests/sqlite_auth_repository_integration.rs` 固定 login/access identity、normal/password-change
+  Session、refresh rotation/replay、并发 write-lock、ownership revocation、Session ordering/state
+  和 malformed timestamp fail-closed 行为。
 
 `src/runtime_config/mod.rs` 仍只接受 `postgres://`/`postgresql://`，默认构建也不包含
 `sqlite-backend`。在 SQLite 仓储、事务和日志/结算实现完成前，不得把 `sqlite:` URL 写入配置
@@ -141,18 +151,22 @@ terminal RequestLogEvent
 6. 运行 PostgreSQL 相关 Rust 门禁和 Console 契约测试；涉及 SQLite 时还要运行
    `cargo clippy --all-targets --features sqlite-backend` 和
    `cargo test --features sqlite-backend --lib`，再运行
-   `cargo test --features sqlite-backend --test sqlite_schema_integration`。
+   `cargo test --features sqlite-backend --test sqlite_schema_integration`、
+   `cargo test --features sqlite-backend --test sqlite_runtime_repository_integration` 与
+   `cargo test --features sqlite-backend --test sqlite_auth_repository_integration`。
 
 ## 来源
 
 - PostgreSQL schema：`migrations/*.sql`
 - SQLite schema：`migrations/sqlite/*.sql`
 - 数据库不透明边界：`src/persistence/database.rs`
-- 后端中立运行时记录与错误：`src/persistence/records.rs`、`src/persistence/error.rs`
+- 后端中立运行时记录、auth/session 契约与错误：`src/persistence/records.rs`、
+  `src/persistence/auth.rs`、`src/persistence/error.rs`
 - PostgreSQL row mapping 与仓储：`src/persistence/postgres/`
 - SQLite migration 与存储 adapter：`src/persistence/sqlite.rs`
 - SQLite runtime row mapping 与只读仓储：`src/persistence/sqlite/row.rs`、
   `src/persistence/sqlite/runtime.rs`
+- SQLite core Console login/session 仓储：`src/persistence/sqlite/auth.rs`
 - 快照编译：`src/runtime_config/mod.rs`
 - 当前请求链路：[当前架构](architecture.md)
 - Console API：`docs/openapi/console-v1.yaml`
