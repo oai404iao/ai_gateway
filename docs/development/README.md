@@ -13,6 +13,8 @@
   转发、Codex 凭证共享投影，以及 replayable 大 body 边界。
 - [数据库与控制面架构](database-architecture.md)：当前持久化实体组、快照编译和 schema
   修改流程；逐列结构以 migration 为准。
+- [数据库 Repository 契约与 M1 方法台账](database-repository-contracts.md)：当前后端中立
+  契约、104 个 repository 操作基线、事务意图、错误与 outcome 语义。
 - [数据库后端抽象与 SQLite 完成总计划](database-backend-completion-plan.md)：**提案**；
   完整数据库 facade、生产级 SQLite 功能等价与分阶段实施的控制性路线图，不代表当前可用能力。
 - [Console 认证与授权设计记录](console-auth.md)

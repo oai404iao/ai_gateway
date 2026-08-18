@@ -884,7 +884,7 @@ async fn sqlite_account_repository_rolls_back_when_audit_insertion_fails() {
                 OLD_HASH,
             )
             .await,
-        Err(RepositoryError::Sql(_))
+        Err(RepositoryError::Constraint(_))
     ));
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT count(*) FROM users")
@@ -938,7 +938,7 @@ async fn sqlite_account_repository_rolls_back_when_audit_insertion_fails() {
                 Duration::from_secs(60),
             )
             .await,
-        Err(RepositoryError::Sql(_))
+        Err(RepositoryError::Constraint(_))
     ));
     assert_eq!(
         sqlx::query_as::<_, (String, i64, bool)>(
@@ -965,7 +965,7 @@ async fn sqlite_account_repository_rolls_back_when_audit_insertion_fails() {
         repository
             .reset_active_admin_password("ROLLBACK-ADMIN@EXAMPLE.TEST", PERMANENT_HASH)
             .await,
-        Err(RepositoryError::Sql(_))
+        Err(RepositoryError::Constraint(_))
     ));
     assert_eq!(
         sqlx::query_as::<_, (String, i64)>(
@@ -1023,7 +1023,7 @@ async fn sqlite_account_repository_rolls_back_when_audit_insertion_fails() {
         repository
             .complete_temporary_password(USER_ID, PASSWORD_SESSION_ID, 2, PERMANENT_HASH)
             .await,
-        Err(RepositoryError::Sql(_))
+        Err(RepositoryError::Constraint(_))
     ));
     assert_eq!(
         sqlx::query_as::<_, (String, i64, bool)>(

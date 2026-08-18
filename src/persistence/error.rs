@@ -1,12 +1,70 @@
 //! Backend-neutral persistence failure contract.
 
+use std::{
+    error::Error as StdError,
+    fmt::{self, Debug, Display, Formatter},
+};
+
 use thiserror::Error;
 use uuid::Uuid;
 
+/// Opaque source retained for persistence failures.
+///
+/// Persistence adapters preserve the concrete backend error privately, but
+/// this wrapper is the terminal standard error source. Its formatting and
+/// source chain never expose the concrete value.
+pub struct RepositoryErrorSource {
+    _source: Box<dyn StdError + Send + Sync + 'static>,
+}
+
+impl RepositoryErrorSource {
+    pub(crate) fn new(source: impl StdError + Send + Sync + 'static) -> Self {
+        Self {
+            _source: Box::new(source),
+        }
+    }
+}
+
+impl Debug for RepositoryErrorSource {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RepositoryErrorSource")
+            .finish_non_exhaustive()
+    }
+}
+
+impl Display for RepositoryErrorSource {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter.write_str("opaque persistence backend failure")
+    }
+}
+
+impl StdError for RepositoryErrorSource {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+        None
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum RepositoryError {
-    #[error("control-plane database operation failed")]
-    Sql(#[from] sqlx::Error),
+    #[error("repository transaction conflicted with another transaction")]
+    TransactionConflict(#[source] RepositoryErrorSource),
+    #[error("repository constraint rejected the operation")]
+    Constraint(#[source] RepositoryErrorSource),
+    #[error("repository storage is busy")]
+    Busy(#[source] RepositoryErrorSource),
+    #[error("repository operation timed out")]
+    Timeout(#[source] RepositoryErrorSource),
+    #[error("repository and transaction belong to different backends or pool identities")]
+    BackendMismatch,
+    #[error("repository data or storage is corrupt")]
+    Corrupt(#[source] RepositoryErrorSource),
+    #[error("repository storage is unavailable")]
+    StorageUnavailable(#[source] RepositoryErrorSource),
+    #[error("repository migration failed")]
+    Migration(#[source] RepositoryErrorSource),
+    #[error("repository database operation failed")]
+    DatabaseFailure(#[source] RepositoryErrorSource),
     #[error("request log response status is outside the HTTP range")]
     InvalidResponseStatus { status: u16 },
     #[error("request log id already exists with different immutable facts")]

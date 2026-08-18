@@ -167,3 +167,35 @@ pub enum RegistrationAttempt {
 pub(super) fn normalize_numeric_24_8(value: Decimal) -> Decimal {
     value.round_dp_with_strategy(8, RoundingStrategy::MidpointAwayFromZero)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use rust_decimal::Decimal;
+
+    use super::normalize_numeric_24_8;
+
+    #[test]
+    fn numeric_24_8_rounds_midpoints_away_from_zero() {
+        let positive = Decimal::from_str("1.234567885").unwrap();
+        let negative = Decimal::from_str("-1.234567885").unwrap();
+
+        assert_eq!(
+            normalize_numeric_24_8(positive),
+            Decimal::from_str("1.23456789").unwrap()
+        );
+        assert_eq!(
+            normalize_numeric_24_8(negative),
+            Decimal::from_str("-1.23456789").unwrap()
+        );
+    }
+
+    #[test]
+    fn numeric_24_8_normalization_is_idempotent() {
+        for value in ["1.234567885", "-1.234567885", "9999999999999999.99999999"] {
+            let normalized = normalize_numeric_24_8(Decimal::from_str(value).unwrap());
+            assert_eq!(normalize_numeric_24_8(normalized), normalized);
+        }
+    }
+}

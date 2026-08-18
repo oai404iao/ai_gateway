@@ -101,7 +101,7 @@ impl ControlPlaneCoordinator {
 
     pub async fn manual_reload(&self, actor: Uuid) -> Result<Uuid, ControlPlaneError> {
         let _guard = self.serial.lock().await;
-        let mut transaction = self.repository.begin_serializable().await?;
+        let mut transaction = self.repository.begin_management_write().await?;
         if !self
             .repository
             .active_admin_exists(&mut transaction, actor)
@@ -115,7 +115,7 @@ impl ControlPlaneCoordinator {
         self.repository
             .insert_manual_reload_audit(&mut transaction, actor, correlation_id)
             .await?;
-        transaction.commit().await.map_err(RepositoryError::from)?;
+        transaction.commit().await?;
         self.publish(next);
         Ok(correlation_id)
     }
@@ -165,7 +165,7 @@ impl ControlPlaneCoordinator {
         input: UserSettingsInput,
     ) -> Result<UserSettingsView, ControlPlaneError> {
         let _guard = self.serial.lock().await;
-        let mut transaction = self.repository.begin_serializable().await?;
+        let mut transaction = self.repository.begin_management_write().await?;
         let settings = self
             .repository
             .update_user_settings(&mut transaction, user_id, input)
@@ -173,7 +173,7 @@ impl ControlPlaneCoordinator {
             .ok_or(RepositoryError::NotFound)?;
         let candidate = self.compile_transaction(&mut transaction).await?;
         self.validate_candidate(&candidate)?;
-        transaction.commit().await.map_err(RepositoryError::from)?;
+        transaction.commit().await?;
         self.publish(candidate);
         tracing::info!(
             %user_id,
@@ -208,7 +208,7 @@ impl ControlPlaneCoordinator {
         mutation: ControlPlaneMutation,
     ) -> Result<MutationResult, ControlPlaneError> {
         let _guard = self.serial.lock().await;
-        let mut transaction = self.repository.begin_serializable().await?;
+        let mut transaction = self.repository.begin_management_write().await?;
         if !self
             .repository
             .active_admin_exists(&mut transaction, actor)
@@ -226,7 +226,7 @@ impl ControlPlaneCoordinator {
         self.repository
             .insert_audit(&mut transaction, actor, &result, correlation_id)
             .await?;
-        transaction.commit().await.map_err(RepositoryError::from)?;
+        transaction.commit().await?;
         self.publish(candidate);
         tracing::info!(%correlation_id, object_type = result.object_type, action = result.action, "management mutation committed");
         Ok(MutationResult {
@@ -241,7 +241,7 @@ impl ControlPlaneCoordinator {
         input: ChannelBatchUpdateInput,
     ) -> Result<ChannelBatchUpdateResult, ControlPlaneError> {
         let _guard = self.serial.lock().await;
-        let mut transaction = self.repository.begin_serializable().await?;
+        let mut transaction = self.repository.begin_management_write().await?;
         if !self
             .repository
             .active_admin_exists(&mut transaction, actor)
@@ -261,7 +261,7 @@ impl ControlPlaneCoordinator {
                 .insert_audit(&mut transaction, actor, mutation, correlation_id)
                 .await?;
         }
-        transaction.commit().await.map_err(RepositoryError::from)?;
+        transaction.commit().await?;
         self.publish(candidate);
         tracing::info!(
             %correlation_id,
@@ -281,7 +281,7 @@ impl ControlPlaneCoordinator {
         oauth_flow_id: Option<Uuid>,
     ) -> Result<MutationResult, ControlPlaneError> {
         let _guard = self.serial.lock().await;
-        let mut transaction = self.repository.begin_serializable().await?;
+        let mut transaction = self.repository.begin_management_write().await?;
         if !self
             .repository
             .active_admin_exists(&mut transaction, actor)
@@ -299,7 +299,7 @@ impl ControlPlaneCoordinator {
         self.repository
             .insert_audit(&mut transaction, actor, &result, correlation_id)
             .await?;
-        transaction.commit().await.map_err(RepositoryError::from)?;
+        transaction.commit().await?;
         self.publish(candidate);
         Ok(MutationResult {
             correlation_id: Some(correlation_id),
@@ -315,7 +315,7 @@ impl ControlPlaneCoordinator {
         expected_updated_at: chrono::DateTime<chrono::Utc>,
     ) -> Result<MutationResult, ControlPlaneError> {
         let _guard = self.serial.lock().await;
-        let mut transaction = self.repository.begin_serializable().await?;
+        let mut transaction = self.repository.begin_management_write().await?;
         if !self
             .repository
             .active_admin_exists(&mut transaction, actor)
@@ -333,7 +333,7 @@ impl ControlPlaneCoordinator {
         self.repository
             .insert_audit(&mut transaction, actor, &result, correlation_id)
             .await?;
-        transaction.commit().await.map_err(RepositoryError::from)?;
+        transaction.commit().await?;
         self.publish(candidate);
         Ok(MutationResult {
             correlation_id: Some(correlation_id),
@@ -348,7 +348,7 @@ impl ControlPlaneCoordinator {
         expected_updated_at: chrono::DateTime<chrono::Utc>,
     ) -> Result<MutationResult, ControlPlaneError> {
         let _guard = self.serial.lock().await;
-        let mut transaction = self.repository.begin_serializable().await?;
+        let mut transaction = self.repository.begin_management_write().await?;
         if !self
             .repository
             .active_admin_exists(&mut transaction, actor)
@@ -366,7 +366,7 @@ impl ControlPlaneCoordinator {
         self.repository
             .insert_audit(&mut transaction, actor, &result, correlation_id)
             .await?;
-        transaction.commit().await.map_err(RepositoryError::from)?;
+        transaction.commit().await?;
         self.publish(candidate);
         Ok(MutationResult {
             correlation_id: Some(correlation_id),
@@ -381,7 +381,7 @@ impl ControlPlaneCoordinator {
         input: CodexCredentialBatchInput,
     ) -> Result<CodexCredentialBatchResult, ControlPlaneError> {
         let _guard = self.serial.lock().await;
-        let mut transaction = self.repository.begin_serializable().await?;
+        let mut transaction = self.repository.begin_management_write().await?;
         if !self
             .repository
             .active_admin_exists(&mut transaction, actor)
@@ -401,7 +401,7 @@ impl ControlPlaneCoordinator {
                 .insert_audit(&mut transaction, actor, mutation, correlation_id)
                 .await?;
         }
-        transaction.commit().await.map_err(RepositoryError::from)?;
+        transaction.commit().await?;
         self.publish(candidate);
         Ok(CodexCredentialBatchResult {
             updated_ids: mutations.into_iter().map(|mutation| mutation.id).collect(),
@@ -415,7 +415,7 @@ impl ControlPlaneCoordinator {
         input: UserBatchUpdateInput,
     ) -> Result<UserBatchUpdateResult, ControlPlaneError> {
         let _guard = self.serial.lock().await;
-        let mut transaction = self.repository.begin_serializable().await?;
+        let mut transaction = self.repository.begin_management_write().await?;
         if !self
             .repository
             .active_admin_exists(&mut transaction, actor)
@@ -435,7 +435,7 @@ impl ControlPlaneCoordinator {
                 .insert_audit(&mut transaction, actor, mutation, correlation_id)
                 .await?;
         }
-        transaction.commit().await.map_err(RepositoryError::from)?;
+        transaction.commit().await?;
         self.publish(candidate);
         tracing::info!(
             %correlation_id,
@@ -477,7 +477,7 @@ impl ControlPlaneCoordinator {
         input: SelfApiKeyCreate,
     ) -> Result<MutationResult, ControlPlaneError> {
         let _guard = self.serial.lock().await;
-        let mut transaction = self.repository.begin_serializable().await?;
+        let mut transaction = self.repository.begin_management_write().await?;
         if !self
             .repository
             .active_user_exists(&mut transaction, actor)
@@ -495,7 +495,7 @@ impl ControlPlaneCoordinator {
         self.repository
             .insert_self_audit(&mut transaction, actor, &result, correlation_id)
             .await?;
-        transaction.commit().await.map_err(RepositoryError::from)?;
+        transaction.commit().await?;
         self.publish(candidate);
         Ok(MutationResult {
             correlation_id: Some(correlation_id),
@@ -511,7 +511,7 @@ impl ControlPlaneCoordinator {
         expected_updated_at: chrono::DateTime<chrono::Utc>,
     ) -> Result<MutationResult, ControlPlaneError> {
         let _guard = self.serial.lock().await;
-        let mut transaction = self.repository.begin_serializable().await?;
+        let mut transaction = self.repository.begin_management_write().await?;
         if !self
             .repository
             .active_user_exists(&mut transaction, actor)
@@ -529,7 +529,7 @@ impl ControlPlaneCoordinator {
         self.repository
             .insert_self_audit(&mut transaction, actor, &result, correlation_id)
             .await?;
-        transaction.commit().await.map_err(RepositoryError::from)?;
+        transaction.commit().await?;
         self.publish(candidate);
         Ok(MutationResult {
             correlation_id: Some(correlation_id),
@@ -544,7 +544,7 @@ impl ControlPlaneCoordinator {
         reason: String,
     ) -> Result<MutationResult, ControlPlaneError> {
         let _guard = self.serial.lock().await;
-        let mut transaction = self.repository.begin_serializable().await?;
+        let mut transaction = self.repository.begin_management_write().await?;
         if !self
             .repository
             .active_user_exists(&mut transaction, actor)
@@ -562,7 +562,7 @@ impl ControlPlaneCoordinator {
         self.repository
             .insert_self_audit(&mut transaction, actor, &result, correlation_id)
             .await?;
-        transaction.commit().await.map_err(RepositoryError::from)?;
+        transaction.commit().await?;
         self.publish(candidate);
         Ok(MutationResult {
             correlation_id: Some(correlation_id),
@@ -586,7 +586,7 @@ impl ControlPlaneCoordinator {
         inputs: Vec<SyncedModelInput>,
     ) -> Result<ModelSyncResult, ControlPlaneError> {
         let _guard = self.serial.lock().await;
-        let mut transaction = self.repository.begin_serializable().await?;
+        let mut transaction = self.repository.begin_management_write().await?;
         if !self
             .repository
             .active_admin_exists(&mut transaction, actor)
@@ -606,7 +606,7 @@ impl ControlPlaneCoordinator {
                 .insert_audit(&mut transaction, actor, mutation, correlation_id)
                 .await?;
         }
-        transaction.commit().await.map_err(RepositoryError::from)?;
+        transaction.commit().await?;
         self.publish(candidate);
         tracing::info!(
             %correlation_id,
@@ -628,15 +628,12 @@ impl ControlPlaneCoordinator {
     }
 
     pub async fn verify_active_admin(&self, actor: Uuid) -> Result<(), ControlPlaneError> {
-        let mut transaction = self.repository.begin_serializable().await?;
+        let mut transaction = self.repository.begin_management_write().await?;
         let active = self
             .repository
             .active_admin_exists(&mut transaction, actor)
             .await?;
-        transaction
-            .rollback()
-            .await
-            .map_err(RepositoryError::from)?;
+        transaction.rollback().await?;
         if active {
             Ok(())
         } else {
@@ -654,13 +651,13 @@ impl ControlPlaneCoordinator {
         trigger: AutomaticDisableTrigger,
     ) -> Result<bool, ControlPlaneError> {
         let _guard = self.serial.lock().await;
-        let mut transaction = self.repository.begin_serializable().await?;
+        let mut transaction = self.repository.begin_management_write().await?;
         let Some(result) = self
             .repository
             .automatically_disable_channel(&mut transaction, channel_id, &trigger)
             .await?
         else {
-            transaction.commit().await.map_err(RepositoryError::from)?;
+            transaction.commit().await?;
             return Ok(false);
         };
         let candidate = self.compile_transaction(&mut transaction).await?;
@@ -669,7 +666,7 @@ impl ControlPlaneCoordinator {
         self.repository
             .insert_system_audit(&mut transaction, &result, correlation_id)
             .await?;
-        transaction.commit().await.map_err(RepositoryError::from)?;
+        transaction.commit().await?;
         self.publish(candidate);
         tracing::info!(
             %correlation_id,
@@ -688,13 +685,13 @@ impl ControlPlaneCoordinator {
         channel_id: Uuid,
     ) -> Result<bool, ControlPlaneError> {
         let _guard = self.serial.lock().await;
-        let mut transaction = self.repository.begin_serializable().await?;
+        let mut transaction = self.repository.begin_management_write().await?;
         let Some(result) = self
             .repository
             .automatically_recover_channel(&mut transaction, channel_id)
             .await?
         else {
-            transaction.commit().await.map_err(RepositoryError::from)?;
+            transaction.commit().await?;
             return Ok(false);
         };
         let candidate = self.compile_transaction(&mut transaction).await?;
@@ -703,7 +700,7 @@ impl ControlPlaneCoordinator {
         self.repository
             .insert_system_audit(&mut transaction, &result, correlation_id)
             .await?;
-        transaction.commit().await.map_err(RepositoryError::from)?;
+        transaction.commit().await?;
         self.publish(candidate);
         tracing::info!(
             %correlation_id,

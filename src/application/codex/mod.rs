@@ -409,7 +409,7 @@ impl CodexConnectorService {
                 record.quota_reset_credits_available,
             )
             .await?;
-        transaction.commit().await.map_err(RepositoryError::from)?;
+        transaction.commit().await?;
         let quota_refreshed = match self.refresh_quota_locked(record).await {
             Ok(()) => true,
             Err(error) => {
@@ -598,7 +598,7 @@ impl CodexConnectorService {
             .await?
             .ok_or(CodexConnectorError::CredentialNotFound)?;
         if observed_generation.is_some_and(|generation| generation != record.refresh_generation) {
-            transaction.commit().await.map_err(RepositoryError::from)?;
+            transaction.commit().await?;
             return Ok(());
         }
         if !record.enabled || record.runtime_status == "disabled" {
@@ -701,7 +701,7 @@ impl CodexConnectorService {
         if !updated {
             return Err(CodexConnectorError::Repository(RepositoryError::Conflict));
         }
-        transaction.commit().await.map_err(RepositoryError::from)?;
+        transaction.commit().await?;
         tracing::info!(%channel_id, "Codex OAuth credential refreshed");
         self.reload_runtime().await?;
         Ok(())
@@ -741,7 +741,7 @@ impl CodexConnectorService {
                 error.safe_summary(),
             )
             .await?;
-        transaction.commit().await.map_err(RepositoryError::from)?;
+        transaction.commit().await?;
         self.reload_runtime().await
     }
 

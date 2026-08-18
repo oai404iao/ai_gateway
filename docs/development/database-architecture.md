@@ -17,10 +17,17 @@
 应用层不直接持有 SQLx 的 PostgreSQL 连接、连接池或 transaction 类型。启动、系统负载和应用服务
 通过 `src/persistence/database.rs` 暴露的 `DatabaseConnectOptions`、`DatabasePool` 和
 `RepositoryTransaction` 使用不透明边界；当前唯一可启动和注册仓储的实现仍是 PostgreSQL。
-后端中立的运行时快照记录、Console auth/session 契约、系统设置契约和仓储错误分别位于
-`src/persistence/records.rs`、`src/persistence/auth.rs` 与 `src/persistence/error.rs`。具体
-SQL、COPY、PostgreSQL 查询构造、`FromRow` mapping 和仓储实现位于
-`src/persistence/postgres/`；公共 DTO 与仓储 API 继续从 `src/persistence.rs` 重导出。
+该调用方边界不表示 `database.rs` 的生命周期实现已经 SQLx-free：
+`DatabaseConnectOptions`/`connect_pool`、migrator 和 `From<PgPool>` 仍是 PostgreSQL/SQLx-backed
+过渡 plumbing，由 M2 负责 backend URL/lifecycle dispatch 和 concrete conversion 移除。
+后端中立契约按职责位于 `src/persistence/auth.rs`、`control_plane.rs`、`codex.rs`、
+`request_log.rs`、`records.rs`、`database.rs` 与 `error.rs`；当前 104 个 repository 操作及
+transaction/error/outcome 语义记录在
+[数据库 Repository 契约与 M1 方法台账](database-repository-contracts.md)。具体 SQL、COPY、
+PostgreSQL 查询构造、`FromRow` mapping 和仓储实现位于 `src/persistence/postgres/`，SQLx
+repository 操作错误也只在私有 adapter 中转换为后端中立类别；M1 仅冻结
+`RepositoryError::Migration`，尚未转换 `run_migrations`/connect lifecycle errors。公共 DTO
+与三个现有仓储名称继续从 `src/persistence.rs` 显式重导出，不再 glob-export PostgreSQL module。
 
 这个边界不表示当前已经支持其他数据库，也不改变 PostgreSQL migration 或事务语义。新增后端必须
 提供独立 schema/migration 和仓储实现，并通过相同应用层 API 与持久化契约测试，不能依赖
@@ -70,10 +77,12 @@ Cargo feature `sqlite-backend` 已提供第二后端的 schema、存储类型、
 - `tests/sqlite_registration_repository_integration.rs` 固定注册邀请码、自助注册，以及一次性用户
   邀请的 invite/reinvite/accept 仓储事务。
 
-`src/runtime_config/mod.rs` 仍只接受 `postgres://`/`postgresql://`，默认构建也不包含
-`sqlite-backend`。这些 registration 仓储能力不改变运行时数据库选择；在 SQLite 其余仓储、事务
-和日志/结算实现完成前，不得把 `sqlite:` URL 写入配置模板或用户文档，也不得宣称 SQLite 已可用于
-部署。完整后端抽象与生产启用的拟议顺序见
+`src/runtime_config/mod.rs` 对正常验证的 `[database].url` 仍只接受
+`postgres://`/`postgresql://`，默认构建也不包含 `sqlite-backend`。底层过渡性
+`DatabaseConnectOptions::from_str` 不是配置激活门禁；其 URL/lifecycle parsing 属于 M2。这些
+registration 仓储能力不改变运行时数据库选择；在 SQLite 其余仓储、事务和日志/结算实现完成前，
+不得把 `sqlite:` URL 写入配置模板或用户文档，也不得宣称 SQLite 已可用于部署。完整后端抽象与
+生产启用的拟议顺序见
 [数据库后端抽象与 SQLite 完成总计划](database-backend-completion-plan.md)；该提案不改变本节
 所述当前状态。
 
@@ -174,9 +183,16 @@ terminal RequestLogEvent
 
 - PostgreSQL schema：`migrations/*.sql`
 - SQLite schema：`migrations/sqlite/*.sql`
-- 数据库不透明边界：`src/persistence/database.rs`
-- 后端中立运行时记录、auth/session 契约与错误：`src/persistence/records.rs`、
-  `src/persistence/auth.rs`、`src/persistence/error.rs`
+- 应用不透明数据库边界和 M2 前的 SQLx-backed lifecycle plumbing：
+  `src/persistence/database.rs`
+- 后端中立 repository 契约与方法台账：
+  [database-repository-contracts.md](database-repository-contracts.md)
+- 后端中立 runtime/auth/control-plane/Codex/request-log/error 契约，以及 database 模块中的
+  应用 opaque 类型与事务意图：
+  `src/persistence/records.rs`、`src/persistence/auth.rs`、
+  `src/persistence/control_plane.rs`、`src/persistence/codex.rs`、
+  `src/persistence/request_log.rs`、`src/persistence/database.rs`、
+  `src/persistence/error.rs`
 - PostgreSQL row mapping 与仓储：`src/persistence/postgres/`
 - SQLite migration 与存储 adapter：`src/persistence/sqlite.rs`
 - SQLite runtime row mapping 与只读仓储：`src/persistence/sqlite/row.rs`、
