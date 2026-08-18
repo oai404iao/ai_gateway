@@ -722,5 +722,5 @@ async fn sqlite_auth_repository_fails_closed_on_malformed_timestamps() {
         .sessions_for_user(USER_ID, SESSION_ID)
         .await
         .unwrap_err();
-    assert!(matches!(error, RepositoryError::Sql(_)));
+    assert!(matches!(error, RepositoryError::Corrupt(_)));
 }

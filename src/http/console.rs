@@ -2808,6 +2808,7 @@ fn repository_status(error: &crate::persistence::RepositoryError) -> StatusCode 
     match error {
         crate::persistence::RepositoryError::NotFound => StatusCode::NOT_FOUND,
         crate::persistence::RepositoryError::Conflict
+        | crate::persistence::RepositoryError::TransactionConflict(_)
         | crate::persistence::RepositoryError::ProtectedUserGroup
         | crate::persistence::RepositoryError::UserGroupInUse
         | crate::persistence::RepositoryError::ProxyInUse
@@ -2817,7 +2818,8 @@ fn repository_status(error: &crate::persistence::RepositoryError) -> StatusCode 
         | crate::persistence::RepositoryError::CannotResetSelf
         | crate::persistence::RepositoryError::RegistrationInvitationCodeConflict
         | crate::persistence::RepositoryError::McpServerSlugConflict => StatusCode::CONFLICT,
-        crate::persistence::RepositoryError::Validation => StatusCode::UNPROCESSABLE_ENTITY,
+        crate::persistence::RepositoryError::Validation
+        | crate::persistence::RepositoryError::Constraint(_) => StatusCode::UNPROCESSABLE_ENTITY,
         crate::persistence::RepositoryError::TemporaryPasswordUnavailable => {
             StatusCode::UNPROCESSABLE_ENTITY
         }
@@ -2826,27 +2828,51 @@ fn repository_status(error: &crate::persistence::RepositoryError) -> StatusCode 
         | crate::persistence::RepositoryError::ApiKeyTargetNotAllowed => {
             StatusCode::UNPROCESSABLE_ENTITY
         }
-        crate::persistence::RepositoryError::Sql(error)
-            if error
-                .as_database_error()
-                .and_then(|database| database.code())
-                .is_some_and(|code| code == "40001" || code == "40P01") =>
-        {
-            StatusCode::CONFLICT
-        }
-        crate::persistence::RepositoryError::Sql(error)
-            if error
-                .as_database_error()
-                .and_then(|database| database.code())
-                .is_some_and(|code| {
-                    matches!(
-                        code.as_ref(),
-                        "22001" | "22007" | "22P02" | "23502" | "23503" | "23505" | "23514"
-                    )
-                }) =>
-        {
-            StatusCode::UNPROCESSABLE_ENTITY
-        }
         _ => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io;
+
+    use axum::http::StatusCode;
+
+    use super::repository_status;
+    use crate::persistence::{RepositoryError, RepositoryErrorSource};
+
+    fn source() -> RepositoryErrorSource {
+        RepositoryErrorSource::new(io::Error::other("harmless test storage failure"))
+    }
+
+    #[test]
+    fn neutral_transaction_conflict_maps_to_conflict() {
+        assert_eq!(
+            repository_status(&RepositoryError::TransactionConflict(source())),
+            StatusCode::CONFLICT
+        );
+    }
+
+    #[test]
+    fn neutral_constraint_maps_to_unprocessable_entity() {
+        assert_eq!(
+            repository_status(&RepositoryError::Constraint(source())),
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+    }
+
+    #[test]
+    fn neutral_storage_failures_and_fallback_map_to_internal_server_error() {
+        let errors = [
+            RepositoryError::Busy(source()),
+            RepositoryError::Timeout(source()),
+            RepositoryError::Corrupt(source()),
+            RepositoryError::StorageUnavailable(source()),
+            RepositoryError::DatabaseFailure(source()),
+        ];
+
+        for error in errors {
+            assert_eq!(repository_status(&error), StatusCode::INTERNAL_SERVER_ERROR);
+        }
     }
 }

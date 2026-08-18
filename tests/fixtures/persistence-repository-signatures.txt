@@ -1,0 +1,109 @@
+# M1 application-visible repository operation signatures.
+# family<TAB>visibility<TAB>asyncness<TAB>name<TAB>normalized full signature
+auth	pub	async	accept_invitation	pub async fn accept_invitation( &self, invitation_id: Uuid, presented_token_hash: &[u8], password_hash: &str, ) -> Result<Option<SessionUser>, RepositoryError> {
+auth	pub	async	bootstrap_admin	pub async fn bootstrap_admin( &self, email: &str, display_name: &str, password_hash: &str, ) -> Result<Uuid, RepositoryError> {
+auth	pub	async	change_password	pub async fn change_password( &self, user_id: Uuid, password_hash: &str, ) -> Result<bool, RepositoryError> {
+auth	pub	async	complete_temporary_password	pub async fn complete_temporary_password( &self, user_id: Uuid, session_id: Uuid, expected_auth_version: i64, password_hash: &str, ) -> Result<Option<SessionUser>, RepositoryError> {
+auth	pub	async	create_registration_invitation_code	pub async fn create_registration_invitation_code( &self, actor_user_id: Uuid, code_hash: &[u8], input: RegistrationInvitationCodeInput, ) -> Result<RegistrationInvitationCodeMutation, RepositoryError> {
+auth	pub	async	create_session	pub async fn create_session( &self, id: Uuid, user_id: Uuid, refresh_token_hash: &[u8], expires_at: DateTime<Utc>, user_agent: Option<&str>, purpose: ConsoleSessionPurpose, ) -> Result<(), RepositoryError> {
+auth	pub	async	find_login_user	pub async fn find_login_user(&self, email: &str) -> Result<Option<LoginUser>, RepositoryError> {
+auth	pub	async	invite_user	pub async fn invite_user( &self, actor_user_id: Uuid, input: InviteUserInput, invitation_id: Uuid, invitation_token_hash: &[u8], invitation_ttl: Duration, ) -> Result<InvitationCreated, RepositoryError> {
+auth	pub	async	issue_temporary_password	pub async fn issue_temporary_password( &self, actor_user_id: Uuid, actor_auth_version: i64, user_id: Uuid, password_hash: &str, temporary_password_ttl: Duration, ) -> Result<TemporaryPasswordCreated, RepositoryError> {
+auth	pub	async	password_user	pub async fn password_user( &self, user_id: Uuid, ) -> Result<Option<PasswordUser>, RepositoryError> {
+auth	pub	async	profile	pub async fn profile(&self, user_id: Uuid) -> Result<Option<ConsoleProfile>, RepositoryError> {
+auth	pub	async	register_with_invitation_code	pub async fn register_with_invitation_code( &self, code_hash: &[u8], email: &str, display_name: &str, password_hash: &str, ) -> Result<RegistrationAttempt, RepositoryError> {
+auth	pub	async	registration_invitation_code	pub async fn registration_invitation_code( &self, id: Uuid, ) -> Result<Option<RegistrationInvitationCode>, RepositoryError> {
+auth	pub	async	registration_invitation_codes	pub async fn registration_invitation_codes( &self, ) -> Result<Vec<RegistrationInvitationCode>, RepositoryError> {
+auth	pub	async	reissue_invitation	pub async fn reissue_invitation( &self, actor_user_id: Uuid, user_id: Uuid, invitation_id: Uuid, invitation_token_hash: &[u8], invitation_ttl: Duration, ) -> Result<InvitationCreated, RepositoryError> {
+auth	pub	async	reset_active_admin_password	pub async fn reset_active_admin_password( &self, email: &str, password_hash: &str, ) -> Result<bool, RepositoryError> {
+auth	pub	async	revoke_all_sessions	pub async fn revoke_all_sessions(&self, user_id: Uuid) -> Result<(), RepositoryError> {
+auth	pub	async	revoke_other_sessions	pub async fn revoke_other_sessions( &self, user_id: Uuid, current_session_id: Uuid, ) -> Result<u64, RepositoryError> {
+auth	pub	async	revoke_session_for_user	pub async fn revoke_session_for_user( &self, user_id: Uuid, session_id: Uuid, ) -> Result<bool, RepositoryError> {
+auth	pub	async	rotate_session	pub async fn rotate_session( &self, session_id: Uuid, presented_hash: &[u8], next_hash: &[u8], next_expires_at: DateTime<Utc>, user_agent: Option<&str>, ) -> Result<SessionRotation, RepositoryError> {
+auth	pub	async	sessions_for_user	pub async fn sessions_for_user( &self, user_id: Uuid, current_session_id: Uuid, ) -> Result<Vec<ConsoleSession>, RepositoryError> {
+auth	pub	async	update_display_name	pub async fn update_display_name( &self, user_id: Uuid, display_name: &str, ) -> Result<Option<ConsoleProfile>, RepositoryError> {
+auth	pub	async	update_registration_invitation_code	pub async fn update_registration_invitation_code( &self, actor_user_id: Uuid, id: Uuid, input: RegistrationInvitationCodeInput, expected_updated_at: DateTime<Utc>, ) -> Result<RegistrationInvitationCodeMutation, RepositoryError> {
+auth	pub	async	validate_console_identity	pub async fn validate_console_identity( &self, user_id: Uuid, session_id: Uuid, auth_version: i64, ) -> Result<Option<LiveConsoleIdentity>, RepositoryError> {
+
+codex	pub	async	begin_codex_quota_reset	pub async fn begin_codex_quota_reset( &self, ) -> Result<RepositoryTransaction<'_>, RepositoryError> {
+codex	pub	async	begin_codex_refresh	pub async fn begin_codex_refresh(&self) -> Result<RepositoryTransaction<'_>, RepositoryError> {
+codex	pub	async	cleanup_codex_oauth_flows	pub async fn cleanup_codex_oauth_flows(&self) -> Result<u64, RepositoryError> {
+codex	pub	async	codex_credential	pub async fn codex_credential( &self, channel_id: Uuid, ) -> Result<Option<CodexCredentialRecord>, RepositoryError> {
+codex	pub	async	codex_credential_for_update	pub async fn codex_credential_for_update( &self, transaction: &mut RepositoryTransaction<'_>, channel_id: Uuid, ) -> Result<Option<CodexCredentialRecord>, RepositoryError> {
+codex	pub	async	codex_credential_view	pub async fn codex_credential_view( &self, channel_id: Uuid, ) -> Result<Option<CodexCredentialView>, RepositoryError> {
+codex	pub	async	codex_credentials	pub async fn codex_credentials( &self, channel_group_id: Uuid, ) -> Result<Vec<CodexCredentialView>, RepositoryError> {
+codex	pub	async	codex_oauth_flow	pub async fn codex_oauth_flow( &self, id: Uuid, actor_user_id: Uuid, ) -> Result<Option<CodexOauthFlowRecord>, RepositoryError> {
+codex	pub	async	codex_quota_window_history	pub async fn codex_quota_window_history( &self, channel_id: Uuid, limit_per_window: i64, ) -> Result<CodexQuotaWindowHistory, RepositoryError> {
+codex	pub	async	create_codex_oauth_flow	pub async fn create_codex_oauth_flow( &self, actor_user_id: Uuid, channel_group_id: Uuid, input: CodexOauthStartInput, redirect_uri: String, state_hash: Vec<u8>, code_verifier: String, expires_at: DateTime<Utc>, ) -> Result<CodexOauthFlowRecord, RepositoryError> {
+codex	pub	async	delete_codex_credential	pub async fn delete_codex_credential( &self, transaction: &mut RepositoryTransaction<'_>, channel_id: Uuid, expected_updated_at: DateTime<Utc>, ) -> Result<MutationResult, RepositoryError> {
+codex	pub	async	export_codex_credentials	pub async fn export_codex_credentials( &self, channel_group_id: Uuid, input: CodexCredentialExportInput, ) -> Result<CodexCredentialExportBundle, RepositoryError> {
+codex	pub	async	insert_codex_credential	pub async fn insert_codex_credential( &self, transaction: &mut RepositoryTransaction<'_>, input: CodexCredentialCreate, oauth_flow_id: Option<Uuid>, ) -> Result<MutationResult, RepositoryError> {
+codex	pub	async	load_codex_credentials	pub async fn load_codex_credentials( &self, ) -> Result<Vec<CodexCredentialRecord>, RepositoryError> {
+codex	pub	async	mark_codex_credential_error	pub async fn mark_codex_credential_error( &self, channel_id: Uuid, permanent: bool, code: &str, summary: &str, ) -> Result<(), RepositoryError> {
+codex	pub	async	mark_codex_credential_error_transaction	pub async fn mark_codex_credential_error_transaction( &self, transaction: &mut RepositoryTransaction<'_>, channel_id: Uuid, permanent: bool, code: &str, summary: &str, ) -> Result<(), RepositoryError> {
+codex	pub	async	persist_codex_quota	pub async fn persist_codex_quota( &self, channel_id: Uuid, quota: CodexQuotaUpdate, ) -> Result<(), RepositoryError> {
+codex	pub	async	persist_codex_token_refresh_transaction	pub async fn persist_codex_token_refresh_transaction( &self, transaction: &mut RepositoryTransaction<'_>, channel_id: Uuid, update: CodexTokenRefreshUpdate, ) -> Result<bool, RepositoryError> {
+codex	pub	async	record_codex_quota_reset	pub async fn record_codex_quota_reset( &self, actor_user_id: Uuid, channel_id: Uuid, event_id: Uuid, requested_at: DateTime<Utc>, outcome: CodexQuotaResetOutcome, windows_reset: i32, ) -> Result<Uuid, RepositoryError> {
+codex	pub	async	record_codex_quota_reset_transaction	pub async fn record_codex_quota_reset_transaction( &self, transaction: &mut RepositoryTransaction<'_>, actor_user_id: Uuid, channel_id: Uuid, event_id: Uuid, requested_at: DateTime<Utc>, outcome: CodexQuotaResetOutcome, windows_reset: i32, reset_credits_available: Option<i64>, ) -> Result<Uuid, RepositoryError> {
+codex	pub	async	self_codex_quota_credentials	pub async fn self_codex_quota_credentials( &self, user_id: Uuid, ) -> Result<Vec<SelfCodexQuotaCredentialView>, RepositoryError> {
+codex	pub	async	self_codex_quota_window_history	pub async fn self_codex_quota_window_history( &self, user_id: Uuid, channel_id: Uuid, limit_per_window: i64, ) -> Result<SelfCodexQuotaWindowHistory, RepositoryError> {
+codex	pub	async	set_codex_user_id_if_missing	pub async fn set_codex_user_id_if_missing( &self, channel_id: Uuid, user_id: &str, ) -> Result<bool, RepositoryError> {
+codex	pub	async	update_codex_credential	pub async fn update_codex_credential( &self, transaction: &mut RepositoryTransaction<'_>, channel_id: Uuid, input: CodexCredentialUpdateInput, expected_updated_at: DateTime<Utc>, ) -> Result<MutationResult, RepositoryError> {
+codex	pub	async	update_codex_credentials_batch	pub async fn update_codex_credentials_batch( &self, transaction: &mut RepositoryTransaction<'_>, channel_group_id: Uuid, input: CodexCredentialBatchInput, ) -> Result<Vec<MutationResult>, RepositoryError> {
+
+control_plane	pub	async	active_admin_exists	pub async fn active_admin_exists( &self, transaction: &mut RepositoryTransaction<'_>, id: Uuid, ) -> Result<bool, RepositoryError> {
+control_plane	pub	async	active_user_exists	pub async fn active_user_exists( &self, transaction: &mut RepositoryTransaction<'_>, id: Uuid, ) -> Result<bool, RepositoryError> {
+control_plane	pub	async	apply_catalog_models	pub async fn apply_catalog_models( &self, transaction: &mut RepositoryTransaction<'_>, inputs: Vec<SyncedModelInput>, ) -> Result<Vec<MutationResult>, RepositoryError> {
+control_plane	pub	async	apply_control_plane_mutation	pub async fn apply_control_plane_mutation( &self, transaction: &mut RepositoryTransaction<'_>, mutation: ControlPlaneMutation, ) -> Result<MutationResult, RepositoryError> {
+control_plane	pub	async	audit_logs	pub async fn audit_logs(&self, limit: i64) -> Result<Vec<ConsoleAuditLog>, RepositoryError> {
+control_plane	pub	async	automatically_disable_channel	pub async fn automatically_disable_channel( &self, transaction: &mut RepositoryTransaction<'_>, id: Uuid, trigger: &AutomaticDisableTrigger, ) -> Result<Option<MutationResult>, RepositoryError> {
+control_plane	pub	async	automatically_recover_channel	pub async fn automatically_recover_channel( &self, transaction: &mut RepositoryTransaction<'_>, id: Uuid, ) -> Result<Option<MutationResult>, RepositoryError> {
+control_plane	pub	async	begin_management_write	pub async fn begin_management_write( &self, ) -> Result<RepositoryTransaction<'_>, RepositoryError> {
+control_plane	pub	async	control_plane_channel_detail	pub async fn control_plane_channel_detail( &self, id: Uuid, ) -> Result<Option<ControlPlaneChannelDetail>, RepositoryError> {
+control_plane	pub	async	control_plane_config_template_detail	pub async fn control_plane_config_template_detail( &self, id: Uuid, ) -> Result<Option<ControlPlaneConfigTemplateDetail>, RepositoryError> {
+control_plane	pub	async	control_plane_lists	pub async fn control_plane_lists(&self) -> Result<ControlPlaneLists, RepositoryError> {
+control_plane	pub	async	control_plane_mcp_server	pub async fn control_plane_mcp_server( &self, id: Uuid, ) -> Result<Option<ControlPlaneMcpServer>, RepositoryError> {
+control_plane	pub	async	create_own_api_key	pub async fn create_own_api_key( &self, transaction: &mut RepositoryTransaction<'_>, user_id: Uuid, input: SelfApiKeyCreate, ) -> Result<MutationResult, RepositoryError> {
+control_plane	pub	async	ensure_system_probe_identity	pub async fn ensure_system_probe_identity( &self, ) -> Result<SystemProbeIdentity, RepositoryError> {
+control_plane	pub	async	ensure_system_settings	pub async fn ensure_system_settings( &self, input: SystemSettingsInput, ) -> Result<(), RepositoryError> {
+control_plane	pub	async	insert_audit	pub async fn insert_audit( &self, transaction: &mut RepositoryTransaction<'_>, actor: Uuid, mutation: &MutationResult, correlation_id: Uuid, ) -> Result<(), RepositoryError> {
+control_plane	pub	async	insert_manual_reload_audit	pub async fn insert_manual_reload_audit( &self, transaction: &mut RepositoryTransaction<'_>, actor: Uuid, correlation_id: Uuid, ) -> Result<(), RepositoryError> {
+control_plane	pub	async	insert_self_audit	pub async fn insert_self_audit( &self, transaction: &mut RepositoryTransaction<'_>, actor: Uuid, mutation: &MutationResult, correlation_id: Uuid, ) -> Result<(), RepositoryError> {
+control_plane	pub	async	insert_system_audit	pub async fn insert_system_audit( &self, transaction: &mut RepositoryTransaction<'_>, mutation: &MutationResult, correlation_id: Uuid, ) -> Result<(), RepositoryError> {
+control_plane	pub	async	load	pub async fn load(&self) -> Result<ControlPlaneRecords, RepositoryError> {
+control_plane	pub	async	load_runtime	pub async fn load_runtime(&self) -> Result<RuntimeConfigRecords, RepositoryError> {
+control_plane	pub	async	load_runtime_transaction	pub async fn load_runtime_transaction( transaction: &mut RepositoryTransaction<'_>, ) -> Result<RuntimeConfigRecords, RepositoryError> {
+control_plane	pub	async	load_transaction	pub async fn load_transaction( transaction: &mut RepositoryTransaction<'_>, ) -> Result<ControlPlaneRecords, RepositoryError> {
+control_plane	pub	async	model_source_ids	pub async fn model_source_ids(&self) -> Result<Vec<String>, RepositoryError> {
+control_plane	pub	async	own_api_key	pub async fn own_api_key( &self, user_id: Uuid, id: Uuid, ) -> Result<Option<ConsoleApiKey>, RepositoryError> {
+control_plane	pub	async	own_api_key_options	pub async fn own_api_key_options( &self, user_id: Uuid, ) -> Result<SelfApiKeyOptions, RepositoryError> {
+control_plane	pub	async	own_api_keys	pub async fn own_api_keys(&self, user_id: Uuid) -> Result<Vec<ConsoleApiKey>, RepositoryError> {
+control_plane	pub	async	revoke_own_api_key	pub async fn revoke_own_api_key( &self, transaction: &mut RepositoryTransaction<'_>, user_id: Uuid, id: Uuid, reason: String, ) -> Result<MutationResult, RepositoryError> {
+control_plane	pub	async	system_settings	pub async fn system_settings(&self) -> Result<SystemSettingsView, RepositoryError> {
+control_plane	pub	async	update_channels_batch	pub async fn update_channels_batch( &self, transaction: &mut RepositoryTransaction<'_>, input: ChannelBatchUpdateInput, ) -> Result<Vec<MutationResult>, RepositoryError> {
+control_plane	pub	async	update_own_api_key	pub async fn update_own_api_key( &self, transaction: &mut RepositoryTransaction<'_>, user_id: Uuid, id: Uuid, input: SelfApiKeyUpdate, expected_updated_at: DateTime<Utc>, ) -> Result<MutationResult, RepositoryError> {
+control_plane	pub	async	update_user_settings	pub async fn update_user_settings( &self, transaction: &mut RepositoryTransaction<'_>, user_id: Uuid, input: UserSettingsInput, ) -> Result<Option<UserSettingsView>, RepositoryError> {
+control_plane	pub	async	update_users_batch	pub async fn update_users_batch( &self, transaction: &mut RepositoryTransaction<'_>, actor: Uuid, input: UserBatchUpdateInput, ) -> Result<Vec<MutationResult>, RepositoryError> {
+control_plane	pub	async	user_settings	pub async fn user_settings( &self, user_id: Uuid, ) -> Result<Option<UserSettingsView>, RepositoryError> {
+
+request_log	pub	async	channel_group_status	pub async fn channel_group_status( &self, window: ChannelGroupStatusWindow, ) -> Result<ChannelGroupStatusReport, RepositoryError> {
+request_log	pub	async	cost_statistics	pub async fn cost_statistics( &self, filter: CostStatisticsFilter, ) -> Result<CostStatisticsReport, RepositoryError> {
+request_log	pub	async	get	pub async fn get(&self, id: Uuid) -> Result<Option<ConsoleRequestLog>, RepositoryError> {
+request_log	pub	async	get_for_user	pub async fn get_for_user( &self, user_id: Uuid, id: Uuid, ) -> Result<Option<ConsoleRequestLog>, RepositoryError> {
+request_log	pub	async	insert	pub async fn insert( &self, event: &RequestLogEvent, ) -> Result<RequestLogInsertOutcome, RepositoryError> {
+request_log	pub	async	insert_batch	pub async fn insert_batch( &self, events: &[RequestLogEvent], ) -> Result<Vec<RequestLogBatchInsertResult>, RepositoryError> {
+request_log	pub	async	list_all	pub async fn list_all( &self, filter: RequestLogFilter, ) -> Result<Vec<ConsoleRequestLog>, RepositoryError> {
+request_log	pub	async	list_for_user	pub async fn list_for_user( &self, user_id: Uuid, filter: RequestLogFilter, ) -> Result<Vec<ConsoleRequestLog>, RepositoryError> {
+request_log	pub	async	personal_usage	pub async fn personal_usage( &self, user_id: Uuid, ended_on: NaiveDate, ) -> Result<PersonalUsageReport, RepositoryError> {
+request_log	pub	async	refresh_spend_leaderboard_snapshots	pub async fn refresh_spend_leaderboard_snapshots( &self, ) -> Result<SpendLeaderboardRefresh, RepositoryError> {
+request_log	pub	async	settle	pub async fn settle( &self, request_log_id: Uuid, ) -> Result<RequestLogSettlementOutcome, RepositoryError> {
+request_log	pub	async	settle_batch	pub async fn settle_batch( &self, request_log_ids: &[Uuid], ) -> Result<Vec<(Uuid, RequestLogSettlementOutcome)>, RepositoryError> {
+request_log	pub	async	settle_pending	pub async fn settle_pending( &self, limit: i64, ) -> Result<Vec<RequestLogSettlementOutcome>, RepositoryError> {
+request_log	pub	async	spend_leaderboard	pub async fn spend_leaderboard( &self, filter: SpendLeaderboardFilter, ) -> Result<SpendLeaderboardReport, RepositoryError> {
+request_log	pub(crate)	async	acknowledge_ingest	pub(crate) async fn acknowledge_ingest( &self, sequences: &[i64], ) -> Result<u64, RepositoryError> {
+request_log	pub(crate)	async	copy_ingest_batch	pub(crate) async fn copy_ingest_batch( &self, records: &[EncodedRequestLog], ) -> Result<u64, RepositoryError> {
+request_log	pub(crate)	async	defer_ingest	pub(crate) async fn defer_ingest( &self, sequences: &[i64], error_code: &str, retry_after_seconds: i64, ) -> Result<u64, RepositoryError> {
+request_log	pub(crate)	async	ingest_backlog	pub(crate) async fn ingest_backlog(&self) -> Result<RequestLogIngestBacklog, RepositoryError> {
+request_log	pub(crate)	async	load_ingest_batch	pub(crate) async fn load_ingest_batch( &self, limit: i64, ) -> Result<Vec<RequestLogIngestRecord>, RepositoryError> {
+request_log	pub(crate)	async	settlement_backlog	pub(crate) async fn settlement_backlog( &self, ) -> Result<RequestLogSettlementBacklog, RepositoryError> {
+request_log	pub(crate)	sync	pool_status	pub(crate) fn pool_status(&self) -> RequestLogPoolStatus {

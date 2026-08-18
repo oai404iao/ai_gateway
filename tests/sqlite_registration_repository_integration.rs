@@ -587,7 +587,7 @@ async fn sqlite_registration_codes_validate_conflicts_etags_and_redacted_audits(
                 ),
             )
             .await,
-        Err(RepositoryError::Sql(_))
+        Err(RepositoryError::Constraint(_))
     ));
     assert_eq!(
         sqlx::query_scalar::<_, i64>(
@@ -614,7 +614,7 @@ async fn sqlite_registration_codes_validate_conflicts_etags_and_redacted_audits(
                 after_second.updated_at,
             )
             .await,
-        Err(RepositoryError::Sql(_))
+        Err(RepositoryError::Constraint(_))
     ));
     let after_failed_update = repository
         .registration_invitation_code(created.id)
@@ -868,7 +868,7 @@ async fn sqlite_code_registration_preserves_precedence_canonical_email_balance_a
                 PASSWORD_HASH,
             )
             .await,
-        Err(RepositoryError::Sql(_))
+        Err(RepositoryError::Constraint(_))
     ));
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT count(*) FROM users WHERE email=?1")
@@ -1275,7 +1275,7 @@ async fn sqlite_invitations_accept_valid_tokens_once_and_serialize_concurrent_ac
                 "$argon2id$accept-rollback",
             )
             .await,
-        Err(RepositoryError::Sql(_))
+        Err(RepositoryError::Constraint(_))
     ));
     let rollback_state = sqlx::query_as::<_, (String, i64, Option<String>, Option<DateTime<Utc>>)>(
         "SELECT u.status,u.auth_version,u.password_hash,i.accepted_at \
@@ -1728,7 +1728,7 @@ async fn sqlite_invitation_mutations_enforce_guards_and_roll_back_on_audit_failu
                 Duration::from_secs(3600),
             )
             .await,
-        Err(RepositoryError::Sql(_))
+        Err(RepositoryError::Constraint(_))
     ));
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT count(*) FROM users WHERE email=?1")
@@ -1775,7 +1775,7 @@ async fn sqlite_invitation_mutations_enforce_guards_and_roll_back_on_audit_failu
                 Duration::from_secs(3600),
             )
             .await,
-        Err(RepositoryError::Sql(_))
+        Err(RepositoryError::Constraint(_))
     ));
     let user_state =
         sqlx::query_as::<_, (String, i64)>("SELECT status,auth_version FROM users WHERE id=?1")
