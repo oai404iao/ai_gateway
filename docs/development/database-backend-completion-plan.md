@@ -50,9 +50,16 @@ SQLite，`sqlite:` URL 仍被拒绝。
   留在本机”的限制：一致备份应先在受控边界内生成，再加密并复制到受访问控制的异机或对象存储。
 - 不支持 NFS、SMB/CIFS、分布式文件系统、共享数据库文件、多个 Gateway 副本或 HA。
 - 不承诺多进程读写、自动故障转移、在线跨主机复制或 PostgreSQL 到 SQLite 的在线迁移。
-- 进程排他锁是受支持拓扑的组成部分，不是多副本协调机制。其保证只适用于 M2 冻结并验证的生产
-  平台、内核锁语义和本地文件系统；不能把规范路径或路径旁路锁的行为外推为所有平台/文件系统上的
-  通用保证。
+- 进程排他锁是受支持拓扑的组成部分，不是多副本协调机制。M2 冻结 Linux protected-path /
+  cooperative-process capability contract、候选文件系统集合和可复用资格探针；I-12 预激活阶段
+  才冻结并验证准确的官方 image、UID/GID、mount path、volume 与 backing filesystem 组合。
+- 文件边界隔离不同非特权 UID，并排除遵守协议的第二个 Gateway；root、具备 DAC/mount/ptrace
+  等价 capability 的主体、恶意或已攻陷的 Gateway 相同有效 UID/fsuid 进程不属于该隔离边界。
+  该信任假设不能被解释为允许普通第二实例、弱化 owner/mode/link-count/xattr 检查或提前激活。
+- stock SQLx 按已验证 canonical path 打开数据库；独立的 no-follow anchor descriptor、
+  canonical-path binding label 和 inode `flock` 分别负责稳定文件检查、崩溃后 path drift 检测和
+  cooperating runtime 排他。不能把 canonical path、path lock 或前后复验单独描述为 descriptor
+  adoption 或对所有平台/主体的通用保证。
 
 ### 2.3 激活门禁
 
@@ -81,6 +88,9 @@ Docker/Release 二进制必须编译 `sqlite-backend`；Cargo 默认 feature 可
 每个类型内部使用私有、闭合的 `Postgres | Sqlite` 枚举 dispatch。具体连接选项、pool、transaction、
 row mapping、SQL 和批量写入只存在于 `src/persistence/postgres/` 或
 `src/persistence/sqlite/`。`src/persistence.rs` 继续作为后端中立重导出面。
+M2 立即完成 connect options/pool/transaction 的两个 backend variant 和三个 repository 的中立
+wrapper；repository 的 `Sqlite` inner variant 只在 M3/M4/M6 等所属里程碑完成该 repository 全部
+contract 后加入，不能用 method-level unsupported stub 冒充闭合 dispatch。
 
 明确拒绝以下方案：
 
@@ -95,11 +105,17 @@ row mapping、SQL 和批量写入只存在于 `src/persistence/postgres/` 或
 ### 3.2 数据库生命周期
 
 验证后的 `DatabaseConnectOptions` 只能消费一次来创建唯一生命周期 owner
-`DatabaseRuntime`（若实现最终采用 `DatabasePools`，职责不变）。该 owner 同时持有路径旁路创建
-锁、绑定稳定数据库文件身份/描述符的 OS 排他锁、共享 writer coordinator、专用 lifecycle
-connection、控制面与请求日志两个逻辑 pool，并独占 migration、checkpoint 和有序 shutdown。
-`main`、serve/bootstrap/reset 等 CLI 和 worker 只能接收该 owner 或其受控 handle，不能各自再次
-`connect`、各拿一把锁或独立管理 pool。
+`DatabaseRuntime`。serve profile 同时持有父目录 descriptor、路径创建锁、no-follow 数据库
+anchor descriptor 及其稳定身份 `flock`、共享 writer coordinator、专用 lifecycle connection、
+控制面与请求日志两个逻辑 pool，并独占 migration、checkpoint 和有序 shutdown。bootstrap/reset
+使用同一 owner 的 management-command profile，但不为没有 consumer 的命令创建 request-log pool。
+anchor descriptor 不是 SQLx 数据 I/O descriptor。`main`、CLI 和 worker 只能接收 owner 或其
+受控 handle，不能各自再次 `connect`、各拿一把锁或独立管理 pool。
+owner 在第一次 SQLx await 前把 lock leases 移交给 runtime-owned shutdown supervisor；
+connection、pool 和受控 acquire task 都由 supervisor 登记/持有，构造或调用方 future 被取消
+不能绕过 graceful cleanup 或提前释放 locks。
+leases 另登记到 process-lifetime fatal vault，只有完整关闭后移除；supervisor/acquisition panic
+或 JoinError 必须保留 vault 并 nonzero terminate，不能通过 unwind 释放锁。
 
 该 owner 及其连接工厂必须同时满足：
 
@@ -110,9 +126,13 @@ connection、控制面与请求日志两个逻辑 pool，并独占 migration、c
      或 port）、query、fragment、`:memory:`、临时数据库和空路径。
    - URL path 按严格 URI 规则只 percent-decode 一次；拒绝错误转义、非 UTF-8、NUL 和解码后
      的 `.`/`..` 路径段。解码结果必须已是规范化绝对路径。对已存在的父路径逐段 no-follow
-     解析并取得规范路径，数据库 leaf 可以尚不存在；连接、旁路锁和进程内身份键都使用同一个
-     规范化结果。规范路径和路径旁路锁只负责安全创建与常见路径别名收敛，不能单独防住 hard-link
-     或 bind/mount alias；单实例约束最终必须绑定下述稳定文件身份和数据库文件描述符上的 OS 锁。
+     解析并取得规范路径，数据库 leaf 可以尚不存在；SQLx、路径锁、path binding 和进程内身份键
+     都使用同一个规范化结果。普通重启与崩溃恢复必须继续使用同一 canonical path；versioned
+     canonical-path binding xattr 在 SQLx 第一次打开前写入数据库 inode，后续 path hash 不匹配
+     时 fail closed。该 label 不是 secret 或恶意相同 UID 的认证机制。
+   - 规范路径和路径旁路锁只负责安全创建与同路径串行化，不能单独防住 hard-link 或 bind/mount
+     alias；active instance exclusion 最终由 no-follow anchor descriptor 上经资格验证的 inode
+     `flock` 提供。stock SQLx 随后仍按 canonical path 打开，不接管 anchor descriptor。
    - 测试可使用独立的 in-memory 构造器，但该构造器不从 TOML 暴露。
    - 未编译 `sqlite-backend` 时，SQLite URL 返回明确的 feature-disabled 配置错误。
    - `[database].password_file` 仅适用于 PostgreSQL；SQLite 同时设置它必须报错，而不是忽略。
@@ -121,55 +141,87 @@ connection、控制面与请求日志两个逻辑 pool，并独占 migration、c
      控制面 pool 和请求日志 pool 的**每个物理连接**都必须在首次可用前设置并读回验证
      `synchronous=FULL`、`foreign_keys=ON` 和统一 busy policy（含固定的 busy timeout）；pool
      after-connect/reconnect 以及 checkout/recycle 后再次交付前的 gate 必须重复同一设置与验证，
-     任何不匹配都销毁该连接并以 typed storage/configuration failure fail closed，不能把它交给
-     调用方；
+     任何不匹配都不能交给调用方；hook 记录 poison，受控 wrapper/supervisor 必须确认 graceful
+     close，不能用 SQLx `close_hard` 或直接销毁冒充 worker 已停止；
+   - 精确 pin/source guard 固定 SQLx 0.8.6 hook 前只有内建、connection-scoped
+     `foreign_keys=ON` SQL。`NO_CKPT_ON_CLOSE=1` 必须是每个 SQLite handle 的第一个
+     Gateway-controlled post-establish operation 并 read-back；若无法设置，走 non-unwinding
+     fatal termination。pre-hook establish failure 不得继续 serve，lock 保持到 worker/进程结束；
    - 文件初始化设置并验证 `journal_mode=WAL`；每个新建、重开或回收后的 lifecycle/control/log
      连接还必须验证其观察到 WAL，并完成上述 connection-scoped pragma/busy policy gate；
    - 不允许调用方通过 URL 参数降低这些值。
 3. **文件安全**
-   - 创建前按受支持生产平台的文件系统类型做正向本地 allowlist 分类。已知远程/不支持类型以及
-     无法识别的类型都 fail closed；不宣称能在任意平台普遍识别所有远程文件系统。M2 退出前必须
-     冻结平台、文件系统、稳定文件身份和 OS 锁语义的正向 allowlist，并验证官方容器采用的本地卷
-     策略；无法可靠取得/复验平台等价的稳定身份或建立 identity-following 排他锁时 fail closed，
-     该组合不得列为受支持生产环境；
-   - Unix 下父目录和数据库/lock/WAL 相关文件由 Gateway 运行用户拥有，目标权限分别为
-     `0700` 和 `0600`，拒绝 symlink 与不安全的 group/world 可写路径。数据库、WAL、SHM 和路径
-     旁路 lock 文件一旦存在，在平台提供可靠 link-count 语义时还必须拒绝 hard-link count
-     `!= 1`；冻结的生产平台/文件系统必须具备并通过该能力，否则不受支持；
-   - 数据库 leaf 必须通过 no-follow、原子且仅创建普通文件的安全打开/创建流程取得描述符，不能先
-     做 path check 再由 SQLx 按路径重新打开而留下替换窗口。`DatabaseRuntime` 记录该描述符对应
-     的稳定文件身份（Unix 上为 device + inode，其他冻结平台使用经验证的等价标识），并在路径
-     旁路创建锁之外，对绑定数据库文件描述符/身份的 OS 锁持有排他锁。alternate path、
-     hard-link 和 bind/mount alias 只要在冻结的受支持平台/文件系统上到达同一身份，就必须进入
-     同一 identity exclusion domain，并因 identity lock 竞争或更早的 link-count/path 安全校验
-     快速失败，绝不能同时启动；
-   - 创建、已有文件与 link-count 校验、身份取得/复验、alias 锁竞争、容器 UID/GID 和备份恢复后
-     的权限具有确定测试。本文不宣称未冻结平台、内核或文件系统上的 alias 锁行为。
+   - M2 冻结 Linux kernel、candidate local filesystem、xattr、stable identity、`flock`、
+     link-count 与 fsync 的 capability contract/probe。ext4、XFS、Btrfs 只是候选集合，每个实际
+     组合仍须通过；known-remote、overlay、tmpfs、FUSE、unknown 或能力不可验证的组合 fail
+     closed。Linux 5.6 runtime 不虚构自己能可靠辨认所有 idmapped mount；I-12 必须证明准确部署
+     不使用未经评审的 idmap。I-12 负责官方 image/volume 最终资格，M2 不作容器可部署声明；
+   - Gateway 启动前必须已经丢弃危险 capability，effective UID 与 fsuid 一致且 mount namespace
+     稳定。数据库路径每级祖先由 root 或 Gateway UID 拥有、不得 group/world writable，并通过
+     `openat2` no-symlink/no-magic-link 逐段解析；最终父目录由 Gateway UID 拥有且 mode 精确为
+     `0700`。不提供 sticky-directory 生产豁免；
+   - path lock、数据库、WAL、SHM 和 rollback journal 一旦存在，必须是 Gateway UID 拥有的
+     `0600` 普通文件并满足 `nlink == 1`。任何异常只 fail closed，不删除 hot journal/WAL；
+   - 数据库 leaf 先通过 no-follow、原子且仅创建普通文件的流程取得 anchor descriptor，记录
+     device + inode/mount identity 并取得 nonblocking exclusive `flock`。path lock 只串行化同
+     canonical path；同 inode bind alias 由 anchor `flock` 排除，pre-existing hard link 先因
+     link count 失败；
+   - path lock 用双 slot/sequence/CRC 持久化
+     `creating → labeled → migrating → initialized` state；先同步
+     creating intent，再创建 anchor，取得/复验 anchor `flock` 后才初始化/验证 xattr，migration
+     成功后才标 initialized。existing unlabeled/zero/missing DB 只按签入的完整状态表推进；
+     missing/zero/unlabeled DB 旁存在任一 WAL/SHM/journal、`initialized + missing/zero DB`、
+     lock/label generation mismatch 等未知组合一律 fail closed，不能自动重建空库；older schema
+     generation 必须先同步 `migrating(from,target)` fence 再执行 forward migrator，commit 与
+     initialized record 更新之间崩溃可幂等恢复；旧 binary 在 SQLite open/write 前按 target
+     generation 拒绝 downgrade；
+   - stock SQLx 可以在完整 DAC/mount 信任边界内按 canonical path 调用 `sqlite3_open_v2`。
+     SQLx 没有 per-physical pre-open hook，因此 runtime/pool 创建及每次受控 acquire 调用 SQLx
+     前先 prevalidate path；`after_connect` 对每个新建/重开的物理连接立即 postvalidate，
+     `before_acquire`/`after_release` 再覆盖 checkout/recycle。gate 证明 path identity、owner、
+     mode、link count 与 label 匹配 anchor，并通过 `PRAGMA database_list` 复验 main filename。
+     该 protected-path 推论不声称读取 SQLx 内部 descriptor，也不防护已排除主体；
+   - identity/path/label/sidecar 违反会 poison 整个 runtime、阻止新 checkout 并触发关闭，不能
+     只销毁一条连接后无限重试。M2 不实现 custom VFS，不使用 `/proc/self/fd`、`unix-excl`
+     冒充 adoption，也不依赖 `SQLITE_FCNTL_HAS_MOVED` 或 private VFS struct；
+   - M2 确定测试覆盖创建、已有文件、xattr、link count、path/anchor 身份、concurrent alias lock、
+     capability probe 与崩溃恢复；I-12 再覆盖准确容器 UID/GID、volume 和 offline restore/install。
 4. **逻辑 pool**
    - 控制面 pool 与请求日志 pool 仍是两个逻辑容量和指标域，但连接同一个 SQLite 文件；
+   - SQLite repository 不直接调用可取消的 `pool.acquire()`；runtime-owned acquisition task 通过
+     bounded request/one-shot 执行 acquire，caller 取消后仍完成并 graceful-close，shutdown 先
+     停止并 join acquisition tasks。禁止 raw pool executor、direct begin、detach/leak；
    - 两者共享一个进程内公平 writer coordinator，避免日志批次长期饿死控制面或反之；
-   - pool 指标保留 size/idle/acquire pressure，并增加 backend、busy/lock wait、checkpoint
-     结果和 writer queue 可观察性；这些 pool/writer 指标由 M2 提供，不得把两个 pool 的容量
-     误报为可并行 writer 数。
+   - pool 指标保留 size/idle/capacity；受控 acquire wrapper 定义并测量 queue depth、wait、
+     timeout 和 utilization。busy/locked 指标来自 extended error count 与
+     `BEGIN IMMEDIATE` elapsed time，不虚构 SQLx 未暴露的 callback；另增加 backend、checkpoint
+     结果和 writer queue 可观察性。不得把两个 pool 的容量误报为可并行 writer 数。
 5. **migration、锁与关闭**
    - `DatabaseRuntime` 只执行一次 `run_migrations`，并按枚举 dispatch 到各自 migrator；
-   - 启动时先对 `0700` 父目录和数据库路径做逐段 no-follow 安全预检，以路径旁路创建锁串行化
-     尚不存在 leaf 的创建，再按上述 no-follow 流程安全创建/打开数据库、记录稳定身份并取得绑定
-     文件描述符/身份的 OS 排他锁。持有 identity lock 后必须重新 no-follow 解析数据库路径，
-     复验 path leaf 与已锁描述符仍是同一稳定身份，并复验 owner/mode/link count。初次复验通过后
-     才能打开专用 lifecycle connection 并创建/验证 WAL；WAL/SHM 创建后、control/log pool 启动
-     和 migration 前，必须再次完成适用文件校验并复验锁定数据库的 path/identity。任一身份、
-     路径或能力无法确认都 fail closed。`0700` 且受信 owner 的父目录和全程 no-follow 约束共同
-     防止复验后的 leaf replacement；
-   - 只有上述第二次复验通过后才可启动 control/log pool、执行 migration 和启动 worker。在冻结
-     支持矩阵上，同路径、编码路径别名、alternate path、hard-link 或 bind/mount alias 到达同一
-     身份的第二个进程都必须因 identity lock 竞争或前置安全校验快速失败；路径旁路锁不能作为这一
-     保证的替代；
+   - 启动顺序固定为：process/capability 与 filesystem probe → 逐段 no-follow 祖先/DAC 校验 →
+     path lock/必要时同步 `creating` intent → no-follow anchor create/open → anchor `flock` →
+     锁后 path identity 复验 → canonical-path binding 初始化/验证 → 必要时同步
+     `migrating(from,target)` fence → lifecycle connection policy/WAL → `SQLITE_MIGRATOR` →
+     同步 initialized target → DB/WAL/SHM 第二次复验 → control/log pool → worker。任一能力、
+     身份、path、label 或 sidecar 无法确认都 fail closed；
+   - lifecycle/control/log 的 SQLx open 依赖受信祖先链在 runtime 期间不可由边界内主体替换。
+     同 canonical path、percent-encoded equivalent 和同时运行的 bind alias 第二个 cooperating
+     process 必须因 path/anchor lock 或前置校验失败；alternate canonical path 在进程退出后也因
+     path label 不匹配失败。hard link 必须由 link count 拒绝；
+   - 每条物理 connection 通过 pinned `libsqlite3-sys` 的窄 safe wrapper 设置并 read-back
+     `SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE=1`，防止 pool close 自动绕过 checkpoint admission；
    - 关闭时先停止新请求，再按日志流水线顺序 drain 并阻止 pool 新 checkout；保留专用 lifecycle
-     connection 执行有界 WAL checkpoint 和必要同步，之后关闭最后连接，最后释放进程锁；
-     identity lock 及其安全文件描述符必须至少保持到所有 pool/连接关闭且 checkpoint 完成之后，
-     才能与路径旁路锁按定义顺序释放；
-   - checkpoint 失败要返回/记录 typed failure，但不得删除仍可恢复的 WAL、spool 或 ingress。
+     connection 执行 WAL checkpoint，之后关闭最后连接，最后按反序释放 anchor/path locks。
+     owned shutdown supervisor 持有 connection/pool/locks；任一 pool/lifecycle close 超时只表示
+     shutdown pending/fatal，不能继续 checkpoint 或释放锁。SQLx future 被 timeout/drop 不证明
+     worker 已停止；
+   - “有界 checkpoint”限定 admitted WAL size、lock wait 和是否进入 TRUNCATE：pool 关闭后以
+     零 lock-wait 先做 PASSIVE，只有 `busy == 0 && checkpointed == log` 且 dispatch 前预算允许
+     才做 TRUNCATE；WAL 超过签入上限时可 typed skip 并保留恢复事实。任意 kernel I/O 的硬
+     deadline 由外部 supervisor forced kill 提供，
+     不能手工删除 WAL/SHM 或虚构成功；
+   - checkpoint partial/busy/skip/failure 要返回/记录 typed 状态，但不得删除仍可恢复的 WAL、
+     spool 或 ingress。
 6. **错误**
    - `RepositoryError` 扩展为后端中立的 not-found、conflict、constraint、busy/timeout、
      backend-mismatch、corrupt/storage-unavailable 和 migration 类别；
@@ -178,10 +230,12 @@ connection、控制面与请求日志两个逻辑 pool，并独占 migration、c
    - 禁止把正在写入的 `.db`/WAL 文件直接复制后称为一致备份。先建立有界 backup barrier、同步
      spool 并固定 manifest，再使用 SQLite backup API 捕获数据库，或在该 barrier 内执行协调
      checkpoint 后捕获；
-   - 备份 manifest 记录数据库 generation、spool 文件集和 checkpoint，使 restore 后允许依靠
-     UUID 幂等语义重放但不遗漏未投影日志；
+   - 备份 manifest 记录数据库 generation、spool 文件集、checkpoint、数据库 digest 和 path-label
+     version，使 restore 后允许依靠 UUID 幂等语义重放但不遗漏未投影日志；
    - 备份在离开运行主机前加密并限制读取/写入权限，随后复制到受保护的异机或对象存储；恢复必须
-     同时校验数据库与 spool manifest、文件 owner/mode 和密钥可用性。
+     同时校验数据库与 spool manifest、文件 owner/mode 和密钥可用性。SQLite backup API 不复制
+     xattr；offline restore/install 必须在空的受保护目标目录按目标 canonical path 写新 label，
+     并确保旧数据库的 WAL/SHM/journal 不与恢复文件混用。
 
 ### 3.3 事务意图与不变量
 
@@ -196,16 +250,20 @@ facade 必须表达事务**意图**，而不是让上层选择 SQL：
 
 1. transaction 只能传给相同 backend/pool 创建的 repository；实例不匹配返回
    `backend-mismatch`，不得 panic 或错误访问另一枚举分支。
-2. SQLite writer transaction 必须短。持锁期间禁止 provider HTTP、DNS、文件大 I/O、密码哈希、
+2. SQLite writer permit 只有在 commit/rollback 已确认或 physical connection 已 graceful-close
+   后释放。begin/terminal future cancellation、失败或 active transaction unexpected drop 不能因
+   SQLx 仅排队异步 rollback 就释放 permit；它们必须 poison runtime、关闭 writer admission，并由
+   shutdown supervisor 保留 permit/anchor lease 直到 cleanup 可证明完成或进程退出。
+3. SQLite writer transaction 必须短。持锁期间禁止 provider HTTP、DNS、文件大 I/O、密码哈希、
    无界聚合或其他无上限 CPU-heavy 工作。唯一有意保留的有界例外是管理写入后从同一 transaction
    读取**完整候选配置并编译** `CompiledRuntimeConfig`；它不得被改成事务外读取，也不引入 CAS
    重设计。M5 必须冻结可支持配置的记录数/序列化字节等数值上限、writer queue wait、writer
    lock-held duration 与 transaction duration telemetry，以及各自的数值 pass/fail 阈值；超限
    候选在 commit 前失败。M10 把这些限制和阈值纳入全栈资格 profile 并验证。
-3. 控制面发布固定顺序为：在事务内写候选记录 → 从同一事务读取完整候选记录并编译
+4. 控制面发布固定顺序为：在事务内写候选记录 → 从同一事务读取完整候选记录并编译
    `CompiledRuntimeConfig` → 写脱敏 audit → commit → 通过 `ArcSwap` publish。编译或 audit
    失败必须 rollback；commit 前不得 publish。
-4. commit 后 publish 使用已经验证的候选快照；跨进程 PostgreSQL 收敛仍由 reload worker 负责，
+5. commit 后 publish 使用已经验证的候选快照；跨进程 PostgreSQL 收敛仍由 reload worker 负责，
    SQLite 首期只有一个进程，但仍复用相同路径。
 
 ## 4. 专项语义要求
@@ -430,6 +488,7 @@ SQLite 必须覆盖 request-log 查询、个人 usage、渠道组状态、个人
 本计划本身是 planning PR（P-00），之后固定为 **11 个实施里程碑、12 个实施 PR**。M9 因凭证
 生命周期与 quota/reset 风险不同拆成两个 PR。任何拆分、合并、换序或门禁削弱都必须先更新本文并
 完成评审。
+PR #136 是 P-00 的技术路线修订，不计入 12 个实施 PR，也不替代 M2 的 I-02。
 
 ```text
 P-00 本计划
@@ -452,7 +511,7 @@ M2 完成后，M3–M5、M6–M7 与 M8 可并行推进；随后 Codex 轨仍受
 | 里程碑 | 实施 PR | 依赖 | 估算（工程日） | 风险 | 状态 |
 | --- | --- | --- | ---: | --- | --- |
 | M1 后端中立契约 | I-01 | P-00 | 5–8 | 中 | [x] 完成（[PR #135](https://github.com/oai404iao/ai_gateway/pull/135)，2026-08-18；实际 1 工程日） |
-| M2 DB 生命周期与枚举 facade | I-02 | M1 | 9–13 | 高 | [!] 阻塞（[PR #136](https://github.com/oai404iao/ai_gateway/pull/136)，2026-08-18：SQLx 0.8.6 没有从 no-follow 预打开的数据库 descriptor 建立连接的受支持入口，与 3.2.3 节门禁冲突；解除方案未决） |
+| M2 DB 生命周期与枚举 facade | I-02 | M1 | 12–18 | 高 | [ ] 未开始（[PR #136](https://github.com/oai404iao/ai_gateway/pull/136)，2026-08-18：已确定 protected-path/cooperative-process 路线；I-02 尚未开始） |
 | M3 控制面生命周期与读取 | I-03 | M2 | 7–10 | 中 | [ ] 未开始 |
 | M4 身份与访问写入 | I-04 | M3 | 6–9 | 中 | [ ] 未开始 |
 | M5 路由、系统与 MCP 写入 | I-05 | M4 | 9–13 | 高 | [ ] 未开始 |
@@ -461,11 +520,11 @@ M2 完成后，M3–M5、M6–M7 与 M8 可并行推进；随后 Codex 轨仍受
 | M8 Codex 跨 HTTP 事务重构 | I-08 | M2 | 15–22 | 高 | [ ] 未开始 |
 | M9 SQLite Codex 完整实现 | I-09、I-10 | I-09: M5、M8；I-10: I-09、M7 | 15–23 | 高 | [ ] 未开始 |
 | M10 全栈 facade/runtime 收敛 | I-11 | M5、M7、M9 | 8–12 | 高 | [ ] 未开始 |
-| M11 生产启用与运维 | I-12 | M10 | 6–8 | 高 | [ ] 未开始 |
+| M11 生产启用与运维 | I-12 | M10 | 8–12 | 高 | [ ] 未开始 |
 
-合计底部估算为约 102–150 工程日；按集成未知量对外表述为约 **100–150 工程日**。
-M2 的 9–13 日和总量均是发现下述阻塞前的基线，不包含解除阻塞所需的设计、实现、审计或验证；
-解除方案经评审前，不再把这些数字作为当前完成时间预测。
+里程碑 estimate column 的修订后基线合计为 107–159 工程日；M1 已用 1 个实际工程日完成，因此
+M2–M11 remaining estimate 为 102–151，actual + estimate-to-complete 为 103–152（不含 planning
+overhead）。按集成未知量对外表述为约 **105–160 工程日**。
 
 ## 6. 里程碑明细
 
@@ -488,61 +547,84 @@ M2 的 9–13 日和总量均是发现下述阻塞前的基线，不包含解除
 
 - **范围**：实现 enum-backed `DatabaseConnectOptions`、`DatabasePool`、
   `RepositoryTransaction` 和三个 repository facade 骨架；由验证后的 options 一次创建唯一
-  `DatabaseRuntime` 生命周期 owner，统一持有路径旁路创建锁、no-follow 安全打开的数据库描述符、
-  稳定文件身份及绑定该描述符/身份的 OS 排他锁、共享 writer coordinator、lifecycle connection、
-  两个逻辑 pool、migration 和 shutdown/checkpoint；规范路径或旁路锁本身不得被视为
-  hard-link/bind/mount alias 排除机制。加入 SQLite pool 创建、覆盖
+  `DatabaseRuntime` 生命周期 owner。SQLite serve profile 统一持有 no-follow parent/anchor
+  descriptors、path lock、versioned canonical-path binding、anchor inode `flock`、共享 writer
+  coordinator、lifecycle connection、两个逻辑 pool、migration 和 shutdown/checkpoint；
+  management command profile 只创建实际使用的 control pool。stock SQLx 按 protected canonical
+  path 打开，不能把 anchor/path lock 描述为 descriptor adoption。加入 SQLite pool 创建、覆盖
   首次建立/重开物理连接及 pool checkout/recycle 再交付的 per-connection pragma/busy policy
-  setup + read-back gate、
-  pool/writer metrics、权限、link-count、路径与锁定身份验证。配置入口仍拒绝 SQLite。
+  setup + read-back gate、runtime poison、pool/writer metrics、祖先 DAC、xattr、权限、link-count、
+  path/anchor/sidecar 身份验证和 owned background-task shutdown。配置入口仍拒绝 SQLite。详细
+  安全与生命周期协议以
+  [SQLite 数据库运行时生命周期技术路线](sqlite-runtime-lifecycle.md) 为准。
+  三个中立 repository facade 在所属后续里程碑完成完整 SQLite contract 前不提供可构造的 SQLite
+  inner variant；M2 不增加 temporary capability-unavailable method stub。现有 feature-gated
+  SQLite direct adapters 仅作为测试基础保留，并由架构门禁禁止生产调用方导入。
 - **依赖**：M1。
 - **关键文件/模块**：`src/persistence/database.rs`、`src/persistence.rs`、
   `src/persistence/postgres/`、`src/persistence/sqlite.rs`、startup/shutdown 和 metrics 的
   数据库接缝。
 - **进入条件**：中立方法集与错误集冻结；生命周期 fault points 可注入。
 - **退出条件**：crate-private SQLite runtime 可安全创建、迁移和关闭；serve/bootstrap/reset
-  及 worker 不能各自建立第二套连接生命周期；错误 backend transaction 配对被拒绝；受支持生产
-  平台、本地文件系统、稳定身份与 identity-following OS lock 语义的正向 allowlist、
-  unknown/unsupported/capability-unverifiable fail-closed 行为及官方容器本地卷策略已冻结并通过
-  测试；数据库由 no-follow 流程创建/打开，已有 DB/WAL/SHM/旁路 lock 文件在支持可靠
-  link-count 的冻结平台上均拒绝 `!= 1`，锁定身份在创建后及 pool/migration 前均与 no-follow
-  重解析路径一致；identity lock 持续到 pool/连接/checkpoint 关闭后，同一稳定身份的受支持 alias
-  不能启动第二个 runtime；lifecycle/control/log 每个物理连接（含强制重开和 pool 回收替换）都在可用
-  前以及 pool checkout/recycle 后再次交付前设置并读回验证 `synchronous=FULL`、
-  `foreign_keys=ON` 与统一 busy policy，且观察到 WAL；
-  第二进程、身份或锁能力不可验证、弱权限、任一连接 pragma/busy policy 不匹配均 fail closed。
+  及 worker 不能各自建立第二套连接生命周期；错误 backend transaction 配对被拒绝；candidate
+  Linux kernel/local filesystem、xattr、stable identity、`flock`、link-count 和 fsync
+  capability contract/probe 已冻结，known-remote/unsupported/unknown/unverifiable fail closed；
+  准确官方 image/volume 组合仍明确归 I-12。数据库由 no-follow anchor 流程创建/打开，完整祖先链
+  满足 protected-path DAC；DB/WAL/SHM/journal/path lock 拒绝错误 owner/mode/type/link count；
+  canonical-path binding 在新建、重启、崩溃和 alternate-path 负例中 fail closed。anchor lock
+  持续到 pool/connection/checkpoint 关闭后，同一 inode 的 concurrent cooperating alias 不能启动
+  第二个 runtime；SQLx pool 设 `min_connections(0)`，所有 SQLite repository acquire 只能经过
+  受控 wrapper，禁止 raw pool executor/detach/leak。runtime/pool/acquire 前先 prevalidate，
+  lifecycle/control/log 每个新建/重开的物理连接在 `after_connect` 立即 postvalidate，并在
+  checkout/recycle 时重复设置并读回验证 `synchronous=FULL`、
+  `foreign_keys=ON`、`locking_mode=NORMAL` 与统一 busy policy，且观察到 WAL；path/label/sidecar
+  违反 poison runtime；第二 cooperating process、能力不可验证、弱权限、任一连接 policy 不匹配
+  均 fail closed。每条 physical connection 还设置并验证 `NO_CKPT_ON_CLOSE`；pool/lifecycle close
+  未确认或 fatal poison 未收敛时 supervisor 保留/leak locks 到进程退出。实现不包含 custom VFS、
+  `/proc/self/fd` adoption 或 `SQLITE_FCNTL_HAS_MOVED`。
 - **必测**：严格 URL parse、单次 percent-decoding/规范化、无 query/authority/userinfo/
-  fragment、feature/password_file 矩阵；no-follow 原子创建/打开、DB/WAL/SHM/旁路 lock
-  link-count、稳定身份记录与锁后 path/identity 复验。两个真实进程分别覆盖同路径、percent-encoded
-  alias、hard-link alias 和 bind/mount alias 的 identity exclusion/失败；只有在 CI 确实缺少
-  构造某个 alias case 所需 capability 时，才以确定性的低层 identity/descriptor-lock 跨进程测试
-  替代该 case，并明确记录 capability 判定，禁止 silent skip。测试结论只约束冻结的受支持平台与
-  文件系统。分别枚举
-  lifecycle、control pool、log
-  pool 的初始连接，强制断开/重开、把被故意改变 pragma 的连接回收到 pool 后再次 checkout，以及
+  fragment、feature/password_file 矩阵；每级 ancestor no-follow/DAC、原子 anchor create/open、
+  path-lock 双 slot/CRC initialization intent、canonical label 初始化/损坏/缺失/path mismatch、
+  完整 state table、missing/zero DB + residual sidecar、schema generation upgrade/downgrade、
+  migration commit 后 record update 前 kill 与旧 binary pre-open fence、无 matching intent 的
+  零长度 unlabeled 文件拒绝、DB/WAL/SHM/journal/path lock
+  owner/mode/type/link-count、稳定身份与锁后 path 复验。两个真实进程分别覆盖同路径、
+  percent-encoded equivalent、hard-link rejection 和 concurrent bind alias `flock`；CI 无 bind
+  capability 时必须输出判定并运行同 inode descriptor 的真实双进程 fallback，禁止 silent skip。
+  另测 `SIGKILL` 后同 path + residual WAL 恢复及 alternate path label rejection。分别枚举
+  lifecycle connection、control pool、request-log pool 的初始连接，强制断开/重开、把被故意
+  改变 pragma 的连接回收到 pool 后再次 checkout，以及
   回收替换物理连接，验证每次都重新 set + read-back
-  `synchronous=FULL`/`foreign_keys=ON`/busy timeout 并检查 WAL，注入每一项不匹配时连接不得进入
-  pool；两个逻辑 pool 的共享 writer 公平性、owner 只能创建一次、CLI/serve 生命周期复用、锁
-  的全生命周期保持与 pool/checkpoint 后释放、WAL checkpoint、正向
-  local filesystem allowlist 与 known-remote/unsupported/unknown 分类、官方容器卷、权限、
-  migration dispatch、pool/writer metrics、PostgreSQL 回归和 MSRV。
-- **风险/工作量**：高，9–13 日。风险集中于 SQLx transaction 生命周期、跨 pool 锁公平性和
-  冻结平台/文件系统上的 no-follow 文件生命周期、稳定身份/alias 锁语义及文件权限；不把该保证
-  扩展到未验证组合。
+  `synchronous=FULL`/`foreign_keys=ON`/`locking_mode=NORMAL`/busy timeout 并检查 WAL；注入
+  pragma mismatch 时连接不得交付调用方，并由 supervisor 确认 graceful close；注入
+  identity/path/label/sidecar mismatch 时整个 runtime poisoned，且 active checkout 只能
+  rollback/graceful-close；已 dispatch terminal 只等待真实结束，不能继续普通业务。另测两个逻辑 pool 的
+  shared writer 双向公平性、begin/terminal cancellation/drop permit retention、owner 只能创建
+  一次、caller acquire cancellation 后 runtime task graceful-close、`DatabaseRuntime::open`
+  每个 await point 的 cancellation、CLI/serve profile、startup rollback、所有持库 background
+  task owned/join、supervisor/acquisition panic 后 fatal-vault lock retention、pool/lifecycle close
+  pending 时 lock retention、精确 source guard 与每连接第一个 Gateway-controlled
+  post-establish operation `NO_CKPT_ON_CLOSE`、设置失败 non-unwinding termination、pre-hook
+  establish failure lock retention、精确 `sqlx` 0.8.6 / `libsqlite3-sys` 0.30.1 单一 linkage、
+  PASSIVE/TRUNCATE/size-admission checkpoint 状态、candidate filesystem/capability probe 与
+  privileged-case 明确 fallback、migration dispatch、pool/writer metrics、PostgreSQL 回归和
+  MSRV。
+- **风险/工作量**：高，12–18 日。风险集中于 stock SQLx pathname open 依赖的 DAC/mount 边界、
+  xattr 与 crash/restore 状态、transaction 生命周期、跨 pool writer 公平性、不可硬取消的 kernel
+  I/O、worker ownership 和资格探针漂移；不把保证扩展到 root/恶意相同 UID、未验证组合或尚未
+  通过 I-12 的官方 volume。
 
-#### 当前阻塞（2026-08-18）
+#### 路线修订（PR #136）
 
-M2 的进入调研确认，锁定的 `sqlx-sqlite` 0.8.6 只能把 filename 交给
-`sqlite3_open_v2`，没有从 Gateway 已通过 no-follow 安全打开并锁定的 descriptor 建立
-`SqliteConnection` 的受支持入口。这与 3.2.3 节“不能先做 path check 再由 SQLx 按路径重新打开”
-的当前硬门禁直接冲突。已核对的普通 pathname/URI indirection 和内建 VFS 选择仍会按 filename
-打开，不能把 `/proc/self/fd`、`unix-excl` 或类似技巧描述为 descriptor adoption；注册新的
-descriptor-aware driver/VFS 只是待评审的可能方向之一，不是已经批准的方案。
+M2 进入调研确认 SQLx 0.8.6 没有 descriptor-adoption API。PR #136 因此提出本节与
+[SQLite 数据库运行时生命周期技术路线](sqlite-runtime-lifecycle.md) 的
+Linux protected-path/cooperative-process 边界：保留独立 no-follow anchor、stable identity
+`flock`、严格祖先 DAC、canonical-path binding、每连接 policy gate 和全部激活门禁，同时明确
+stock SQLx 按 canonical path 打开，不实现 custom VFS，也不使用 `SQLITE_FCNTL_HAS_MOVED`。
 
-因此 M2 暂停，M3–M11 继续受依赖图阻断，正常配置仍拒绝 `sqlite:` URL。解除阻塞前必须先完成并
-评审一个明确的路线图决策，并同步本计划的安全边界、范围、测试矩阵、依赖和估算；本阻塞记录不
-预选 descriptor-aware driver/VFS、调整威胁模型或其他解决路线，也不能被解释为批准直接开始
-生命周期代码。
+PR #136 是 P-00 路线修订，只解除技术路线阻塞，不属于 I-02，也不代表 M2 已开始或退出条件完成。
+I-02 生命周期代码必须从该 PR 合并后的 `main` 开始；M3–M11 仍须等待 I-02 全部实现和测试通过，
+正常配置仍拒绝 `sqlite:` URL。
 
 ### M3 / I-03：控制面生命周期与读取
 
@@ -825,25 +907,36 @@ descriptor-aware driver/VFS 只是待评审的可能方向之一，不是已经�
 
 - **范围**：在同一个 I-12 PR 内先保持激活关闭，运行并记录预激活 gate；通过评审后追加最终最小
   激活改动，该改动才开放文件型 SQLite URL，然后原样重跑 gate。官方 Docker/Release artifact
-  编译 `sqlite-backend`，Cargo 默认可保持 PostgreSQL-only；同步两份配置模板、单独的 SQLite
-  部署示例、用户运维文档、容器文件权限准备、监控、一致备份/恢复、容量、升级和故障处理说明。
-  PostgreSQL 保持默认，公开声明仍须等待激活后 gate 通过。
+  编译 `sqlite-backend`，Cargo 默认可保持 PostgreSQL-only；I-12 必须消费 M2 签入的 capability
+  contract/probe，冻结准确的 image digest、UID/GID、capability set、mount source/destination/
+  options、volume 类型与 backing filesystem；runtime 必须使用不与其他服务共享的专用 principal，
+  且 host UID mapping/fsuid 明确，不使用未单独通过评审的 idmapped mount。不能把抽象 named
+  volume 当作已验证。同步两份
+  配置模板、单独的 SQLite 部署示例、用户运维文档、容器文件权限准备、监控、offline
+  restore/install、容量、升级和故障处理说明。PostgreSQL 保持默认，公开声明仍须等待激活后 gate
+  通过。
 - **依赖**：M10。
 - **关键文件/模块**：runtime config、配置模板、container entrypoint、用户部署/生产配置文档、
   release verification 和运维测试。具体改动须遵循届时的配置/部署同步矩阵。
 - **进入条件**：M10 全绿且没有阻断级数据完整性、性能或安全问题；支持拓扑文字已冻结。
-- **退出条件**：预激活与激活后两次 gate 都通过；官方 artifact 可显式选择安全的本地 SQLite
-  文件而 Cargo 默认仍是 PostgreSQL；PostgreSQL 官方部署与单独 SQLite 示例不混用拓扑；安装、
-  升级、磁盘满、权限修复和回滚 runbook 经演练；在同步 spool/manifest 的 backup barrier 内使用
-  SQLite backup API 或协调 checkpoint 生成一致数据库备份，备份加密、受访问控制并复制到受保护
-  的异机/对象存储；数据库、spool、spool checkpoint/manifest 的一致恢复和幂等重放 drill 通过；
-  所有文档只宣称单进程本机 live 文件拓扑，并发布已实测的支持容量。
+- **退出条件**：预激活与激活后两次 gate 都在准确官方 image/UID/GID/volume 组合通过；artifact
+  可显式选择安全的本地 SQLite 文件而 Cargo 默认仍是 PostgreSQL；PostgreSQL 官方部署与单独
+  SQLite 示例不混用拓扑；安装、升级、磁盘满、权限修复、canonical-path label、回滚和容器
+  recreate/restart runbook 经演练；在同步 spool/manifest 的 backup barrier 内使用 SQLite backup
+  API 或协调 checkpoint 生成一致数据库备份，备份加密、受访问控制并复制到受保护的异机或对象
+  存储；offline restore/install 在相同与新 canonical path 正确生成目标 label，且数据库、spool、
+  checkpoint/manifest 的一致恢复和幂等重放 drill 通过；所有文档只宣称单进程本机 live 文件拓扑
+  和已经实测的准确组合/容量。
 - **必测**：配置正反例和首发零 query parameter、feature-disabled 错误、官方 Docker/Release
-  feature 检查、PostgreSQL 与单独 SQLite 部署示例、容器 UID/GID 与正向 local filesystem
-  allowlist、实际文件/WAL 权限、backup API/协调 checkpoint、加密与 off-host copy、数据库+spool
-  coherent restore、migration upgrade、磁盘满/损坏诊断、最终全栈；在明确授权后原样运行并通过
-  M10 签入的持续资格 profile。未获持续性能运行授权时 M11 保持阻塞。
-- **风险/工作量**：高，6–8 日。风险是过早宣传、错误复制 live DB 文件和容器卷权限。
+  feature 检查、PostgreSQL 与单独 SQLite 部署示例、准确容器 dedicated principal、capability、
+  UID/GID/host mapping/fsuid/mount/volume/
+  backing filesystem、M2 probe、xattr/flock/link-count/fsync、实际 DB/WAL/SHM 权限、同 volume
+  第二 cooperating process、容器 recreate/主机重启、negative mount 组合、backup API/协调
+  checkpoint、加密与 off-host copy、数据库+spool coherent restore、同路径/新路径 offline
+  install、migration upgrade、磁盘满/损坏诊断、最终全栈；在明确授权后原样运行并通过 M10 签入的
+  持续资格 profile。未获持续性能运行授权时 M11 保持阻塞。
+- **风险/工作量**：高，8–12 日。风险是过早宣传、错误复制 live DB/WAL、path label 或 xattr
+  丢失、image/runtime/volume 漂移、backing filesystem 误判和容器权限。
 
 ## 7. 测试总策略
 
@@ -922,12 +1015,18 @@ PostgreSQL contract 测试使用隔离数据库；SQLite 每个测试使用独�
 - 除普通 error injection 外，对关键 cut point 执行子进程 kill/restart，验证磁盘事实，而不只验证
   内存 mock。M8 先在 PostgreSQL 双实例验证；I-10 用同一 suite 在 SQLite 单进程拓扑内两个独立
   application/worker 实例交错执行，并对两个后端分别执行 crash/restart。
-- M2 对路径旁路创建锁取得前后、数据库 no-follow create/open、identity 记录、descriptor/identity
-  OS lock 取得、锁后 path/identity/link-count 复验、WAL/SHM 创建后复验、pool/migration 启动前
-  和 pool/checkpoint 关闭后的锁释放分别设置 failpoint。两个子进程必须覆盖同路径、编码 alias、
-  hard-link alias 与 bind/mount alias；若 CI capability 无法构造某类 alias，必须运行能证明
-  相同稳定身份共享同一 descriptor/identity lock 域的确定性低层跨进程测试并报告该 capability，
-  不能 silent skip 或把未测平台列入支持矩阵。
+- M2 对 capability/DAC probe、path lock 双 slot intent、anchor no-follow create/open、stable
+  identity/`flock`、锁后 path 复验、canonical label create/fsync/read、runtime/pool/acquire
+  prevalidation、`after_connect` postvalidation、checkout/recycle policy gate、WAL/SHM/journal
+  复验、pool/migration 启动前和 pool/checkpoint 后锁释放分别设置 failpoint。两个子进程必须覆盖
+  同 canonical path、编码等价路径、hard-link rejection 与 concurrent bind alias；CI 无 bind
+  capability 时必须运行同 inode descriptor 的真实双进程 `flock` fallback 并报告 capability，
+  不能 silent skip 或把未测组合列入候选矩阵。另以子进程 kill/restart 固定 path-label 初始化、
+  initialization state table 全组合、无 matching intent 的零长度文件拒绝、residual WAL 同路径
+  恢复和 alternate-path rejection；另在 runtime construction/acquire 每个 await point 取消
+  caller，证明 supervisor/acquisition task 继续 graceful cleanup。pool/lifecycle close 或
+  transaction cleanup 未确认时 lock/permit 保持到进程退出；supervisor/acquisition panic
+  injection 证明 fatal vault 不经 unwind 释放锁。
 - 覆盖 busy timeout、长 reader、writer 饥饿、磁盘满、只读目录、WAL 残留、截断 journal、
   malformed TEXT/JSON/time、连接中断和 shutdown deadline。
 - PostgreSQL 从完整 migration 历史和受支持旧版本 fixture 升级；SQLite 从 `0001` 及之后每个
@@ -963,11 +1062,13 @@ M10/M11 至少自动化以下单文件场景：
 6. spool backlog、ingress、final、settlement、个人/系统统计和排行榜端到端收敛；
 7. 优雅关闭、强制终止、WAL/spool 恢复，以及一致数据库备份与 spool/checkpoint manifest 的
    coherent restore 后再次启动；
-8. 第二进程通过同路径、percent-encoded alias、hard-link alias 和 CI capability 允许的
-   bind/mount alias 竞争同一锁定身份；不具备 alias 构造 capability 时运行确定性低层
-   identity/lock 测试而非 silent skip。另覆盖 DB/WAL/SHM/旁路 lock 的异常 link count、锁后身份
-   或路径变化、错误权限、known-remote/unsupported/unknown 文件系统分类、稳定身份/锁能力不可
-   验证、磁盘满和损坏文件的 fail-closed 诊断；只对冻结支持矩阵作出保证。
+8. 第二 cooperating process 通过同 canonical path、percent-encoded equivalent 和 capability
+   允许的 concurrent bind alias 竞争 path/anchor locks；pre-existing hard link 按 link count
+   拒绝。无 bind capability 时运行同 inode descriptor 的真实双进程 `flock` fallback 而非 silent
+   skip。另覆盖 canonical label path drift、DB/WAL/SHM/journal/path lock 的异常 type/owner/mode/
+   link count、完整祖先 DAC、identity/path/sidecar runtime poison、known-remote/unsupported/
+   unknown capability、磁盘满和损坏文件的 fail-closed 诊断；I-12 只对准确通过的
+   image/UID/GID/volume 组合作出发布保证。
 
 ### 7.5 可复现容量资格
 
@@ -986,10 +1087,11 @@ M10 必须签入一个版本化、可单命令复现的 SQLite qualification pro
   恢复后的 eventual closure deadline、attempt expiry/stale-anchor/late-response rejection、WAL
   峰值/回收值和总磁盘预算的逐项数值 pass/fail 阈值。
 
-profile 必须声明硬件/文件系统基线、预热、采样、重复次数和结果 artifact，失败不能由人工主观豁免。
-M11 在预激活 gate 与最小激活改动后都使用同一 profile；最终至少一次获明确授权的持续运行必须全项
-通过，并把 profile 对应的支持容量发布到运维文档。任何持续 performance/soak 执行仍须用户明确
-授权；未获授权不是“跳过并通过”，而是 M11 阻塞。
+profile 必须声明硬件、kernel、filesystem/mount 与 M2 capability-probe baseline、预热、采样、
+重复次数和结果 artifact，失败不能由人工主观豁免。M10 host profile 不替代 I-12 的准确
+image/volume run。M11 在预激活 gate 与最小激活改动后都使用同一 profile；最终至少一次获明确
+授权的持续运行必须全项通过，并把 profile 对应的支持容量发布到运维文档。任何持续
+performance/soak 执行仍须用户明确授权；未获授权不是“跳过并通过”，而是 M11 阻塞。
 
 ## 8. Definition of Done 与非目标
 
@@ -1030,21 +1132,31 @@ M11 在预激活 gate 与最小激活改动后都使用同一 profile；最终�
   replay、concurrent/stale resolver conflict 和两种 event/anchor 行为在 PostgreSQL/SQLite
   等价；operator runbook 禁止直接 DB 编辑并明确 rotating refresh unknown 只能 reauthorization。
 - [ ] 默认、SQLite、MCP 组合和 Rust 1.92 MSRV 矩阵全绿。
-- [ ] URL 解码/规范化、零 query parameter、文件系统/稳定身份/identity-following lock 正向
-  allowlist、官方容器本地卷、文件权限、link-count、no-follow create/open、锁后 path/identity
-  复验、排他锁和 checkpoint 门禁全绿；规范路径和旁路锁没有被当作 hard-link/bind/mount alias
-  排除机制。冻结支持矩阵上的两个真实进程对同路径、编码 alias、hard-link alias 以及 capability
-  允许的 bind/mount alias 均竞争/失败；CI 无对应 capability 的 case 有确定性低层
-  identity/descriptor-lock 测试而非 silent skip。identity lock 只在全部 pool/连接和 checkpoint
-  关闭后释放；lifecycle/control/log 每个物理连接（含重开/回收替换）均在首次
-  可用前以及 pool checkout/recycle 后再次交付前 set + read-back `synchronous=FULL`、
-  `foreign_keys=ON`、统一 busy policy，并验证 WAL；任一不匹配 fail closed。
+- [ ] URL 解码/规范化、零 query parameter、Linux protected-path/DAC、candidate capability
+  probe、no-follow anchor、canonical-path binding、stable identity `flock`、文件
+  type/owner/mode/link-count、runtime/pool/acquire prevalidation、`after_connect` postvalidation、
+  runtime poison 和 checkpoint 门禁全绿；
+  anchor/path lock 没有被描述成 descriptor adoption 或单独的 alias 排除机制。两个真实进程对同
+  canonical path、编码等价路径和 capability 允许的 concurrent bind alias 均竞争/失败，
+  hard-link 按 link count 拒绝；CI 无 bind capability 时有同 inode `flock` 双进程测试而非
+  silent skip。anchor lock 只在全部 pool/连接和 checkpoint 调用结束后释放；
+  lifecycle/control/log 每个物理连接（含重开/回收替换）均在首次可用前以及 pool
+  checkout/recycle 后再次交付前 set + read-back `synchronous=FULL`、`foreign_keys=ON`、
+  `locking_mode=NORMAL`、统一 busy policy 并验证 WAL；精确 source guard 固定 audited SQLx
+  pre-hook initializer，`NO_CKPT_ON_CLOSE` 是第一个 Gateway-controlled post-establish operation
+  并 read-back；任一 policy mismatch
+  fail closed，任一 identity/path/label/sidecar mismatch poison runtime。runtime-owned acquire/
+  construction cancellation 与 supervisor panic tests 全绿；writer permit、pool/lifecycle close
+  或 checkpoint cleanup 未确认时 locks/fatal vault 保持到 cleanup 完成或进程退出。FFI 精确
+  pin/单一 linkage 已验证。实现没有 custom VFS、
+  `/proc/self/fd` adoption 或 `SQLITE_FCNTL_HAS_MOVED`。
 - [ ] 加密受控的 off-host 备份及数据库+spool coherent restore runbook 经演练，备份凭据和恢复
   密钥风险有明确轮换、最小权限与失效处理。
 - [ ] M10 数值 qualification profile 在授权后由 M11 全项通过，并发布支持容量。
 - [ ] PostgreSQL 仍为默认，现有 PostgreSQL 行为和部署路径无回归。
 - [ ] 官方 Docker/Release artifact 编译 `sqlite-backend`，Cargo 默认可保持 PostgreSQL-only，
-  SQLite 使用单独部署示例。
+  SQLite 使用单独部署示例；I-12 的准确 image digest、UID/GID、capability、mount、volume、
+  backing filesystem 和 M2 probe 结果均已通过，不能以“编译了 feature”替代部署资格。
 - [ ] 任何实际转发路径变更均在明确授权后通过付费真实上游 smoke；否则对应里程碑仍阻塞。
 - [ ] 只有 I-12 同 PR 的预激活 gate 通过后才落最终最小激活改动，重跑通过后才作出可部署声明。
 
@@ -1058,19 +1170,16 @@ M11 在预激活 gate 与最小激活改动后都使用同一 profile；最终�
 
 ## 9. 估算与并行方式
 
-总量约 **100–150 工程日**，不确定性主要来自 Codex 外部副作用恢复、两套 API 级幂等与 operator
-reconciliation、quota fence/anchor generation 恢复、日志故障注入、统计性能和 SQLx SQLite
-transaction 生命周期。该范围不是承诺工期，应预留
-约 ±20% 的环境、评审和缺陷修复
-波动。
-在 M2 的 descriptor-adoption 阻塞解除路线经评审并完成重新估算前，本节数字只保留为阻塞发现前
-的历史基线，相关日历预测暂停。
+总量约 **105–160 工程日**，不确定性主要来自 Codex 外部副作用恢复、两套 API 级幂等与 operator
+reconciliation、quota fence/anchor generation 恢复、日志故障注入、统计性能、protected-path/
+xattr/crash-restore 状态、candidate capability probe、stock SQLx transaction/shutdown 生命周期
+和 I-12 准确 image/volume 资格。该范围不是承诺工期，应预留约 ±20% 的环境、评审和缺陷修复波动。
 
 - 单工程师串行：约 **5–8 个月**。
-- M2 后由 3 名熟悉代码的工程师分别承担控制面、日志、Codex 三轨：约 **14–21 周**，包含 M10
+- M2 后由 3 名熟悉代码的工程师分别承担控制面、日志、Codex 三轨：约 **15–22 周**，包含 M10
   收敛和 M11 运维门禁。M3–M5、M6–M7、M8 可部分重叠，但 I-09 必须等待 M5+M8，I-10 必须等待
   I-09+M7；共享 facade/migration、M10 profile 固化、I-12 两阶段 gate 和跨轨缺陷修复仍需串行
-  协调，因此不能用 100–150 工程日简单除以三。
+  协调，因此不能用 105–160 工程日简单除以三。
 - 不通过减少测试、缩短 crash matrix 或提前激活来压缩日历时间。
 
 ## 10. 风险登记
@@ -1079,8 +1188,12 @@ transaction 生命周期。该范围不是承诺工期，应预留
 | --- | --- | --- |
 | SQLite 单 writer 导致控制面或日志饥饿 | backlog、Console 超时 | 共享公平 coordinator、有界 batch、M5 配置大小/锁时长阈值、M10 数值 qualification profile；M5/M6/M10/M11 阻断 |
 | 生命周期被 main/CLI 重复创建 | 双锁、双 worker、关闭次序破坏 | 唯一 `DatabaseRuntime` owner、构造可见性和架构测试；M2/M10 阻断 |
-| 仅依赖规范路径/旁路锁使 hard-link 或 bind/mount alias 绕过单进程排除，或锁后路径被替换 | 两个 runtime 同时迁移/写同一 DB，导致损坏或关闭/checkpoint 竞态 | 冻结平台/文件系统/内核锁支持矩阵；no-follow 原子 create/open；DB/WAL/SHM/旁路 lock 的 owner/mode/link-count 校验；记录稳定 file identity 并持有绑定 descriptor/identity 的 OS 排他锁；pool/migration 前复验锁定 identity/path，父目录 0700；同路径/编码/hard-link/bind-mount 两进程与低层 fallback tests；能力不可验证 fail closed；M2/M11 阻断 |
-| SQLite 重开/回收连接继承默认 pragma | `synchronous` 降级、外键失效或 busy 行为漂移 | lifecycle/control/log 每个 physical connect/reconnect/recycle 都 set + read-back FULL/foreign_keys/busy policy 并验证 WAL，不匹配连接销毁；M2/M11 阻断 |
+| runtime construction/acquire cancellation 或 supervisor panic 丢弃 SQLx connection | SQLite worker 尚未停止而 lock owner 已释放，或连接被 close-hard | 第一次 SQLx await 前启动 shutdown supervisor；runtime-owned acquisition task shielding；caller 取消后继续 graceful-close；process-lifetime fatal lease vault 防 unwind 释放；无法确认则 nonzero terminate 并保留 locks 到 process exit；M2 阻断 |
+| stock SQLx pathname reopen 时祖先或 mount 可被边界内主体替换 | 连接打开错误 inode，并与原 WAL namespace 交叉导致损坏 | 明确 protected-path/cooperative-process 威胁模型；危险 capability/root/恶意相同 UID 排除；每级 root/Gateway-owned 且不可写 ancestor、最终 0700 parent、稳定 mount namespace、runtime/acquire prevalidation 与 `after_connect` postvalidation；无法满足即拒绝；不声称 descriptor adoption；M2/M11 阻断 |
+| canonical path 漂移、hard/bind alias 或 path label 在 crash/restore 中丢失 | 重启遗漏 hot WAL，或两个 runtime 同时迁移/写同一 DB | no-follow anchor + dev/inode、`nlink == 1`、inode `flock`、versioned canonical-path binding xattr、同 path/encoded/bind 双进程、hard-link rejection、kill/restart 与 offline restore/install tests；xattr/lock/capability 不可验证 fail closed；M2/M11 阻断 |
+| SQLite 重开/回收连接继承默认 pragma 或文件身份 gate 失败后只重试单连接 | `synchronous` 降级、外键失效、busy 行为漂移或持续在被替换文件上工作 | lifecycle/control/log 每个 physical connect/reconnect/checkout/recycle 都 set + read-back FULL/foreign_keys/locking mode/busy policy 并验证 WAL；mismatch 不交付，poison runtime，并由 controlled wrapper/supervisor 确认 graceful close，不能走 close-hard；M2/M11 阻断 |
+| transaction drop/cancellation 只排队 rollback，或 pool/lifecycle close 尚未确认 | writer permit/anchor lock 过早释放，另一个 writer/runtime 与旧 SQLite worker 竞态 | cancellation-safe transaction wrapper；terminal/close 确认前 supervisor 保留 permit/locks，失败则 poison 并禁止同进程恢复，直到 cleanup 或 process exit；M2/M11 阻断 |
+| SQLx 自动 close-checkpoint 或 checkpoint future 被 timeout/drop 但 worker 仍在 I/O | 绕过 WAL-size admission 或提前释放 anchor lock，第二 runtime 与未结束 checkpoint 竞态 | 精确 pin/source guard 限定 pre-hook initializer；`NO_CKPT_ON_CLOSE` 是第一个 Gateway-controlled post-establish operation，设置失败 non-unwinding terminate，pre-hook establish failure 不继续 serve；pool 先关闭、零 lock-wait PASSIVE、WAL-size admission、仅完整后 TRUNCATE；checkpoint 调用真实结束前不释放锁，forced hard deadline 由 supervisor kill，永不手工删 WAL；M2/M11 阻断 |
 | checkpoint/重放顺序错误 | 丢日志或重复扣费 | 明确两条“不得提前”不变量、kill/restart crash matrix；M6 阻断 |
 | Decimal 被 SQLite 隐式转浮点 | 金额漂移 | TEXT adapter、Rust Decimal fold、禁止 REAL/f64/SUM(TEXT)、对抗 fixture；M6/M7 阻断 |
 | Codex rotating refresh 在 provider 轮换后、持久化前崩溃 | 新 token 不可恢复，旧 token 重试扩大损失 | durable dispatched 状态，abandon/expiry 转 unknown/reauth 且不自动重试旧 token；M8/M9 阻断 |
@@ -1096,7 +1209,7 @@ transaction 生命周期。该范围不是承诺工期，应预留
 | reset 长期 pending 导致 quota fence backlog | quota 可见性陈旧、队列持续增长 | pending/recovering/unknown 可观察与告警、有界 claim/lease 恢复、attempt expiry、fresh-anchor/drain backlog 指标和容量阈值；不得猜测失败后放开 fence；M8/M9/M10/M11 阻断 |
 | PostgreSQL trigger/约束未显式移植 | projection 或授权不一致 | 共享 mutation contract、SQLite 同事务显式投影、schema/状态审计；M5/M9 阻断 |
 | 统计 SQL 方言与时区差异 | API 数值不一致 | canonical fixture、Rust 聚合、DST/边界/golden tests；M7 阻断 |
-| 文件系统/权限/第二进程误用 | 损坏或 secret 泄露 | 支持平台正向 local-FS/identity/lock allowlist、unknown 或能力不可验证 fail closed、owner/mode/symlink/link-count 校验、文件身份排他锁、官方容器卷；保证仅限冻结组合；M2/M11 阻断 |
+| 文件系统/权限/第二进程误用 | 损坏或 secret 泄露 | M2 candidate Linux/local-FS/xattr/flock/link-count/fsync capability contract 与双进程 probe；unknown/unsupported fail closed；I-12 在准确 image/UID/GID/mount/volume/backing filesystem 原样复验后才发布；M2/M11 阻断 |
 | 双 pool 被误认为双 writer 容量 | 锁争用和错误调参 | 指标区分 logical pool 与全局 writer、生产容量测试；M2/M6 阻断 |
 | facade 泄漏 concrete backend | 后续分支扩散、测试组合爆炸 | 静态 grep/架构测试、PR review checklist；M1/M10 阻断 |
 | migration 首发后不可恢复 | 启动失败或数据损坏 | 前向 migration fixture、故障中断/恢复、数据库+spool coherent restore drill；M11 阻断 |
@@ -1104,7 +1217,7 @@ transaction 生命周期。该范围不是承诺工期，应预留
 | 未经资格测试即宣传 SQLite | 超容量部署、数据风险 | I-12 单 PR 两阶段 gate、数值 profile、最终 gate 前禁止宣传；M11 阻断 |
 | 转发接缝变化只通过 mock | 真实 provider 回归未发现 | 明确授权后的付费 smoke 是硬门禁；不可用则受影响里程碑阻塞 |
 | 功能新增造成计划 inventory 漂移 | “完成”但不等价 | 每个 PostgreSQL schema/feature PR 同步本计划和 SQLite contract；持续治理 |
-| 估算受跨轨冲突放大 | 延期、集成返工 | M1/M2 先冻结 contract、三轨 ownership、M10 前定期合并验证 |
+| 估算受 protected-path 与跨轨冲突放大 | 延期、集成返工 | PR #136 先冻结 M2 security/lifecycle contract，I-02 完成后才解锁三轨；三轨 ownership 与 M10 前定期合并验证 |
 
 ## 11. 计划治理
 
@@ -1136,6 +1249,7 @@ transaction 生命周期。该范围不是承诺工期，应预留
 
 - [数据库 Repository 契约与 M1 方法台账](database-repository-contracts.md)
 - [数据库与控制面架构](database-architecture.md)
+- [SQLite 数据库运行时生命周期技术路线](sqlite-runtime-lifecycle.md)
 - [请求日志耐久化流水线](request-log-durability.md)
 - [统计页面设计](statistics.md)
 - [Codex OAuth Connector 设计记录](codex-oauth-connector.md)

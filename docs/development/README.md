@@ -17,6 +17,9 @@
   契约、104 个 repository 操作基线、事务意图、错误与 outcome 语义。
 - [数据库后端抽象与 SQLite 完成总计划](database-backend-completion-plan.md)：**提案**；
   完整数据库 facade、生产级 SQLite 功能等价与分阶段实施的控制性路线图，不代表当前可用能力。
+- [SQLite 数据库运行时生命周期技术路线](sqlite-runtime-lifecycle.md)：**提案**；M2 / I-02 的
+  Linux protected-path/cooperative-process 安全边界、唯一 runtime owner、pool/connection policy、
+  文件身份锁、canonical-path binding、关闭和资格探针设计。
 - [Console 认证与授权设计记录](console-auth.md)
 - [Console Web UI 架构与开发指南](console-ui.md)：当前 Base UI 技术栈、会话、安全、构建和测试。
 - [请求日志耐久化流水线](request-log-durability.md)
