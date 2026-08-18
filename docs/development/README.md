@@ -13,6 +13,8 @@
   转发、Codex 凭证共享投影，以及 replayable 大 body 边界。
 - [数据库与控制面架构](database-architecture.md)：当前持久化实体组、快照编译和 schema
   修改流程；逐列结构以 migration 为准。
+- [数据库后端抽象与 SQLite 完成总计划](database-backend-completion-plan.md)：**提案**；
+  完整数据库 facade、生产级 SQLite 功能等价与分阶段实施的控制性路线图，不代表当前可用能力。
 - [Console 认证与授权设计记录](console-auth.md)
 - [Console Web UI 架构与开发指南](console-ui.md)：当前 Base UI 技术栈、会话、安全、构建和测试。
 - [请求日志耐久化流水线](request-log-durability.md)

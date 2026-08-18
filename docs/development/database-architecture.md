@@ -73,7 +73,9 @@ Cargo feature `sqlite-backend` 已提供第二后端的 schema、存储类型、
 `src/runtime_config/mod.rs` 仍只接受 `postgres://`/`postgresql://`，默认构建也不包含
 `sqlite-backend`。这些 registration 仓储能力不改变运行时数据库选择；在 SQLite 其余仓储、事务
 和日志/结算实现完成前，不得把 `sqlite:` URL 写入配置模板或用户文档，也不得宣称 SQLite 已可用于
-部署。
+部署。完整后端抽象与生产启用的拟议顺序见
+[数据库后端抽象与 SQLite 完成总计划](database-backend-completion-plan.md)；该提案不改变本节
+所述当前状态。
 
 最初的 11 表方案及其当时的取舍已移入
 [首版数据库设计归档](../archive/initial-database-design.md)。它不能作为当前列名、表数量或功能边界
