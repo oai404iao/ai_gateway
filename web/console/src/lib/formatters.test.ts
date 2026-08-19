@@ -4,6 +4,7 @@ import {
   formatBytes,
   formatCompactTokens,
   formatDurationMs,
+  formatEstimatedQuotaTotal,
   formatList,
   formatTokens,
   formatUsd,
@@ -14,6 +15,17 @@ describe("formatters", () => {
   it("formats USD amounts", () => {
     expect(formatUsd("1.5")).toBe("1.50 USD");
     expect(formatUsd(null)).toBe("—");
+  });
+
+  it("estimates total quota only from valid window observations", () => {
+    expect(formatEstimatedQuotaTotal("3.2174", 42)).toBe("7.660476 USD");
+    expect(formatEstimatedQuotaTotal("0", 50)).toBe("0.00 USD");
+    expect(formatEstimatedQuotaTotal(null, 42)).toBe("—");
+    expect(formatEstimatedQuotaTotal("3.2174", null)).toBe("—");
+    expect(formatEstimatedQuotaTotal("3.2174", 0)).toBe("—");
+    expect(formatEstimatedQuotaTotal("3.2174", 101)).toBe("—");
+    expect(formatEstimatedQuotaTotal("not-a-decimal", 42)).toBe("—");
+    expect(formatEstimatedQuotaTotal("-1", 42)).toBe("—");
   });
 
   it("formats durations", () => {

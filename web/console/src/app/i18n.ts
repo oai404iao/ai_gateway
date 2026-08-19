@@ -1862,8 +1862,8 @@ const zhCN: Record<string, string> = {
   "OpenAI-compatible": "OpenAI 兼容",
   "Codex OAuth": "Codex OAuth",
   "Codex quotas": "Codex 额度",
-  "Read-only quota windows and credential-wide spend for Codex credential groups granted by your user group. Spend includes every caller and both Responses and Images.":
-    "只读查看当前用户组获准访问的 Codex 凭证组额度窗口和凭证总花费。花费包含所有调用者以及 Responses 与 Images。",
+  "Read-only quota windows and credential-wide spend for Codex credential groups granted by your user group. Spend includes every caller and both Responses and Images. Estimated total quota divides current period spend by the most recently provider-reported used percentage.":
+    "只读查看当前用户组获准访问的 Codex 凭证组额度窗口和凭证总花费。花费包含所有调用者以及 Responses 与 Images。预估总额度按当前周期花费除以 Provider 最近报告的已使用百分比计算。",
   "No Codex quota access": "暂无 Codex 额度查看权限",
   "Your user group has not been granted access to any Codex quota groups.":
     "当前用户组尚未获准查看任何 Codex 额度组。",
@@ -1897,8 +1897,8 @@ const zhCN: Record<string, string> = {
   "Quota refreshed.": "额度已刷新。",
   "This channel group is not a Codex OAuth connector.":
     "该渠道组不是 Codex OAuth Connector。",
-  "Connect ChatGPT Codex subscriptions, share credentials across Responses and Images channels, assign proxies, and monitor quota.":
-    "连接 ChatGPT Codex 订阅，在 Responses 与 Images 渠道间共享凭证、分配代理并监控额度。",
+  "Connect ChatGPT Codex subscriptions, share credentials across Responses and Images channels, assign proxies, and monitor quota. Estimated total quota divides current period spend by the most recently provider-reported used percentage.":
+    "连接 ChatGPT Codex 订阅，在 Responses 与 Images 渠道间共享凭证、分配代理并监控额度。预估总额度按当前周期花费除以 Provider 最近报告的已使用百分比计算。",
   "Export credentials": "导出凭证",
   "Advanced import": "高级导入",
   "Import tokens": "导入 Token",
@@ -1921,6 +1921,7 @@ const zhCN: Record<string, string> = {
   "Primary window": "主窗口",
   "Secondary window": "次窗口",
   "Period spend": "周期花费",
+  "Estimated total quota": "预估总额度",
   "Natural reset": "自然重置",
   "Manual reset credit": "手动 reset credit",
   "OpenAI official reset": "OpenAI 官方重置",

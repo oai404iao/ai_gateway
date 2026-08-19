@@ -97,7 +97,7 @@ import {
   useControlPlaneLists,
 } from "@/features/admin/api";
 import { formatDateTime } from "@/lib/dates";
-import { formatUsd } from "@/lib/formatters";
+import { formatEstimatedQuotaTotal, formatUsd } from "@/lib/formatters";
 import {
   useBatchUpdateCodexCredentials,
   useCodexCredential,
@@ -301,6 +301,14 @@ function QuotaWindow({
         <span className="text-muted-foreground">{t("Period spend")}</span>
         <span className="font-medium tabular-nums">
           {formatUsd(costAmount)}
+        </span>
+      </div>
+      <div className="flex items-center justify-between gap-3 text-xs">
+        <span className="text-muted-foreground">
+          {t("Estimated total quota")}
+        </span>
+        <span className="font-medium tabular-nums">
+          {formatEstimatedQuotaTotal(costAmount, percent)}
         </span>
       </div>
     </div>
@@ -689,7 +697,7 @@ export default function CodexOauthPage() {
       <PageHeader
         title={group.data?.data.name ?? t("Codex OAuth")}
         description={t(
-          "Connect ChatGPT Codex subscriptions, share credentials across Responses and Images channels, assign proxies, and monitor quota.",
+          "Connect ChatGPT Codex subscriptions, share credentials across Responses and Images channels, assign proxies, and monitor quota. Estimated total quota divides current period spend by the most recently provider-reported used percentage.",
         )}
         actions={
           <>
@@ -1588,6 +1596,7 @@ function QuotaWindowPeriodsTable({
             <TableHead>{t("Period")}</TableHead>
             <TableHead>{t("Usage")}</TableHead>
             <TableHead>{t("Period spend")}</TableHead>
+            <TableHead>{t("Estimated total quota")}</TableHead>
             <TableHead>{t("Ended by")}</TableHead>
             <TableHead>{t("Last observed")}</TableHead>
             <TableHead className="text-right">{t("Actions")}</TableHead>
@@ -1622,6 +1631,12 @@ function QuotaWindowPeriodsTable({
               </TableCell>
               <TableCell className="align-top tabular-nums">
                 {formatUsd(period.cost_amount)}
+              </TableCell>
+              <TableCell className="align-top tabular-nums">
+                {formatEstimatedQuotaTotal(
+                  period.cost_amount,
+                  period.last_used_percent,
+                )}
               </TableCell>
               <TableCell className="align-top">
                 <Badge variant={quotaResetReasonVariant(period.reset_reason)}>

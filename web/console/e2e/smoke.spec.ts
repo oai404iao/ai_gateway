@@ -157,6 +157,8 @@ test.describe("Console SPA smoke", () => {
     await expect(page.getByText("96%")).toBeVisible();
     await expect(page.getByText("4.75 USD")).toBeVisible();
     await expect(page.getByText("24.50 USD")).toBeVisible();
+    await expect(page.getByText("4.947917 USD")).toBeVisible();
+    await expect(page.getByText("204.166667 USD")).toBeVisible();
     await expect(page.getByText("Personal Plus")).toHaveCount(0);
     await expect(
       page.getByRole("button", { name: /refresh quota/i }),
@@ -177,6 +179,7 @@ test.describe("Console SPA smoke", () => {
     ).toBeVisible();
     await expect(page.getByText("Natural reset")).toBeVisible();
     await expect(page.getByRole("cell", { name: "4.75 USD" })).toBeVisible();
+    await expect(page.getByRole("cell", { name: "4.947917 USD" })).toBeVisible();
     await expect(page.getByRole("button", { name: "View costs" })).toHaveCount(0);
   });
 
@@ -490,6 +493,7 @@ test.describe("Console SPA smoke", () => {
     await expect(page.getByText("Personal Plus")).toBeVisible();
     await expect(page.getByText("96% used")).toBeVisible();
     await expect(page.getByText("4.75 USD")).toBeVisible();
+    await expect(page.getByText("4.947917 USD")).toBeVisible();
     await expect(page.getByText("Draining", { exact: true })).toBeVisible();
 
     const editButton = page.getByRole("button", {
@@ -586,6 +590,7 @@ test.describe("Console SPA smoke", () => {
       }),
     ).toBeVisible();
     await expect(page.getByRole("cell", { name: "4.75 USD" })).toBeVisible();
+    await expect(page.getByRole("cell", { name: "4.947917 USD" })).toBeVisible();
     await page.getByRole("button", { name: "View costs" }).click();
     await expect(page).toHaveURL(
       new RegExp(
