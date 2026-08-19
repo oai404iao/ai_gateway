@@ -210,15 +210,31 @@ const zhCN: Record<string, string> = {
     "Codex Git remote URL 最多 2048 个字符。",
   "Enter a valid HTTPS repository URL without credentials, query, or fragment.":
     "请输入不含凭证、查询参数或片段的有效 HTTPS 仓库 URL。",
-  "Codex privacy metadata": "Codex 隐私元数据",
-  "Codex Connect replaces every client-reported workspace with this synthetic Git workspace and fills safe request metadata when it is missing.":
-    "Codex Connect 会用这个合成 Git 工作区替换客户端上报的所有工作区，并在缺失时补齐可安全推导的请求元数据。",
+  "Codex originator is required.": "Codex originator 不能为空。",
+  "Codex originator must be at most 256 characters.": "Codex originator 最多 256 个字符。",
+  "Codex client version is required.": "Codex 客户端版本不能为空。",
+  "Codex client version must be at most 128 characters.": "Codex 客户端版本最多 128 个字符。",
+  "Codex User-Agent is required.": "Codex User-Agent 不能为空。",
+  "Codex User-Agent must be at most 1024 characters.": "Codex User-Agent 最多 1024 个字符。",
+  "Use printable ASCII HTTP header characters.": "请使用可打印的 ASCII HTTP 请求头字符。",
+  "Codex privacy and outbound identity": "Codex 隐私元数据与出站身份",
+  "Codex Connect replaces every client-reported workspace with this synthetic Git workspace, fills safe request metadata when it is missing, and applies this global identity to managed Codex backend requests.":
+    "Codex Connect 会用这个合成 Git 工作区替换客户端上报的所有工作区，在缺失时补齐可安全推导的请求元数据，并将该全局身份用于受管 Codex 后端请求。",
   "Synthetic workspace path": "合成工作区路径",
   "An absolute synthetic path. Real client paths and workspace counts are never forwarded through Codex Connect.":
     "使用绝对的合成路径；Codex Connect 不会转发客户端真实路径或工作区数量。",
   "Synthetic Git origin": "合成 Git origin",
   "Written as associated_remote_urls.origin for the synthetic workspace. Commit hashes and dirty state are omitted.":
     "写入合成工作区的 associated_remote_urls.origin；不会上报 commit hash 或工作区脏状态。",
+  "Codex originator": "Codex originator",
+  "Replaces client-supplied originator values for managed Codex requests and OAuth authorization.":
+    "替换受管 Codex 请求和 OAuth 授权中的客户端 originator 值。",
+  "Codex client version": "Codex 客户端版本",
+  "Used for the Codex version Header and Models client_version query. Update it when the upstream raises its minimum version.":
+    "用于 Codex version 请求头和 Models client_version 查询；上游提高最低版本时在此更新。",
+  "Codex User-Agent": "Codex User-Agent",
+  "Used exactly as the Codex User-Agent. Set a matching native CLI value, including its platform and terminal suffix, when required.":
+    "按原样用作 Codex User-Agent；需要时可设置与原生 CLI 匹配、包含平台和终端后缀的值。",
   "MCP public base URL must be at most 2048 characters.":
     "MCP 公开基础 URL 最多 2048 个字符。",
   "Enter a valid HTTP(S) origin without a path.":

@@ -48,6 +48,15 @@ describe("SystemPage", () => {
     ).toHaveClass("xl:grid-cols-2");
     await user.clear(connectTimeout);
     await user.type(connectTimeout, "12");
+    const originator = screen.getByLabelText("Codex originator");
+    await user.clear(originator);
+    await user.type(originator, "codex_gateway");
+    const clientVersion = screen.getByLabelText("Codex client version");
+    await user.clear(clientVersion);
+    await user.type(clientVersion, "9.8.7");
+    const userAgent = screen.getByLabelText("Codex User-Agent");
+    await user.clear(userAgent);
+    await user.type(userAgent, "codex_gateway/9.8.7 (Linux 6.8.0; x86_64) ai-gateway");
     await user.click(screen.getByRole("button", { name: "Add Codex template" }));
     await user.click(screen.getByRole("button", { name: /save system settings/i }));
 
@@ -109,6 +118,9 @@ describe("SystemPage", () => {
       codex: {
         workspace_path: "/workspace",
         git_remote_url: "https://github.com/oai404iao/ai_gateway",
+        originator: "codex_gateway",
+        client_version: "9.8.7",
+        user_agent: "codex_gateway/9.8.7 (Linux 6.8.0; x86_64) ai-gateway",
       },
       mcp: {
         enabled: false,

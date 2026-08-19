@@ -621,6 +621,9 @@ export const SYSTEM_SETTINGS: SystemSettings = {
   codex: {
     workspace_path: "/workspace",
     git_remote_url: "https://github.com/oai404iao/ai_gateway",
+    originator: "codex_cli_rs",
+    client_version: "0.146.0",
+    user_agent: "codex_cli_rs/0.146.0",
   },
   mcp: {
     enabled: false,

@@ -41,6 +41,15 @@ Header 或错误分类。
 正式 HTTP 请求直接通过共享 reqwest client streaming 转发；WebSocket 使用共享的上游拨号、代理
 和有界连接池。worker 只维护凭证状态，不承载代理流量。
 
+`forwarding_policy.codex` 同时保存隐私投影与全局出站身份：`originator`、`client_version` 和
+`user_agent`。它们默认分别为 `codex_cli_rs`、`0.146.0` 和
+`codex_cli_rs/0.146.0`，由 Console“系统设置”修改后随完整不可变运行时快照发布。`prepare`
+把该快照的身份复制进 `PreparedCodexAttempt`，使 HTTP、WebSocket、Search 和 Images 的一个逻辑
+attempt 不会在中途观察到新设置；OAuth authorization、Models 与 quota 管理请求也从操作开始时的
+快照取得同一身份。`client_version` 同时驱动 Models URL 的 query 参数和最终 `version` Header；
+`user_agent` 是直接的 Header 值，因此管理员可配置原生 CLI 的平台/终端后缀而无需让服务进程伪造
+交互式环境。
+
 ## 持久化模型
 
 `channel_groups.connector_kind` 决定该组使用的 Connector。Codex group 可以使用
@@ -225,7 +234,7 @@ Codex standalone web search attempt：
 - 目标固定为 managed Responses channel base URL 下的 `/alpha/search`；
 - 保留合法的 `x-codex-turn-metadata`；turn metadata 缺失或无效时安全合成，安装 ID 与工作区
   使用同一凭证级/系统设置投影；
-- 无条件把 `originator` 和 `User-Agent` 固定为 Gateway 的 `codex_cli_rs` Connector 身份，
+- 无条件把 `originator` 和 `User-Agent` 覆盖为快照中的全局 Codex Connector 身份，
   并注入 Bearer、存在时的 account、可选 FedRAMP 和版本，删除
   `session-id`、`thread-id` 与 image-turn Header；
 - 成功响应按非流式 JSON 处理，`results` DTO 不解释、不重写；没有可识别 usage 时不估算 token

@@ -38,7 +38,7 @@ impl UpstreamConnectorRegistry {
         affinity_cache_hit: bool,
         client_headers: &HeaderMap,
         affinity_hash: Option<[u8; 32]>,
-        codex_metadata_settings: &CodexRequestMetadataSettings,
+        codex_settings: &CodexRequestMetadataSettings,
     ) -> Result<PreparedUpstreamAttempt, ConnectorUnavailable> {
         match channel.connector_kind() {
             ConnectorKind::OpenAiCompatible => Ok(PreparedUpstreamAttempt::OpenAiCompatible),
@@ -51,11 +51,10 @@ impl UpstreamConnectorRegistry {
                     affinity_cache_hit,
                     client_headers,
                     affinity_hash,
+                    codex_settings.outbound_identity().clone(),
                 )
                 .map_err(ConnectorUnavailable::Codex)?;
-                let request_metadata = attempt
-                    .request_metadata(codex_metadata_settings)
-                    .map(Box::new);
+                let request_metadata = attempt.request_metadata(codex_settings).map(Box::new);
                 Ok(PreparedUpstreamAttempt::Codex {
                     attempt: Box::new(attempt),
                     request_metadata,

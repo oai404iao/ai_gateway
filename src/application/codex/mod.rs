@@ -14,7 +14,9 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::{
-    domain::{ApiFormat, ChannelTimeoutPolicy, CompiledChannelUpstreamPolicy},
+    domain::{
+        ApiFormat, ChannelTimeoutPolicy, CodexOutboundIdentity, CompiledChannelUpstreamPolicy,
+    },
     persistence::{
         CodexCredentialBatchInput, CodexCredentialCreate, CodexCredentialExportBundle,
         CodexCredentialExportInput, CodexCredentialImportInput, CodexCredentialRecord,
@@ -36,7 +38,6 @@ use protocol::{
 };
 
 pub(crate) use attempt::{CodexAttemptError, PreparedCodexAttempt};
-pub use protocol::{CODEX_CLIENT_VERSION, CODEX_ORIGINATOR, codex_user_agent};
 pub use runtime::{CodexCredentialRuntime, CodexCredentialUnavailable, CompiledCodexCredential};
 
 const OAUTH_FLOW_TTL: chrono::Duration = chrono::Duration::minutes(15);
@@ -125,6 +126,15 @@ impl CodexConnectorService {
         self.credentials.clone()
     }
 
+    fn outbound_identity(&self) -> CodexOutboundIdentity {
+        self.runtime_config
+            .snapshot()
+            .system_settings()
+            .codex()
+            .outbound_identity()
+            .clone()
+    }
+
     pub async fn list_credentials(
         &self,
         channel_group_id: Uuid,
@@ -202,7 +212,9 @@ impl CodexConnectorService {
         self.coordinator.verify_active_admin(actor).await?;
         let pkce = generate_pkce();
         let state = generate_oauth_state();
-        let authorization_url = build_authorize_url(&self.endpoints, &pkce, &state)?;
+        let outbound_identity = self.outbound_identity();
+        let authorization_url =
+            build_authorize_url(&self.endpoints, &pkce, &state, &outbound_identity)?;
         let expires_at = Utc::now() + OAUTH_FLOW_TTL;
         let flow = self
             .repository
@@ -230,6 +242,7 @@ impl CodexConnectorService {
         input: CodexOauthCompleteInput,
     ) -> Result<MutationResult, CodexConnectorError> {
         self.coordinator.verify_active_admin(actor).await?;
+        let outbound_identity = self.outbound_identity();
         let flow = self
             .repository
             .codex_oauth_flow(flow_id, actor)
@@ -262,6 +275,7 @@ impl CodexConnectorService {
                 tokens.refresh_token,
                 None,
                 None,
+                &outbound_identity,
                 &client,
                 policy,
             )
@@ -281,6 +295,7 @@ impl CodexConnectorService {
         input: CodexCredentialImportInput,
     ) -> Result<MutationResult, CodexConnectorError> {
         self.coordinator.verify_active_admin(actor).await?;
+        let outbound_identity = self.outbound_identity();
         let (client, policy) = self.client_for_proxy(input.proxy_id)?;
         let create = self
             .prepare_credential(
@@ -295,6 +310,7 @@ impl CodexConnectorService {
                 input.refresh_token,
                 input.account_id,
                 input.user_id,
+                &outbound_identity,
                 &client,
                 policy,
             )
@@ -365,7 +381,9 @@ impl CodexConnectorService {
         channel_id: Uuid,
     ) -> Result<(), CodexConnectorError> {
         self.coordinator.verify_active_admin(actor).await?;
-        self.refresh_quota_system(channel_id).await
+        let outbound_identity = self.outbound_identity();
+        self.refresh_quota_system(channel_id, &outbound_identity)
+            .await
     }
 
     pub async fn reset_quota(
@@ -374,6 +392,7 @@ impl CodexConnectorService {
         channel_id: Uuid,
     ) -> Result<CodexQuotaResetResponse, CodexConnectorError> {
         self.coordinator.verify_active_admin(actor).await?;
+        let outbound_identity = self.outbound_identity();
         let quota_lock = self.quota_lock(channel_id).await;
         let _guard = quota_lock.lock().await;
         let mut transaction = self.repository.begin_codex_quota_reset().await?;
@@ -389,6 +408,7 @@ impl CodexConnectorService {
         let reset = consume_quota_reset_credit(
             &client,
             &self.endpoints,
+            &outbound_identity,
             &record.access_token,
             record.account_id.as_deref(),
             record.is_fedramp,
@@ -411,7 +431,7 @@ impl CodexConnectorService {
             )
             .await?;
         transaction.commit().await.map_err(RepositoryError::from)?;
-        let quota_refreshed = match self.refresh_quota_locked(record).await {
+        let quota_refreshed = match self.refresh_quota_locked(record, &outbound_identity).await {
             Ok(()) => true,
             Err(error) => {
                 tracing::warn!(
@@ -462,8 +482,11 @@ impl CodexConnectorService {
                 "Codex OAuth credential refresh failed"
             );
         }
+        let outbound_identity = self.outbound_identity();
         if quota_due(&record)
-            && let Err(error) = self.refresh_quota_system(record.channel_id).await
+            && let Err(error) = self
+                .refresh_quota_system(record.channel_id, &outbound_identity)
+                .await
         {
             tracing::warn!(
                 channel_id = %record.channel_id,
@@ -500,6 +523,7 @@ impl CodexConnectorService {
         refresh_token: String,
         supplied_account_id: Option<String>,
         supplied_user_id: Option<String>,
+        outbound_identity: &CodexOutboundIdentity,
         client: &Client,
         policy: ResolvedUpstreamPolicy,
     ) -> Result<CodexCredentialCreate, CodexConnectorError> {
@@ -521,6 +545,7 @@ impl CodexConnectorService {
         let models = fetch_models(
             client,
             &self.endpoints,
+            outbound_identity,
             &access_token,
             account_id.as_deref(),
             identity.is_fedramp,
@@ -531,6 +556,7 @@ impl CodexConnectorService {
         let quota = match fetch_quota(
             client,
             &self.endpoints,
+            outbound_identity,
             &access_token,
             account_id.as_deref(),
             identity.is_fedramp,
@@ -746,7 +772,11 @@ impl CodexConnectorService {
         self.reload_runtime().await
     }
 
-    async fn refresh_quota_system(&self, channel_id: Uuid) -> Result<(), CodexConnectorError> {
+    async fn refresh_quota_system(
+        &self,
+        channel_id: Uuid,
+        outbound_identity: &CodexOutboundIdentity,
+    ) -> Result<(), CodexConnectorError> {
         let quota_lock = self.quota_lock(channel_id).await;
         let _guard = quota_lock.lock().await;
         let record = self
@@ -754,12 +784,13 @@ impl CodexConnectorService {
             .codex_credential(channel_id)
             .await?
             .ok_or(CodexConnectorError::CredentialNotFound)?;
-        self.refresh_quota_locked(record).await
+        self.refresh_quota_locked(record, outbound_identity).await
     }
 
     async fn refresh_quota_locked(
         &self,
         mut record: CodexCredentialRecord,
+        outbound_identity: &CodexOutboundIdentity,
     ) -> Result<(), CodexConnectorError> {
         validate_quota_credential(&record)?;
         let channel_id = record.channel_id;
@@ -769,6 +800,7 @@ impl CodexConnectorService {
             match fetch_quota(
                 &client,
                 &self.endpoints,
+                outbound_identity,
                 &record.access_token,
                 record.account_id.as_deref(),
                 record.is_fedramp,

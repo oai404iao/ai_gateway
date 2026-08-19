@@ -13,11 +13,10 @@ use ai_gateway::persistence::SystemMcpSettingsInput;
 use ai_gateway::{
     admission::AdmissionRuntime,
     application::{
-        AutomaticDisableWorker, CODEX_ORIGINATOR, ChannelModelDiscoveryService,
-        CodexConnectorService, ConsoleAuthService, ControlPlaneCoordinator, ModelSyncService,
-        NoopRequestLogSink, ProxyService, ProxyTestService, QueueRequestLogSink,
-        RecordingRequestLogSink, RequestLogSink, SystemMetricsService, UpstreamConnectorRegistry,
-        codex_user_agent, hash_console_password,
+        AutomaticDisableWorker, ChannelModelDiscoveryService, CodexConnectorService,
+        ConsoleAuthService, ControlPlaneCoordinator, ModelSyncService, NoopRequestLogSink,
+        ProxyService, ProxyTestService, QueueRequestLogSink, RecordingRequestLogSink,
+        RequestLogSink, SystemMetricsService, UpstreamConnectorRegistry, hash_console_password,
     },
     domain::{
         ApiFormat, ApiKeyPermission, ApiOperation, AutomaticDisableTrigger, ConnectorKind,
@@ -534,11 +533,16 @@ struct CapturedCodexRequest {
     account_id: Option<String>,
     originator: Option<String>,
     user_agent: Option<String>,
+    version: Option<String>,
     session_id: Option<String>,
     thread_id: Option<String>,
     client_request_id: Option<String>,
     window_id: Option<String>,
     turn_metadata: Option<String>,
+    beta_features: Option<String>,
+    routing_hint: Option<String>,
+    turn_state: Option<String>,
+    responses_lite: Option<String>,
     stainless_lang: Option<String>,
     body: serde_json::Value,
 }
@@ -588,6 +592,10 @@ struct CapturedCodexWebSocketHandshake {
     client_request_id: Option<String>,
     window_id: Option<String>,
     turn_metadata: Option<String>,
+    beta_features: Option<String>,
+    routing_hint: Option<String>,
+    turn_state: Option<String>,
+    responses_lite: Option<String>,
     openai_beta: Option<String>,
     accept_encoding: Option<String>,
     stainless_lang: Option<String>,
@@ -632,11 +640,16 @@ async fn codex_responses_upstream(
             account_id: header("chatgpt-account-id"),
             originator: header("originator"),
             user_agent: header("user-agent"),
+            version: header("version"),
             session_id: header("session-id"),
             thread_id: header("thread-id"),
             client_request_id: header("x-client-request-id"),
             window_id: header("x-codex-window-id"),
             turn_metadata: header("x-codex-turn-metadata"),
+            beta_features: header("x-codex-beta-features"),
+            routing_hint: header("x-codex-routing-hint"),
+            turn_state: header("x-codex-turn-state"),
+            responses_lite: header("x-openai-internal-codex-responses-lite"),
             stainless_lang: header("x-stainless-lang"),
             body: serde_json::from_slice(&decoded_body).unwrap(),
         });
@@ -769,6 +782,10 @@ async fn codex_responses_websocket_upstream(
             client_request_id: header("x-client-request-id"),
             window_id: header("x-codex-window-id"),
             turn_metadata: header("x-codex-turn-metadata"),
+            beta_features: header("x-codex-beta-features"),
+            routing_hint: header("x-codex-routing-hint"),
+            turn_state: header("x-codex-turn-state"),
+            responses_lite: header("x-openai-internal-codex-responses-lite"),
             openai_beta: header("openai-beta"),
             accept_encoding: header("accept-encoding"),
             stainless_lang: header("x-stainless-lang"),
@@ -2830,6 +2847,12 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
             .unwrap();
     assert_eq!(images_group_request_compression, "default");
     let mut settings = system_settings();
+    let codex_originator = "codex_gateway";
+    let codex_client_version = "9.8.7";
+    let codex_user_agent = "codex_gateway/9.8.7 (Linux 6.8.0; x86_64) ai-gateway";
+    settings.codex.originator = codex_originator.into();
+    settings.codex.client_version = codex_client_version.into();
+    settings.codex.user_agent = codex_user_agent.into();
     settings.session_affinity = SystemSessionAffinitySettingsInput {
         enabled: true,
         max_entries: 100,
@@ -3068,6 +3091,10 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
             .header("session-id", session_id)
             .header("thread-id", "thread-456")
             .header("x-stainless-lang", "rust")
+            .header("x-codex-beta-features", "remote_compaction_v2")
+            .header("x-codex-routing-hint", "model=gpt-5.6-sol;tier=priority")
+            .header("x-codex-turn-state", "opaque-turn-state")
+            .header("x-openai-internal-codex-responses-lite", "true")
             .body(Body::from(serde_json::to_vec(&body).unwrap()))
             .unwrap()
     };
@@ -3156,15 +3183,23 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
     assert_eq!(forwarded.content_encoding.as_deref(), Some("zstd"));
     assert_eq!(forwarded.content_type.as_deref(), Some("application/json"));
     assert_eq!(forwarded.account_id, None);
-    assert_eq!(forwarded.originator.as_deref(), Some(CODEX_ORIGINATOR));
-    assert_eq!(
-        forwarded.user_agent.as_deref(),
-        Some(codex_user_agent().as_str())
-    );
+    assert_eq!(forwarded.originator.as_deref(), Some(codex_originator));
+    assert_eq!(forwarded.user_agent.as_deref(), Some(codex_user_agent));
+    assert_eq!(forwarded.version.as_deref(), Some(codex_client_version));
     assert_eq!(forwarded.session_id.as_deref(), Some("session-123"));
     assert_eq!(forwarded.thread_id.as_deref(), Some("thread-456"));
     assert_eq!(forwarded.client_request_id.as_deref(), Some("thread-456"));
     assert_eq!(forwarded.window_id.as_deref(), Some("thread-456:0"));
+    assert_eq!(
+        forwarded.beta_features.as_deref(),
+        Some("remote_compaction_v2")
+    );
+    assert_eq!(
+        forwarded.routing_hint.as_deref(),
+        Some("model=gpt-5.6-sol;tier=priority")
+    );
+    assert_eq!(forwarded.turn_state.as_deref(), Some("opaque-turn-state"));
+    assert_eq!(forwarded.responses_lite.as_deref(), Some("true"));
     assert_eq!(forwarded.body["model"], "upstream-v1");
     assert_eq!(forwarded.body["stream"], true);
     assert_eq!(forwarded.body["store"], false);
@@ -3347,16 +3382,11 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
         Some("Bearer access-token")
     );
     assert_eq!(search_request.account_id, None);
-    assert_eq!(search_request.originator.as_deref(), Some("codex_cli_rs"));
-    assert_eq!(
-        search_request.user_agent.as_deref(),
-        Some(codex_user_agent().as_str())
-    );
+    assert_eq!(search_request.originator.as_deref(), Some(codex_originator));
+    assert_eq!(search_request.user_agent.as_deref(), Some(codex_user_agent));
     assert_eq!(
         search_request.version.as_deref(),
-        codex_user_agent()
-            .split_once('/')
-            .map(|(_, version)| version)
+        Some(codex_client_version)
     );
     let search_turn_metadata: serde_json::Value =
         serde_json::from_str(search_request.turn_metadata.as_deref().unwrap()).unwrap();
@@ -3465,17 +3495,9 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
         Some("gzip, deflate, br, zstd")
     );
     assert_eq!(image_request.account_id, None);
-    assert_eq!(image_request.originator.as_deref(), Some(CODEX_ORIGINATOR));
-    assert_eq!(
-        image_request.user_agent.as_deref(),
-        Some(codex_user_agent().as_str())
-    );
-    assert_eq!(
-        image_request.version.as_deref(),
-        codex_user_agent()
-            .split_once('/')
-            .map(|(_, version)| version)
-    );
+    assert_eq!(image_request.originator.as_deref(), Some(codex_originator));
+    assert_eq!(image_request.user_agent.as_deref(), Some(codex_user_agent));
+    assert_eq!(image_request.version.as_deref(), Some(codex_client_version));
     assert_eq!(
         image_request.content_type.as_deref(),
         Some("application/json")
@@ -3742,6 +3764,22 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
         request
             .headers_mut()
             .insert("x-stainless-lang", HeaderValue::from_static("rust"));
+        request.headers_mut().insert(
+            "x-codex-beta-features",
+            HeaderValue::from_static("remote_compaction_v2"),
+        );
+        request.headers_mut().insert(
+            "x-codex-routing-hint",
+            HeaderValue::from_static("model=gpt-5.6-sol;tier=priority"),
+        );
+        request.headers_mut().insert(
+            "x-codex-turn-state",
+            HeaderValue::from_static("opaque-turn-state"),
+        );
+        request.headers_mut().insert(
+            "x-openai-internal-codex-responses-lite",
+            HeaderValue::from_static("true"),
+        );
         request
     };
     let (mut websocket, response) = connect_async(websocket_request()).await.unwrap();
@@ -3838,21 +3876,23 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
         Some("Bearer access-token")
     );
     assert_eq!(handshake.account_id, None);
-    assert_eq!(handshake.originator.as_deref(), Some(CODEX_ORIGINATOR));
-    assert_eq!(
-        handshake.user_agent.as_deref(),
-        Some(codex_user_agent().as_str())
-    );
-    assert_eq!(
-        handshake.version.as_deref(),
-        codex_user_agent()
-            .split_once('/')
-            .map(|(_, version)| version)
-    );
+    assert_eq!(handshake.originator.as_deref(), Some(codex_originator));
+    assert_eq!(handshake.user_agent.as_deref(), Some(codex_user_agent));
+    assert_eq!(handshake.version.as_deref(), Some(codex_client_version));
     assert_eq!(handshake.session_id.as_deref(), Some("session-123"));
     assert_eq!(handshake.thread_id.as_deref(), Some("thread-456"));
     assert_eq!(handshake.client_request_id.as_deref(), Some("thread-456"));
     assert_eq!(handshake.window_id.as_deref(), Some("thread-456:0"));
+    assert_eq!(
+        handshake.beta_features.as_deref(),
+        Some("remote_compaction_v2")
+    );
+    assert_eq!(
+        handshake.routing_hint.as_deref(),
+        Some("model=gpt-5.6-sol;tier=priority")
+    );
+    assert_eq!(handshake.turn_state.as_deref(), Some("opaque-turn-state"));
+    assert_eq!(handshake.responses_lite.as_deref(), Some("true"));
     let handshake_turn_metadata: serde_json::Value =
         serde_json::from_str(handshake.turn_metadata.as_deref().unwrap()).unwrap();
     assert_eq!(
@@ -7332,7 +7372,7 @@ async fn standalone_web_search_migration_backfills_codex_capability_and_timeout(
 }
 
 #[tokio::test]
-async fn codex_images_migration_backfills_existing_credentials_without_replacing_responses() {
+async fn codex_projection_migrations_backfill_existing_credentials_and_system_settings() {
     let database = TestDatabase::new_unmigrated().await;
     for migration in MIGRATOR.iter().filter(|migration| migration.version <= 35) {
         sqlx::raw_sql(migration.sql.as_ref())
@@ -7507,8 +7547,33 @@ async fn codex_images_migration_backfills_existing_credentials_without_replacing
     .execute(&database.pool)
     .await
     .expect("user-group fast-mode migration must bring the runtime schema current");
-    let codex_defaults: (String, String) = sqlx::query_as(
-        "SELECT value #>> '{codex,workspace_path}', value #>> '{codex,git_remote_url}' \
+    sqlx::query(
+        "UPDATE system_settings \
+         SET value=jsonb_set( \
+             value, \
+             '{codex,originator}', \
+             to_jsonb($1::text), \
+             true \
+         ) \
+         WHERE setting_key='forwarding_policy'",
+    )
+    .bind("preserved-originator")
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    sqlx::raw_sql(include_str!(
+        "../migrations/0050_codex_outbound_identity.sql"
+    ))
+    .execute(&database.pool)
+    .await
+    .expect("Codex outbound identity migration must backfill system settings");
+    let codex_defaults: (String, String, String, String, String) = sqlx::query_as(
+        "SELECT \
+             value #>> '{codex,workspace_path}', \
+             value #>> '{codex,git_remote_url}', \
+             value #>> '{codex,originator}', \
+             value #>> '{codex,client_version}', \
+             value #>> '{codex,user_agent}' \
          FROM system_settings WHERE setting_key='forwarding_policy'",
     )
     .fetch_one(&database.pool)
@@ -7516,6 +7581,9 @@ async fn codex_images_migration_backfills_existing_credentials_without_replacing
     .unwrap();
     assert_eq!(codex_defaults.0, "/workspace");
     assert_eq!(codex_defaults.1, "https://github.com/oai404iao/ai_gateway");
+    assert_eq!(codex_defaults.2, "preserved-originator");
+    assert_eq!(codex_defaults.3, "0.146.0");
+    assert_eq!(codex_defaults.4, "codex_cli_rs/0.146.0");
     let repository = ControlPlaneRepository::new(database.pool.clone());
     repository
         .ensure_system_settings(system_settings())

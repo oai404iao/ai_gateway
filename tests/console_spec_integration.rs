@@ -472,6 +472,9 @@ async fn system_settings_bootstrap_backfills_late_sections_once_for_upgraded_dat
     let mut bootstrap = bootstrap_system_settings();
     bootstrap.codex.workspace_path = "/synthetic/project".into();
     bootstrap.codex.git_remote_url = "https://github.com/example/synthetic-project".into();
+    bootstrap.codex.originator = "codex_gateway".into();
+    bootstrap.codex.client_version = "9.8.7".into();
+    bootstrap.codex.user_agent = "codex_gateway/9.8.7 (Linux 6.8.0; x86_64) ai-gateway".into();
     bootstrap.mcp = SystemMcpSettingsInput {
         enabled: false,
         public_base_url: Some("https://mcp.example.test".into()),
@@ -482,13 +485,22 @@ async fn system_settings_bootstrap_backfills_late_sections_once_for_upgraded_dat
         search_result_bytes: 3_072,
         image_result_bytes: 4_096,
     };
-    repository.ensure_system_settings(bootstrap).await.unwrap();
+    repository
+        .ensure_system_settings(bootstrap.clone())
+        .await
+        .unwrap();
 
     let stored = repository.system_settings().await.unwrap();
     assert_eq!(stored.settings.codex.workspace_path, "/synthetic/project");
     assert_eq!(
         stored.settings.codex.git_remote_url,
         "https://github.com/example/synthetic-project"
+    );
+    assert_eq!(stored.settings.codex.originator, "codex_gateway");
+    assert_eq!(stored.settings.codex.client_version, "9.8.7");
+    assert_eq!(
+        stored.settings.codex.user_agent,
+        "codex_gateway/9.8.7 (Linux 6.8.0; x86_64) ai-gateway"
     );
     assert_eq!(
         stored.settings.mcp.public_base_url.as_deref(),
@@ -501,9 +513,37 @@ async fn system_settings_bootstrap_backfills_late_sections_once_for_upgraded_dat
     assert!(stored.settings.mcp.allow_legacy_2025_11_25);
     assert_eq!(stored.settings.mcp.image_result_bytes, 4_096);
 
+    sqlx::query(
+        "UPDATE system_settings \
+         SET value=jsonb_set( \
+             value, \
+             '{codex}', \
+             (value->'codex')-'originator'-'client_version'-'user_agent', \
+             false \
+         ) \
+         WHERE setting_key='forwarding_policy'",
+    )
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    repository
+        .ensure_system_settings(bootstrap.clone())
+        .await
+        .unwrap();
+    let stored = repository.system_settings().await.unwrap();
+    assert_eq!(stored.settings.codex.originator, "codex_gateway");
+    assert_eq!(stored.settings.codex.client_version, "9.8.7");
+    assert_eq!(
+        stored.settings.codex.user_agent,
+        "codex_gateway/9.8.7 (Linux 6.8.0; x86_64) ai-gateway"
+    );
+
     let mut replacement = bootstrap_system_settings();
     replacement.codex.workspace_path = "/replacement".into();
     replacement.codex.git_remote_url = "https://github.com/example/replacement".into();
+    replacement.codex.originator = "replacement-originator".into();
+    replacement.codex.client_version = "1.2.3".into();
+    replacement.codex.user_agent = "replacement/1.2.3".into();
     replacement.mcp.public_base_url = Some("https://replacement.example.test".into());
     repository
         .ensure_system_settings(replacement)
@@ -525,6 +565,12 @@ async fn system_settings_bootstrap_backfills_late_sections_once_for_upgraded_dat
     assert_eq!(
         stored.settings.codex.git_remote_url,
         "https://github.com/example/synthetic-project"
+    );
+    assert_eq!(stored.settings.codex.originator, "codex_gateway");
+    assert_eq!(stored.settings.codex.client_version, "9.8.7");
+    assert_eq!(
+        stored.settings.codex.user_agent,
+        "codex_gateway/9.8.7 (Linux 6.8.0; x86_64) ai-gateway"
     );
     database.cleanup().await;
 }
@@ -3768,6 +3814,9 @@ async fn system_settings_are_versioned_audited_and_updated_via_console() {
     input["codex"] = serde_json::json!({
         "workspace_path": "/synthetic/project",
         "git_remote_url": "https://github.com/example/synthetic-project",
+        "originator": "codex_gateway",
+        "client_version": "9.8.7",
+        "user_agent": "codex_gateway/9.8.7 (Linux 6.8.0; x86_64) ai-gateway",
     });
     input["mcp"] = serde_json::json!({
         "enabled": false,
@@ -3856,6 +3905,34 @@ async fn system_settings_are_versioned_audited_and_updated_via_console() {
     .await;
     assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
+    let mut invalid_codex_identity = input.clone();
+    invalid_codex_identity["codex"]["user_agent"] =
+        serde_json::json!("codex_gateway/9.8.7\r\ninjected");
+    let invalid = request(
+        &app,
+        "PUT",
+        "/console/v1/system/settings",
+        invalid_codex_identity,
+        &[("if-match", &etag)],
+    )
+    .await;
+    assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let mut missing_codex_identity = input.clone();
+    missing_codex_identity["codex"]
+        .as_object_mut()
+        .unwrap()
+        .remove("client_version");
+    let invalid = request(
+        &app,
+        "PUT",
+        "/console/v1/system/settings",
+        missing_codex_identity,
+        &[("if-match", &etag)],
+    )
+    .await;
+    assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
     let updated = request(
         &app,
         "PUT",
@@ -3925,6 +4002,18 @@ async fn system_settings_are_versioned_audited_and_updated_via_console() {
     assert_eq!(
         published.codex().git_remote_url(),
         "https://github.com/example/synthetic-project"
+    );
+    assert_eq!(
+        published.codex().outbound_identity().originator(),
+        "codex_gateway"
+    );
+    assert_eq!(
+        published.codex().outbound_identity().client_version(),
+        "9.8.7"
+    );
+    assert_eq!(
+        published.codex().outbound_identity().user_agent(),
+        "codex_gateway/9.8.7 (Linux 6.8.0; x86_64) ai-gateway"
     );
     assert!(!published.mcp().enabled());
     assert_eq!(

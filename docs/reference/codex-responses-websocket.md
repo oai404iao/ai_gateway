@@ -194,6 +194,9 @@ ID 和 turn metadata installation ID 会替换为按逻辑凭证稳定的 opaque
 下的 `/responses`，并最后注入当前
 Bearer、可选 account、FedRAMP、Codex Session/thread、User-Agent、`originator` 和版本 Header。
 HTTP SSE 专用的 `Accept`、`Accept-Encoding` 与 `Content-Type` 不进入上游 WebSocket 握手。
+Gateway 的 Codex WebSocket Header 策略还允许调用方透传
+`x-codex-beta-features`、`x-codex-routing-hint`、`x-codex-turn-state` 和
+`x-openai-internal-codex-responses-lite`；它不生成这些 beta、路由或 turn-state 值。
 
 因此，`ai-gateway` 不会为普通 OpenAI-compatible channel 删除
 `max_output_tokens`，也不会伪造全部 Codex metadata。只有选中

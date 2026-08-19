@@ -1,9 +1,9 @@
 {
   "version": 3,
-  "verified_at": "2026-08-12",
+  "verified_at": "2026-08-19",
   "sources": {
     "openai_node_commit": "854892a0580980449ce1ed04aa5e3831d3330383",
-    "codex_commit": "7a0e974e08c798d1e8d59d407aeb6e24db1313af"
+    "codex_commit": "fde2156057c38c0227ce94c8514d04c7498df60d"
   },
   "codex_fingerprint_normalization": {
     "client_metadata_body_field": "client_metadata",
@@ -59,9 +59,13 @@
       "tracestate",
       "user-agent",
       "x-client-request-id",
+      "x-codex-beta-features",
+      "x-codex-routing-hint",
       "x-codex-turn-metadata",
+      "x-codex-turn-state",
       "x-codex-window-id",
       "x-openai-client-user-agent",
+      "x-openai-internal-codex-responses-lite",
       "x-request-id",
       "x-session-id"
     ],
@@ -184,8 +188,12 @@
             "traceparent",
             "tracestate",
             "x-client-request-id",
+            "x-codex-beta-features",
+            "x-codex-routing-hint",
             "x-codex-turn-metadata",
-            "x-codex-window-id"
+            "x-codex-turn-state",
+            "x-codex-window-id",
+            "x-openai-internal-codex-responses-lite"
           ],
           "allow_prefixes": [],
           "ignore": [],
@@ -361,8 +369,12 @@
             "traceparent",
             "tracestate",
             "x-client-request-id",
+            "x-codex-beta-features",
+            "x-codex-routing-hint",
             "x-codex-turn-metadata",
-            "x-codex-window-id"
+            "x-codex-turn-state",
+            "x-codex-window-id",
+            "x-openai-internal-codex-responses-lite"
           ],
           "allow_prefixes": [],
           "ignore": [],
