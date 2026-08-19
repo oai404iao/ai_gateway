@@ -83,8 +83,11 @@ Cargo feature `sqlite-backend` 已提供第二后端的 schema、存储类型、
 registration 仓储能力不改变运行时数据库选择；在 SQLite 其余仓储、事务和日志/结算实现完成前，
 不得把 `sqlite:` URL 写入配置模板或用户文档，也不得宣称 SQLite 已可用于部署。完整后端抽象与
 生产启用的拟议顺序见
-[数据库后端抽象与 SQLite 完成总计划](database-backend-completion-plan.md)；该提案不改变本节
-所述当前状态。
+[数据库后端抽象与 SQLite 完成总计划](database-backend-completion-plan.md)，M2 的拟议文件安全、
+唯一 owner、连接和关闭边界另见
+[SQLite 数据库运行时生命周期技术路线](sqlite-runtime-lifecycle.md)。这些提案不改变本节所述
+当前状态；尤其不能把候选 Linux/文件系统 capability contract 当作已经通过 I-12 的官方
+image/volume 组合。
 
 最初的 11 表方案及其当时的取舍已移入
 [首版数据库设计归档](../archive/initial-database-design.md)。它不能作为当前列名、表数量或功能边界
@@ -187,6 +190,8 @@ terminal RequestLogEvent
   `src/persistence/database.rs`
 - 后端中立 repository 契约与方法台账：
   [database-repository-contracts.md](database-repository-contracts.md)
+- M2 拟议 SQLite 文件/runtime 生命周期：
+  [sqlite-runtime-lifecycle.md](sqlite-runtime-lifecycle.md)
 - 后端中立 runtime/auth/control-plane/Codex/request-log/error 契约，以及 database 模块中的
   应用 opaque 类型与事务意图：
   `src/persistence/records.rs`、`src/persistence/auth.rs`、
