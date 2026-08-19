@@ -325,11 +325,20 @@ WebSocket、standalone search 和 Images 请求也不使用该请求编码。客
 适用于 HTTP SSE 与 WebSocket `response.create`，普通 OpenAI-compatible channel 不受影响。
 Codex body/Header 在普通 Transform 之后还会应用独立 provider 白名单：纯遥测、空值和明确
 no-op 可以按契约删除；无法表达的非默认语义和未知 body 字段返回 `400`，未知 Header 被删除。
+Responses HTTP/WebSocket 会透传已经显式允许的 `x-codex-beta-features`、
+`x-codex-routing-hint`、`x-codex-turn-state` 和
+`x-openai-internal-codex-responses-lite`；Gateway 不生成这些 beta、路由或 turn-state 值。
 此外，Codex OAuth 出站会把 `client_metadata["x-codex-installation-id"]` 和 turn metadata 中的
 `installation_id` 替换为按逻辑凭证稳定的 opaque UUID；turn metadata 的 `workspaces` 始终替换
 为 Console“系统设置”中的单一合成 Git 工作区。默认 path 为 `/workspace`，默认
 `associated_remote_urls.origin` 为 `https://github.com/oai404iao/ai_gateway`；本地路径、真实
 Git remote、workspace 数量、commit 和 dirty 状态不会发送给订阅后端。
+管理员可在 Console“系统设置”的 Codex 区修改全局 `originator`、`client_version` 和
+`User-Agent`。默认值分别为 `codex_cli_rs`、`0.146.0` 和
+`codex_cli_rs/0.146.0`；需要精确模拟原生 CLI 时，可把带操作系统、架构与终端后缀的完整
+User-Agent 写入该设置。`client_version` 同时用于 `version` Header 和 Models 查询参数，因此
+上游提高最小客户端版本时无需重新发布 Gateway。保存会发布新快照；已经在处理的请求以及正在执行的
+Models/quota 管理请求保留取得身份时的设置。
 Responses HTTP/WebSocket 缺少 `client_metadata` 时，Gateway 会创建并补齐 installation、
 session、thread、turn、window、turn metadata 和 `prompt_cache_key`；已有非空身份值保留。
 Gateway 不推测 request kind、sandbox、beta、subagent、attestation、turn-state 或 residency。
@@ -348,7 +357,7 @@ Codex standalone web search 使用同一 Responses managed channel 和凭证，�
 `POST /v1/alpha/search`，Connector 将上游目标改为 managed base URL 下的 `/alpha/search`。
 该请求固定为非流式 JSON；保留合法的 `x-codex-turn-metadata`，缺失时由 Connector 安全补齐，
 并对其应用相同 installation/workspace 归一化；客户端 `originator` 和 `User-Agent` 始终替换为
-Gateway 的 `codex_cli_rs` Connector 身份。随后注入共享 Bearer、可选 account/FedRAMP 和版本，
+系统设置中的 Codex Connector 身份。随后注入共享 Bearer、可选 account/FedRAMP 和版本，
 并删除 Responses Session Header。发送前不可用且未命中 affinity 时可以重选凭证；命中
 affinity 后 fail closed；请求发送后不重试。上游没有返回可识别 usage 时，日志不估算 token
 或费用。

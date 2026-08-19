@@ -19,6 +19,15 @@ pub const DEFAULT_STANDALONE_WEB_SEARCH_RESPONSE_HEADER_TIMEOUT_SECONDS: u64 = 3
 pub const DEFAULT_CODEX_WORKSPACE_PATH: &str = "/workspace";
 /// Default privacy-preserving Git remote projected into Codex request metadata.
 pub const DEFAULT_CODEX_GIT_REMOTE_URL: &str = "https://github.com/oai404iao/ai_gateway";
+/// Default connector-owned Codex request originator.
+pub const DEFAULT_CODEX_ORIGINATOR: &str = "codex_cli_rs";
+/// Default connector-owned Codex client version.
+pub const DEFAULT_CODEX_CLIENT_VERSION: &str = "0.146.0";
+/// Default connector-owned Codex User-Agent.
+///
+/// Administrators can set a full native Codex CLI User-Agent, including its
+/// platform and terminal suffix, in database-backed system settings.
+pub const DEFAULT_CODEX_USER_AGENT: &str = "codex_cli_rs/0.146.0";
 /// Default MCP JSON-RPC request envelope limit for Search endpoints.
 pub const DEFAULT_MCP_REQUEST_BODY_BYTES: usize = 4 * 1_024 * 1_024;
 /// Default MCP JSON-RPC request envelope limit for Images endpoints.
@@ -628,19 +637,70 @@ impl Default for McpTransportSettings {
     }
 }
 
-/// Immutable privacy-preserving metadata projected into Codex Connect requests.
+/// Immutable connector-owned identity used by Codex backend requests.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CodexOutboundIdentity {
+    originator: Arc<str>,
+    client_version: Arc<str>,
+    user_agent: Arc<str>,
+}
+
+impl CodexOutboundIdentity {
+    #[must_use]
+    pub fn new(originator: Arc<str>, client_version: Arc<str>, user_agent: Arc<str>) -> Self {
+        Self {
+            originator,
+            client_version,
+            user_agent,
+        }
+    }
+
+    #[must_use]
+    pub fn originator(&self) -> &str {
+        &self.originator
+    }
+
+    #[must_use]
+    pub fn client_version(&self) -> &str {
+        &self.client_version
+    }
+
+    #[must_use]
+    pub fn user_agent(&self) -> &str {
+        &self.user_agent
+    }
+}
+
+impl Default for CodexOutboundIdentity {
+    fn default() -> Self {
+        Self::new(
+            Arc::from(DEFAULT_CODEX_ORIGINATOR),
+            Arc::from(DEFAULT_CODEX_CLIENT_VERSION),
+            Arc::from(DEFAULT_CODEX_USER_AGENT),
+        )
+    }
+}
+
+/// Immutable privacy-preserving metadata and outbound identity projected into
+/// Codex Connect requests.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CodexRequestMetadataSettings {
     workspace_path: Arc<str>,
     git_remote_url: Arc<str>,
+    outbound_identity: CodexOutboundIdentity,
 }
 
 impl CodexRequestMetadataSettings {
     #[must_use]
-    pub fn new(workspace_path: Arc<str>, git_remote_url: Arc<str>) -> Self {
+    pub fn new(
+        workspace_path: Arc<str>,
+        git_remote_url: Arc<str>,
+        outbound_identity: CodexOutboundIdentity,
+    ) -> Self {
         Self {
             workspace_path,
             git_remote_url,
+            outbound_identity,
         }
     }
 
@@ -653,6 +713,11 @@ impl CodexRequestMetadataSettings {
     pub fn git_remote_url(&self) -> &str {
         &self.git_remote_url
     }
+
+    #[must_use]
+    pub const fn outbound_identity(&self) -> &CodexOutboundIdentity {
+        &self.outbound_identity
+    }
 }
 
 impl Default for CodexRequestMetadataSettings {
@@ -660,6 +725,7 @@ impl Default for CodexRequestMetadataSettings {
         Self::new(
             Arc::from(DEFAULT_CODEX_WORKSPACE_PATH),
             Arc::from(DEFAULT_CODEX_GIT_REMOTE_URL),
+            CodexOutboundIdentity::default(),
         )
     }
 }

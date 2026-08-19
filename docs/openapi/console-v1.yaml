@@ -3096,7 +3096,7 @@ components:
 
     SystemCodexSettings:
       type: object
-      required: [workspace_path, git_remote_url]
+      required: [workspace_path, git_remote_url, originator, client_version, user_agent]
       properties:
         workspace_path:
           type: string
@@ -3113,6 +3113,24 @@ components:
           pattern: ^https://
           default: https://github.com/oai404iao/ai_gateway
           description: Synthetic HTTPS origin remote written to workspaces[workspace_path].associated_remote_urls.origin.
+        originator:
+          type: string
+          minLength: 1
+          maxLength: 256
+          default: codex_cli_rs
+          description: Connector-owned originator used for Codex forwarding and the OAuth authorization URL.
+        client_version:
+          type: string
+          minLength: 1
+          maxLength: 128
+          default: 0.146.0
+          description: Connector-owned Codex version sent in the version Header and models client_version query parameter.
+        user_agent:
+          type: string
+          minLength: 1
+          maxLength: 1024
+          default: codex_cli_rs/0.146.0
+          description: Connector-owned User-Agent for managed Codex backend requests. Set a matching native CLI value, including its platform and terminal suffix, when required.
 
     SystemMcpSettings:
       type: object

@@ -26,7 +26,7 @@ use std::{
 
 use chrono::{DateTime, Datelike, NaiveDate, Timelike, Utc, Weekday};
 use regex::Regex;
-use reqwest::header::HeaderName;
+use reqwest::header::{HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{FromRow, PgPool, Postgres, QueryBuilder, Transaction, postgres::PgPoolCopyExt};
@@ -35,7 +35,8 @@ use uuid::Uuid;
 
 use crate::{
     domain::{
-        ApiFormat, AutomaticDisableTrigger, DEFAULT_IMAGES_RESPONSE_HEADER_TIMEOUT_SECONDS,
+        ApiFormat, AutomaticDisableTrigger, DEFAULT_CODEX_CLIENT_VERSION, DEFAULT_CODEX_ORIGINATOR,
+        DEFAULT_CODEX_USER_AGENT, DEFAULT_IMAGES_RESPONSE_HEADER_TIMEOUT_SECONDS,
         DEFAULT_MCP_IMAGE_REQUEST_BODY_BYTES, DEFAULT_MCP_IMAGE_RESULT_BYTES,
         DEFAULT_MCP_REQUEST_BODY_BYTES, DEFAULT_MCP_SEARCH_RESULT_BYTES,
         DEFAULT_STANDALONE_WEB_SEARCH_RESPONSE_HEADER_TIMEOUT_SECONDS, MAX_MCP_IMAGE_BYTES,
@@ -240,6 +241,9 @@ pub struct SystemCodexSettingsInput {
     pub workspace_path: String,
     #[serde(default = "default_codex_git_remote_url")]
     pub git_remote_url: String,
+    pub originator: String,
+    pub client_version: String,
+    pub user_agent: String,
 }
 
 impl Default for SystemCodexSettingsInput {
@@ -247,6 +251,9 @@ impl Default for SystemCodexSettingsInput {
         Self {
             workspace_path: default_codex_workspace_path(),
             git_remote_url: default_codex_git_remote_url(),
+            originator: default_codex_originator(),
+            client_version: default_codex_client_version(),
+            user_agent: default_codex_user_agent(),
         }
     }
 }
@@ -355,6 +362,18 @@ fn default_codex_workspace_path() -> String {
 
 fn default_codex_git_remote_url() -> String {
     crate::domain::DEFAULT_CODEX_GIT_REMOTE_URL.into()
+}
+
+fn default_codex_originator() -> String {
+    DEFAULT_CODEX_ORIGINATOR.into()
+}
+
+fn default_codex_client_version() -> String {
+    DEFAULT_CODEX_CLIENT_VERSION.into()
+}
+
+fn default_codex_user_agent() -> String {
+    DEFAULT_CODEX_USER_AGENT.into()
 }
 
 const fn default_mcp_request_body_bytes() -> usize {
@@ -4647,6 +4666,30 @@ impl ControlPlaneRepository {
                     changed = true;
                 }
             }
+            if let Some(codex) = after_object
+                .get_mut("codex")
+                .and_then(serde_json::Value::as_object_mut)
+            {
+                for (key, value) in [
+                    (
+                        "originator",
+                        serde_json::Value::String(input.codex.originator.clone()),
+                    ),
+                    (
+                        "client_version",
+                        serde_json::Value::String(input.codex.client_version.clone()),
+                    ),
+                    (
+                        "user_agent",
+                        serde_json::Value::String(input.codex.user_agent.clone()),
+                    ),
+                ] {
+                    if !codex.contains_key(key) {
+                        codex.insert(key.into(), value);
+                        changed = true;
+                    }
+                }
+            }
             if changed {
                 let settings: SystemSettingsInput = serde_json::from_value(after.clone())
                     .map_err(|_| RepositoryError::Validation)?;
@@ -7844,6 +7887,16 @@ pub fn valid_codex_settings_input(input: &SystemCodexSettingsInput) -> bool {
         && url.password().is_none()
         && url.query().is_none()
         && url.fragment().is_none()
+        && valid_codex_identity_header_value(&input.originator, 256)
+        && valid_codex_identity_header_value(&input.client_version, 128)
+        && valid_codex_identity_header_value(&input.user_agent, 1_024)
+}
+
+fn valid_codex_identity_header_value(value: &str, maximum_characters: usize) -> bool {
+    value.trim() == value
+        && !value.is_empty()
+        && value.chars().count() <= maximum_characters
+        && HeaderValue::from_str(value).is_ok()
 }
 
 fn valid_mcp_settings_input(input: &SystemMcpSettingsInput) -> bool {

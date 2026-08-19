@@ -1,7 +1,7 @@
 # Codex OAuth 与订阅后端接入参考
 
 > 类型：外部参考
-> 最近核对：2026-08-12
+> 最近核对：2026-08-19
 > 权威来源：
 > [`openai/codex` 0.146.0 release](https://github.com/openai/codex/releases/tag/rust-v0.146.0)、
 > [OAuth server](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/login/src/server.rs)、
@@ -15,6 +15,12 @@
 > [Responses request type](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/codex-api/src/common.rs)、
 > [session headers](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/codex-api/src/requests/headers.rs) 和
 > [usage endpoint client](https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/backend-client/src/client/rate_limit_resets.rs)。
+> 出站身份和 Responses Header 另外核对本地
+> [`openai/codex@fde2156057c38c0227ce94c8514d04c7498df60d`](https://github.com/openai/codex/tree/fde2156057c38c0227ce94c8514d04c7498df60d)：
+> [default client identity](https://github.com/openai/codex/blob/fde2156057c38c0227ce94c8514d04c7498df60d/codex-rs/login/src/auth/default_client.rs)、
+> [Responses client Headers](https://github.com/openai/codex/blob/fde2156057c38c0227ce94c8514d04c7498df60d/codex-rs/core/src/client.rs)、
+> [SSE turn state](https://github.com/openai/codex/blob/fde2156057c38c0227ce94c8514d04c7498df60d/codex-rs/codex-api/src/sse/responses.rs)
+> 和 [WebSocket endpoint](https://github.com/openai/codex/blob/fde2156057c38c0227ce94c8514d04c7498df60d/codex-rs/codex-api/src/endpoint/responses_websocket.rs)。
 > Account-ID 可选行为另外核对
 > [`openai/codex@bb5054fe47abe73ecbbd454751066a28c89f4bb9`](https://github.com/openai/codex/tree/bb5054fe47abe73ecbbd454751066a28c89f4bb9)：
 > [optional TokenData claims](https://github.com/openai/codex/blob/bb5054fe47abe73ecbbd454751066a28c89f4bb9/codex-rs/login/src/token_data.rs)、
@@ -81,7 +87,8 @@ OpenAI Platform API 稳定性承诺；外部接口、授权条件和账户政策
 | PKCE | `S256` |
 
 Authorization URL 还包含 `id_token_add_organizations=true`、
-`codex_cli_simplified_flow=true`、随机 `state` 和 `originator`。Authorization code
+`codex_cli_simplified_flow=true`、随机 `state` 和 `originator`。Gateway 使用系统设置中的
+`originator` 填充该参数。Authorization code
 交换使用 `application/x-www-form-urlencoded`；refresh 使用 JSON
 `{client_id, grant_type:"refresh_token", refresh_token}`。refresh 响应中的
 `id_token`、`access_token` 和 `refresh_token` 都可能独立轮换。
@@ -132,7 +139,7 @@ Token claim 不同，网关拒绝导入。
 - Responses 请求的 `session-id`、`thread-id` 与 `x-client-request-id`。
 
 Standalone web search 额外保留 `x-codex-turn-metadata`，但发送前会把客户端
-`originator` 和 `User-Agent` 统一覆盖为 Gateway 的 `codex_cli_rs` Connector 身份。请求顶层
+`originator` 和 `User-Agent` 统一覆盖为系统设置中的 Codex Connector 身份。请求顶层
 字段为 `id`、`model` 以及可选 `reasoning`、`input`、`commands`、`settings`、
 `max_output_tokens`。响应为非流式 JSON，`output` 是最终文本，`encrypted_output` 和
 `results` 为可选 opaque 数据。
@@ -161,9 +168,10 @@ Models 响应是带 `models` 数组的 envelope；网关只保留非空且未显
 `no_credit` 或 `already_redeemed`，并返回 `windows_reset`。Codex app-server 要求 ChatGPT
 认证，并建议 reset 后重新读取 rate limits。
 
-Models 查询参数 `client_version` 和请求 Header `version` 固定报告当前核对的 Codex
-客户端版本 `0.146.0`。该版本独立于 `ai-gateway` 自身版本，因为 Codex 后端会根据客户端
-版本过滤模型；误用较小的网关版本可能得到成功但为空的 `models` 数组。
+Models 查询参数 `client_version` 和请求 Header `version` 由原生 Codex 报告自身版本。Gateway
+默认使用当前核对的 `0.146.0`，但把它作为全局系统设置；Codex 后端会根据客户端版本过滤模型，
+因此上游提高最低版本时管理员可更新该值而无需重新发布 Gateway。该版本独立于
+`ai-gateway` 自身版本；误用较小值可能得到成功但为空的 `models` 数组。
 
 ## ai-gateway 兼容行为
 
@@ -216,7 +224,7 @@ WebSocket 路径：
 4. 把目标改为 managed channel base URL 下的 `/responses`，再将
    `http`/`https` 转成 `ws`/`wss`；
 5. 注入 `OpenAI-Beta: responses_websockets=2026-02-06`、Bearer/可选 account、
-   FedRAMP、session/thread、User-Agent、`originator` 和版本 Header；
+   FedRAMP、session/thread、系统设置中的 User-Agent、`originator` 和版本 Header；
 6. 不发送 HTTP SSE 专用的 `Accept`、`Accept-Encoding` 和 `Content-Type`；
 7. 顺序转发事件，并把成功、无残留的连接放回 Session 隔离池，使后续请求可以继续使用
    connection-local `previous_response_id`。
@@ -230,7 +238,7 @@ Standalone web search 路径：
 4. 将目标改为 managed channel base URL 下的 `/alpha/search`；
 5. 保留合法的 `x-codex-turn-metadata` 和可选 `x-client-request-id`；缺失或无效的 turn metadata
    会安全合成，installation/workspace 指纹按同一凭证/系统设置规则归一化；客户端
-   `originator` 和 `User-Agent` 固定覆盖为 Gateway 的 `codex_cli_rs` Connector 身份，再注入
+   `originator` 和 `User-Agent` 覆盖为系统设置中的 Codex Connector 身份，再注入
    Bearer/可选 account/FedRAMP 和版本，删除 Responses Session Header；
 6. `results` DTO 透明转发；没有 usage 时不估算 token 或费用。
 
@@ -269,11 +277,13 @@ Codex 成功响应按 Connector 契约视为 SSE，而不只依赖上游
 usage 与请求终态记录；客户端随后立即停止读取时，不会把已经完整结束的请求覆盖成
 `client_cancelled`。
 
-为提高 ChatGPT Codex 后端兼容性，网关使用 Codex 默认的
-`originator: codex_cli_rs`，并发送稳定的基础 User-Agent
-`codex_cli_rs/0.146.0`。原生 Codex 还会在该基础值后附加操作系统和终端信息；网关不伪造这些
-不属于服务进程的交互式客户端元数据。Codex `client_version`/`version` 同样报告独立维护的
-兼容版本。OAuth 公共 client ID、scope、redirect URI 和后端路径与核对版本保持一致。
+为提高 ChatGPT Codex 后端兼容性，网关默认使用
+`originator: codex_cli_rs`、`client_version`/`version: 0.146.0` 和基础 User-Agent
+`codex_cli_rs/0.146.0`。这三项是 Console 可编辑的全局数据库系统设置：一个已准备的
+HTTP/WebSocket/Search/Images attempt 以及 OAuth、Models、quota 管理操作各自固定取得一个
+运行时快照，客户端和 Header Transform 都不能覆盖它。原生 Codex 还会在 User-Agent 基础值后附加
+操作系统和终端信息；管理员可在系统设置中提供匹配的完整 CLI 值，Gateway 不自行伪造服务进程
+没有的交互式元数据。OAuth 公共 client ID、scope、redirect URI 和后端路径与核对版本保持一致。
 
 原生 Codex 还会通过 flat `client_metadata` 和 JSON 字符串形式的
 `x-codex-turn-metadata` 上报持久 installation ID，以及 workspace 根路径、Git remote、HEAD

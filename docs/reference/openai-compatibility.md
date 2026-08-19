@@ -45,7 +45,9 @@ assistants、fine-tuning 等其他 OpenAI 路径。
 - Chat Completions 额外允许第三方兼容扩展 `thinking` 和 `enable_thinking`；网关不解释其值，
   由选中的上游决定是否支持。
 - 客户端 Header 使用共享白名单；未知 Header 被删除。官方 SDK 的 `x-stainless-*`、OpenAI
-  组织/项目 Header、Gateway Session Header 和 W3C trace Header 显式列入契约。
+  组织/项目 Header、Gateway Session Header、W3C trace Header，以及 Codex Responses 的
+  `x-codex-beta-features`、`x-codex-routing-hint`、`x-codex-turn-state` 和
+  `x-openai-internal-codex-responses-lite` 显式列入契约。
 - 仅为请求日志元数据，网关会宽松识别 Responses 的 `reasoning.effort`、兼容
   Chat Completions 的 `reasoning_effort`，以及 `service_tier = "priority"`；非字符串、
   过长或未知形状不会增加本地拒绝条件。若调用方所属用户组启用 Fast 过滤，网关会在客户端
@@ -110,7 +112,7 @@ metadata 与 `prompt_cache_key` 会补齐；其余已有 metadata 保留。
 Codex OAuth standalone web search 使用同一 Responses managed channel、模型规则、API Key 权限
 和凭证。Connector 把公共 `/v1/alpha/search` 改写为 managed base URL 下的 `/alpha/search`，
 保留合法的 `x-codex-turn-metadata`，缺失时安全补齐，并把客户端 `originator` 与
-`User-Agent` 固定覆盖为 Gateway 的 `codex_cli_rs` Connector 身份。Responses Session Header
+`User-Agent` 覆盖为系统设置中的 Codex Connector 身份。Responses Session Header
 会被删除，响应按普通 JSON 处理。Turn metadata 使用与 Responses 相同的
 installation/workspace 归一化；`results` 中未知 DTO 和字段透明转发；没有 usage 时不估算
 token 或费用。

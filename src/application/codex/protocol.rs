@@ -15,7 +15,10 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use tokio::time::timeout;
 
-use crate::persistence::{CodexQuotaResetOutcome, CodexQuotaUpdate};
+use crate::{
+    domain::CodexOutboundIdentity,
+    persistence::{CodexQuotaResetOutcome, CodexQuotaUpdate},
+};
 
 use super::CodexConnectorError;
 
@@ -23,8 +26,6 @@ pub const CODEX_OAUTH_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 pub const CODEX_OAUTH_REDIRECT_URI: &str = "http://localhost:1455/auth/callback";
 pub const CODEX_OAUTH_SCOPE: &str =
     "openid profile email offline_access api.connectors.read api.connectors.invoke";
-pub const CODEX_ORIGINATOR: &str = "codex_cli_rs";
-pub const CODEX_CLIENT_VERSION: &str = "0.146.0";
 
 const MAX_TOKEN_RESPONSE_BYTES: usize = 1024 * 1024;
 const MAX_MODELS_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
@@ -54,14 +55,14 @@ impl CodexEndpoints {
             .map_err(|_| CodexConnectorError::InvalidEndpoint)
     }
 
-    pub fn models_url(&self) -> Result<Url, CodexConnectorError> {
+    pub fn models_url(&self, identity: &CodexOutboundIdentity) -> Result<Url, CodexConnectorError> {
         let mut url = Url::parse(&format!(
             "{}/models",
             self.responses_base_url.as_str().trim_end_matches('/')
         ))
         .map_err(|_| CodexConnectorError::InvalidEndpoint)?;
         url.query_pairs_mut()
-            .append_pair("client_version", CODEX_CLIENT_VERSION);
+            .append_pair("client_version", identity.client_version());
         Ok(url)
     }
 
@@ -204,6 +205,7 @@ pub fn build_authorize_url(
     endpoints: &CodexEndpoints,
     pkce: &PkceCodes,
     state: &str,
+    identity: &CodexOutboundIdentity,
 ) -> Result<String, CodexConnectorError> {
     let mut url = endpoints
         .issuer
@@ -219,7 +221,7 @@ pub fn build_authorize_url(
         .append_pair("id_token_add_organizations", "true")
         .append_pair("codex_cli_simplified_flow", "true")
         .append_pair("state", state)
-        .append_pair("originator", CODEX_ORIGINATOR);
+        .append_pair("originator", identity.originator());
     Ok(url.into())
 }
 
@@ -367,9 +369,11 @@ pub async fn refresh_tokens(
     })
 }
 
+#[allow(clippy::too_many_arguments)] // mirrors the authenticated models-fetch request surface
 pub async fn fetch_models(
     client: &Client,
     endpoints: &CodexEndpoints,
+    identity: &CodexOutboundIdentity,
     access_token: &str,
     account_id: Option<&str>,
     is_fedramp: bool,
@@ -390,8 +394,13 @@ pub async fn fetch_models(
     let response = timeout(
         response_header_timeout,
         client
-            .get(endpoints.models_url()?)
-            .headers(codex_headers(access_token, account_id, is_fedramp)?)
+            .get(endpoints.models_url(identity)?)
+            .headers(codex_headers(
+                identity,
+                access_token,
+                account_id,
+                is_fedramp,
+            )?)
             .send(),
     )
     .await
@@ -419,9 +428,11 @@ pub async fn fetch_models(
     Ok(models)
 }
 
+#[allow(clippy::too_many_arguments)] // mirrors the authenticated quota-fetch request surface
 pub async fn fetch_quota(
     client: &Client,
     endpoints: &CodexEndpoints,
+    identity: &CodexOutboundIdentity,
     access_token: &str,
     account_id: Option<&str>,
     is_fedramp: bool,
@@ -433,7 +444,12 @@ pub async fn fetch_quota(
         response_header_timeout,
         client
             .get(endpoints.quota_url()?)
-            .headers(codex_headers(access_token, account_id, is_fedramp)?)
+            .headers(codex_headers(
+                identity,
+                access_token,
+                account_id,
+                is_fedramp,
+            )?)
             .send(),
     )
     .await
@@ -480,6 +496,7 @@ pub async fn fetch_quota(
 pub async fn consume_quota_reset_credit(
     client: &Client,
     endpoints: &CodexEndpoints,
+    identity: &CodexOutboundIdentity,
     access_token: &str,
     account_id: Option<&str>,
     is_fedramp: bool,
@@ -495,7 +512,12 @@ pub async fn consume_quota_reset_credit(
         response_header_timeout,
         client
             .post(endpoints.quota_reset_url()?)
-            .headers(codex_headers(access_token, account_id, is_fedramp)?)
+            .headers(codex_headers(
+                identity,
+                access_token,
+                account_id,
+                is_fedramp,
+            )?)
             .header(CONTENT_TYPE, "application/json")
             .body(request_body)
             .send(),
@@ -676,6 +698,7 @@ fn normalize_claim(
 }
 
 fn codex_headers(
+    identity: &CodexOutboundIdentity,
     access_token: &str,
     account_id: Option<&str>,
     is_fedramp: bool,
@@ -696,19 +719,23 @@ fn codex_headers(
     headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
     headers.insert(
         USER_AGENT,
-        HeaderValue::from_str(&codex_user_agent())
+        HeaderValue::from_str(identity.user_agent())
             .map_err(|_| CodexConnectorError::InvalidCredential)?,
     );
-    headers.insert("originator", HeaderValue::from_static(CODEX_ORIGINATOR));
-    headers.insert("version", HeaderValue::from_static(CODEX_CLIENT_VERSION));
+    headers.insert(
+        "originator",
+        HeaderValue::from_str(identity.originator())
+            .map_err(|_| CodexConnectorError::InvalidCredential)?,
+    );
+    headers.insert(
+        "version",
+        HeaderValue::from_str(identity.client_version())
+            .map_err(|_| CodexConnectorError::InvalidCredential)?,
+    );
     if is_fedramp {
         headers.insert("X-OpenAI-Fedramp", HeaderValue::from_static("true"));
     }
     Ok(headers)
-}
-
-pub fn codex_user_agent() -> String {
-    format!("{CODEX_ORIGINATOR}/{CODEX_CLIENT_VERSION}")
 }
 
 async fn read_body(
@@ -771,6 +798,8 @@ fn token_endpoint_error(status: StatusCode, body: &[u8], refreshing: bool) -> Co
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use axum::{
         Json, Router,
@@ -779,6 +808,14 @@ mod tests {
     };
     use serde_json::json;
     use tokio::net::TcpListener;
+
+    fn configured_identity() -> CodexOutboundIdentity {
+        CodexOutboundIdentity::new(
+            Arc::from("codex_gateway"),
+            Arc::from("9.8.7"),
+            Arc::from("codex_gateway/9.8.7 (Linux 6.8.0; x86_64) ai-gateway"),
+        )
+    }
 
     fn jwt(payload: Value) -> String {
         let header = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b"{}");
@@ -790,19 +827,20 @@ mod tests {
     #[test]
     fn derives_codex_models_and_quota_endpoints_without_url_join_truncation() {
         let endpoints = CodexEndpoints::default();
+        let identity = configured_identity();
 
         assert_eq!(
-            endpoints.models_url().unwrap().path(),
+            endpoints.models_url(&identity).unwrap().path(),
             "/backend-api/codex/models"
         );
         assert_eq!(
             endpoints
-                .models_url()
+                .models_url(&identity)
                 .unwrap()
                 .query_pairs()
                 .find(|(name, _)| name == "client_version")
                 .map(|(_, value)| value.into_owned()),
-            Some(CODEX_CLIENT_VERSION.to_owned())
+            Some(identity.client_version().to_owned())
         );
         assert_eq!(
             endpoints.quota_url().unwrap().path(),
@@ -815,8 +853,9 @@ mod tests {
     }
 
     #[test]
-    fn builds_authorize_url_with_pkce_state_and_fixed_public_client() {
+    fn builds_authorize_url_with_pkce_state_and_configured_originator() {
         let endpoints = CodexEndpoints::default();
+        let identity = configured_identity();
         let url = Url::parse(
             &build_authorize_url(
                 &endpoints,
@@ -825,6 +864,7 @@ mod tests {
                     challenge: "challenge".into(),
                 },
                 "state-value",
+                &identity,
             )
             .unwrap(),
         )
@@ -858,16 +898,29 @@ mod tests {
         );
         assert_eq!(
             query.get("originator").map(|value| value.as_ref()),
-            Some(CODEX_ORIGINATOR)
+            Some(identity.originator())
         );
     }
 
     #[test]
-    fn reports_the_pinned_codex_client_identity() {
-        assert_eq!(CODEX_ORIGINATOR, "codex_cli_rs");
+    fn codex_headers_use_the_configured_identity() {
+        let identity = configured_identity();
+        let headers = codex_headers(&identity, "access-token", None, false).unwrap();
         assert_eq!(
-            codex_user_agent(),
-            format!("{CODEX_ORIGINATOR}/{CODEX_CLIENT_VERSION}")
+            headers
+                .get("originator")
+                .and_then(|value| value.to_str().ok()),
+            Some(identity.originator())
+        );
+        assert_eq!(
+            headers.get("version").and_then(|value| value.to_str().ok()),
+            Some(identity.client_version())
+        );
+        assert_eq!(
+            headers
+                .get(USER_AGENT)
+                .and_then(|value| value.to_str().ok()),
+            Some(identity.user_agent())
         );
     }
 
@@ -951,7 +1004,13 @@ mod tests {
         assert_eq!(personal_identity.account_id, None);
         assert_eq!(personal_identity.user_id.as_deref(), Some("personal-user"));
 
-        let headers = codex_headers("access-token", None, false).unwrap();
+        let headers = codex_headers(
+            &CodexOutboundIdentity::default(),
+            "access-token",
+            None,
+            false,
+        )
+        .unwrap();
         assert!(!headers.contains_key("chatgpt-account-id"));
 
         let expires_at = parse_jwt_expiration(&jwt(json!({"exp": 1_800_000_000})))
@@ -1060,9 +1119,10 @@ mod tests {
             Some("Bearer personal-access-token") => (None, None),
             _ => return Err(AxumStatusCode::UNAUTHORIZED),
         };
+        let identity = CodexOutboundIdentity::default();
         let common = [
-            ("originator", CODEX_ORIGINATOR),
-            ("version", CODEX_CLIENT_VERSION),
+            ("originator", identity.originator()),
+            ("version", identity.client_version()),
         ];
         if common.iter().any(|(name, value)| {
             headers.get(*name).and_then(|header| header.to_str().ok()) != Some(*value)
@@ -1074,7 +1134,10 @@ mod tests {
                 .get("x-openai-fedramp")
                 .and_then(|header| header.to_str().ok())
                 != expected_fedramp
-            || headers.get(USER_AGENT).is_none()
+            || headers
+                .get(USER_AGENT)
+                .and_then(|header| header.to_str().ok())
+                != Some(identity.user_agent())
         {
             return Err(AxumStatusCode::UNAUTHORIZED);
         }
@@ -1100,9 +1163,11 @@ mod tests {
             responses_base_url: Url::parse(&format!("http://{address}/backend-api/codex")).unwrap(),
         };
         let client = Client::new();
+        let identity = CodexOutboundIdentity::default();
         let models = fetch_models(
             &client,
             &endpoints,
+            &identity,
             "access-token",
             Some("account-123"),
             true,
@@ -1116,6 +1181,7 @@ mod tests {
             fetch_models(
                 &client,
                 &endpoints,
+                &identity,
                 "personal-access-token",
                 None,
                 false,
@@ -1130,6 +1196,7 @@ mod tests {
         let quota = fetch_quota(
             &client,
             &endpoints,
+            &identity,
             "access-token",
             Some("account-123"),
             true,
@@ -1151,6 +1218,7 @@ mod tests {
             fetch_quota(
                 &client,
                 &endpoints,
+                &identity,
                 "personal-access-token",
                 None,
                 false,
@@ -1165,6 +1233,7 @@ mod tests {
         let reset = consume_quota_reset_credit(
             &client,
             &endpoints,
+            &identity,
             "access-token",
             Some("account-123"),
             true,

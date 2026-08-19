@@ -32,9 +32,9 @@ pub use channel_models::{
     ChannelModelDiscoveryService,
 };
 pub use codex::{
-    CODEX_ORIGINATOR, CodexConnectorError, CodexConnectorService, CodexCredentialRuntime,
-    CodexCredentialUnavailable, CodexOauthCompleteInput, CodexOauthStartResponse,
-    CodexQuotaResetResponse, CompiledCodexCredential, codex_user_agent,
+    CodexConnectorError, CodexConnectorService, CodexCredentialRuntime, CodexCredentialUnavailable,
+    CodexOauthCompleteInput, CodexOauthStartResponse, CodexQuotaResetResponse,
+    CompiledCodexCredential,
 };
 pub use connector::UpstreamConnectorRegistry;
 pub(crate) use connector::{ConnectorAttemptError, ConnectorUnavailable};

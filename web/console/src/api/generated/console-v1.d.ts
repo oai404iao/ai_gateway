@@ -1712,6 +1712,21 @@ export interface components {
              * @default https://github.com/oai404iao/ai_gateway
              */
             git_remote_url: string;
+            /**
+             * @description Connector-owned originator used for Codex forwarding and the OAuth authorization URL.
+             * @default codex_cli_rs
+             */
+            originator: string;
+            /**
+             * @description Connector-owned Codex version sent in the version Header and models client_version query parameter.
+             * @default 0.146.0
+             */
+            client_version: string;
+            /**
+             * @description Connector-owned User-Agent for managed Codex backend requests. Set a matching native CLI value, including its platform and terminal suffix, when required.
+             * @default codex_cli_rs/0.146.0
+             */
+            user_agent: string;
         };
         SystemMcpSettings: {
             /**

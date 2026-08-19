@@ -4,7 +4,7 @@
 >
 > 状态：当前。
 >
-> 最近核对：2026-08-12。
+> 最近核对：2026-08-19。
 >
 > 机器可读权威契约：
 > [`request-allowlists.json`](request-allowlists.json)。
@@ -14,15 +14,13 @@
 > [Chat Completions](https://github.com/openai/openai-node/blob/854892a0580980449ce1ed04aa5e3831d3330383/src/resources/chat/completions/completions.ts)、
 > [Responses](https://github.com/openai/openai-node/blob/854892a0580980449ce1ed04aa5e3831d3330383/src/resources/responses/responses.ts) 与
 > [Images](https://github.com/openai/openai-node/blob/854892a0580980449ce1ed04aa5e3831d3330383/src/resources/images.ts) 请求类型；
-> [`openai/codex@7a0e974`](https://github.com/openai/codex/tree/7a0e974e08c798d1e8d59d407aeb6e24db1313af) 的
-> [Responses wire type](https://github.com/openai/codex/blob/7a0e974e08c798d1e8d59d407aeb6e24db1313af/codex-rs/codex-api/src/common.rs)、
-> [Responses metadata](https://github.com/openai/codex/blob/7a0e974e08c798d1e8d59d407aeb6e24db1313af/codex-rs/core/src/responses_metadata.rs)、
-> [compression selection](https://github.com/openai/codex/blob/7a0e974e08c798d1e8d59d407aeb6e24db1313af/codex-rs/core/src/client.rs)、
-> [Responses endpoint](https://github.com/openai/codex/blob/7a0e974e08c798d1e8d59d407aeb6e24db1313af/codex-rs/codex-api/src/endpoint/responses.rs)、
-> [Zstandard encoder](https://github.com/openai/codex/blob/7a0e974e08c798d1e8d59d407aeb6e24db1313af/codex-rs/http-client/src/request.rs)、
-> [Images wire type](https://github.com/openai/codex/blob/7a0e974e08c798d1e8d59d407aeb6e24db1313af/codex-rs/codex-api/src/images.rs)、
-> [Search wire type](https://github.com/openai/codex/blob/7a0e974e08c798d1e8d59d407aeb6e24db1313af/codex-rs/codex-api/src/search.rs) 与
-> [Search tool Header](https://github.com/openai/codex/blob/7a0e974e08c798d1e8d59d407aeb6e24db1313af/codex-rs/ext/web-search/src/tool.rs)；
+> [`openai/codex@fde2156`](https://github.com/openai/codex/tree/fde2156057c38c0227ce94c8514d04c7498df60d) 的
+> [Responses client and Header construction](https://github.com/openai/codex/blob/fde2156057c38c0227ce94c8514d04c7498df60d/codex-rs/core/src/client.rs)、
+> [default HTTP client identity](https://github.com/openai/codex/blob/fde2156057c38c0227ce94c8514d04c7498df60d/codex-rs/login/src/auth/default_client.rs)、
+> [Responses SSE turn state](https://github.com/openai/codex/blob/fde2156057c38c0227ce94c8514d04c7498df60d/codex-rs/codex-api/src/sse/responses.rs)、
+> [Responses WebSocket endpoint](https://github.com/openai/codex/blob/fde2156057c38c0227ce94c8514d04c7498df60d/codex-rs/codex-api/src/endpoint/responses_websocket.rs)、
+> [Images wire type](https://github.com/openai/codex/blob/fde2156057c38c0227ce94c8514d04c7498df60d/codex-rs/codex-api/src/images.rs) 与
+> [Search wire type](https://github.com/openai/codex/blob/fde2156057c38c0227ce94c8514d04c7498df60d/codex-rs/codex-api/src/search.rs)；
 > 请求压缩实现还与本地研究 checkout
 > `openai/codex@eb9dceba1a2e658142a456c5898836774835616b` 的
 > `codex-rs/http-client/src/request.rs` 交叉核对；
@@ -81,8 +79,9 @@ hop-by-hop 清理和上游鉴权覆盖约束。
   `openai-organization`、`openai-project`、`idempotency-key`；
 - Gateway/Codex Session Header，例如 `session-id`、`thread-id`、
   `x-client-request-id`、`x-codex-window-id`、`x-session-id`；
-- Codex 请求归因和 Search 上下文 Header：`originator` 与
-  `x-codex-turn-metadata`；
+- Codex 请求归因、Search 上下文与 Responses 控制 Header：`originator`、
+  `x-codex-turn-metadata`、`x-codex-beta-features`、`x-codex-routing-hint`、
+  `x-codex-turn-state` 与 `x-openai-internal-codex-responses-lite`；
 - 为兼容 0.9.4 示例配置而保留的 `session_id`、`thread_id`；新配置应使用上面的连字符形式；
 - W3C trace Header；
 - 官方 SDK 使用的 `x-stainless-*` 前缀。
@@ -141,6 +140,12 @@ Images edit 额外兼容部分通用表单会提交、但当前公开 edit 类�
 - `body_overrides`：Connector 强制写入的字段；
 - `generated_body_fields`：adapter 生成而不是直接来自客户端的字段。
 
+Responses HTTP 与 WebSocket 明确允许
+`x-codex-beta-features`、`x-codex-routing-hint`、`x-codex-turn-state` 和
+`x-openai-internal-codex-responses-lite` 从客户端或 Header Transform 透传。这四个 Header
+不在 `headers.generated` 中：Gateway 不伪造 beta 开关、路由提示、sticky turn-state 或 lite
+模型标记；它只保留已经通过客户端入口与 Codex 出口策略的值。
+
 根级 `codex_fingerprint_normalization` 另行维护以下固定行为：
 
 - `client_metadata["x-codex-installation-id"]` 和 turn metadata 中的
@@ -191,8 +196,8 @@ Images edit 额外兼容部分通用表单会提交、但当前公开 edit 类�
   `max_output_tokens`；
 - Gateway 只检查顶层字段；Search command、settings 和 result DTO 的嵌套结构由 Codex
   上游解释；
-- 客户端 `originator` 和 `User-Agent` 不作为上游身份保留，发送前统一覆盖为 Gateway 的
-  `codex_cli_rs` Connector 身份；合法的 `x-codex-turn-metadata` 保留，缺失时安全合成，
+- 客户端 `originator` 和 `User-Agent` 不作为上游身份保留，发送前统一覆盖为数据库系统设置中的
+  Codex Connector 身份；合法的 `x-codex-turn-metadata` 保留，缺失时安全合成，
   安装 ID 与工作区信息在发送前归一化；
 - 固定使用非流式 JSON，不添加 body override；
 - 当前不支持 Request JSON Transform；支持该操作的渠道若组合出非空 Request JSON

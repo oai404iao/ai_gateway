@@ -8,19 +8,20 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::{
-    domain::{ApiOperation, CodexRequestMetadataSettings, CompiledChannel, RequestProtocol},
+    domain::{
+        ApiOperation, CodexOutboundIdentity, CodexRequestMetadataSettings, CompiledChannel,
+        RequestProtocol,
+    },
     request_policy::{CodexRequestMetadata, RequestInterface},
 };
 
-use super::{
-    CODEX_CLIENT_VERSION, CODEX_ORIGINATOR, CodexCredentialRuntime, CodexCredentialUnavailable,
-    CompiledCodexCredential, codex_user_agent,
-};
+use super::{CodexCredentialRuntime, CodexCredentialUnavailable, CompiledCodexCredential};
 
 #[derive(Clone)]
 pub(crate) struct PreparedCodexAttempt {
     credential: std::sync::Arc<CompiledCodexCredential>,
     request: CodexRequestContext,
+    outbound_identity: CodexOutboundIdentity,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -51,6 +52,7 @@ impl PreparedCodexAttempt {
         affinity_cache_hit: bool,
         client_headers: &HeaderMap,
         affinity_hash: Option<[u8; 32]>,
+        outbound_identity: CodexOutboundIdentity,
     ) -> Result<Self, CodexCredentialUnavailable> {
         let request = match api_operation {
             ApiOperation::Responses => CodexRequestContext::Responses(CodexRequestIdentity::new(
@@ -71,6 +73,7 @@ impl PreparedCodexAttempt {
         Ok(Self {
             credential: runtime.credential(channel_id, affinity_cache_hit)?,
             request,
+            outbound_identity,
         })
     }
 
@@ -150,10 +153,16 @@ impl PreparedCodexAttempt {
         }
         headers.insert(
             USER_AGENT,
-            HeaderValue::from_str(&codex_user_agent()).map_err(invalid)?,
+            HeaderValue::from_str(self.outbound_identity.user_agent()).map_err(invalid)?,
         );
-        headers.insert("originator", HeaderValue::from_static(CODEX_ORIGINATOR));
-        headers.insert("version", HeaderValue::from_static(CODEX_CLIENT_VERSION));
+        headers.insert(
+            "originator",
+            HeaderValue::from_str(self.outbound_identity.originator()).map_err(invalid)?,
+        );
+        headers.insert(
+            "version",
+            HeaderValue::from_str(self.outbound_identity.client_version()).map_err(invalid)?,
+        );
         if self.credential.is_fedramp() {
             headers.insert("X-OpenAI-Fedramp", HeaderValue::from_static("true"));
         } else {
@@ -359,12 +368,27 @@ fn opaque_uuid(seed: &[u8], domain: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use chrono::Utc;
     use serde_json::Value;
 
+    use crate::domain::CodexOutboundIdentity;
     use crate::persistence::CodexCredentialRecord;
 
     use super::*;
+
+    fn default_outbound_identity() -> CodexOutboundIdentity {
+        CodexOutboundIdentity::default()
+    }
+
+    fn configured_outbound_identity() -> CodexOutboundIdentity {
+        CodexOutboundIdentity::new(
+            Arc::from("codex_gateway"),
+            Arc::from("9.8.7"),
+            Arc::from("codex_gateway/9.8.7 (Linux 6.8.0; x86_64) ai-gateway"),
+        )
+    }
 
     fn runtime() -> CodexCredentialRuntime {
         let now = Utc::now();
@@ -420,6 +444,7 @@ mod tests {
             false,
             &HeaderMap::new(),
             None,
+            default_outbound_identity(),
         )
         .unwrap();
         let body = attempt
@@ -444,6 +469,7 @@ mod tests {
             false,
             &HeaderMap::new(),
             None,
+            default_outbound_identity(),
         )
         .unwrap();
         assert_eq!(
@@ -485,6 +511,7 @@ mod tests {
             false,
             &HeaderMap::new(),
             None,
+            default_outbound_identity(),
         )
         .unwrap();
         let images = PreparedCodexAttempt::prepare(
@@ -494,6 +521,7 @@ mod tests {
             false,
             &HeaderMap::new(),
             None,
+            default_outbound_identity(),
         )
         .unwrap();
 
@@ -505,7 +533,8 @@ mod tests {
     }
 
     #[test]
-    fn responses_headers_leave_content_coding_to_the_proxy() {
+    fn responses_headers_use_the_snapshot_pinned_outbound_identity() {
+        let identity = configured_outbound_identity();
         let attempt = PreparedCodexAttempt::prepare(
             &runtime(),
             Uuid::from_u128(1),
@@ -513,6 +542,7 @@ mod tests {
             false,
             &HeaderMap::new(),
             None,
+            identity.clone(),
         )
         .unwrap();
         let mut headers = HeaderMap::new();
@@ -525,20 +555,31 @@ mod tests {
         assert!(!headers.contains_key(CONTENT_ENCODING));
         assert_eq!(
             headers.get("version").and_then(|value| value.to_str().ok()),
-            Some(CODEX_CLIENT_VERSION)
+            Some(identity.client_version())
         );
         assert_eq!(
             headers
                 .get("originator")
                 .and_then(|value| value.to_str().ok()),
-            Some(CODEX_ORIGINATOR)
+            Some(identity.originator())
         );
         assert_eq!(
             headers
                 .get(USER_AGENT)
                 .and_then(|value| value.to_str().ok()),
-            Some(codex_user_agent().as_str())
+            Some(identity.user_agent())
         );
+        for header in [
+            "x-codex-beta-features",
+            "x-codex-routing-hint",
+            "x-codex-turn-state",
+            "x-openai-internal-codex-responses-lite",
+        ] {
+            assert!(
+                !headers.contains_key(header),
+                "{header} must not be generated"
+            );
+        }
     }
 
     #[test]
@@ -555,6 +596,7 @@ mod tests {
             false,
             &HeaderMap::new(),
             None,
+            default_outbound_identity(),
         )
         .unwrap();
         let mut headers = HeaderMap::new();
@@ -572,6 +614,7 @@ mod tests {
 
     #[test]
     fn standalone_web_search_uses_alpha_target_and_pins_connector_identity() {
+        let identity = configured_outbound_identity();
         let attempt = PreparedCodexAttempt::prepare(
             &runtime(),
             Uuid::from_u128(1),
@@ -579,6 +622,7 @@ mod tests {
             true,
             &HeaderMap::new(),
             Some([7; 32]),
+            identity.clone(),
         )
         .unwrap();
         let original = Bytes::from_static(
@@ -637,11 +681,9 @@ mod tests {
             .inject_headers(&mut headers, RequestProtocol::NonStream)
             .unwrap();
 
-        assert_eq!(headers.get("originator").unwrap(), CODEX_ORIGINATOR);
-        assert_eq!(
-            headers.get(USER_AGENT).unwrap(),
-            codex_user_agent().as_str()
-        );
+        assert_eq!(headers.get("originator").unwrap(), identity.originator());
+        assert_eq!(headers.get(USER_AGENT).unwrap(), identity.user_agent());
+        assert_eq!(headers.get("version").unwrap(), identity.client_version());
         assert_eq!(
             headers.get("x-codex-turn-metadata").unwrap(),
             r#"{"search_context_size":"medium"}"#
@@ -672,6 +714,7 @@ mod tests {
             false,
             &HeaderMap::new(),
             None,
+            default_outbound_identity(),
         )
         .unwrap();
         let original =
@@ -739,6 +782,17 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("account-123")
         );
+        for header in [
+            "x-codex-beta-features",
+            "x-codex-routing-hint",
+            "x-codex-turn-state",
+            "x-openai-internal-codex-responses-lite",
+        ] {
+            assert!(
+                !headers.contains_key(header),
+                "{header} must not be generated"
+            );
+        }
         assert_eq!(
             headers.get(ACCEPT).and_then(|value| value.to_str().ok()),
             Some("application/json")
@@ -773,6 +827,7 @@ mod tests {
             false,
             &HeaderMap::new(),
             None,
+            default_outbound_identity(),
         )
         .unwrap();
         let body = attempt
@@ -815,6 +870,17 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("account-123")
         );
+        for header in [
+            "x-codex-beta-features",
+            "x-codex-routing-hint",
+            "x-codex-turn-state",
+            "x-openai-internal-codex-responses-lite",
+        ] {
+            assert!(
+                !headers.contains_key(header),
+                "{header} must not be generated"
+            );
+        }
     }
 
     #[test]
@@ -833,6 +899,7 @@ mod tests {
                 false,
                 &HeaderMap::new(),
                 Some([1; 32]),
+                default_outbound_identity(),
             ),
             Err(CodexCredentialUnavailable::Draining)
         ));
@@ -844,6 +911,7 @@ mod tests {
                 true,
                 &HeaderMap::new(),
                 Some([1; 32]),
+                default_outbound_identity(),
             )
             .is_ok()
         );

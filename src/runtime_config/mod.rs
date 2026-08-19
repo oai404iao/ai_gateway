@@ -25,13 +25,14 @@ use zeroize::Zeroizing;
 use crate::{
     domain::{
         AdvancedBilling, ApiFormat, ApiKeyHash, ApiKeyPermission, AuthorizationProfile,
-        AutomaticDisableSettings, ChannelTimeoutPolicy, CodexRequestMetadataSettings,
-        CompiledApiKey, CompiledCandidate, CompiledChannel, CompiledChannelGroup,
-        CompiledChannelUpstreamPolicy, CompiledConfigTemplate, CompiledMcpServer,
-        CompiledModelRule, CompiledProxy, CompiledRouteTier, CompiledRuntimeConfig,
-        CompiledScheduledTestModel, ConnectorKind, DEFAULT_IMAGES_RESPONSE_HEADER_TIMEOUT_SECONDS,
-        DEFAULT_MCP_IMAGE_REQUEST_BODY_BYTES, DEFAULT_MCP_IMAGE_RESULT_BYTES,
-        DEFAULT_MCP_REQUEST_BODY_BYTES, DEFAULT_MCP_SEARCH_RESULT_BYTES,
+        AutomaticDisableSettings, ChannelTimeoutPolicy, CodexOutboundIdentity,
+        CodexRequestMetadataSettings, CompiledApiKey, CompiledCandidate, CompiledChannel,
+        CompiledChannelGroup, CompiledChannelUpstreamPolicy, CompiledConfigTemplate,
+        CompiledMcpServer, CompiledModelRule, CompiledProxy, CompiledRouteTier,
+        CompiledRuntimeConfig, CompiledScheduledTestModel, ConnectorKind,
+        DEFAULT_IMAGES_RESPONSE_HEADER_TIMEOUT_SECONDS, DEFAULT_MCP_IMAGE_REQUEST_BODY_BYTES,
+        DEFAULT_MCP_IMAGE_RESULT_BYTES, DEFAULT_MCP_REQUEST_BODY_BYTES,
+        DEFAULT_MCP_SEARCH_RESULT_BYTES,
         DEFAULT_STANDALONE_WEB_SEARCH_RESPONSE_HEADER_TIMEOUT_SECONDS, ImageMcpSettings,
         MAX_MCP_IMAGE_BYTES, MAX_REQUEST_RETRIES, McpServerKind, McpTransportSettings,
         ModelPriceSnapshot, ModelRouteKey, NoProxyHost, PassiveHealthSettings, RequestCompression,
@@ -1265,6 +1266,11 @@ fn compile_codex_request_metadata_settings(
     Ok(CodexRequestMetadataSettings::new(
         Arc::from(input.workspace_path.as_str()),
         Arc::from(input.git_remote_url.as_str()),
+        CodexOutboundIdentity::new(
+            Arc::from(input.originator.as_str()),
+            Arc::from(input.client_version.as_str()),
+            Arc::from(input.user_agent.as_str()),
+        ),
     ))
 }
 
@@ -3606,6 +3612,9 @@ mod tests {
                     codex: SystemCodexSettingsInput {
                         workspace_path: "/synthetic/project".into(),
                         git_remote_url: "https://github.com/example/synthetic-project".into(),
+                        originator: "codex_gateway".into(),
+                        client_version: "9.8.7".into(),
+                        user_agent: "codex_gateway/9.8.7 (Linux 6.8.0; x86_64) ai-gateway".into(),
                     },
                     mcp: Default::default(),
                 })
@@ -3654,6 +3663,18 @@ mod tests {
         assert_eq!(
             settings.codex().git_remote_url(),
             "https://github.com/example/synthetic-project"
+        );
+        assert_eq!(
+            settings.codex().outbound_identity().originator(),
+            "codex_gateway"
+        );
+        assert_eq!(
+            settings.codex().outbound_identity().client_version(),
+            "9.8.7"
+        );
+        assert_eq!(
+            settings.codex().outbound_identity().user_agent(),
+            "codex_gateway/9.8.7 (Linux 6.8.0; x86_64) ai-gateway"
         );
     }
 
