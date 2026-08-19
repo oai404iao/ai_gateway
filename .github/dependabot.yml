@@ -8,6 +8,10 @@ updates:
       day: monday
       time: "04:00"
       timezone: Etc/UTC
+    groups:
+      codeql-action:
+        patterns:
+          - "github/codeql-action/*"
     open-pull-requests-limit: 5
     commit-message:
       prefix: ci
