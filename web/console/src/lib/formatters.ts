@@ -24,6 +24,35 @@ export function formatUsd(value: string | null | undefined): string {
   return `${amount} USD`;
 }
 
+/**
+ * Infers a quota window's total allowance from its gateway-recorded spend and
+ * the provider-reported percentage used. This is an estimate, not a
+ * provider-supplied limit.
+ */
+export function formatEstimatedQuotaTotal(
+  spendAmount: string | null | undefined,
+  usedPercent: number | null | undefined,
+): string {
+  if (
+    typeof spendAmount !== "string" ||
+    spendAmount.trim() === "" ||
+    typeof usedPercent !== "number" ||
+    !Number.isFinite(usedPercent) ||
+    usedPercent <= 0 ||
+    usedPercent > 100
+  ) {
+    return "—";
+  }
+
+  const spend = Number(spendAmount);
+  if (!Number.isFinite(spend) || spend < 0) return "—";
+
+  const estimatedTotal = (spend * 100) / usedPercent;
+  return Number.isFinite(estimatedTotal) && estimatedTotal >= 0
+    ? formatUsd(String(estimatedTotal))
+    : "—";
+}
+
 export function formatTokens(value: number | null | undefined): string {
   if (value === null || value === undefined) return "—";
   return value.toLocaleString(currentLocale());

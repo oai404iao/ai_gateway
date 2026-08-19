@@ -23,6 +23,7 @@ describe("Console i18n", () => {
     );
     expect(translateFor("zh-CN", "Long-context tiers")).toBe("长上下文价格档位");
     expect(translateFor("zh-CN", "Request multipliers")).toBe("请求参数倍率");
+    expect(translateFor("zh-CN", "Estimated total quota")).toBe("预估总额度");
     expect(
       translateFor(
         "zh-CN",

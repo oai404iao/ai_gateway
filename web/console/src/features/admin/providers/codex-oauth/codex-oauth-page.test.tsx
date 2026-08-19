@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { BrowserRouter } from "react-router";
@@ -129,6 +129,7 @@ describe("CodexOauthPage", () => {
     expect(screen.getByText("96% used")).toBeInTheDocument();
     expect(screen.getByText("Draining")).toBeInTheDocument();
     expect(screen.getByText("4.75 USD")).toBeInTheDocument();
+    expect(screen.getByText("4.947917 USD")).toBeInTheDocument();
 
     await user.click(
       screen.getByRole("button", {
@@ -276,12 +277,14 @@ describe("CodexOauthPage", () => {
         name: "View quota history for Personal Plus",
       }),
     );
+    const dialog = await screen.findByRole("dialog");
     expect(
-      await screen.findByRole("heading", {
+      within(dialog).getByRole("heading", {
         name: "Quota window history for Personal Plus",
       }),
     ).toBeInTheDocument();
-    expect(screen.getByText("Manual reset credit")).toBeInTheDocument();
+    expect(within(dialog).getByText("Manual reset credit")).toBeInTheDocument();
+    expect(within(dialog).getByText("4.947917 USD")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "View costs" }));
 
     await waitFor(() =>

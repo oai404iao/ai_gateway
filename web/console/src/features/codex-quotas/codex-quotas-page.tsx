@@ -45,7 +45,7 @@ import {
   useOwnCodexQuotaWindowHistory,
 } from "@/features/codex-quotas/api";
 import { formatDateTime } from "@/lib/dates";
-import { formatUsd } from "@/lib/formatters";
+import { formatEstimatedQuotaTotal, formatUsd } from "@/lib/formatters";
 
 function windowDuration(seconds: number | null): string {
   if (seconds === null) return "—";
@@ -107,6 +107,14 @@ function QuotaWindow({
         <span className="text-muted-foreground">{t("Period spend")}</span>
         <span className="font-medium tabular-nums">
           {formatUsd(costAmount)}
+        </span>
+      </div>
+      <div className="flex items-center justify-between gap-3 text-xs">
+        <span className="text-muted-foreground">
+          {t("Estimated total quota")}
+        </span>
+        <span className="font-medium tabular-nums">
+          {formatEstimatedQuotaTotal(costAmount, percent)}
         </span>
       </div>
     </div>
@@ -196,6 +204,7 @@ function QuotaWindowPeriodsTable({
             <TableHead>{t("Period")}</TableHead>
             <TableHead>{t("Usage")}</TableHead>
             <TableHead>{t("Period spend")}</TableHead>
+            <TableHead>{t("Estimated total quota")}</TableHead>
             <TableHead>{t("Ended by")}</TableHead>
             <TableHead>{t("Last observed")}</TableHead>
           </TableRow>
@@ -229,6 +238,12 @@ function QuotaWindowPeriodsTable({
               </TableCell>
               <TableCell className="align-top tabular-nums">
                 {formatUsd(period.cost_amount)}
+              </TableCell>
+              <TableCell className="align-top tabular-nums">
+                {formatEstimatedQuotaTotal(
+                  period.cost_amount,
+                  period.last_used_percent,
+                )}
               </TableCell>
               <TableCell className="align-top">
                 <Badge variant={resetReasonVariant(period.reset_reason)}>
@@ -265,7 +280,7 @@ export function CodexQuotasPage() {
       <PageHeader
         title={t("Codex quotas")}
         description={t(
-          "Read-only quota windows and credential-wide spend for Codex credential groups granted by your user group. Spend includes every caller and both Responses and Images.",
+          "Read-only quota windows and credential-wide spend for Codex credential groups granted by your user group. Spend includes every caller and both Responses and Images. Estimated total quota divides current period spend by the most recently provider-reported used percentage.",
         )}
       />
       <AsyncResource
