@@ -7,6 +7,17 @@ Versioning.
 
 ## [Unreleased]
 
+## [0.10.5] - 2026-08-19
+
+### Added
+
+- Show estimated total quota for current and historical Codex quota windows in
+  the user Console and administrator credential views, calculated from period
+  spend divided by the provider-reported used percentage.
+- Make the managed Codex connector's `originator`, client version, and
+  `User-Agent` configurable through Console System settings, and preserve the
+  declared Codex Responses beta, routing, and turn-state headers.
+
 ## [0.10.4] - 2026-08-13
 
 ### Added
