@@ -3,6 +3,7 @@ import { useNavigate } from "react-router";
 import {
   CheckCheck,
   ChevronDown,
+  Copy,
   ListChecks,
   Pencil,
   Plus,
@@ -10,6 +11,7 @@ import {
   PowerOff,
   RotateCcw,
   Search,
+  Workflow,
   X,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -64,6 +66,10 @@ import {
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/app/i18n";
 import type { ChannelGroupView, ChannelView } from "@/api/types";
+import {
+  MODEL_SETUP_PATH,
+  adminPath,
+} from "@/features/admin/model-setup/model-setup-navigation";
 
 type GroupFilter = "all" | "standard" | "codex";
 
@@ -528,6 +534,22 @@ export function ChannelsPage() {
           <Button
             variant="ghost"
             size="icon-sm"
+            aria-label={t("Copy {name}", { name: channel.name })}
+            onClick={() =>
+              navigate(
+                adminPath("/admin/routing/channels/new", {
+                  copyFrom: channel.id,
+                  channelGroupId: channel.channel_group_id,
+                  returnTo: "/admin/routing/channels",
+                }),
+              )
+            }
+          >
+            <Copy />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon-sm"
             aria-label={t("Edit {name}", { name: channel.name })}
             onClick={() => navigate(`/admin/routing/channels/${channel.id}`)}
           >
@@ -571,6 +593,13 @@ export function ChannelsPage() {
         )}
         actions={
           <>
+            <Button
+              variant="outline"
+              onClick={() => navigate(MODEL_SETUP_PATH)}
+            >
+              <Workflow data-icon="inline-start" />
+              {t("Guided model setup")}
+            </Button>
             <Button
               variant="outline"
               disabled={visibleOrdinaryChannels.length === 0}

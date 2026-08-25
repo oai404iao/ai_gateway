@@ -1,8 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate, useParams } from "react-router";
-import { RefreshCwIcon } from "lucide-react";
+import { useNavigate, useParams, useSearchParams } from "react-router";
+import { Copy, RefreshCwIcon } from "lucide-react";
 import { z } from "zod";
 import { toast } from "sonner";
+import {
+  Alert,
+  AlertDescription,
+  AlertTitle,
+} from "@/components/ui/alert";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import {
@@ -59,6 +64,10 @@ import {
 } from "@/features/admin/routing/routing-validation";
 import { useI18n } from "@/app/i18n";
 import { formatDecimal } from "@/lib/formatters";
+import {
+  safeAdminReturnPath,
+  validResourceId,
+} from "@/features/admin/model-setup/model-setup-navigation";
 
 function isAllowedBaseUrl(value: string): boolean {
   try {
@@ -195,7 +204,20 @@ export function ChannelDetailPage() {
   const { id = "" } = useParams();
   const isNew = id === "new";
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const copyFrom = isNew
+    ? validResourceId(searchParams.get("copyFrom"))
+    : null;
+  const preferredGroupId = isNew
+    ? validResourceId(searchParams.get("channelGroupId"))
+    : null;
+  const returnTo = safeAdminReturnPath(
+    searchParams.get("returnTo"),
+    "/admin/routing/channels",
+  );
+  const returnsToSetup = returnTo.startsWith("/admin/model-setup");
   const { data, etag, isLoading, error } = useChannel(id);
+  const copySource = useChannel(copyFrom ?? "");
   const create = useCreateChannel();
   const update = useUpdateChannel(id);
   const discoverModels = useDiscoverChannelModels();
@@ -214,6 +236,10 @@ export function ChannelDetailPage() {
   const [routingImpact, setRoutingImpact] = useState<ChannelRoutingImpact[]>([]);
   const [overrideDocumentValidation, setOverrideDocumentValidation] = useState<string | null>(
     null,
+  );
+  const [copyInitialized, setCopyInitialized] = useState(!copyFrom);
+  const [groupPrefillInitialized, setGroupPrefillInitialized] = useState(
+    !preferredGroupId || Boolean(copyFrom),
   );
 
   useEffect(() => {
@@ -250,6 +276,109 @@ export function ChannelDetailPage() {
       setOverrideDocumentValidation(null);
     }
   }, [data, navigate]);
+
+  useEffect(() => {
+    if (
+      !isNew ||
+      copyFrom ||
+      !preferredGroupId ||
+      groupPrefillInitialized
+    ) {
+      return;
+    }
+    if (!groups.data) return;
+    const group = groups.data?.find(
+      (candidate) =>
+        candidate.id === preferredGroupId &&
+        candidate.connector_kind === "openai_compatible",
+    );
+    if (group) {
+      setState((current) => ({
+        ...current,
+        channel_group_id: group.id,
+        api_format: group.api_format,
+      }));
+    }
+    setGroupPrefillInitialized(true);
+  }, [
+    copyFrom,
+    groupPrefillInitialized,
+    groups.data,
+    isNew,
+    preferredGroupId,
+  ]);
+
+  useEffect(() => {
+    if (!isNew || !copyFrom || !copySource.data || copyInitialized) {
+      return;
+    }
+    const source = copySource.data.data;
+    if (source.provider_managed) {
+      setCopyInitialized(true);
+      toast.error(t("Provider-managed channels cannot be copied here."));
+      navigate(returnTo, { replace: true });
+      return;
+    }
+    if (!groups.data) return;
+    const preferredGroup = preferredGroupId
+      ? groups.data.find(
+          (candidate) =>
+            candidate.id === preferredGroupId &&
+            candidate.connector_kind === "openai_compatible" &&
+            candidate.api_format === source.api_format,
+        )
+      : undefined;
+    const targetGroup =
+      preferredGroup ??
+      groups.data.find(
+        (candidate) =>
+          candidate.id === source.channel_group_id &&
+          candidate.connector_kind === "openai_compatible" &&
+          candidate.api_format === source.api_format,
+      );
+    const apiFormat = targetGroup?.api_format ?? source.api_format;
+    setState({
+      channel_group_id: targetGroup?.id ?? source.channel_group_id,
+      api_format: apiFormat,
+      name: `${source.name} ${t("copy")}`,
+      base_url: source.base_url,
+      enabled: source.enabled,
+      supports_websocket:
+        apiFormat === "open_ai_responses" && source.supports_websocket,
+      supports_standalone_web_search:
+        apiFormat === "open_ai_responses" &&
+        source.supports_standalone_web_search,
+      auto_disable_allowed: source.auto_disable_allowed,
+      weight: source.weight,
+      billing_multiplier: source.billing_multiplier,
+      proxy_id: source.proxy_id,
+      config_template_id:
+        apiFormat === source.api_format ? source.config_template_id : null,
+      override_document:
+        JSON.stringify(source.override_document, null, 2) ?? "{}",
+      connect_timeout_ms: source.connect_timeout_ms,
+      response_header_timeout_ms: source.response_header_timeout_ms,
+      stream_idle_timeout_ms: source.stream_idle_timeout_ms,
+      upstream_auth_kind: source.upstream_auth_kind,
+      upstream_auth_header_name: source.upstream_auth_header_name,
+      upstream_api_key: "",
+      available_models: source.available_models,
+      test_model:
+        apiFormat === "open_ai_images" ? null : source.test_model,
+    });
+    setOverrideDocumentValidation(null);
+    setCopyInitialized(true);
+  }, [
+    copyFrom,
+    copyInitialized,
+    copySource.data,
+    groups.data,
+    isNew,
+    navigate,
+    preferredGroupId,
+    returnTo,
+    t,
+  ]);
 
   const patch = (partial: Partial<FormState>) => setState((prev) => ({ ...prev, ...partial }));
 
@@ -465,7 +594,7 @@ export function ChannelDetailPage() {
         };
         await create.mutateAsync(input);
         toast.success(t("Channel created"));
-        navigate("/admin/routing/channels", { replace: true });
+        navigate(returnTo, { replace: true });
       } else {
         // On edit, omit upstream_api_key when blank to keep the current secret.
         const input: ChannelInput = {
@@ -519,17 +648,43 @@ export function ChannelDetailPage() {
     const message = validation?.issues.find((issue) => issue.path.join(".") === path)?.message;
     return message ? t(message) : undefined;
   };
+  const needsGroupPrefill =
+    isNew && Boolean(copyFrom || preferredGroupId);
+  const prefillInitialized = copyFrom
+    ? copyInitialized
+    : groupPrefillInitialized;
+  const prefillError = needsGroupPrefill ? groups.error : null;
+  const prefillPending =
+    needsGroupPrefill &&
+    !copySource.error &&
+    (groups.isLoading || (!prefillInitialized && !prefillError));
 
   return (
     <>
       <AdminDetailShell
-        title={isNew ? t("New channel") : state.name || t("Channel")}
+        title={
+          copyFrom
+            ? t("Copy supplier")
+            : isNew
+              ? t("New channel")
+              : state.name || t("Channel")
+        }
         description={t("An upstream endpoint with weight, timeouts, and credential injection.")}
-        backPath="/admin/routing/channels"
-        backLabel={t("Back to channels")}
-        isLoading={isLoading}
-        error={error}
-        hasData={isNew || Boolean(data)}
+        backPath={returnTo}
+        backLabel={
+          returnsToSetup ? t("Back to model setup") : t("Back to channels")
+        }
+        isLoading={
+          isLoading ||
+          (Boolean(copyFrom) && copySource.isLoading) ||
+          prefillPending
+        }
+        error={error ?? copySource.error ?? prefillError}
+        hasData={
+          isNew
+            ? prefillInitialized
+            : Boolean(data)
+        }
         detailCard={
           !isNew && data ? (
             <Card>
@@ -600,6 +755,17 @@ export function ChannelDetailPage() {
             data-slot="channel-edit-layout"
             className="grid items-start gap-6 xl:grid-cols-2"
           >
+            {copyFrom ? (
+              <Alert className="xl:col-span-2">
+                <Copy />
+                <AlertTitle>{t("Review the copied supplier")}</AlertTitle>
+                <AlertDescription>
+                  {t(
+                    "Connection, routing, and model settings were copied. Enter a unique name and re-enter the upstream credential before saving.",
+                  )}
+                </AlertDescription>
+              </Alert>
+            ) : null}
             <Card>
               <CardHeader>
                 <CardTitle>{t("Routing and identity")}</CardTitle>
@@ -631,14 +797,23 @@ export function ChannelDetailPage() {
                         });
                       }}
                     >
-                      <SelectTrigger aria-invalid={Boolean(fieldError("channel_group_id"))}>
+                      <SelectTrigger
+                        aria-label={t("Channel group")}
+                        aria-invalid={Boolean(fieldError("channel_group_id"))}
+                      >
                         <SelectValue placeholder={t("Pick a group")} />
                       </SelectTrigger>
                       <SelectContent>
                         <SelectGroup>
                           <SelectItem value="__none__">{t("None")}</SelectItem>
                           {groups.data
-                            ?.filter((group) => group.connector_kind === "openai_compatible")
+                            ?.filter(
+                              (group) =>
+                                group.connector_kind === "openai_compatible" &&
+                                (!copyFrom ||
+                                  group.api_format ===
+                                    copySource.data?.data.api_format),
+                            )
                             .map((group) => (
                             <SelectItem
                               key={group.id}

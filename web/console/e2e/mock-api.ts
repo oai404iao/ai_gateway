@@ -318,6 +318,10 @@ export const E2E_SEARCH_MODEL_RULE = {
   channel_group_ids: [E2E_CODEX_GROUP_ID],
   channel_ids: [],
   enabled: true,
+  routing_status: "ready",
+  target_channel_count: 1,
+  model_capable_channel_count: 1,
+  active_channel_count: 1,
   updated_at: "2026-08-05T00:00:00.000Z",
 };
 
@@ -332,6 +336,10 @@ export const E2E_IMAGE_MODEL_RULE = {
   channel_group_ids: [E2E_CODEX_IMAGES_GROUP.id],
   channel_ids: [],
   enabled: true,
+  routing_status: "ready",
+  target_channel_count: 1,
+  model_capable_channel_count: 1,
+  active_channel_count: 1,
   updated_at: "2026-08-05T00:00:00.000Z",
 };
 

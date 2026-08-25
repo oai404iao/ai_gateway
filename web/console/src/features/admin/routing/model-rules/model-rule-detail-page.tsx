@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate, useParams } from "react-router";
+import { useNavigate, useParams, useSearchParams } from "react-router";
 import { z } from "zod";
 import { toast } from "sonner";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -44,6 +44,10 @@ import { ApiError, controlPlaneMutationErrorMessage } from "@/api/errors";
 import type { ApiFormat, ModelRuleInput } from "@/api/types";
 import { API_FORMATS, apiFormatLabel } from "@/lib/permissions";
 import { useI18n } from "@/app/i18n";
+import {
+  safeAdminReturnPath,
+  validResourceId,
+} from "@/features/admin/model-setup/model-setup-navigation";
 
 const schema = z.object({
   client_model: z.string().min(1, "Client model is required."),
@@ -81,6 +85,30 @@ export function ModelRuleDetailPage() {
   const { id = "" } = useParams();
   const isNew = id === "new";
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const returnTo = safeAdminReturnPath(
+    searchParams.get("returnTo"),
+    "/admin/routing/model-rules",
+  );
+  const returnsToSetup = returnTo.startsWith("/admin/model-setup");
+  const preferredModelId = isNew
+    ? validResourceId(searchParams.get("upstreamModelId"))
+    : null;
+  const preferredGroupId = isNew
+    ? validResourceId(searchParams.get("channelGroupId"))
+    : null;
+  const preferredChannelId = isNew
+    ? validResourceId(searchParams.get("channelId"))
+    : null;
+  const preferredClientModel = isNew
+    ? searchParams.get("clientModel")?.trim() || null
+    : null;
+  const requestedApiFormat = searchParams.get("apiFormat");
+  const preferredApiFormat: ApiFormat | null = API_FORMATS.includes(
+    requestedApiFormat as ApiFormat,
+  )
+    ? (requestedApiFormat as ApiFormat)
+    : null;
   const { data, etag, isLoading, error } = useModelRule(id);
   const create = useCreateModelRule();
   const update = useUpdateModelRule(id);
@@ -88,9 +116,17 @@ export function ModelRuleDetailPage() {
   const groups = useChannelGroups();
   const channels = useChannels();
   const { t } = useI18n();
+  const hasPrefill = Boolean(
+    preferredModelId ||
+      preferredGroupId ||
+      preferredChannelId ||
+      preferredClientModel ||
+      preferredApiFormat,
+  );
   const [state, setState] = useState<FormState>(empty);
   const [submitting, setSubmitting] = useState(false);
   const [validation, setValidation] = useState<z.ZodError | null>(null);
+  const [prefillInitialized, setPrefillInitialized] = useState(!hasPrefill);
   const modelProviderGroups = useMemo(
     () => groupModelsByProvider(models.data ?? [], t("Unspecified provider")),
     [models.data, t],
@@ -109,6 +145,60 @@ export function ModelRuleDetailPage() {
       });
     }
   }, [data]);
+
+  useEffect(() => {
+    if (!isNew || prefillInitialized || !hasPrefill) return;
+    if (
+      (preferredModelId && !models.data) ||
+      (preferredGroupId && !groups.data) ||
+      (preferredChannelId && !channels.data)
+    ) {
+      return;
+    }
+
+    const model = preferredModelId
+      ? models.data?.find((candidate) => candidate.id === preferredModelId)
+      : undefined;
+    const group = preferredGroupId
+      ? groups.data?.find((candidate) => candidate.id === preferredGroupId)
+      : undefined;
+    const channel = preferredChannelId
+      ? channels.data?.find(
+          (candidate) => candidate.id === preferredChannelId,
+        )
+      : undefined;
+    const apiFormat =
+      preferredApiFormat ??
+      group?.api_format ??
+      channel?.api_format ??
+      empty.api_format;
+    setState((current) => ({
+      ...current,
+      client_model:
+        preferredClientModel ??
+        model?.source_model_id ??
+        current.client_model,
+      api_format: apiFormat,
+      upstream_model_id: model?.id ?? current.upstream_model_id,
+      channel_group_ids:
+        group?.api_format === apiFormat ? [group.id] : [],
+      channel_ids:
+        channel?.api_format === apiFormat ? [channel.id] : [],
+    }));
+    setPrefillInitialized(true);
+  }, [
+    channels.data,
+    groups.data,
+    hasPrefill,
+    isNew,
+    models.data,
+    prefillInitialized,
+    preferredApiFormat,
+    preferredChannelId,
+    preferredClientModel,
+    preferredGroupId,
+    preferredModelId,
+  ]);
 
   const patch = (partial: Partial<FormState>) => setState((prev) => ({ ...prev, ...partial }));
 
@@ -195,7 +285,7 @@ export function ModelRuleDetailPage() {
       if (isNew) {
         await create.mutateAsync(input);
         toast.success(t("Model rule created"));
-        navigate("/admin/routing/model-rules", { replace: true });
+        navigate(returnTo, { replace: true });
       } else {
         await update.mutateAsync({ input, ifMatch: etag });
         toast.success(t("Model rule updated"));
@@ -215,16 +305,27 @@ export function ModelRuleDetailPage() {
     const message = validation?.issues.find((issue) => issue.path.join(".") === path)?.message;
     return message ? t(message) : undefined;
   };
+  const prefillError =
+    (preferredModelId ? models.error : null) ??
+    (preferredGroupId ? groups.error : null) ??
+    (preferredChannelId ? channels.error : null);
+  const prefillLoading =
+    hasPrefill &&
+    !prefillError &&
+    ((Boolean(preferredModelId) && models.isLoading) ||
+      (Boolean(preferredGroupId) && groups.isLoading) ||
+      (Boolean(preferredChannelId) && channels.isLoading) ||
+      (!prefillInitialized && !prefillError));
 
   return (
     <AdminDetailShell
       title={isNew ? t("New model rule") : state.client_model || t("Model Rules")}
       description={t("Routes a client model and API format to one priced upstream model and channels.")}
-      backPath="/admin/routing/model-rules"
-      backLabel={t("Back to rules")}
-      isLoading={isLoading}
-      error={error}
-      hasData={isNew || Boolean(data)}
+      backPath={returnTo}
+      backLabel={t(returnsToSetup ? "Back to model setup" : "Back to rules")}
+      isLoading={isLoading || prefillLoading}
+      error={error ?? prefillError}
+      hasData={isNew ? prefillInitialized : Boolean(data)}
       detailCard={
         !isNew && data ? (
           <Card>

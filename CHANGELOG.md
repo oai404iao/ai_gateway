@@ -19,6 +19,9 @@ Versioning.
   preset.
 - Mark request-log costs with a `Peak` badge when the immutable request-time
   billing decision selected a weekly UTC multiplier above one.
+- Add a guided Console model-setup workspace that unifies channel groups,
+  supplier endpoints, upstream models, pricing, and published model rules,
+  with safe supplier/model copy flows and configuration-health guidance.
 
 ## [0.10.5] - 2026-08-19
 

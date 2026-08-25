@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useNavigate } from "react-router";
-import { ListPlus } from "lucide-react";
+import { ListPlus, Workflow } from "lucide-react";
 import type { ApiFormat, ModelRuleView } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -11,6 +11,7 @@ import { ModelRuleQuickAddDialog } from "@/features/admin/routing/model-rules/mo
 import { formatRelative } from "@/lib/dates";
 import { apiFormatLabel } from "@/lib/permissions";
 import { useI18n } from "@/app/i18n";
+import { MODEL_SETUP_PATH } from "@/features/admin/model-setup/model-setup-navigation";
 
 const FORMAT_ORDER: Record<ApiFormat, number> = {
   open_ai_chat_completions: 0,
@@ -67,14 +68,23 @@ export function ModelRulesPage() {
         createLabel={t("New rule")}
         onCreate={() => navigate("/admin/routing/model-rules/new")}
         headerActions={
-          <Button
-            id={quickAddTriggerId}
-            variant="outline"
-            onClick={() => setQuickAddOpen(true)}
-          >
-            <ListPlus data-icon="inline-start" />
-            {t("Quick add")}
-          </Button>
+          <>
+            <Button
+              variant="outline"
+              onClick={() => navigate(MODEL_SETUP_PATH)}
+            >
+              <Workflow data-icon="inline-start" />
+              {t("Guided model setup")}
+            </Button>
+            <Button
+              id={quickAddTriggerId}
+              variant="outline"
+              onClick={() => setQuickAddOpen(true)}
+            >
+              <ListPlus data-icon="inline-start" />
+              {t("Quick add")}
+            </Button>
+          </>
         }
         columns={[
           {
