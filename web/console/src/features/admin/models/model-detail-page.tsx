@@ -1,8 +1,15 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router";
+import { Calculator } from "lucide-react";
 import { z } from "zod";
 import { toast } from "sonner";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import {
   Field,
@@ -55,7 +62,7 @@ const empty: FormState = {
   output_unit_price: "0",
   price_effective_at: new Date().toISOString(),
   advanced_billing: JSON.stringify(
-    { long_context_tiers: [], request_multipliers: [] },
+    { long_context_tiers: [], request_multipliers: [], time_multipliers: [] },
     null,
     2,
   ),
@@ -184,6 +191,19 @@ export function ModelDetailPage() {
       isLoading={isLoading}
       error={error}
       hasData={isNew || Boolean(data)}
+      headerActions={
+        !isNew && data ? (
+          <Button
+            aria-label={t("Configure pricing for {model}", {
+              model: data.data.display_name,
+            })}
+            onClick={() => navigate(`/admin/models/${id}/pricing`)}
+          >
+            <Calculator data-icon="inline-start" />
+            {t("Configure pricing")}
+          </Button>
+        ) : null
+      }
       detailCard={
         !isNew && data ? (
           <Card>
@@ -217,6 +237,10 @@ export function ModelDetailPage() {
                 <DetailField
                   label={t("Request multipliers")}
                   value={data.data.advanced_billing.request_multipliers.length}
+                />
+                <DetailField
+                  label={t("UTC price windows")}
+                  value={data.data.advanced_billing.time_multipliers?.length ?? 0}
                 />
               </dl>
             </CardContent>
@@ -323,7 +347,7 @@ export function ModelDetailPage() {
                   />
                   <FieldDescription>
                     {t(
-                      "Use long_context_tiers for whole-request input, cache, and optional output prices at token thresholds. Use request_multipliers for exact JSON Pointer matches on the original client body; all matches multiply the complete request cost.",
+                      "Use long_context_tiers for whole-request input, cache, and optional output prices at token thresholds. Use request_multipliers for exact JSON Pointer matches on the original client body; all matches multiply the complete request cost. Use time_multipliers for non-overlapping weekly UTC windows selected at request start.",
                     )}
                   </FieldDescription>
                   {fieldError("advanced_billing") ? (

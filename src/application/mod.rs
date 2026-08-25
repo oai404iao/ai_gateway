@@ -22,7 +22,8 @@ pub use auth::{
     SelfRegistrationInput, hash_console_password,
 };
 pub(crate) use billing::{
-    request_billing, request_billing_multiplier, request_billing_multiplier_for_value,
+    RequestBillingFactors, request_billing, request_billing_multiplier,
+    request_billing_multiplier_for_value,
 };
 pub use channel_automation::{
     AutomaticDisableService, AutomaticDisableWorker, ErrorKeywordMatcher,

@@ -439,6 +439,7 @@ async fn system_probe_identity_is_an_internal_active_administrator() {
             },
             cost_amount: Some(cost),
             output_tokens_per_second: Some(rust_decimal::Decimal::ONE),
+            peak_pricing: false,
         }),
         error_code: None,
         error_summary: None,
@@ -1024,6 +1025,7 @@ struct PersistedBilling {
     reasoning_tokens: Option<i64>,
     cost_amount: Option<rust_decimal::Decimal>,
     currency: Option<String>,
+    peak_pricing: bool,
 }
 
 #[derive(FromRow)]
@@ -1321,6 +1323,7 @@ fn request_log_event(seed: &Seed, outcome: RequestLogOutcome) -> RequestLogEvent
             },
             cost_amount: Some(rust_decimal::Decimal::new(999, 8)),
             output_tokens_per_second: Some(rust_decimal::Decimal::new(20, 2)),
+            peak_pricing: true,
         }),
         error_code: None,
         error_summary: None,
@@ -4350,7 +4353,7 @@ async fn request_log_insert_is_idempotent_and_worker_continues_after_failure() {
         .unwrap();
     assert_eq!(count, 1);
     let persisted_billing: PersistedBilling = sqlx::query_as(
-        "SELECT input_tokens,cached_input_tokens,cache_write_tokens,output_tokens,reasoning_tokens,cost_amount,currency FROM request_logs WHERE id=$1",
+        "SELECT input_tokens,cached_input_tokens,cache_write_tokens,output_tokens,reasoning_tokens,cost_amount,currency,peak_pricing FROM request_logs WHERE id=$1",
     )
     .bind(event.id)
     .fetch_one(&database.pool)
@@ -4366,6 +4369,7 @@ async fn request_log_insert_is_idempotent_and_worker_continues_after_failure() {
         Some(rust_decimal::Decimal::new(999, 8))
     );
     assert_eq!(persisted_billing.currency.as_deref(), Some("USD"));
+    assert!(persisted_billing.peak_pricing);
     let persisted_modes: (Option<String>, bool) =
         sqlx::query_as("SELECT reasoning_effort,fast_mode FROM request_logs WHERE id=$1")
             .bind(event.id)
@@ -4428,6 +4432,16 @@ async fn request_log_insert_is_idempotent_and_worker_continues_after_failure() {
     conflicting_fast_mode.fast_mode = false;
     assert!(matches!(
         repository.insert(&conflicting_fast_mode).await,
+        Err(ai_gateway::persistence::RepositoryError::DuplicateConflict { .. })
+    ));
+    let mut conflicting_peak_pricing = event.clone();
+    conflicting_peak_pricing
+        .billing
+        .as_mut()
+        .unwrap()
+        .peak_pricing = false;
+    assert!(matches!(
+        repository.insert(&conflicting_peak_pricing).await,
         Err(ai_gateway::persistence::RepositoryError::DuplicateConflict { .. })
     ));
     let mut conflicting_operation = event.clone();
@@ -7131,6 +7145,49 @@ async fn repository_migrates_compiles_seeded_snapshot_and_authenticates() {
         "upstream-v1"
     );
     assert!(!format!("{snapshot:?}").contains("upstream-secret"));
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn request_log_peak_pricing_migration_defaults_existing_logs() {
+    let database = TestDatabase::new_unmigrated().await;
+    for migration in MIGRATOR.iter().filter(|migration| migration.version <= 50) {
+        sqlx::raw_sql(migration.sql.as_ref())
+            .execute(&database.pool)
+            .await
+            .unwrap_or_else(|error| panic!("migration {} failed: {error}", migration.version));
+    }
+    let seed = seed(&database.pool).await;
+    let existing_log_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO request_logs \
+         (id,started_at,completed_at,user_id,api_key_id,api_format,api_operation,\
+          client_model,outcome) \
+         VALUES ($1,now(),now(),$2,$3,'open_ai_chat_completions','chat_completions',\
+                 'legacy-pricing-log','succeeded')",
+    )
+    .bind(existing_log_id)
+    .bind(seed.user)
+    .bind(seed.key)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+
+    sqlx::raw_sql(include_str!(
+        "../migrations/0051_request_log_peak_pricing.sql"
+    ))
+    .execute(&database.pool)
+    .await
+    .expect("request-log peak-pricing migration must apply");
+
+    let peak_pricing: bool =
+        sqlx::query_scalar("SELECT peak_pricing FROM request_logs WHERE id=$1")
+            .bind(existing_log_id)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert!(!peak_pricing);
+
     database.cleanup().await;
 }
 

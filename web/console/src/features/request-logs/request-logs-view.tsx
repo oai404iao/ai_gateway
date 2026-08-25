@@ -311,6 +311,25 @@ function RequestDuration({ log }: { log: RequestLogView }) {
   );
 }
 
+function RequestCost({ log }: { log: RequestLogView }) {
+  const { t } = useI18n();
+
+  return (
+    <span className="flex flex-wrap items-center gap-1.5 tabular-nums">
+      <span>{formatUsd(log.cost_amount)}</span>
+      {log.peak_pricing ? (
+        <Badge
+          variant="warning"
+          aria-label={t("Peak pricing")}
+          title={t("Peak pricing")}
+        >
+          {t("Peak")}
+        </Badge>
+      ) : null}
+    </span>
+  );
+}
+
 function toQuery(draft: RequestLogFilterDraft): ListQuery {
   return {
     limit: draft.limit,
@@ -472,7 +491,7 @@ export function RequestLogsView({
     {
       key: "cost",
       header: t("Cost"),
-      render: (log) => formatUsd(log.cost_amount),
+      render: (log) => <RequestCost log={log} />,
     },
     {
       key: "duration",
@@ -825,7 +844,7 @@ export function RequestLogsView({
                 }
               />
               <DetailField label={t("Tokens")} value={<TokenUsage log={detail.data} />} />
-              <DetailField label={t("Cost")} value={formatUsd(detail.data.cost_amount)} />
+              <DetailField label={t("Cost")} value={<RequestCost log={detail.data} />} />
               <DetailField
                 label={t("Duration")}
                 value={<RequestDuration log={detail.data} />}

@@ -48,6 +48,36 @@ const RESET_COMPLETED_PROFILE = {
   access_token: "e2e-reset-completed-access-token",
 };
 
+export const E2E_MODEL = {
+  id: "00000000-0000-0000-0000-000000000030",
+  source_model_id: "deepseek/deepseek-chat",
+  display_name: "DeepSeek Chat",
+  provider_name: "DeepSeek",
+  enabled: true,
+  price_unit_tokens: 1_000_000,
+  input_unit_price: "0.14",
+  cached_input_unit_price: "0.014",
+  cache_write_unit_price: "0",
+  output_unit_price: "0.28",
+  price_effective_at: "2026-08-24T00:00:00.000Z",
+  advanced_billing: {
+    long_context_tiers: [],
+    request_multipliers: [],
+    time_multipliers: [
+      {
+        label: "Weekday morning peak",
+        weekdays: ["monday", "tuesday", "wednesday", "thursday", "friday"],
+        start_time: "01:00",
+        end_time: "04:00",
+        multiplier: "2",
+      },
+    ],
+  },
+  last_synced_at: null,
+  created_at: "2026-01-01T00:00:00.000Z",
+  updated_at: "2026-08-24T00:00:00.000Z",
+};
+
 const E2E_USER = {
   id: "00000000-0000-0000-0000-000000000090",
   email: "batch-user@example.test",
@@ -614,6 +644,7 @@ const E2E_PERSONAL_REQUEST_LOG = {
   output_tokens: 4,
   reasoning_tokens: 1,
   cost_amount: "0.00010000",
+  peak_pricing: true,
   error_code: "rate_limit_exceeded",
   error_summary: "Upstream rate limit exceeded.",
   billed_at: "2026-07-28T10:00:02.000Z",
@@ -869,7 +900,29 @@ export async function mockConsoleApi(page: Page): Promise<void> {
       return route.fulfill({ status: 200, json: [E2E_API_KEY_POLICY] });
     }
     if (path === "/console/v1/models" && method === "GET") {
-      return route.fulfill({ status: 200, json: [] });
+      return route.fulfill({ status: 200, json: [E2E_MODEL] });
+    }
+    if (
+      path === `/console/v1/models/${E2E_MODEL.id}` &&
+      method === "GET"
+    ) {
+      return route.fulfill({
+        status: 200,
+        headers: { ETag: `"${E2E_MODEL.updated_at}"` },
+        json: E2E_MODEL,
+      });
+    }
+    if (
+      path === `/console/v1/models/${E2E_MODEL.id}` &&
+      method === "PUT"
+    ) {
+      return route.fulfill({
+        status: 200,
+        json: {
+          id: E2E_MODEL.id,
+          correlation_id: "00000000-0000-0000-0000-000000000030",
+        },
+      });
     }
     if (path === "/console/v1/network/proxies" && method === "GET") {
       return route.fulfill({ status: 200, json: [] });

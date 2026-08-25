@@ -4564,8 +4564,9 @@ async fn image_mcp_servers_compile_typed_settings_and_require_images_routes() {
 }
 
 /// Model prices may define immutable advanced billing policy: input-price
-/// tiers and request-body JSON Pointer multipliers are model-level facts, not
-/// channel transforms. Invalid policy is rejected before it can be persisted.
+/// tiers, request-body JSON Pointer multipliers, and recurring weekly UTC price
+/// windows are model-level facts, not channel transforms. Invalid policy is
+/// rejected before it can be persisted.
 #[tokio::test]
 async fn model_advanced_billing_is_returned_and_validated() {
     let database = TestDatabase::new().await;
@@ -4580,6 +4581,18 @@ async fn model_advanced_billing_is_returned_and_validated() {
         "request_multipliers": [{
             "json_pointer": "/reasoning/effort",
             "value": "high",
+            "multiplier": "2"
+        }],
+        "time_multipliers": [{
+            "label": "Peak 1",
+            "start_time": "01:00",
+            "end_time": "04:00",
+            "multiplier": "2"
+        }, {
+            "label": "Peak 2",
+            "weekdays": ["monday", "tuesday", "wednesday", "thursday", "friday"],
+            "start_time": "06:00",
+            "end_time": "10:00",
             "multiplier": "2"
         }]
     });
@@ -4647,6 +4660,41 @@ async fn model_advanced_billing_is_returned_and_validated() {
     )
     .await;
     assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let overlapping = request(
+        &app,
+        "POST",
+        "/console/v1/models",
+        serde_json::json!({
+            "source_model_id": "overlapping-time-billing-model",
+            "display_name": "Overlapping time billing model",
+            "enabled": true,
+            "price_unit_tokens": 1000000,
+            "input_unit_price": "0",
+            "cached_input_unit_price": "0",
+            "cache_write_unit_price": "0",
+            "output_unit_price": "0",
+            "price_effective_at": chrono::Utc::now().to_rfc3339(),
+            "advanced_billing": {
+                "long_context_tiers": [],
+                "request_multipliers": [],
+                "time_multipliers": [{
+                    "label": "Overnight",
+                    "start_time": "22:00",
+                    "end_time": "02:00",
+                    "multiplier": "0.5"
+                }, {
+                    "label": "Overlap",
+                    "start_time": "01:00",
+                    "end_time": "03:00",
+                    "multiplier": "2"
+                }]
+            }
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(overlapping.status(), StatusCode::UNPROCESSABLE_ENTITY);
     database.cleanup().await;
 }
 
@@ -5842,8 +5890,8 @@ async fn request_log_filters_match_the_console_contract() {
     ] {
         sqlx::query(
             "INSERT INTO request_logs \
-             (id,started_at,completed_at,user_id,api_key_id,api_format,api_operation,client_model,upstream_model,outcome,streamed,ttft_ms,total_duration_ms,output_tokens_per_second,reasoning_effort,fast_mode,input_tokens,cached_input_tokens,cache_write_tokens,output_tokens,reasoning_tokens,error_code,error_summary) \
-             VALUES ($1,$2,$2,$3,$4,'open_ai_chat_completions','chat_completions',$5,$6,$7,false,100,1000,5.5556,'high',true,12,2,1,5,1,$8,$9)",
+             (id,started_at,completed_at,user_id,api_key_id,api_format,api_operation,client_model,upstream_model,outcome,streamed,ttft_ms,total_duration_ms,output_tokens_per_second,reasoning_effort,fast_mode,input_tokens,cached_input_tokens,cache_write_tokens,output_tokens,reasoning_tokens,error_code,error_summary,peak_pricing) \
+             VALUES ($1,$2,$2,$3,$4,'open_ai_chat_completions','chat_completions',$5,$6,$7,false,100,1000,5.5556,'high',true,12,2,1,5,1,$8,$9,$10)",
         )
         .bind(id)
         .bind(now)
@@ -5854,6 +5902,7 @@ async fn request_log_filters_match_the_console_contract() {
         .bind(outcome)
         .bind(error_code)
         .bind(error_summary)
+        .bind(id == matching_log_id)
         .execute(&database.pool)
         .await
         .unwrap();
@@ -5876,6 +5925,7 @@ async fn request_log_filters_match_the_console_contract() {
     assert_eq!(body[0]["request_protocol"], "non_stream");
     assert_eq!(body[0]["reasoning_effort"], "high");
     assert_eq!(body[0]["fast_mode"], true);
+    assert_eq!(body[0]["peak_pricing"], true);
     assert_eq!(body[0]["ttft_ms"], 100);
     assert_eq!(body[0]["total_duration_ms"], 1000);
     assert_eq!(body[0]["output_tokens_per_second"], "5.5556");
@@ -5902,6 +5952,7 @@ async fn request_log_filters_match_the_console_contract() {
     assert_eq!(detail["request_protocol"], "non_stream");
     assert_eq!(detail["reasoning_effort"], "high");
     assert_eq!(detail["fast_mode"], true);
+    assert_eq!(detail["peak_pricing"], true);
     assert_eq!(detail["output_tokens_per_second"], "5.5556");
     assert_eq!(detail["reasoning_tokens"], 1);
     assert_eq!(detail["error_code"], "provider_error");

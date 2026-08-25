@@ -125,6 +125,11 @@ const ModelDetailPage = lazy(() =>
     default: m.ModelDetailPage,
   })),
 );
+const ModelPricingPage = lazy(() =>
+  import("@/features/admin/models/model-pricing-page").then((m) => ({
+    default: m.ModelPricingPage,
+  })),
+);
 const CatalogPage = lazy(() =>
   import("@/features/admin/catalog/catalog-page").then((m) => ({ default: m.CatalogPage })),
 );
@@ -294,6 +299,7 @@ export function AppRouter() {
               />
               <Route path="/admin/models" element={<ModelsPage />} />
               <Route path="/admin/models/:id" element={<ModelDetailPage />} />
+              <Route path="/admin/models/:id/pricing" element={<ModelPricingPage />} />
               <Route path="/admin/catalog" element={<CatalogPage />} />
               <Route
                 path="/admin/routing/channel-groups/:id"

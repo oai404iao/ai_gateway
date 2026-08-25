@@ -64,7 +64,8 @@ use crate::{
 };
 
 use super::{
-    request_billing, request_billing_multiplier, request_billing_multiplier_for_value,
+    RequestBillingFactors, request_billing, request_billing_multiplier,
+    request_billing_multiplier_for_value,
     request_body::{
         ImageBodySpoolSnapshot, ImageEditBodyError, ImageEditBodyPolicy, PreparedRequestBody,
         ProxyRequestBodyLimits, ReplayableRequestBody,
@@ -2922,8 +2923,11 @@ impl CompletionGuard {
         let billing = request_billing(
             &context.price_snapshot,
             &context.advanced_billing,
-            context.billing_multiplier,
-            context.request_billing_multiplier,
+            RequestBillingFactors::new(
+                context.started_wall_at,
+                context.billing_multiplier,
+                context.request_billing_multiplier,
+            ),
             usage,
             total_duration_ms,
             billing_ttft_ms,
@@ -3040,12 +3044,13 @@ mod tests {
         response_error_body_is_textual, response_has_no_body,
     };
     use crate::{
-        application::billing::{calculate_cost, request_billing},
+        application::billing::{RequestBillingFactors, calculate_cost, request_billing},
         application::usage::ResponseUsage,
         domain::{
-            AdvancedBilling, ApiFormat, ApiOperation, CompiledAdvancedBilling, LongContextTier,
-            ModelPriceSnapshot, RequestBillingMultiplier, RequestPriceSnapshot, RequestUsage,
-            SessionAffinityKeySource, SessionAffinityRule, SessionAffinitySettings,
+            AdvancedBilling, ApiFormat, ApiOperation, BillingWeekday, CompiledAdvancedBilling,
+            LongContextTier, ModelPriceSnapshot, RequestBillingMultiplier, RequestPriceSnapshot,
+            RequestUsage, SessionAffinityKeySource, SessionAffinityRule, SessionAffinitySettings,
+            TimeBillingMultiplier,
         },
     };
     use serde_json::json;
@@ -3340,8 +3345,7 @@ mod tests {
         let billing = request_billing(
             &snapshot,
             &CompiledAdvancedBilling::default(),
-            Decimal::ONE,
-            Decimal::ONE,
+            RequestBillingFactors::new(price.price_effective_at, Decimal::ONE, Decimal::ONE),
             Some(ResponseUsage {
                 input_tokens: 10,
                 cached_input_tokens: 2,
@@ -3353,6 +3357,7 @@ mod tests {
             Some(500),
         );
         assert_eq!(billing.cost_amount, Some(Decimal::new(1725, 2)));
+        assert!(!billing.peak_pricing);
         assert_eq!(
             billing.output_tokens_per_second,
             Some(Decimal::new(26667, 4))
@@ -3361,8 +3366,7 @@ mod tests {
         let missing_ttft = request_billing(
             &snapshot,
             &CompiledAdvancedBilling::default(),
-            Decimal::ONE,
-            Decimal::ONE,
+            RequestBillingFactors::new(price.price_effective_at, Decimal::ONE, Decimal::ONE),
             Some(ResponseUsage {
                 input_tokens: 10,
                 cached_input_tokens: 2,
@@ -3390,8 +3394,11 @@ mod tests {
         let billing = request_billing(
             &snapshot,
             &CompiledAdvancedBilling::default(),
-            Decimal::new(15, 1),
-            Decimal::ONE,
+            RequestBillingFactors::new(
+                snapshot.price_effective_at(),
+                Decimal::new(15, 1),
+                Decimal::ONE,
+            ),
             Some(ResponseUsage {
                 input_tokens: 10,
                 cached_input_tokens: 2,
@@ -3411,7 +3418,7 @@ mod tests {
     }
 
     #[test]
-    fn applies_context_tier_then_channel_and_request_multipliers() {
+    fn applies_context_tier_then_time_channel_and_request_multipliers() {
         let snapshot = ModelPriceSnapshot::new(
             "USD".into(),
             1,
@@ -3434,13 +3441,23 @@ mod tests {
                 value: json!("high"),
                 multiplier: Decimal::new(2, 0),
             }],
+            time_multipliers: vec![TimeBillingMultiplier {
+                label: "peak".into(),
+                weekdays: BillingWeekday::ALL.to_vec(),
+                start_time: "01:00".into(),
+                end_time: "04:00".into(),
+                multiplier: Decimal::from(2),
+            }],
         })
         .unwrap();
         let billing = request_billing(
             &snapshot,
             &advanced,
-            Decimal::new(15, 1),
-            advanced.request_multiplier(&json!({"reasoning": {"effort": "high"}})),
+            RequestBillingFactors::new(
+                "2026-08-17T01:30:00Z".parse().unwrap(),
+                Decimal::new(15, 1),
+                advanced.request_multiplier(&json!({"reasoning": {"effort": "high"}})),
+            ),
             Some(ResponseUsage {
                 input_tokens: 10,
                 cached_input_tokens: 2,
@@ -3452,10 +3469,48 @@ mod tests {
             Some(500),
         );
 
-        assert_eq!(billing.price.input_unit_price, Decimal::from(9_i64));
-        assert_eq!(billing.price.cached_input_unit_price, Decimal::from(6_i64));
-        assert_eq!(billing.price.cache_write_unit_price, Decimal::from(12_i64));
-        assert_eq!(billing.price.output_unit_price, Decimal::from(15_i64));
-        assert_eq!(billing.cost_amount, Some(Decimal::from(156_i64)));
+        assert_eq!(billing.price.input_unit_price, Decimal::from(18_i64));
+        assert_eq!(billing.price.cached_input_unit_price, Decimal::from(12_i64));
+        assert_eq!(billing.price.cache_write_unit_price, Decimal::from(24_i64));
+        assert_eq!(billing.price.output_unit_price, Decimal::from(30_i64));
+        assert_eq!(billing.cost_amount, Some(Decimal::from(312_i64)));
+        assert!(billing.peak_pricing);
+    }
+
+    #[test]
+    fn discount_time_multiplier_is_not_peak_pricing() {
+        let started_at = "2026-08-17T01:30:00Z".parse().unwrap();
+        let snapshot = ModelPriceSnapshot::new(
+            "USD".into(),
+            1,
+            started_at,
+            Decimal::ONE,
+            Decimal::ONE,
+            Decimal::ONE,
+            Decimal::ONE,
+        );
+        let advanced = CompiledAdvancedBilling::compile(AdvancedBilling {
+            time_multipliers: vec![TimeBillingMultiplier {
+                label: "off peak".into(),
+                weekdays: BillingWeekday::ALL.to_vec(),
+                start_time: "01:00".into(),
+                end_time: "04:00".into(),
+                multiplier: Decimal::new(5, 1),
+            }],
+            ..AdvancedBilling::default()
+        })
+        .unwrap();
+
+        let billing = request_billing(
+            &snapshot,
+            &advanced,
+            RequestBillingFactors::new(started_at, Decimal::ONE, Decimal::ONE),
+            None,
+            1,
+            None,
+        );
+
+        assert_eq!(billing.price.input_unit_price, Decimal::new(5, 1));
+        assert!(!billing.peak_pricing);
     }
 }

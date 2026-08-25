@@ -97,6 +97,12 @@ docs/openapi/console-v1.yaml
 - TypeScript 启用了 `verbatimModuleSyntax`、`noUnusedLocals`、`noUnusedParameters` 和
   `erasableSyntaxOnly`：使用 `import type`，不使用 TypeScript enum，不保留未使用变量。
 - `QueryClient` 必须按 `AppProviders` mount 创建，不能改成模块级 singleton。
+- 模型价格使用十进制字符串作为表单和 API 状态。`/admin/models/:id/pricing` 的倍率计算通过
+  `src/lib/decimal.ts` 使用 `BigInt` 做十进制定点乘法并按 12 位小数舍入，不能用 JavaScript
+  `number` 的二进制浮点结果直接写回价格字段。该子页保存完整 `ModelInput` 时必须保留模型元数据、
+  长上下文档位和请求倍率，并省略不在普通详情响应中的 `source_payload`。桌面布局使用左侧价格/
+  星期时段编辑区和右侧 sticky 计算、摘要、保存工具栏，窄屏按 DOM 顺序降级为单栏。星期 Toggle
+  Group 必须保持至少一个 UTC 开始星期，旧响应缺少 `weekdays` 时在表单层归一化为全周。
 
 ## 7. 开发与生产运行
 

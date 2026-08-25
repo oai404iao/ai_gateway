@@ -21,6 +21,8 @@ interface AdminDetailShellProps {
   editCard?: React.ReactNode;
   /** Shown when data is present: destructive actions. */
   dangerZone?: React.ReactNode;
+  /** Additional primary actions shown in the page header before Back. */
+  headerActions?: React.ReactNode;
 }
 
 export function AdminDetailShell({
@@ -34,6 +36,7 @@ export function AdminDetailShell({
   detailCard,
   editCard,
   dangerZone,
+  headerActions,
 }: AdminDetailShellProps) {
   const navigate = useNavigate();
   const { t } = useI18n();
@@ -43,9 +46,12 @@ export function AdminDetailShell({
         title={t(title)}
         description={description ? t(description) : undefined}
         actions={
-          <Button variant="ghost" size="sm" onClick={() => navigate(backPath)}>
-            <ArrowLeft data-icon="inline-start" /> {backLabel ?? t("Back")}
-          </Button>
+          <>
+            {headerActions}
+            <Button variant="ghost" size="sm" onClick={() => navigate(backPath)}>
+              <ArrowLeft data-icon="inline-start" /> {backLabel ?? t("Back")}
+            </Button>
+          </>
         }
       />
       <AsyncResource isLoading={isLoading} error={error}>

@@ -57,6 +57,7 @@ const editRoutes = [
   ],
   [`/admin/api-key-policies/${API_KEY_POLICY.id}`, /save policy/i],
   [`/admin/models/${MODEL.id}`, /save upstream model/i],
+  [`/admin/models/${MODEL.id}/pricing`, /save model pricing/i],
   [`/admin/routing/channel-groups/${CHANNEL_GROUP.id}`, /save group/i],
   [`/admin/routing/channels/${CHANNEL.id}`, /save channel/i],
   [`/admin/routing/model-rules/${MODEL_RULE.id}`, /save rule/i],

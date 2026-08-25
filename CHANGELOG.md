@@ -7,6 +7,19 @@ Versioning.
 
 ## [Unreleased]
 
+### Added
+
+- Add model-level weekly UTC peak/off-peak price windows with selectable start
+  weekdays. They apply one non-overlapping uniform multiplier at logical
+  request start, compose with existing context/request/channel pricing, and
+  preserve effective historical price snapshots.
+- Add prominent model-list and model-detail pricing actions plus a responsive
+  two-column Console pricing workspace with exact decimal reference-price
+  multiplication, weekday-aware UTC windows, and a DeepSeek peak-pricing
+  preset.
+- Mark request-log costs with a `Peak` badge when the immutable request-time
+  billing decision selected a weekly UTC multiplier above one.
+
 ## [0.10.5] - 2026-08-19
 
 ### Added

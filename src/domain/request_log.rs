@@ -115,6 +115,10 @@ pub struct RequestBilling {
     pub price: RequestPriceSnapshot,
     pub cost_amount: Option<Decimal>,
     pub output_tokens_per_second: Option<Decimal>,
+    /// True when a recurring time window selected a multiplier above one at
+    /// the logical request start time. Older journal payloads default false.
+    #[serde(default)]
+    pub peak_pricing: bool,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

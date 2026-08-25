@@ -7,11 +7,55 @@ import {
   E2E_CODEX_GROUP_ID,
   E2E_IMAGE_MODEL_RULE,
   E2E_MCP_SERVER,
+  E2E_MODEL,
   E2E_STANDARD_GROUP_ID,
   mockConsoleApi,
 } from "./mock-api";
 
 test.describe("Console SPA smoke", () => {
+  test("model pricing has prominent entry points and a weekday-aware two-column workspace", async ({
+    page,
+  }) => {
+    await mockConsoleApi(page);
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.goto("/login");
+    await page.getByLabel(/email/i).fill("admin@example.com");
+    await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
+    await page.getByRole("button", { name: /sign in/i }).click();
+    await page.getByRole("link", { name: "Models" }).click();
+
+    const pricingAction = page.getByRole("button", {
+      name: `Configure pricing for ${E2E_MODEL.display_name}`,
+    });
+    await expect(pricingAction).toBeVisible();
+    await pricingAction.click();
+    await expect(page).toHaveURL(
+      new RegExp(`/admin/models/${E2E_MODEL.id}/pricing$`),
+    );
+
+    const basePrices = page.getByText("Base prices", { exact: true });
+    const calculator = page.getByText("Multiplier calculator", { exact: true });
+    await expect(basePrices).toBeVisible();
+    await expect(calculator).toBeVisible();
+    const baseBox = await basePrices.boundingBox();
+    const calculatorBox = await calculator.boundingBox();
+    expect(baseBox).not.toBeNull();
+    expect(calculatorBox).not.toBeNull();
+    expect(baseBox!.x).toBeLessThan(calculatorBox!.x);
+
+    await expect(page.getByRole("button", { name: "Monday" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await expect(page.getByRole("button", { name: "Saturday" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+    await expect(
+      page.getByRole("button", { name: /save model pricing/i }),
+    ).toBeDisabled();
+  });
+
   test("login page renders and a successful login reaches the account shell", async ({
     page,
   }) => {
@@ -678,6 +722,7 @@ test.describe("Console SPA smoke", () => {
     await expect(page.getByText("upstream-a", { exact: true })).toHaveCount(0);
     await expect(page.getByLabel("Reasoning effort: High")).toBeVisible();
     await expect(page.getByLabel("Fast mode")).toBeVisible();
+    await expect(page.getByLabel("Peak pricing")).toBeVisible();
     await expect(page.getByLabel("TTFT: 120 ms")).toBeVisible();
     await expect(page.getByLabel("Total duration: 1 s")).toBeVisible();
     await expect(page.getByLabel("TPS: 4.5 tok/s")).toBeVisible();

@@ -2033,7 +2033,13 @@ fn validate_effective_scheduled_test_prices(
 ) -> Result<(), ConfigError> {
     let max_persisted_unit_price =
         rust_decimal::Decimal::from_i128_with_scale(999_999_999_999_999_999_999_999, 12);
-    let request_multiplier = model.advanced_billing().maximum_request_multiplier();
+    let maximum_multiplier =
+        maximum_effective_billing_multiplier(model.advanced_billing(), billing_multiplier)
+            .ok_or_else(|| {
+                ConfigError::Compile(
+                    "advanced billing multiplier overflows scheduled test price".into(),
+                )
+            })?;
     let snapshot = model.price_snapshot();
     for price in model.advanced_billing().price_candidates(
         snapshot.input_unit_price(),
@@ -2041,10 +2047,7 @@ fn validate_effective_scheduled_test_prices(
         snapshot.cache_write_unit_price(),
         snapshot.output_unit_price(),
     ) {
-        let Some(effective) = price
-            .checked_mul(billing_multiplier)
-            .and_then(|price| price.checked_mul(request_multiplier))
-        else {
+        let Some(effective) = price.checked_mul(maximum_multiplier) else {
             return Err(ConfigError::Compile(
                 "advanced billing multiplier overflows scheduled test price".into(),
             ));
@@ -2291,17 +2294,21 @@ fn validate_effective_channel_prices(
     let max_persisted_unit_price =
         rust_decimal::Decimal::from_i128_with_scale(999_999_999_999_999_999_999_999, 12);
     let advanced_billing = compile_advanced_billing(record)?;
-    let request_multiplier = advanced_billing.maximum_request_multiplier();
+    let maximum_multiplier =
+        maximum_effective_billing_multiplier(&advanced_billing, billing_multiplier).ok_or_else(
+            || {
+                ConfigError::Compile(
+                    "advanced billing multiplier overflows the effective model price".into(),
+                )
+            },
+        )?;
     for price in advanced_billing.price_candidates(
         record.input_unit_price,
         record.cached_input_unit_price,
         record.cache_write_unit_price,
         record.output_unit_price,
     ) {
-        let Some(effective) = price
-            .checked_mul(billing_multiplier)
-            .and_then(|price| price.checked_mul(request_multiplier))
-        else {
+        let Some(effective) = price.checked_mul(maximum_multiplier) else {
             return Err(ConfigError::Compile(
                 "advanced billing multiplier overflows the effective model price".into(),
             ));
@@ -2314,6 +2321,16 @@ fn validate_effective_channel_prices(
     }
     Ok(())
 }
+
+fn maximum_effective_billing_multiplier(
+    advanced_billing: &crate::domain::CompiledAdvancedBilling,
+    channel_multiplier: rust_decimal::Decimal,
+) -> Option<rust_decimal::Decimal> {
+    channel_multiplier
+        .checked_mul(advanced_billing.maximum_request_multiplier())
+        .and_then(|multiplier| multiplier.checked_mul(advanced_billing.maximum_time_multiplier()))
+}
+
 fn compile_advanced_billing(
     record: &ModelRuleRecord,
 ) -> Result<crate::domain::CompiledAdvancedBilling, ConfigError> {
@@ -3026,6 +3043,7 @@ pub enum ConfigError {
 
 #[cfg(test)]
 mod tests {
+    use crate::domain::{BillingWeekday, TimeBillingMultiplier};
     use crate::persistence::{
         ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ConfigTemplateRecord, ControlPlaneRecords,
         McpServerRecord, ModelRecord, ModelRuleRecord, ProxyRecord, RuntimeConfigRecords,
@@ -3036,6 +3054,33 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn rejects_multiplier_overflow_independently_of_zero_model_prices() {
+        let advanced_billing = crate::domain::CompiledAdvancedBilling::compile(AdvancedBilling {
+            time_multipliers: vec![TimeBillingMultiplier {
+                label: "peak".into(),
+                weekdays: BillingWeekday::ALL.to_vec(),
+                start_time: "01:00".into(),
+                end_time: "04:00".into(),
+                multiplier: rust_decimal::Decimal::MAX,
+            }],
+            ..AdvancedBilling::default()
+        })
+        .unwrap();
+
+        assert!(
+            maximum_effective_billing_multiplier(
+                &advanced_billing,
+                rust_decimal::Decimal::from(2),
+            )
+            .is_none()
+        );
+        assert_eq!(
+            rust_decimal::Decimal::ZERO.checked_mul(rust_decimal::Decimal::MAX),
+            Some(rust_decimal::Decimal::ZERO)
+        );
+    }
 
     fn route_records(
         first_priority: i32,

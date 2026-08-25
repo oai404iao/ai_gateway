@@ -1487,6 +1487,7 @@ pub struct ConsoleRequestLog {
     pub output_tokens: Option<i64>,
     pub reasoning_tokens: Option<i64>,
     pub cost_amount: Option<rust_decimal::Decimal>,
+    pub peak_pricing: bool,
     pub error_code: Option<String>,
     pub error_summary: Option<String>,
     pub billed_at: Option<DateTime<Utc>>,
@@ -3203,7 +3204,7 @@ impl RequestLogRepository {
                   cache_write_tokens,output_tokens,model_id,currency,price_unit_tokens,\
                   price_effective_at,input_unit_price,cached_input_unit_price,\
                   cache_write_unit_price,output_unit_price,cost_amount,error_code,error_summary,\
-                  reasoning_tokens,reasoning_effort,fast_mode) \
+                  reasoning_tokens,reasoning_effort,fast_mode,peak_pricing) \
                  SELECT input.id,input.started_at,input.completed_at,input.user_id,input.api_key_id,\
                         input.request_source,input.api_format::api_format,input.api_operation,\
                         input.request_protocol,input.client_model,input.upstream_model,\
@@ -3215,7 +3216,7 @@ impl RequestLogRepository {
                         input.input_unit_price,input.cached_input_unit_price,\
                         input.cache_write_unit_price,input.output_unit_price,input.cost_amount,\
                         input.error_code,input.error_summary,input.reasoning_tokens,\
-                        input.reasoning_effort,input.fast_mode \
+                        input.reasoning_effort,input.fast_mode,input.peak_pricing \
                  FROM UNNEST(\
                     $1::uuid[],$2::timestamptz[],$3::timestamptz[],$4::uuid[],$5::uuid[],\
                     $6::text[],$7::text[],$8::text[],$9::text[],$10::text[],$11::text[],\
@@ -3223,7 +3224,7 @@ impl RequestLogRepository {
                     $18::int4[],$19::int4[],$20::numeric[],$21::int8[],$22::int8[],$23::int8[],\
                     $24::int8[],$25::uuid[],$26::text[],$27::int8[],$28::timestamptz[],\
                     $29::numeric[],$30::numeric[],$31::numeric[],$32::numeric[],$33::numeric[],\
-                    $34::text[],$35::text[],$36::int8[],$37::text[],$38::bool[]\
+                    $34::text[],$35::text[],$36::int8[],$37::text[],$38::bool[],$39::bool[]\
                  ) AS input(\
                     id,started_at,completed_at,user_id,api_key_id,request_source,api_format,\
                     api_operation,request_protocol,client_model,upstream_model,model_rule_id,\
@@ -3232,7 +3233,7 @@ impl RequestLogRepository {
                     cache_write_tokens,output_tokens,model_id,currency,price_unit_tokens,\
                     price_effective_at,input_unit_price,cached_input_unit_price,\
                     cache_write_unit_price,output_unit_price,cost_amount,error_code,error_summary,\
-                    reasoning_tokens,reasoning_effort,fast_mode\
+                    reasoning_tokens,reasoning_effort,fast_mode,peak_pricing\
                  ) \
                  ON CONFLICT (id) DO NOTHING \
                  RETURNING id",
@@ -3275,6 +3276,7 @@ impl RequestLogRepository {
                 .bind(&batch.reasoning_tokens)
                 .bind(&batch.reasoning_efforts)
                 .bind(&batch.fast_modes)
+                .bind(&batch.peak_pricing)
                 .fetch_all(&self.pool)
                 .await?
                 .into_iter()
@@ -3303,7 +3305,8 @@ impl RequestLogRepository {
                             cache_write_tokens,output_tokens,reasoning_tokens,\
                             model_id,currency,price_unit_tokens,price_effective_at,input_unit_price,\
                             cached_input_unit_price,cache_write_unit_price,output_unit_price,\
-                            cost_amount,error_code,error_summary,reasoning_effort,fast_mode \
+                            cost_amount,error_code,error_summary,reasoning_effort,fast_mode,\
+                            peak_pricing \
                      FROM request_logs WHERE id = ANY($1)",
                 )
                 .bind(&ids)
@@ -3573,7 +3576,7 @@ fn redact_self_service_request_log(log: &mut ConsoleRequestLog) {
     log.channel_name = None;
 }
 
-const CONSOLE_REQUEST_LOG_COLUMNS: &str = "log.id,log.started_at,log.completed_at,log.user_id,request_user.display_name AS user_name,log.api_key_id,log.request_source,log.api_format::text AS api_format,log.api_operation,log.request_protocol,log.client_model,log.reasoning_effort,log.fast_mode,log.upstream_model,log.model_rule_id,log.channel_group_id,channel_group.name AS channel_group_name,log.channel_id,channel.name AS channel_name,log.outcome,log.response_status_code,log.streamed,log.ttft_ms,log.total_duration_ms,log.output_tokens_per_second,log.input_tokens,log.cached_input_tokens,log.cache_write_tokens,log.output_tokens,log.reasoning_tokens,log.cost_amount,log.error_code,log.error_summary,log.billed_at";
+const CONSOLE_REQUEST_LOG_COLUMNS: &str = "log.id,log.started_at,log.completed_at,log.user_id,request_user.display_name AS user_name,log.api_key_id,log.request_source,log.api_format::text AS api_format,log.api_operation,log.request_protocol,log.client_model,log.reasoning_effort,log.fast_mode,log.upstream_model,log.model_rule_id,log.channel_group_id,channel_group.name AS channel_group_name,log.channel_id,channel.name AS channel_name,log.outcome,log.response_status_code,log.streamed,log.ttft_ms,log.total_duration_ms,log.output_tokens_per_second,log.input_tokens,log.cached_input_tokens,log.cache_write_tokens,log.output_tokens,log.reasoning_tokens,log.cost_amount,log.peak_pricing,log.error_code,log.error_summary,log.billed_at";
 
 async fn query_console_request_log(
     pool: &PgPool,
@@ -4237,6 +4240,7 @@ struct RequestLogInsertBatch {
     error_summaries: Vec<Option<String>>,
     reasoning_efforts: Vec<Option<String>>,
     fast_modes: Vec<bool>,
+    peak_pricing: Vec<bool>,
 }
 
 impl RequestLogInsertBatch {
@@ -4280,6 +4284,7 @@ impl RequestLogInsertBatch {
             error_summaries: Vec::with_capacity(capacity),
             reasoning_efforts: Vec::with_capacity(capacity),
             fast_modes: Vec::with_capacity(capacity),
+            peak_pricing: Vec::with_capacity(capacity),
         }
     }
 
@@ -4343,6 +4348,8 @@ impl RequestLogInsertBatch {
         self.error_summaries.push(event.error_summary.clone());
         self.reasoning_efforts.push(event.reasoning_effort.clone());
         self.fast_modes.push(event.fast_mode);
+        self.peak_pricing
+            .push(billing.is_some_and(|billing| billing.peak_pricing));
     }
 }
 
@@ -4395,6 +4402,7 @@ struct StoredRequestLog {
     error_summary: Option<String>,
     reasoning_effort: Option<String>,
     fast_mode: bool,
+    peak_pricing: bool,
 }
 
 impl StoredRequestLog {
@@ -4499,6 +4507,11 @@ impl StoredRequestLog {
             && self.error_summary == event.error_summary
             && self.reasoning_effort == event.reasoning_effort
             && self.fast_mode == event.fast_mode
+            && self.peak_pricing
+                == event
+                    .billing
+                    .as_ref()
+                    .is_some_and(|billing| billing.peak_pricing)
     }
 }
 
@@ -7173,15 +7186,31 @@ mod synced_advanced_billing_tests {
     use serde_json::json;
 
     use super::merge_synced_advanced_billing;
-    use crate::domain::{AdvancedBilling, LongContextTier, RequestBillingMultiplier};
+    use crate::domain::{
+        AdvancedBilling, BillingWeekday, LongContextTier, RequestBillingMultiplier,
+        TimeBillingMultiplier,
+    };
 
     #[test]
-    fn sync_without_catalog_request_rules_preserves_local_multipliers() {
+    fn sync_preserves_local_request_and_time_multipliers() {
         let current = serde_json::to_value(AdvancedBilling {
             long_context_tiers: vec![],
             request_multipliers: vec![RequestBillingMultiplier {
                 json_pointer: "/reasoning/effort".into(),
                 value: json!("high"),
+                multiplier: Decimal::from(2),
+            }],
+            time_multipliers: vec![TimeBillingMultiplier {
+                label: "peak".into(),
+                weekdays: vec![
+                    BillingWeekday::Monday,
+                    BillingWeekday::Tuesday,
+                    BillingWeekday::Wednesday,
+                    BillingWeekday::Thursday,
+                    BillingWeekday::Friday,
+                ],
+                start_time: "01:00".into(),
+                end_time: "04:00".into(),
                 multiplier: Decimal::from(2),
             }],
         })
@@ -7197,6 +7226,7 @@ mod synced_advanced_billing_tests {
                     output_unit_price: Some(Decimal::from(6)),
                 }],
                 request_multipliers: vec![],
+                time_multipliers: vec![],
             },
         )
         .unwrap();
@@ -7207,6 +7237,18 @@ mod synced_advanced_billing_tests {
         assert_eq!(
             merged.request_multipliers[0].json_pointer,
             "/reasoning/effort"
+        );
+        assert_eq!(merged.time_multipliers.len(), 1);
+        assert_eq!(merged.time_multipliers[0].label, "peak");
+        assert_eq!(
+            merged.time_multipliers[0].weekdays,
+            vec![
+                BillingWeekday::Monday,
+                BillingWeekday::Tuesday,
+                BillingWeekday::Wednesday,
+                BillingWeekday::Thursday,
+                BillingWeekday::Friday,
+            ]
         );
     }
 }

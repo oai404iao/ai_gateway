@@ -1,5 +1,6 @@
 //! Shared immutable request-billing calculations.
 
+use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use serde_json::Value;
 
@@ -8,6 +9,27 @@ use crate::domain::{
 };
 
 use super::usage::ResponseUsage;
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RequestBillingFactors {
+    started_at: DateTime<Utc>,
+    channel_multiplier: Decimal,
+    request_multiplier: Decimal,
+}
+
+impl RequestBillingFactors {
+    pub(crate) fn new(
+        started_at: DateTime<Utc>,
+        channel_multiplier: Decimal,
+        request_multiplier: Decimal,
+    ) -> Self {
+        Self {
+            started_at,
+            channel_multiplier,
+            request_multiplier,
+        }
+    }
+}
 
 /// Resolves model-level request billing rules against the validated request
 /// body after client policy filters have run.
@@ -37,8 +59,7 @@ pub(crate) fn request_billing_multiplier_for_value(
 pub(crate) fn request_billing(
     snapshot: &ModelPriceSnapshot,
     advanced_billing: &CompiledAdvancedBilling,
-    billing_multiplier: Decimal,
-    request_billing_multiplier: Decimal,
+    factors: RequestBillingFactors,
     usage: Option<ResponseUsage>,
     total_duration_ms: i32,
     ttft_ms: Option<i32>,
@@ -68,9 +89,12 @@ pub(crate) fn request_billing(
                 )
             },
         );
-    let billing_multiplier = billing_multiplier
-        .checked_mul(request_billing_multiplier)
-        .expect("compiled request billing multiplier fits");
+    let time_multiplier = advanced_billing.time_multiplier(factors.started_at);
+    let billing_multiplier = factors
+        .channel_multiplier
+        .checked_mul(factors.request_multiplier)
+        .and_then(|multiplier| multiplier.checked_mul(time_multiplier))
+        .expect("compiled billing multiplier product fits");
     let price = RequestPriceSnapshot {
         currency: snapshot.currency().to_owned(),
         price_unit_tokens: snapshot.price_unit_tokens(),
@@ -95,6 +119,7 @@ pub(crate) fn request_billing(
         price,
         cost_amount,
         output_tokens_per_second,
+        peak_pricing: time_multiplier > Decimal::ONE,
     }
 }
 
