@@ -18,6 +18,7 @@ import {
   UsersRound,
   Settings2,
   Blocks,
+  Workflow,
   type LucideIcon,
 } from "lucide-react";
 import type { UserRole } from "@/api/types";
@@ -65,16 +66,17 @@ export const NAV_SECTIONS: NavSection[] = [
         icon: TicketCheck,
       },
       { label: "API Key Policies", path: "/admin/api-key-policies", icon: SlidersHorizontal },
-      { label: "Models", path: "/admin/models", icon: Boxes },
-      { label: "Price sync", path: "/admin/catalog", icon: GalleryVerticalEnd },
     ],
   },
   {
-    title: "Routing",
+    title: "Model routing",
     roles: ["admin"],
     items: [
+      { label: "Model setup", path: "/admin/model-setup", icon: Workflow },
       { label: "Channels", path: "/admin/routing/channels", icon: Network },
+      { label: "Models", path: "/admin/models", icon: Boxes },
       { label: "Model Rules", path: "/admin/routing/model-rules", icon: Route },
+      { label: "Price sync", path: "/admin/catalog", icon: GalleryVerticalEnd },
       { label: "MCP Servers", path: "/admin/mcp-servers", icon: Blocks },
     ],
   },

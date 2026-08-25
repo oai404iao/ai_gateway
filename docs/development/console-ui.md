@@ -103,6 +103,13 @@ docs/openapi/console-v1.yaml
   长上下文档位和请求倍率，并省略不在普通详情响应中的 `source_payload`。桌面布局使用左侧价格/
   星期时段编辑区和右侧 sticky 计算、摘要、保存工具栏，窄屏按 DOM 顺序降级为单栏。星期 Toggle
   Group 必须保持至少一个 UTC 开始星期，旧响应缺少 `weekdays` 时在表单层归一化为全周。
+- `/admin/model-setup` 是渠道组、普通供应商 Channel、模型价格和模型规则之上的前端编排页，
+  复用既有 list/detail/mutation hooks，不引入另一套 Console API 或原子批量写入语义。复制入口的
+  URL 只能携带资源 UUID 和经过校验的 `/admin/*` 返回路径，不能序列化凭据或完整资源。普通
+  Channel 复制默认清空 `upstream_api_key`，且目标渠道组被限制为来源 API 格式；Codex
+  provider-managed Channel 不进入复制候选；
+  模型复制清空全局唯一的 `source_model_id`，并明确提示普通详情响应不包含的 `source_payload`
+  不会复制。
 
 ## 7. 开发与生产运行
 

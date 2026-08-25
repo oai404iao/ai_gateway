@@ -583,6 +583,17 @@ workspace/member 身份、Token、代理、权重、运行状态、错误或 res
 - 系统转发设置：`GET` / `PUT /console/v1/system/settings`（管理员；`PUT` 使用 `If-Match`，保存后立即发布快照）
 - 手动重载：`POST /console/v1/system/reload`
 
+管理员浏览器 Console 的 `/admin/model-setup` 是模型接入的统一工作台。页面按
+“渠道组 → 供应商端点 → 模型与价格 → 模型规则”展示完整流程，并在同一处提供添加或复制供应商、
+添加或复制模型、发布规则、路由链路预览和配置缺口提示。这里的“供应商端点”对应控制面的普通
+OpenAI-compatible Channel；Channel Group 仍是同 API 格式端点的路由池。复制供应商只复用连接、
+路由、变换和模型能力配置，只能选择与来源相同 API 格式的渠道组，不复制上游凭据，保存前必须
+重新输入凭据；Provider 托管的 Codex
+渠道继续通过专用凭据页面管理，不能走普通复制流程。复制模型会复用供应商和价格配置，但要求填写
+新的唯一 `source_model_id`，且不会复制普通模型详情响应中不存在的目录 `source_payload`。
+原有 `/admin/routing/channels`、`/admin/models` 和 `/admin/routing/model-rules` 详情页继续作为
+高级编辑入口。
+
 用户详情支持带 `If-Match` 的 `PATCH /console/v1/users/{id}`，只修改请求中出现的字段；
 例如仅提交 `balance_amount` 不会重写邮箱、角色、用户组、策略或状态。用户级
 `default_api_key_policy_id` 是可选覆盖；显式设为 `null` 后立即恢复继承用户组默认策略。

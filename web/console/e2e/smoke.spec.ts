@@ -13,6 +13,57 @@ import {
 } from "./mock-api";
 
 test.describe("Console SPA smoke", () => {
+  test("model setup unifies the supplier-to-route workflow", async ({
+    page,
+  }) => {
+    await mockConsoleApi(page);
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.goto("/login");
+    await page.getByLabel(/email/i).fill("admin@example.com");
+    await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
+    await page.getByRole("button", { name: /sign in/i }).click();
+    await page.getByRole("link", { name: "Model setup" }).click();
+
+    await expect(page).toHaveURL(/\/admin\/model-setup$/);
+    await expect(
+      page.getByRole("heading", { name: "Model setup" }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("One flow from endpoint to client model"),
+    ).toBeVisible();
+
+    const stageCards = [
+      page.locator('[data-setup-step="1"]'),
+      page.locator('[data-setup-step="2"]'),
+      page.locator('[data-setup-step="3"]'),
+      page.locator('[data-setup-step="4"]'),
+    ];
+    const stageBoxes = await Promise.all(
+      stageCards.map(async (card) => {
+        await expect(card).toBeVisible();
+        return card.boundingBox();
+      }),
+    );
+    expect(stageBoxes.every((box) => box !== null)).toBe(true);
+    expect(stageBoxes[0]!.x).toBeLessThan(stageBoxes[1]!.x);
+    expect(stageBoxes[1]!.x).toBeLessThan(stageBoxes[2]!.x);
+    expect(stageBoxes[2]!.x).toBeLessThan(stageBoxes[3]!.x);
+
+    await page.getByRole("button", { name: "Copy supplier" }).click();
+    const copyDialog = page.getByRole("dialog");
+    await expect(copyDialog).toBeVisible();
+    await expect(
+      copyDialog.getByRole("button", { name: /standard-upstream-1/ }),
+    ).toBeVisible();
+    await expect(copyDialog.getByText("Personal Plus")).toHaveCount(0);
+    await page.keyboard.press("Escape");
+
+    await page.getByRole("tab", { name: "Groups and suppliers" }).click();
+    await expect(page).toHaveURL(/view=suppliers/);
+    await expect(page.getByText("standard-group-1")).toBeVisible();
+    await expect(page.getByText("standard-upstream-1")).toBeVisible();
+  });
+
   test("model pricing has prominent entry points and a weekday-aware two-column workspace", async ({
     page,
   }) => {

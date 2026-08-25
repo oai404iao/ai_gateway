@@ -1,8 +1,13 @@
 import { useEffect, useState } from "react";
-import { useNavigate, useParams } from "react-router";
-import { Calculator } from "lucide-react";
+import { useNavigate, useParams, useSearchParams } from "react-router";
+import { Calculator, Copy } from "lucide-react";
 import { z } from "zod";
 import { toast } from "sonner";
+import {
+  Alert,
+  AlertDescription,
+  AlertTitle,
+} from "@/components/ui/alert";
 import {
   Card,
   CardContent,
@@ -32,6 +37,11 @@ import type { ModelInput } from "@/api/types";
 import { formatDateTime } from "@/lib/dates";
 import { formatDecimal } from "@/lib/formatters";
 import { useI18n } from "@/app/i18n";
+import {
+  adminPath,
+  safeAdminReturnPath,
+  validResourceId,
+} from "@/features/admin/model-setup/model-setup-navigation";
 
 const schema = z.object({
   source_model_id: z.string().min(1, "Source model id is required."),
@@ -87,13 +97,28 @@ export function ModelDetailPage() {
   const { id = "" } = useParams();
   const isNew = id === "new";
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const copyFrom = isNew
+    ? validResourceId(searchParams.get("copyFrom"))
+    : null;
+  const returnTo = safeAdminReturnPath(
+    searchParams.get("returnTo"),
+    "/admin/models",
+  );
+  const returnsToSetup = returnTo.startsWith("/admin/model-setup");
   const { data, etag, isLoading, error } = useModel(id);
+  const copySource = useModel(copyFrom ?? "");
   const create = useCreateModel();
   const update = useUpdateModel(id);
   const { t } = useI18n();
   const [state, setState] = useState<FormState>(empty);
   const [submitting, setSubmitting] = useState(false);
   const [validation, setValidation] = useState<z.ZodError | null>(null);
+  const [initializedCopyFrom, setInitializedCopyFrom] = useState<string | null>(
+    null,
+  );
+  const copyInitialized =
+    !copyFrom || initializedCopyFrom === copyFrom;
 
   useEffect(() => {
     if (data) {
@@ -113,6 +138,47 @@ export function ModelDetailPage() {
       });
     }
   }, [data]);
+
+  useEffect(() => {
+    if (
+      !isNew ||
+      !copyFrom ||
+      !copySource.data ||
+      initializedCopyFrom === copyFrom
+    ) {
+      return;
+    }
+    const source = copySource.data.data;
+    setState({
+      source_model_id: "",
+      display_name: `${source.display_name} ${t("copy")}`,
+      provider_name: source.provider_name,
+      enabled: source.enabled,
+      price_unit_tokens: source.price_unit_tokens,
+      input_unit_price: source.input_unit_price,
+      cached_input_unit_price: source.cached_input_unit_price,
+      cache_write_unit_price: source.cache_write_unit_price,
+      output_unit_price: source.output_unit_price,
+      price_effective_at: source.price_effective_at,
+      advanced_billing: JSON.stringify(
+        {
+          ...source.advanced_billing,
+          time_multipliers:
+            source.advanced_billing.time_multipliers ?? [],
+        },
+        null,
+        2,
+      ),
+      source_payload: "{}",
+    });
+    setInitializedCopyFrom(copyFrom);
+  }, [
+    copyFrom,
+    copySource.data,
+    initializedCopyFrom,
+    isNew,
+    t,
+  ]);
 
   const patch = (partial: Partial<FormState>) => setState((prev) => ({ ...prev, ...partial }));
 
@@ -161,7 +227,7 @@ export function ModelDetailPage() {
       if (isNew) {
         await create.mutateAsync(input);
         toast.success(t("Upstream model created"));
-        navigate("/admin/models", { replace: true });
+        navigate(returnTo, { replace: true });
       } else {
         await update.mutateAsync({ input, ifMatch: etag });
         toast.success(t("Upstream model updated"));
@@ -184,24 +250,68 @@ export function ModelDetailPage() {
 
   return (
     <AdminDetailShell
-      title={isNew ? t("New upstream model") : state.display_name || t("Upstream model")}
+      title={
+        copyFrom
+          ? t("Copy upstream model")
+          : isNew
+            ? t("New upstream model")
+            : state.display_name || t("Upstream model")
+      }
       description={t("An upstream model identifier with its USD billing price.")}
-      backPath="/admin/models"
-      backLabel={t("Back to upstream models")}
-      isLoading={isLoading}
-      error={error}
-      hasData={isNew || Boolean(data)}
+      backPath={returnTo}
+      backLabel={
+        returnsToSetup ? t("Back to model setup") : t("Back to upstream models")
+      }
+      isLoading={
+        isLoading ||
+        (Boolean(copyFrom) &&
+          (copySource.isLoading ||
+            (!copyInitialized && !copySource.error)))
+      }
+      error={error ?? copySource.error}
+      hasData={
+        isNew
+          ? !copyFrom || copyInitialized
+          : Boolean(data)
+      }
       headerActions={
         !isNew && data ? (
-          <Button
-            aria-label={t("Configure pricing for {model}", {
-              model: data.data.display_name,
-            })}
-            onClick={() => navigate(`/admin/models/${id}/pricing`)}
-          >
-            <Calculator data-icon="inline-start" />
-            {t("Configure pricing")}
-          </Button>
+          <>
+            <Button
+              variant="outline"
+              aria-label={t("Copy {name}", {
+                name: data.data.display_name,
+              })}
+              onClick={() =>
+                navigate(
+                  adminPath("/admin/models/new", {
+                    copyFrom: data.data.id,
+                    returnTo,
+                  }),
+                )
+              }
+            >
+              <Copy data-icon="inline-start" />
+              {t("Copy model")}
+            </Button>
+            <Button
+              aria-label={t("Configure pricing for {model}", {
+                model: data.data.display_name,
+              })}
+              onClick={() =>
+                navigate(
+                  adminPath(`/admin/models/${id}/pricing`, {
+                    returnTo: returnsToSetup
+                      ? returnTo
+                      : `/admin/models/${id}`,
+                  }),
+                )
+              }
+            >
+              <Calculator data-icon="inline-start" />
+              {t("Configure pricing")}
+            </Button>
+          </>
         ) : null
       }
       detailCard={
@@ -259,6 +369,17 @@ export function ModelDetailPage() {
           </CardHeader>
           <CardContent>
             <div className="flex flex-col gap-4">
+              {copyFrom ? (
+                <Alert>
+                  <Copy />
+                  <AlertTitle>{t("Review the copied model")}</AlertTitle>
+                  <AlertDescription>
+                    {t(
+                      "Pricing and provider settings were copied. Enter a unique source model ID; catalog source payload is not copied.",
+                    )}
+                  </AlertDescription>
+                </Alert>
+              ) : null}
               <FieldGroup className="grid gap-5 xl:grid-cols-2">
                 <Field data-invalid={Boolean(fieldError("source_model_id"))}>
                   <FieldLabel htmlFor="source_model_id">{t("Source model id")}</FieldLabel>
@@ -386,7 +507,9 @@ export function ModelDetailPage() {
               </FieldGroup>
               <Button className="self-start" onClick={submit} disabled={submitting}>
                 {submitting ? <Spinner data-icon="inline-start" /> : null}
-                {isNew ? t("Create upstream model") : t("Save upstream model")}
+                {isNew
+                  ? t(copyFrom ? "Create copied model" : "Create upstream model")
+                  : t("Save upstream model")}
               </Button>
             </div>
           </CardContent>

@@ -1,5 +1,5 @@
 import { useNavigate } from "react-router";
-import { Calculator } from "lucide-react";
+import { Calculator, Copy, Workflow } from "lucide-react";
 import { AdminListPage } from "@/features/admin/components/admin-list-page";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/shared/status-badge";
@@ -8,6 +8,10 @@ import { groupModelsByProvider } from "@/features/admin/models/model-groups";
 import { formatRelative } from "@/lib/dates";
 import { formatDecimal } from "@/lib/formatters";
 import { useI18n } from "@/app/i18n";
+import {
+  MODEL_SETUP_PATH,
+  adminPath,
+} from "@/features/admin/model-setup/model-setup-navigation";
 
 export function ModelsPage() {
   const navigate = useNavigate();
@@ -25,6 +29,15 @@ export function ModelsPage() {
       groupBy={(model) => model.provider_name?.trim() || t("Unspecified provider")}
       createLabel={t("New upstream model")}
       onCreate={() => navigate("/admin/models/new")}
+      headerActions={
+        <Button
+          variant="outline"
+          onClick={() => navigate(MODEL_SETUP_PATH)}
+        >
+          <Workflow data-icon="inline-start" />
+          {t("Guided model setup")}
+        </Button>
+      }
       columns={[
         {
           key: "name",
@@ -50,20 +63,39 @@ export function ModelsPage() {
         { key: "updated", header: t("Updated"), render: (model) => formatRelative(model.updated_at) },
         {
           key: "pricing",
-          header: t("Pricing"),
+          header: t("Actions"),
           className: "w-0 text-right",
           render: (model) => (
-            <Button
-              variant="outline"
-              size="sm"
-              aria-label={t("Configure pricing for {model}", {
-                model: model.display_name,
-              })}
-              onClick={() => navigate(`/admin/models/${model.id}/pricing`)}
-            >
-              <Calculator data-icon="inline-start" />
-              {t("Configure pricing")}
-            </Button>
+            <div className="flex justify-end gap-1">
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label={t("Copy {name}", {
+                  name: model.display_name,
+                })}
+                onClick={() =>
+                  navigate(
+                    adminPath("/admin/models/new", {
+                      copyFrom: model.id,
+                      returnTo: "/admin/models",
+                    }),
+                  )
+                }
+              >
+                <Copy />
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                aria-label={t("Configure pricing for {model}", {
+                  model: model.display_name,
+                })}
+                onClick={() => navigate(`/admin/models/${model.id}/pricing`)}
+              >
+                <Calculator data-icon="inline-start" />
+                {t("Configure pricing")}
+              </Button>
+            </div>
           ),
         },
       ]}

@@ -11,7 +11,7 @@ import {
   Trash2,
   WandSparkles,
 } from "lucide-react";
-import { useParams } from "react-router";
+import { useParams, useSearchParams } from "react-router";
 import { toast } from "sonner";
 import { z } from "zod";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -57,6 +57,7 @@ import type {
   TimeBillingMultiplier,
 } from "@/api/types";
 import { useI18n } from "@/app/i18n";
+import { safeAdminReturnPath } from "@/features/admin/model-setup/model-setup-navigation";
 import { useModel, useUpdateModel } from "@/features/admin/api";
 import { AdminDetailShell } from "@/features/admin/components/admin-detail-shell";
 import {
@@ -291,6 +292,12 @@ function fromLocalInput(value: string): string {
 
 export function ModelPricingPage() {
   const { id = "" } = useParams();
+  const [searchParams] = useSearchParams();
+  const returnTo = safeAdminReturnPath(
+    searchParams.get("returnTo"),
+    `/admin/models/${id}`,
+  );
+  const returnsToSetup = returnTo.startsWith("/admin/model-setup");
   const { data, etag, isLoading, error, refetch } = useModel(id);
   const update = useUpdateModel(id);
   const { t } = useI18n();
@@ -479,8 +486,10 @@ export function ModelPricingPage() {
     <AdminDetailShell
       title={data?.data.display_name || t("Model pricing")}
       description={t("Configure base USD prices and weekly UTC peak or off-peak multipliers.")}
-      backPath={`/admin/models/${id}`}
-      backLabel={t("Back to upstream model")}
+      backPath={returnTo}
+      backLabel={t(
+        returnsToSetup ? "Back to model setup" : "Back to upstream model",
+      )}
       isLoading={isLoading}
       error={data ? null : error}
       hasData={Boolean(data)}

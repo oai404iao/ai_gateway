@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { http, HttpResponse } from "msw";
+import { delay, http, HttpResponse } from "msw";
 import { BrowserRouter } from "react-router";
 import { AppProviders } from "@/app/providers";
 import { AppRouter } from "@/app/router";
@@ -60,5 +60,40 @@ describe("ModelRuleDetailPage", () => {
       expect(submitted).toBeDefined();
     });
     expect(submitted?.client_model).toBe("my-custom-client-model");
+  });
+
+  it("waits for guided defaults and returns to the setup workspace", async () => {
+    seedAuthenticatedSession();
+    server.use(
+      http.get("/console/v1/models", async () => {
+        await delay(300);
+        return HttpResponse.json([MODEL]);
+      }),
+    );
+    const user = userEvent.setup();
+    renderAppAt(
+      `/admin/routing/model-rules/new?upstreamModelId=${MODEL.id}&clientModel=${encodeURIComponent(
+        MODEL.source_model_id,
+      )}&returnTo=${encodeURIComponent("/admin/model-setup?view=rules")}`,
+    );
+
+    expect(
+      await screen.findByRole("heading", { name: "New model rule" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("combobox", { name: "Client model" }),
+    ).not.toBeInTheDocument();
+    const clientModelSelect = await screen.findByRole("combobox", {
+      name: "Client model",
+    });
+    expect(clientModelSelect).toHaveTextContent(MODEL.display_name);
+
+    await user.click(screen.getByRole("button", { name: "Back to model setup" }));
+    await waitFor(() => {
+      expect(window.location.pathname).toBe("/admin/model-setup");
+      expect(new URLSearchParams(window.location.search).get("view")).toBe(
+        "rules",
+      );
+    });
   });
 });

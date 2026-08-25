@@ -21,6 +21,26 @@ function renderAppAt(path: string) {
 }
 
 describe("ModelDetailPage", () => {
+  it("initializes copy mode when navigating from the existing detail route", async () => {
+    seedAuthenticatedSession();
+    const user = userEvent.setup();
+    renderAppAt(`/admin/models/${MODEL.id}`);
+
+    await user.click(
+      await screen.findByRole("button", {
+        name: `Copy ${MODEL.display_name}`,
+      }),
+    );
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe("/admin/models/new");
+    });
+    expect(await screen.findByLabelText("Source model id")).toHaveValue("");
+    expect(screen.getByLabelText("Display name")).toHaveValue(
+      `${MODEL.display_name} copy`,
+    );
+  });
+
   it("loads and submits the model-level advanced billing policy", async () => {
     seedAuthenticatedSession();
     let submitted: ModelInput | undefined;

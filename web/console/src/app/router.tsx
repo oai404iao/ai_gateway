@@ -117,6 +117,11 @@ const ApiKeyPolicyDetailPage = lazy(() =>
     default: m.ApiKeyPolicyDetailPage,
   })),
 );
+const ModelSetupPage = lazy(() =>
+  import("@/features/admin/model-setup/model-setup-page").then((m) => ({
+    default: m.ModelSetupPage,
+  })),
+);
 const ModelsPage = lazy(() =>
   import("@/features/admin/models/models-page").then((m) => ({ default: m.ModelsPage })),
 );
@@ -297,6 +302,7 @@ export function AppRouter() {
                 path="/admin/api-key-policies/:id"
                 element={<ApiKeyPolicyDetailPage />}
               />
+              <Route path="/admin/model-setup" element={<ModelSetupPage />} />
               <Route path="/admin/models" element={<ModelsPage />} />
               <Route path="/admin/models/:id" element={<ModelDetailPage />} />
               <Route path="/admin/models/:id/pricing" element={<ModelPricingPage />} />

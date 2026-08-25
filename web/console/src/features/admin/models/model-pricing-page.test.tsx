@@ -21,6 +21,26 @@ function renderAppAt(path: string) {
 }
 
 describe("ModelPricingPage", () => {
+  it("returns to the originating model-setup tab", async () => {
+    seedAuthenticatedSession();
+    const user = userEvent.setup();
+    renderAppAt(
+      `/admin/models/${MODEL.id}/pricing?returnTo=${encodeURIComponent(
+        "/admin/model-setup?view=models",
+      )}`,
+    );
+
+    await user.click(
+      await screen.findByRole("button", { name: "Back to model setup" }),
+    );
+    await waitFor(() => {
+      expect(window.location.pathname).toBe("/admin/model-setup");
+      expect(new URLSearchParams(window.location.search).get("view")).toBe(
+        "models",
+      );
+    });
+  });
+
   it("calculates exact prices, fills the DeepSeek preset, and preserves model policy", async () => {
     seedAuthenticatedSession();
     let submitted: ModelInput | undefined;

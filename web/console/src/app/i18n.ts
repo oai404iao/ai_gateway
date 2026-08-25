@@ -20,7 +20,114 @@ const zhCN: Record<string, string> = {
   "User Groups": "用户组",
   "Registration Codes": "注册邀请码",
   "API Key Policies": "API 密钥策略",
+  "Model routing": "模型与路由",
+  "Model setup": "模型接入",
+  "Guided model setup": "模型接入向导",
+  "Connect a supplier, price its models, and publish client-facing routes from one guided workspace.":
+    "在一个引导式工作台中连接供应商、配置模型价格并发布客户端路由。",
+  "Import prices": "导入价格",
+  "One flow from endpoint to client model": "从供应商端点到客户端模型的一条完整流程",
+  "Complete the four stages in order. Existing configuration is reused, so you can resume at any stage.":
+    "按顺序完成四个阶段；已有配置会自动复用，也可以从任意阶段继续。",
+  "{complete} of {total} ready": "已就绪 {complete}/{total}",
+  "Model setup progress": "模型接入进度",
+  "Stage ready": "已就绪",
+  "Needs setup": "待配置",
+  "Choose the API format and the pool that will own supplier endpoints.":
+    "选择 API 格式，以及用于承载供应商端点的渠道池。",
+  "{count} standard groups": "{count} 个普通渠道组",
+  "{count} enabled groups": "{count} 个已启用渠道组",
+  "Manage": "管理",
+  "Supplier endpoint": "供应商端点",
+  "Configure the base URL, credential, capabilities, and available model IDs.":
+    "配置基础 URL、凭据、能力和可用模型 ID。",
+  "{count} suppliers": "{count} 个供应商",
+  "{count} ready suppliers": "{count} 个可用供应商",
+  "Add or copy": "添加或复制",
+  "Model and pricing": "模型与价格",
+  "Register upstream model IDs and the prices used for settlement.":
+    "登记上游模型 ID 和用于结算的价格。",
+  "{count} enabled models": "{count} 个已启用模型",
+  "{count} routable models": "{count} 个可路由模型",
+  "Publish a client model name and connect it to compatible routing targets.":
+    "发布客户端模型名称，并连接到兼容的路由目标。",
+  "{count} enabled rules": "{count} 条已启用规则",
+  "{count} ready rules": "{count} 条可路由规则",
+  "Publish": "发布",
+  "Overview": "总览",
+  "Groups and suppliers": "渠道组与供应商",
+  "Models and pricing": "模型与价格",
+  "Published routes": "已发布路由",
+  "Published routing map": "已发布路由图",
+  "Review the complete path from the client model name to its upstream model and routing targets.":
+    "查看从客户端模型名称到上游模型及路由目标的完整链路。",
+  "View all": "查看全部",
+  "Individual channel": "单独渠道",
+  "No published model routes": "尚未发布模型路由",
+  "Create a model rule after adding a supplier and a priced model.":
+    "添加供应商和已定价模型后，再创建模型规则。",
+  "Add model rule": "添加模型规则",
+  "Quick actions": "快捷操作",
+  "Start from scratch or reuse a proven configuration.":
+    "从头创建，或复用已经验证过的配置。",
+  "Add supplier": "添加供应商",
+  "Copy supplier": "复制供应商",
+  "Add model": "添加模型",
+  "Copy model": "复制模型",
+  "Configuration health": "配置健康度",
+  "Resolve these gaps before sending production traffic.":
+    "在承载生产流量前处理这些配置缺口。",
+  "Models not advertised by suppliers": "供应商未声明的模型",
+  "Models not published": "尚未发布的模型",
+  "Degraded routes": "降级路由",
+  "Continue setup": "继续配置",
+  "Review published routes": "检查已发布路由",
+  "Supplier endpoints and channel groups": "供应商端点与渠道组",
+  "A supplier endpoint is stored as a channel. Channel groups pool endpoints that share one API format.":
+    "供应商端点在系统中保存为渠道；渠道组汇集使用同一 API 格式的端点。",
+  "No supplier endpoints": "暂无供应商端点",
+  "Add a supplier endpoint to make this channel group usable.":
+    "添加供应商端点后，该渠道组才可用于路由。",
+  "No channel groups": "暂无渠道组",
+  "Create a channel group first, then add a supplier endpoint.":
+    "请先创建渠道组，再添加供应商端点。",
+  "Register each upstream model once, then publish it through one or more API formats.":
+    "每个上游模型只需登记一次，然后可通过一个或多个 API 格式发布。",
+  "Add a model and its prices before creating a model rule.":
+    "创建模型规则前，请先添加模型及其价格。",
+  "Each rule exposes one client model name for one API format and sends it to compatible targets.":
+    "每条规则为一种 API 格式发布一个客户端模型名称，并将请求发送到兼容目标。",
+  "Add a rule to expose a priced upstream model to clients.":
+    "添加规则，将已定价的上游模型发布给客户端。",
+  "Search by name, model, or endpoint": "按名称、模型或端点搜索",
+  "Search": "搜索",
+  "Try another search or create one from scratch.": "请尝试其他搜索词，或从头创建。",
+  "Choose a supplier endpoint to reuse its connection, routing, and model-capability settings. Credentials are not copied.":
+    "选择一个供应商端点，复用其连接、路由和模型能力配置；凭据不会复制。",
+  "Choose a model to reuse its provider and pricing settings. Enter a new source model ID before saving.":
+    "选择一个模型，复用其供应商与价格配置；保存前需填写新的来源模型 ID。",
+  "Input / output price": "输入 / 输出价格",
+  "Publication": "发布状态",
+  "Published": "已发布",
+  "Not published": "未发布",
+  "Create rule for {model}": "为 {model} 创建规则",
+  "Route": "路由",
+  "{count} individual channels": "{count} 个单独渠道",
+  "Copy {name}": "复制 {name}",
+  "copy": "副本",
+  "Copy upstream model": "复制上游模型",
+  "Back to model setup": "返回模型接入",
+  "Review the copied model": "检查复制的模型",
+  "Pricing and provider settings were copied. Enter a unique source model ID; catalog source payload is not copied.":
+    "已复制价格和供应商配置。请填写唯一的来源模型 ID；目录来源数据不会复制。",
+  "Create copied model": "创建模型副本",
+  "Provider-managed channels cannot be copied here.":
+    "Provider 托管渠道不能在此复制。",
+  "Review the copied supplier": "检查复制的供应商",
+  "Connection, routing, and model settings were copied. Enter a unique name and re-enter the upstream credential before saving.":
+    "已复制连接、路由和模型配置。请填写唯一名称，并在保存前重新输入上游凭据。",
   "Upstream Models": "上游模型",
+  "Models": "模型",
   "Price sync": "价格同步",
   "Channel Groups": "渠道组",
   "Channels": "渠道",

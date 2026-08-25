@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useNavigate, useParams } from "react-router";
+import { useNavigate, useParams, useSearchParams } from "react-router";
 import { z } from "zod";
 import { toast } from "sonner";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -50,6 +50,7 @@ import {
   selectionStrategyLabel,
 } from "@/lib/permissions";
 import { useI18n } from "@/app/i18n";
+import { safeAdminReturnPath } from "@/features/admin/model-setup/model-setup-navigation";
 
 const schema = z.object({
   name: z.string().min(1, "Name is required.").max(100),
@@ -79,6 +80,12 @@ export function ChannelGroupDetailPage() {
   const { id = "" } = useParams();
   const isNew = id === "new";
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const returnTo = safeAdminReturnPath(
+    searchParams.get("returnTo"),
+    "/admin/routing/channels",
+  );
+  const returnsToSetup = returnTo.startsWith("/admin/model-setup");
   const { data, etag, isLoading, error } = useChannelGroup(id);
   const create = useCreateChannelGroup();
   const update = useUpdateChannelGroup(id);
@@ -126,7 +133,7 @@ export function ChannelGroupDetailPage() {
       if (isNew) {
         await create.mutateAsync(input);
         toast.success(t("Channel group created"));
-        navigate("/admin/routing/channels", { replace: true });
+        navigate(returnTo, { replace: true });
       } else {
         await update.mutateAsync({ input, ifMatch: etag });
         toast.success(t("Channel group updated"));
@@ -151,8 +158,8 @@ export function ChannelGroupDetailPage() {
     <AdminDetailShell
       title={isNew ? t("New channel group") : state.name || t("Channel group")}
       description={t("A same-format pool of channels selected by priority and weight.")}
-      backPath="/admin/routing/channels"
-      backLabel={t("Back to channels")}
+      backPath={returnTo}
+      backLabel={t(returnsToSetup ? "Back to model setup" : "Back to channels")}
       isLoading={isLoading}
       error={error}
       hasData={isNew || Boolean(data)}
