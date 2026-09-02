@@ -15,7 +15,7 @@ use ai_gateway::{
     mcp::McpService,
     persistence::{
         ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ControlPlaneRecords, McpServerRecord,
-        ModelRuleRecord,
+        ModelRuleChannelGroupTarget, ModelRuleRecord, ModelRuleRoutingTier,
     },
     runtime_config::{RuntimeConfig, compile_control_plane_with_system_settings},
 };
@@ -224,8 +224,16 @@ async fn harness_with_options_and_runtime(
                 "request_multipliers": []
             }),
             upstream_model: "provider-search".into(),
-            channel_group_ids: vec![group_id],
-            channel_ids: vec![],
+            routing_tiers: vec![ModelRuleRoutingTier {
+                priority: 0,
+                selection_strategy: "weighted_random".into(),
+                channel_groups: vec![ModelRuleChannelGroupTarget {
+                    channel_group_id: group_id,
+                    channel_selection: "all".into(),
+                    default_weight: Some(1),
+                    channels: vec![],
+                }],
+            }],
             enabled: true,
         }],
         groups: vec![ChannelGroupRecord {
@@ -234,8 +242,6 @@ async fn harness_with_options_and_runtime(
             api_format: "open_ai_responses".into(),
             connector_kind: "openai_compatible".into(),
             request_compression: "default".into(),
-            priority: 0,
-            selection_strategy: "weighted_random".into(),
             enabled: true,
         }],
         channels: vec![ChannelRecord {
@@ -249,7 +255,6 @@ async fn harness_with_options_and_runtime(
             supports_standalone_web_search: true,
             auto_disabled: false,
             auto_disable_allowed: false,
-            weight: 1,
             billing_multiplier: Decimal::ONE,
             proxy_id: None,
             config_template_id: None,
@@ -494,8 +499,16 @@ async fn image_harness_with_limits(
                 "request_multipliers": []
             }),
             upstream_model: "provider-image".into(),
-            channel_group_ids: vec![group_id],
-            channel_ids: vec![],
+            routing_tiers: vec![ModelRuleRoutingTier {
+                priority: 0,
+                selection_strategy: "weighted_random".into(),
+                channel_groups: vec![ModelRuleChannelGroupTarget {
+                    channel_group_id: group_id,
+                    channel_selection: "all".into(),
+                    default_weight: Some(1),
+                    channels: vec![],
+                }],
+            }],
             enabled: true,
         }],
         groups: vec![ChannelGroupRecord {
@@ -504,8 +517,6 @@ async fn image_harness_with_limits(
             api_format: "open_ai_images".into(),
             connector_kind: "openai_compatible".into(),
             request_compression: "default".into(),
-            priority: 0,
-            selection_strategy: "weighted_random".into(),
             enabled: true,
         }],
         channels: vec![ChannelRecord {
@@ -519,7 +530,6 @@ async fn image_harness_with_limits(
             supports_standalone_web_search: false,
             auto_disabled: false,
             auto_disable_allowed: false,
-            weight: 1,
             billing_multiplier: Decimal::ONE,
             proxy_id: None,
             config_template_id: None,

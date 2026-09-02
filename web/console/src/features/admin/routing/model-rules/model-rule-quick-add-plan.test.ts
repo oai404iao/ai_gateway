@@ -33,8 +33,20 @@ describe("buildQuickAddModelPlans", () => {
         api_format: "open_ai_chat_completions",
         upstream_model_id: MODEL.id,
         description: null,
-        channel_group_ids: [CHANNEL_GROUP.id],
-        channel_ids: [],
+        routing_tiers: [
+          {
+            priority: 0,
+            selection_strategy: "weighted_random",
+            channel_groups: [
+              {
+                channel_group_id: CHANNEL_GROUP.id,
+                channel_selection: "all",
+                default_weight: 100,
+                channels: [],
+              },
+            ],
+          },
+        ],
         enabled: true,
       },
     ]);
@@ -55,8 +67,20 @@ describe("buildQuickAddModelPlans", () => {
       [],
     );
 
-    expect(plan.drafts[0]?.channel_group_ids).toEqual([]);
-    expect(plan.drafts[0]?.channel_ids).toEqual([CHANNEL.id]);
+    expect(plan.drafts[0]?.routing_tiers).toEqual([
+      {
+        priority: 0,
+        selection_strategy: "weighted_random",
+        channel_groups: [
+          {
+            channel_group_id: CHANNEL_GROUP.id,
+            channel_selection: "selected",
+            default_weight: null,
+            channels: [{ channel_id: CHANNEL.id, weight: 100 }],
+          },
+        ],
+      },
+    ]);
   });
 
   it("creates only missing API-format rules", () => {
@@ -74,6 +98,13 @@ describe("buildQuickAddModelPlans", () => {
 
     expect(plan.drafts).toHaveLength(1);
     expect(plan.drafts[0]?.api_format).toBe("open_ai_responses");
-    expect(plan.drafts[0]?.channel_group_ids).toEqual([RESPONSES_GROUP.id]);
+    expect(plan.drafts[0]?.routing_tiers[0]?.channel_groups).toEqual([
+      {
+        channel_group_id: RESPONSES_GROUP.id,
+        channel_selection: "all",
+        default_weight: 100,
+        channels: [],
+      },
+    ]);
   });
 });

@@ -426,7 +426,6 @@ mod tests {
             last_error_code: None,
             last_error_summary: None,
             proxy_id: None,
-            weight: 100,
             enabled: true,
             available_models: vec!["gpt-5-codex".into()],
             created_at: now,
@@ -649,7 +648,6 @@ mod tests {
             Uuid::from_u128(2),
             crate::domain::ApiFormat::OpenAiResponses,
             Url::parse("https://chatgpt.example/backend-api/codex").unwrap(),
-            100,
             crate::domain::UpstreamAuth::None,
             std::collections::HashSet::new(),
         );
@@ -740,7 +738,6 @@ mod tests {
             Uuid::from_u128(4),
             crate::domain::ApiFormat::OpenAiImages,
             Url::parse("https://chatgpt.example/backend-api/codex").unwrap(),
-            100,
             crate::domain::UpstreamAuth::None,
             std::collections::HashSet::new(),
         );
@@ -951,7 +948,6 @@ mod tests {
             last_error_code: None,
             last_error_summary: None,
             proxy_id: None,
-            weight: 100,
             enabled: true,
             available_models: vec!["gpt-5-codex".into()],
             created_at: now,

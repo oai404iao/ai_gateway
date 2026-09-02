@@ -355,7 +355,6 @@ mod tests {
             Uuid::new_v4(),
             ApiFormat::OpenAiChatCompletions,
             Url::parse("https://example.test/base").unwrap(),
-            1,
             UpstreamAuth::Header {
                 name: HeaderName::from_static("x-api-key"),
                 value: Arc::from("upstream-secret"),

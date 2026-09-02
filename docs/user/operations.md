@@ -46,6 +46,19 @@ Console listener 提供。无论是否启用 UI，本文件描述的 API 行为�
 
 服务不读取 dotenv。JWT Ed25519 私钥和公钥通过受限文件路径配置，不写入 TOML。
 
+### 升级到模型规则路由层级
+
+migration `0052_model_rule_routing_tiers.sql` 是路由 schema 的硬切换。升级多实例部署时必须先停止
+所有旧 Gateway，再由新版本应用 migration；不能让旧实例在 migration 后继续接收 Console 或
+数据面流量，也不能采用新旧版本滚动混跑。migration 会把旧 group priority/strategy、Channel
+weight 和 model rule target 回填为规则拥有的 tiers/assignments，然后删除这些旧列及不再适用的
+Codex flow weight。
+
+升级前应检查每条 model rule 显式引用的 Channel Group，以及它直接引用的 Channel 所属 group：
+如果这两类 group 在同一旧 priority 下使用不同 selection strategy，即使相关 group 当前禁用，
+这种 latent conflict 也会使 migration 明确中止。先在旧版本中统一冲突策略，再重试 migration。
+成功启动一个新版本实例并确认完整快照可编译后，才能恢复同版本实例和流量。
+
 ### 紧急重置管理员密码
 
 Console 密码最少为 12 个字节；前端和后端都会拒绝更短的密码。若现有
@@ -209,6 +222,26 @@ JSON/data URL 形式的公开客户端 edit 请求。
 粘性、SSE 变换和 WebSocket 也不适用于该格式。普通 Header 变换、请求 JSON 变换、模型别名、
 被动健康、准入、请求日志和结算仍沿用统一数据面基础设施。
 
+### 模型规则路由层级
+
+priority、selection strategy 和 routing weight 都在 model rule 上配置，不再是 Channel Group、
+Channel 或 Codex credential 的属性。每条规则包含一个或多个非负 priority tier；较小数值优先，
+每个 tier 选择一种 `weighted_random` 或 `weighted_round_robin`。只有当前最低可用 tier 参与
+选择，权重只比较该 tier 内通过格式、模型能力、operation capability、启用、授权和健康检查的
+渠道，不会跨 tier 抵消优先级。
+
+每个 tier 通过 Channel Group target 选择候选：
+
+- `all`：动态包含该组当前及以后新增的全部渠道。它要求正数默认权重；Console 新建规则时默认
+  `100`，并可为个别渠道设置正数覆盖。
+- `selected`：只包含显式列出的渠道，每个渠道必须有正数权重；Console 新选择渠道时初始化为
+  `100`。以后加入 group 的渠道不会自动进入该规则。
+
+Channel Group 继续保存 API 格式、Connector、启用、请求压缩和状态统计等池级资源配置；Channel
+继续保存端点、上游鉴权、模型能力、Transform、网络、计费和健康配置。API Key Policy 与 Key
+自身的 `allowed_group_ids` / `allowed_channel_ids` 语义没有变化：规则 target 只定义候选，
+不会扩大 Key 的授权范围。
+
 ### Codex OAuth Connect
 
 管理员可以把 ChatGPT Codex 订阅凭证作为共享 Connector pool 接入，而不增加 sidecar 或第二个
@@ -229,7 +262,7 @@ JSON/data URL 形式的公开客户端 edit 请求。
 2. 从渠道组详情或渠道列表进入
    `/admin/providers/codex-oauth/<channel-group-id>`。
 3. 选择一种凭证添加方式：
-   - **Connect account**：填写 label、可选 outbound proxy、weight 和 quota threshold，
+   - **Connect account**：填写 label、可选 outbound proxy 和 quota threshold，
      打开 PKCE Authorization URL；授权后浏览器会落到不可达的
      `http://localhost:1455/auth/callback?...`，复制完整地址回 Console 完成交换。
    - **Import tokens**：提交 access token、refresh token，以及可选 ID token、account ID
@@ -242,16 +275,18 @@ JSON/data URL 形式的公开客户端 edit 请求。
    - **Advanced import**：进入独立检查页，粘贴 JSON 或上传一个或多个 JSON 文件。
      Console 会自动识别 ai-gateway 原生导出、CLIProxyAPI（CPA）Codex Token 和
      Sub2API 数据导出，把内容先转换成只保存在当前页面内存中的草稿。提交前可以编辑
-     label、enable、account ID、user ID、Token、weight、quota threshold 和逐凭证代理分配；还可以
+     label、enable、account ID、user ID、Token、quota threshold 和逐凭证代理分配；还可以
      在同一页面新增、编辑或删除代理，并把导入文件中的代理映射到现有代理。最终仍逐条调用
      服务端凭证验证与导入接口，因此失败条目可在保留其他草稿的情况下修正和重试。
-4. 为返回的 Codex model slug 创建或启用本地 model，并创建 Responses model rule，
-   将 Responses Channel Group 作为候选。
+4. 为返回的 Codex model slug 创建或启用本地 model，并创建 Responses model rule。按需要建立
+   routing tiers；用 `all` target 让该 group 当前和未来凭证 projection 使用规则默认权重，或用
+   `selected` 显式选择凭证及权重。
 5. Codex OAuth Responses managed channel 自动声明 standalone web search 能力。客户端若使用
    Codex 自定义 provider，还必须把 provider base URL 指向 Gateway 的 `/v1`，并设置
    `supports_standalone_web_search = true`。
-6. 如需图片生成或编辑，为 `gpt-image-2` 创建或启用本地 model，创建
-   `open_ai_images` model rule，选择自动创建的 Images Channel Group，并显式启用该 group。
+6. 如需图片生成或编辑，为 `gpt-image-2` 创建或启用本地 model，创建独立的
+   `open_ai_images` model rule，为自动创建的 Images Channel Group 单独配置 routing tiers，
+   并显式启用该 group。Responses 的 routing assignment 不会同步到 Images。
 7. 确保调用方 API Key 允许所需格式、`proxy` 权限和对应格式的 Channel Group。服务不会自动把
    Images format、group 或 channel 加入现有 API Key、Policy 或规则。
 8. 需要跨 Responses 与 Search 请求固定同一订阅账户时，在系统设置中启用 Session affinity，并
@@ -262,7 +297,8 @@ JSON/data URL 形式的公开客户端 edit 请求。
 每个凭证自动创建 Responses 与 Images 两个 provider-managed channels。既有 Responses Channel ID
 继续作为稳定的凭证 ID；Images 使用独立 Channel ID，因此两个格式的被动健康和日志不会混合。
 普通 Channel 详情、批量编辑和 model discovery 接口不能修改这些 channels；label、enable、
-proxy、weight 和 quota threshold 必须在 Codex 凭证页维护。
+proxy 和 quota threshold 必须在 Codex 凭证页维护。凭证和 managed channels 不保存 routing
+weight；权重只在引用它们的 Responses/Images model rule 上配置。
 每个凭证的 outbound proxy 独立生效，并由现有 reqwest client registry 按网络与超时策略复用。
 凭证 enable、quota 和 refresh 状态由两个 projection 共享的 Connector 运行时持有；底层 managed
 channels 保留为路由壳，使已绑定 Responses Session
@@ -286,11 +322,13 @@ channels 保留为路由壳，使已绑定 Responses Session
 该删除不会调用
 OpenAI token revocation endpoint，若还需要使外部 Token 失效，应在账户侧另行撤销授权。
 
-凭证页的 **Export credentials** 需要显式确认，并下载 ai-gateway 原生 JSON Bundle。Bundle 包含
-原始 ID/access/refresh token、可选 workspace/member 身份、凭证路由设置，以及被这些凭证引用的代理定义和代理认证信息；它必须
-按密钥或未加密备份处理。常规凭证列表和详情接口仍不会返回已保存 Token，只有管理员显式调用导出
-接口时才会读取这些敏感字段。高级导入会保留 Bundle 中的 enable 状态；如果 `id_token` 缺失，则
-验证阶段从 `access_token` 读取身份声明。
+凭证页的 **Export credentials** 需要显式确认，并下载 ai-gateway 原生 JSON Bundle。当前 Bundle
+为 version 2，包含原始 ID/access/refresh token、可选 workspace/member 身份、enable/quota
+设置，以及被这些凭证引用的代理定义和代理认证信息，但不包含 routing weight；它必须按密钥或
+未加密备份处理。常规凭证列表和详情接口仍不会返回已保存 Token，只有管理员显式调用导出接口时
+才会读取这些敏感字段。高级导入会保留 Bundle 中的 enable 状态；如果 `id_token` 缺失，则验证
+阶段从 `access_token` 读取身份声明。旧原生或外部 JSON 中若带 `weight`，前端会忽略并显示
+warning，新凭证加入现有 `all` target 时使用对应 model rule 的默认权重。
 
 高级导入页允许删除代理，但服务端要求 `If-Match`，并且只有当代理未被普通渠道或未完成的 Codex
 OAuth 流引用时才会删除；否则返回 `proxy_in_use`。已分配给导入草稿的代理还必须存在且已启用。
@@ -556,7 +594,7 @@ Policy 不再保存额度、RPM、并发、格式、权限或最大活动 Key �
 `open_ai_responses` Codex Channel Group；同一 Connector pool 的 Images projection 自动共享这份
 可见性。普通用户接口只返回凭证 UUID（`name` 固定使用同一个 UUID）、Provider 报告的
 `plan_type`、当前主/次窗口、凭证级周期花费以及窗口周期历史，不返回管理员 label、邮箱、可选
-workspace/member 身份、Token、代理、权重、运行状态、错误或 reset-credit 信息。周期花费汇总该
+workspace/member 身份、Token、代理、运行状态、错误或 reset-credit 信息。周期花费汇总该
 凭证全部调用者，不按当前用户过滤，但不会暴露用户、API Key、请求或渠道明细。接口没有写方法，
 也不提供 refresh、reset、编辑或导出操作；未授权凭证与不存在的凭证统一返回 `404`。
 
@@ -586,9 +624,10 @@ workspace/member 身份、Token、代理、权重、运行状态、错误或 res
 管理员浏览器 Console 的 `/admin/model-setup` 是模型接入的统一工作台。页面按
 “渠道组 → 供应商端点 → 模型与价格 → 模型规则”展示完整流程，并在同一处提供添加或复制供应商、
 添加或复制模型、发布规则、路由链路预览和配置缺口提示。这里的“供应商端点”对应控制面的普通
-OpenAI-compatible Channel；Channel Group 仍是同 API 格式端点的路由池。复制供应商只复用连接、
-路由、变换和模型能力配置，只能选择与来源相同 API 格式的渠道组，不复制上游凭据，保存前必须
-重新输入凭据；Provider 托管的 Codex
+OpenAI-compatible Channel；Channel Group 仍是同 API 格式端点的资源池。复制供应商只复用连接、
+变换、模型能力和 group membership 等 Channel 资源配置，只能选择与来源相同 API 格式的渠道组，
+不复制上游凭据或 model-rule routing assignment，保存前必须重新输入凭据。新 Channel 会动态加入
+引用该 group 的 `all` target，但不会加入 `selected` target；Provider 托管的 Codex
 渠道继续通过专用凭据页面管理，不能走普通复制流程。复制模型会复用供应商和价格配置，但要求填写
 新的唯一 `source_model_id`，且不会复制普通模型详情响应中不存在的目录 `source_payload`。
 原有 `/admin/routing/channels`、`/admin/models` 和 `/admin/routing/model-rules` 详情页继续作为
@@ -639,8 +678,9 @@ Codex 额度可见性和 Fast 过滤也立即按当前用户组生效。
 写入在 serializable 事务中再次确认 actor 仍为 active admin，校验完整候选快照、写入脱敏
 审计记录，并在提交后立即发布运行时快照。
 
-模型路由把结构错误与可用性下降分开处理。缺失目标、跨 API 格式引用或无法确定活跃优先级 tier
-的选路策略仍会返回 `routing_dependency_invalid` 并回滚；但管理员可以禁用最后一个活跃渠道，
+模型路由把结构错误与可用性下降分开处理。缺失目标和跨 API 格式引用会返回
+`routing_dependency_invalid`；非法/重复 priority、空 tier、`all` 缺少正数默认权重或
+`selected` 缺少显式正权重渠道等非法输入也会被拒绝。上述写入都会回滚；但管理员可以禁用最后一个活跃渠道，
 也可以从目标渠道的 `available_models` 中移除规则使用的最后一个上游模型。Console 会在此类
 修改前列出受影响规则并要求确认，但不会阻止保存。模型规则详情使用以下状态：
 
@@ -663,7 +703,7 @@ HTTP、仅允许非商业用途并带独立限流，因此结果只适合作为�
 渠道的 `billing_multiplier` 为非负十进制数，默认 `1`。最终选定渠道的倍率会乘到模型
 输入、缓存输入、缓存写入和输出单价上；请求日志保存乘算后的有效价格快照，因此历史费用
 不受后续倍率调整影响。批量修改接口一次最多接收 100 个渠道及各自的 `updated_at` 版本，
-可统一修改启用状态、自动禁用授权、权重和计费倍率。任一版本过期或候选路由
+可统一修改启用状态、自动禁用授权和计费倍率。任一版本过期或候选路由
 配置无效时，整批修改、审计和运行时发布都会回滚。
 
 渠道组的 `status_statistics_enabled` 控制是否进入公开的渠道组状态监控报告。启用后，
@@ -782,7 +822,8 @@ tool arguments、prompt、图片或结果。
 - 缓存 Key 自动按规则、API Key 和模型规则隔离，原始 Session Key 只用于计算 SHA-256，
   不写入数据库、请求日志或审计详情。
 - 缓存有 TTL 和最大条目数，只存在于当前 Gateway 进程。
-- 命中的渠道仍须满足当前授权、模型候选、最低可用优先级和被动健康状态，否则删除旧映射并执行普通选路。
+- 命中的渠道仍须满足当前授权、模型候选、模型规则最低可用 priority tier 和被动健康状态，否则
+  删除旧映射并执行普通选路。
 - 只有完整成功的 2xx 请求才写入或刷新映射；上游失败会删除本次命中的旧映射。
 - Session 粘性本身不增加尝试次数；如果全局请求故障转移已启用，失败的粘性渠道会从本次请求的候选中排除，并清除命中的旧映射。
 - JSON 来源使用 RFC 6901 Pointer，例如 Responses 请求的 `/prompt_cache_key` 和

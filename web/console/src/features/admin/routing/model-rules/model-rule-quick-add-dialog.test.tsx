@@ -100,8 +100,20 @@ describe("ModelRuleQuickAddDialog", () => {
         api_format: "open_ai_chat_completions",
         upstream_model_id: model.id,
         description: null,
-        channel_group_ids: [CHANNEL_GROUP.id],
-        channel_ids: [],
+        routing_tiers: [
+          {
+            priority: 0,
+            selection_strategy: "weighted_random",
+            channel_groups: [
+              {
+                channel_group_id: CHANNEL_GROUP.id,
+                channel_selection: "all",
+                default_weight: 100,
+                channels: [],
+              },
+            ],
+          },
+        ],
         enabled: true,
       });
       expect(submitted).toContainEqual({
@@ -109,8 +121,20 @@ describe("ModelRuleQuickAddDialog", () => {
         api_format: "open_ai_responses",
         upstream_model_id: model.id,
         description: null,
-        channel_group_ids: [RESPONSES_GROUP.id],
-        channel_ids: [],
+        routing_tiers: [
+          {
+            priority: 0,
+            selection_strategy: "weighted_random",
+            channel_groups: [
+              {
+                channel_group_id: RESPONSES_GROUP.id,
+                channel_selection: "all",
+                default_weight: 100,
+                channels: [],
+              },
+            ],
+          },
+        ],
         enabled: true,
       });
     }

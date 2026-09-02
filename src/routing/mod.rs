@@ -1498,7 +1498,7 @@ pub fn select(
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::VecDeque,
+        collections::{BTreeMap, VecDeque},
         sync::{
             Arc, Barrier, Mutex,
             atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -1513,8 +1513,8 @@ mod tests {
             SystemRuntimeSettings, UpstreamTimeoutDefaults,
         },
         persistence::{
-            ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ControlPlaneRecords, ModelRuleRecord,
-            ProxyRecord,
+            ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ControlPlaneRecords,
+            ModelRuleChannelGroupTarget, ModelRuleRecord, ModelRuleRoutingTier, ProxyRecord,
         },
         runtime_config::{compile_control_plane, compile_control_plane_with_system_settings},
     };
@@ -1570,6 +1570,29 @@ mod tests {
             .map(|index| Uuid::from_u128(index as u128 + 100))
             .collect::<Vec<_>>();
         let secret = "routing-test-key".to_owned();
+        let mut routing_tiers = BTreeMap::<(i32, String), Vec<ModelRuleChannelGroupTarget>>::new();
+        for ((group_id, (priority, strategy)), weight) in group_ids.iter().zip(groups).zip(weights)
+        {
+            routing_tiers
+                .entry((*priority, (*strategy).into()))
+                .or_default()
+                .push(ModelRuleChannelGroupTarget {
+                    channel_group_id: *group_id,
+                    channel_selection: "all".into(),
+                    default_weight: Some(*weight),
+                    channels: vec![],
+                });
+        }
+        let routing_tiers = routing_tiers
+            .into_iter()
+            .map(
+                |((priority, selection_strategy), channel_groups)| ModelRuleRoutingTier {
+                    priority,
+                    selection_strategy,
+                    channel_groups,
+                },
+            )
+            .collect();
         let records = ControlPlaneRecords {
             api_keys: vec![ApiKeyRecord {
                 id: Uuid::from_u128(1_000),
@@ -1592,22 +1615,19 @@ mod tests {
             groups: group_ids
                 .iter()
                 .zip(groups)
-                .map(|(id, (priority, group_strategy))| ChannelGroupRecord {
+                .map(|(id, _)| ChannelGroupRecord {
                     id: *id,
                     name: id.to_string(),
                     api_format: "open_ai_chat_completions".into(),
                     connector_kind: "openai_compatible".into(),
                     request_compression: "default".into(),
-                    priority: *priority,
-                    selection_strategy: (*group_strategy).into(),
                     enabled: true,
                 })
                 .collect(),
             channels: channel_ids
                 .iter()
                 .zip(group_ids.iter())
-                .zip(weights)
-                .map(|((id, group_id), weight)| ChannelRecord {
+                .map(|(id, group_id)| ChannelRecord {
                     id: *id,
                     channel_group_id: *group_id,
                     api_format: "open_ai_chat_completions".into(),
@@ -1620,7 +1640,6 @@ mod tests {
                     supports_standalone_web_search: false,
                     auto_disabled: false,
                     auto_disable_allowed: false,
-                    weight: *weight,
                     billing_multiplier: rust_decimal::Decimal::ONE,
                     proxy_id: None,
                     config_template_id: None,
@@ -1654,8 +1673,7 @@ mod tests {
                     "request_multipliers": [],
                 }),
                 upstream_model: "upstream".into(),
-                channel_group_ids: group_ids,
-                channel_ids: vec![],
+                routing_tiers,
                 enabled: true,
             }],
             proxies: vec![],
@@ -1750,8 +1768,6 @@ mod tests {
                 api_format: "open_ai_chat_completions".into(),
                 connector_kind: "openai_compatible".into(),
                 request_compression: "default".into(),
-                priority: 0,
-                selection_strategy: "weighted_random".into(),
                 enabled: true,
             }],
             channels: vec![ChannelRecord {
@@ -1765,7 +1781,6 @@ mod tests {
                 supports_standalone_web_search: false,
                 auto_disabled: false,
                 auto_disable_allowed: false,
-                weight: 1,
                 billing_multiplier: rust_decimal::Decimal::ONE,
                 proxy_id: Some(proxy_id),
                 config_template_id: None,
@@ -1798,8 +1813,19 @@ mod tests {
                     "request_multipliers": [],
                 }),
                 upstream_model: "upstream".into(),
-                channel_group_ids: vec![],
-                channel_ids: vec![channel_id],
+                routing_tiers: vec![ModelRuleRoutingTier {
+                    priority: 0,
+                    selection_strategy: "weighted_random".into(),
+                    channel_groups: vec![ModelRuleChannelGroupTarget {
+                        channel_group_id: group_id,
+                        channel_selection: "selected".into(),
+                        default_weight: None,
+                        channels: vec![crate::persistence::ModelRuleChannelWeight {
+                            channel_id,
+                            weight: 1,
+                        }],
+                    }],
+                }],
                 enabled: true,
             }],
             proxies: vec![ProxyRecord {

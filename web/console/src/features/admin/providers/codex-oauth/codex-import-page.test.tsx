@@ -89,6 +89,7 @@ describe("CodexImportPage", () => {
         access_token: "access-token",
         refresh_token: "refresh-token",
         proxy_url: PROXY.proxy_url,
+        weight: 80,
         }),
       },
     });
@@ -100,6 +101,9 @@ describe("CodexImportPage", () => {
     expect(
       screen.getByRole("combobox", { name: "Proxy for cpa@example.test" }),
     ).toHaveTextContent(PROXY.name);
+    expect(
+      screen.getByText("Legacy credential weight was ignored."),
+    ).toBeInTheDocument();
 
     await user.click(
       screen.getByRole("button", { name: "Validate and import selected" }),
@@ -109,7 +113,6 @@ describe("CodexImportPage", () => {
         label: "cpa@example.test",
         enabled: true,
         proxy_id: PROXY.id,
-        weight: 100,
         quota_threshold_percent: 95,
         account_id: "account-cpa",
         user_id: "user-cpa",
@@ -118,6 +121,7 @@ describe("CodexImportPage", () => {
         refresh_token: "refresh-token",
       }),
     );
+    expect(submitted).not.toHaveProperty("weight");
     expect(await screen.findByText("Imported")).toBeInTheDocument();
   });
 

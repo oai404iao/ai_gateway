@@ -297,7 +297,6 @@ export default function CodexImportPage() {
         label: target.label.trim(),
         enabled: target.enabled,
         proxy_id: target.proxy_id || null,
-        weight: Number(target.weight),
         quota_threshold_percent: Number(target.quota_threshold_percent),
         access_token: target.access_token.trim(),
         refresh_token: target.refresh_token.trim(),
@@ -533,7 +532,7 @@ export default function CodexImportPage() {
               <CardTitle>{t("2. Review credentials")}</CardTitle>
               <CardDescription>
                 {t(
-                  "Edit labels, routing values, tokens, and per-credential proxy assignments before the server validates each credential.",
+                  "Edit labels, quota thresholds, tokens, and per-credential proxy assignments before the server validates each credential.",
                 )}
               </CardDescription>
             </CardHeader>
@@ -593,7 +592,6 @@ export default function CodexImportPage() {
                       </TableHead>
                       <TableHead>{t("Credential")}</TableHead>
                       <TableHead>{t("Proxy")}</TableHead>
-                      <TableHead>{t("Weight")}</TableHead>
                       <TableHead>{t("Threshold")}</TableHead>
                       <TableHead>{t("Status")}</TableHead>
                       <TableHead className="text-right">
@@ -708,21 +706,6 @@ export default function CodexImportPage() {
                                 </SelectGroup>
                               </SelectContent>
                             </Select>
-                          </TableCell>
-                          <TableCell className="min-w-28 align-top">
-                            <Input
-                              aria-label={t("Weight for {label}", {
-                                label: credential.label,
-                              })}
-                              type="number"
-                              min={1}
-                              value={credential.weight}
-                              onChange={(event) =>
-                                patchCredential(credential.id, {
-                                  weight: event.target.value,
-                                })
-                              }
-                            />
                           </TableCell>
                           <TableCell className="min-w-28 align-top">
                             <Input
@@ -982,14 +965,10 @@ function credentialErrors(
   const errors = credential.errors.filter((error) =>
     error.startsWith("Duplicate of import row"),
   );
-  const weight = Number(credential.weight);
   const threshold = Number(credential.quota_threshold_percent);
   if (!credential.label.trim()) errors.push("Label is required.");
   if (!credential.access_token.trim()) errors.push("Access token is required.");
   if (!credential.refresh_token.trim()) errors.push("Refresh token is required.");
-  if (!Number.isInteger(weight) || weight <= 0) {
-    errors.push("Weight must be a positive integer.");
-  }
   if (!Number.isInteger(threshold) || threshold < 1 || threshold > 100) {
     errors.push("Quota threshold must be from 1 to 100.");
   }

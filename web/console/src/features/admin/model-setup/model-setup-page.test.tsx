@@ -40,7 +40,7 @@ describe("ModelSetupPage", () => {
     expect(screen.getByText("Published routing map")).toBeInTheDocument();
     expect(screen.getByText("gateway-chat-model")).toBeInTheDocument();
     expect(screen.getByText("GPT-4o mini")).toBeInTheDocument();
-    expect(screen.getByText("chat-primary")).toBeInTheDocument();
+    expect(screen.getByText("P0 · chat-primary")).toBeInTheDocument();
   });
 
   it("copies an ordinary supplier without exposing or reusing its credential", async () => {
@@ -204,6 +204,107 @@ describe("ModelSetupPage", () => {
     expect(
       screen.getByRole("button", { name: "Continue setup" }),
     ).toBeEnabled();
+  });
+
+  it("does not count an unselected channel in a targeted group as published", async () => {
+    seedAuthenticatedSession();
+    server.use(
+      http.get("/console/v1/routing/model-rules", () =>
+        HttpResponse.json([
+          {
+            ...MODEL_RULE,
+            routing_tiers: [
+              {
+                priority: 0,
+                selection_strategy: "weighted_random",
+                channel_groups: [
+                  {
+                    channel_group_id: CHANNEL_GROUP.id,
+                    channel_selection: "selected",
+                    default_weight: null,
+                    channels: [
+                      {
+                        channel_id:
+                          "00000000-0000-0000-0000-000000000099",
+                        weight: 100,
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ]),
+      ),
+    );
+    renderAppAt("/admin/model-setup");
+
+    expect(await screen.findByText("3 of 4 ready")).toBeInTheDocument();
+    expect(screen.getAllByText("Needs setup")).toHaveLength(1);
+  });
+
+  it("shows routing targets in lower-priority-first order", async () => {
+    seedAuthenticatedSession();
+    const fallbackGroup = {
+      ...CHANNEL_GROUP,
+      id: "00000000-0000-0000-0000-000000000098",
+      name: "chat-fallback",
+    };
+    const fallbackChannel = {
+      ...CHANNEL,
+      id: "00000000-0000-0000-0000-000000000099",
+      channel_group_id: fallbackGroup.id,
+      name: "upstream-fallback",
+    };
+    server.use(
+      http.get("/console/v1/routing/channel-groups", () =>
+        HttpResponse.json([CHANNEL_GROUP, fallbackGroup]),
+      ),
+      http.get("/console/v1/routing/channels", () =>
+        HttpResponse.json([CHANNEL, fallbackChannel]),
+      ),
+      http.get("/console/v1/routing/model-rules", () =>
+        HttpResponse.json([
+          {
+            ...MODEL_RULE,
+            routing_tiers: [
+              {
+                priority: 10,
+                selection_strategy: "weighted_random",
+                channel_groups: [
+                  {
+                    channel_group_id: fallbackGroup.id,
+                    channel_selection: "all",
+                    default_weight: 100,
+                    channels: [],
+                  },
+                ],
+              },
+              {
+                priority: 0,
+                selection_strategy: "weighted_round_robin",
+                channel_groups: [
+                  {
+                    channel_group_id: CHANNEL_GROUP.id,
+                    channel_selection: "selected",
+                    default_weight: null,
+                    channels: [{ channel_id: CHANNEL.id, weight: 100 }],
+                  },
+                ],
+              },
+            ],
+          },
+        ]),
+      ),
+    );
+    renderAppAt("/admin/model-setup");
+
+    const primary = await screen.findByText("P0 · upstream-a");
+    const fallback = screen.getByText("P10 · chat-fallback");
+    expect(
+      primary.compareDocumentPosition(fallback) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 
   it("keeps the continuation action disabled until setup data is loaded", async () => {

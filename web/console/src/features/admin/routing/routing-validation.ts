@@ -31,10 +31,17 @@ function routingStatus(
   let modelCapableCount = 0;
   let activeCount = 0;
   for (const channel of channels) {
+    const isTargeted = rule.routing_tiers.some((tier) =>
+      tier.channel_groups.some(
+        (target) =>
+          target.channel_group_id === channel.channel_group_id &&
+          (target.channel_selection === "all" ||
+            target.channels.some((entry) => entry.channel_id === channel.id)),
+      ),
+    );
     if (
       channel.api_format !== rule.api_format ||
-      (!rule.channel_ids.includes(channel.id) &&
-        !rule.channel_group_ids.includes(channel.channel_group_id)) ||
+      !isTargeted ||
       !channel.available_models.includes(rule.upstream_model)
     ) {
       continue;

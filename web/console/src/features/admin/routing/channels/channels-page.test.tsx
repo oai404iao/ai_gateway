@@ -20,8 +20,6 @@ const RESPONSES_GROUP: ChannelGroupView = {
   id: "00000000-0000-0000-0000-000000000023",
   name: "responses-backup",
   api_format: "open_ai_responses",
-  priority: 2,
-  selection_strategy: "weighted_round_robin",
 };
 
 const RESPONSES_CHANNEL: ChannelView = {
@@ -117,6 +115,7 @@ describe("ChannelsPage", () => {
     expect(within(responsesGroup).queryByText(CHANNEL.name)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "New group" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "New channel" })).toBeInTheDocument();
+    expect(screen.queryByRole("columnheader", { name: "Weight" })).not.toBeInTheDocument();
     expect(screen.getAllByText("1.25")).toHaveLength(2);
   });
 
@@ -172,7 +171,6 @@ describe("ChannelsPage", () => {
       ...CHANNEL_GROUP,
       id: `00000000-0000-0000-0000-0000000001${index}`,
       name: index === 4 ? "target-group" : `bulk-group-${index}`,
-      priority: index,
     }));
     const targetChannel: ChannelView = {
       ...CHANNEL,
@@ -235,6 +233,7 @@ describe("ChannelsPage", () => {
       screen.getByRole("checkbox", { name: `Select ${RESPONSES_CHANNEL.name}` }),
     );
     await user.click(screen.getByRole("button", { name: "Batch edit (2)" }));
+    expect(screen.queryByLabelText("Weight")).not.toBeInTheDocument();
     await user.type(screen.getByLabelText("Billing multiplier"), "1.75");
     await user.click(screen.getByRole("button", { name: "Update channels" }));
 
@@ -311,8 +310,6 @@ describe("ChannelsPage", () => {
       api_format: CHANNEL_GROUP.api_format,
       connector_kind: CHANNEL_GROUP.connector_kind,
       request_compression: CHANNEL_GROUP.request_compression,
-      priority: CHANNEL_GROUP.priority,
-      selection_strategy: CHANNEL_GROUP.selection_strategy,
       enabled: false,
     });
     expect(groupIfMatch).toBe(`"${CHANNEL_GROUP.updated_at}"`);

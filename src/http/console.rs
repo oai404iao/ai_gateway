@@ -2766,9 +2766,7 @@ fn routing_dependency_invalid(reason: &str) -> bool {
             | "model rule references a missing channel group"
             | "model rule references a cross-format channel group"
             | "model rule references a missing channel"
-            | "model rule references a cross-format channel"
-            | "direct channel candidate references a missing group"
-            | "all channel groups in every route priority tier must use the same selection strategy"
+            | "model rule references a cross-format or cross-group channel"
             | "channel references a missing group"
             | "channel and group use different API formats"
             | "channel references a missing or disabled proxy"
@@ -2786,6 +2784,9 @@ fn repository_error_message(error: &crate::persistence::RepositoryError) -> &'st
             "default_api_key_policy_disabled"
         }
         crate::persistence::RepositoryError::ApiKeyTargetNotAllowed => "api_key_target_not_allowed",
+        crate::persistence::RepositoryError::RoutingDependencyInvalid => {
+            "routing_dependency_invalid"
+        }
         crate::persistence::RepositoryError::ProtectedUserGroup => "protected_user_group",
         crate::persistence::RepositoryError::UserGroupInUse => "user_group_in_use",
         crate::persistence::RepositoryError::ProxyInUse => "proxy_in_use",
@@ -2800,8 +2801,30 @@ fn repository_error_message(error: &crate::persistence::RepositoryError) -> &'st
             "registration_invitation_code_conflict"
         }
         crate::persistence::RepositoryError::McpServerSlugConflict => "mcp_server_slug_conflict",
+        crate::persistence::RepositoryError::Sql(error) if routing_dependency_sql_error(error) => {
+            "routing_dependency_invalid"
+        }
         _ => "Console operation rejected",
     }
+}
+
+fn routing_dependency_sql_error(error: &sqlx::Error) -> bool {
+    error
+        .as_database_error()
+        .and_then(sqlx::error::DatabaseError::constraint)
+        .is_some_and(|constraint| {
+            matches!(
+                constraint,
+                "channels_channel_group_id_api_format_fkey"
+                    | "channels_proxy_id_fkey"
+                    | "channels_config_template_id_fkey"
+                    | "model_rule_tiers_rule_format_fk"
+                    | "model_rule_groups_tier_fk"
+                    | "model_rule_groups_group_format_fk"
+                    | "model_rule_channels_group_target_fk"
+                    | "model_rule_channels_channel_group_format_fk"
+            )
+        })
 }
 
 fn repository_status(error: &crate::persistence::RepositoryError) -> StatusCode {
@@ -2817,7 +2840,10 @@ fn repository_status(error: &crate::persistence::RepositoryError) -> StatusCode 
         | crate::persistence::RepositoryError::CannotResetSelf
         | crate::persistence::RepositoryError::RegistrationInvitationCodeConflict
         | crate::persistence::RepositoryError::McpServerSlugConflict => StatusCode::CONFLICT,
-        crate::persistence::RepositoryError::Validation => StatusCode::UNPROCESSABLE_ENTITY,
+        crate::persistence::RepositoryError::Validation
+        | crate::persistence::RepositoryError::RoutingDependencyInvalid => {
+            StatusCode::UNPROCESSABLE_ENTITY
+        }
         crate::persistence::RepositoryError::TemporaryPasswordUnavailable => {
             StatusCode::UNPROCESSABLE_ENTITY
         }

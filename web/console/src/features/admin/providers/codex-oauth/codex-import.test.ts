@@ -17,7 +17,7 @@ describe("Codex import parser", () => {
         name: "gateway-export.json",
         content: JSON.stringify({
           type: "ai-gateway-codex-credentials",
-          version: 1,
+          version: 2,
           proxies: [
             {
               proxy_key: "00000000-0000-0000-0000-000000000001",
@@ -43,7 +43,6 @@ describe("Codex import parser", () => {
               access_token: jwt({ exp: 1_900_000_000 }),
               refresh_token: "refresh-1",
               proxy_key: "00000000-0000-0000-0000-000000000001",
-              weight: 80,
               quota_threshold_percent: 90,
               enabled: true,
             },
@@ -64,11 +63,30 @@ describe("Codex import parser", () => {
       label: "Personal Plus",
       account_id: "account-1",
       user_id: "user-1",
-      weight: "80",
       quota_threshold_percent: "90",
       source_proxy_key: parsed.proxies[0]?.source_key,
       selected: true,
     });
+  });
+
+  it("ignores legacy credential weight with a warning", () => {
+    const parsed = parseCodexImportDocuments([
+      {
+        name: "legacy-export.json",
+        content: JSON.stringify({
+          type: "codex",
+          access_token: jwt({ exp: 1_900_000_000 }),
+          refresh_token: "refresh-legacy",
+          weight: 80,
+        }),
+      },
+    ]);
+
+    expect(parsed.credentials[0]).not.toHaveProperty("weight");
+    expect(parsed.credentials[0]?.warnings).toContain(
+      "Legacy credential weight was ignored.",
+    );
+    expect(parsed.credentials[0]?.selected).toBe(true);
   });
 
   it("accepts a CLIProxyAPI auth file and separates embedded proxy credentials", () => {

@@ -15,28 +15,24 @@ const GROUPS: RoutingTargetGroup[] = [
     name: "chat-later",
     api_format: "open_ai_chat_completions",
     enabled: true,
-    priority: 5,
   },
   {
     id: "images-disabled",
     name: "images-disabled",
     api_format: "open_ai_images",
     enabled: false,
-    priority: 1,
   },
   {
     id: "responses",
     name: "responses",
     api_format: "open_ai_responses",
     enabled: true,
-    priority: 1,
   },
   {
     id: "chat-first",
     name: "chat-first",
     api_format: "open_ai_chat_completions",
     enabled: true,
-    priority: 1,
   },
 ];
 
@@ -123,6 +119,7 @@ describe("RoutingTargetFields", () => {
       "chat-later (Chat Completions)",
       "responses (Responses)",
     ]);
+    expect(screen.queryByText("Priority")).not.toBeInTheDocument();
     expect(
       screen.queryByRole("checkbox", { name: "images-disabled (Images)" }),
     ).not.toBeInTheDocument();

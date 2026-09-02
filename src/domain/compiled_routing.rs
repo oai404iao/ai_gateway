@@ -726,7 +726,6 @@ pub struct CompiledChannel {
     connectivity_fingerprint: Arc<str>,
     supports_websocket: bool,
     supports_standalone_web_search: bool,
-    weight: i32,
     billing_multiplier: Decimal,
     upstream_auth: UpstreamAuth,
     available_models: HashSet<Arc<str>>,
@@ -773,10 +772,6 @@ impl CompiledChannel {
         self.supports_standalone_web_search
     }
     #[must_use]
-    pub fn weight(&self) -> i32 {
-        self.weight
-    }
-    #[must_use]
     pub fn billing_multiplier(&self) -> Decimal {
         self.billing_multiplier
     }
@@ -810,7 +805,6 @@ impl CompiledChannel {
         group_id: Uuid,
         api_format: ApiFormat,
         base_url: Url,
-        weight: i32,
         upstream_auth: UpstreamAuth,
         available_models: HashSet<Arc<str>>,
     ) -> Self {
@@ -820,7 +814,6 @@ impl CompiledChannel {
             group_id,
             api_format,
             base_url,
-            weight,
             upstream_auth,
             available_models,
             upstream_policy,
@@ -832,7 +825,6 @@ impl CompiledChannel {
         group_id: Uuid,
         api_format: ApiFormat,
         base_url: Url,
-        weight: i32,
         upstream_auth: UpstreamAuth,
         available_models: HashSet<Arc<str>>,
         upstream_policy: CompiledChannelUpstreamPolicy,
@@ -842,7 +834,6 @@ impl CompiledChannel {
             group_id,
             api_format,
             base_url,
-            weight,
             upstream_auth,
             available_models,
             false,
@@ -857,7 +848,6 @@ impl CompiledChannel {
         group_id: Uuid,
         api_format: ApiFormat,
         base_url: Url,
-        weight: i32,
         upstream_auth: UpstreamAuth,
         available_models: HashSet<Arc<str>>,
         auto_disable_allowed: bool,
@@ -870,7 +860,6 @@ impl CompiledChannel {
             group_id,
             api_format,
             base_url,
-            weight,
             Decimal::ONE,
             upstream_auth,
             available_models,
@@ -888,7 +877,6 @@ impl CompiledChannel {
         group_id: Uuid,
         api_format: ApiFormat,
         base_url: Url,
-        weight: i32,
         billing_multiplier: Decimal,
         upstream_auth: UpstreamAuth,
         available_models: HashSet<Arc<str>>,
@@ -906,7 +894,6 @@ impl CompiledChannel {
             ConnectorKind::OpenAiCompatible,
             RequestCompression::Default,
             base_url,
-            weight,
             billing_multiplier,
             upstream_auth,
             available_models,
@@ -926,7 +913,6 @@ impl CompiledChannel {
         connector_kind: ConnectorKind,
         request_compression: RequestCompression,
         base_url: Url,
-        weight: i32,
         billing_multiplier: Decimal,
         upstream_auth: UpstreamAuth,
         available_models: HashSet<Arc<str>>,
@@ -948,7 +934,6 @@ impl CompiledChannel {
             connectivity_fingerprint,
             supports_websocket,
             supports_standalone_web_search,
-            weight,
             billing_multiplier,
             upstream_auth,
             available_models,
@@ -980,8 +965,6 @@ pub struct CompiledChannelGroup {
     id: Uuid,
     api_format: ApiFormat,
     connector_kind: ConnectorKind,
-    priority: i32,
-    selection_strategy: SelectionStrategy,
 }
 impl CompiledChannelGroup {
     #[must_use]
@@ -996,27 +979,15 @@ impl CompiledChannelGroup {
     pub const fn connector_kind(&self) -> ConnectorKind {
         self.connector_kind
     }
-    #[must_use]
-    pub fn priority(&self) -> i32 {
-        self.priority
-    }
-    #[must_use]
-    pub fn selection_strategy(&self) -> SelectionStrategy {
-        self.selection_strategy
-    }
     pub(crate) fn new_with_connector(
         id: Uuid,
         api_format: ApiFormat,
         connector_kind: ConnectorKind,
-        priority: i32,
-        selection_strategy: SelectionStrategy,
     ) -> Self {
         Self {
             id,
             api_format,
             connector_kind,
-            priority,
-            selection_strategy,
         }
     }
 }
@@ -1043,10 +1014,10 @@ impl CompiledCandidate {
         self.weight
     }
 
-    pub(crate) fn new(channel_slot: usize, channel: Arc<CompiledChannel>) -> Self {
+    pub(crate) fn new(channel_slot: usize, channel: Arc<CompiledChannel>, weight: i32) -> Self {
         Self {
             channel_slot,
-            weight: u32::try_from(channel.weight()).expect("compiled positive channel weight"),
+            weight: u32::try_from(weight).expect("compiled positive route weight"),
             channel,
         }
     }

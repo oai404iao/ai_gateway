@@ -24,6 +24,16 @@ type GroupedModelRule = ModelRuleView & {
   modelGroupLabel: string;
 };
 
+function routingTargetSummary(rule: ModelRuleView) {
+  return rule.routing_tiers.reduce(
+    (summary, tier) => ({
+      tiers: summary.tiers + 1,
+      groups: summary.groups + tier.channel_groups.length,
+    }),
+    { tiers: 0, groups: 0 },
+  );
+}
+
 export function ModelRulesPage() {
   const navigate = useNavigate();
   const rules = useModelRules();
@@ -110,16 +120,24 @@ export function ModelRulesPage() {
           {
             key: "targets",
             header: t("Targets"),
-            render: (rule) => (
-              <span className="flex flex-wrap gap-1">
-                <Badge variant="info">
-                  {t("{count} groups", { count: rule.channel_group_ids.length })}
-                </Badge>
-                <Badge variant="secondary">
-                  {t("{count} channels", { count: rule.channel_ids.length })}
-                </Badge>
-              </span>
-            ),
+            render: (rule) => {
+              const summary = routingTargetSummary(rule);
+              return (
+                <span className="flex flex-wrap gap-1">
+                  <Badge variant="info">
+                    {t("{count} tiers", { count: summary.tiers })}
+                  </Badge>
+                  <Badge variant="secondary">
+                    {t("{count} groups", { count: summary.groups })}
+                  </Badge>
+                  <Badge variant="outline">
+                    {t("{count} channels", {
+                      count: rule.target_channel_count,
+                    })}
+                  </Badge>
+                </span>
+              );
+            },
           },
           {
             key: "routing",

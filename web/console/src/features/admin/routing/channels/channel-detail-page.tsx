@@ -107,7 +107,6 @@ const schema = z.object({
   supports_websocket: z.boolean(),
   supports_standalone_web_search: z.boolean(),
   auto_disable_allowed: z.boolean(),
-  weight: z.number().int().min(1, "Weight must be at least 1."),
   billing_multiplier: z
     .string()
     .trim()
@@ -185,7 +184,6 @@ const empty: FormState = {
   supports_websocket: false,
   supports_standalone_web_search: false,
   auto_disable_allowed: false,
-  weight: 100,
   billing_multiplier: "1",
   proxy_id: null,
   config_template_id: null,
@@ -259,7 +257,6 @@ export function ChannelDetailPage() {
         supports_websocket: data.data.supports_websocket,
         supports_standalone_web_search: data.data.supports_standalone_web_search,
         auto_disable_allowed: data.data.auto_disable_allowed,
-        weight: data.data.weight,
         billing_multiplier: data.data.billing_multiplier,
         proxy_id: data.data.proxy_id,
         config_template_id: data.data.config_template_id,
@@ -349,7 +346,6 @@ export function ChannelDetailPage() {
         apiFormat === "open_ai_responses" &&
         source.supports_standalone_web_search,
       auto_disable_allowed: source.auto_disable_allowed,
-      weight: source.weight,
       billing_multiplier: source.billing_multiplier,
       proxy_id: source.proxy_id,
       config_template_id:
@@ -572,7 +568,6 @@ export function ChannelDetailPage() {
           supports_standalone_web_search:
             parsed.data.supports_standalone_web_search,
           auto_disable_allowed: parsed.data.auto_disable_allowed,
-          weight: parsed.data.weight,
           billing_multiplier: parsed.data.billing_multiplier,
           proxy_id: parsed.data.proxy_id,
           config_template_id: parsed.data.config_template_id,
@@ -607,7 +602,6 @@ export function ChannelDetailPage() {
           supports_standalone_web_search:
             parsed.data.supports_standalone_web_search,
           auto_disable_allowed: parsed.data.auto_disable_allowed,
-          weight: parsed.data.weight,
           billing_multiplier: parsed.data.billing_multiplier,
           proxy_id: parsed.data.proxy_id,
           config_template_id: parsed.data.config_template_id,
@@ -669,7 +663,7 @@ export function ChannelDetailPage() {
               ? t("New channel")
               : state.name || t("Channel")
         }
-        description={t("An upstream endpoint with weight, timeouts, and credential injection.")}
+        description={t("An upstream endpoint with timeouts and credential injection.")}
         backPath={returnTo}
         backLabel={
           returnsToSetup ? t("Back to model setup") : t("Back to channels")
@@ -729,7 +723,6 @@ export function ChannelDetailPage() {
                   label={t("Credential configured")}
                   value={data.data.upstream_credential_configured ? t("yes") : t("no")}
                 />
-                <DetailField label={t("Weight")} value={data.data.weight} />
                 <DetailField
                   label={t("Billing multiplier")}
                   value={formatDecimal(data.data.billing_multiplier)}
@@ -857,20 +850,6 @@ export function ChannelDetailPage() {
                       aria-invalid={Boolean(fieldError("base_url"))}
                     />
                     {fieldError("base_url") ? <FieldError>{fieldError("base_url")}</FieldError> : null}
-                  </Field>
-                  <Field data-invalid={Boolean(fieldError("weight"))}>
-                    <FieldLabel htmlFor="weight">{t("Weight")}</FieldLabel>
-                    <Input
-                      id="weight"
-                      type="number"
-                      min={1}
-                      value={state.weight}
-                      onChange={(event) =>
-                        patch({ weight: Math.max(1, Number(event.target.value) || 1) })
-                      }
-                      aria-invalid={Boolean(fieldError("weight"))}
-                    />
-                    {fieldError("weight") ? <FieldError>{fieldError("weight")}</FieldError> : null}
                   </Field>
                   <DecimalField
                     id="billing_multiplier"

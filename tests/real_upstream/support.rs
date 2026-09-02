@@ -18,7 +18,8 @@ use ai_gateway::{
     },
     http,
     persistence::{
-        ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ControlPlaneRecords, ModelRuleRecord,
+        ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ControlPlaneRecords,
+        ModelRuleChannelGroupTarget, ModelRuleChannelWeight, ModelRuleRecord, ModelRuleRoutingTier,
     },
     runtime_config::{RuntimeConfig, compile_control_plane_with_system_settings},
 };
@@ -367,8 +368,6 @@ fn gateway(
             api_format: format.api_format_name().into(),
             connector_kind: "openai_compatible".into(),
             request_compression: "default".into(),
-            priority: 0,
-            selection_strategy: "weighted_random".into(),
             enabled: true,
         }],
         channels: vec![ChannelRecord {
@@ -382,7 +381,6 @@ fn gateway(
             supports_standalone_web_search: matches!(format, SmokeFormat::StandaloneWebSearch),
             auto_disabled: false,
             auto_disable_allowed: false,
-            weight: 1,
             billing_multiplier: Decimal::ONE,
             proxy_id: None,
             config_template_id: None,
@@ -415,8 +413,19 @@ fn gateway(
                 "request_multipliers": [],
             }),
             upstream_model: upstream_model.into(),
-            channel_group_ids: vec![],
-            channel_ids: vec![channel_id],
+            routing_tiers: vec![ModelRuleRoutingTier {
+                priority: 0,
+                selection_strategy: "weighted_random".into(),
+                channel_groups: vec![ModelRuleChannelGroupTarget {
+                    channel_group_id: group_id,
+                    channel_selection: "selected".into(),
+                    default_weight: None,
+                    channels: vec![ModelRuleChannelWeight {
+                        channel_id,
+                        weight: 1,
+                    }],
+                }],
+            }],
             enabled: true,
         }],
         proxies: vec![],

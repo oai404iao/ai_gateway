@@ -145,7 +145,6 @@ impl ChannelModelDiscoveryInput {
             supports_standalone_web_search: false,
             auto_disabled: false,
             auto_disable_allowed: false,
-            weight: 1,
             billing_multiplier: Decimal::ONE,
             proxy_id: self.proxy_id,
             config_template_id: self.config_template_id,

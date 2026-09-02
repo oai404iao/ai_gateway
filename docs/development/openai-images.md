@@ -146,11 +146,16 @@ codex_oauth_credentials
 - 一个 `open_ai_images` managed channel。
 
 两个 Channel 共享 Token、account/member 身份、refresh generation、quota 与 outbound proxy
-来源；label、weight、proxy 和超时初始同步。它们拥有独立的 ID、模型列表、格式能力、被动健康
+来源；label、proxy、计费倍率和超时配置保持同步。它们拥有独立的 ID、模型列表、格式能力、被动健康
 状态和路由授权。Responses projection 继续使用 models endpoint 返回的 slug 并声明 WebSocket；
 Images projection 当前固定声明经核对的 `gpt-image-2`，不声明 WebSocket、scheduled probe 或
 渠道级状态统计。状态监控由 Images Channel Group 独立控制，新建的配对 Images group 默认关闭
 `status_statistics_enabled`。
+
+路由层级和权重不在凭证或 projection Channel 上同步。Responses 与 Images model rule 分别拥有
+自己的 priority tiers、selection strategy 和 group/channel weights；`all` target 会让以后加入
+该格式 group 的 credential projection 使用该 rule 的默认权重，`selected` target 则必须显式
+加入 projection。一个格式的 routing assignment 不会投影到另一个格式。
 
 ### 安全迁移
 
@@ -270,8 +275,8 @@ PR 2 另外覆盖：
 - 已应用到 0035 的数据库中，既有 Responses group/channel/credential 原 ID 在 migration 后
   保持不变；
 - 新旧凭证都产生 Responses 与 Images projection，Images group 默认停用；
-- credential 更新同步 projection 的 label、weight、proxy 和 timeout，重新授权不会把 Responses
-  model catalog 写入 Images projection；
+- credential 更新同步 projection 的 label、proxy、计费倍率和 timeout，重新授权不会把 Responses
+  model catalog 或 routing assignment 写入 Images projection；
 - credential 删除清理共享 Token 并 tombstone 两个 projection；
 - Codex generation 的路径、认证、image turn Header、原始 JSON、JSON 响应、usage 和请求日志；
 - 同一凭证可通过 Responses SSE/WebSocket 与 Images generation/edit 使用。
@@ -304,7 +309,7 @@ Images 上游，都必须保留 deterministic Codex Images mock integration test
 | usage | `src/application/usage.rs` |
 | Transform | `src/transforms/mod.rs` |
 | 运行时编译 | `src/runtime_config/mod.rs` |
-| 数据库 | `migrations/0034_open_ai_images_api_format.sql`、`migrations/0035_request_log_api_operation.sql`、`migrations/0036_codex_images_projection.sql` |
+| 数据库 | `migrations/0034_open_ai_images_api_format.sql`、`migrations/0035_request_log_api_operation.sql`、`migrations/0036_codex_images_projection.sql`、`migrations/0052_model_rule_routing_tiers.sql` |
 | Console 契约 | `docs/openapi/console-v1.yaml` |
 | 用户可观察行为 | `docs/user/operations.md` |
 | 外部 API 边界 | `docs/reference/openai-images.md` |

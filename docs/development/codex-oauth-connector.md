@@ -59,8 +59,7 @@ attempt 不会在中途观察到新设置；OAuth authorization、Models 与 quo
 `codex_oauth_credential_channels` 把每条凭证投影到两个 managed `channels` 记录：
 
 - 既有 `codex_oauth_credentials.channel_id` 保留为稳定凭证 ID 与 Responses Channel ID；
-- Responses 与 Images channel 的 `weight`、`proxy_id` 和各自 `available_models` 继续进入统一
-  路由快照；
+- Responses 与 Images channel 的 `proxy_id` 和各自 `available_models` 继续进入统一路由快照；
 - credential 的逻辑 `enabled` 和动态状态由 Connector 快照持有；底层 managed channel
   始终保留为可选择的路由壳，Connector prepare 再排除新 Session 或让 affinity hit fail closed；
 - 两种 channel 都固定 `upstream_auth_kind = none`、`auto_disable_allowed = false`；
@@ -69,6 +68,12 @@ attempt 不会在中途观察到新设置；OAuth authorization、Models 与 quo
   新建时默认关闭；
 - 普通 channel create/update/batch API 在 repository 层拒绝 provider-managed channel；
 - provider mutation 在同一控制面事务中更新凭证与 channel、写 audit、编译候选快照并发布。
+
+Codex credential 和两个 projection channel 都不拥有 routing weight。权重、priority 与 selection
+strategy 属于具体 model rule 的 routing tier；Responses 和 Images rule 独立引用各自的 group/
+channel projection，不在两个格式之间同步路由赋值。若 rule 以 `all` 引用 Codex group，新接入的
+credential 会作为新 group channel 自动使用该 rule 的正数默认权重；`selected` rule 必须显式
+加入对应 projection。
 
 新建 Codex Responses group 时会同时创建一个默认关闭的 Images group。migration 对现有 group 和
 凭证执行同样投影，但不会增加 API Key format、Policy、模型规则或可访问路由。管理员必须显式启用
@@ -134,6 +139,11 @@ worker、上游 `401` 恢复和多实例并发均传递 observed generation；�
 Connector pool/workspace/member，或相同 accountless personal user ID 的新 Token
 会事务内更新原 credential/channel、递增 generation 并清除 `reauth_required`，不会创建重复
 channel。
+
+原生凭证导出 Bundle 当前为 version 2，包含 Token、身份、enable/quota 和可选 proxy 数据，但
+不包含 routing weight。高级导入器会忽略旧原生 Bundle 或外部凭证对象中的 `weight` 并显示
+warning；导入完成后，凭证是否进入规则及其权重完全由现有 model rule 的 `all`/`selected`
+assignment 决定。
 
 ## Quota 与 Session 粘性
 

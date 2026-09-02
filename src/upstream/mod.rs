@@ -766,8 +766,6 @@ mod tests {
                     api_format: api_format.into(),
                     connector_kind: "openai_compatible".into(),
                     request_compression: "default".into(),
-                    priority: 0,
-                    selection_strategy: "weighted_random".into(),
                     enabled: true,
                 }],
                 channels: vec![ChannelRecord {
@@ -781,7 +779,6 @@ mod tests {
                     supports_standalone_web_search: false,
                     auto_disabled: false,
                     auto_disable_allowed: false,
-                    weight: 1,
                     billing_multiplier: rust_decimal::Decimal::ONE,
                     proxy_id: Some(proxy_id),
                     config_template_id: None,

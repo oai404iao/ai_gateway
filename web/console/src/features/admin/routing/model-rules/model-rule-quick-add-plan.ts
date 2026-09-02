@@ -12,7 +12,6 @@ export type QuickAddFormatStatus =
   | "ready"
   | "configured"
   | "no_channels"
-  | "strategy_conflict"
   | "model_disabled";
 
 export interface QuickAddFormatPlan {
@@ -29,10 +28,8 @@ export interface QuickAddModelPlan {
 }
 
 interface TargetPlan {
-  channelGroupIds: string[];
-  channelIds: string[];
+  channelGroups: ModelRuleInput["routing_tiers"][number]["channel_groups"];
   compatibleChannelCount: number;
-  hasStrategyConflict: boolean;
 }
 
 function ruleKey(clientModel: string, apiFormat: ApiFormat): string {
@@ -40,11 +37,7 @@ function ruleKey(clientModel: string, apiFormat: ApiFormat): string {
 }
 
 function compareGroups(left: ChannelGroupView, right: ChannelGroupView): number {
-  return (
-    left.priority - right.priority ||
-    left.name.localeCompare(right.name) ||
-    left.id.localeCompare(right.id)
-  );
+  return left.name.localeCompare(right.name) || left.id.localeCompare(right.id);
 }
 
 function compareChannels(left: ChannelView, right: ChannelView): number {
@@ -76,9 +69,7 @@ function buildTargets(
     channelsByGroup.set(channel.channel_group_id, current);
   }
 
-  const channelGroupIds: string[] = [];
-  const channelIds: string[] = [];
-  const activeCandidateGroupIds = new Set<string>();
+  const channelGroups: TargetPlan["channelGroups"] = [];
   let compatibleChannelCount = 0;
 
   for (const group of eligibleGroups) {
@@ -89,33 +80,29 @@ function buildTargets(
     if (compatibleChannels.length === 0) continue;
 
     compatibleChannelCount += compatibleChannels.length;
-    if (compatibleChannels.some((channel) => !channel.auto_disabled)) {
-      activeCandidateGroupIds.add(group.id);
-    }
-
     if (compatibleChannels.length === enabledChannels.length) {
-      channelGroupIds.push(group.id);
+      channelGroups.push({
+        channel_group_id: group.id,
+        channel_selection: "all",
+        default_weight: 100,
+        channels: [],
+      });
     } else {
-      channelIds.push(...compatibleChannels.map((channel) => channel.id));
+      channelGroups.push({
+        channel_group_id: group.id,
+        channel_selection: "selected",
+        default_weight: null,
+        channels: compatibleChannels.map((channel) => ({
+          channel_id: channel.id,
+          weight: 100,
+        })),
+      });
     }
-  }
-
-  const strategiesByPriority = new Map<number, Set<string>>();
-  for (const groupId of activeCandidateGroupIds) {
-    const group = groupsById.get(groupId);
-    if (!group) continue;
-    const strategies = strategiesByPriority.get(group.priority) ?? new Set<string>();
-    strategies.add(group.selection_strategy);
-    strategiesByPriority.set(group.priority, strategies);
   }
 
   return {
-    channelGroupIds,
-    channelIds,
+    channelGroups,
     compatibleChannelCount,
-    hasStrategyConflict: [...strategiesByPriority.values()].some(
-      (strategies) => strategies.size > 1,
-    ),
   };
 }
 
@@ -153,13 +140,6 @@ export function buildQuickAddModelPlans(
           compatibleChannelCount: targets.compatibleChannelCount,
         };
       }
-      if (targets.hasStrategyConflict) {
-        return {
-          apiFormat,
-          status: "strategy_conflict",
-          compatibleChannelCount: targets.compatibleChannelCount,
-        };
-      }
       return {
         apiFormat,
         status: "ready",
@@ -169,8 +149,13 @@ export function buildQuickAddModelPlans(
           api_format: apiFormat,
           upstream_model_id: model.id,
           description: null,
-          channel_group_ids: targets.channelGroupIds,
-          channel_ids: targets.channelIds,
+          routing_tiers: [
+            {
+              priority: 0,
+              selection_strategy: "weighted_random",
+              channel_groups: targets.channelGroups,
+            },
+          ],
           enabled: true,
         },
       };

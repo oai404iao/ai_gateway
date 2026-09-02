@@ -522,8 +522,6 @@ test.describe("Console SPA smoke", () => {
       api_format: "open_ai_chat_completions",
       connector_kind: "openai_compatible",
       request_compression: "default",
-      priority: 0,
-      selection_strategy: "weighted_random",
       enabled: false,
     });
 

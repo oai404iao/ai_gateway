@@ -51,9 +51,8 @@ interface ModelRuleQuickAddDialogProps {
 
 function formatBadgeVariant(
   status: QuickAddFormatPlan["status"],
-): "info" | "secondary" | "warning" {
+): "info" | "secondary" {
   if (status === "ready") return "info";
-  if (status === "strategy_conflict") return "warning";
   return "secondary";
 }
 
@@ -144,9 +143,6 @@ export function ModelRuleQuickAddDialog({
 
   const unavailableDescription = (plan: QuickAddModelPlan): string | undefined => {
     if (!plan.model.enabled) return t("Upstream model is disabled.");
-    if (plan.formats.some((format) => format.status === "strategy_conflict")) {
-      return t("Routing groups at the same priority use different selection strategies.");
-    }
     if (plan.drafts.length > 0) return undefined;
     if (plan.formats.some((format) => format.status === "configured")) {
       return t("All compatible formats already have rules.");
@@ -201,7 +197,7 @@ export function ModelRuleQuickAddDialog({
           <DialogTitle>{t("Quick add model rules")}</DialogTitle>
           <DialogDescription>
             {t(
-              "Select upstream models. Missing rules are created for every API format with compatible enabled channels. Each rule uses the source model id, stays enabled, and targets every compatible channel; complete channel groups are selected when possible.",
+              "Select upstream models. Missing rules are created with one priority 0 weighted-random tier for every API format with compatible enabled channels. Complete compatible groups use all channels at weight 100; partial groups select each compatible channel at weight 100.",
             )}
           </DialogDescription>
         </DialogHeader>
@@ -302,9 +298,7 @@ export function ModelRuleQuickAddDialog({
                                             })
                                           : format.status === "configured"
                                             ? t("Already configured")
-                                            : format.status === "strategy_conflict"
-                                              ? t("Manual setup required")
-                                              : t("Model disabled")}
+                                            : t("Model disabled")}
                                       </Badge>
                                     ))}
                                 </div>

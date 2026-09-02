@@ -7,6 +7,20 @@ Versioning.
 
 ## [Unreleased]
 
+### Changed
+
+- Move routing priority, weighted strategy, and channel weights from shared
+  channel groups/channels/Codex credentials into ordered model-rule tiers.
+  Rules can dynamically include all current and future group channels with a
+  default weight plus overrides, or select explicit weighted channels; newly
+  authored assignments start at weight 100. API-key authorization remains
+  unchanged and Responses/Images assignments remain independent.
+- Make migration `0052` a coordinated hard cutover that backfills legacy
+  routing into normalized rule-tier tables, rejects latent same-tier strategy
+  conflicts, and removes the old columns. Codex native credential exports are
+  now version 2 without weight; imports ignore legacy or foreign weight fields
+  with a warning.
+
 ### Added
 
 - Add model-level weekly UTC peak/off-peak price windows with selectable start

@@ -43,7 +43,6 @@ export interface RoutingTargetGroup {
   name: string;
   api_format: ApiFormat;
   enabled: boolean;
-  priority?: number;
   model_capable?: boolean;
 }
 
@@ -120,8 +119,6 @@ export function RoutingTargetFields({
       [...groups].sort(
         (left, right) =>
           FORMAT_ORDER[left.api_format] - FORMAT_ORDER[right.api_format] ||
-          (left.priority ?? Number.MAX_SAFE_INTEGER) -
-            (right.priority ?? Number.MAX_SAFE_INTEGER) ||
           compareNames(left.name, right.name) ||
           compareNames(left.id, right.id),
       ),
@@ -134,8 +131,6 @@ export function RoutingTargetFields({
         const rightGroup = groupById.get(right.channel_group_id);
         return (
           FORMAT_ORDER[left.api_format] - FORMAT_ORDER[right.api_format] ||
-          (leftGroup?.priority ?? Number.MAX_SAFE_INTEGER) -
-            (rightGroup?.priority ?? Number.MAX_SAFE_INTEGER) ||
           compareNames(
             left.channel_group_name ?? leftGroup?.name ?? left.channel_group_id,
             right.channel_group_name ?? rightGroup?.name ?? right.channel_group_id,
@@ -152,7 +147,7 @@ export function RoutingTargetFields({
       (showDisabled || group.enabled || selectedGroupSet.has(group.id)) &&
       (!normalizedSearch ||
         matchesSearch(
-          [group.name, apiFormatLabel(group.api_format), String(group.priority ?? "")],
+          [group.name, apiFormatLabel(group.api_format)],
           normalizedSearch,
         )),
   );
@@ -214,7 +209,7 @@ export function RoutingTargetFields({
     >
       <FieldLegend>{t("Routing targets")}</FieldLegend>
       <FieldDescription>
-        {t("Targets are grouped by API format and sorted by priority and name.")}
+        {t("Targets are grouped by API format and sorted by name.")}
       </FieldDescription>
 
       <div className="flex flex-wrap gap-2">
@@ -316,11 +311,6 @@ export function RoutingTargetFields({
                           <FieldLabel htmlFor={inputId} className="font-normal">
                             <span className="flex flex-wrap items-center gap-2">
                               <span>{group.name}</span>
-                              {group.priority !== undefined ? (
-                                <Badge variant="outline">
-                                  {t("Priority")}: {group.priority}
-                                </Badge>
-                              ) : null}
                               {!group.enabled ? <StatusBadge value={false} /> : null}
                               {group.model_capable === false ? (
                                 <Badge variant="warning">{t("Model unavailable")}</Badge>

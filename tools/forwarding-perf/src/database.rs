@@ -264,8 +264,8 @@ async fn seed(
     ] {
         sqlx::query(
             "INSERT INTO channel_groups
-             (id,name,api_format,priority,selection_strategy,enabled)
-             VALUES ($1,$2,$3::api_format,0,'weighted_random',true)",
+             (id,name,api_format,enabled)
+             VALUES ($1,$2,$3::api_format,true)",
         )
         .bind(group_id)
         .bind(name)
@@ -302,10 +302,10 @@ async fn seed(
     ] {
         sqlx::query(
             "INSERT INTO channels
-             (id,channel_group_id,api_format,name,base_url,enabled,weight,
+             (id,channel_group_id,api_format,name,base_url,enabled,
               upstream_auth_kind,upstream_api_key,available_models,
               auto_disable_allowed)
-             VALUES ($1,$2,$3::api_format,$4,$5,true,1,
+             VALUES ($1,$2,$3::api_format,$4,$5,true,
                      'bearer',$6,$7,false)",
         )
         .bind(channel_id)
@@ -337,19 +337,50 @@ async fn seed(
     .await?;
 
     for scenario in scenarios {
-        let channel_id = match scenario.api_kind {
-            ApiKind::ChatCompletions => chat_channel_id,
-            ApiKind::Responses => responses_channel_id,
+        let (group_id, channel_id) = match scenario.api_kind {
+            ApiKind::ChatCompletions => (chat_group_id, chat_channel_id),
+            ApiKind::Responses => (responses_group_id, responses_channel_id),
         };
+        let model_rule_id = Uuid::new_v4();
         sqlx::query(
             "INSERT INTO model_rules
-             (id,client_model,api_format,upstream_model_id,channel_ids,enabled)
-             VALUES ($1,$2,$3::api_format,$4,ARRAY[$5]::uuid[],true)",
+             (id,client_model,api_format,upstream_model_id,enabled)
+             VALUES ($1,$2,$3::api_format,$4,true)",
         )
-        .bind(Uuid::new_v4())
+        .bind(model_rule_id)
         .bind(&scenario.model)
         .bind(scenario.api_kind.database_name())
         .bind(model_ids[&scenario.name])
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "INSERT INTO model_rule_routing_tiers
+             (model_rule_id,api_format,priority,selection_strategy)
+             VALUES ($1,$2::api_format,0,'weighted_random')",
+        )
+        .bind(model_rule_id)
+        .bind(scenario.api_kind.database_name())
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "INSERT INTO model_rule_routing_groups
+             (model_rule_id,api_format,priority,channel_group_id,
+              channel_selection,default_weight)
+             VALUES ($1,$2::api_format,0,$3,'selected',NULL)",
+        )
+        .bind(model_rule_id)
+        .bind(scenario.api_kind.database_name())
+        .bind(group_id)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "INSERT INTO model_rule_routing_channels
+             (model_rule_id,api_format,channel_group_id,channel_id,weight)
+             VALUES ($1,$2::api_format,$3,$4,1)",
+        )
+        .bind(model_rule_id)
+        .bind(scenario.api_kind.database_name())
+        .bind(group_id)
         .bind(channel_id)
         .execute(&mut *transaction)
         .await?;

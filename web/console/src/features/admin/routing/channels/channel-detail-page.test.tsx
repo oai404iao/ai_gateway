@@ -62,6 +62,7 @@ describe("ChannelDetailPage", () => {
     renderAppAt(`/admin/routing/channels/${CHANNEL.id}`);
 
     await waitForHydratedChannelForm(CHANNEL.name);
+    expect(screen.queryByText("Weight")).not.toBeInTheDocument();
     const templateSelect = screen.getByRole("combobox", { name: "Config template" });
     await user.click(templateSelect);
     await user.click(
@@ -169,6 +170,7 @@ describe("ChannelDetailPage", () => {
     expect(submitted?.supports_websocket).toBe(false);
     expect(submitted?.billing_multiplier).toBe(CHANNEL.billing_multiplier);
     expect(submitted?.test_model).toBe(CHANNEL.test_model);
+    expect(submitted).not.toHaveProperty("weight");
   });
 
   it("enables Responses-only capabilities for a Responses channel", async () => {

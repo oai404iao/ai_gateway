@@ -10,7 +10,25 @@ describe("channelUpdateRoutingImpact", () => {
         { ...CHANNEL, enabled: false },
         [CHANNEL],
         [CHANNEL_GROUP],
-        [{ ...MODEL_RULE, channel_group_ids: [], channel_ids: [CHANNEL.id] }],
+        [
+          {
+            ...MODEL_RULE,
+            routing_tiers: [
+              {
+                priority: 0,
+                selection_strategy: "weighted_random",
+                channel_groups: [
+                  {
+                    channel_group_id: CHANNEL_GROUP.id,
+                    channel_selection: "selected",
+                    default_weight: null,
+                    channels: [{ channel_id: CHANNEL.id, weight: 100 }],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
       ),
     ).toEqual([
       expect.objectContaining({
@@ -33,7 +51,7 @@ describe("channelUpdateRoutingImpact", () => {
         { ...CHANNEL, enabled: false },
         [CHANNEL, fallback],
         [CHANNEL_GROUP],
-        [{ ...MODEL_RULE, channel_group_ids: [CHANNEL_GROUP.id], channel_ids: [] }],
+        [MODEL_RULE],
       ),
     ).toEqual([]);
   });
@@ -46,7 +64,7 @@ describe("channelUpdateRoutingImpact", () => {
         { ...disabled, available_models: [] },
         [disabled],
         [CHANNEL_GROUP],
-        [{ ...MODEL_RULE, channel_group_ids: [CHANNEL_GROUP.id], channel_ids: [] }],
+        [MODEL_RULE],
       ),
     ).toEqual([
       expect.objectContaining({
@@ -64,7 +82,42 @@ describe("channelUpdateRoutingImpact", () => {
         disabled,
         [disabled],
         [CHANNEL_GROUP],
-        [{ ...MODEL_RULE, channel_group_ids: [CHANNEL_GROUP.id], channel_ids: [] }],
+        [MODEL_RULE],
+      ),
+    ).toEqual([]);
+  });
+
+  it("ignores channels in the same group that are not selected by the tier", () => {
+    const selected = {
+      ...CHANNEL,
+      id: "00000000-0000-0000-0000-000000000099",
+      name: "selected-upstream",
+    };
+    expect(
+      channelUpdateRoutingImpact(
+        CHANNEL.id,
+        { ...CHANNEL, enabled: false },
+        [CHANNEL, selected],
+        [CHANNEL_GROUP],
+        [
+          {
+            ...MODEL_RULE,
+            routing_tiers: [
+              {
+                priority: 0,
+                selection_strategy: "weighted_random",
+                channel_groups: [
+                  {
+                    channel_group_id: CHANNEL_GROUP.id,
+                    channel_selection: "selected",
+                    default_weight: null,
+                    channels: [{ channel_id: selected.id, weight: 100 }],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
       ),
     ).toEqual([]);
   });
