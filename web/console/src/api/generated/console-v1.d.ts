@@ -2016,7 +2016,6 @@ export interface components {
             id: string;
             name: string;
             api_format: components["schemas"]["ApiFormat"];
-            priority: number;
             enabled: boolean;
         };
         SelfApiKeyChannelOption: {
@@ -2128,8 +2127,6 @@ export interface components {
              */
             connector_pool_id: string | null;
             request_compression: components["schemas"]["RequestCompression"];
-            priority: number;
-            selection_strategy: components["schemas"]["SelectionStrategy"];
             enabled: boolean;
             /** @description Includes this channel group in the authenticated channel-group status report. */
             status_statistics_enabled: boolean;
@@ -2155,7 +2152,6 @@ export interface components {
             auto_disabled_reason: string | null;
             /** @description Allows system automatic-disable rules to temporarily remove this channel from routing. */
             auto_disable_allowed: boolean;
-            weight: number;
             /** @description Multiplies the selected upstream model prices before request settlement. */
             billing_multiplier: components["schemas"]["Decimal"];
             /** Format: uuid */
@@ -2234,7 +2230,6 @@ export interface components {
             last_error_summary: string | null;
             /** Format: uuid */
             proxy_id: string | null;
-            weight: number;
             enabled: boolean;
             /** @description Models exposed by the credential's Responses projection. */
             available_models: string[];
@@ -2358,8 +2353,6 @@ export interface components {
             label: string;
             /** Format: uuid */
             proxy_id?: string | null;
-            /** @default 100 */
-            weight: number;
             /** @default 95 */
             quota_threshold_percent: number;
         };
@@ -2403,7 +2396,7 @@ export interface components {
             /** @enum {string} */
             type: "ai-gateway-codex-credentials";
             /** @enum {integer} */
-            version: 1;
+            version: 2;
             exported_at: components["schemas"]["DateTime"];
             /** Format: uuid */
             channel_group_id: string;
@@ -2433,7 +2426,6 @@ export interface components {
             refresh_token: string;
             /** Format: uuid */
             proxy_key: string | null;
-            weight: number;
             quota_threshold_percent: number;
             enabled: boolean;
         };
@@ -2442,7 +2434,6 @@ export interface components {
             enabled: boolean;
             /** Format: uuid */
             proxy_id: string | null;
-            weight: number;
             quota_threshold_percent: number;
         };
         /** @enum {string} */
@@ -2462,6 +2453,43 @@ export interface components {
             /** Format: uuid */
             correlation_id: string;
         };
+        /**
+         * @description Explicit route weight for one channel. Weights are compared only
+         *     among eligible candidates in the same routing tier.
+         */
+        ModelRuleChannelWeight: {
+            /** Format: uuid */
+            channel_id: string;
+            weight: number;
+        };
+        /**
+         * @description Selects candidates from one channel group. `all` requires a positive
+         *     `default_weight`; entries in `channels` may override that weight.
+         *     `selected` requires `default_weight` to be null and `channels` to be
+         *     nonempty.
+         */
+        ModelRuleChannelGroupTarget: {
+            /** Format: uuid */
+            channel_group_id: string;
+            /** @enum {string} */
+            channel_selection: "all" | "selected";
+            /** @description Positive default for `all`; null for `selected`. */
+            default_weight: number | null;
+            /**
+             * @description Per-channel weight overrides for `all`, or the complete nonempty
+             *     channel selection for `selected`.
+             */
+            channels: components["schemas"]["ModelRuleChannelWeight"][];
+        };
+        /**
+         * @description One model-rule routing tier. Lower priority wins. Selection strategy
+         *     and weights apply only among eligible candidates in this tier.
+         */
+        ModelRuleRoutingTier: {
+            priority: number;
+            selection_strategy: components["schemas"]["SelectionStrategy"];
+            channel_groups: components["schemas"]["ModelRuleChannelGroupTarget"][];
+        };
         ModelRuleView: {
             /** Format: uuid */
             id: string;
@@ -2472,8 +2500,8 @@ export interface components {
             upstream_model_enabled: boolean;
             upstream_model: string;
             description: string | null;
-            channel_group_ids: string[];
-            channel_ids: string[];
+            /** @description Ordered routing tiers; lower numeric priority wins. */
+            routing_tiers: components["schemas"]["ModelRuleRoutingTier"][];
             enabled: boolean;
             routing_status: components["schemas"]["ModelRuleRoutingStatus"];
             /** @description Distinct channels selected directly or through a target group. */
@@ -3203,8 +3231,6 @@ export interface components {
             connector_kind: components["schemas"]["ConnectorKind"];
             /** @description Valid only for open_ai_responses groups. Omission defaults to `default` on create and preserves the current value on update. */
             request_compression?: components["schemas"]["RequestCompression"];
-            priority: number;
-            selection_strategy: components["schemas"]["SelectionStrategy"];
             enabled: boolean;
             /** @description Includes this channel group in the authenticated channel-group status report. Omission defaults to false on create and preserves the current value on update. */
             status_statistics_enabled?: boolean;
@@ -3235,7 +3261,6 @@ export interface components {
              * @default false
              */
             auto_disable_allowed: boolean;
-            weight: number;
             /**
              * @description Non-negative multiplier applied to upstream model prices for settlement.
              * @default 1
@@ -3282,7 +3307,6 @@ export interface components {
              * @default false
              */
             auto_disable_allowed: boolean;
-            weight: number;
             /** @description Omit to preserve the stored non-negative billing multiplier. */
             billing_multiplier?: components["schemas"]["Decimal"];
             /** Format: uuid */
@@ -3334,7 +3358,6 @@ export interface components {
         ChannelBatchChanges: {
             enabled?: boolean;
             auto_disable_allowed?: boolean;
-            weight?: number;
             /** @description Non-negative multiplier applied to upstream model prices for settlement. */
             billing_multiplier?: components["schemas"]["Decimal"];
         };
@@ -3357,8 +3380,8 @@ export interface components {
             /** Format: uuid */
             upstream_model_id: string;
             description?: string | null;
-            channel_group_ids?: string[];
-            channel_ids?: string[];
+            /** @description Ordered routing tiers; lower numeric priority wins. */
+            routing_tiers: components["schemas"]["ModelRuleRoutingTier"][];
             enabled: boolean;
         };
         ProxyCreateInput: {

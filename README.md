@@ -45,8 +45,9 @@ separate management Console for users and administrators.
   `/mcp/{slug}` instances expose Codex-compatible
   `web.run` and `image_gen.imagegen` generation/edit while reusing Gateway
   API keys, routing, admission, billing, and durable request logs.
-- **Priority and weighted routing** with passive health, optional session
-  affinity, and controlled failover before upstream response headers arrive.
+- **Model-rule-owned priority tiers and weighted routing** with passive
+  health, optional session affinity, and controlled failover before upstream
+  response headers arrive.
 - **In-process upstream connectors** keep provider-specific authentication and
   request preparation inside the single Rust service. The first connector,
   Codex OAuth, adds subscription credentials, per-account proxies, token

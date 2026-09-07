@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     convert::Infallible,
     future::pending,
     net::SocketAddr,
@@ -18,7 +19,8 @@ use ai_gateway::{
     },
     http,
     persistence::{
-        ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ControlPlaneRecords, ModelRuleRecord,
+        ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ControlPlaneRecords,
+        ModelRuleChannelGroupTarget, ModelRuleRecord, ModelRuleRoutingTier,
     },
     routing::{PassiveHealthPolicy, RoutingRuntime},
     runtime_config::{RuntimeConfig, UpstreamConfig, compile_control_plane_with_system_settings},
@@ -122,6 +124,26 @@ fn proxy_fixture_with_retry(
     let channel_ids = (0..upstream_urls.len())
         .map(|_| Uuid::new_v4())
         .collect::<Vec<_>>();
+    let mut routing_tiers = BTreeMap::<i32, Vec<ModelRuleChannelGroupTarget>>::new();
+    for (group_id, priority) in group_ids.iter().zip(priorities) {
+        routing_tiers
+            .entry(*priority)
+            .or_default()
+            .push(ModelRuleChannelGroupTarget {
+                channel_group_id: *group_id,
+                channel_selection: "all".into(),
+                default_weight: Some(1),
+                channels: vec![],
+            });
+    }
+    let routing_tiers = routing_tiers
+        .into_iter()
+        .map(|(priority, channel_groups)| ModelRuleRoutingTier {
+            priority,
+            selection_strategy: "weighted_random".into(),
+            channel_groups,
+        })
+        .collect();
     let records = ControlPlaneRecords {
         api_keys: vec![ApiKeyRecord {
             id: Uuid::new_v4(),
@@ -146,15 +168,12 @@ fn proxy_fixture_with_retry(
         }],
         groups: group_ids
             .iter()
-            .zip(priorities)
-            .map(|(id, priority)| ChannelGroupRecord {
+            .map(|id| ChannelGroupRecord {
                 id: *id,
                 name: id.to_string(),
                 api_format: "open_ai_chat_completions".into(),
                 connector_kind: "openai_compatible".into(),
                 request_compression: "default".into(),
-                priority: *priority,
-                selection_strategy: "weighted_random".into(),
                 enabled: true,
             })
             .collect(),
@@ -173,7 +192,6 @@ fn proxy_fixture_with_retry(
                 supports_standalone_web_search: false,
                 auto_disabled: false,
                 auto_disable_allowed: false,
-                weight: 1,
                 billing_multiplier: rust_decimal::Decimal::ONE,
                 proxy_id: None,
                 config_template_id: None,
@@ -207,8 +225,7 @@ fn proxy_fixture_with_retry(
                 "request_multipliers": [],
             }),
             upstream_model: "model".into(),
-            channel_group_ids: group_ids.clone(),
-            channel_ids: vec![],
+            routing_tiers,
             enabled: true,
         }],
         proxies: vec![],

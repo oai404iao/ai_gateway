@@ -37,17 +37,14 @@ import type {
   ChannelGroupInput,
   ConnectorKind,
   RequestCompression,
-  SelectionStrategy,
 } from "@/api/types";
 import {
   API_FORMATS,
   CONNECTOR_KINDS,
   REQUEST_COMPRESSIONS,
-  SELECTION_STRATEGIES,
   apiFormatLabel,
   connectorKindLabel,
   requestCompressionLabel,
-  selectionStrategyLabel,
 } from "@/lib/permissions";
 import { useI18n } from "@/app/i18n";
 import { safeAdminReturnPath } from "@/features/admin/model-setup/model-setup-navigation";
@@ -57,8 +54,6 @@ const schema = z.object({
   api_format: z.enum(["open_ai_chat_completions", "open_ai_responses", "open_ai_images"]),
   connector_kind: z.enum(["openai_compatible", "codex_oauth"]),
   request_compression: z.enum(["default", "zstd"]),
-  priority: z.number().int().min(0, "Priority must be zero or greater."),
-  selection_strategy: z.enum(["weighted_random", "weighted_round_robin"]),
   enabled: z.boolean(),
   status_statistics_enabled: z.boolean(),
 });
@@ -70,8 +65,6 @@ const empty: FormState = {
   api_format: "open_ai_chat_completions",
   connector_kind: "openai_compatible",
   request_compression: "default",
-  priority: 1,
-  selection_strategy: "weighted_random",
   enabled: true,
   status_statistics_enabled: false,
 };
@@ -101,8 +94,6 @@ export function ChannelGroupDetailPage() {
         api_format: data.data.api_format,
         connector_kind: data.data.connector_kind,
         request_compression: data.data.request_compression,
-        priority: data.data.priority,
-        selection_strategy: data.data.selection_strategy,
         enabled: data.data.enabled,
         status_statistics_enabled: data.data.status_statistics_enabled,
       });
@@ -124,8 +115,6 @@ export function ChannelGroupDetailPage() {
       api_format: parsed.data.api_format as ApiFormat,
       connector_kind: parsed.data.connector_kind as ConnectorKind,
       request_compression: parsed.data.request_compression as RequestCompression,
-      priority: parsed.data.priority,
-      selection_strategy: parsed.data.selection_strategy as SelectionStrategy,
       enabled: parsed.data.enabled,
       status_statistics_enabled: parsed.data.status_statistics_enabled,
     };
@@ -157,7 +146,7 @@ export function ChannelGroupDetailPage() {
   return (
     <AdminDetailShell
       title={isNew ? t("New channel group") : state.name || t("Channel group")}
-      description={t("A same-format pool of channels selected by priority and weight.")}
+      description={t("A same-format pool of upstream channels.")}
       backPath={returnTo}
       backLabel={t(returnsToSetup ? "Back to model setup" : "Back to channels")}
       isLoading={isLoading}
@@ -172,14 +161,9 @@ export function ChannelGroupDetailPage() {
             </CardHeader>
             <CardContent>
               <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <DetailField label={t("Priority")} value={data.data.priority} />
                 <DetailField
                   label={t("Connector")}
                   value={connectorKindLabel(data.data.connector_kind)}
-                />
-                <DetailField
-                  label={t("Strategy")}
-                  value={selectionStrategyLabel(data.data.selection_strategy)}
                 />
                 <DetailField
                   label={t("Request compression")}
@@ -314,44 +298,6 @@ export function ChannelGroupDetailPage() {
                       )}
                     </FieldDescription>
                   ) : null}
-                </Field>
-                <Field data-invalid={Boolean(fieldError("priority"))}>
-                  <FieldLabel htmlFor="priority">{t("Priority")}</FieldLabel>
-                  <Input
-                    id="priority"
-                    type="number"
-                    min={0}
-                    value={state.priority}
-                    onChange={(event) =>
-                      patch({ priority: Math.max(0, Number(event.target.value) || 0) })
-                    }
-                    aria-invalid={Boolean(fieldError("priority"))}
-                  />
-                  {fieldError("priority") ? (
-                    <FieldError>{fieldError("priority")}</FieldError>
-                  ) : null}
-                </Field>
-                <Field>
-                  <FieldLabel>{t("Selection strategy")}</FieldLabel>
-                  <Select
-                    value={state.selection_strategy}
-                    onValueChange={(value) =>
-                      patch({ selection_strategy: value as SelectionStrategy })
-                    }
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectGroup>
-                        {SELECTION_STRATEGIES.map((strategy) => (
-                          <SelectItem key={strategy} value={strategy}>
-                            {selectionStrategyLabel(strategy)}
-                          </SelectItem>
-                        ))}
-                      </SelectGroup>
-                    </SelectContent>
-                  </Select>
                 </Field>
                 <Field orientation="horizontal">
                   <FieldLabel htmlFor="channel_group_enabled">{t("Enabled")}</FieldLabel>

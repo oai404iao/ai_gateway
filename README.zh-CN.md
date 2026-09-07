@@ -27,7 +27,7 @@ Chat Completions、Responses、Codex standalone web search、非流式 JSON Imag
   `2025-11-25` Session/SSE 兼容，并接受 Codex 旧版模式使用的 `2025-06-18` 初始化协商。
   当前 Search kind 暴露 Codex 兼容 `web.run`，Image kind 暴露单图
   `image_gen.imagegen` generation/edit，并复用现有 API Key、路由、准入、计费和耐久日志。
-- 按 `(客户端模型名, API 格式)` 路由，支持渠道组优先级和渠道权重选择。
+- 按 `(客户端模型名, API 格式)` 路由，由模型规则拥有优先级层级、选择策略和渠道权重。
 - 特殊上游通过单进程内 Connector 接入，不增加 sidecar 或第二次网络跳转。首个
   Codex OAuth Connector 支持订阅凭证、每账户代理、Token 刷新、额度感知 draining
   以及共享凭证的 provider-managed Responses HTTP/SSE/WebSocket/Search 与 Images

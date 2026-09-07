@@ -145,7 +145,6 @@ function errorMessage(error: unknown): string {
 interface CredentialSettingsState {
   label: string;
   proxy_id: string;
-  weight: string;
   quota_threshold_percent: string;
 }
 
@@ -164,7 +163,6 @@ interface EditState extends CredentialSettingsState {
 const EMPTY_SETTINGS: CredentialSettingsState = {
   label: "",
   proxy_id: "",
-  weight: "100",
   quota_threshold_percent: "95",
 };
 
@@ -184,12 +182,10 @@ function parsePositiveInteger(value: string): number | null {
 
 function parseSettings(
   state: CredentialSettingsState,
-): { label: string; proxy_id: string | null; weight: number; quota_threshold_percent: number } | null {
-  const weight = parsePositiveInteger(state.weight);
+): { label: string; proxy_id: string | null; quota_threshold_percent: number } | null {
   const threshold = parsePositiveInteger(state.quota_threshold_percent);
   if (
     !state.label.trim() ||
-    weight === null ||
     threshold === null ||
     threshold > 100
   ) {
@@ -198,7 +194,6 @@ function parseSettings(
   return {
     label: state.label.trim(),
     proxy_id: state.proxy_id || null,
-    weight,
     quota_threshold_percent: threshold,
   };
 }
@@ -376,38 +371,26 @@ function SettingsFields({
         onChange={(proxy_id) => onChange({ proxy_id })}
         proxies={proxies}
       />
-      <div className="grid gap-4 sm:grid-cols-2">
-        <Field>
-          <FieldLabel htmlFor="codex-weight">{t("Weight")}</FieldLabel>
-          <Input
-            id="codex-weight"
-            type="number"
-            min={1}
-            value={state.weight}
-            onChange={(event) => onChange({ weight: event.target.value })}
-          />
-        </Field>
-        <Field>
-          <FieldLabel htmlFor="codex-threshold">
-            {t("Quota threshold (%)")}
-          </FieldLabel>
-          <Input
-            id="codex-threshold"
-            type="number"
-            min={1}
-            max={100}
-            value={state.quota_threshold_percent}
-            onChange={(event) =>
-              onChange({ quota_threshold_percent: event.target.value })
-            }
-          />
-          <FieldDescription>
-            {t(
-              "New requests stop using this credential at the threshold; existing sticky Responses sessions may continue.",
-            )}
-          </FieldDescription>
-        </Field>
-      </div>
+      <Field>
+        <FieldLabel htmlFor="codex-threshold">
+          {t("Quota threshold (%)")}
+        </FieldLabel>
+        <Input
+          id="codex-threshold"
+          type="number"
+          min={1}
+          max={100}
+          value={state.quota_threshold_percent}
+          onChange={(event) =>
+            onChange({ quota_threshold_percent: event.target.value })
+          }
+        />
+        <FieldDescription>
+          {t(
+            "New requests stop using this credential at the threshold; existing sticky Responses sessions may continue.",
+          )}
+        </FieldDescription>
+      </Field>
     </FieldGroup>
   );
 }
@@ -503,7 +486,7 @@ export default function CodexOauthPage() {
   const beginOauth = async () => {
     const input = parseSettings(oauthSettings);
     if (!input) {
-      toast.error(t("Enter a label, positive weight, and quota threshold from 1 to 100."));
+      toast.error(t("Enter a label and quota threshold from 1 to 100."));
       return;
     }
     try {
@@ -1031,8 +1014,7 @@ export default function CodexOauthPage() {
                         </p>
                       </TableCell>
                       <TableCell className="align-top text-sm">
-                        <p>{t("Weight {weight}", { weight: credential.weight })}</p>
-                        <p className="mt-1 text-xs text-muted-foreground">
+                        <p className="text-xs text-muted-foreground">
                           {credential.proxy_id ? t("Proxy assigned") : t("Direct")}
                         </p>
                       </TableCell>
@@ -1690,7 +1672,6 @@ function EditCredentialDialog({
       label: credential.label,
       enabled: credential.enabled,
       proxy_id: credential.proxy_id ?? "",
-      weight: String(credential.weight),
       quota_threshold_percent: String(credential.quota_threshold_percent),
     });
   }, [detail.data]);

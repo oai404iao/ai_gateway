@@ -21,12 +21,15 @@ info:
       passwords, and reusable registration invitation code plaintext are
       returned only at issuance and are never retrievable again.
     - Every error body is `{"error":"<code>"}`.
+    - Model rules own their routing tiers. Lower numeric priority wins;
+      selection strategy and weights apply only among eligible candidates in
+      the same tier.
     - `routing_dependency_invalid` means a mutation would make the routing
       graph structurally invalid, such as by introducing a missing or
-      cross-format reference or an ambiguous active priority tier. A model
-      rule with no model-capable or active channel is valid and is reported as
-      disconnected or temporarily unavailable instead of blocking the
-      mutation.
+      cross-format reference or duplicate priorities within one model rule. A
+      model rule with no model-capable or active channel is valid and is
+      reported as disconnected or temporarily unavailable instead of blocking
+      the mutation.
     - `limit` query parameters are clamped to `1..=100` (default `50`).
 
 servers:
@@ -3540,12 +3543,11 @@ components:
 
     SelfApiKeyGroupOption:
       type: object
-      required: [id, name, api_format, priority, enabled]
+      required: [id, name, api_format, enabled]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
         api_format: { $ref: "#/components/schemas/ApiFormat" }
-        priority: { type: integer }
         enabled: { type: boolean }
 
     SelfApiKeyChannelOption:
@@ -3675,7 +3677,7 @@ components:
 
     ChannelGroupView:
       type: object
-      required: [id, name, api_format, connector_kind, connector_pool_id, request_compression, priority, selection_strategy, enabled, status_statistics_enabled, updated_at]
+      required: [id, name, api_format, connector_kind, connector_pool_id, request_compression, enabled, status_statistics_enabled, updated_at]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
@@ -3687,8 +3689,6 @@ components:
           nullable: true
           description: Shared by the format-specific channel groups derived from one provider connector pool; null for ordinary OpenAI-compatible groups.
         request_compression: { $ref: "#/components/schemas/RequestCompression" }
-        priority: { type: integer }
-        selection_strategy: { $ref: "#/components/schemas/SelectionStrategy" }
         enabled: { type: boolean }
         status_statistics_enabled:
           type: boolean
@@ -3701,7 +3701,7 @@ components:
         [id, channel_group_id, api_format, connector_kind, provider_managed, name, base_url, enabled, supports_websocket,
          supports_standalone_web_search,
          auto_disabled, auto_disabled_reason, auto_disable_allowed,
-         weight, billing_multiplier, proxy_id,
+         billing_multiplier, proxy_id,
          config_template_id, connect_timeout_ms, response_header_timeout_ms,
          stream_idle_timeout_ms, upstream_auth_kind, upstream_auth_header_name,
          upstream_credential_configured, available_models, test_model, created_at, updated_at]
@@ -3727,7 +3727,6 @@ components:
         auto_disable_allowed:
           type: boolean
           description: Allows system automatic-disable rules to temporarily remove this channel from routing.
-        weight: { type: integer }
         billing_multiplier:
           allOf: [{ $ref: "#/components/schemas/Decimal" }]
           description: Multiplies the selected upstream model prices before request settlement.
@@ -3777,7 +3776,7 @@ components:
          secondary_used_percent, secondary_window_seconds, secondary_reset_at,
          secondary_window_cost_amount,
          quota_reset_credits_available, quota_checked_at, last_error_code,
-         last_error_summary, proxy_id, weight, enabled, available_models,
+         last_error_summary, proxy_id, enabled, available_models,
          created_at, updated_at]
       properties:
         id: { type: string, format: uuid }
@@ -3833,7 +3832,6 @@ components:
         last_error_code: { type: string, nullable: true }
         last_error_summary: { type: string, nullable: true }
         proxy_id: { type: string, format: uuid, nullable: true }
-        weight: { type: integer, minimum: 1 }
         enabled: { type: boolean }
         available_models:
           type: array
@@ -4001,7 +3999,6 @@ components:
       properties:
         label: { type: string, minLength: 1, maxLength: 100 }
         proxy_id: { type: string, format: uuid, nullable: true }
-        weight: { type: integer, minimum: 1, default: 100 }
         quota_threshold_percent:
           type: integer
           minimum: 1
@@ -4079,7 +4076,7 @@ components:
         type:
           type: string
           enum: [ai-gateway-codex-credentials]
-        version: { type: integer, enum: [1] }
+        version: { type: integer, enum: [2] }
         exported_at: { $ref: "#/components/schemas/DateTime" }
         channel_group_id: { type: string, format: uuid }
         channel_group_name: { type: string }
@@ -4109,7 +4106,7 @@ components:
       type: object
       required:
         [label, email, account_id, user_id, plan_type, is_fedramp, id_token,
-         access_token, refresh_token, proxy_key, weight,
+         access_token, refresh_token, proxy_key,
          quota_threshold_percent, enabled]
       properties:
         label: { type: string }
@@ -4124,18 +4121,16 @@ components:
         access_token: { type: string }
         refresh_token: { type: string }
         proxy_key: { type: string, format: uuid, nullable: true }
-        weight: { type: integer, minimum: 1 }
         quota_threshold_percent: { type: integer, minimum: 1, maximum: 100 }
         enabled: { type: boolean }
 
     CodexCredentialUpdateInput:
       type: object
-      required: [label, enabled, proxy_id, weight, quota_threshold_percent]
+      required: [label, enabled, proxy_id, quota_threshold_percent]
       properties:
         label: { type: string, minLength: 1, maxLength: 100 }
         enabled: { type: boolean }
         proxy_id: { type: string, format: uuid, nullable: true }
-        weight: { type: integer, minimum: 1 }
         quota_threshold_percent: { type: integer, minimum: 1, maximum: 100 }
 
     CodexCredentialBatchOperation:
@@ -4172,11 +4167,64 @@ components:
           items: { type: string, format: uuid }
         correlation_id: { type: string, format: uuid }
 
+    ModelRuleChannelWeight:
+      type: object
+      additionalProperties: false
+      description: |
+        Explicit route weight for one channel. Weights are compared only
+        among eligible candidates in the same routing tier.
+      required: [channel_id, weight]
+      properties:
+        channel_id: { type: string, format: uuid }
+        weight: { type: integer, minimum: 1, maximum: 2147483647 }
+
+    ModelRuleChannelGroupTarget:
+      type: object
+      additionalProperties: false
+      description: |
+        Selects candidates from one channel group. `all` requires a positive
+        `default_weight`; entries in `channels` may override that weight.
+        `selected` requires `default_weight` to be null and `channels` to be
+        nonempty.
+      required: [channel_group_id, channel_selection, default_weight, channels]
+      properties:
+        channel_group_id: { type: string, format: uuid }
+        channel_selection:
+          type: string
+          enum: [all, selected]
+        default_weight:
+          type: integer
+          minimum: 1
+          maximum: 2147483647
+          nullable: true
+          description: Positive default for `all`; null for `selected`.
+        channels:
+          type: array
+          description: |
+            Per-channel weight overrides for `all`, or the complete nonempty
+            channel selection for `selected`.
+          items: { $ref: "#/components/schemas/ModelRuleChannelWeight" }
+
+    ModelRuleRoutingTier:
+      type: object
+      additionalProperties: false
+      description: |
+        One model-rule routing tier. Lower priority wins. Selection strategy
+        and weights apply only among eligible candidates in this tier.
+      required: [priority, selection_strategy, channel_groups]
+      properties:
+        priority: { type: integer, minimum: 0, maximum: 2147483647 }
+        selection_strategy: { $ref: "#/components/schemas/SelectionStrategy" }
+        channel_groups:
+          type: array
+          minItems: 1
+          items: { $ref: "#/components/schemas/ModelRuleChannelGroupTarget" }
+
     ModelRuleView:
       type: object
       required:
         [id, client_model, api_format, upstream_model_id, upstream_model_enabled, upstream_model,
-         description, channel_group_ids, channel_ids, enabled, routing_status,
+         description, routing_tiers, enabled, routing_status,
          target_channel_count, model_capable_channel_count, active_channel_count, updated_at]
       properties:
         id: { type: string, format: uuid }
@@ -4186,12 +4234,11 @@ components:
         upstream_model_enabled: { type: boolean }
         upstream_model: { type: string }
         description: { type: string, nullable: true }
-        channel_group_ids:
+        routing_tiers:
           type: array
-          items: { type: string, format: uuid }
-        channel_ids:
-          type: array
-          items: { type: string, format: uuid }
+          minItems: 1
+          description: Ordered routing tiers; lower numeric priority wins.
+          items: { $ref: "#/components/schemas/ModelRuleRoutingTier" }
         enabled: { type: boolean }
         routing_status: { $ref: "#/components/schemas/ModelRuleRoutingStatus" }
         target_channel_count:
@@ -5342,7 +5389,7 @@ components:
 
     ChannelGroupInput:
       type: object
-      required: [name, api_format, connector_kind, priority, selection_strategy, enabled]
+      required: [name, api_format, connector_kind, enabled]
       properties:
         name: { type: string }
         api_format:
@@ -5356,8 +5403,6 @@ components:
           description: >
             Valid only for open_ai_responses groups. Omission defaults to
             `default` on create and preserves the current value on update.
-        priority: { type: integer, minimum: 0 }
-        selection_strategy: { $ref: "#/components/schemas/SelectionStrategy" }
         enabled: { type: boolean }
         status_statistics_enabled:
           type: boolean
@@ -5366,7 +5411,7 @@ components:
     ChannelCreateInput:
       type: object
       required:
-        [channel_group_id, api_format, name, base_url, enabled, weight, upstream_auth_kind]
+        [channel_group_id, api_format, name, base_url, enabled, upstream_auth_kind]
       properties:
         channel_group_id: { type: string, format: uuid }
         api_format: { $ref: "#/components/schemas/ApiFormat" }
@@ -5388,7 +5433,6 @@ components:
           type: boolean
           default: false
           description: Allows configured automatic-disable rules to temporarily remove this channel from routing.
-        weight: { type: integer, minimum: 1 }
         billing_multiplier:
           allOf: [{ $ref: "#/components/schemas/Decimal" }]
           default: "1"
@@ -5413,7 +5457,7 @@ components:
     ChannelInput:
       type: object
       required:
-        [channel_group_id, api_format, name, base_url, enabled, weight, upstream_auth_kind]
+        [channel_group_id, api_format, name, base_url, enabled, upstream_auth_kind]
       properties:
         channel_group_id: { type: string, format: uuid }
         api_format: { $ref: "#/components/schemas/ApiFormat" }
@@ -5435,7 +5479,6 @@ components:
           type: boolean
           default: false
           description: Allows configured automatic-disable rules to temporarily remove this channel from routing.
-        weight: { type: integer, minimum: 1 }
         billing_multiplier:
           allOf: [{ $ref: "#/components/schemas/Decimal" }]
           description: Omit to preserve the stored non-negative billing multiplier.
@@ -5502,7 +5545,6 @@ components:
       properties:
         enabled: { type: boolean }
         auto_disable_allowed: { type: boolean }
-        weight: { type: integer, minimum: 1 }
         billing_multiplier:
           allOf: [{ $ref: "#/components/schemas/Decimal" }]
           description: Non-negative multiplier applied to upstream model prices for settlement.
@@ -5537,18 +5579,17 @@ components:
 
     ModelRuleInput:
       type: object
-      required: [client_model, api_format, upstream_model_id, enabled]
+      required: [client_model, api_format, upstream_model_id, routing_tiers, enabled]
       properties:
         client_model: { type: string }
         api_format: { $ref: "#/components/schemas/ApiFormat" }
         upstream_model_id: { type: string, format: uuid }
         description: { type: string, nullable: true }
-        channel_group_ids:
+        routing_tiers:
           type: array
-          items: { type: string, format: uuid }
-        channel_ids:
-          type: array
-          items: { type: string, format: uuid }
+          minItems: 1
+          description: Ordered routing tiers; lower numeric priority wins.
+          items: { $ref: "#/components/schemas/ModelRuleRoutingTier" }
         enabled: { type: boolean }
 
     ProxyCreateInput:

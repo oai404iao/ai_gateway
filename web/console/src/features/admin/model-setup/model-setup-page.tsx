@@ -89,6 +89,50 @@ interface PickerItem {
   searchText: string;
 }
 
+interface RoutingTargetEntry {
+  key: string;
+  priority: number;
+  channelGroupId: string;
+  channelId?: string;
+}
+
+function routingTargetEntries(rule: ModelRuleView): RoutingTargetEntry[] {
+  return [...rule.routing_tiers]
+    .sort((left, right) => left.priority - right.priority)
+    .flatMap((tier) =>
+      tier.channel_groups.flatMap((target) =>
+        target.channel_selection === "all"
+          ? [
+              {
+                key: `${tier.priority}:${target.channel_group_id}`,
+                priority: tier.priority,
+                channelGroupId: target.channel_group_id,
+              },
+            ]
+          : target.channels.map((channel) => ({
+              key: `${tier.priority}:${target.channel_group_id}:${channel.channel_id}`,
+              priority: tier.priority,
+              channelGroupId: target.channel_group_id,
+              channelId: channel.channel_id,
+            })),
+      ),
+    );
+}
+
+function modelRuleTargetsChannel(
+  rule: ModelRuleView,
+  channel: ChannelView,
+): boolean {
+  return rule.routing_tiers.some((tier) =>
+    tier.channel_groups.some(
+      (target) =>
+        target.channel_group_id === channel.channel_group_id &&
+        (target.channel_selection === "all" ||
+          target.channels.some((entry) => entry.channel_id === channel.id)),
+    ),
+  );
+}
+
 function CopyPickerDialog({
   open,
   title,
@@ -500,8 +544,7 @@ export function ModelSetupPage() {
     return readySupplierChannels.some(
       (channel) =>
         channel.available_models.includes(model.source_model_id) &&
-        (rule.channel_ids.includes(channel.id) ||
-          rule.channel_group_ids.includes(channel.channel_group_id)),
+        modelRuleTargetsChannel(rule, channel),
     );
   });
   const unattachedModels = enabledModels.filter(
@@ -723,22 +766,27 @@ export function ModelSetupPage() {
     {
       key: "targets",
       header: t("Route"),
-      render: (rule) => (
-        <span className="flex flex-wrap gap-1">
-          {rule.channel_group_ids.slice(0, 2).map((groupId) => (
-            <Badge key={groupId} variant="secondary">
-              {groupById.get(groupId)?.name ?? t("Channel group")}
-            </Badge>
-          ))}
-          {rule.channel_ids.length > 0 ? (
-            <Badge variant="outline">
-              {t("{count} individual channels", {
-                count: rule.channel_ids.length,
-              })}
-            </Badge>
-          ) : null}
-        </span>
-      ),
+      render: (rule) => {
+        const targets = routingTargetEntries(rule);
+        return (
+          <span className="flex flex-wrap gap-1">
+            {targets.slice(0, 2).map((target) => (
+              <Badge key={target.key} variant="secondary">
+                {`P${target.priority} · ${
+                  target.channelId
+                    ? channelById.get(target.channelId)?.name ??
+                      t("Individual channel")
+                    : groupById.get(target.channelGroupId)?.name ??
+                      t("Channel group")
+                }`}
+              </Badge>
+            ))}
+            {targets.length > 2 ? (
+              <Badge variant="outline">+{targets.length - 2}</Badge>
+            ) : null}
+          </span>
+        );
+      },
     },
     {
       key: "status",
@@ -955,18 +1003,7 @@ export function ModelSetupPage() {
                     <div className="flex flex-col">
                       {enabledRules.slice(0, 5).map((rule, index) => {
                         const model = modelById.get(rule.upstream_model_id);
-                        const targetNames = [
-                          ...rule.channel_group_ids.map(
-                            (groupId) =>
-                              groupById.get(groupId)?.name ??
-                              t("Channel group"),
-                          ),
-                          ...rule.channel_ids.map(
-                            (channelId) =>
-                              channelById.get(channelId)?.name ??
-                              t("Individual channel"),
-                          ),
-                        ];
+                        const targets = routingTargetEntries(rule);
                         return (
                           <div key={rule.id}>
                             {index > 0 ? (
@@ -1011,17 +1048,23 @@ export function ModelSetupPage() {
                                   {t("Targets")}
                                 </span>
                                 <span className="flex flex-wrap gap-1">
-                                  {targetNames.slice(0, 2).map((target, targetIndex) => (
+                                  {targets.slice(0, 2).map((target) => (
                                     <Badge
-                                      key={`${target}-${targetIndex}`}
+                                      key={target.key}
                                       variant="secondary"
                                     >
-                                      {target}
+                                      {`P${target.priority} · ${
+                                        target.channelId
+                                          ? channelById.get(target.channelId)
+                                              ?.name ?? t("Individual channel")
+                                          : groupById.get(target.channelGroupId)
+                                              ?.name ?? t("Channel group")
+                                      }`}
                                     </Badge>
                                   ))}
-                                  {targetNames.length > 2 ? (
+                                  {targets.length > 2 ? (
                                     <Badge variant="outline">
-                                      +{targetNames.length - 2}
+                                      +{targets.length - 2}
                                     </Badge>
                                   ) : null}
                                 </span>

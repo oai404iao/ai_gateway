@@ -33,15 +33,18 @@ Free plan 专属格式，也不应由导入器补造 workspace ID。
 
 高级导入页接受粘贴 JSON 和最多 20 个 JSON 文件，每个文件最大 5 MiB，并自动识别：
 
-- ai-gateway 原生 `ai-gateway-codex-credentials` version 1 Bundle；
+- ai-gateway 原生 `ai-gateway-codex-credentials` Bundle，包括当前 version 2 和旧版输入；
 - CLIProxyAPI 单对象或对象数组；
 - Sub2API 原始数据 payload 或常见 `data` 响应封装；
 - 仅含 Token 字段的单个通用对象。
 
 解析发生在浏览器内，结果必须先进入可检查和修改的草稿态。管理员可以修改 label、enable、
-account ID、user ID、Token、weight、quota threshold 和代理分配；导入文件中的代理必须先映射到
+account ID、user ID、Token、quota threshold 和代理分配；导入文件中的代理必须先映射到
 现有代理，或在同一页面检查并创建。最终每条凭证仍由 ai-gateway 服务端验证 Token、
 可选 workspace/member 身份和 Codex models 后写入。
+
+旧 ai-gateway Bundle 或外部凭证对象可能仍带 `weight`。浏览器会忽略该字段、在对应草稿显示
+warning，并且不会把它提交给服务端；这同样适用于无法识别来源版本但凭证形状可导入的对象。
 
 `id_token` 可缺失；此时服务端从 `access_token` 读取身份声明。`access_token` 和
 `refresh_token` 必须存在。account ID 可以缺失，但此时必须能取得 user ID；解析兼容
@@ -51,9 +54,11 @@ account ID、user ID、Token、weight、quota threshold 和代理分配；导入
 就把后者标成重复。服务端验证 models、quota 和后续数据面请求时，仅在 account ID 存在时发送
 `ChatGPT-Account-ID`。
 
-ai-gateway 的导出只生成自己的 versioned Bundle，不尝试生成 CLIProxyAPI 或 Sub2API 文件。Bundle
-可包含凭证引用的代理定义和代理认证信息，并保留 account/user ID、enable、weight 和 quota
-threshold。
+ai-gateway 的导出只生成自己的 version 2 Bundle，不尝试生成 CLIProxyAPI 或 Sub2API 文件。
+Bundle 可包含凭证引用的代理定义和代理认证信息，并保留 account/user ID、enable 和 quota
+threshold，但不包含 routing weight。凭证加入 `all` model-rule target 后使用该 rule 的正数默认
+权重（新建规则默认为 `100`）；`selected` target 的权重由对应 Responses 或 Images rule 显式
+设置，两个格式的 routing assignment 互不同步。
 
 ## 差异与限制
 
@@ -70,5 +75,5 @@ threshold。
 1. CLIProxyAPI 单对象、对象数组、缺少 `id_token` 和带 `proxy_url` 的解析测试；
 2. Sub2API 原始 payload、响应封装、accountless personal identity、`proxy_key` 映射和内嵌
    代理认证测试；
-3. 原生 Bundle 导出后重新导入的字段保持；
+3. version 2 原生 Bundle 导出后重新导入的字段保持，以及旧版/外部 `weight` 被忽略并显示 warning；
 4. 解析失败、重复凭证、禁用或已删除代理，以及逐条导入失败重试。

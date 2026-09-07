@@ -36,7 +36,6 @@ export interface CodexCredentialImportDraft {
   refresh_token: string;
   source_proxy_key: string;
   proxy_id: string;
-  weight: string;
   quota_threshold_percent: string;
   enabled: boolean;
   warnings: string[];
@@ -425,12 +424,13 @@ function normalizeCredential({
   if (!accountId) {
     warnings.push("No workspace account ID was found; personal credentials can omit it.");
   }
+  if (Object.prototype.hasOwnProperty.call(value, "weight")) {
+    warnings.push("Legacy credential weight was ignored.");
+  }
   if (!label.trim()) errors.push("Label is required.");
   if (!accessToken) errors.push("Access token is required.");
   if (!refreshToken) errors.push("Refresh token is required.");
-  const weight = positiveIntegerString(value.weight, "100");
   const threshold = boundedPercentString(value.quota_threshold_percent, "95");
-  if (weight === null) errors.push("Weight must be a positive integer.");
   if (threshold === null) errors.push("Quota threshold must be from 1 to 100.");
   return {
     id: itemKey,
@@ -446,7 +446,6 @@ function normalizeCredential({
     refresh_token: refreshToken,
     source_proxy_key: sourceProxyKey,
     proxy_id: "",
-    weight: weight ?? stringValue(value.weight),
     quota_threshold_percent: threshold ?? stringValue(value.quota_threshold_percent),
     enabled: booleanValue(value.enabled, true),
     warnings,
@@ -603,12 +602,6 @@ function claimUserId(claims: JsonRecord | null): string {
     ["https://api.openai.com/auth", "user_id"],
     ["sub"],
   ]);
-}
-
-function positiveIntegerString(value: unknown, fallback: string): string | null {
-  if (value === undefined || value === null || value === "") return fallback;
-  const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed > 0 ? String(parsed) : null;
 }
 
 function boundedPercentString(value: unknown, fallback: string): string | null {

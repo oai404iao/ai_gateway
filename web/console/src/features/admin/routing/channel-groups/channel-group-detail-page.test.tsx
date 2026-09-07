@@ -41,6 +41,8 @@ describe("ChannelGroupDetailPage", () => {
         CHANNEL_GROUP.name,
       );
     });
+    expect(screen.queryByText("Priority")).not.toBeInTheDocument();
+    expect(screen.queryByText("Selection strategy")).not.toBeInTheDocument();
     const monitoring = screen.getByRole("switch", { name: "Status monitoring" });
     expect(monitoring).toBeChecked();
     await user.click(monitoring);
@@ -49,6 +51,8 @@ describe("ChannelGroupDetailPage", () => {
     await waitFor(() => {
       expect(submitted?.status_statistics_enabled).toBe(false);
     });
+    expect(submitted).not.toHaveProperty("priority");
+    expect(submitted).not.toHaveProperty("selection_strategy");
   });
 
   it("edits Responses request compression", async () => {

@@ -23,11 +23,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
-import {
-  RoutingTargetFields,
-  type RoutingTargetChannel,
-  type RoutingTargetGroup,
-} from "@/components/shared/routing-target-fields";
 import { AdminDetailShell } from "@/features/admin/components/admin-detail-shell";
 import { DetailField } from "@/components/shared/detail-field";
 import { StatusBadge } from "@/components/shared/status-badge";
@@ -44,28 +39,123 @@ import { ApiError, controlPlaneMutationErrorMessage } from "@/api/errors";
 import type { ApiFormat, ModelRuleInput } from "@/api/types";
 import { API_FORMATS, apiFormatLabel } from "@/lib/permissions";
 import { useI18n } from "@/app/i18n";
+import { ModelRuleTierEditor } from "./model-rule-tier-editor";
 import {
   safeAdminReturnPath,
   validResourceId,
 } from "@/features/admin/model-setup/model-setup-navigation";
 
-const schema = z.object({
-  client_model: z.string().min(1, "Client model is required."),
-  api_format: z.enum(["open_ai_chat_completions", "open_ai_responses", "open_ai_images"]),
-  upstream_model_id: z.string().min(1, "Pick an upstream model."),
-  description: z.string().nullable(),
-  channel_group_ids: z.array(z.string()),
-  channel_ids: z.array(z.string()),
-  enabled: z.boolean(),
-}).superRefine((value, context) => {
-  if (value.channel_group_ids.length === 0 && value.channel_ids.length === 0) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["channel_group_ids"],
-      message: "Pick at least one channel group or channel.",
-    });
-  }
+const channelWeightSchema = z.object({
+  channel_id: z.string().min(1),
+  weight: z.number().int("Channel weights must be whole numbers.").min(
+    1,
+    "Channel weights must be positive.",
+  ).max(2_147_483_647, "Channel weights are too large."),
 });
+
+const groupTargetSchema = z
+  .object({
+    channel_group_id: z.string().min(1),
+    channel_selection: z.enum(["all", "selected"]),
+    default_weight: z
+      .number()
+      .int("Default weight must be a whole number.")
+      .min(1, "Default weight must be positive.")
+      .max(2_147_483_647, "Default weight is too large.")
+      .nullable(),
+    channels: z.array(channelWeightSchema),
+  })
+  .superRefine((value, context) => {
+    if (value.channel_selection === "all" && value.default_weight === null) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["default_weight"],
+        message: "All-channel routing requires a positive default weight.",
+      });
+    }
+    if (value.channel_selection === "selected" && value.default_weight !== null) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["default_weight"],
+        message: "Selected-channel routing cannot have a default weight.",
+      });
+    }
+    if (value.channel_selection === "selected" && value.channels.length === 0) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["channels"],
+        message: "Select at least one channel and assign a positive weight.",
+      });
+    }
+    const channelIds = new Set<string>();
+    value.channels.forEach((channel, channelIndex) => {
+      if (channelIds.has(channel.channel_id)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["channels", channelIndex, "channel_id"],
+          message: "A channel can appear only once in a group target.",
+        });
+      }
+      channelIds.add(channel.channel_id);
+    });
+  });
+
+const routingTierSchema = z.object({
+  priority: z.number().int("Priority must be a whole number.").min(
+    0,
+    "Priority must be zero or greater.",
+  ).max(2_147_483_647, "Priority is too large."),
+  selection_strategy: z.enum(["weighted_random", "weighted_round_robin"]),
+  channel_groups: z
+    .array(groupTargetSchema)
+    .min(1, "Add at least one channel group to this tier."),
+});
+
+const schema = z
+  .object({
+    client_model: z.string().min(1, "Client model is required."),
+    api_format: z.enum([
+      "open_ai_chat_completions",
+      "open_ai_responses",
+      "open_ai_images",
+    ]),
+    upstream_model_id: z.string().min(1, "Pick an upstream model."),
+    description: z.string().nullable(),
+    routing_tiers: z
+      .array(routingTierSchema)
+      .min(1, "Add at least one routing tier."),
+    enabled: z.boolean(),
+  })
+  .superRefine((value, context) => {
+    const priorities = new Set<number>();
+    const groupIds = new Set<string>();
+    value.routing_tiers.forEach((tier, tierIndex) => {
+      if (priorities.has(tier.priority)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["routing_tiers", tierIndex, "priority"],
+          message: "Tier priorities must be unique.",
+        });
+      }
+      priorities.add(tier.priority);
+      tier.channel_groups.forEach((target, targetIndex) => {
+        if (groupIds.has(target.channel_group_id)) {
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [
+              "routing_tiers",
+              tierIndex,
+              "channel_groups",
+              targetIndex,
+              "channel_group_id",
+            ],
+            message: "A channel group can appear only once in a rule.",
+          });
+        }
+        groupIds.add(target.channel_group_id);
+      });
+    });
+  });
 
 type FormState = z.infer<typeof schema>;
 
@@ -74,8 +164,13 @@ const empty: FormState = {
   api_format: "open_ai_chat_completions",
   upstream_model_id: "",
   description: null,
-  channel_group_ids: [],
-  channel_ids: [],
+  routing_tiers: [
+    {
+      priority: 0,
+      selection_strategy: "weighted_random",
+      channel_groups: [],
+    },
+  ],
   enabled: true,
 };
 
@@ -139,8 +234,7 @@ export function ModelRuleDetailPage() {
         api_format: data.data.api_format,
         upstream_model_id: data.data.upstream_model_id,
         description: data.data.description,
-        channel_group_ids: data.data.channel_group_ids,
-        channel_ids: data.data.channel_ids,
+        routing_tiers: data.data.routing_tiers,
         enabled: data.data.enabled,
       });
     }
@@ -151,6 +245,7 @@ export function ModelRuleDetailPage() {
     if (
       (preferredModelId && !models.data) ||
       (preferredGroupId && !groups.data) ||
+      (preferredGroupId && !channels.data) ||
       (preferredChannelId && !channels.data)
     ) {
       return;
@@ -172,6 +267,55 @@ export function ModelRuleDetailPage() {
       group?.api_format ??
       channel?.api_format ??
       empty.api_format;
+    const selectedModel = model ?? models.data?.find(
+      (candidate) => candidate.id === state.upstream_model_id,
+    );
+    const groupChannels = group
+      ? (channels.data ?? []).filter(
+          (candidate) =>
+            candidate.channel_group_id === group.id &&
+            candidate.api_format === apiFormat &&
+            candidate.enabled,
+        )
+      : [];
+    const compatibleGroupChannels = selectedModel
+      ? groupChannels.filter((candidate) =>
+          candidate.available_models.includes(selectedModel.source_model_id),
+        )
+      : groupChannels;
+    const partiallyCompatible =
+      Boolean(selectedModel) &&
+      compatibleGroupChannels.length > 0 &&
+      compatibleGroupChannels.length < groupChannels.length;
+    const noCompatibleChannels =
+      Boolean(selectedModel) &&
+      groupChannels.length > 0 &&
+      compatibleGroupChannels.length === 0;
+    const groupTarget =
+      group?.api_format === apiFormat && !noCompatibleChannels
+        ? {
+            channel_group_id: group.id,
+            channel_selection: partiallyCompatible
+              ? ("selected" as const)
+              : ("all" as const),
+            default_weight: partiallyCompatible ? null : 100,
+            channels: partiallyCompatible
+              ? compatibleGroupChannels.map((candidate) => ({
+                  channel_id: candidate.id,
+                  weight: 100,
+                }))
+              : [],
+          }
+        : null;
+    const channelTarget =
+      channel?.api_format === apiFormat
+        ? {
+            channel_group_id: channel.channel_group_id,
+            channel_selection: "selected" as const,
+            default_weight: null,
+            channels: [{ channel_id: channel.id, weight: 100 }],
+          }
+        : null;
     setState((current) => ({
       ...current,
       client_model:
@@ -180,10 +324,17 @@ export function ModelRuleDetailPage() {
         current.client_model,
       api_format: apiFormat,
       upstream_model_id: model?.id ?? current.upstream_model_id,
-      channel_group_ids:
-        group?.api_format === apiFormat ? [group.id] : [],
-      channel_ids:
-        channel?.api_format === apiFormat ? [channel.id] : [],
+      routing_tiers: [
+        {
+          priority: 0,
+          selection_strategy: "weighted_random",
+          channel_groups: channelTarget
+            ? [channelTarget]
+            : groupTarget
+              ? [groupTarget]
+              : [],
+        },
+      ],
     }));
     setPrefillInitialized(true);
   }, [
@@ -198,14 +349,11 @@ export function ModelRuleDetailPage() {
     preferredClientModel,
     preferredGroupId,
     preferredModelId,
+    state.upstream_model_id,
   ]);
 
   const patch = (partial: Partial<FormState>) => setState((prev) => ({ ...prev, ...partial }));
 
-  const selectedUpstreamModel = useMemo(
-    () => models.data?.find((model) => model.id === state.upstream_model_id),
-    [models.data, state.upstream_model_id],
-  );
   const clientModelSelection = useMemo(
     () =>
       models.data?.some((model) => model.source_model_id === state.client_model)
@@ -213,56 +361,20 @@ export function ModelRuleDetailPage() {
         : CUSTOM_CLIENT_MODEL,
     [models.data, state.client_model],
   );
-  const targetGroups = useMemo<RoutingTargetGroup[]>(
+  const targetGroups = useMemo(
     () =>
-      (groups.data ?? [])
-        .filter((group) => group.api_format === state.api_format)
-        .map((group) => ({
-          id: group.id,
-          name: group.name,
-          api_format: group.api_format,
-          enabled: group.enabled,
-          priority: group.priority,
-          model_capable: selectedUpstreamModel
-            ? (channels.data ?? []).some(
-                (channel) =>
-                  channel.channel_group_id === group.id &&
-                  channel.available_models.includes(
-                    selectedUpstreamModel.source_model_id,
-                  ),
-              )
-            : undefined,
-        })),
-    [channels.data, groups.data, selectedUpstreamModel, state.api_format],
+      (groups.data ?? []).filter(
+        (group) => group.api_format === state.api_format,
+      ),
+    [groups.data, state.api_format],
   );
-  const targetChannels = useMemo<RoutingTargetChannel[]>(() => {
-    const groupById = new Map((groups.data ?? []).map((group) => [group.id, group]));
-    return (channels.data ?? [])
-      .filter((channel) => channel.api_format === state.api_format)
-      .map((channel) => {
-        const group = groupById.get(channel.channel_group_id);
-        return {
-          id: channel.id,
-          channel_group_id: channel.channel_group_id,
-          channel_group_name: group?.name,
-          channel_group_enabled: group?.enabled ?? false,
-          name: channel.name,
-          api_format: channel.api_format,
-          enabled: channel.enabled,
-          auto_disabled: channel.auto_disabled,
-          model_capable: selectedUpstreamModel
-            ? channel.available_models.includes(
-                selectedUpstreamModel.source_model_id,
-              )
-            : undefined,
-        };
-      });
-  }, [
-    channels.data,
-    groups.data,
-    selectedUpstreamModel,
-    state.api_format,
-  ]);
+  const targetChannels = useMemo(
+    () =>
+      (channels.data ?? []).filter(
+        (channel) => channel.api_format === state.api_format,
+      ),
+    [channels.data, state.api_format],
+  );
 
   const submit = async () => {
     const parsed = schema.safeParse(state);
@@ -277,8 +389,7 @@ export function ModelRuleDetailPage() {
       api_format: parsed.data.api_format as ApiFormat,
       upstream_model_id: parsed.data.upstream_model_id,
       description: parsed.data.description,
-      channel_group_ids: parsed.data.channel_group_ids,
-      channel_ids: parsed.data.channel_ids,
+      routing_tiers: parsed.data.routing_tiers,
       enabled: parsed.data.enabled,
     };
     try {
@@ -301,26 +412,33 @@ export function ModelRuleDetailPage() {
     }
   };
 
-  const fieldError = (path: string) => {
-    const message = validation?.issues.find((issue) => issue.path.join(".") === path)?.message;
+  const fieldError = (path: string | Array<string | number>) => {
+    const normalizedPath = Array.isArray(path) ? path.join(".") : path;
+    const message = validation?.issues.find(
+      (issue) => issue.path.join(".") === normalizedPath,
+    )?.message;
     return message ? t(message) : undefined;
   };
   const prefillError =
     (preferredModelId ? models.error : null) ??
     (preferredGroupId ? groups.error : null) ??
+    (preferredGroupId ? channels.error : null) ??
     (preferredChannelId ? channels.error : null);
   const prefillLoading =
     hasPrefill &&
     !prefillError &&
     ((Boolean(preferredModelId) && models.isLoading) ||
       (Boolean(preferredGroupId) && groups.isLoading) ||
+      (Boolean(preferredGroupId) && channels.isLoading) ||
       (Boolean(preferredChannelId) && channels.isLoading) ||
       (!prefillInitialized && !prefillError));
 
   return (
     <AdminDetailShell
       title={isNew ? t("New model rule") : state.client_model || t("Model Rules")}
-      description={t("Routes a client model and API format to one priced upstream model and channels.")}
+      description={t(
+        "Routes a client model and API format through rule-owned priority tiers to one priced upstream model.",
+      )}
       backPath={returnTo}
       backLabel={t(returnsToSetup ? "Back to model setup" : "Back to rules")}
       isLoading={isLoading || prefillLoading}
@@ -354,6 +472,15 @@ export function ModelRuleDetailPage() {
                     active: data.data.active_channel_count,
                     capable: data.data.model_capable_channel_count,
                     target: data.data.target_channel_count,
+                  })}
+                />
+                <DetailField
+                  label={t("Routing tiers")}
+                  value={t("{count} tiers · priorities {priorities}", {
+                    count: data.data.routing_tiers.length,
+                    priorities: data.data.routing_tiers
+                      .map((tier) => tier.priority)
+                      .join(", "),
                   })}
                 />
               </dl>
@@ -423,7 +550,16 @@ export function ModelRuleDetailPage() {
                   <Select
                     value={state.api_format}
                     onValueChange={(value) =>
-                      patch({ api_format: value as ApiFormat, channel_group_ids: [], channel_ids: [] })
+                      patch({
+                        api_format: value as ApiFormat,
+                        routing_tiers: [
+                          {
+                            priority: 0,
+                            selection_strategy: "weighted_random",
+                            channel_groups: [],
+                          },
+                        ],
+                      })
                     }
                   >
                     <SelectTrigger>
@@ -479,22 +615,15 @@ export function ModelRuleDetailPage() {
                     onChange={(event) => patch({ description: event.target.value || null })}
                   />
                 </Field>
-                <RoutingTargetFields
+                <ModelRuleTierEditor
                   className="xl:col-span-2"
+                  value={state.routing_tiers}
                   groups={targetGroups}
                   channels={targetChannels}
-                  selectedGroupIds={state.channel_group_ids}
-                  selectedChannelIds={state.channel_ids}
-                  onChange={(channelGroupIds, channelIds) =>
-                    patch({
-                      channel_group_ids: channelGroupIds,
-                      channel_ids: channelIds,
-                    })
+                  onChange={(routingTiers) =>
+                    patch({ routing_tiers: routingTiers })
                   }
-                  error={
-                    fieldError("channel_group_ids") ?? fieldError("channel_ids")
-                  }
-                  allowUnavailableSelection
+                  errorFor={fieldError}
                 />
                 <Field orientation="horizontal">
                   <FieldLabel htmlFor="model_rule_enabled">{t("Enabled")}</FieldLabel>

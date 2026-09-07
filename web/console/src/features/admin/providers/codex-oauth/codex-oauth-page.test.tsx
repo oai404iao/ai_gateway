@@ -9,6 +9,7 @@ import type {
   ChannelGroupView,
   CodexCredentialBatchInput,
   CodexCredentialExportInput,
+  CodexCredentialUpdateInput,
   CodexCredentialView,
   CodexOauthCompleteInput,
   CodexOauthStartInput,
@@ -57,7 +58,6 @@ const CREDENTIAL: CodexCredentialView = {
   last_error_code: null,
   last_error_summary: null,
   proxy_id: null,
-  weight: 100,
   enabled: true,
   available_models: ["gpt-5-codex"],
   created_at: "2026-07-29T12:00:00.000Z",
@@ -331,6 +331,52 @@ describe("CodexOauthPage", () => {
     }
   });
 
+  it("edits credential settings without displaying or submitting weight", async () => {
+    seedAuthenticatedSession();
+    let updateInput: CodexCredentialUpdateInput | undefined;
+    server.use(
+      ...baseHandlers([CREDENTIAL]),
+      http.get(
+        "/console/v1/providers/codex-oauth/credentials/:id",
+        () =>
+          HttpResponse.json(CREDENTIAL, {
+            headers: { ETag: `"${CREDENTIAL.updated_at}"` },
+          }),
+      ),
+      http.put(
+        "/console/v1/providers/codex-oauth/credentials/:id",
+        async ({ request }) => {
+          updateInput = (await request.json()) as CodexCredentialUpdateInput;
+          return HttpResponse.json({
+            id: CREDENTIAL_ID,
+            correlation_id: "00000000-0000-0000-0000-00000000c013",
+          });
+        },
+      ),
+    );
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(
+      await screen.findByRole("button", { name: "Edit Personal Plus" }),
+    );
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).queryByLabelText("Weight")).not.toBeInTheDocument();
+    await user.click(
+      within(dialog).getByRole("button", { name: "Save changes" }),
+    );
+
+    await waitFor(() =>
+      expect(updateInput).toEqual({
+        label: "Personal Plus",
+        enabled: true,
+        proxy_id: null,
+        quota_threshold_percent: 95,
+      }),
+    );
+    expect(updateInput).not.toHaveProperty("weight");
+  });
+
   it("starts PKCE authorization without opening a tab and submits the copied callback URL", async () => {
     seedAuthenticatedSession();
     const authorizationUrl =
@@ -373,14 +419,15 @@ describe("CodexOauthPage", () => {
 
     await user.click(await screen.findByRole("button", { name: "Connect account" }));
     await user.type(screen.getByLabelText("Label"), "Personal Plus");
+    expect(screen.queryByLabelText("Weight")).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Start authorization" }));
 
     await waitFor(() => expect(startInput?.label).toBe("Personal Plus"));
     expect(startInput).toMatchObject({
       proxy_id: null,
-      weight: 100,
       quota_threshold_percent: 95,
     });
+    expect(startInput).not.toHaveProperty("weight");
     expect(open).not.toHaveBeenCalled();
 
     await user.click(
@@ -423,7 +470,7 @@ describe("CodexOauthPage", () => {
             (await request.json()) as CodexCredentialExportInput;
           return HttpResponse.json({
             type: "ai-gateway-codex-credentials",
-            version: 1,
+            version: 2,
             exported_at: "2026-07-30T12:00:00.000Z",
             channel_group_id: GROUP_ID,
             channel_group_name: CODEX_GROUP.name,
@@ -440,7 +487,6 @@ describe("CodexOauthPage", () => {
                 access_token: "secret-access",
                 refresh_token: "secret-refresh",
                 proxy_key: null,
-                weight: 100,
                 quota_threshold_percent: 95,
                 enabled: true,
               },

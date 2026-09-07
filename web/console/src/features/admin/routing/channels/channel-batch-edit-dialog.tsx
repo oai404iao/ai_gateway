@@ -41,20 +41,9 @@ const schema = z
   .object({
     enabled: z.enum(["unchanged", "true", "false"]),
     auto_disable_allowed: z.enum(["unchanged", "true", "false"]),
-    weight: z.string().trim(),
     billing_multiplier: z.string().trim(),
   })
   .superRefine((value, context) => {
-    if (value.weight !== "") {
-      const weight = Number(value.weight);
-      if (!Number.isInteger(weight) || weight < 1) {
-        context.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["weight"],
-          message: "Weight must be at least 1.",
-        });
-      }
-    }
     if (
       value.billing_multiplier !== "" &&
       (!decimalPattern.test(value.billing_multiplier) ||
@@ -69,7 +58,6 @@ const schema = z
     if (
       value.enabled === "unchanged" &&
       value.auto_disable_allowed === "unchanged" &&
-      value.weight === "" &&
       value.billing_multiplier === ""
     ) {
       context.addIssue({
@@ -85,7 +73,6 @@ type FormState = z.infer<typeof schema>;
 const empty: FormState = {
   enabled: "unchanged",
   auto_disable_allowed: "unchanged",
-  weight: "",
   billing_multiplier: "",
 };
 
@@ -141,9 +128,6 @@ export function ChannelBatchEditDialog({
     if (enabled !== undefined) changes.enabled = enabled;
     if (autoDisableAllowed !== undefined) {
       changes.auto_disable_allowed = autoDisableAllowed;
-    }
-    if (parsed.data.weight !== "") {
-      changes.weight = Number(parsed.data.weight);
     }
     if (parsed.data.billing_multiplier !== "") {
       changes.billing_multiplier = parsed.data.billing_multiplier;
@@ -230,19 +214,6 @@ export function ChannelBatchEditDialog({
                 </SelectGroup>
               </SelectContent>
             </Select>
-          </Field>
-          <Field data-invalid={Boolean(fieldError("weight"))}>
-            <FieldLabel htmlFor="batch-channel-weight">{t("Weight")}</FieldLabel>
-            <Input
-              id="batch-channel-weight"
-              type="number"
-              min={1}
-              value={state.weight}
-              placeholder={t("Keep unchanged")}
-              onChange={(event) => patch({ weight: event.target.value })}
-              aria-invalid={Boolean(fieldError("weight"))}
-            />
-            {fieldError("weight") ? <FieldError>{fieldError("weight")}</FieldError> : null}
           </Field>
           <Field data-invalid={Boolean(fieldError("billing_multiplier"))}>
             <FieldLabel htmlFor="batch-channel-billing-multiplier">

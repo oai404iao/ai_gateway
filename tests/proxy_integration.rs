@@ -15,7 +15,8 @@ use ai_gateway::{
     http,
     persistence::{
         ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ConfigTemplateRecord, ControlPlaneRecords,
-        ModelRuleRecord, ProxyRecord,
+        ModelRuleChannelGroupTarget, ModelRuleChannelWeight, ModelRuleRecord, ModelRuleRoutingTier,
+        ProxyRecord,
     },
     runtime_config::{RuntimeConfig, UpstreamConfig, compile_control_plane_with_system_settings},
 };
@@ -794,8 +795,6 @@ fn configured_proxy_with_policy_and_transforms(
         } else {
             "default".into()
         },
-        priority: 0,
-        selection_strategy: "weighted_random".into(),
         enabled: true,
     };
     let template_id = transforms.template.as_ref().map(|_| Uuid::new_v4());
@@ -811,7 +810,6 @@ fn configured_proxy_with_policy_and_transforms(
             && transforms.responses_search_supported,
         auto_disabled: false,
         auto_disable_allowed: false,
-        weight: 1,
         billing_multiplier: rust_decimal::Decimal::ONE,
         proxy_id: None,
         config_template_id: (api_format == "open_ai_chat_completions")
@@ -861,54 +859,73 @@ fn configured_proxy_with_policy_and_transforms(
             quota_used_amount: Default::default(),
         }
     };
-    let rule = |model: &str, upstream: &str, format: &str, channel_id: Uuid| ModelRuleRecord {
-        id: Uuid::new_v4(),
-        client_model: model.into(),
-        api_format: format.into(),
-        upstream_model_id: Uuid::new_v4(),
-        upstream_model_enabled: true,
-        upstream_model_currency: "USD".into(),
-        price_unit_tokens: 1_000_000,
-        price_effective_at: chrono::Utc::now(),
-        input_unit_price: if transforms.filter_fast_mode {
-            Decimal::ONE
-        } else {
-            Decimal::ZERO
-        },
-        cached_input_unit_price: if transforms.filter_fast_mode {
-            Decimal::ONE
-        } else {
-            Decimal::ZERO
-        },
-        cache_write_unit_price: if transforms.filter_fast_mode {
-            Decimal::ONE
-        } else {
-            Decimal::ZERO
-        },
-        output_unit_price: if transforms.filter_fast_mode {
-            Decimal::ONE
-        } else {
-            Decimal::ZERO
-        },
-        advanced_billing: if transforms.filter_fast_mode {
-            serde_json::json!({
-                "long_context_tiers": [],
-                "request_multipliers": [{
-                    "json_pointer": "/service_tier",
-                    "value": "priority",
-                    "multiplier": "2"
+    let rule = |model: &str, upstream: &str, format: &str, channel_id: Uuid| {
+        let channel_group_id = match format {
+            "open_ai_chat_completions" => chat_group,
+            "open_ai_responses" => responses_group,
+            "open_ai_images" => images_group,
+            _ => unreachable!("test rule format"),
+        };
+        ModelRuleRecord {
+            id: Uuid::new_v4(),
+            client_model: model.into(),
+            api_format: format.into(),
+            upstream_model_id: Uuid::new_v4(),
+            upstream_model_enabled: true,
+            upstream_model_currency: "USD".into(),
+            price_unit_tokens: 1_000_000,
+            price_effective_at: chrono::Utc::now(),
+            input_unit_price: if transforms.filter_fast_mode {
+                Decimal::ONE
+            } else {
+                Decimal::ZERO
+            },
+            cached_input_unit_price: if transforms.filter_fast_mode {
+                Decimal::ONE
+            } else {
+                Decimal::ZERO
+            },
+            cache_write_unit_price: if transforms.filter_fast_mode {
+                Decimal::ONE
+            } else {
+                Decimal::ZERO
+            },
+            output_unit_price: if transforms.filter_fast_mode {
+                Decimal::ONE
+            } else {
+                Decimal::ZERO
+            },
+            advanced_billing: if transforms.filter_fast_mode {
+                serde_json::json!({
+                    "long_context_tiers": [],
+                    "request_multipliers": [{
+                        "json_pointer": "/service_tier",
+                        "value": "priority",
+                        "multiplier": "2"
+                    }],
+                })
+            } else {
+                serde_json::json!({
+                    "long_context_tiers": [],
+                    "request_multipliers": [],
+                })
+            },
+            upstream_model: upstream.into(),
+            routing_tiers: vec![ModelRuleRoutingTier {
+                priority: 0,
+                selection_strategy: "weighted_random".into(),
+                channel_groups: vec![ModelRuleChannelGroupTarget {
+                    channel_group_id,
+                    channel_selection: "selected".into(),
+                    default_weight: None,
+                    channels: vec![ModelRuleChannelWeight {
+                        channel_id,
+                        weight: 1,
+                    }],
                 }],
-            })
-        } else {
-            serde_json::json!({
-                "long_context_tiers": [],
-                "request_multipliers": [],
-            })
-        },
-        upstream_model: upstream.into(),
-        channel_group_ids: vec![],
-        channel_ids: vec![channel_id],
-        enabled: true,
+            }],
+            enabled: true,
+        }
     };
     let mut records = ControlPlaneRecords {
         api_keys: vec![
@@ -982,12 +999,22 @@ fn configured_proxy_with_policy_and_transforms(
             ),
             {
                 let mut rule = rule("gpt-image-2", "gpt-image-2", "open_ai_images", images);
-                rule.channel_ids.push(images_alt);
+                rule.routing_tiers[0].channel_groups[0]
+                    .channels
+                    .push(ModelRuleChannelWeight {
+                        channel_id: images_alt,
+                        weight: 1,
+                    });
                 rule
             },
             {
                 let mut rule = rule("image-alias", "gpt-image-2", "open_ai_images", images);
-                rule.channel_ids.push(images_alt);
+                rule.routing_tiers[0].channel_groups[0]
+                    .channels
+                    .push(ModelRuleChannelWeight {
+                        channel_id: images_alt,
+                        weight: 1,
+                    });
                 rule
             },
         ],
@@ -1189,7 +1216,6 @@ fn session_affinity_proxy(first_upstream_url: &str, second_upstream_url: &str) -
         supports_standalone_web_search: false,
         auto_disabled: false,
         auto_disable_allowed: false,
-        weight: 1,
         billing_multiplier: rust_decimal::Decimal::ONE,
         proxy_id: None,
         config_template_id: None,
@@ -1228,8 +1254,6 @@ fn session_affinity_proxy(first_upstream_url: &str, second_upstream_url: &str) -
             api_format: "open_ai_chat_completions".into(),
             connector_kind: "openai_compatible".into(),
             request_compression: "default".into(),
-            priority: 0,
-            selection_strategy: "weighted_round_robin".into(),
             enabled: true,
         }],
         channels: vec![
@@ -1255,8 +1279,16 @@ fn session_affinity_proxy(first_upstream_url: &str, second_upstream_url: &str) -
                 "request_multipliers": [],
             }),
             upstream_model: "affinity-model".into(),
-            channel_group_ids: vec![group_id],
-            channel_ids: vec![],
+            routing_tiers: vec![ModelRuleRoutingTier {
+                priority: 0,
+                selection_strategy: "weighted_round_robin".into(),
+                channel_groups: vec![ModelRuleChannelGroupTarget {
+                    channel_group_id: group_id,
+                    channel_selection: "all".into(),
+                    default_weight: Some(1),
+                    channels: vec![],
+                }],
+            }],
             enabled: true,
         }],
         proxies: vec![],

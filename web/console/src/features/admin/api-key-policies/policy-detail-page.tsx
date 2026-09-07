@@ -86,7 +86,6 @@ export function ApiKeyPolicyDetailPage() {
         name: group.name,
         api_format: group.api_format,
         enabled: group.enabled,
-        priority: group.priority,
       })),
     [groups.data],
   );

@@ -2374,8 +2374,8 @@ async fn user_group_codex_quota_visibility_is_scoped_sanitized_and_read_only() {
     let ordinary_group_id = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO channel_groups \
-         (id,name,api_format,priority,selection_strategy,enabled) \
-         VALUES ($1,$2,'open_ai_responses',1,'weighted_random',true)",
+         (id,name,api_format,enabled) \
+         VALUES ($1,$2,'open_ai_responses',true)",
     )
     .bind(ordinary_group_id)
     .bind(format!("ordinary-{ordinary_group_id}"))
@@ -2405,9 +2405,8 @@ async fn user_group_codex_quota_visibility_is_scoped_sanitized_and_read_only() {
     ] {
         sqlx::query(
             "INSERT INTO channel_groups \
-             (id,name,api_format,connector_kind,priority,selection_strategy,enabled) \
-             VALUES ($1,$2,'open_ai_responses','codex_oauth',1, \
-                     'weighted_random',true)",
+             (id,name,api_format,connector_kind,enabled) \
+             VALUES ($1,$2,'open_ai_responses','codex_oauth',true)",
         )
         .bind(group_id)
         .bind(format!("codex-{group_id}"))
@@ -2416,10 +2415,10 @@ async fn user_group_codex_quota_visibility_is_scoped_sanitized_and_read_only() {
         .unwrap();
         sqlx::query(
             "INSERT INTO channels \
-             (id,channel_group_id,api_format,name,base_url,enabled,weight, \
+             (id,channel_group_id,api_format,name,base_url,enabled, \
               upstream_auth_kind,available_models,auto_disable_allowed,supports_websocket) \
              VALUES ($1,$2,'open_ai_responses',$3, \
-                     'https://chatgpt.com/backend-api/codex',true,100,'none', \
+                     'https://chatgpt.com/backend-api/codex',true,'none', \
                      ARRAY['gpt-5-codex'],false,true)",
         )
         .bind(credential_id)
@@ -3073,6 +3072,25 @@ async fn etag_if_match_optimistic_concurrency_matches_spec() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
 
+    let removed_group_routing = request(
+        &app,
+        "POST",
+        "/console/v1/routing/channel-groups",
+        serde_json::json!({
+            "name": "legacy-spec-group",
+            "api_format": "open_ai_chat_completions",
+            "priority": 1,
+            "selection_strategy": "weighted_random",
+            "enabled": true,
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(
+        removed_group_routing.status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+
     let create = request(
         &app,
         "POST",
@@ -3080,8 +3098,6 @@ async fn etag_if_match_optimistic_concurrency_matches_spec() {
         serde_json::json!({
             "name": "spec-group",
             "api_format": "open_ai_chat_completions",
-            "priority": 1,
-            "selection_strategy": "weighted_random",
             "enabled": true,
         }),
         &[],
@@ -3104,6 +3120,8 @@ async fn etag_if_match_optimistic_concurrency_matches_spec() {
     assert!(update["connector_pool_id"].is_null());
     assert_eq!(update["request_compression"], "default");
     assert_eq!(update["status_statistics_enabled"], false);
+    assert!(update.get("priority").is_none());
+    assert!(update.get("selection_strategy").is_none());
     update["name"] = serde_json::json!("spec-group-renamed");
     update["status_statistics_enabled"] = serde_json::json!(true);
     for field in ["id", "connector_pool_id", "updated_at"] {
@@ -3149,8 +3167,6 @@ async fn request_compression_is_restricted_to_responses_channel_groups() {
             "api_format": "open_ai_chat_completions",
             "connector_kind": "openai_compatible",
             "request_compression": "zstd",
-            "priority": 1,
-            "selection_strategy": "weighted_random",
             "enabled": true,
         }),
         &[],
@@ -3174,8 +3190,6 @@ async fn codex_oauth_flow_contract_uses_pkce_and_actor_scoped_completion() {
             "name": "spec-codex-images-orphan",
             "api_format": "open_ai_images",
             "connector_kind": "codex_oauth",
-            "priority": 1,
-            "selection_strategy": "weighted_random",
             "enabled": false,
         }),
         &[],
@@ -3195,8 +3209,6 @@ async fn codex_oauth_flow_contract_uses_pkce_and_actor_scoped_completion() {
             "api_format": "open_ai_responses",
             "connector_kind": "codex_oauth",
             "request_compression": "zstd",
-            "priority": 1,
-            "selection_strategy": "weighted_random",
             "enabled": true,
         }),
         &[],
@@ -3240,6 +3252,8 @@ async fn codex_oauth_flow_contract_uses_pkce_and_actor_scoped_completion() {
     assert_eq!(images_group["connector_pool_id"], group_id);
     assert_eq!(responses_group["request_compression"], "zstd");
     assert_eq!(images_group["request_compression"], "default");
+    assert!(responses_group.get("priority").is_none());
+    assert!(responses_group.get("selection_strategy").is_none());
     let group_audit: serde_json::Value = sqlx::query_scalar(
         "SELECT after_redacted FROM audit_logs \
          WHERE object_type='channel_group' AND object_id=$1 AND action='create'",
@@ -3254,6 +3268,23 @@ async fn codex_oauth_flow_contract_uses_pkce_and_actor_scoped_completion() {
             .map(Vec::len),
         Some(2)
     );
+
+    let legacy_import = request(
+        &app,
+        "POST",
+        &format!("/console/v1/providers/codex-oauth/channel-groups/{group_id}/credentials"),
+        serde_json::json!({
+            "label": "legacy-import",
+            "weight": 100,
+            "quota_threshold_percent": 95,
+            "access_token": "legacy-access",
+            "refresh_token": "legacy-refresh"
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(legacy_import.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
     let images_group_path = format!("/console/v1/routing/channel-groups/{images_group_id}");
     let images_group_detail =
         request(&app, "GET", &images_group_path, serde_json::json!({}), &[]).await;
@@ -3290,13 +3321,26 @@ async fn codex_oauth_flow_contract_uses_pkce_and_actor_scoped_completion() {
     .await;
     assert_eq!(enabled_images_group.status(), StatusCode::OK);
 
+    let legacy_start = request(
+        &app,
+        "POST",
+        &format!("/console/v1/providers/codex-oauth/channel-groups/{group_id}/oauth/flows"),
+        serde_json::json!({
+            "label": "legacy-spec-account",
+            "weight": 100,
+            "quota_threshold_percent": 95
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(legacy_start.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
     let start = request(
         &app,
         "POST",
         &format!("/console/v1/providers/codex-oauth/channel-groups/{group_id}/oauth/flows"),
         serde_json::json!({
             "label": "spec-account",
-            "weight": 100,
             "quota_threshold_percent": 95
         }),
         &[],
@@ -3360,7 +3404,6 @@ async fn codex_oauth_flow_contract_uses_pkce_and_actor_scoped_completion() {
         &format!("/console/v1/providers/codex-oauth/channel-groups/{images_group_id}/oauth/flows"),
         serde_json::json!({
             "label": "spec-images-account",
-            "weight": 100,
             "quota_threshold_percent": 95
         }),
         &[],
@@ -3398,8 +3441,8 @@ async fn codex_export_and_proxy_delete_contracts_preserve_secrets_and_references
     let channel_id = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO channel_groups \
-         (id,name,api_format,connector_kind,priority,selection_strategy,enabled) \
-         VALUES ($1,'spec-portable','open_ai_responses','codex_oauth',1,'weighted_random',true)",
+         (id,name,api_format,connector_kind,enabled) \
+         VALUES ($1,'spec-portable','open_ai_responses','codex_oauth',true)",
     )
     .bind(group_id)
     .execute(&database.pool)
@@ -3419,10 +3462,10 @@ async fn codex_export_and_proxy_delete_contracts_preserve_secrets_and_references
     .unwrap();
     sqlx::query(
         "INSERT INTO channels \
-         (id,channel_group_id,api_format,name,base_url,enabled,weight,proxy_id, \
+         (id,channel_group_id,api_format,name,base_url,enabled,proxy_id, \
           upstream_auth_kind,available_models,auto_disable_allowed,supports_websocket) \
          VALUES ($1,$2,'open_ai_responses','spec-portable', \
-                 'https://chatgpt.com/backend-api/codex',true,100,$3,'none', \
+                 'https://chatgpt.com/backend-api/codex',true,$3,'none', \
                  ARRAY['gpt-5-codex'],false,true)",
     )
     .bind(channel_id)
@@ -3460,7 +3503,7 @@ async fn codex_export_and_proxy_delete_contracts_preserve_secrets_and_references
     assert_eq!(exported.status(), StatusCode::OK);
     let exported = body_json(exported).await;
     assert_eq!(exported["type"], "ai-gateway-codex-credentials");
-    assert_eq!(exported["version"], 1);
+    assert_eq!(exported["version"], 2);
     assert_eq!(
         exported["credentials"][0]["account_id"],
         serde_json::Value::Null
@@ -3476,6 +3519,7 @@ async fn codex_export_and_proxy_delete_contracts_preserve_secrets_and_references
         exported["credentials"][0]["proxy_key"],
         assigned_proxy_id.to_string()
     );
+    assert!(exported["credentials"][0].get("weight").is_none());
     assert_eq!(exported["proxies"][0]["password"], "proxy-password");
 
     let assigned = request(
@@ -3548,8 +3592,8 @@ async fn codex_business_batch_and_delete_contracts_are_versioned() {
     let member_b = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO channel_groups \
-         (id,name,api_format,connector_kind,priority,selection_strategy,enabled) \
-         VALUES ($1,'spec-business','open_ai_responses','codex_oauth',1,'weighted_random',true)",
+         (id,name,api_format,connector_kind,enabled) \
+         VALUES ($1,'spec-business','open_ai_responses','codex_oauth',true)",
     )
     .bind(group_id)
     .execute(&database.pool)
@@ -3571,10 +3615,10 @@ async fn codex_business_batch_and_delete_contracts_are_versioned() {
     ] {
         sqlx::query(
             "INSERT INTO channels \
-             (id,channel_group_id,api_format,name,base_url,enabled,weight, \
+             (id,channel_group_id,api_format,name,base_url,enabled, \
               upstream_auth_kind,available_models,auto_disable_allowed,supports_websocket) \
              VALUES ($1,$2,'open_ai_responses',$3, \
-                     'https://chatgpt.com/backend-api/codex',true,100,'none', \
+                     'https://chatgpt.com/backend-api/codex',true,'none', \
                      ARRAY['gpt-5-codex'],false,true)",
         )
         .bind(channel_id)
@@ -3617,6 +3661,7 @@ async fn codex_business_batch_and_delete_contracts_are_versioned() {
     assert_eq!(list.as_array().unwrap().len(), 2);
     assert_eq!(list[0]["account_id"], "business-workspace");
     assert_ne!(list[0]["user_id"], list[1]["user_id"]);
+    assert!(list[0].get("weight").is_none());
 
     let items = list
         .as_array()
@@ -3665,7 +3710,25 @@ async fn codex_business_batch_and_delete_contracts_are_versioned() {
         .to_str()
         .unwrap()
         .to_owned();
-    assert_eq!(body_json(detail).await["enabled"], false);
+    let detail_body = body_json(detail).await;
+    assert_eq!(detail_body["enabled"], false);
+    assert!(detail_body.get("weight").is_none());
+
+    let legacy_update = request(
+        &app,
+        "PUT",
+        &format!("/console/v1/providers/codex-oauth/credentials/{member_a}"),
+        serde_json::json!({
+            "label": "business-member-a",
+            "enabled": false,
+            "proxy_id": null,
+            "weight": 100,
+            "quota_threshold_percent": 95
+        }),
+        &[("if-match", &etag)],
+    )
+    .await;
+    assert_eq!(legacy_update.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
     let deleted = request(
         &app,
@@ -4082,8 +4145,6 @@ async fn model_rule_uses_its_upstream_model_as_the_price_source() {
         serde_json::json!({
             "name": "spec-rule-group",
             "api_format": "open_ai_chat_completions",
-            "priority": 1,
-            "selection_strategy": "weighted_random",
             "enabled": true,
         }),
         &[],
@@ -4101,7 +4162,6 @@ async fn model_rule_uses_its_upstream_model_as_the_price_source() {
             "name": "spec-rule-channel",
             "base_url": "https://upstream.example.test",
             "enabled": true,
-            "weight": 1,
             "upstream_auth_kind": "none",
             "available_models": ["spec-upstream-model"],
         }),
@@ -4111,6 +4171,215 @@ async fn model_rule_uses_its_upstream_model_as_the_price_source() {
     assert_eq!(channel.status(), StatusCode::CREATED);
     let channel_id = body_json(channel).await["id"].as_str().unwrap().to_owned();
 
+    let other_group = request(
+        &app,
+        "POST",
+        "/console/v1/routing/channel-groups",
+        serde_json::json!({
+            "name": "spec-rule-other-group",
+            "api_format": "open_ai_chat_completions",
+            "enabled": true,
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(other_group.status(), StatusCode::CREATED);
+    let other_group_id = body_json(other_group).await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let cross_format_group = request(
+        &app,
+        "POST",
+        "/console/v1/routing/channel-groups",
+        serde_json::json!({
+            "name": "spec-rule-responses-group",
+            "api_format": "open_ai_responses",
+            "enabled": true,
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(cross_format_group.status(), StatusCode::CREATED);
+    let cross_format_group_id = body_json(cross_format_group).await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    for (index, invalid_target) in [
+        serde_json::json!({
+            "channel_group_id": uuid::Uuid::new_v4(),
+            "channel_selection": "all",
+            "default_weight": 1,
+            "channels": []
+        }),
+        serde_json::json!({
+            "channel_group_id": cross_format_group_id,
+            "channel_selection": "all",
+            "default_weight": 1,
+            "channels": []
+        }),
+        serde_json::json!({
+            "channel_group_id": other_group_id,
+            "channel_selection": "selected",
+            "default_weight": null,
+            "channels": [{"channel_id": channel_id, "weight": 1}]
+        }),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let invalid = request(
+            &app,
+            "POST",
+            "/console/v1/routing/model-rules",
+            serde_json::json!({
+                "client_model": format!("spec-invalid-reference-{index}"),
+                "api_format": "open_ai_chat_completions",
+                "upstream_model_id": model_id,
+                "routing_tiers": [{
+                    "priority": 0,
+                    "selection_strategy": "weighted_random",
+                    "channel_groups": [invalid_target]
+                }],
+                "enabled": true,
+            }),
+            &[],
+        )
+        .await;
+        assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            body_json(invalid).await,
+            serde_json::json!({"error": "routing_dependency_invalid"})
+        );
+    }
+
+    for (index, invalid_routing_tiers) in [
+        serde_json::json!([{
+            "priority": 0,
+            "selection_strategy": "weighted_random",
+            "channel_groups": [{
+                "channel_group_id": group_id,
+                "channel_selection": "all",
+                "default_weight": null,
+                "channels": []
+            }]
+        }]),
+        serde_json::json!([{
+            "priority": 0,
+            "selection_strategy": "weighted_random",
+            "channel_groups": [{
+                "channel_group_id": group_id,
+                "channel_selection": "all",
+                "default_weight": 0,
+                "channels": []
+            }]
+        }]),
+        serde_json::json!([{
+            "priority": 0,
+            "selection_strategy": "weighted_random",
+            "channel_groups": [{
+                "channel_group_id": group_id,
+                "channel_selection": "selected",
+                "channels": [{"channel_id": channel_id, "weight": 1}]
+            }]
+        }]),
+        serde_json::json!([{
+            "priority": 0,
+            "selection_strategy": "weighted_random",
+            "channel_groups": [{
+                "channel_group_id": group_id,
+                "channel_selection": "selected",
+                "default_weight": 1,
+                "channels": [{"channel_id": channel_id, "weight": 1}]
+            }]
+        }]),
+        serde_json::json!([{
+            "priority": 0,
+            "selection_strategy": "weighted_random",
+            "channel_groups": [{
+                "channel_group_id": group_id,
+                "channel_selection": "selected",
+                "default_weight": null,
+                "channels": []
+            }]
+        }]),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let invalid = request(
+            &app,
+            "POST",
+            "/console/v1/routing/model-rules",
+            serde_json::json!({
+                "client_model": "spec-invalid-client-model",
+                "api_format": "open_ai_chat_completions",
+                "upstream_model_id": model_id,
+                "routing_tiers": invalid_routing_tiers,
+                "enabled": true,
+            }),
+            &[],
+        )
+        .await;
+        assert_eq!(
+            invalid.status(),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid routing case {index} unexpectedly succeeded"
+        );
+    }
+
+    let all_channels_rule = request(
+        &app,
+        "POST",
+        "/console/v1/routing/model-rules",
+        serde_json::json!({
+            "client_model": "spec-all-channels-model",
+            "api_format": "open_ai_chat_completions",
+            "upstream_model_id": model_id,
+            "routing_tiers": [{
+                "priority": 0,
+                "selection_strategy": "weighted_random",
+                "channel_groups": [{
+                    "channel_group_id": group_id,
+                    "channel_selection": "all",
+                    "default_weight": 5,
+                    "channels": []
+                }]
+            }],
+            "enabled": true,
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(all_channels_rule.status(), StatusCode::CREATED);
+    let all_channels_rule_id = body_json(all_channels_rule).await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let all_channels_rule = request(
+        &app,
+        "GET",
+        &format!("/console/v1/routing/model-rules/{all_channels_rule_id}"),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(all_channels_rule.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(all_channels_rule).await["routing_tiers"],
+        serde_json::json!([{
+            "priority": 0,
+            "selection_strategy": "weighted_random",
+            "channel_groups": [{
+                "channel_group_id": group_id,
+                "channel_selection": "all",
+                "default_weight": 5,
+                "channels": []
+            }]
+        }])
+    );
+
     let rule = request(
         &app,
         "POST",
@@ -4119,7 +4388,19 @@ async fn model_rule_uses_its_upstream_model_as_the_price_source() {
             "client_model": "spec-client-model",
             "api_format": "open_ai_chat_completions",
             "upstream_model_id": model_id,
-            "channel_ids": [channel_id],
+            "routing_tiers": [{
+                "priority": 3,
+                "selection_strategy": "weighted_round_robin",
+                "channel_groups": [{
+                    "channel_group_id": group_id,
+                    "channel_selection": "selected",
+                    "default_weight": null,
+                    "channels": [{
+                        "channel_id": channel_id,
+                        "weight": 7
+                    }]
+                }]
+            }],
             "enabled": true,
         }),
         &[],
@@ -4137,14 +4418,177 @@ async fn model_rule_uses_its_upstream_model_as_the_price_source() {
     )
     .await;
     assert_eq!(detail.status(), StatusCode::OK);
+    let etag = detail
+        .headers()
+        .get(header::ETAG)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
     let detail = body_json(detail).await;
     assert_eq!(detail["upstream_model_id"], model_id);
     assert_eq!(detail["upstream_model"], "spec-upstream-model");
+    assert_eq!(
+        detail["routing_tiers"],
+        serde_json::json!([{
+            "priority": 3,
+            "selection_strategy": "weighted_round_robin",
+            "channel_groups": [{
+                "channel_group_id": group_id,
+                "channel_selection": "selected",
+                "default_weight": null,
+                "channels": [{
+                    "channel_id": channel_id,
+                    "weight": 7
+                }]
+            }]
+        }])
+    );
+    assert!(detail.get("channel_group_ids").is_none());
+    assert!(detail.get("channel_ids").is_none());
     assert_eq!(detail["routing_status"], "ready");
     assert_eq!(detail["target_channel_count"], 1);
     assert_eq!(detail["model_capable_channel_count"], 1);
     assert_eq!(detail["active_channel_count"], 1);
     assert!(detail.get("model_id").is_none());
+
+    let updated_input = serde_json::json!({
+        "client_model": "spec-client-model",
+        "api_format": "open_ai_chat_completions",
+        "upstream_model_id": model_id,
+        "routing_tiers": [{
+            "priority": 4,
+            "selection_strategy": "weighted_random",
+            "channel_groups": [{
+                "channel_group_id": group_id,
+                "channel_selection": "selected",
+                "default_weight": null,
+                "channels": [{
+                    "channel_id": channel_id,
+                    "weight": 11
+                }]
+            }]
+        }],
+        "enabled": true,
+    });
+    let updated = request(
+        &app,
+        "PUT",
+        &format!("/console/v1/routing/model-rules/{rule_id}"),
+        updated_input.clone(),
+        &[("if-match", &etag)],
+    )
+    .await;
+    assert_eq!(updated.status(), StatusCode::OK);
+
+    let audit: (serde_json::Value, serde_json::Value) = sqlx::query_as(
+        "SELECT before_redacted,after_redacted \
+         FROM audit_logs \
+         WHERE object_type='model_rule' AND object_id=$1 AND action='update' \
+         ORDER BY occurred_at DESC LIMIT 1",
+    )
+    .bind(Uuid::parse_str(&rule_id).unwrap())
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(audit.0["routing_tiers"], detail["routing_tiers"]);
+    assert_eq!(audit.1["routing_tiers"], updated_input["routing_tiers"]);
+
+    let stale = request(
+        &app,
+        "PUT",
+        &format!("/console/v1/routing/model-rules/{rule_id}"),
+        updated_input,
+        &[("if-match", &etag)],
+    )
+    .await;
+    assert_eq!(stale.status(), StatusCode::CONFLICT);
+    let update_audit_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_logs \
+         WHERE object_type='model_rule' AND object_id=$1 AND action='update'",
+    )
+    .bind(Uuid::parse_str(&rule_id).unwrap())
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(update_audit_count, 1);
+
+    let group_detail = request(
+        &app,
+        "GET",
+        &format!("/console/v1/routing/channel-groups/{group_id}"),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    let group_etag = group_detail
+        .headers()
+        .get(header::ETAG)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let invalid_group_move = request(
+        &app,
+        "PUT",
+        &format!("/console/v1/routing/channel-groups/{group_id}"),
+        serde_json::json!({
+            "name": "spec-rule-group",
+            "api_format": "open_ai_responses",
+            "connector_kind": "openai_compatible",
+            "enabled": true,
+        }),
+        &[("if-match", &group_etag)],
+    )
+    .await;
+    assert_eq!(
+        invalid_group_move.status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        body_json(invalid_group_move).await,
+        serde_json::json!({"error": "routing_dependency_invalid"})
+    );
+
+    let channel_detail = request(
+        &app,
+        "GET",
+        &format!("/console/v1/routing/channels/{channel_id}"),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    let channel_etag = channel_detail
+        .headers()
+        .get(header::ETAG)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let invalid_channel_move = request(
+        &app,
+        "PUT",
+        &format!("/console/v1/routing/channels/{channel_id}"),
+        serde_json::json!({
+            "channel_group_id": other_group_id,
+            "api_format": "open_ai_chat_completions",
+            "name": "spec-rule-channel",
+            "base_url": "https://upstream.example.test",
+            "enabled": true,
+            "upstream_auth_kind": "none",
+            "available_models": ["spec-upstream-model"],
+        }),
+        &[("if-match", &channel_etag)],
+    )
+    .await;
+    assert_eq!(
+        invalid_channel_move.status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        body_json(invalid_channel_move).await,
+        serde_json::json!({"error": "routing_dependency_invalid"})
+    );
     database.cleanup().await;
 }
 
@@ -4180,8 +4624,6 @@ async fn mcp_server_crud_publishes_registry_and_uses_etags() {
         serde_json::json!({
             "name": "mcp-search-group",
             "api_format": "open_ai_responses",
-            "priority": 1,
-            "selection_strategy": "weighted_random",
             "enabled": true,
         }),
         &[],
@@ -4201,7 +4643,6 @@ async fn mcp_server_crud_publishes_registry_and_uses_etags() {
             "base_url": "https://search.example.test",
             "enabled": true,
             "supports_standalone_web_search": true,
-            "weight": 1,
             "upstream_auth_kind": "none",
             "available_models": ["mcp-search-upstream"],
         }),
@@ -4219,7 +4660,16 @@ async fn mcp_server_crud_publishes_registry_and_uses_etags() {
             "client_model": "mcp-search-client",
             "api_format": "open_ai_responses",
             "upstream_model_id": model_id,
-            "channel_ids": [channel_id],
+            "routing_tiers": [{
+                "priority": 0,
+                "selection_strategy": "weighted_random",
+                "channel_groups": [{
+                    "channel_group_id": group_id,
+                    "channel_selection": "selected",
+                    "default_weight": null,
+                    "channels": [{"channel_id": channel_id, "weight": 1}]
+                }]
+            }],
             "enabled": true,
         }),
         &[],
@@ -4455,8 +4905,6 @@ async fn image_mcp_servers_compile_typed_settings_and_require_images_routes() {
         serde_json::json!({
             "name": "mcp-image-group",
             "api_format": "open_ai_images",
-            "priority": 1,
-            "selection_strategy": "weighted_random",
             "enabled": true,
         }),
         &[],
@@ -4475,7 +4923,6 @@ async fn image_mcp_servers_compile_typed_settings_and_require_images_routes() {
             "name": "mcp-image-channel",
             "base_url": "https://images.example.test",
             "enabled": true,
-            "weight": 1,
             "upstream_auth_kind": "none",
             "available_models": ["mcp-image-upstream"],
         }),
@@ -4493,7 +4940,16 @@ async fn image_mcp_servers_compile_typed_settings_and_require_images_routes() {
             "client_model": "mcp-image-client",
             "api_format": "open_ai_images",
             "upstream_model_id": model_id,
-            "channel_ids": [channel_id],
+            "routing_tiers": [{
+                "priority": 0,
+                "selection_strategy": "weighted_random",
+                "channel_groups": [{
+                    "channel_group_id": group_id,
+                    "channel_selection": "selected",
+                    "default_weight": null,
+                    "channels": [{"channel_id": channel_id, "weight": 1}]
+                }]
+            }],
             "enabled": true,
         }),
         &[],
@@ -4711,8 +5167,6 @@ async fn api_key_create_returns_retrievable_prefixed_secret() {
         serde_json::json!({
             "name": "spec-key-group",
             "api_format": "open_ai_chat_completions",
-            "priority": 1,
-            "selection_strategy": "weighted_random",
             "enabled": true,
         }),
         &[],
@@ -4770,8 +5224,6 @@ async fn channel_and_template_details_return_stored_editable_values() {
         serde_json::json!({
             "name": "editable-detail-group",
             "api_format": "open_ai_chat_completions",
-            "priority": 1,
-            "selection_strategy": "weighted_random",
             "enabled": true,
         }),
         &[],
@@ -4779,6 +5231,24 @@ async fn channel_and_template_details_return_stored_editable_values() {
     .await;
     assert_eq!(group.status(), StatusCode::CREATED);
     let group_id = body_json(group).await["id"].as_str().unwrap().to_owned();
+
+    let legacy_weight = request(
+        &app,
+        "POST",
+        "/console/v1/routing/channels",
+        serde_json::json!({
+            "channel_group_id": group_id,
+            "api_format": "open_ai_chat_completions",
+            "name": "legacy-weight-channel",
+            "base_url": "https://legacy-weight.example.test",
+            "enabled": true,
+            "weight": 1,
+            "upstream_auth_kind": "none",
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(legacy_weight.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
     let template_document = serde_json::json!({
         "version": 1,
@@ -4817,7 +5287,6 @@ async fn channel_and_template_details_return_stored_editable_values() {
             "name": "editable-detail-channel",
             "base_url": "https://editable-detail.example.test",
             "enabled": true,
-            "weight": 1,
             "billing_multiplier": "1.5",
             "config_template_id": template_id,
             "override_document": override_document,
@@ -4849,6 +5318,7 @@ async fn channel_and_template_details_return_stored_editable_values() {
         .unwrap();
     assert!(channel_list_item.get("override_document").is_none());
     assert!(channel_list_item.get("upstream_api_key").is_none());
+    assert!(channel_list_item.get("weight").is_none());
     assert_eq!(channel_list_item["billing_multiplier"], "1.500000000000");
 
     let channel_detail = request(
@@ -4860,11 +5330,39 @@ async fn channel_and_template_details_return_stored_editable_values() {
     )
     .await;
     assert_eq!(channel_detail.status(), StatusCode::OK);
-    assert!(channel_detail.headers().get(header::ETAG).is_some());
+    let channel_etag = channel_detail
+        .headers()
+        .get(header::ETAG)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
     let channel_detail = body_json(channel_detail).await;
     assert_eq!(channel_detail["override_document"], override_document);
     assert_eq!(channel_detail["upstream_api_key"], upstream_api_key);
+    assert!(channel_detail.get("weight").is_none());
     assert_eq!(channel_detail["billing_multiplier"], "1.500000000000");
+
+    let legacy_weight_update = request(
+        &app,
+        "PUT",
+        &format!("/console/v1/routing/channels/{channel_id}"),
+        serde_json::json!({
+            "channel_group_id": group_id,
+            "api_format": "open_ai_chat_completions",
+            "name": "editable-detail-channel",
+            "base_url": "https://editable-detail.example.test",
+            "enabled": true,
+            "weight": 1,
+            "upstream_auth_kind": "bearer",
+        }),
+        &[("if-match", &channel_etag)],
+    )
+    .await;
+    assert_eq!(
+        legacy_weight_update.status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
 
     let template_list = request(
         &app,
@@ -4914,8 +5412,6 @@ async fn channel_responses_capabilities_are_responses_only_and_default_to_opt_in
         serde_json::json!({
             "name": "websocket-responses-group",
             "api_format": "open_ai_responses",
-            "priority": 1,
-            "selection_strategy": "weighted_random",
             "enabled": true,
         }),
         &[],
@@ -4937,7 +5433,6 @@ async fn channel_responses_capabilities_are_responses_only_and_default_to_opt_in
             "enabled": true,
             "supports_websocket": true,
             "supports_standalone_web_search": true,
-            "weight": 1,
             "upstream_auth_kind": "none",
         }),
         &[],
@@ -4969,8 +5464,6 @@ async fn channel_responses_capabilities_are_responses_only_and_default_to_opt_in
         serde_json::json!({
             "name": "websocket-chat-group",
             "api_format": "open_ai_chat_completions",
-            "priority": 1,
-            "selection_strategy": "weighted_random",
             "enabled": true,
         }),
         &[],
@@ -4991,7 +5484,6 @@ async fn channel_responses_capabilities_are_responses_only_and_default_to_opt_in
             "base_url": "https://chat-websocket.example.test",
             "enabled": true,
             "supports_websocket": true,
-            "weight": 1,
             "upstream_auth_kind": "none",
         }),
         &[],
@@ -5010,7 +5502,6 @@ async fn channel_responses_capabilities_are_responses_only_and_default_to_opt_in
             "base_url": "https://chat-search.example.test",
             "enabled": true,
             "supports_standalone_web_search": true,
-            "weight": 1,
             "upstream_auth_kind": "none",
         }),
         &[],
@@ -5033,8 +5524,6 @@ async fn images_control_plane_rejects_scheduled_probes_and_sse_transforms() {
         serde_json::json!({
             "name": "images-group",
             "api_format": "open_ai_images",
-            "priority": 1,
-            "selection_strategy": "weighted_random",
             "enabled": true,
         }),
         &[],
@@ -5053,7 +5542,6 @@ async fn images_control_plane_rejects_scheduled_probes_and_sse_transforms() {
             "name": "invalid-images-probe",
             "base_url": "https://images.example.test",
             "enabled": true,
-            "weight": 1,
             "upstream_auth_kind": "none",
             "available_models": ["gpt-image-2"],
             "test_model": "gpt-image-2",
@@ -5073,7 +5561,6 @@ async fn images_control_plane_rejects_scheduled_probes_and_sse_transforms() {
             "name": "images-generation",
             "base_url": "https://images.example.test",
             "enabled": true,
-            "weight": 1,
             "upstream_auth_kind": "none",
             "available_models": ["gpt-image-2"],
         }),
@@ -5165,8 +5652,6 @@ async fn channel_batch_updates_are_atomic_versioned_and_published_once() {
         serde_json::json!({
             "name": "batch-channel-group",
             "api_format": "open_ai_chat_completions",
-            "priority": 1,
-            "selection_strategy": "weighted_random",
             "enabled": true,
         }),
         &[],
@@ -5187,7 +5672,6 @@ async fn channel_batch_updates_are_atomic_versioned_and_published_once() {
                 "name": format!("batch-channel-{suffix}"),
                 "base_url": format!("https://batch-{suffix}.example.test"),
                 "enabled": true,
-                "weight": 1,
                 "upstream_auth_kind": "none",
                 "available_models": [],
             }),
@@ -5225,6 +5709,19 @@ async fn channel_batch_updates_are_atomic_versioned_and_published_once() {
         })
         .collect::<Vec<_>>();
 
+    let legacy_weight = request(
+        &app,
+        "POST",
+        "/console/v1/routing/channels/batch",
+        serde_json::json!({
+            "items": before_items.clone(),
+            "changes": {"weight": 7}
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(legacy_weight.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
     let updated = request(
         &app,
         "POST",
@@ -5233,7 +5730,6 @@ async fn channel_batch_updates_are_atomic_versioned_and_published_once() {
             "items": before_items,
             "changes": {
                 "auto_disable_allowed": true,
-                "weight": 7,
                 "billing_multiplier": "2.5"
             }
         }),
@@ -5263,7 +5759,7 @@ async fn channel_batch_updates_are_atomic_versioned_and_published_once() {
             .iter()
             .find(|channel| channel["id"] == *id)
             .unwrap();
-        assert_eq!(channel["weight"], 7);
+        assert!(channel.get("weight").is_none());
         assert_eq!(channel["billing_multiplier"], "2.500000000000");
         assert_eq!(channel["auto_disable_allowed"], true);
         let compiled = app
@@ -5271,7 +5767,6 @@ async fn channel_batch_updates_are_atomic_versioned_and_published_once() {
             .snapshot()
             .channel(Uuid::parse_str(id).unwrap())
             .unwrap();
-        assert_eq!(compiled.weight(), 7);
         assert_eq!(
             compiled.billing_multiplier(),
             rust_decimal::Decimal::new(25, 1)
@@ -5326,24 +5821,31 @@ async fn channel_batch_updates_are_atomic_versioned_and_published_once() {
                     "updated_at": stale_second_version
                 }
             ],
-            "changes": {"weight": 9}
+            "changes": {"billing_multiplier": "9"}
         }),
         &[],
     )
     .await;
     assert_eq!(conflict.status(), StatusCode::CONFLICT);
-    let persisted_weights: Vec<i32> =
-        sqlx::query_scalar("SELECT weight FROM channels WHERE id = ANY($1) ORDER BY id")
-            .bind(
-                channel_ids
-                    .iter()
-                    .map(|id| Uuid::parse_str(id).unwrap())
-                    .collect::<Vec<_>>(),
-            )
-            .fetch_all(&database.pool)
-            .await
-            .unwrap();
-    assert_eq!(persisted_weights, vec![7, 7]);
+    let persisted_multipliers: Vec<rust_decimal::Decimal> = sqlx::query_scalar(
+        "SELECT billing_multiplier FROM channels WHERE id = ANY($1) ORDER BY id",
+    )
+    .bind(
+        channel_ids
+            .iter()
+            .map(|id| Uuid::parse_str(id).unwrap())
+            .collect::<Vec<_>>(),
+    )
+    .fetch_all(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        persisted_multipliers,
+        vec![
+            rust_decimal::Decimal::new(25, 1),
+            rust_decimal::Decimal::new(25, 1)
+        ]
+    );
     let audit_count: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM audit_logs \
          WHERE action='batch_update' AND object_id = ANY($1)",
@@ -5373,8 +5875,6 @@ async fn administrator_can_manually_recover_an_auto_disabled_channel() {
         serde_json::json!({
             "name": "manual-recovery-group",
             "api_format": "open_ai_chat_completions",
-            "priority": 1,
-            "selection_strategy": "weighted_random",
             "enabled": true,
         }),
         &[],
@@ -5392,7 +5892,6 @@ async fn administrator_can_manually_recover_an_auto_disabled_channel() {
             "name": "manual-recovery-channel",
             "base_url": "https://manual-recovery.example.test",
             "enabled": true,
-            "weight": 1,
             "upstream_auth_kind": "none",
             "available_models": [],
         }),
@@ -5482,8 +5981,6 @@ async fn api_key_policy_only_stores_selectable_targets() {
         serde_json::json!({
             "name": "policy-target-group",
             "api_format": "open_ai_chat_completions",
-            "priority": 1,
-            "selection_strategy": "weighted_random",
             "enabled": true,
         }),
         &[],
@@ -5501,7 +5998,6 @@ async fn api_key_policy_only_stores_selectable_targets() {
             "name": "policy-target-channel",
             "base_url": "https://upstream.example.test",
             "enabled": true,
-            "weight": 1,
             "upstream_auth_kind": "none",
             "available_models": [],
         }),
@@ -5569,8 +6065,6 @@ async fn self_api_key_create_reports_policy_preconditions() {
         serde_json::json!({
             "name": "self-key-group",
             "api_format": "open_ai_chat_completions",
-            "priority": 1,
-            "selection_strategy": "weighted_random",
             "enabled": true,
         }),
         &[],
@@ -5588,7 +6082,6 @@ async fn self_api_key_create_reports_policy_preconditions() {
             "name": "self-key-channel",
             "base_url": "https://upstream.example.test",
             "enabled": true,
-            "weight": 1,
             "upstream_auth_kind": "none",
             "available_models": [],
         }),
@@ -5672,7 +6165,7 @@ async fn self_api_key_create_reports_policy_preconditions() {
     let options = body_json(options).await;
     assert_eq!(options["policy_id"], policy_id.to_string());
     assert_eq!(options["groups"][0]["id"], group_id);
-    assert_eq!(options["groups"][0]["priority"], 1);
+    assert!(options["groups"][0].get("priority").is_none());
     assert_eq!(options["channels"][0]["id"], channel_id);
     assert_eq!(options["channels"][0]["channel_group_enabled"], true);
 
@@ -5683,8 +6176,6 @@ async fn self_api_key_create_reports_policy_preconditions() {
         serde_json::json!({
             "name": "self-key-other-group",
             "api_format": "open_ai_chat_completions",
-            "priority": 2,
-            "selection_strategy": "weighted_random",
             "enabled": true,
         }),
         &[],
@@ -6092,8 +6583,8 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
     let api_key_id = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO channel_groups \
-         (id,name,api_format,priority,selection_strategy,enabled,status_statistics_enabled) \
-         VALUES ($1,$2,'open_ai_chat_completions',1,'weighted_random',true,true)",
+         (id,name,api_format,enabled,status_statistics_enabled) \
+         VALUES ($1,$2,'open_ai_chat_completions',true,true)",
     )
     .bind(group_id)
     .bind(format!("statistics-group-{group_id}"))
@@ -6111,7 +6602,6 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
             "base_url": "https://legacy-statistics.example.test",
             "enabled": true,
             "status_statistics_enabled": true,
-            "weight": 1,
             "upstream_auth_kind": "none",
         }),
         &[],
@@ -6131,7 +6621,6 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
             "name": format!("statistics-channel-{group_id}"),
             "base_url": "https://statistics.example.test",
             "enabled": true,
-            "weight": 1,
             "upstream_auth_kind": "none",
             "available_models": ["statistics-model"],
         }),
@@ -6838,9 +7327,8 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
     let codex_credential_id = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO channel_groups \
-         (id,name,api_format,connector_kind,priority,selection_strategy,enabled) \
-         VALUES ($1,'statistics-codex','open_ai_responses','codex_oauth',1, \
-                 'weighted_random',true)",
+         (id,name,api_format,connector_kind,enabled) \
+         VALUES ($1,'statistics-codex','open_ai_responses','codex_oauth',true)",
     )
     .bind(codex_group_id)
     .execute(&database.pool)
@@ -6848,10 +7336,10 @@ async fn statistics_endpoints_aggregate_channel_group_status_and_costs() {
     .unwrap();
     sqlx::query(
         "INSERT INTO channels \
-         (id,channel_group_id,api_format,name,base_url,enabled,weight, \
+         (id,channel_group_id,api_format,name,base_url,enabled, \
           upstream_auth_kind,available_models,auto_disable_allowed,supports_websocket) \
          VALUES ($1,$2,'open_ai_responses','statistics-codex', \
-                 'https://chatgpt.com/backend-api/codex',true,100,'none', \
+                 'https://chatgpt.com/backend-api/codex',true,'none', \
                  ARRAY['gpt-5-codex'],false,true)",
     )
     .bind(codex_credential_id)

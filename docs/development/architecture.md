@@ -81,13 +81,20 @@ Browser or Console client
    契约时删除。当前只校验顶层字段，允许字段内部的嵌套结构仍由上游解释。随后按 API Key
    快照中的用户组策略执行可选 Fast 过滤：启用时删除顶层 `service_tier`，因此后续日志元数据、
    请求倍率、Session affinity、Transform 和 Connector 都只观察过滤后的请求。
-6. 从分 API 格式索引按 `(api_format, client_model)` 取得预编译模型路由。规则分别保存目标
-   渠道位图、与 `channels.available_models` 求交后的模型兼容位图，以及由当前启用状态构成的
-   优先级 tier。没有模型兼容渠道的规则仍保留为可发布的断开状态。
+6. 从分 API 格式索引按 `(api_format, client_model)` 取得预编译模型路由。每条规则拥有一个或
+   多个按非负 `priority` 排序的 routing tier；数值越小越先尝试，每个 tier 独立选择
+   `weighted_random` 或 `weighted_round_robin`。tier 内的 group target 为 `all` 时，编译器
+   动态展开该组当前全部渠道并应用正数默认权重及可选逐渠道覆盖，因此以后加入该组的渠道也会在
+   下次快照发布时自动进入规则；`selected` 则只展开显式列出的正权重渠道。Console 新建规则时
+   将 `all` 默认权重和新选择的显式 Channel 权重都初始化为 `100`。规则另存目标渠道
+   位图和与 `channels.available_models` 求交后的模型兼容位图；没有模型兼容渠道的规则仍保留为
+   可发布的断开状态。
 7. `accessible_routes` 通常按模型兼容渠道完成 O(1) 授权判断；只有规则全局没有任何模型兼容
    渠道时，才退回目标渠道位图，使原本已授权的断开规则仍可识别。随后使用渠道授权位图过滤
-   实际模型兼容候选，并依次应用 operation capability、Session 粘性、最低优先级、权重策略和
-   被动健康过滤。授权范围内没有可选候选时返回 `503 no_healthy_channel`。
+   实际模型兼容候选，并依次应用 operation capability、Session 粘性、规则中最低可用
+   `priority` tier 和被动健康过滤。权重只比较该 tier 内仍然合格的渠道，不跨 tier 比较；
+   API Key 的 group/channel 授权仍与此前相同，模型规则的 `all` target 不会扩大 Key 的授权
+   范围。授权范围内没有可选候选时返回 `503 no_healthy_channel`。
    `/v1/models` 额外要求 API Key 范围与模型兼容位图相交，所以不公布断开规则。
    Standalone web search 只允许
    `supports_standalone_web_search = true` 的 Responses 渠道。
@@ -213,6 +220,8 @@ tombstone。
 managed channels 保留为统一路由中的稳定壳，credential 的 enable/quota/重新授权状态由独立
 Connector 快照判定；这样 Responses 新 Session 和 Images 请求可在发送前排除不可用账户，
 Responses affinity hit 会持续命中原 channel 并 fail closed，不会因一次失败静默改绑账户。
+路由顺序和权重不属于 managed channel 或 credential。Responses 与 Images 模型规则分别维护自己
+的 routing tiers 和 group/channel assignments；一个格式的修改不会投影或同步到另一个格式。
 
 Codex token 与 quota 使用独立 `ArcSwap` 凭证快照；两个 projection channel ID 指向同一份
 credential，避免每次 token 轮换都重编译整个控制面。
@@ -221,7 +230,8 @@ credential，避免每次 token 轮换都重编译整个控制面。
 并发重用。正式代理请求仍直接通过 reqwest streaming path，不经过 worker actor。
 
 Codex 凭证可移植性仍沿用相同 provider 边界：服务端显式导出 API 从 repository 读取敏感 Token
-及实际引用的代理，生成带版本的原生 Bundle；高级导入页在浏览器内把原生、CLIProxyAPI 和
+及实际引用的代理，生成不含路由权重的 version 2 原生 Bundle；高级导入页在浏览器内把原生、
+CLIProxyAPI 和
 Sub2API JSON 标准化成可编辑草稿，完成代理 CRUD/映射后再逐条调用既有服务端验证导入事务。导入
 格式解析不是数据面职责，也不会绕过“account/user 至少存在一个”、models、代理 enable 或
 managed channel 的现有不变量。代理删除使用 optimistic concurrency，并在 repository 层拒绝仍被渠道或待完成 OAuth
@@ -255,7 +265,7 @@ grace period 内完成，截止时强制取消，避免 Upgrade 脱离 Hyper con
   Connector 仍可在响应头前故障转移，Codex Connector 发送后不重试。
 - Responses WebSocket 只在上游 Upgrade/建连完成前故障转移；`response.create`
   一旦发送就不再切换连接或渠道。
-- 每次后续尝试排除已经尝试过的渠道，并重新遵守授权、优先级、健康和权重规则。
+- 每次后续尝试排除已经尝试过的渠道，并重新遵守授权、规则 tier、健康和 tier 内权重规则。
 - 上游返回任意 HTTP 响应头后，不再重试 HTTP 错误。
 - 向客户端发送响应头或任何响应字节后，不得切换渠道。
 - SSE 变换按解码后的事件边界处理，不按压缩或网络 chunk 处理，也不缓冲完整流。
@@ -293,8 +303,10 @@ API Key 不受影响。临时密码登录只创建 `purpose = password_change` �
 除刷新、退出和完成密码重置外拒绝所有 Console 路由。用户提交不同于临时密码的新密码后，事务原子
 清除临时状态并撤销全部受限 Session，随后签发新的普通 Session。
 
-路由快照为渠道和模型路由分配进程内 dense slot。模型 tier 保存连续的
-`CompiledCandidate(slot, channel, weight)` 数组；相同授权范围的 API Key 共享
+路由快照为渠道和模型路由分配进程内 dense slot。每个模型规则 tier 保存自己的 priority、
+selection strategy 和连续的 `CompiledCandidate(slot, channel, route_weight)` 数组；这里的
+weight 来自该模型规则的 group target 默认值或逐渠道赋值，不是 Channel 资源字段。相同授权范围
+的 API Key 共享
 `AuthorizationProfile`，其中包含允许渠道和预计算的可达路由位图。可达路由通常按模型兼容
 渠道授权；规则全局断开时改用目标渠道，以便原本已授权的请求得到明确的运行时不可用结果。
 模型规则另存模型兼容渠道位图，用于 `/v1/models` 可见性；因此删除最后一个渠道模型不会阻止
@@ -305,6 +317,11 @@ API Key 不受影响。临时密码登录只创建 `purpose = password_change` �
 加权轮询游标分别按 64 个 shard 隔离。加权随机使用无分配两遍扫描，重试使用固定
 dense channel slot 数组，因此正常选择路径没有全局渠道状态锁，也不创建候选
 `Vec`、`HashSet` 或 Session affinity `Box`。
+
+Channel Group 不再保存 priority 或 selection strategy，Channel 和 Codex credential 也不再保存
+routing weight。Group 继续承担格式、Connector、启用、请求压缩和状态统计等资源配置；Channel
+继续承担端点、鉴权、模型能力、变换、网络、计费和健康状态。路由层级与权重只由引用这些资源的
+模型规则拥有。
 
 ## 请求日志耐久链路
 

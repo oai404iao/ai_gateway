@@ -1197,6 +1197,173 @@ struct Seed {
     client_model: String,
 }
 
+enum RoutingGroupFixture<'a> {
+    All {
+        channel_group_id: Uuid,
+        default_weight: i32,
+        channels: &'a [(Uuid, i32)],
+    },
+    Selected {
+        channel_group_id: Uuid,
+        channels: &'a [(Uuid, i32)],
+    },
+}
+
+struct RoutingTierFixture<'a> {
+    priority: i32,
+    selection_strategy: &'a str,
+    channel_groups: &'a [RoutingGroupFixture<'a>],
+}
+
+async fn insert_model_rule_fixture(
+    pool: &PgPool,
+    id: Uuid,
+    client_model: &str,
+    api_format: &str,
+    upstream_model_id: Uuid,
+    enabled: bool,
+    routing_tiers: &[RoutingTierFixture<'_>],
+) {
+    let mut transaction = pool.begin().await.unwrap();
+    sqlx::query(
+        "INSERT INTO model_rules \
+         (id,client_model,api_format,upstream_model_id,enabled) \
+         VALUES ($1,$2,$3::api_format,$4,$5)",
+    )
+    .bind(id)
+    .bind(client_model)
+    .bind(api_format)
+    .bind(upstream_model_id)
+    .bind(enabled)
+    .execute(&mut *transaction)
+    .await
+    .unwrap();
+
+    for tier in routing_tiers {
+        sqlx::query(
+            "INSERT INTO model_rule_routing_tiers \
+             (model_rule_id,api_format,priority,selection_strategy) \
+             VALUES ($1,$2::api_format,$3,$4)",
+        )
+        .bind(id)
+        .bind(api_format)
+        .bind(tier.priority)
+        .bind(tier.selection_strategy)
+        .execute(&mut *transaction)
+        .await
+        .unwrap();
+        for group in tier.channel_groups {
+            let (channel_group_id, channel_selection, default_weight, channels) = match group {
+                RoutingGroupFixture::All {
+                    channel_group_id,
+                    default_weight,
+                    channels,
+                } => (channel_group_id, "all", Some(*default_weight), *channels),
+                RoutingGroupFixture::Selected {
+                    channel_group_id,
+                    channels,
+                } => (channel_group_id, "selected", None, *channels),
+            };
+            sqlx::query(
+                "INSERT INTO model_rule_routing_groups \
+                 (model_rule_id,api_format,priority,channel_group_id,channel_selection,default_weight) \
+                 VALUES ($1,$2::api_format,$3,$4,$5,$6)",
+            )
+            .bind(id)
+            .bind(api_format)
+            .bind(tier.priority)
+            .bind(channel_group_id)
+            .bind(channel_selection)
+            .bind(default_weight)
+            .execute(&mut *transaction)
+            .await
+            .unwrap();
+            for (channel_id, weight) in channels {
+                sqlx::query(
+                    "INSERT INTO model_rule_routing_channels \
+                     (model_rule_id,api_format,channel_group_id,channel_id,weight) \
+                     VALUES ($1,$2::api_format,$3,$4,$5)",
+                )
+                .bind(id)
+                .bind(api_format)
+                .bind(channel_group_id)
+                .bind(channel_id)
+                .bind(weight)
+                .execute(&mut *transaction)
+                .await
+                .unwrap();
+            }
+        }
+    }
+    transaction.commit().await.unwrap();
+}
+
+async fn replace_model_rule_with_all_group_fixture(
+    pool: &PgPool,
+    model_rule_id: Uuid,
+    api_format: &str,
+    priority: i32,
+    selection_strategy: &str,
+    channel_group_id: Uuid,
+    default_weight: i32,
+) {
+    let mut transaction = pool.begin().await.unwrap();
+    sqlx::query("DELETE FROM model_rule_routing_tiers WHERE model_rule_id=$1")
+        .bind(model_rule_id)
+        .execute(&mut *transaction)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO model_rule_routing_tiers \
+         (model_rule_id,api_format,priority,selection_strategy) \
+         VALUES ($1,$2::api_format,$3,$4)",
+    )
+    .bind(model_rule_id)
+    .bind(api_format)
+    .bind(priority)
+    .bind(selection_strategy)
+    .execute(&mut *transaction)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO model_rule_routing_groups \
+         (model_rule_id,api_format,priority,channel_group_id,channel_selection,default_weight) \
+         VALUES ($1,$2::api_format,$3,$4,'all',$5)",
+    )
+    .bind(model_rule_id)
+    .bind(api_format)
+    .bind(priority)
+    .bind(channel_group_id)
+    .bind(default_weight)
+    .execute(&mut *transaction)
+    .await
+    .unwrap();
+    transaction.commit().await.unwrap();
+}
+
+async fn insert_model_rule_channel_override_fixture(
+    pool: &PgPool,
+    model_rule_id: Uuid,
+    api_format: &str,
+    channel_group_id: Uuid,
+    channel_id: Uuid,
+    weight: i32,
+) {
+    sqlx::query(
+        "INSERT INTO model_rule_routing_channels \
+         (model_rule_id,api_format,channel_group_id,channel_id,weight) \
+         VALUES ($1,$2::api_format,$3,$4,$5)",
+    )
+    .bind(model_rule_id)
+    .bind(api_format)
+    .bind(channel_group_id)
+    .bind(channel_id)
+    .bind(weight)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
 async fn seed(pool: &PgPool) -> Seed {
     let user = Uuid::new_v4();
     let seed = Seed {
@@ -1228,15 +1395,41 @@ async fn seed(pool: &PgPool) -> Seed {
         .execute(pool)
         .await
         .unwrap();
+    let normalized_routing: bool =
+        sqlx::query_scalar("SELECT to_regclass('model_rule_routing_tiers') IS NOT NULL")
+            .fetch_one(pool)
+            .await
+            .unwrap();
     for (id, name) in [(seed.group, "route"), (seed.other_group, "other")] {
-        sqlx::query("INSERT INTO channel_groups (id, name, api_format, priority, selection_strategy, enabled) VALUES ($1, $2, 'open_ai_chat_completions', 0, 'weighted_random', true)")
+        let query = if normalized_routing {
+            "INSERT INTO channel_groups (id, name, api_format, enabled) \
+             VALUES ($1, $2, 'open_ai_chat_completions', true)"
+        } else {
+            "INSERT INTO channel_groups \
+             (id, name, api_format, priority, selection_strategy, enabled) \
+             VALUES ($1, $2, 'open_ai_chat_completions', 0, 'weighted_random', true)"
+        };
+        sqlx::query(query)
             .bind(id)
             .bind(format!("test-group-{name}-{id}"))
             .execute(pool)
             .await
             .unwrap();
     }
-    sqlx::query("INSERT INTO channels (id, channel_group_id, api_format, name, base_url, enabled, weight, upstream_auth_kind, upstream_api_key, available_models) VALUES ($1, $2, 'open_ai_chat_completions', $3, 'https://example.test', true, 1, 'bearer', 'upstream-secret', ARRAY['upstream-v1']::text[])")
+    let channel_query = if normalized_routing {
+        "INSERT INTO channels \
+         (id,channel_group_id,api_format,name,base_url,enabled,upstream_auth_kind, \
+          upstream_api_key,available_models) \
+         VALUES ($1,$2,'open_ai_chat_completions',$3,'https://example.test',true, \
+                 'bearer','upstream-secret',ARRAY['upstream-v1']::text[])"
+    } else {
+        "INSERT INTO channels \
+         (id,channel_group_id,api_format,name,base_url,enabled,weight,upstream_auth_kind, \
+          upstream_api_key,available_models) \
+         VALUES ($1,$2,'open_ai_chat_completions',$3,'https://example.test',true,1, \
+                 'bearer','upstream-secret',ARRAY['upstream-v1']::text[])"
+    };
+    sqlx::query(channel_query)
         .bind(seed.channel)
         .bind(seed.group)
         .bind(format!("test-channel-{}", seed.channel))
@@ -1268,7 +1461,30 @@ async fn seed(pool: &PgPool) -> Seed {
         .execute(pool)
         .await
         .unwrap();
-    sqlx::query("INSERT INTO model_rules (id, client_model, api_format, upstream_model_id, channel_ids, enabled) VALUES ($1, $2, 'open_ai_chat_completions', $3, ARRAY[$4]::uuid[], true)")
+    if normalized_routing {
+        insert_model_rule_fixture(
+            pool,
+            seed.rule,
+            &seed.client_model,
+            "open_ai_chat_completions",
+            seed.model,
+            true,
+            &[RoutingTierFixture {
+                priority: 0,
+                selection_strategy: "weighted_random",
+                channel_groups: &[RoutingGroupFixture::Selected {
+                    channel_group_id: seed.group,
+                    channels: &[(seed.channel, 1)],
+                }],
+            }],
+        )
+        .await;
+    } else {
+        sqlx::query(
+            "INSERT INTO model_rules \
+             (id,client_model,api_format,upstream_model_id,channel_ids,enabled) \
+             VALUES ($1,$2,'open_ai_chat_completions',$3,ARRAY[$4]::uuid[],true)",
+        )
         .bind(seed.rule)
         .bind(&seed.client_model)
         .bind(seed.model)
@@ -1276,6 +1492,7 @@ async fn seed(pool: &PgPool) -> Seed {
         .execute(pool)
         .await
         .unwrap();
+    }
     seed
 }
 
@@ -1342,7 +1559,6 @@ fn business_codex_credential(
         label: label.into(),
         enabled: true,
         proxy_id: None,
-        weight: 100,
         quota_threshold_percent: 95,
         base_url: "https://chatgpt.com/backend-api/codex".into(),
         email: Some(email.into()),
@@ -1378,8 +1594,8 @@ async fn codex_business_credentials_are_unique_per_workspace_member() {
     let codex_group = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO channel_groups \
-         (id,name,api_format,connector_kind,priority,selection_strategy,enabled) \
-         VALUES ($1,'codex-business','open_ai_responses','codex_oauth',0,'weighted_random',true)",
+         (id,name,api_format,connector_kind,enabled) \
+         VALUES ($1,'codex-business','open_ai_responses','codex_oauth',true)",
     )
     .bind(codex_group)
     .execute(&database.pool)
@@ -1505,8 +1721,8 @@ async fn codex_personal_credentials_without_account_ids_are_unique_by_user() {
     let codex_group = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO channel_groups \
-         (id,name,api_format,connector_kind,priority,selection_strategy,enabled) \
-         VALUES ($1,'codex-personal','open_ai_responses','codex_oauth',0,'weighted_random',true)",
+         (id,name,api_format,connector_kind,enabled) \
+         VALUES ($1,'codex-personal','open_ai_responses','codex_oauth',true)",
     )
     .bind(codex_group)
     .execute(&database.pool)
@@ -1600,8 +1816,8 @@ async fn codex_credentials_support_atomic_batch_state_changes_and_token_scrubbin
     let codex_group = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO channel_groups \
-         (id,name,api_format,connector_kind,priority,selection_strategy,enabled) \
-         VALUES ($1,'codex-batch','open_ai_responses','codex_oauth',0,'weighted_random',true)",
+         (id,name,api_format,connector_kind,enabled) \
+         VALUES ($1,'codex-batch','open_ai_responses','codex_oauth',true)",
     )
     .bind(codex_group)
     .execute(&database.pool)
@@ -1866,8 +2082,8 @@ async fn codex_credentials_create_managed_channels_and_recompute_quota_state() {
     let codex_group = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO channel_groups \
-         (id,name,api_format,connector_kind,priority,selection_strategy,enabled) \
-         VALUES ($1,'codex-managed','open_ai_responses','codex_oauth',0,'weighted_random',true)",
+         (id,name,api_format,connector_kind,enabled) \
+         VALUES ($1,'codex-managed','open_ai_responses','codex_oauth',true)",
     )
     .bind(codex_group)
     .execute(&database.pool)
@@ -1906,7 +2122,6 @@ async fn codex_credentials_create_managed_channels_and_recompute_quota_state() {
                 label: "plus-account".into(),
                 enabled: true,
                 proxy_id: None,
-                weight: 100,
                 quota_threshold_percent: 95,
                 base_url: "https://chatgpt.com/backend-api/codex".into(),
                 email: Some("codex@example.test".into()),
@@ -2017,7 +2232,6 @@ async fn codex_credentials_create_managed_channels_and_recompute_quota_state() {
                 label: "plus-account".into(),
                 enabled: true,
                 proxy_id: None,
-                weight: 50,
                 quota_threshold_percent: 99,
             },
             before.updated_at,
@@ -2031,14 +2245,13 @@ async fn codex_credentials_create_managed_channels_and_recompute_quota_state() {
         .unwrap()
         .unwrap();
     assert_eq!(after.runtime_status, "active");
-    assert_eq!(after.weight, 50);
-    let images_channel_after_update: (String, i32) =
-        sqlx::query_as("SELECT name,weight FROM channels WHERE id=$1")
+    let images_channel_after_update: String =
+        sqlx::query_scalar("SELECT name FROM channels WHERE id=$1")
             .bind(images_channel)
             .fetch_one(&database.pool)
             .await
             .unwrap();
-    assert_eq!(images_channel_after_update, ("plus-account".into(), 50));
+    assert_eq!(images_channel_after_update, "plus-account");
 
     repository
         .mark_codex_credential_error(
@@ -2063,7 +2276,6 @@ async fn codex_credentials_create_managed_channels_and_recompute_quota_state() {
                 label: "plus-account".into(),
                 enabled: true,
                 proxy_id: None,
-                weight: 75,
                 quota_threshold_percent: 99,
             },
             reauth.updated_at,
@@ -2146,7 +2358,6 @@ async fn codex_credentials_create_managed_channels_and_recompute_quota_state() {
                 label: "plus-reauthorized".into(),
                 enabled: true,
                 proxy_id: None,
-                weight: 80,
                 quota_threshold_percent: 98,
                 base_url: "https://chatgpt.com/backend-api/codex".into(),
                 email: Some("codex-updated@example.test".into()),
@@ -2181,20 +2392,19 @@ async fn codex_credentials_create_managed_channels_and_recompute_quota_state() {
         reauthorized_record.access_token,
         "reauthorized-access-token"
     );
-    assert_eq!(reauthorized_record.weight, 80);
     assert_eq!(
         reauthorized_record.available_models,
         vec!["gpt-5-codex", "gpt-5.1-codex"]
     );
-    let images_channel_after_reauthorization: (String, i32, Vec<String>) =
-        sqlx::query_as("SELECT name,weight,available_models FROM channels WHERE id=$1")
+    let images_channel_after_reauthorization: (String, Vec<String>) =
+        sqlx::query_as("SELECT name,available_models FROM channels WHERE id=$1")
             .bind(images_channel)
             .fetch_one(&database.pool)
             .await
             .unwrap();
     assert_eq!(
         images_channel_after_reauthorization,
-        ("plus-reauthorized".into(), 80, vec!["gpt-image-2".into()])
+        ("plus-reauthorized".into(), vec!["gpt-image-2".into()])
     );
 
     let group_updated_at: DateTime<Utc> =
@@ -2213,8 +2423,6 @@ async fn codex_credentials_create_managed_channels_and_recompute_quota_state() {
                     api_format: "open_ai_responses".into(),
                     connector_kind: "openai_compatible".into(),
                     request_compression: None,
-                    priority: 0,
-                    selection_strategy: "weighted_random".into(),
                     enabled: true,
                     status_statistics_enabled: None,
                 },
@@ -2234,9 +2442,8 @@ async fn codex_quota_window_history_coalesces_sliding_zero_usage_windows() {
     let codex_group = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO channel_groups \
-         (id,name,api_format,connector_kind,priority,selection_strategy,enabled) \
-         VALUES ($1,'codex-zero-window-history','open_ai_responses','codex_oauth',0, \
-                 'weighted_random',true)",
+         (id,name,api_format,connector_kind,enabled) \
+         VALUES ($1,'codex-zero-window-history','open_ai_responses','codex_oauth',true)",
     )
     .bind(codex_group)
     .execute(&database.pool)
@@ -2368,9 +2575,8 @@ async fn codex_quota_window_history_classifies_natural_manual_and_openai_resets(
     let codex_group = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO channel_groups \
-         (id,name,api_format,connector_kind,priority,selection_strategy,enabled) \
-         VALUES ($1,'codex-window-history','open_ai_responses','codex_oauth',0, \
-                 'weighted_random',true)",
+         (id,name,api_format,connector_kind,enabled) \
+         VALUES ($1,'codex-window-history','open_ai_responses','codex_oauth',true)",
     )
     .bind(codex_group)
     .execute(&database.pool)
@@ -2617,8 +2823,8 @@ async fn codex_credentials_export_secrets_and_protect_assigned_proxies_from_dele
     let codex_group = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO channel_groups \
-         (id,name,api_format,connector_kind,priority,selection_strategy,enabled) \
-         VALUES ($1,'codex-portable','open_ai_responses','codex_oauth',0,'weighted_random',true)",
+         (id,name,api_format,connector_kind,enabled) \
+         VALUES ($1,'codex-portable','open_ai_responses','codex_oauth',true)",
     )
     .bind(codex_group)
     .execute(&database.pool)
@@ -2664,7 +2870,6 @@ async fn codex_credentials_export_secrets_and_protect_assigned_proxies_from_dele
                 label: "portable-account".into(),
                 enabled: true,
                 proxy_id: Some(proxy.id),
-                weight: 70,
                 quota_threshold_percent: 91,
                 base_url: "https://chatgpt.com/backend-api/codex".into(),
                 email: Some("portable@example.test".into()),
@@ -2695,6 +2900,7 @@ async fn codex_credentials_export_secrets_and_protect_assigned_proxies_from_dele
         .await
         .unwrap();
     assert_eq!(exported.export_type, "ai-gateway-codex-credentials");
+    assert_eq!(exported.version, 2);
     assert_eq!(exported.channel_group_name, "codex-portable");
     assert_eq!(exported.credentials.len(), 1);
     assert_eq!(exported.credentials[0].id_token, "portable-id-token");
@@ -2760,7 +2966,6 @@ async fn codex_credentials_export_secrets_and_protect_assigned_proxies_from_dele
                 label: credential_view.label,
                 enabled: credential_view.enabled,
                 proxy_id: None,
-                weight: credential_view.weight,
                 quota_threshold_percent: credential_view.quota_threshold_percent,
             },
             credential_view.updated_at,
@@ -2819,9 +3024,8 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
     let codex_group = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO channel_groups \
-         (id,name,api_format,connector_kind,request_compression,priority,selection_strategy,enabled) \
-         VALUES ($1,'codex-forwarding','open_ai_responses','codex_oauth','zstd',0, \
-                 'weighted_random',true)",
+         (id,name,api_format,connector_kind,request_compression,enabled) \
+         VALUES ($1,'codex-forwarding','open_ai_responses','codex_oauth','zstd',true)",
     )
     .bind(codex_group)
     .execute(&database.pool)
@@ -2920,7 +3124,6 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
                 label: "forwarding-account".into(),
                 enabled: true,
                 proxy_id: None,
-                weight: 100,
                 quota_threshold_percent: 95,
                 base_url: format!("http://{}/backend-api/codex", upstream.address),
                 email: Some("codex@example.test".into()),
@@ -2983,18 +3186,24 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
     let synthetic_workspace_path = "/synthetic/project";
     let synthetic_git_remote = "https://github.com/example/synthetic-project";
     let client_model = format!("codex-client-{}", Uuid::new_v4());
-    sqlx::query(
-        "INSERT INTO model_rules \
-         (id,client_model,api_format,upstream_model_id,channel_group_ids,enabled) \
-         VALUES ($1,$2,'open_ai_responses',$3,ARRAY[$4]::uuid[],true)",
+    insert_model_rule_fixture(
+        &database.pool,
+        Uuid::new_v4(),
+        &client_model,
+        "open_ai_responses",
+        seed.model,
+        true,
+        &[RoutingTierFixture {
+            priority: 0,
+            selection_strategy: "weighted_random",
+            channel_groups: &[RoutingGroupFixture::All {
+                channel_group_id: codex_group,
+                default_weight: 100,
+                channels: &[],
+            }],
+        }],
     )
-    .bind(Uuid::new_v4())
-    .bind(&client_model)
-    .bind(seed.model)
-    .bind(codex_group)
-    .execute(&database.pool)
-    .await
-    .unwrap();
+    .await;
     let images_model = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO models \
@@ -3008,17 +3217,24 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
     .await
     .unwrap();
     let images_rule = Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO model_rules \
-         (id,client_model,api_format,upstream_model_id,channel_group_ids,enabled) \
-         VALUES ($1,'gpt-image-2','open_ai_images',$2,ARRAY[$3]::uuid[],true)",
+    insert_model_rule_fixture(
+        &database.pool,
+        images_rule,
+        "gpt-image-2",
+        "open_ai_images",
+        images_model,
+        true,
+        &[RoutingTierFixture {
+            priority: 0,
+            selection_strategy: "weighted_random",
+            channel_groups: &[RoutingGroupFixture::All {
+                channel_group_id: images_group,
+                default_weight: 100,
+                channels: &[],
+            }],
+        }],
     )
-    .bind(images_rule)
-    .bind(images_model)
-    .bind(images_group)
-    .execute(&database.pool)
-    .await
-    .unwrap();
+    .await;
     sqlx::query(
         "INSERT INTO mcp_servers \
          (id,slug,kind,name,description,model_rule_id,settings_version,settings,enabled) \
@@ -4217,7 +4433,6 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
                 label: view.label,
                 enabled: false,
                 proxy_id: view.proxy_id,
-                weight: view.weight,
                 quota_threshold_percent: view.quota_threshold_percent,
             },
             view.updated_at,
@@ -6090,7 +6305,7 @@ async fn manual_channel_disable_publishes_an_unavailable_route() {
         serde_json::json!({
             "channel_group_id": seed.group, "api_format": "open_ai_chat_completions",
             "name": format!("test-channel-{}", seed.channel), "base_url": "https://example.test",
-            "enabled": false, "weight": 1,
+            "enabled": false,
             "upstream_auth_kind": "bearer",
             "available_models": ["upstream-v1"]
         }),
@@ -6137,14 +6352,16 @@ async fn manual_channel_disable_publishes_an_unavailable_route() {
 async fn disabled_only_group_channel_can_remove_the_last_routed_model() {
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
-    sqlx::query(
-        "UPDATE model_rules SET channel_group_ids=ARRAY[$1]::uuid[], channel_ids='{}' WHERE id=$2",
+    replace_model_rule_with_all_group_fixture(
+        &database.pool,
+        seed.rule,
+        "open_ai_chat_completions",
+        0,
+        "weighted_random",
+        seed.group,
+        100,
     )
-    .bind(seed.group)
-    .bind(seed.rule)
-    .execute(&database.pool)
-    .await
-    .unwrap();
+    .await;
     sqlx::query("UPDATE channels SET enabled=false WHERE id=$1")
         .bind(seed.channel)
         .execute(&database.pool)
@@ -6166,7 +6383,6 @@ async fn disabled_only_group_channel_can_remove_the_last_routed_model() {
             "name": format!("test-channel-{}", seed.channel),
             "base_url": "https://example.test",
             "enabled": false,
-            "weight": 1,
             "upstream_auth_kind": "bearer",
             "available_models": ["different-upstream"]
         }),
@@ -6222,7 +6438,6 @@ async fn disabled_only_group_channel_can_remove_the_last_routed_model() {
             "name": format!("test-channel-{}", seed.channel),
             "base_url": "https://example.test",
             "enabled": false,
-            "weight": 1,
             "upstream_auth_kind": "bearer",
             "available_models": ["upstream-v1"]
         }),
@@ -6259,14 +6474,16 @@ async fn disabled_only_group_channel_can_remove_the_last_routed_model() {
 async fn adding_a_group_channel_for_another_model_preserves_existing_routes() {
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
-    sqlx::query(
-        "UPDATE model_rules SET channel_group_ids=ARRAY[$1]::uuid[], channel_ids='{}' WHERE id=$2",
+    replace_model_rule_with_all_group_fixture(
+        &database.pool,
+        seed.rule,
+        "open_ai_chat_completions",
+        0,
+        "weighted_random",
+        seed.group,
+        100,
     )
-    .bind(seed.group)
-    .bind(seed.rule)
-    .execute(&database.pool)
-    .await
-    .unwrap();
+    .await;
     let (app, runtime) = admin_app(database.pool.clone(), seed.user).await;
     let response = admin_request(
         app,
@@ -6278,7 +6495,6 @@ async fn adding_a_group_channel_for_another_model_preserves_existing_routes() {
             "name": format!("other-model-{}", Uuid::new_v4()),
             "base_url": "https://other-model.example.test",
             "enabled": true,
-            "weight": 1,
             "upstream_auth_kind": "bearer",
             "upstream_api_key": "other-upstream-secret",
             "available_models": ["different-upstream"]
@@ -6319,7 +6535,7 @@ async fn model_incompatible_direct_channel_publishes_a_disconnected_route() {
         serde_json::json!({
             "channel_group_id": seed.group, "api_format": "open_ai_chat_completions",
             "name": format!("test-channel-{}", seed.channel), "base_url": "https://example.test",
-            "enabled": true, "weight": 1,
+            "enabled": true,
             "upstream_auth_kind": "bearer",
             "available_models": ["different-upstream"]
         }),
@@ -6608,7 +6824,6 @@ async fn proxy_template_management_exposes_editable_documents_and_keeps_audits_r
         "name": format!("test-channel-{}", seed.channel),
         "base_url": "https://example.test",
         "enabled": true,
-        "weight": 1,
         "proxy_id": proxy_id,
         "config_template_id": template_id,
         "override_document": {
@@ -6901,7 +7116,7 @@ async fn management_channel_credentials_are_visible_kept_replaced_and_cleared_sa
         serde_json::json!({
             "channel_group_id": seed.group, "api_format": "open_ai_chat_completions",
             "name": format!("test-channel-{}", seed.channel), "base_url": "https://example.test",
-            "enabled": true, "weight": 1, "upstream_auth_kind": "bearer",
+            "enabled": true, "upstream_auth_kind": "bearer",
             "available_models": ["upstream-v1"], "upstream_api_key": credential
         })
     };
@@ -6924,7 +7139,7 @@ async fn management_channel_credentials_are_visible_kept_replaced_and_cleared_sa
     let etag = current.headers()["etag"].to_str().unwrap().to_owned();
     let keep = admin_request_with_headers(app.clone(), "PUT", &path, serde_json::json!({
         "channel_group_id": seed.group, "api_format": "open_ai_chat_completions", "name": format!("test-channel-{}", seed.channel),
-        "base_url": "https://example.test", "enabled": true, "weight": 1, "upstream_auth_kind": "bearer", "available_models": ["upstream-v1"]
+        "base_url": "https://example.test", "enabled": true, "upstream_auth_kind": "bearer", "available_models": ["upstream-v1"]
     }), &[("if-match", &etag)]).await;
     assert_eq!(keep.status(), StatusCode::OK);
     let secret: String = sqlx::query_scalar("SELECT upstream_api_key FROM channels WHERE id=$1")
@@ -6964,7 +7179,7 @@ async fn channel_documents_are_rejected_and_never_escape_audit_allowlists() {
         serde_json::json!({
             "channel_group_id": seed.group, "api_format": "open_ai_chat_completions",
             "name": format!("rejected-channel-{}", Uuid::new_v4()),
-            "base_url": "https://example.test", "enabled": true, "weight": 1,
+            "base_url": "https://example.test", "enabled": true,
             "upstream_auth_kind": "bearer", "upstream_api_key": "upstream-secret",
             "available_models": ["upstream-v1"],
             "override_document": {"headers": {"Authorization": "rejected-create-secret"}}
@@ -7008,7 +7223,7 @@ async fn channel_documents_are_rejected_and_never_escape_audit_allowlists() {
     let valid_update = serde_json::json!({
         "channel_group_id": seed.group, "api_format": "open_ai_chat_completions",
         "name": format!("test-channel-{}", seed.channel), "base_url": "https://example.test",
-        "enabled": true, "weight": 1, "upstream_auth_kind": "bearer",
+        "enabled": true, "upstream_auth_kind": "bearer",
         "available_models": ["upstream-v1"], "upstream_api_key": "upstream-secret",
         "override_document": {}
     });
@@ -7052,7 +7267,7 @@ async fn channel_documents_are_rejected_and_never_escape_audit_allowlists() {
     let rejected_update = serde_json::json!({
         "channel_group_id": seed.group, "api_format": "open_ai_chat_completions",
         "name": format!("test-channel-{}", seed.channel), "base_url": "https://example.test",
-        "enabled": true, "weight": 1, "upstream_auth_kind": "bearer",
+        "enabled": true, "upstream_auth_kind": "bearer",
         "available_models": ["upstream-v1"], "upstream_api_key": "upstream-secret",
         "override_document": {"headers": {"Authorization": "rejected-secret"}}
     });
@@ -7187,6 +7402,420 @@ async fn request_log_peak_pricing_migration_defaults_existing_logs() {
             .await
             .unwrap();
     assert!(!peak_pricing);
+
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn model_rule_routing_tiers_migration_backfills_legacy_targets() {
+    let database = TestDatabase::new_unmigrated().await;
+    for migration in MIGRATOR.iter().filter(|migration| migration.version <= 51) {
+        sqlx::raw_sql(migration.sql.as_ref())
+            .execute(&database.pool)
+            .await
+            .unwrap_or_else(|error| panic!("migration {} failed: {error}", migration.version));
+    }
+    let seed = seed(&database.pool).await;
+    let selected_group = Uuid::new_v4();
+    let selected_channel = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO channel_groups \
+         (id,name,api_format,priority,selection_strategy,enabled) \
+         VALUES ($1,$2,'open_ai_chat_completions',1,'weighted_round_robin',true)",
+    )
+    .bind(selected_group)
+    .bind(format!("legacy-selected-{selected_group}"))
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO channels \
+         (id,channel_group_id,api_format,name,base_url,enabled,weight,upstream_auth_kind, \
+          available_models) \
+         VALUES ($1,$2,'open_ai_chat_completions',$3,'https://selected.example.test', \
+                 true,77,'none',ARRAY['upstream-v1']::text[])",
+    )
+    .bind(selected_channel)
+    .bind(selected_group)
+    .bind(format!("legacy-selected-{selected_channel}"))
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE model_rules \
+         SET channel_group_ids=ARRAY[$1]::uuid[],channel_ids=ARRAY[$2,$3]::uuid[] \
+         WHERE id=$4",
+    )
+    .bind(seed.group)
+    .bind(seed.channel)
+    .bind(selected_channel)
+    .bind(seed.rule)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+
+    sqlx::raw_sql(include_str!(
+        "../migrations/0052_model_rule_routing_tiers.sql"
+    ))
+    .execute(&database.pool)
+    .await
+    .expect("model-rule routing-tier migration must apply");
+
+    let tiers = sqlx::query_as::<_, (i32, String)>(
+        "SELECT priority,selection_strategy \
+         FROM model_rule_routing_tiers WHERE model_rule_id=$1 ORDER BY priority",
+    )
+    .bind(seed.rule)
+    .fetch_all(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        tiers,
+        vec![
+            (0, "weighted_random".into()),
+            (1, "weighted_round_robin".into())
+        ]
+    );
+    let groups = sqlx::query_as::<_, (Uuid, String, Option<i32>)>(
+        "SELECT channel_group_id,channel_selection,default_weight \
+         FROM model_rule_routing_groups WHERE model_rule_id=$1 ORDER BY priority",
+    )
+    .bind(seed.rule)
+    .fetch_all(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        groups,
+        vec![
+            (seed.group, "all".into(), Some(100)),
+            (selected_group, "selected".into(), None)
+        ]
+    );
+    let channel_weights = sqlx::query_as::<_, (Uuid, i32)>(
+        "SELECT channel_id,weight FROM model_rule_routing_channels \
+         WHERE model_rule_id=$1 ORDER BY channel_id",
+    )
+    .bind(seed.rule)
+    .fetch_all(&database.pool)
+    .await
+    .unwrap()
+    .into_iter()
+    .collect::<std::collections::HashMap<_, _>>();
+    assert_eq!(channel_weights.len(), 2);
+    assert_eq!(channel_weights.get(&seed.channel), Some(&1));
+    assert_eq!(channel_weights.get(&selected_channel), Some(&77));
+
+    for (table_name, column_name) in [
+        ("channel_groups", "priority"),
+        ("channel_groups", "selection_strategy"),
+        ("channels", "weight"),
+        ("model_rules", "channel_group_ids"),
+        ("model_rules", "channel_ids"),
+    ] {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.columns \
+             WHERE table_schema='public' AND table_name=$1 AND column_name=$2)",
+        )
+        .bind(table_name)
+        .bind(column_name)
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+        assert!(!exists, "{table_name}.{column_name} must be removed");
+    }
+
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn model_rule_routing_tiers_migration_rejects_latent_strategy_conflicts() {
+    let database = TestDatabase::new_unmigrated().await;
+    for migration in MIGRATOR.iter().filter(|migration| migration.version <= 51) {
+        sqlx::raw_sql(migration.sql.as_ref())
+            .execute(&database.pool)
+            .await
+            .unwrap_or_else(|error| panic!("migration {} failed: {error}", migration.version));
+    }
+    let seed = seed(&database.pool).await;
+    let conflicting_group = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO channel_groups \
+         (id,name,api_format,priority,selection_strategy,enabled) \
+         VALUES ($1,$2,'open_ai_chat_completions',0,'weighted_round_robin',false)",
+    )
+    .bind(conflicting_group)
+    .bind(format!("legacy-conflict-{conflicting_group}"))
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE model_rules \
+         SET enabled=false,channel_group_ids=ARRAY[$1,$2]::uuid[],channel_ids='{}' \
+         WHERE id=$3",
+    )
+    .bind(seed.group)
+    .bind(conflicting_group)
+    .bind(seed.rule)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+
+    let error = sqlx::raw_sql(include_str!(
+        "../migrations/0052_model_rule_routing_tiers.sql"
+    ))
+    .execute(&database.pool)
+    .await
+    .unwrap_err();
+    let database_error = error.as_database_error().unwrap();
+    assert_eq!(database_error.code().as_deref(), Some("23514"));
+    assert!(
+        database_error
+            .message()
+            .contains("conflicting selection strategies")
+    );
+
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn model_rule_routing_tiers_migration_rejects_duplicate_legacy_targets() {
+    let database = TestDatabase::new_unmigrated().await;
+    for migration in MIGRATOR.iter().filter(|migration| migration.version <= 51) {
+        sqlx::raw_sql(migration.sql.as_ref())
+            .execute(&database.pool)
+            .await
+            .unwrap_or_else(|error| panic!("migration {} failed: {error}", migration.version));
+    }
+    let seed = seed(&database.pool).await;
+    sqlx::query(
+        "UPDATE model_rules \
+         SET channel_group_ids=ARRAY[$1,$1]::uuid[],channel_ids='{}' \
+         WHERE id=$2",
+    )
+    .bind(seed.group)
+    .bind(seed.rule)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+
+    let error = sqlx::raw_sql(include_str!(
+        "../migrations/0052_model_rule_routing_tiers.sql"
+    ))
+    .execute(&database.pool)
+    .await
+    .unwrap_err();
+    let database_error = error.as_database_error().unwrap();
+    assert_eq!(database_error.code().as_deref(), Some("23514"));
+    assert!(database_error.message().contains("repeats channel group"));
+
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn model_rule_routing_shape_constraints_reject_empty_graphs_and_allow_parent_cascade() {
+    let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
+
+    let mut empty_selected = database.pool.begin().await.unwrap();
+    sqlx::query("DELETE FROM model_rule_routing_channels WHERE model_rule_id=$1")
+        .bind(seed.rule)
+        .execute(&mut *empty_selected)
+        .await
+        .unwrap();
+    let error = empty_selected.commit().await.unwrap_err();
+    assert_eq!(
+        error.as_database_error().and_then(|error| error.code()),
+        Some("23514".into())
+    );
+
+    let mut empty_rule = database.pool.begin().await.unwrap();
+    sqlx::query("DELETE FROM model_rule_routing_tiers WHERE model_rule_id=$1")
+        .bind(seed.rule)
+        .execute(&mut *empty_rule)
+        .await
+        .unwrap();
+    let error = empty_rule.commit().await.unwrap_err();
+    assert_eq!(
+        error.as_database_error().and_then(|error| error.code()),
+        Some("23514".into())
+    );
+
+    sqlx::query("DELETE FROM model_rules WHERE id=$1")
+        .bind(seed.rule)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    let child_count: i64 = sqlx::query_scalar(
+        "SELECT \
+            (SELECT count(*) FROM model_rule_routing_tiers WHERE model_rule_id=$1) + \
+            (SELECT count(*) FROM model_rule_routing_groups WHERE model_rule_id=$1) + \
+            (SELECT count(*) FROM model_rule_routing_channels WHERE model_rule_id=$1)",
+    )
+    .bind(seed.rule)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(child_count, 0);
+
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn model_rule_routing_rows_cannot_be_reparented_between_rules() {
+    let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
+    let second_rule = Uuid::new_v4();
+    insert_model_rule_fixture(
+        &database.pool,
+        second_rule,
+        &format!("second-rule-{second_rule}"),
+        "open_ai_chat_completions",
+        seed.model,
+        true,
+        &[RoutingTierFixture {
+            priority: 0,
+            selection_strategy: "weighted_random",
+            channel_groups: &[RoutingGroupFixture::All {
+                channel_group_id: seed.other_group,
+                default_weight: 100,
+                channels: &[],
+            }],
+        }],
+    )
+    .await;
+
+    let error = sqlx::query(
+        "UPDATE model_rule_routing_tiers \
+         SET model_rule_id=$1 \
+         WHERE model_rule_id=$2 AND priority=0",
+    )
+    .bind(second_rule)
+    .bind(seed.rule)
+    .execute(&database.pool)
+    .await
+    .unwrap_err();
+    assert_eq!(
+        error.as_database_error().and_then(|error| error.code()),
+        Some("23514".into())
+    );
+
+    let error = sqlx::query(
+        "UPDATE model_rule_routing_groups \
+         SET model_rule_id=$1 \
+         WHERE model_rule_id=$2 AND channel_group_id=$3",
+    )
+    .bind(second_rule)
+    .bind(seed.rule)
+    .bind(seed.group)
+    .execute(&database.pool)
+    .await
+    .unwrap_err();
+    assert_eq!(
+        error.as_database_error().and_then(|error| error.code()),
+        Some("23514".into())
+    );
+
+    replace_model_rule_with_all_group_fixture(
+        &database.pool,
+        second_rule,
+        "open_ai_chat_completions",
+        0,
+        "weighted_random",
+        seed.group,
+        100,
+    )
+    .await;
+    let error = sqlx::query(
+        "UPDATE model_rule_routing_channels \
+         SET model_rule_id=$1 \
+         WHERE model_rule_id=$2 AND channel_group_id=$3 AND channel_id=$4",
+    )
+    .bind(second_rule)
+    .bind(seed.rule)
+    .bind(seed.group)
+    .bind(seed.channel)
+    .execute(&database.pool)
+    .await
+    .unwrap_err();
+    assert_eq!(
+        error.as_database_error().and_then(|error| error.code()),
+        Some("23514".into())
+    );
+
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn concurrent_group_deletes_cannot_commit_an_empty_routing_tier() {
+    let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
+    replace_model_rule_with_all_group_fixture(
+        &database.pool,
+        seed.rule,
+        "open_ai_chat_completions",
+        0,
+        "weighted_random",
+        seed.group,
+        100,
+    )
+    .await;
+    sqlx::query(
+        "INSERT INTO model_rule_routing_groups \
+         (model_rule_id,api_format,priority,channel_group_id,channel_selection,default_weight) \
+         VALUES ($1,'open_ai_chat_completions',0,$2,'all',100)",
+    )
+    .bind(seed.rule)
+    .bind(seed.other_group)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+
+    let mut first = database.pool.begin().await.unwrap();
+    sqlx::query(
+        "DELETE FROM model_rule_routing_groups \
+         WHERE model_rule_id=$1 AND channel_group_id=$2",
+    )
+    .bind(seed.rule)
+    .bind(seed.group)
+    .execute(&mut *first)
+    .await
+    .unwrap();
+
+    let second_pool = database.pool.clone();
+    let second_rule = seed.rule;
+    let second_group = seed.other_group;
+    let second = tokio::spawn(async move {
+        let mut transaction = second_pool.begin().await.unwrap();
+        sqlx::query(
+            "DELETE FROM model_rule_routing_groups \
+             WHERE model_rule_id=$1 AND channel_group_id=$2",
+        )
+        .bind(second_rule)
+        .bind(second_group)
+        .execute(&mut *transaction)
+        .await
+        .unwrap();
+        transaction.commit().await
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    first.commit().await.unwrap();
+
+    let error = timeout(Duration::from_secs(5), second)
+        .await
+        .expect("second graph mutation must finish")
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(
+        error.as_database_error().and_then(|error| error.code()),
+        Some("23514".into())
+    );
+    let remaining_groups: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM model_rule_routing_groups WHERE model_rule_id=$1")
+            .bind(seed.rule)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert_eq!(remaining_groups, 1);
 
     database.cleanup().await;
 }
@@ -7493,6 +8122,38 @@ async fn codex_projection_migrations_backfill_existing_credentials_and_system_se
     .execute(&database.pool)
     .await
     .expect("Codex Images projection migration must apply");
+    for migration in MIGRATOR
+        .iter()
+        .filter(|migration| (37..=49).contains(&migration.version))
+    {
+        sqlx::raw_sql(migration.sql.as_ref())
+            .execute(&database.pool)
+            .await
+            .unwrap_or_else(|error| panic!("migration {} failed: {error}", migration.version));
+    }
+    sqlx::query(
+        "UPDATE system_settings \
+         SET value=jsonb_set( \
+             value, \
+             '{codex,originator}', \
+             to_jsonb($1::text), \
+             true \
+         ) \
+         WHERE setting_key='forwarding_policy'",
+    )
+    .bind("preserved-originator")
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    for migration in MIGRATOR
+        .iter()
+        .filter(|migration| (50..=52).contains(&migration.version))
+    {
+        sqlx::raw_sql(migration.sql.as_ref())
+            .execute(&database.pool)
+            .await
+            .unwrap_or_else(|error| panic!("migration {} failed: {error}", migration.version));
+    }
 
     let connector_pool: Uuid =
         sqlx::query_scalar("SELECT connector_pool_id FROM channel_groups WHERE id=$1")
@@ -7501,8 +8162,8 @@ async fn codex_projection_migrations_backfill_existing_credentials_and_system_se
             .await
             .unwrap();
     assert_eq!(connector_pool, responses_group);
-    let images_group: (Uuid, bool, i32, String) = sqlx::query_as(
-        "SELECT id,enabled,priority,selection_strategy \
+    let images_group: (Uuid, bool) = sqlx::query_as(
+        "SELECT id,enabled \
          FROM channel_groups \
          WHERE connector_pool_id=$1 AND api_format='open_ai_images'::api_format",
     )
@@ -7511,8 +8172,6 @@ async fn codex_projection_migrations_backfill_existing_credentials_and_system_se
     .await
     .unwrap();
     assert!(!images_group.1);
-    assert_eq!(images_group.2, 2);
-    assert_eq!(images_group.3, "weighted_round_robin");
 
     let projections = sqlx::query_as::<_, (String, Uuid)>(
         "SELECT api_format::text,channel_id \
@@ -7531,24 +8190,18 @@ async fn codex_projection_migrations_backfill_existing_credentials_and_system_se
         .find(|(format, _)| format == "open_ai_images")
         .map(|(_, channel_id)| *channel_id)
         .unwrap();
-    let responses_shape: (String, i32, Vec<String>, bool) = sqlx::query_as(
-        "SELECT name,weight,available_models,supports_websocket FROM channels WHERE id=$1",
-    )
-    .bind(responses_channel)
-    .fetch_one(&database.pool)
-    .await
-    .unwrap();
+    let responses_shape: (String, Vec<String>, bool) =
+        sqlx::query_as("SELECT name,available_models,supports_websocket FROM channels WHERE id=$1")
+            .bind(responses_channel)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
     assert_eq!(
         responses_shape,
-        (
-            "legacy-account".into(),
-            77,
-            vec!["gpt-5-codex".into()],
-            true
-        )
+        ("legacy-account".into(), vec!["gpt-5-codex".into()], true)
     );
-    let images_shape: (Uuid, String, i32, Vec<String>, bool) = sqlx::query_as(
-        "SELECT channel_group_id,name,weight,available_models,supports_websocket \
+    let images_shape: (Uuid, String, Vec<String>, bool) = sqlx::query_as(
+        "SELECT channel_group_id,name,available_models,supports_websocket \
          FROM channels WHERE id=$1",
     )
     .bind(images_channel)
@@ -7560,7 +8213,6 @@ async fn codex_projection_migrations_backfill_existing_credentials_and_system_se
         (
             images_group.0,
             "legacy-account".into(),
-            77,
             vec!["gpt-image-2".into()],
             false
         )
@@ -7573,57 +8225,6 @@ async fn codex_projection_migrations_backfill_existing_credentials_and_system_se
     .await
     .unwrap();
     assert_eq!(credential_pool, connector_pool);
-
-    sqlx::raw_sql(include_str!("../migrations/0044_standalone_web_search.sql"))
-        .execute(&database.pool)
-        .await
-        .expect("standalone web-search migration must extend the legacy projection");
-    sqlx::raw_sql(include_str!("../migrations/0045_mcp_servers.sql"))
-        .execute(&database.pool)
-        .await
-        .expect("MCP registry migration must bring the runtime schema current");
-    sqlx::raw_sql(include_str!("../migrations/0046_mcp_image_kind.sql"))
-        .execute(&database.pool)
-        .await
-        .expect("MCP image-kind migration must bring the runtime schema current");
-    sqlx::raw_sql(include_str!(
-        "../migrations/0047_codex_request_metadata.sql"
-    ))
-    .execute(&database.pool)
-    .await
-    .expect("Codex request-metadata migration must bring the runtime schema current");
-    sqlx::raw_sql(include_str!(
-        "../migrations/0048_channel_group_request_compression.sql"
-    ))
-    .execute(&database.pool)
-    .await
-    .expect("request-compression migration must bring the runtime schema current");
-    sqlx::raw_sql(include_str!(
-        "../migrations/0049_user_group_fast_mode_filter.sql"
-    ))
-    .execute(&database.pool)
-    .await
-    .expect("user-group fast-mode migration must bring the runtime schema current");
-    sqlx::query(
-        "UPDATE system_settings \
-         SET value=jsonb_set( \
-             value, \
-             '{codex,originator}', \
-             to_jsonb($1::text), \
-             true \
-         ) \
-         WHERE setting_key='forwarding_policy'",
-    )
-    .bind("preserved-originator")
-    .execute(&database.pool)
-    .await
-    .unwrap();
-    sqlx::raw_sql(include_str!(
-        "../migrations/0050_codex_outbound_identity.sql"
-    ))
-    .execute(&database.pool)
-    .await
-    .expect("Codex outbound identity migration must backfill system settings");
     let codex_defaults: (String, String, String, String, String) = sqlx::query_as(
         "SELECT \
              value #>> '{codex,workspace_path}', \
@@ -7789,17 +8390,24 @@ async fn migrated_soft_quota_allows_over_limit_usage_and_rejects_the_seeded_key(
 async fn dangling_enabled_route_is_rejected() {
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
-    sqlx::query("UPDATE model_rules SET channel_ids = ARRAY[$1]::uuid[] WHERE id = $2")
-        .bind(Uuid::new_v4())
-        .bind(seed.rule)
-        .execute(&database.pool)
-        .await
-        .unwrap();
-    let records = ControlPlaneRepository::new(database.pool.clone())
-        .load()
-        .await
-        .unwrap();
-    assert!(compile_control_plane(records).is_err());
+    let result = sqlx::query(
+        "INSERT INTO model_rule_routing_channels \
+         (model_rule_id,api_format,channel_group_id,channel_id,weight) \
+         VALUES ($1,'open_ai_chat_completions',$2,$3,100)",
+    )
+    .bind(seed.rule)
+    .bind(seed.group)
+    .bind(Uuid::new_v4())
+    .execute(&database.pool)
+    .await
+    .unwrap_err();
+    assert_eq!(
+        result
+            .as_database_error()
+            .and_then(|error| error.code())
+            .as_deref(),
+        Some("23503")
+    );
     database.cleanup().await;
 }
 
@@ -7807,17 +8415,28 @@ async fn dangling_enabled_route_is_rejected() {
 async fn disabled_rules_still_require_structurally_valid_targets() {
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
-    sqlx::query("UPDATE model_rules SET enabled=false, channel_ids=ARRAY[$1]::uuid[] WHERE id=$2")
-        .bind(Uuid::new_v4())
+    sqlx::query("UPDATE model_rules SET enabled=false WHERE id=$1")
         .bind(seed.rule)
         .execute(&database.pool)
         .await
         .unwrap();
-    let records = ControlPlaneRepository::new(database.pool.clone())
-        .load()
-        .await
-        .unwrap();
-    assert!(compile_control_plane(records).is_err());
+    let result = sqlx::query(
+        "UPDATE model_rule_routing_channels SET channel_id=$1 \
+         WHERE model_rule_id=$2 AND channel_group_id=$3",
+    )
+    .bind(Uuid::new_v4())
+    .bind(seed.rule)
+    .bind(seed.group)
+    .execute(&database.pool)
+    .await
+    .unwrap_err();
+    assert_eq!(
+        result
+            .as_database_error()
+            .and_then(|error| error.code())
+            .as_deref(),
+        Some("23503")
+    );
     database.cleanup().await;
 }
 
@@ -7827,30 +8446,36 @@ async fn cross_format_enabled_route_is_rejected() {
     let seed = seed(&database.pool).await;
     let group = Uuid::new_v4();
     let channel = Uuid::new_v4();
-    sqlx::query("INSERT INTO channel_groups (id, name, api_format, priority, selection_strategy, enabled) VALUES ($1, $2, 'open_ai_responses', 0, 'weighted_random', true)")
+    sqlx::query("INSERT INTO channel_groups (id, name, api_format, enabled) VALUES ($1, $2, 'open_ai_responses', true)")
         .bind(group)
         .bind(format!("responses-group-{group}"))
         .execute(&database.pool)
         .await
         .unwrap();
-    sqlx::query("INSERT INTO channels (id, channel_group_id, api_format, name, base_url, enabled, weight, upstream_auth_kind, upstream_api_key, available_models) VALUES ($1, $2, 'open_ai_responses', $3, 'https://example.test', true, 1, 'bearer', 'upstream-secret', ARRAY['upstream-v1']::text[])")
+    sqlx::query("INSERT INTO channels (id, channel_group_id, api_format, name, base_url, enabled, upstream_auth_kind, upstream_api_key, available_models) VALUES ($1, $2, 'open_ai_responses', $3, 'https://example.test', true, 'bearer', 'upstream-secret', ARRAY['upstream-v1']::text[])")
         .bind(channel)
         .bind(group)
         .bind(format!("responses-channel-{channel}"))
         .execute(&database.pool)
         .await
         .unwrap();
-    sqlx::query("UPDATE model_rules SET channel_ids = ARRAY[$1]::uuid[] WHERE id = $2")
-        .bind(channel)
-        .bind(seed.rule)
-        .execute(&database.pool)
-        .await
-        .unwrap();
-    let records = ControlPlaneRepository::new(database.pool.clone())
-        .load()
-        .await
-        .unwrap();
-    assert!(compile_control_plane(records).is_err());
+    let result = sqlx::query(
+        "UPDATE model_rule_routing_channels SET channel_id=$1 \
+         WHERE model_rule_id=$2 AND channel_group_id=$3",
+    )
+    .bind(channel)
+    .bind(seed.rule)
+    .bind(seed.group)
+    .execute(&database.pool)
+    .await
+    .unwrap_err();
+    assert_eq!(
+        result
+            .as_database_error()
+            .and_then(|error| error.code())
+            .as_deref(),
+        Some("23503")
+    );
     database.cleanup().await;
 }
 
@@ -7897,12 +8522,15 @@ async fn reloader_replaces_atomically_retains_old_arcs_and_rolls_back_failures()
             .upstream_model(),
         "upstream-v2"
     );
-    sqlx::query("UPDATE model_rules SET channel_ids = ARRAY[$1]::uuid[] WHERE id = $2")
-        .bind(Uuid::new_v4())
-        .bind(seed.rule)
-        .execute(&database.pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "UPDATE channels \
+         SET connect_timeout_ms=2000,response_header_timeout_ms=1000 \
+         WHERE id=$1",
+    )
+    .bind(seed.channel)
+    .execute(&database.pool)
+    .await
+    .unwrap();
     assert!(reloader.reload().await.is_err());
     assert!(Arc::ptr_eq(&replaced, &runtime.snapshot()));
     database.cleanup().await;
@@ -8111,12 +8739,25 @@ async fn admission_controls_and_overlapping_group_targets_are_compiled() {
     .execute(&database.pool)
     .await
     .unwrap();
-    sqlx::query("UPDATE model_rules SET channel_group_ids = ARRAY[$1]::uuid[] WHERE id = $2")
-        .bind(seed.group)
-        .bind(seed.rule)
-        .execute(&database.pool)
-        .await
-        .unwrap();
+    replace_model_rule_with_all_group_fixture(
+        &database.pool,
+        seed.rule,
+        "open_ai_chat_completions",
+        0,
+        "weighted_random",
+        seed.group,
+        100,
+    )
+    .await;
+    insert_model_rule_channel_override_fixture(
+        &database.pool,
+        seed.rule,
+        "open_ai_chat_completions",
+        seed.group,
+        seed.channel,
+        1,
+    )
+    .await;
     let records = ControlPlaneRepository::new(database.pool.clone())
         .load()
         .await

@@ -13,6 +13,37 @@ const RESPONSES_RULE: ModelRuleView = {
   id: "00000000-0000-0000-0000-000000000026",
   client_model: "gateway-responses-model",
   api_format: "open_ai_responses",
+  routing_tiers: [
+    {
+      priority: 0,
+      selection_strategy: "weighted_random",
+      channel_groups: [
+        {
+          channel_group_id: "00000000-0000-0000-0000-000000000041",
+          channel_selection: "all",
+          default_weight: 100,
+          channels: [],
+        },
+      ],
+    },
+    {
+      priority: 10,
+      selection_strategy: "weighted_round_robin",
+      channel_groups: [
+        {
+          channel_group_id: "00000000-0000-0000-0000-000000000042",
+          channel_selection: "selected",
+          default_weight: null,
+          channels: [
+            {
+              channel_id: "00000000-0000-0000-0000-000000000043",
+              weight: 50,
+            },
+          ],
+        },
+      ],
+    },
+  ],
 };
 
 const SECOND_OPENAI_MODEL: ControlPlaneModel = {
@@ -87,6 +118,9 @@ describe("ModelRulesPage", () => {
     expect(sharedModelRow?.nextElementSibling?.nextElementSibling).toHaveTextContent(
       `${RESPONSES_RULE.client_model}Responses`,
     );
+    expect(
+      sharedModelRow?.nextElementSibling?.nextElementSibling,
+    ).toHaveTextContent("2 tiers2 groups1 channels");
 
     const groupedRows = screen
       .getAllByRole("cell")

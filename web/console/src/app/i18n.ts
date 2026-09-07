@@ -1036,8 +1036,8 @@ const zhCN: Record<string, string> = {
   "New rule": "新建规则",
   "Quick add": "快速批量添加",
   "Quick add model rules": "快速批量添加模型规则",
-  "Select upstream models. Missing rules are created for every API format with compatible enabled channels. Each rule uses the source model id, stays enabled, and targets every compatible channel; complete channel groups are selected when possible.":
-    "选择上游模型。系统会为每种存在兼容已启用渠道的 API 格式创建缺失规则。每条规则使用来源模型 ID、默认启用并覆盖全部兼容渠道；条件允许时会自动选择完整渠道组。",
+  "Select upstream models. Missing rules are created with one priority 0 weighted-random tier for every API format with compatible enabled channels. Complete compatible groups use all channels at weight 100; partial groups select each compatible channel at weight 100.":
+    "选择上游模型。系统会为每种存在兼容已启用渠道的 API 格式创建缺失规则，并使用一个优先级为 0 的加权随机层。完全兼容的渠道组会以权重 100 使用全部渠道；部分兼容的渠道组会显式选择每个兼容渠道并设置权重 100。",
   "Search models": "搜索模型",
   "Search by model id, name, or provider": "按模型 ID、名称或提供商搜索",
   "Select all available": "选择全部可添加模型",
@@ -1045,12 +1045,9 @@ const zhCN: Record<string, string> = {
     "已选择 {models} 个模型，将创建 {rules} 条规则。",
   "{count} compatible channels": "{count} 个兼容渠道",
   "Already configured": "已配置",
-  "Manual setup required": "需要手动配置",
   "Model disabled": "模型已禁用",
   "Model unavailable": "不支持此模型",
   "Upstream model is disabled.": "上游模型已禁用。",
-  "Routing groups at the same priority use different selection strategies.":
-    "同一优先级的路由组使用了不同的选择策略，需要手动配置。",
   "All compatible formats already have rules.": "所有兼容格式均已存在规则。",
   "No compatible enabled channels.": "没有兼容的已启用渠道。",
   "No upstream models": "没有上游模型",
@@ -1071,10 +1068,70 @@ const zhCN: Record<string, string> = {
   "Model rule created": "模型规则已创建",
   "Model rule updated": "模型规则已更新",
   "This rule was changed elsewhere. Reloading.": "此规则已在其他位置修改，正在重新加载。",
-  "Routes a client model and API format to one priced upstream model and channels.":
-    "将客户端模型和 API 格式路由到一个带价格的上游模型和渠道。",
+  "Routes a client model and API format through rule-owned priority tiers to one priced upstream model.":
+    "通过规则自有的优先级层，将客户端模型和 API 格式路由到一个带价格的上游模型。",
   "Routing status": "路由状态",
   "Routing candidates": "路由候选",
+  "Routing tiers": "路由层",
+  "{count} tiers · priorities {priorities}":
+    "{count} 个路由层 · 优先级 {priorities}",
+  "Rule routing tiers": "规则路由层",
+  "Lower priority tiers are tried first. Strategy and weights belong to this model rule, not to global channels or groups.":
+    "优先尝试数值较低的优先级层。选择策略和权重属于此模型规则，而不是全局渠道或渠道组。",
+  "Tier {number}": "路由层 {number}",
+  "{count} channel groups": "{count} 个渠道组",
+  "Remove tier {number}": "删除路由层 {number}",
+  "Lower numbers are attempted first.": "优先尝试数值较低的层。",
+  "Selection strategy for tier {number}": "路由层 {number} 的选择策略",
+  "Weights are compared only among eligible channels in this tier.":
+    "权重仅在此层内符合条件的渠道之间比较。",
+  "Add a format-compatible channel group": "添加格式兼容的渠道组",
+  "Add channel group to tier {number}": "向路由层 {number} 添加渠道组",
+  "Choose a channel group": "选择渠道组",
+  "All compatible groups are already used": "所有兼容渠道组均已使用",
+  "All channels use the default weight unless overridden.":
+    "除非单独覆盖，否则所有渠道均使用默认权重。",
+  "Only explicitly selected channels are eligible.":
+    "只有显式选择的渠道才符合路由条件。",
+  "Remove channel group {name}": "删除渠道组 {name}",
+  "Channel selection": "渠道选择",
+  "Channel selection for {name}": "{name} 的渠道选择",
+  "Selected channels": "所选渠道",
+  "Default weight": "默认权重",
+  "Enable a channel below only to override this weight.":
+    "仅在需要覆盖此权重时启用下方渠道。",
+  "Per-channel overrides": "单渠道覆盖",
+  "Selected channels and weights": "所选渠道及权重",
+  "Unchecked channels inherit the default weight.":
+    "未勾选的渠道继承默认权重。",
+  "Select at least one channel and assign a positive weight.":
+    "请至少选择一个渠道并分配正权重。",
+  "This group has no channels.": "此渠道组没有渠道。",
+  "Weight for channel {name}": "渠道 {name} 的权重",
+  "{count} channel overrides": "{count} 个渠道覆盖",
+  "Tier priority {priority} · {strategy}":
+    "路由层优先级 {priority} · {strategy}",
+  "Add routing tier": "添加路由层",
+  "Channel weights must be whole numbers.": "渠道权重必须为整数。",
+  "Channel weights must be positive.": "渠道权重必须为正数。",
+  "Channel weights are too large.": "渠道权重过大。",
+  "Default weight must be positive.": "默认权重必须为正数。",
+  "Default weight must be a whole number.": "默认权重必须为整数。",
+  "Default weight is too large.": "默认权重过大。",
+  "All-channel routing requires a positive default weight.":
+    "全部渠道路由需要正的默认权重。",
+  "Selected-channel routing cannot have a default weight.":
+    "显式选择渠道时不能设置默认权重。",
+  "A channel can appear only once in a group target.":
+    "同一渠道在一个渠道组目标中只能出现一次。",
+  "Priority must be a whole number.": "优先级必须为整数。",
+  "Priority is too large.": "优先级过大。",
+  "Add at least one channel group to this tier.":
+    "请向此路由层添加至少一个渠道组。",
+  "Add at least one routing tier.": "请添加至少一个路由层。",
+  "Tier priorities must be unique.": "路由层优先级必须唯一。",
+  "A channel group can appear only once in a rule.":
+    "同一渠道组在一条规则中只能出现一次。",
   "Ready": "可路由",
   "Temporarily unavailable": "暂时不可用",
   "Disconnected": "已断开",
@@ -1094,8 +1151,8 @@ const zhCN: Record<string, string> = {
   "Channels ({count})": "渠道（{count}）",
   "Individual channels ({count})": "单独渠道（{count}）",
   "Routing targets": "路由目标",
-  "Targets are grouped by API format and sorted by priority and name.":
-    "路由目标按 API 格式分类，并按优先级和名称排序。",
+  "Targets are grouped by API format and sorted by name.":
+    "路由目标按 API 格式分类，并按名称排序。",
   "{count} groups selected": "已选择 {count} 个渠道组",
   "{count} individual channels selected": "已选择 {count} 个单独渠道",
   "Search routing targets": "搜索路由目标",
@@ -1156,6 +1213,7 @@ const zhCN: Record<string, string> = {
   "Action": "操作",
   "Select": "选择",
   "Targets": "路由目标",
+  "{count} tiers": "{count} 个优先级层",
   "{count} groups": "{count} 个渠道组",
   "{count} channels": "{count} 个渠道",
   "import": "导入",
@@ -1250,16 +1308,15 @@ const zhCN: Record<string, string> = {
   "Format": "格式",
   "Group": "渠道组",
   "State": "状态",
-  "Weight": "权重",
   "Billing multiplier": "计费倍率",
   "Priority": "优先级",
   "Strategy": "策略",
   "auto-disabled": "自动禁用",
-  "Load-balancing pools for one API format with priority tiers.":
-    "按 API 格式和优先级划分的负载均衡池。",
+  "Pools of upstream channels for one API format.":
+    "同一 API 格式的上游渠道池。",
   "New group": "新建渠道组",
-  "Upstream endpoints inside a channel group with weight, timeouts, and auth.":
-    "渠道组内具有权重、超时和认证配置的上游端点。",
+  "Upstream endpoints inside a channel group with timeouts and auth.":
+    "渠道组内具有超时和认证配置的上游端点。",
   "Routing and identity": "路由与标识",
   "Upstream connection": "上游连接",
   "Proxy, template, authentication, and credential overrides.":
@@ -1395,8 +1452,7 @@ const zhCN: Record<string, string> = {
   "Formats": "格式",
   "Max keys": "最大密钥数",
   "New channel group": "新建渠道组",
-  "A same-format pool of channels selected by priority and weight.":
-    "按优先级和权重选择的同格式渠道池。",
+  "A same-format pool of upstream channels.": "同格式的上游渠道池。",
   "A disabled Images group is created with the Responses group so credentials can be shared without granting Images access.":
     "创建 Responses 组时会同时创建一个停用的 Images 组，以便共享凭证且不会自动授予 Images 访问权限。",
   "Back to groups": "返回渠道组",
@@ -1419,8 +1475,8 @@ const zhCN: Record<string, string> = {
   "Request compression is available only for Responses channel groups.":
     "请求压缩仅适用于 Responses 渠道组。",
   "Priority must be zero or greater.": "优先级必须为 0 或更大。",
-  "An upstream endpoint with weight, timeouts, and credential injection.":
-    "具有权重、超时和凭据注入配置的上游端点。",
+  "An upstream endpoint with timeouts and credential injection.":
+    "具有超时和凭据注入配置的上游端点。",
   "Back to channels": "返回渠道",
   "Channel created": "渠道已创建",
   "Channel updated": "渠道已更新",
@@ -1490,7 +1546,6 @@ const zhCN: Record<string, string> = {
   "An upstream API key is required when upstream auth is enabled.": "启用上游认证时必须提供上游 API 密钥。",
   "Enter an HTTP(S) URL without credentials, query parameters, or a fragment.":
     "请输入不含凭据、查询参数或片段的 HTTP(S) URL。",
-  "Weight must be at least 1.": "权重至少为 1。",
   "Billing multiplier must be zero or greater.": "计费倍率必须大于或等于 0。",
   "Multiplies the upstream model price used for request settlement.":
     "将上游模型价格乘以此倍率后用于请求结算。",
@@ -2107,8 +2162,8 @@ const zhCN: Record<string, string> = {
   "Quota threshold (%)": "额度阈值（%）",
   "New requests stop using this credential at the threshold; existing sticky Responses sessions may continue.":
     "达到阈值后，新请求将停止使用该凭证；已有的 Responses 粘性会话仍可继续。",
-  "Enter a label, positive weight, and quota threshold from 1 to 100.":
-    "请输入标签、正数权重和 1 至 100 的额度阈值。",
+  "Enter a label and quota threshold from 1 to 100.":
+    "请输入标签和 1 至 100 的额度阈值。",
   "Paste the complete callback URL.": "请粘贴完整的回调 URL。",
   "Codex credential connected.": "Codex 凭证已连接。",
   "Complete all required credential fields.": "请填写所有必填凭证字段。",
@@ -2148,7 +2203,6 @@ const zhCN: Record<string, string> = {
   "Threshold: {percent}%": "阈值：{percent}%",
   "OpenAI reset credits: {count}": "OpenAI reset credit：{count}",
   "Refreshed {time}": "刷新于 {time}",
-  "Weight {weight}": "权重 {weight}",
   "Proxy assigned": "已分配代理",
   "Workspace {id}": "工作区 {id}",
   "Member {id}": "成员 {id}",
@@ -2261,8 +2315,8 @@ const zhCN: Record<string, string> = {
   "Selected": "已选择",
   "Imported": "已导入",
   "2. Review credentials": "2. 检查凭证",
-  "Edit labels, routing values, tokens, and per-credential proxy assignments before the server validates each credential.":
-    "服务器验证每个凭证前，可编辑标签、路由参数、Token 和逐凭证代理分配。",
+  "Edit labels, quota thresholds, tokens, and per-credential proxy assignments before the server validates each credential.":
+    "服务器验证每个凭证前，可编辑标签、额度阈值、Token 和逐凭证代理分配。",
   "Bulk proxy assignment": "批量代理分配",
   "Apply to selected": "应用到所选项",
   "Round-robin selected": "轮询分配所选项",
@@ -2273,7 +2327,6 @@ const zhCN: Record<string, string> = {
   "Label for credential {number}": "第 {number} 个凭证的标签",
   "Personal credential (no workspace ID)": "个人凭证（无工作区 ID）",
   "Proxy for {label}": "{label} 的代理",
-  "Weight for {label}": "{label} 的权重",
   "Threshold for {label}": "{label} 的阈值",
   "Edit tokens for {label}": "编辑 {label} 的 Token",
   "Remove {label}": "移除 {label}",
@@ -2298,7 +2351,6 @@ const zhCN: Record<string, string> = {
   "Label is required.": "标签不能为空。",
   "Access token is required.": "Access Token 不能为空。",
   "Refresh token is required.": "Refresh Token 不能为空。",
-  "Weight must be a positive integer.": "权重必须为正整数。",
   "Quota threshold must be from 1 to 100.": "额度阈值必须在 1 至 100 之间。",
   "The assigned proxy is missing or disabled.": "已分配的代理不存在或已禁用。",
   "The source proxy is not mapped; this credential will use a direct connection.":
@@ -2314,6 +2366,7 @@ const zhCN: Record<string, string> = {
     "缺少 ID Token；身份信息将从 Access Token 读取。",
   "No workspace account ID was found; personal credentials can omit it.":
     "未找到工作区 Account ID；个人凭证可以不提供该字段。",
+  "Legacy credential weight was ignored.": "已忽略旧版凭证权重。",
   "Enter valid credential settings.": "请输入有效的凭证设置。",
   "Credential updated.": "凭证已更新。",
   "Edit Codex credential": "编辑 Codex 凭证",

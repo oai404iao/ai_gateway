@@ -25,8 +25,6 @@ pub struct CodexOauthStartInput {
     pub label: String,
     #[serde(default)]
     pub proxy_id: Option<Uuid>,
-    #[serde(default = "default_weight")]
-    pub weight: i32,
     #[serde(default = "default_quota_threshold_percent")]
     pub quota_threshold_percent: i16,
 }
@@ -39,8 +37,6 @@ pub struct CodexCredentialImportInput {
     pub enabled: bool,
     #[serde(default)]
     pub proxy_id: Option<Uuid>,
-    #[serde(default = "default_weight")]
-    pub weight: i32,
     #[serde(default = "default_quota_threshold_percent")]
     pub quota_threshold_percent: i16,
     #[serde(default)]
@@ -97,7 +93,6 @@ pub struct CodexCredentialExportItem {
     pub access_token: String,
     pub refresh_token: String,
     pub proxy_key: Option<Uuid>,
-    pub weight: i32,
     pub quota_threshold_percent: i16,
     pub enabled: bool,
 }
@@ -109,7 +104,6 @@ pub struct CodexCredentialUpdateInput {
     pub enabled: bool,
     #[serde(default)]
     pub proxy_id: Option<Uuid>,
-    pub weight: i32,
     pub quota_threshold_percent: i16,
 }
 
@@ -141,7 +135,6 @@ pub struct CodexCredentialCreate {
     pub label: String,
     pub enabled: bool,
     pub proxy_id: Option<Uuid>,
-    pub weight: i32,
     pub quota_threshold_percent: i16,
     pub base_url: String,
     pub email: Option<String>,
@@ -164,7 +157,6 @@ pub struct CodexOauthFlowRecord {
     pub channel_group_id: Uuid,
     pub label: String,
     pub proxy_id: Option<Uuid>,
-    pub weight: i32,
     pub quota_threshold_percent: i16,
     pub redirect_uri: String,
     pub state_hash: Vec<u8>,
@@ -206,7 +198,6 @@ pub struct CodexCredentialRecord {
     pub last_error_code: Option<String>,
     pub last_error_summary: Option<String>,
     pub proxy_id: Option<Uuid>,
-    pub weight: i32,
     pub enabled: bool,
     pub available_models: Vec<String>,
     pub created_at: DateTime<Utc>,
@@ -248,7 +239,6 @@ impl std::fmt::Debug for CodexCredentialRecord {
             .field("last_error_code", &self.last_error_code)
             .field("last_error_summary", &self.last_error_summary)
             .field("proxy_id", &self.proxy_id)
-            .field("weight", &self.weight)
             .field("enabled", &self.enabled)
             .field("available_models", &self.available_models)
             .field("created_at", &self.created_at)
@@ -286,7 +276,6 @@ pub struct CodexCredentialView {
     pub last_error_code: Option<String>,
     pub last_error_summary: Option<String>,
     pub proxy_id: Option<Uuid>,
-    pub weight: i32,
     pub enabled: bool,
     pub available_models: Vec<String>,
     pub created_at: DateTime<Utc>,
@@ -842,7 +831,6 @@ impl ControlPlaneRepository {
                 access_token: record.access_token,
                 refresh_token: record.refresh_token,
                 proxy_key: record.proxy_id.filter(|_| input.include_proxies),
-                weight: record.weight,
                 quota_threshold_percent: record.quota_threshold_percent,
                 enabled: record.enabled,
             })
@@ -850,7 +838,7 @@ impl ControlPlaneRepository {
 
         Ok(CodexCredentialExportBundle {
             export_type: "ai-gateway-codex-credentials",
-            version: 1,
+            version: 2,
             exported_at: Utc::now(),
             channel_group_id,
             channel_group_name,
@@ -870,16 +858,16 @@ impl ControlPlaneRepository {
         code_verifier: String,
         expires_at: DateTime<Utc>,
     ) -> Result<CodexOauthFlowRecord, RepositoryError> {
-        validate_credential_settings(&input.label, input.weight, input.quota_threshold_percent)?;
+        validate_credential_settings(&input.label, input.quota_threshold_percent)?;
         let _ = validate_codex_group_and_proxy_pool(&self.pool, channel_group_id, input.proxy_id)
             .await?;
         let id = Uuid::new_v4();
         sqlx::query_as::<_, CodexOauthFlowRecord>(
             "INSERT INTO codex_oauth_flows \
-             (id,actor_user_id,channel_group_id,label,proxy_id,weight,quota_threshold_percent, \
+             (id,actor_user_id,channel_group_id,label,proxy_id,quota_threshold_percent, \
               redirect_uri,state_hash,code_verifier,expires_at) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) \
-             RETURNING id,actor_user_id,channel_group_id,label,proxy_id,weight, \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) \
+             RETURNING id,actor_user_id,channel_group_id,label,proxy_id, \
                        quota_threshold_percent,redirect_uri,state_hash,code_verifier,expires_at",
         )
         .bind(id)
@@ -887,7 +875,6 @@ impl ControlPlaneRepository {
         .bind(channel_group_id)
         .bind(input.label.trim())
         .bind(input.proxy_id)
-        .bind(input.weight)
         .bind(input.quota_threshold_percent)
         .bind(redirect_uri)
         .bind(state_hash)
@@ -904,7 +891,7 @@ impl ControlPlaneRepository {
         actor_user_id: Uuid,
     ) -> Result<Option<CodexOauthFlowRecord>, RepositoryError> {
         sqlx::query_as::<_, CodexOauthFlowRecord>(
-            "SELECT id,actor_user_id,channel_group_id,label,proxy_id,weight, \
+            "SELECT id,actor_user_id,channel_group_id,label,proxy_id, \
                     quota_threshold_percent,redirect_uri,state_hash,code_verifier,expires_at \
              FROM codex_oauth_flows \
              WHERE id=$1 AND actor_user_id=$2 AND completed_at IS NULL AND expires_at>now()",
@@ -922,7 +909,7 @@ impl ControlPlaneRepository {
         input: CodexCredentialCreate,
         oauth_flow_id: Option<Uuid>,
     ) -> Result<MutationResult, RepositoryError> {
-        validate_credential_settings(&input.label, input.weight, input.quota_threshold_percent)?;
+        validate_credential_settings(&input.label, input.quota_threshold_percent)?;
         let requested_channel_group_id = input.channel_group_id;
         let pool = validate_codex_group_and_proxy_transaction(
             transaction,
@@ -982,14 +969,13 @@ impl ControlPlaneRepository {
             .await?;
             sqlx::query(
                 "UPDATE channels SET \
-                 name=$2,base_url=$3,enabled=true,weight=$4,proxy_id=$5,available_models=$6, \
+                 name=$2,base_url=$3,enabled=true,proxy_id=$4,available_models=$5, \
                  supports_websocket=true,supports_standalone_web_search=true \
                  WHERE id=$1",
             )
             .bind(channel_id)
             .bind(input.label.trim())
             .bind(&input.base_url)
-            .bind(input.weight)
             .bind(input.proxy_id)
             .bind(&input.available_models)
             .execute(&mut **transaction)
@@ -1078,10 +1064,10 @@ impl ControlPlaneRepository {
         let channel_id = Uuid::new_v4();
         let updated_at = sqlx::query_scalar::<_, DateTime<Utc>>(
             "INSERT INTO channels \
-             (id,channel_group_id,api_format,name,base_url,enabled,weight,billing_multiplier, \
+             (id,channel_group_id,api_format,name,base_url,enabled,billing_multiplier, \
               proxy_id,override_document,upstream_auth_kind,available_models, \
               auto_disable_allowed,supports_websocket,supports_standalone_web_search) \
-             VALUES ($1,$2,$3::api_format,$4,$5,true,$6,1,$7,'{}','none',$8,false,true,true) \
+             VALUES ($1,$2,$3::api_format,$4,$5,true,1,$6,'{}','none',$7,false,true,true) \
              RETURNING updated_at",
         )
         .bind(channel_id)
@@ -1089,7 +1075,6 @@ impl ControlPlaneRepository {
         .bind(CODEX_RESPONSES_API_FORMAT)
         .bind(input.label.trim())
         .bind(input.base_url)
-        .bind(input.weight)
         .bind(input.proxy_id)
         .bind(&input.available_models)
         .fetch_one(&mut **transaction)
@@ -1166,7 +1151,7 @@ impl ControlPlaneRepository {
         input: CodexCredentialUpdateInput,
         expected_updated_at: DateTime<Utc>,
     ) -> Result<MutationResult, RepositoryError> {
-        validate_credential_settings(&input.label, input.weight, input.quota_threshold_percent)?;
+        validate_credential_settings(&input.label, input.quota_threshold_percent)?;
         let before = codex_credential_audit(transaction, channel_id).await?;
         let group_id = before["channel_group_id"]
             .as_str()
@@ -1194,11 +1179,10 @@ impl ControlPlaneRepository {
         .fetch_optional(&mut **transaction)
         .await?
         .ok_or(RepositoryError::Conflict)?;
-        sqlx::query("UPDATE channels SET name=$2,proxy_id=$3,weight=$4 WHERE id=$1")
+        sqlx::query("UPDATE channels SET name=$2,proxy_id=$3 WHERE id=$1")
             .bind(channel_id)
             .bind(input.label.trim())
             .bind(input.proxy_id)
-            .bind(input.weight)
             .execute(&mut **transaction)
             .await?;
 
@@ -1797,7 +1781,7 @@ fn credential_view_select(suffix: &str) -> String {
                 credential.secondary_reset_at,window_costs.secondary_window_cost_amount, \
                 credential.quota_reset_credits_available,credential.quota_checked_at, \
                 credential.last_error_code,credential.last_error_summary, \
-                channel.proxy_id,channel.weight,credential.enabled,channel.available_models, \
+                channel.proxy_id,credential.enabled,channel.available_models, \
                 credential.created_at,credential.updated_at \
          FROM codex_oauth_credentials AS credential \
          JOIN channels AS channel ON channel.id=credential.channel_id \
@@ -1852,7 +1836,7 @@ fn credential_select(suffix: &str) -> String {
                 c.primary_reset_at,c.secondary_used_percent,c.secondary_window_seconds, \
                 c.secondary_reset_at,c.quota_reset_credits_available,c.quota_checked_at, \
                 c.last_error_code,c.last_error_summary, \
-                ch.proxy_id,ch.weight,c.enabled,ch.available_models,c.created_at,c.updated_at \
+                ch.proxy_id,c.enabled,ch.available_models,c.created_at,c.updated_at \
          FROM codex_oauth_credentials c JOIN channels ch ON ch.id=c.channel_id {suffix}"
     )
 }
@@ -2116,7 +2100,7 @@ async fn codex_credential_audit(
              'is_fedramp',c.is_fedramp,'access_token_expires_at',c.access_token_expires_at, \
              'last_refreshed_at',c.last_refreshed_at, \
              'quota_threshold_percent',c.quota_threshold_percent, \
-             'runtime_status',c.runtime_status,'proxy_id',ch.proxy_id,'weight',ch.weight, \
+             'runtime_status',c.runtime_status,'proxy_id',ch.proxy_id, \
              'enabled',c.enabled,'available_models',ch.available_models, \
              'projections',( \
                  SELECT json_agg( \
@@ -2145,13 +2129,9 @@ async fn codex_credential_audit(
 
 fn validate_credential_settings(
     label: &str,
-    weight: i32,
     quota_threshold_percent: i16,
 ) -> Result<(), RepositoryError> {
-    if label.trim().is_empty()
-        || label.len() > 100
-        || weight <= 0
-        || !(1..=100).contains(&quota_threshold_percent)
+    if label.trim().is_empty() || label.len() > 100 || !(1..=100).contains(&quota_threshold_percent)
     {
         return Err(RepositoryError::Validation);
     }
@@ -2171,10 +2151,6 @@ fn runtime_status_for_quota(quota: &CodexQuotaUpdate, threshold: i16) -> &'stati
     } else {
         "active"
     }
-}
-
-const fn default_weight() -> i32 {
-    100
 }
 
 const fn default_quota_threshold_percent() -> i16 {

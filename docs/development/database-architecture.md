@@ -18,13 +18,13 @@
 
 ## 当前实体组
 
-截至 migration `0051_request_log_peak_pricing.sql`，migration 历史创建了 27 张表。维护者不应
+截至 migration `0052_model_rule_routing_tiers.sql`，migration 历史创建了 30 张表。维护者不应
 把这个数量写成稳定产品契约；新增 schema 时应直接阅读全部 migration。当前实体可按职责分为：
 
 | 领域 | 主要表 | 责任 |
 | --- | --- | --- |
 | 身份与授权 | `users`、`user_groups`、`user_sessions`、`user_invitations`、`registration_invitation_codes`、`api_key_policies`、`api_keys` | Console 身份、角色、生命周期、注册/邀请、用户可选路由边界和具体 Key 限制。 |
-| 模型与路由 | `models`、`model_rules`、`channel_groups`、`channels`、`proxies`、`config_templates`、`system_settings` | 价格、上游 wire 模型、格式隔离、路由目标、Connector、网络/变换和数据库动态系统策略。 |
+| 模型与路由 | `models`、`model_rules`、`model_rule_routing_tiers`、`model_rule_routing_groups`、`model_rule_routing_channels`、`channel_groups`、`channels`、`proxies`、`config_templates`、`system_settings` | 价格、上游 wire 模型、规则级路由层级/目标/权重、格式隔离、Connector、网络/变换和数据库动态系统策略。 |
 | Codex Connector | `connector_pools`、`codex_oauth_credentials`、`codex_oauth_credential_channels`、`codex_oauth_flows`、`codex_quota_window_periods`、`codex_quota_reset_events`、`user_group_codex_quota_visibility` | 共享逻辑凭证、Responses/Images 投影、OAuth、quota 历史和用户组可见性。 |
 | MCP | `mcp_servers` | 静态内置 kind 的实例定义；transport 全局设置保存在 `system_settings`。 |
 | 日志与统计 | `request_log_ingest`、`request_logs`、`spend_leaderboard_periods`、`spend_leaderboard_entries`、`audit_logs` | 耐久日志入口、查询/结算事实、排行榜投影和控制面审计。 |
@@ -40,8 +40,19 @@
 - 被引用 `models.source_model_id` 同时是发往上游的 wire 模型名和该请求的价格来源。migration
   `0006_simplify_model_routes_and_request_log_filters.sql` 已删除旧的独立
   `model_rules.upstream_model` 列。
-- 规则、渠道组和渠道必须保持格式一致。启用规则可以暂时没有模型兼容或活跃渠道；快照仍可发布，
-  实际请求按普通路由错误失败。
+- `model_rule_routing_tiers` 保存规则拥有的非负 priority 和单一
+  `weighted_random` / `weighted_round_robin` strategy；priority 数值越小越先选。
+  `model_rule_routing_groups` 保存 tier 内 group target：`all` 使用正数默认权重并允许
+  `model_rule_routing_channels` 提供逐渠道覆盖，`selected` 则要求后者明确列出至少一个正权重
+  渠道。权重只在同一 tier 的合格渠道间比较。
+- `all` 在每次完整快照编译时展开 group 当前全部渠道，所以以后加入该组的渠道自动继承规则默认
+  权重；`selected` 不随 group 新成员扩展。Console 新建规则时把 `all` 默认权重和新选择的显式
+  Channel 权重都初始化为 `100`。
+- 规则、routing target、渠道组和渠道必须保持格式一致。启用规则可以暂时没有模型兼容或活跃
+  渠道；快照仍可发布，实际请求按普通路由错误失败。
+- Channel Group 不再保存 priority 或 selection strategy，Channel 和 Codex credential 不再保存
+  routing weight。它们仍分别保存资源池/Connector 设置和端点、鉴权、模型能力、网络、变换、
+  计费与健康配置。API Key 的 group/channel 授权关系没有改变，只在规则候选之上继续取交集。
 - `channel_groups.request_compression` 当前为 `default` 或 `zstd`；只有 Responses group 可以
   选择 `zstd`。
 - `channels.health_check` 已在 migration `0017_remove_legacy_compatibility.sql` 删除。当前定时测试、
@@ -63,6 +74,22 @@ Connector 都只观察过滤后的请求。
 - Codex 合成 workspace path、HTTPS Git remote 等转发元数据策略。
 
 首次启动只在对应设置不存在时使用 TOML bootstrap 值。之后数据库记录是动态运行时来源。
+
+### migration 0052 硬切换
+
+`0052_model_rule_routing_tiers.sql` 把旧 `model_rules` group/channel 数组、Channel Group
+priority/strategy 和 Channel weight 回填到上述三张规则级关系表，然后删除这些旧列和不再适用的
+Codex flow weight。
+旧的 group target 回填为 `all`、默认权重 `100`；只有所属 group 未同时被规则整体引用的旧直接
+Channel target 才回填为 `selected`。若规则已经整体引用该 group，重叠的直接 Channel 仍属于
+`all`，其非 `100` 旧权重保存为逐渠道覆盖；其他 group-selected Channel 的非 `100` 旧权重也用
+相同方式保留。
+
+这是不能由新旧二进制同时解释的硬切换。多实例部署必须先停止所有旧 Gateway，再让单个新版本实例
+应用 migration，验证启动和快照编译后才恢复同版本实例与流量，不能滚动混跑。migration 会检查
+禁用或暂时不可用的 latent targets；如果同一 model rule 的同一旧 priority 下存在不同
+selection strategy，会明确中止并要求先在旧 schema 上统一这些 group strategy，不能静默选择
+一种策略。缺失引用和跨格式引用也会 fail closed。
 
 ### 请求日志与结算
 

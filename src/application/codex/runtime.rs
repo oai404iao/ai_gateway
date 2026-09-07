@@ -208,7 +208,6 @@ mod tests {
             last_error_code: None,
             last_error_summary: None,
             proxy_id: None,
-            weight: 100,
             enabled: true,
             available_models: vec!["gpt-5-codex".into()],
             created_at: now,

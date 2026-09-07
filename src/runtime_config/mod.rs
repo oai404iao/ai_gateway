@@ -799,8 +799,6 @@ pub fn compile_control_plane_with_system_settings(
                     group.id,
                     parse_format(&group.api_format)?,
                     parse_connector_kind(&group.connector_kind)?,
-                    group.priority,
-                    parse_strategy(&group.selection_strategy)?,
                 )),
             );
         }
@@ -830,21 +828,12 @@ pub fn compile_control_plane_with_system_settings(
         .map(|(slot, id)| (*id, slot))
         .collect::<HashMap<_, _>>();
     let mut channels_by_group = HashMap::<Uuid, Vec<Uuid>>::new();
-    let mut channels_by_group_model = HashMap::<Uuid, HashMap<String, Vec<Uuid>>>::new();
     for id in &sorted_channel_ids {
         let channel = &all_channels[id];
         channels_by_group
             .entry(channel.channel_group_id)
             .or_default()
             .push(*id);
-        for model in &channel.available_models {
-            channels_by_group_model
-                .entry(channel.channel_group_id)
-                .or_default()
-                .entry(model.clone())
-                .or_default()
-                .push(*id);
-        }
     }
     let scheduled_test_models = compile_scheduled_test_models(&all_channels, &models_by_source)?;
     for channel in validated_channels {
@@ -898,7 +887,6 @@ pub fn compile_control_plane_with_system_settings(
                     connector_kind,
                     request_compression,
                     parse_url(channel.id, &channel.base_url)?,
-                    channel.weight,
                     channel.billing_multiplier,
                     auth,
                     channel
@@ -928,9 +916,7 @@ pub fn compile_control_plane_with_system_settings(
         &all_groups,
         &all_channels,
         &channels_by_group,
-        &channels_by_group_model,
         &channel_slots,
-        &groups,
         &channels,
     )?;
     let api_keys = compile_keys(
@@ -1781,7 +1767,6 @@ pub(crate) fn compile_channel_discovery_target(
         channel.channel_group_id,
         api_format,
         parse_url(channel.id, &channel.base_url)?,
-        channel.weight,
         compile_auth(channel)?,
         HashSet::new(),
         upstream_policy,
@@ -2072,9 +2057,7 @@ fn compile_rules(
     all_groups: &HashMap<Uuid, ChannelGroupRecord>,
     all_channels: &HashMap<Uuid, ChannelRecord>,
     channels_by_group: &HashMap<Uuid, Vec<Uuid>>,
-    channels_by_group_model: &HashMap<Uuid, HashMap<String, Vec<Uuid>>>,
     channel_slots: &HashMap<Uuid, usize>,
-    groups: &HashMap<Uuid, Arc<CompiledChannelGroup>>,
     channels: &HashMap<Uuid, Arc<CompiledChannel>>,
 ) -> Result<CompiledRules, ConfigError> {
     let mut result = HashMap::new();
@@ -2095,90 +2078,83 @@ fn compile_rules(
             ));
         }
         let format = parse_format(&record.api_format)?;
-        let mut candidates = HashSet::new();
         let mut unavailable_candidates = HashMap::<Uuid, Uuid>::new();
         let mut target_candidates = HashSet::new();
         let mut model_capable_candidates = HashSet::new();
-        let mut tier_strategies = HashMap::<i32, SelectionStrategy>::new();
-        for group_id in &record.channel_group_ids {
-            let group = all_groups.get(group_id).ok_or_else(|| {
-                ConfigError::Compile("enabled model rule references a missing channel group".into())
-            })?;
-            if parse_format(&group.api_format)? != format {
-                return Err(ConfigError::Compile(
-                    "enabled model rule references a cross-format channel group".into(),
-                ));
-            }
-            target_candidates.extend(
-                channels_by_group
-                    .get(group_id)
-                    .into_iter()
-                    .flatten()
-                    .copied(),
-            );
-            for channel_id in channels_by_group_model
-                .get(group_id)
-                .and_then(|models| models.get(&record.upstream_model))
-                .into_iter()
-                .flatten()
-            {
-                let channel = &all_channels[channel_id];
-                validate_effective_channel_prices(&record, channel.billing_multiplier)?;
-                if !model_capable_candidates.insert(*channel_id) {
-                    continue;
-                }
-                if group.enabled && channel.enabled && !channel.auto_disabled {
-                    validate_route_tier_strategy(&mut tier_strategies, group)?;
-                    candidates.insert(*channel_id);
-                } else {
-                    unavailable_candidates.insert(*channel_id, *group_id);
-                }
-            }
-        }
-        for channel_id in &record.channel_ids {
-            let channel = all_channels.get(channel_id).ok_or_else(|| {
-                ConfigError::Compile("enabled model rule references a missing channel".into())
-            })?;
-            if parse_format(&channel.api_format)? != format {
-                return Err(ConfigError::Compile(
-                    "enabled model rule references a cross-format channel".into(),
-                ));
-            }
-            target_candidates.insert(*channel_id);
-            let group = all_groups.get(&channel.channel_group_id).ok_or_else(|| {
-                ConfigError::Compile("direct channel candidate references a missing group".into())
-            })?;
-            if !channel
-                .available_models
-                .iter()
-                .any(|model| model == &record.upstream_model)
-            {
-                continue;
-            }
-            validate_effective_channel_prices(&record, channel.billing_multiplier)?;
-            if !model_capable_candidates.insert(*channel_id) {
-                continue;
-            }
-            if group.enabled && channel.enabled && !channel.auto_disabled {
-                validate_route_tier_strategy(&mut tier_strategies, group)?;
-                candidates.insert(*channel_id);
-            } else {
-                unavailable_candidates.insert(*channel_id, channel.channel_group_id);
-            }
-        }
         let mut tier_channels: HashMap<i32, Vec<CompiledCandidate>> = HashMap::new();
-        for candidate in candidates {
-            let channel = &channels[&candidate];
-            let group = groups.get(&channel.group_id()).ok_or_else(|| {
-                ConfigError::Compile("eligible channel has no enabled group".into())
-            })?;
-            tier_channels
-                .entry(group.priority())
-                .or_default()
-                .push(CompiledCandidate::new(
-                    channel_slots[&candidate],
-                    Arc::clone(channel),
-                ));
+        let mut tier_strategies = HashMap::new();
+        for tier in &record.routing_tiers {
+            let strategy = parse_strategy(&tier.selection_strategy)?;
+            tier_strategies.insert(tier.priority, strategy);
+            for target in &tier.channel_groups {
+                let group = all_groups.get(&target.channel_group_id).ok_or_else(|| {
+                    ConfigError::Compile(
+                        "enabled model rule references a missing channel group".into(),
+                    )
+                })?;
+                if parse_format(&group.api_format)? != format {
+                    return Err(ConfigError::Compile(
+                        "enabled model rule references a cross-format channel group".into(),
+                    ));
+                }
+                let overrides = target
+                    .channels
+                    .iter()
+                    .map(|channel| (channel.channel_id, channel.weight))
+                    .collect::<HashMap<_, _>>();
+                let selected_channels = if target.channel_selection == "all" {
+                    channels_by_group
+                        .get(&target.channel_group_id)
+                        .cloned()
+                        .unwrap_or_default()
+                } else {
+                    target
+                        .channels
+                        .iter()
+                        .map(|channel| channel.channel_id)
+                        .collect()
+                };
+                for channel_id in selected_channels {
+                    let channel = all_channels.get(&channel_id).ok_or_else(|| {
+                        ConfigError::Compile(
+                            "enabled model rule references a missing channel".into(),
+                        )
+                    })?;
+                    let weight = overrides
+                        .get(&channel_id)
+                        .copied()
+                        .or(target.default_weight)
+                        .ok_or_else(|| {
+                            ConfigError::Compile(
+                                "selected route channel has no explicit weight".into(),
+                            )
+                        })?;
+                    target_candidates.insert(channel_id);
+                    if !channel
+                        .available_models
+                        .iter()
+                        .any(|model| model == &record.upstream_model)
+                    {
+                        continue;
+                    }
+                    validate_effective_channel_prices(&record, channel.billing_multiplier)?;
+                    model_capable_candidates.insert(channel_id);
+                    if group.enabled && channel.enabled && !channel.auto_disabled {
+                        let compiled = channels.get(&channel_id).ok_or_else(|| {
+                            ConfigError::Compile("eligible route channel was not compiled".into())
+                        })?;
+                        tier_channels.entry(tier.priority).or_default().push(
+                            CompiledCandidate::new(
+                                channel_slots[&channel_id],
+                                Arc::clone(compiled),
+                                weight,
+                            ),
+                        );
+                    } else {
+                        unavailable_candidates.insert(channel_id, target.channel_group_id);
+                    }
+                }
+            }
         }
         let mut priorities = tier_channels.keys().copied().collect::<Vec<_>>();
         priorities.sort_unstable();
@@ -2270,23 +2246,6 @@ fn compile_rules(
     })
 }
 
-fn validate_route_tier_strategy(
-    strategies: &mut HashMap<i32, SelectionStrategy>,
-    group: &ChannelGroupRecord,
-) -> Result<(), ConfigError> {
-    let strategy = parse_strategy(&group.selection_strategy)?;
-    if strategies
-        .insert(group.priority, strategy)
-        .is_some_and(|existing| existing != strategy)
-    {
-        return Err(ConfigError::Compile(
-            "all channel groups in every route priority tier must use the same selection strategy"
-                .into(),
-        ));
-    }
-    Ok(())
-}
-
 fn validate_effective_channel_prices(
     record: &ModelRuleRecord,
     billing_multiplier: rust_decimal::Decimal,
@@ -2374,24 +2333,28 @@ fn validate_rule_references(
     channels: &HashMap<Uuid, ChannelRecord>,
 ) -> Result<(), ConfigError> {
     let format = parse_format(&record.api_format)?;
-    for group_id in &record.channel_group_ids {
-        let group = groups.get(group_id).ok_or_else(|| {
-            ConfigError::Compile("model rule references a missing channel group".into())
-        })?;
-        if parse_format(&group.api_format)? != format {
-            return Err(ConfigError::Compile(
-                "model rule references a cross-format channel group".into(),
-            ));
-        }
-    }
-    for channel_id in &record.channel_ids {
-        let channel = channels.get(channel_id).ok_or_else(|| {
-            ConfigError::Compile("model rule references a missing channel".into())
-        })?;
-        if parse_format(&channel.api_format)? != format {
-            return Err(ConfigError::Compile(
-                "model rule references a cross-format channel".into(),
-            ));
+    for tier in &record.routing_tiers {
+        for target in &tier.channel_groups {
+            let group = groups.get(&target.channel_group_id).ok_or_else(|| {
+                ConfigError::Compile("model rule references a missing channel group".into())
+            })?;
+            if parse_format(&group.api_format)? != format {
+                return Err(ConfigError::Compile(
+                    "model rule references a cross-format channel group".into(),
+                ));
+            }
+            for selected in &target.channels {
+                let channel = channels.get(&selected.channel_id).ok_or_else(|| {
+                    ConfigError::Compile("model rule references a missing channel".into())
+                })?;
+                if parse_format(&channel.api_format)? != format
+                    || channel.channel_group_id != target.channel_group_id
+                {
+                    return Err(ConfigError::Compile(
+                        "model rule references a cross-format or cross-group channel".into(),
+                    ));
+                }
+            }
         }
     }
     Ok(())
@@ -2417,11 +2380,6 @@ fn validate_group(record: &ChannelGroupRecord) -> Result<(), ConfigError> {
             "request compression is supported only for Responses channel groups".into(),
         ));
     }
-    if record.priority < 0 || SelectionStrategy::parse(&record.selection_strategy).is_none() {
-        return Err(ConfigError::Compile(
-            "invalid channel group selection metadata".into(),
-        ));
-    }
     Ok(())
 }
 fn parse_connector_kind(value: &str) -> Result<ConnectorKind, ConfigError> {
@@ -2434,7 +2392,7 @@ fn parse_request_compression(value: &str) -> Result<RequestCompression, ConfigEr
 }
 fn parse_strategy(value: &str) -> Result<SelectionStrategy, ConfigError> {
     SelectionStrategy::parse(value)
-        .ok_or_else(|| ConfigError::Compile("unsupported channel group selection strategy".into()))
+        .ok_or_else(|| ConfigError::Compile("unsupported route tier selection strategy".into()))
 }
 fn validate_channel(
     record: &ChannelRecord,
@@ -2455,11 +2413,6 @@ fn validate_channel(
     compile_document(&record.override_document, format)
         .map_err(transform_error("channel override document"))?;
     compile_timeouts(record)?;
-    if record.weight <= 0 {
-        return Err(ConfigError::Compile(
-            "channel weight must be positive".into(),
-        ));
-    }
     if record.billing_multiplier.is_sign_negative() {
         return Err(ConfigError::Compile(
             "channel billing multiplier must be non-negative".into(),
@@ -2636,12 +2589,45 @@ fn validate_rule(record: &ModelRuleRecord) -> Result<(), ConfigError> {
     require("model rule client_model", &record.client_model)?;
     require("model rule upstream_model", &record.upstream_model)?;
     parse_format(&record.api_format)?;
-    unique(&record.channel_group_ids, "model rule channel_group_ids")?;
-    unique(&record.channel_ids, "model rule channel_ids")?;
-    if record.channel_group_ids.is_empty() && record.channel_ids.is_empty() {
+    if record.routing_tiers.is_empty() {
         return Err(ConfigError::Compile(
             "model rule must select at least one target".into(),
         ));
+    }
+    let mut priorities = HashSet::with_capacity(record.routing_tiers.len());
+    let mut group_ids = HashSet::new();
+    for tier in &record.routing_tiers {
+        if tier.priority < 0
+            || !priorities.insert(tier.priority)
+            || SelectionStrategy::parse(&tier.selection_strategy).is_none()
+            || tier.channel_groups.is_empty()
+        {
+            return Err(ConfigError::Compile(
+                "model rule has invalid routing tier metadata".into(),
+            ));
+        }
+        for target in &tier.channel_groups {
+            let mut channel_ids = HashSet::with_capacity(target.channels.len());
+            if !group_ids.insert(target.channel_group_id)
+                || target
+                    .channels
+                    .iter()
+                    .any(|channel| channel.weight <= 0 || !channel_ids.insert(channel.channel_id))
+            {
+                return Err(ConfigError::Compile(
+                    "model rule has duplicate targets or invalid route weights".into(),
+                ));
+            }
+            match target.channel_selection.as_str() {
+                "all" if target.default_weight.is_some_and(|weight| weight > 0) => {}
+                "selected" if target.default_weight.is_none() && !target.channels.is_empty() => {}
+                _ => {
+                    return Err(ConfigError::Compile(
+                        "model rule has invalid channel selection metadata".into(),
+                    ));
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -3043,10 +3029,13 @@ pub enum ConfigError {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use crate::domain::{BillingWeekday, TimeBillingMultiplier};
     use crate::persistence::{
         ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ConfigTemplateRecord, ControlPlaneRecords,
-        McpServerRecord, ModelRecord, ModelRuleRecord, ProxyRecord, RuntimeConfigRecords,
+        McpServerRecord, ModelRecord, ModelRuleChannelGroupTarget, ModelRuleChannelWeight,
+        ModelRuleRecord, ModelRuleRoutingTier, ProxyRecord, RuntimeConfigRecords,
         SystemPassiveHealthSettingsInput, SystemRequestRetrySettingsInput,
         SystemSessionAffinityKeySourceInput, SystemSessionAffinityRuleInput,
         SystemSessionAffinitySettingsInput, SystemSettingsInput, SystemSettingsRecord,
@@ -3093,14 +3082,12 @@ mod tests {
         let second_group = Uuid::from_u128(2);
         let first_channel = Uuid::from_u128(11);
         let second_channel = Uuid::from_u128(12);
-        let group = |id, priority, strategy: &str| ChannelGroupRecord {
+        let group = |id| ChannelGroupRecord {
             id,
             name: id.to_string(),
             api_format: "open_ai_chat_completions".into(),
             connector_kind: "openai_compatible".into(),
             request_compression: "default".into(),
-            priority,
-            selection_strategy: strategy.into(),
             enabled: true,
         };
         let channel = |id, group_id| ChannelRecord {
@@ -3114,7 +3101,6 @@ mod tests {
             supports_standalone_web_search: false,
             auto_disabled: false,
             auto_disable_allowed: false,
-            weight: 1,
             billing_multiplier: rust_decimal::Decimal::ONE,
             proxy_id: None,
             config_template_id: None,
@@ -3128,12 +3114,46 @@ mod tests {
             available_models: vec!["upstream".into()],
             test_model: None,
         };
+        let mut routing_tiers = BTreeMap::<(i32, String), Vec<ModelRuleChannelGroupTarget>>::new();
+        for (group_id, channel_id, priority, strategy) in [
+            (first_group, first_channel, first_priority, first_strategy),
+            (
+                second_group,
+                second_channel,
+                second_priority,
+                second_strategy,
+            ),
+        ] {
+            routing_tiers
+                .entry((priority, strategy.into()))
+                .or_default()
+                .push(ModelRuleChannelGroupTarget {
+                    channel_group_id: group_id,
+                    channel_selection: "all".into(),
+                    default_weight: Some(1),
+                    channels: if direct_duplicate && group_id == first_group {
+                        vec![ModelRuleChannelWeight {
+                            channel_id,
+                            weight: 1,
+                        }]
+                    } else {
+                        vec![]
+                    },
+                });
+        }
+        let routing_tiers = routing_tiers
+            .into_iter()
+            .map(
+                |((priority, selection_strategy), channel_groups)| ModelRuleRoutingTier {
+                    priority,
+                    selection_strategy,
+                    channel_groups,
+                },
+            )
+            .collect();
         ControlPlaneRecords {
             api_keys: vec![],
-            groups: vec![
-                group(first_group, first_priority, first_strategy),
-                group(second_group, second_priority, second_strategy),
-            ],
+            groups: vec![group(first_group), group(second_group)],
             channels: vec![
                 channel(first_channel, first_group),
                 channel(second_channel, second_group),
@@ -3157,17 +3177,42 @@ mod tests {
                     "request_multipliers": [],
                 }),
                 upstream_model: "upstream".into(),
-                channel_group_ids: vec![first_group, second_group],
-                channel_ids: direct_duplicate
-                    .then_some(first_channel)
-                    .into_iter()
-                    .collect(),
+                routing_tiers,
                 enabled: true,
             }],
             proxies: vec![],
             templates: vec![],
             mcp_servers: vec![],
         }
+    }
+
+    fn set_all_group_target(rule: &mut ModelRuleRecord, group_id: Uuid) {
+        rule.routing_tiers = vec![ModelRuleRoutingTier {
+            priority: 0,
+            selection_strategy: "weighted_random".into(),
+            channel_groups: vec![ModelRuleChannelGroupTarget {
+                channel_group_id: group_id,
+                channel_selection: "all".into(),
+                default_weight: Some(1),
+                channels: vec![],
+            }],
+        }];
+    }
+
+    fn set_selected_channel_target(rule: &mut ModelRuleRecord, group_id: Uuid, channel_id: Uuid) {
+        rule.routing_tiers = vec![ModelRuleRoutingTier {
+            priority: 0,
+            selection_strategy: "weighted_random".into(),
+            channel_groups: vec![ModelRuleChannelGroupTarget {
+                channel_group_id: group_id,
+                channel_selection: "selected".into(),
+                default_weight: None,
+                channels: vec![ModelRuleChannelWeight {
+                    channel_id,
+                    weight: 1,
+                }],
+            }],
+        }];
     }
 
     #[test]
@@ -4062,6 +4107,65 @@ mod tests {
     }
 
     #[test]
+    fn compiler_keeps_route_weights_isolated_per_model_rule() {
+        let mut records = route_records(0, "weighted_random", 1, "weighted_random", false);
+        let group_id = records.groups[0].id;
+        let channel_id = records.channels[0].id;
+        set_selected_channel_target(&mut records.model_rules[0], group_id, channel_id);
+        records.model_rules[0].routing_tiers[0].channel_groups[0].channels[0].weight = 3;
+
+        let mut second_rule = records.model_rules[0].clone();
+        second_rule.id = Uuid::from_u128(99);
+        second_rule.client_model = "second-client".into();
+        second_rule.routing_tiers[0].channel_groups[0].channels[0].weight = 9;
+        records.model_rules.push(second_rule);
+
+        let snapshot = compile_control_plane(records).unwrap();
+        let first = snapshot
+            .model_rule(ApiFormat::OpenAiChatCompletions, "client")
+            .unwrap();
+        let second = snapshot
+            .model_rule(ApiFormat::OpenAiChatCompletions, "second-client")
+            .unwrap();
+        assert_eq!(first.tiers()[0].candidates()[0].weight(), 3);
+        assert_eq!(second.tiers()[0].candidates()[0].weight(), 9);
+        assert_eq!(
+            first.tiers()[0].candidates()[0].channel().id(),
+            second.tiers()[0].candidates()[0].channel().id()
+        );
+    }
+
+    #[test]
+    fn compiler_expands_all_targets_but_keeps_selected_targets_exact() {
+        let mut all_records = route_records(0, "weighted_random", 1, "weighted_random", false);
+        let group_id = all_records.groups[0].id;
+        all_records.channels[1].channel_group_id = group_id;
+
+        set_all_group_target(&mut all_records.model_rules[0], group_id);
+        let all_snapshot = compile_control_plane(all_records).unwrap();
+        let all_rule = all_snapshot
+            .model_rule(ApiFormat::OpenAiChatCompletions, "client")
+            .unwrap();
+        assert_eq!(all_rule.active_candidate_count(), 2);
+
+        let mut selected_records = route_records(0, "weighted_random", 1, "weighted_random", false);
+        let group_id = selected_records.groups[0].id;
+        let first_channel = selected_records.channels[0].id;
+        selected_records.channels[1].channel_group_id = group_id;
+        set_selected_channel_target(
+            &mut selected_records.model_rules[0],
+            group_id,
+            first_channel,
+        );
+        let selected_snapshot = compile_control_plane(selected_records).unwrap();
+        let selected_rule = selected_snapshot
+            .model_rule(ApiFormat::OpenAiChatCompletions, "client")
+            .unwrap();
+        assert_eq!(selected_rule.active_candidate_count(), 1);
+        assert_eq!(selected_rule.tiers()[0].channel_ids(), &[first_channel]);
+    }
+
+    #[test]
     fn compiler_rejects_strategy_mismatch_in_any_priority_tier() {
         assert!(
             compile_control_plane(route_records(
@@ -4076,16 +4180,10 @@ mod tests {
     }
 
     #[test]
-    fn disabled_candidates_do_not_create_an_active_strategy_conflict() {
+    fn disabled_candidates_do_not_hide_a_rule_tier_conflict() {
         let mut records = route_records(0, "weighted_random", 0, "weighted_round_robin", false);
         records.channels[1].enabled = false;
-
-        let snapshot = compile_control_plane(records).unwrap();
-        let rule = snapshot
-            .model_rule(ApiFormat::OpenAiChatCompletions, "client")
-            .unwrap();
-        assert_eq!(rule.active_candidate_count(), 1);
-        assert_eq!(rule.model_capable_candidate_count(), 2);
+        assert!(compile_control_plane(records).is_err());
     }
 
     #[test]
@@ -4116,7 +4214,7 @@ mod tests {
         let first_group = records.groups[0].id;
         let second_group = records.groups[1].id;
         let first_channel = records.channels[0].id;
-        records.model_rules[0].channel_group_ids = vec![first_group];
+        set_all_group_target(&mut records.model_rules[0], first_group);
         let key = |id: u128, secret: &str, groups, channels| ApiKeyRecord {
             id: Uuid::from_u128(id),
             user_id: Uuid::from_u128(id + 100),
@@ -4171,7 +4269,7 @@ mod tests {
         records.channels[1].channel_group_id = shared_group;
         records.channels[0].available_models = vec!["different-upstream".into()];
         records.channels[1].available_models = vec!["different-upstream".into()];
-        records.model_rules[0].channel_group_ids = vec![shared_group];
+        set_all_group_target(&mut records.model_rules[0], shared_group);
         records.api_keys.push(ApiKeyRecord {
             id: Uuid::from_u128(33),
             user_id: Uuid::from_u128(133),
@@ -4216,7 +4314,7 @@ mod tests {
         records.channels[1].channel_group_id = shared_group;
         records.channels[0].available_models = vec!["upstream".into()];
         records.channels[1].available_models = vec!["different-upstream".into()];
-        records.model_rules[0].channel_group_ids = vec![shared_group];
+        set_all_group_target(&mut records.model_rules[0], shared_group);
         records.api_keys.push(ApiKeyRecord {
             id: Uuid::from_u128(34),
             user_id: Uuid::from_u128(134),
@@ -4264,7 +4362,7 @@ mod tests {
         records.channels[1].available_models = vec!["upstream-b".into()];
         records.model_rules[0].client_model = "client-a".into();
         records.model_rules[0].upstream_model = "upstream-a".into();
-        records.model_rules[0].channel_group_ids = vec![shared_group];
+        set_all_group_target(&mut records.model_rules[0], shared_group);
         records.model_rules.push(ModelRuleRecord {
             id: Uuid::from_u128(22),
             client_model: "client-b".into(),
@@ -4283,8 +4381,16 @@ mod tests {
                 "request_multipliers": [],
             }),
             upstream_model: "upstream-b".into(),
-            channel_group_ids: vec![shared_group],
-            channel_ids: vec![],
+            routing_tiers: vec![ModelRuleRoutingTier {
+                priority: 0,
+                selection_strategy: "weighted_random".into(),
+                channel_groups: vec![ModelRuleChannelGroupTarget {
+                    channel_group_id: shared_group,
+                    channel_selection: "all".into(),
+                    default_weight: Some(1),
+                    channels: vec![],
+                }],
+            }],
             enabled: true,
         });
 
@@ -4313,7 +4419,7 @@ mod tests {
         let group_id = records.groups[0].id;
         let channel_id = records.channels[0].id;
         records.channels[0].enabled = false;
-        records.model_rules[0].channel_group_ids = vec![group_id];
+        set_all_group_target(&mut records.model_rules[0], group_id);
 
         let snapshot = compile_control_plane(records).unwrap();
         let rule = snapshot
@@ -4328,9 +4434,9 @@ mod tests {
     fn compiler_keeps_model_incompatible_direct_channel_as_a_disconnected_target() {
         let mut records = route_records(0, "weighted_random", 1, "weighted_random", false);
         let channel_id = records.channels[0].id;
+        let group_id = records.channels[0].channel_group_id;
         records.channels[0].available_models = vec!["different-upstream".into()];
-        records.model_rules[0].channel_group_ids.clear();
-        records.model_rules[0].channel_ids = vec![channel_id];
+        set_selected_channel_target(&mut records.model_rules[0], group_id, channel_id);
 
         let snapshot = compile_control_plane(records).unwrap();
         let rule = snapshot

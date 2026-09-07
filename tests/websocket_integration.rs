@@ -16,7 +16,8 @@ use ai_gateway::{
     },
     http,
     persistence::{
-        ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ControlPlaneRecords, ModelRuleRecord,
+        ApiKeyRecord, ChannelGroupRecord, ChannelRecord, ControlPlaneRecords,
+        ModelRuleChannelGroupTarget, ModelRuleChannelWeight, ModelRuleRecord, ModelRuleRoutingTier,
         ProxyRecord,
     },
     routing::{PassiveHealthPolicy, RoutingRuntime},
@@ -448,8 +449,6 @@ async fn gateway_harness_with_controls(
             api_format: "open_ai_responses".into(),
             connector_kind: "openai_compatible".into(),
             request_compression: "default".into(),
-            priority: 0,
-            selection_strategy: "weighted_random".into(),
             enabled: true,
         }],
         channels: vec![ChannelRecord {
@@ -463,7 +462,6 @@ async fn gateway_harness_with_controls(
             supports_standalone_web_search: false,
             auto_disabled: false,
             auto_disable_allowed: false,
-            weight: 1,
             billing_multiplier: Decimal::ONE,
             proxy_id,
             config_template_id: None,
@@ -533,8 +531,19 @@ async fn gateway_harness_with_controls(
                 })
             },
             upstream_model: UPSTREAM_MODEL.into(),
-            channel_group_ids: vec![],
-            channel_ids: vec![channel_id],
+            routing_tiers: vec![ModelRuleRoutingTier {
+                priority: 0,
+                selection_strategy: "weighted_random".into(),
+                channel_groups: vec![ModelRuleChannelGroupTarget {
+                    channel_group_id: group_id,
+                    channel_selection: "selected".into(),
+                    default_weight: None,
+                    channels: vec![ModelRuleChannelWeight {
+                        channel_id,
+                        weight: 1,
+                    }],
+                }],
+            }],
             enabled: true,
         }],
         proxies: outbound_proxy.into_iter().collect(),

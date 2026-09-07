@@ -61,7 +61,6 @@ import { formatDecimal } from "@/lib/formatters";
 import {
   apiFormatLabel,
   connectorKindLabel,
-  selectionStrategyLabel,
 } from "@/lib/permissions";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/app/i18n";
@@ -93,9 +92,9 @@ const FORMAT_ORDER: Record<ChannelGroupView["api_format"], number> = {
 
 function compareGroups(left: ChannelGroupView, right: ChannelGroupView): number {
   return (
-    left.priority - right.priority ||
+    FORMAT_ORDER[left.api_format] - FORMAT_ORDER[right.api_format] ||
     left.name.localeCompare(right.name) ||
-    FORMAT_ORDER[left.api_format] - FORMAT_ORDER[right.api_format]
+    left.id.localeCompare(right.id)
   );
 }
 
@@ -151,12 +150,6 @@ function StandardGroupCard({
               />
               <Badge variant="secondary">
                 {t("Channels ({count})", { count: channels.length })}
-              </Badge>
-              <Badge variant="outline">
-                {t("Priority")}: {group.priority}
-              </Badge>
-              <Badge variant="outline">
-                {selectionStrategyLabel(group.selection_strategy)}
               </Badge>
             </span>
           </CardDescription>
@@ -483,7 +476,6 @@ export function ChannelsPage() {
         <StatusBadge value={channel.supports_standalone_web_search} />
       ),
     },
-    { key: "weight", header: t("Weight"), render: (channel) => channel.weight },
     {
       key: "billing_multiplier",
       header: t("Billing multiplier"),
@@ -847,14 +839,6 @@ export function ChannelsPage() {
                                       {t("Channels ({count})", {
                                         count: groupedChannels.length,
                                       })}
-                                    </Badge>
-                                    <Badge variant="outline">
-                                      {t("Priority")}: {group.priority}
-                                    </Badge>
-                                    <Badge variant="outline">
-                                      {selectionStrategyLabel(
-                                        group.selection_strategy,
-                                      )}
                                     </Badge>
                                   </CardContent>
                                 </Card>
