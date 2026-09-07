@@ -4,7 +4,7 @@
 >
 > 状态：当前。
 >
-> 最近核对：2026-08-19。
+> 最近核对：2026-09-07。
 >
 > 机器可读权威契约：
 > [`request-allowlists.json`](request-allowlists.json)。
@@ -81,7 +81,8 @@ hop-by-hop 清理和上游鉴权覆盖约束。
   `x-client-request-id`、`x-codex-window-id`、`x-session-id`；
 - Codex 请求归因、Search 上下文与 Responses 控制 Header：`originator`、
   `x-codex-turn-metadata`、`x-codex-beta-features`、`x-codex-routing-hint`、
-  `x-codex-turn-state` 与 `x-openai-internal-codex-responses-lite`；
+  `x-codex-turn-state`、`x-openai-internal-codex-responses-lite` 与
+  `x-responsesapi-include-timing-metrics`；
 - 为兼容 0.9.4 示例配置而保留的 `session_id`、`thread_id`；新配置应使用上面的连字符形式；
 - W3C trace Header；
 - 官方 SDK 使用的 `x-stainless-*` 前缀。
@@ -142,9 +143,10 @@ Images edit 额外兼容部分通用表单会提交、但当前公开 edit 类�
 
 Responses HTTP 与 WebSocket 明确允许
 `x-codex-beta-features`、`x-codex-routing-hint`、`x-codex-turn-state` 和
-`x-openai-internal-codex-responses-lite` 从客户端或 Header Transform 透传。这四个 Header
+`x-openai-internal-codex-responses-lite`、`x-responsesapi-include-timing-metrics`
+从客户端或 Header Transform 透传。这五个 Header
 不在 `headers.generated` 中：Gateway 不伪造 beta 开关、路由提示、sticky turn-state 或 lite
-模型标记；它只保留已经通过客户端入口与 Codex 出口策略的值。
+模型标记，也不主动请求 timing metrics；它只保留已经通过客户端入口与 Codex 出口策略的值。
 
 根级 `codex_fingerprint_normalization` 另行维护以下固定行为：
 

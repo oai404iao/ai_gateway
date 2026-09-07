@@ -1643,6 +1643,10 @@ mod tests {
             "x-openai-internal-codex-responses-lite",
             HeaderValue::from_static("true"),
         );
+        headers.insert(
+            "x-responsesapi-include-timing-metrics",
+            HeaderValue::from_static("true"),
+        );
 
         let client = filter_client_headers(RequestInterface::ResponsesHttp, &headers).unwrap();
         assert!(client.contains_key(CONNECTION));
@@ -1655,6 +1659,7 @@ mod tests {
         assert!(client.contains_key("x-codex-routing-hint"));
         assert!(client.contains_key("x-codex-turn-state"));
         assert!(client.contains_key("x-openai-internal-codex-responses-lite"));
+        assert!(client.contains_key("x-responsesapi-include-timing-metrics"));
         assert!(!client.contains_key("forwarded"));
         assert!(!client.contains_key("x-unknown"));
 
@@ -1665,6 +1670,7 @@ mod tests {
         assert!(codex.contains_key("x-codex-routing-hint"));
         assert!(codex.contains_key("x-codex-turn-state"));
         assert!(codex.contains_key("x-openai-internal-codex-responses-lite"));
+        assert!(codex.contains_key("x-responsesapi-include-timing-metrics"));
         assert!(!codex.contains_key("x-hop"));
         assert!(!codex.contains_key("x-stainless-lang"));
 
@@ -1674,6 +1680,7 @@ mod tests {
         assert!(websocket.contains_key("x-codex-routing-hint"));
         assert!(websocket.contains_key("x-codex-turn-state"));
         assert!(websocket.contains_key("x-openai-internal-codex-responses-lite"));
+        assert!(websocket.contains_key("x-responsesapi-include-timing-metrics"));
 
         let search = filter_codex_headers(RequestInterface::StandaloneWebSearch, &client).unwrap();
         assert_eq!(search.get("originator").unwrap(), "codex_cli_rs");
