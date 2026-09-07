@@ -1,6 +1,6 @@
 {
   "version": 3,
-  "verified_at": "2026-08-19",
+  "verified_at": "2026-09-07",
   "sources": {
     "openai_node_commit": "854892a0580980449ce1ed04aa5e3831d3330383",
     "codex_commit": "fde2156057c38c0227ce94c8514d04c7498df60d"
@@ -67,6 +67,7 @@
       "x-openai-client-user-agent",
       "x-openai-internal-codex-responses-lite",
       "x-request-id",
+      "x-responsesapi-include-timing-metrics",
       "x-session-id"
     ],
     "allow_prefixes": [
@@ -193,7 +194,8 @@
             "x-codex-turn-metadata",
             "x-codex-turn-state",
             "x-codex-window-id",
-            "x-openai-internal-codex-responses-lite"
+            "x-openai-internal-codex-responses-lite",
+            "x-responsesapi-include-timing-metrics"
           ],
           "allow_prefixes": [],
           "ignore": [],
@@ -374,7 +376,8 @@
             "x-codex-turn-metadata",
             "x-codex-turn-state",
             "x-codex-window-id",
-            "x-openai-internal-codex-responses-lite"
+            "x-openai-internal-codex-responses-lite",
+            "x-responsesapi-include-timing-metrics"
           ],
           "allow_prefixes": [],
           "ignore": [],
