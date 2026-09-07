@@ -7,6 +7,8 @@ Versioning.
 
 ## [Unreleased]
 
+## [0.10.6] - 2026-09-07
+
 ### Changed
 
 - Move routing priority, weighted strategy, and channel weights from shared
@@ -36,6 +38,12 @@ Versioning.
 - Add a guided Console model-setup workspace that unifies channel groups,
   supplier endpoints, upstream models, pricing, and published model rules,
   with safe supplier/model copy flows and configuration-health guidance.
+
+### Fixed
+
+- Allow `x-responsesapi-include-timing-metrics` through the shared client
+  Header policy and the Codex Responses HTTP/SSE and WebSocket outbound
+  policies.
 
 ## [0.10.5] - 2026-08-19
 
