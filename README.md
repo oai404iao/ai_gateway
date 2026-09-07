@@ -16,7 +16,7 @@
 <p align="center">
   <a href="https://github.com/oai404iao/ai_gateway/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/oai404iao/ai_gateway/actions/workflows/ci.yml/badge.svg"></a>
   <a href="https://github.com/oai404iao/ai_gateway/releases"><img alt="GitHub release" src="https://img.shields.io/github/v/release/oai404iao/ai_gateway"></a>
-  <a href="rust-toolchain.toml"><img alt="Rust 1.92+" src="https://img.shields.io/badge/Rust-1.92%2B-orange"></a>
+  <a href="rust-toolchain.toml"><img alt="Rust 1.97.1" src="https://img.shields.io/badge/Rust-1.97.1-orange"></a>
   <a href="LICENSE"><img alt="License: AGPL-3.0-only" src="https://img.shields.io/badge/license-AGPL--3.0--only-blue"></a>
 </p>
 
@@ -133,8 +133,8 @@ policy.
 
 ### Prerequisites
 
-- Rust **1.92** or newer; this repository pins Rust **1.97.1** for normal
-  development and release builds.
+- Rust **1.97.1** (Rust 2024 edition), pinned by `rust-toolchain.toml` as the
+  supported development and release toolchain.
 - PostgreSQL, or Docker with Docker Compose.
 - OpenSSL for generating the local password and Console signing keys.
 - Node.js 24 and pnpm 11.17 only when developing or building the Console UI.

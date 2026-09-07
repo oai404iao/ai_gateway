@@ -33,9 +33,9 @@ VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
 ./scripts/check-release-version.sh "$VERSION"
 ```
 
-发布构建使用 `rust-toolchain.toml` 固定的 Rust 1.97.1；源码 MSRV 为 1.92，
-并由普通 CI 的独立 job 持续验证。版本职责和约半年的兼容窗口见
-[Rust 工具链与 MSRV 策略](rust-toolchain-policy.md)。
+发布构建、普通 CI 和本地开发都使用 `rust-toolchain.toml` 固定的 Rust 1.97.1。
+Cargo manifest 不声明更低编译器兼容边界，也没有独立的旧版本验证 job。工具链
+职责和协调升级流程见 [Rust 单工具链策略](rust-toolchain-policy.md)。
 
 ## 本地发布门禁
 
