@@ -39,8 +39,8 @@ pub(crate) enum CodexAttemptError {
 enum CodexRequestContext {
     Responses(CodexRequestIdentity),
     StandaloneWebSearch(CodexRequestIdentity),
-    ImagesGeneration { turn_id: String },
-    ImagesEdit { turn_id: String },
+    ImagesGeneration(CodexRequestIdentity),
+    ImagesEdit(CodexRequestIdentity),
     Unsupported,
 }
 
@@ -62,12 +62,12 @@ impl PreparedCodexAttempt {
             ApiOperation::StandaloneWebSearch => CodexRequestContext::StandaloneWebSearch(
                 CodexRequestIdentity::new(client_headers, affinity_hash),
             ),
-            ApiOperation::ImagesGeneration => CodexRequestContext::ImagesGeneration {
-                turn_id: Uuid::new_v4().to_string(),
-            },
-            ApiOperation::ImagesEdit => CodexRequestContext::ImagesEdit {
-                turn_id: Uuid::new_v4().to_string(),
-            },
+            ApiOperation::ImagesGeneration => CodexRequestContext::ImagesGeneration(
+                CodexRequestIdentity::new(client_headers, None),
+            ),
+            ApiOperation::ImagesEdit => {
+                CodexRequestContext::ImagesEdit(CodexRequestIdentity::new(client_headers, None))
+            }
             ApiOperation::ChatCompletions => CodexRequestContext::Unsupported,
         };
         Ok(Self {
@@ -83,14 +83,14 @@ impl PreparedCodexAttempt {
         request_protocol: RequestProtocol,
     ) -> Result<Bytes, CodexAttemptError> {
         match &self.request {
-            CodexRequestContext::ImagesGeneration { .. } => {
+            CodexRequestContext::ImagesGeneration(_) => {
                 return if request_protocol == RequestProtocol::NonStream {
                     Ok(body)
                 } else {
                     Err(CodexAttemptError::ImageStreamingUnsupported)
                 };
             }
-            CodexRequestContext::ImagesEdit { .. } => {
+            CodexRequestContext::ImagesEdit(_) => {
                 return Err(CodexAttemptError::InvalidRequestBody);
             }
             CodexRequestContext::StandaloneWebSearch(_) => {
@@ -123,8 +123,8 @@ impl PreparedCodexAttempt {
         let path = match &self.request {
             CodexRequestContext::Responses(_) => "responses",
             CodexRequestContext::StandaloneWebSearch(_) => "alpha/search",
-            CodexRequestContext::ImagesGeneration { .. } => "images/generations",
-            CodexRequestContext::ImagesEdit { .. } => "images/edits",
+            CodexRequestContext::ImagesGeneration(_) => "images/generations",
+            CodexRequestContext::ImagesEdit(_) => "images/edits",
             CodexRequestContext::Unsupported => {
                 return Err(CodexAttemptError::UnsupportedOperation);
             }
@@ -168,8 +168,14 @@ impl PreparedCodexAttempt {
         } else {
             headers.remove("X-OpenAI-Fedramp");
         }
+        // All Codex operations carry the same caller session identity. Retain
+        // the ingress identity even after provider header filtering; synthesizing
+        // missing values must not replace a supplied session or thread.
+        self.request_identity()
+            .ok_or(CodexAttemptError::UnsupportedOperation)?
+            .inject_session_headers(headers)?;
         match &self.request {
-            CodexRequestContext::Responses(identity) => {
+            CodexRequestContext::Responses(_) => {
                 if request_protocol == RequestProtocol::WebSocket {
                     headers.remove(ACCEPT);
                     headers.remove(ACCEPT_ENCODING);
@@ -179,39 +185,25 @@ impl PreparedCodexAttempt {
                     headers.insert(ACCEPT, HeaderValue::from_static("text/event-stream"));
                     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
                 }
-                headers.insert(
-                    "session-id",
-                    HeaderValue::from_str(&identity.session_id).map_err(invalid)?,
-                );
-                headers.insert(
-                    "thread-id",
-                    HeaderValue::from_str(&identity.thread_id).map_err(invalid)?,
-                );
-                if !headers.contains_key("x-client-request-id") {
-                    headers.insert(
-                        "x-client-request-id",
-                        HeaderValue::from_str(&identity.thread_id).map_err(invalid)?,
-                    );
-                }
                 headers.remove("x-codex-image-turn-id");
             }
-            CodexRequestContext::ImagesGeneration { turn_id }
-            | CodexRequestContext::ImagesEdit { turn_id } => {
+            CodexRequestContext::ImagesGeneration(identity)
+            | CodexRequestContext::ImagesEdit(identity) => {
                 headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
                 headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-                headers.remove("session-id");
-                headers.remove("thread-id");
-                headers.remove("x-client-request-id");
+                // Image turn correlation belongs to the caller, unlike provider
+                // authentication. Only synthesize it when no usable value survived
+                // the client/transform/Codex header policies.
+                let turn_id = valid_identity_header(headers, "x-codex-image-turn-id")
+                    .unwrap_or_else(|| identity.turn_id.clone());
                 headers.insert(
                     "x-codex-image-turn-id",
-                    HeaderValue::from_str(turn_id).map_err(invalid)?,
+                    HeaderValue::from_str(&turn_id).map_err(invalid)?,
                 );
             }
             CodexRequestContext::StandaloneWebSearch(_) => {
                 headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
                 headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-                headers.remove("session-id");
-                headers.remove("thread-id");
                 headers.remove("x-codex-image-turn-id");
             }
             CodexRequestContext::Unsupported => {
@@ -236,13 +228,7 @@ impl PreparedCodexAttempt {
         &self,
         settings: &CodexRequestMetadataSettings,
     ) -> Option<CodexRequestMetadata> {
-        let identity = match &self.request {
-            CodexRequestContext::Responses(identity)
-            | CodexRequestContext::StandaloneWebSearch(identity) => identity,
-            CodexRequestContext::ImagesGeneration { .. }
-            | CodexRequestContext::ImagesEdit { .. }
-            | CodexRequestContext::Unsupported => return None,
-        };
+        let identity = self.request_identity()?;
         Some(CodexRequestMetadata::new(
             self.platform_installation_id(),
             identity.session_id.clone(),
@@ -252,6 +238,16 @@ impl PreparedCodexAttempt {
             settings.workspace_path().to_owned(),
             settings.git_remote_url().to_owned(),
         ))
+    }
+
+    fn request_identity(&self) -> Option<&CodexRequestIdentity> {
+        match &self.request {
+            CodexRequestContext::Responses(identity)
+            | CodexRequestContext::StandaloneWebSearch(identity)
+            | CodexRequestContext::ImagesGeneration(identity)
+            | CodexRequestContext::ImagesEdit(identity) => Some(identity),
+            CodexRequestContext::Unsupported => None,
+        }
     }
 
     pub(crate) fn refresh_generation(&self) -> i64 {
@@ -270,7 +266,7 @@ impl PreparedCodexAttempt {
     }
 
     pub(crate) fn is_image_edit(&self) -> bool {
-        matches!(self.request, CodexRequestContext::ImagesEdit { .. })
+        matches!(self.request, CodexRequestContext::ImagesEdit(_))
     }
 
     pub(crate) fn request_interface(
@@ -285,8 +281,8 @@ impl PreparedCodexAttempt {
             CodexRequestContext::StandaloneWebSearch(_) => {
                 Ok(RequestInterface::StandaloneWebSearch)
             }
-            CodexRequestContext::ImagesGeneration { .. } => Ok(RequestInterface::ImagesGeneration),
-            CodexRequestContext::ImagesEdit { .. } => Ok(RequestInterface::ImagesEdit),
+            CodexRequestContext::ImagesGeneration(_) => Ok(RequestInterface::ImagesGeneration),
+            CodexRequestContext::ImagesEdit(_) => Ok(RequestInterface::ImagesEdit),
             CodexRequestContext::Unsupported => Err(CodexAttemptError::UnsupportedOperation),
         }
     }
@@ -295,8 +291,8 @@ impl PreparedCodexAttempt {
         matches!(
             self.request,
             CodexRequestContext::Responses(_)
-                | CodexRequestContext::ImagesGeneration { .. }
-                | CodexRequestContext::ImagesEdit { .. }
+                | CodexRequestContext::ImagesGeneration(_)
+                | CodexRequestContext::ImagesEdit(_)
         )
     }
 }
@@ -310,6 +306,25 @@ struct CodexRequestIdentity {
 }
 
 impl CodexRequestIdentity {
+    fn inject_session_headers(&self, headers: &mut HeaderMap) -> Result<(), CodexAttemptError> {
+        let invalid = |_| CodexAttemptError::InvalidCredentials;
+        headers.insert(
+            "session-id",
+            HeaderValue::from_str(&self.session_id).map_err(invalid)?,
+        );
+        headers.insert(
+            "thread-id",
+            HeaderValue::from_str(&self.thread_id).map_err(invalid)?,
+        );
+        if !headers.contains_key("x-client-request-id") {
+            headers.insert(
+                "x-client-request-id",
+                HeaderValue::from_str(&self.thread_id).map_err(invalid)?,
+            );
+        }
+        Ok(())
+    }
+
     fn new(headers: &HeaderMap, affinity_hash: Option<[u8; 32]>) -> Self {
         let session_id = valid_identity_header(headers, "session-id");
         let thread_id = valid_identity_header(headers, "thread-id");
@@ -614,12 +629,15 @@ mod tests {
     #[test]
     fn standalone_web_search_uses_alpha_target_and_pins_connector_identity() {
         let identity = configured_outbound_identity();
+        let mut client_headers = HeaderMap::new();
+        client_headers.insert("session-id", HeaderValue::from_static("search-session"));
+        client_headers.insert("thread-id", HeaderValue::from_static("search-thread"));
         let attempt = PreparedCodexAttempt::prepare(
             &runtime(),
             Uuid::from_u128(1),
             ApiOperation::StandaloneWebSearch,
             true,
-            &HeaderMap::new(),
+            &client_headers,
             Some([7; 32]),
             identity.clone(),
         )
@@ -669,8 +687,6 @@ mod tests {
             "x-codex-turn-metadata",
             HeaderValue::from_static(r#"{"search_context_size":"medium"}"#),
         );
-        headers.insert("session-id", HeaderValue::from_static("remove-session"));
-        headers.insert("thread-id", HeaderValue::from_static("remove-thread"));
         headers.insert(
             "x-client-request-id",
             HeaderValue::from_static("request-123"),
@@ -690,8 +706,8 @@ mod tests {
         assert_eq!(headers.get(ACCEPT).unwrap(), "application/json");
         assert_eq!(headers.get(CONTENT_TYPE).unwrap(), "application/json");
         assert!(!headers.contains_key(CONTENT_ENCODING));
-        assert!(!headers.contains_key("session-id"));
-        assert!(!headers.contains_key("thread-id"));
+        assert_eq!(headers["session-id"], "search-session");
+        assert_eq!(headers["thread-id"], "search-thread");
         assert!(attempt.preserves_affinity_on_failure());
         assert!(!attempt.successful_response_is_sse());
         assert!(!attempt.changes_request_body());
@@ -705,12 +721,15 @@ mod tests {
 
     #[test]
     fn image_generation_preserves_json_and_uses_image_specific_target_and_headers() {
+        let mut client_headers = HeaderMap::new();
+        client_headers.insert("session-id", HeaderValue::from_static("client-session"));
+        client_headers.insert("thread-id", HeaderValue::from_static("client-thread"));
         let attempt = PreparedCodexAttempt::prepare(
             &runtime(),
             Uuid::from_u128(3),
             ApiOperation::ImagesGeneration,
             false,
-            &HeaderMap::new(),
+            &client_headers,
             None,
             default_outbound_identity(),
         )
@@ -801,18 +820,163 @@ mod tests {
             Some("application/json")
         );
         assert!(!headers.contains_key(CONTENT_ENCODING));
-        assert!(!headers.contains_key("session-id"));
-        assert!(!headers.contains_key("thread-id"));
-        assert!(!headers.contains_key("x-client-request-id"));
+        assert_eq!(headers["session-id"], "client-session");
+        assert_eq!(headers["thread-id"], "client-thread");
+        assert_eq!(headers["x-client-request-id"], "client-request");
         let turn_id = headers
             .get("x-codex-image-turn-id")
             .and_then(|value| value.to_str().ok())
             .unwrap();
-        assert_ne!(turn_id, "client-controlled");
-        assert!(Uuid::parse_str(turn_id).is_ok());
+        assert_eq!(turn_id, "client-controlled");
         assert_eq!(attempt.credential_id(), Uuid::from_u128(1));
         assert!(!attempt.preserves_affinity_on_failure());
         assert!(!attempt.successful_response_is_sse());
+    }
+
+    #[test]
+    fn images_fill_unusable_turn_ids_once_per_attempt_and_preserve_valid_values() {
+        for operation in [ApiOperation::ImagesGeneration, ApiOperation::ImagesEdit] {
+            let attempt = PreparedCodexAttempt::prepare(
+                &runtime(),
+                Uuid::from_u128(3),
+                operation,
+                false,
+                &HeaderMap::new(),
+                None,
+                default_outbound_identity(),
+            )
+            .unwrap();
+            let mut generated = None;
+            for value in [None, Some(""), Some("  "), Some(&"x".repeat(513))] {
+                let mut headers = HeaderMap::new();
+                if let Some(value) = value {
+                    headers.insert(
+                        "x-codex-image-turn-id",
+                        HeaderValue::from_str(value).unwrap(),
+                    );
+                }
+                attempt
+                    .inject_headers(&mut headers, RequestProtocol::NonStream)
+                    .unwrap();
+                let actual = headers["x-codex-image-turn-id"]
+                    .to_str()
+                    .unwrap()
+                    .to_owned();
+                assert!(Uuid::parse_str(&actual).is_ok());
+                assert_eq!(generated.get_or_insert(actual.clone()), &actual);
+            }
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                "x-codex-image-turn-id",
+                HeaderValue::from_static("caller-turn"),
+            );
+            attempt
+                .inject_headers(&mut headers, RequestProtocol::NonStream)
+                .unwrap();
+            assert_eq!(headers["x-codex-image-turn-id"], "caller-turn");
+        }
+    }
+
+    #[test]
+    fn standalone_operations_preserve_caller_identity_and_only_fill_missing_headers() {
+        use crate::request_policy::{
+            filter_client_headers, filter_codex_headers, normalize_codex_fingerprints_in_headers,
+        };
+
+        for operation in [
+            ApiOperation::StandaloneWebSearch,
+            ApiOperation::ImagesGeneration,
+            ApiOperation::ImagesEdit,
+        ] {
+            for (session, thread) in [
+                (Some("caller-session"), Some("caller-thread")),
+                (Some("caller-session"), None),
+                (None, Some("caller-thread")),
+                (None, None),
+            ] {
+                let interface = RequestInterface::for_http(operation);
+                let mut incoming = HeaderMap::new();
+                for (name, value) in [("session-id", session), ("thread-id", thread)] {
+                    if let Some(value) = value {
+                        incoming.insert(name, HeaderValue::from_static(value));
+                    }
+                }
+                incoming.insert(
+                    "x-client-request-id",
+                    HeaderValue::from_static("caller-request"),
+                );
+                incoming.insert(
+                    "x-codex-window-id",
+                    HeaderValue::from_static("caller-window"),
+                );
+                incoming.insert(
+                    "x-codex-turn-metadata",
+                    HeaderValue::from_static(
+                        r#"{"turn_id":"caller-turn","installation_id":"private-installation","workspaces":{"/private/repo":{"commit":"private-commit"}}}"#,
+                    ),
+                );
+                let client = filter_client_headers(interface, &incoming).unwrap();
+                let attempt = PreparedCodexAttempt::prepare(
+                    &runtime(),
+                    Uuid::from_u128(3),
+                    operation,
+                    false,
+                    &client,
+                    None,
+                    default_outbound_identity(),
+                )
+                .unwrap();
+                let metadata = attempt
+                    .request_metadata(&CodexRequestMetadataSettings::default())
+                    .unwrap();
+                let mut headers = filter_codex_headers(interface, &client).unwrap();
+                normalize_codex_fingerprints_in_headers(interface, &mut headers, &metadata);
+                attempt
+                    .inject_headers(&mut headers, RequestProtocol::NonStream)
+                    .unwrap();
+                for (name, expected) in [
+                    ("session-id", session.or(thread)),
+                    ("thread-id", thread.or(session)),
+                ] {
+                    if let Some(expected) = expected {
+                        assert_eq!(headers[name], expected);
+                    } else {
+                        assert!(Uuid::parse_str(headers[name].to_str().unwrap()).is_ok());
+                    }
+                }
+                assert_eq!(headers["x-client-request-id"], "caller-request");
+                assert_eq!(headers["x-codex-window-id"], "caller-window");
+                let turn_metadata = headers["x-codex-turn-metadata"].to_str().unwrap();
+                assert!(!turn_metadata.contains("private"));
+                let turn_metadata: Value = serde_json::from_str(turn_metadata).unwrap();
+                assert_eq!(turn_metadata["turn_id"], "caller-turn");
+                assert_eq!(
+                    turn_metadata["session_id"],
+                    headers["session-id"].to_str().unwrap()
+                );
+                assert_eq!(
+                    turn_metadata["thread_id"],
+                    headers["thread-id"].to_str().unwrap()
+                );
+                assert_eq!(turn_metadata["window_id"], "caller-window");
+                assert_eq!(
+                    turn_metadata["installation_id"],
+                    attempt.platform_installation_id()
+                );
+
+                // The fallback must keep this attempt's original identity, not mint
+                // new session/thread values each time headers are reconstructed.
+                let mut missing = HeaderMap::new();
+                normalize_codex_fingerprints_in_headers(interface, &mut missing, &metadata);
+                attempt
+                    .inject_headers(&mut missing, RequestProtocol::NonStream)
+                    .unwrap();
+                assert_eq!(missing["session-id"], headers["session-id"]);
+                assert_eq!(missing["thread-id"], headers["thread-id"]);
+                assert_eq!(missing["x-client-request-id"], headers["thread-id"]);
+                assert_eq!(missing["x-codex-window-id"], "caller-window");
+            }
+        }
     }
 
     #[test]

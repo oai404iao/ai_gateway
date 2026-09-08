@@ -112,14 +112,17 @@ metadata 与 `prompt_cache_key` 会补齐；其余已有 metadata 保留。
 Codex OAuth standalone web search 使用同一 Responses managed channel、模型规则、API Key 权限
 和凭证。Connector 把公共 `/v1/alpha/search` 改写为 managed base URL 下的 `/alpha/search`，
 保留合法的 `x-codex-turn-metadata`，缺失时安全补齐，并把客户端 `originator` 与
-`User-Agent` 覆盖为系统设置中的 Codex Connector 身份。Responses Session Header
-会被删除，响应按普通 JSON 处理。Turn metadata 使用与 Responses 相同的
+`User-Agent` 覆盖为系统设置中的 Codex Connector 身份。会话身份 Header 与 Responses 共用
+保留/缺失补全规则，不删除 session/thread，响应按普通 JSON 处理。Turn metadata 使用与 Responses 相同的
 installation/workspace 归一化；`results` 中未知 DTO 和字段透明转发；没有 usage 时不估算
 token 或费用。
 
 Codex OAuth Images projection 仍使用标准客户端 `/v1/images/generations`，Connector 将上游目标
 改为 `/images/generations`，注入共享订阅凭证和 `x-codex-image-turn-id`，并按非流式 JSON
 而不是 SSE 处理响应。它不会把 Responses 输入转换成 Images。
+Images generation/edit 同样保留 session/thread/request/window/turn metadata，并只补全缺失值；
+传入 turn metadata 的 installation/workspaces 仍按同一隐私策略归一化，不写入 Images body。
+会话身份 Header 的传递不意味着 Images 支持 Session affinity。
 
 同一 projection 也接受客户端 `/v1/images/edits` multipart。Connector 流式读取 replayable
 body，把最多五张输入图片编码为 Codex JSON `images[].image_url` data URL，再将目标改为
@@ -131,7 +134,8 @@ Codex Responses HTTP、Responses WebSocket、standalone web search、Images gene
 都在普通 Transform 后执行
 独立的 provider body/Header 白名单。已知字段必须显式归类为转发、忽略或报错；未知 Codex body
 字段报错，未知 Codex Header 被删除。最终 OAuth/account/Session/image-turn Header 在白名单之后
-注入，不能由客户端或 Transform 覆盖。该归一化只属于 `codex_oauth` Connector；普通
+写入：OAuth/account 与 Connector 身份不能由客户端或 Transform 覆盖；Session 保留入口
+身份，image-turn 保留有效客户端/Transform 值并按需补全。该归一化只属于 `codex_oauth` Connector；普通
 OpenAI-compatible channel 不改写嵌套 metadata。
 
 ## 格式隔离

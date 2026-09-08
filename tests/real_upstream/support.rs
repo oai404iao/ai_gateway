@@ -138,7 +138,6 @@ impl SmokeFormat {
             Self::StandaloneWebSearch => json!({
                 "id": "gateway-real-upstream-search-session",
                 "model": CLIENT_MODEL,
-                "input": "Find one authoritative source about Rust.",
                 "commands": {
                     "search_query": [{
                         "q": "official Rust programming language",
@@ -1596,6 +1595,10 @@ mod tests {
             "rust-lang.org"
         );
         assert!(body["commands"].is_object());
+        assert!(
+            body.get("input").is_none(),
+            "command-only MCP requests need no invented history"
+        );
     }
 
     #[test]

@@ -2,7 +2,10 @@ use std::{collections::HashSet, sync::OnceLock};
 
 use axum::{
     body::{Body, to_bytes},
-    http::{Request, StatusCode, header::CONTENT_TYPE},
+    http::{
+        Request, StatusCode,
+        header::{ACCEPT, CONTENT_TYPE},
+    },
 };
 use chrono::NaiveDate;
 use rmcp::{
@@ -354,10 +357,11 @@ pub(super) async fn execute_web_run(
         search_session_id,
     );
     let commands = command_value(&arguments)?;
+    // Unlike a Codex conversation, this stateless adapter has no history.
+    // SearchInput is optional: do not invent user input from command counts.
     let body = json!({
         "id": provider_id,
         "model": principal.server.model_rule().client_model(),
-        "input": command_summary(&arguments),
         "commands": commands,
         "settings": search_settings(settings),
         "max_output_tokens": max_output_tokens,
@@ -365,6 +369,7 @@ pub(super) async fn execute_web_run(
     let body = serde_json::to_vec(&body)
         .map_err(|_| ErrorData::internal_error("failed to encode search request", None))?;
     let request = Request::post("/v1/alpha/search")
+        .header(ACCEPT, "application/json")
         .header(CONTENT_TYPE, "application/json")
         .body(Body::from(body))
         .map_err(|_| ErrorData::internal_error("failed to build search request", None))?;
@@ -492,29 +497,6 @@ fn provider_search_id(
     bytes[6] = (bytes[6] & 0x0f) | 0x80;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     Uuid::from_bytes(bytes).to_string()
-}
-
-fn command_summary(arguments: &WebRunArguments) -> String {
-    let mut commands = Vec::new();
-    push_command(&mut commands, "search_query", &arguments.search_query);
-    push_command(&mut commands, "image_query", &arguments.image_query);
-    push_command(&mut commands, "open", &arguments.open);
-    push_command(&mut commands, "click", &arguments.click);
-    push_command(&mut commands, "find", &arguments.find);
-    push_command(&mut commands, "screenshot", &arguments.screenshot);
-    push_command(&mut commands, "finance", &arguments.finance);
-    push_command(&mut commands, "weather", &arguments.weather);
-    push_command(&mut commands, "sports", &arguments.sports);
-    push_command(&mut commands, "time", &arguments.time);
-    format!("Execute web.run commands: {}.", commands.join(", "))
-}
-
-fn push_command<T>(target: &mut Vec<String>, name: &str, values: &Option<Vec<T>>) {
-    if let Some(values) = values
-        && !values.is_empty()
-    {
-        target.push(format!("{name}={}", values.len()));
-    }
 }
 
 fn tool_error(message: impl Into<String>) -> CallToolResult {

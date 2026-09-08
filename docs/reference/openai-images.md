@@ -91,7 +91,11 @@ Codex image tool 声明 `gpt-image-2`，管理员仍须创建对应本地模型�
   Token、可选 workspace/member、quota 和 outbound proxy，但使用独立的 Responses/Images group 与
   channel；Codex Images group 默认关闭，不会自动加入 API Key、Policy 或模型规则。
 - Codex Images generation 会把目标改为 `/backend-api/codex/images/generations`，注入
-  `x-codex-image-turn-id`，并删除 Responses 专用 session/thread Header。
+  Connector 鉴权/身份。session/thread/request/window/turn metadata 沿用 Responses 的传递与
+  缺失补全规则，保留客户端会话身份，同时归一化 installation/workspaces；这不启用 Images
+  Session affinity。`x-codex-image-turn-id`
+  保留有效调用方值，缺失或不可用时补充随机 UUID；规则与最近核对版本见
+  [请求字段与 Header 白名单](request-allowlists.md)。
 - Codex Images edit 会把公共 multipart 流式转换为
   `/backend-api/codex/images/edits` 的 JSON `images[].image_url` data URL。该 provider
   仅接受最多五张图片、不接受 mask，并通过统一 Codex body 白名单拒绝无法等价表达的 edit

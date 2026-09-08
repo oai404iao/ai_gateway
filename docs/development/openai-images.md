@@ -181,9 +181,11 @@ Images generation attempt 需要：
 - 将目标改写为 Codex subscription backend 的 `/images/generations`；
 - 使用与 Responses projection 相同的 credential snapshot 和预发送 token refresh 边界；
 - 最后注入 Bearer、可选 `ChatGPT-Account-ID`、FedRAMP、`originator`、`version`、
-  `User-Agent` 和 Gateway 生成的 `x-codex-image-turn-id`；
-- 移除客户端 `session-id`、`thread-id` 与 `x-client-request-id`，Images 不借用 Responses
-  Session identity；
+  `User-Agent`；`x-codex-image-turn-id` 保留有效的调用方/Transform 值，缺失或不可用时由
+  Gateway 补充随机 UUID；
+- 与 Responses 共用 session/thread 身份传递逻辑，保留客户端 `session-id`、`thread-id`、
+  `x-client-request-id`、window 和 turn metadata，仅缺失时补全；turn metadata 继续归一化
+  installation/workspaces，但不会向 Images body 增加 Responses 字段，也不启用 Images affinity；
 - 在模型别名和受限 JSON/Header 变换后保留 generation JSON 字节，不强制加入 Responses 的
   `stream`/`store` 字段；
 - 把成功响应按非流式 JSON 而不是 SSE 处理，继续使用增量 Images usage collector；
@@ -231,8 +233,8 @@ Codex OAuth edit adapter：
   fail closed；
 - provider-specific 地限制最多五张图片并拒绝 `mask` 与无法等价忽略的字段；通用
   `OpenAiImages` multipart 仍保留最多 16 张输入的独立上限；
-- 复用 generation 的 Bearer/可选 account/FedRAMP、`originator`、版本、User-Agent 和新生成的
-  `x-codex-image-turn-id`，并删除 Responses Session Header。
+- 复用 generation 的 Bearer/可选 account/FedRAMP、`originator`、版本、User-Agent 和
+  `x-codex-image-turn-id` 以及 session/thread/window/turn metadata 的保留/补全规则。
 
 完整的客户端与 Codex Header/body 动作见
 [`request-allowlists.json`](../reference/request-allowlists.json) 和

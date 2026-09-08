@@ -202,11 +202,22 @@ Images generation/edit 是例外：请求一旦开始尝试上游，就不会自
 不会提高全局 JSON 内存上限。未配置渠道级响应头超时时，generation/edit 使用系统设置中的
 Images 专用响应头超时，而不是 Chat Completions/Responses 的普通响应头超时。
 
+Images 的 `x-codex-image-turn-id` 可由调用方传入：普通渠道透传；Codex 渠道保留有效的
+客户端/Transform 值，仅在缺失或不可用时生成随机 UUID。该 Header 只关联图片调用，不用于
+鉴权，不会在 Codex Responses/Search 出口透传。鉴权与 Connector 身份仍由网关最终覆盖。
+Codex Connect 的 Images / Search 同时像 Responses 一样保留 `session-id`、`thread-id`、
+`x-client-request-id`、`x-codex-window-id` 和 turn metadata，仅缺失时补全。安装 ID / 工作区
+继续隐私归一化；会话头传递不会启用 Images affinity，也不会改变独立请求的 body 格式。
+
 Standalone web search 允许顶层 `id`、`model`、`reasoning`、`input`、`commands`、
 `settings` 和 `max_output_tokens`；结果 JSON 中的 `output`、`encrypted_output` 和
 `results` 原样流式转发，不解释 `results` DTO。该操作允许模型别名和 Header/响应 Header
 Transform，但不应用 Request JSON Transform。开启 Search 能力的渠道若组合出非空 Request JSON
 Transform，控制面编译失败。
+
+Search 的 `id`、`input`、commands 和 settings 不借用 Responses body 规则。无需模型别名或
+策略删除时保留原始 JSON；网关不会额外加入 `stream`、`store`、`client_metadata` 或伪造
+`input`。MCP 的请求生成差异见 [MCP 服务](mcp-services.md)。
 
 multipart edit 最多接受 64 个 part、16 张输入图片和一个 mask；普通文本字段最多
 单项 `64 KiB`、合计 `1 MiB`；boundary 最多 70 bytes，preamble、单个 part Header block 和
@@ -396,15 +407,15 @@ Codex standalone web search 使用同一 Responses managed channel 和凭证，�
 该请求固定为非流式 JSON；保留合法的 `x-codex-turn-metadata`，缺失时由 Connector 安全补齐，
 并对其应用相同 installation/workspace 归一化；客户端 `originator` 和 `User-Agent` 始终替换为
 系统设置中的 Codex Connector 身份。随后注入共享 Bearer、可选 account/FedRAMP 和版本，
-并删除 Responses Session Header。发送前不可用且未命中 affinity 时可以重选凭证；命中
+并按 Responses 相同规则保留会话身份 Header、仅补全缺失值。发送前不可用且未命中 affinity 时可以重选凭证；命中
 affinity 后 fail closed；请求发送后不重试。上游没有返回可识别 usage 时，日志不估算 token
 或费用。
 
 Codex Images generation 在模型别名和受限变换后只保留 Codex wire type 声明的 JSON 字段，请求目标改为
 `/backend-api/codex/images/generations`。Connector 注入共享凭证的 Bearer、可选
-account/FedRAMP、
-`originator`、版本、User-Agent 和新生成的 `x-codex-image-turn-id`，并删除客户端
-`session-id`、`thread-id` 与 `x-client-request-id`。Images 不使用 Session affinity；发送前若凭证
+account/FedRAMP、`originator`、版本、User-Agent；`x-codex-image-turn-id` 保留有效调用方值，
+缺失或不可用时补全。`session-id`、`thread-id`、`x-client-request-id`、window 和 turn metadata
+沿用 Responses 的保留/缺失补全规则，installation/workspaces 仍归一化。Images 不使用 Session affinity；发送前若凭证
 不可用可以选择同一 Images group 的其他 projection，但请求一旦发送就不会自动换账户或重试。
 成功响应按非流式 JSON 转发并增量提取顶层 usage，不会为 `data[].b64_json` 缓冲完整响应。
 
@@ -413,9 +424,9 @@ Codex Images edit 接收相同客户端模型的 multipart 请求，并在 repla
 provider-specific 地限制最多五张输入图片、不接受 mask，并只转发 `prompt`、`background`、
 `model`、`n`、`quality` 和 `size`。`moderation=auto` 在客户端入口层作为兼容默认值删除；
 `output_format=png` 在 Codex 出口层作为 provider 等价值删除。其他无法等价忽略的取值或字段在
-联系上游前拒绝。认证、image turn Header、draining 和发送后不重试边界与 generation 相同。
+联系上游前拒绝。认证、会话身份和 image turn Header、draining 和发送后不重试边界与 generation 相同。
 
-客户端已有的合法 `session-id` / `thread-id` 会转发。缺少时，HTTP 请求若匹配 Session affinity，
+客户端已有的合法 `session-id` / `thread-id` 会转发。缺少时，Responses/Search HTTP 请求若匹配 Session affinity，
 会从不可逆 session hash 派生稳定 opaque UUID；未匹配 affinity 的 HTTP 请求仅使用本次请求
 UUID。WebSocket Session 从下游握手身份派生稳定 seed，使顺序请求和池化重连使用一致身份。
 

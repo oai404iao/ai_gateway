@@ -1,9 +1,10 @@
 {
   "version": 3,
-  "verified_at": "2026-09-07",
+  "verified_at": "2026-09-08",
   "sources": {
     "openai_node_commit": "854892a0580980449ce1ed04aa5e3831d3330383",
-    "codex_commit": "fde2156057c38c0227ce94c8514d04c7498df60d"
+    "codex_commit": "fde2156057c38c0227ce94c8514d04c7498df60d",
+    "codex_standalone_commit": "d6489472f3c15e87d2d7763a5fde033545c530f8"
   },
   "codex_fingerprint_normalization": {
     "client_metadata_body_field": "client_metadata",
@@ -60,6 +61,7 @@
       "user-agent",
       "x-client-request-id",
       "x-codex-beta-features",
+      "x-codex-image-turn-id",
       "x-codex-routing-hint",
       "x-codex-turn-metadata",
       "x-codex-turn-state",
@@ -530,7 +532,8 @@
             "traceparent",
             "tracestate",
             "x-client-request-id",
-            "x-codex-turn-metadata"
+            "x-codex-turn-metadata",
+            "x-codex-window-id"
           ],
           "allow_prefixes": [],
           "ignore": [],
@@ -543,9 +546,13 @@
             "content-type",
             "host",
             "originator",
+            "session-id",
+            "thread-id",
             "user-agent",
             "version",
+            "x-client-request-id",
             "x-codex-turn-metadata",
+            "x-codex-window-id",
             "x-openai-fedramp"
           ]
         },
@@ -595,7 +602,11 @@
           "allow": [
             "baggage",
             "traceparent",
-            "tracestate"
+            "tracestate",
+            "x-client-request-id",
+            "x-codex-image-turn-id",
+            "x-codex-turn-metadata",
+            "x-codex-window-id"
           ],
           "allow_prefixes": [],
           "ignore": [],
@@ -608,9 +619,14 @@
             "content-type",
             "host",
             "originator",
+            "session-id",
+            "thread-id",
             "user-agent",
             "version",
+            "x-client-request-id",
             "x-codex-image-turn-id",
+            "x-codex-turn-metadata",
+            "x-codex-window-id",
             "x-openai-fedramp"
           ]
         },
@@ -709,7 +725,11 @@
           "allow": [
             "baggage",
             "traceparent",
-            "tracestate"
+            "tracestate",
+            "x-client-request-id",
+            "x-codex-image-turn-id",
+            "x-codex-turn-metadata",
+            "x-codex-window-id"
           ],
           "allow_prefixes": [],
           "ignore": [],
@@ -722,9 +742,14 @@
             "content-type",
             "host",
             "originator",
+            "session-id",
+            "thread-id",
             "user-agent",
             "version",
+            "x-client-request-id",
             "x-codex-image-turn-id",
+            "x-codex-turn-metadata",
+            "x-codex-window-id",
             "x-openai-fedramp"
           ]
         },

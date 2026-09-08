@@ -79,8 +79,10 @@ struct MockSearch {
 
 async fn search_upstream(
     State(state): State<MockSearch>,
+    headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> impl IntoResponse {
+    assert_mcp_upstream_headers(&headers, false);
     *state.request.lock().unwrap() = Some(body);
     let query = state
         .request
@@ -351,6 +353,7 @@ async fn image_upstream(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> impl IntoResponse {
+    assert_mcp_upstream_headers(&headers, true);
     *state.generation.lock().unwrap() = Some(body.clone());
     if headers
         .get(AUTHORIZATION)
@@ -388,6 +391,7 @@ async fn image_edit_upstream(
     headers: HeaderMap,
     body: Bytes,
 ) -> impl IntoResponse {
+    assert_mcp_upstream_headers(&headers, true);
     let authorization = headers
         .get(AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
@@ -432,6 +436,35 @@ async fn image_edit_upstream(
             "usage": {"input_tokens": 13, "output_tokens": 17}
         })),
     )
+}
+
+fn assert_mcp_upstream_headers(headers: &HeaderMap, images: bool) {
+    assert_eq!(headers[ACCEPT], "application/json");
+    assert_eq!(
+        headers[AUTHORIZATION],
+        if images {
+            "Bearer upstream-image-key"
+        } else {
+            "Bearer upstream-key"
+        }
+    );
+    for name in [
+        "origin",
+        "mcp-protocol-version",
+        "mcp-session-id",
+        "mcp-method",
+        "mcp-name",
+        "x-codex-turn-metadata",
+        "session-id",
+        "thread-id",
+    ] {
+        assert!(!headers.contains_key(name), "{name} must not leak from MCP");
+    }
+    if images {
+        assert!(Uuid::parse_str(headers["x-codex-image-turn-id"].to_str().unwrap()).is_ok());
+    } else {
+        assert!(!headers.contains_key("x-codex-image-turn-id"));
+    }
 }
 
 async fn image_harness(
@@ -790,6 +823,11 @@ async fn stateless_web_run_forwards_through_gateway_and_attributes_logs() {
     assert!(!response.to_string().contains("must-not-leak"));
 
     let first_upstream = captured.lock().unwrap().clone().unwrap();
+    assert!(first_upstream.get("input").is_none());
+    assert!(first_upstream.get("reasoning").is_none());
+    assert!(first_upstream.get("stream").is_none());
+    assert!(first_upstream.get("store").is_none());
+    assert!(first_upstream.get("client_metadata").is_none());
     assert_eq!(first_upstream["model"], "provider-search");
     assert_eq!(
         first_upstream["commands"]["search_query"][0]["q"],
@@ -959,7 +997,7 @@ async fn stateless_imagegen_returns_one_mcp_image_and_attributes_logs() {
     assert_eq!(upstream["background"], "opaque");
     assert_eq!(upstream["quality"], "high");
     assert_eq!(upstream["size"], "1536x1024");
-    assert!(upstream.get("output_format").is_none());
+    assert_eq!(upstream["output_format"], "png");
     assert!(upstream.get("response_format").is_none());
     assert!(upstream.get("stream").is_none());
 
@@ -1028,6 +1066,8 @@ async fn stateless_imagegen_edits_explicit_data_urls_through_the_images_proxy() 
     assert_eq!(edit.fields["background"], "opaque");
     assert_eq!(edit.fields["quality"], "high");
     assert_eq!(edit.fields["size"], "1536x1024");
+    assert_eq!(edit.fields["output_format"], "png");
+    assert!(!edit.fields.contains_key("response_format"));
     assert_eq!(edit.images.len(), 2);
     assert_eq!(edit.images[0].0, "image/png");
     assert_eq!(

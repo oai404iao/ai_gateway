@@ -443,6 +443,8 @@ pub(crate) fn normalize_codex_fingerprints_in_headers(
         RequestInterface::ResponsesHttp
             | RequestInterface::ResponsesWebSocket
             | RequestInterface::StandaloneWebSearch
+            | RequestInterface::ImagesGeneration
+            | RequestInterface::ImagesEdit
     ) {
         return;
     }
@@ -466,20 +468,15 @@ pub(crate) fn normalize_codex_fingerprints_in_headers(
             headers.insert(name, value);
         }
     }
-    if matches!(
-        interface,
-        RequestInterface::ResponsesHttp | RequestInterface::ResponsesWebSocket
-    ) {
-        let name = HeaderName::from_bytes(policy.window_header_field.as_bytes())
-            .expect("validated Codex window header name must remain valid");
-        if headers
-            .get(&name)
-            .and_then(|value| value.to_str().ok())
-            .is_none_or(|value| value.trim().is_empty())
-            && let Ok(value) = HeaderValue::from_str(&metadata.window_id)
-        {
-            headers.insert(name, value);
-        }
+    let name = HeaderName::from_bytes(policy.window_header_field.as_bytes())
+        .expect("validated Codex window header name must remain valid");
+    if headers
+        .get(&name)
+        .and_then(|value| value.to_str().ok())
+        .is_none_or(|value| value.trim().is_empty())
+        && let Ok(value) = HeaderValue::from_str(&metadata.window_id)
+    {
+        headers.insert(name, value);
     }
 }
 
@@ -830,6 +827,7 @@ struct RequestPolicyContract {
 struct RequestPolicySources {
     openai_node_commit: String,
     codex_commit: String,
+    codex_standalone_commit: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -933,6 +931,7 @@ fn validate_contract(contract: &RequestPolicyContract) -> Result<(), String> {
     for commit in [
         &contract.sources.openai_node_commit,
         &contract.sources.codex_commit,
+        &contract.sources.codex_standalone_commit,
     ] {
         if commit.len() != 40 || !commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return Err("request allowlist source commits must be full Git SHAs".into());
@@ -1138,13 +1137,28 @@ fn validate_codex_fingerprint_normalization(
                 ));
             }
         }
+    }
+    for interface in [
+        RequestInterface::ResponsesHttp,
+        RequestInterface::ResponsesWebSocket,
+        RequestInterface::StandaloneWebSearch,
+        RequestInterface::ImagesGeneration,
+        RequestInterface::ImagesEdit,
+    ] {
+        let headers = &contract
+            .interfaces
+            .get(interface.as_str())
+            .and_then(|policy| policy.codex_oauth.as_ref())
+            .ok_or_else(|| format!("missing Codex policy for `{}`", interface.as_str()))?
+            .headers;
         for name in [
             policy.window_header_field.as_str(),
             policy.turn_metadata.header_fields[0].as_str(),
+            "x-client-request-id",
         ] {
             if !contains_sorted(&contract.client_headers.allow, name)
-                || !contains_sorted(&codex.headers.allow, name)
-                || !contains_sorted(&codex.headers.generated, name)
+                || !contains_sorted(&headers.allow, name)
+                || !contains_sorted(&headers.generated, name)
             {
                 return Err(format!(
                     "Codex request enrichment header `{name}` must be allowed and generated for `{}`",
@@ -1152,21 +1166,17 @@ fn validate_codex_fingerprint_normalization(
                 ));
             }
         }
-    }
-    let search_headers = &contract
-        .interfaces
-        .get(RequestInterface::StandaloneWebSearch.as_str())
-        .and_then(|policy| policy.codex_oauth.as_ref())
-        .ok_or_else(|| "missing Codex standalone web search policy".to_owned())?
-        .headers;
-    for name in &policy.turn_metadata.header_fields {
-        if !contains_sorted(&contract.client_headers.allow, name)
-            || !contains_sorted(&search_headers.allow, name)
-            || !contains_sorted(&search_headers.generated, name)
-        {
-            return Err(format!(
-                "Codex fingerprint normalization header `{name}` must be allowed and generated for standalone search"
-            ));
+        // Session/thread are captured at ingress and restored after filtering,
+        // just like Responses. Header transforms cannot change that identity.
+        for name in ["session-id", "thread-id"] {
+            if !contains_sorted(&contract.client_headers.allow, name)
+                || !contains_sorted(&headers.generated, name)
+            {
+                return Err(format!(
+                    "Codex caller identity header `{name}` must be preserved for `{}`",
+                    interface.as_str()
+                ));
+            }
         }
     }
     Ok(())
@@ -1359,6 +1369,30 @@ mod tests {
     }
 
     #[test]
+    fn standalone_identity_enrichment_is_header_only_and_preserves_body_bytes() {
+        for (interface, body) in [
+            (
+                RequestInterface::StandaloneWebSearch,
+                Bytes::from_static(br#"{ "model":"search", "id":"caller-search", "commands":{} }"#),
+            ),
+            (
+                RequestInterface::ImagesGeneration,
+                Bytes::from_static(br#"{ "model":"image", "prompt":"a red hat" }"#),
+            ),
+            (
+                RequestInterface::ImagesEdit,
+                Bytes::from_static(br#"{ "model":"image", "images":[{"image_url":"data:image/png;base64,aA=="}] }"#),
+            ),
+        ] {
+            let applied =
+                normalize_codex_fingerprints_in_json(interface, body.clone(), &codex_metadata())
+                    .unwrap();
+            assert!(!applied.changed);
+            assert_eq!(applied.body, body);
+        }
+    }
+
+    #[test]
     fn codex_fingerprint_normalization_updates_and_synthesizes_search_headers() {
         let metadata = codex_metadata();
         let mut headers = HeaderMap::new();
@@ -1504,6 +1538,30 @@ mod tests {
         .unwrap_err();
         assert_eq!(error.code(), "request_body_field_unsupported");
         assert!(error.message().contains("future_field"));
+    }
+
+    #[test]
+    fn image_turn_header_survives_images_policies_but_not_other_codex_operations() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-codex-image-turn-id",
+            HeaderValue::from_static("caller-image-turn"),
+        );
+        for interface in REQUIRED_INTERFACES {
+            let client = filter_client_headers(interface, &headers).unwrap();
+            assert_eq!(client["x-codex-image-turn-id"], "caller-image-turn");
+            if interface == RequestInterface::ChatCompletions {
+                continue;
+            }
+            let codex = filter_codex_headers(interface, &client).unwrap();
+            assert_eq!(
+                codex.contains_key("x-codex-image-turn-id"),
+                matches!(
+                    interface,
+                    RequestInterface::ImagesGeneration | RequestInterface::ImagesEdit
+                )
+            );
+        }
     }
 
     #[test]

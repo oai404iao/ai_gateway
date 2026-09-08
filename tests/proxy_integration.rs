@@ -1971,6 +1971,55 @@ async fn standalone_web_search_requires_explicit_channel_capability() {
 }
 
 #[tokio::test]
+async fn standalone_web_search_preserves_raw_body_and_only_forwards_allowed_headers() {
+    let harness = harness(StatusCode::OK, br#"{"output":"ok"}"#.to_vec()).await;
+    let body = br#"{
+        "id" : "client-search-context", "model" : "responses-model",
+        "input" : [{"role":"user","content":[{"type":"input_text","text":"source?"}]}],
+        "commands" : {"open":[{"ref_id":"turn0search0","future_nested":true}]},
+        "settings" : {"external_web_access":"indexed"}, "max_output_tokens":100
+    }"#;
+    let response = authorized_post(
+        &client(),
+        harness.url("/v1/alpha/search"),
+        CLIENT_KEY,
+        body.to_vec(),
+    )
+    .header("originator", "caller-originator")
+    .header("x-codex-turn-metadata", r#"{"turn_id":"caller-turn"}"#)
+    .header("x-client-request-id", "caller-request")
+    .header("forwarded", "for=192.0.2.1")
+    .header("x-unknown-client-header", "discard")
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    response.bytes().await.unwrap();
+    let requests = harness.upstream_requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].body.as_slice(), body);
+    let headers = &requests[0].headers;
+    assert_eq!(headers["authorization"], "Bearer upstream-key");
+    assert_eq!(headers["originator"], "caller-originator");
+    assert_eq!(
+        headers["x-codex-turn-metadata"],
+        r#"{"turn_id":"caller-turn"}"#
+    );
+    assert_eq!(headers["x-client-request-id"], "caller-request");
+    for name in [
+        "forwarded",
+        "x-unknown-client-header",
+        "x-codex-image-turn-id",
+        "content-encoding",
+    ] {
+        assert!(
+            !headers.contains_key(name),
+            "{name} must not be generated or forwarded"
+        );
+    }
+}
+
+#[tokio::test]
 async fn standalone_web_search_rejects_unknown_top_level_fields_before_upstream_contact() {
     let harness = harness(StatusCode::OK, Vec::new()).await;
 
@@ -2155,6 +2204,7 @@ async fn images_generation_preserves_json_and_collects_top_level_usage() {
         CLIENT_KEY,
         request_body.clone(),
     )
+    .header("x-codex-image-turn-id", "caller-generation-turn")
     .send()
     .await
     .unwrap();
@@ -2164,6 +2214,10 @@ async fn images_generation_preserves_json_and_collects_top_level_usage() {
     let requests = harness.upstream_requests();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].body, request_body);
+    assert_eq!(
+        requests[0].headers["x-codex-image-turn-id"],
+        "caller-generation-turn"
+    );
     assert_eq!(
         requests[0].headers.get("authorization").unwrap(),
         "Bearer upstream-key"
@@ -2649,6 +2703,7 @@ async fn images_edit_preserves_multipart_spools_large_input_and_collects_usage()
     )
     .header("content-md5", "stale")
     .header("digest", "sha-256=stale")
+    .header("x-codex-image-turn-id", "caller-edit-turn")
     .send()
     .await
     .unwrap();
@@ -2658,6 +2713,10 @@ async fn images_edit_preserves_multipart_spools_large_input_and_collects_usage()
     let requests = harness.upstream_requests();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].body, request_body);
+    assert_eq!(
+        requests[0].headers["x-codex-image-turn-id"],
+        "caller-edit-turn"
+    );
     let expected_content_type = format!("multipart/form-data; boundary={boundary}");
     assert_eq!(
         requests[0]

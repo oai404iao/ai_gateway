@@ -366,7 +366,6 @@ Codex 内部可直接使用线程 `session_id`；MCP 工具契约不依赖隐式
 {
   "id": "<derived-provider-search-id>",
   "model": "<configured-client-model>",
-  "input": "<deterministic command summary>",
   "commands": {},
   "settings": {},
   "max_output_tokens": 3000
@@ -385,6 +384,9 @@ Codex 内部可直接使用线程 `session_id`；MCP 工具契约不依赖隐式
 7. 不接受调用方直接提交上游 `model`、`id`、`settings` 或 `max_output_tokens`；
 8. 最终请求继续经过现有 standalone search client policy、模型别名、Header Transform、
    Connector body/Header policy 和 operation capability 选路。
+9. MCP 没有对话历史，因此省略可选 `input`，不生成 command summary 作为用户输入；
+   `reasoning`、Responses `stream/store/client_metadata` 也不生成。内部请求声明
+   `Accept: application/json`，不继承 MCP transport Header。
 
 ### 结果
 
@@ -479,17 +481,24 @@ generation 生成规范化 JSON：
   "n": 1,
   "background": "auto",
   "quality": "auto",
-  "size": "auto"
+  "size": "auto",
+  "output_format": "png"
 }
 ```
 
-这与 Codex 内置 generation 请求保持最小字段集合，并依赖现代 GPT Images/Codex 路由返回
-`b64_json`；`stream` 缺省即为非流式。Gateway 仍把工具输出契约固定为 PNG/base64：上游若返回
-URL、无效 base64 或非 PNG 数据，工具调用失败关闭，不抓取远程 URL。
+普通渠道显式收到 `output_format=png`；Codex 出口会按统一策略删除此等价值，使其符合 Codex
+wire type。依赖现代 GPT Images/Codex 路由直接返回 `b64_json`，不发送这些模型不支持的
+`response_format`；`stream` 缺省即为非流式。上游若返回 URL、无效 base64 或非 PNG 数据，
+工具调用失败关闭，不抓取远程 URL。
+
+generation/edit 内部请求都声明 `Accept: application/json`，每次工具调用生成独立
+`x-codex-image-turn-id`；普通渠道与 Codex Connector 都保留它，不从 MCP 请求复制关联身份、
+鉴权或协议 Header。具体规则和核对来源见
+[请求字段与 Header 白名单](../reference/request-allowlists.md)。
 
 edit 在验证阶段按 `64 KiB` base64 chunk 计算解码大小与 signature，然后生成随机 multipart
-boundary，逐块解码图片并构造 `model`、`prompt`、`n`、`background`、`quality`、`size` 和
-`image[]` parts。该流由既有 `ImageEditBodyPolicy::capture` 接收为
+boundary，逐块解码图片并构造 `model`、`prompt`、`n`、`background`、`quality`、`size`、
+`output_format=png` 和 `image[]` parts。该流由既有 `ImageEditBodyPolicy::capture` 接收为
 `PreparedRequestBody::ImageEdit`，超过公共内存阈值时落入匿名临时文件，再进入普通或 Codex
 Connector adapter。取消或 Drop 会释放当前流、base64 参数和临时文件。该路径不得绕过：
 

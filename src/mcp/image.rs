@@ -6,7 +6,10 @@ use std::{
 
 use axum::{
     body::Body,
-    http::{Request, StatusCode, header::CONTENT_TYPE},
+    http::{
+        Request, StatusCode,
+        header::{ACCEPT, CONTENT_TYPE},
+    },
 };
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use bytes::{Bytes, BytesMut};
@@ -259,7 +262,9 @@ fn generation_request(
     let body = serde_json::to_vec(&generation_body(model, prompt, settings))
         .map_err(|_| ErrorData::internal_error("failed to encode image request", None))?;
     Request::post("/v1/images/generations")
+        .header(ACCEPT, "application/json")
         .header(CONTENT_TYPE, "application/json")
+        .header("x-codex-image-turn-id", Uuid::new_v4().to_string())
         .body(Body::from(body))
         .map_err(|_| ErrorData::internal_error("failed to build image request", None))
 }
@@ -272,6 +277,7 @@ fn generation_body(model: &str, prompt: &str, settings: &ImageMcpSettings) -> Va
         "background": image_background(settings.background),
         "quality": image_quality(settings.quality),
         "size": settings.size.as_str(),
+        "output_format": "png",
     })
 }
 
@@ -299,6 +305,7 @@ fn edit_request(
         image_quality(settings.quality),
     );
     push_text_part(&mut segments, &boundary, "size", &settings.size);
+    push_text_part(&mut segments, &boundary, "output_format", "png");
     for (index, image) in images.into_iter().enumerate() {
         segments.push_back(MultipartSegment::Bytes(Bytes::from(format!(
             "--{boundary}\r\n\
@@ -347,6 +354,8 @@ fn edit_request(
         }
     }));
     Request::post("/v1/images/edits")
+        .header(ACCEPT, "application/json")
+        .header("x-codex-image-turn-id", Uuid::new_v4().to_string())
         .header(
             CONTENT_TYPE,
             format!("multipart/form-data; boundary={boundary}"),
@@ -601,7 +610,33 @@ mod tests {
                 "background": "opaque",
                 "quality": "high",
                 "size": "1536x1024",
+                "output_format": "png",
             })
+        );
+    }
+
+    #[test]
+    fn image_requests_generate_independent_turn_ids_without_mcp_transport_headers() {
+        let generation = generation_request("image-model", "paint a lake", &settings()).unwrap();
+        let edit = edit_request(
+            "image-model",
+            "add a boat",
+            &settings(),
+            validate_edit_images(vec![data_url("image/png", PNG_SIGNATURE)]).unwrap(),
+        )
+        .unwrap();
+        for request in [&generation, &edit] {
+            assert_eq!(request.headers()[ACCEPT], "application/json");
+            assert!(
+                Uuid::parse_str(request.headers()["x-codex-image-turn-id"].to_str().unwrap())
+                    .is_ok()
+            );
+            // The adapter starts from a fresh envelope, not from caller headers.
+            assert_eq!(request.headers().len(), 3);
+        }
+        assert_ne!(
+            generation.headers()["x-codex-image-turn-id"],
+            edit.headers()["x-codex-image-turn-id"]
         );
     }
 

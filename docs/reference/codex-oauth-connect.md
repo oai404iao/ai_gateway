@@ -151,6 +151,11 @@ JSON，`data[].b64_json` 可能很大，并可在顶层包含 usage。Codex edit
 `images[].image_url` data URL，而不是公开 OpenAI API 常见的 multipart 形状；该差异只属于
 provider adapter。
 
+上述是原生工具的最小 Header 构造。Gateway 的 Codex Connect 独立 Images/Search 接口额外
+沿用 Responses 的会话身份传递规则：保留客户端 session/thread/request/window/turn metadata，
+仅缺失时补全，并对 installation/workspaces 执行统一隐私归一化；不会改写为 Responses body
+或开启 Images Session affinity。完整动作见 [请求白名单](request-allowlists.md)。
+
 Codex Responses HTTP 客户端使用 Responses wire format。当前直连接口按流式方式工作，
 请求强制 `stream=true`、`store=false`，且不会用 HTTP
 `previous_response_id` 恢复增量连接状态。核对版本的 `ResponsesApiRequest` 不声明
@@ -237,10 +242,11 @@ Standalone web search 路径：
 2. 固定为非流式 JSON，在模型别名后应用独立 Search body/Header 白名单；
 3. 不应用 Request JSON Transform；Header 和响应 Header Transform 仍有效；
 4. 将目标改为 managed channel base URL 下的 `/alpha/search`；
-5. 保留合法的 `x-codex-turn-metadata` 和可选 `x-client-request-id`；缺失或无效的 turn metadata
+5. 按 Responses 相同规则保留 session/thread/request/window 和 `x-codex-turn-metadata`；
+   仅缺失时补全。缺失或无效的 turn metadata
    会安全合成，installation/workspace 指纹按同一凭证/系统设置规则归一化；客户端
    `originator` 和 `User-Agent` 覆盖为系统设置中的 Codex Connector 身份，再注入
-   Bearer/可选 account/FedRAMP 和版本，删除 Responses Session Header；
+   Bearer/可选 account/FedRAMP 和版本，不再删除会话身份 Header；
 6. `results` DTO 透明转发；没有 usage 时不估算 token 或费用。
 
 客户端也可以调用非流式 JSON `POST /v1/images/generations`。选中 Codex Images projection 后：
@@ -249,8 +255,9 @@ Standalone web search 路径：
    `output_format=png`、`moderation=auto` 等等价值删除；
 2. 将目标改为 `/backend-api/codex/images/generations`；
 3. 注入共享 credential 的 Bearer/可选 account/FedRAMP，以及 `originator`、版本、User-Agent 和
-   Gateway 生成的 `x-codex-image-turn-id`；
-4. 删除客户端 `session-id`、`thread-id` 与 `x-client-request-id`；
+   有效客户端值或缺失时补全的 `x-codex-image-turn-id`；
+4. 与 Responses 共用 session/thread/request/window/turn metadata 的保留/缺失补全逻辑，
+   installation/workspaces 继续隐私归一化；
 5. 按普通 JSON 逐块转发响应，并增量提取顶层 usage，不缓冲完整 base64 图片。
 
 客户端还可以调用 multipart `POST /v1/images/edits`。选中相同 Images projection 后：

@@ -16,6 +16,17 @@ Versioning.
 - Make Rust 1.97.1 the sole supported and CI-validated toolchain, removing the
   lower-version Cargo metadata promise and duplicate compatibility job.
 
+### Fixed
+
+- Preserve caller session, thread, request, window, and turn metadata on Codex
+  standalone Images and Search requests using the Responses identity rules.
+  Fill only missing identities, retain installation/workspace privacy
+  normalization, and keep the standalone body formats and Images no-retry
+  boundary unchanged.
+- Preserve valid image-turn headers instead of replacing them. MCP Images now
+  explicitly requests PNG/JSON output and generates per-call image-turn IDs;
+  MCP Search sends structured commands without inventing conversation input.
+
 ## [0.10.6] - 2026-09-07
 
 ### Changed
