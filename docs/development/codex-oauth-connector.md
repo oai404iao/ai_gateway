@@ -245,8 +245,8 @@ Codex standalone web search attempt：
 - 保留合法的 `x-codex-turn-metadata`；turn metadata 缺失或无效时安全合成，安装 ID 与工作区
   使用同一凭证级/系统设置投影；
 - 无条件把 `originator` 和 `User-Agent` 覆盖为快照中的全局 Codex Connector 身份，
-  并注入 Bearer、存在时的 account、可选 FedRAMP 和版本，删除
-  `session-id`、`thread-id` 与 image-turn Header；
+  并注入 Bearer、存在时的 account、可选 FedRAMP 和版本，只删除不属于 Search 的 image-turn
+  Header；session/thread/request/window/turn metadata 与 Responses 共用保留/缺失补全逻辑；
 - 成功响应按非流式 JSON 处理，`results` DTO 不解释、不重写；没有可识别 usage 时不估算 token
   或费用。
 
@@ -256,9 +256,10 @@ Codex Images generation attempt：
 - 在模型别名和受限变换后应用 Codex Images generation body 白名单，只保留 wire type 字段；
   `output_format=png`、`moderation=auto` 等契约列出的等价值被删除，无法表达的非默认值返回错误；
 - 目标固定为 managed channel base URL 下的 `/images/generations`；
-- 注入 Bearer/可选 account、FedRAMP、User-Agent、`originator`、版本和 Gateway 生成的
-  `x-codex-image-turn-id`；
-- 删除客户端 `session-id`、`thread-id` 与 `x-client-request-id`；
+- 注入 Bearer/可选 account、FedRAMP、User-Agent、`originator` 和版本；保留有效的
+  `x-codex-image-turn-id`，缺失或不可用时补全；
+- 与 Responses 共用 session/thread/request/window/turn metadata 的保留/缺失补全逻辑；
+  installation/workspaces 仍执行隐私归一化，不增加 Responses body 字段或 Images affinity；
 - 把流式解码后的成功响应按普通 JSON 交给 Images usage collector，不按 SSE 解释。
 
 Codex Images edit attempt：
@@ -271,8 +272,8 @@ Codex Images edit attempt：
 - provider-specific 地拒绝 `mask`、第六张图片及无法等价删除的字段；客户端兼容字段和
   `output_format=png` 等 provider 默认值按机器契约删除；
 - 目标固定为 managed channel base URL 下的 `/images/edits`；
-- 使用与 generation 相同的 Bearer/可选 account/FedRAMP、User-Agent、`originator`、版本和新
-  `x-codex-image-turn-id`，不发送 Responses Session Header；
+- 使用与 generation 相同的 Bearer/可选 account/FedRAMP、User-Agent、`originator`、版本，
+  以及会话身份和 `x-codex-image-turn-id` 的保留/缺失补全规则；
 - 成功响应继续按普通 JSON 与 Images usage collector 处理。
 
 preparation 失败可以在发送前换凭证。HTTP Codex attempt（包括 standalone web search）不启用普通 transport retry，因为

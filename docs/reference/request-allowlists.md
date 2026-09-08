@@ -4,7 +4,7 @@
 >
 > 状态：当前。
 >
-> 最近核对：2026-09-07。
+> 最近核对：2026-09-08。
 >
 > 机器可读权威契约：
 > [`request-allowlists.json`](request-allowlists.json)。
@@ -27,6 +27,13 @@
 > [DeepSeek Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode) 与
 > [阿里云百炼深度思考](https://help.aliyun.com/zh/model-studio/deep-thinking) 的
 > Chat Completions 兼容扩展。
+
+独立 Images/Search 另以
+[`openai/codex@d648947`](https://github.com/openai/codex/tree/d6489472f3c15e87d2d7763a5fde033545c530f8)
+的 [Images Header 构造](https://github.com/openai/codex/blob/d6489472f3c15e87d2d7763a5fde033545c530f8/codex-rs/ext/image-generation/src/backend.rs)、
+[Search 请求构造](https://github.com/openai/codex/blob/d6489472f3c15e87d2d7763a5fde033545c530f8/codex-rs/ext/web-search/src/tool.rs)
+与 [Search 可选上下文](https://github.com/openai/codex/blob/d6489472f3c15e87d2d7763a5fde033545c530f8/codex-rs/ext/web-search/src/history.rs)
+核对，记录为 `sources.codex_standalone_commit`；Responses 的核对版本不因此更新。
 
 ## 目标
 
@@ -79,6 +86,7 @@ hop-by-hop 清理和上游鉴权覆盖约束。
   `openai-organization`、`openai-project`、`idempotency-key`；
 - Gateway/Codex Session Header，例如 `session-id`、`thread-id`、
   `x-client-request-id`、`x-codex-window-id`、`x-session-id`；
+- 独立 Images 调用关联 Header `x-codex-image-turn-id`；
 - Codex 请求归因、Search 上下文与 Responses 控制 Header：`originator`、
   `x-codex-turn-metadata`、`x-codex-beta-features`、`x-codex-routing-hint`、
   `x-codex-turn-state`、`x-openai-internal-codex-responses-lite` 与
@@ -148,6 +156,15 @@ Responses HTTP 与 WebSocket 明确允许
 不在 `headers.generated` 中：Gateway 不伪造 beta 开关、路由提示、sticky turn-state 或 lite
 模型标记，也不主动请求 timing metrics；它只保留已经通过客户端入口与 Codex 出口策略的值。
 
+**Gateway 的会话身份规则**：Codex Connect 的 Responses、独立 Search、Images generation/edit
+共用 session/thread 传递逻辑。`session-id`、`thread-id` 从入口捕获并在出口策略之后按原身份写回，
+不因为操作类型改变而删除或重新随机生成，Header Transform 也不能替换这两个入口身份。
+两者只缺其一时使用已存在的值补齐；两者均缺失时才沿用 Responses 的安全补全规则。
+`x-client-request-id`、`x-codex-window-id` 和 turn metadata 通过出口策略保留，缺失时补齐。
+这里的 `headers.generated` 表示 Connector 最终写入 Header，**不表示覆盖客户端已有身份**。
+这是 Gateway 的跨接口身份策略，不要求上游原生独立工具主动发送所有这些 Header；Images
+仍不启用 Session affinity，Search/Images body 也不增加 Responses 专用字段。
+
 根级 `codex_fingerprint_normalization` 另行维护以下固定行为：
 
 - `client_metadata["x-codex-installation-id"]` 和 turn metadata 中的
@@ -161,10 +178,11 @@ Responses HTTP 与 WebSocket 明确允许
 - Responses HTTP/WebSocket 在缺少时创建 `client_metadata`，补齐 installation、session、
   thread、turn、window、JSON 字符串形式的 turn metadata，以及顶层 `prompt_cache_key`。已有
   非空身份值保留；installation 与 workspaces 始终使用平台值。
-- Responses HTTP/WebSocket 在缺少时补 `x-codex-window-id` 和
+- Responses HTTP/WebSocket、Standalone Search 和 Images generation/edit 在缺少时补
+  `x-codex-window-id` 和
   `x-codex-turn-metadata` Header；WebSocket 的合成握手 metadata 不新增 turn ID，使同一
-  Session 的上游连接池 key 保持稳定。Standalone web search 缺少 turn metadata Header 时也会
-  合成一个。
+  Session 的上游连接池 key 保持稳定。Search/Images 同样保留已有 session/thread/turn/window，
+  只归一化安装 ID 与工作区；不会把 Header metadata 塞进其独立 body。
 - 无法解析为 JSON 对象的 `x-codex-turn-metadata` 不会作为 opaque 值继续转发，而是用安全合成
   metadata 替换。其他已有字段与 W3C `traceparent`、`tracestate`、`baggage` 保留。
 
@@ -194,6 +212,7 @@ Responses HTTP 与 WebSocket 明确允许
 
 ### Standalone web search
 
+- 会话身份 Header 沿用上述 Responses 保留/缺失补全规则，不再删除 session/thread；
 - 允许 `id`、`model`、`reasoning`、`input`、`commands`、`settings` 和
   `max_output_tokens`；
 - Gateway 只检查顶层字段；Search command、settings 和 result DTO 的嵌套结构由 Codex
@@ -207,6 +226,11 @@ Responses HTTP 与 WebSocket 明确允许
 
 ### Images generation
 
+- generation/edit 的会话身份 Header 同样沿用 Responses 保留/缺失补全规则；turn metadata
+  在保留已有会话信息的同时执行相同的安装 ID / 工作区隐私归一化；
+- `x-codex-image-turn-id` 是调用关联信息，不是鉴权信息：保留客户端或 Header Transform 提供的
+  有效值；缺失、空白、无法读取或去除首尾空白后超过 512 bytes 时才补充本次 attempt 的随机
+  UUID。generation/edit 共用此规则；Responses/Search 的 Codex 出口不允许该 Header。
 - 发往 Codex 的字段只保留 `prompt`、`background`、`model`、`n`、`quality`、`size`；
 - `output_format=png`、`moderation=auto`、`response_format=b64_json`、`stream=false` 和
   `partial_images=0` 可作为等价值删除；
@@ -223,8 +247,15 @@ Responses HTTP 与 WebSocket 明确允许
   第一层时产生不一致。
 
 Codex 出口 Header 从普通 Header Transform 结果中再次过滤。未知 Header 被删除；随后 Connector
-才注入 Bearer、可选 account/FedRAMP、Codex 版本、Session 或 image-turn Header。客户端不能通过
-同名 Header 覆盖这些最终值。
+才注入 Bearer、可选 account/FedRAMP、Codex 版本、Session，或按需补充 image-turn Header。
+鉴权和 Connector 身份始终覆盖客户端同名值；image-turn 则遵循上述保留/补全规则。
+
+MCP adapter 生成新的内部请求，而不是转发 MCP envelope：Search 只生成作用域隔离的 `id`、
+固定模型、commands、settings 和输出上限；没有对话历史时省略可选 `input`，不伪造上下文。
+Images generation/edit 固定 `n=1`、`output_format=png` 和实例参数，并为每次工具调用生成独立
+image-turn UUID。普通渠道保留 PNG 参数，Codex 将其作为等价值删除；不生成现代 GPT Image
+模型不支持的 `response_format`，仍校验上游直接返回的 PNG/base64。三种 MCP 内部请求均声明
+`Accept: application/json`。
 
 ## 执行顺序
 

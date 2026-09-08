@@ -188,6 +188,10 @@ Search/Images 请求 body、上游 Header 或请求日志。
 
 ## 无状态 Search continuation
 
+工具直接生成结构化 Search commands 与实例策略；不生成虚构的 `input` 对话上下文，也不将
+MCP transport Header 或 `_meta` 写入 Search 请求。Codex 渠道需要的身份/隐私 metadata 仍由
+Connector 统一生成或归一化。
+
 `web.run` 的命令形状参考 Codex，包括：
 
 - `search_query`、`image_query`
@@ -207,6 +211,11 @@ Gateway 实例处理，并且同一 API Key 在不同 MCP endpoint 复用相同 
 集合、超限 command 数量和被实例域名策略完全排除的 query domains 会失败关闭。
 
 ## Images generation 与 edit
+
+generation/edit 内部请求显式要求 `output_format=png`，并生成每次工具调用独立的
+`x-codex-image-turn-id`。普通渠道保留该字段和 Header；Codex 删除等价的 PNG body 参数，
+保留 image-turn Header。仍要求上游直接返回 PNG/base64，不生成不受现代 GPT Image 模型
+支持的 `response_format`，也不会跟随图片 URL。
 
 Images endpoint 暴露：
 

@@ -558,6 +558,8 @@ struct CapturedCodexImageRequest {
     user_agent: Option<String>,
     version: Option<String>,
     image_turn_id: Option<String>,
+    turn_metadata: Option<String>,
+    window_id: Option<String>,
     session_id: Option<String>,
     thread_id: Option<String>,
     client_request_id: Option<String>,
@@ -574,6 +576,7 @@ struct CapturedCodexSearchRequest {
     user_agent: Option<String>,
     version: Option<String>,
     turn_metadata: Option<String>,
+    window_id: Option<String>,
     session_id: Option<String>,
     thread_id: Option<String>,
     client_request_id: Option<String>,
@@ -700,6 +703,7 @@ async fn codex_search_upstream(
             user_agent: header("user-agent"),
             version: header("version"),
             turn_metadata: header("x-codex-turn-metadata"),
+            window_id: header("x-codex-window-id"),
             session_id: header("session-id"),
             thread_id: header("thread-id"),
             client_request_id: header("x-client-request-id"),
@@ -741,6 +745,8 @@ async fn codex_images_upstream(
             user_agent: header("user-agent"),
             version: header("version"),
             image_turn_id: header("x-codex-image-turn-id"),
+            turn_metadata: header("x-codex-turn-metadata"),
+            window_id: header("x-codex-window-id"),
             session_id: header("session-id"),
             thread_id: header("thread-id"),
             client_request_id: header("x-client-request-id"),
@@ -3186,9 +3192,10 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
     let synthetic_workspace_path = "/synthetic/project";
     let synthetic_git_remote = "https://github.com/example/synthetic-project";
     let client_model = format!("codex-client-{}", Uuid::new_v4());
+    let responses_rule = Uuid::new_v4();
     insert_model_rule_fixture(
         &database.pool,
-        Uuid::new_v4(),
+        responses_rule,
         &client_model,
         "open_ai_responses",
         seed.model,
@@ -3243,6 +3250,23 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
     )
     .bind(Uuid::new_v4())
     .bind(images_rule)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO mcp_servers \
+         (id,slug,kind,name,description,model_rule_id,settings_version,settings,enabled) \
+         VALUES ($1,'codex-search','web_search','Codex search','Codex standalone search',$2,1,$3,true)",
+    )
+    .bind(Uuid::new_v4())
+    .bind(responses_rule)
+    .bind(serde_json::json!({
+        "external_web_access": "live",
+        "search_context_size": "medium",
+        "allowed_domains": [],
+        "blocked_domains": [],
+        "max_output_tokens": {"short": 1000, "medium": 3000, "long": 6000}
+    }))
     .execute(&database.pool)
     .await
     .unwrap();
@@ -3560,9 +3584,10 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
                 .header("content-type", "application/json")
                 .header("originator", "codex_vscode")
                 .header("user-agent", "private-client/1.0")
-                .header("session-id", "remove-search-session")
-                .header("thread-id", "remove-search-thread")
+                .header("session-id", "client-search-session")
+                .header("thread-id", "client-search-thread")
                 .header("x-client-request-id", "search-request-123")
+                .header("x-codex-window-id", "client-search-window")
                 .body(Body::from(
                     serde_json::to_vec(&serde_json::json!({
                         "id": "session-123",
@@ -3623,13 +3648,23 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
             }
         })
     );
-    assert_eq!(search_turn_metadata["session_id"], "remove-search-session");
-    assert_eq!(search_turn_metadata["thread_id"], "remove-search-thread");
-    assert_eq!(search_turn_metadata["window_id"], "remove-search-thread:0");
+    assert_eq!(search_turn_metadata["session_id"], "client-search-session");
+    assert_eq!(search_turn_metadata["thread_id"], "client-search-thread");
+    assert_eq!(search_turn_metadata["window_id"], "client-search-window");
     assert!(Uuid::parse_str(search_turn_metadata["turn_id"].as_str().unwrap()).is_ok());
     assert!(search_turn_metadata.get("request_kind").is_none());
-    assert!(search_request.session_id.is_none());
-    assert!(search_request.thread_id.is_none());
+    assert_eq!(
+        search_request.session_id.as_deref(),
+        Some("client-search-session")
+    );
+    assert_eq!(
+        search_request.thread_id.as_deref(),
+        Some("client-search-thread")
+    );
+    assert_eq!(
+        search_request.window_id.as_deref(),
+        Some("client-search-window")
+    );
     assert_eq!(
         search_request.client_request_id.as_deref(),
         Some("search-request-123")
@@ -3680,6 +3715,11 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
                 .header("session-id", "client-image-session")
                 .header("thread-id", "client-image-thread")
                 .header("x-client-request-id", "client-image-request")
+                .header("x-codex-window-id", "client-image-window")
+                .header(
+                    "x-codex-turn-metadata",
+                    r#"{"session_id":"client-image-session","thread_id":"client-image-thread","turn_id":"client-image-turn","installation_id":"private-image-installation","workspaces":{"/private/image-repo":{"commit":"private-commit"}}}"#,
+                )
                 .header("x-codex-image-turn-id", "client-controlled")
                 .header("x-stainless-lang", "rust")
                 .body(Body::from(image_request_body.clone()))
@@ -3721,19 +3761,47 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
         image_request.content_type.as_deref(),
         Some("application/json")
     );
-    assert!(image_request.session_id.is_none());
-    assert!(image_request.thread_id.is_none());
-    assert!(image_request.client_request_id.is_none());
+    assert_eq!(
+        image_request.session_id.as_deref(),
+        Some("client-image-session")
+    );
+    assert_eq!(
+        image_request.thread_id.as_deref(),
+        Some("client-image-thread")
+    );
+    assert_eq!(
+        image_request.client_request_id.as_deref(),
+        Some("client-image-request")
+    );
+    assert_eq!(
+        image_request.window_id.as_deref(),
+        Some("client-image-window")
+    );
+    let image_metadata: serde_json::Value =
+        serde_json::from_str(image_request.turn_metadata.as_deref().unwrap()).unwrap();
+    assert_eq!(image_metadata["session_id"], "client-image-session");
+    assert_eq!(image_metadata["thread_id"], "client-image-thread");
+    assert_eq!(image_metadata["turn_id"], "client-image-turn");
+    assert_eq!(image_metadata["window_id"], "client-image-window");
+    assert_eq!(image_metadata["installation_id"], platform_installation_id);
+    assert_eq!(
+        image_metadata["workspaces"],
+        search_turn_metadata["workspaces"]
+    );
+    assert!(!image_metadata.to_string().contains("private"));
     assert!(image_request.stainless_lang.is_none());
     let image_turn_id = image_request.image_turn_id.as_deref().unwrap();
-    assert_ne!(image_turn_id, "client-controlled");
-    assert!(Uuid::parse_str(image_turn_id).is_ok());
+    assert_eq!(image_turn_id, "client-controlled");
     let image_json: serde_json::Value = serde_json::from_slice(&image_request.body).unwrap();
     assert_eq!(image_json["model"], "gpt-image-2");
     assert_eq!(image_json["prompt"], "a red fox in a field");
     assert!(image_json.get("output_format").is_none());
     assert!(image_json.get("moderation").is_none());
     assert!(image_json.get("user").is_none());
+    assert!(image_json.get("client_metadata").is_none());
+    assert!(image_json.get("prompt_cache_key").is_none());
+    assert!(image_json.get("stream").is_none());
+    assert!(image_json.get("store").is_none());
 
     let events = logs.events();
     let image_events = events
@@ -3830,14 +3898,35 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
         edit_request.content_type.as_deref(),
         Some("application/json")
     );
-    assert!(edit_request.session_id.is_none());
-    assert!(edit_request.thread_id.is_none());
-    assert!(edit_request.client_request_id.is_none());
+    assert_eq!(
+        edit_request.session_id.as_deref(),
+        Some("client-edit-session")
+    );
+    assert_eq!(
+        edit_request.thread_id.as_deref(),
+        Some("client-edit-thread")
+    );
+    assert_eq!(
+        edit_request.client_request_id.as_deref(),
+        Some("client-edit-request")
+    );
+    assert_eq!(
+        edit_request.window_id.as_deref(),
+        Some("client-edit-thread:0")
+    );
+    let edit_metadata: serde_json::Value =
+        serde_json::from_str(edit_request.turn_metadata.as_deref().unwrap()).unwrap();
+    assert_eq!(edit_metadata["session_id"], "client-edit-session");
+    assert_eq!(edit_metadata["thread_id"], "client-edit-thread");
+    assert_eq!(edit_metadata["installation_id"], platform_installation_id);
+    assert_eq!(
+        edit_metadata["workspaces"],
+        search_turn_metadata["workspaces"]
+    );
     assert!(edit_request.stainless_lang.is_none());
     let edit_turn_id = edit_request.image_turn_id.as_deref().unwrap();
-    assert_ne!(edit_turn_id, "client-edit-controlled");
+    assert_eq!(edit_turn_id, "client-edit-controlled");
     assert_ne!(edit_turn_id, image_turn_id);
-    assert!(Uuid::parse_str(edit_turn_id).is_ok());
     let edit_json: serde_json::Value = serde_json::from_slice(&edit_request.body).unwrap();
     assert_eq!(edit_json["model"], "gpt-image-2");
     assert_eq!(edit_json["prompt"], "add a red hat");
@@ -3846,6 +3935,10 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
     assert_eq!(edit_json["size"], "1024x1024");
     assert!(edit_json.get("output_format").is_none());
     assert!(edit_json.get("moderation").is_none());
+    assert!(edit_json.get("client_metadata").is_none());
+    assert!(edit_json.get("prompt_cache_key").is_none());
+    assert!(edit_json.get("stream").is_none());
+    assert!(edit_json.get("store").is_none());
     assert_eq!(
         edit_json["images"][0]["image_url"],
         format!(
@@ -3874,45 +3967,59 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
     #[cfg(feature = "mcp-server")]
     {
         let mcp = McpService::new(proxy.clone(), Arc::clone(&runtime)).router();
-        let mcp_edit = mcp
-            .oneshot(
-                axum::http::Request::builder()
-                    .method("POST")
-                    .uri("/mcp/codex-image")
-                    .header("host", "mcp.example.test")
-                    .header("authorization", format!("Bearer {}", seed.secret))
-                    .header("content-type", "application/json")
-                    .header("accept", "application/json, text/event-stream")
-                    .header("mcp-protocol-version", MCP_VERSION)
-                    .header("mcp-method", "tools/call")
-                    .header("mcp-name", "image_gen.imagegen")
-                    .body(Body::from(
-                        serde_json::json!({
-                            "jsonrpc": "2.0",
-                            "id": 1,
-                            "method": "tools/call",
-                            "params": {
-                                "_meta": {
-                                    "io.modelcontextprotocol/protocolVersion": MCP_VERSION,
-                                    "io.modelcontextprotocol/clientInfo": {
-                                        "name": "ai-gateway-test",
-                                        "version": "1.0.0"
-                                    },
-                                    "io.modelcontextprotocol/clientCapabilities": {}
+        let tool_request = |slug: &str, tool: &str, arguments: serde_json::Value| {
+            axum::http::Request::builder()
+                .method("POST")
+                .uri(format!("/mcp/{slug}"))
+                .header("host", "mcp.example.test")
+                .header("authorization", format!("Bearer {}", seed.secret))
+                .header("content-type", "application/json")
+                .header("accept", "application/json, text/event-stream")
+                .header("mcp-protocol-version", MCP_VERSION)
+                .header("mcp-method", "tools/call")
+                .header("mcp-name", tool)
+                .header("session-id", "mcp-transport-session")
+                .header("thread-id", "mcp-transport-thread")
+                .header("x-client-request-id", "mcp-transport-request")
+                .header("x-codex-image-turn-id", "must-not-leak-from-mcp")
+                .header(
+                    "x-codex-turn-metadata",
+                    r#"{"installation_id":"mcp-private"}"#,
+                )
+                .body(Body::from(
+                    serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "tools/call",
+                        "params": {
+                            "_meta": {
+                                "io.modelcontextprotocol/protocolVersion": MCP_VERSION,
+                                "io.modelcontextprotocol/clientInfo": {
+                                    "name": "ai-gateway-test",
+                                    "version": "1.0.0"
                                 },
-                                "name": "image_gen.imagegen",
-                                "arguments": {
-                                    "prompt": "add a blue hat",
-                                    "referenced_image_urls": [
-                                        format!("data:image/png;base64,{TEST_PNG_BASE64}")
-                                    ]
-                                }
-                            }
-                        })
-                        .to_string(),
-                    ))
-                    .unwrap(),
-            )
+                                "io.modelcontextprotocol/clientCapabilities": {}
+                            },
+                            "name": tool,
+                            "arguments": arguments
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap()
+        };
+        let mcp_edit = mcp
+            .clone()
+            .oneshot(tool_request(
+                "codex-image",
+                "image_gen.imagegen",
+                serde_json::json!({
+                    "prompt": "add a blue hat",
+                    "referenced_image_urls": [
+                        format!("data:image/png;base64,{TEST_PNG_BASE64}")
+                    ]
+                }),
+            ))
             .await
             .unwrap();
         assert_eq!(mcp_edit.status(), StatusCode::OK);
@@ -3944,6 +4051,11 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
         assert_eq!(mcp_json["quality"], "high");
         assert_eq!(mcp_json["size"], "1024x1024");
         assert_eq!(mcp_json["n"], 1);
+        assert!(mcp_json.get("output_format").is_none());
+        assert!(mcp_json.get("response_format").is_none());
+        assert!(mcp_json.get("stream").is_none());
+        assert!(mcp_json.get("store").is_none());
+        assert!(Uuid::parse_str(mcp_request.image_turn_id.as_deref().unwrap()).is_ok());
         assert_eq!(
             mcp_json["images"][0]["image_url"],
             format!("data:image/png;base64,{TEST_PNG_BASE64}")
@@ -3960,6 +4072,103 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
         assert_eq!(mcp_events.len(), 1);
         assert_eq!(mcp_events[0].channel_id, Some(images_channel));
         assert_eq!(mcp_events[0].outcome, RequestLogOutcome::Succeeded);
+
+        let generation = mcp
+            .clone()
+            .oneshot(tool_request(
+                "codex-image",
+                "image_gen.imagegen",
+                serde_json::json!({"prompt": "paint a green hat"}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(generation.status(), StatusCode::OK);
+        let generation: serde_json::Value =
+            serde_json::from_slice(&generation.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(generation["result"]["content"][0]["data"], TEST_PNG_BASE64);
+        let requests = captured.image_requests.lock().unwrap().clone();
+        assert_eq!(requests.len(), 4);
+        assert_eq!(requests[3].path, "/backend-api/codex/images/generations");
+        assert_eq!(
+            requests[3].authorization.as_deref(),
+            Some("Bearer access-token")
+        );
+        assert!(Uuid::parse_str(requests[3].image_turn_id.as_deref().unwrap()).is_ok());
+        assert_ne!(requests[3].image_turn_id, mcp_request.image_turn_id);
+        for request in [&requests[2], &requests[3]] {
+            assert!(Uuid::parse_str(request.session_id.as_deref().unwrap()).is_ok());
+            assert!(Uuid::parse_str(request.thread_id.as_deref().unwrap()).is_ok());
+            assert_eq!(request.client_request_id, request.thread_id);
+            let metadata: serde_json::Value =
+                serde_json::from_str(request.turn_metadata.as_deref().unwrap()).unwrap();
+            assert_eq!(
+                metadata["session_id"],
+                request.session_id.as_deref().unwrap()
+            );
+            assert_eq!(metadata["thread_id"], request.thread_id.as_deref().unwrap());
+            assert_eq!(metadata["window_id"], request.window_id.as_deref().unwrap());
+            assert_eq!(metadata["installation_id"], platform_installation_id);
+            assert_eq!(metadata["workspaces"], search_turn_metadata["workspaces"]);
+        }
+        let body: serde_json::Value = serde_json::from_slice(&requests[3].body).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "model": "gpt-image-2", "prompt": "paint a green hat", "n": 1,
+                "background": "auto", "quality": "high", "size": "1024x1024"
+            })
+        );
+
+        let search = mcp
+            .oneshot(tool_request(
+                "codex-search",
+                "web.run",
+                serde_json::json!({"search_query": [{"q": "example"}]}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(search.status(), StatusCode::OK);
+        let search: serde_json::Value =
+            serde_json::from_slice(&search.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(search["result"]["content"][0]["text"], "search summary");
+        let requests = captured.search_requests.lock().unwrap().clone();
+        assert_eq!(requests.len(), 2);
+        let request = &requests[1];
+        assert_eq!(
+            request.authorization.as_deref(),
+            Some("Bearer access-token")
+        );
+        assert_eq!(request.content_type.as_deref(), Some("application/json"));
+        assert_eq!(request.originator.as_deref(), Some(codex_originator));
+        assert_eq!(request.user_agent.as_deref(), Some(codex_user_agent));
+        assert!(Uuid::parse_str(request.session_id.as_deref().unwrap()).is_ok());
+        assert!(Uuid::parse_str(request.thread_id.as_deref().unwrap()).is_ok());
+        assert_eq!(request.client_request_id, request.thread_id);
+        let metadata: serde_json::Value =
+            serde_json::from_str(request.turn_metadata.as_deref().unwrap()).unwrap();
+        assert_eq!(metadata["installation_id"], platform_installation_id);
+        assert_eq!(metadata["workspaces"], search_turn_metadata["workspaces"]);
+        assert_eq!(
+            metadata["session_id"],
+            request.session_id.as_deref().unwrap()
+        );
+        assert_eq!(metadata["thread_id"], request.thread_id.as_deref().unwrap());
+        assert_eq!(metadata["window_id"], request.window_id.as_deref().unwrap());
+        assert_eq!(request.body["model"], "upstream-v1");
+        assert!(Uuid::parse_str(request.body["id"].as_str().unwrap()).is_ok());
+        assert_eq!(
+            request.body["commands"],
+            serde_json::json!({
+                "search_query": [{"q": "example"}]
+            })
+        );
+        assert_eq!(request.body["max_output_tokens"], 3000);
+        assert!(request.body.get("input").is_none());
+        assert!(request.body.get("stream").is_none());
+        assert!(request.body.get("store").is_none());
+        assert!(request.body.get("client_metadata").is_none());
     }
 
     let gateway = start_server(app.clone()).await;

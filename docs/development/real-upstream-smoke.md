@@ -165,7 +165,8 @@ protocol/authorization/health tests remain part of `websocket_integration`.
   pricing and output behavior still apply, so use a credential with an
   Images-specific spending cap.
 - When Search settings are present, one non-streaming request asks for a single
-  authoritative Rust source. It asserts a nonempty `output`, preserves opaque
+  authoritative Rust source using structured commands without synthetic `input`,
+  matching the stateless MCP adapter. It asserts a nonempty `output`, preserves opaque
   optional `results`, verifies the distinct `standalone_web_search` log
   operation, and prints only elapsed time, output character count, and result
   count. Use a credential with a Search-specific spending cap.
