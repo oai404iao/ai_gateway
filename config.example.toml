@@ -36,32 +36,6 @@ console_body_bytes = 262_144
 # Login, refresh, password, and invitation payloads.
 auth_body_bytes = 16_384
 
-[mcp]
-# One-time bootstrap values for the database-backed MCP transport settings.
-# They are inserted when the system-settings row or its MCP section is absent;
-# after startup, edit them through Console System settings. The binary must
-# include --features mcp-server before an enabled transport can start.
-enabled = false
-# Public HTTP(S) origin used to publish endpoint URLs and derive the accepted
-# Host header. Do not include a path.
-public_base_url = "https://api.example.com"
-# Browser Origin headers are rejected unless explicitly listed. Non-browser
-# MCP clients normally omit Origin.
-allowed_origins = []
-# Enables the complete 2025-11-25 initialize/session/SSE lifecycle and accepts
-# the 2025-06-18 negotiation used by Codex legacy mode, alongside stateless
-# 2026-07-28. Legacy sessions are process-local and require sticky routing.
-allow_legacy_2025_11_25 = false
-# Independent limits for MCP JSON-RPC envelopes and bounded tool results.
-request_body_bytes = 4_194_304
-# Image MCP endpoints accept larger JSON envelopes for bounded inline edit data URLs.
-# The hard maximum is 64 MiB.
-image_request_body_bytes = 33_554_432
-search_result_bytes = 4_194_304
-# Bounded JSON/base64 response collected for one Images generation/edit tool call.
-# The hard maximum is 64 MiB.
-image_result_bytes = 33_554_432
-
 [database]
 # Prefer a password file over embedding credentials in TOML. Relative paths
 # are resolved from the process working directory. Inline URL passwords remain

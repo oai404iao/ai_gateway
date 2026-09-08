@@ -250,13 +250,6 @@ Codex 出口 Header 从普通 Header Transform 结果中再次过滤。未知 He
 才注入 Bearer、可选 account/FedRAMP、Codex 版本、Session，或按需补充 image-turn Header。
 鉴权和 Connector 身份始终覆盖客户端同名值；image-turn 则遵循上述保留/补全规则。
 
-MCP adapter 生成新的内部请求，而不是转发 MCP envelope：Search 只生成作用域隔离的 `id`、
-固定模型、commands、settings 和输出上限；没有对话历史时省略可选 `input`，不伪造上下文。
-Images generation/edit 固定 `n=1`、`output_format=png` 和实例参数，并为每次工具调用生成独立
-image-turn UUID。普通渠道保留 PNG 参数，Codex 将其作为等价值删除；不生成现代 GPT Image
-模型不支持的 `response_format`，仍校验上游直接返回的 PNG/base64。三种 MCP 内部请求均声明
-`Accept: application/json`。
-
 ## 执行顺序
 
 ```text

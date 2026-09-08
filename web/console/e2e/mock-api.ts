@@ -1,4 +1,5 @@
 import type { Page, Route } from "@playwright/test";
+import { SYSTEM_SETTINGS } from "../src/test/fixtures";
 
 /**
  * Network-layer Console API mocks for e2e tests. Each handler returns
@@ -362,31 +363,6 @@ export const E2E_IMAGE_MODEL_RULE = {
   updated_at: "2026-08-05T00:00:00.000Z",
 };
 
-export const E2E_MCP_SERVER = {
-  id: "00000000-0000-0000-0000-000000000127",
-  slug: "research",
-  kind: "web_search",
-  name: "Research search",
-  description: "Search the public web with bounded output.",
-  model_rule_id: E2E_SEARCH_MODEL_RULE.id,
-  client_model: E2E_SEARCH_MODEL_RULE.client_model,
-  api_format: "open_ai_responses",
-  settings_version: 1,
-  settings: {
-    external_web_access: "live",
-    search_context_size: "high",
-    allowed_domains: ["example.com"],
-    blocked_domains: ["ads.example.com"],
-    max_output_tokens: {
-      short: 1_000,
-      medium: 3_000,
-      long: 6_000,
-    },
-  },
-  enabled: true,
-  created_at: "2026-08-05T01:00:00.000Z",
-  updated_at: "2026-08-05T02:00:00.000Z",
-};
 
 export const E2E_CODEX_CREDENTIAL = {
   id: E2E_CODEX_CREDENTIAL_ID,
@@ -688,7 +664,6 @@ export async function mockConsoleApi(page: Page): Promise<void> {
   let websocketEnabled = false;
   let authenticated = false;
   let session = ADMIN_PROFILE;
-  let mcpServers = [E2E_MCP_SERVER];
   await page.route("**/console/v1/**", (route: Route) => {
     const url = new URL(route.request().url());
     const method = route.request().method();
@@ -1143,87 +1118,6 @@ export async function mockConsoleApi(page: Page): Promise<void> {
         json: [E2E_SEARCH_MODEL_RULE, E2E_IMAGE_MODEL_RULE],
       });
     }
-    if (path === "/console/v1/mcp-servers" && method === "GET") {
-      return route.fulfill({ status: 200, json: mcpServers });
-    }
-    if (path === "/console/v1/mcp-servers" && method === "POST") {
-      const input = route.request().postDataJSON() as {
-        slug: string;
-        kind: "web_search" | "image";
-        name: string;
-        description: string | null;
-        model_rule_id: string;
-        settings: Record<string, unknown>;
-        enabled: boolean;
-      };
-      const modelRule =
-        input.kind === "image"
-          ? E2E_IMAGE_MODEL_RULE
-          : E2E_SEARCH_MODEL_RULE;
-      const created = {
-        id: "00000000-0000-0000-0000-000000000128",
-        ...input,
-        client_model: modelRule.client_model,
-        api_format: modelRule.api_format,
-        settings_version: 1,
-        created_at: "2026-08-06T00:00:00.000Z",
-        updated_at: "2026-08-06T00:00:00.000Z",
-      };
-      mcpServers = [...mcpServers, created];
-      return route.fulfill({
-        status: 201,
-        json: {
-          id: created.id,
-          correlation_id: "00000000-0000-0000-0000-000000000129",
-        },
-      });
-    }
-    if (path.startsWith("/console/v1/mcp-servers/")) {
-      const id = path.split("/").at(-1);
-      const server = mcpServers.find((item) => item.id === id);
-      if (!server) {
-        return route.fulfill({
-          status: 404,
-          json: { code: "not_found", message: "MCP server not found." },
-        });
-      }
-      if (method === "GET") {
-        return route.fulfill({
-          status: 200,
-          headers: { ETag: `"${server.updated_at}"` },
-          json: server,
-        });
-      }
-      if (method === "PUT") {
-        const input = route.request().postDataJSON() as Record<string, unknown>;
-        mcpServers = mcpServers.map((item) =>
-          item.id === id
-            ? {
-                ...item,
-                ...input,
-                updated_at: "2026-08-06T01:00:00.000Z",
-              }
-            : item,
-        );
-        return route.fulfill({
-          status: 200,
-          json: {
-            id,
-            correlation_id: "00000000-0000-0000-0000-000000000130",
-          },
-        });
-      }
-      if (method === "DELETE") {
-        mcpServers = mcpServers.filter((item) => item.id !== id);
-        return route.fulfill({
-          status: 200,
-          json: {
-            id,
-            correlation_id: "00000000-0000-0000-0000-000000000131",
-          },
-        });
-      }
-    }
     if (path === "/console/v1/network/proxies/test" && method === "POST") {
       return route.fulfill({ status: 200, json: E2E_PROXY_TEST_RESULT });
     }
@@ -1292,6 +1186,19 @@ export async function mockConsoleApi(page: Page): Promise<void> {
       });
     }
     // Default: empty 200 so unknown reads do not break the shell.
+    if (path === "/console/v1/system/settings") {
+      if (method === "GET") {
+        return route.fulfill({
+          status: 200,
+          json: SYSTEM_SETTINGS,
+          headers: { ETag: `"${SYSTEM_SETTINGS.updated_at}"` },
+        });
+      }
+      return route.fulfill({
+        status: 200,
+        json: { id: "system-settings", correlation_id: "settings-e2e" },
+      });
+    }
     return route.fulfill({ status: 200, json: {} });
   });
 }

@@ -202,7 +202,6 @@ fn proxy_service_with_network_policy(
                 }]
             })
             .unwrap_or_default(),
-        mcp_servers: vec![],
     };
     ProxyService::with_log_sink(
         Arc::new(RuntimeConfig::new(

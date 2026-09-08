@@ -285,31 +285,6 @@ impl ProxyService {
         Ok(api_key)
     }
 
-    #[cfg(feature = "mcp-server")]
-    pub(crate) async fn proxy_authenticated(
-        &self,
-        api_operation: ApiOperation,
-        request: Request<Body>,
-        snapshot: Arc<crate::domain::CompiledRuntimeConfig>,
-        api_key: Arc<CompiledApiKey>,
-        request_source: RequestLogSource,
-    ) -> Result<AxumResponse, ProxyError> {
-        let started_at = Instant::now();
-        let started_wall_at = chrono::Utc::now();
-        let (parts, body) = request.into_parts();
-        self.proxy_authenticated_parts(
-            api_operation,
-            parts,
-            body,
-            snapshot,
-            api_key,
-            request_source,
-            started_wall_at,
-            started_at,
-        )
-        .await
-    }
-
     #[allow(clippy::too_many_arguments)]
     async fn proxy_authenticated_parts(
         &self,
@@ -990,18 +965,6 @@ pub struct ProxyError {
 }
 
 impl ProxyError {
-    #[cfg(feature = "mcp-server")]
-    #[must_use]
-    pub(crate) const fn status(&self) -> StatusCode {
-        self.status
-    }
-
-    #[cfg(feature = "mcp-server")]
-    #[must_use]
-    pub(crate) fn message(&self) -> &str {
-        &self.message
-    }
-
     fn invalid_api_key() -> Self {
         Self {
             status: StatusCode::UNAUTHORIZED,
@@ -2919,21 +2882,13 @@ impl CompletionGuard {
         let usage = context.usage.latest();
         let upstream_error = context.usage.error_details().unwrap_or_default();
         let explicit_error = context.error_details.unwrap_or_default();
-        let error_summary = if context.request_source == RequestLogSource::Mcp {
-            outcome.default_error_summary(context.upstream_status)
-        } else {
-            upstream_error
-                .summary
-                .or(explicit_error.summary)
-                .or_else(|| outcome.default_error_summary(context.upstream_status))
-        };
-        let error_code = if context.request_source == RequestLogSource::Mcp {
-            outcome.error_code().map(str::to_owned)
-        } else {
-            upstream_error
-                .code
-                .or_else(|| outcome.error_code().map(str::to_owned))
-        };
+        let error_summary = upstream_error
+            .summary
+            .or(explicit_error.summary)
+            .or_else(|| outcome.default_error_summary(context.upstream_status));
+        let error_code = upstream_error
+            .code
+            .or_else(|| outcome.error_code().map(str::to_owned));
         let total_duration_ms = clamp_duration_ms(context.started_at.elapsed());
         let billing_ttft_ms = (!context.api_operation.is_images())
             .then(|| context.first_byte_at.map(clamp_duration_ms))

@@ -28,16 +28,6 @@ pub const DEFAULT_CODEX_CLIENT_VERSION: &str = "0.146.0";
 /// Administrators can set a full native Codex CLI User-Agent, including its
 /// platform and terminal suffix, in database-backed system settings.
 pub const DEFAULT_CODEX_USER_AGENT: &str = "codex_cli_rs/0.146.0";
-/// Default MCP JSON-RPC request envelope limit for Search endpoints.
-pub const DEFAULT_MCP_REQUEST_BODY_BYTES: usize = 4 * 1_024 * 1_024;
-/// Default MCP JSON-RPC request envelope limit for Images endpoints.
-pub const DEFAULT_MCP_IMAGE_REQUEST_BODY_BYTES: usize = 32 * 1_024 * 1_024;
-/// Default bounded result size for Search MCP calls.
-pub const DEFAULT_MCP_SEARCH_RESULT_BYTES: usize = 4 * 1_024 * 1_024;
-/// Default bounded result size for Images MCP calls.
-pub const DEFAULT_MCP_IMAGE_RESULT_BYTES: usize = 32 * 1_024 * 1_024;
-/// Hard limit for Images MCP request envelopes and collected results.
-pub const MAX_MCP_IMAGE_BYTES: usize = 64 * 1_024 * 1_024;
 
 /// Global timeout defaults used when a channel has no explicit override.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -530,113 +520,6 @@ impl Default for ResponsesWebSocketSettings {
     }
 }
 
-/// Immutable process-wide MCP transport policy.
-///
-/// The `mcp-server` feature controls whether the transport implementation is
-/// linked into the binary. These values are database-backed runtime settings
-/// and may be changed through the Console without restarting the process.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct McpTransportSettings {
-    enabled: bool,
-    public_base_url: Option<Arc<str>>,
-    allowed_hosts: Arc<[String]>,
-    allowed_origins: Arc<[String]>,
-    allow_legacy_2025_11_25: bool,
-    request_body_bytes: usize,
-    image_request_body_bytes: usize,
-    search_result_bytes: usize,
-    image_result_bytes: usize,
-}
-
-impl McpTransportSettings {
-    #[allow(clippy::too_many_arguments)]
-    #[must_use]
-    pub fn new(
-        enabled: bool,
-        public_base_url: Option<Arc<str>>,
-        allowed_hosts: Arc<[String]>,
-        allowed_origins: Arc<[String]>,
-        allow_legacy_2025_11_25: bool,
-        request_body_bytes: usize,
-        image_request_body_bytes: usize,
-        search_result_bytes: usize,
-        image_result_bytes: usize,
-    ) -> Self {
-        Self {
-            enabled,
-            public_base_url,
-            allowed_hosts,
-            allowed_origins,
-            allow_legacy_2025_11_25,
-            request_body_bytes,
-            image_request_body_bytes,
-            search_result_bytes,
-            image_result_bytes,
-        }
-    }
-
-    #[must_use]
-    pub const fn enabled(&self) -> bool {
-        self.enabled
-    }
-
-    #[must_use]
-    pub fn public_base_url(&self) -> Option<&str> {
-        self.public_base_url.as_deref()
-    }
-
-    #[must_use]
-    pub fn allowed_hosts(&self) -> &[String] {
-        &self.allowed_hosts
-    }
-
-    #[must_use]
-    pub fn allowed_origins(&self) -> &[String] {
-        &self.allowed_origins
-    }
-
-    #[must_use]
-    pub const fn allow_legacy_2025_11_25(&self) -> bool {
-        self.allow_legacy_2025_11_25
-    }
-
-    #[must_use]
-    pub const fn request_body_bytes(&self) -> usize {
-        self.request_body_bytes
-    }
-
-    #[must_use]
-    pub const fn image_request_body_bytes(&self) -> usize {
-        self.image_request_body_bytes
-    }
-
-    #[must_use]
-    pub const fn search_result_bytes(&self) -> usize {
-        self.search_result_bytes
-    }
-
-    #[must_use]
-    pub const fn image_result_bytes(&self) -> usize {
-        self.image_result_bytes
-    }
-}
-
-impl Default for McpTransportSettings {
-    fn default() -> Self {
-        Self::new(
-            false,
-            None,
-            Arc::from([]),
-            Arc::from([]),
-            false,
-            DEFAULT_MCP_REQUEST_BODY_BYTES,
-            DEFAULT_MCP_IMAGE_REQUEST_BODY_BYTES,
-            DEFAULT_MCP_SEARCH_RESULT_BYTES,
-            DEFAULT_MCP_IMAGE_RESULT_BYTES,
-        )
-    }
-}
-
 /// Immutable connector-owned identity used by Codex backend requests.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CodexOutboundIdentity {
@@ -740,7 +623,6 @@ pub struct SystemRuntimeSettings {
     scheduled_testing: ScheduledTestingSettings,
     session_affinity: SessionAffinitySettings,
     websocket: ResponsesWebSocketSettings,
-    mcp: McpTransportSettings,
     codex: CodexRequestMetadataSettings,
 }
 
@@ -758,7 +640,6 @@ impl SystemRuntimeSettings {
             scheduled_testing: ScheduledTestingSettings::default(),
             session_affinity: SessionAffinitySettings::default(),
             websocket: ResponsesWebSocketSettings::default(),
-            mcp: McpTransportSettings::default(),
             codex: CodexRequestMetadataSettings::default(),
         }
     }
@@ -777,7 +658,6 @@ impl SystemRuntimeSettings {
             scheduled_testing: ScheduledTestingSettings::default(),
             session_affinity: SessionAffinitySettings::default(),
             websocket,
-            mcp: McpTransportSettings::default(),
             codex: CodexRequestMetadataSettings::default(),
         }
     }
@@ -797,7 +677,6 @@ impl SystemRuntimeSettings {
             scheduled_testing,
             session_affinity: SessionAffinitySettings::default(),
             websocket: ResponsesWebSocketSettings::default(),
-            mcp: McpTransportSettings::default(),
             codex: CodexRequestMetadataSettings::default(),
         }
     }
@@ -819,7 +698,6 @@ impl SystemRuntimeSettings {
             scheduled_testing,
             session_affinity,
             websocket: ResponsesWebSocketSettings::default(),
-            mcp: McpTransportSettings::default(),
             codex: CodexRequestMetadataSettings::default(),
         }
     }
@@ -843,15 +721,8 @@ impl SystemRuntimeSettings {
             scheduled_testing,
             session_affinity,
             websocket,
-            mcp: McpTransportSettings::default(),
             codex: CodexRequestMetadataSettings::default(),
         }
-    }
-
-    #[must_use]
-    pub fn with_mcp(mut self, mcp: McpTransportSettings) -> Self {
-        self.mcp = mcp;
-        self
     }
 
     #[must_use]
@@ -893,11 +764,6 @@ impl SystemRuntimeSettings {
     #[must_use]
     pub const fn websocket(&self) -> ResponsesWebSocketSettings {
         self.websocket
-    }
-
-    #[must_use]
-    pub const fn mcp(&self) -> &McpTransportSettings {
-        &self.mcp
     }
 
     #[must_use]

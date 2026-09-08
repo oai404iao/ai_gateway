@@ -48,8 +48,8 @@ Docker image job 只依赖快速的路径分类，与 Rust、Console 和 E2E 并
 `.github/workflows/reusable-quality.yml` 是普通 CI 的可复用质量门禁，包含：
 
 - 文档检查；
-- Rust 1.97.1 format、默认 workspace 与 `mcp-server` feature 的
-  Clippy/测试，包括 MCP modern/legacy Session 集成和 MCP Images 经 Codex Images 适配器的路径；
+- Rust 1.97.1 format、默认 workspace 的
+  Clippy/测试，包括 Codex Responses 与 Images 适配器集成路径；
 - Console API 类型漂移、TypeScript、lint、组件测试和生产构建；
 - Chromium Playwright E2E，并在失败时上传 trace/test results。
 
@@ -57,7 +57,7 @@ Rust 质量门禁只使用仓库固定的 Rust 1.97.1，不声明或测试更低
 普通 CI 按路径传入启用项。Release tag 必须解析到属于 `main` 的提交，并通过
 GitHub Actions API 验证相同 SHA 已成功完成 `main` `ci-gate`；本地 tag 创建脚本
 还要求当时的 `HEAD` 与 `origin/main` 完全一致。因此 Tag workflow 不再重复运行
-普通 Rust、Console 和 E2E，只并行执行 embedded Console + MCP feature 发布验证、双架构镜像
+普通 Rust、Console 和 E2E，只并行执行 embedded Console feature 发布验证、双架构镜像
 构建、从 AMD64 镜像提取发布二进制和许可证、manifest/provenance 与 GitHub
 Release 发布。
 

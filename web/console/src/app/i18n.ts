@@ -237,6 +237,10 @@ const zhCN: Record<string, string> = {
   "Audit Logs": "审计日志",
   "System": "系统",
   "System settings": "系统设置",
+  "General settings": "基础设置",
+  "Upstream timeouts": "上游超时",
+  "Retries and health": "重试与健康",
+  "Runtime maintenance": "运行维护",
   "API hosts": "API 地址",
   "API host": "API 地址",
   "API host copied": "API 地址已复制",
@@ -406,7 +410,6 @@ const zhCN: Record<string, string> = {
   "System settings changed elsewhere. Reloading.": "系统设置已在其他位置修改，正在重新加载。",
   "Enter a positive number of seconds.": "请输入正整数秒数。",
   "Enter a positive failure threshold.": "请输入正整数失败阈值。",
-  "Enter a positive byte limit.": "请输入正整数字节上限。",
   "Codex workspace path is required.": "Codex 工作区路径不能为空。",
   "Codex workspace path must be at most 1024 characters.":
     "Codex 工作区路径最多 1024 个字符。",
@@ -441,39 +444,6 @@ const zhCN: Record<string, string> = {
   "Codex User-Agent": "Codex User-Agent",
   "Used exactly as the Codex User-Agent. Set a matching native CLI value, including its platform and terminal suffix, when required.":
     "按原样用作 Codex User-Agent；需要时可设置与原生 CLI 匹配、包含平台和终端后缀的值。",
-  "MCP public base URL must be at most 2048 characters.":
-    "MCP 公开基础 URL 最多 2048 个字符。",
-  "Enter a valid HTTP(S) origin without a path.":
-    "请输入不含路径的有效 HTTP(S) Origin。",
-  "MCP origin cannot be blank.": "MCP Origin 不能为空。",
-  "MCP origin must be at most 2048 characters.": "MCP Origin 最多 2048 个字符。",
-  "Configure at most 64 MCP browser origins.": "最多配置 64 个 MCP 浏览器 Origin。",
-  "MCP browser origins must be unique.": "MCP 浏览器 Origin 必须唯一。",
-  "Images MCP request limit cannot exceed 67108864 bytes.":
-    "Images MCP 请求上限不能超过 67108864 字节。",
-  "Images MCP result limit cannot exceed 67108864 bytes.":
-    "Images MCP 结果上限不能超过 67108864 字节。",
-  "MCP public base URL is required when the transport is enabled.":
-    "启用 MCP transport 时必须填写 MCP 公开基础 URL。",
-  "MCP transport": "MCP Transport",
-  "Publishes managed Search and Images MCP endpoints on the public listener. The binary must include the mcp-server feature.":
-    "在公共监听器上发布受管 Search 与 Images MCP endpoint；二进制必须包含 mcp-server feature。",
-  "Enable MCP transport": "启用 MCP Transport",
-  "Disabled transports return 404 for every /mcp/{slug} endpoint and close active legacy sessions.":
-    "禁用后所有 /mcp/{slug} endpoint 返回 404，并关闭当前旧协议 Session。",
-  "MCP public base URL": "MCP 公开基础 URL",
-  "HTTP(S) origin used to validate Host and publish /mcp/{slug} URLs. Do not include a path.":
-    "用于校验 Host 并发布 /mcp/{slug} URL 的 HTTP(S) Origin；请勿包含路径。",
-  "Allowed MCP browser origins": "允许的 MCP 浏览器 Origin",
-  "One exact HTTP(S) origin per line. Empty rejects requests carrying Origin while allowing non-browser clients.":
-    "每行一个精确 HTTP(S) Origin；留空时拒绝所有携带 Origin 的请求，但允许不带 Origin 的非浏览器客户端。",
-  "Enable legacy MCP compatibility": "启用旧版 MCP 兼容",
-  "Adds 2025-11-25 sessions and the Codex legacy 2025-06-18 negotiation alongside stateless 2026-07-28. Legacy sessions are process-local and require sticky routing in multi-instance deployments.":
-    "在无状态 2026-07-28 之外启用 2025-11-25 Session，以及 Codex 旧版模式使用的 2025-06-18 协商。旧协议 Session 仅在当前进程内有效，多实例部署需要粘性路由。",
-  "Search request limit (bytes)": "Search 请求上限（字节）",
-  "Images request limit (bytes)": "Images 请求上限（字节）",
-  "Search result limit (bytes)": "Search 结果上限（字节）",
-  "Images result limit (bytes)": "Images 结果上限（字节）",
   "Response header timeout must exceed connect timeout.": "响应头超时必须大于连接超时。",
   "Images response header timeout must exceed connect timeout.":
     "Images 响应头超时必须大于连接超时。",
@@ -2104,100 +2074,18 @@ const zhCN: Record<string, string> = {
   "Standalone web search": "独立 Web Search",
   "Supports standalone web search": "支持独立 Web Search",
   "Web search": "Web Search",
-  "MCP Servers": "MCP 服务",
-  "MCP server": "MCP 服务",
-  "Manage public MCP endpoints backed by existing model rules and Gateway API keys.":
-    "管理由现有模型规则和网关 API 密钥支持的公共 MCP 端点。",
-  "New MCP server": "新建 MCP 服务",
-  "Create MCP server": "创建 MCP 服务",
-  "Edit MCP server": "编辑 MCP 服务",
-  "Save MCP server": "保存 MCP 服务",
-  "Delete MCP server": "删除 MCP 服务",
-  "Delete MCP server?": "删除 MCP 服务？",
-  "Back to MCP servers": "返回 MCP 服务",
-  "Expose one managed MCP tool through an existing Gateway model rule.":
-    "通过现有网关模型规则公开一个受管 MCP 工具。",
-  "The binary must include the mcp-server feature and the MCP transport must be enabled in System settings before public endpoints are reachable.":
-    "公共端点可访问前，二进制必须包含 mcp-server feature，并在系统设置中启用 MCP transport。",
-  "Endpoint slug": "端点 Slug",
-  "Creates the immutable public path /mcp/{slug}.":
-    "创建不可变的公共路径 /mcp/{slug}。",
   "Kind": "类型",
-  "Kind selects a statically compiled tool and cannot be changed later.":
-    "类型用于选择静态编译的工具，创建后不可更改。",
   "Model rule": "模型规则",
-  "Pick a compatible model rule": "请选择兼容的模型规则",
-  "Pick a compatible model rule.": "请选择兼容的模型规则。",
-  "An enabled server requires an enabled {format} rule. Disconnected or temporarily unavailable routing is allowed, and calls fail until routing recovers.":
-    "启用服务需要一条已启用的 {format} 规则。允许路由处于已断开或暂时不可用状态，在路由恢复前调用会失败。",
-  "Optional instructions shown to MCP clients during discovery.":
-    "可选说明，会在 MCP 客户端发现服务时显示。",
   "Tool": "工具",
   "Settings": "设置",
-  "Settings version": "设置版本",
   "Images": "Images",
-  "Web search policy": "Web Search 策略",
-  "Control search freshness, context size, domain policy, and bounded output tokens.":
-    "控制搜索新鲜度、上下文大小、域名策略和有界输出 Token。",
-  "External web access": "外部网络访问",
-  "Search context size": "搜索上下文大小",
-  "Allowed domains": "允许的域名",
-  "Blocked domains": "屏蔽的域名",
-  "Optional allowlist. Enter bare DNS names, one per line.":
-    "可选允许列表。每行输入一个不含协议和路径的 DNS 域名。",
-  "These domains are always excluded and cannot also be allowed.":
-    "这些域名始终会被排除，不能同时出现在允许列表中。",
-  "Maximum output tokens": "最大输出 Token",
-  "The selected response length maps to ordered short, medium, and long limits.":
-    "所选响应长度会映射到依次递增的短、中、长输出限制。",
   "Short": "短",
-  "Medium": "中",
   "Long": "长",
   "Low": "低",
   "High": "高",
   "Cached": "缓存",
-  "Indexed": "索引",
-  "Image defaults": "图像默认设置",
-  "These values are fixed by the MCP instance and cannot be overridden by callers.":
-    "这些值由 MCP 实例固定，调用方不能覆盖。",
-  "Background": "背景",
-  "Quality": "质量",
   "Size": "尺寸",
   "Auto": "自动",
-  "Opaque": "不透明",
-  "Transparent": "透明",
-  "Use auto or WIDTHxHEIGHT; each dimension must be 64-8192.":
-    "使用 auto 或 WIDTHxHEIGHT；每个维度必须在 64 至 8192 之间。",
-  "Endpoint slug remains reserved": "端点 Slug 会保持保留",
-  "Deleting removes this endpoint from the runtime registry, but the slug cannot be reused.":
-    "删除会将此端点移出运行时注册表，但该 Slug 不能重复使用。",
-  "This removes /mcp/{slug} from the runtime registry. The reserved slug cannot be reused.":
-    "这会将 /mcp/{slug} 移出运行时注册表。保留的 Slug 不能重复使用。",
-  "MCP server created": "MCP 服务已创建",
-  "MCP server updated": "MCP 服务已更新",
-  "MCP server deleted": "MCP 服务已删除",
-  "This MCP endpoint slug is already reserved, including by a deleted server.":
-    "此 MCP 端点 Slug 已被保留，包括已删除服务使用过的 Slug。",
-  "This MCP server was changed elsewhere. Reloading.":
-    "此 MCP 服务已在其他位置修改，正在重新加载。",
-  "Check the server kind, model rule, route eligibility, and tool settings.":
-    "请检查服务类型、模型规则、路由可用性和工具设置。",
-  "Use 1-63 lowercase letters, digits, or hyphens, starting with a letter or digit.":
-    "请使用 1 至 63 个小写字母、数字或连字符，并以字母或数字开头。",
-  "Each domain list supports at most 100 entries.":
-    "每个域名列表最多支持 100 项。",
-  "Enter valid DNS domain names without schemes, paths, or wildcards.":
-    "请输入不含协议、路径或通配符的有效 DNS 域名。",
-  "Domain lists cannot contain duplicate entries.": "域名列表不能包含重复项。",
-  "A domain cannot appear in both allowed and blocked lists.":
-    "同一域名不能同时出现在允许和屏蔽列表中。",
-  "Token limits must be whole numbers.": "Token 限制必须为整数。",
-  "Token limits must be at least 1.": "Token 限制必须至少为 1。",
-  "Token limits must not exceed 100000.": "Token 限制不能超过 100000。",
-  "Token limits must be ordered as short ≤ medium ≤ long.":
-    "Token 限制必须按短 ≤ 中 ≤ 长排序。",
-  "Use auto or WIDTHxHEIGHT with canonical dimensions from 64 to 8192.":
-    "请使用 auto 或规范的 WIDTHxHEIGHT，且每个维度在 64 至 8192 之间。",
   "Allow this channel to receive Codex standalone alpha/search requests. Request JSON transforms are not supported.":
     "允许此渠道接收 Codex 独立 alpha/search 请求。不支持请求 JSON 转换。",
   "Only OpenAI Responses channels can enable standalone web search.":

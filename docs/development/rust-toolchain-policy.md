@@ -27,7 +27,7 @@ cargo test --locked --workspace
 ## CI 与发布门禁
 
 Pull Request 和 `main` push 只运行 Rust 1.97.1 质量 job，要求 `fmt`、
-workspace-wide Clippy、完整测试以及对应的 `mcp-server` feature 路径通过。
+workspace-wide Clippy、完整测试以及 embedded Console feature 路径通过。
 Release CI 和 Docker 使用同一版本生成发布二进制，不再重复运行旧编译器兼容 job。
 
 ## 升级策略

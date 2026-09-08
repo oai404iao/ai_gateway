@@ -26,7 +26,6 @@
 | 身份与授权 | `users`、`user_groups`、`user_sessions`、`user_invitations`、`registration_invitation_codes`、`api_key_policies`、`api_keys` | Console 身份、角色、生命周期、注册/邀请、用户可选路由边界和具体 Key 限制。 |
 | 模型与路由 | `models`、`model_rules`、`model_rule_routing_tiers`、`model_rule_routing_groups`、`model_rule_routing_channels`、`channel_groups`、`channels`、`proxies`、`config_templates`、`system_settings` | 价格、上游 wire 模型、规则级路由层级/目标/权重、格式隔离、Connector、网络/变换和数据库动态系统策略。 |
 | Codex Connector | `connector_pools`、`codex_oauth_credentials`、`codex_oauth_credential_channels`、`codex_oauth_flows`、`codex_quota_window_periods`、`codex_quota_reset_events`、`user_group_codex_quota_visibility` | 共享逻辑凭证、Responses/Images 投影、OAuth、quota 历史和用户组可见性。 |
-| MCP | `mcp_servers` | 静态内置 kind 的实例定义；transport 全局设置保存在 `system_settings`。 |
 | 日志与统计 | `request_log_ingest`、`request_logs`、`spend_leaderboard_periods`、`spend_leaderboard_entries`、`audit_logs` | 耐久日志入口、查询/结算事实、排行榜投影和控制面审计。 |
 
 ## 关键当前语义
@@ -70,7 +69,6 @@ Connector 都只观察过滤后的请求。
 
 - 上游超时、请求重试、被动健康、自动禁用和定时测试；
 - Session affinity 与 Responses WebSocket；
-- MCP transport、协议兼容和 request/result limits；
 - Codex 合成 workspace path、HTTPS Git remote 等转发元数据策略。
 
 首次启动只在对应设置不存在时使用 TOML bootstrap 值。之后数据库记录是动态运行时来源。

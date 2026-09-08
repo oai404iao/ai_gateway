@@ -2,56 +2,26 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use tracing::{Level, Metadata};
 use tracing_appender::non_blocking::WorkerGuard;
-use tracing_subscriber::{
-    EnvFilter, Layer, filter::filter_fn, layer::SubscriberExt, util::SubscriberInitExt,
-};
+use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 /// Initializes a lossy, nonblocking stderr writer. Keeping the returned guard
 /// alive flushes queued records during process shutdown.
 pub fn init(filter: &str) -> WorkerGuard {
     let filter = EnvFilter::try_new(filter).unwrap_or_else(|_| EnvFilter::new("info"));
     let (writer, guard) = tracing_appender::non_blocking(std::io::stderr());
-    let payload_filter = filter_fn(mcp_payload_trace_allowed);
     let layer = tracing_subscriber::fmt::layer()
         .with_target(false)
-        .with_writer(writer)
-        .with_filter(payload_filter);
+        .with_writer(writer);
 
     // Keep the operator-supplied EnvFilter global. Composing it into the fmt
     // layer caused target-scoped application directives to miss some events
-    // in the full runtime. The per-layer predicate remains a final safety cap
-    // for dependency targets that can format complete MCP payloads.
+    // in the full runtime.
     let _ = tracing_subscriber::registry()
         .with(filter)
         .with(layer)
         .try_init();
     guard
-}
-
-fn mcp_payload_trace_allowed(metadata: &Metadata<'_>) -> bool {
-    mcp_payload_level_allowed(metadata.target(), metadata.level())
-}
-
-fn mcp_payload_level_allowed(target: &str, level: &Level) -> bool {
-    #[cfg(feature = "mcp-server")]
-    {
-        // RMCP's debug/trace events format complete tool requests and results.
-        // Keep those dependency targets capped at info so Search arguments and
-        // result payloads cannot enter tracing even under an operator-supplied
-        // verbose application filter.
-        if matches!(
-            target,
-            "rmcp::service" | "rmcp::transport::streamable_http_server::tower"
-        ) && matches!(*level, Level::DEBUG | Level::TRACE)
-        {
-            return false;
-        }
-    }
-    #[cfg(not(feature = "mcp-server"))]
-    let _ = (target, level);
-    true
 }
 
 #[derive(Default)]
@@ -205,13 +175,7 @@ mod tests {
         sync::{Arc, Mutex},
     };
 
-    #[cfg(feature = "mcp-server")]
-    use tracing::Level;
-    use tracing_subscriber::{EnvFilter, Layer, filter::filter_fn, layer::SubscriberExt};
-
-    #[cfg(feature = "mcp-server")]
-    use super::mcp_payload_level_allowed;
-    use super::mcp_payload_trace_allowed;
+    use tracing_subscriber::{EnvFilter, layer::SubscriberExt};
 
     #[derive(Clone, Default)]
     struct BufferWriter {
@@ -259,8 +223,7 @@ mod tests {
             .without_time()
             .with_ansi(false)
             .with_target(false)
-            .with_writer(writer)
-            .with_filter(filter_fn(mcp_payload_trace_allowed));
+            .with_writer(writer);
         let subscriber = tracing_subscriber::registry()
             .with(EnvFilter::new(filter))
             .with(layer);
@@ -283,29 +246,5 @@ mod tests {
 
         assert!(output.contains("request-log heartbeat"));
         assert!(!output.contains("dependency info"));
-    }
-
-    #[cfg(feature = "mcp-server")]
-    #[test]
-    fn mcp_filter_caps_dependency_payload_tracing() {
-        assert!(!mcp_payload_level_allowed("rmcp::service", &Level::DEBUG));
-        assert!(!mcp_payload_level_allowed(
-            "rmcp::transport::streamable_http_server::tower",
-            &Level::TRACE
-        ));
-        assert!(mcp_payload_level_allowed("rmcp::service", &Level::INFO));
-        assert!(mcp_payload_level_allowed("ai_gateway::mcp", &Level::TRACE));
-    }
-
-    #[cfg(feature = "mcp-server")]
-    #[test]
-    fn mcp_payload_filter_blocks_dependency_debug_output() {
-        let output = capture("trace", || {
-            tracing::debug!(target: "rmcp::service", "sensitive payload");
-            tracing::info!(target: "rmcp::service", "safe lifecycle");
-        });
-
-        assert!(!output.contains("sensitive payload"));
-        assert!(output.contains("safe lifecycle"));
     }
 }

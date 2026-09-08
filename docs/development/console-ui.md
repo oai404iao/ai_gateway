@@ -4,6 +4,10 @@
 > 和测试为准。原始分阶段计划保存在
 > [Console UI 实施计划归档](../archive/console-ui-implementation-plan.md)。
 
+系统设置分类定义在 `web/console/src/features/admin/system/settings-sections.ts`，侧栏的
+可展开子菜单与 `/admin/system/:section` 页面共用此定义。旧 `/admin/system` 地址跳转
+到基础设置；每个分类切换时重建表单，保留完整 API 配置及 ETag，只挂载当前分类控件。
+
 ## 1. 运行边界
 
 Console UI 是管理 `ai-gateway` 的 React 单页应用，不是聊天产品或第三方 Widget。

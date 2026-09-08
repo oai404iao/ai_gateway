@@ -6,8 +6,7 @@
 
 > **Status:** Current implementation, under active development. The public
 > data plane supports Chat Completions, Responses, Codex standalone web
-> search, non-streaming JSON Images generation, multipart Images edits, and
-> optional Search and Images MCP services that are stateless by default.
+> search, non-streaming JSON Images generation, and multipart Images edits.
 
 <p align="center">
   A production-oriented, single-binary Rust gateway for OpenAI-compatible LLM traffic.
@@ -38,13 +37,6 @@ separate management Console for users and administrators.
 - **OpenAI-compatible data plane** for Chat Completions, Responses, the Codex
   standalone web-search extension, Images generation, and multipart Images
   edits over HTTP, SSE, and Responses WebSocket where applicable.
-- **Optional MCP transport** built with the `mcp-server` feature. It defaults
-  to stateless `2026-07-28` and can also provide complete process-local
-  `2025-11-25` Session/SSE compatibility, including the `2025-06-18`
-  initialize negotiation used by Codex legacy mode. PostgreSQL-managed
-  `/mcp/{slug}` instances expose Codex-compatible
-  `web.run` and `image_gen.imagegen` generation/edit while reusing Gateway
-  API keys, routing, admission, billing, and durable request logs.
 - **Model-rule-owned priority tiers and weighted routing** with passive
   health, optional session affinity, and controlled failover before upstream
   response headers arrive.
@@ -67,7 +59,7 @@ separate management Console for users and administrators.
   settlement.
 - **Management Console** with JWT sessions, user/admin roles, administrator-
   assisted temporary-password recovery, API-key policy, routing and channel
-  management, typed MCP transport and instance management, owner-scoped
+  management, owner-scoped
   request/cost analytics, administrator system analytics, audit logs, and
   optimistic concurrency.
 - **Single-binary deployment** with an optional embedded React Console UI; no
@@ -85,7 +77,6 @@ separate management Console for users and administrators.
 | `GET /v1/responses` + Upgrade | Client API key | Proxies sequential Responses requests over WebSocket. |
 | `POST /v1/images/generations` | Client API key | Proxies non-streaming JSON Images generation requests. |
 | `POST /v1/images/edits` | Client API key | Proxies non-streaming multipart Images edit requests. |
-| `/mcp/{slug}` | Client API key | Optional MCP transport; stateless `2026-07-28` uses POST, while enabled legacy compatibility provides `2025-11-25`/Codex `2025-06-18` Session POST, GET SSE, and DELETE. |
 
 Each API format uses separate routing rules and never falls back or transforms
 into another format. Public `/v1/images/edits` JSON/data-URL edits, image streaming, embeddings,
@@ -107,14 +98,6 @@ Public listener (/v1/*)
   → reusable HTTP client or pinned Responses WebSocket
   → streamed upstream response
   → durable asynchronous logging, usage, and settlement
-
-MCP client
-  │  Same Bearer API key
-  ▼
-Public listener (/mcp/{slug}, optional)
-  → stateless protocol / Host / Origin validation
-  → immutable MCP registry and API-key route authorization
-  → existing standalone-search or Images generation/edit proxy operation
 
 Browser or Console client
   │  JWT through an HTTPS reverse proxy
@@ -284,8 +267,8 @@ Configuration is split into two layers:
 
 | Layer | Source | Examples |
 | --- | --- | --- |
-| Process/bootstrap | TOML | Listeners, PostgreSQL, request limits, one-time defaults for MCP and forwarding settings, durable spool, Console JWT key paths. |
-| Dynamic control plane | PostgreSQL through the Console | Users, API keys, models, routes, channels, proxies, transforms, MCP transport/instances, and forwarding settings. |
+| Process/bootstrap | TOML | Listeners, PostgreSQL, request limits, one-time defaults for forwarding settings, durable spool, Console JWT key paths. |
+| Dynamic control plane | PostgreSQL through the Console | Users, API keys, models, routes, channels, proxies, transforms, and forwarding settings. |
 
 Console writes validate the complete candidate configuration before commit and
 publish a new immutable snapshot immediately afterward. A periodic reload
@@ -294,8 +277,6 @@ worker provides cross-process convergence.
 Start with [`config.example.toml`](config.example.toml). Production sizing,
 PostgreSQL tuning, storage, and operational metrics are covered in the
 [production configuration guide](docs/user/production-configuration.md).
-The optional Search and Images MCP services are documented in the
-[MCP service guide](docs/user/mcp-services.md).
 
 ## 🐳 Production deployment
 
