@@ -11,10 +11,6 @@ on:
         description: Run the default Rust toolchain gate.
         required: true
         type: boolean
-      run_msrv:
-        description: Run the MSRV compile and test gate.
-        required: true
-        type: boolean
       run_console:
         description: Run Console type, lint, component, and build checks.
         required: true
@@ -77,43 +73,6 @@ jobs:
       - run: cargo test --locked --features mcp-server --lib
       - run: cargo test --locked --features mcp-server --test mcp_integration
       - run: cargo test --locked --features mcp-server --test control_plane_integration codex_connector_forwards_responses_and_images_with_shared_credentials -- --exact
-
-  msrv:
-    if: ${{ inputs.run_msrv }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    services:
-      postgres:
-        image: postgres:18.4-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
-        env:
-          POSTGRES_DB: postgres
-          POSTGRES_USER: ai_gateway
-          POSTGRES_PASSWORD: ci-test-password
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U ai_gateway -d postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 20
-    env:
-      RUSTUP_TOOLCHAIN: 1.92.0
-      TEST_DATABASE_ADMIN_URL: postgres://ai_gateway:ci-test-password@127.0.0.1:5432/postgres
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
-        with:
-          toolchain: 1.92.0
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          shared-key: msrv
-          save-if: ${{ inputs.save_cache }}
-      - run: cargo +1.92.0 check --locked --workspace --all-targets
-      - run: cargo +1.92.0 check --locked --all-targets --features mcp-server
-      - run: cargo +1.92.0 test --locked --workspace
-      - run: cargo +1.92.0 test --locked --features mcp-server --lib
-      - run: cargo +1.92.0 test --locked --features mcp-server --test mcp_integration
-      - run: cargo +1.92.0 test --locked --features mcp-server --test control_plane_integration codex_connector_forwards_responses_and_images_with_shared_credentials -- --exact
 
   console:
     if: ${{ inputs.run_console }}
@@ -193,7 +152,6 @@ jobs:
     needs:
       - docs
       - rust
-      - msrv
       - console
       - e2e
     runs-on: ubuntu-24.04
@@ -201,7 +159,6 @@ jobs:
     env:
       DOCS_RESULT: ${{ needs.docs.result }}
       RUST_RESULT: ${{ needs.rust.result }}
-      MSRV_RESULT: ${{ needs.msrv.result }}
       CONSOLE_RESULT: ${{ needs.console.result }}
       E2E_RESULT: ${{ needs.e2e.result }}
     steps:
@@ -212,7 +169,6 @@ jobs:
           for result in \
             "$DOCS_RESULT" \
             "$RUST_RESULT" \
-            "$MSRV_RESULT" \
             "$CONSOLE_RESULT" \
             "$E2E_RESULT"
           do

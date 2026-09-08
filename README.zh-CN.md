@@ -77,8 +77,8 @@ Console 客户端
 
 ## 环境要求
 
-- Rust **1.92** 或更高版本（MSRV；Rust 2024 edition）。仓库通过
-  `rust-toolchain.toml` 将日常开发和发布构建固定为 **1.97.1**。
+- Rust **1.97.1**（Rust 2024 edition）；`rust-toolchain.toml` 将其固定为
+  受支持的开发与发布工具链。
 - PostgreSQL
 - Docker Compose（可选；`docker-compose.yml` 提供开发用 PostgreSQL，
   `docker-compose.prd.yaml` 可通过拉取或本地构建 Gateway 镜像运行完整生产栈）

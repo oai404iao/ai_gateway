@@ -8,7 +8,7 @@
 生成稳定的 `ci-gate` 检查。`scripts/ci-changed-areas.sh` 根据变更路径选择门禁：
 
 - Markdown、`docs/`、Agent 指令和 `.gitignore` 等安全仓库元数据运行文档检查。
-- Rust、migration、测试和 workspace 文件运行默认工具链与 MSRV 门禁。
+- Rust、migration、测试和 workspace 文件运行固定的 Rust 工具链门禁。
 - `web/console/` 和 Console OpenAPI 变更运行类型检查、lint、组件测试、构建与
   Playwright E2E。
 - 生产源码、Console、Docker 和部署材料变更运行容器构建与 `--version` smoke。
@@ -41,10 +41,10 @@ Docker image job 只依赖快速的路径分类，与 Rust、Console 和 E2E 并
 - 文档检查；
 - Rust 1.97.1 format、默认 workspace 与 `mcp-server` feature 的
   Clippy/测试，包括 MCP modern/legacy Session 集成和 MCP Images 经 Codex Images 适配器的路径；
-- Rust 1.92.0 MSRV 默认 workspace 与相同 `mcp-server` 集成路径的 check/测试；
 - Console API 类型漂移、TypeScript、lint、组件测试和生产构建；
 - Chromium Playwright E2E，并在失败时上传 trace/test results。
 
+Rust 质量门禁只使用仓库固定的 Rust 1.97.1，不声明或测试更低版本兼容性。
 普通 CI 按路径传入启用项。Release tag 必须解析到属于 `main` 的提交，并通过
 GitHub Actions API 验证相同 SHA 已成功完成 `main` `ci-gate`；本地 tag 创建脚本
 还要求当时的 `HEAD` 与 `origin/main` 完全一致。因此 Tag workflow 不再重复运行
@@ -61,7 +61,7 @@ Pull Request 只能恢复默认分支或 Release 已有 cache，不能创建 cac
   `actions/cache/save`。
 - PR Docker 构建只设置 `cache-from`，`cache-to` 为空。
 
-只有 `main` 相关 workflow 可以写入 cache。稳定 Rust 与 MSRV 使用独立 shared
+只有 `main` 相关 workflow 可以写入 cache。固定 Rust job 使用 `stable` shared
 key；普通 CI 写入 `ci-image-amd64`，独立的
 `.github/workflows/release-image-cache.yml` 对 image 相关的 `main` 变更异步写入
 `release-image-arm64`。Tag-triggered Release 只恢复这些 cache，避免在发布关键

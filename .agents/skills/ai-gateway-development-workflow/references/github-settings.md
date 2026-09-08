@@ -59,7 +59,7 @@ possible.
 The path-aware CI workflow runs for every PR:
 
 1. `changes` detects the affected areas and validates patch whitespace.
-2. The reusable quality workflow runs or skips docs, Rust, MSRV, Console, and
+2. The reusable quality workflow runs or skips docs, Rust, Console, and
    Playwright jobs.
 3. The image job runs in parallel when production artifacts are affected.
 4. The always-present `ci-gate` succeeds only when every selected job succeeds.

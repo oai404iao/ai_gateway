@@ -74,9 +74,9 @@ docker compose \
 ```
 
 Dockerfile 使用 Rust 1.97.1 构建 release 二进制，并先构建、再嵌入 Console
-Web UI，同时编入默认关闭的 `mcp-server` transport；源码最低支持版本（MSRV）仍为
-Rust 1.92。运行镜像只保留二进制及必要的
-CA、健康检查和权限切换工具。
+Web UI，同时编入默认关闭的 `mcp-server` transport；源码构建也以同一固定
+工具链作为受支持和持续验证的边界。运行镜像只保留二进制及必要的 CA、健康检查
+和权限切换工具。
 
 ## 3. 启动与验证
 

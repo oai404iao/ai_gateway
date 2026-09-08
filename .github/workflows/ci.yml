@@ -75,7 +75,6 @@ jobs:
     with:
       run_docs: ${{ needs.changes.outputs.docs == 'true' }}
       run_rust: ${{ needs.changes.outputs.rust == 'true' }}
-      run_msrv: ${{ needs.changes.outputs.rust == 'true' }}
       run_console: ${{ needs.changes.outputs.console == 'true' }}
       run_e2e: ${{ needs.changes.outputs.console == 'true' }}
       save_cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}

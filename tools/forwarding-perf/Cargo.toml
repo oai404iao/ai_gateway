@@ -2,7 +2,6 @@
 name = "ai-gateway-perf"
 version = "0.10.6"
 edition = "2024"
-rust-version = "1.92"
 publish = false
 description = "Manually invoked end-to-end forwarding performance harness for ai-gateway"
 license = "AGPL-3.0-only"

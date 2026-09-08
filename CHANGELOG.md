@@ -7,6 +7,11 @@ Versioning.
 
 ## [Unreleased]
 
+### Changed
+
+- Make Rust 1.97.1 the sole supported and CI-validated toolchain, removing the
+  lower-version Cargo metadata promise and duplicate compatibility job.
+
 ## [0.10.6] - 2026-09-07
 
 ### Changed
