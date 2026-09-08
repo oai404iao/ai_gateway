@@ -78,7 +78,7 @@ const ANTHROPIC_RULE: ModelRuleView = {
 };
 
 function renderPage() {
-  window.history.replaceState({}, "", "/admin/routing/model-rules");
+  window.history.replaceState({}, "", "/admin/routing/model-rules?mode=table");
   render(
     <AppProviders>
       <BrowserRouter>

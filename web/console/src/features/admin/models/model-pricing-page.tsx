@@ -60,6 +60,7 @@ import { useI18n } from "@/app/i18n";
 import { safeAdminReturnPath } from "@/features/admin/model-setup/model-setup-navigation";
 import { useModel, useUpdateModel } from "@/features/admin/api";
 import { AdminDetailShell } from "@/features/admin/components/admin-detail-shell";
+import { useConfigurationDraft } from "@/features/admin/model-setup/use-configuration-draft";
 import {
   isNonNegativeDecimal,
   isNonNegativeRustDecimal,
@@ -313,6 +314,7 @@ export function ModelPricingPage() {
     name: "time_multipliers",
   });
   const formIsDirty = form.formState.isDirty;
+  const { navigate, navigationGuard, markSaved } = useConfigurationDraft(form.formState.isSubmitting, formIsDirty);
 
   useEffect(() => {
     if (!data || formIsDirty) return;
@@ -425,6 +427,8 @@ export function ModelPricingPage() {
         form.reset(pricingFormForModel(refreshed.data.data));
         setReloadRequired(false);
         toast.success(t("Model pricing updated"));
+        markSaved();
+        if (searchParams.has("returnTo")) navigate(returnTo, { replace: true });
       } else {
         setReloadRequired(true);
         toast.error(
@@ -484,6 +488,10 @@ export function ModelPricingPage() {
 
   return (
     <AdminDetailShell
+      configurationLens="models"
+      navigationGuard={navigationGuard}
+      saving={form.formState.isSubmitting}
+      onBack={() => navigate(returnTo)}
       title={data?.data.display_name || t("Model pricing")}
       description={t("Configure base USD prices and weekly UTC peak or off-peak multipliers.")}
       backPath={returnTo}

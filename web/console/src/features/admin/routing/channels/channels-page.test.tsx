@@ -83,7 +83,8 @@ const CODEX_IMAGES_CHANNEL: ChannelView = {
 };
 
 function renderAppAt(path: string) {
-  window.history.replaceState({}, "", path);
+  // Batch-operation regression coverage uses the explicit table tool.
+  window.history.replaceState({}, "", `${path}?mode=table`);
   render(
     <AppProviders>
       <BrowserRouter>

@@ -61,6 +61,22 @@ pnpm e2e:install            # install Playwright Chromium + OS deps (first run)
 - `src/test/` — vitest setup, MSW server, deterministic fixtures.
 - `e2e/` — Playwright browser smoke tests (API mocked at the network layer).
 
+## Model configuration workspace
+
+The sidebar's **Model configuration** entry opens a relationship-first
+workbench. The existing model-rule, channel, and model list URLs are three
+views of the same directory/inspector layout. Search, filters, pagination,
+and selection live in the URL; related-resource links lead directly to their
+inspector. `?mode=table` exposes table and batch tools, while
+`/admin/model-setup` remains the guided creation flow.
+
+Configuration editors retain the existing single-resource mutations and
+ETags, return to their source context after saving, and protect unsaved drafts.
+Production uses `AppRouterProvider` (data router) so browser Back is blocked
+as well as app navigation. Regression coverage is in
+`src/features/admin/model-setup/configuration-*.test.*` and
+`e2e/configuration-workbench.spec.ts`, including mobile, Chinese, and dark mode.
+
 ## API contract
 
 The TypeScript types consumed across the app are generated from

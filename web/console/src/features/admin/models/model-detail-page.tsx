@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
-import { useNavigate, useParams, useSearchParams } from "react-router";
+import { useParams, useSearchParams } from "react-router";
+import { useConfigurationDraft } from "@/features/admin/model-setup/use-configuration-draft";
+import { ConfigurationSaveBar } from "@/features/admin/model-setup/configuration-save-bar";
 import { Calculator, Copy } from "lucide-react";
 import { z } from "zod";
 import { toast } from "sonner";
@@ -96,7 +98,6 @@ function fromLocalInput(value: string): string {
 export function ModelDetailPage() {
   const { id = "" } = useParams();
   const isNew = id === "new";
-  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const copyFrom = isNew
     ? validResourceId(searchParams.get("copyFrom"))
@@ -113,6 +114,7 @@ export function ModelDetailPage() {
   const { t } = useI18n();
   const [state, setState] = useState<FormState>(empty);
   const [submitting, setSubmitting] = useState(false);
+  const { dirty, markDirty, markSaved, navigate, navigationGuard } = useConfigurationDraft(submitting);
   const [validation, setValidation] = useState<z.ZodError | null>(null);
   const [initializedCopyFrom, setInitializedCopyFrom] = useState<string | null>(
     null,
@@ -180,7 +182,10 @@ export function ModelDetailPage() {
     t,
   ]);
 
-  const patch = (partial: Partial<FormState>) => setState((prev) => ({ ...prev, ...partial }));
+  const patch = (partial: Partial<FormState>) => {
+    markDirty();
+    setState((prev) => ({ ...prev, ...partial }));
+  };
 
   const submit = async () => {
     let payload: unknown = undefined;
@@ -226,11 +231,14 @@ export function ModelDetailPage() {
     try {
       if (isNew) {
         await create.mutateAsync(input);
+        markSaved();
         toast.success(t("Upstream model created"));
         navigate(returnTo, { replace: true });
       } else {
         await update.mutateAsync({ input, ifMatch: etag });
+        markSaved();
         toast.success(t("Upstream model updated"));
+        if (searchParams.has("returnTo")) navigate(returnTo, { replace: true });
       }
     } catch (error) {
       if (error instanceof ApiError && error.isConflict) {
@@ -250,6 +258,18 @@ export function ModelDetailPage() {
 
   return (
     <AdminDetailShell
+      configurationLens="models"
+      navigationGuard={navigationGuard}
+      saving={submitting}
+      onBack={() => navigate(returnTo)}
+      actionBar={
+        <ConfigurationSaveBar dirty={dirty} saving={submitting} onCancel={() => navigate(returnTo)}>
+          <Button onClick={submit} disabled={submitting}>
+            {submitting ? <Spinner data-icon="inline-start" /> : null}
+            {isNew ? t(copyFrom ? "Create copied model" : "Create upstream model") : t("Save upstream model")}
+          </Button>
+        </ConfigurationSaveBar>
+      }
       title={
         copyFrom
           ? t("Copy upstream model")
@@ -505,12 +525,6 @@ export function ModelDetailPage() {
                   />
                 </Field>
               </FieldGroup>
-              <Button className="self-start" onClick={submit} disabled={submitting}>
-                {submitting ? <Spinner data-icon="inline-start" /> : null}
-                {isNew
-                  ? t(copyFrom ? "Create copied model" : "Create upstream model")
-                  : t("Save upstream model")}
-              </Button>
             </div>
           </CardContent>
         </Card>

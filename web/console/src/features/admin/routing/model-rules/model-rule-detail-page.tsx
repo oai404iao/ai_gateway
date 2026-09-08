@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate, useParams, useSearchParams } from "react-router";
+import { useParams, useSearchParams } from "react-router";
+import { useConfigurationDraft } from "@/features/admin/model-setup/use-configuration-draft";
+import { ConfigurationSaveBar } from "@/features/admin/model-setup/configuration-save-bar";
 import { z } from "zod";
 import { toast } from "sonner";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -179,7 +181,6 @@ const CUSTOM_CLIENT_MODEL = "__custom_client_model__";
 export function ModelRuleDetailPage() {
   const { id = "" } = useParams();
   const isNew = id === "new";
-  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const returnTo = safeAdminReturnPath(
     searchParams.get("returnTo"),
@@ -220,6 +221,7 @@ export function ModelRuleDetailPage() {
   );
   const [state, setState] = useState<FormState>(empty);
   const [submitting, setSubmitting] = useState(false);
+  const { dirty, markDirty, markSaved, navigate, navigationGuard } = useConfigurationDraft(submitting);
   const [validation, setValidation] = useState<z.ZodError | null>(null);
   const [prefillInitialized, setPrefillInitialized] = useState(!hasPrefill);
   const modelProviderGroups = useMemo(
@@ -352,7 +354,10 @@ export function ModelRuleDetailPage() {
     state.upstream_model_id,
   ]);
 
-  const patch = (partial: Partial<FormState>) => setState((prev) => ({ ...prev, ...partial }));
+  const patch = (partial: Partial<FormState>) => {
+    markDirty();
+    setState((prev) => ({ ...prev, ...partial }));
+  };
 
   const clientModelSelection = useMemo(
     () =>
@@ -395,11 +400,14 @@ export function ModelRuleDetailPage() {
     try {
       if (isNew) {
         await create.mutateAsync(input);
+        markSaved();
         toast.success(t("Model rule created"));
         navigate(returnTo, { replace: true });
       } else {
         await update.mutateAsync({ input, ifMatch: etag });
+        markSaved();
         toast.success(t("Model rule updated"));
+        if (searchParams.has("returnTo")) navigate(returnTo, { replace: true });
       }
     } catch (error) {
       if (error instanceof ApiError && error.isConflict) {
@@ -435,6 +443,18 @@ export function ModelRuleDetailPage() {
 
   return (
     <AdminDetailShell
+      configurationLens="routes"
+      navigationGuard={navigationGuard}
+      saving={submitting}
+      onBack={() => navigate(returnTo)}
+      actionBar={
+        <ConfigurationSaveBar dirty={dirty} saving={submitting} onCancel={() => navigate(returnTo)}>
+          <Button onClick={submit} disabled={submitting}>
+            {submitting ? <Spinner data-icon="inline-start" /> : null}
+            {isNew ? t("Create rule") : t("Save rule")}
+          </Button>
+        </ConfigurationSaveBar>
+      }
       title={isNew ? t("New model rule") : state.client_model || t("Model Rules")}
       description={t(
         "Routes a client model and API format through rule-owned priority tiers to one priced upstream model.",
@@ -634,10 +654,6 @@ export function ModelRuleDetailPage() {
                   />
                 </Field>
               </FieldGroup>
-              <Button className="self-start" onClick={submit} disabled={submitting}>
-                {submitting ? <Spinner data-icon="inline-start" /> : null}
-                {isNew ? t("Create rule") : t("Save rule")}
-              </Button>
             </div>
           </CardContent>
         </Card>

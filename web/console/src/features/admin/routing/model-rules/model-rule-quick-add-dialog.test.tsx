@@ -79,7 +79,7 @@ describe("ModelRuleQuickAddDialog", () => {
       }),
     );
     const user = userEvent.setup();
-    renderAppAt("/admin/routing/model-rules");
+    renderAppAt("/admin/routing/model-rules?mode=table");
 
     await user.click(await screen.findByRole("button", { name: "Quick add" }));
     await user.click(

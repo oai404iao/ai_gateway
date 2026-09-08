@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
+import { ConfigurationNav } from "./configuration-workbench";
 import {
   ArrowRight,
   Boxes,
@@ -839,6 +840,7 @@ export function ModelSetupPage() {
 
   return (
     <div className="flex flex-col gap-6">
+      <ConfigurationNav />
       <PageHeader
         title={t("Model setup")}
         description={t(

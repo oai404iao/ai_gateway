@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { useNavigate } from "react-router";
+import { useNavigate, useSearchParams } from "react-router";
+import { ConfigurationTableView, ConfigurationWorkbench } from "@/features/admin/model-setup/configuration-workbench";
 import { ListPlus, Workflow } from "lucide-react";
 import type { ApiFormat, ModelRuleView } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
@@ -35,6 +36,13 @@ function routingTargetSummary(rule: ModelRuleView) {
 }
 
 export function ModelRulesPage() {
+  const [params] = useSearchParams();
+  return params.get("mode") === "table"
+    ? <ConfigurationTableView lens="routes"><ModelRulesTable /></ConfigurationTableView>
+    : <ConfigurationWorkbench lens="routes" />;
+}
+
+function ModelRulesTable() {
   const navigate = useNavigate();
   const rules = useModelRules();
   const models = useModels();

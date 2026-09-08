@@ -22,7 +22,8 @@ test.describe("Console SPA smoke", () => {
     await page.getByLabel(/email/i).fill("admin@example.com");
     await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
     await page.getByRole("button", { name: /sign in/i }).click();
-    await page.getByRole("link", { name: "Model setup" }).click();
+    await page.getByRole("link", { name: "Model configuration" }).click();
+    await page.getByRole("link", { name: "Guided model setup" }).click();
 
     await expect(page).toHaveURL(/\/admin\/model-setup$/);
     await expect(
@@ -73,15 +74,16 @@ test.describe("Console SPA smoke", () => {
     await page.getByLabel(/email/i).fill("admin@example.com");
     await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
     await page.getByRole("button", { name: /sign in/i }).click();
-    await page.getByRole("link", { name: "Models" }).click();
+    await page.getByRole("link", { name: "Model configuration" }).click();
+    await page.getByRole("link", { name: "Models & pricing What upstream models cost" }).click();
 
-    const pricingAction = page.getByRole("button", {
-      name: `Configure pricing for ${E2E_MODEL.display_name}`,
+    const pricingAction = page.getByRole("link", {
+      name: "Configure pricing",
     });
     await expect(pricingAction).toBeVisible();
     await pricingAction.click();
     await expect(page).toHaveURL(
-      new RegExp(`/admin/models/${E2E_MODEL.id}/pricing$`),
+      new RegExp(`/admin/models/${E2E_MODEL.id}/pricing\\?`),
     );
 
     const basePrices = page.getByText("Base prices", { exact: true });
@@ -478,7 +480,7 @@ test.describe("Console SPA smoke", () => {
     await page.evaluate((path) => {
       window.history.pushState({}, "", path);
       window.dispatchEvent(new PopStateEvent("popstate"));
-    }, "/admin/routing/channels");
+    }, "/admin/routing/channels?mode=table");
 
     await expect(page.getByRole("heading", { name: "Channels" })).toBeVisible();
     const codexPool = page.getByRole("region", {
