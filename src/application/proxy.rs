@@ -893,7 +893,11 @@ impl ProxyService {
         started_at: chrono::DateTime<chrono::Utc>,
         started: Instant,
     ) {
-        let error = ProxyError::no_healthy_channel();
+        let error = if request_protocol == RequestProtocol::WebSocket {
+            ProxyError::websocket_unavailable()
+        } else {
+            ProxyError::no_healthy_channel()
+        };
         let event = RequestLogEvent {
             id: Uuid::new_v4(),
             started_at,
@@ -913,7 +917,7 @@ impl ProxyService {
             channel_id: None,
             model_id: Some(rule.upstream_model_id()),
             outcome: RequestLogOutcome::Failed,
-            response_status_code: Some(StatusCode::SERVICE_UNAVAILABLE.as_u16()),
+            response_status_code: Some(error.status.as_u16()),
             streamed: request_protocol.is_streamed(),
             ttft_ms: None,
             total_duration_ms: clamp_duration_ms(started.elapsed()),
@@ -1029,6 +1033,20 @@ impl ProxyError {
             error_type: "permission_error",
             param: None,
             code: Some("websocket_disabled"),
+            authenticate: false,
+            retry_after: None,
+        }
+    }
+
+    fn websocket_unavailable() -> Self {
+        Self {
+            status: StatusCode::UPGRADE_REQUIRED,
+            message:
+                "No available upstream WebSocket route. Use POST /v1/responses over HTTP instead."
+                    .to_owned(),
+            error_type: "invalid_request_error",
+            param: None,
+            code: Some("websocket_unavailable"),
             authenticate: false,
             retry_after: None,
         }

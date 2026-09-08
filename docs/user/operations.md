@@ -440,8 +440,24 @@ migration 后的现有系统、用户和普通渠道以及所有新普通渠道�
 Codex OAuth Responses projection 会自动声明 WebSocket 能力，但 Images projection 永不声明；
 系统与用户开关仍默认关闭。
 Chat Completions 渠道不能声明 WebSocket 支持。系统或用户未开启时，HTTP Upgrade 返回
-`403 websocket_disabled`；没有可用且声明支持的 Responses 渠道时，首条
-`response.create` 返回 `503 no_healthy_channel`。
+`403 websocket_disabled`。没有可用且声明支持的 Responses WS 路由时，返回
+`426 websocket_unavailable`，提示客户端改用 `POST /v1/responses`：
+
+- 握手时还没有请求模型。如果该 API Key 的全部已授权 Responses 路由都没有可选 WS 渠道，
+  直接拒绝 Upgrade，返回 HTTP 426 和普通 JSON 错误体。
+- 如果其他模型仍可使用 WS，允许 Upgrade；收到 `response.create` 后，若该模型没有可选
+  WS 渠道，则发送 `type: "error"`、`status: 426`、
+  `error.code: "websocket_unavailable"` 的错误帧并关闭连接。请求日志记录同样的状态和错误码。
+- 未配置 WS 能力、渠道组/渠道停用、自动禁用，以及被动健康冷却或已被占用的半开探针都会影响
+  可选性。握手预检不占用路由 lease、不推进权重轮转、不消耗 RPM/并发，也不发起上游请求；
+  模型消息仍重新执行正常鉴权、准入和路由。
+- 未知或无权访问的模型在消息阶段仍返回 `404 model_not_found`；系统/用户关闭 WS、
+  鉴权失败和其他准入错误不会被改成 426。HTTP 无可选渠道仍使用 `503 no_healthy_channel`。
+
+Codex CLI 0.130.0 已通过纯本地 Mock 验证：握手 426 触发 HTTP fallback；升级后的 426
+错误帧经其 WS 重试预算耗尽后回退，**不保证立即回退**。回退由客户端执行，Gateway 不把已发送的
+WS 请求自动转换或重放为 HTTP。其他客户端的自动回退取决于其实现；具体错误映射见
+[Codex 参考](../reference/codex-responses-websocket.md)。
 
 管理员也可以在用户详情页修改同一个 `websocket_enabled` 个人偏好。该操作走版本化用户资源，
 保存后立即重新发布数据面快照；用户仍可随后在自己的个人设置页再次调整。
@@ -703,7 +719,8 @@ Codex 额度可见性和 Fast 过滤也立即按当前用户组生效。
 - `disabled`：规则自身已禁用。
 
 `disconnected` 规则不出现在 `/v1/models`；已授权客户端仍直接请求该规则时会收到
-`503 no_healthy_channel`。恢复渠道的模型列表或启用状态后，下一次快照发布会自动恢复对应状态。
+HTTP `503 no_healthy_channel`（Responses WS 使用上文的 `426 websocket_unavailable`）。
+恢复渠道的模型列表或启用状态后，下一次快照发布会自动恢复对应状态。
 已在处理中的请求继续使用取得请求时的旧快照。
 
 代理编辑页可以在保存前测试当前 HTTP、HTTPS 或 SOCKS 代理草稿。测试接口固定通过该代理请求

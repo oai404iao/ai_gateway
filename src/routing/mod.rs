@@ -848,6 +848,29 @@ impl RoutingRuntime {
         )
     }
 
+    /// Read-only upgrade preflight: do not select a channel, advance weights,
+    /// populate affinity, or claim a half-open probe before `response.create`.
+    #[must_use]
+    pub(crate) fn has_available_websocket_route(
+        &self,
+        snapshot: &CompiledRuntimeConfig,
+        key: &CompiledApiKey,
+    ) -> bool {
+        let now = self.inner.clock.now();
+        snapshot.model_rules().any(|rule| {
+            rule.api_format() == ApiFormat::OpenAiResponses
+                && key.permits_route(rule.route_slot())
+                && rule.tiers().iter().any(|tier| {
+                    tier.candidates().iter().any(|candidate| {
+                        let channel = candidate.channel();
+                        channel.supports_websocket()
+                            && key.permits_route_candidate(candidate.channel_slot())
+                            && usable(&self.inner, &ChannelIdentity::from_channel(channel), now)
+                    })
+                })
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn select_with_affinity_excluding_capability(
         &self,
@@ -1562,6 +1585,22 @@ mod tests {
         base_url: Option<&str>,
         system_settings: SystemRuntimeSettings,
     ) -> (CompiledRuntimeConfig, String) {
+        snapshot_with_format(
+            groups,
+            weights,
+            base_url,
+            system_settings,
+            ApiFormat::OpenAiChatCompletions,
+        )
+    }
+
+    fn snapshot_with_format(
+        groups: &[(i32, &str)],
+        weights: &[i32],
+        base_url: Option<&str>,
+        system_settings: SystemRuntimeSettings,
+        format: ApiFormat,
+    ) -> (CompiledRuntimeConfig, String) {
         assert_eq!(groups.len(), weights.len());
         let group_ids = (0..groups.len())
             .map(|index| Uuid::from_u128(index as u128 + 1))
@@ -1603,7 +1642,7 @@ mod tests {
                 secret_value: secret.clone(),
                 status: "active".into(),
                 expires_at: None,
-                allowed_api_formats: vec!["open_ai_chat_completions".into()],
+                allowed_api_formats: vec![format.as_str().into()],
                 permissions: vec!["proxy".into()],
                 allowed_group_ids: group_ids.clone(),
                 allowed_channel_ids: vec![],
@@ -1618,7 +1657,7 @@ mod tests {
                 .map(|(id, _)| ChannelGroupRecord {
                     id: *id,
                     name: id.to_string(),
-                    api_format: "open_ai_chat_completions".into(),
+                    api_format: format.as_str().into(),
                     connector_kind: "openai_compatible".into(),
                     request_compression: "default".into(),
                     enabled: true,
@@ -1630,13 +1669,13 @@ mod tests {
                 .map(|(id, group_id)| ChannelRecord {
                     id: *id,
                     channel_group_id: *group_id,
-                    api_format: "open_ai_chat_completions".into(),
+                    api_format: format.as_str().into(),
                     name: id.to_string(),
                     base_url: base_url
                         .map(ToOwned::to_owned)
                         .unwrap_or_else(|| format!("https://{id}.test")),
                     enabled: true,
-                    supports_websocket: false,
+                    supports_websocket: format == ApiFormat::OpenAiResponses,
                     supports_standalone_web_search: false,
                     auto_disabled: false,
                     auto_disable_allowed: false,
@@ -1658,7 +1697,7 @@ mod tests {
             model_rules: vec![ModelRuleRecord {
                 id: Uuid::from_u128(1_002),
                 client_model: "model".into(),
-                api_format: "open_ai_chat_completions".into(),
+                api_format: format.as_str().into(),
                 upstream_model_id: Uuid::from_u128(1_003),
                 upstream_model_enabled: true,
                 upstream_model_currency: "USD".into(),
@@ -1730,6 +1769,64 @@ mod tests {
             .iter()
             .map(|shard| shard.lock().unwrap().len())
             .sum()
+    }
+
+    #[test]
+    fn websocket_preflight_does_not_advance_weights_or_claim_recovery_probes() {
+        let (snapshot, secret) = snapshot_with_format(
+            &[(0, "weighted_round_robin")],
+            &[1],
+            None,
+            SystemRuntimeSettings::default(),
+            ApiFormat::OpenAiResponses,
+        );
+        let clock = Arc::new(TestClock(AtomicU64::new(0)));
+        let runtime = RoutingRuntime::with_seams(
+            PassiveHealthPolicy {
+                connection_failure_threshold: 1,
+                cooldown: Duration::from_secs(10),
+            },
+            clock.clone(),
+            Arc::new(Tickets(Mutex::new(VecDeque::new()))),
+        );
+        let key = snapshot.authenticate(&secret).unwrap();
+        assert!(runtime.has_available_websocket_route(&snapshot, &key));
+        assert_eq!(round_robin_len(&runtime), 0);
+        assert_eq!(runtime.pressure_snapshot().in_flight_requests, 0);
+        let SelectionResult::Selected(mut failed) = runtime
+            .select_websocket_with_affinity_excluding(
+                &snapshot,
+                &key,
+                ApiFormat::OpenAiResponses,
+                "model",
+                None,
+                &[],
+            )
+        else {
+            panic!("fixture must select a WS channel");
+        };
+        let channel = Arc::clone(&failed.channel);
+        failed.lease.connection_failed();
+        drop(failed);
+        assert!(!runtime.has_available_websocket_route(&snapshot, &key));
+        clock.advance(Duration::from_secs(11));
+        assert!(runtime.has_available_websocket_route(&snapshot, &key));
+        assert!(runtime.has_available_websocket_route(&snapshot, &key));
+        assert!(!runtime.health(&channel).half_open_probe);
+        assert_eq!(runtime.health(&channel).in_flight, 0);
+        let SelectionResult::Selected(probe) = runtime.select_websocket_with_affinity_excluding(
+            &snapshot,
+            &key,
+            ApiFormat::OpenAiResponses,
+            "model",
+            None,
+            &[],
+        ) else {
+            panic!("recovery probe must be available");
+        };
+        assert!(!runtime.has_available_websocket_route(&snapshot, &key));
+        drop(probe);
+        assert!(runtime.has_available_websocket_route(&snapshot, &key));
     }
 
     fn snapshot_with_outbound_policy(

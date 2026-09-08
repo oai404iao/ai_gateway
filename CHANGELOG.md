@@ -9,6 +9,10 @@ Versioning.
 
 ### Changed
 
+- Return `426 websocket_unavailable` when Responses has no eligible WebSocket
+  route, allowing Codex HTTP fallback instead of terminal server-overload
+  errors. Reject upgrades early when the API key has no available WS route;
+  preserve model-specific errors after upgrade and avoid gateway-side replay.
 - Make Rust 1.97.1 the sole supported and CI-validated toolchain, removing the
   lower-version Cargo metadata promise and duplicate compatibility job.
 

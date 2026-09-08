@@ -11,8 +11,8 @@ use ai_gateway::{
     admission::AdmissionRuntime,
     application::{ProxyService, RecordingRequestLogSink, SystemMetricsService},
     domain::{
-        PassiveHealthSettings, RequestProtocol, ResponsesWebSocketSettings, SystemRuntimeSettings,
-        UpstreamTimeoutDefaults,
+        ApiFormat, PassiveHealthSettings, RequestProtocol, ResponsesWebSocketSettings,
+        SystemRuntimeSettings, UpstreamTimeoutDefaults,
     },
     http,
     persistence::{
@@ -381,6 +381,9 @@ struct GatewayHarness {
     server: TestServer,
     proxy: ProxyService,
     logs: RecordingRequestLogSink,
+    runtime: Arc<RuntimeConfig>,
+    routing: RoutingRuntime,
+    upgrade_attempts: Arc<AtomicUsize>,
 }
 
 #[derive(Clone, Copy)]
@@ -389,6 +392,11 @@ struct WebSocketControls {
     user_enabled: bool,
     filter_fast_mode: bool,
     channel_supported: bool,
+    group_enabled: bool,
+    channel_enabled: bool,
+    auto_disabled: bool,
+    other_websocket_route: bool,
+    other_route_authorized: bool,
     max_idle_connections: usize,
 }
 
@@ -399,6 +407,11 @@ impl Default for WebSocketControls {
             user_enabled: true,
             filter_fast_mode: false,
             channel_supported: true,
+            group_enabled: true,
+            channel_enabled: true,
+            auto_disabled: false,
+            other_websocket_route: false,
+            other_route_authorized: true,
             max_idle_connections: 128,
         }
     }
@@ -424,7 +437,7 @@ async fn gateway_harness_with_controls(
     let group_id = Uuid::new_v4();
     let channel_id = Uuid::new_v4();
     let proxy_id = outbound_proxy.as_ref().map(|proxy| proxy.id);
-    let records = ControlPlaneRecords {
+    let mut records = ControlPlaneRecords {
         api_keys: vec![ApiKeyRecord {
             id: api_key_id,
             user_id: Uuid::new_v4(),
@@ -449,7 +462,7 @@ async fn gateway_harness_with_controls(
             api_format: "open_ai_responses".into(),
             connector_kind: "openai_compatible".into(),
             request_compression: "default".into(),
-            enabled: true,
+            enabled: controls.group_enabled,
         }],
         channels: vec![ChannelRecord {
             id: channel_id,
@@ -457,10 +470,10 @@ async fn gateway_harness_with_controls(
             api_format: "open_ai_responses".into(),
             name: "responses".into(),
             base_url: upstream.base_url(),
-            enabled: true,
+            enabled: controls.channel_enabled,
             supports_websocket: controls.channel_supported,
             supports_standalone_web_search: false,
-            auto_disabled: false,
+            auto_disabled: controls.auto_disabled,
             auto_disable_allowed: false,
             billing_multiplier: Decimal::ONE,
             proxy_id,
@@ -550,6 +563,33 @@ async fn gateway_harness_with_controls(
         templates: vec![],
         mcp_servers: vec![],
     };
+    if controls.other_websocket_route {
+        let group = ChannelGroupRecord {
+            id: Uuid::new_v4(),
+            name: "other-responses".into(),
+            api_format: "open_ai_responses".into(),
+            connector_kind: "openai_compatible".into(),
+            request_compression: "default".into(),
+            enabled: true,
+        };
+        let mut channel = records.channels[0].clone();
+        channel.id = Uuid::new_v4();
+        channel.channel_group_id = group.id;
+        channel.enabled = true;
+        channel.auto_disabled = false;
+        channel.supports_websocket = true;
+        let mut rule = records.model_rules[0].clone();
+        rule.id = Uuid::new_v4();
+        rule.client_model = "other-ws-model".into();
+        rule.routing_tiers[0].channel_groups[0].channel_group_id = group.id;
+        rule.routing_tiers[0].channel_groups[0].channels[0].channel_id = channel.id;
+        if controls.other_route_authorized {
+            records.api_keys[0].allowed_group_ids.push(group.id);
+        }
+        records.groups.push(group);
+        records.channels.push(channel);
+        records.model_rules.push(rule);
+    }
     let runtime = Arc::new(RuntimeConfig::new(
         compile_control_plane_with_system_settings(
             records,
@@ -572,20 +612,39 @@ async fn gateway_harness_with_controls(
     ));
     let registry = Arc::new(UpstreamClientRegistry::new());
     let logs = RecordingRequestLogSink::default();
+    let routing = RoutingRuntime::new(PassiveHealthPolicy::default());
     let proxy = ProxyService::with_dependencies_and_registry(
-        runtime,
+        Arc::clone(&runtime),
         1_048_576,
         Arc::clone(&registry),
         Arc::new(logs.clone()),
-        RoutingRuntime::new(PassiveHealthPolicy::default()),
+        routing.clone(),
         AdmissionRuntime::new(),
     )
     .unwrap();
-    let server = start_gateway(http::router(proxy.clone())).await;
+    let upgrade_attempts = Arc::new(AtomicUsize::new(0));
+    let counted_attempts = Arc::clone(&upgrade_attempts);
+    let app = http::router(proxy.clone()).layer(axum::middleware::from_fn(
+        move |request: axum::extract::Request, next: axum::middleware::Next| {
+            let counted_attempts = Arc::clone(&counted_attempts);
+            async move {
+                if request.method() == axum::http::Method::GET
+                    && request.uri().path() == "/v1/responses"
+                {
+                    counted_attempts.fetch_add(1, Ordering::SeqCst);
+                }
+                next.run(request).await
+            }
+        },
+    ));
+    let server = start_gateway(app).await;
     GatewayHarness {
         server,
         proxy,
         logs,
+        runtime,
+        routing,
+        upgrade_attempts,
     }
 }
 
@@ -636,6 +695,15 @@ async fn response_create_with_residual(
     if force_residual {
         body["client_metadata"] = json!({"force_residual": true});
     }
+    send_websocket_body(websocket, body).await
+}
+
+async fn send_websocket_body(
+    websocket: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+    body: Value,
+) -> Vec<Value> {
     websocket
         .send(Message::Text(body.to_string().into()))
         .await
@@ -958,21 +1026,206 @@ async fn responses_websocket_excludes_channels_without_websocket_support() {
         },
     )
     .await;
-    let (mut websocket, response) = connect_async(websocket_request(
+    let error = connect_async(websocket_request(
         gateway.server.address,
         CLIENT_KEY,
         "unsupported-channel",
     ))
     .await
-    .unwrap();
-    assert_eq!(response.status(), 101);
-
-    let events = response_create(&mut websocket, None).await;
-    let terminal = events.last().expect("terminal error event");
-    assert_eq!(terminal["type"], "error");
-    assert_eq!(terminal["status"], 503);
-    assert_eq!(terminal["error"]["code"], "no_healthy_channel");
+    .expect_err("an HTTP-only key must reject the upgrade");
+    assert_upgrade_unavailable(error);
     assert!(upstream.handshakes().is_empty());
+}
+
+fn assert_upgrade_unavailable(error: WebSocketError) {
+    let WebSocketError::Http(response) = error else {
+        panic!("expected HTTP upgrade rejection, got {error:?}");
+    };
+    assert_eq!(response.status(), 426);
+    let body: Value = serde_json::from_slice(response.body().as_ref().unwrap()).unwrap();
+    assert_eq!(body["error"]["code"], "websocket_unavailable");
+    assert_eq!(body["error"]["type"], "invalid_request_error");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("POST /v1/responses")
+    );
+}
+
+#[tokio::test]
+async fn responses_websocket_upgrade_excludes_disabled_and_unauthorized_routes() {
+    for controls in [
+        WebSocketControls {
+            group_enabled: false,
+            ..WebSocketControls::default()
+        },
+        WebSocketControls {
+            channel_enabled: false,
+            ..WebSocketControls::default()
+        },
+        WebSocketControls {
+            auto_disabled: true,
+            ..WebSocketControls::default()
+        },
+        WebSocketControls {
+            channel_supported: false,
+            other_websocket_route: true,
+            other_route_authorized: false,
+            ..WebSocketControls::default()
+        },
+    ] {
+        let upstream = start_mock_upstream().await;
+        let gateway = gateway_harness_with_controls(&upstream, None, controls).await;
+        let error = connect_async(websocket_request(
+            gateway.server.address,
+            CLIENT_KEY,
+            "unavailable",
+        ))
+        .await
+        .expect_err("no eligible WS route must reject the upgrade");
+        assert_upgrade_unavailable(error);
+        assert!(upstream.handshakes().is_empty());
+        assert_eq!(gateway.proxy.active_websocket_sessions(), 0);
+    }
+}
+
+#[tokio::test]
+async fn responses_websocket_model_without_ws_sends_426_after_upgrade_and_logs_it() {
+    for controls in [
+        WebSocketControls {
+            channel_supported: false,
+            ..WebSocketControls::default()
+        },
+        WebSocketControls {
+            group_enabled: false,
+            ..WebSocketControls::default()
+        },
+        WebSocketControls {
+            channel_enabled: false,
+            ..WebSocketControls::default()
+        },
+        WebSocketControls {
+            auto_disabled: true,
+            ..WebSocketControls::default()
+        },
+    ] {
+        let upstream = start_mock_upstream().await;
+        let gateway = gateway_harness_with_controls(
+            &upstream,
+            None,
+            WebSocketControls {
+                other_websocket_route: true,
+                ..controls
+            },
+        )
+        .await;
+        let (mut socket, response) = connect_async(websocket_request(
+            gateway.server.address,
+            CLIENT_KEY,
+            "mixed",
+        ))
+        .await
+        .unwrap();
+        assert_eq!(
+            response.status(),
+            101,
+            "another accessible model still supports WS"
+        );
+        let events = response_create(&mut socket, None).await;
+        let terminal = events.last().unwrap();
+        assert_eq!(terminal["type"], "error");
+        assert_eq!(terminal["status"], 426);
+        assert_eq!(terminal["error"]["code"], "websocket_unavailable");
+        assert!(
+            upstream.handshakes().is_empty(),
+            "do not dispatch or replay a rejected request"
+        );
+        let logs = gateway.logs.events();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].response_status_code, Some(426));
+        assert_eq!(logs[0].error_code.as_deref(), Some("websocket_unavailable"));
+    }
+}
+
+#[tokio::test]
+async fn responses_websocket_upgrade_checks_passive_health_without_acquiring_a_lease() {
+    let upstream = start_mock_upstream().await;
+    let gateway = gateway_harness(&upstream).await;
+    let snapshot = gateway.runtime.snapshot();
+    let key = snapshot.authenticate(CLIENT_KEY).unwrap();
+    for _ in 0..3 {
+        let ai_gateway::routing::SelectionResult::Selected(mut selected) =
+            gateway.routing.select_websocket_with_affinity_excluding(
+                &snapshot,
+                &key,
+                ApiFormat::OpenAiResponses,
+                CLIENT_MODEL,
+                None,
+                &[],
+            )
+        else {
+            panic!("expected an eligible channel");
+        };
+        selected.lease.connection_failed();
+    }
+    let pressure = gateway.routing.pressure_snapshot();
+    let error = connect_async(websocket_request(
+        gateway.server.address,
+        CLIENT_KEY,
+        "cooling",
+    ))
+    .await
+    .expect_err("cooling WS route must reject the upgrade");
+    assert_upgrade_unavailable(error);
+    assert_eq!(
+        gateway.routing.pressure_snapshot().in_flight_requests,
+        pressure.in_flight_requests
+    );
+    assert!(upstream.handshakes().is_empty());
+}
+
+#[tokio::test]
+async fn responses_websocket_mixed_routes_keep_ws_support_and_model_not_found_errors() {
+    let upstream = start_mock_upstream().await;
+    let gateway = gateway_harness_with_controls(
+        &upstream,
+        None,
+        WebSocketControls {
+            channel_supported: false,
+            other_websocket_route: true,
+            ..WebSocketControls::default()
+        },
+    )
+    .await;
+    let (mut socket, _) = connect_async(websocket_request(
+        gateway.server.address,
+        CLIENT_KEY,
+        "mixed-models",
+    ))
+    .await
+    .unwrap();
+    let events = send_websocket_body(
+        &mut socket,
+        json!({
+            "type": "response.create", "model": "other-ws-model",
+            "input": [{"role": "user", "content": "hello"}]
+        }),
+    )
+    .await;
+    assert_eq!(completed_response_id(&events), "resp-1");
+    let events = send_websocket_body(
+        &mut socket,
+        json!({
+            "type": "response.create", "model": "unknown-model",
+            "input": [{"role": "user", "content": "hello"}]
+        }),
+    )
+    .await;
+    let error = events.last().unwrap();
+    assert_eq!(error["status"], 404);
+    assert_eq!(error["error"]["code"], "model_not_found");
+    assert_eq!(upstream.requests().len(), 1);
 }
 
 #[tokio::test]
@@ -1162,4 +1415,182 @@ async fn responses_websocket_uses_authenticated_socks5h_proxy() {
         outbound_proxy.target.lock().unwrap().clone(),
         Some(("127.0.0.1".into(), upstream.address.port()))
     );
+}
+
+/// A paid provider is never used by this manual client-compatibility test.
+async fn start_http_fallback_upstream() -> MockResponsesWebSocket {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&requests);
+    let app = axum::Router::new().route(
+        "/v1/responses",
+        axum::routing::post(move |axum::Json(body): axum::Json<Value>| {
+            let captured = Arc::clone(&captured);
+            async move {
+                captured.lock().unwrap().push(CapturedRequest { connection: 0, body });
+                let item = json!({
+                    "id": "msg_mock",
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": "MOCK_OK", "annotations": []}]
+                });
+                let events = [
+                    json!({"type": "response.created", "response": {"id": "resp_mock", "model": UPSTREAM_MODEL}}),
+                    json!({"type": "response.output_item.added", "output_index": 0, "item": {
+                        "id": "msg_mock", "type": "message", "role": "assistant", "content": []
+                    }}),
+                    json!({"type": "response.output_text.delta", "item_id": "msg_mock", "output_index": 0, "content_index": 0, "delta": "MOCK_OK"}),
+                    json!({"type": "response.output_item.done", "output_index": 0, "item": item}),
+                    json!({"type": "response.completed", "response": {
+                        "id": "resp_mock", "model": UPSTREAM_MODEL, "status": "completed",
+                        "output": [item],
+                        "usage": {"input_tokens": 5, "output_tokens": 2, "total_tokens": 7}
+                    }}),
+                ];
+                let sse = events.iter().map(|event| {
+                    format!("event: {}\ndata: {event}\n\n", event["type"].as_str().unwrap())
+                }).collect::<String>();
+                ([(axum::http::header::CONTENT_TYPE, "text/event-stream")], sse)
+            }
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let task = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    MockResponsesWebSocket {
+        address,
+        handshakes: Arc::new(Mutex::new(Vec::new())),
+        requests,
+        task,
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires a local Codex CLI; isolated synthetic credentials and loopback mocks only"]
+async fn codex_cli_falls_back_to_http_for_unavailable_websocket_routes() {
+    for other_websocket_route in [false, true] {
+        let upstream = start_http_fallback_upstream().await;
+        let gateway = gateway_harness_with_controls(
+            &upstream,
+            None,
+            WebSocketControls {
+                channel_supported: false,
+                other_websocket_route,
+                ..WebSocketControls::default()
+            },
+        )
+        .await;
+        let directory = tempfile::tempdir().unwrap();
+        let home = directory.path().join("codex-home");
+        std::fs::create_dir(&home).unwrap();
+        std::fs::write(
+            home.join("config.toml"),
+            format!(
+                r#"
+model = "{CLIENT_MODEL}"
+model_provider = "gateway_mock"
+approval_policy = "never"
+sandbox_mode = "read-only"
+[model_providers.gateway_mock]
+name = "Loopback mock"
+base_url = "http://{}/v1"
+env_key = "GATEWAY_MOCK_KEY"
+wire_api = "responses"
+supports_websockets = true
+stream_max_retries = 1
+request_max_retries = 0
+"#,
+                gateway.server.address
+            ),
+        )
+        .unwrap();
+        let stdout_path = directory.path().join("stdout");
+        let stderr_path = directory.path().join("stderr");
+        let output_path = directory.path().join("answer");
+        let mut command = std::process::Command::new(
+            std::env::var_os("CODEX_BIN").unwrap_or_else(|| "codex".into()),
+        );
+        command
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .env("HOME", directory.path())
+            .env("CODEX_HOME", &home)
+            .env("GATEWAY_MOCK_KEY", CLIENT_KEY)
+            .current_dir(directory.path())
+            .args([
+                "exec",
+                "--ephemeral",
+                "--skip-git-repo-check",
+                "--output-last-message",
+            ])
+            .arg(&output_path)
+            .arg("Reply with MOCK_OK only. Do not call tools.")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::fs::File::create(&stdout_path).unwrap())
+            .stderr(std::fs::File::create(&stderr_path).unwrap());
+        let status = tokio::task::spawn_blocking(move || {
+            let mut child = command.spawn().expect("install Codex CLI or set CODEX_BIN");
+            let deadline = std::time::Instant::now() + Duration::from_secs(90);
+            loop {
+                if let Some(status) = child.try_wait().unwrap() {
+                    return status;
+                }
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("Codex did not finish loopback fallback within 90 seconds");
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        })
+        .await
+        .unwrap();
+        let diagnostic = std::fs::read_to_string(&stderr_path).unwrap();
+        assert!(
+            status.success(),
+            "Codex failed against loopback mocks: {diagnostic}"
+        );
+        assert!(
+            std::fs::read_to_string(&output_path)
+                .unwrap()
+                .contains("MOCK_OK")
+        );
+        assert!(
+            gateway.upgrade_attempts.load(Ordering::SeqCst) > 0,
+            "must attempt WS before falling back"
+        );
+        assert_eq!(
+            upstream.requests().len(),
+            1,
+            "exactly one HTTP request, no gateway replay"
+        );
+        assert_eq!(upstream.requests()[0].body["model"], UPSTREAM_MODEL);
+        let logs = gateway.logs.events();
+        let ws_logs = logs
+            .iter()
+            .filter(|event| event.request_protocol == RequestProtocol::WebSocket)
+            .collect::<Vec<_>>();
+        if other_websocket_route {
+            assert!(
+                !ws_logs.is_empty(),
+                "mixed capabilities must exercise the wrapped error path"
+            );
+            assert!(
+                ws_logs
+                    .iter()
+                    .all(|event| event.response_status_code == Some(426))
+            );
+        } else {
+            assert!(
+                ws_logs.is_empty(),
+                "rejected upgrade is not a logical request"
+            );
+        }
+        assert!(
+            logs.iter()
+                .any(|event| event.response_status_code == Some(200))
+        );
+    }
 }
