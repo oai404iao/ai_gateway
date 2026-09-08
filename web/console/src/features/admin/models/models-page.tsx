@@ -1,4 +1,5 @@
-import { useNavigate } from "react-router";
+import { useNavigate, useSearchParams } from "react-router";
+import { ConfigurationTableView, ConfigurationWorkbench } from "@/features/admin/model-setup/configuration-workbench";
 import { Calculator, Copy, Workflow } from "lucide-react";
 import { AdminListPage } from "@/features/admin/components/admin-list-page";
 import { Button } from "@/components/ui/button";
@@ -14,6 +15,13 @@ import {
 } from "@/features/admin/model-setup/model-setup-navigation";
 
 export function ModelsPage() {
+  const [params] = useSearchParams();
+  return params.get("mode") === "table"
+    ? <ConfigurationTableView lens="models"><ModelsTable /></ConfigurationTableView>
+    : <ConfigurationWorkbench lens="models" />;
+}
+
+function ModelsTable() {
   const navigate = useNavigate();
   const { data, isLoading, error } = useModels();
   const { t } = useI18n();

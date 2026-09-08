@@ -1,5 +1,6 @@
 import { type ReactNode, useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router";
+import { useNavigate, useSearchParams } from "react-router";
+import { ConfigurationTableView, ConfigurationWorkbench } from "@/features/admin/model-setup/configuration-workbench";
 import {
   CheckCheck,
   ChevronDown,
@@ -191,6 +192,13 @@ function StandardGroupCard({
 }
 
 export function ChannelsPage() {
+  const [params] = useSearchParams();
+  return params.get("mode") === "table"
+    ? <ConfigurationTableView lens="supply"><ChannelsTable /></ConfigurationTableView>
+    : <ConfigurationWorkbench lens="supply" />;
+}
+
+function ChannelsTable() {
   const navigate = useNavigate();
   const groups = useChannelGroups();
   const channels = useChannels();

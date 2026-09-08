@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate, useParams, useSearchParams } from "react-router";
+import { useParams, useSearchParams } from "react-router";
+import { useConfigurationDraft } from "@/features/admin/model-setup/use-configuration-draft";
+import { ConfigurationSaveBar } from "@/features/admin/model-setup/configuration-save-bar";
 import { Copy, RefreshCwIcon } from "lucide-react";
 import { z } from "zod";
 import { toast } from "sonner";
@@ -201,7 +203,6 @@ const empty: FormState = {
 export function ChannelDetailPage() {
   const { id = "" } = useParams();
   const isNew = id === "new";
-  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const copyFrom = isNew
     ? validResourceId(searchParams.get("copyFrom"))
@@ -227,6 +228,7 @@ export function ChannelDetailPage() {
   const { t } = useI18n();
   const [state, setState] = useState<FormState>(empty);
   const [submitting, setSubmitting] = useState(false);
+  const { dirty, markDirty, markSaved, navigate, navigationGuard } = useConfigurationDraft(submitting);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const modelPickerTriggerId = "channel-model-picker-trigger";
   const [discoveredModels, setDiscoveredModels] = useState<string[]>([]);
@@ -376,7 +378,10 @@ export function ChannelDetailPage() {
     t,
   ]);
 
-  const patch = (partial: Partial<FormState>) => setState((prev) => ({ ...prev, ...partial }));
+  const patch = (partial: Partial<FormState>) => {
+    markDirty();
+    setState((prev) => ({ ...prev, ...partial }));
+  };
 
   // When the group changes, align the channel format to the group's format.
   const selectedGroup = useMemo(
@@ -588,6 +593,7 @@ export function ChannelDetailPage() {
           test_model: parsed.data.test_model,
         };
         await create.mutateAsync(input);
+        markSaved();
         toast.success(t("Channel created"));
         navigate(returnTo, { replace: true });
       } else {
@@ -625,7 +631,9 @@ export function ChannelDetailPage() {
           input.upstream_api_key = parsed.data.upstream_api_key;
         }
         await update.mutateAsync({ input, ifMatch: etag });
+        markSaved();
         toast.success(t("Channel updated"));
+        if (searchParams.has("returnTo")) navigate(returnTo, { replace: true });
       }
     } catch (error) {
       if (error instanceof ApiError && error.isConflict) {
@@ -656,6 +664,18 @@ export function ChannelDetailPage() {
   return (
     <>
       <AdminDetailShell
+        configurationLens="supply"
+        navigationGuard={navigationGuard}
+        saving={submitting}
+        onBack={() => navigate(returnTo)}
+        actionBar={
+          <ConfigurationSaveBar dirty={dirty} saving={submitting} onCancel={() => navigate(returnTo)}>
+            <Button onClick={() => void submit()} disabled={submitting}>
+              {submitting ? <Spinner data-icon="inline-start" /> : null}
+              {isNew ? t("Create channel") : t("Save channel")}
+            </Button>
+          </ConfigurationSaveBar>
+        }
         title={
           copyFrom
             ? t("Copy supplier")
@@ -1228,14 +1248,6 @@ export function ChannelDetailPage() {
               </CardContent>
             </Card>
 
-            <Button
-              className="w-fit xl:col-span-2"
-              onClick={() => void submit()}
-              disabled={submitting}
-            >
-              {submitting ? <Spinner data-icon="inline-start" /> : null}
-              {isNew ? t("Create channel") : t("Save channel")}
-            </Button>
           </div>
         }
       />

@@ -111,6 +111,29 @@ docs/openapi/console-v1.yaml
   模型复制清空全局唯一的 `source_model_id`，并明确提示普通详情响应不包含的 `source_payload`
   不会复制。
 
+### 配置工作台
+
+模型配置侧边栏入口默认打开 `/admin/routing/model-rules`。三个列表路由复用
+`model-setup/configuration-workbench.tsx`，分别是客户端路由、渠道供给和模型价格视角，
+而不是按数据库资源排列的多个折叠列表：
+
+- 桌面左侧是可搜索、按格式或供应商筛选的分页目录，右侧是请求路径和关联资源面板；
+  窄屏在目录和选中面板之间切换。目录每页 24 项，单组渠道每页 8 项。
+- `q`、`facet`、`state`、`page`、`selected` 保存在 URL；资源间关联跳转用 UUID 定位。
+  失效的显式选择显示不可用提示，不能静默展示另一个资源。
+- `configuration-graph.ts` 只推导资源引用关系。路由状态和可路由渠道计数使用 API 返回值，
+  不把模型能力列表或本地开关推断为实时健康。`all` 和 `selected` 目标必须区别处理。
+- 同一 Codex pool 在目录中合并，但 Responses/Images group 的开关、能力和路由分别展示；
+  凭据仍进入专用管理页面，普通 Channel 的复制和批量操作不能编辑托管凭据。
+- `?mode=table` 是显式的表格/批量工具；保留批量渠道编辑、恢复、组禁用和规则快速添加。
+  `/admin/model-setup` 保留为创建流程向导，不再充当日常配置总览。
+- 渠道组、渠道、模型、规则编辑器使用统一双栏详情和 sticky 操作栏；价格编辑器保留专用
+  计算布局。通过工作台进入的编辑器保存成功后返回经过校验的 `returnTo`，保持原筛选和选择；
+  每次保存仍只提交一个既有资源，没有跨资源原子保存。
+- 生产使用 data router 的 `useBlocker` 保护 PUSH/REPLACE/浏览器 POP；表单草稿不持久化。
+  Declarative `AppRouter` 留给组件测试，fallback 保护应用链接和返回操作；真正的 POP
+  保护由 `e2e/configuration-workbench.spec.ts` 验证。页面刷新/关闭由 `beforeunload` 保护。
+
 ## 7. 开发与生产运行
 
 开发模式：

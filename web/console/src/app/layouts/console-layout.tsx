@@ -1,5 +1,5 @@
 import { Suspense } from "react";
-import { NavLink, Outlet, useNavigate } from "react-router";
+import { NavLink, Outlet, useLocation, useNavigate } from "react-router";
 import { LogOut, Moon, Sun, Monitor, ChevronDown, User } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -138,6 +138,7 @@ function UserMenu() {
 
 export function ConsoleLayout() {
   const { user } = useSession();
+  const { pathname } = useLocation();
   const { t } = useI18n();
   const sections = visibleSections(user?.role ?? null);
 
@@ -154,6 +155,12 @@ export function ConsoleLayout() {
                   {section.items.map((item) => (
                     <SidebarMenuItem key={item.path}>
                       <SidebarMenuButton
+                        isActive={item.label === "Model configuration" && (
+                          pathname.startsWith("/admin/routing/") ||
+                          pathname.startsWith("/admin/models") ||
+                          pathname.startsWith("/admin/model-setup") ||
+                          pathname.startsWith("/admin/providers/codex-oauth")
+                        )}
                         render={<NavLink to={item.path} end={item.end} />}
                       >
                         <item.icon />

@@ -1,5 +1,14 @@
-import { lazy } from "react";
-import { Link, Navigate, Outlet, Route, Routes } from "react-router";
+import { lazy, useState } from "react";
+import {
+  Link,
+  Navigate,
+  Outlet,
+  Route,
+  Routes,
+  RouterProvider,
+  createBrowserRouter,
+  createRoutesFromElements,
+} from "react-router";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/shared/empty-state";
 import { useI18n } from "@/app/i18n";
@@ -253,9 +262,9 @@ function NotFound() {
   );
 }
 
-export function AppRouter() {
+function appRouteElements() {
   return (
-    <Routes>
+    <>
       <Route element={<AuthLayout />}>
         <Route path="/login" element={<LoginPage />} />
         <Route path="/register" element={<RegisterPage />} />
@@ -362,6 +371,17 @@ export function AppRouter() {
           </Route>
         </Route>
       </Route>
-    </Routes>
+    </>
   );
+}
+
+export function AppRouter() {
+  return <Routes>{appRouteElements()}</Routes>;
+}
+
+export function AppRouterProvider() {
+  const [router] = useState(() =>
+    createBrowserRouter(createRoutesFromElements(appRouteElements())),
+  );
+  return <RouterProvider router={router} />;
 }

@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
-import { useNavigate, useParams, useSearchParams } from "react-router";
+import { useParams, useSearchParams } from "react-router";
+import { useConfigurationDraft } from "@/features/admin/model-setup/use-configuration-draft";
+import { ConfigurationSaveBar } from "@/features/admin/model-setup/configuration-save-bar";
 import { z } from "zod";
 import { toast } from "sonner";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -72,7 +74,6 @@ const empty: FormState = {
 export function ChannelGroupDetailPage() {
   const { id = "" } = useParams();
   const isNew = id === "new";
-  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const returnTo = safeAdminReturnPath(
     searchParams.get("returnTo"),
@@ -85,6 +86,7 @@ export function ChannelGroupDetailPage() {
   const { t } = useI18n();
   const [state, setState] = useState<FormState>(empty);
   const [submitting, setSubmitting] = useState(false);
+  const { dirty, markDirty, markSaved, navigate, navigationGuard } = useConfigurationDraft(submitting);
   const [validation, setValidation] = useState<z.ZodError | null>(null);
 
   useEffect(() => {
@@ -100,7 +102,10 @@ export function ChannelGroupDetailPage() {
     }
   }, [data]);
 
-  const patch = (partial: Partial<FormState>) => setState((prev) => ({ ...prev, ...partial }));
+  const patch = (partial: Partial<FormState>) => {
+    markDirty();
+    setState((prev) => ({ ...prev, ...partial }));
+  };
 
   const submit = async () => {
     const parsed = schema.safeParse(state);
@@ -121,11 +126,14 @@ export function ChannelGroupDetailPage() {
     try {
       if (isNew) {
         await create.mutateAsync(input);
+        markSaved();
         toast.success(t("Channel group created"));
         navigate(returnTo, { replace: true });
       } else {
         await update.mutateAsync({ input, ifMatch: etag });
+        markSaved();
         toast.success(t("Channel group updated"));
+        if (searchParams.has("returnTo")) navigate(returnTo, { replace: true });
       }
     } catch (error) {
       if (error instanceof ApiError && error.isConflict) {
@@ -145,6 +153,18 @@ export function ChannelGroupDetailPage() {
 
   return (
     <AdminDetailShell
+      configurationLens="supply"
+      navigationGuard={navigationGuard}
+      saving={submitting}
+      onBack={() => navigate(returnTo)}
+      actionBar={
+        <ConfigurationSaveBar dirty={dirty} saving={submitting} onCancel={() => navigate(returnTo)}>
+          <Button onClick={submit} disabled={submitting}>
+            {submitting ? <Spinner data-icon="inline-start" /> : null}
+            {isNew ? t("Create group") : t("Save group")}
+          </Button>
+        </ConfigurationSaveBar>
+      }
       title={isNew ? t("New channel group") : state.name || t("Channel group")}
       description={t("A same-format pool of upstream channels.")}
       backPath={returnTo}
@@ -327,10 +347,6 @@ export function ChannelGroupDetailPage() {
                   />
                 </Field>
               </FieldGroup>
-              <Button className="self-start" onClick={submit} disabled={submitting}>
-                {submitting ? <Spinner data-icon="inline-start" /> : null}
-                {isNew ? t("Create group") : t("Save group")}
-              </Button>
               {!isNew && data?.data.connector_kind === "codex_oauth" ? (
                 <Button
                   className="self-start"

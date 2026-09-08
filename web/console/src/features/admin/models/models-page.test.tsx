@@ -22,7 +22,7 @@ describe("ModelsPage", () => {
   it("provides a direct pricing action without opening the general model editor", async () => {
     seedAuthenticatedSession();
     const user = userEvent.setup();
-    renderAppAt("/admin/models");
+    renderAppAt("/admin/models?mode=table");
 
     await user.click(
       await screen.findByRole("button", { name: /configure pricing/i }),
