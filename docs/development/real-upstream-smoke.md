@@ -107,6 +107,31 @@ complete successfully and retain usage in their terminal request logs.
 
 ## Safety and scope
 
+### Optional local Codex fallback compatibility
+
+This separate, manually selected integration test uses an installed Codex CLI
+(`codex`, or `CODEX_BIN`) against loopback Gateway/upstream fixtures only:
+
+```bash
+cargo test --locked --test websocket_integration \
+  codex_cli_falls_back_to_http_for_unavailable_websocket_routes -- --ignored --exact
+```
+
+It creates disposable `HOME`/`CODEX_HOME` directories, clears inherited
+environment settings, supplies a synthetic API key, and returns fixed mock
+responses without tool calls. It does not use real upstream credentials, contact a paid
+provider, or replace the mandatory real-upstream smoke for forwarding changes.
+The child has a bounded lifetime and is killed/reaped on timeout.
+
+Verified with Codex CLI 0.130.0: an HTTP-only authorized scope gets HTTP 426
+during upgrade; a mixed-capability scope upgrades, then rejects the HTTP-only
+model with a wrapped 426 error. Both must attempt WS, complete via exactly one
+mock HTTP request, and preserve matching request-log statuses. Ordinary Rust CI
+ignores this test because it does not install Codex; deterministic Gateway
+protocol/authorization/health tests remain part of `websocket_integration`.
+
+### Paid smoke boundaries
+
 - Use a dedicated credential with a strict spending cap, model allowlist, and
   rate limit. Never use a production credential.
 - The five baseline test cases run serially. In the default

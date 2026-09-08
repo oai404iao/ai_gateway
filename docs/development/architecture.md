@@ -94,7 +94,8 @@ Browser or Console client
    实际模型兼容候选，并依次应用 operation capability、Session 粘性、规则中最低可用
    `priority` tier 和被动健康过滤。权重只比较该 tier 内仍然合格的渠道，不跨 tier 比较；
    API Key 的 group/channel 授权仍与此前相同，模型规则的 `all` target 不会扩大 Key 的授权
-   范围。授权范围内没有可选候选时返回 `503 no_healthy_channel`。
+   范围。HTTP 授权范围内没有可选候选时返回 `503 no_healthy_channel`；
+   Responses WS 使用下文的 `426 websocket_unavailable` 回退提示。
    `/v1/models` 额外要求 API Key 范围与模型兼容位图相交，所以不公布断开规则。
    Standalone web search 只允许
    `supports_standalone_web_search = true` 的 Responses 渠道。
@@ -254,6 +255,14 @@ WebSocket 身份，不做请求多路复用。每个成功请求结束后，上�
 管理员系统负载快照中。
 关闭流程单独跟踪 Axum Upgrade 后的任务：停止新 Upgrade 并清空空闲池，允许当前逻辑请求在全局
 grace period 内完成，截止时强制取消，避免 Upgrade 脱离 Hyper connection tracker 后绕过进程排空。
+
+握手还执行只读 WS 可用性预检：在同一不可变快照内检查 API Key 可访问的 Responses 路由及其候选、
+显式 WS 能力和实时被动健康，不占用 lease/半开探针、不推进轮转/粘性状态、不进行数据库或上游调用。
+全部无可选 WS 路由时拒绝 Upgrade 并返回 HTTP `426 websocket_unavailable`。模型直到
+`response.create` 才确定；混合能力场景或连接后可用性变化造成该模型没有 WS 候选时，返回带
+`status: 426` 的错误帧并记录同码请求日志。HTTP 的 `503 no_healthy_channel`、
+鉴权/准入错误和消息阶段的 `404 model_not_found` 保持不变。该兼容提示由 Codex 在客户端执行
+HTTP fallback，不能成为 Gateway 对已派发消息自动重放的依据。
 
 ## 重试与 Streaming 边界
 

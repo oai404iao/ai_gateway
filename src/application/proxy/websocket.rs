@@ -103,6 +103,14 @@ impl ProxyService {
         let mut request_headers =
             filter_client_headers(RequestInterface::ResponsesWebSocket, headers)
                 .map_err(ProxyError::request_policy)?;
+        // The model arrives only in response.create. Reject the upgrade early
+        // only when none of this key's authorized Responses routes can use WS.
+        if !self
+            .routing
+            .has_available_websocket_route(&snapshot, &api_key)
+        {
+            return Err(ProxyError::websocket_unavailable());
+        }
         let identity_headers = forward_websocket_request_headers(&request_headers);
         request_headers.remove(AUTHORIZATION);
         request_headers.remove(PROXY_AUTHORIZATION);
@@ -442,15 +450,10 @@ impl ResponsesWebSocketSession {
                     started_wall_at,
                     started_at,
                 );
-                send_error(
-                    client,
-                    503,
-                    "api_error",
-                    "no_healthy_channel",
-                    "No healthy upstream channel is currently available for this model.",
-                    None,
-                )
-                .await;
+                // A 503 wrapped event is treated as terminal server overload
+                // by Codex. 426 remains a transport failure, allowing its WS
+                // retry budget to reach HTTP fallback without replaying here.
+                send_proxy_error(client, ProxyError::websocket_unavailable()).await;
                 return SessionAction::Close;
             }
         };

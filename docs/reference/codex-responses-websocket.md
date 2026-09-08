@@ -2,7 +2,7 @@
 
 > 类型：外部实现参考，不是 `ai-gateway` 行为契约。
 >
-> 最近核对：2026-08-02。
+> 最近核对：2026-08-02；HTTP fallback 补充核对：2026-09-08（Codex CLI 0.130.0）。
 >
 > 参考版本：[`openai/codex@aa064463458adbef10400c74174107fc4b3550f0`](https://github.com/openai/codex/tree/aa064463458adbef10400c74174107fc4b3550f0)。
 >
@@ -141,6 +141,23 @@ Codex 区分两种提前工作：
 
 这些重试发生在 Codex 客户端。服务端网关不能在已经发送 `response.create` 后再自动复制请求，否则
 可能产生重复生成。
+
+### Codex 0.130.0 的无可用 WS 路由兼容
+
+补充来源：[客户端 fallback 分支](https://github.com/openai/codex/blob/rust-v0.130.0/codex-rs/core/src/client.rs)
+和 [错误可重试分类](https://github.com/openai/codex/blob/rust-v0.130.0/codex-rs/protocol/src/error.rs)。
+这次补充不更新上文基于固定 commit 的其他行为假设。
+
+握手返回 HTTP 426 时，Codex 直接切换到 HTTP。升级后的错误帧即使包含 `status: 426`，
+也不是握手拒绝；它按流传输错误消耗重试预算，再触发 Session 级 HTTP fallback。不能宣称给
+任意 WS 错误增加 426 就能立即回退。503 被映射为不可重试的服务过载，因此不适合作为网关
+“当前模型没有 WS 渠道”的回退提示。
+
+网关在已授权范围内完全没有可选 WS 路由时拒绝握手；模型只能在首条消息中确定时，发送
+`websocket_unavailable` 的 426 错误帧。实际 Codex CLI 0.130.0 已通过本地兼容测试：
+两条路径都最终生成一次 HTTP 请求，且网关不做请求重放。命令和隔离条件见
+[真实上游与客户端兼容测试](../development/real-upstream-smoke.md)；
+网关错误契约见 [操作说明](../user/operations.md)。
 
 ## 代理和 TLS
 
