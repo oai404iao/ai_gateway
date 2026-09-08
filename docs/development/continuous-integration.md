@@ -7,12 +7,21 @@
 `.github/workflows/ci.yml` 对每个 Pull Request 和 `main` push 运行，并始终
 生成稳定的 `ci-gate` 检查。`scripts/ci-changed-areas.sh` 根据变更路径选择门禁：
 
-- Markdown、`docs/`、Agent 指令和 `.gitignore` 等安全仓库元数据运行文档检查。
-- Rust、migration、测试和 workspace 文件运行固定的 Rust 工具链门禁。
-- `web/console/` 和 Console OpenAPI 变更运行类型检查、lint、组件测试、构建与
-  Playwright E2E。
-- 生产源码、Console、Docker 和部署材料变更运行容器构建与 `--version` smoke。
-- `.github/`、`scripts/` 或未知路径采用保守策略，运行全部门禁。
+| 变更路径 | 分类输出 |
+| --- | --- |
+| Markdown、普通 `docs/`、Agent 指令和 `.gitignore` | `docs` |
+| `src/`、`tests/`、`migrations/`、`tools/` | `rust` |
+| `Cargo.toml`、`Cargo.lock`、`rust-toolchain.toml` | `rust`、`image` |
+| `web/console/package.json`、`web/console/pnpm-lock.yaml`、`web/console/pnpm-workspace.yaml` | `console`、`image` |
+| 其余 `web/console/` | `console` |
+| `Dockerfile`、`.dockerignore`、`docker-compose*.yml`、`config.example.toml`、`deploy/`、`LICENSE`、`LICENSES/` | `image` |
+| Console OpenAPI、`.github/`、`scripts/` 或未知路径 | 全部门禁 |
+
+这里的 `image` 输出标记会改变镜像依赖层或构建配方的路径；保守的“全部门禁”
+路径也会设置该输出。Pull Request 仅在 `image` 为 `true` 时运行 release Docker
+构建与 `--version` smoke，因此纯 Rust 或 Console 源码变更不再重复构建镜像。
+`main` push 则在 `image`、`rust` 或 `console` 任一输出为 `true` 时运行 image
+job，继续对每个影响可执行产物的合并提交验证可交付镜像。
 
 CI 和 Security 的 Pull Request 触发器显式只接受 `opened`、`synchronize` 和
 `reopened`。合并产生的 `closed` 事件不运行 PR 门禁：Squash merge 后源分支可能
@@ -26,7 +35,7 @@ CI 和 Security 的 Pull Request 触发器显式只接受 `opened`、`synchroniz
 image job。
 
 Docker image job 只依赖快速的路径分类，与 Rust、Console 和 E2E 并行运行。
-最终 `ci-gate` 只接受 `success` 或因路径无关而产生的 `skipped` 结果。
+最终 `ci-gate` 只接受 `success` 或因事件/路径无关而产生的 `skipped` 结果。
 
 ## 并发策略
 
@@ -63,9 +72,12 @@ Pull Request 只能恢复默认分支或 Release 已有 cache，不能创建 cac
 
 只有 `main` 相关 workflow 可以写入 cache。固定 Rust job 使用 `stable` shared
 key；普通 CI 写入 `ci-image-amd64`，独立的
-`.github/workflows/release-image-cache.yml` 对 image 相关的 `main` 变更异步写入
-`release-image-arm64`。Tag-triggered Release 只恢复这些 cache，避免在发布关键
-路径上传大型 `mode=max` cache。Pull Request 仍然只能恢复 cache。
+`.github/workflows/release-image-cache.yml` 只在分类器的 `image` 输出为 `true`
+时异步写入 `release-image-arm64`。因此普通 Rust/Console 源码合并仍由 AMD64
+image job 验证，但不会启动 ARM64 预热；依赖清单、工具链、Console 包管理文件、
+Docker/部署配方和保守的全门禁路径变化仍会预热。Tag-triggered Release 只恢复这些
+cache，避免在发布关键路径上传大型 `mode=max` cache。Pull Request 仍然只能恢复
+cache。
 
 Docker planner 在 cargo-chef recipe 生成前将 workspace 自身版本规范化为固定值；
 发布版本号变化不会再使完整 Rust 依赖层失效。

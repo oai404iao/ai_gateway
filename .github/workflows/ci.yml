@@ -93,7 +93,13 @@ jobs:
 
   image:
     name: image
-    if: ${{ needs.changes.outputs.image == 'true' }}
+    if: >-
+      ${{ (github.event_name == 'push'
+           && (needs.changes.outputs.image == 'true'
+               || needs.changes.outputs.rust == 'true'
+               || needs.changes.outputs.console == 'true'))
+          || (github.event_name == 'pull_request'
+              && needs.changes.outputs.image == 'true') }}
     needs: changes
     runs-on: ubuntu-24.04
     timeout-minutes: 60
