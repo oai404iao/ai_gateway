@@ -24,6 +24,8 @@
 
 - [持续集成与安全扫描](continuous-integration.md)：路径感知门禁、稳定
   `ci-gate`、cache 写入边界、Playwright、CodeQL 与默认分支 ruleset。
+- [安全告警核查与处置](security-alert-triage.md)：逐条 CodeQL 核查证据、测试用途与误报边界，
+  以及必须重新评估的条件。
 - [Rust 单工具链策略](rust-toolchain-policy.md)：固定开发、CI、Release 和容器
   构建使用的同一版本，并定义协调升级门禁。
 - [真实上游 smoke test](real-upstream-smoke.md)：付费、显式执行的转发验证。

@@ -9,6 +9,9 @@ Versioning.
 
 ### Security
 
+- Stop including synthetic fixture secrets in audit-test failure messages,
+  add batch-input limit regression coverage, and record per-alert CodeQL
+  triage evidence without weakening the scan configuration.
 - Update Console transitive dependency overrides for `fast-uri` to 3.1.6,
   `hono` to 4.13.5, and `js-yaml` to 4.3.2, addressing seven dependency
   advisories involving URL interpretation, output paths, and YAML resource
