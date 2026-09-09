@@ -251,6 +251,36 @@ mod tests {
     }
 
     #[test]
+    fn retired_adapter_journals_replay_as_client_requests() {
+        let id = Uuid::new_v4();
+        let mut payload: serde_json::Value = serde_json::from_slice(&usage_payload(
+            id,
+            Some("non_stream"),
+            Some("chat_completions"),
+            false,
+        ))
+        .unwrap();
+        payload["request_source"] = serde_json::json!("mcp");
+        for schema_version in [2, 3, 4, 5, super::REQUEST_LOG_SCHEMA_VERSION] {
+            let event = EncodedRequestLog {
+                request_log_id: id,
+                schema_version,
+                payload: serde_json::to_vec(&payload).unwrap(),
+            }
+            .decode()
+            .unwrap();
+            assert_eq!(event.request_source, RequestLogSource::Client);
+            let encoded = EncodedRequestLog::encode(&event).unwrap();
+            let payload: serde_json::Value = serde_json::from_slice(&encoded.payload).unwrap();
+            assert_eq!(payload["request_source"], "client");
+            assert_eq!(
+                encoded.decode().unwrap().request_source,
+                RequestLogSource::Client
+            );
+        }
+    }
+
+    #[test]
     fn rejects_current_schema_payloads_without_a_request_protocol() {
         let id = Uuid::new_v4();
         let error = EncodedRequestLog {
@@ -301,32 +331,6 @@ mod tests {
         .unwrap_err();
 
         assert!(matches!(error, JournalCodecError::Deserialize(_)));
-    }
-
-    #[test]
-    fn current_schema_round_trips_mcp_request_sources() {
-        let id = Uuid::new_v4();
-        let mut value: serde_json::Value = serde_json::from_slice(&usage_payload(
-            id,
-            Some("non_stream"),
-            Some("chat_completions"),
-            false,
-        ))
-        .unwrap();
-        value.as_object_mut().unwrap().insert(
-            "request_source".into(),
-            serde_json::Value::String("mcp".into()),
-        );
-        let encoded = EncodedRequestLog {
-            request_log_id: id,
-            schema_version: super::REQUEST_LOG_SCHEMA_VERSION,
-            payload: serde_json::to_vec(&value).unwrap(),
-        };
-
-        assert_eq!(
-            encoded.decode().unwrap().request_source,
-            RequestLogSource::Mcp
-        );
     }
 
     #[test]

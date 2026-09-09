@@ -18,14 +18,6 @@ Responses、standalone web search、Images generation 与 Images edit。Standalo
 复用 `OpenAiResponses` 路由与授权维度，但拥有独立 capability、请求契约、目标路径和日志
 operation；当前 Images 实现非流式 JSON generation 和非流式 multipart edit。
 
-可选 `mcp-server` feature 不是第四种数据面格式。它在公共 listener 上提供
-`/mcp/{slug}` transport；默认使用无状态 `2026-07-28` POST，可选兼容完整
-`2025-11-25` Session/SSE，并接受 Codex 旧版模式使用的 `2025-06-18` 协商。当前
-`web_search` kind 把 `web.run` 参数编译为
-`ApiOperation::StandaloneWebSearch`，`image` kind 把 `image_gen.imagegen` 参数编译为
-`ApiOperation::ImagesGeneration` 或 `ApiOperation::ImagesEdit`，随后进入同一认证后 Proxy
-执行核心。
-
 客户端 API 格式与上游接入方式是两个维度。Channel Group 另有
 `ConnectorKind`：普通渠道使用 `openai_compatible`，Codex 订阅凭证使用
 `codex_oauth`；后者可投影为 `OpenAiResponses` 与 `OpenAiImages` 渠道，但不会新增
@@ -44,14 +36,6 @@ OpenAI-compatible client
   -> reusable reqwest client or pinned Responses WebSocket
   -> streamed HTTP/SSE response or WebSocket events
   -> durable asynchronous request logging and settlement
-
-MCP client
-  -> optional public /mcp/{slug}
-  -> Host / Origin / MCP metadata validation
-  -> API-key authentication and immutable MCP registry lookup
-  -> built-in web.run or image_gen.imagegen adapter
-  -> authenticated standalone-search or Images generation/edit Proxy execution
-  -> bounded MCP CallToolResult
 
 Browser or Console client
   -> HTTPS reverse proxy
@@ -143,33 +127,6 @@ Browser or Console client
 解码或渠道组请求压缩时，原始请求字节保持不变。`POST /v1/responses` 另外接受客户端
 `Content-Encoding: zstd`；网关先在配置的 JSON 请求上限内解码，再执行解析、白名单与路由。
 其他 JSON 接口只接受 identity。普通响应不会为了 usage 采集而整体缓冲。
-
-### MCP adapter
-
-`src/mcp/mod.rs` 使用 feature-gated `rmcp` Streamable HTTP transport。每个请求只获取一次
-`ArcSwap` 快照并认证一次 Gateway API Key，然后把 `CompiledMcpServer`、`CompiledApiKey` 和同一
-快照放入 request extension。`src/mcp/search.rs` 只负责静态 `web.run` schema、typed validation、
-显式 `search_session_id`、域名策略和 Search body/result 映射；它不查询 PostgreSQL、不回环
-HTTP，也不保存 MCP Session。`src/mcp/image.rs` 提供静态 `image_gen.imagegen`
-generation/edit schema：无引用时编译 JSON generation；有引用时验证最多五个显式
-PNG/JPEG/WebP base64 data URL，并逐块解码为既有 replayable multipart edit。两种操作都固定
-实例的模型、background、quality、size 和单图 PNG/base64 输出，并返回带
-`codex/imageDetail = original` 的 MCP `ImageContent`；它不抓取远程 URL，也不保存图片或服务端文件。
-
-启用的 MCP 定义随其他控制面记录编译进按 slug 索引的不可变 registry。数据库不能上传任意工具
-代码或 schema；`kind` 只选择二进制中已链接的实现。全局 MCP transport 设置同样存入
-`system_settings` 并随快照热更新；TOML 只在该节首次缺失时引导。默认只支持
-`2026-07-28` 每请求 metadata，不发 `Mcp-Session-Id`。开启
-`allow_legacy_2025_11_25` 后，RMCP 同时提供 `initialize` / `notifications/initialized`、
-`Mcp-Session-Id`、请求级/独立 GET SSE 和 DELETE；它协商 `2025-11-25`，也接受 Codex
-旧版模式固定发送的 `2025-06-18`。现代请求仍无状态。旧 Session 使用进程内
-`LocalSessionManager`，设置变更、关闭或重启会终止，集群部署必须在入口层保持粘性路由。
-
-Search 使用普通 MCP envelope 上限；Image endpoint 使用独立 inline-edit envelope 上限。
-Images 输入还限制单图/解码总字节，Search 与 Images 结果分别按独立上限有界收集。底层转发
-日志使用 `request_source = "mcp"`，但不保存 tool arguments、prompt、图片字节或结果。无论
-是否存在旧协议 Session，Search ref-id 和 Images edit 输入都保持显式无状态，不读取 Session
-历史。
 
 ### Images edit replayable body
 
@@ -283,8 +240,6 @@ HTTP fallback，不能成为 Gateway 对已派发消息自动重放的依据。
 ## 控制面与一致性
 
 动态配置保存在 PostgreSQL。Console 写操作在事务中完成授权、候选配置校验、审计和提交；提交成功后立即编译并发布新的不可变快照。周期 worker 负责从数据库重新加载，以覆盖进程间或外部变更。
-全局 MCP transport 的 enable、公开 origin、浏览器 origin、协议兼容和大小限制也属于该
-`system_settings` 快照；`mcp-server` Cargo feature 仍是构建时边界，不能通过数据库动态加载。
 
 数据面不会为每个请求查询 PostgreSQL。用户 WebSocket 偏好和渠道 WebSocket 能力随完整控制面快照
 编译并原子发布；Connector 动态凭证从独立不可变快照读取。进程内限流、被动健康、in-flight、
@@ -367,7 +322,6 @@ generation/edit 可以保持独立观测和迁移兼容性。
 | --- | --- |
 | 支持的 API 格式 | `src/domain/api_format.rs` |
 | 公共路由 | `src/http/mod.rs` |
-| 可选 MCP transport 与 Search/Images adapters | `src/mcp/mod.rs`、`src/mcp/search.rs`、`src/mcp/image.rs` |
 | Images multipart/replay | `src/application/request_body.rs` |
 | Responses WebSocket 转发与连接池 | `src/application/proxy/websocket.rs`、`src/upstream/websocket.rs` |
 | Upstream Connector registry | `src/application/connector.rs` |

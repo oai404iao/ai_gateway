@@ -9,6 +9,12 @@ Versioning.
 
 ### Changed
 
+- Split Console system settings into expandable sidebar categories with
+  deep links and isolated forms.
+- Remove MCP endpoints, adapters, Console management, runtime settings, and
+  build dependencies. Migration 0053 removes definitions and settings while
+  retaining historical usage as client requests; old durable logs remain
+  replayable. Standalone search and Images HTTP endpoints are unchanged.
 - Return `426 websocket_unavailable` when Responses has no eligible WebSocket
   route, allowing Codex HTTP fallback instead of terminal server-overload
   errors. Reject upgrades early when the API key has no available WS route;

@@ -804,7 +804,6 @@ mod tests {
                     enabled: true,
                 }],
                 templates: vec![],
-                mcp_servers: vec![],
             },
             SystemRuntimeSettings::new(defaults, PassiveHealthSettings::default()),
         )

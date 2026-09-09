@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Navigate, useParams } from "react-router";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
@@ -36,6 +37,7 @@ import { useReload, useSystemSettings, useUpdateSystemSettings } from "@/feature
 import { SessionAffinityCard } from "@/features/admin/system/session-affinity-card";
 import { useI18n } from "@/app/i18n";
 import type { ScheduledTestingMode, SystemSettingsInput } from "@/api/types";
+import { SETTINGS_SECTIONS, type SettingsSection } from "./settings-sections";
 
 function statusCodesAreValid(value: string): boolean {
   const codes = value
@@ -55,31 +57,6 @@ function parseStatusCodes(value: string): number[] {
     .map((code) => code.trim())
     .filter(Boolean)
     .map(Number);
-}
-
-function isHttpOrigin(value: string): boolean {
-  try {
-    const url = new URL(value);
-    return (
-      (url.protocol === "http:" || url.protocol === "https:") &&
-      Boolean(url.hostname) &&
-      !url.username &&
-      !url.password &&
-      url.pathname === "/" &&
-      !url.search &&
-      !url.hash
-    );
-  } catch {
-    return false;
-  }
-}
-
-function canonicalHttpOrigin(value: string): string {
-  try {
-    return new URL(value).origin;
-  } catch {
-    return value;
-  }
 }
 
 function isHttpsRepositoryUrl(value: string): boolean {
@@ -298,45 +275,6 @@ const systemSettingsSchema = z
         .max(1024, "Codex User-Agent must be at most 1024 characters.")
         .refine(isPrintableHttpHeaderValue, "Use printable ASCII HTTP header characters."),
     }),
-    mcp: z.object({
-      enabled: z.boolean(),
-      public_base_url: z
-        .string()
-        .trim()
-        .max(2048, "MCP public base URL must be at most 2048 characters.")
-        .refine(
-          (value) => value.length === 0 || isHttpOrigin(value),
-          "Enter a valid HTTP(S) origin without a path.",
-        ),
-      allowed_origins: z
-        .array(
-          z
-            .string()
-            .trim()
-            .min(1, "MCP origin cannot be blank.")
-            .max(2048, "MCP origin must be at most 2048 characters.")
-            .refine(isHttpOrigin, "Enter a valid HTTP(S) origin without a path."),
-        )
-        .max(64, "Configure at most 64 MCP browser origins.")
-        .refine(
-          (origins) =>
-            new Set(origins.map(canonicalHttpOrigin)).size === origins.length,
-          "MCP browser origins must be unique.",
-        ),
-      allow_legacy_2025_11_25: z.boolean(),
-      request_body_bytes: z.number().int().min(1, "Enter a positive byte limit."),
-      image_request_body_bytes: z
-        .number()
-        .int()
-        .min(1, "Enter a positive byte limit.")
-        .max(67_108_864, "Images MCP request limit cannot exceed 67108864 bytes."),
-      search_result_bytes: z.number().int().min(1, "Enter a positive byte limit."),
-      image_result_bytes: z
-        .number()
-        .int()
-        .min(1, "Enter a positive byte limit.")
-        .max(67_108_864, "Images MCP result limit cannot exceed 67108864 bytes."),
-    }),
   })
   .superRefine((value, context) => {
     if (value.upstream.response_header_timeout_seconds <= value.upstream.connect_timeout_seconds) {
@@ -374,13 +312,6 @@ const systemSettingsSchema = z
         code: z.ZodIssueCode.custom,
         path: ["websocket", "max_connection_age_seconds"],
         message: "Maximum WebSocket age must exceed the idle timeout.",
-      });
-    }
-    if (value.mcp.enabled && value.mcp.public_base_url.length === 0) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["mcp", "public_base_url"],
-        message: "MCP public base URL is required when the transport is enabled.",
       });
     }
   });
@@ -434,19 +365,16 @@ const defaultValues: SystemSettingsValues = {
     client_version: "0.146.0",
     user_agent: "codex_cli_rs/0.146.0",
   },
-  mcp: {
-    enabled: false,
-    public_base_url: "",
-    allowed_origins: [],
-    allow_legacy_2025_11_25: false,
-    request_body_bytes: 4_194_304,
-    image_request_body_bytes: 33_554_432,
-    search_result_bytes: 4_194_304,
-    image_result_bytes: 33_554_432,
-  },
 };
 
 export function SystemPage() {
+  const { section } = useParams();
+  const selected = SETTINGS_SECTIONS.find((item) => item.id === section);
+  if (!selected) return <Navigate to="/admin/system/general" replace />;
+  return <SystemSettingsForm key={selected.id} section={selected.id} label={selected.label} />;
+}
+
+function SystemSettingsForm({ section, label }: { section: SettingsSection; label: string }) {
   const { t } = useI18n();
   const settings = useSystemSettings();
   const updateSettings = useUpdateSystemSettings();
@@ -473,10 +401,6 @@ export function SystemPage() {
         session_affinity: settings.data.data.session_affinity,
         websocket: settings.data.data.websocket,
         codex: settings.data.data.codex,
-        mcp: {
-          ...settings.data.data.mcp,
-          public_base_url: settings.data.data.mcp.public_base_url ?? "",
-        },
       });
     }
   }, [form, settings.data]);
@@ -500,10 +424,6 @@ export function SystemPage() {
         session_affinity: values.session_affinity,
         websocket: values.websocket,
         codex: values.codex,
-        mcp: {
-          ...values.mcp,
-          public_base_url: values.mcp.public_base_url || null,
-        },
       };
       const result = await updateSettings.mutateAsync({
         input,
@@ -514,6 +434,7 @@ export function SystemPage() {
     } catch (error) {
       if (error instanceof ApiError && error.isConflict) {
         toast.error(t("System settings changed elsewhere. Reloading."));
+        await settings.refetch();
       } else {
         toast.error(error instanceof Error ? error.message : t("Save failed"));
       }
@@ -533,24 +454,25 @@ export function SystemPage() {
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
-        title={t("System settings")}
+        title={`${t("System settings")} · ${t(label)}`}
         description={t("Database-backed runtime settings for future requests.")}
       />
-      <Alert>
+      {section !== "maintenance" ? <Alert>
         <AlertTitle>{t("Applies immediately")}</AlertTitle>
         <AlertDescription>
           {t(
             "Saving validates the full routing configuration and publishes a new runtime snapshot. Requests already in flight retain their original settings.",
           )}
         </AlertDescription>
-      </Alert>
+      </Alert> : null}
       <AsyncResource isLoading={settings.isLoading} error={settings.error}>
-        {settings.data ? (
+        {settings.data && section !== "maintenance" ? (
           <form
             data-slot="system-settings-columns"
             onSubmit={form.handleSubmit(save)}
-            className="grid items-start gap-6 xl:grid-cols-2"
+            className="flex flex-col gap-6"
           >
+            {section === "general" ? (
             <Card>
               <CardHeader>
                 <CardTitle>{t("API hosts")}</CardTitle>
@@ -581,7 +503,9 @@ export function SystemPage() {
                 </FieldGroup>
               </CardContent>
             </Card>
+            ) : null}
 
+            {section === "codex" ? (
             <Card>
               <CardHeader>
                 <CardTitle>{t("Codex privacy and outbound identity")}</CardTitle>
@@ -698,7 +622,9 @@ export function SystemPage() {
                 </FieldGroup>
               </CardContent>
             </Card>
+            ) : null}
 
+            {section === "upstream" ? (
             <Card>
               <CardHeader>
                 <CardTitle>{t("Default upstream timeouts")}</CardTitle>
@@ -839,7 +765,9 @@ export function SystemPage() {
                 </FieldGroup>
               </CardContent>
             </Card>
+            ) : null}
 
+            {section === "reliability" ? (
             <Card>
               <CardHeader>
                 <CardTitle>{t("Request failover")}</CardTitle>
@@ -906,7 +834,9 @@ export function SystemPage() {
                 </FieldGroup>
               </CardContent>
             </Card>
+            ) : null}
 
+            {section === "reliability" ? (
             <Card>
               <CardHeader>
                 <CardTitle>{t("Passive health")}</CardTitle>
@@ -968,7 +898,9 @@ export function SystemPage() {
                 </FieldGroup>
               </CardContent>
             </Card>
+            ) : null}
 
+            {section === "reliability" ? (
             <Card>
               <CardHeader>
                 <CardTitle>{t("Automatic channel disable")}</CardTitle>
@@ -1051,7 +983,9 @@ export function SystemPage() {
                 </FieldGroup>
               </CardContent>
             </Card>
+            ) : null}
 
+            {section === "testing" ? (
             <Card>
               <CardHeader>
                 <CardTitle>{t("Scheduled channel tests")}</CardTitle>
@@ -1158,238 +1092,10 @@ export function SystemPage() {
                 </FieldGroup>
               </CardContent>
             </Card>
+            ) : null}
 
-            <div className="xl:col-span-2">
-              <Card>
-                <CardHeader>
-                  <CardTitle>{t("MCP transport")}</CardTitle>
-                  <CardDescription>
-                    {t(
-                      "Publishes managed Search and Images MCP endpoints on the public listener. The binary must include the mcp-server feature.",
-                    )}
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <FieldGroup>
-                    <Field orientation="horizontal">
-                      <FieldContent>
-                        <FieldLabel htmlFor="mcp_enabled">
-                          {t("Enable MCP transport")}
-                        </FieldLabel>
-                        <FieldDescription>
-                          {t(
-                            "Disabled transports return 404 for every /mcp/{slug} endpoint and close active legacy sessions.",
-                          )}
-                        </FieldDescription>
-                      </FieldContent>
-                      <Switch
-                        id="mcp_enabled"
-                        checked={form.watch("mcp.enabled")}
-                        onCheckedChange={(checked) =>
-                          form.setValue("mcp.enabled", Boolean(checked), {
-                            shouldDirty: true,
-                            shouldValidate: true,
-                          })
-                        }
-                      />
-                    </Field>
 
-                    <Field
-                      data-invalid={Boolean(form.formState.errors.mcp?.public_base_url)}
-                    >
-                      <FieldLabel htmlFor="mcp_public_base_url">
-                        {t("MCP public base URL")}
-                      </FieldLabel>
-                      <Input
-                        id="mcp_public_base_url"
-                        type="url"
-                        placeholder="https://api.example.com"
-                        aria-invalid={Boolean(
-                          form.formState.errors.mcp?.public_base_url,
-                        )}
-                        {...form.register("mcp.public_base_url")}
-                      />
-                      <FieldDescription>
-                        {t(
-                          "HTTP(S) origin used to validate Host and publish /mcp/{slug} URLs. Do not include a path.",
-                        )}
-                      </FieldDescription>
-                      {form.formState.errors.mcp?.public_base_url ? (
-                        <FieldError>
-                          {errorMessage(
-                            form.formState.errors.mcp.public_base_url.message,
-                          )}
-                        </FieldError>
-                      ) : null}
-                    </Field>
-
-                    <StringListField
-                      id="mcp_allowed_origins"
-                      label={t("Allowed MCP browser origins")}
-                      value={form.watch("mcp.allowed_origins")}
-                      onChange={(value) =>
-                        form.setValue("mcp.allowed_origins", value, {
-                          shouldDirty: true,
-                          shouldValidate: true,
-                        })
-                      }
-                      placeholder="https://client.example.com"
-                      description={t(
-                        "One exact HTTP(S) origin per line. Empty rejects requests carrying Origin while allowing non-browser clients.",
-                      )}
-                      error={errorMessage(
-                        form.formState.errors.mcp?.allowed_origins?.message,
-                      )}
-                    />
-
-                    <Field orientation="horizontal">
-                      <FieldContent>
-                        <FieldLabel htmlFor="mcp_allow_legacy">
-                          {t("Enable legacy MCP compatibility")}
-                        </FieldLabel>
-                        <FieldDescription>
-                          {t(
-                            "Adds 2025-11-25 sessions and the Codex legacy 2025-06-18 negotiation alongside stateless 2026-07-28. Legacy sessions are process-local and require sticky routing in multi-instance deployments.",
-                          )}
-                        </FieldDescription>
-                      </FieldContent>
-                      <Switch
-                        id="mcp_allow_legacy"
-                        checked={form.watch("mcp.allow_legacy_2025_11_25")}
-                        onCheckedChange={(checked) =>
-                          form.setValue(
-                            "mcp.allow_legacy_2025_11_25",
-                            Boolean(checked),
-                            {
-                              shouldDirty: true,
-                              shouldValidate: true,
-                            },
-                          )
-                        }
-                      />
-                    </Field>
-
-                    <div className="grid gap-4 md:grid-cols-2">
-                      <Field
-                        data-invalid={Boolean(
-                          form.formState.errors.mcp?.request_body_bytes,
-                        )}
-                      >
-                        <FieldLabel htmlFor="mcp_request_body_bytes">
-                          {t("Search request limit (bytes)")}
-                        </FieldLabel>
-                        <Input
-                          id="mcp_request_body_bytes"
-                          type="number"
-                          min={1}
-                          aria-invalid={Boolean(
-                            form.formState.errors.mcp?.request_body_bytes,
-                          )}
-                          {...form.register("mcp.request_body_bytes", {
-                            valueAsNumber: true,
-                          })}
-                        />
-                        {form.formState.errors.mcp?.request_body_bytes ? (
-                          <FieldError>
-                            {errorMessage(
-                              form.formState.errors.mcp.request_body_bytes.message,
-                            )}
-                          </FieldError>
-                        ) : null}
-                      </Field>
-
-                      <Field
-                        data-invalid={Boolean(
-                          form.formState.errors.mcp?.image_request_body_bytes,
-                        )}
-                      >
-                        <FieldLabel htmlFor="mcp_image_request_body_bytes">
-                          {t("Images request limit (bytes)")}
-                        </FieldLabel>
-                        <Input
-                          id="mcp_image_request_body_bytes"
-                          type="number"
-                          min={1}
-                          max={67_108_864}
-                          aria-invalid={Boolean(
-                            form.formState.errors.mcp?.image_request_body_bytes,
-                          )}
-                          {...form.register("mcp.image_request_body_bytes", {
-                            valueAsNumber: true,
-                          })}
-                        />
-                        {form.formState.errors.mcp?.image_request_body_bytes ? (
-                          <FieldError>
-                            {errorMessage(
-                              form.formState.errors.mcp.image_request_body_bytes.message,
-                            )}
-                          </FieldError>
-                        ) : null}
-                      </Field>
-
-                      <Field
-                        data-invalid={Boolean(
-                          form.formState.errors.mcp?.search_result_bytes,
-                        )}
-                      >
-                        <FieldLabel htmlFor="mcp_search_result_bytes">
-                          {t("Search result limit (bytes)")}
-                        </FieldLabel>
-                        <Input
-                          id="mcp_search_result_bytes"
-                          type="number"
-                          min={1}
-                          aria-invalid={Boolean(
-                            form.formState.errors.mcp?.search_result_bytes,
-                          )}
-                          {...form.register("mcp.search_result_bytes", {
-                            valueAsNumber: true,
-                          })}
-                        />
-                        {form.formState.errors.mcp?.search_result_bytes ? (
-                          <FieldError>
-                            {errorMessage(
-                              form.formState.errors.mcp.search_result_bytes.message,
-                            )}
-                          </FieldError>
-                        ) : null}
-                      </Field>
-
-                      <Field
-                        data-invalid={Boolean(
-                          form.formState.errors.mcp?.image_result_bytes,
-                        )}
-                      >
-                        <FieldLabel htmlFor="mcp_image_result_bytes">
-                          {t("Images result limit (bytes)")}
-                        </FieldLabel>
-                        <Input
-                          id="mcp_image_result_bytes"
-                          type="number"
-                          min={1}
-                          max={67_108_864}
-                          aria-invalid={Boolean(
-                            form.formState.errors.mcp?.image_result_bytes,
-                          )}
-                          {...form.register("mcp.image_result_bytes", {
-                            valueAsNumber: true,
-                          })}
-                        />
-                        {form.formState.errors.mcp?.image_result_bytes ? (
-                          <FieldError>
-                            {errorMessage(
-                              form.formState.errors.mcp.image_result_bytes.message,
-                            )}
-                          </FieldError>
-                        ) : null}
-                      </Field>
-                    </div>
-                  </FieldGroup>
-                </CardContent>
-              </Card>
-            </div>
-
-            <div className="xl:col-span-2">
+            {section === "websocket" ? <div>
               <Card>
                 <CardHeader>
                   <CardTitle>{t("Responses WebSocket")}</CardTitle>
@@ -1521,9 +1227,9 @@ export function SystemPage() {
                   </FieldGroup>
                 </CardContent>
               </Card>
-            </div>
+            </div> : null}
 
-            <div className="xl:col-span-2">
+            {section === "affinity" ? <div>
               <SessionAffinityCard
                 value={form.watch("session_affinity")}
                 onChange={(session_affinity) =>
@@ -1542,11 +1248,11 @@ export function SystemPage() {
                   rules: errorMessage(form.formState.errors.session_affinity?.rules?.message),
                 }}
               />
-            </div>
+            </div> : null}
 
             <Button
               type="submit"
-              className="w-fit xl:col-span-2"
+              className="w-fit"
               disabled={updateSettings.isPending}
             >
               {updateSettings.isPending ? (
@@ -1560,7 +1266,7 @@ export function SystemPage() {
         ) : null}
       </AsyncResource>
 
-      <Card>
+      {section === "maintenance" ? <Card>
         <CardHeader>
           <CardTitle>{t("Reload control plane")}</CardTitle>
           <CardDescription>
@@ -1582,7 +1288,7 @@ export function SystemPage() {
             ) : null}
           </div>
         </CardContent>
-      </Card>
+      </Card> : null}
     </div>
   );
 }

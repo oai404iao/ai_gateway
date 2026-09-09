@@ -10,7 +10,6 @@ import {
   CHANNEL_GROUP,
   CONFIG_TEMPLATE,
   CONTROL_PLANE_USER,
-  SEARCH_MCP_SERVER,
   MODEL,
   MODEL_RULE,
   PROXY,
@@ -43,7 +42,6 @@ const createRoutes = [
   ["/admin/routing/channel-groups/new", /create group/i],
   ["/admin/routing/channels/new", /create channel/i],
   ["/admin/routing/model-rules/new", /create rule/i],
-  ["/admin/mcp-servers/new", /create mcp server/i],
   ["/admin/network/proxies/new", /create proxy/i],
   ["/admin/transforms/templates/new", /create template/i],
 ] as const;
@@ -61,7 +59,6 @@ const editRoutes = [
   [`/admin/routing/channel-groups/${CHANNEL_GROUP.id}`, /save group/i],
   [`/admin/routing/channels/${CHANNEL.id}`, /save channel/i],
   [`/admin/routing/model-rules/${MODEL_RULE.id}`, /save rule/i],
-  [`/admin/mcp-servers/${SEARCH_MCP_SERVER.id}`, /save mcp server/i],
   [`/admin/network/proxies/${PROXY.id}`, /save proxy/i],
   [`/admin/transforms/templates/${CONFIG_TEMPLATE.id}`, /save template/i],
 ] as const;

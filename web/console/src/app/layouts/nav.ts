@@ -15,17 +15,18 @@ import {
   TicketCheck,
   UsersRound,
   Settings2,
-  Blocks,
   Workflow,
   type LucideIcon,
 } from "lucide-react";
 import type { UserRole } from "@/api/types";
+import { SETTINGS_SECTIONS } from "@/features/admin/system/settings-sections";
 
 export interface NavItem {
   label: string;
   path: string;
   icon: LucideIcon;
   end?: boolean;
+  children?: { label: string; path: string }[];
 }
 
 export interface NavSection {
@@ -72,7 +73,6 @@ export const NAV_SECTIONS: NavSection[] = [
     items: [
       { label: "Model configuration", path: "/admin/routing/model-rules", icon: Workflow },
       { label: "Price sync", path: "/admin/catalog", icon: GalleryVerticalEnd },
-      { label: "MCP Servers", path: "/admin/mcp-servers", icon: Blocks },
     ],
   },
   {
@@ -95,7 +95,15 @@ export const NAV_SECTIONS: NavSection[] = [
       },
       { label: "Audit Logs", path: "/admin/audit-logs", icon: ShieldCheck },
       { label: "System load", path: "/admin/system-load", icon: Gauge },
-      { label: "System settings", path: "/admin/system", icon: RefreshCw },
+      {
+        label: "System settings",
+        path: "/admin/system",
+        icon: RefreshCw,
+        children: SETTINGS_SECTIONS.map((section) => ({
+          label: section.label,
+          path: `/admin/system/${section.id}`,
+        })),
+      },
     ],
   },
 ];

@@ -561,7 +561,6 @@ async fn gateway_harness_with_controls(
         }],
         proxies: outbound_proxy.into_iter().collect(),
         templates: vec![],
-        mcp_servers: vec![],
     };
     if controls.other_websocket_route {
         let group = ChannelGroupRecord {

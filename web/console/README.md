@@ -55,7 +55,7 @@ pnpm e2e:install            # install Playwright Chromium + OS deps (first run)
   administrator Codex OAuth credential/quota management,
   Business workspace-member identity, single/batch credential deletion and
   state changes, Codex credential export/import review with in-page proxy
-  management, typed MCP transport/server management, and the remaining admin
+  management, categorized system settings, and the remaining admin
   control plane).
 - `src/components/` — shadcn/ui primitives (`ui/`) and shared app components.
 - `src/test/` — vitest setup, MSW server, deterministic fixtures.

@@ -6,7 +6,6 @@ import {
   E2E_CODEX_CREDENTIAL_ID,
   E2E_CODEX_GROUP_ID,
   E2E_IMAGE_MODEL_RULE,
-  E2E_MCP_SERVER,
   E2E_MODEL,
   E2E_STANDARD_GROUP_ID,
   mockConsoleApi,
@@ -413,59 +412,55 @@ test.describe("Console SPA smoke", () => {
     await expect(page.getByText("E2E ISP")).toBeVisible();
   });
 
-  test("administrators can create a typed image MCP endpoint", async ({
-    page,
-  }) => {
+  test("system settings expand into isolated, deep-linked categories", async ({ page }) => {
     await mockConsoleApi(page);
     await page.goto("/login");
     await page.getByLabel(/email/i).fill("admin@example.com");
     await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
     await page.getByRole("button", { name: /sign in/i }).click();
-    await page.getByRole("link", { name: "MCP Servers" }).click();
+    await expect(page).toHaveURL(/\/account/);
 
-    await expect(page).toHaveURL(/\/admin\/mcp-servers$/);
-    await expect(page.getByText(`/mcp/${E2E_MCP_SERVER.slug}`)).toBeVisible();
-    await page.getByRole("button", { name: "New MCP server" }).click();
+    const menu = page.getByRole("button", { name: "System settings", exact: true });
+    await expect(menu).toHaveAttribute("aria-expanded", "false");
+    await menu.click();
+    await expect(menu).toHaveAttribute("aria-expanded", "true");
+    await page.getByRole("link", { name: "Upstream timeouts", exact: true }).click();
+    await expect(page).toHaveURL(/\/admin\/system\/upstream$/);
+    await expect(page.getByLabel("Connect timeout (seconds)")).toBeVisible();
+    await expect(page.getByLabel("Codex originator")).toHaveCount(0);
+    await expect(page.getByRole("link", { name: "MCP Servers" })).toHaveCount(0);
 
-    await page.getByLabel("Endpoint slug").fill("image-lab");
-    await page.getByLabel("Name").fill("Image lab");
-    await page.getByRole("combobox", { name: "Kind" }).click();
-    await page.getByRole("option", { name: "Images" }).click();
-    await page.getByRole("combobox", { name: "Model rule" }).click();
-    await page
-      .getByRole("option", {
-        name: `${E2E_IMAGE_MODEL_RULE.client_model} → ${E2E_IMAGE_MODEL_RULE.upstream_model}`,
-      })
-      .click();
-    await page.getByRole("combobox", { name: "Background" }).click();
-    await page.getByRole("option", { name: "Transparent" }).click();
-    await page.getByRole("combobox", { name: "Quality" }).click();
-    await page.getByRole("option", { name: "High" }).click();
-    await page.getByLabel("Size").fill("1536x1024");
-
-    const createRequest = page.waitForRequest(
-      (request) =>
-        request.url().endsWith("/console/v1/mcp-servers") &&
-        request.method() === "POST",
+    await page.getByLabel("Connect timeout (seconds)").fill("12");
+    const saved = page.waitForRequest((request) =>
+      request.url().endsWith("/console/v1/system/settings") && request.method() === "PUT",
     );
-    await page.getByRole("button", { name: "Create MCP server" }).click();
-    expect((await createRequest).postDataJSON()).toEqual({
-      slug: "image-lab",
-      kind: "image",
-      name: "Image lab",
-      description: null,
-      model_rule_id: E2E_IMAGE_MODEL_RULE.id,
-      settings: {
-        background: "transparent",
-        quality: "high",
-        size: "1536x1024",
-      },
-      enabled: true,
-    });
+    await page.getByRole("button", { name: "Save system settings" }).click();
+    const request = await saved;
+    expect(request.postDataJSON().upstream.connect_timeout_seconds).toBe(12);
+    expect(request.postDataJSON().codex.originator).toBe("codex_cli_rs");
+    expect(request.headers()["if-match"]).toBe('"2026-01-02T00:00:00.000Z"');
+    expect(request.postDataJSON()).not.toHaveProperty("mcp");
 
-    await expect(page).toHaveURL(/\/admin\/mcp-servers$/);
-    await expect(page.getByText("MCP server created")).toBeVisible();
-    await expect(page.getByText("/mcp/image-lab")).toBeVisible();
+    await menu.click();
+    await expect(page.getByRole("link", { name: "Codex", exact: true })).toBeHidden();
+    await menu.click();
+    await page.getByRole("link", { name: "Codex", exact: true }).click();
+    await expect(page.getByLabel("Codex originator")).toBeVisible();
+    await expect(page.getByLabel("Connect timeout (seconds)")).toHaveCount(0);
+    await page.reload();
+    await expect(menu).toHaveAttribute("aria-expanded", "true");
+    await expect(page.getByRole("link", { name: "Codex", exact: true })).toHaveAttribute("aria-current", "page");
+
+    await page.getByRole("button", { name: "Toggle Sidebar" }).click();
+    await menu.click();
+    await expect(page.getByRole("link", { name: "Codex", exact: true })).toBeVisible();
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.getByRole("button", { name: "Toggle Sidebar" }).click();
+    await page.getByRole("link", { name: "Runtime maintenance", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Reload now" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Save system settings" })).toHaveCount(0);
+    await expect(page.getByRole("dialog")).toBeHidden();
   });
 
   test("administrators can browse large channel inventories with paired Codex pools", async ({

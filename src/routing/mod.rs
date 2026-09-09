@@ -1717,7 +1717,6 @@ mod tests {
             }],
             proxies: vec![],
             templates: vec![],
-            mcp_servers: vec![],
         };
         (
             compile_control_plane_with_system_settings(records, system_settings).unwrap(),
@@ -1935,7 +1934,6 @@ mod tests {
                 enabled: true,
             }],
             templates: vec![],
-            mcp_servers: vec![],
         };
         (compile_control_plane(records).unwrap(), secret)
     }

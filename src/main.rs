@@ -130,7 +130,6 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
             },
             websocket: SystemWebSocketSettingsInput::default(),
             codex: Default::default(),
-            mcp: config.mcp,
         })
         .await?;
     let system_probe_identity = repository.ensure_system_probe_identity().await?;
@@ -219,24 +218,7 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
     ));
     let listener = TcpListener::bind(&address).await?;
     tracing::info!(%address, "AI gateway public listener enabled");
-    #[cfg(feature = "mcp-server")]
-    let mut public_router = http::router(proxy.clone());
-    #[cfg(not(feature = "mcp-server"))]
     let public_router = http::router(proxy.clone());
-    #[cfg(feature = "mcp-server")]
-    let mcp_service = {
-        let service = ai_gateway::mcp::McpService::new(proxy.clone(), Arc::clone(&runtime));
-        public_router = public_router.merge(service.clone().router());
-        let mcp = runtime.snapshot();
-        let mcp = mcp.system_settings().mcp();
-        tracing::info!(
-            enabled = mcp.enabled(),
-            public_base_url = mcp.public_base_url(),
-            legacy_2025_11_25 = mcp.allow_legacy_2025_11_25(),
-            "AI gateway MCP transport initialized"
-        );
-        Some(service)
-    };
 
     let console = if let Some(console) = config.console.as_ref() {
         let auth =
@@ -290,8 +272,6 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
         console,
         Duration::from_secs(config.server.shutdown_grace_period_seconds),
         websocket_proxy,
-        #[cfg(feature = "mcp-server")]
-        mcp_service,
     )
     .await;
     channel_probe_worker.shutdown().await;
@@ -505,7 +485,6 @@ async fn run_servers(
     console: Option<(TcpListener, Router)>,
     shutdown_grace_period: Duration,
     websocket_proxy: ProxyService,
-    #[cfg(feature = "mcp-server")] mcp_service: Option<ai_gateway::mcp::McpService>,
 ) -> Result<(), std::io::Error> {
     let (shutdown_sender, shutdown_receiver) = watch::channel(());
     let mut servers = JoinSet::new();
@@ -565,10 +544,6 @@ async fn run_servers(
             grace_period_seconds = shutdown_grace_period.as_secs(),
             "graceful shutdown deadline expired; force-closing HTTP and WebSocket connections"
         );
-        #[cfg(feature = "mcp-server")]
-        if let Some(service) = mcp_service.as_ref() {
-            service.begin_shutdown();
-        }
         websocket_proxy.force_websocket_shutdown();
         servers.abort_all();
         while let Some(result) = servers.join_next().await {
@@ -587,10 +562,6 @@ async fn run_servers(
         {
             tracing::warn!("Responses WebSocket tasks did not stop after forced shutdown");
         }
-    }
-    #[cfg(feature = "mcp-server")]
-    if let Some(service) = mcp_service.as_ref() {
-        service.begin_shutdown();
     }
     error.map_or(Ok(()), Err)
 }

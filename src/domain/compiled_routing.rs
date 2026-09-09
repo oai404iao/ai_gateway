@@ -16,8 +16,8 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use super::{
-    ApiFormat, ApiKeyHash, CompiledAdvancedBilling, CompiledMcpServer, ConnectorKind,
-    RequestCompression, SystemRuntimeSettings,
+    ApiFormat, ApiKeyHash, CompiledAdvancedBilling, ConnectorKind, RequestCompression,
+    SystemRuntimeSettings,
 };
 use crate::transforms::TransformPlan;
 
@@ -1398,7 +1398,6 @@ pub struct CompiledRuntimeConfig {
     groups: HashMap<Uuid, Arc<CompiledChannelGroup>>,
     proxies: HashMap<Uuid, Arc<CompiledProxy>>,
     templates: HashMap<Uuid, Arc<CompiledConfigTemplate>>,
-    mcp_servers: HashMap<Arc<str>, Arc<CompiledMcpServer>>,
     system_settings: SystemRuntimeSettings,
 }
 impl CompiledRuntimeConfig {
@@ -1483,17 +1482,8 @@ impl CompiledRuntimeConfig {
             groups,
             proxies,
             templates,
-            mcp_servers: HashMap::new(),
             system_settings,
         }
-    }
-    #[must_use]
-    pub(crate) fn with_mcp_servers(
-        mut self,
-        mcp_servers: HashMap<Arc<str>, Arc<CompiledMcpServer>>,
-    ) -> Self {
-        self.mcp_servers = mcp_servers;
-        self
     }
     #[must_use]
     pub fn empty() -> Self {
@@ -1534,13 +1524,6 @@ impl CompiledRuntimeConfig {
     #[must_use]
     pub fn template(&self, id: Uuid) -> Option<Arc<CompiledConfigTemplate>> {
         self.templates.get(&id).cloned()
-    }
-    #[must_use]
-    pub fn mcp_server(&self, slug: &str) -> Option<Arc<CompiledMcpServer>> {
-        self.mcp_servers.get(slug).cloned()
-    }
-    pub fn mcp_servers(&self) -> impl Iterator<Item = &Arc<CompiledMcpServer>> {
-        self.mcp_servers.values()
     }
     #[must_use]
     pub fn system_settings(&self) -> &SystemRuntimeSettings {

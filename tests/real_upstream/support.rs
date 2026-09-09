@@ -429,7 +429,6 @@ fn gateway(
         }],
         proxies: vec![],
         templates: vec![],
-        mcp_servers: vec![],
     };
     let upstream = UpstreamTimeoutDefaults::new(
         Duration::from_secs(settings.timeout.as_secs().saturating_sub(1).clamp(1, 10)),
@@ -1597,7 +1596,7 @@ mod tests {
         assert!(body["commands"].is_object());
         assert!(
             body.get("input").is_none(),
-            "command-only MCP requests need no invented history"
+            "command-only search requests need no invented history"
         );
     }
 

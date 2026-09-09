@@ -172,16 +172,6 @@ const ModelRuleDetailPage = lazy(() =>
     default: m.ModelRuleDetailPage,
   })),
 );
-const McpServersPage = lazy(() =>
-  import("@/features/admin/mcp-servers/mcp-servers-page").then((m) => ({
-    default: m.McpServersPage,
-  })),
-);
-const McpServerDetailPage = lazy(() =>
-  import("@/features/admin/mcp-servers/mcp-server-detail-page").then((m) => ({
-    default: m.McpServerDetailPage,
-  })),
-);
 const CodexOauthPage = lazy(
   () => import("@/features/admin/providers/codex-oauth/codex-oauth-page"),
 );
@@ -327,11 +317,6 @@ function appRouteElements() {
                 path="/admin/routing/model-rules/:id"
                 element={<ModelRuleDetailPage />}
               />
-              <Route path="/admin/mcp-servers" element={<McpServersPage />} />
-              <Route
-                path="/admin/mcp-servers/:id"
-                element={<McpServerDetailPage />}
-              />
               <Route
                 path="/admin/providers/codex-oauth/:id"
                 element={<CodexOauthPage />}
@@ -365,6 +350,7 @@ function appRouteElements() {
               <Route path="/admin/audit-logs" element={<AuditLogsPage />} />
               <Route path="/admin/system-load" element={<SystemLoadPage />} />
               <Route path="/admin/system" element={<SystemPage />} />
+              <Route path="/admin/system/:section" element={<SystemPage />} />
             </Route>
 
             <Route path="*" element={<NotFound />} />

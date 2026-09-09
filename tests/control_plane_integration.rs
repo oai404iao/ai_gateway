@@ -6,10 +6,6 @@ use std::{
     time::Duration,
 };
 
-#[cfg(feature = "mcp-server")]
-use ai_gateway::mcp::McpService;
-#[cfg(feature = "mcp-server")]
-use ai_gateway::persistence::SystemMcpSettingsInput;
 use ai_gateway::{
     admission::AdmissionRuntime,
     application::{
@@ -76,8 +72,6 @@ const DEFAULT_ADMIN_URL: &str = "postgres://ai_gateway:ai_gateway@127.0.0.1:5432
 const PASSWORD_FILE_ADMIN_URL: &str = "postgres://ai_gateway@127.0.0.1:5432/postgres";
 const TEST_PNG_BASE64: &str =
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
-#[cfg(feature = "mcp-server")]
-const MCP_VERSION: &str = "2026-07-28";
 
 fn default_admin_url() -> String {
     let Ok(mut password) = std::fs::read_to_string("./config/postgres-password") else {
@@ -115,7 +109,6 @@ fn system_settings() -> SystemSettingsInput {
         session_affinity: Default::default(),
         websocket: Default::default(),
         codex: Default::default(),
-        mcp: Default::default(),
     }
 }
 
@@ -3083,19 +3076,6 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
         }],
     };
     settings.websocket.enabled = true;
-    #[cfg(feature = "mcp-server")]
-    {
-        settings.mcp = SystemMcpSettingsInput {
-            enabled: true,
-            public_base_url: Some("https://mcp.example.test".into()),
-            allowed_origins: Vec::new(),
-            allow_legacy_2025_11_25: false,
-            request_body_bytes: 64 * 1_024,
-            image_request_body_bytes: 512 * 1_024,
-            search_result_bytes: 64 * 1_024,
-            image_result_bytes: 512 * 1_024,
-        };
-    }
     sqlx::query("UPDATE system_settings SET value=$2 WHERE setting_key=$1")
         .bind("forwarding_policy")
         .bind(serde_json::to_value(settings).unwrap())
@@ -3242,34 +3222,6 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
         }],
     )
     .await;
-    sqlx::query(
-        "INSERT INTO mcp_servers \
-         (id,slug,kind,name,description,model_rule_id,settings_version,settings,enabled) \
-         VALUES ($1,'codex-image','image','Codex image','Codex image generation and edit',$2,1, \
-                 '{\"background\":\"auto\",\"quality\":\"high\",\"size\":\"1024x1024\"}'::jsonb,true)",
-    )
-    .bind(Uuid::new_v4())
-    .bind(images_rule)
-    .execute(&database.pool)
-    .await
-    .unwrap();
-    sqlx::query(
-        "INSERT INTO mcp_servers \
-         (id,slug,kind,name,description,model_rule_id,settings_version,settings,enabled) \
-         VALUES ($1,'codex-search','web_search','Codex search','Codex standalone search',$2,1,$3,true)",
-    )
-    .bind(Uuid::new_v4())
-    .bind(responses_rule)
-    .bind(serde_json::json!({
-        "external_web_access": "live",
-        "search_context_size": "medium",
-        "allowed_domains": [],
-        "blocked_domains": [],
-        "max_output_tokens": {"short": 1000, "medium": 3000, "long": 6000}
-    }))
-    .execute(&database.pool)
-    .await
-    .unwrap();
     sqlx::query("UPDATE channel_groups SET enabled=true WHERE id=$1")
         .bind(images_group)
         .execute(&database.pool)
@@ -3963,213 +3915,6 @@ async fn codex_connector_forwards_responses_and_images_with_shared_credentials()
     assert_eq!(edit_events[0].channel_id, Some(images_channel));
     assert_eq!(edit_events[0].channel_group_id, Some(images_group));
     assert_eq!(edit_events[0].outcome, RequestLogOutcome::Succeeded);
-
-    #[cfg(feature = "mcp-server")]
-    {
-        let mcp = McpService::new(proxy.clone(), Arc::clone(&runtime)).router();
-        let tool_request = |slug: &str, tool: &str, arguments: serde_json::Value| {
-            axum::http::Request::builder()
-                .method("POST")
-                .uri(format!("/mcp/{slug}"))
-                .header("host", "mcp.example.test")
-                .header("authorization", format!("Bearer {}", seed.secret))
-                .header("content-type", "application/json")
-                .header("accept", "application/json, text/event-stream")
-                .header("mcp-protocol-version", MCP_VERSION)
-                .header("mcp-method", "tools/call")
-                .header("mcp-name", tool)
-                .header("session-id", "mcp-transport-session")
-                .header("thread-id", "mcp-transport-thread")
-                .header("x-client-request-id", "mcp-transport-request")
-                .header("x-codex-image-turn-id", "must-not-leak-from-mcp")
-                .header(
-                    "x-codex-turn-metadata",
-                    r#"{"installation_id":"mcp-private"}"#,
-                )
-                .body(Body::from(
-                    serde_json::json!({
-                        "jsonrpc": "2.0",
-                        "id": 1,
-                        "method": "tools/call",
-                        "params": {
-                            "_meta": {
-                                "io.modelcontextprotocol/protocolVersion": MCP_VERSION,
-                                "io.modelcontextprotocol/clientInfo": {
-                                    "name": "ai-gateway-test",
-                                    "version": "1.0.0"
-                                },
-                                "io.modelcontextprotocol/clientCapabilities": {}
-                            },
-                            "name": tool,
-                            "arguments": arguments
-                        }
-                    })
-                    .to_string(),
-                ))
-                .unwrap()
-        };
-        let mcp_edit = mcp
-            .clone()
-            .oneshot(tool_request(
-                "codex-image",
-                "image_gen.imagegen",
-                serde_json::json!({
-                    "prompt": "add a blue hat",
-                    "referenced_image_urls": [
-                        format!("data:image/png;base64,{TEST_PNG_BASE64}")
-                    ]
-                }),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(mcp_edit.status(), StatusCode::OK);
-        let mcp_edit: serde_json::Value =
-            serde_json::from_slice(&mcp_edit.into_body().collect().await.unwrap().to_bytes())
-                .unwrap();
-        assert_eq!(mcp_edit["result"]["content"][0]["data"], TEST_PNG_BASE64);
-        assert_eq!(
-            mcp_edit["result"]["content"][0]["_meta"]["codex/imageDetail"],
-            "original"
-        );
-
-        let image_requests = captured.image_requests.lock().unwrap().clone();
-        assert_eq!(image_requests.len(), 3);
-        let mcp_request = &image_requests[2];
-        assert_eq!(mcp_request.path, "/backend-api/codex/images/edits");
-        assert_eq!(
-            mcp_request.authorization.as_deref(),
-            Some("Bearer access-token")
-        );
-        assert_eq!(
-            mcp_request.content_type.as_deref(),
-            Some("application/json")
-        );
-        let mcp_json: serde_json::Value = serde_json::from_slice(&mcp_request.body).unwrap();
-        assert_eq!(mcp_json["model"], "gpt-image-2");
-        assert_eq!(mcp_json["prompt"], "add a blue hat");
-        assert_eq!(mcp_json["background"], "auto");
-        assert_eq!(mcp_json["quality"], "high");
-        assert_eq!(mcp_json["size"], "1024x1024");
-        assert_eq!(mcp_json["n"], 1);
-        assert!(mcp_json.get("output_format").is_none());
-        assert!(mcp_json.get("response_format").is_none());
-        assert!(mcp_json.get("stream").is_none());
-        assert!(mcp_json.get("store").is_none());
-        assert!(Uuid::parse_str(mcp_request.image_turn_id.as_deref().unwrap()).is_ok());
-        assert_eq!(
-            mcp_json["images"][0]["image_url"],
-            format!("data:image/png;base64,{TEST_PNG_BASE64}")
-        );
-
-        let mcp_events = logs
-            .events()
-            .into_iter()
-            .filter(|event| {
-                event.request_source == RequestLogSource::Mcp
-                    && event.api_operation == ApiOperation::ImagesEdit
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(mcp_events.len(), 1);
-        assert_eq!(mcp_events[0].channel_id, Some(images_channel));
-        assert_eq!(mcp_events[0].outcome, RequestLogOutcome::Succeeded);
-
-        let generation = mcp
-            .clone()
-            .oneshot(tool_request(
-                "codex-image",
-                "image_gen.imagegen",
-                serde_json::json!({"prompt": "paint a green hat"}),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(generation.status(), StatusCode::OK);
-        let generation: serde_json::Value =
-            serde_json::from_slice(&generation.into_body().collect().await.unwrap().to_bytes())
-                .unwrap();
-        assert_eq!(generation["result"]["content"][0]["data"], TEST_PNG_BASE64);
-        let requests = captured.image_requests.lock().unwrap().clone();
-        assert_eq!(requests.len(), 4);
-        assert_eq!(requests[3].path, "/backend-api/codex/images/generations");
-        assert_eq!(
-            requests[3].authorization.as_deref(),
-            Some("Bearer access-token")
-        );
-        assert!(Uuid::parse_str(requests[3].image_turn_id.as_deref().unwrap()).is_ok());
-        assert_ne!(requests[3].image_turn_id, mcp_request.image_turn_id);
-        for request in [&requests[2], &requests[3]] {
-            assert!(Uuid::parse_str(request.session_id.as_deref().unwrap()).is_ok());
-            assert!(Uuid::parse_str(request.thread_id.as_deref().unwrap()).is_ok());
-            assert_eq!(request.client_request_id, request.thread_id);
-            let metadata: serde_json::Value =
-                serde_json::from_str(request.turn_metadata.as_deref().unwrap()).unwrap();
-            assert_eq!(
-                metadata["session_id"],
-                request.session_id.as_deref().unwrap()
-            );
-            assert_eq!(metadata["thread_id"], request.thread_id.as_deref().unwrap());
-            assert_eq!(metadata["window_id"], request.window_id.as_deref().unwrap());
-            assert_eq!(metadata["installation_id"], platform_installation_id);
-            assert_eq!(metadata["workspaces"], search_turn_metadata["workspaces"]);
-        }
-        let body: serde_json::Value = serde_json::from_slice(&requests[3].body).unwrap();
-        assert_eq!(
-            body,
-            serde_json::json!({
-                "model": "gpt-image-2", "prompt": "paint a green hat", "n": 1,
-                "background": "auto", "quality": "high", "size": "1024x1024"
-            })
-        );
-
-        let search = mcp
-            .oneshot(tool_request(
-                "codex-search",
-                "web.run",
-                serde_json::json!({"search_query": [{"q": "example"}]}),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(search.status(), StatusCode::OK);
-        let search: serde_json::Value =
-            serde_json::from_slice(&search.into_body().collect().await.unwrap().to_bytes())
-                .unwrap();
-        assert_eq!(search["result"]["content"][0]["text"], "search summary");
-        let requests = captured.search_requests.lock().unwrap().clone();
-        assert_eq!(requests.len(), 2);
-        let request = &requests[1];
-        assert_eq!(
-            request.authorization.as_deref(),
-            Some("Bearer access-token")
-        );
-        assert_eq!(request.content_type.as_deref(), Some("application/json"));
-        assert_eq!(request.originator.as_deref(), Some(codex_originator));
-        assert_eq!(request.user_agent.as_deref(), Some(codex_user_agent));
-        assert!(Uuid::parse_str(request.session_id.as_deref().unwrap()).is_ok());
-        assert!(Uuid::parse_str(request.thread_id.as_deref().unwrap()).is_ok());
-        assert_eq!(request.client_request_id, request.thread_id);
-        let metadata: serde_json::Value =
-            serde_json::from_str(request.turn_metadata.as_deref().unwrap()).unwrap();
-        assert_eq!(metadata["installation_id"], platform_installation_id);
-        assert_eq!(metadata["workspaces"], search_turn_metadata["workspaces"]);
-        assert_eq!(
-            metadata["session_id"],
-            request.session_id.as_deref().unwrap()
-        );
-        assert_eq!(metadata["thread_id"], request.thread_id.as_deref().unwrap());
-        assert_eq!(metadata["window_id"], request.window_id.as_deref().unwrap());
-        assert_eq!(request.body["model"], "upstream-v1");
-        assert!(Uuid::parse_str(request.body["id"].as_str().unwrap()).is_ok());
-        assert_eq!(
-            request.body["commands"],
-            serde_json::json!({
-                "search_query": [{"q": "example"}]
-            })
-        );
-        assert_eq!(request.body["max_output_tokens"], 3000);
-        assert!(request.body.get("input").is_none());
-        assert!(request.body.get("stream").is_none());
-        assert!(request.body.get("store").is_none());
-        assert!(request.body.get("client_metadata").is_none());
-    }
 
     let gateway = start_server(app.clone()).await;
     let websocket_request = || {

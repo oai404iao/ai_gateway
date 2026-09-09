@@ -37,10 +37,8 @@ use crate::{
     domain::{
         ApiFormat, AutomaticDisableTrigger, DEFAULT_CODEX_CLIENT_VERSION, DEFAULT_CODEX_ORIGINATOR,
         DEFAULT_CODEX_USER_AGENT, DEFAULT_IMAGES_RESPONSE_HEADER_TIMEOUT_SECONDS,
-        DEFAULT_MCP_IMAGE_REQUEST_BODY_BYTES, DEFAULT_MCP_IMAGE_RESULT_BYTES,
-        DEFAULT_MCP_REQUEST_BODY_BYTES, DEFAULT_MCP_SEARCH_RESULT_BYTES,
-        DEFAULT_STANDALONE_WEB_SEARCH_RESPONSE_HEADER_TIMEOUT_SECONDS, MAX_MCP_IMAGE_BYTES,
-        MAX_REQUEST_RETRIES, McpServerKind, RequestCompression, RequestLogEvent,
+        DEFAULT_STANDALONE_WEB_SEARCH_RESPONSE_HEADER_TIMEOUT_SECONDS, MAX_REQUEST_RETRIES,
+        RequestCompression, RequestLogEvent,
     },
     request_log_journal::EncodedRequestLog,
 };
@@ -77,7 +75,6 @@ pub struct ControlPlaneRecords {
     pub channels: Vec<ChannelRecord>,
     pub proxies: Vec<ProxyRecord>,
     pub templates: Vec<ConfigTemplateRecord>,
-    pub mcp_servers: Vec<McpServerRecord>,
 }
 
 /// Coherent database input for one complete runtime snapshot.
@@ -114,8 +111,6 @@ pub struct SystemSettingsInput {
     pub websocket: SystemWebSocketSettingsInput,
     #[serde(default)]
     pub codex: SystemCodexSettingsInput,
-    #[serde(default)]
-    pub mcp: SystemMcpSettingsInput,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -260,42 +255,6 @@ impl Default for SystemCodexSettingsInput {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct SystemMcpSettingsInput {
-    #[serde(default)]
-    pub enabled: bool,
-    #[serde(default)]
-    pub public_base_url: Option<String>,
-    #[serde(default)]
-    pub allowed_origins: Vec<String>,
-    #[serde(default)]
-    pub allow_legacy_2025_11_25: bool,
-    #[serde(default = "default_mcp_request_body_bytes")]
-    pub request_body_bytes: usize,
-    #[serde(default = "default_mcp_image_request_body_bytes")]
-    pub image_request_body_bytes: usize,
-    #[serde(default = "default_mcp_search_result_bytes")]
-    pub search_result_bytes: usize,
-    #[serde(default = "default_mcp_image_result_bytes")]
-    pub image_result_bytes: usize,
-}
-
-impl Default for SystemMcpSettingsInput {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            public_base_url: None,
-            allowed_origins: Vec::new(),
-            allow_legacy_2025_11_25: false,
-            request_body_bytes: default_mcp_request_body_bytes(),
-            image_request_body_bytes: default_mcp_image_request_body_bytes(),
-            search_result_bytes: default_mcp_search_result_bytes(),
-            image_result_bytes: default_mcp_image_result_bytes(),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct SystemSessionAffinityRuleInput {
     pub name: String,
     pub enabled: bool,
@@ -374,22 +333,6 @@ fn default_codex_client_version() -> String {
 
 fn default_codex_user_agent() -> String {
     DEFAULT_CODEX_USER_AGENT.into()
-}
-
-const fn default_mcp_request_body_bytes() -> usize {
-    DEFAULT_MCP_REQUEST_BODY_BYTES
-}
-
-const fn default_mcp_image_request_body_bytes() -> usize {
-    DEFAULT_MCP_IMAGE_REQUEST_BODY_BYTES
-}
-
-const fn default_mcp_search_result_bytes() -> usize {
-    DEFAULT_MCP_SEARCH_RESULT_BYTES
-}
-
-const fn default_mcp_image_result_bytes() -> usize {
-    DEFAULT_MCP_IMAGE_RESULT_BYTES
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -701,19 +644,6 @@ impl fmt::Debug for ConfigTemplateRecord {
             .field("enabled", &self.enabled)
             .finish()
     }
-}
-
-#[derive(Debug, FromRow)]
-pub struct McpServerRecord {
-    pub id: Uuid,
-    pub slug: String,
-    pub kind: String,
-    pub name: String,
-    pub description: Option<String>,
-    pub model_rule_id: Uuid,
-    pub settings_version: i16,
-    pub settings: Value,
-    pub enabled: bool,
 }
 
 #[derive(Clone)]
@@ -1150,29 +1080,6 @@ pub struct ConfigTemplateInput {
     pub document: Option<Value>,
     pub enabled: bool,
 }
-#[derive(Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct McpServerCreateInput {
-    pub slug: String,
-    pub kind: String,
-    pub name: String,
-    #[serde(default)]
-    pub description: Option<String>,
-    pub model_rule_id: Uuid,
-    #[serde(default = "empty_object")]
-    pub settings: Value,
-    pub enabled: bool,
-}
-#[derive(Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct McpServerInput {
-    pub name: String,
-    #[serde(default)]
-    pub description: Option<String>,
-    pub model_rule_id: Uuid,
-    pub settings: Value,
-    pub enabled: bool,
-}
 fn empty_object() -> Value {
     json!({})
 }
@@ -1383,16 +1290,6 @@ pub enum ControlPlaneMutation {
         input: ConfigTemplateInput,
         expected_updated_at: DateTime<Utc>,
     },
-    CreateMcpServer(McpServerCreateInput),
-    UpdateMcpServer {
-        id: Uuid,
-        input: McpServerInput,
-        expected_updated_at: DateTime<Utc>,
-    },
-    DeleteMcpServer {
-        id: Uuid,
-        expected_updated_at: DateTime<Utc>,
-    },
     UpdateSystemSettings {
         input: SystemSettingsInput,
         expected_updated_at: DateTime<Utc>,
@@ -1423,7 +1320,6 @@ pub struct ControlPlaneLists {
     pub model_rules: Vec<ControlPlaneModelRule>,
     pub proxies: Vec<ControlPlaneProxy>,
     pub config_templates: Vec<ControlPlaneConfigTemplate>,
-    pub mcp_servers: Vec<ControlPlaneMcpServer>,
 }
 #[derive(Serialize, FromRow)]
 pub struct ControlPlaneUser {
@@ -2238,23 +2134,6 @@ pub struct ControlPlaneConfigTemplateDetail {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Serialize, FromRow)]
-pub struct ControlPlaneMcpServer {
-    pub id: Uuid,
-    pub slug: String,
-    pub kind: String,
-    pub name: String,
-    pub description: Option<String>,
-    pub model_rule_id: Uuid,
-    pub client_model: String,
-    pub api_format: String,
-    pub settings_version: i16,
-    pub settings: Value,
-    pub enabled: bool,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
 #[derive(Clone)]
 pub struct RequestLogRepository {
     pool: PgPool,
@@ -2468,7 +2347,7 @@ impl RequestLogRepository {
                     count(*)::bigint AS request_count
              FROM request_logs
              WHERE user_id = $1
-               AND request_source IN ('client', 'mcp')
+               AND request_source = 'client'
                AND started_at >= $2
                AND started_at < $3
              GROUP BY (started_at AT TIME ZONE 'UTC')::date
@@ -2978,7 +2857,7 @@ impl RequestLogRepository {
                     )::bigint AS total_tokens,
                     COALESCE(sum(log.cost_amount), 0) AS cost_amount
              FROM request_logs AS log
-             WHERE log.request_source IN ('client', 'mcp')
+             WHERE log.request_source = 'client'
              GROUP BY (log.started_at AT TIME ZONE 'Asia/Shanghai')::date, log.user_id
              HAVING count(log.cost_amount) > 0
 
@@ -2998,7 +2877,7 @@ impl RequestLogRepository {
                     )::bigint,
                     COALESCE(sum(log.cost_amount), 0)
              FROM request_logs AS log
-             WHERE log.request_source IN ('client', 'mcp')
+             WHERE log.request_source = 'client'
              GROUP BY date_trunc(
                  'week',
                  log.started_at AT TIME ZONE 'Asia/Shanghai'
@@ -3021,7 +2900,7 @@ impl RequestLogRepository {
                     )::bigint,
                     COALESCE(sum(log.cost_amount), 0)
              FROM request_logs AS log
-             WHERE log.request_source IN ('client', 'mcp')
+             WHERE log.request_source = 'client'
              GROUP BY date_trunc(
                  'month',
                  log.started_at AT TIME ZONE 'Asia/Shanghai'
@@ -4739,16 +4618,10 @@ impl ControlPlaneRepository {
             let mut after = before.clone();
             let after_object = after.as_object_mut().ok_or(RepositoryError::Validation)?;
             let mut changed = false;
-            for (key, value) in [
-                (
-                    "codex",
-                    serde_json::to_value(&input.codex).expect("Codex settings serialize"),
-                ),
-                (
-                    "mcp",
-                    serde_json::to_value(&input.mcp).expect("MCP settings serialize"),
-                ),
-            ] {
+            for (key, value) in [(
+                "codex",
+                serde_json::to_value(&input.codex).expect("Codex settings serialize"),
+            )] {
                 if !after_object.contains_key(key) {
                     after_object.insert(key.into(), value);
                     changed = true;
@@ -4947,12 +4820,6 @@ impl ControlPlaneRepository {
         )
         .fetch_all(&mut **transaction)
         .await?;
-        let mcp_servers = sqlx::query_as::<_, McpServerRecord>(
-            "SELECT id,slug,kind::text AS kind,name,description,model_rule_id,settings_version,settings,enabled \
-             FROM mcp_servers WHERE deleted_at IS NULL ORDER BY slug,id",
-        )
-        .fetch_all(&mut **transaction)
-        .await?;
         Ok(ControlPlaneRecords {
             api_keys,
             models,
@@ -4961,7 +4828,6 @@ impl ControlPlaneRepository {
             channels,
             proxies,
             templates,
-            mcp_servers,
         })
     }
 
@@ -5172,17 +5038,6 @@ impl ControlPlaneRepository {
             .collect();
         let proxies = sqlx::query_as::<_, ControlPlaneProxy>("SELECT id,name,regexp_replace(regexp_replace(proxy_url, '^([^:/?#]+://)[^/?#]*@', E'\\1'), '[?#].*$', '') AS proxy_url,no_proxy_hosts,enabled,(username IS NOT NULL OR password IS NOT NULL) AS credential_configured,created_at,updated_at FROM proxies ORDER BY id").fetch_all(&self.pool).await?;
         let config_templates = sqlx::query_as::<_, ControlPlaneConfigTemplate>("SELECT id,name,description,document->>'api_format' AS api_format,enabled,created_at,updated_at FROM config_templates ORDER BY id").fetch_all(&self.pool).await?;
-        let mcp_servers = sqlx::query_as::<_, ControlPlaneMcpServer>(
-            "SELECT s.id,s.slug,s.kind::text AS kind,s.name,s.description,s.model_rule_id, \
-                    r.client_model,r.api_format::text AS api_format,s.settings_version,s.settings, \
-                    s.enabled,s.created_at,s.updated_at \
-             FROM mcp_servers AS s \
-             JOIN model_rules AS r ON r.id=s.model_rule_id \
-             WHERE s.deleted_at IS NULL \
-             ORDER BY s.slug,s.id",
-        )
-        .fetch_all(&self.pool)
-        .await?;
         Ok(ControlPlaneLists {
             users,
             user_groups,
@@ -5194,7 +5049,6 @@ impl ControlPlaneRepository {
             model_rules,
             proxies,
             config_templates,
-            mcp_servers,
         })
     }
 
@@ -5231,24 +5085,6 @@ impl ControlPlaneRepository {
     ) -> Result<Option<ControlPlaneConfigTemplateDetail>, RepositoryError> {
         sqlx::query_as::<_, ControlPlaneConfigTemplateDetail>(
             "SELECT id,name,description,document->>'api_format' AS api_format,document,enabled,created_at,updated_at FROM config_templates WHERE id=$1",
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(RepositoryError::from)
-    }
-
-    pub async fn control_plane_mcp_server(
-        &self,
-        id: Uuid,
-    ) -> Result<Option<ControlPlaneMcpServer>, RepositoryError> {
-        sqlx::query_as::<_, ControlPlaneMcpServer>(
-            "SELECT s.id,s.slug,s.kind::text AS kind,s.name,s.description,s.model_rule_id, \
-                    r.client_model,r.api_format::text AS api_format,s.settings_version,s.settings, \
-                    s.enabled,s.created_at,s.updated_at \
-             FROM mcp_servers AS s \
-             JOIN model_rules AS r ON r.id=s.model_rule_id \
-             WHERE s.id=$1 AND s.deleted_at IS NULL",
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -5897,18 +5733,6 @@ impl ControlPlaneRepository {
                 config_template_insert(transaction, id, input, false, Some(expected_updated_at))
                     .await
             }
-            ControlPlaneMutation::CreateMcpServer(input) => {
-                mcp_server_create(transaction, Uuid::new_v4(), input).await
-            }
-            ControlPlaneMutation::UpdateMcpServer {
-                id,
-                input,
-                expected_updated_at,
-            } => mcp_server_update(transaction, id, input, expected_updated_at).await,
-            ControlPlaneMutation::DeleteMcpServer {
-                id,
-                expected_updated_at,
-            } => mcp_server_delete(transaction, id, expected_updated_at).await,
             ControlPlaneMutation::UpdateSystemSettings {
                 input,
                 expected_updated_at,
@@ -6461,23 +6285,6 @@ async fn config_template_audit(
         return Err(RepositoryError::NotFound);
     };
     Ok(value)
-}
-async fn mcp_server_audit(
-    transaction: &mut Transaction<'_, Postgres>,
-    id: Uuid,
-) -> Result<Value, RepositoryError> {
-    let value = sqlx::query_scalar::<_, Value>(
-        "SELECT json_build_object( \
-            'id',id,'slug',slug,'kind',kind,'name',name,'description',description, \
-            'model_rule_id',model_rule_id,'settings_version',settings_version, \
-            'settings',settings,'enabled',enabled,'deleted_at',deleted_at, \
-            'created_at',created_at,'updated_at',updated_at) \
-         FROM mcp_servers WHERE id=$1 FOR UPDATE",
-    )
-    .bind(id)
-    .fetch_optional(&mut **transaction)
-    .await?;
-    value.ok_or(RepositoryError::NotFound)
 }
 async fn api_key_policy_audit(
     transaction: &mut Transaction<'_, Postgres>,
@@ -7926,161 +7733,6 @@ async fn config_template_insert(
     })
 }
 
-fn validate_mcp_server_fields(
-    name: &str,
-    description: Option<&str>,
-    model_rule_id: Uuid,
-    settings: &Value,
-) -> Result<(), RepositoryError> {
-    if name.trim().is_empty()
-        || name.len() > 100
-        || description.is_some_and(|value| value.len() > 1_000)
-        || model_rule_id.is_nil()
-        || !settings.is_object()
-    {
-        return Err(RepositoryError::Validation);
-    }
-    Ok(())
-}
-
-async fn mcp_server_create(
-    transaction: &mut Transaction<'_, Postgres>,
-    id: Uuid,
-    input: McpServerCreateInput,
-) -> Result<MutationResult, RepositoryError> {
-    validate_mcp_server_fields(
-        &input.name,
-        input.description.as_deref(),
-        input.model_rule_id,
-        &input.settings,
-    )?;
-    if McpServerKind::parse(&input.kind).is_none()
-        || !Regex::new(r"^[a-z0-9][a-z0-9-]{0,62}$")
-            .expect("static MCP slug regex")
-            .is_match(&input.slug)
-    {
-        return Err(RepositoryError::Validation);
-    }
-    let updated_at = match sqlx::query_scalar(
-        "INSERT INTO mcp_servers \
-         (id,slug,kind,name,description,model_rule_id,settings_version,settings,enabled) \
-         VALUES ($1,$2,$3::mcp_server_kind,$4,$5,$6,1,$7,$8) \
-         RETURNING updated_at",
-    )
-    .bind(id)
-    .bind(&input.slug)
-    .bind(&input.kind)
-    .bind(&input.name)
-    .bind(&input.description)
-    .bind(input.model_rule_id)
-    .bind(&input.settings)
-    .bind(input.enabled)
-    .fetch_one(&mut **transaction)
-    .await
-    {
-        Ok(updated_at) => updated_at,
-        Err(sqlx::Error::Database(error)) if error.constraint() == Some("mcp_servers_slug_key") => {
-            return Err(RepositoryError::McpServerSlugConflict);
-        }
-        Err(error) => return Err(error.into()),
-    };
-    Ok(MutationResult {
-        id,
-        object_type: "mcp_server",
-        action: "create",
-        before_redacted: json!({}),
-        after_redacted: mcp_server_audit(transaction, id).await?,
-        created_secret: None,
-        reason: None,
-        updated_at,
-        correlation_id: None,
-    })
-}
-
-async fn mcp_server_update(
-    transaction: &mut Transaction<'_, Postgres>,
-    id: Uuid,
-    input: McpServerInput,
-    expected_updated_at: DateTime<Utc>,
-) -> Result<MutationResult, RepositoryError> {
-    validate_mcp_server_fields(
-        &input.name,
-        input.description.as_deref(),
-        input.model_rule_id,
-        &input.settings,
-    )?;
-    let before = mcp_server_audit(transaction, id).await?;
-    if before
-        .get("deleted_at")
-        .is_some_and(|value| !value.is_null())
-    {
-        return Err(RepositoryError::NotFound);
-    }
-    let updated_at = sqlx::query_scalar(
-        "UPDATE mcp_servers \
-         SET name=$2,description=$3,model_rule_id=$4,settings_version=1,settings=$5,enabled=$6 \
-         WHERE id=$1 AND deleted_at IS NULL AND updated_at=$7 \
-         RETURNING updated_at",
-    )
-    .bind(id)
-    .bind(&input.name)
-    .bind(&input.description)
-    .bind(input.model_rule_id)
-    .bind(&input.settings)
-    .bind(input.enabled)
-    .bind(expected_updated_at)
-    .fetch_optional(&mut **transaction)
-    .await?
-    .ok_or(RepositoryError::Conflict)?;
-    Ok(MutationResult {
-        id,
-        object_type: "mcp_server",
-        action: "update",
-        before_redacted: before,
-        after_redacted: mcp_server_audit(transaction, id).await?,
-        created_secret: None,
-        reason: None,
-        updated_at,
-        correlation_id: None,
-    })
-}
-
-async fn mcp_server_delete(
-    transaction: &mut Transaction<'_, Postgres>,
-    id: Uuid,
-    expected_updated_at: DateTime<Utc>,
-) -> Result<MutationResult, RepositoryError> {
-    let before = mcp_server_audit(transaction, id).await?;
-    if before
-        .get("deleted_at")
-        .is_some_and(|value| !value.is_null())
-    {
-        return Err(RepositoryError::NotFound);
-    }
-    let updated_at = sqlx::query_scalar(
-        "UPDATE mcp_servers \
-         SET enabled=false,deleted_at=now() \
-         WHERE id=$1 AND deleted_at IS NULL AND updated_at=$2 \
-         RETURNING updated_at",
-    )
-    .bind(id)
-    .bind(expected_updated_at)
-    .fetch_optional(&mut **transaction)
-    .await?
-    .ok_or(RepositoryError::Conflict)?;
-    Ok(MutationResult {
-        id,
-        object_type: "mcp_server",
-        action: "delete",
-        before_redacted: before,
-        after_redacted: mcp_server_audit(transaction, id).await?,
-        created_secret: None,
-        reason: None,
-        updated_at,
-        correlation_id: None,
-    })
-}
-
 async fn system_settings_update(
     transaction: &mut Transaction<'_, Postgres>,
     input: SystemSettingsInput,
@@ -8203,7 +7855,6 @@ fn validate_system_settings_input(input: &SystemSettingsInput) -> Result<(), Rep
     let session_affinity = &input.session_affinity;
     let websocket = &input.websocket;
     let codex = &input.codex;
-    let mcp = &input.mcp;
     if !valid_api_hosts(api_hosts)
         || upstream.connect_timeout_seconds == 0
         || upstream.response_header_timeout_seconds <= upstream.connect_timeout_seconds
@@ -8235,7 +7886,6 @@ fn validate_system_settings_input(input: &SystemSettingsInput) -> Result<(), Rep
         || websocket.max_connection_age_seconds > 3_600
         || websocket.idle_timeout_seconds >= websocket.max_connection_age_seconds
         || !valid_codex_settings_input(codex)
-        || !valid_mcp_settings_input(mcp)
     {
         return Err(RepositoryError::Validation);
     }
@@ -8279,50 +7929,6 @@ fn valid_codex_identity_header_value(value: &str, maximum_characters: usize) -> 
         && !value.is_empty()
         && value.chars().count() <= maximum_characters
         && HeaderValue::from_str(value).is_ok()
-}
-
-fn valid_mcp_settings_input(input: &SystemMcpSettingsInput) -> bool {
-    if input.request_body_bytes == 0
-        || input.image_request_body_bytes == 0
-        || input.search_result_bytes == 0
-        || input.image_result_bytes == 0
-        || input.image_request_body_bytes > MAX_MCP_IMAGE_BYTES
-        || input.image_result_bytes > MAX_MCP_IMAGE_BYTES
-        || input.allowed_origins.len() > 64
-        || (input.enabled && input.public_base_url.is_none())
-    {
-        return false;
-    }
-    if input
-        .public_base_url
-        .as_deref()
-        .is_some_and(|value| canonical_mcp_origin(value).is_none())
-    {
-        return false;
-    }
-    let mut origins = HashSet::new();
-    input
-        .allowed_origins
-        .iter()
-        .all(|origin| canonical_mcp_origin(origin).is_some_and(|origin| origins.insert(origin)))
-}
-
-fn canonical_mcp_origin(value: &str) -> Option<String> {
-    if value.trim() != value || value.is_empty() || value.chars().count() > 2_048 || value == "*" {
-        return None;
-    }
-    let url = reqwest::Url::parse(value).ok()?;
-    if !matches!(url.scheme(), "http" | "https")
-        || url.host_str().is_none()
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.path() != "/"
-        || url.query().is_some()
-        || url.fragment().is_some()
-    {
-        return None;
-    }
-    Some(url.origin().ascii_serialization())
 }
 
 pub fn valid_api_hosts(api_hosts: &[String]) -> bool {
@@ -8491,6 +8097,4 @@ pub enum RepositoryError {
     ApiKeyTargetNotAllowed,
     #[error("the registration invitation code name or secret already exists")]
     RegistrationInvitationCodeConflict,
-    #[error("the MCP server slug already exists")]
-    McpServerSlugConflict,
 }

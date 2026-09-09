@@ -8,8 +8,8 @@ import { AppRouter } from "@/app/router";
 import { server, seedAuthenticatedSession } from "@/test/msw";
 import { SYSTEM_SETTINGS } from "@/test/fixtures";
 
-function renderApp() {
-  window.history.replaceState({}, "", "/admin/system");
+function renderApp(section = "upstream") {
+  window.history.replaceState({}, "", `/admin/system/${section}`);
   render(
     <AppProviders>
       <BrowserRouter>
@@ -20,6 +20,57 @@ function renderApp() {
 }
 
 describe("SystemPage", () => {
+  it("redirects the old settings URL and opens only the selected category", async () => {
+    seedAuthenticatedSession();
+    const user = userEvent.setup();
+    renderApp("");
+    expect(await screen.findByRole("heading", { name: "System settings · General settings" })).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/admin/system/general");
+    const menu = screen.getByRole("button", { name: "System settings" });
+    expect(menu).toHaveAttribute("aria-expanded", "true");
+    expect(screen.queryByLabelText("Connect timeout (seconds)")).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "MCP Servers" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("link", { name: "Codex" }));
+    const originator = await screen.findByLabelText("Codex originator");
+    await user.clear(originator);
+    await user.type(originator, "unsaved-draft");
+    await user.click(screen.getByRole("link", { name: "Upstream timeouts" }));
+    expect(await screen.findByLabelText("Connect timeout (seconds)")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Codex originator")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("link", { name: "Codex" }));
+    expect(await screen.findByLabelText("Codex originator")).toHaveValue(SYSTEM_SETTINGS.codex.originator);
+  });
+
+  it("reloads the complete settings and ETag after an edit conflict", async () => {
+    seedAuthenticatedSession();
+    let conflict = false;
+    let savedEtag: string | null = null;
+    server.use(
+      http.get("/console/v1/system/settings", () =>
+        HttpResponse.json(
+          { ...SYSTEM_SETTINGS, upstream: { ...SYSTEM_SETTINGS.upstream, connect_timeout_seconds: conflict ? 14 : 10 } },
+          { headers: { ETag: conflict ? '"new-version"' : '"old-version"' } },
+        ),
+      ),
+      http.put("/console/v1/system/settings", ({ request }) => {
+        savedEtag = request.headers.get("if-match");
+        conflict = true;
+        return HttpResponse.json({ error: "conflict", message: "Changed elsewhere" }, { status: 409 });
+      }),
+    );
+    const user = userEvent.setup();
+    renderApp();
+    const timeout = await screen.findByLabelText("Connect timeout (seconds)");
+    await user.clear(timeout);
+    await user.type(timeout, "12");
+    await user.click(screen.getByRole("button", { name: "Save system settings" }));
+    expect(savedEtag).toBe('"old-version"');
+    await waitFor(() => expect(timeout).toHaveValue(14));
+    await user.click(screen.getByRole("button", { name: "Save system settings" }));
+    expect(savedEtag).toBe('"new-version"');
+  });
+
   it("persists database-backed forwarding settings with its ETag", async () => {
     seedAuthenticatedSession();
     let received: unknown;
@@ -38,101 +89,16 @@ describe("SystemPage", () => {
     renderApp();
 
     const connectTimeout = await screen.findByLabelText("Connect timeout (seconds)");
-    expect(
-      connectTimeout.closest('[data-slot="system-settings-columns"]'),
-    ).toHaveClass("xl:grid-cols-2");
-    expect(
-      screen
-        .getByLabelText("Maximum cache entries")
-        .closest('[data-slot="field-group"]'),
-    ).toHaveClass("xl:grid-cols-2");
     await user.clear(connectTimeout);
     await user.type(connectTimeout, "12");
-    const originator = screen.getByLabelText("Codex originator");
-    await user.clear(originator);
-    await user.type(originator, "codex_gateway");
-    const clientVersion = screen.getByLabelText("Codex client version");
-    await user.clear(clientVersion);
-    await user.type(clientVersion, "9.8.7");
-    const userAgent = screen.getByLabelText("Codex User-Agent");
-    await user.clear(userAgent);
-    await user.type(userAgent, "codex_gateway/9.8.7 (Linux 6.8.0; x86_64) ai-gateway");
-    await user.click(screen.getByRole("button", { name: "Add Codex template" }));
     await user.click(screen.getByRole("button", { name: /save system settings/i }));
 
     expect(received).toEqual({
-      api_hosts: ["https://api.example.test/v1"],
-      upstream: {
-        connect_timeout_seconds: 12,
-        response_header_timeout_seconds: 30,
-        images_response_header_timeout_seconds: 300,
-        standalone_web_search_response_header_timeout_seconds: 300,
-        stream_idle_timeout_seconds: 90,
-      },
-      request_retry: {
-        enabled: true,
-        max_retries: 1,
-      },
-      passive_health: {
-        connection_failure_threshold: 3,
-        cooldown_seconds: 30,
-      },
-      automatic_disable: {
-        enabled: true,
-        error_status_codes: [429, 500],
-        error_message_keywords: ["quota exceeded"],
-      },
-      scheduled_testing: {
-        mode: "global",
-        auto_recover: true,
-        interval_minutes: 5,
-        prompt: "reply '1'",
-      },
-      session_affinity: {
-        enabled: false,
-        max_entries: 100000,
-        default_ttl_seconds: 3600,
-        rules: [
-          {
-            name: "codex-responses",
-            enabled: true,
-            api_formats: ["open_ai_responses"],
-            model_regex: ["^gpt-.*$"],
-            key_sources: [
-              { type: "json_pointer", pointer: "/prompt_cache_key" },
-              { type: "json_pointer", pointer: "/id" },
-              { type: "request_header", name: "session-id" },
-              { type: "request_header", name: "thread-id" },
-            ],
-            value_regex: null,
-            ttl_seconds: null,
-          },
-        ],
-      },
-      websocket: {
-        enabled: false,
-        max_idle_connections: 128,
-        idle_timeout_seconds: 300,
-        max_connection_age_seconds: 3300,
-      },
-      codex: {
-        workspace_path: "/workspace",
-        git_remote_url: "https://github.com/oai404iao/ai_gateway",
-        originator: "codex_gateway",
-        client_version: "9.8.7",
-        user_agent: "codex_gateway/9.8.7 (Linux 6.8.0; x86_64) ai-gateway",
-      },
-      mcp: {
-        enabled: false,
-        public_base_url: "https://mcp.example.test",
-        allowed_origins: ["https://client.example.test"],
-        allow_legacy_2025_11_25: true,
-        request_body_bytes: 4194304,
-        image_request_body_bytes: 33554432,
-        search_result_bytes: 4194304,
-        image_result_bytes: 33554432,
-      },
+      ...Object.fromEntries(Object.entries(SYSTEM_SETTINGS).filter(([key]) => key !== "updated_at")),
+      upstream: { ...SYSTEM_SETTINGS.upstream, connect_timeout_seconds: 12 },
     });
+    expect(screen.queryByLabelText("Codex originator")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Maximum cache entries")).not.toBeInTheDocument();
     expect(ifMatch).toBe('"2026-01-02T00:00:00.000Z"');
     expect(await screen.findByText("System settings saved and applied.")).toBeInTheDocument();
   });
@@ -154,24 +120,6 @@ describe("SystemPage", () => {
     ).toBeInTheDocument();
   });
 
-  it("requires a public origin before enabling the MCP transport", async () => {
-    seedAuthenticatedSession();
-    const user = userEvent.setup();
-    renderApp();
-
-    const publicBaseUrl = await screen.findByLabelText("MCP public base URL");
-    await user.clear(publicBaseUrl);
-    await user.click(
-      screen.getByRole("switch", { name: "Enable MCP transport" }),
-    );
-    await user.click(screen.getByRole("button", { name: /save system settings/i }));
-
-    expect(
-      await screen.findByText(
-        "MCP public base URL is required when the transport is enabled.",
-      ),
-    ).toBeInTheDocument();
-  });
 
   it("requires the Images response-header timeout to exceed the connect timeout", async () => {
     seedAuthenticatedSession();
@@ -212,7 +160,7 @@ describe("SystemPage", () => {
   it("bounds automatic retries after the initial attempt", async () => {
     seedAuthenticatedSession();
     const user = userEvent.setup();
-    renderApp();
+    renderApp("reliability");
 
     const maximumRetries = await screen.findByLabelText("Maximum retries");
     await user.clear(maximumRetries);
@@ -227,7 +175,7 @@ describe("SystemPage", () => {
   it("requires a synthetic HTTPS Codex Git remote", async () => {
     seedAuthenticatedSession();
     const user = userEvent.setup();
-    renderApp();
+    renderApp("codex");
 
     const gitRemote = await screen.findByLabelText("Synthetic Git origin");
     await user.clear(gitRemote);
@@ -292,7 +240,7 @@ describe("SystemPage", () => {
       }),
     );
     const user = userEvent.setup();
-    renderApp();
+    renderApp("affinity");
 
     const rule = await screen.findByText("codex-responses");
     const row = rule.closest("tr");

@@ -23,8 +23,8 @@ use ai_gateway::{
     models_dev::ModelsDevClient,
     persistence::{
         AuthRepository, ControlPlaneRepository, DEFAULT_USER_GROUP_ID, MIGRATOR,
-        RequestLogRepository, SystemMcpSettingsInput, SystemPassiveHealthSettingsInput,
-        SystemSettingsInput, SystemUpstreamSettingsInput,
+        RequestLogRepository, SystemPassiveHealthSettingsInput, SystemSettingsInput,
+        SystemUpstreamSettingsInput,
     },
     routing::{PassiveHealthPolicy, RoutingRuntime},
     runtime_config::{AuthConfig, ModelsSyncConfig, RuntimeConfig, compile_runtime_config},
@@ -63,6 +63,10 @@ struct TestDatabase {
 
 impl TestDatabase {
     async fn new() -> Self {
+        Self::with_migrator(&MIGRATOR).await
+    }
+
+    async fn with_migrator(migrator: &sqlx::migrate::Migrator) -> Self {
         let admin_url =
             std::env::var("TEST_DATABASE_ADMIN_URL").unwrap_or_else(|_| default_admin_url());
         let mut database_url = reqwest::Url::parse(&admin_url).expect("admin URL valid");
@@ -87,7 +91,7 @@ impl TestDatabase {
             .connect(database_url.as_str())
             .await
             .expect("temp database connectable");
-        MIGRATOR.run(&pool).await.expect("migrations apply");
+        migrator.run(&pool).await.expect("migrations apply");
         Self { pool, admin, name }
     }
 
@@ -99,6 +103,84 @@ impl TestDatabase {
             .expect("temp database removable");
         self.admin.close().await;
     }
+}
+
+#[tokio::test]
+async fn retired_adapter_migration_preserves_usage_and_removes_control_plane_state() {
+    let mut previous = sqlx::migrate::Migrator::new(std::path::Path::new("./migrations"))
+        .await
+        .unwrap();
+    previous.migrations = previous
+        .iter()
+        .filter(|migration| migration.version < 53)
+        .cloned()
+        .collect::<Vec<_>>()
+        .into();
+    let database = TestDatabase::with_migrator(&previous).await;
+    let app = app(database.pool.clone()).await;
+    let key = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO api_keys (id,user_id,name,secret_value,status,allowed_api_formats,permissions) \
+         VALUES ($1,$2,'legacy usage','legacy-test-secret','active', \
+         ARRAY['open_ai_responses']::api_format[],ARRAY['proxy'])",
+    )
+    .bind(key)
+    .bind(app.user_id)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let log = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO request_logs \
+         (id,started_at,completed_at,user_id,api_key_id,api_format,api_operation, \
+          client_model,outcome,streamed,total_duration_ms,request_source,cost_amount) \
+         VALUES ($1,now(),now(),$2,$3,'open_ai_responses','standalone_web_search', \
+                 'legacy-search','succeeded',false,100,'mcp',0.25)",
+    )
+    .bind(log)
+    .bind(app.user_id)
+    .bind(key)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE system_settings SET value=value || '{\"mcp\":{\"enabled\":true}}'::jsonb \
+         WHERE setting_key='forwarding_policy'",
+    )
+    .execute(&database.pool)
+    .await
+    .unwrap();
+
+    MIGRATOR.run(&database.pool).await.unwrap();
+    let state: (bool, bool, bool) = sqlx::query_as(
+        "SELECT to_regclass('mcp_servers') IS NULL, to_regtype('mcp_server_kind') IS NULL, \
+         NOT (SELECT value ? 'mcp' FROM system_settings WHERE setting_key='forwarding_policy')",
+    )
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(state, (true, true, true));
+    let preserved: (String, String) =
+        sqlx::query_as("SELECT request_source,cost_amount::text FROM request_logs WHERE id=$1")
+            .bind(log)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert_eq!(preserved.0, "client");
+    assert_eq!(preserved.1.parse::<f64>().unwrap(), 0.25);
+    let settings = ControlPlaneRepository::new(database.pool.clone())
+        .system_settings()
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(settings.settings).unwrap(),
+        serde_json::to_value(bootstrap_system_settings()).unwrap()
+    );
+    for path in ["/console/v1/mcp-servers", "/console/v1/mcp-servers/retired"] {
+        let response = request(&app, "GET", path, serde_json::json!({}), &[]).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+    database.cleanup().await;
 }
 
 fn default_admin_url() -> String {
@@ -150,7 +232,6 @@ fn bootstrap_system_settings() -> SystemSettingsInput {
         session_affinity: Default::default(),
         websocket: Default::default(),
         codex: Default::default(),
-        mcp: Default::default(),
     }
 }
 
@@ -416,7 +497,6 @@ async fn system_settings_bootstrap_initializes_once_without_overwriting_database
         session_affinity: Default::default(),
         websocket: Default::default(),
         codex: Default::default(),
-        mcp: Default::default(),
     };
 
     repository
@@ -463,7 +543,7 @@ async fn system_settings_bootstrap_backfills_late_sections_once_for_upgraded_dat
         .await
         .unwrap();
     sqlx::query(
-        "UPDATE system_settings SET value=value-'codex'-'mcp' WHERE setting_key='forwarding_policy'",
+        "UPDATE system_settings SET value=value-'codex' WHERE setting_key='forwarding_policy'",
     )
     .execute(&database.pool)
     .await
@@ -475,16 +555,6 @@ async fn system_settings_bootstrap_backfills_late_sections_once_for_upgraded_dat
     bootstrap.codex.originator = "codex_gateway".into();
     bootstrap.codex.client_version = "9.8.7".into();
     bootstrap.codex.user_agent = "codex_gateway/9.8.7 (Linux 6.8.0; x86_64) ai-gateway".into();
-    bootstrap.mcp = SystemMcpSettingsInput {
-        enabled: false,
-        public_base_url: Some("https://mcp.example.test".into()),
-        allowed_origins: vec!["https://client.example.test".into()],
-        allow_legacy_2025_11_25: true,
-        request_body_bytes: 1_024,
-        image_request_body_bytes: 2_048,
-        search_result_bytes: 3_072,
-        image_result_bytes: 4_096,
-    };
     repository
         .ensure_system_settings(bootstrap.clone())
         .await
@@ -502,16 +572,6 @@ async fn system_settings_bootstrap_backfills_late_sections_once_for_upgraded_dat
         stored.settings.codex.user_agent,
         "codex_gateway/9.8.7 (Linux 6.8.0; x86_64) ai-gateway"
     );
-    assert_eq!(
-        stored.settings.mcp.public_base_url.as_deref(),
-        Some("https://mcp.example.test")
-    );
-    assert_eq!(
-        stored.settings.mcp.allowed_origins,
-        ["https://client.example.test"]
-    );
-    assert!(stored.settings.mcp.allow_legacy_2025_11_25);
-    assert_eq!(stored.settings.mcp.image_result_bytes, 4_096);
 
     sqlx::query(
         "UPDATE system_settings \
@@ -544,22 +604,11 @@ async fn system_settings_bootstrap_backfills_late_sections_once_for_upgraded_dat
     replacement.codex.originator = "replacement-originator".into();
     replacement.codex.client_version = "1.2.3".into();
     replacement.codex.user_agent = "replacement/1.2.3".into();
-    replacement.mcp.public_base_url = Some("https://replacement.example.test".into());
     repository
         .ensure_system_settings(replacement)
         .await
         .unwrap();
-    assert_eq!(
-        repository
-            .system_settings()
-            .await
-            .unwrap()
-            .settings
-            .mcp
-            .public_base_url
-            .as_deref(),
-        Some("https://mcp.example.test")
-    );
+
     let stored = repository.system_settings().await.unwrap();
     assert_eq!(stored.settings.codex.workspace_path, "/synthetic/project");
     assert_eq!(
@@ -3881,16 +3930,6 @@ async fn system_settings_are_versioned_audited_and_updated_via_console() {
         "client_version": "9.8.7",
         "user_agent": "codex_gateway/9.8.7 (Linux 6.8.0; x86_64) ai-gateway",
     });
-    input["mcp"] = serde_json::json!({
-        "enabled": false,
-        "public_base_url": "https://mcp.example.test",
-        "allowed_origins": ["https://client.example.test"],
-        "allow_legacy_2025_11_25": true,
-        "request_body_bytes": 4194304,
-        "image_request_body_bytes": 33554432,
-        "search_result_bytes": 4194304,
-        "image_result_bytes": 33554432,
-    });
     input.as_object_mut().unwrap().remove("updated_at");
 
     let mut invalid_retry = input.clone();
@@ -3937,19 +3976,6 @@ async fn system_settings_are_versioned_audited_and_updated_via_console() {
         "PUT",
         "/console/v1/system/settings",
         invalid_api_host,
-        &[("if-match", &etag)],
-    )
-    .await;
-    assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
-
-    let mut invalid_mcp_origin = input.clone();
-    invalid_mcp_origin["mcp"]["public_base_url"] =
-        serde_json::json!("https://mcp.example.test/path");
-    let invalid = request(
-        &app,
-        "PUT",
-        "/console/v1/system/settings",
-        invalid_mcp_origin,
         &[("if-match", &etag)],
     )
     .await;
@@ -4078,16 +4104,7 @@ async fn system_settings_are_versioned_audited_and_updated_via_console() {
         published.codex().outbound_identity().user_agent(),
         "codex_gateway/9.8.7 (Linux 6.8.0; x86_64) ai-gateway"
     );
-    assert!(!published.mcp().enabled());
-    assert_eq!(
-        published.mcp().public_base_url(),
-        Some("https://mcp.example.test")
-    );
-    assert!(published.mcp().allow_legacy_2025_11_25());
-    assert_eq!(
-        published.mcp().allowed_origins(),
-        ["https://client.example.test"]
-    );
+
     let audit: serde_json::Value = sqlx::query_scalar(
         "SELECT after_redacted FROM audit_logs \
          WHERE object_type='system_settings' ORDER BY occurred_at DESC LIMIT 1",
@@ -4589,433 +4606,6 @@ async fn model_rule_uses_its_upstream_model_as_the_price_source() {
         body_json(invalid_channel_move).await,
         serde_json::json!({"error": "routing_dependency_invalid"})
     );
-    database.cleanup().await;
-}
-
-#[tokio::test]
-async fn mcp_server_crud_publishes_registry_and_uses_etags() {
-    let database = TestDatabase::new().await;
-    let app = app(database.pool.clone()).await;
-    let model = request(
-        &app,
-        "POST",
-        "/console/v1/models",
-        serde_json::json!({
-            "source_model_id": "mcp-search-upstream",
-            "display_name": "MCP search upstream",
-            "enabled": true,
-            "price_unit_tokens": 1000000,
-            "input_unit_price": "0",
-            "cached_input_unit_price": "0",
-            "cache_write_unit_price": "0",
-            "output_unit_price": "0",
-            "price_effective_at": chrono::Utc::now().to_rfc3339(),
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(model.status(), StatusCode::CREATED);
-    let model_id = body_json(model).await["id"].as_str().unwrap().to_owned();
-
-    let group = request(
-        &app,
-        "POST",
-        "/console/v1/routing/channel-groups",
-        serde_json::json!({
-            "name": "mcp-search-group",
-            "api_format": "open_ai_responses",
-            "enabled": true,
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(group.status(), StatusCode::CREATED);
-    let group_id = body_json(group).await["id"].as_str().unwrap().to_owned();
-
-    let channel = request(
-        &app,
-        "POST",
-        "/console/v1/routing/channels",
-        serde_json::json!({
-            "channel_group_id": group_id,
-            "api_format": "open_ai_responses",
-            "name": "mcp-search-channel",
-            "base_url": "https://search.example.test",
-            "enabled": true,
-            "supports_standalone_web_search": true,
-            "upstream_auth_kind": "none",
-            "available_models": ["mcp-search-upstream"],
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(channel.status(), StatusCode::CREATED);
-    let channel_id = body_json(channel).await["id"].as_str().unwrap().to_owned();
-
-    let rule = request(
-        &app,
-        "POST",
-        "/console/v1/routing/model-rules",
-        serde_json::json!({
-            "client_model": "mcp-search-client",
-            "api_format": "open_ai_responses",
-            "upstream_model_id": model_id,
-            "routing_tiers": [{
-                "priority": 0,
-                "selection_strategy": "weighted_random",
-                "channel_groups": [{
-                    "channel_group_id": group_id,
-                    "channel_selection": "selected",
-                    "default_weight": null,
-                    "channels": [{"channel_id": channel_id, "weight": 1}]
-                }]
-            }],
-            "enabled": true,
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(rule.status(), StatusCode::CREATED);
-    let rule_id = body_json(rule).await["id"].as_str().unwrap().to_owned();
-
-    let created = request(
-        &app,
-        "POST",
-        "/console/v1/mcp-servers",
-        serde_json::json!({
-            "slug": "search",
-            "kind": "web_search",
-            "name": "Search MCP",
-            "description": "Search through the gateway",
-            "model_rule_id": rule_id,
-            "settings": {
-                "external_web_access": "live",
-                "search_context_size": "medium",
-                "allowed_domains": ["example.test"],
-                "blocked_domains": [],
-                "max_output_tokens": {
-                    "short": 1000,
-                    "medium": 3000,
-                    "long": 6000
-                }
-            },
-            "enabled": true,
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(created.status(), StatusCode::CREATED);
-    let mcp_id = body_json(created).await["id"].as_str().unwrap().to_owned();
-    assert_eq!(
-        app.runtime
-            .snapshot()
-            .mcp_server("search")
-            .unwrap()
-            .model_rule()
-            .client_model(),
-        "mcp-search-client"
-    );
-
-    let duplicate = request(
-        &app,
-        "POST",
-        "/console/v1/mcp-servers",
-        serde_json::json!({
-            "slug": "search",
-            "kind": "web_search",
-            "name": "Duplicate",
-            "model_rule_id": rule_id,
-            "settings": {},
-            "enabled": false,
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(duplicate.status(), StatusCode::CONFLICT);
-    assert_eq!(
-        body_json(duplicate).await["error"],
-        "mcp_server_slug_conflict"
-    );
-
-    let listed = request(
-        &app,
-        "GET",
-        "/console/v1/mcp-servers",
-        serde_json::json!({}),
-        &[],
-    )
-    .await;
-    assert_eq!(listed.status(), StatusCode::OK);
-    let listed = body_json(listed).await;
-    assert_eq!(listed.as_array().unwrap().len(), 1);
-    assert_eq!(listed[0]["slug"], "search");
-    assert_eq!(listed[0]["kind"], "web_search");
-    assert_eq!(listed[0]["api_format"], "open_ai_responses");
-
-    let detail = request(
-        &app,
-        "GET",
-        &format!("/console/v1/mcp-servers/{mcp_id}"),
-        serde_json::json!({}),
-        &[],
-    )
-    .await;
-    assert_eq!(detail.status(), StatusCode::OK);
-    let first_etag = detail
-        .headers()
-        .get(header::ETAG)
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .to_owned();
-    assert_eq!(body_json(detail).await["settings_version"], 1);
-
-    let updated = request(
-        &app,
-        "PUT",
-        &format!("/console/v1/mcp-servers/{mcp_id}"),
-        serde_json::json!({
-            "name": "Restricted Search MCP",
-            "description": null,
-            "model_rule_id": rule_id,
-            "settings": {
-                "external_web_access": "indexed",
-                "search_context_size": "low",
-                "allowed_domains": ["example.test"],
-                "blocked_domains": [],
-                "max_output_tokens": {
-                    "short": 500,
-                    "medium": 1000,
-                    "long": 2000
-                }
-            },
-            "enabled": true,
-        }),
-        &[("if-match", &first_etag)],
-    )
-    .await;
-    assert_eq!(updated.status(), StatusCode::OK);
-    assert_eq!(
-        app.runtime.snapshot().mcp_server("search").unwrap().name(),
-        "Restricted Search MCP"
-    );
-
-    let stale = request(
-        &app,
-        "PUT",
-        &format!("/console/v1/mcp-servers/{mcp_id}"),
-        serde_json::json!({
-            "name": "Stale",
-            "description": null,
-            "model_rule_id": rule_id,
-            "settings": {},
-            "enabled": true,
-        }),
-        &[("if-match", &first_etag)],
-    )
-    .await;
-    assert_eq!(stale.status(), StatusCode::CONFLICT);
-
-    let detail = request(
-        &app,
-        "GET",
-        &format!("/console/v1/mcp-servers/{mcp_id}"),
-        serde_json::json!({}),
-        &[],
-    )
-    .await;
-    let current_etag = detail
-        .headers()
-        .get(header::ETAG)
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .to_owned();
-    let deleted = request(
-        &app,
-        "DELETE",
-        &format!("/console/v1/mcp-servers/{mcp_id}"),
-        serde_json::json!({}),
-        &[("if-match", &current_etag)],
-    )
-    .await;
-    assert_eq!(deleted.status(), StatusCode::OK);
-    assert!(app.runtime.snapshot().mcp_server("search").is_none());
-    let deleted_at: Option<chrono::DateTime<chrono::Utc>> =
-        sqlx::query_scalar("SELECT deleted_at FROM mcp_servers WHERE id=$1")
-            .bind(Uuid::parse_str(&mcp_id).unwrap())
-            .fetch_one(&database.pool)
-            .await
-            .unwrap();
-    assert!(deleted_at.is_some());
-
-    let reused_slug = request(
-        &app,
-        "POST",
-        "/console/v1/mcp-servers",
-        serde_json::json!({
-            "slug": "search",
-            "kind": "web_search",
-            "name": "Reused tombstone",
-            "model_rule_id": rule_id,
-            "settings": {},
-            "enabled": false,
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(reused_slug.status(), StatusCode::CONFLICT);
-    assert_eq!(
-        body_json(reused_slug).await["error"],
-        "mcp_server_slug_conflict"
-    );
-
-    database.cleanup().await;
-}
-
-#[tokio::test]
-async fn image_mcp_servers_compile_typed_settings_and_require_images_routes() {
-    let database = TestDatabase::new().await;
-    let app = app(database.pool.clone()).await;
-    let model = request(
-        &app,
-        "POST",
-        "/console/v1/models",
-        serde_json::json!({
-            "source_model_id": "mcp-image-upstream",
-            "display_name": "MCP image upstream",
-            "enabled": true,
-            "price_unit_tokens": 1000000,
-            "input_unit_price": "0",
-            "cached_input_unit_price": "0",
-            "cache_write_unit_price": "0",
-            "output_unit_price": "0",
-            "price_effective_at": chrono::Utc::now().to_rfc3339(),
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(model.status(), StatusCode::CREATED);
-    let model_id = body_json(model).await["id"].as_str().unwrap().to_owned();
-
-    let group = request(
-        &app,
-        "POST",
-        "/console/v1/routing/channel-groups",
-        serde_json::json!({
-            "name": "mcp-image-group",
-            "api_format": "open_ai_images",
-            "enabled": true,
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(group.status(), StatusCode::CREATED);
-    let group_id = body_json(group).await["id"].as_str().unwrap().to_owned();
-
-    let channel = request(
-        &app,
-        "POST",
-        "/console/v1/routing/channels",
-        serde_json::json!({
-            "channel_group_id": group_id,
-            "api_format": "open_ai_images",
-            "name": "mcp-image-channel",
-            "base_url": "https://images.example.test",
-            "enabled": true,
-            "upstream_auth_kind": "none",
-            "available_models": ["mcp-image-upstream"],
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(channel.status(), StatusCode::CREATED);
-    let channel_id = body_json(channel).await["id"].as_str().unwrap().to_owned();
-
-    let rule = request(
-        &app,
-        "POST",
-        "/console/v1/routing/model-rules",
-        serde_json::json!({
-            "client_model": "mcp-image-client",
-            "api_format": "open_ai_images",
-            "upstream_model_id": model_id,
-            "routing_tiers": [{
-                "priority": 0,
-                "selection_strategy": "weighted_random",
-                "channel_groups": [{
-                    "channel_group_id": group_id,
-                    "channel_selection": "selected",
-                    "default_weight": null,
-                    "channels": [{"channel_id": channel_id, "weight": 1}]
-                }]
-            }],
-            "enabled": true,
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(rule.status(), StatusCode::CREATED);
-    let rule_id = body_json(rule).await["id"].as_str().unwrap().to_owned();
-
-    let created = request(
-        &app,
-        "POST",
-        "/console/v1/mcp-servers",
-        serde_json::json!({
-            "slug": "image",
-            "kind": "image",
-            "name": "Image generation",
-            "model_rule_id": rule_id,
-            "settings": {
-                "background": "opaque",
-                "quality": "high",
-                "size": "1536x1024"
-            },
-            "enabled": true,
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(created.status(), StatusCode::CREATED);
-    let server = app.runtime.snapshot().mcp_server("image").unwrap();
-    assert_eq!(server.kind().as_str(), "image");
-    assert_eq!(server.model_rule().api_format().as_str(), "open_ai_images");
-    assert_eq!(server.image_settings().unwrap().size, "1536x1024");
-
-    let invalid_size = request(
-        &app,
-        "POST",
-        "/console/v1/mcp-servers",
-        serde_json::json!({
-            "slug": "image-invalid-size",
-            "kind": "image",
-            "name": "Invalid image size",
-            "model_rule_id": rule_id,
-            "settings": {"size": "63x1024"},
-            "enabled": false,
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(invalid_size.status(), StatusCode::UNPROCESSABLE_ENTITY);
-
-    let wrong_kind = request(
-        &app,
-        "POST",
-        "/console/v1/mcp-servers",
-        serde_json::json!({
-            "slug": "search-on-images",
-            "kind": "web_search",
-            "name": "Wrong route format",
-            "model_rule_id": rule_id,
-            "settings": {},
-            "enabled": true,
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(wrong_kind.status(), StatusCode::UNPROCESSABLE_ENTITY);
     database.cleanup().await;
 }
 

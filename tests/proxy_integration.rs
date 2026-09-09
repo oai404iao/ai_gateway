@@ -1031,7 +1031,6 @@ fn configured_proxy_with_policy_and_transforms(
                 }]
             })
             .unwrap_or_default(),
-        mcp_servers: vec![],
     };
     let OutboundTestPolicy {
         proxy,
@@ -1293,7 +1292,6 @@ fn session_affinity_proxy(first_upstream_url: &str, second_upstream_url: &str) -
         }],
         proxies: vec![],
         templates: vec![],
-        mcp_servers: vec![],
     };
     let system_settings = SystemRuntimeSettings::new_with_all(
         UpstreamTimeoutDefaults::new(

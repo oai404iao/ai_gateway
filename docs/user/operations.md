@@ -115,11 +115,6 @@ verification_key_path = "./config/console-jwt-public.pem"
 - `image_edit_spool_directory` 必须位于容量足够的本地文件系统。Unix 上目录和临时文件分别使用
   `0700` 与 `0600`；图片字节不会进入请求日志。
 - `console_body_bytes` 限制已认证 Console 写操作；`auth_body_bytes` 限制登录、注册、刷新和邀请激活请求。
-- 启用 `mcp-server` feature 和数据库系统设置中的 MCP transport 后，`request_body_bytes`
-  限制 Search MCP JSON-RPC envelope，`image_request_body_bytes` 独立限制 Image MCP
-  inline edit envelope，`search_result_bytes` 限制 Search MCP 有界收集的上游结果，
-  `image_result_bytes` 限制 Images generation/edit MCP 的单图 JSON/base64 结果。TOML
-  `[mcp]` 只提供首次引导值。
 
 ## 上游超时
 
@@ -133,7 +128,10 @@ stream_idle_timeout_seconds = 90
 ```
 
 这些 TOML 值只在数据库 `forwarding_policy` 系统设置不存在时用于首次初始化；之后应在 Console
-的“系统设置”页面修改。Images generation/edit 使用独立的
+的“系统设置”分类页面修改。左侧菜单可点击展开，按基础设置、上游超时、重试与健康、
+定时测试、会话亲和、WebSocket、Codex 和运行维护分类；每类有独立地址，可直接打开或刷新。
+保存只提交当前页面的编辑，其他分类保留读取时的值；整份配置仍使用同一个 ETag 防止覆盖
+并发修改。切换分类前请先保存，未保存编辑不会带到另一个页面。Images generation/edit 使用独立的
 `images_response_header_timeout_seconds`，因为上游通常要完成图片处理后才返回响应头。Chat
 Completions、Responses 和其他辅助上游请求继续使用 `response_header_timeout_seconds`。
 非流式 `/v1/alpha/search` 使用
@@ -157,22 +155,10 @@ Completions、Responses 和其他辅助上游请求继续使用 `response_header
   路由规则；当前只支持非流式 generation。
 - `POST /v1/images/edits`：接受带 `model`、一个或多个 `image`/`image[]` 和可选
   `mask` 的 `multipart/form-data`，仅匹配 Images 路由规则。
-- 可选 `/mcp/{slug}`：默认接受无状态 MCP `2026-07-28` POST；启用旧协议兼容后还支持
-  `2025-11-25` 的 Session POST、GET SSE 和 DELETE，并接受 Codex 旧版模式使用的
-  `2025-06-18` 初始化协商。当前已实现的
-  `web_search` kind 暴露 `web.run`，`image` kind 暴露单图 `image_gen.imagegen`
-  generation/edit，并在同一不可变快照内调用既有 standalone search、Images generation
-  或 Images edit Proxy use case。
 
 三个 OpenAI 格式绝不互相回退。客户端 `Authorization` 不会转发给上游；网关清理
 hop-by-hop headers 后，按渠道配置最后注入上游认证。
 
-MCP 不是第四种 `ApiFormat`，也不会通过本机 HTTP 回环到 `/v1/*`。它复用同一个 Gateway API
-Key：Search 使用 Responses `proxy` 权限，Images generation/edit 使用 Images `proxy` 权限，
-并继续执行模型规则和 Channel 可达性。Search ref-id 的跨请求连续性通过客户端显式回传
-`search_session_id`；Images 不保存最近图片或文件，edit 只接受客户端显式回传的受限 data URL。
-旧协议 Session 只保存在当前进程中，多实例需要粘性路由；Search ref-id 与图片输入仍必须显式
-回传，不依赖协议 Session。完整配置、协议 Header 和工具边界见 [MCP 服务](mcp-services.md)。
 
 所有公开数据面请求先应用客户端入口白名单：未列出的 Header 被忽略，未列出的顶层 JSON 或
 multipart 字段返回 `400 request_body_field_unsupported`。当前只检查顶层字段，允许字段内部的
@@ -217,7 +203,7 @@ Transform，控制面编译失败。
 
 Search 的 `id`、`input`、commands 和 settings 不借用 Responses body 规则。无需模型别名或
 策略删除时保留原始 JSON；网关不会额外加入 `stream`、`store`、`client_metadata` 或伪造
-`input`。MCP 的请求生成差异见 [MCP 服务](mcp-services.md)。
+`input`。
 
 multipart edit 最多接受 64 个 part、16 张输入图片和一个 mask；普通文本字段最多
 单项 `64 KiB`、合计 `1 MiB`；boundary 最多 70 bytes，preamble、单个 part Header block 和
@@ -641,7 +627,6 @@ workspace/member 身份、Token、代理、运行状态、错误或 reset-credit
 - 渠道批量修改：`POST /console/v1/routing/channels/batch`
 - 网络：`/console/v1/network/proxies`、`POST /console/v1/network/proxies/test`
 - 变换模板：`/console/v1/transforms/templates`
-- MCP 实例：`/console/v1/mcp-servers`
 - 观测事实：`GET /console/v1/request-logs`、`GET /console/v1/audit-logs`
 - 花费排行榜：`GET /console/v1/statistics/spend-leaderboard`
 - 系统负载：`GET /console/v1/system/load`（当前实例的 CPU、内存、运行时、队列、日志积压、Responses WebSocket Session/连接池和数据库连接池压力；Console 页面位于“运维”下的 `/admin/system-load`）
@@ -844,9 +829,6 @@ API Key 和小时/天聚合粒度，不提供用户或渠道筛选，响应中�
 并复用该渠道的代理、超时、变换和上游鉴权配置。Images 渠道不能配置 `test_model`，
 不会被定时测试。手工禁用的渠道与禁用渠道组不会被测试。
 
-MCP 转发日志的 `request_source` 为 `mcp`；它们仍按底层
-`standalone_web_search`、`images_generation` 或 `images_edit` operation 计费，并且不保存
-tool arguments、prompt、图片或结果。
 
 定时测试日志写入 `request_logs`，`request_source` 为 `scheduled_test`。它们使用系统内置、
 管理员角色的内部 API Key。网关会解析响应中的 token 用量，并按该模型的不可变价格快照、模型高级计费规则和渠道计费倍率计算成本；结算会扣减该系统管理员账户余额并累计其内部 API Key 的额度用量，不会归属到任何普通用户。系统内部身份不会出现在用户和 API Key 管理列表中。自动禁用和自动恢复都会写入系统审计日志并立即发布新的路由快照。

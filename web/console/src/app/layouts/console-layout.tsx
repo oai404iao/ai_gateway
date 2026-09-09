@@ -1,4 +1,4 @@
-import { Suspense } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router";
 import { LogOut, Moon, Sun, Monitor, ChevronDown, User } from "lucide-react";
 import { toast } from "sonner";
@@ -14,9 +14,18 @@ import {
   SidebarMenu,
   SidebarMenuItem,
   SidebarMenuButton,
+  SidebarMenuSub,
+  SidebarMenuSubItem,
+  SidebarMenuSubButton,
   SidebarProvider,
   SidebarTrigger,
+  useSidebar,
 } from "@/components/ui/sidebar";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -35,10 +44,11 @@ import { useTheme } from "@/app/theme";
 import { useI18n } from "@/app/i18n";
 import { logout } from "@/api/session";
 import { roleLabel } from "@/lib/permissions";
-import { visibleSections } from "@/app/layouts/nav";
+import { visibleSections, type NavItem } from "@/app/layouts/nav";
 import { RouteFallback } from "@/components/shared/route-fallback";
 import { LocaleToggle } from "@/components/shared/locale-toggle";
 import { Brand } from "@/components/shared/brand";
+import { cn } from "@/lib/utils";
 
 function BrandHeader() {
   return (
@@ -136,6 +146,56 @@ function UserMenu() {
   );
 }
 
+function ExpandableNavItem({ item }: { item: NavItem }) {
+  const { pathname } = useLocation();
+  const { t } = useI18n();
+  const { state, setOpen: setSidebarOpen, isMobile, setOpenMobile } = useSidebar();
+  const active = pathname === item.path || pathname.startsWith(`${item.path}/`);
+  const [open, setOpen] = useState(active);
+
+  useEffect(() => {
+    if (active) setOpen(true);
+  }, [active, pathname]);
+
+  return (
+    <Collapsible
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (!isMobile && state === "collapsed") {
+          setSidebarOpen(true);
+          setOpen(true);
+        } else {
+          setOpen(nextOpen);
+        }
+      }}
+      render={<SidebarMenuItem />}
+    >
+      <CollapsibleTrigger render={<SidebarMenuButton isActive={active} tooltip={t(item.label)} />}>
+        <item.icon />
+        <span>{t(item.label)}</span>
+        <ChevronDown className={cn("ml-auto", open && "rotate-180")} />
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <SidebarMenuSub>
+          {item.children?.map((child) => (
+            <SidebarMenuSubItem key={child.path}>
+              <SidebarMenuSubButton
+                isActive={pathname === child.path}
+                render={<NavLink to={child.path} end />}
+                onClick={() => {
+                  if (isMobile) setOpenMobile(false);
+                }}
+              >
+                <span>{t(child.label)}</span>
+              </SidebarMenuSubButton>
+            </SidebarMenuSubItem>
+          ))}
+        </SidebarMenuSub>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
 export function ConsoleLayout() {
   const { user } = useSession();
   const { pathname } = useLocation();
@@ -152,7 +212,9 @@ export function ConsoleLayout() {
               <SidebarGroupLabel>{t(section.title)}</SidebarGroupLabel>
               <SidebarGroupContent>
                 <SidebarMenu>
-                  {section.items.map((item) => (
+                  {section.items.map((item) => item.children ? (
+                    <ExpandableNavItem key={item.path} item={item} />
+                  ) : (
                     <SidebarMenuItem key={item.path}>
                       <SidebarMenuButton
                         isActive={item.label === "Model configuration" && (

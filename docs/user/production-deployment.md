@@ -74,7 +74,7 @@ docker compose \
 ```
 
 Dockerfile 使用 Rust 1.97.1 构建 release 二进制，并先构建、再嵌入 Console
-Web UI，同时编入默认关闭的 `mcp-server` transport；源码构建也以同一固定
+Web UI；源码构建也以同一固定
 工具链作为受支持和持续验证的边界。运行镜像只保留二进制及必要的 CA、健康检查
 和权限切换工具。
 
@@ -119,6 +119,11 @@ docker compose \
 ```
 
 ## 5. 升级
+
+移除 MCP 的版本包含 `0053_remove_mcp.sql`：删除 MCP 实例表、类型和系统设置，将历史
+MCP 日志归入 `client`，保留用量与费用，并兼容旧 spool/ingress 日志回放。升级前备份并停止
+所有旧实例；不要混跑新旧二进制，也不要仅回滚应用而继续使用已迁移数据库。移除旧配置中的
+`[mcp]` 段及构建命令中的 `mcp-server` feature。Images 与独立搜索 HTTP 接口不变。
 
 1. 备份 PostgreSQL，并确认本地 spool 与 `request_log_ingest` 已排空；包含 journal payload 破坏性变更的升级不能保留旧二进制写入的积压记录。
 2. 将 `config/compose.prd.env` 中的 `AI_GATEWAY_VERSION` 改为目标版本。

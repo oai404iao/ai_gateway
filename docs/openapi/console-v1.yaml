@@ -51,7 +51,6 @@ tags:
   - name: CodexOAuth
   - name: Proxies
   - name: Templates
-  - name: McpServers
   - name: RequestLogs
   - name: Statistics
   - name: AuditLogs
@@ -2075,101 +2074,6 @@ paths:
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/Unprocessable" }
 
-  /mcp-servers:
-    get:
-      tags: [McpServers]
-      operationId: listMcpServers
-      security: [{ bearerAuth: [] }]
-      responses:
-        "200":
-          description: Configured MCP server instances.
-          content:
-            application/json:
-              schema:
-                type: array
-                items: { $ref: "#/components/schemas/McpServerView" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-    post:
-      tags: [McpServers]
-      operationId: createMcpServer
-      security: [{ bearerAuth: [] }]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/McpServerCreateInput" }
-      responses:
-        "201":
-          description: Created and published to the immutable runtime snapshot.
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/MutationResponse" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "409": { $ref: "#/components/responses/Conflict" }
-        "422": { $ref: "#/components/responses/Unprocessable" }
-
-  /mcp-servers/{id}:
-    get:
-      tags: [McpServers]
-      operationId: getMcpServer
-      security: [{ bearerAuth: [] }]
-      parameters:
-        - $ref: "#/components/parameters/PathId"
-      responses:
-        "200":
-          description: MCP server detail.
-          headers:
-            ETag: { $ref: "#/components/headers/ETag" }
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/McpServerView" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "404": { $ref: "#/components/responses/NotFound" }
-    put:
-      tags: [McpServers]
-      operationId: updateMcpServer
-      security: [{ bearerAuth: [] }]
-      parameters:
-        - $ref: "#/components/parameters/PathId"
-        - $ref: "#/components/parameters/IfMatch"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/McpServerInput" }
-      responses:
-        "200":
-          description: Updated and published to the immutable runtime snapshot.
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/MutationResponse" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "404": { $ref: "#/components/responses/NotFound" }
-        "409": { $ref: "#/components/responses/Conflict" }
-        "422": { $ref: "#/components/responses/Unprocessable" }
-    delete:
-      tags: [McpServers]
-      operationId: deleteMcpServer
-      security: [{ bearerAuth: [] }]
-      parameters:
-        - $ref: "#/components/parameters/PathId"
-        - $ref: "#/components/parameters/IfMatch"
-      responses:
-        "200":
-          description: Soft-deleted and removed from the runtime registry.
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/MutationResponse" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-        "404": { $ref: "#/components/responses/NotFound" }
-        "409": { $ref: "#/components/responses/Conflict" }
-        "422": { $ref: "#/components/responses/Unprocessable" }
-
   /request-logs:
     get:
       tags: [System, RequestLogs]
@@ -2284,7 +2188,7 @@ paths:
         refreshed snapshot instead of aggregating request logs at request time.
         Rankings use Asia/Shanghai boundaries: a day is 00:00 inclusive through
         the following 00:00 exclusive; a week is Monday through Sunday; and a
-        month is the 1st through its final day. Client and MCP requests participate;
+        month is the 1st through its final day. Client requests participate;
         scheduled tests do not.
         Omit `period_start` for the current period, or use the adjacent period
         values in the response to browse retained history. Users without any priced
@@ -2424,7 +2328,7 @@ paths:
       security: [{ bearerAuth: [] }]
       responses:
         "200":
-          description: Database-backed forwarding, retry, health, automation, scheduled-test, session-affinity, Responses WebSocket, and MCP transport defaults.
+          description: Database-backed forwarding, retry, health, automation, scheduled-test, session-affinity, and Responses WebSocket defaults.
           headers:
             ETag: { $ref: "#/components/headers/ETag" }
           content:
@@ -3135,66 +3039,11 @@ components:
           default: codex_cli_rs/0.146.0
           description: Connector-owned User-Agent for managed Codex backend requests. Set a matching native CLI value, including its platform and terminal suffix, when required.
 
-    SystemMcpSettings:
-      type: object
-      required:
-        [enabled, public_base_url, allowed_origins, allow_legacy_2025_11_25,
-         request_body_bytes, image_request_body_bytes, search_result_bytes, image_result_bytes]
-      properties:
-        enabled:
-          type: boolean
-          default: false
-          description: Mounts configured MCP endpoints on the public listener when the binary includes the mcp-server feature.
-        public_base_url:
-          type: string
-          format: uri
-          maxLength: 2048
-          nullable: true
-          description: Public HTTP(S) origin used to derive the accepted Host authority. Required when enabled; paths, credentials, query strings, and fragments are forbidden.
-        allowed_origins:
-          type: array
-          maxItems: 64
-          description: Exact browser origins allowed to call MCP endpoints. An empty list rejects every request carrying Origin while allowing non-browser clients without Origin.
-          items:
-            type: string
-            format: uri
-            maxLength: 2048
-        allow_legacy_2025_11_25:
-          type: boolean
-          default: false
-          description: Enables the complete MCP 2025-11-25 initialize/session/SSE lifecycle and the Codex legacy 2025-06-18 negotiation alongside stateless 2026-07-28 requests.
-        request_body_bytes:
-          type: integer
-          format: int64
-          minimum: 1
-          default: 4194304
-          description: Maximum Search MCP JSON-RPC request envelope size.
-        image_request_body_bytes:
-          type: integer
-          format: int64
-          minimum: 1
-          maximum: 67108864
-          default: 33554432
-          description: Maximum Images MCP JSON-RPC request envelope size.
-        search_result_bytes:
-          type: integer
-          format: int64
-          minimum: 1
-          default: 4194304
-          description: Maximum collected Search MCP upstream result size.
-        image_result_bytes:
-          type: integer
-          format: int64
-          minimum: 1
-          maximum: 67108864
-          default: 33554432
-          description: Maximum collected Images MCP JSON/base64 result size.
-
     SystemSettingsInput:
       type: object
       required:
         [api_hosts, upstream, request_retry, passive_health, automatic_disable, scheduled_testing,
-         session_affinity, websocket, codex, mcp]
+         session_affinity, websocket, codex]
       properties:
         api_hosts:
           type: array
@@ -3212,7 +3061,6 @@ components:
         session_affinity: { $ref: "#/components/schemas/SystemSessionAffinitySettings" }
         websocket: { $ref: "#/components/schemas/SystemWebSocketSettings" }
         codex: { $ref: "#/components/schemas/SystemCodexSettings" }
-        mcp: { $ref: "#/components/schemas/SystemMcpSettings" }
 
     SystemSettings:
       allOf:
@@ -4329,108 +4177,6 @@ components:
               allOf: [{ $ref: "#/components/schemas/JsonValue" }]
               description: Stored transform template document returned for administrator editing.
 
-    McpServerKind:
-      type: string
-      enum: [web_search, image]
-
-    McpSearchExternalWebAccess:
-      type: string
-      enum: [cached, indexed, live]
-
-    McpSearchContextSize:
-      type: string
-      enum: [low, medium, high]
-
-    McpSearchTokenLimits:
-      type: object
-      additionalProperties: false
-      required: [short, medium, long]
-      properties:
-        short: { type: integer, format: int64, minimum: 1, maximum: 100000 }
-        medium: { type: integer, format: int64, minimum: 1, maximum: 100000 }
-        long: { type: integer, format: int64, minimum: 1, maximum: 100000 }
-      description: Values must be ordered as short <= medium <= long.
-
-    WebSearchMcpSettings:
-      type: object
-      additionalProperties: false
-      properties:
-        external_web_access:
-          allOf: [{ $ref: "#/components/schemas/McpSearchExternalWebAccess" }]
-          description: Defaults to `live` when omitted.
-        search_context_size:
-          allOf: [{ $ref: "#/components/schemas/McpSearchContextSize" }]
-          description: Defaults to `medium` when omitted.
-        allowed_domains:
-          type: array
-          maxItems: 100
-          uniqueItems: true
-          items: { type: string, maxLength: 253 }
-          description: Defaults to an empty list.
-        blocked_domains:
-          type: array
-          maxItems: 100
-          uniqueItems: true
-          items: { type: string, maxLength: 253 }
-          description: Defaults to an empty list.
-        max_output_tokens:
-          allOf: [{ $ref: "#/components/schemas/McpSearchTokenLimits" }]
-          description: Defaults to short=1000, medium=3000, and long=6000.
-
-    McpImageBackground:
-      type: string
-      enum: [auto, opaque, transparent]
-
-    McpImageQuality:
-      type: string
-      enum: [auto, low, medium, high]
-
-    ImageMcpSettings:
-      type: object
-      additionalProperties: false
-      properties:
-        background:
-          allOf: [{ $ref: "#/components/schemas/McpImageBackground" }]
-          description: Defaults to `auto`.
-        quality:
-          allOf: [{ $ref: "#/components/schemas/McpImageQuality" }]
-          description: Defaults to `auto`.
-        size:
-          type: string
-          pattern: "^(auto|[1-9][0-9]{1,4}x[1-9][0-9]{1,4})$"
-          description: Defaults to `auto`; numeric dimensions must each be from 64 through 8192.
-
-    McpServerSettings:
-      anyOf:
-        - $ref: "#/components/schemas/WebSearchMcpSettings"
-        - $ref: "#/components/schemas/ImageMcpSettings"
-      description: The valid object shape is selected by the immutable MCP server kind.
-
-    McpServerView:
-      type: object
-      required:
-        [id, slug, kind, name, description, model_rule_id, client_model, api_format,
-         settings_version, settings, enabled, created_at, updated_at]
-      properties:
-        id: { type: string, format: uuid }
-        slug:
-          type: string
-          pattern: "^[a-z0-9][a-z0-9-]{0,62}$"
-          description: Immutable public endpoint segment under `/mcp/{slug}`.
-        kind: { $ref: "#/components/schemas/McpServerKind" }
-        name: { type: string, maxLength: 100 }
-        description: { type: string, maxLength: 1000, nullable: true }
-        model_rule_id: { type: string, format: uuid }
-        client_model: { type: string }
-        api_format:
-          allOf: [{ $ref: "#/components/schemas/ApiFormat" }]
-          description: "open_ai_responses for web search or open_ai_images for image generation."
-        settings_version: { type: integer, format: int32, minimum: 1 }
-        settings: { $ref: "#/components/schemas/McpServerSettings" }
-        enabled: { type: boolean }
-        created_at: { $ref: "#/components/schemas/DateTime" }
-        updated_at: { $ref: "#/components/schemas/DateTime" }
-
     RequestLogView:
       type: object
       required:
@@ -4513,7 +4259,7 @@ components:
 
     RequestLogSource:
       type: string
-      enum: [client, mcp, scheduled_test]
+      enum: [client, scheduled_test]
 
     RequestProtocol:
       type: string
@@ -4536,12 +4282,12 @@ components:
         total_request_count:
           type: integer
           minimum: 0
-          description: Client and MCP requests made by the authenticated user in the window.
+          description: Client requests made by the authenticated user in the window.
         active_day_count:
           type: integer
           minimum: 0
           maximum: 365
-          description: UTC dates with at least one client or MCP request.
+          description: UTC dates with at least one client request.
         current_streak_days:
           type: integer
           minimum: 0
@@ -5659,34 +5405,6 @@ components:
         document:
           allOf: [{ $ref: "#/components/schemas/JsonValue" }]
           description: Omit to preserve the stored document; send `{}` to clear it.
-        enabled: { type: boolean }
-
-    McpServerCreateInput:
-      type: object
-      additionalProperties: false
-      required: [slug, kind, name, model_rule_id, enabled]
-      properties:
-        slug:
-          type: string
-          pattern: "^[a-z0-9][a-z0-9-]{0,62}$"
-        kind: { $ref: "#/components/schemas/McpServerKind" }
-        name: { type: string, minLength: 1, maxLength: 100 }
-        description: { type: string, maxLength: 1000, nullable: true }
-        model_rule_id: { type: string, format: uuid }
-        settings:
-          allOf: [{ $ref: "#/components/schemas/McpServerSettings" }]
-          description: Omission stores an empty object and applies all server defaults.
-        enabled: { type: boolean }
-
-    McpServerInput:
-      type: object
-      additionalProperties: false
-      required: [name, model_rule_id, settings, enabled]
-      properties:
-        name: { type: string, minLength: 1, maxLength: 100 }
-        description: { type: string, maxLength: 1000, nullable: true }
-        model_rule_id: { type: string, format: uuid }
-        settings: { $ref: "#/components/schemas/McpServerSettings" }
         enabled: { type: boolean }
 
     ModelSyncPreviewRequest:

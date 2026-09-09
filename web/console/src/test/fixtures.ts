@@ -19,7 +19,6 @@ import type {
   ControlPlaneModel,
   ControlPlaneUser,
   LoginResponse,
-  McpServerView,
   ModelRuleView,
   PersonalUsageReport,
   ProxyTestResponse,
@@ -463,51 +462,7 @@ export const IMAGE_MODEL_RULE: ModelRuleView = {
   updated_at: "2026-08-05T00:00:00.000Z",
 };
 
-export const SEARCH_MCP_SERVER: McpServerView = {
-  id: "00000000-0000-0000-0000-000000000127",
-  slug: "research",
-  kind: "web_search",
-  name: "Research search",
-  description: "Search the public web with bounded output.",
-  model_rule_id: SEARCH_MODEL_RULE.id,
-  client_model: SEARCH_MODEL_RULE.client_model,
-  api_format: "open_ai_responses",
-  settings_version: 1,
-  settings: {
-    external_web_access: "live",
-    search_context_size: "high",
-    allowed_domains: ["example.com"],
-    blocked_domains: ["ads.example.com"],
-    max_output_tokens: {
-      short: 1_000,
-      medium: 3_000,
-      long: 6_000,
-    },
-  },
-  enabled: true,
-  created_at: "2026-08-05T01:00:00.000Z",
-  updated_at: "2026-08-05T02:00:00.000Z",
-};
 
-export const IMAGE_MCP_SERVER: McpServerView = {
-  id: "00000000-0000-0000-0000-000000000128",
-  slug: "studio",
-  kind: "image",
-  name: "Image studio",
-  description: "Generate and edit images with fixed defaults.",
-  model_rule_id: IMAGE_MODEL_RULE.id,
-  client_model: IMAGE_MODEL_RULE.client_model,
-  api_format: "open_ai_images",
-  settings_version: 1,
-  settings: {
-    background: "opaque",
-    quality: "high",
-    size: "1536x1024",
-  },
-  enabled: true,
-  created_at: "2026-08-05T03:00:00.000Z",
-  updated_at: "2026-08-05T04:00:00.000Z",
-};
 
 export const REQUEST_LOG: RequestLogView = {
   id: "11111111-2222-4333-8444-555555555555",
@@ -655,16 +610,6 @@ export const SYSTEM_SETTINGS: SystemSettings = {
     originator: "codex_cli_rs",
     client_version: "0.146.0",
     user_agent: "codex_cli_rs/0.146.0",
-  },
-  mcp: {
-    enabled: false,
-    public_base_url: "https://mcp.example.test",
-    allowed_origins: ["https://client.example.test"],
-    allow_legacy_2025_11_25: true,
-    request_body_bytes: 4_194_304,
-    image_request_body_bytes: 33_554_432,
-    search_result_bytes: 4_194_304,
-    image_result_bytes: 33_554_432,
   },
   updated_at: "2026-01-02T00:00:00.000Z",
 };

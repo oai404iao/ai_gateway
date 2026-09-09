@@ -68,11 +68,7 @@ jobs:
           save-if: ${{ inputs.save_cache }}
       - run: cargo fmt --check
       - run: cargo clippy --locked --workspace --all-targets
-      - run: cargo clippy --locked --all-targets --features mcp-server
       - run: cargo test --locked --workspace
-      - run: cargo test --locked --features mcp-server --lib
-      - run: cargo test --locked --features mcp-server --test mcp_integration
-      - run: cargo test --locked --features mcp-server --test control_plane_integration codex_connector_forwards_responses_and_images_with_shared_credentials -- --exact
 
   console:
     if: ${{ inputs.run_console }}
