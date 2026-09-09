@@ -7,6 +7,15 @@ Versioning.
 
 ## [Unreleased]
 
+### Security
+
+- Update Console transitive dependency overrides for `fast-uri` to 3.1.6,
+  `hono` to 4.13.5, and `js-yaml` to 4.3.2, addressing seven dependency
+  advisories involving URL interpretation, output paths, and YAML resource
+  consumption.
+- Update `nanoid` to 3.3.18 and `qs` to 6.16.0 to resolve three additional
+  denial-of-service advisories identified by the full dependency audit.
+
 ### Changed
 
 - Split Console system settings into expandable sidebar categories with
