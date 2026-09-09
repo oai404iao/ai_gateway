@@ -1809,6 +1809,63 @@ async fn codex_personal_credentials_without_account_ids_are_unique_by_user() {
 }
 
 #[tokio::test]
+async fn batch_mutations_reject_empty_and_oversized_inputs() {
+    let database = TestDatabase::new().await;
+    let repository = ControlPlaneRepository::new(database.pool.clone());
+    let mut transaction = repository.begin_serializable().await.unwrap();
+    // An aborted transaction makes accidental SQL return a database error, not
+    // a coincidental Validation caused by a missing target or connector pool.
+    assert!(
+        sqlx::query("SELECT 1 / 0")
+            .execute(&mut *transaction)
+            .await
+            .is_err()
+    );
+    for count in [0, 101] {
+        let items = (0..count)
+            .map(|_| serde_json::json!({"id": Uuid::new_v4(), "updated_at": Utc::now()}))
+            .collect::<Vec<_>>();
+        let users = serde_json::from_value(serde_json::json!({
+            "items": items,
+            "changes": {"status": "suspended"}
+        }))
+        .unwrap();
+        assert!(matches!(
+            repository
+                .update_users_batch(&mut transaction, Uuid::new_v4(), users)
+                .await,
+            Err(ai_gateway::persistence::RepositoryError::Validation)
+        ));
+
+        let channels = serde_json::from_value(serde_json::json!({
+            "items": items,
+            "changes": {"enabled": false}
+        }))
+        .unwrap();
+        assert!(matches!(
+            repository
+                .update_channels_batch(&mut transaction, channels)
+                .await,
+            Err(ai_gateway::persistence::RepositoryError::Validation)
+        ));
+
+        let credentials = serde_json::from_value(serde_json::json!({
+            "items": items,
+            "operation": "enable"
+        }))
+        .unwrap();
+        assert!(matches!(
+            repository
+                .update_codex_credentials_batch(&mut transaction, Uuid::new_v4(), credentials)
+                .await,
+            Err(ai_gateway::persistence::RepositoryError::Validation)
+        ));
+    }
+    transaction.rollback().await.unwrap();
+    database.cleanup().await;
+}
+
+#[tokio::test]
 async fn codex_credentials_support_atomic_batch_state_changes_and_token_scrubbing_delete() {
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
@@ -6893,7 +6950,10 @@ async fn proxy_template_management_exposes_editable_documents_and_keeps_audits_r
         template_value,
         channel_value,
     ] {
-        assert!(!audit.contains(secret), "audit leaked {secret}");
+        assert!(
+            !audit.contains(secret),
+            "audit leaked a sensitive fixture value"
+        );
     }
     assert!(!audit.contains("password"));
     assert!(!audit.contains("username"));

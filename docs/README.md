@@ -17,6 +17,9 @@
 
 仓库根目录的 [`AGENTS.md`](../AGENTS.md) 是编码 Agent 的操作手册，不是用户文档或架构文档。
 
+处理 GitHub 安全告警时，参见[安全告警核查与处置](development/security-alert-triage.md)，
+区分真实修复、测试用途和误报，并保留逐条证据。
+
 ## 来源优先级
 
 当文档之间出现差异时，按以下优先级判断：
