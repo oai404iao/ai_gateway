@@ -2,6 +2,7 @@
 
 pub mod admission;
 pub mod application;
+pub mod codex_sharing;
 pub mod domain;
 pub mod http;
 pub mod models_dev;

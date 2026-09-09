@@ -41,6 +41,9 @@ Chat Completions、Responses、Codex standalone web search、非流式 JSON Imag
 
 ## 架构
 
+可选 [Codex 拼车](docs/user/codex-sharing.md) 提供固定席位 USD 窗口额度、耐久预占和
+个人用量页面。仅支持单实例，不承诺单请求费用硬上限。
+
 ```text
 OpenAI 兼容客户端
   │ Bearer API Key

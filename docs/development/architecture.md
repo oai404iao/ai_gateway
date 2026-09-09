@@ -239,6 +239,11 @@ HTTP fallback，不能成为 Gateway 对已派发消息自动重放的依据。
 
 ## 控制面与一致性
 
+可选 [Codex 拼车](codex-sharing.md) 在授权快照中收窄成员的可用投影，并在 dispatch 前
+通过独立单写线程完成金额预占的 WAL fsync。HTTP/SSE、Images 和每条 WebSocket 请求复用
+同一完成回调进行幂等结算。配置/窗口及对账由后台访问数据库，数据面不逐请求查库。
+它不分享会话上下文，也不提供多实例全局配额。
+
 动态配置保存在 PostgreSQL。Console 写操作在事务中完成授权、候选配置校验、审计和提交；提交成功后立即编译并发布新的不可变快照。周期 worker 负责从数据库重新加载，以覆盖进程间或外部变更。
 
 数据面不会为每个请求查询 PostgreSQL。用户 WebSocket 偏好和渠道 WebSocket 能力随完整控制面快照

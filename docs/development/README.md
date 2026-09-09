@@ -14,6 +14,7 @@
 - [Console 认证与授权设计记录](console-auth.md)
 - [Console Web UI 架构与开发指南](console-ui.md)：当前 Base UI 技术栈、会话、安全、构建和测试。
 - [请求日志耐久化流水线](request-log-durability.md)
+- [Codex 拼车金额账本](codex-sharing.md)：固定席位、窗口准入、WAL 恢复与单实例边界。
 - [统计功能设计](statistics.md)
 - [Transform DSL](transform-dsl.md)
 

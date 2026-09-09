@@ -44,6 +44,7 @@ export const NAV_SECTIONS: NavSection[] = [
       { label: "API Keys", path: "/api-keys", icon: KeyRound },
       { label: "Request Logs", path: "/usage/request-logs", icon: ScrollText },
       { label: "Codex quotas", path: "/codex-quotas", icon: Gauge },
+      { label: "My Codex sharing", path: "/codex-sharing", icon: UsersRound },
       {
         label: "Channel group status",
         path: "/channel-group-status",
@@ -59,6 +60,7 @@ export const NAV_SECTIONS: NavSection[] = [
     items: [
       { label: "Users", path: "/admin/users", icon: Users },
       { label: "User Groups", path: "/admin/user-groups", icon: UsersRound },
+      { label: "Codex sharing", path: "/admin/codex-sharing", icon: UsersRound },
       {
         label: "Registration Codes",
         path: "/admin/registration-invitation-codes",

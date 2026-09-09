@@ -80,6 +80,10 @@ max_retries = 1
 # reload is the cross-process/manual-database-change convergence fallback.
 reload_interval_seconds = 30
 
+[codex_sharing]
+# Single-instance monetary sharing. Back up spool_directory/codex-sharing with the DB.
+enabled = false
+
 [request_logging]
 # Request paths append terminal events to this local durable spool before
 # notifying the asynchronous database pipeline. A full notification queue only

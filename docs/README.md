@@ -20,6 +20,9 @@
 处理 GitHub 安全告警时，参见[安全告警核查与处置](development/security-alert-triage.md)，
 区分真实修复、测试用途和误报，并保留逐条证据。
 
+配置专用 Codex 共享凭证时，参见[拼车使用说明](user/codex-sharing.md)和
+[金额账本实现](development/codex-sharing.md)。该功能仅支持单实例。
+
 ## 来源优先级
 
 当文档之间出现差异时，按以下优先级判断：

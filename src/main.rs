@@ -136,6 +136,46 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
     let initial = compile_runtime_config(repository.load_runtime().await?)?;
     let initial_passive_health = initial.system_settings().passive_health();
     let runtime = Arc::new(RuntimeConfig::new(initial));
+    let sharing = if config.codex_sharing.enabled {
+        ai_gateway::codex_sharing::SharingRuntime::open(
+            config.request_logging.spool_directory.join("codex-sharing"),
+        )
+        .await?
+    } else {
+        ai_gateway::codex_sharing::SharingRuntime::default()
+    };
+    let sharing_worker = if let Some(ledger_id) = sharing.ledger_id() {
+        let mut owner = repository.claim_sharing_ledger(ledger_id).await?;
+        let sharing = sharing.clone();
+        let repository = repository.clone();
+        Some(tokio::spawn(async move {
+            use sqlx::Connection;
+            let mut interval = tokio::time::interval(Duration::from_secs(5));
+            loop {
+                interval.tick().await;
+                if !matches!(
+                    tokio::time::timeout(Duration::from_secs(3), owner.ping()).await,
+                    Ok(Ok(()))
+                ) {
+                    sharing.poison();
+                    tracing::error!(
+                        "Codex sharing single-writer ownership lost; admission disabled"
+                    );
+                    break;
+                }
+                let pending = sharing.pending().await;
+                if !pending.is_empty()
+                    && let Ok(costs) = repository.sharing_completed_costs(&pending).await
+                {
+                    for (id, cost) in costs {
+                        sharing.finish(id, Some(cost));
+                    }
+                }
+            }
+        }))
+    } else {
+        None
+    };
 
     let address = format!("{}:{}", config.server.host, config.server.port);
     let admission = AdmissionRuntime::new();
@@ -166,7 +206,8 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
         Arc::clone(&runtime),
         routing.clone(),
         Arc::clone(&upstream_clients),
-    )?;
+    )?
+    .with_sharing_runtime(sharing.clone());
     let (automatic_disable_service, automatic_disable_worker) =
         AutomaticDisableWorker::start(coordinator.clone());
     let codex_connector = CodexConnectorService::new(
@@ -187,7 +228,8 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
         admission.clone(),
         Some(automatic_disable_service.clone()),
     )?
-    .with_connector_registry(connectors);
+    .with_connector_registry(connectors)
+    .with_sharing_runtime(sharing.clone());
     let system_metrics = SystemMetricsService::new_at(
         pool.clone(),
         config.database.max_connections,
@@ -281,6 +323,11 @@ async fn serve(config_path: PathBuf) -> Result<(), Box<dyn Error>> {
         worker.shutdown().await;
     }
     request_log_worker.shutdown().await;
+    sharing.flush().await?;
+    if let Some(worker) = sharing_worker {
+        worker.abort();
+        let _ = worker.await;
+    }
     serve_result?;
     Ok(())
 }

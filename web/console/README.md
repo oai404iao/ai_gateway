@@ -79,6 +79,10 @@ as well as app navigation. Regression coverage is in
 
 ## API contract
 
+`/codex-sharing` and `/admin/codex-sharing/:id` expose private member usage and
+administrator fixed-seat settings. See the [sharing guide](../../docs/user/codex-sharing.md)
+for money windows, required runtime enablement, and single-instance recovery.
+
 The TypeScript types consumed across the app are generated from
 `docs/openapi/console-v1.yaml`. Never hand-edit
 `src/api/generated/console-v1.d.ts`; change the spec, run `pnpm generate:api`,

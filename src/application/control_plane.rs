@@ -28,6 +28,7 @@ use crate::{
 /// snapshot over a just-committed management mutation.
 #[derive(Clone)]
 pub struct ControlPlaneCoordinator {
+    sharing: crate::codex_sharing::SharingRuntime,
     repository: ControlPlaneRepository,
     runtime: Arc<RuntimeConfig>,
     routing: RoutingRuntime,
@@ -48,6 +49,7 @@ impl ControlPlaneCoordinator {
         routing: RoutingRuntime,
     ) -> Self {
         Self {
+            sharing: Default::default(),
             repository,
             runtime,
             routing,
@@ -80,12 +82,30 @@ impl ControlPlaneCoordinator {
     #[must_use]
     pub fn with_routing(&self, routing: RoutingRuntime) -> Self {
         Self {
+            sharing: self.sharing.clone(),
             repository: self.repository.clone(),
             runtime: Arc::clone(&self.runtime),
             routing,
             serial: Arc::clone(&self.serial),
             upstream_client_cleanup: self.upstream_client_cleanup.clone(),
         }
+    }
+
+    pub fn with_sharing_runtime(mut self, sharing: crate::codex_sharing::SharingRuntime) -> Self {
+        sharing.publish(self.runtime.snapshot().sharing());
+        self.sharing = sharing;
+        self
+    }
+
+    pub fn sharing_runtime(&self) -> &crate::codex_sharing::SharingRuntime {
+        &self.sharing
+    }
+
+    pub async fn sharing_groups(
+        &self,
+        user: Option<Uuid>,
+    ) -> Result<Vec<crate::domain::codex_sharing::SharingGroup>, ControlPlaneError> {
+        Ok(self.repository.sharing_groups(user).await?)
     }
 
     pub async fn reload(&self) -> Result<(), ControlPlaneError> {
@@ -207,6 +227,11 @@ impl ControlPlaneCoordinator {
             .await?
         {
             return Err(ControlPlaneError::InvalidActor);
+        }
+        if matches!(&mutation, ControlPlaneMutation::SaveCodexSharing { input, .. }
+            if input.enabled && !self.sharing.available())
+        {
+            return Err(RepositoryError::Validation.into());
         }
         let result = self
             .repository
@@ -707,6 +732,7 @@ impl ControlPlaneCoordinator {
     }
 
     fn publish(&self, next: Arc<crate::domain::CompiledRuntimeConfig>) {
+        self.sharing.publish(next.sharing());
         if let Some(cleanup) = &self.upstream_client_cleanup {
             // The candidate was validated before this point, so a failure here
             // cannot be an invalid policy; retain the existing availability
