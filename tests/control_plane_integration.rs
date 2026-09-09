@@ -1714,6 +1714,501 @@ async fn codex_business_credentials_are_unique_per_workspace_member() {
 }
 
 #[tokio::test]
+async fn codex_sharing_pins_credentials_and_settles_money_across_api_keys() {
+    use ai_gateway::{
+        codex_sharing::SharingRuntime, domain::codex_sharing::SharingGroupInput,
+        persistence::RepositoryError,
+    };
+    use rust_decimal::Decimal;
+    use sqlx::Connection;
+
+    let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
+    let captured = CodexUpstreamState::default();
+    let upstream = start_server(Router::new()
+        .route("/responses", get(codex_responses_websocket_upstream).post(|State(state): State<CodexUpstreamState>, headers: HeaderMap, body: Bytes| async move {
+            let mut response = codex_responses_upstream(State(state), headers, body).await;
+            response.headers_mut().insert("content-type", HeaderValue::from_static("text/event-stream"));
+            *response.body_mut() = Body::from(
+                "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"sharing-response\",\"usage\":{\"input_tokens\":1,\"output_tokens\":10}}}\n\n",
+            );
+            response
+        }))
+        .with_state(captured.clone())).await;
+    let codex_group = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO channel_groups (id,name,api_format,connector_kind,enabled) \
+        VALUES ($1,'sharing-test','open_ai_responses','codex_oauth',true)",
+    )
+    .bind(codex_group)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let mut settings = system_settings();
+    settings.websocket.enabled = true;
+    sqlx::query("UPDATE system_settings SET value=$1 WHERE setting_key='forwarding_policy'")
+        .bind(serde_json::to_value(settings).unwrap())
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE users SET websocket_enabled=true WHERE id=$1")
+        .bind(seed.user)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    let repository = ControlPlaneRepository::new(database.pool.clone());
+    let runtime = Arc::new(RuntimeConfig::new(
+        compile_runtime_config(repository.load_runtime().await.unwrap()).unwrap(),
+    ));
+    let routing = RoutingRuntime::new(PassiveHealthPolicy::default());
+    let clients = Arc::new(UpstreamClientRegistry::new());
+    let directory = tempfile::tempdir().unwrap();
+    let sharing = SharingRuntime::open(directory.path().to_path_buf())
+        .await
+        .unwrap();
+    let owner = repository
+        .claim_sharing_ledger(sharing.ledger_id().unwrap())
+        .await
+        .unwrap();
+    assert!(matches!(
+        repository
+            .claim_sharing_ledger(sharing.ledger_id().unwrap())
+            .await,
+        Err(RepositoryError::Conflict)
+    ));
+    let coordinator =
+        ControlPlaneCoordinator::new(repository.clone(), runtime.clone(), routing.clone())
+            .with_sharing_runtime(sharing.clone());
+    let now = Utc::now();
+    let mut input = business_codex_credential(
+        codex_group,
+        "sharing",
+        "sharing@example.test",
+        "sharing-user",
+    );
+    input.base_url = format!("http://{}", upstream.address);
+    input.available_models = vec!["upstream-v1".into()];
+    input.quota = Some(CodexQuotaUpdate {
+        allowed: true,
+        limit_reached: false,
+        primary_used_percent: Some(10),
+        primary_window_seconds: Some(3600),
+        primary_reset_at: Some(now + chrono::Duration::minutes(30)),
+        secondary_used_percent: Some(10),
+        secondary_window_seconds: Some(604800),
+        secondary_reset_at: Some(now + chrono::Duration::days(7)),
+        reset_credits_available: None,
+        checked_at: now,
+    });
+    let credential = coordinator
+        .create_codex_credential(seed.user, input.clone(), None)
+        .await
+        .unwrap();
+    input.user_id = Some("other-sharing-user".into());
+    input.label = "other".into();
+    let other = coordinator
+        .create_codex_credential(seed.user, input, None)
+        .await
+        .unwrap();
+    insert_model_rule_fixture(
+        &database.pool,
+        Uuid::new_v4(),
+        "sharing-model",
+        "open_ai_responses",
+        seed.model,
+        true,
+        &[RoutingTierFixture {
+            priority: 0,
+            selection_strategy: "weighted_random",
+            channel_groups: &[RoutingGroupFixture::Selected {
+                channel_group_id: codex_group,
+                channels: &[(credential.id, 1), (other.id, 100)],
+            }],
+        }],
+    )
+    .await;
+    sqlx::query("UPDATE models SET output_unit_price=0.1 WHERE id=$1")
+        .bind(seed.model)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE api_keys SET allowed_api_formats=ARRAY['open_ai_responses']::api_format[], \
+        allowed_group_ids=ARRAY[$2]::uuid[] WHERE id=$1",
+    )
+    .bind(seed.key)
+    .bind(codex_group)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let second_secret = Uuid::new_v4().to_string();
+    sqlx::query("INSERT INTO api_keys (id,user_id,name,secret_value,status,allowed_api_formats,permissions,allowed_group_ids) \
+        SELECT $1,user_id,'second-sharing-key',$2,status,allowed_api_formats,permissions,allowed_group_ids FROM api_keys WHERE id=$3")
+        .bind(Uuid::new_v4()).bind(&second_secret).bind(seed.key).execute(&database.pool).await.unwrap();
+    let user_group_id: Uuid = sqlx::query_scalar("SELECT user_group_id FROM users WHERE id=$1")
+        .bind(seed.user)
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    let group_id = Uuid::new_v4();
+    let policy = SharingGroupInput {
+        user_group_id,
+        credential_id: credential.id,
+        name: "Fixed seats".into(),
+        enabled: true,
+        seats: vec![Some(seed.user), None],
+        primary_limit_amount: Decimal::from(2),
+        secondary_limit_amount: Decimal::from(10),
+        request_reservation_amount: Decimal::new(25, 2),
+        user_requests_per_minute: 30,
+        group_requests_per_minute: 60,
+        user_max_concurrent_requests: 1,
+        group_max_concurrent_requests: 2,
+    };
+    let saved = coordinator
+        .mutate(
+            seed.user,
+            ControlPlaneMutation::SaveCodexSharing {
+                id: group_id,
+                input: policy.clone(),
+                expected_updated_at: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        coordinator
+            .mutate(
+                seed.user,
+                ControlPlaneMutation::SaveCodexSharing {
+                    id: Uuid::new_v4(),
+                    input: policy.clone(),
+                    expected_updated_at: None,
+                }
+            )
+            .await,
+        Err(ai_gateway::application::ControlPlaneError::Repository(
+            RepositoryError::Conflict
+        ))
+    ));
+    let snapshot = runtime.snapshot();
+    assert!(snapshot.sharing().permits(seed.user, credential.id));
+    assert!(!snapshot.sharing().permits(seed.user, other.id));
+    assert!(!snapshot.sharing().permits(Uuid::new_v4(), credential.id));
+    let group = snapshot.sharing().group(group_id).unwrap().clone();
+    let alias_pool = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO channel_groups (id,name,api_format,connector_kind,enabled) \
+        VALUES ($1,'sharing-alias','open_ai_responses','codex_oauth',true)",
+    )
+    .bind(alias_pool)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let alias = coordinator
+        .create_codex_credential(
+            seed.user,
+            business_codex_credential(alias_pool, "alias", "sharing@example.test", "sharing-user"),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(runtime.snapshot().sharing().is_protected(alias.id));
+    assert!(
+        !runtime
+            .snapshot()
+            .sharing()
+            .permits(Uuid::new_v4(), alias.id)
+    );
+    let another_user_group = Uuid::new_v4();
+    sqlx::query("INSERT INTO user_groups (id,name) VALUES ($1,'sharing-duplicate-identity')")
+        .bind(another_user_group)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    let mut duplicate_identity = policy.clone();
+    duplicate_identity.user_group_id = another_user_group;
+    duplicate_identity.credential_id = alias.id;
+    duplicate_identity.seats = vec![None, None];
+    assert!(matches!(
+        coordinator
+            .mutate(
+                seed.user,
+                ControlPlaneMutation::SaveCodexSharing {
+                    id: Uuid::new_v4(),
+                    input: duplicate_identity,
+                    expected_updated_at: None,
+                }
+            )
+            .await,
+        Err(ai_gateway::application::ControlPlaneError::Repository(
+            RepositoryError::Conflict
+        ))
+    ));
+    let connector = CodexConnectorService::new(
+        repository.clone(),
+        coordinator.clone(),
+        runtime.clone(),
+        clients.clone(),
+    )
+    .await
+    .unwrap();
+    let sink = Arc::new(RecordingRequestLogSink::default());
+    let proxy = ProxyService::with_dependencies_and_registry(
+        runtime.clone(),
+        1024 * 1024,
+        clients,
+        sink.clone(),
+        routing,
+        AdmissionRuntime::new(),
+    )
+    .unwrap()
+    .with_connector_registry(UpstreamConnectorRegistry::default().with_codex(connector))
+    .with_sharing_runtime(sharing.clone());
+    let request = |secret: &str| {
+        axum::http::Request::builder()
+            .method("POST")
+            .uri("/v1/responses")
+            .header("authorization", format!("Bearer {secret}"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"model":"sharing-model","input":"hello","stream":true}"#,
+            ))
+            .unwrap()
+    };
+    let app = ai_gateway::http::router(proxy);
+    let response = app.clone().oneshot(request(&seed.secret)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let _ = timeout(Duration::from_secs(5), response.into_body().collect())
+        .await
+        .unwrap()
+        .unwrap();
+    sharing.flush().await.unwrap();
+    let usage = sharing.inspect(&group, seed.user).await;
+    assert_eq!(usage.windows.len(), 2);
+    assert!(
+        usage
+            .windows
+            .iter()
+            .all(|window| window.used_amount == Decimal::ONE)
+    );
+    assert_eq!(sink.events()[0].channel_id, Some(credential.id));
+    assert_eq!(
+        usage
+            .windows
+            .iter()
+            .find(|w| w.window_kind == "primary")
+            .unwrap()
+            .remaining_amount,
+        Decimal::ZERO
+    );
+    let blocked = app.clone().oneshot(request(&second_secret)).await.unwrap();
+    assert_eq!(blocked.status(), StatusCode::TOO_MANY_REQUESTS);
+    let body = blocked.into_body().collect().await.unwrap().to_bytes();
+    assert!(
+        std::str::from_utf8(&body)
+            .unwrap()
+            .contains("sharing_quota_exceeded")
+    );
+    assert_eq!(captured.http_requests.lock().unwrap().len(), 1);
+    let search = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/v1/alpha/search")
+                .header("authorization", format!("Bearer {}", seed.secret))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "model": "sharing-model", "commands": {"search_query": [{"q": "test"}]}
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(search.status(), StatusCode::FORBIDDEN);
+    assert!(
+        std::str::from_utf8(&search.into_body().collect().await.unwrap().to_bytes())
+            .unwrap()
+            .contains("sharing_operation_unmetered")
+    );
+    assert!(captured.search_requests.lock().unwrap().is_empty());
+    let duplicate_publish = coordinator.reload().await;
+    duplicate_publish.unwrap();
+    sharing.flush().await.unwrap();
+    assert_eq!(
+        sharing.inspect(&group, seed.user).await.windows[0].used_amount,
+        Decimal::ONE
+    );
+    repository
+        .persist_codex_quota(
+            credential.id,
+            CodexQuotaUpdate {
+                allowed: true,
+                limit_reached: false,
+                primary_used_percent: Some(0),
+                primary_window_seconds: Some(3600),
+                primary_reset_at: Some(now + chrono::Duration::hours(1)),
+                secondary_used_percent: Some(15),
+                secondary_window_seconds: Some(604800),
+                secondary_reset_at: Some(now + chrono::Duration::days(7)),
+                reset_credits_available: None,
+                checked_at: Utc::now(),
+            },
+        )
+        .await
+        .unwrap();
+    coordinator.reload().await.unwrap();
+    sharing.flush().await.unwrap();
+    let refreshed = sharing.inspect(&group, seed.user).await;
+    assert_eq!(refreshed.windows[0].used_amount, Decimal::ZERO);
+    assert_eq!(refreshed.windows[1].used_amount, Decimal::ONE);
+    let gateway = start_server(app.clone()).await;
+    let mut upgrade = format!("ws://{}/v1/responses", gateway.address)
+        .into_client_request()
+        .unwrap();
+    upgrade.headers_mut().insert(
+        "authorization",
+        HeaderValue::from_str(&format!("Bearer {}", seed.secret)).unwrap(),
+    );
+    let (mut websocket, _) = connect_async(upgrade).await.unwrap();
+    let first = codex_websocket_response_create(
+        &mut websocket,
+        serde_json::json!({
+            "type": "response.create", "model": "sharing-model", "input": [],
+        }),
+    )
+    .await;
+    assert_eq!(first.last().unwrap()["type"], "response.completed");
+    sharing.flush().await.unwrap();
+    let denied = codex_websocket_response_create(
+        &mut websocket,
+        serde_json::json!({
+            "type": "response.create", "model": "sharing-model", "input": [],
+            "previous_response_id": "resp_codex_ws_1",
+        }),
+    )
+    .await;
+    assert_eq!(
+        denied.last().unwrap()["error"]["code"],
+        "sharing_quota_exceeded"
+    );
+    assert_eq!(captured.websocket_requests.lock().unwrap().len(), 1);
+    assert_eq!(
+        sharing.inspect(&group, seed.user).await.windows[1].used_amount,
+        Decimal::from(2)
+    );
+    let images_group: Uuid = sqlx::query_scalar(
+        "SELECT c.channel_group_id FROM codex_oauth_credential_channels p JOIN channels c ON c.id=p.channel_id \
+         WHERE p.credential_id=$1 AND p.api_format='open_ai_images'",
+    ).bind(credential.id).fetch_one(&database.pool).await.unwrap();
+    let enabled: bool = sqlx::query_scalar("SELECT enabled FROM channel_groups WHERE id=$1")
+        .bind(images_group)
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    assert!(!enabled);
+    sqlx::query("UPDATE channel_groups SET enabled=true WHERE id=$1")
+        .bind(images_group)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE api_keys SET allowed_api_formats=ARRAY['open_ai_responses','open_ai_images']::api_format[], \
+        allowed_group_ids=ARRAY[$2,$3]::uuid[] WHERE id=$1")
+        .bind(seed.key).bind(codex_group).bind(images_group).execute(&database.pool).await.unwrap();
+    let images_model = Uuid::new_v4();
+    sqlx::query("INSERT INTO models (id,source_model_id,display_name,enabled,currency,price_unit_tokens, \
+        input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,price_effective_at) \
+        VALUES ($1,'gpt-image-2','Sharing images',true,'USD',1,0,0,0,0.1,now())")
+        .bind(images_model).execute(&database.pool).await.unwrap();
+    insert_model_rule_fixture(
+        &database.pool,
+        Uuid::new_v4(),
+        "sharing-image",
+        "open_ai_images",
+        images_model,
+        true,
+        &[RoutingTierFixture {
+            priority: 0,
+            selection_strategy: "weighted_random",
+            channel_groups: &[RoutingGroupFixture::All {
+                channel_group_id: images_group,
+                default_weight: 1,
+                channels: &[],
+            }],
+        }],
+    )
+    .await;
+    coordinator.reload().await.unwrap();
+    sharing.flush().await.unwrap();
+    let image = app
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/v1/images/generations")
+                .header("authorization", format!("Bearer {}", seed.secret))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"model":"sharing-image","prompt":"test","n":1}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(image.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert!(
+        std::str::from_utf8(&image.into_body().collect().await.unwrap().to_bytes())
+            .unwrap()
+            .contains("sharing_quota_exceeded")
+    );
+    assert_eq!(captured.http_requests.lock().unwrap().len(), 1);
+    assert!(matches!(
+        coordinator
+            .delete_codex_credential(seed.user, credential.id, credential.updated_at)
+            .await,
+        Err(ai_gateway::application::ControlPlaneError::Repository(
+            RepositoryError::SharingCredentialInUse
+        ))
+    ));
+    sqlx::query(
+        "DELETE FROM codex_quota_window_periods WHERE credential_id=$1 AND window_kind='secondary'",
+    )
+    .bind(credential.id)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    coordinator.reload().await.unwrap();
+    sharing.flush().await.unwrap();
+    assert!(!sharing.inspect(&group, seed.user).await.available);
+    assert!(matches!(
+        coordinator
+            .mutate(
+                seed.user,
+                ControlPlaneMutation::SaveCodexSharing {
+                    id: group_id,
+                    input: policy,
+                    expected_updated_at: Some(saved.updated_at - chrono::Duration::seconds(1)),
+                }
+            )
+            .await,
+        Err(ai_gateway::application::ControlPlaneError::Repository(
+            RepositoryError::Conflict
+        ))
+    ));
+    owner.close().await.unwrap();
+    assert!(matches!(
+        repository.claim_sharing_ledger(Uuid::new_v4()).await,
+        Err(RepositoryError::Conflict)
+    ));
+    upstream.task.abort();
+    gateway.task.abort();
+    database.cleanup().await;
+}
+
+#[tokio::test]
 async fn codex_personal_credentials_without_account_ids_are_unique_by_user() {
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
@@ -8256,6 +8751,12 @@ async fn codex_projection_migrations_backfill_existing_credentials_and_system_se
     assert_eq!(codex_defaults.2, "preserved-originator");
     assert_eq!(codex_defaults.3, "0.146.0");
     assert_eq!(codex_defaults.4, "codex_cli_rs/0.146.0");
+    for migration in MIGRATOR.iter().filter(|migration| migration.version > 52) {
+        sqlx::raw_sql(migration.sql.as_ref())
+            .execute(&database.pool)
+            .await
+            .unwrap_or_else(|error| panic!("migration {} failed: {error}", migration.version));
+    }
     let repository = ControlPlaneRepository::new(database.pool.clone());
     repository
         .ensure_system_settings(system_settings())

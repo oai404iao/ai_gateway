@@ -1,5 +1,6 @@
 import type { Page, Route } from "@playwright/test";
-import { SYSTEM_SETTINGS } from "../src/test/fixtures";
+import { SYSTEM_SETTINGS, SHARING_GROUP, SHARING_USAGE, OWN_SHARING } from "../src/test/fixtures";
+import type { SharingGroupInput } from "../src/api/types";
 
 /**
  * Network-layer Console API mocks for e2e tests. Each handler returns
@@ -664,6 +665,10 @@ export async function mockConsoleApi(page: Page): Promise<void> {
   let websocketEnabled = false;
   let authenticated = false;
   let session = ADMIN_PROFILE;
+  let sharing = {
+    ...SHARING_GROUP, user_group_id: E2E_USER.user_group_id,
+    credential_id: E2E_CODEX_CREDENTIAL_ID, seats: [E2E_USER.id, null],
+  };
   await page.route("**/console/v1/**", (route: Route) => {
     const url = new URL(route.request().url());
     const method = route.request().method();
@@ -677,6 +682,8 @@ export async function mockConsoleApi(page: Page): Promise<void> {
       session =
         input.email === TEMPORARY_PASSWORD_PROFILE.user.email
           ? TEMPORARY_PASSWORD_PROFILE
+          : input.email === E2E_USER.email
+          ? { user: E2E_USER, access_token: "e2e-sharing-member-token" }
           : ADMIN_PROFILE;
       return route.fulfill({ status: 200, json: session });
     }
@@ -705,6 +712,41 @@ export async function mockConsoleApi(page: Page): Promise<void> {
     }
     if (path === "/console/v1/me" && method === "GET") {
       return route.fulfill({ status: 200, json: session.user });
+    }
+    if (path === "/console/v1/me/codex-sharing" && method === "GET") {
+      return route.fulfill({ json: session.user.id === E2E_USER.id ? OWN_SHARING : null });
+    }
+    if (path === "/console/v1/codex-sharing-groups" && method === "GET") {
+      return route.fulfill({ json: { groups: [sharing], runtime_available: true } });
+    }
+    if (path === `/console/v1/codex-sharing-groups/${sharing.id}/usage` && method === "GET") {
+      return route.fulfill({ json: {
+        seats: [
+          { seat_number: 1, user_id: E2E_USER.id, usage: SHARING_USAGE },
+          { seat_number: 2, user_id: null, usage: {
+            ...SHARING_USAGE, seat_number: 2, pending_requests: 0,
+            windows: SHARING_USAGE.windows.map(window => ({
+              ...window, used_amount: "0", reserved_amount: "0", remaining_amount: window.limit_amount,
+            })),
+          } },
+        ],
+      } });
+    }
+    if (path === `/console/v1/codex-sharing-groups/${sharing.id}`) {
+      if (method === "GET") {
+        return route.fulfill({ json: sharing, headers: { ETag: `"${sharing.updated_at}"` } });
+      }
+      if (method === "PUT") {
+        if (route.request().headers()["if-match"] !== `"${sharing.updated_at}"`) {
+          return route.fulfill({ status: 409, json: { error: "conflict" } });
+        }
+        const input = route.request().postDataJSON() as SharingGroupInput;
+        sharing = { ...sharing, ...input, updated_at: "2026-09-09T01:00:00Z" };
+        return route.fulfill({ json: {
+          id: sharing.id, updated_at: sharing.updated_at,
+          correlation_id: "00000000-0000-0000-0000-0000000000f1",
+        } });
+      }
     }
     if (path === "/console/v1/me/settings" && method === "GET") {
       return route.fulfill({

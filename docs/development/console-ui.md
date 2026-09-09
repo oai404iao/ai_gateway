@@ -52,6 +52,10 @@ Console API/UI 不可达。
 
 ## 4. 目录与契约
 
+`/codex-sharing` 是本人金额视图；`/admin/codex-sharing` 和其详情页负责固定席位配置、
+ETag 保存和逐席位用量。它们位于 `src/features/codex-sharing/`，不与只读 Codex 官方配额页
+混用，也不向本人接口返回其他成员或凭证信息。规则见 [Codex 拼车](codex-sharing.md)。
+
 ```text
 web/console/
   src/api/           typed client、session store、generated OpenAPI types

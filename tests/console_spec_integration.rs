@@ -117,7 +117,19 @@ async fn retired_adapter_migration_preserves_usage_and_removes_control_plane_sta
         .collect::<Vec<_>>()
         .into();
     let database = TestDatabase::with_migrator(&previous).await;
-    let app = app(database.pool.clone()).await;
+    let user_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO users (id,email,display_name,role,status) \
+        VALUES ($1,'legacy-sharing-fixture@example.test','Legacy fixture','admin','active')",
+    )
+    .bind(user_id)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    ControlPlaneRepository::new(database.pool.clone())
+        .ensure_system_settings(bootstrap_system_settings())
+        .await
+        .unwrap();
     let key = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO api_keys (id,user_id,name,secret_value,status,allowed_api_formats,permissions) \
@@ -125,7 +137,7 @@ async fn retired_adapter_migration_preserves_usage_and_removes_control_plane_sta
          ARRAY['open_ai_responses']::api_format[],ARRAY['proxy'])",
     )
     .bind(key)
-    .bind(app.user_id)
+    .bind(user_id)
     .execute(&database.pool)
     .await
     .unwrap();
@@ -138,7 +150,7 @@ async fn retired_adapter_migration_preserves_usage_and_removes_control_plane_sta
                  'legacy-search','succeeded',false,100,'mcp',0.25)",
     )
     .bind(log)
-    .bind(app.user_id)
+    .bind(user_id)
     .bind(key)
     .execute(&database.pool)
     .await
@@ -152,6 +164,7 @@ async fn retired_adapter_migration_preserves_usage_and_removes_control_plane_sta
     .unwrap();
 
     MIGRATOR.run(&database.pool).await.unwrap();
+    let app = app(database.pool.clone()).await;
     let state: (bool, bool, bool) = sqlx::query_as(
         "SELECT to_regclass('mcp_servers') IS NULL, to_regtype('mcp_server_kind') IS NULL, \
          NOT (SELECT value ? 'mcp' FROM system_settings WHERE setting_key='forwarding_policy')",
@@ -1273,6 +1286,223 @@ async fn body_json(response: axum::response::Response) -> serde_json::Value {
 async fn body_text(response: axum::response::Response) -> String {
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     String::from_utf8(bytes.to_vec()).unwrap()
+}
+
+#[tokio::test]
+async fn sharing_contract_is_versioned_scoped_and_never_exposes_provider_identity() {
+    use ai_gateway::persistence::CodexCredentialCreate;
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+    let repository = ControlPlaneRepository::new(database.pool.clone());
+    let coordinator = ControlPlaneCoordinator::new(
+        repository.clone(),
+        app.runtime.clone(),
+        RoutingRuntime::new(PassiveHealthPolicy::default()),
+    );
+    let channel_group = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO channel_groups (id,name,api_format,connector_kind,enabled) \
+        VALUES ($1,'sharing-contract','open_ai_responses','codex_oauth',true)",
+    )
+    .bind(channel_group)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let credential = coordinator
+        .create_codex_credential(
+            app.user_id,
+            CodexCredentialCreate {
+                channel_group_id: channel_group,
+                label: "Private provider label".into(),
+                enabled: true,
+                proxy_id: None,
+                quota_threshold_percent: 95,
+                base_url: "https://example.test/codex".into(),
+                email: Some("private@example.test".into()),
+                account_id: None,
+                user_id: Some(Uuid::new_v4().to_string()),
+                plan_type: None,
+                is_fedramp: false,
+                id_token: Uuid::new_v4().to_string(),
+                access_token: Uuid::new_v4().to_string(),
+                refresh_token: Uuid::new_v4().to_string(),
+                access_token_expires_at: None,
+                available_models: vec!["sharing-contract-model".into()],
+                quota: None,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let user_group: Uuid = sqlx::query_scalar("SELECT user_group_id FROM users WHERE id=$1")
+        .bind(app.user_id)
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    let mut input = serde_json::json!({
+        "user_group_id": user_group, "credential_id": credential.id,
+        "name": "Shared development", "enabled": false, "seats": [app.user_id, null],
+        "primary_limit_amount": "20", "secondary_limit_amount": "100",
+        "request_reservation_amount": "0.10", "user_requests_per_minute": 30,
+        "group_requests_per_minute": 60, "user_max_concurrent_requests": 1,
+        "group_max_concurrent_requests": 2
+    });
+    let created = request(
+        &app,
+        "POST",
+        "/console/v1/codex-sharing-groups",
+        input.clone(),
+        &[],
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let created = body_json(created).await;
+    assert!(created["correlation_id"].is_string());
+    let id = created["id"].as_str().unwrap();
+    let path = format!("/console/v1/codex-sharing-groups/{id}");
+    let detail = request(&app, "GET", &path, serde_json::json!({}), &[]).await;
+    assert_eq!(detail.status(), StatusCode::OK);
+    let etag = detail.headers()[header::ETAG].to_str().unwrap().to_owned();
+    let detail = body_json(detail).await;
+    assert_eq!(
+        detail["primary_limit_amount"]
+            .as_str()
+            .unwrap()
+            .parse::<rust_decimal::Decimal>()
+            .unwrap(),
+        rust_decimal::Decimal::from(20)
+    );
+    assert_eq!(detail["seats"].as_array().unwrap().len(), 2);
+    assert!(detail.get("provider_user_id").is_none());
+    assert!(detail.get("access_token").is_none());
+    let own = body_json(
+        request(
+            &app,
+            "GET",
+            "/console/v1/me/codex-sharing",
+            serde_json::json!({}),
+            &[],
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(own["id"], id);
+    assert_eq!(own["currency"], "USD");
+    assert_eq!(own["usage"]["seat_number"], 1);
+    assert_eq!(own["usage"]["available"], false);
+    for private in [
+        "credential_id",
+        "user_group_id",
+        "seats",
+        "email",
+        "access_token",
+    ] {
+        assert!(own.get(private).is_none());
+    }
+    assert_eq!(
+        request(&app, "PUT", &path, input.clone(), &[])
+            .await
+            .status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    input["primary_limit_amount"] = "24".into();
+    assert_eq!(
+        request(&app, "PUT", &path, input.clone(), &[("if-match", &etag)])
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        request(&app, "PUT", &path, input.clone(), &[("if-match", &etag)])
+            .await
+            .status(),
+        StatusCode::CONFLICT
+    );
+    let fresh = request(&app, "GET", &path, serde_json::json!({}), &[]).await;
+    let etag = fresh.headers()[header::ETAG].to_str().unwrap().to_owned();
+    input["enabled"] = true.into();
+    assert_eq!(
+        request(&app, "PUT", &path, input.clone(), &[("if-match", &etag)])
+            .await
+            .status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    input["enabled"] = false.into();
+    input["seats"] = serde_json::json!([app.user_id, app.user_id]);
+    assert_eq!(
+        request(&app, "PUT", &path, input, &[("if-match", &etag)])
+            .await
+            .status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+
+    let outsider = Uuid::new_v4();
+    let email = format!("{outsider}@example.test");
+    let outside_group = Uuid::new_v4();
+    sqlx::query("INSERT INTO user_groups (id,name) VALUES ($1,'outside-sharing')")
+        .bind(outside_group)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO users (id,email,display_name,role,status,password_hash,user_group_id) \
+        SELECT $1,$2,'Outside sharing','user','active',password_hash,$4 FROM users WHERE id=$3",
+    )
+    .bind(outsider)
+    .bind(&email)
+    .bind(app.user_id)
+    .bind(outside_group)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let session = app
+        .auth
+        .login_with_user_agent(email, TEST_PASSWORD.into(), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        request_with_token(
+            &app,
+            &session.access_token,
+            "GET",
+            "/console/v1/codex-sharing-groups",
+            serde_json::json!({}),
+            &[]
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    let forged = format!("/console/v1/me/codex-sharing?user_id={}", app.user_id);
+    assert!(
+        body_json(
+            request_with_token(
+                &app,
+                &session.access_token,
+                "GET",
+                &forged,
+                serde_json::json!({}),
+                &[]
+            )
+            .await
+        )
+        .await
+        .is_null()
+    );
+    let own_anonymous = unauthenticated_request(
+        &app,
+        "GET",
+        "/console/v1/me/codex-sharing",
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(own_anonymous.status(), StatusCode::UNAUTHORIZED);
+    let audit: serde_json::Value = sqlx::query_scalar(
+        "SELECT after_redacted FROM audit_logs WHERE object_type='codex_sharing_group' ORDER BY id LIMIT 1",
+    ).fetch_one(&database.pool).await.unwrap();
+    assert!(audit.get("seats").is_some());
+    assert!(audit.get("provider_user_id").is_none());
+    database.cleanup().await;
 }
 
 async fn upstream_models(headers: HeaderMap) -> Result<Json<serde_json::Value>, StatusCode> {

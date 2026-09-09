@@ -1,5 +1,7 @@
 //! JWT-authenticated Console API for self-service and role-gated control-plane work.
 
+mod codex_sharing;
+
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Extension, Path, Query, Request, State},
@@ -78,6 +80,7 @@ pub fn router(state: ConsoleState) -> Router {
         .layer(RequestBodyLimitLayer::new(state.auth_body_bytes));
 
     let self_routes = Router::new()
+        .route("/console/v1/me/codex-sharing", get(codex_sharing::own))
         .route("/console/v1/me", get(get_me).patch(update_me))
         .route(
             "/console/v1/me/settings",
@@ -130,6 +133,18 @@ pub fn router(state: ConsoleState) -> Router {
         );
 
     let control_routes = Router::new()
+        .route(
+            "/console/v1/codex-sharing-groups",
+            get(codex_sharing::list).post(codex_sharing::create),
+        )
+        .route(
+            "/console/v1/codex-sharing-groups/{id}",
+            get(codex_sharing::get).put(codex_sharing::update),
+        )
+        .route(
+            "/console/v1/codex-sharing-groups/{id}/usage",
+            get(codex_sharing::usage),
+        )
         .route("/console/v1/users", get(list_users).post(invite_user))
         .route("/console/v1/users/batch", post(update_users_batch))
         .route(
@@ -2696,6 +2711,8 @@ fn routing_dependency_invalid(reason: &str) -> bool {
 
 fn repository_error_message(error: &crate::persistence::RepositoryError) -> &'static str {
     match error {
+        crate::persistence::RepositoryError::SharingGroupInUse => "sharing_group_in_use",
+        crate::persistence::RepositoryError::SharingCredentialInUse => "sharing_credential_in_use",
         crate::persistence::RepositoryError::DefaultApiKeyPolicyRequired => {
             "default_api_key_policy_required"
         }
@@ -2747,6 +2764,8 @@ fn routing_dependency_sql_error(error: &sqlx::Error) -> bool {
 
 fn repository_status(error: &crate::persistence::RepositoryError) -> StatusCode {
     match error {
+        crate::persistence::RepositoryError::SharingGroupInUse => StatusCode::CONFLICT,
+        crate::persistence::RepositoryError::SharingCredentialInUse => StatusCode::CONFLICT,
         crate::persistence::RepositoryError::NotFound => StatusCode::NOT_FOUND,
         crate::persistence::RepositoryError::Conflict
         | crate::persistence::RepositoryError::ProtectedUserGroup

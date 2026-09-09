@@ -1390,6 +1390,7 @@ impl CompiledModelRoutes {
 
 #[derive(Debug)]
 pub struct CompiledRuntimeConfig {
+    sharing: super::codex_sharing::SharingRegistry,
     api_keys: HashMap<ApiKeyHash, Arc<CompiledApiKey>>,
     model_rules: CompiledModelRoutes,
     channels: HashMap<Uuid, Arc<CompiledChannel>>,
@@ -1474,6 +1475,7 @@ impl CompiledRuntimeConfig {
         system_settings: SystemRuntimeSettings,
     ) -> Self {
         Self {
+            sharing: super::codex_sharing::SharingRegistry::default(),
             api_keys,
             model_rules: CompiledModelRoutes::from_flat(model_rules),
             channels,
@@ -1484,6 +1486,14 @@ impl CompiledRuntimeConfig {
             templates,
             system_settings,
         }
+    }
+    pub(crate) fn with_sharing(mut self, sharing: super::codex_sharing::SharingRegistry) -> Self {
+        self.sharing = sharing;
+        self
+    }
+
+    pub fn sharing(&self) -> &super::codex_sharing::SharingRegistry {
+        &self.sharing
     }
     #[must_use]
     pub fn empty() -> Self {

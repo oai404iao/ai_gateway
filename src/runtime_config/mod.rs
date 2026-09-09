@@ -58,6 +58,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub request_logging: RequestLoggingConfig,
     #[serde(default)]
+    pub codex_sharing: CodexSharingConfig,
+    #[serde(default)]
     pub passive_health: PassiveHealthConfig,
     #[serde(default)]
     pub automatic_disable: AutomaticDisableConfig,
@@ -153,6 +155,7 @@ impl AppConfig {
             request_retry: self.request_retry,
             runtime_config: self.runtime_config,
             request_logging: self.request_logging,
+            codex_sharing: self.codex_sharing,
             passive_health: self.passive_health,
             automatic_disable: self.automatic_disable,
             scheduled_testing: self.scheduled_testing,
@@ -166,6 +169,7 @@ impl AppConfig {
 }
 
 pub struct BootstrapConfig {
+    pub codex_sharing: CodexSharingConfig,
     pub server: ServerConfig,
     pub database: DatabaseConfig,
     pub upstream: UpstreamConfig,
@@ -181,6 +185,13 @@ pub struct BootstrapConfig {
     pub console: Option<ConsoleListenerConfig>,
     pub observability: ObservabilityConfig,
 }
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CodexSharingConfig {
+    #[serde(default)]
+    pub enabled: bool,
+}
+
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServerConfig {
@@ -705,7 +716,9 @@ pub fn compile_runtime_config(
     records: RuntimeConfigRecords,
 ) -> Result<CompiledRuntimeConfig, ConfigError> {
     let system_settings = compile_system_settings(records.system_settings)?;
-    compile_control_plane_with_system_settings(records.control_plane, system_settings)
+    let sharing = crate::domain::codex_sharing::SharingRegistry::compile(records.sharing)
+        .map_err(|message| ConfigError::Compile(message.into()))?;
+    compile_with_sharing(records.control_plane, system_settings, sharing)
 }
 
 /// Compiles control-plane resources with an already validated system policy.
@@ -715,6 +728,14 @@ pub fn compile_runtime_config(
 pub fn compile_control_plane_with_system_settings(
     records: ControlPlaneRecords,
     system_settings: SystemRuntimeSettings,
+) -> Result<CompiledRuntimeConfig, ConfigError> {
+    compile_with_sharing(records, system_settings, Default::default())
+}
+
+fn compile_with_sharing(
+    records: ControlPlaneRecords,
+    system_settings: SystemRuntimeSettings,
+    sharing: crate::domain::codex_sharing::SharingRegistry,
 ) -> Result<CompiledRuntimeConfig, ConfigError> {
     let mut all_groups = HashMap::new();
     let mut groups = HashMap::new();
@@ -858,6 +879,7 @@ pub fn compile_control_plane_with_system_settings(
         &channel_slots,
         &model_rules,
         &routes_by_channel_slot,
+        &sharing,
     )?;
     Ok(
         CompiledRuntimeConfig::with_resources_system_settings_and_probe_channels(
@@ -870,7 +892,8 @@ pub fn compile_control_plane_with_system_settings(
             proxies,
             templates,
             system_settings,
-        ),
+        )
+        .with_sharing(sharing),
     )
 }
 
@@ -1453,6 +1476,7 @@ fn transform_error(context: &'static str) -> impl FnOnce(TransformCompileError) 
     move |error| ConfigError::Compile(format!("{context} is invalid: {error}"))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compile_keys(
     records: Vec<ApiKeyRecord>,
     all_groups: &HashMap<Uuid, ChannelGroupRecord>,
@@ -1461,6 +1485,7 @@ fn compile_keys(
     channel_slots: &HashMap<Uuid, usize>,
     model_rules: &HashMap<ModelRouteKey, Arc<CompiledModelRule>>,
     routes_by_channel_slot: &[Vec<usize>],
+    sharing: &crate::domain::codex_sharing::SharingRegistry,
 ) -> Result<HashMap<ApiKeyHash, Arc<CompiledApiKey>>, ConfigError> {
     let mut result = HashMap::new();
     let mut ids = HashSet::new();
@@ -1485,7 +1510,7 @@ fn compile_keys(
             .map(|value| parse_permission(value))
             .collect::<Result<HashSet<_>, _>>()?;
         let (allowed_channel_slot_words, allowed_channel_ids) =
-            compile_allowed_channel_slots(&record, channels_by_group, channel_slots);
+            compile_allowed_channel_slots(&record, channels_by_group, channel_slots, sharing);
         let authorization = authorization_profiles
             .entry(allowed_channel_slot_words.clone())
             .or_insert_with(|| {
@@ -1534,10 +1559,14 @@ fn compile_allowed_channel_slots(
     record: &ApiKeyRecord,
     channels_by_group: &HashMap<Uuid, Vec<Uuid>>,
     channel_slots: &HashMap<Uuid, usize>,
+    sharing: &crate::domain::codex_sharing::SharingRegistry,
 ) -> (Vec<u64>, HashSet<Uuid>) {
     let mut words = vec![0_u64; channel_slots.len().div_ceil(u64::BITS as usize)];
     let mut allowed_channel_ids = HashSet::new();
     let mut allow = |channel_id: &Uuid| {
+        if !sharing.permits(record.user_id, *channel_id) {
+            return;
+        }
         let slot = channel_slots[channel_id];
         words[slot / u64::BITS as usize] |= 1_u64 << (slot % u64::BITS as usize);
         allowed_channel_ids.insert(*channel_id);
@@ -3012,6 +3041,25 @@ mod tests {
     }
 
     #[test]
+    fn codex_sharing_is_opt_in_for_existing_bootstrap_configuration() {
+        let mut document: toml::Value =
+            toml::from_str(include_str!("../../config.example.toml")).unwrap();
+        document.as_table_mut().unwrap().remove("codex_sharing");
+        let legacy: AppConfig = document.clone().try_into().unwrap();
+        assert!(!legacy.codex_sharing.enabled);
+        document.as_table_mut().unwrap().insert(
+            "codex_sharing".into(),
+            toml::Value::Table(
+                [("enabled".into(), toml::Value::Boolean(true))]
+                    .into_iter()
+                    .collect(),
+            ),
+        );
+        let enabled: AppConfig = document.try_into().unwrap();
+        assert!(enabled.codex_sharing.enabled);
+    }
+
+    #[test]
     fn container_example_configuration_matches_the_embedded_image_contract() {
         let example = include_str!("../../deploy/compose/config.example.toml");
         assert!(example.contains(r#"name = "session-id""#));
@@ -3047,6 +3095,7 @@ mod tests {
     #[test]
     fn compiler_uses_database_backed_forwarding_settings() {
         let records = RuntimeConfigRecords {
+            sharing: Vec::new(),
             control_plane: route_records(0, "weighted_random", 1, "weighted_random", false),
             system_settings: SystemSettingsRecord {
                 setting_key: FORWARDING_SETTINGS_KEY.into(),

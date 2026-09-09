@@ -7,6 +7,13 @@ Versioning.
 
 ## [Unreleased]
 
+### Added
+
+- Opt-in single-instance Codex sharing with fixed seats, provider-aligned USD
+  window allowances, credential-pinned routing, durable pre-dispatch
+  reservations and idempotent settlement, administrator management and private
+  member usage pages. Sharing search fails closed until monetary usage exists.
+
 ### Security
 
 - Stop including synthetic fixture secrets in audit-test failure messages,

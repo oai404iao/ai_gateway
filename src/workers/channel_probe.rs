@@ -116,7 +116,8 @@ async fn run_probe_round(
     let channels = snapshot
         .probe_channels()
         .filter(|channel| {
-            snapshot.group(channel.group_id()).is_some()
+            !snapshot.sharing().is_protected(channel.id())
+                && snapshot.group(channel.group_id()).is_some()
                 && channel.test_model().is_some()
                 && match scheduled.mode() {
                     ScheduledTestingMode::Global => true,

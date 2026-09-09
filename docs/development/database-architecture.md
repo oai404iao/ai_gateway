@@ -114,6 +114,10 @@ terminal RequestLogEvent
 
 ## 修改数据库的流程
 
+`0054_codex_sharing.sql` 新增固定席位车队与单实例账本身份。绑定和上游身份保持不可变，
+金额预占不写入余额实体，而由本地耐久 WAL 拥有；后台仅使用既有请求日志对账。
+详见 [Codex 拼车实现](codex-sharing.md)。
+
 1. 新增有序 migration，不修改已发布 migration。
 2. 同步 `src/persistence/` DTO/查询、领域类型、运行时编译器和 Console mutation。
 3. 若 Console API 形状变化，先改 `docs/openapi/console-v1.yaml`，再生成并提交 TypeScript 类型。

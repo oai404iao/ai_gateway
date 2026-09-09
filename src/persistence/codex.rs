@@ -1976,6 +1976,15 @@ async fn delete_codex_credential(
     expected_connector_pool_id: Option<Uuid>,
     expected_updated_at: DateTime<Utc>,
 ) -> Result<MutationResult, RepositoryError> {
+    let sharing: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM codex_sharing_groups WHERE credential_id=$1)",
+    )
+    .bind(channel_id)
+    .fetch_one(&mut **transaction)
+    .await?;
+    if sharing {
+        return Err(RepositoryError::SharingCredentialInUse);
+    }
     let before = codex_credential_audit(transaction, channel_id).await?;
     let actual_connector_pool_id = before["connector_pool_id"]
         .as_str()

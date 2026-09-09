@@ -753,6 +753,15 @@ impl ResponsesWebSocketSession {
                 );
                 return SessionAction::Close;
             };
+            if let Err(error) = completion
+                .admit_sharing(&self.proxy.sharing, &snapshot)
+                .await
+            {
+                completion.set_preserve_affinity_on_failure(true);
+                completion.finish_with_proxy_error(RequestOutcome::ClientRequestError, &error);
+                send_proxy_error(client, error).await;
+                return SessionAction::Close;
+            }
             active.reusable = false;
             completion.set_upstream_status(200);
             let request = match UpstreamUtf8Bytes::try_from(prepared.body) {

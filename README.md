@@ -67,6 +67,10 @@ separate management Console for users and administrators.
 
 ## 🔌 Supported APIs
 
+Optional [Codex sharing](docs/user/codex-sharing.md) adds fixed-seat USD window
+allowances with durable reservations and private member views. It is
+single-instance only and does not provide a hard per-request spending ceiling.
+
 | Endpoint | Authentication | Purpose |
 | --- | --- | --- |
 | `GET /health` | None | Liveness check; returns `204 No Content`. |

@@ -2,6 +2,7 @@
 
 mod auth;
 mod codex;
+mod codex_sharing;
 
 pub use auth::{
     AuthRepository, ConsoleProfile, ConsoleSession, ConsoleSessionState, InvitationCreated,
@@ -82,6 +83,7 @@ pub struct ControlPlaneRecords {
 pub struct RuntimeConfigRecords {
     pub control_plane: ControlPlaneRecords,
     pub system_settings: SystemSettingsRecord,
+    pub sharing: Vec<crate::domain::codex_sharing::SharingRecord>,
 }
 
 #[derive(Debug, FromRow)]
@@ -1209,6 +1211,11 @@ impl From<ConfigTemplateInput> for ConfigTemplateMutationInput {
 }
 
 pub enum ControlPlaneMutation {
+    SaveCodexSharing {
+        id: Uuid,
+        input: crate::domain::codex_sharing::SharingGroupInput,
+        expected_updated_at: Option<DateTime<Utc>>,
+    },
     CreateUser(UserInput),
     UpdateUser {
         id: Uuid,
@@ -4704,6 +4711,7 @@ impl ControlPlaneRepository {
         Ok(RuntimeConfigRecords {
             control_plane: Self::load_transaction(transaction).await?,
             system_settings: Self::load_system_settings_transaction(transaction).await?,
+            sharing: Self::load_sharing_transaction(transaction).await?,
         })
     }
 
@@ -5557,6 +5565,11 @@ impl ControlPlaneRepository {
         mutation: ControlPlaneMutation,
     ) -> Result<MutationResult, RepositoryError> {
         match mutation {
+            ControlPlaneMutation::SaveCodexSharing {
+                id,
+                input,
+                expected_updated_at,
+            } => codex_sharing::save_group(transaction, id, input, expected_updated_at).await,
             ControlPlaneMutation::CreateUser(input) => {
                 user_create(transaction, Uuid::new_v4(), input).await
             }
@@ -6617,6 +6630,15 @@ async fn user_group_delete(
     }
     if !before["system_role"].is_null() {
         return Err(RepositoryError::ProtectedUserGroup);
+    }
+    let sharing: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM codex_sharing_groups WHERE user_group_id=$1)",
+    )
+    .bind(id)
+    .fetch_one(&mut **transaction)
+    .await?;
+    if sharing {
+        return Err(RepositoryError::SharingGroupInUse);
     }
     if before["member_count"].as_i64().unwrap_or_default() > 0 {
         return Err(RepositoryError::UserGroupInUse);
@@ -8055,6 +8077,10 @@ fn valid_session_affinity_json_pointer(pointer: &str) -> bool {
 
 #[derive(Debug, Error)]
 pub enum RepositoryError {
+    #[error("user group is bound to a Codex sharing group")]
+    SharingGroupInUse,
+    #[error("credential is bound to a Codex sharing group")]
+    SharingCredentialInUse,
     #[error("control-plane database operation failed")]
     Sql(#[from] sqlx::Error),
     #[error("request log response status is outside the HTTP range")]

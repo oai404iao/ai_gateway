@@ -3,6 +3,9 @@
 // assert on stable ids/timestamps.
 
 import type {
+  CodexSharingGroup,
+  CodexSharingUsage,
+  SelfCodexSharingView,
   AdminApiKeyView,
   ApiKeyPolicyView,
   ApiKeyView,
@@ -955,4 +958,46 @@ export const SYSTEM_LOAD_REPORT: SystemLoadReport = {
       utilization_percent: 50,
     },
   },
+};
+
+export const SHARING_GROUP: CodexSharingGroup = {
+  id: "00000000-0000-0000-0000-000000000801",
+  updated_at: "2026-09-09T00:00:00.000000Z",
+  user_group_id: USER_GROUP.id,
+  credential_id: CHANNEL.id,
+  name: "Development car",
+  enabled: true,
+  seats: [CONTROL_PLANE_USER.id, null],
+  primary_limit_amount: "20",
+  secondary_limit_amount: "100",
+  request_reservation_amount: "0.10",
+  user_requests_per_minute: 30,
+  group_requests_per_minute: 120,
+  user_max_concurrent_requests: 1,
+  group_max_concurrent_requests: 4,
+};
+
+export const SHARING_USAGE: CodexSharingUsage = {
+  available: true, seat_number: 1, pending_requests: 1, uncertain: false,
+  windows: [{
+    window_id: "00000000-0000-0000-0000-000000000802",
+    window_kind: "primary", reset_at: "2026-09-09T05:00:00Z",
+    limit_amount: "10", used_amount: "3", reserved_amount: "0.10",
+    remaining_amount: "6.90", group_remaining_amount: "16.90",
+    provider_used_percent: 35, checked_at: "2026-09-09T00:00:00Z",
+  }, {
+    window_id: "00000000-0000-0000-0000-000000000803",
+    window_kind: "secondary", reset_at: "2026-09-16T00:00:00Z",
+    limit_amount: "50", used_amount: "15", reserved_amount: "0.10",
+    remaining_amount: "34.90", group_remaining_amount: "84.90",
+    provider_used_percent: 45, checked_at: "2026-09-09T00:00:00Z",
+  }],
+};
+
+export const OWN_SHARING: SelfCodexSharingView = {
+  id: SHARING_GROUP.id, name: SHARING_GROUP.name, enabled: true,
+  seat_count: 2, currency: "USD",
+  request_reservation_amount: "0.10",
+  user_requests_per_minute: 30, user_max_concurrent_requests: 1,
+  usage: SHARING_USAGE,
 };

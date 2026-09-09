@@ -108,6 +108,10 @@ backlog 停滞、日志数据库池持续饱和、健康查询不可用及其恢
 
 ## PostgreSQL 参数分档
 
+可选 `[codex_sharing].enabled` 默认关闭。启用前必须准备持久的
+`request_logging.spool_directory/codex-sharing` 账本目录，并遵守
+[拼车单实例与一致性备份要求](codex-sharing.md)。该开关不取消已经存在的凭证绑定保护。
+
 Compose 中所有主要参数都可以通过 `AI_GATEWAY_POSTGRES_*` 环境变量覆盖。以下数值是起点，不是容量承诺：
 
 | 主机规格 | shared_buffers | effective_cache_size | work_mem | maintenance_work_mem | max_wal_size | 建议应用批次 |
