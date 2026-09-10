@@ -367,6 +367,7 @@ fn gateway(
             api_format: format.api_format_name().into(),
             connector_kind: "openai_compatible".into(),
             request_compression: "default".into(),
+            sharing_only: false,
             enabled: true,
         }],
         channels: vec![ChannelRecord {

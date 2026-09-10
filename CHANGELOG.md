@@ -13,6 +13,8 @@ Versioning.
   window allowances, credential-pinned routing, durable pre-dispatch
   reservations and idempotent settlement, administrator management and private
   member usage pages. Sharing search fails closed until monetary usage exists.
+- Codex pool-wide sharing-only access mode, with unbound-credential and identity
+  alias protection, synchronized Responses/Images controls and versioned Console editing.
 
 ### Security
 
@@ -674,3 +676,7 @@ Versioning.
 - Production Docker image, full-stack `docker-compose.prd.yaml`, release
   validation scripts, Gitea Actions CI, release assets, and optional container
   registry publication.
+- Scope Codex sharing admission and spending to the actual sharing credential,
+  allowing members to use other authorized ordinary channels with normal billing.
+  Migration 0055 preserves existing seats, windows, spending, reservations and
+  ledger identity; pausing a car no longer blocks ordinary routes.

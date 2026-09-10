@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { mockConsoleApi } from "./mock-api";
+import { E2E_CODEX_GROUP, E2E_CODEX_GROUP_ID, mockConsoleApi } from "./mock-api";
 import { SHARING_GROUP } from "../src/test/fixtures";
 
 test("a sharing member sees private USD windows on mobile", async ({ page }) => {
@@ -48,4 +48,37 @@ test("an administrator edits a fixed-seat budget with its ETag", async ({ page }
   await page.reload();
   await expect(amount).toHaveValue("24");
   await expect(page.getByRole("columnheader", { name: "Seat allowance" }).first()).toBeVisible();
+});
+
+test("an administrator saves sharing-only access on a mobile Codex group editor", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await mockConsoleApi(page);
+  let group = { ...E2E_CODEX_GROUP };
+  let version = '"sharing-mode-1"';
+  await page.route(`**/console/v1/routing/channel-groups/${E2E_CODEX_GROUP_ID}`, async route => {
+    if (route.request().method() === "PUT") {
+      expect(route.request().headers()["if-match"]).toBe(version);
+      group = { ...group, ...route.request().postDataJSON() };
+      version = '"sharing-mode-2"';
+      return route.fulfill({ status: 200, json: { id: group.id, correlation_id: group.id } });
+    }
+    return route.fulfill({ status: 200, headers: { ETag: version }, json: group });
+  });
+  await page.goto("/login");
+  await page.getByLabel("Email").fill("admin@example.com");
+  await page.getByLabel("Password", { exact: true }).fill("mock-admin-password");
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await expect(page).not.toHaveURL(/\/login/);
+  await page.goto(`/admin/routing/channel-groups/${E2E_CODEX_GROUP_ID}`);
+  const toggle = page.getByRole("switch", { name: "Sharing only", exact: true });
+  await expect(toggle).not.toBeChecked();
+  await toggle.scrollIntoViewIfNeeded();
+  await expect(toggle).toBeInViewport();
+  await toggle.click();
+  const saved = page.waitForResponse(response => response.request().method() === "PUT"
+    && response.url().endsWith(`/channel-groups/${E2E_CODEX_GROUP_ID}`));
+  await page.getByRole("button", { name: "Save group", exact: true }).click();
+  expect((await saved).status()).toBe(200);
+  await page.reload();
+  await expect(toggle).toBeChecked();
 });

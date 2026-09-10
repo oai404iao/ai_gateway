@@ -239,7 +239,8 @@ HTTP fallback，不能成为 Gateway 对已派发消息自动重放的依据。
 
 ## 控制面与一致性
 
-可选 [Codex 拼车](codex-sharing.md) 在授权快照中收窄成员的可用投影，并在 dispatch 前
+可选 [Codex 拼车](codex-sharing.md) 在授权快照中保护拼车/专用池投影，保留成员对普通渠道
+的原有访问。仅拼车请求在 dispatch 前
 通过独立单写线程完成金额预占的 WAL fsync。HTTP/SSE、Images 和每条 WebSocket 请求复用
 同一完成回调进行幂等结算。配置/窗口及对账由后台访问数据库，数据面不逐请求查库。
 它不分享会话上下文，也不提供多实例全局配额。

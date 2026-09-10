@@ -80,6 +80,8 @@ as well as app navigation. Regression coverage is in
 ## API contract
 
 `/codex-sharing` and `/admin/codex-sharing/:id` expose private member usage and
+ordinary-channel coexistence. The Codex channel-group editor also exposes
+pool-wide sharing-only access without enabling Images. Sharing pages provide
 administrator fixed-seat settings. See the [sharing guide](../../docs/user/codex-sharing.md)
 for money windows, required runtime enablement, and single-instance recovery.
 

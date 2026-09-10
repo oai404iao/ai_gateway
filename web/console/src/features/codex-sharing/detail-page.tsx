@@ -102,7 +102,7 @@ export function SharingDetailPage() {
         {t("Soft USD allowance, not official credits. Active requests can exceed their reservation. No automatic fallback, borrowing or rollover.")}
       </AlertDescription></Alert>
       {isNew && <Alert variant="destructive"><AlertDescription>
-        {t("Creating a sharing group immediately restricts all keys in the selected user group, even while paused. Bindings cannot be undone in this version. Use a dedicated user group.")}
+        {t("Creating a sharing group reserves its credential for assigned seats, even while paused. Other authorized ordinary channels remain usable. Bindings cannot be undone in this version.")}
       </AlertDescription></Alert>}
       <form onSubmit={submit} className="flex flex-col gap-6">
         <Card>

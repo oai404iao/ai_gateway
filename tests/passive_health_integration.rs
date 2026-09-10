@@ -174,6 +174,7 @@ fn proxy_fixture_with_retry(
                 api_format: "open_ai_chat_completions".into(),
                 connector_kind: "openai_compatible".into(),
                 request_compression: "default".into(),
+                sharing_only: false,
                 enabled: true,
             })
             .collect(),

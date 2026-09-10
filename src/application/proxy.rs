@@ -493,9 +493,18 @@ impl ProxyService {
             ) {
                 Ok(attempt) => attempt,
                 Err(error) => {
-                    if affinity_hit {
+                    if affinity_hit
+                        || snapshot
+                            .sharing()
+                            .for_channel(current_channel.id())
+                            .is_some()
+                    {
                         completion.set_preserve_affinity_on_failure(true);
-                        let error = ProxyError::sticky_connector_unavailable(error);
+                        let error = if affinity_hit {
+                            ProxyError::sticky_connector_unavailable(error)
+                        } else {
+                            ProxyError::connector_unavailable(error)
+                        };
                         completion
                             .finish_with_proxy_error(RequestOutcome::UpstreamUnavailable, &error);
                         return Err(error);
@@ -2708,7 +2717,7 @@ impl CompletionGuard {
             ));
         }
         if self.sharing.is_none()
-            && let Some(group) = snapshot.sharing().for_user(context.user_id)
+            && let Some(group) = snapshot.sharing().for_channel(context.channel_id)
         {
             if context.api_operation == ApiOperation::StandaloneWebSearch {
                 return Err(ProxyError::sharing(

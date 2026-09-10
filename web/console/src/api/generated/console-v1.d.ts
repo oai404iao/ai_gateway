@@ -2205,6 +2205,8 @@ export interface components {
              */
             connector_pool_id: string | null;
             request_compression: components["schemas"]["RequestCompression"];
+            /** @description Codex-only access mode, synchronized across the pool's Responses and Images groups. Unbound credentials and recognizable aliases cannot be used normally. Existing sharing bindings remain protected even when false. */
+            sharing_only: boolean;
             enabled: boolean;
             /** @description Includes this channel group in the authenticated channel-group status report. */
             status_statistics_enabled: boolean;
@@ -3246,6 +3248,8 @@ export interface components {
             /** @description New codex_oauth pools start with open_ai_responses; the server also creates a disabled open_ai_images group in the same credential pool. */
             api_format: components["schemas"]["ApiFormat"];
             connector_kind: components["schemas"]["ConnectorKind"];
+            /** @description True is valid only for codex_oauth. Restricts the entire logical pool to eligible sharing seats and synchronizes the paired group's mode, without enabling Images or granting API Key access. Omission defaults to false on create and preserves the current mode on update. Disabling this mode never removes existing credential-level sharing protection. */
+            sharing_only?: boolean;
             /** @description Valid only for open_ai_responses groups. Omission defaults to `default` on create and preserves the current value on update. */
             request_compression?: components["schemas"]["RequestCompression"];
             enabled: boolean;

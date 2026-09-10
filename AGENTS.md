@@ -435,7 +435,12 @@ pool isolation, transforms, and configured outbound proxies.
 reservations, UUID-idempotent settlement, fixed seats, complete provider
 window observations, and credential projection isolation together. Never
 reset money on page refresh, key rotation, rejoining, or restart, and never
-serve sharing requests through an unmetered operation. Read
+serve sharing requests through an unmetered operation.
+Apply sharing admission to the selected credential, not the entire user;
+ordinary authorized routes retain normal billing even when a car is paused or
+unavailable. `channel_groups.sharing_only` is Codex-only and synchronized across
+the pool's projections; toggling it must never remove existing binding protection
+or reset money. Read
 [`docs/development/codex-sharing.md`](docs/development/codex-sharing.md) before
 changing its WAL, window epochs, configuration, or recovery behavior.
 

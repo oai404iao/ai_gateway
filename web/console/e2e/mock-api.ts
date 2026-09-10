@@ -192,13 +192,14 @@ export const E2E_CODEX_GROUP_ID = "00000000-0000-0000-0000-00000000c001";
 export const E2E_CODEX_CREDENTIAL_ID =
   "00000000-0000-0000-0000-00000000c002";
 
-const E2E_CODEX_GROUP = {
+export const E2E_CODEX_GROUP = {
   id: E2E_CODEX_GROUP_ID,
   name: "Codex subscriptions",
   api_format: "open_ai_responses",
   connector_kind: "codex_oauth",
   connector_pool_id: E2E_CODEX_GROUP_ID,
   request_compression: "default",
+  sharing_only: false,
   enabled: true,
   status_statistics_enabled: true,
   updated_at: "2026-07-29T12:00:00.000Z",
@@ -220,6 +221,7 @@ const E2E_STANDARD_CHANNEL_GROUPS = Array.from({ length: 5 }, (_, index) => ({
   connector_kind: "openai_compatible",
   connector_pool_id: null,
   request_compression: "default",
+  sharing_only: false,
   enabled: true,
   status_statistics_enabled: true,
   updated_at: "2026-07-29T12:00:00.000Z",

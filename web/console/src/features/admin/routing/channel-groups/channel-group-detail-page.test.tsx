@@ -21,6 +21,31 @@ function renderAppAt(path: string) {
 }
 
 describe("ChannelGroupDetailPage", () => {
+  it("edits the Codex sharing-only mode without enabling Images", async () => {
+    seedAuthenticatedSession();
+    let submitted: ChannelGroupInput | undefined;
+    let ifMatch: string | null = null;
+    const group = { ...CHANNEL_GROUP, connector_kind: "codex_oauth", api_format: "open_ai_responses", sharing_only: false };
+    server.use(
+      http.get("/console/v1/routing/channel-groups/:id", () => HttpResponse.json(group, {
+        headers: { ETag: `"${group.updated_at}"` },
+      })),
+      http.put("/console/v1/routing/channel-groups/:id", async ({ request }) => {
+        submitted = await request.json() as ChannelGroupInput;
+        ifMatch = request.headers.get("If-Match");
+        return HttpResponse.json({ id: group.id, correlation_id: group.id });
+      }),
+    );
+    renderAppAt(`/admin/routing/channel-groups/${group.id}`);
+    const toggle = await screen.findByRole("switch", { name: "Sharing only" });
+    expect(toggle).not.toBeChecked();
+    expect(screen.getByText(/both Responses and Images without enabling Images/)).toBeVisible();
+    await userEvent.click(toggle);
+    await userEvent.click(screen.getByRole("button", { name: /save group/i }));
+    await waitFor(() => expect(submitted?.sharing_only).toBe(true));
+    expect(ifMatch).toBe(`"${group.updated_at}"`);
+  });
+
   it("edits group-level status monitoring", async () => {
     seedAuthenticatedSession();
     let submitted: ChannelGroupInput | undefined;
@@ -43,6 +68,7 @@ describe("ChannelGroupDetailPage", () => {
     });
     expect(screen.queryByText("Priority")).not.toBeInTheDocument();
     expect(screen.queryByText("Selection strategy")).not.toBeInTheDocument();
+    expect(screen.queryByRole("switch", { name: "Sharing only" })).not.toBeInTheDocument();
     const monitoring = screen.getByRole("switch", { name: "Status monitoring" });
     expect(monitoring).toBeChecked();
     await user.click(monitoring);
