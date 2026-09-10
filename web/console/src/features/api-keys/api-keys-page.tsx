@@ -34,6 +34,7 @@ import { AsyncResource } from "@/components/shared/async-resource";
 import { ApiKeyValue } from "@/components/shared/api-key-value";
 import { DecimalField, NullableNumberField } from "@/components/shared/decimal-field";
 import { ResourceTable, type Column } from "@/components/shared/resource-table";
+import { SharingCredentialFields } from "@/components/shared/sharing-credential-fields";
 import { StatusBadge } from "@/components/shared/status-badge";
 import {
   useCreateOwnApiKey,
@@ -163,6 +164,16 @@ export function ApiKeysPage() {
   );
   const selectedGroupIds = form.watch("allowed_group_ids");
   const selectedChannelIds = form.watch("allowed_channel_ids");
+  const sharingChannelIds = useMemo(
+    () => new Set(options.data?.sharing_credentials.flatMap((item) => item.channel_ids) ?? []),
+    [options.data?.sharing_credentials],
+  );
+  const selectedSharingChannelIds = selectedChannelIds.filter((id) =>
+    sharingChannelIds.has(id),
+  );
+  const selectedPolicyChannelIds = selectedChannelIds.filter(
+    (id) => !sharingChannelIds.has(id),
+  );
   const targetError =
     form.formState.errors.allowed_group_ids?.message ??
     form.formState.errors.allowed_channel_ids?.message;
@@ -322,12 +333,12 @@ export function ApiKeysPage() {
           if (!open) form.reset();
         }}
       >
-        <DialogContent className="max-h-[calc(100svh-2rem)] overflow-y-auto sm:max-w-2xl">
+        <DialogContent className="max-h-[calc(100svh-2rem)] overflow-y-auto sm:max-w-5xl">
           <DialogHeader>
             <DialogTitle>{t("New API key")}</DialogTitle>
             <DialogDescription>
               {t(
-                "Choose targets from your policy and configure this key's own limits.",
+                "Choose sharing credentials or policy targets, then configure this key's own limits.",
               )}
             </DialogDescription>
           </DialogHeader>
@@ -361,24 +372,41 @@ export function ApiKeysPage() {
                   {createErrorMessage(options.error, t)}
                 </FieldError>
               ) : null}
-              <RoutingTargetFields
-                className="md:col-span-2"
-                groups={targetGroups}
-                channels={targetChannels}
-                selectedGroupIds={selectedGroupIds}
-                selectedChannelIds={selectedChannelIds}
-                onChange={(allowedGroupIds, allowedChannelIds) => {
-                  form.setValue("allowed_group_ids", allowedGroupIds, {
-                    shouldDirty: true,
-                    shouldValidate: true,
-                  });
-                  form.setValue("allowed_channel_ids", allowedChannelIds, {
-                    shouldDirty: true,
-                    shouldValidate: true,
-                  });
-                }}
-                error={targetError ? t(targetError) : undefined}
-              />
+              <div className="grid items-start gap-4 md:col-span-2 lg:grid-cols-2">
+                <SharingCredentialFields
+                  credentials={options.data?.sharing_credentials ?? []}
+                  selectedChannelIds={selectedSharingChannelIds}
+                  onChange={(channelIds) =>
+                    form.setValue(
+                      "allowed_channel_ids",
+                      [...selectedPolicyChannelIds, ...channelIds],
+                      { shouldDirty: true, shouldValidate: true },
+                    )
+                  }
+                />
+                <RoutingTargetFields
+                  groups={targetGroups}
+                  channels={targetChannels}
+                  selectedGroupIds={selectedGroupIds}
+                  selectedChannelIds={selectedPolicyChannelIds}
+                  onChange={(allowedGroupIds, allowedChannelIds) => {
+                    form.setValue("allowed_group_ids", allowedGroupIds, {
+                      shouldDirty: true,
+                      shouldValidate: true,
+                    });
+                    form.setValue(
+                      "allowed_channel_ids",
+                      [...selectedSharingChannelIds, ...allowedChannelIds],
+                      { shouldDirty: true, shouldValidate: true },
+                    );
+                  }}
+                  legend={t("API Key Policy targets")}
+                  description={t(options.data?.policy_enabled
+                    ? "These ordinary groups and channels come from your enabled API Key Policy."
+                    : "No enabled API Key Policy is assigned. Sharing credentials remain available.")}
+                  error={targetError ? t(targetError) : undefined}
+                />
+              </div>
               <NullableNumberField
                 id="requests_per_minute"
                 label={t("Requests / minute")}

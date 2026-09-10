@@ -117,6 +117,9 @@ terminal RequestLogEvent
 `0054_codex_sharing.sql` 新增固定席位车队与单实例账本身份。绑定和上游身份保持不可变。
 `0055_codex_sharing_only_groups.sql` 只增加 Codex 渠道组的整池访问模式与同步触发器，
 不改写这些绑定、席位、配额窗口或账本身份。
+`0056_codex_sharing_direct_seats.sql` 删除车队的 `user_group_id`，成员直接来自原有
+`seats` JSON；同时把旧 Key 经 group target 可达的现有拼车投影回填为显式 channel target，
+不改写席位顺序、金额、窗口、账本身份或在途预占。
 金额预占不写入余额实体，而由本地耐久 WAL 拥有；后台仅使用既有请求日志对账。
 详见 [Codex 拼车实现](codex-sharing.md)。
 

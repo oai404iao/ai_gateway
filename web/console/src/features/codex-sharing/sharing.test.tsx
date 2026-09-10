@@ -5,7 +5,14 @@ import { BrowserRouter } from "react-router";
 import { describe, expect, it } from "vitest";
 import { AppProviders } from "@/app/providers";
 import { AppRouter } from "@/app/router";
-import { CHANNEL, CODEX_QUOTA_GROUP, OWN_SHARING, SHARING_GROUP, SHARING_USAGE, USER_GROUP } from "@/test/fixtures";
+import {
+  CHANNEL,
+  CODEX_QUOTA_GROUP,
+  CONTROL_PLANE_USER,
+  OWN_SHARING,
+  SHARING_GROUP,
+  SHARING_USAGE,
+} from "@/test/fixtures";
 import { server, seedAuthenticatedSession } from "@/test/msw";
 
 function renderAt(path: string) {
@@ -72,13 +79,11 @@ describe("Codex sharing", () => {
     renderAt("/admin/codex-sharing/new");
     await screen.findByText(/Bindings cannot be undone/);
     await userEvent.type(screen.getByLabelText("Name"), "New car");
-    await userEvent.click(screen.getByLabelText("User group"));
-    await userEvent.click(screen.getByRole("option", { name: USER_GROUP.name }));
     await userEvent.click(screen.getByLabelText("Codex credential"));
     await userEvent.click(screen.getByRole("option", { name: CHANNEL.name }));
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(submitted).toMatchObject({
-      name: "New car", user_group_id: USER_GROUP.id, credential_id: CHANNEL.id,
+      name: "New car", credential_id: CHANNEL.id,
       enabled: false, seats: [null], request_reservation_amount: "0.10",
     }));
     expect(etag).toBeNull();
@@ -97,13 +102,46 @@ describe("Codex sharing", () => {
     await screen.findByDisplayValue(SHARING_GROUP.name);
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(submitted).toMatchObject({
-      user_group_id: SHARING_GROUP.user_group_id,
       credential_id: SHARING_GROUP.credential_id,
       primary_limit_amount: "20", secondary_limit_amount: "100",
       seats: SHARING_GROUP.seats, enabled: true,
     }));
     expect(submitted).not.toHaveProperty("id");
     expect(etag).toBe(`"${SHARING_GROUP.updated_at}"`);
+  });
+
+  it("assigns a later vacant seat without filtering by user group", async () => {
+    handlers();
+    const otherGroupUser = {
+      ...CONTROL_PLANE_USER,
+      id: "00000000-0000-0000-0000-000000000899",
+      email: "other-group@example.test",
+      display_name: "Other group member",
+      user_group_id: "00000000-0000-0000-0000-000000000898",
+    };
+    let submitted: unknown;
+    server.use(
+      http.get("/console/v1/users", () =>
+        HttpResponse.json([CONTROL_PLANE_USER, otherGroupUser])),
+      http.put("/console/v1/codex-sharing-groups/:id", async ({ request }) => {
+        submitted = await request.json();
+        return HttpResponse.json({
+          id: SHARING_GROUP.id,
+          correlation_id: SHARING_GROUP.id,
+        });
+      }),
+    );
+    renderAt(`/admin/codex-sharing/${SHARING_GROUP.id}`);
+    await screen.findByDisplayValue(SHARING_GROUP.name);
+    await userEvent.click(screen.getByLabelText("Seat 2"));
+    await userEvent.click(screen.getByRole("option", { name: otherGroupUser.display_name }));
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(submitted).toMatchObject({
+        seats: [CONTROL_PLANE_USER.id, otherGroupUser.id],
+      }),
+    );
   });
 
   it("reloads fresh configuration after a concurrent edit", async () => {

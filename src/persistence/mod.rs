@@ -1413,10 +1413,22 @@ pub struct ConsoleApiKey {
 
 #[derive(Clone, Serialize)]
 pub struct SelfApiKeyOptions {
-    pub policy_id: Uuid,
-    pub policy_name: String,
+    pub policy_id: Option<Uuid>,
+    pub policy_name: Option<String>,
+    pub policy_enabled: bool,
+    pub sharing_credentials: Vec<SelfApiKeySharingCredentialOption>,
     pub groups: Vec<SelfApiKeyGroupOption>,
     pub channels: Vec<SelfApiKeyChannelOption>,
+}
+
+#[derive(Clone, Serialize, FromRow)]
+pub struct SelfApiKeySharingCredentialOption {
+    pub credential_id: Uuid,
+    pub sharing_group_id: Uuid,
+    pub name: String,
+    pub enabled: bool,
+    pub channel_ids: Vec<Uuid>,
+    pub api_formats: Vec<String>,
 }
 
 #[derive(Clone, Serialize, FromRow)]
@@ -5161,35 +5173,83 @@ impl ControlPlaneRepository {
         )
         .bind(user_id)
         .fetch_optional(&self.pool)
-        .await?
-        .ok_or(RepositoryError::DefaultApiKeyPolicyRequired)?;
-        ensure_policy_enabled(&policy)?;
+        .await?;
+        let sharing_credentials = sqlx::query_as::<_, SelfApiKeySharingCredentialOption>(
+            "SELECT s.credential_id,s.id AS sharing_group_id,s.name,s.enabled, \
+                    ARRAY(SELECT p.channel_id FROM codex_oauth_credential_channels p \
+                          WHERE p.credential_id=s.credential_id ORDER BY p.api_format) \
+                    AS channel_ids, \
+                    ARRAY(SELECT p.api_format::text FROM codex_oauth_credential_channels p \
+                          WHERE p.credential_id=s.credential_id ORDER BY p.api_format) \
+                    AS api_formats \
+             FROM codex_sharing_groups s \
+             JOIN users u ON u.id=$1 AND u.status='active' AND u.deleted_at IS NULL \
+                              AND NOT u.is_system \
+             WHERE s.seats @> jsonb_build_array($1::uuid) \
+             ORDER BY s.name,s.id",
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await?;
+        if sharing_credentials.is_empty() {
+            ensure_optional_policy_enabled(policy.as_ref())?;
+        }
 
-        let groups = sqlx::query_as::<_, SelfApiKeyGroupOption>(
-            "SELECT id,name,api_format::text AS api_format,enabled \
-             FROM channel_groups \
-             WHERE id = ANY($1) \
-              ORDER BY api_format,name,id",
-        )
-        .bind(&policy.allowed_group_ids)
-        .fetch_all(&self.pool)
-        .await?;
-        let channels = sqlx::query_as::<_, SelfApiKeyChannelOption>(
-            "SELECT c.id,c.channel_group_id,g.name AS channel_group_name, \
-                    g.enabled AS channel_group_enabled, \
-                    c.api_format::text AS api_format,c.name,c.enabled,c.auto_disabled \
-             FROM channels AS c \
-             JOIN channel_groups AS g ON g.id=c.channel_group_id \
-             WHERE c.channel_group_id = ANY($1) OR c.id = ANY($2) \
-             ORDER BY c.api_format,g.name,c.name,c.id",
-        )
-        .bind(&policy.allowed_group_ids)
-        .bind(&policy.allowed_channel_ids)
-        .fetch_all(&self.pool)
-        .await?;
+        let (groups, channels) = if let Some(policy) = policy.as_ref().filter(|p| p.enabled) {
+            let groups = sqlx::query_as::<_, SelfApiKeyGroupOption>(
+                "SELECT g.id,g.name,g.api_format::text AS api_format,g.enabled \
+                 FROM channel_groups g \
+                 WHERE g.id = ANY($1) AND NOT g.sharing_only \
+                   AND EXISTS (SELECT 1 FROM channels candidate \
+                     WHERE candidate.channel_group_id=g.id \
+                       AND NOT EXISTS (SELECT 1 \
+                         FROM codex_oauth_credential_channels option_projection \
+                         JOIN codex_oauth_credentials option_credential \
+                           ON option_credential.channel_id=option_projection.credential_id \
+                         JOIN codex_sharing_groups s \
+                           ON s.credential_id=option_credential.channel_id \
+                           OR (COALESCE(option_credential.account_id,'')=s.provider_account_id \
+                               AND option_credential.user_id=s.provider_user_id) \
+                         WHERE option_projection.channel_id=candidate.id \
+                           AND option_credential.deleted_at IS NULL)) \
+                 ORDER BY g.api_format,g.name,g.id",
+            )
+            .bind(&policy.allowed_group_ids)
+            .fetch_all(&self.pool)
+            .await?;
+            let channels = sqlx::query_as::<_, SelfApiKeyChannelOption>(
+                "SELECT c.id,c.channel_group_id,g.name AS channel_group_name, \
+                        g.enabled AS channel_group_enabled, \
+                        c.api_format::text AS api_format,c.name,c.enabled,c.auto_disabled \
+                 FROM channels AS c \
+                 JOIN channel_groups AS g ON g.id=c.channel_group_id \
+                 WHERE NOT g.sharing_only \
+                   AND (c.channel_group_id = ANY($1) OR c.id = ANY($2)) \
+                   AND NOT EXISTS (SELECT 1 \
+                       FROM codex_oauth_credential_channels option_projection \
+                       JOIN codex_oauth_credentials option_credential \
+                         ON option_credential.channel_id=option_projection.credential_id \
+                       JOIN codex_sharing_groups s \
+                         ON s.credential_id=option_credential.channel_id \
+                         OR (COALESCE(option_credential.account_id,'')=s.provider_account_id \
+                             AND option_credential.user_id=s.provider_user_id) \
+                       WHERE option_projection.channel_id=c.id \
+                         AND option_credential.deleted_at IS NULL) \
+                 ORDER BY c.api_format,g.name,c.name,c.id",
+            )
+            .bind(&policy.allowed_group_ids)
+            .bind(&policy.allowed_channel_ids)
+            .fetch_all(&self.pool)
+            .await?;
+            (groups, channels)
+        } else {
+            (Vec::new(), Vec::new())
+        };
         Ok(SelfApiKeyOptions {
-            policy_id: policy.id,
-            policy_name: policy.name,
+            policy_id: policy.as_ref().map(|p| p.id),
+            policy_name: policy.as_ref().map(|p| p.name.clone()),
+            policy_enabled: policy.as_ref().is_some_and(|p| p.enabled),
+            sharing_credentials,
             groups,
             channels,
         })
@@ -5210,12 +5270,14 @@ impl ControlPlaneRepository {
             input.quota_limit_amount,
             false,
         )?;
-        let policy = load_self_api_key_policy(transaction, user_id).await?;
+        let policy = load_optional_self_api_key_policy(transaction, user_id).await?;
+        let sharing = load_self_api_key_sharing_access(transaction, user_id).await?;
         let allowed_api_formats = resolve_self_api_key_targets(
             transaction,
             &input.allowed_group_ids,
             &input.allowed_channel_ids,
-            &policy,
+            policy.as_ref(),
+            &sharing,
         )
         .await?;
         let id = Uuid::new_v4();
@@ -5289,13 +5351,15 @@ impl ControlPlaneRepository {
             !targets_changed,
         )?;
         let allowed_api_formats = if targets_changed {
-            let policy = load_self_api_key_policy(transaction, user_id).await?;
+            let policy = load_optional_self_api_key_policy(transaction, user_id).await?;
+            let sharing = load_self_api_key_sharing_access(transaction, user_id).await?;
             Some(
                 resolve_self_api_key_targets(
                     transaction,
                     &input.allowed_group_ids,
                     &input.allowed_channel_ids,
-                    &policy,
+                    policy.as_ref(),
+                    &sharing,
                 )
                 .await?,
             )
@@ -5866,6 +5930,8 @@ struct SelfApiKeyCurrent {
 struct ApiKeyTargetGroup {
     id: Uuid,
     api_format: String,
+    sharing_only: bool,
+    has_ordinary_channel: bool,
 }
 
 #[derive(FromRow)]
@@ -5873,12 +5939,28 @@ struct ApiKeyTargetChannel {
     id: Uuid,
     channel_group_id: Uuid,
     api_format: String,
+    sharing_only: bool,
 }
 
-async fn load_self_api_key_policy(
+#[derive(Default)]
+struct SelfApiKeySharingAccess {
+    owned_channels: HashSet<Uuid>,
+    protected_channels: HashSet<Uuid>,
+}
+
+async fn load_optional_self_api_key_policy(
     transaction: &mut Transaction<'_, Postgres>,
     user_id: Uuid,
-) -> Result<SelfApiKeyPolicy, RepositoryError> {
+) -> Result<Option<SelfApiKeyPolicy>, RepositoryError> {
+    sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM users \
+         WHERE id=$1 AND status='active' AND deleted_at IS NULL AND NOT is_system \
+         FOR UPDATE",
+    )
+    .bind(user_id)
+    .fetch_optional(&mut **transaction)
+    .await?
+    .ok_or(RepositoryError::DefaultApiKeyPolicyRequired)?;
     let policy = sqlx::query_as::<_, SelfApiKeyPolicy>(
         "SELECT p.id,p.name,p.allowed_group_ids,p.allowed_channel_ids,p.enabled \
          FROM users AS u \
@@ -5886,22 +5968,53 @@ async fn load_self_api_key_policy(
          JOIN api_key_policies AS p \
            ON p.id=COALESCE(u.default_api_key_policy_id,g.default_api_key_policy_id) \
          WHERE u.id=$1 AND u.status='active' AND u.deleted_at IS NULL \
-         FOR UPDATE OF u,g,p",
+         FOR UPDATE OF p",
     )
     .bind(user_id)
     .fetch_optional(&mut **transaction)
-    .await?
-    .ok_or(RepositoryError::DefaultApiKeyPolicyRequired)?;
-    ensure_policy_enabled(&policy)?;
+    .await?;
     Ok(policy)
 }
 
-fn ensure_policy_enabled(policy: &SelfApiKeyPolicy) -> Result<(), RepositoryError> {
-    if policy.enabled {
-        Ok(())
-    } else {
-        Err(RepositoryError::DefaultApiKeyPolicyDisabled)
+fn ensure_optional_policy_enabled(
+    policy: Option<&SelfApiKeyPolicy>,
+) -> Result<(), RepositoryError> {
+    match policy {
+        Some(policy) if policy.enabled => Ok(()),
+        Some(_) => Err(RepositoryError::DefaultApiKeyPolicyDisabled),
+        None => Err(RepositoryError::DefaultApiKeyPolicyRequired),
     }
+}
+
+async fn load_self_api_key_sharing_access(
+    transaction: &mut Transaction<'_, Postgres>,
+    user_id: Uuid,
+) -> Result<SelfApiKeySharingAccess, RepositoryError> {
+    let rows = sqlx::query_as::<_, (Uuid, bool)>(
+        "SELECT projection.channel_id, \
+                bool_or(candidate.channel_id=s.credential_id \
+                    AND s.seats @> jsonb_build_array($1::uuid)) AS owned \
+         FROM codex_sharing_groups s \
+         JOIN codex_oauth_credentials candidate \
+           ON candidate.channel_id=s.credential_id \
+           OR (COALESCE(candidate.account_id,'')=s.provider_account_id \
+               AND candidate.user_id=s.provider_user_id) \
+         JOIN codex_oauth_credential_channels projection \
+           ON projection.credential_id=candidate.channel_id \
+         WHERE candidate.deleted_at IS NULL \
+         GROUP BY projection.channel_id",
+    )
+    .bind(user_id)
+    .fetch_all(&mut **transaction)
+    .await?;
+    let mut access = SelfApiKeySharingAccess::default();
+    for (channel, owned) in rows {
+        access.protected_channels.insert(channel);
+        if owned {
+            access.owned_channels.insert(channel);
+        }
+    }
+    Ok(access)
 }
 
 fn same_uuid_set(left: &[Uuid], right: &[Uuid]) -> bool {
@@ -5999,20 +6112,33 @@ async fn resolve_self_api_key_targets(
     transaction: &mut Transaction<'_, Postgres>,
     selected_group_ids: &[Uuid],
     selected_channel_ids: &[Uuid],
-    policy: &SelfApiKeyPolicy,
+    policy: Option<&SelfApiKeyPolicy>,
+    sharing: &SelfApiKeySharingAccess,
 ) -> Result<Vec<String>, RepositoryError> {
     let groups = sqlx::query_as::<_, ApiKeyTargetGroup>(
-        "SELECT id,api_format::text AS api_format \
-         FROM channel_groups \
-         WHERE id = ANY($1)",
+        "SELECT g.id,g.api_format::text AS api_format,g.sharing_only, \
+                EXISTS (SELECT 1 FROM channels candidate \
+                  WHERE candidate.channel_group_id=g.id \
+                    AND NOT EXISTS (SELECT 1 \
+                      FROM codex_oauth_credential_channels projection \
+                      JOIN codex_oauth_credentials credential \
+                        ON credential.channel_id=projection.credential_id \
+                      JOIN codex_sharing_groups s \
+                        ON s.credential_id=credential.channel_id \
+                        OR (COALESCE(credential.account_id,'')=s.provider_account_id \
+                            AND credential.user_id=s.provider_user_id) \
+                      WHERE projection.channel_id=candidate.id \
+                        AND credential.deleted_at IS NULL)) AS has_ordinary_channel \
+         FROM channel_groups g \
+         WHERE g.id = ANY($1)",
     )
     .bind(selected_group_ids)
     .fetch_all(&mut **transaction)
     .await?;
     let channels = sqlx::query_as::<_, ApiKeyTargetChannel>(
-        "SELECT id,channel_group_id,api_format::text AS api_format \
-         FROM channels \
-         WHERE id = ANY($1)",
+        "SELECT c.id,c.channel_group_id,c.api_format::text AS api_format,g.sharing_only \
+         FROM channels c JOIN channel_groups g ON g.id=c.channel_group_id \
+         WHERE c.id = ANY($1)",
     )
     .bind(selected_channel_ids)
     .fetch_all(&mut **transaction)
@@ -6021,25 +6147,45 @@ async fn resolve_self_api_key_targets(
         return Err(RepositoryError::ApiKeyTargetNotAllowed);
     }
 
-    let allowed_groups = policy
-        .allowed_group_ids
-        .iter()
-        .copied()
-        .collect::<HashSet<_>>();
-    let allowed_channels = policy
-        .allowed_channel_ids
-        .iter()
-        .copied()
-        .collect::<HashSet<_>>();
     if groups
         .iter()
-        .any(|group| !allowed_groups.contains(&group.id))
+        .any(|group| group.sharing_only || !group.has_ordinary_channel)
         || channels.iter().any(|channel| {
-            !allowed_groups.contains(&channel.channel_group_id)
-                && !allowed_channels.contains(&channel.id)
+            sharing.protected_channels.contains(&channel.id)
+                && !sharing.owned_channels.contains(&channel.id)
         })
     {
         return Err(RepositoryError::ApiKeyTargetNotAllowed);
+    }
+    let ordinary_groups = groups.iter().collect::<Vec<_>>();
+    let ordinary_channels = channels
+        .iter()
+        .filter(|channel| !sharing.owned_channels.contains(&channel.id))
+        .collect::<Vec<_>>();
+    if !ordinary_groups.is_empty() || !ordinary_channels.is_empty() {
+        ensure_optional_policy_enabled(policy)?;
+        let policy = policy.expect("enabled policy was required");
+        let allowed_groups = policy
+            .allowed_group_ids
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>();
+        let allowed_channels = policy
+            .allowed_channel_ids
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>();
+        if ordinary_groups
+            .iter()
+            .any(|group| !allowed_groups.contains(&group.id))
+            || ordinary_channels.iter().any(|channel| {
+                channel.sharing_only
+                    || (!allowed_groups.contains(&channel.channel_group_id)
+                        && !allowed_channels.contains(&channel.id))
+            })
+        {
+            return Err(RepositoryError::ApiKeyTargetNotAllowed);
+        }
     }
 
     let mut formats = BTreeSet::new();
@@ -6642,15 +6788,6 @@ async fn user_group_delete(
     }
     if !before["system_role"].is_null() {
         return Err(RepositoryError::ProtectedUserGroup);
-    }
-    let sharing: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM codex_sharing_groups WHERE user_group_id=$1)",
-    )
-    .bind(id)
-    .fetch_one(&mut **transaction)
-    .await?;
-    if sharing {
-        return Err(RepositoryError::SharingGroupInUse);
     }
     if before["member_count"].as_i64().unwrap_or_default() > 0 {
         return Err(RepositoryError::UserGroupInUse);
@@ -8089,8 +8226,6 @@ fn valid_session_affinity_json_pointer(pointer: &str) -> bool {
 
 #[derive(Debug, Error)]
 pub enum RepositoryError {
-    #[error("user group is bound to a Codex sharing group")]
-    SharingGroupInUse,
     #[error("credential is bound to a Codex sharing group")]
     SharingCredentialInUse,
     #[error("control-plane database operation failed")]

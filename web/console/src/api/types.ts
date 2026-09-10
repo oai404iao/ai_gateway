@@ -81,6 +81,7 @@ export type ApiKeyView = S["ApiKeyView"];
 export type AdminApiKeyView = S["AdminApiKeyView"];
 export type ApiKeyPolicyView = S["ApiKeyPolicyView"];
 export type SelfApiKeyOptions = S["SelfApiKeyOptions"];
+export type SelfApiKeySharingCredentialOption = S["SelfApiKeySharingCredentialOption"];
 export type SelfApiKeyGroupOption = S["SelfApiKeyGroupOption"];
 export type SelfApiKeyChannelOption = S["SelfApiKeyChannelOption"];
 export type ApiHostsView = S["ApiHostsView"];

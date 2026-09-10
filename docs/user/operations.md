@@ -236,15 +236,18 @@ Channel 或 Codex credential 的属性。每条规则包含一个或多个非负
 
 Channel Group 继续保存 API 格式、Connector、启用、请求压缩和状态统计等池级资源配置；Channel
 继续保存端点、上游鉴权、模型能力、Transform、网络、计费和健康配置。API Key Policy 与 Key
-自身的 `allowed_group_ids` / `allowed_channel_ids` 语义没有变化：规则 target 只定义候选，
-不会扩大 Key 的授权范围。
+自身的 `allowed_group_ids` / `allowed_channel_ids` 对普通目标的语义没有变化：规则 target
+只定义候选，不会扩大 Key 的授权范围。拼车席位另可给本人 Key 添加对应凭证的 canonical
+渠道 ID，不依赖 API Key Policy。
 
 ### Codex OAuth Connect
 
-可选 [Codex 拼车](codex-sharing.md) 将用户组固定席位绑定到专用凭证，并增加 USD
+可选 [Codex 拼车](codex-sharing.md) 将直接分配给用户的固定席位绑定到专用凭证，并增加 USD
 双窗口预占/结算门禁。该单实例功能默认关闭；启用后不借用其他凭证，Images 仍需显式授权，
 经拼车凭证的不可计价 standalone search 会被拒绝，同一用户经普通渠道的请求保持原行为。
 Codex 渠道组可开启整池同步的“仅拼车使用”模式；未绑定凭证也受限制，但不自动开启 Images。
+车队可先保存空席；本人创建 Key 时，拼车凭证与 Policy 普通目标分栏选择，没有 Policy
+也可创建仅含席位凭证的 Key。
 
 管理员可以把 ChatGPT Codex 订阅凭证作为共享 Connector pool 接入，而不增加 sidecar 或第二个
 转发服务。同一凭证会投影为独立的 Responses 与 Images managed channels。客户端可以调用标准

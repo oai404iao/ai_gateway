@@ -101,6 +101,15 @@ const E2E_USER = {
 export const E2E_ADMIN_USER_GROUP_ID =
   "00000000-0000-0000-0000-000000000102";
 
+const E2E_ADMIN_USER = {
+  ...E2E_USER,
+  id: ADMIN_PROFILE.user.id,
+  email: ADMIN_PROFILE.user.email,
+  display_name: ADMIN_PROFILE.user.display_name,
+  role: "admin",
+  user_group_id: E2E_ADMIN_USER_GROUP_ID,
+};
+
 const E2E_USER_GROUPS = [
   {
     id: "00000000-0000-0000-0000-000000000101",
@@ -668,7 +677,7 @@ export async function mockConsoleApi(page: Page): Promise<void> {
   let authenticated = false;
   let session = ADMIN_PROFILE;
   let sharing = {
-    ...SHARING_GROUP, user_group_id: E2E_USER.user_group_id,
+    ...SHARING_GROUP,
     credential_id: E2E_CODEX_CREDENTIAL_ID, seats: [E2E_USER.id, null],
   };
   await page.route("**/console/v1/**", (route: Route) => {
@@ -846,7 +855,7 @@ export async function mockConsoleApi(page: Page): Promise<void> {
       return route.fulfill({ status: 200, json: E2E_PERSONAL_REQUEST_LOG });
     }
     if (path === "/console/v1/users" && method === "GET") {
-      return route.fulfill({ status: 200, json: [E2E_USER] });
+      return route.fulfill({ status: 200, json: [E2E_USER, E2E_ADMIN_USER] });
     }
     if (
       path === `/console/v1/users/${E2E_USER.id}` &&
@@ -1180,6 +1189,17 @@ export async function mockConsoleApi(page: Page): Promise<void> {
         json: {
           policy_id: "00000000-0000-0000-0000-000000000031",
           policy_name: "default",
+          policy_enabled: true,
+          sharing_credentials: [
+            {
+              credential_id: SHARING_GROUP.credential_id,
+              sharing_group_id: SHARING_GROUP.id,
+              name: SHARING_GROUP.name,
+              enabled: SHARING_GROUP.enabled,
+              channel_ids: [SHARING_GROUP.credential_id],
+              api_formats: ["open_ai_responses"],
+            },
+          ],
           groups: [
             {
               id: "00000000-0000-0000-0000-000000000021",

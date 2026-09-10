@@ -1586,7 +1586,13 @@ fn compile_allowed_channel_slots(
     for group_id in &record.allowed_group_ids {
         if let Some(channel_ids) = channels_by_group.get(group_id) {
             for channel_id in channel_ids {
-                allow(channel_id);
+                // A sharing seat is an independent authorization source.
+                // Group targets may still authorize ordinary channels in a
+                // mixed pool, but a bound credential must be selected
+                // explicitly as a canonical channel projection.
+                if sharing.for_channel(*channel_id).is_none() {
+                    allow(channel_id);
+                }
             }
         }
     }

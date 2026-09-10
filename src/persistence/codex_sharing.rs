@@ -3,7 +3,7 @@
 use super::*;
 use crate::domain::codex_sharing::{SharingGroup, SharingGroupInput, SharingRecord, SharingWindow};
 
-const GROUP_JSON: &str = "jsonb_build_object('id',s.id,'user_group_id',s.user_group_id,\
+const GROUP_JSON: &str = "jsonb_build_object('id',s.id,\
      'credential_id',s.credential_id,'name',s.name,'enabled',s.enabled,'seats',s.seats,\
      'primary_limit_amount',s.primary_limit_amount::text,\
      'secondary_limit_amount',s.secondary_limit_amount::text,\
@@ -70,9 +70,9 @@ impl ControlPlaneRepository {
     ) -> Result<Vec<SharingGroup>, RepositoryError> {
         let values = sqlx::query_scalar::<_, Value>(&format!(
             "SELECT {GROUP_JSON} FROM codex_sharing_groups s \
-             WHERE $1::uuid IS NULL OR EXISTS \
-             (SELECT 1 FROM users u WHERE u.id=$1 AND u.user_group_id=s.user_group_id \
-              AND u.status='active' AND u.deleted_at IS NULL) ORDER BY s.id"
+             WHERE $1::uuid IS NULL OR (s.seats @> jsonb_build_array($1::uuid) AND EXISTS \
+             (SELECT 1 FROM users u WHERE u.id=$1 AND u.status='active' \
+              AND u.deleted_at IS NULL AND NOT u.is_system)) ORDER BY s.id"
         ))
         .bind(user)
         .fetch_all(&self.pool)
@@ -122,9 +122,8 @@ impl ControlPlaneRepository {
              ) SELECT id,credential_id,window_kind,scheduled_reset_at,used_percent,checked_at \
                FROM observed WHERE observed_count=expected_count",
         ).fetch_all(&mut **transaction).await?;
-        let rows = sqlx::query_as::<_, (Value, Vec<Uuid>, Vec<Uuid>, Vec<Uuid>)>(&format!(
+        let rows = sqlx::query_as::<_, (Value, Vec<Uuid>, Vec<Uuid>)>(&format!(
             "SELECT {GROUP_JSON},\
-             ARRAY(SELECT u.id FROM users u WHERE u.user_group_id=s.user_group_id),\
              ARRAY(SELECT p.channel_id FROM codex_oauth_credential_channels p \
                    WHERE p.credential_id=s.credential_id),\
              ARRAY(SELECT p.channel_id FROM codex_oauth_credentials c \
@@ -137,24 +136,21 @@ impl ControlPlaneRepository {
         .fetch_all(&mut **transaction)
         .await?;
         rows.into_iter()
-            .map(
-                |(value, group_user_ids, channel_ids, protected_channel_ids)| {
-                    let group: SharingGroup =
-                        serde_json::from_value(value).map_err(|_| RepositoryError::Validation)?;
-                    let windows = windows
-                        .iter()
-                        .filter(|w| w.credential_id == group.policy.credential_id)
-                        .cloned()
-                        .collect();
-                    Ok(SharingRecord {
-                        group,
-                        group_user_ids,
-                        channel_ids,
-                        protected_channel_ids,
-                        windows,
-                    })
-                },
-            )
+            .map(|(value, channel_ids, protected_channel_ids)| {
+                let group: SharingGroup =
+                    serde_json::from_value(value).map_err(|_| RepositoryError::Validation)?;
+                let windows = windows
+                    .iter()
+                    .filter(|w| w.credential_id == group.policy.credential_id)
+                    .cloned()
+                    .collect();
+                Ok(SharingRecord {
+                    group,
+                    channel_ids,
+                    protected_channel_ids,
+                    windows,
+                })
+            })
             .collect()
     }
 }
@@ -183,7 +179,6 @@ pub(super) async fn save_group(
                 return Err(RepositoryError::Conflict);
             }
             if previous.policy.credential_id != input.credential_id
-                || previous.policy.user_group_id != input.user_group_id
                 || input.seats.len() < previous.policy.seats.len()
             {
                 return Err(RepositoryError::Validation);
@@ -193,7 +188,6 @@ pub(super) async fn save_group(
         (None, Some(_)) => return Err(RepositoryError::NotFound),
         _ => return Err(RepositoryError::Conflict),
     }
-    ensure_user_group_exists(transaction, input.user_group_id).await?;
     let previous_seats: Vec<Option<Uuid>> = before
         .as_ref()
         .and_then(|value| value.get("seats"))
@@ -209,11 +203,10 @@ pub(super) async fn save_group(
         .filter_map(|(_, user)| *user)
         .collect::<Vec<_>>();
     let count: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM users WHERE id=ANY($1) AND user_group_id=$2 \
+        "SELECT count(*) FROM users WHERE id=ANY($1) \
          AND status='active' AND deleted_at IS NULL AND NOT is_system",
     )
     .bind(&members)
-    .bind(input.user_group_id)
     .fetch_one(&mut **transaction)
     .await?;
     if count != members.len() as i64 {
@@ -227,16 +220,24 @@ pub(super) async fn save_group(
     .fetch_optional(&mut **transaction)
     .await?
     .ok_or(RepositoryError::Validation)?;
+    let seated_users = input
+        .seats
+        .iter()
+        .flatten()
+        .map(Uuid::to_string)
+        .collect::<Vec<_>>();
     let conflict: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM codex_sharing_groups WHERE id<>$1 \
-         AND (user_group_id=$2 OR credential_id=$3 \
-              OR (provider_account_id=$4 AND provider_user_id=$5)))",
+         AND (credential_id=$2 \
+              OR (provider_account_id=$3 AND provider_user_id=$4) \
+              OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(seats) member(user_id) \
+                         WHERE member.user_id=ANY($5))))",
     )
     .bind(id)
-    .bind(input.user_group_id)
     .bind(input.credential_id)
     .bind(&identity.0)
     .bind(&identity.1)
+    .bind(&seated_users)
     .fetch_one(&mut **transaction)
     .await?;
     if conflict {
@@ -244,11 +245,11 @@ pub(super) async fn save_group(
     }
     let updated_at = sqlx::query_scalar(
         "INSERT INTO codex_sharing_groups \
-         (id,user_group_id,credential_id,provider_account_id,provider_user_id,name,enabled,seats,\
+         (id,credential_id,provider_account_id,provider_user_id,name,enabled,seats,\
           primary_limit_amount,secondary_limit_amount,request_reservation_amount,\
           user_requests_per_minute,group_requests_per_minute,user_max_concurrent_requests,\
           group_max_concurrent_requests) \
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) \
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) \
          ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name,enabled=EXCLUDED.enabled,\
           seats=EXCLUDED.seats,primary_limit_amount=EXCLUDED.primary_limit_amount,\
           secondary_limit_amount=EXCLUDED.secondary_limit_amount,\
@@ -260,7 +261,6 @@ pub(super) async fn save_group(
          RETURNING updated_at",
     )
     .bind(id)
-    .bind(input.user_group_id)
     .bind(input.credential_id)
     .bind(identity.0)
     .bind(identity.1)

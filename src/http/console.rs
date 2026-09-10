@@ -2711,7 +2711,6 @@ fn routing_dependency_invalid(reason: &str) -> bool {
 
 fn repository_error_message(error: &crate::persistence::RepositoryError) -> &'static str {
     match error {
-        crate::persistence::RepositoryError::SharingGroupInUse => "sharing_group_in_use",
         crate::persistence::RepositoryError::SharingCredentialInUse => "sharing_credential_in_use",
         crate::persistence::RepositoryError::DefaultApiKeyPolicyRequired => {
             "default_api_key_policy_required"
@@ -2764,7 +2763,6 @@ fn routing_dependency_sql_error(error: &sqlx::Error) -> bool {
 
 fn repository_status(error: &crate::persistence::RepositoryError) -> StatusCode {
     match error {
-        crate::persistence::RepositoryError::SharingGroupInUse => StatusCode::CONFLICT,
         crate::persistence::RepositoryError::SharingCredentialInUse => StatusCode::CONFLICT,
         crate::persistence::RepositoryError::NotFound => StatusCode::NOT_FOUND,
         crate::persistence::RepositoryError::Conflict

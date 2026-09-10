@@ -22,6 +22,7 @@ import { Separator } from "@/components/ui/separator";
 import { PageHeader } from "@/components/shared/page-header";
 import { AsyncResource } from "@/components/shared/async-resource";
 import { ApiKeyValue } from "@/components/shared/api-key-value";
+import { SharingCredentialFields } from "@/components/shared/sharing-credential-fields";
 import {
   RoutingTargetFields,
   type RoutingTargetChannel,
@@ -173,10 +174,16 @@ export function ApiKeyDetailPage() {
       }));
     return [...available, ...missing];
   }, [key?.allowed_api_formats, key?.allowed_group_ids, options.data?.groups]);
+  const sharingChannelIds = useMemo(
+    () => new Set(options.data?.sharing_credentials.flatMap((item) => item.channel_ids) ?? []),
+    [options.data?.sharing_credentials],
+  );
   const targetChannels = useMemo<RoutingTargetChannel[]>(() => {
     const available = options.data?.channels ?? [];
     const missing = (key?.allowed_channel_ids ?? [])
-      .filter((channelId) => !available.some((channel) => channel.id === channelId))
+      .filter((channelId) =>
+        !sharingChannelIds.has(channelId)
+        && !available.some((channel) => channel.id === channelId))
       .map((channelId) => ({
         id: channelId,
         channel_group_id: "",
@@ -188,18 +195,38 @@ export function ApiKeyDetailPage() {
         auto_disabled: false,
       }));
     return [...available, ...missing];
-  }, [key?.allowed_api_formats, key?.allowed_channel_ids, options.data?.channels, t]);
+  }, [
+    key?.allowed_api_formats,
+    key?.allowed_channel_ids,
+    options.data?.channels,
+    sharingChannelIds,
+    t,
+  ]);
   const selectedGroupIds = form.watch("allowed_group_ids");
   const selectedChannelIds = form.watch("allowed_channel_ids");
+  const selectedSharingChannelIds = selectedChannelIds.filter((channelId) =>
+    sharingChannelIds.has(channelId),
+  );
+  const selectedPolicyChannelIds = selectedChannelIds.filter(
+    (channelId) => !sharingChannelIds.has(channelId),
+  );
   const targetError =
     form.formState.errors.allowed_group_ids?.message ??
     form.formState.errors.allowed_channel_ids?.message;
   const allowedGroupNames = (key?.allowed_group_ids ?? []).map(
     (groupId) => targetGroups.find((group) => group.id === groupId)?.name ?? groupId,
   );
-  const allowedChannelNames = (key?.allowed_channel_ids ?? []).map(
-    (channelId) => targetChannels.find((channel) => channel.id === channelId)?.name ?? channelId,
-  );
+  const allowedChannelNames = [
+    ...(options.data?.sharing_credentials ?? [])
+      .filter((credential) =>
+        credential.channel_ids.some((channelId) =>
+          key?.allowed_channel_ids.includes(channelId)))
+      .map((credential) => credential.name),
+    ...(key?.allowed_channel_ids ?? [])
+      .filter((channelId) => !sharingChannelIds.has(channelId))
+      .map((channelId) =>
+        targetChannels.find((channel) => channel.id === channelId)?.name ?? channelId),
+  ];
 
   return (
     <div className="flex flex-col gap-6">
@@ -331,24 +358,41 @@ export function ApiKeyDetailPage() {
                           : t("Unable to load API key target options.")}
                       </FieldError>
                     ) : null}
-                    <RoutingTargetFields
-                      className="xl:col-span-2"
-                      groups={targetGroups}
-                      channels={targetChannels}
-                      selectedGroupIds={selectedGroupIds}
-                      selectedChannelIds={selectedChannelIds}
-                      onChange={(allowedGroupIds, allowedChannelIds) => {
-                        form.setValue("allowed_group_ids", allowedGroupIds, {
-                          shouldDirty: true,
-                          shouldValidate: true,
-                        });
-                        form.setValue("allowed_channel_ids", allowedChannelIds, {
-                          shouldDirty: true,
-                          shouldValidate: true,
-                        });
-                      }}
-                      error={targetError ? t(targetError) : undefined}
-                    />
+                    <div className="grid items-start gap-4 xl:col-span-2 xl:grid-cols-2">
+                      <SharingCredentialFields
+                        credentials={options.data?.sharing_credentials ?? []}
+                        selectedChannelIds={selectedSharingChannelIds}
+                        onChange={(channelIds) =>
+                          form.setValue(
+                            "allowed_channel_ids",
+                            [...selectedPolicyChannelIds, ...channelIds],
+                            { shouldDirty: true, shouldValidate: true },
+                          )
+                        }
+                      />
+                      <RoutingTargetFields
+                        groups={targetGroups}
+                        channels={targetChannels}
+                        selectedGroupIds={selectedGroupIds}
+                        selectedChannelIds={selectedPolicyChannelIds}
+                        onChange={(allowedGroupIds, allowedChannelIds) => {
+                          form.setValue("allowed_group_ids", allowedGroupIds, {
+                            shouldDirty: true,
+                            shouldValidate: true,
+                          });
+                          form.setValue(
+                            "allowed_channel_ids",
+                            [...selectedSharingChannelIds, ...allowedChannelIds],
+                            { shouldDirty: true, shouldValidate: true },
+                          );
+                        }}
+                        legend={t("API Key Policy targets")}
+                        description={t(options.data?.policy_enabled
+                          ? "These ordinary groups and channels come from your enabled API Key Policy."
+                          : "No enabled API Key Policy is assigned. Sharing credentials remain available.")}
+                        error={targetError ? t(targetError) : undefined}
+                      />
+                    </div>
                     <NullableNumberField
                       id="requests_per_minute"
                       label={t("Requests / minute")}

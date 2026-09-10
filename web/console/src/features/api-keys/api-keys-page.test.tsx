@@ -6,9 +6,9 @@ import { BrowserRouter } from "react-router";
 import { AppProviders } from "@/app/providers";
 import { AppRouter } from "@/app/router";
 import { server, seedAuthenticatedSession } from "@/test/msw";
-import { CHANNEL_GROUP, NEW_API_KEY_SECRET, OWN_API_KEY } from "@/test/fixtures";
+import { CHANNEL, CHANNEL_GROUP, NEW_API_KEY_SECRET, OWN_API_KEY, SHARING_GROUP } from "@/test/fixtures";
 import { maskApiKey } from "@/lib/api-keys";
-import type { SelfApiKeyCreateInput } from "@/api/types";
+import type { SelfApiKeyCreateInput, SelfApiKeyOptions } from "@/api/types";
 
 function renderAppAt(path: string) {
   window.history.replaceState({}, "", path);
@@ -40,6 +40,56 @@ describe("ApiKeysPage", () => {
 
     expect(await screen.findByText(/api key created/i)).toBeInTheDocument();
     expect(screen.queryByText(/save it now/i)).not.toBeInTheDocument();
+  });
+
+  it("creates a key from a sharing credential when no policy is assigned", async () => {
+    seedAuthenticatedSession();
+    const imageChannel = "00000000-0000-0000-0000-000000000812";
+    const options: SelfApiKeyOptions = {
+      policy_id: null,
+      policy_name: null,
+      policy_enabled: false,
+      sharing_credentials: [{
+        credential_id: SHARING_GROUP.credential_id,
+        sharing_group_id: SHARING_GROUP.id,
+        name: SHARING_GROUP.name,
+        enabled: false,
+        channel_ids: [CHANNEL.id, imageChannel],
+        api_formats: ["open_ai_responses", "open_ai_images"],
+      }],
+      groups: [],
+      channels: [],
+    };
+    let submitted: SelfApiKeyCreateInput | undefined;
+    server.use(
+      http.get("/console/v1/me/api-key-options", () => HttpResponse.json(options)),
+      http.post("/console/v1/me/api-keys", async ({ request }) => {
+        submitted = (await request.json()) as SelfApiKeyCreateInput;
+        return HttpResponse.json({
+          id: OWN_API_KEY.id,
+          secret: NEW_API_KEY_SECRET,
+          correlation_id: "11111111-0000-0000-0000-000000000000",
+        }, { status: 201 });
+      }),
+    );
+    const user = userEvent.setup();
+    renderAppAt("/api-keys");
+
+    await user.click(await screen.findByRole("button", { name: /new api key/i }));
+    expect(await screen.findByText("Sharing credentials")).toBeInTheDocument();
+    expect(screen.getByText("API Key Policy targets")).toBeInTheDocument();
+    expect(screen.getByText("No selectable channel groups.")).toBeInTheDocument();
+    await user.type(screen.getByLabelText(/^name$/i), "sharing key");
+    await user.click(screen.getByRole("checkbox", { name: SHARING_GROUP.name }));
+    await user.click(screen.getByRole("button", { name: /create key/i }));
+
+    await waitFor(() => {
+      expect(submitted).toMatchObject({
+        name: "sharing key",
+        allowed_group_ids: [],
+        allowed_channel_ids: [CHANNEL.id, imageChannel],
+      });
+    });
   });
 
   it("masks, reveals, and copies the complete API key", async () => {
@@ -158,6 +208,44 @@ describe("ApiKeysPage", () => {
 
     expect(value).toHaveTextContent(CHANNEL_GROUP.name);
     expect(value).not.toHaveTextContent(CHANNEL_GROUP.id);
+  });
+
+  it("keeps a migrated single-format sharing credential visible as partial", async () => {
+    seedAuthenticatedSession();
+    const imageChannel = "00000000-0000-0000-0000-000000000812";
+    const key = {
+      ...OWN_API_KEY,
+      allowed_group_ids: [],
+      allowed_channel_ids: [CHANNEL.id],
+      allowed_api_formats: ["open_ai_responses"] as const,
+    };
+    const options: SelfApiKeyOptions = {
+      policy_id: null,
+      policy_name: null,
+      policy_enabled: false,
+      sharing_credentials: [{
+        credential_id: SHARING_GROUP.credential_id,
+        sharing_group_id: SHARING_GROUP.id,
+        name: SHARING_GROUP.name,
+        enabled: true,
+        channel_ids: [CHANNEL.id, imageChannel],
+        api_formats: ["open_ai_responses", "open_ai_images"],
+      }],
+      groups: [],
+      channels: [],
+    };
+    server.use(
+      http.get("/console/v1/me/api-keys/:id", () =>
+        HttpResponse.json(key, { headers: { ETag: `"${key.updated_at}"` } })),
+      http.get("/console/v1/me/api-key-options", () => HttpResponse.json(options)),
+    );
+    renderAppAt(`/api-keys/${key.id}`);
+
+    const credential = await screen.findByRole("checkbox", { name: SHARING_GROUP.name });
+    expect(credential).toHaveAttribute("data-indeterminate");
+    expect(screen.getByText("Partially selected")).toBeInTheDocument();
+    const label = screen.getByText(/^Allowed channels$/i);
+    expect(label.nextElementSibling).toHaveTextContent(SHARING_GROUP.name);
   });
 
   it("saves a loaded disabled status without requiring reselection", async () => {

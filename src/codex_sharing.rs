@@ -1081,7 +1081,6 @@ mod tests {
             id: Uuid::new_v4(),
             updated_at: Utc::now(),
             policy: SharingGroupInput {
-                user_group_id: Uuid::new_v4(),
                 credential_id: Uuid::new_v4(),
                 name: "Shared credential".into(),
                 enabled: true,

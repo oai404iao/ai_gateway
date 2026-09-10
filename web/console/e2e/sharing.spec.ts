@@ -39,12 +39,20 @@ test("an administrator edits a fixed-seat budget with its ETag", async ({ page }
   await page.getByRole("link", { name: SHARING_GROUP.name }).click();
   const amount = page.getByLabel("Primary window total (USD)", { exact: true });
   await expect(amount).toHaveValue("20");
+  await expect(page.getByLabel("User group")).toHaveCount(0);
+  await page.getByLabel("Seat 2").click();
+  await page.getByRole("option", { name: "Initial Admin" }).click();
   await amount.fill("24");
   const saved = page.waitForResponse(response =>
     response.url().endsWith(`/codex-sharing-groups/${SHARING_GROUP.id}`)
     && response.request().method() === "PUT");
   await page.getByRole("button", { name: "Save", exact: true }).click();
-  expect((await saved).status()).toBe(200);
+  const response = await saved;
+  expect(response.status()).toBe(200);
+  expect(response.request().postDataJSON()).toMatchObject({
+    seats: [expect.any(String), "00000000-0000-0000-0000-000000000001"],
+  });
+  expect(response.request().postDataJSON()).not.toHaveProperty("user_group_id");
   await page.reload();
   await expect(amount).toHaveValue("24");
   await expect(page.getByRole("columnheader", { name: "Seat allowance" }).first()).toBeVisible();

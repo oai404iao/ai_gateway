@@ -527,9 +527,10 @@ export interface paths {
         get: operations["listCodexSharingGroups"];
         put?: never;
         /**
-         * @description Bind one user group to a dedicated logical credential. Enabling requires the
-         *     local single-writer runtime. Duplicate provider identities cannot create
-         *     another allowance. There is no delete-and-recreate reset operation.
+         * @description Bind stable, directly assigned user seats to a dedicated logical credential.
+         *     Every seat may initially be vacant. Enabling requires the local single-writer
+         *     runtime. Duplicate provider identities cannot create another allowance.
+         *     There is no delete-and-recreate reset operation.
          */
         post: operations["createCodexSharingGroup"];
         delete?: never;
@@ -547,10 +548,10 @@ export interface paths {
         };
         get: operations["getCodexSharingGroup"];
         /**
-         * @description User group and credential are immutable. Seats may be expanded but not
-         *     shrunk. Budget and seat-count changes apply independently when each next
-         *     monetary window is initialized. Replacements inherit remaining seat allowance.
-         *     Pause and rate/concurrency settings apply to subsequent requests.
+         * @description Credential is immutable. Seats may be assigned from any user group and
+         *     expanded but not shrunk. Budget and seat-count changes apply independently
+         *     when each next monetary window is initialized. Replacements inherit remaining
+         *     seat allowance. Pause and rate/concurrency settings apply to subsequent requests.
          */
         put: operations["updateCodexSharingGroup"];
         post?: never;
@@ -1492,12 +1493,10 @@ export interface components {
         DateTime: string;
         CodexSharingGroupInput: {
             /** Format: uuid */
-            user_group_id: string;
-            /** Format: uuid */
             credential_id: string;
             name: string;
             enabled: boolean;
-            /** @description Stable slot order. A null reserves a vacant seat; non-null user IDs must be unique. */
+            /** @description Stable slot order independent of user groups. A null reserves a vacant seat; non-null active user IDs must be unique across all sharing groups. */
             seats: (string | null)[];
             /** @description Total distributable primary-window USD allowance, positive, at most 1000000 and eight decimal places. */
             primary_limit_amount: components["schemas"]["Decimal"];
@@ -1514,8 +1513,6 @@ export interface components {
             /** Format: uuid */
             id: string;
             updated_at: components["schemas"]["DateTime"];
-            /** Format: uuid */
-            user_group_id: string;
             /** Format: uuid */
             credential_id: string;
             name: string;
@@ -2084,10 +2081,29 @@ export interface components {
         };
         SelfApiKeyOptions: {
             /** Format: uuid */
-            policy_id: string;
-            policy_name: string;
+            policy_id: string | null;
+            policy_name: string | null;
+            /** @description Whether the resolved user/group API Key Policy currently contributes ordinary targets. */
+            policy_enabled: boolean;
+            /** @description Logical Codex credentials selectable because the current user occupies an explicit sharing seat; independent of API Key Policy. */
+            sharing_credentials: components["schemas"]["SelfApiKeySharingCredentialOption"][];
+            /** @description Ordinary groups contributed by the enabled API Key Policy; sharing-only groups and groups with no ordinary channel are excluded. */
             groups: components["schemas"]["SelfApiKeyGroupOption"][];
+            /** @description Ordinary individual channels contributed by the enabled API Key Policy; sharing credentials and protected aliases are excluded. */
             channels: components["schemas"]["SelfApiKeyChannelOption"][];
+        };
+        SelfApiKeySharingCredentialOption: {
+            /** Format: uuid */
+            credential_id: string;
+            /** Format: uuid */
+            sharing_group_id: string;
+            /** @description Administrator-defined sharing-group name; provider identity remains private. */
+            name: string;
+            /** @description Whether the sharing group is enabled; disabled credentials may still be preselected on a Key. */
+            enabled: boolean;
+            /** @description Canonical Responses/Images projections authorized together by selecting this credential. */
+            channel_ids: string[];
+            api_formats: components["schemas"]["ApiFormat"][];
         };
         SelfApiKeyGroupOption: {
             /** Format: uuid */
@@ -4004,7 +4020,7 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
-            /** @description Missing/disabled policy, invalid limits, or a target outside the policy. */
+            /** @description No usable policy or sharing seat, invalid limits, or an unauthorized target. */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -4024,7 +4040,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Channel groups and channels selectable under the user's policy. */
+            /** @description Sharing credentials owned through seats plus ordinary targets selectable under the user's policy. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -4034,7 +4050,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthorized"];
-            /** @description Missing or disabled default API key policy. */
+            /** @description Missing or disabled default API key policy when the user has no sharing seat. */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -4578,7 +4594,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Sharing membership, or null when the user group has no sharing policy. */
+            /** @description Sharing membership, or null when the user occupies no sharing seat. */
             200: {
                 headers: {
                     [name: string]: unknown;
