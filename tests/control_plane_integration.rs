@@ -1714,7 +1714,7 @@ async fn codex_business_credentials_are_unique_per_workspace_member() {
 }
 
 #[tokio::test]
-async fn sharing_only_migration_preserves_existing_money_and_pending_reservations() {
+async fn direct_seat_migration_preserves_existing_money_and_pending_reservations() {
     use ai_gateway::{
         codex_sharing::SharingRuntime,
         domain::codex_sharing::{SharingRecord, SharingRegistry, SharingWindow},
@@ -1722,7 +1722,7 @@ async fn sharing_only_migration_preserves_existing_money_and_pending_reservation
     use rust_decimal::Decimal;
 
     let database = TestDatabase::new_unmigrated().await;
-    for migration in MIGRATOR.iter().filter(|m| m.version <= 54) {
+    for migration in MIGRATOR.iter().filter(|m| m.version <= 55) {
         sqlx::raw_sql(migration.sql.as_ref())
             .execute(&database.pool)
             .await
@@ -1748,6 +1748,16 @@ async fn sharing_only_migration_preserves_existing_money_and_pending_reservation
         primary_limit_amount,secondary_limit_amount,request_reservation_amount,user_requests_per_minute,group_requests_per_minute,user_max_concurrent_requests,group_max_concurrent_requests) \
         SELECT $1,user_group_id,$2,'migration-account','migration-user','migration-sharing',true,jsonb_build_array(id),20,100,0.1,30,60,2,4 FROM users WHERE id=$3")
         .bind(group_id).bind(credential).bind(seed.user).execute(&database.pool).await.unwrap();
+    sqlx::query(
+        "UPDATE api_keys SET allowed_api_formats=ARRAY['open_ai_responses']::api_format[], \
+         allowed_group_ids=ARRAY[$2]::uuid[], \
+         allowed_channel_ids='{}'::uuid[] WHERE id=$1",
+    )
+    .bind(seed.key)
+    .bind(channel_group)
+    .execute(&database.pool)
+    .await
+    .unwrap();
     let repository = ControlPlaneRepository::new(database.pool.clone());
     let now = Utc::now();
     repository
@@ -1778,7 +1788,6 @@ async fn sharing_only_migration_preserves_existing_money_and_pending_reservation
     let registry = SharingRegistry::compile(vec![SharingRecord {
         group: group.clone(),
         windows,
-        group_user_ids: vec![seed.user],
         channel_ids: vec![credential],
         protected_channel_ids: vec![credential],
     }])
@@ -1809,7 +1818,7 @@ async fn sharing_only_migration_preserves_existing_money_and_pending_reservation
         std::fs::read(directory.path().join("ledger.json")).unwrap(),
         std::fs::read(directory.path().join("ledger.wal")).unwrap(),
     );
-    let facts = "SELECT jsonb_build_object('groups',(SELECT jsonb_agg(s ORDER BY id) FROM codex_sharing_groups s), \
+    let facts = "SELECT jsonb_build_object('groups',(SELECT jsonb_agg((to_jsonb(s)-'user_group_id') ORDER BY id) FROM codex_sharing_groups s), \
         'windows',(SELECT jsonb_agg(w ORDER BY id) FROM codex_quota_window_periods w), \
         'ledger',(SELECT jsonb_agg(l) FROM codex_sharing_ledger l))";
     let before: serde_json::Value = sqlx::query_scalar(facts)
@@ -1817,7 +1826,7 @@ async fn sharing_only_migration_preserves_existing_money_and_pending_reservation
         .await
         .unwrap();
     sqlx::raw_sql(include_str!(
-        "../migrations/0055_codex_sharing_only_groups.sql"
+        "../migrations/0056_codex_sharing_direct_seats.sql"
     ))
     .execute(&database.pool)
     .await
@@ -1827,6 +1836,13 @@ async fn sharing_only_migration_preserves_existing_money_and_pending_reservation
         .await
         .unwrap();
     assert_eq!(before, after);
+    let migrated_key_channels: Vec<Uuid> =
+        sqlx::query_scalar("SELECT allowed_channel_ids FROM api_keys WHERE id=$1")
+            .bind(seed.key)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert_eq!(migrated_key_channels, vec![credential]);
     let snapshot = compile_runtime_config(repository.load_runtime().await.unwrap()).unwrap();
     sharing.publish(snapshot.sharing());
     sharing.flush().await.unwrap();
@@ -2004,26 +2020,21 @@ async fn codex_sharing_pins_credentials_and_settles_money_across_api_keys() {
         .unwrap();
     sqlx::query(
         "UPDATE api_keys SET allowed_api_formats=ARRAY['open_ai_responses','open_ai_chat_completions']::api_format[], \
-        allowed_group_ids=ARRAY[$2,$3]::uuid[] WHERE id=$1",
+        allowed_group_ids=ARRAY[$2,$3]::uuid[],allowed_channel_ids=ARRAY[$4]::uuid[] WHERE id=$1",
     )
     .bind(seed.key)
     .bind(codex_group)
     .bind(seed.group)
+    .bind(credential.id)
     .execute(&database.pool)
     .await
     .unwrap();
     let second_secret = Uuid::new_v4().to_string();
-    sqlx::query("INSERT INTO api_keys (id,user_id,name,secret_value,status,allowed_api_formats,permissions,allowed_group_ids) \
-        SELECT $1,user_id,'second-sharing-key',$2,status,allowed_api_formats,permissions,allowed_group_ids FROM api_keys WHERE id=$3")
+    sqlx::query("INSERT INTO api_keys (id,user_id,name,secret_value,status,allowed_api_formats,permissions,allowed_group_ids,allowed_channel_ids) \
+        SELECT $1,user_id,'second-sharing-key',$2,status,allowed_api_formats,permissions,allowed_group_ids,allowed_channel_ids FROM api_keys WHERE id=$3")
         .bind(Uuid::new_v4()).bind(&second_secret).bind(seed.key).execute(&database.pool).await.unwrap();
-    let user_group_id: Uuid = sqlx::query_scalar("SELECT user_group_id FROM users WHERE id=$1")
-        .bind(seed.user)
-        .fetch_one(&database.pool)
-        .await
-        .unwrap();
     let group_id = Uuid::new_v4();
     let policy = SharingGroupInput {
-        user_group_id,
         credential_id: credential.id,
         name: "Fixed seats".into(),
         enabled: true,
@@ -2111,14 +2122,7 @@ async fn codex_sharing_pins_credentials_and_settles_money_across_api_keys() {
             .sharing()
             .permits(Uuid::new_v4(), alias.id)
     );
-    let another_user_group = Uuid::new_v4();
-    sqlx::query("INSERT INTO user_groups (id,name) VALUES ($1,'sharing-duplicate-identity')")
-        .bind(another_user_group)
-        .execute(&database.pool)
-        .await
-        .unwrap();
     let mut duplicate_identity = policy.clone();
-    duplicate_identity.user_group_id = another_user_group;
     duplicate_identity.credential_id = alias.id;
     duplicate_identity.seats = vec![None, None];
     assert!(matches!(
@@ -2128,6 +2132,23 @@ async fn codex_sharing_pins_credentials_and_settles_money_across_api_keys() {
                 ControlPlaneMutation::SaveCodexSharing {
                     id: Uuid::new_v4(),
                     input: duplicate_identity,
+                    expected_updated_at: None,
+                }
+            )
+            .await,
+        Err(ai_gateway::application::ControlPlaneError::Repository(
+            RepositoryError::Conflict
+        ))
+    ));
+    let mut duplicate_seat = policy.clone();
+    duplicate_seat.credential_id = unbound_alias.id;
+    assert!(matches!(
+        coordinator
+            .mutate(
+                seed.user,
+                ControlPlaneMutation::SaveCodexSharing {
+                    id: Uuid::new_v4(),
+                    input: duplicate_seat,
                     expected_updated_at: None,
                 }
             )
@@ -2459,8 +2480,17 @@ async fn codex_sharing_pins_credentials_and_settles_money_across_api_keys() {
         .await
         .unwrap();
     sqlx::query("UPDATE api_keys SET allowed_api_formats=ARRAY['open_ai_responses','open_ai_images','open_ai_chat_completions']::api_format[], \
-        allowed_group_ids=ARRAY[$2,$3,$4]::uuid[] WHERE id=$1")
-        .bind(seed.key).bind(codex_group).bind(images_group).bind(seed.group).execute(&database.pool).await.unwrap();
+        allowed_group_ids=ARRAY[$2,$3,$4]::uuid[], \
+        allowed_channel_ids=ARRAY(SELECT channel_id FROM codex_oauth_credential_channels WHERE credential_id=$5) \
+        WHERE id=$1")
+        .bind(seed.key)
+        .bind(codex_group)
+        .bind(images_group)
+        .bind(seed.group)
+        .bind(credential.id)
+        .execute(&database.pool)
+        .await
+        .unwrap();
     let images_model = Uuid::new_v4();
     sqlx::query("INSERT INTO models (id,source_model_id,display_name,enabled,currency,price_unit_tokens, \
         input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,price_effective_at) \

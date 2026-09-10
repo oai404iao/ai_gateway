@@ -334,6 +334,8 @@ export const CHANNEL_DETAIL: ChannelDetailView = {
 export const API_KEY_OPTIONS: SelfApiKeyOptions = {
   policy_id: API_KEY_POLICY.id,
   policy_name: API_KEY_POLICY.name,
+  policy_enabled: true,
+  sharing_credentials: [],
   groups: [
     {
       id: CHANNEL_GROUP.id,
@@ -965,7 +967,6 @@ export const SYSTEM_LOAD_REPORT: SystemLoadReport = {
 export const SHARING_GROUP: CodexSharingGroup = {
   id: "00000000-0000-0000-0000-000000000801",
   updated_at: "2026-09-09T00:00:00.000000Z",
-  user_group_id: USER_GROUP.id,
   credential_id: CHANNEL.id,
   name: "Development car",
   enabled: true,

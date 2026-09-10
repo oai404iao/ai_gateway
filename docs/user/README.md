@@ -11,7 +11,7 @@
 
 ## API 使用者
 
-需要用户组固定席位共享 Codex 凭证时，参见 [Codex 拼车](codex-sharing.md)。
+需要给用户分配固定席位共享 Codex 凭证时，参见 [Codex 拼车](codex-sharing.md)。
 
 公共数据面只提供：
 

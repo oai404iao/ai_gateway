@@ -1334,14 +1334,9 @@ async fn sharing_contract_is_versioned_scoped_and_never_exposes_provider_identit
         )
         .await
         .unwrap();
-    let user_group: Uuid = sqlx::query_scalar("SELECT user_group_id FROM users WHERE id=$1")
-        .bind(app.user_id)
-        .fetch_one(&database.pool)
-        .await
-        .unwrap();
     let mut input = serde_json::json!({
-        "user_group_id": user_group, "credential_id": credential.id,
-        "name": "Shared development", "enabled": false, "seats": [app.user_id, null],
+        "credential_id": credential.id,
+        "name": "Shared development", "enabled": false, "seats": [null, null],
         "primary_limit_amount": "20", "secondary_limit_amount": "100",
         "request_reservation_amount": "0.10", "user_requests_per_minute": 30,
         "group_requests_per_minute": 60, "user_max_concurrent_requests": 1,
@@ -1372,9 +1367,32 @@ async fn sharing_contract_is_versioned_scoped_and_never_exposes_provider_identit
             .unwrap(),
         rust_decimal::Decimal::from(20)
     );
-    assert_eq!(detail["seats"].as_array().unwrap().len(), 2);
+    assert_eq!(detail["seats"], serde_json::json!([null, null]));
     assert!(detail.get("provider_user_id").is_none());
     assert!(detail.get("access_token").is_none());
+    assert!(
+        body_json(
+            request(
+                &app,
+                "GET",
+                "/console/v1/me/codex-sharing",
+                serde_json::json!({}),
+                &[],
+            )
+            .await,
+        )
+        .await
+        .is_null()
+    );
+    input["seats"] = serde_json::json!([app.user_id, null]);
+    assert_eq!(
+        request(&app, "PUT", &path, input.clone(), &[("if-match", &etag)])
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    let fresh = request(&app, "GET", &path, serde_json::json!({}), &[]).await;
+    let etag = fresh.headers()[header::ETAG].to_str().unwrap().to_owned();
     let own = body_json(
         request(
             &app,
@@ -1390,15 +1408,176 @@ async fn sharing_contract_is_versioned_scoped_and_never_exposes_provider_identit
     assert_eq!(own["currency"], "USD");
     assert_eq!(own["usage"]["seat_number"], 1);
     assert_eq!(own["usage"]["available"], false);
-    for private in [
-        "credential_id",
-        "user_group_id",
-        "seats",
-        "email",
-        "access_token",
-    ] {
+    for private in ["credential_id", "seats", "email", "access_token"] {
         assert!(own.get(private).is_none());
     }
+    let options = request(
+        &app,
+        "GET",
+        "/console/v1/me/api-key-options",
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(options.status(), StatusCode::OK);
+    let options = body_json(options).await;
+    assert!(options["policy_id"].is_null());
+    assert_eq!(options["policy_enabled"], false);
+    assert_eq!(options["groups"], serde_json::json!([]));
+    assert_eq!(options["channels"], serde_json::json!([]));
+    assert_eq!(
+        options["sharing_credentials"][0]["credential_id"],
+        credential.id.to_string()
+    );
+    assert_eq!(
+        options["sharing_credentials"][0]["name"],
+        "Shared development"
+    );
+    let sharing_channel_ids = options["sharing_credentials"][0]["channel_ids"].clone();
+    let sharing_key = request(
+        &app,
+        "POST",
+        "/console/v1/me/api-keys",
+        serde_json::json!({
+            "name": "sharing-without-policy",
+            "allowed_group_ids": [],
+            "allowed_channel_ids": sharing_channel_ids.clone(),
+            "requests_per_minute": null,
+            "max_concurrent_requests": null,
+            "quota_limit_amount": null
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(sharing_key.status(), StatusCode::CREATED);
+    let policy_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO api_key_policies \
+         (id,name,allowed_group_ids,allowed_channel_ids,enabled) \
+         VALUES ($1,'sharing-must-be-explicit',ARRAY[$2]::uuid[],'{}',true)",
+    )
+    .bind(policy_id)
+    .bind(channel_group)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE users SET default_api_key_policy_id=$2 WHERE id=$1")
+        .bind(app.user_id)
+        .bind(policy_id)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    let categorized = body_json(
+        request(
+            &app,
+            "GET",
+            "/console/v1/me/api-key-options",
+            serde_json::json!({}),
+            &[],
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(categorized["policy_id"], policy_id.to_string());
+    assert_eq!(categorized["policy_enabled"], true);
+    assert_eq!(categorized["groups"], serde_json::json!([]));
+    assert_eq!(categorized["channels"], serde_json::json!([]));
+    assert_eq!(
+        categorized["sharing_credentials"].as_array().unwrap().len(),
+        1
+    );
+    let implicit_group_key = request(
+        &app,
+        "POST",
+        "/console/v1/me/api-keys",
+        serde_json::json!({
+            "name": "implicit-sharing-group",
+            "allowed_group_ids": [channel_group],
+            "allowed_channel_ids": [],
+            "requests_per_minute": null,
+            "max_concurrent_requests": null,
+            "quota_limit_amount": null
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(
+        implicit_group_key.status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        body_json(implicit_group_key).await,
+        serde_json::json!({"error": "api_key_target_not_allowed"})
+    );
+    let ordinary_group = Uuid::new_v4();
+    let ordinary_channel = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO channel_groups (id,name,api_format,connector_kind,enabled) \
+         VALUES ($1,'ordinary-policy-target','open_ai_chat_completions', \
+                 'openai_compatible',true)",
+    )
+    .bind(ordinary_group)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO channels \
+         (id,channel_group_id,api_format,name,base_url,enabled,upstream_auth_kind) \
+         VALUES ($1,$2,'open_ai_chat_completions','ordinary-policy-target', \
+                 'https://ordinary.example.test',true,'none')",
+    )
+    .bind(ordinary_channel)
+    .bind(ordinary_group)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE api_key_policies SET allowed_group_ids=ARRAY[$2,$3]::uuid[] WHERE id=$1")
+        .bind(policy_id)
+        .bind(channel_group)
+        .bind(ordinary_group)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    let combined_options = body_json(
+        request(
+            &app,
+            "GET",
+            "/console/v1/me/api-key-options",
+            serde_json::json!({}),
+            &[],
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(combined_options["groups"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        combined_options["groups"][0]["id"],
+        ordinary_group.to_string()
+    );
+    assert_eq!(
+        combined_options["channels"][0]["id"],
+        ordinary_channel.to_string()
+    );
+    assert_eq!(
+        combined_options["sharing_credentials"][0]["credential_id"],
+        credential.id.to_string()
+    );
+    let combined_key = request(
+        &app,
+        "POST",
+        "/console/v1/me/api-keys",
+        serde_json::json!({
+            "name": "sharing-and-ordinary",
+            "allowed_group_ids": [ordinary_group],
+            "allowed_channel_ids": sharing_channel_ids.clone(),
+            "requests_per_minute": null,
+            "max_concurrent_requests": null,
+            "quota_limit_amount": null
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(combined_key.status(), StatusCode::CREATED);
     assert_eq!(
         request(&app, "PUT", &path, input.clone(), &[])
             .await
@@ -1430,7 +1609,7 @@ async fn sharing_contract_is_versioned_scoped_and_never_exposes_provider_identit
     input["enabled"] = false.into();
     input["seats"] = serde_json::json!([app.user_id, app.user_id]);
     assert_eq!(
-        request(&app, "PUT", &path, input, &[("if-match", &etag)])
+        request(&app, "PUT", &path, input.clone(), &[("if-match", &etag)])
             .await
             .status(),
         StatusCode::UNPROCESSABLE_ENTITY
@@ -1489,6 +1668,50 @@ async fn sharing_contract_is_versioned_scoped_and_never_exposes_provider_identit
         .await
         .is_null()
     );
+    let unseated_key = request_with_token(
+        &app,
+        &session.access_token,
+        "POST",
+        "/console/v1/me/api-keys",
+        serde_json::json!({
+            "name": "unseated-sharing-key",
+            "allowed_group_ids": [],
+            "allowed_channel_ids": sharing_channel_ids,
+            "requests_per_minute": null,
+            "max_concurrent_requests": null,
+            "quota_limit_amount": null
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(unseated_key.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        body_json(unseated_key).await,
+        serde_json::json!({"error": "api_key_target_not_allowed"})
+    );
+    let fresh = request(&app, "GET", &path, serde_json::json!({}), &[]).await;
+    let etag = fresh.headers()[header::ETAG].to_str().unwrap().to_owned();
+    input["seats"] = serde_json::json!([app.user_id, outsider]);
+    assert_eq!(
+        request(&app, "PUT", &path, input, &[("if-match", &etag)])
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    let cross_group_own = body_json(
+        request_with_token(
+            &app,
+            &session.access_token,
+            "GET",
+            "/console/v1/me/codex-sharing",
+            serde_json::json!({}),
+            &[],
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(cross_group_own["id"], id);
+    assert_eq!(cross_group_own["usage"]["seat_number"], 2);
     let own_anonymous = unauthenticated_request(
         &app,
         "GET",
@@ -2546,7 +2769,7 @@ async fn user_groups_supply_role_defaults_and_inherited_api_policy() {
         .own_api_key_options(invited_user_id)
         .await
         .unwrap();
-    assert_eq!(options.policy_id, policy_id);
+    assert_eq!(options.policy_id, Some(policy_id));
 
     let user_path = format!("/console/v1/users/{invited_user_id}");
     let user_detail = request(&app, "GET", &user_path, serde_json::json!({}), &[]).await;
@@ -2569,7 +2792,7 @@ async fn user_groups_supply_role_defaults_and_inherited_api_policy() {
         .own_api_key_options(invited_user_id)
         .await
         .unwrap();
-    assert_eq!(overridden.policy_id, override_policy_id);
+    assert_eq!(overridden.policy_id, Some(override_policy_id));
 
     let user_detail = request(&app, "GET", &user_path, serde_json::json!({}), &[]).await;
     let user_etag = user_detail.headers()[header::ETAG]
@@ -2589,7 +2812,7 @@ async fn user_groups_supply_role_defaults_and_inherited_api_policy() {
         .own_api_key_options(invited_user_id)
         .await
         .unwrap();
-    assert_eq!(inherited_again.policy_id, policy_id);
+    assert_eq!(inherited_again.policy_id, Some(policy_id));
 
     let default_group = request(&app, "GET", &group_path, serde_json::json!({}), &[]).await;
     let default_group_etag = default_group.headers()[header::ETAG]

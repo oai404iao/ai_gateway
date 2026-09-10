@@ -15,7 +15,7 @@ import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/c
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { useChannelGroups, useChannels, useUserGroups, useUsers } from "@/features/admin/api";
+import { useChannelGroups, useChannels, useUsers } from "@/features/admin/api";
 import { useSaveSharing, useSharingGroup, useSharingSeats } from "./api";
 import { SharingUsage } from "./usage";
 
@@ -24,7 +24,6 @@ const money = z.string().regex(/^\d+(\.\d{1,8})?$/, "Enter a positive USD amount
 const limit = z.number().int().min(1).max(100_000);
 const schema = z.object({
   name: z.string().trim().min(1).max(120),
-  user_group_id: z.guid(),
   credential_id: z.guid(),
   enabled: z.boolean(),
   seats: z.array(z.guid().nullable()).min(1).max(100)
@@ -35,7 +34,7 @@ const schema = z.object({
 });
 type FormValues = z.infer<typeof schema>;
 const defaults: FormValues = {
-  name: "", user_group_id: "", credential_id: "", enabled: false, seats: [null],
+  name: "", credential_id: "", enabled: false, seats: [null],
   primary_limit_amount: "20", secondary_limit_amount: "100", request_reservation_amount: "0.10",
   user_requests_per_minute: 30, group_requests_per_minute: 120,
   user_max_concurrent_requests: 1, group_max_concurrent_requests: 4,
@@ -56,7 +55,6 @@ export function SharingDetailPage() {
   const detail = useSharingGroup(id);
   const usage = useSharingSeats(id);
   const save = useSaveSharing(id);
-  const userGroups = useUserGroups();
   const users = useUsers();
   const channelGroups = useChannelGroups();
   const channels = useChannels();
@@ -71,8 +69,7 @@ export function SharingDetailPage() {
   const credentials = (channels.data ?? []).filter(channel =>
     channel.api_format === "open_ai_responses" && channelGroups.data?.some(group =>
       group.id === channel.channel_group_id && group.connector_kind === "codex_oauth"));
-  const members = (users.data ?? []).filter(user =>
-    user.user_group_id === values.user_group_id || values.seats.includes(user.id));
+  const members = users.data ?? [];
   const formerMembers = values.seats.filter((userId): userId is string =>
     userId !== null && !users.data?.some(user => user.id === userId));
   const submit = form.handleSubmit(async input => {
@@ -96,8 +93,8 @@ export function SharingDetailPage() {
   return <div className="flex flex-col gap-6">
     <PageHeader title={isNew ? "New sharing group" : detail.data?.data.name ?? "Codex sharing"}
       actions={<Button variant="outline" nativeButton={false} render={<Link to="/admin/codex-sharing" />}>{t("Back")}</Button>} />
-    <AsyncResource isLoading={detail.isLoading || users.isLoading || userGroups.isLoading || channels.isLoading || channelGroups.isLoading}
-      error={detail.error ?? users.error ?? userGroups.error ?? channels.error ?? channelGroups.error}>
+    <AsyncResource isLoading={detail.isLoading || users.isLoading || channels.isLoading || channelGroups.isLoading}
+      error={detail.error ?? users.error ?? channels.error ?? channelGroups.error}>
       <Alert><AlertDescription>
         {t("Soft USD allowance, not official credits. Active requests can exceed their reservation. No automatic fallback, borrowing or rollover.")}
       </AlertDescription></Alert>
@@ -107,25 +104,12 @@ export function SharingDetailPage() {
       <form onSubmit={submit} className="flex flex-col gap-6">
         <Card>
           <CardHeader><CardTitle>{t("Sharing configuration")}</CardTitle>
-            <CardDescription>{t("Credential and user group cannot be changed after creation.")}</CardDescription></CardHeader>
+            <CardDescription>{t("Credential cannot be changed after creation. Seats are independent of user groups.")}</CardDescription></CardHeader>
           <CardContent><FieldGroup className="grid gap-6 md:grid-cols-2">
             <Field className="md:col-span-2" data-invalid={!!errors.name}><FieldLabel htmlFor="sharing-name">{t("Name")}</FieldLabel>
               <Input id="sharing-name" {...form.register("name")} aria-invalid={!!errors.name} />
               <FieldError errors={[errors.name]} /></Field>
-            <Field data-invalid={!!errors.user_group_id}>
-              <FieldLabel htmlFor="sharing-user-group">{t("User group")}</FieldLabel>
-              <Select disabled={!isNew} value={values.user_group_id}
-                items={userGroups.data?.map(group => ({ value: group.id, label: group.name }))}
-                onValueChange={value => {
-                  form.setValue("user_group_id", value ?? "", { shouldDirty: true });
-                  form.setValue("seats", values.seats.map(() => null), { shouldDirty: true });
-                }}>
-                <SelectTrigger id="sharing-user-group" aria-invalid={!!errors.user_group_id}><SelectValue placeholder={t("Select user group")} /></SelectTrigger>
-                <SelectContent><SelectGroup>{userGroups.data?.map(group =>
-                  <SelectItem key={group.id} value={group.id}>{group.name}</SelectItem>)}</SelectGroup></SelectContent>
-              </Select><FieldError errors={[errors.user_group_id]} />
-            </Field>
-            <Field data-invalid={!!errors.credential_id}>
+            <Field className="md:col-span-2" data-invalid={!!errors.credential_id}>
               <FieldLabel htmlFor="sharing-credential">{t("Codex credential")}</FieldLabel>
               <Select disabled={!isNew} value={values.credential_id}
                 items={credentials.map(credential => ({ value: credential.id, label: credential.name }))}
@@ -169,7 +153,7 @@ export function SharingDetailPage() {
                   <SelectItem value="vacant">{t("Vacant")}</SelectItem>
                   {formerMembers.map(id => <SelectItem key={id} value={id} disabled>{t("Former member")}</SelectItem>)}
                   {members.map(user => <SelectItem key={user.id} value={user.id}
-                    disabled={user.status !== "active" || user.user_group_id !== values.user_group_id
+                    disabled={user.status !== "active"
                       || values.seats.some((selected, slot) => selected === user.id && slot !== index)}>
                     {user.display_name || user.email}
                   </SelectItem>)}

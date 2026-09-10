@@ -52,9 +52,11 @@ Console API/UI 不可达。
 
 ## 4. 目录与契约
 
-`/codex-sharing` 是本人金额视图；`/admin/codex-sharing` 和其详情页负责固定席位配置、
-ETag 保存和逐席位用量。它们位于 `src/features/codex-sharing/`，不与只读 Codex 官方配额页
-混用，也不向本人接口返回其他成员或凭证信息。规则见 [Codex 拼车](codex-sharing.md)。
+`/codex-sharing` 是本人金额视图；`/admin/codex-sharing` 和其详情页负责不依赖用户组的固定
+席位配置、ETag 保存和逐席位用量。它们位于 `src/features/codex-sharing/`，不与只读 Codex
+官方配额页混用；本人金额接口不返回其他成员或凭证信息。API Key 编辑器把席位可选的逻辑凭证
+和 API Key Policy 普通目标分成响应式双栏，前者只暴露路由所需 UUID/格式，不暴露 provider
+identity 或 Token。规则见 [Codex 拼车](codex-sharing.md)。
 Codex 渠道组编辑器提供“仅拼车使用”开关；普通 Connector 不显示该控件。
 同池配对组模式同步，但不联动格式启用或 Key 授权，成员普通渠道仍按原权限使用。
 

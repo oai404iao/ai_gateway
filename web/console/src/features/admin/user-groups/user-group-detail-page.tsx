@@ -152,9 +152,7 @@ export function UserGroupDetailPage() {
       toast.success(t("User group deleted"));
       navigate("/admin/user-groups", { replace: true });
     } catch (error) {
-      if (error instanceof ApiError && error.code === "sharing_group_in_use") {
-        toast.error(t("This user group is bound to Codex sharing and cannot be deleted."));
-      } else if (error instanceof ApiError && error.code === "user_group_in_use") {
+      if (error instanceof ApiError && error.code === "user_group_in_use") {
         toast.error(
           t(
             "Move every member out of this group and reassign its registration codes before deleting it.",

@@ -440,7 +440,11 @@ Apply sharing admission to the selected credential, not the entire user;
 ordinary authorized routes retain normal billing even when a car is paused or
 unavailable. `channel_groups.sharing_only` is Codex-only and synchronized across
 the pool's projections; toggling it must never remove existing binding protection
-or reset money. Read
+or reset money. Sharing membership comes only from explicit fixed seats, never
+from the user's ordinary group. Self-service API Key authorization may combine
+seat-owned canonical projections with ordinary Policy targets; a missing or
+disabled Policy must not block a sharing-only Key, while protected aliases and
+unseated credentials remain denied. Read
 [`docs/development/codex-sharing.md`](docs/development/codex-sharing.md) before
 changing its WAL, window epochs, configuration, or recovery behavior.
 

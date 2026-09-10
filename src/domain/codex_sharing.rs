@@ -10,7 +10,6 @@ use uuid::Uuid;
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SharingGroupInput {
-    pub user_group_id: Uuid,
     pub credential_id: Uuid,
     pub name: String,
     pub enabled: bool,
@@ -68,7 +67,6 @@ pub struct SharingGroup {
 #[derive(Clone, Debug)]
 pub struct SharingRecord {
     pub group: SharingGroup,
-    pub group_user_ids: Vec<Uuid>,
     pub channel_ids: Vec<Uuid>,
     pub protected_channel_ids: Vec<Uuid>,
     pub windows: Vec<SharingWindow>,
@@ -77,7 +75,7 @@ pub struct SharingRecord {
 #[derive(Clone, Debug, Default)]
 pub struct SharingRegistry {
     groups: HashMap<Uuid, SharingGroup>,
-    user_groups: HashMap<Uuid, Uuid>,
+    users: HashMap<Uuid, Uuid>,
     channels: HashMap<Uuid, Uuid>,
     protected: HashSet<Uuid>,
     windows: Vec<SharingWindow>,
@@ -91,8 +89,8 @@ impl SharingRegistry {
                 return Err("invalid Codex sharing policy");
             }
             let id = record.group.id;
-            for user in record.group_user_ids {
-                if result.user_groups.insert(user, id).is_some() {
+            for user in record.group.policy.seats.iter().flatten() {
+                if result.users.insert(*user, id).is_some() {
                     return Err("duplicate Codex sharing membership");
                 }
             }
@@ -109,9 +107,7 @@ impl SharingRegistry {
     }
 
     pub fn for_user(&self, user: Uuid) -> Option<&SharingGroup> {
-        self.user_groups
-            .get(&user)
-            .and_then(|id| self.groups.get(id))
+        self.users.get(&user).and_then(|id| self.groups.get(id))
     }
 
     pub fn group(&self, id: Uuid) -> Option<&SharingGroup> {
@@ -147,7 +143,7 @@ impl SharingRegistry {
             Some(group) => {
                 group.policy.enabled
                     && group.policy.seats.contains(&Some(user))
-                    && self.user_groups.get(&user) == Some(&group.id)
+                    && self.users.get(&user) == Some(&group.id)
             }
             None => !self.is_protected(channel),
         }
@@ -182,7 +178,6 @@ mod tests {
             id: Uuid::new_v4(),
             updated_at: Utc::now(),
             policy: SharingGroupInput {
-                user_group_id: Uuid::new_v4(),
                 credential_id: channel,
                 name: "test".into(),
                 enabled: true,
@@ -201,7 +196,6 @@ mod tests {
             group.policy.enabled = enabled;
             let mut registry = SharingRegistry::compile(vec![SharingRecord {
                 group,
-                group_user_ids: vec![user, unseated],
                 channel_ids: vec![channel, image],
                 protected_channel_ids: vec![channel, image, alias],
                 windows: vec![],
@@ -221,6 +215,40 @@ mod tests {
             }
             assert!(registry.for_channel(ordinary).is_none());
             assert!(registry.for_channel(channel).is_some());
+            assert!(registry.for_user(user).is_some());
+            assert!(registry.for_user(unseated).is_none());
         }
+    }
+
+    #[test]
+    fn a_user_cannot_occupy_seats_in_multiple_cars() {
+        let user = Uuid::new_v4();
+        let record = |id| SharingRecord {
+            group: SharingGroup {
+                id,
+                updated_at: Utc::now(),
+                policy: SharingGroupInput {
+                    credential_id: Uuid::new_v4(),
+                    name: "test".into(),
+                    enabled: true,
+                    seats: vec![None, Some(user)],
+                    primary_limit_amount: Decimal::ONE,
+                    secondary_limit_amount: Decimal::ONE,
+                    request_reservation_amount: Decimal::new(1, 1),
+                    user_requests_per_minute: 10,
+                    group_requests_per_minute: 10,
+                    user_max_concurrent_requests: 1,
+                    group_max_concurrent_requests: 1,
+                },
+            },
+            channel_ids: vec![Uuid::new_v4()],
+            protected_channel_ids: vec![],
+            windows: vec![],
+        };
+        assert_eq!(
+            SharingRegistry::compile(vec![record(Uuid::new_v4()), record(Uuid::new_v4())])
+                .unwrap_err(),
+            "duplicate Codex sharing membership"
+        );
     }
 }

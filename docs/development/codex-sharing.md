@@ -8,7 +8,8 @@
   单个数据库账本 ID。配置金额为 `numeric(20,8)`，不是余额结算实体。
 - `migrations/0055_codex_sharing_only_groups.sql`：默认关闭的 Codex 整池访问模式，同步配对组，
   不修改已有拼车、窗口或账本数据。
-- `src/domain/codex_sharing.rs`：输入验证、用户组成员与受保护投影注册表。
+- `migrations/0056_codex_sharing_direct_seats.sql`：移除用户组绑定，原样保留席位 JSON 和金额状态。
+- `src/domain/codex_sharing.rs`：输入验证、直接席位成员与受保护投影注册表。
 - `src/persistence/codex_sharing.rs`：管理员配置、所有权条件 SQL、完整窗口加载和批量对账。
 - `src/codex_sharing.rs`：独立单写线程、金额状态、预占 RAII、增量 WAL 与检查点。
 - `src/application/proxy.rs` 的 `CompletionGuard` 与 `proxy/websocket.rs`：
@@ -23,11 +24,12 @@
 快照；关闭进程开关不能放开数据库中已经保留的受保护凭证。
 `ControlPlaneCoordinator` 在发布快照时同步账本元数据。数据面不逐请求访问 PostgreSQL。
 
-每个用户组、逻辑凭证、可识别的 `(account_id?, provider_user_id)` 只能绑定一个车队。
+每个用户只能占一个车队席位；每个逻辑凭证、可识别的
+`(account_id?, provider_user_id)` 只能绑定一个车队。
 同一身份跨 pool 导入的其他投影也受到保护；拼车请求只使用原绑定的两个投影。
 注册表按目标渠道而不是按用户整体实施限制。普通渠道保留既有授权和计费，完成回调
 仅在 `for_channel` 找到实际绑定时预占/结算拼车金额；普通调用不依赖拼车运行时健康。
-注册表只收窄既有 API Key 授权交集，不创建格式、模型或 Images 权限。
+注册表只收窄 API Key 授权交集，不创建模型规则或启用 Images。
 暂停与空席仍保留保护；绑定和既有席位编号不可修改或删除。
 
 `channel_groups.sharing_only` 仅对 Codex 合法，默认 false、PUT 省略保留。数据库触发器
@@ -36,7 +38,14 @@
 已选中的拼车凭证在准备/准入失败后不改走普通渠道；初始目标仍服从原模型路由，需固定拼车
 用途的模型应使用专用规则。发布路由模式不修改窗口元数据和账本，保留金额与预占。
 
-成员关系以用户当前用户组为准。历史席位引用可以保留，但新增/替换的成员必须是组内活跃用户。
+成员关系只读取稳定席位数组，与用户当前用户组无关。车队可用全空席创建；新增/替换成员必须是
+任意用户组中的活跃非系统用户，并且不能已占用另一车队席位。历史席位引用可以保留。
+本人 API Key 选项把席位对应的 canonical Responses/Images 投影作为“拼车凭证”返回，
+与可选的 API Key Policy 普通目标分开。创建/改目标时，服务端重新验证当前席位；没有 Policy
+或 Policy 已停用时，仍可仅选择拼车凭证。受保护身份副本及整池 sharing-only 目标不能借
+Policy 越权；普通 group target 在运行时也跳过已绑定投影，必须由 Key 的显式 channel target
+授权。`0056` 将旧 Key 原先经 group target 获得的有效拼车投影回填为显式 channel target，
+已有 Key 在席位移除后仍会由运行时授权交集立即失去对应渠道。
 保护渠道的计划探测会被跳过。搜索响应不能计价，因此共享请求的该操作在 dispatch 前拒绝。
 该限制不改变普通路径（包括拼车成员的普通调用）的独立搜索协议，也不修改请求白名单。
 
@@ -112,7 +121,8 @@ Console 管理端使用管理员角色与 ETag/If-Match；本人查询在 SQL �
 - `tests/control_plane_integration.rs`：跨 API Key HTTP/SSE 与逐条 WebSocket 扣额，
   Images 权限和共用金额、搜索拒绝、凭证约束、配置刷新和缺失窗口。
 - `tests/console_spec_integration.rs`：配置/本人视图、角色、隐私、ETag 与无运行时拒绝启用。
-- Console 组件与 Playwright：金额页面、固定 Select 默认值、保存和冲突重载。
+- Console 组件与 Playwright：空席后分配、跨用户组选人、API Key 双栏目标、固定 Select
+  默认值、保存和冲突重载。
 
 运行普通 Rust/Console/浏览器门禁，并按[真实上游测试说明](real-upstream-smoke.md)
 执行已授权的付费回归；性能压测仍必须另行授权。

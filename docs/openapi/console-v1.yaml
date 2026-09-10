@@ -344,7 +344,7 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "422":
-          description: Missing/disabled policy, invalid limits, or a target outside the policy.
+          description: No usable policy or sharing seat, invalid limits, or an unauthorized target.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorBody" }
@@ -356,13 +356,13 @@ paths:
       security: [{ bearerAuth: [] }]
       responses:
         "200":
-          description: Channel groups and channels selectable under the user's policy.
+          description: Sharing credentials owned through seats plus ordinary targets selectable under the user's policy.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/SelfApiKeyOptions" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "422":
-          description: Missing or disabled default API key policy.
+          description: Missing or disabled default API key policy when the user has no sharing seat.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorBody" }
@@ -789,7 +789,7 @@ paths:
       security: [{ bearerAuth: [] }]
       responses:
         "200":
-          description: Sharing membership, or null when the user group has no sharing policy.
+          description: Sharing membership, or null when the user occupies no sharing seat.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/SelfCodexSharingView" }
@@ -820,9 +820,10 @@ paths:
       operationId: createCodexSharingGroup
       security: [{ bearerAuth: [] }]
       description: |
-        Bind one user group to a dedicated logical credential. Enabling requires the
-        local single-writer runtime. Duplicate provider identities cannot create
-        another allowance. There is no delete-and-recreate reset operation.
+        Bind stable, directly assigned user seats to a dedicated logical credential.
+        Every seat may initially be vacant. Enabling requires the local single-writer
+        runtime. Duplicate provider identities cannot create another allowance.
+        There is no delete-and-recreate reset operation.
       requestBody:
         required: true
         content:
@@ -862,10 +863,10 @@ paths:
       operationId: updateCodexSharingGroup
       security: [{ bearerAuth: [] }]
       description: |
-        User group and credential are immutable. Seats may be expanded but not
-        shrunk. Budget and seat-count changes apply independently when each next
-        monetary window is initialized. Replacements inherit remaining seat allowance.
-        Pause and rate/concurrency settings apply to subsequent requests.
+        Credential is immutable. Seats may be assigned from any user group and
+        expanded but not shrunk. Budget and seat-count changes apply independently
+        when each next monetary window is initialized. Replacements inherit remaining
+        seat allowance. Pause and rate/concurrency settings apply to subsequent requests.
       parameters:
         - $ref: "#/components/parameters/PathId"
         - $ref: "#/components/parameters/IfMatch"
@@ -2754,11 +2755,10 @@ components:
       type: object
       additionalProperties: false
       required:
-        [user_group_id, credential_id, name, enabled, seats, primary_limit_amount,
+        [credential_id, name, enabled, seats, primary_limit_amount,
          secondary_limit_amount, request_reservation_amount, user_requests_per_minute,
          group_requests_per_minute, user_max_concurrent_requests, group_max_concurrent_requests]
       properties:
-        user_group_id: { type: string, format: uuid }
         credential_id: { type: string, format: uuid }
         name: { type: string, minLength: 1, maxLength: 120 }
         enabled: { type: boolean }
@@ -2766,7 +2766,7 @@ components:
           type: array
           minItems: 1
           maxItems: 100
-          description: Stable slot order. A null reserves a vacant seat; non-null user IDs must be unique.
+          description: Stable slot order independent of user groups. A null reserves a vacant seat; non-null active user IDs must be unique across all sharing groups.
           items: { type: string, format: uuid, nullable: true }
         primary_limit_amount:
           allOf: [{ $ref: "#/components/schemas/Decimal" }]
@@ -2784,13 +2784,12 @@ components:
     CodexSharingGroup:
       type: object
       required:
-        [id, updated_at, user_group_id, credential_id, name, enabled, seats, primary_limit_amount,
+        [id, updated_at, credential_id, name, enabled, seats, primary_limit_amount,
          secondary_limit_amount, request_reservation_amount, user_requests_per_minute,
          group_requests_per_minute, user_max_concurrent_requests, group_max_concurrent_requests]
       properties:
         id: { type: string, format: uuid }
         updated_at: { $ref: "#/components/schemas/DateTime" }
-        user_group_id: { type: string, format: uuid }
         credential_id: { type: string, format: uuid }
         name: { type: string }
         enabled: { type: boolean }
@@ -3617,16 +3616,49 @@ components:
 
     SelfApiKeyOptions:
       type: object
-      required: [policy_id, policy_name, groups, channels]
+      required:
+        [policy_id, policy_name, policy_enabled, sharing_credentials, groups, channels]
       properties:
-        policy_id: { type: string, format: uuid }
-        policy_name: { type: string }
+        policy_id: { type: string, format: uuid, nullable: true }
+        policy_name: { type: string, nullable: true }
+        policy_enabled:
+          type: boolean
+          description: Whether the resolved user/group API Key Policy currently contributes ordinary targets.
+        sharing_credentials:
+          type: array
+          description: Logical Codex credentials selectable because the current user occupies an explicit sharing seat; independent of API Key Policy.
+          items: { $ref: "#/components/schemas/SelfApiKeySharingCredentialOption" }
         groups:
           type: array
+          description: Ordinary groups contributed by the enabled API Key Policy; sharing-only groups and groups with no ordinary channel are excluded.
           items: { $ref: "#/components/schemas/SelfApiKeyGroupOption" }
         channels:
           type: array
+          description: Ordinary individual channels contributed by the enabled API Key Policy; sharing credentials and protected aliases are excluded.
           items: { $ref: "#/components/schemas/SelfApiKeyChannelOption" }
+
+    SelfApiKeySharingCredentialOption:
+      type: object
+      required:
+        [credential_id, sharing_group_id, name, enabled, channel_ids, api_formats]
+      properties:
+        credential_id: { type: string, format: uuid }
+        sharing_group_id: { type: string, format: uuid }
+        name:
+          type: string
+          description: Administrator-defined sharing-group name; provider identity remains private.
+        enabled:
+          type: boolean
+          description: Whether the sharing group is enabled; disabled credentials may still be preselected on a Key.
+        channel_ids:
+          type: array
+          minItems: 1
+          description: Canonical Responses/Images projections authorized together by selecting this credential.
+          items: { type: string, format: uuid }
+        api_formats:
+          type: array
+          minItems: 1
+          items: { $ref: "#/components/schemas/ApiFormat" }
 
     SelfApiKeyGroupOption:
       type: object

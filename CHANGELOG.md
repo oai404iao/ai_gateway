@@ -30,6 +30,11 @@ Versioning.
 
 ### Changed
 
+- Decouple Codex sharing seats from user groups, allow cars to start with
+  vacant seats, and split self-service API Key targets into seat-owned sharing
+  credentials versus ordinary API Key Policy groups/channels. A sharing-only
+  Key can now be created without an assigned policy; migration 0056 preserves
+  prior group-authorized sharing access as explicit channel targets.
 - Split Console system settings into expandable sidebar categories with
   deep links and isolated forms.
 - Remove MCP endpoints, adapters, Console management, runtime settings, and

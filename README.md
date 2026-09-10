@@ -70,7 +70,9 @@ separate management Console for users and administrators.
 Optional [Codex sharing](docs/user/codex-sharing.md) adds fixed-seat USD window
 allowances with durable reservations and private member views. It is
 single-instance only and does not provide a hard per-request spending ceiling.
-Members can also use authorized ordinary channels; Codex pools can require sharing seats.
+Seats are assigned directly to users rather than user groups. Members can add
+seat-owned credentials to a Key independently of API Key Policy and can also
+use authorized ordinary channels; Codex pools can require sharing seats.
 
 | Endpoint | Authentication | Purpose |
 | --- | --- | --- |

@@ -67,6 +67,8 @@ interface RoutingTargetFieldsProps {
   error?: string;
   className?: string;
   allowUnavailableSelection?: boolean;
+  legend?: string;
+  description?: string;
 }
 
 const FORMAT_ORDER: Record<ApiFormat, number> = {
@@ -92,6 +94,8 @@ export function RoutingTargetFields({
   error,
   className,
   allowUnavailableSelection = false,
+  legend,
+  description,
 }: RoutingTargetFieldsProps) {
   const { t } = useI18n();
   const idPrefix = useId();
@@ -207,9 +211,9 @@ export function RoutingTargetFields({
       className={cn("rounded-lg border p-4", className)}
       data-invalid={Boolean(error) || undefined}
     >
-      <FieldLegend>{t("Routing targets")}</FieldLegend>
+      <FieldLegend>{legend ?? t("Routing targets")}</FieldLegend>
       <FieldDescription>
-        {t("Targets are grouped by API format and sorted by name.")}
+        {description ?? t("Targets are grouped by API format and sorted by name.")}
       </FieldDescription>
 
       <div className="flex flex-wrap gap-2">

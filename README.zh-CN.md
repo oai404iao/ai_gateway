@@ -42,7 +42,8 @@ Chat Completions、Responses、Codex standalone web search、非流式 JSON Imag
 ## 架构
 
 可选 [Codex 拼车](docs/user/codex-sharing.md) 提供固定席位 USD 窗口额度、耐久预占和
-个人用量页面，并支持成员同时使用已授权普通渠道；Codex 池可设为仅拼车使用。
+个人用量页面。席位直接分配用户、不绑定用户组；成员可独立于 API Key Policy 把席位凭证
+加入 Key，并同时使用 Policy 授权的普通渠道。Codex 池可设为仅拼车使用。
 仅支持单实例，不承诺单请求费用硬上限。
 
 ```text
