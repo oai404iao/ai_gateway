@@ -114,7 +114,9 @@ terminal RequestLogEvent
 
 ## 修改数据库的流程
 
-`0054_codex_sharing.sql` 新增固定席位车队与单实例账本身份。绑定和上游身份保持不可变，
+`0054_codex_sharing.sql` 新增固定席位车队与单实例账本身份。绑定和上游身份保持不可变。
+`0055_codex_sharing_only_groups.sql` 只增加 Codex 渠道组的整池访问模式与同步触发器，
+不改写这些绑定、席位、配额窗口或账本身份。
 金额预占不写入余额实体，而由本地耐久 WAL 拥有；后台仅使用既有请求日志对账。
 详见 [Codex 拼车实现](codex-sharing.md)。
 

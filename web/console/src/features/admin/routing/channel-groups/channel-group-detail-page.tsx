@@ -58,6 +58,7 @@ const schema = z.object({
   request_compression: z.enum(["default", "zstd"]),
   enabled: z.boolean(),
   status_statistics_enabled: z.boolean(),
+  sharing_only: z.boolean(),
 });
 
 type FormState = z.infer<typeof schema>;
@@ -69,6 +70,7 @@ const empty: FormState = {
   request_compression: "default",
   enabled: true,
   status_statistics_enabled: false,
+  sharing_only: false,
 };
 
 export function ChannelGroupDetailPage() {
@@ -98,6 +100,7 @@ export function ChannelGroupDetailPage() {
         request_compression: data.data.request_compression,
         enabled: data.data.enabled,
         status_statistics_enabled: data.data.status_statistics_enabled,
+        sharing_only: data.data.sharing_only,
       });
     }
   }, [data]);
@@ -122,6 +125,7 @@ export function ChannelGroupDetailPage() {
       request_compression: parsed.data.request_compression as RequestCompression,
       enabled: parsed.data.enabled,
       status_statistics_enabled: parsed.data.status_statistics_enabled,
+      sharing_only: parsed.data.sharing_only,
     };
     try {
       if (isNew) {
@@ -229,6 +233,7 @@ export function ChannelGroupDetailPage() {
                       const connector = value as ConnectorKind;
                       patch({
                         connector_kind: connector,
+                        sharing_only: connector === "codex_oauth" && state.sharing_only,
                         api_format:
                           connector === "codex_oauth"
                             ? "open_ai_responses"
@@ -327,6 +332,14 @@ export function ChannelGroupDetailPage() {
                     onCheckedChange={(checked) => patch({ enabled: Boolean(checked) })}
                   />
                 </Field>
+                {state.connector_kind === "codex_oauth" && <Field orientation="horizontal">
+                  <FieldContent>
+                    <FieldLabel htmlFor="channel_group_sharing_only">{t("Sharing only")}</FieldLabel>
+                    <FieldDescription>{t("Requires a sharing seat for this Codex pool. Applies to both Responses and Images without enabling Images. Existing bound credentials stay protected when turned off.")}</FieldDescription>
+                  </FieldContent>
+                  <Switch id="channel_group_sharing_only" checked={state.sharing_only}
+                    onCheckedChange={checked => patch({ sharing_only: Boolean(checked) })} />
+                </Field>}
                 <Field orientation="horizontal">
                   <FieldContent>
                     <FieldLabel htmlFor="channel_group_status_statistics_enabled">

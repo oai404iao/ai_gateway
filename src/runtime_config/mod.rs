@@ -716,8 +716,9 @@ pub fn compile_runtime_config(
     records: RuntimeConfigRecords,
 ) -> Result<CompiledRuntimeConfig, ConfigError> {
     let system_settings = compile_system_settings(records.system_settings)?;
-    let sharing = crate::domain::codex_sharing::SharingRegistry::compile(records.sharing)
+    let mut sharing = crate::domain::codex_sharing::SharingRegistry::compile(records.sharing)
         .map_err(|message| ConfigError::Compile(message.into()))?;
+    sharing.protect_channels(records.sharing_only_channels);
     compile_with_sharing(records.control_plane, system_settings, sharing)
 }
 
@@ -735,8 +736,19 @@ pub fn compile_control_plane_with_system_settings(
 fn compile_with_sharing(
     records: ControlPlaneRecords,
     system_settings: SystemRuntimeSettings,
-    sharing: crate::domain::codex_sharing::SharingRegistry,
+    mut sharing: crate::domain::codex_sharing::SharingRegistry,
 ) -> Result<CompiledRuntimeConfig, ConfigError> {
+    let sharing_only_groups = records
+        .groups
+        .iter()
+        .filter(|group| group.sharing_only)
+        .map(|group| group.id)
+        .collect::<HashSet<_>>();
+    sharing.protect_channels(records.channels.iter().filter_map(|channel| {
+        sharing_only_groups
+            .contains(&channel.channel_group_id)
+            .then_some(channel.id)
+    }));
     let mut all_groups = HashMap::new();
     let mut groups = HashMap::new();
     for group in records.groups {
@@ -2038,6 +2050,11 @@ fn validate_rule_references(
 }
 
 fn validate_group(record: &ChannelGroupRecord) -> Result<(), ConfigError> {
+    if record.sharing_only && record.connector_kind != "codex_oauth" {
+        return Err(ConfigError::Compile(
+            "sharing-only groups require Codex OAuth".into(),
+        ));
+    }
     require("channel group name", &record.name)?;
     let api_format = parse_format(&record.api_format)?;
     let connector_kind = parse_connector_kind(&record.connector_kind)?;
@@ -2743,6 +2760,7 @@ mod tests {
             api_format: "open_ai_chat_completions".into(),
             connector_kind: "openai_compatible".into(),
             request_compression: "default".into(),
+            sharing_only: false,
             enabled: true,
         };
         let channel = |id, group_id| ChannelRecord {
@@ -3095,6 +3113,7 @@ mod tests {
     #[test]
     fn compiler_uses_database_backed_forwarding_settings() {
         let records = RuntimeConfigRecords {
+            sharing_only_channels: Vec::new(),
             sharing: Vec::new(),
             control_plane: route_records(0, "weighted_random", 1, "weighted_random", false),
             system_settings: SystemSettingsRecord {

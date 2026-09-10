@@ -1714,6 +1714,145 @@ async fn codex_business_credentials_are_unique_per_workspace_member() {
 }
 
 #[tokio::test]
+async fn sharing_only_migration_preserves_existing_money_and_pending_reservations() {
+    use ai_gateway::{
+        codex_sharing::SharingRuntime,
+        domain::codex_sharing::{SharingRecord, SharingRegistry, SharingWindow},
+    };
+    use rust_decimal::Decimal;
+
+    let database = TestDatabase::new_unmigrated().await;
+    for migration in MIGRATOR.iter().filter(|m| m.version <= 54) {
+        sqlx::raw_sql(migration.sql.as_ref())
+            .execute(&database.pool)
+            .await
+            .unwrap();
+    }
+    ControlPlaneRepository::new(database.pool.clone())
+        .ensure_system_settings(system_settings())
+        .await
+        .unwrap();
+    let seed = seed(&database.pool).await;
+    let channel_group = Uuid::new_v4();
+    let credential = Uuid::new_v4();
+    sqlx::query("INSERT INTO channel_groups (id,name,api_format,connector_kind,enabled) VALUES ($1,'migration-sharing','open_ai_responses','codex_oauth',true)")
+        .bind(channel_group).execute(&database.pool).await.unwrap();
+    sqlx::query("INSERT INTO channels (id,channel_group_id,api_format,name,base_url,enabled,upstream_auth_kind,supports_websocket) \
+        VALUES ($1,$2,'open_ai_responses','migration-sharing','https://example.test',true,'none',true)")
+        .bind(credential).bind(channel_group).execute(&database.pool).await.unwrap();
+    sqlx::query("INSERT INTO codex_oauth_credentials (channel_id,channel_group_id,label,account_id,user_id,id_token,access_token,refresh_token,last_refreshed_at,enabled,quota_threshold_percent,runtime_status) \
+        VALUES ($1,$2,'migration-sharing','migration-account','migration-user',$3,$3,$3,now(),true,95,'active')")
+        .bind(credential).bind(channel_group).bind(Uuid::new_v4().to_string()).execute(&database.pool).await.unwrap();
+    let group_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO codex_sharing_groups (id,user_group_id,credential_id,provider_account_id,provider_user_id,name,enabled,seats,\
+        primary_limit_amount,secondary_limit_amount,request_reservation_amount,user_requests_per_minute,group_requests_per_minute,user_max_concurrent_requests,group_max_concurrent_requests) \
+        SELECT $1,user_group_id,$2,'migration-account','migration-user','migration-sharing',true,jsonb_build_array(id),20,100,0.1,30,60,2,4 FROM users WHERE id=$3")
+        .bind(group_id).bind(credential).bind(seed.user).execute(&database.pool).await.unwrap();
+    let repository = ControlPlaneRepository::new(database.pool.clone());
+    let now = Utc::now();
+    repository
+        .persist_codex_quota(
+            credential,
+            CodexQuotaUpdate {
+                allowed: true,
+                limit_reached: false,
+                primary_used_percent: Some(10),
+                primary_window_seconds: Some(3600),
+                primary_reset_at: Some(now + chrono::Duration::hours(1)),
+                secondary_used_percent: None,
+                secondary_window_seconds: None,
+                secondary_reset_at: None,
+                reset_credits_available: None,
+                checked_at: now,
+            },
+        )
+        .await
+        .unwrap();
+    let group = repository
+        .sharing_groups(Some(seed.user))
+        .await
+        .unwrap()
+        .remove(0);
+    let windows: Vec<SharingWindow> = sqlx::query_as("SELECT id,credential_id,window_kind,scheduled_reset_at,last_used_percent AS used_percent,last_observed_at AS checked_at FROM codex_quota_window_periods WHERE credential_id=$1 AND ended_at IS NULL")
+        .bind(credential).fetch_all(&database.pool).await.unwrap();
+    let registry = SharingRegistry::compile(vec![SharingRecord {
+        group: group.clone(),
+        windows,
+        group_user_ids: vec![seed.user],
+        channel_ids: vec![credential],
+        protected_channel_ids: vec![credential],
+    }])
+    .unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let sharing = SharingRuntime::open(directory.path().to_path_buf())
+        .await
+        .unwrap();
+    let _owner = repository
+        .claim_sharing_ledger(sharing.ledger_id().unwrap())
+        .await
+        .unwrap();
+    sharing.publish(&registry);
+    sharing.flush().await.unwrap();
+    sharing
+        .reserve(&group, seed.user, Uuid::new_v4())
+        .await
+        .unwrap()
+        .settle(Some(Decimal::ONE));
+    sharing.flush().await.unwrap();
+    let pending = sharing
+        .reserve(&group, seed.user, Uuid::new_v4())
+        .await
+        .unwrap();
+    sharing.flush().await.unwrap();
+    let usage = serde_json::to_value(sharing.inspect(&group, seed.user).await).unwrap();
+    let ledger = (
+        std::fs::read(directory.path().join("ledger.json")).unwrap(),
+        std::fs::read(directory.path().join("ledger.wal")).unwrap(),
+    );
+    let facts = "SELECT jsonb_build_object('groups',(SELECT jsonb_agg(s ORDER BY id) FROM codex_sharing_groups s), \
+        'windows',(SELECT jsonb_agg(w ORDER BY id) FROM codex_quota_window_periods w), \
+        'ledger',(SELECT jsonb_agg(l) FROM codex_sharing_ledger l))";
+    let before: serde_json::Value = sqlx::query_scalar(facts)
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    sqlx::raw_sql(include_str!(
+        "../migrations/0055_codex_sharing_only_groups.sql"
+    ))
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let after: serde_json::Value = sqlx::query_scalar(facts)
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    assert_eq!(before, after);
+    let snapshot = compile_runtime_config(repository.load_runtime().await.unwrap()).unwrap();
+    sharing.publish(snapshot.sharing());
+    sharing.flush().await.unwrap();
+    assert_eq!(
+        serde_json::to_value(sharing.inspect(&group, seed.user).await).unwrap(),
+        usage
+    );
+    assert_eq!(
+        std::fs::read(directory.path().join("ledger.json")).unwrap(),
+        ledger.0
+    );
+    assert_eq!(
+        std::fs::read(directory.path().join("ledger.wal")).unwrap(),
+        ledger.1
+    );
+    pending.settle(Some(Decimal::new(5, 1)));
+    sharing.flush().await.unwrap();
+    assert_eq!(
+        sharing.inspect(&group, seed.user).await.windows[0].used_amount,
+        Decimal::new(15, 1)
+    );
+    drop(_owner);
+    database.cleanup().await;
+}
+
+#[tokio::test]
 async fn codex_sharing_pins_credentials_and_settles_money_across_api_keys() {
     use ai_gateway::{
         codex_sharing::SharingRuntime, domain::codex_sharing::SharingGroupInput,
@@ -1726,6 +1865,14 @@ async fn codex_sharing_pins_credentials_and_settles_money_across_api_keys() {
     let seed = seed(&database.pool).await;
     let captured = CodexUpstreamState::default();
     let upstream = start_server(Router::new()
+        .route("/v1/chat/completions", post(|| async {
+            axum::Json(serde_json::json!({
+                "id":"ordinary-coexistence", "object":"chat.completion",
+                "choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],
+                "usage":{"prompt_tokens":1,"completion_tokens":10,"total_tokens":11}
+            }))
+        }))
+        .route("/alpha/search", post(codex_search_upstream))
         .route("/responses", get(codex_responses_websocket_upstream).post(|State(state): State<CodexUpstreamState>, headers: HeaderMap, body: Bytes| async move {
             let mut response = codex_responses_upstream(State(state), headers, body).await;
             response.headers_mut().insert("content-type", HeaderValue::from_static("text/event-stream"));
@@ -1737,13 +1884,19 @@ async fn codex_sharing_pins_credentials_and_settles_money_across_api_keys() {
         .with_state(captured.clone())).await;
     let codex_group = Uuid::new_v4();
     sqlx::query(
-        "INSERT INTO channel_groups (id,name,api_format,connector_kind,enabled) \
-        VALUES ($1,'sharing-test','open_ai_responses','codex_oauth',true)",
+        "INSERT INTO channel_groups (id,name,api_format,connector_kind,enabled,sharing_only) \
+        VALUES ($1,'sharing-test','open_ai_responses','codex_oauth',true,true)",
     )
     .bind(codex_group)
     .execute(&database.pool)
     .await
     .unwrap();
+    sqlx::query("UPDATE channels SET base_url=$1 WHERE id=$2")
+        .bind(format!("http://{}", upstream.address))
+        .bind(seed.channel)
+        .execute(&database.pool)
+        .await
+        .unwrap();
     let mut settings = system_settings();
     settings.websocket.enabled = true;
     sqlx::query("UPDATE system_settings SET value=$1 WHERE setting_key='forwarding_policy'")
@@ -1813,6 +1966,23 @@ async fn codex_sharing_pins_credentials_and_settles_money_across_api_keys() {
     insert_model_rule_fixture(
         &database.pool,
         Uuid::new_v4(),
+        "ordinary-search-model",
+        "open_ai_responses",
+        seed.model,
+        true,
+        &[RoutingTierFixture {
+            priority: 0,
+            selection_strategy: "weighted_random",
+            channel_groups: &[RoutingGroupFixture::Selected {
+                channel_group_id: codex_group,
+                channels: &[(other.id, 1)],
+            }],
+        }],
+    )
+    .await;
+    insert_model_rule_fixture(
+        &database.pool,
+        Uuid::new_v4(),
         "sharing-model",
         "open_ai_responses",
         seed.model,
@@ -1833,11 +2003,12 @@ async fn codex_sharing_pins_credentials_and_settles_money_across_api_keys() {
         .await
         .unwrap();
     sqlx::query(
-        "UPDATE api_keys SET allowed_api_formats=ARRAY['open_ai_responses']::api_format[], \
-        allowed_group_ids=ARRAY[$2]::uuid[] WHERE id=$1",
+        "UPDATE api_keys SET allowed_api_formats=ARRAY['open_ai_responses','open_ai_chat_completions']::api_format[], \
+        allowed_group_ids=ARRAY[$2,$3]::uuid[] WHERE id=$1",
     )
     .bind(seed.key)
     .bind(codex_group)
+    .bind(seed.group)
     .execute(&database.pool)
     .await
     .unwrap();
@@ -1914,6 +2085,26 @@ async fn codex_sharing_pins_credentials_and_settles_money_across_api_keys() {
         .await
         .unwrap();
     assert!(runtime.snapshot().sharing().is_protected(alias.id));
+    let unbound_alias = coordinator
+        .create_codex_credential(
+            seed.user,
+            business_codex_credential(
+                alias_pool,
+                "unbound alias",
+                "other@example.test",
+                "other-sharing-user",
+            ),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(runtime.snapshot().sharing().is_protected(unbound_alias.id));
+    assert!(
+        !runtime
+            .snapshot()
+            .sharing()
+            .permits(seed.user, unbound_alias.id)
+    );
     assert!(
         !runtime
             .snapshot()
@@ -1976,7 +2167,26 @@ async fn codex_sharing_pins_credentials_and_settles_money_across_api_keys() {
             ))
             .unwrap()
     };
+    let unavailable_app = ai_gateway::http::router(
+        proxy
+            .clone()
+            .with_sharing_runtime(SharingRuntime::default()),
+    );
     let app = ai_gateway::http::router(proxy);
+    let ordinary = || {
+        axum::http::Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("authorization", format!("Bearer {}", seed.secret))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({
+                    "model": seed.client_model, "messages":[{"role":"user","content":"hello"}]
+                })
+                .to_string(),
+            ))
+            .unwrap()
+    };
     let response = app.clone().oneshot(request(&seed.secret)).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let _ = timeout(Duration::from_secs(5), response.into_body().collect())
@@ -2011,6 +2221,70 @@ async fn codex_sharing_pins_credentials_and_settles_money_across_api_keys() {
             .contains("sharing_quota_exceeded")
     );
     assert_eq!(captured.http_requests.lock().unwrap().len(), 1);
+    let before_ordinary = serde_json::to_value(sharing.inspect(&group, seed.user).await).unwrap();
+    let response = app.clone().oneshot(ordinary()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    response.into_body().collect().await.unwrap();
+    sharing.flush().await.unwrap();
+    assert_eq!(
+        serde_json::to_value(sharing.inspect(&group, seed.user).await).unwrap(),
+        before_ordinary
+    );
+    assert_eq!(sink.events().last().unwrap().channel_id, Some(seed.channel));
+    assert_eq!(
+        sink.events()
+            .last()
+            .unwrap()
+            .billing
+            .as_ref()
+            .unwrap()
+            .cost_amount,
+        Some(Decimal::ONE)
+    );
+    let response = unavailable_app.clone().oneshot(ordinary()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    response.into_body().collect().await.unwrap();
+    assert_eq!(
+        unavailable_app
+            .oneshot(request(&seed.secret))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    // Pausing or removing a seat blocks only protected channels, not the user.
+    sqlx::query("UPDATE codex_sharing_groups SET enabled=false WHERE id=$1")
+        .bind(group_id)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    coordinator.reload().await.unwrap();
+    assert!(
+        !runtime
+            .snapshot()
+            .sharing()
+            .permits(seed.user, credential.id)
+    );
+    assert!(
+        runtime
+            .snapshot()
+            .sharing()
+            .permits(seed.user, seed.channel)
+    );
+    let response = app.clone().oneshot(ordinary()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    response.into_body().collect().await.unwrap();
+    sqlx::query("UPDATE codex_sharing_groups SET enabled=true WHERE id=$1")
+        .bind(group_id)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    coordinator.reload().await.unwrap();
+    sharing.flush().await.unwrap();
+    assert_eq!(
+        serde_json::to_value(sharing.inspect(&group, seed.user).await).unwrap(),
+        before_ordinary
+    );
     let search = app
         .clone()
         .oneshot(
@@ -2066,6 +2340,74 @@ async fn codex_sharing_pins_credentials_and_settles_money_across_api_keys() {
     let refreshed = sharing.inspect(&group, seed.user).await;
     assert_eq!(refreshed.windows[0].used_amount, Decimal::ZERO);
     assert_eq!(refreshed.windows[1].used_amount, Decimal::ONE);
+    // Routing-mode changes must not recreate windows, clear spend, or drop a
+    // durable in-flight reservation. Turning the group mode off also must not
+    // release an already bound identity.
+    let pending = sharing
+        .reserve(&group, seed.user, Uuid::new_v4())
+        .await
+        .unwrap();
+    sharing.flush().await.unwrap();
+    let ledger_before = (
+        std::fs::read(directory.path().join("ledger.json")).unwrap(),
+        std::fs::read(directory.path().join("ledger.wal")).unwrap(),
+    );
+    let pending_before = serde_json::to_value(sharing.inspect(&group, seed.user).await).unwrap();
+    for sharing_only in [false, true] {
+        sqlx::query("UPDATE channel_groups SET sharing_only=$1 WHERE id=$2")
+            .bind(sharing_only)
+            .bind(codex_group)
+            .execute(&database.pool)
+            .await
+            .unwrap();
+        coordinator.reload().await.unwrap();
+        sharing.flush().await.unwrap();
+        assert_eq!(
+            runtime.snapshot().sharing().permits(seed.user, other.id),
+            !sharing_only
+        );
+        assert_eq!(
+            runtime
+                .snapshot()
+                .sharing()
+                .permits(seed.user, unbound_alias.id),
+            !sharing_only
+        );
+        assert!(
+            !runtime
+                .snapshot()
+                .sharing()
+                .permits(Uuid::new_v4(), credential.id)
+        );
+        assert!(!runtime.snapshot().sharing().permits(seed.user, alias.id));
+        if !sharing_only {
+            let response = app.clone().oneshot(
+                axum::http::Request::builder().method("POST").uri("/v1/alpha/search")
+                    .header("authorization", format!("Bearer {}", seed.secret))
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::json!({
+                        "model":"ordinary-search-model", "commands":{"search_query":[{"q":"test"}]}
+                    }).to_string())).unwrap()
+            ).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            response.into_body().collect().await.unwrap();
+            assert_eq!(captured.search_requests.lock().unwrap().len(), 1);
+        }
+        assert_eq!(
+            serde_json::to_value(sharing.inspect(&group, seed.user).await).unwrap(),
+            pending_before
+        );
+        assert_eq!(
+            std::fs::read(directory.path().join("ledger.json")).unwrap(),
+            ledger_before.0
+        );
+        assert_eq!(
+            std::fs::read(directory.path().join("ledger.wal")).unwrap(),
+            ledger_before.1
+        );
+    }
+    pending.settle(Some(Decimal::ZERO));
+    sharing.flush().await.unwrap();
     let gateway = start_server(app.clone()).await;
     let mut upgrade = format!("ws://{}/v1/responses", gateway.address)
         .into_client_request()
@@ -2116,9 +2458,9 @@ async fn codex_sharing_pins_credentials_and_settles_money_across_api_keys() {
         .execute(&database.pool)
         .await
         .unwrap();
-    sqlx::query("UPDATE api_keys SET allowed_api_formats=ARRAY['open_ai_responses','open_ai_images']::api_format[], \
-        allowed_group_ids=ARRAY[$2,$3]::uuid[] WHERE id=$1")
-        .bind(seed.key).bind(codex_group).bind(images_group).execute(&database.pool).await.unwrap();
+    sqlx::query("UPDATE api_keys SET allowed_api_formats=ARRAY['open_ai_responses','open_ai_images','open_ai_chat_completions']::api_format[], \
+        allowed_group_ids=ARRAY[$2,$3,$4]::uuid[] WHERE id=$1")
+        .bind(seed.key).bind(codex_group).bind(images_group).bind(seed.group).execute(&database.pool).await.unwrap();
     let images_model = Uuid::new_v4();
     sqlx::query("INSERT INTO models (id,source_model_id,display_name,enabled,currency,price_unit_tokens, \
         input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,price_effective_at) \
@@ -2145,6 +2487,7 @@ async fn codex_sharing_pins_credentials_and_settles_money_across_api_keys() {
     coordinator.reload().await.unwrap();
     sharing.flush().await.unwrap();
     let image = app
+        .clone()
         .oneshot(
             axum::http::Request::builder()
                 .method("POST")
@@ -2183,6 +2526,24 @@ async fn codex_sharing_pins_credentials_and_settles_money_across_api_keys() {
     coordinator.reload().await.unwrap();
     sharing.flush().await.unwrap();
     assert!(!sharing.inspect(&group, seed.user).await.available);
+    let response = app.clone().oneshot(ordinary()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    response.into_body().collect().await.unwrap();
+    sqlx::query("UPDATE codex_sharing_groups SET seats='[null,null]'::jsonb WHERE id=$1")
+        .bind(group_id)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    coordinator.reload().await.unwrap();
+    assert!(
+        !runtime
+            .snapshot()
+            .sharing()
+            .permits(seed.user, credential.id)
+    );
+    let response = app.oneshot(ordinary()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    response.into_body().collect().await.unwrap();
     assert!(matches!(
         coordinator
             .mutate(
@@ -2974,6 +3335,7 @@ async fn codex_credentials_create_managed_channels_and_recompute_quota_state() {
                     api_format: "open_ai_responses".into(),
                     connector_kind: "openai_compatible".into(),
                     request_compression: None,
+                    sharing_only: None,
                     enabled: true,
                     status_statistics_enabled: None,
                 },

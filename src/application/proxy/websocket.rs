@@ -521,9 +521,18 @@ impl ResponsesWebSocketSession {
                     {
                         active.reusable = false;
                     }
-                    if connector_affinity_hit {
+                    if connector_affinity_hit
+                        || snapshot
+                            .sharing()
+                            .for_channel(current_channel.id())
+                            .is_some()
+                    {
                         completion.set_preserve_affinity_on_failure(true);
-                        let error = ProxyError::sticky_connector_unavailable(error);
+                        let error = if connector_affinity_hit {
+                            ProxyError::sticky_connector_unavailable(error)
+                        } else {
+                            ProxyError::connector_unavailable(error)
+                        };
                         completion
                             .finish_with_proxy_error(RequestOutcome::UpstreamUnavailable, &error);
                         send_proxy_error(client, error).await;

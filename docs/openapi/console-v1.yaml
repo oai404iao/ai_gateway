@@ -3764,7 +3764,7 @@ components:
 
     ChannelGroupView:
       type: object
-      required: [id, name, api_format, connector_kind, connector_pool_id, request_compression, enabled, status_statistics_enabled, updated_at]
+      required: [id, name, api_format, connector_kind, connector_pool_id, request_compression, sharing_only, enabled, status_statistics_enabled, updated_at]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
@@ -3776,6 +3776,9 @@ components:
           nullable: true
           description: Shared by the format-specific channel groups derived from one provider connector pool; null for ordinary OpenAI-compatible groups.
         request_compression: { $ref: "#/components/schemas/RequestCompression" }
+        sharing_only:
+          type: boolean
+          description: Codex-only access mode, synchronized across the pool's Responses and Images groups. Unbound credentials and recognizable aliases cannot be used normally. Existing sharing bindings remain protected even when false.
         enabled: { type: boolean }
         status_statistics_enabled:
           type: boolean
@@ -5383,6 +5386,14 @@ components:
             New codex_oauth pools start with open_ai_responses; the server also
             creates a disabled open_ai_images group in the same credential pool.
         connector_kind: { $ref: "#/components/schemas/ConnectorKind" }
+        sharing_only:
+          type: boolean
+          description: >
+            True is valid only for codex_oauth. Restricts the entire logical pool
+            to eligible sharing seats and synchronizes the paired group's mode,
+            without enabling Images or granting API Key access. Omission defaults
+            to false on create and preserves the current mode on update. Disabling
+            this mode never removes existing credential-level sharing protection.
         request_compression:
           allOf: [{ $ref: "#/components/schemas/RequestCompression" }]
           description: >

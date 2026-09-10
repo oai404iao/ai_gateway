@@ -3457,6 +3457,96 @@ async fn request_compression_is_restricted_to_responses_channel_groups() {
 }
 
 #[tokio::test]
+async fn sharing_only_mode_is_codex_scoped_versioned_and_pool_wide() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+    let path = "/console/v1/routing/channel-groups";
+    let invalid = request(
+        &app,
+        "POST",
+        path,
+        serde_json::json!({
+            "name":"invalid-sharing-only", "api_format":"open_ai_responses",
+            "connector_kind":"openai_compatible", "enabled":true, "sharing_only":true
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let created = request(
+        &app,
+        "POST",
+        path,
+        serde_json::json!({
+            "name":"sharing-only-contract", "api_format":"open_ai_responses",
+            "connector_kind":"codex_oauth", "enabled":true, "sharing_only":true
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let id = body_json(created).await["id"].as_str().unwrap().to_owned();
+    let images: (Uuid, bool, bool) = sqlx::query_as(
+        "SELECT id,enabled,sharing_only FROM channel_groups WHERE connector_pool_id=$1 AND api_format='open_ai_images'"
+    ).bind(Uuid::parse_str(&id).unwrap()).fetch_one(&database.pool).await.unwrap();
+    assert!(!images.1);
+    assert!(images.2);
+    let detail_path = format!("{path}/{id}");
+    let detail = request(&app, "GET", &detail_path, serde_json::json!({}), &[]).await;
+    let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
+    assert_eq!(body_json(detail).await["sharing_only"], true);
+    let mut input = serde_json::json!({
+        "name":"sharing-only-renamed", "api_format":"open_ai_responses",
+        "connector_kind":"codex_oauth", "enabled":true
+    });
+    let saved = request(
+        &app,
+        "PUT",
+        &detail_path,
+        input.clone(),
+        &[("if-match", &etag)],
+    )
+    .await;
+    assert_eq!(saved.status(), StatusCode::OK);
+    let detail = request(&app, "GET", &detail_path, serde_json::json!({}), &[]).await;
+    let next_etag = detail.headers()["etag"].to_str().unwrap().to_owned();
+    assert_eq!(body_json(detail).await["sharing_only"], true);
+    input["sharing_only"] = serde_json::json!(false);
+    assert_eq!(
+        request(
+            &app,
+            "PUT",
+            &detail_path,
+            input.clone(),
+            &[("if-match", &etag)]
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        request(
+            &app,
+            "PUT",
+            &detail_path,
+            input,
+            &[("if-match", &next_etag)]
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    let images: (bool, bool) =
+        sqlx::query_as("SELECT enabled,sharing_only FROM channel_groups WHERE id=$1")
+            .bind(images.0)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert_eq!(images, (false, false));
+    database.cleanup().await;
+}
+
+#[tokio::test]
 async fn codex_oauth_flow_contract_uses_pkce_and_actor_scoped_completion() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;

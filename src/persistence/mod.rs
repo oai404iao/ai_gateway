@@ -84,6 +84,7 @@ pub struct RuntimeConfigRecords {
     pub control_plane: ControlPlaneRecords,
     pub system_settings: SystemSettingsRecord,
     pub sharing: Vec<crate::domain::codex_sharing::SharingRecord>,
+    pub sharing_only_channels: Vec<Uuid>,
 }
 
 #[derive(Debug, FromRow)]
@@ -539,6 +540,7 @@ pub struct ChannelGroupRecord {
     pub api_format: String,
     pub connector_kind: String,
     pub request_compression: String,
+    pub sharing_only: bool,
     pub enabled: bool,
 }
 #[derive(Clone, FromRow)]
@@ -904,6 +906,8 @@ pub struct ChannelGroupInput {
     /// current group-level request compression.
     #[serde(default)]
     pub request_compression: Option<String>,
+    #[serde(default)]
+    pub sharing_only: Option<bool>,
     pub enabled: bool,
     /// Create defaults to disabled; omission during an update preserves the
     /// current group-level status-monitoring setting.
@@ -1863,6 +1867,7 @@ pub struct ControlPlaneChannelGroup {
     pub connector_kind: String,
     pub connector_pool_id: Option<Uuid>,
     pub request_compression: String,
+    pub sharing_only: bool,
     pub enabled: bool,
     pub status_statistics_enabled: bool,
     pub updated_at: DateTime<Utc>,
@@ -4712,6 +4717,7 @@ impl ControlPlaneRepository {
             control_plane: Self::load_transaction(transaction).await?,
             system_settings: Self::load_system_settings_transaction(transaction).await?,
             sharing: Self::load_sharing_transaction(transaction).await?,
+            sharing_only_channels: Self::load_sharing_only_channels(transaction).await?,
         })
     }
 
@@ -4820,7 +4826,7 @@ impl ControlPlaneRepository {
         .into_iter()
         .map(Into::into)
         .collect();
-        let groups = sqlx::query_as::<_, ChannelGroupRecord>("SELECT id, name, api_format::text AS api_format, connector_kind, request_compression, enabled FROM channel_groups ORDER BY id").fetch_all(&mut **transaction).await?;
+        let groups = sqlx::query_as::<_, ChannelGroupRecord>("SELECT id, name, api_format::text AS api_format, connector_kind, request_compression, sharing_only, enabled FROM channel_groups ORDER BY id").fetch_all(&mut **transaction).await?;
         let channels = sqlx::query_as::<_, ChannelRecord>("SELECT id, channel_group_id, api_format::text AS api_format, name, base_url, enabled, supports_websocket, supports_standalone_web_search, auto_disabled, auto_disable_allowed, billing_multiplier, proxy_id, config_template_id, override_document, connect_timeout_ms, response_header_timeout_ms, stream_idle_timeout_ms, upstream_auth_kind, upstream_auth_header_name, upstream_api_key, available_models, test_model FROM channels ORDER BY id").fetch_all(&mut **transaction).await?;
         let proxies = sqlx::query_as::<_, ProxyRecord>("SELECT id, name, proxy_url, username, password, no_proxy_hosts, enabled FROM proxies ORDER BY id").fetch_all(&mut **transaction).await?;
         let templates = sqlx::query_as::<_, ConfigTemplateRecord>(
@@ -4999,7 +5005,7 @@ impl ControlPlaneRepository {
         let models = sqlx::query_as::<_, ControlPlaneModel>("SELECT id,source_model_id,display_name,provider_name,enabled,price_unit_tokens,input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,price_effective_at,advanced_billing,last_synced_at,created_at,updated_at FROM models ORDER BY id").fetch_all(&self.pool).await?;
         let api_keys = sqlx::query_as::<_, ControlPlaneApiKey>("SELECT k.id, k.user_id, u.status AS user_status, k.name, k.secret_value AS secret, k.status, k.expires_at, k.allowed_api_formats::text[] AS allowed_api_formats, k.permissions, k.allowed_group_ids, k.allowed_channel_ids, k.requests_per_minute, k.max_concurrent_requests, k.quota_limit_amount, k.quota_used_amount, k.updated_at FROM api_keys k JOIN users u ON u.id=k.user_id WHERE NOT k.is_system AND u.deleted_at IS NULL ORDER BY k.id").fetch_all(&self.pool).await?;
         let api_key_policies = sqlx::query_as::<_, ControlPlaneApiKeyPolicy>("SELECT id,name,allowed_group_ids,allowed_channel_ids,enabled,created_at,updated_at FROM api_key_policies ORDER BY id").fetch_all(&self.pool).await?;
-        let channel_groups = sqlx::query_as::<_, ControlPlaneChannelGroup>("SELECT id,name,api_format::text AS api_format,connector_kind,connector_pool_id,request_compression,enabled,status_statistics_enabled,updated_at FROM channel_groups ORDER BY id").fetch_all(&self.pool).await?;
+        let channel_groups = sqlx::query_as::<_, ControlPlaneChannelGroup>("SELECT id,name,api_format::text AS api_format,connector_kind,connector_pool_id,request_compression,sharing_only,enabled,status_statistics_enabled,updated_at FROM channel_groups ORDER BY id").fetch_all(&self.pool).await?;
         let channels = sqlx::query_as::<_, ControlPlaneChannelRow>("SELECT c.id,c.channel_group_id,c.api_format::text AS api_format,g.connector_kind,(g.connector_kind <> 'openai_compatible') AS provider_managed,c.name,c.base_url,CASE WHEN g.connector_kind='codex_oauth' THEN (c.enabled AND COALESCE(co.enabled,false)) ELSE c.enabled END AS enabled,c.supports_websocket,c.supports_standalone_web_search,c.auto_disabled,c.auto_disabled_reason,c.auto_disable_allowed,c.billing_multiplier,c.proxy_id,c.config_template_id,c.connect_timeout_ms,c.response_header_timeout_ms,c.stream_idle_timeout_ms,c.upstream_auth_kind,c.upstream_auth_header_name,(c.upstream_api_key IS NOT NULL) AS upstream_credential_configured,c.available_models,c.test_model,c.created_at,c.updated_at FROM channels c JOIN channel_groups g ON g.id=c.channel_group_id LEFT JOIN codex_oauth_credential_channels projection ON projection.channel_id=c.id LEFT JOIN codex_oauth_credentials co ON co.channel_id=projection.credential_id WHERE g.connector_kind <> 'codex_oauth' OR (co.channel_id IS NOT NULL AND co.deleted_at IS NULL) ORDER BY c.id").fetch_all(&self.pool).await?;
         let channels = channels.into_iter().map(Into::into).collect::<Vec<_>>();
         let model_rule_rows = sqlx::query_as::<_, ControlPlaneModelRuleRow>(
@@ -6403,6 +6409,12 @@ async fn group_insert(
     } else {
         group_audit(transaction, id).await?
     };
+    let sharing_only = input
+        .sharing_only
+        .unwrap_or_else(|| before["sharing_only"].as_bool().unwrap_or(false));
+    if sharing_only && input.connector_kind != "codex_oauth" {
+        return Err(RepositoryError::Validation);
+    }
     let request_compression = input.request_compression.as_deref().unwrap_or_else(|| {
         if create {
             "default"
@@ -6429,9 +6441,9 @@ async fn group_insert(
         return Err(RepositoryError::Validation);
     }
     let updated_at = if create {
-        sqlx::query_scalar("INSERT INTO channel_groups (id,name,api_format,connector_kind,request_compression,enabled,status_statistics_enabled) VALUES ($1,$2,$3::api_format,$4,$5,$6,$7) RETURNING updated_at").bind(id).bind(&input.name).bind(&input.api_format).bind(&input.connector_kind).bind(request_compression).bind(input.enabled).bind(input.status_statistics_enabled.unwrap_or(false)).fetch_one(&mut **transaction).await?
+        sqlx::query_scalar("INSERT INTO channel_groups (id,name,api_format,connector_kind,request_compression,enabled,status_statistics_enabled,sharing_only) VALUES ($1,$2,$3::api_format,$4,$5,$6,$7,$8) RETURNING updated_at").bind(id).bind(&input.name).bind(&input.api_format).bind(&input.connector_kind).bind(request_compression).bind(input.enabled).bind(input.status_statistics_enabled.unwrap_or(false)).bind(sharing_only).fetch_one(&mut **transaction).await?
     } else {
-        sqlx::query_scalar("UPDATE channel_groups SET name=$2,api_format=$3::api_format,connector_kind=$4,request_compression=COALESCE($5,request_compression),enabled=$6,status_statistics_enabled=COALESCE($7,status_statistics_enabled) WHERE id=$1 AND updated_at=$8 RETURNING updated_at").bind(id).bind(&input.name).bind(&input.api_format).bind(&input.connector_kind).bind(&input.request_compression).bind(input.enabled).bind(input.status_statistics_enabled).bind(expected_updated_at.expect("PUT version")).fetch_optional(&mut **transaction).await?.ok_or(RepositoryError::Conflict)?
+        sqlx::query_scalar("UPDATE channel_groups SET name=$2,api_format=$3::api_format,connector_kind=$4,request_compression=COALESCE($5,request_compression),enabled=$6,status_statistics_enabled=COALESCE($7,status_statistics_enabled),sharing_only=$9 WHERE id=$1 AND updated_at=$8 RETURNING updated_at").bind(id).bind(&input.name).bind(&input.api_format).bind(&input.connector_kind).bind(&input.request_compression).bind(input.enabled).bind(input.status_statistics_enabled).bind(expected_updated_at.expect("PUT version")).bind(sharing_only).fetch_optional(&mut **transaction).await?.ok_or(RepositoryError::Conflict)?
     };
     Ok(MutationResult {
         id,

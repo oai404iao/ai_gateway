@@ -55,6 +55,8 @@ Console API/UI 不可达。
 `/codex-sharing` 是本人金额视图；`/admin/codex-sharing` 和其详情页负责固定席位配置、
 ETag 保存和逐席位用量。它们位于 `src/features/codex-sharing/`，不与只读 Codex 官方配额页
 混用，也不向本人接口返回其他成员或凭证信息。规则见 [Codex 拼车](codex-sharing.md)。
+Codex 渠道组编辑器提供“仅拼车使用”开关；普通 Connector 不显示该控件。
+同池配对组模式同步，但不联动格式启用或 Key 授权，成员普通渠道仍按原权限使用。
 
 ```text
 web/console/
