@@ -48,6 +48,7 @@ import {
   useCreateChannel,
   useDiscoverChannelModels,
   useModelRules,
+  useModels,
   useProxies,
   useUpdateChannel,
 } from "@/features/admin/api";
@@ -127,6 +128,7 @@ const schema = z.object({
   upstream_api_key: z.string(),
   available_models: z.array(z.string().trim().min(1, "Model ID is required.")),
   test_model: z.string().nullable(),
+  test_pricing_model_id: z.string().nullable(),
 }).superRefine((value, context) => {
   if (value.upstream_auth_kind === "header" && !value.upstream_auth_header_name) {
     context.addIssue({
@@ -154,6 +156,16 @@ const schema = z.object({
       code: z.ZodIssueCode.custom,
       path: ["test_model"],
       message: "Images channels do not support scheduled test models.",
+    });
+  }
+  if (Boolean(value.test_model) !== Boolean(value.test_pricing_model_id)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: [
+        value.test_model ? "test_pricing_model_id" : "test_model",
+      ],
+      message:
+        "The scheduled upstream model and pricing model must be configured together.",
     });
   }
   if (value.supports_websocket && value.api_format !== "open_ai_responses") {
@@ -198,6 +210,7 @@ const empty: FormState = {
   upstream_api_key: "",
   available_models: [],
   test_model: null,
+  test_pricing_model_id: null,
 };
 
 export function ChannelDetailPage() {
@@ -223,6 +236,7 @@ export function ChannelDetailPage() {
   const groups = useChannelGroups();
   const channels = useChannels();
   const rules = useModelRules();
+  const models = useModels();
   const proxies = useProxies();
   const templates = useConfigTemplates();
   const { t } = useI18n();
@@ -271,6 +285,7 @@ export function ChannelDetailPage() {
         upstream_api_key: data.data.upstream_api_key ?? "",
         available_models: data.data.available_models,
         test_model: data.data.test_model,
+        test_pricing_model_id: data.data.test_pricing_model_id,
       });
       setOverrideDocumentValidation(null);
     }
@@ -363,6 +378,10 @@ export function ChannelDetailPage() {
       available_models: source.available_models,
       test_model:
         apiFormat === "open_ai_images" ? null : source.test_model,
+      test_pricing_model_id:
+        apiFormat === "open_ai_images"
+          ? null
+          : source.test_pricing_model_id,
     });
     setOverrideDocumentValidation(null);
     setCopyInitialized(true);
@@ -591,6 +610,7 @@ export function ChannelDetailPage() {
               : parsed.data.upstream_api_key || null,
           available_models: parsed.data.available_models,
           test_model: parsed.data.test_model,
+          test_pricing_model_id: parsed.data.test_pricing_model_id,
         };
         await create.mutateAsync(input);
         markSaved();
@@ -621,6 +641,7 @@ export function ChannelDetailPage() {
               : null,
           available_models: parsed.data.available_models,
           test_model: parsed.data.test_model,
+          test_pricing_model_id: parsed.data.test_pricing_model_id,
         };
         if (overrideDocument !== undefined) {
           input.override_document = overrideDocument;
@@ -740,6 +761,15 @@ export function ChannelDetailPage() {
                   mono={Boolean(data.data.test_model)}
                 />
                 <DetailField
+                  label={t("Scheduled test pricing model")}
+                  value={
+                    models.data?.find(
+                      (model) =>
+                        model.id === data.data.test_pricing_model_id,
+                    )?.display_name ?? "—"
+                  }
+                />
+                <DetailField
                   label={t("Credential configured")}
                   value={data.data.upstream_credential_configured ? t("yes") : t("no")}
                 />
@@ -807,6 +837,10 @@ export function ChannelDetailPage() {
                               : false,
                           test_model:
                             group?.api_format === "open_ai_images" ? null : state.test_model,
+                          test_pricing_model_id:
+                            group?.api_format === "open_ai_images"
+                              ? null
+                              : state.test_pricing_model_id,
                         });
                       }}
                     >
@@ -878,7 +912,7 @@ export function ChannelDetailPage() {
                     onChange={(value) => patch({ billing_multiplier: value })}
                     error={fieldError("billing_multiplier")}
                     description={t(
-                      "Multiplies the upstream model price used for request settlement.",
+                      "Multiplies the applicable pricing model rates used for request settlement.",
                     )}
                     required
                   />
@@ -1060,6 +1094,11 @@ export function ChannelDetailPage() {
                         test_model: state.test_model && !value.includes(state.test_model)
                           ? null
                           : state.test_model,
+                        test_pricing_model_id:
+                          state.test_model &&
+                          !value.includes(state.test_model)
+                            ? null
+                            : state.test_pricing_model_id,
                       })
                     }
                     placeholder={t("Enter an upstream model ID")}
@@ -1089,7 +1128,13 @@ export function ChannelDetailPage() {
                       value={state.test_model ?? "__none__"}
                       disabled={state.api_format === "open_ai_images"}
                       onValueChange={(value) =>
-                        patch({ test_model: value === "__none__" ? null : value })
+                        patch({
+                          test_model: value === "__none__" ? null : value,
+                          test_pricing_model_id:
+                            value === "__none__"
+                              ? null
+                              : state.test_pricing_model_id,
+                        })
                       }
                     >
                       <SelectTrigger aria-invalid={Boolean(fieldError("test_model"))}>
@@ -1110,10 +1155,66 @@ export function ChannelDetailPage() {
                       {state.api_format === "open_ai_images"
                         ? t("Images channels are excluded from scheduled paid probes.")
                         : t(
-                            "Periodic scheduled tests use this model. It must be one of the available upstream models and have a configured price.",
+                            "Periodic scheduled tests send this wire model. Choose it from the available upstream models, then pair it with a pricing model below.",
                           )}
                     </FieldDescription>
                     {fieldError("test_model") ? <FieldError>{fieldError("test_model")}</FieldError> : null}
+                  </Field>
+                  <Field
+                    data-invalid={Boolean(
+                      fieldError("test_pricing_model_id"),
+                    )}
+                  >
+                    <FieldLabel>{t("Scheduled test pricing model")}</FieldLabel>
+                    <Select
+                      value={state.test_pricing_model_id ?? "__none__"}
+                      disabled={
+                        state.api_format === "open_ai_images" ||
+                        !state.test_model
+                      }
+                      onValueChange={(value) =>
+                        patch({
+                          test_pricing_model_id:
+                            value === "__none__" ? null : value,
+                        })
+                      }
+                    >
+                      <SelectTrigger
+                        aria-invalid={Boolean(
+                          fieldError("test_pricing_model_id"),
+                        )}
+                      >
+                        <SelectValue
+                          placeholder={t("Select a pricing model")}
+                        />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectGroup>
+                          <SelectItem value="__none__">{t("None")}</SelectItem>
+                          {(models.data ?? [])
+                            .filter(
+                              (model) =>
+                                model.enabled ||
+                                model.id === state.test_pricing_model_id,
+                            )
+                            .map((model) => (
+                              <SelectItem key={model.id} value={model.id}>
+                                {model.display_name} ({model.source_model_id})
+                              </SelectItem>
+                            ))}
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                    <FieldDescription>
+                      {t(
+                        "Usage from the scheduled probe is priced with this model; it may differ from the upstream wire model.",
+                      )}
+                    </FieldDescription>
+                    {fieldError("test_pricing_model_id") ? (
+                      <FieldError>
+                        {fieldError("test_pricing_model_id")}
+                      </FieldError>
+                    ) : null}
                   </Field>
                 </FieldGroup>
               </CardContent>
@@ -1264,6 +1365,11 @@ export function ChannelDetailPage() {
               state.test_model && !available_models.includes(state.test_model)
                 ? null
                 : state.test_model,
+            test_pricing_model_id:
+              state.test_model &&
+              !available_models.includes(state.test_model)
+                ? null
+                : state.test_pricing_model_id,
           })
         }
       />
@@ -1274,7 +1380,7 @@ export function ChannelDetailPage() {
         }}
         title={t("Save routing degradation?")}
         description={t(
-          "This channel change will make enabled model rules less available. The configuration remains valid, but new requests may fail until compatible channels are restored.",
+          "This channel change will make enabled protocol routes less available. The configuration remains valid, but new requests may fail until compatible channels are restored.",
         )}
         confirmLabel={t("Save anyway")}
         confirmDisabled={submitting}
@@ -1286,7 +1392,7 @@ export function ChannelDetailPage() {
           <ul className="flex max-h-64 flex-col gap-2 overflow-y-auto text-sm">
             {routingImpact.map((impact) => (
               <li
-                key={impact.ruleId}
+                key={impact.protocolRuleId}
                 className="flex items-center justify-between gap-3"
               >
                 <span className="flex min-w-0 flex-col">

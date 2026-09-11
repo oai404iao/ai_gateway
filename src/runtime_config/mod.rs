@@ -769,7 +769,7 @@ fn compile_with_sharing(
     }
     let proxies = compile_proxies(records.proxies)?;
     let templates = compile_templates(records.templates)?;
-    let models_by_source = index_models(records.models)?;
+    let models_by_id = index_models(records.models)?;
     let mut channels = HashMap::new();
     let mut probe_channels = HashMap::new();
     let mut all_channels = HashMap::new();
@@ -799,7 +799,7 @@ fn compile_with_sharing(
             .or_default()
             .push(*id);
     }
-    let scheduled_test_models = compile_scheduled_test_models(&all_channels, &models_by_source)?;
+    let scheduled_test_models = compile_scheduled_test_models(&all_channels, &models_by_id)?;
     for channel in validated_channels {
         if channel.enabled {
             let auth = compile_auth(&channel)?;
@@ -1624,47 +1624,44 @@ fn compile_accessible_route_slots(
     words
 }
 
-fn index_models(records: Vec<ModelRecord>) -> Result<HashMap<String, ModelRecord>, ConfigError> {
-    let mut ids = HashSet::new();
-    let mut by_source = HashMap::new();
+fn index_models(records: Vec<ModelRecord>) -> Result<HashMap<Uuid, ModelRecord>, ConfigError> {
+    let mut by_id = HashMap::new();
+    let mut source_ids = HashSet::new();
     for record in records {
-        if !ids.insert(record.id) {
+        if by_id.contains_key(&record.id) {
             return Err(dup("model id"));
         }
-        if by_source
-            .insert(record.source_model_id.clone(), record)
-            .is_some()
-        {
+        if !source_ids.insert(record.source_model_id.clone()) {
             return Err(dup("model source id"));
         }
+        by_id.insert(record.id, record);
     }
-    Ok(by_source)
+    Ok(by_id)
 }
 
 fn compile_scheduled_test_models(
     channels: &HashMap<Uuid, ChannelRecord>,
-    models_by_source: &HashMap<String, ModelRecord>,
-) -> Result<HashMap<Arc<str>, Arc<CompiledScheduledTestModel>>, ConfigError> {
+    models_by_id: &HashMap<Uuid, ModelRecord>,
+) -> Result<HashMap<Uuid, Arc<CompiledScheduledTestModel>>, ConfigError> {
     let mut result = HashMap::new();
     for channel in channels.values() {
-        let Some(test_model) = channel.test_model.as_deref() else {
+        if channel.test_model.is_none() {
             continue;
-        };
-        let model = models_by_source.get(test_model).ok_or_else(|| {
+        }
+        let pricing_model_id = channel.test_pricing_model_id.ok_or_else(|| {
             ConfigError::Compile(
-                "channel test model must reference a configured priced model".into(),
+                "channel test model must reference a configured pricing model".into(),
             )
         })?;
-        if !result.contains_key(test_model) {
-            result.insert(
-                Arc::from(test_model),
-                Arc::new(compile_scheduled_test_model(model)?),
-            );
-        }
-        let scheduled_test_model = result
-            .get(test_model)
-            .expect("scheduled test model was just inserted or already present");
-        validate_effective_scheduled_test_prices(scheduled_test_model, channel.billing_multiplier)?;
+        let model = models_by_id.get(&pricing_model_id).ok_or_else(|| {
+            ConfigError::Compile("channel test pricing model does not exist".into())
+        })?;
+        let scheduled_test_model = Arc::new(compile_scheduled_test_model(model)?);
+        validate_effective_scheduled_test_prices(
+            &scheduled_test_model,
+            channel.billing_multiplier,
+        )?;
+        result.insert(channel.id, scheduled_test_model);
     }
     Ok(result)
 }
@@ -1767,10 +1764,8 @@ fn compile_rules(
         if !record.enabled {
             continue;
         }
-        if !record.upstream_model_enabled {
-            return Err(ConfigError::Compile(
-                "enabled model rule references a disabled upstream model".into(),
-            ));
+        if !record.model_enabled {
+            continue;
         }
         let format = parse_format(&record.api_format)?;
         let mut unavailable_candidates = HashMap::<Uuid, Uuid>::new();
@@ -1792,10 +1787,10 @@ fn compile_rules(
                         "enabled model rule references a cross-format channel group".into(),
                     ));
                 }
-                let overrides = target
+                let channel_targets = target
                     .channels
                     .iter()
-                    .map(|channel| (channel.channel_id, channel.weight))
+                    .map(|channel| (channel.channel_id, channel))
                     .collect::<HashMap<_, _>>();
                 let selected_channels = if target.channel_selection == "all" {
                     channels_by_group
@@ -1815,20 +1810,28 @@ fn compile_rules(
                             "enabled model rule references a missing channel".into(),
                         )
                     })?;
-                    let weight = overrides
-                        .get(&channel_id)
-                        .copied()
+                    let channel_target = channel_targets.get(&channel_id).copied();
+                    let weight = channel_target
+                        .map(|target| target.weight)
                         .or(target.default_weight)
                         .ok_or_else(|| {
                             ConfigError::Compile(
                                 "selected route channel has no explicit weight".into(),
                             )
                         })?;
+                    let upstream_model = if target.channel_selection == "all" {
+                        target.upstream_model.as_deref()
+                    } else {
+                        channel_target.and_then(|target| target.upstream_model.as_deref())
+                    }
+                    .ok_or_else(|| {
+                        ConfigError::Compile("route target has no configured upstream model".into())
+                    })?;
                     target_candidates.insert(channel_id);
                     if !channel
                         .available_models
                         .iter()
-                        .any(|model| model == &record.upstream_model)
+                        .any(|model| model == upstream_model)
                     {
                         continue;
                     }
@@ -1842,6 +1845,7 @@ fn compile_rules(
                             CompiledCandidate::new(
                                 channel_slots[&channel_id],
                                 Arc::clone(compiled),
+                                Arc::from(upstream_model),
                                 weight,
                             ),
                         );
@@ -1918,10 +1922,9 @@ fn compile_rules(
         let rule = Arc::new(CompiledModelRule::new_with_unavailable_candidates(
             route_slot,
             record.id,
-            record.upstream_model_id,
+            record.model_id,
             Arc::from(record.client_model),
             format,
-            Arc::from(record.upstream_model),
             price_snapshot,
             advanced_billing,
             Arc::from(tiers),
@@ -1997,7 +2000,7 @@ fn compile_advanced_billing(
 fn compile_model_price_snapshot(
     record: &ModelRuleRecord,
 ) -> Result<ModelPriceSnapshot, ConfigError> {
-    if record.upstream_model_currency != "USD"
+    if record.model_currency != "USD"
         || record.price_unit_tokens <= 0
         || [
             record.input_unit_price,
@@ -2009,11 +2012,11 @@ fn compile_model_price_snapshot(
         .any(|price| price.is_sign_negative())
     {
         return Err(ConfigError::Compile(
-            "model rule references invalid upstream-model price metadata".into(),
+            "model protocol rule references invalid price metadata".into(),
         ));
     }
     Ok(ModelPriceSnapshot::new(
-        Arc::from(record.upstream_model_currency.as_str()),
+        Arc::from(record.model_currency.as_str()),
         record.price_unit_tokens,
         record.price_effective_at,
         record.input_unit_price,
@@ -2122,6 +2125,11 @@ fn validate_channel(
     for model in &record.available_models {
         require("channel available model", model)?;
     }
+    if record.test_model.is_some() != record.test_pricing_model_id.is_some() {
+        return Err(ConfigError::Compile(
+            "channel test model and pricing model must be configured together".into(),
+        ));
+    }
     if let Some(test_model) = &record.test_model {
         if format == ApiFormat::OpenAiImages {
             return Err(ConfigError::Compile(
@@ -2168,7 +2176,8 @@ fn validate_channel(
             || record.upstream_auth_kind != "none"
             || record.upstream_auth_header_name.is_some()
             || record.upstream_api_key.is_some()
-            || record.test_model.is_some())
+            || record.test_model.is_some()
+            || record.test_pricing_model_id.is_some())
     {
         return Err(ConfigError::Compile(
             "invalid Codex OAuth managed channel configuration".into(),
@@ -2287,12 +2296,15 @@ fn positive_policy(value: Option<i32>, name: &str) -> Result<Option<u32>, Config
 }
 fn validate_rule(record: &ModelRuleRecord) -> Result<(), ConfigError> {
     require("model rule client_model", &record.client_model)?;
-    require("model rule upstream_model", &record.upstream_model)?;
     parse_format(&record.api_format)?;
     if record.routing_tiers.is_empty() {
-        return Err(ConfigError::Compile(
-            "model rule must select at least one target".into(),
-        ));
+        return if record.enabled {
+            Err(ConfigError::Compile(
+                "enabled model protocol rule must select at least one target".into(),
+            ))
+        } else {
+            Ok(())
+        };
     }
     let mut priorities = HashSet::with_capacity(record.routing_tiers.len());
     let mut group_ids = HashSet::new();
@@ -2319,8 +2331,26 @@ fn validate_rule(record: &ModelRuleRecord) -> Result<(), ConfigError> {
                 ));
             }
             match target.channel_selection.as_str() {
-                "all" if target.default_weight.is_some_and(|weight| weight > 0) => {}
-                "selected" if target.default_weight.is_none() && !target.channels.is_empty() => {}
+                "all"
+                    if target.default_weight.is_some_and(|weight| weight > 0)
+                        && target
+                            .upstream_model
+                            .as_deref()
+                            .is_some_and(|model| !model.trim().is_empty())
+                        && target
+                            .channels
+                            .iter()
+                            .all(|channel| channel.upstream_model.is_none()) => {}
+                "selected"
+                    if target.default_weight.is_none()
+                        && target.upstream_model.is_none()
+                        && !target.channels.is_empty()
+                        && target.channels.iter().all(|channel| {
+                            channel
+                                .upstream_model
+                                .as_deref()
+                                .is_some_and(|model| !model.trim().is_empty())
+                        }) => {}
                 _ => {
                     return Err(ConfigError::Compile(
                         "model rule has invalid channel selection metadata".into(),
@@ -2792,6 +2822,7 @@ mod tests {
             upstream_api_key: None,
             available_models: vec!["upstream".into()],
             test_model: None,
+            test_pricing_model_id: None,
         };
         let mut routing_tiers = BTreeMap::<(i32, String), Vec<ModelRuleChannelGroupTarget>>::new();
         for (group_id, channel_id, priority, strategy) in [
@@ -2809,10 +2840,12 @@ mod tests {
                 .push(ModelRuleChannelGroupTarget {
                     channel_group_id: group_id,
                     channel_selection: "all".into(),
+                    upstream_model: Some("upstream".into()),
                     default_weight: Some(1),
                     channels: if direct_duplicate && group_id == first_group {
                         vec![ModelRuleChannelWeight {
                             channel_id,
+                            upstream_model: None,
                             weight: 1,
                         }]
                     } else {
@@ -2842,9 +2875,9 @@ mod tests {
                 id: Uuid::from_u128(20),
                 client_model: "client".into(),
                 api_format: "open_ai_chat_completions".into(),
-                upstream_model_id: Uuid::from_u128(21),
-                upstream_model_enabled: true,
-                upstream_model_currency: "USD".into(),
+                model_id: Uuid::from_u128(21),
+                model_enabled: true,
+                model_currency: "USD".into(),
                 price_unit_tokens: 1_000_000,
                 price_effective_at: chrono::Utc::now(),
                 input_unit_price: Default::default(),
@@ -2855,7 +2888,6 @@ mod tests {
                     "long_context_tiers": [],
                     "request_multipliers": [],
                 }),
-                upstream_model: "upstream".into(),
                 routing_tiers,
                 enabled: true,
             }],
@@ -2871,6 +2903,7 @@ mod tests {
             channel_groups: vec![ModelRuleChannelGroupTarget {
                 channel_group_id: group_id,
                 channel_selection: "all".into(),
+                upstream_model: Some("upstream".into()),
                 default_weight: Some(1),
                 channels: vec![],
             }],
@@ -2884,9 +2917,11 @@ mod tests {
             channel_groups: vec![ModelRuleChannelGroupTarget {
                 channel_group_id: group_id,
                 channel_selection: "selected".into(),
+                upstream_model: None,
                 default_weight: None,
                 channels: vec![ModelRuleChannelWeight {
                     channel_id,
+                    upstream_model: Some("upstream".into()),
                     weight: 1,
                 }],
             }],
@@ -2896,7 +2931,7 @@ mod tests {
     #[test]
     fn compiler_rejects_non_usd_model_prices() {
         let mut records = route_records(0, "weighted_random", 1, "weighted_random", false);
-        records.model_rules[0].upstream_model_currency = "EUR".into();
+        records.model_rules[0].model_currency = "EUR".into();
         assert!(compile_control_plane(records).is_err());
     }
 
@@ -2970,18 +3005,21 @@ mod tests {
     }
 
     #[test]
-    fn compiler_requires_a_priced_model_for_each_scheduled_test_model() {
+    fn compiler_resolves_scheduled_test_pricing_independently_by_id() {
         let mut records = route_records(0, "weighted_random", 1, "weighted_random", false);
         records.channels[0].test_model = Some("upstream".into());
+        records.channels[0].test_pricing_model_id = Some(Uuid::new_v4());
         let error = compile_control_plane(records).unwrap_err().to_string();
-        assert!(error.contains("configured priced model"));
+        assert!(error.contains("pricing model does not exist"));
 
         let mut records = route_records(0, "weighted_random", 1, "weighted_random", false);
         records.channels[0].test_model = Some("upstream".into());
-        let model_id = records.model_rules[0].upstream_model_id;
+        let model_id = records.model_rules[0].model_id;
+        records.channels[0].test_pricing_model_id = Some(model_id);
+        let channel_id = records.channels[0].id;
         records.models.push(ModelRecord {
             id: model_id,
-            source_model_id: "upstream".into(),
+            source_model_id: "independent-pricing-model".into(),
             currency: "USD".into(),
             price_unit_tokens: 1_000_000,
             price_effective_at: chrono::Utc::now(),
@@ -2996,7 +3034,7 @@ mod tests {
         });
 
         let snapshot = compile_control_plane(records).unwrap();
-        let scheduled = snapshot.scheduled_test_model("upstream").unwrap();
+        let scheduled = snapshot.scheduled_test_model(channel_id).unwrap();
         assert_eq!(scheduled.id(), model_id);
         assert_eq!(
             scheduled.price_snapshot().output_unit_price(),
@@ -3015,6 +3053,7 @@ mod tests {
         }
         records.model_rules[0].api_format = "open_ai_images".into();
         records.channels[0].test_model = Some("upstream".into());
+        records.channels[0].test_pricing_model_id = Some(records.model_rules[0].model_id);
 
         let error = compile_control_plane(records).unwrap_err().to_string();
 
@@ -3814,15 +3853,16 @@ mod tests {
         records.channels[0].available_models = vec!["upstream-a".into()];
         records.channels[1].available_models = vec!["upstream-b".into()];
         records.model_rules[0].client_model = "client-a".into();
-        records.model_rules[0].upstream_model = "upstream-a".into();
         set_all_group_target(&mut records.model_rules[0], shared_group);
+        records.model_rules[0].routing_tiers[0].channel_groups[0].upstream_model =
+            Some("upstream-a".into());
         records.model_rules.push(ModelRuleRecord {
             id: Uuid::from_u128(22),
             client_model: "client-b".into(),
             api_format: "open_ai_chat_completions".into(),
-            upstream_model_id: Uuid::from_u128(23),
-            upstream_model_enabled: true,
-            upstream_model_currency: "USD".into(),
+            model_id: Uuid::from_u128(23),
+            model_enabled: true,
+            model_currency: "USD".into(),
             price_unit_tokens: 1_000_000,
             price_effective_at: chrono::Utc::now(),
             input_unit_price: Default::default(),
@@ -3833,13 +3873,13 @@ mod tests {
                 "long_context_tiers": [],
                 "request_multipliers": [],
             }),
-            upstream_model: "upstream-b".into(),
             routing_tiers: vec![ModelRuleRoutingTier {
                 priority: 0,
                 selection_strategy: "weighted_random".into(),
                 channel_groups: vec![ModelRuleChannelGroupTarget {
                     channel_group_id: shared_group,
                     channel_selection: "all".into(),
+                    upstream_model: Some("upstream-b".into()),
                     default_weight: Some(1),
                     channels: vec![],
                 }],

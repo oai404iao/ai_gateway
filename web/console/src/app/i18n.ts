@@ -7,6 +7,103 @@ export type ConsoleLocale = "en-US" | "zh-CN";
 const STORAGE_KEY = "ai-gateway-console.locale";
 
 const zhCN: Record<string, string> = {
+  "1. Pricing models": "1. 计价模型",
+  "2. Channels": "2. 渠道",
+  "3. Model rules": "3. 模型规则",
+  "A channel group can appear only once in a protocol.":
+    "同一渠道组在一个协议中只能出现一次。",
+  "A client-visible model identifier with its USD billing price.":
+    "客户端可见的模型标识及其美元计费价格。",
+  "Add a priority tier before enabling this protocol.":
+    "启用此协议前请至少添加一个优先级层级。",
+  "Add only the client protocols this model supports. Each protocol owns its priority tiers and upstream model mappings.":
+    "只添加该模型支持的客户端协议。每个协议独立拥有优先级层级和上游模型映射。",
+  "Add protocol": "添加协议",
+  "Advertise the upstream model identifiers each channel supports.":
+    "声明每条渠道支持的上游模型标识。",
+  "Attach a priced client model once, then configure its supported protocols and target-owned upstream models.":
+    "每个计价客户端模型只绑定一次，再配置其支持的协议和各目标拥有的上游模型。",
+  "Attach protocols to priced models, then configure priorities and target-owned upstream models.":
+    "为计价模型添加协议，再配置优先级和各目标拥有的上游模型。",
+  "Back to model rule": "返回模型规则",
+  "Back to pricing models": "返回计价模型",
+  "Choose a model": "选择模型",
+  "Choose a priced model": "选择计价模型",
+  "Choose an enabled priced model that does not already have a model rule. Protocols can be added afterwards.":
+    "选择尚未创建模型规则的已启用计价模型，随后再添加协议。",
+  "Choose an upstream model": "选择上游模型",
+  "Choose an upstream model and default weight for this group.":
+    "请为此渠道组选择上游模型和默认权重。",
+  "Client model id": "客户端模型 ID",
+  "Client-visible model identifiers and their USD prices. Prices carry an effective timestamp.":
+    "客户端可见的模型标识及其美元价格；价格带有生效时间。",
+  "Configure ordered channel targets and choose the upstream model at the target that owns it.":
+    "配置有序渠道目标，并在拥有映射的目标上选择上游模型。",
+  "Configure pricing models, protocol-aware routing rules, and channel supply in their dedicated views.":
+    "分别在专用页面配置计价模型、协议路由规则和渠道供给。",
+  "Copy pricing model": "复制计价模型",
+  "Create pricing model": "创建计价模型",
+  "Define the client-visible model identity and its billing prices.":
+    "定义客户端可见的模型身份及其计费价格。",
+  "Edit pricing model": "编辑计价模型",
+  "Every enabled priced model already has a rule.":
+    "所有已启用计价模型都已创建规则。",
+  "Every selected channel needs an upstream model and weight.":
+    "每条所选渠道都必须配置上游模型和权重。",
+  "Forwarding rules": "转发规则",
+  "Group weight overrides inherit the group upstream model.":
+    "渠道组权重覆盖必须继承渠道组的上游模型。",
+  "Lower priority numbers run first. A disabled protocol may be saved without any tiers.":
+    "优先级数值越小越先执行；停用的协议可以不配置任何层级。",
+  "Manage channels": "管理渠道",
+  "Manage pricing": "管理价格",
+  "Manage routing": "管理路由",
+  "Model enabled": "模型已启用",
+  "Model routing configuration": "模型路由配置",
+  "Models come from this group's channel capabilities.":
+    "模型选项来自该组渠道声明的能力。",
+  "Multiplies the applicable pricing model rates used for request settlement.":
+    "乘算请求结算所使用的计价模型费率。",
+  "New pricing model": "新建计价模型",
+  "No protocols": "未配置协议",
+  "Not configured": "未配置",
+  "One priced client model with independent protocol routing rules.":
+    "一个计价客户端模型及其相互独立的协议路由规则。",
+  "Open {protocol}": "打开 {protocol}",
+  "Priced client model": "计价客户端模型",
+  "Pricing Models": "计价模型",
+  "Pricing model": "计价模型",
+  "Pricing model created": "计价模型已创建",
+  "Pricing model updated": "计价模型已更新",
+  "Protocol rule": "协议规则",
+  "Protocol rule created": "协议规则已创建",
+  "Protocol rule updated": "协议规则已更新",
+  "Protocol rules": "协议规则",
+  "Save pricing model": "保存计价模型",
+  "Save protocol": "保存协议",
+  "Scheduled test pricing model": "定时测试计价模型",
+  "Select a pricing model": "选择计价模型",
+  "Supported protocols": "支持的协议",
+  "This pricing model was changed elsewhere. Reloading.":
+    "该计价模型已被其他操作修改，正在重新加载。",
+  "The client model ID cannot change after a model rule is created.":
+    "创建模型规则后，客户端模型 ID 不可修改。",
+  "This protocol is already configured.": "该协议已配置。",
+  "This protocol was changed elsewhere. Reloading.":
+    "该协议已被其他操作修改，正在重新加载。",
+  "Upstream model for channel group {name}": "渠道组 {name} 的上游模型",
+  "Upstream model for channel {name}": "渠道 {name} 的上游模型",
+  "Usage from the scheduled probe is priced with this model; it may differ from the upstream wire model.":
+    "定时探测用量按此模型计价；它可以不同于实际发送的上游模型。",
+  "channels": "条渠道",
+  "models": "个模型",
+  "protocol rules": "条协议规则",
+  "{capable} of {total} channels advertise this model.":
+    "{total} 条渠道中有 {capable} 条声明支持此模型。",
+  "{count} model-capable channels": "{count} 条支持该模型的渠道",
+  "{count} models available": "可选 {count} 个模型",
+  "{tiers} priority tiers · {active}/{targets} active targets":
+    "{tiers} 个优先级层级 · {active}/{targets} 个活跃目标",
   "Codex sharing": "Codex 拼车",
   "My Codex sharing": "我的拼车",
   "Provider used": "上游已用",
@@ -66,104 +163,18 @@ const zhCN: Record<string, string> = {
   "Choose sharing credentials or policy targets, then configure this key's own limits.": "选择拼车凭证或策略渠道，然后设置此 Key 自身的限制。",
   "An earlier request has unknown usage. Its reservation is retained until reconciliation or all affected windows reset.": "之前的请求用量未知，预占将保留至对账完成或所有相关窗口换窗。",
   "All": "全部",
-  "Search channels in {name}": "搜索 {name} 内的渠道",
-  "Previous channels": "上一页渠道",
-  "Next channels": "下一页渠道",
   "Discard unsaved changes?": "放弃未保存的修改？",
   "Your edits on this page will be lost.": "此页面尚未保存的修改将丢失。",
   "Discard changes": "放弃修改",
   "No pending edits": "暂无未保存的修改",
   "Editing one resource": "仅编辑当前资源",
-  "Related resources are not changed automatically. Return to the workbench to inspect the complete request path.":
-    "关联资源不会自动修改。可返回工作台检查完整请求路径。",
+  "Related resources are not changed automatically.":
+    "关联资源不会自动修改。",
   "Model configuration": "模型配置",
-  "Client routes": "客户端路由",
-  "Channel supply": "渠道供给",
-  "Models & pricing": "模型与价格",
-  "What clients can call": "客户端可以调用什么",
-  "Where requests are sent": "请求发往哪里",
-  "What upstream models cost": "上游模型如何计价",
-  "Configuration views": "配置视角",
-  "Configuration directory": "配置目录",
-  "Configuration inspector": "配置关系面板",
-  "Back to workbench": "返回配置工作台",
-  "Back to directory": "返回配置目录",
-  "Table & batch tools": "表格与批量工具",
-  "Trace a client model to its upstream price and channel supply. Inspect relationships before changing configuration.":
-    "从客户端模型追溯上游价格与渠道来源。先看清配置关系，再进行修改。",
-  "Search configuration": "搜索配置",
-  "Search names, models…": "搜索名称、模型…",
-  "Provider filter": "按供应商筛选",
-  "API format filter": "按 API 格式筛选",
-  "All providers": "全部供应商",
-  "All API formats": "全部 API 格式",
-  "Configuration status": "配置状态",
-  "Needs attention": "待检查",
-  "No matching configuration": "没有匹配的配置",
-  "Clear filters or create a new resource.": "清除筛选条件，或创建新的配置。",
-  "{count} results": "{count} 条结果",
-  "Clear filters": "清除筛选",
-  "Selection unavailable": "所选配置不可用",
-  "Select a configuration": "选择一项配置",
-  "Choose a result from the directory, or clear filters to see all resources.":
-    "从左侧目录选择配置，或清除筛选以查看全部资源。",
-  "Client-facing route": "客户端调用入口",
-  "Edit route": "编辑路由",
-  "Request path": "请求路径",
-  "Client model → priced upstream model → ordered channel tiers. No conversion between API formats.":
-    "客户端模型 → 上游模型与价格 → 分层渠道目标。不同 API 格式之间不做转换。",
-  "Upstream model unavailable": "上游模型不可用",
   "Target channels": "目标渠道",
   "Model-capable channels": "支持模型的渠道",
   "Active channels": "当前可路由渠道",
-  "Review this route": "检查这条路由",
-  "Check the route switch, upstream model, channel-group switches and model capabilities. Status is reported by the gateway, not inferred from this diagram.":
-    "请检查路由开关、上游模型、渠道组开关与模型能力。状态由网关返回，不由此关系图推断。",
-  "Routing plan": "路由方案",
-  "Lower priority numbers run first. Strategy and channel weights belong to each route tier.":
-    "优先级数字越小越优先。选择策略与渠道权重均在各路由层级中配置。",
-  "Configure targets": "配置路由目标",
-  "Priority {priority}": "优先级 {priority}",
-  "All channels · default weight {weight}": "全部渠道 · 默认权重 {weight}",
-  "Selected channels only": "仅指定渠道",
-  "Weight {weight}": "权重 {weight}",
-  "Model supported": "支持该模型",
-  "Model not supported": "不支持该模型",
-  "No target channels in the current configuration.": "当前配置中没有对应的目标渠道。",
-  "No routing targets": "尚未配置路由目标",
-  "Edit the route to add a channel group.": "编辑路由并添加渠道组。",
   "Unavailable channel group": "渠道组不可用",
-  "{count} routes": "{count} 条路由",
-  "Group disabled": "渠道组已停用",
-  "Every channel in this group is excluded, even if its own switch is on.":
-    "该组内所有渠道均不会参与路由，即使渠道自身处于启用状态。",
-  "Managed credential projection": "托管凭据的格式投影",
-  "Billing multiplier: {value}": "计费倍率：{value}",
-  "No model capabilities configured": "尚未配置模型能力",
-  "Route this channel": "为此渠道创建路由",
-  "Routes using this group": "使用此组的路由",
-  "No routes use this group yet. Adding a channel does not publish a client model.":
-    "尚无路由使用此组。添加渠道不会自动发布客户端模型。",
-  "Shared credential pool": "共享凭据池",
-  "Credentials are shared. Format switches, capabilities and routing remain independent.":
-    "凭据共用；各 API 格式的开关、模型能力与路由仍然独立。",
-  "A supply group owns channels. Model rules decide priority, weights and which channels receive requests.":
-    "渠道组管理渠道资源；模型规则决定优先级、权重以及哪些渠道接收请求。",
-  "Priced upstream model": "上游模型与计价",
-  "Edit model": "编辑模型",
-  "USD per one million tokens. Channel multipliers and advanced billing may also apply.":
-    "单位：美元 / 百万 Token。实际结算还可能叠加渠道倍率与高级计费规则。",
-  "Cache read price": "缓存读取价格",
-  "Cache write price": "缓存写入价格",
-  "Supply supporting this model": "支持此模型的渠道来源",
-  "Declared model capabilities, not a live health check.": "根据已配置的模型能力展示，不代表实时健康检查。",
-  "No supporting channels": "没有支持此模型的渠道",
-  "Add this upstream model ID to a channel's model capabilities.": "请在渠道的模型能力中添加此上游模型 ID。",
-  "Browse channel supply": "查看渠道供给",
-  "A price record alone does not expose a model to clients.": "仅创建价格记录不会向客户端开放模型。",
-  "Not used by any route": "尚未被任何路由使用",
-  "Create a route to connect this model to a client-facing name.": "创建路由，将此模型关联到客户端调用名称。",
-  "Create route for model": "为此模型创建路由",
   "Personal": "个人",
   "Administration": "管理",
   "Routing": "路由",
@@ -179,104 +190,20 @@ const zhCN: Record<string, string> = {
   "API Key Policies": "API 密钥策略",
   "Model routing": "模型与路由",
   "Model setup": "模型接入",
-  "Guided model setup": "模型接入向导",
-  "Connect a supplier, price its models, and publish client-facing routes from one guided workspace.":
-    "在一个引导式工作台中连接供应商、配置模型价格并发布客户端路由。",
-  "Import prices": "导入价格",
-  "One flow from endpoint to client model": "从供应商端点到客户端模型的一条完整流程",
-  "Complete the four stages in order. Existing configuration is reused, so you can resume at any stage.":
-    "按顺序完成四个阶段；已有配置会自动复用，也可以从任意阶段继续。",
-  "{complete} of {total} ready": "已就绪 {complete}/{total}",
-  "Model setup progress": "模型接入进度",
-  "Stage ready": "已就绪",
-  "Needs setup": "待配置",
-  "Choose the API format and the pool that will own supplier endpoints.":
-    "选择 API 格式，以及用于承载供应商端点的渠道池。",
-  "{count} standard groups": "{count} 个普通渠道组",
-  "{count} enabled groups": "{count} 个已启用渠道组",
   "Manage": "管理",
-  "Supplier endpoint": "供应商端点",
-  "Configure the base URL, credential, capabilities, and available model IDs.":
-    "配置基础 URL、凭据、能力和可用模型 ID。",
-  "{count} suppliers": "{count} 个供应商",
-  "{count} ready suppliers": "{count} 个可用供应商",
-  "Add or copy": "添加或复制",
-  "Model and pricing": "模型与价格",
-  "Register upstream model IDs and the prices used for settlement.":
-    "登记上游模型 ID 和用于结算的价格。",
-  "{count} enabled models": "{count} 个已启用模型",
-  "{count} routable models": "{count} 个可路由模型",
-  "Publish a client model name and connect it to compatible routing targets.":
-    "发布客户端模型名称，并连接到兼容的路由目标。",
-  "{count} enabled rules": "{count} 条已启用规则",
-  "{count} ready rules": "{count} 条可路由规则",
-  "Publish": "发布",
-  "Overview": "总览",
-  "Groups and suppliers": "渠道组与供应商",
-  "Models and pricing": "模型与价格",
-  "Published routes": "已发布路由",
-  "Published routing map": "已发布路由图",
-  "Review the complete path from the client model name to its upstream model and routing targets.":
-    "查看从客户端模型名称到上游模型及路由目标的完整链路。",
-  "View all": "查看全部",
   "Individual channel": "单独渠道",
-  "No published model routes": "尚未发布模型路由",
-  "Create a model rule after adding a supplier and a priced model.":
-    "添加供应商和已定价模型后，再创建模型规则。",
-  "Add model rule": "添加模型规则",
-  "Quick actions": "快捷操作",
-  "Start from scratch or reuse a proven configuration.":
-    "从头创建，或复用已经验证过的配置。",
-  "Add supplier": "添加供应商",
   "Copy supplier": "复制供应商",
-  "Add model": "添加模型",
   "Copy model": "复制模型",
-  "Configuration health": "配置健康度",
-  "Resolve these gaps before sending production traffic.":
-    "在承载生产流量前处理这些配置缺口。",
-  "Models not advertised by suppliers": "供应商未声明的模型",
-  "Models not published": "尚未发布的模型",
-  "Degraded routes": "降级路由",
-  "Continue setup": "继续配置",
-  "Review published routes": "检查已发布路由",
-  "Supplier endpoints and channel groups": "供应商端点与渠道组",
-  "A supplier endpoint is stored as a channel. Channel groups pool endpoints that share one API format.":
-    "供应商端点在系统中保存为渠道；渠道组汇集使用同一 API 格式的端点。",
-  "No supplier endpoints": "暂无供应商端点",
-  "Add a supplier endpoint to make this channel group usable.":
-    "添加供应商端点后，该渠道组才可用于路由。",
   "No channel groups": "暂无渠道组",
-  "Create a channel group first, then add a supplier endpoint.":
-    "请先创建渠道组，再添加供应商端点。",
-  "Register each upstream model once, then publish it through one or more API formats.":
-    "每个上游模型只需登记一次，然后可通过一个或多个 API 格式发布。",
-  "Add a model and its prices before creating a model rule.":
-    "创建模型规则前，请先添加模型及其价格。",
-  "Each rule exposes one client model name for one API format and sends it to compatible targets.":
-    "每条规则为一种 API 格式发布一个客户端模型名称，并将请求发送到兼容目标。",
-  "Add a rule to expose a priced upstream model to clients.":
-    "添加规则，将已定价的上游模型发布给客户端。",
-  "Search by name, model, or endpoint": "按名称、模型或端点搜索",
   "Search": "搜索",
-  "Try another search or create one from scratch.": "请尝试其他搜索词，或从头创建。",
-  "Choose a supplier endpoint to reuse its connection, routing, and model-capability settings. Credentials are not copied.":
-    "选择一个供应商端点，复用其连接、路由和模型能力配置；凭据不会复制。",
-  "Choose a model to reuse its provider and pricing settings. Enter a new source model ID before saving.":
-    "选择一个模型，复用其供应商与价格配置；保存前需填写新的来源模型 ID。",
-  "Input / output price": "输入 / 输出价格",
-  "Publication": "发布状态",
-  "Published": "已发布",
-  "Not published": "未发布",
-  "Create rule for {model}": "为 {model} 创建规则",
   "Route": "路由",
   "{count} individual channels": "{count} 个单独渠道",
   "Copy {name}": "复制 {name}",
   "copy": "副本",
-  "Copy upstream model": "复制上游模型",
   "Back to model setup": "返回模型接入",
   "Review the copied model": "检查复制的模型",
-  "Pricing and provider settings were copied. Enter a unique source model ID; catalog source payload is not copied.":
-    "已复制价格和供应商配置。请填写唯一的来源模型 ID；目录来源数据不会复制。",
+  "Pricing and provider settings were copied. Enter a unique client model ID; catalog source payload is not copied.":
+    "已复制价格和供应商配置。请填写唯一的客户端模型 ID；目录来源数据不会复制。",
   "Create copied model": "创建模型副本",
   "Provider-managed channels cannot be copied here.":
     "Provider 托管渠道不能在此复制。",
@@ -1018,21 +945,10 @@ const zhCN: Record<string, string> = {
     "请立即保存邀请码，后续详情页只显示设置和使用情况。",
   "Name is required.": "名称不能为空。",
   "Proxy URL is required.": "代理 URL 不能为空。",
-  "Client model is required.": "客户端模型不能为空。",
   "Pick a channel group.": "请选择渠道组。",
-  "Base URL is required.": "基础 URL 不能为空。",
-  "Source model id is required.": "上游模型 ID 不能为空。",
+  "Client model id is required.": "客户端模型 ID 不能为空。",
   "Pick at least one format.": "请至少选择一种 API 格式。",
   "Upstream model": "上游模型",
-  "Upstream model identifiers and their USD prices. Prices carry an effective timestamp.":
-    "上游模型标识及其 USD 价格。价格带有生效时间。",
-  "New upstream model": "新建上游模型",
-  "Back to upstream models": "返回上游模型",
-  "Create upstream model": "创建上游模型",
-  "Edit upstream model": "编辑上游模型",
-  "Save upstream model": "保存上游模型",
-  "An upstream model identifier with its USD billing price.": "具有 USD 计费价格的上游模型标识。",
-  "Source payload is not valid JSON.": "来源数据不是有效的 JSON。",
   "Advanced billing": "高级计费",
   "Advanced billing configuration is required.": "高级计费配置不能为空。",
   "Advanced billing and source payload must be valid JSON objects.":
@@ -1053,7 +969,7 @@ const zhCN: Record<string, string> = {
     "配置 USD 基础价格和按星期循环的 UTC 峰谷倍率。",
   "Configure base USD prices and weekly UTC peak or off-peak multipliers.":
     "配置 USD 基础价格和每周循环的 UTC 峰谷倍率。",
-  "Back to upstream model": "返回上游模型",
+  "Back to pricing model": "返回计价模型",
   "Pricing overview": "价格概览",
   "Multiplier calculator": "倍率计算器",
   "Multiply four reference prices and fill the base-price fields. Calculation changes stay local until you save.":
@@ -1150,61 +1066,23 @@ const zhCN: Record<string, string> = {
   "UTC price windows cannot overlap on the selected weekdays.":
     "所选星期内的 UTC 价格时段不能重叠。",
   "Pricing": "定价",
-  "Upstream model created": "上游模型已创建",
-  "Upstream model updated": "上游模型已更新",
-  "This upstream model was changed elsewhere. Reloading.": "此上游模型已在其他位置修改，正在重新加载。",
-  "This upstream model changed elsewhere, but the latest version could not be reloaded.":
-    "此上游模型已在其他位置修改，但无法重新加载最新版本。",
+  "This pricing model changed elsewhere, but the latest version could not be reloaded.":
+    "此计价模型已在其他位置修改，但无法重新加载最新版本。",
   "Save failed": "保存失败",
-  "Map (client model, API format) to one priced upstream model and routing targets.":
-    "将客户端模型和 API 格式映射到一个带价格的上游模型及路由目标。",
-  "Map (client model, API format) to one priced upstream model and routing targets. Rules are grouped by upstream-model provider and model ID.":
-    "将客户端模型和 API 格式映射到一个带价格的上游模型及路由目标，并按上游模型提供商与模型 ID 聚合显示。",
-  "New rule": "新建规则",
-  "Quick add": "快速批量添加",
-  "Quick add model rules": "快速批量添加模型规则",
-  "Select upstream models. Missing rules are created with one priority 0 weighted-random tier for every API format with compatible enabled channels. Complete compatible groups use all channels at weight 100; partial groups select each compatible channel at weight 100.":
-    "选择上游模型。系统会为每种存在兼容已启用渠道的 API 格式创建缺失规则，并使用一个优先级为 0 的加权随机层。完全兼容的渠道组会以权重 100 使用全部渠道；部分兼容的渠道组会显式选择每个兼容渠道并设置权重 100。",
   "Search models": "搜索模型",
-  "Search by model id, name, or provider": "按模型 ID、名称或提供商搜索",
-  "Select all available": "选择全部可添加模型",
-  "Selected {models} models; {rules} rules will be created.":
-    "已选择 {models} 个模型，将创建 {rules} 条规则。",
-  "{count} compatible channels": "{count} 个兼容渠道",
-  "Already configured": "已配置",
   "Model disabled": "模型已禁用",
   "Model unavailable": "不支持此模型",
-  "Upstream model is disabled.": "上游模型已禁用。",
-  "All compatible formats already have rules.": "所有兼容格式均已存在规则。",
-  "No compatible enabled channels.": "没有兼容的已启用渠道。",
-  "No upstream models": "没有上游模型",
-  "Create or import upstream models before adding routing rules.":
-    "请先创建或导入上游模型，再添加路由规则。",
   "No models match this search.": "没有匹配搜索条件的模型。",
-  "Try a different model id, name, or provider.": "请尝试其他模型 ID、名称或提供商。",
-  "Create {count} rules": "创建 {count} 条规则",
-  "Created {count} model rules.": "已创建 {count} 条模型规则。",
-  "Created {created} of {total} model rules. Refresh and retry the remaining items.":
-    "已创建 {total} 条中的 {created} 条模型规则。请刷新后重试剩余项目。",
-  "Batch create failed": "批量创建失败",
   "New model rule": "新建模型规则",
   "Back to rules": "返回规则列表",
   "Create rule": "创建规则",
   "Edit rule": "编辑规则",
   "Save rule": "保存规则",
   "Model rule created": "模型规则已创建",
-  "Model rule updated": "模型规则已更新",
-  "This rule was changed elsewhere. Reloading.": "此规则已在其他位置修改，正在重新加载。",
-  "Routes a client model and API format through rule-owned priority tiers to one priced upstream model.":
-    "通过规则自有的优先级层，将客户端模型和 API 格式路由到一个带价格的上游模型。",
   "Routing status": "路由状态",
-  "Routing candidates": "路由候选",
-  "Routing tiers": "路由层",
-  "{count} tiers · priorities {priorities}":
-    "{count} 个路由层 · 优先级 {priorities}",
-  "Rule routing tiers": "规则路由层",
-  "Lower priority tiers are tried first. Strategy and weights belong to this model rule, not to global channels or groups.":
-    "优先尝试数值较低的优先级层。选择策略和权重属于此模型规则，而不是全局渠道或渠道组。",
+  "Protocol routing tiers": "协议路由层",
+  "Lower priority tiers are tried first. Strategy and weights belong to this protocol rule, not to global channels or groups.":
+    "优先尝试数值较低的优先级层。选择策略和权重属于此协议规则，而不是全局渠道或渠道组。",
   "Tier {number}": "路由层 {number}",
   "{count} channel groups": "{count} 个渠道组",
   "Remove tier {number}": "删除路由层 {number}",
@@ -1216,8 +1094,8 @@ const zhCN: Record<string, string> = {
   "Add channel group to tier {number}": "向路由层 {number} 添加渠道组",
   "Choose a channel group": "选择渠道组",
   "All compatible groups are already used": "所有兼容渠道组均已使用",
-  "All channels use the default weight unless overridden.":
-    "除非单独覆盖，否则所有渠道均使用默认权重。",
+  "Channels advertising the selected model use the default weight unless overridden.":
+    "除非单独覆盖，否则声明支持所选模型的渠道均使用默认权重。",
   "Only explicitly selected channels are eligible.":
     "只有显式选择的渠道才符合路由条件。",
   "Remove channel group {name}": "删除渠道组 {name}",
@@ -1229,8 +1107,8 @@ const zhCN: Record<string, string> = {
     "仅在需要覆盖此权重时启用下方渠道。",
   "Per-channel overrides": "单渠道覆盖",
   "Selected channels and weights": "所选渠道及权重",
-  "Unchecked channels inherit the default weight.":
-    "未勾选的渠道继承默认权重。",
+  "Unchecked model-capable channels inherit the default weight.":
+    "未勾选且支持该模型的渠道继承默认权重。",
   "Select at least one channel and assign a positive weight.":
     "请至少选择一个渠道并分配正权重。",
   "This group has no channels.": "此渠道组没有渠道。",
@@ -1257,22 +1135,11 @@ const zhCN: Record<string, string> = {
     "请向此路由层添加至少一个渠道组。",
   "Add at least one routing tier.": "请添加至少一个路由层。",
   "Tier priorities must be unique.": "路由层优先级必须唯一。",
-  "A channel group can appear only once in a rule.":
-    "同一渠道组在一条规则中只能出现一次。",
   "Ready": "可路由",
   "Temporarily unavailable": "暂时不可用",
   "Disconnected": "已断开",
-  "Active {active} · Capable {capable} · Targets {target}":
-    "活跃 {active} · 兼容 {capable} · 目标 {target}",
   "Client model": "客户端模型",
-  "Pick a client model": "选择客户端模型",
-  "Custom client model": "自定义客户端模型",
-  "Enter a custom client model": "输入自定义客户端模型",
-  "Choose an upstream model or use Custom client model to enter an alias.":
-    "选择上游模型，或使用“自定义客户端模型”输入别名。",
   "API format": "API 格式",
-  "Pick an upstream model.": "请选择上游模型。",
-  "Pick an upstream model": "选择上游模型",
   "Description": "说明",
   "Channel groups ({count})": "渠道组（{count}）",
   "Channels ({count})": "渠道（{count}）",
@@ -1326,7 +1193,6 @@ const zhCN: Record<string, string> = {
   "Unspecified provider": "未指定提供商",
   "Input price": "输入价格",
   "Output price": "输出价格",
-  "Source model id": "上游模型 ID",
   "Provider name": "提供商名称",
   "Price unit tokens": "价格单位 Token 数",
   "Input unit price": "输入单价",
@@ -1621,8 +1487,8 @@ const zhCN: Record<string, string> = {
   "Allow automatic disable": "允许自动禁用",
   "Scheduled test model": "定时测试模型",
   "Select a test model": "选择测试模型",
-  "Periodic scheduled tests use this model. It must be one of the available upstream models and have a configured price.":
-    "定时测试会使用此模型。它必须是可用上游模型之一，并且已配置价格。",
+  "Periodic scheduled tests send this wire model. Choose it from the available upstream models, then pair it with a pricing model below.":
+    "定时测试会发送此 wire model。请从可用上游模型中选择，再在下方配对一个计价模型。",
   "Images channels do not support scheduled test models.":
     "Images 渠道不支持配置定时测试模型。",
   "Images channels are excluded from scheduled paid probes.":
@@ -1674,8 +1540,6 @@ const zhCN: Record<string, string> = {
   "Enter an HTTP(S) URL without credentials, query parameters, or a fragment.":
     "请输入不含凭据、查询参数或片段的 HTTP(S) URL。",
   "Billing multiplier must be zero or greater.": "计费倍率必须大于或等于 0。",
-  "Multiplies the upstream model price used for request settlement.":
-    "将上游模型价格乘以此倍率后用于请求结算。",
   "Batch edit channels": "批量修改渠道",
   "Apply the selected changes atomically to {count} channels.":
     "以原子方式将所选修改应用到 {count} 个渠道。",
@@ -1852,8 +1716,8 @@ const zhCN: Record<string, string> = {
   "Save blocked: the routing graph contains a missing, cross-format, or otherwise structurally invalid dependency.":
     "无法保存：路由图包含缺失、跨格式或其他结构非法的依赖。",
   "Save routing degradation?": "保存会降低路由可用性的更改？",
-  "This channel change will make enabled model rules less available. The configuration remains valid, but new requests may fail until compatible channels are restored.":
-    "此渠道更改会降低已启用模型规则的可用性。配置仍然有效，但在恢复兼容渠道前，新请求可能失败。",
+  "This channel change will make enabled protocol routes less available. The configuration remains valid, but new requests may fail until compatible channels are restored.":
+    "此渠道更改会降低已启用协议路由的可用性。配置仍然有效，但在恢复兼容渠道前，新请求可能失败。",
   "Save anyway": "仍然保存",
   "Base URL": "基础 URL",
   "Filter by time range, user, API key, and aggregation granularity.":

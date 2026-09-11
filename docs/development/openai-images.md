@@ -102,7 +102,8 @@ POST /v1/images/generations
 - migration 的 `BEFORE INSERT` 兼容触发器会为尚未升级的旧 Gateway 写入推导 operation，
   避免滚动升级期间旧进程因新列非空约束失败。
 - Console OpenAPI 的 `ApiFormat` 和请求日志视图已扩展；前端生成类型由 spec 重新生成。
-- Channel Group、Channel、Model Rule、API Key Policy 与 Transform 编辑器可以选择 Images。
+- Channel Group、Channel、顶层 Model Rule 下的协议规则、API Key Policy 与 Transform
+  编辑器可以选择 Images；顶层 Model Rule 自身不再保存格式。
 - Images Channel 的 `test_model` 被后端和 UI 拒绝。
 - 格式中性的空 Config Template 会分别生成 Chat Completions、Responses 和 Images no-op
   plan；显式 Images 文档仅允许 Header 与请求 JSON 规则，SSE 规则在编译阶段拒绝。
@@ -152,10 +153,11 @@ Images projection 当前固定声明经核对的 `gpt-image-2`，不声明 WebSo
 渠道级状态统计。状态监控由 Images Channel Group 独立控制，新建的配对 Images group 默认关闭
 `status_statistics_enabled`。
 
-路由层级和权重不在凭证或 projection Channel 上同步。Responses 与 Images model rule 分别拥有
-自己的 priority tiers、selection strategy 和 group/channel weights；`all` target 会让以后加入
-该格式 group 的 credential projection 使用该 rule 的默认权重，`selected` target 则必须显式
-加入 projection。一个格式的 routing assignment 不会投影到另一个格式。
+路由层级、上游模型映射和权重不在凭证或 projection Channel 上同步。Responses 与 Images 协议
+规则分别拥有自己的 priority tiers、selection strategy 和 group/channel targets；`all`
+target 保存一个上游模型，只让以后加入该格式 group 且声明支持该模型的 credential projection
+使用默认权重，`selected` target 则必须显式加入 projection 并逐条选择模型。一个格式的 routing
+assignment 不会投影到另一个格式。
 
 ### 安全迁移
 
@@ -169,8 +171,8 @@ Images projection 当前固定声明经核对的 `gpt-image-2`，不声明 WebSo
   新凭证也会在同一事务创建两个 projection。
 - 不自动把 `open_ai_images` 添加到任何现有 API Key、Policy 或模型规则。
 - 不自动创建可访问的客户端 Images 路由。
-- 只有管理员显式启用 Images group，并配置本地 `gpt-image-2` 模型、Images model rule、
-  API Key format 和 group/channel 权限后才产生新流量。
+- 只有管理员显式启用 Images group，并配置客户端计价模型、Images 协议规则中指向
+  `gpt-image-2` 的 target、API Key format 和 group/channel 权限后才产生新流量。
 - credential 删除会清除共享 Token，并把 Responses 与 Images Channel 都保留为不含敏感信息的
   tombstone。
 

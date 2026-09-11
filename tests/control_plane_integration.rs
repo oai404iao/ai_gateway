@@ -156,10 +156,12 @@ async fn automatic_disable_and_scheduled_recovery_publish_channel_availability()
     let seed = seed(&database.pool).await;
     sqlx::query(
         "UPDATE channels
-         SET auto_disable_allowed=true, test_model='upstream-v1'
+         SET auto_disable_allowed=true, test_model='upstream-v1',
+             test_pricing_model_id=$2
          WHERE id=$1",
     )
     .bind(seed.channel)
+    .bind(seed.model)
     .execute(&database.pool)
     .await
     .unwrap();
@@ -1183,6 +1185,7 @@ impl TestDatabase {
 struct Seed {
     user: Uuid,
     model: Uuid,
+    profile: Uuid,
     group: Uuid,
     other_group: Uuid,
     channel: Uuid,
@@ -1224,19 +1227,86 @@ async fn insert_model_rule_fixture(
     routing_tiers: &[RoutingTierFixture<'_>],
 ) {
     let mut transaction = pool.begin().await.unwrap();
-    sqlx::query(
-        "INSERT INTO model_rules \
-         (id,client_model,api_format,upstream_model_id,enabled) \
-         VALUES ($1,$2,$3::api_format,$4,$5)",
-    )
-    .bind(id)
-    .bind(client_model)
-    .bind(api_format)
-    .bind(upstream_model_id)
-    .bind(enabled)
-    .execute(&mut *transaction)
-    .await
-    .unwrap();
+    let hierarchical: bool =
+        sqlx::query_scalar("SELECT to_regclass('model_routing_profiles') IS NOT NULL")
+            .fetch_one(&mut *transaction)
+            .await
+            .unwrap();
+    let upstream_model: String =
+        sqlx::query_scalar("SELECT source_model_id FROM models WHERE id=$1")
+            .bind(upstream_model_id)
+            .fetch_one(&mut *transaction)
+            .await
+            .unwrap();
+    if hierarchical {
+        let pricing_model_id = if upstream_model == client_model {
+            upstream_model_id
+        } else {
+            sqlx::query_scalar(
+                "INSERT INTO models ( \
+                     id,source_model_id,display_name,provider_name,enabled,currency, \
+                     price_unit_tokens,input_unit_price,cached_input_unit_price, \
+                     cache_write_unit_price,output_unit_price,price_effective_at, \
+                     advanced_billing,source_payload) \
+                 SELECT $1,$2,$2,provider_name,enabled,currency,price_unit_tokens, \
+                        input_unit_price,cached_input_unit_price,cache_write_unit_price, \
+                        output_unit_price,price_effective_at,advanced_billing,source_payload \
+                 FROM models WHERE id=$3 \
+                 ON CONFLICT (source_model_id) DO UPDATE \
+                 SET source_model_id=EXCLUDED.source_model_id \
+                 RETURNING id",
+            )
+            .bind(Uuid::new_v4())
+            .bind(client_model)
+            .bind(upstream_model_id)
+            .fetch_one(&mut *transaction)
+            .await
+            .unwrap()
+        };
+        let profile_id = sqlx::query_scalar::<_, Uuid>(
+            "SELECT id FROM model_routing_profiles WHERE model_id=$1",
+        )
+        .bind(pricing_model_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .unwrap()
+        .unwrap_or_else(Uuid::new_v4);
+        sqlx::query(
+            "INSERT INTO model_routing_profiles (id,model_id) \
+             VALUES ($1,$2) ON CONFLICT (model_id) DO NOTHING",
+        )
+        .bind(profile_id)
+        .bind(pricing_model_id)
+        .execute(&mut *transaction)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO model_rules \
+             (id,model_routing_profile_id,api_format,enabled) \
+             VALUES ($1,$2,$3::api_format,$4)",
+        )
+        .bind(id)
+        .bind(profile_id)
+        .bind(api_format)
+        .bind(enabled)
+        .execute(&mut *transaction)
+        .await
+        .unwrap();
+    } else {
+        sqlx::query(
+            "INSERT INTO model_rules \
+             (id,client_model,api_format,upstream_model_id,enabled) \
+             VALUES ($1,$2,$3::api_format,$4,$5)",
+        )
+        .bind(id)
+        .bind(client_model)
+        .bind(api_format)
+        .bind(upstream_model_id)
+        .bind(enabled)
+        .execute(&mut *transaction)
+        .await
+        .unwrap();
+    }
 
     for tier in routing_tiers {
         sqlx::query(
@@ -1263,34 +1333,69 @@ async fn insert_model_rule_fixture(
                     channels,
                 } => (channel_group_id, "selected", None, *channels),
             };
-            sqlx::query(
-                "INSERT INTO model_rule_routing_groups \
-                 (model_rule_id,api_format,priority,channel_group_id,channel_selection,default_weight) \
-                 VALUES ($1,$2::api_format,$3,$4,$5,$6)",
-            )
-            .bind(id)
-            .bind(api_format)
-            .bind(tier.priority)
-            .bind(channel_group_id)
-            .bind(channel_selection)
-            .bind(default_weight)
-            .execute(&mut *transaction)
-            .await
-            .unwrap();
-            for (channel_id, weight) in channels {
+            if hierarchical {
                 sqlx::query(
-                    "INSERT INTO model_rule_routing_channels \
-                     (model_rule_id,api_format,channel_group_id,channel_id,weight) \
-                     VALUES ($1,$2::api_format,$3,$4,$5)",
+                    "INSERT INTO model_rule_routing_groups \
+                     (model_rule_id,api_format,priority,channel_group_id,channel_selection,upstream_model,default_weight) \
+                     VALUES ($1,$2::api_format,$3,$4,$5,$6,$7)",
                 )
                 .bind(id)
                 .bind(api_format)
+                .bind(tier.priority)
                 .bind(channel_group_id)
-                .bind(channel_id)
-                .bind(weight)
+                .bind(channel_selection)
+                .bind((channel_selection == "all").then_some(upstream_model.as_str()))
+                .bind(default_weight)
                 .execute(&mut *transaction)
                 .await
                 .unwrap();
+            } else {
+                sqlx::query(
+                    "INSERT INTO model_rule_routing_groups \
+                     (model_rule_id,api_format,priority,channel_group_id,channel_selection,default_weight) \
+                     VALUES ($1,$2::api_format,$3,$4,$5,$6)",
+                )
+                .bind(id)
+                .bind(api_format)
+                .bind(tier.priority)
+                .bind(channel_group_id)
+                .bind(channel_selection)
+                .bind(default_weight)
+                .execute(&mut *transaction)
+                .await
+                .unwrap();
+            }
+            for (channel_id, weight) in channels {
+                if hierarchical {
+                    sqlx::query(
+                        "INSERT INTO model_rule_routing_channels \
+                         (model_rule_id,api_format,channel_group_id,channel_id,upstream_model,weight) \
+                         VALUES ($1,$2::api_format,$3,$4,$5,$6)",
+                    )
+                    .bind(id)
+                    .bind(api_format)
+                    .bind(channel_group_id)
+                    .bind(channel_id)
+                    .bind((channel_selection == "selected").then_some(upstream_model.as_str()))
+                    .bind(weight)
+                    .execute(&mut *transaction)
+                    .await
+                    .unwrap();
+                } else {
+                    sqlx::query(
+                        "INSERT INTO model_rule_routing_channels \
+                         (model_rule_id,api_format,channel_group_id,channel_id,weight) \
+                         VALUES ($1,$2::api_format,$3,$4,$5)",
+                    )
+                    .bind(id)
+                    .bind(api_format)
+                    .bind(channel_group_id)
+                    .bind(channel_id)
+                    .bind(weight)
+                    .execute(&mut *transaction)
+                    .await
+                    .unwrap();
+                }
             }
         }
     }
@@ -1307,6 +1412,11 @@ async fn replace_model_rule_with_all_group_fixture(
     default_weight: i32,
 ) {
     let mut transaction = pool.begin().await.unwrap();
+    let hierarchical: bool =
+        sqlx::query_scalar("SELECT to_regclass('model_routing_profiles') IS NOT NULL")
+            .fetch_one(&mut *transaction)
+            .await
+            .unwrap();
     sqlx::query("DELETE FROM model_rule_routing_tiers WHERE model_rule_id=$1")
         .bind(model_rule_id)
         .execute(&mut *transaction)
@@ -1324,19 +1434,48 @@ async fn replace_model_rule_with_all_group_fixture(
     .execute(&mut *transaction)
     .await
     .unwrap();
-    sqlx::query(
-        "INSERT INTO model_rule_routing_groups \
-         (model_rule_id,api_format,priority,channel_group_id,channel_selection,default_weight) \
-         VALUES ($1,$2::api_format,$3,$4,'all',$5)",
-    )
-    .bind(model_rule_id)
-    .bind(api_format)
-    .bind(priority)
-    .bind(channel_group_id)
-    .bind(default_weight)
-    .execute(&mut *transaction)
-    .await
-    .unwrap();
+    if hierarchical {
+        let upstream_model: String = sqlx::query_scalar(
+            "SELECT model.source_model_id \
+             FROM model_rules AS rule \
+             JOIN model_routing_profiles AS profile \
+               ON profile.id=rule.model_routing_profile_id \
+             JOIN models AS model ON model.id=profile.model_id \
+             WHERE rule.id=$1",
+        )
+        .bind(model_rule_id)
+        .fetch_one(&mut *transaction)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO model_rule_routing_groups \
+             (model_rule_id,api_format,priority,channel_group_id,channel_selection,upstream_model,default_weight) \
+             VALUES ($1,$2::api_format,$3,$4,'all',$5,$6)",
+        )
+        .bind(model_rule_id)
+        .bind(api_format)
+        .bind(priority)
+        .bind(channel_group_id)
+        .bind(upstream_model)
+        .bind(default_weight)
+        .execute(&mut *transaction)
+        .await
+        .unwrap();
+    } else {
+        sqlx::query(
+            "INSERT INTO model_rule_routing_groups \
+             (model_rule_id,api_format,priority,channel_group_id,channel_selection,default_weight) \
+             VALUES ($1,$2::api_format,$3,$4,'all',$5)",
+        )
+        .bind(model_rule_id)
+        .bind(api_format)
+        .bind(priority)
+        .bind(channel_group_id)
+        .bind(default_weight)
+        .execute(&mut *transaction)
+        .await
+        .unwrap();
+    }
     transaction.commit().await.unwrap();
 }
 
@@ -1368,6 +1507,7 @@ async fn seed(pool: &PgPool) -> Seed {
     let seed = Seed {
         user,
         model: Uuid::new_v4(),
+        profile: Uuid::new_v4(),
         group: Uuid::new_v4(),
         other_group: Uuid::new_v4(),
         channel: Uuid::new_v4(),
@@ -1378,7 +1518,7 @@ async fn seed(pool: &PgPool) -> Seed {
         secret: format!("test-client-{}", Uuid::new_v4()),
         email: format!("test-user-{user}@example.test"),
         password: "test-password-with-enough-length".into(),
-        client_model: format!("test-model-{}", Uuid::new_v4()),
+        client_model: "upstream-v1".into(),
     };
     let password_hash = hash_console_password(seed.password.clone()).await.unwrap();
     sqlx::query("INSERT INTO users (id, email, display_name, role, status, password_hash) VALUES ($1, $2, $3, 'admin', 'active', $4)")
@@ -1461,6 +1601,19 @@ async fn seed(pool: &PgPool) -> Seed {
         .await
         .unwrap();
     if normalized_routing {
+        let hierarchical: bool =
+            sqlx::query_scalar("SELECT to_regclass('model_routing_profiles') IS NOT NULL")
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        if hierarchical {
+            sqlx::query("INSERT INTO model_routing_profiles (id,model_id) VALUES ($1,$2)")
+                .bind(seed.profile)
+                .bind(seed.model)
+                .execute(pool)
+                .await
+                .unwrap();
+        }
         insert_model_rule_fixture(
             pool,
             seed.rule,
@@ -1843,6 +1996,10 @@ async fn direct_seat_migration_preserves_existing_money_and_pending_reservations
             .await
             .unwrap();
     assert_eq!(migrated_key_channels, vec![credential]);
+    sqlx::raw_sql(include_str!("../migrations/0057_model_rule_hierarchy.sql"))
+        .execute(&database.pool)
+        .await
+        .unwrap();
     let snapshot = compile_runtime_config(repository.load_runtime().await.unwrap()).unwrap();
     sharing.publish(snapshot.sharing());
     sharing.flush().await.unwrap();
@@ -2013,11 +2170,14 @@ async fn codex_sharing_pins_credentials_and_settles_money_across_api_keys() {
         }],
     )
     .await;
-    sqlx::query("UPDATE models SET output_unit_price=0.1 WHERE id=$1")
-        .bind(seed.model)
-        .execute(&database.pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "UPDATE models SET output_unit_price=0.1 \
+         WHERE id=$1 OR source_model_id='sharing-model'",
+    )
+    .bind(seed.model)
+    .execute(&database.pool)
+    .await
+    .unwrap();
     sqlx::query(
         "UPDATE api_keys SET allowed_api_formats=ARRAY['open_ai_responses','open_ai_chat_completions']::api_format[], \
         allowed_group_ids=ARRAY[$2,$3]::uuid[],allowed_channel_ids=ARRAY[$4]::uuid[] WHERE id=$1",
@@ -6580,7 +6740,7 @@ async fn managed_users_are_versioned_audited_and_immediately_revoke_their_keys()
 }
 
 #[tokio::test]
-async fn managed_models_are_versioned_and_invalid_disable_rolls_back() {
+async fn managed_models_are_versioned_and_disabling_hides_attached_routes() {
     let database = TestDatabase::new().await;
     let seed = seed(&database.pool).await;
     let (app, runtime) = admin_app(database.pool.clone(), seed.user).await;
@@ -6705,6 +6865,15 @@ async fn managed_models_are_versioned_and_invalid_disable_rolls_back() {
             .unwrap();
     assert_eq!(source_payload, serde_json::json!({"source": "test"}));
 
+    let draft = admin_request(
+        app.clone(),
+        "POST",
+        &format!("/console/v1/routing/model-rules/{}/protocols", seed.profile),
+        serde_json::json!({"api_format": "open_ai_responses"}),
+    )
+    .await;
+    assert_eq!(draft.status(), StatusCode::CREATED);
+
     let seed_path = format!("/console/v1/models/{}", seed.model);
     let seed_detail = admin_request(app.clone(), "GET", &seed_path, serde_json::json!({})).await;
     let seed_etag = seed_detail.headers()["etag"].to_str().unwrap().to_owned();
@@ -6721,25 +6890,68 @@ async fn managed_models_are_versioned_and_invalid_disable_rolls_back() {
             .fetch_one(&database.pool)
             .await
             .unwrap();
+    let mut renamed = disable.clone();
+    renamed["source_model_id"] = serde_json::json!("renamed-client-model");
     assert_eq!(
-        admin_request_with_headers(app, "PUT", &seed_path, disable, &[("if-match", &seed_etag)])
-            .await
-            .status(),
+        admin_request_with_headers(
+            app.clone(),
+            "PUT",
+            &seed_path,
+            renamed,
+            &[("if-match", &seed_etag)],
+        )
+        .await
+        .status(),
         StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        admin_request_with_headers(
+            app.clone(),
+            "PUT",
+            &seed_path,
+            disable,
+            &[("if-match", &seed_etag)],
+        )
+        .await
+        .status(),
+        StatusCode::OK
     );
     let enabled: bool = sqlx::query_scalar("SELECT enabled FROM models WHERE id=$1")
         .bind(seed.model)
         .fetch_one(&database.pool)
         .await
         .unwrap();
-    assert!(enabled);
+    assert!(!enabled);
     let audit_after: i64 =
         sqlx::query_scalar("SELECT count(*) FROM audit_logs WHERE object_type='model'")
             .fetch_one(&database.pool)
             .await
             .unwrap();
-    assert_eq!(audit_after, audit_before);
-    assert!(Arc::ptr_eq(&published, &runtime.snapshot()));
+    assert_eq!(audit_after, audit_before + 1);
+    assert!(!Arc::ptr_eq(&published, &runtime.snapshot()));
+    assert!(
+        runtime
+            .snapshot()
+            .model_rule(ApiFormat::OpenAiChatCompletions, &seed.client_model)
+            .is_none()
+    );
+    let rule_detail = admin_request(
+        app,
+        "GET",
+        &format!("/console/v1/routing/model-rules/{}", seed.profile),
+        serde_json::json!({}),
+    )
+    .await;
+    let rule_detail: serde_json::Value =
+        serde_json::from_slice(&rule_detail.into_body().collect().await.unwrap().to_bytes())
+            .unwrap();
+    let protocols = rule_detail["protocol_rules"].as_array().unwrap();
+    assert_eq!(protocols.len(), 2);
+    assert!(
+        protocols
+            .iter()
+            .all(|protocol| protocol["routing_status"] == "model_disabled")
+    );
     database.cleanup().await;
 }
 
@@ -7315,14 +7527,17 @@ async fn disabled_only_group_channel_can_remove_the_last_routed_model() {
     let rule_detail = admin_request(
         app.clone(),
         "GET",
-        &format!("/console/v1/routing/model-rules/{}", seed.rule),
+        &format!("/console/v1/routing/model-rules/{}", seed.profile),
         serde_json::json!({}),
     )
     .await;
     let rule_detail: serde_json::Value =
         serde_json::from_slice(&rule_detail.into_body().collect().await.unwrap().to_bytes())
             .unwrap();
-    assert_eq!(rule_detail["routing_status"], "disconnected");
+    assert_eq!(
+        rule_detail["protocol_rules"][0]["routing_status"],
+        "disconnected"
+    );
 
     let detail = admin_request(app.clone(), "GET", &path, serde_json::json!({})).await;
     let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
@@ -7357,14 +7572,17 @@ async fn disabled_only_group_channel_can_remove_the_last_routed_model() {
     let rule_detail = admin_request(
         app,
         "GET",
-        &format!("/console/v1/routing/model-rules/{}", seed.rule),
+        &format!("/console/v1/routing/model-rules/{}", seed.profile),
         serde_json::json!({}),
     )
     .await;
     let rule_detail: serde_json::Value =
         serde_json::from_slice(&rule_detail.into_body().collect().await.unwrap().to_bytes())
             .unwrap();
-    assert_eq!(rule_detail["routing_status"], "temporarily_unavailable");
+    assert_eq!(
+        rule_detail["protocol_rules"][0]["routing_status"],
+        "temporarily_unavailable"
+    );
     database.cleanup().await;
 }
 
@@ -7481,17 +7699,23 @@ async fn model_incompatible_direct_channel_publishes_a_disconnected_route() {
     let detail = admin_request(
         app,
         "GET",
-        &format!("/console/v1/routing/model-rules/{}", seed.rule),
+        &format!("/console/v1/routing/model-rules/{}", seed.profile),
         serde_json::json!({}),
     )
     .await;
     assert_eq!(detail.status(), StatusCode::OK);
     let detail: serde_json::Value =
         serde_json::from_slice(&detail.into_body().collect().await.unwrap().to_bytes()).unwrap();
-    assert_eq!(detail["routing_status"], "disconnected");
-    assert_eq!(detail["target_channel_count"], 1);
-    assert_eq!(detail["model_capable_channel_count"], 0);
-    assert_eq!(detail["active_channel_count"], 0);
+    assert_eq!(
+        detail["protocol_rules"][0]["routing_status"],
+        "disconnected"
+    );
+    assert_eq!(detail["protocol_rules"][0]["target_channel_count"], 1);
+    assert_eq!(
+        detail["protocol_rules"][0]["model_capable_channel_count"],
+        0
+    );
+    assert_eq!(detail["protocol_rules"][0]["active_channel_count"], 0);
     database.cleanup().await;
 }
 
@@ -8253,14 +8477,217 @@ async fn repository_migrates_compiles_seeded_snapshot_and_authenticates() {
     let snapshot = compile_control_plane(records).unwrap();
     let key = snapshot.authenticate(&seed.secret).unwrap();
     assert!(key.permits(ApiFormat::OpenAiChatCompletions, ApiKeyPermission::Proxy));
-    assert_eq!(
-        snapshot
-            .model_rule(ApiFormat::OpenAiChatCompletions, &seed.client_model)
-            .unwrap()
-            .upstream_model(),
-        "upstream-v1"
-    );
+    let routing::SelectionResult::Selected(route) = routing::select(
+        &snapshot,
+        &key,
+        ApiFormat::OpenAiChatCompletions,
+        &seed.client_model,
+    ) else {
+        panic!("seeded route must be selectable");
+    };
+    assert_eq!(route.upstream_model.as_ref(), "upstream-v1");
     assert!(!format!("{snapshot:?}").contains("upstream-secret"));
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn model_rule_hierarchy_creates_drafts_and_routes_target_owned_models() {
+    let database = TestDatabase::new().await;
+    let seed = seed(&database.pool).await;
+    let priced_model = Uuid::new_v4();
+    let client_model = format!("priced-client-{priced_model}");
+    sqlx::query(
+        "INSERT INTO models \
+         (id,source_model_id,display_name,enabled,currency,price_unit_tokens, \
+          input_unit_price,cached_input_unit_price,cache_write_unit_price, \
+          output_unit_price,price_effective_at) \
+         VALUES ($1,$2,'Target-owned model test',true,'USD',1000000,1,0,0,2,now())",
+    )
+    .bind(priced_model)
+    .bind(&client_model)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let disabled_model = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO models \
+         (id,source_model_id,display_name,enabled,currency,price_unit_tokens, \
+          input_unit_price,cached_input_unit_price,cache_write_unit_price, \
+          output_unit_price,price_effective_at) \
+         VALUES ($1,$2,'Disabled hierarchy model',false,'USD',1000000,1,0,0,2,now())",
+    )
+    .bind(disabled_model)
+    .bind(format!("disabled-client-{disabled_model}"))
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let (app, runtime) = admin_app(database.pool.clone(), seed.user).await;
+
+    assert_eq!(
+        admin_request(
+            app.clone(),
+            "POST",
+            "/console/v1/routing/model-rules",
+            serde_json::json!({"model_id": disabled_model}),
+        )
+        .await
+        .status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let created = admin_request(
+        app.clone(),
+        "POST",
+        "/console/v1/routing/model-rules",
+        serde_json::json!({"model_id": priced_model}),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let created: serde_json::Value =
+        serde_json::from_slice(&created.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let profile_id: Uuid = serde_json::from_value(created["id"].clone()).unwrap();
+    assert_eq!(
+        admin_request(
+            app.clone(),
+            "POST",
+            "/console/v1/routing/model-rules",
+            serde_json::json!({"model_id": priced_model}),
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+
+    let protocol = admin_request(
+        app.clone(),
+        "POST",
+        &format!("/console/v1/routing/model-rules/{profile_id}/protocols"),
+        serde_json::json!({"api_format": "open_ai_chat_completions"}),
+    )
+    .await;
+    assert_eq!(protocol.status(), StatusCode::CREATED);
+    let protocol: serde_json::Value =
+        serde_json::from_slice(&protocol.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let protocol_id: Uuid = serde_json::from_value(protocol["id"].clone()).unwrap();
+    assert_eq!(
+        admin_request(
+            app.clone(),
+            "POST",
+            &format!("/console/v1/routing/model-rules/{profile_id}/protocols"),
+            serde_json::json!({"api_format": "open_ai_chat_completions"}),
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+
+    let parent = admin_request(
+        app.clone(),
+        "GET",
+        &format!("/console/v1/routing/model-rules/{profile_id}"),
+        serde_json::json!({}),
+    )
+    .await;
+    let parent: serde_json::Value =
+        serde_json::from_slice(&parent.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(parent["client_model"], client_model);
+    assert_eq!(parent["model_id"], priced_model.to_string());
+    assert_eq!(parent["protocol_rules"][0]["routing_status"], "draft");
+    assert_eq!(parent["protocol_rules"][0]["enabled"], false);
+
+    let protocol_path =
+        format!("/console/v1/routing/model-rules/{profile_id}/protocols/{protocol_id}");
+    let detail = admin_request(app.clone(), "GET", &protocol_path, serde_json::json!({})).await;
+    let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
+    assert_eq!(
+        admin_request_with_headers(
+            app.clone(),
+            "PUT",
+            &protocol_path,
+            serde_json::json!({
+                "description": null,
+                "routing_tiers": [],
+                "enabled": true
+            }),
+            &[("if-match", &etag)],
+        )
+        .await
+        .status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        admin_request_with_headers(
+            app.clone(),
+            "PUT",
+            &protocol_path,
+            serde_json::json!({
+                "description": null,
+                "routing_tiers": [{
+                    "priority": 0,
+                    "selection_strategy": "weighted_random",
+                    "channel_groups": [{
+                        "channel_group_id": seed.group,
+                        "channel_selection": "selected",
+                        "upstream_model": null,
+                        "default_weight": null,
+                        "channels": [{
+                            "channel_id": seed.channel,
+                            "upstream_model": "not-advertised",
+                            "weight": 1
+                        }]
+                    }]
+                }],
+                "enabled": true
+            }),
+            &[("if-match", &etag)],
+        )
+        .await
+        .status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        admin_request_with_headers(
+            app,
+            "PUT",
+            &protocol_path,
+            serde_json::json!({
+                "description": "Target-specific upstream mapping",
+                "routing_tiers": [{
+                    "priority": 0,
+                    "selection_strategy": "weighted_random",
+                    "channel_groups": [{
+                        "channel_group_id": seed.group,
+                        "channel_selection": "selected",
+                        "upstream_model": null,
+                        "default_weight": null,
+                        "channels": [{
+                            "channel_id": seed.channel,
+                            "upstream_model": "upstream-v1",
+                            "weight": 17
+                        }]
+                    }]
+                }],
+                "enabled": true
+            }),
+            &[("if-match", &etag)],
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+
+    let snapshot = runtime.snapshot();
+    let key = snapshot.authenticate(&seed.secret).unwrap();
+    let routing::SelectionResult::Selected(route) = routing::select(
+        &snapshot,
+        &key,
+        ApiFormat::OpenAiChatCompletions,
+        &client_model,
+    ) else {
+        panic!("new hierarchical route must be selectable");
+    };
+    assert_eq!(route.rule.model_id(), priced_model);
+    assert_eq!(route.upstream_model.as_ref(), "upstream-v1");
+    assert_eq!(route.channel.id(), seed.channel);
     database.cleanup().await;
 }
 
@@ -8304,6 +8731,265 @@ async fn request_log_peak_pricing_migration_defaults_existing_logs() {
             .unwrap();
     assert!(!peak_pricing);
 
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn model_rule_hierarchy_migration_preserves_protocol_ids_and_target_models() {
+    let database = TestDatabase::new_unmigrated().await;
+    for migration in MIGRATOR.iter().filter(|migration| migration.version <= 56) {
+        sqlx::raw_sql(migration.sql.as_ref())
+            .execute(&database.pool)
+            .await
+            .unwrap_or_else(|error| panic!("migration {} failed: {error}", migration.version));
+    }
+    let seed = seed(&database.pool).await;
+    let request_log_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO request_logs \
+         (id,started_at,completed_at,user_id,api_key_id,api_format,api_operation, \
+          client_model,upstream_model,model_rule_id,outcome) \
+         VALUES ($1,now(),now(),$2,$3,'open_ai_chat_completions','chat_completions', \
+                 $4,'upstream-v1',$5,'succeeded')",
+    )
+    .bind(request_log_id)
+    .bind(seed.user)
+    .bind(seed.key)
+    .bind(&seed.client_model)
+    .bind(seed.rule)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE channels SET test_model='upstream-v1' WHERE id=$1")
+        .bind(seed.channel)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    let all_group_id = Uuid::new_v4();
+    let all_channel_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO channel_groups (id,name,api_format,enabled) \
+         VALUES ($1,$2,'open_ai_chat_completions',true)",
+    )
+    .bind(all_group_id)
+    .bind(format!("migration-all-group-{all_group_id}"))
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO channels \
+         (id,channel_group_id,api_format,name,base_url,enabled,upstream_auth_kind, \
+          available_models) \
+         VALUES ($1,$2,'open_ai_chat_completions',$3,'https://example.test',true, \
+                 'none',ARRAY['upstream-v1']::text[])",
+    )
+    .bind(all_channel_id)
+    .bind(all_group_id)
+    .bind(format!("migration-all-channel-{all_channel_id}"))
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let mut transaction = database.pool.begin().await.unwrap();
+    sqlx::query(
+        "INSERT INTO model_rule_routing_tiers \
+         (model_rule_id,api_format,priority,selection_strategy) \
+         VALUES ($1,'open_ai_chat_completions',1,'weighted_random')",
+    )
+    .bind(seed.rule)
+    .execute(&mut *transaction)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO model_rule_routing_groups \
+         (model_rule_id,api_format,priority,channel_group_id,channel_selection,default_weight) \
+         VALUES ($1,'open_ai_chat_completions',1,$2,'all',5)",
+    )
+    .bind(seed.rule)
+    .bind(all_group_id)
+    .execute(&mut *transaction)
+    .await
+    .unwrap();
+    transaction.commit().await.unwrap();
+
+    sqlx::raw_sql(include_str!("../migrations/0057_model_rule_hierarchy.sql"))
+        .execute(&database.pool)
+        .await
+        .unwrap();
+
+    let (profile_id, model_id): (Uuid, Uuid) = sqlx::query_as(
+        "SELECT profile.id,profile.model_id \
+         FROM model_routing_profiles AS profile \
+         JOIN model_rules AS rule ON rule.model_routing_profile_id=profile.id \
+         WHERE rule.id=$1",
+    )
+    .bind(seed.rule)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(model_id, seed.model);
+    let migrated_rule: (Uuid, String) = sqlx::query_as(
+        "SELECT model_routing_profile_id,api_format::text \
+         FROM model_rules WHERE id=$1",
+    )
+    .bind(seed.rule)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        migrated_rule,
+        (profile_id, "open_ai_chat_completions".into())
+    );
+    let target_model: Option<String> = sqlx::query_scalar(
+        "SELECT upstream_model FROM model_rule_routing_channels \
+         WHERE model_rule_id=$1 AND channel_id=$2",
+    )
+    .bind(seed.rule)
+    .bind(seed.channel)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(target_model.as_deref(), Some("upstream-v1"));
+    let all_target_model: Option<String> = sqlx::query_scalar(
+        "SELECT upstream_model FROM model_rule_routing_groups \
+         WHERE model_rule_id=$1 AND channel_group_id=$2",
+    )
+    .bind(seed.rule)
+    .bind(all_group_id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(all_target_model.as_deref(), Some("upstream-v1"));
+    let test_pricing_model: Option<Uuid> =
+        sqlx::query_scalar("SELECT test_pricing_model_id FROM channels WHERE id=$1")
+            .bind(seed.channel)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert_eq!(test_pricing_model, Some(seed.model));
+    let logged_rule: Option<Uuid> =
+        sqlx::query_scalar("SELECT model_rule_id FROM request_logs WHERE id=$1")
+            .bind(request_log_id)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert_eq!(logged_rule, Some(seed.rule));
+    for column in ["client_model", "upstream_model_id"] {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS ( \
+                 SELECT 1 FROM information_schema.columns \
+                 WHERE table_schema='public' \
+                   AND table_name='model_rules' \
+                   AND column_name=$1)",
+        )
+        .bind(column)
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+        assert!(!exists, "model_rules.{column} must be removed");
+    }
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn model_rule_hierarchy_migration_rejects_legacy_client_aliases() {
+    let database = TestDatabase::new_unmigrated().await;
+    for migration in MIGRATOR.iter().filter(|migration| migration.version <= 56) {
+        sqlx::raw_sql(migration.sql.as_ref())
+            .execute(&database.pool)
+            .await
+            .unwrap_or_else(|error| panic!("migration {} failed: {error}", migration.version));
+    }
+    let seed = seed(&database.pool).await;
+    sqlx::query("UPDATE model_rules SET client_model='legacy-client-alias' WHERE id=$1")
+        .bind(seed.rule)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+
+    let error = sqlx::raw_sql(include_str!("../migrations/0057_model_rule_hierarchy.sql"))
+        .execute(&database.pool)
+        .await
+        .unwrap_err();
+    let database_error = error.as_database_error().unwrap();
+    assert_eq!(database_error.code().as_deref(), Some("23514"));
+    assert!(database_error.message().contains("migration aborted"));
+    assert!(database_error.message().contains("legacy-client-alias"));
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn model_rule_hierarchy_migration_rejects_unsupported_scheduled_probes() {
+    let database = TestDatabase::new_unmigrated().await;
+    for migration in MIGRATOR.iter().filter(|migration| migration.version <= 56) {
+        sqlx::raw_sql(migration.sql.as_ref())
+            .execute(&database.pool)
+            .await
+            .unwrap_or_else(|error| panic!("migration {} failed: {error}", migration.version));
+    }
+    let seed = seed(&database.pool).await;
+    let group_id = Uuid::new_v4();
+    let channel_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO channel_groups (id,name,api_format,enabled) \
+         VALUES ($1,$2,'open_ai_images',true)",
+    )
+    .bind(group_id)
+    .bind(format!("legacy-images-probe-{group_id}"))
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO channels \
+         (id,channel_group_id,api_format,name,base_url,enabled,upstream_auth_kind, \
+          available_models,test_model) \
+         VALUES ($1,$2,'open_ai_images',$3,'https://images.example.test',true,'none', \
+                 ARRAY['upstream-v1']::text[],'upstream-v1')",
+    )
+    .bind(channel_id)
+    .bind(group_id)
+    .bind(format!("legacy-images-probe-{channel_id}"))
+    .execute(&database.pool)
+    .await
+    .unwrap();
+
+    let error = sqlx::raw_sql(include_str!("../migrations/0057_model_rule_hierarchy.sql"))
+        .execute(&database.pool)
+        .await
+        .unwrap_err();
+    let database_error = error.as_database_error().unwrap();
+    assert_eq!(database_error.code().as_deref(), Some("23514"));
+    assert!(
+        database_error
+            .message()
+            .contains("cannot schedule test model")
+    );
+
+    sqlx::query("DELETE FROM channels WHERE id=$1")
+        .bind(channel_id)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM channel_groups WHERE id=$1")
+        .bind(group_id)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE channels \
+         SET available_models=ARRAY['unpriced-wire']::text[],test_model='unpriced-wire' \
+         WHERE id=$1",
+    )
+    .bind(seed.channel)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let error = sqlx::raw_sql(include_str!("../migrations/0057_model_rule_hierarchy.sql"))
+        .execute(&database.pool)
+        .await
+        .unwrap_err();
+    let database_error = error.as_database_error().unwrap();
+    assert_eq!(database_error.code().as_deref(), Some("23503"));
+    assert!(database_error.message().contains("has no priced model"));
     database.cleanup().await;
 }
 
@@ -8662,8 +9348,8 @@ async fn concurrent_group_deletes_cannot_commit_an_empty_routing_tier() {
     .await;
     sqlx::query(
         "INSERT INTO model_rule_routing_groups \
-         (model_rule_id,api_format,priority,channel_group_id,channel_selection,default_weight) \
-         VALUES ($1,'open_ai_chat_completions',0,$2,'all',100)",
+         (model_rule_id,api_format,priority,channel_group_id,channel_selection,upstream_model,default_weight) \
+         VALUES ($1,'open_ai_chat_completions',0,$2,'all','upstream-v1',100)",
     )
     .bind(seed.rule)
     .bind(seed.other_group)
@@ -9403,11 +10089,16 @@ async fn reloader_replaces_atomically_retains_old_arcs_and_rolls_back_failures()
     .execute(&database.pool)
     .await
     .unwrap();
-    sqlx::query("UPDATE models SET source_model_id = 'upstream-v2' WHERE id = $1")
-        .bind(seed.model)
-        .execute(&database.pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "UPDATE model_rule_routing_channels \
+         SET upstream_model='upstream-v2' \
+         WHERE model_rule_id=$1 AND channel_id=$2",
+    )
+    .bind(seed.rule)
+    .bind(seed.channel)
+    .execute(&database.pool)
+    .await
+    .unwrap();
     let first = reloader.reload();
     let second = reloader.reload();
     let (first, second) = tokio::join!(first, second);
@@ -9415,20 +10106,26 @@ async fn reloader_replaces_atomically_retains_old_arcs_and_rolls_back_failures()
     second.unwrap();
     let replaced = runtime.snapshot();
     assert!(!Arc::ptr_eq(&old, &replaced));
-    assert_eq!(
-        old.model_rule(ApiFormat::OpenAiChatCompletions, &seed.client_model)
-            .unwrap()
-            .upstream_model(),
-        "upstream-v1"
-    );
-    assert!(old.authenticate(&seed.secret).is_some());
-    assert_eq!(
-        replaced
-            .model_rule(ApiFormat::OpenAiChatCompletions, &seed.client_model)
-            .unwrap()
-            .upstream_model(),
-        "upstream-v2"
-    );
+    let old_key = old.authenticate(&seed.secret).unwrap();
+    let routing::SelectionResult::Selected(old_route) = routing::select(
+        &old,
+        &old_key,
+        ApiFormat::OpenAiChatCompletions,
+        &seed.client_model,
+    ) else {
+        panic!("old route must remain selectable");
+    };
+    assert_eq!(old_route.upstream_model.as_ref(), "upstream-v1");
+    let replaced_key = replaced.authenticate(&seed.secret).unwrap();
+    let routing::SelectionResult::Selected(replaced_route) = routing::select(
+        &replaced,
+        &replaced_key,
+        ApiFormat::OpenAiChatCompletions,
+        &seed.client_model,
+    ) else {
+        panic!("reloaded route must be selectable");
+    };
+    assert_eq!(replaced_route.upstream_model.as_ref(), "upstream-v2");
     sqlx::query(
         "UPDATE channels \
          SET connect_timeout_ms=2000,response_header_timeout_ms=1000 \

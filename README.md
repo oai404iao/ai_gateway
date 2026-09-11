@@ -85,8 +85,8 @@ use authorized ordinary channels; Codex pools can require sharing seats.
 | `POST /v1/images/generations` | Client API key | Proxies non-streaming JSON Images generation requests. |
 | `POST /v1/images/edits` | Client API key | Proxies non-streaming multipart Images edit requests. |
 
-Each API format uses separate routing rules and never falls back or transforms
-into another format. Public `/v1/images/edits` JSON/data-URL edits, image streaming, embeddings,
+Each API format uses a separate protocol rule under its priced client model and
+never falls back or transforms into another format. Public `/v1/images/edits` JSON/data-URL edits, image streaming, embeddings,
 audio, files, batches, assistants, and fine-tuning APIs are outside the
 current scope. See the
 [OpenAI compatibility reference](docs/reference/openai-compatibility.md) for
@@ -209,14 +209,14 @@ Use the Console UI or API to create:
    OAuth Responses group also creates a disabled Images group backed by the
    same credential pool.
 3. A channel with its upstream URL, credentials, and available models.
-4. A model rule mapping the client model to one model record and route. That
-   model record's source ID is both the upstream wire model name and the
-   request's price source.
+4. A top-level model rule attached to the priced client model, then one or
+   more format-specific protocol rules. Each route target selects its upstream
+   wire model from the target channel capabilities.
 5. A client API key with `proxy` permission; add `models.read` for
    `/v1/models`.
 
-Create separate model rules for Chat Completions, Responses, and Images, even
-when they use the same provider. The
+Create separate protocol rules under the priced model for Chat Completions,
+Responses, and Images as needed. The
 [operations guide](docs/user/operations.md) documents the full Console route
 inventory and control-plane behavior.
 

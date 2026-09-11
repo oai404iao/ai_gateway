@@ -740,6 +740,7 @@ impl RoutingRuntime {
         let candidate = preferred?;
         let channel_slot = candidate.channel_slot();
         let channel = Arc::clone(candidate.channel());
+        let upstream_model = Arc::clone(candidate.upstream_model());
         let identity = ChannelIdentity::from_channel(&channel);
         let (channel_state, half_open_claim) = try_acquire_channel(&self.inner, &identity, now)?;
         let cache_hit = affinity
@@ -767,6 +768,7 @@ impl RoutingRuntime {
             rule,
             channel,
             channel_slot,
+            upstream_model,
             session_affinity: affinity_selection,
             lease: ChannelLease {
                 inner: Arc::clone(&self.inner),
@@ -912,7 +914,13 @@ impl RoutingRuntime {
                                                 &ChannelIdentity::from_channel(channel),
                                                 now,
                                             ))
-                                        .then(|| (slot, Arc::clone(channel)))
+                                        .then(|| {
+                                            (
+                                                slot,
+                                                Arc::clone(channel),
+                                                Arc::clone(candidate.upstream_model()),
+                                            )
+                                        })
                                     })
                                 })
                         })
@@ -983,7 +991,7 @@ impl RoutingRuntime {
                     });
                     (channel, cache_hit)
                 };
-                let Some((channel_slot, channel)) = channel else {
+                let Some((channel_slot, channel, upstream_model)) = channel else {
                     break;
                 };
                 let identity = ChannelIdentity::from_channel(&channel);
@@ -1014,6 +1022,7 @@ impl RoutingRuntime {
                     rule,
                     channel,
                     channel_slot,
+                    upstream_model,
                     session_affinity: affinity_selection,
                     lease: ChannelLease {
                         inner: Arc::clone(&self.inner),
@@ -1309,7 +1318,7 @@ fn weighted_ticket(
     now: Duration,
     entropy: &dyn Entropy,
     capability: ChannelCapability,
-) -> Option<(usize, Arc<CompiledChannel>)> {
+) -> Option<(usize, Arc<CompiledChannel>, Arc<str>)> {
     let eligible = |slot: usize, channel: &CompiledChannel| {
         capability.permits(channel)
             && key.permits_route_candidate(slot)
@@ -1345,7 +1354,11 @@ fn weighted_ticket(
             let weight = u64::from(candidate.weight());
             observed_total += weight;
             if selected.is_none() && remaining < weight {
-                selected = Some((slot, Arc::clone(channel)));
+                selected = Some((
+                    slot,
+                    Arc::clone(channel),
+                    Arc::clone(candidate.upstream_model()),
+                ));
             } else if selected.is_none() {
                 remaining -= weight;
             }
@@ -1367,9 +1380,9 @@ fn smooth_round_robin(
     inner: &RuntimeInner,
     now: Duration,
     capability: ChannelCapability,
-) -> Option<(usize, Arc<CompiledChannel>)> {
+) -> Option<(usize, Arc<CompiledChannel>, Arc<str>)> {
     let mut total = 0_i64;
-    let mut winner = None::<(usize, Arc<CompiledChannel>, i64)>;
+    let mut winner = None::<(usize, Arc<CompiledChannel>, Arc<str>, i64)>;
     for candidate in tier.candidates() {
         let slot = candidate.channel_slot();
         let channel = candidate.channel();
@@ -1385,14 +1398,19 @@ fn smooth_round_robin(
         *value += i64::from(candidate.weight());
         if winner
             .as_ref()
-            .is_none_or(|(_, _, winner_value)| *value > *winner_value)
+            .is_none_or(|(_, _, _, winner_value)| *value > *winner_value)
         {
-            winner = Some((slot, Arc::clone(channel), *value));
+            winner = Some((
+                slot,
+                Arc::clone(channel),
+                Arc::clone(candidate.upstream_model()),
+                *value,
+            ));
         }
     }
-    let (slot, winner, _) = winner?;
+    let (slot, winner, upstream_model, _) = winner?;
     *current.get_mut(&winner.id()).expect("winner exists") -= total;
-    Some((slot, winner))
+    Some((slot, winner, upstream_model))
 }
 
 #[allow(clippy::large_enum_variant)] // keep successful selection free of request-level boxing
@@ -1415,6 +1433,7 @@ pub struct SelectedRoute {
     pub rule: Arc<CompiledModelRule>,
     pub channel: Arc<CompiledChannel>,
     pub channel_slot: usize,
+    pub upstream_model: Arc<str>,
     pub session_affinity: Option<SessionAffinitySelection>,
     pub lease: ChannelLease,
 }
@@ -1618,6 +1637,7 @@ mod tests {
                 .push(ModelRuleChannelGroupTarget {
                     channel_group_id: *group_id,
                     channel_selection: "all".into(),
+                    upstream_model: Some("upstream".into()),
                     default_weight: Some(*weight),
                     channels: vec![],
                 });
@@ -1692,6 +1712,7 @@ mod tests {
                     upstream_api_key: None,
                     available_models: vec!["upstream".into()],
                     test_model: None,
+                    test_pricing_model_id: None,
                 })
                 .collect(),
             models: vec![],
@@ -1699,9 +1720,9 @@ mod tests {
                 id: Uuid::from_u128(1_002),
                 client_model: "model".into(),
                 api_format: format.as_str().into(),
-                upstream_model_id: Uuid::from_u128(1_003),
-                upstream_model_enabled: true,
-                upstream_model_currency: "USD".into(),
+                model_id: Uuid::from_u128(1_003),
+                model_enabled: true,
+                model_currency: "USD".into(),
                 price_unit_tokens: 1_000_000,
                 price_effective_at: chrono::Utc::now(),
                 input_unit_price: Default::default(),
@@ -1712,7 +1733,6 @@ mod tests {
                     "long_context_tiers": [],
                     "request_multipliers": [],
                 }),
-                upstream_model: "upstream".into(),
                 routing_tiers,
                 enabled: true,
             }],
@@ -1891,15 +1911,16 @@ mod tests {
                 upstream_api_key: None,
                 available_models: vec!["upstream".into()],
                 test_model: None,
+                test_pricing_model_id: None,
             }],
             models: vec![],
             model_rules: vec![ModelRuleRecord {
                 id: Uuid::from_u128(400),
                 client_model: "model".into(),
                 api_format: "open_ai_chat_completions".into(),
-                upstream_model_id: Uuid::from_u128(401),
-                upstream_model_enabled: true,
-                upstream_model_currency: "USD".into(),
+                model_id: Uuid::from_u128(401),
+                model_enabled: true,
+                model_currency: "USD".into(),
                 price_unit_tokens: 1_000_000,
                 price_effective_at: chrono::Utc::now(),
                 input_unit_price: Default::default(),
@@ -1910,16 +1931,17 @@ mod tests {
                     "long_context_tiers": [],
                     "request_multipliers": [],
                 }),
-                upstream_model: "upstream".into(),
                 routing_tiers: vec![ModelRuleRoutingTier {
                     priority: 0,
                     selection_strategy: "weighted_random".into(),
                     channel_groups: vec![ModelRuleChannelGroupTarget {
                         channel_group_id: group_id,
                         channel_selection: "selected".into(),
+                        upstream_model: None,
                         default_weight: None,
                         channels: vec![crate::persistence::ModelRuleChannelWeight {
                             channel_id,
+                            upstream_model: Some("upstream".into()),
                             weight: 1,
                         }],
                     }],

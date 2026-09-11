@@ -80,6 +80,20 @@ export const E2E_MODEL = {
   updated_at: "2026-08-24T00:00:00.000Z",
 };
 
+const E2E_SEARCH_MODEL = {
+  ...E2E_MODEL,
+  id: "00000000-0000-0000-0000-000000000130",
+  source_model_id: "gateway-search-model",
+  display_name: "Gateway Search",
+};
+
+const E2E_IMAGE_MODEL = {
+  ...E2E_MODEL,
+  id: "00000000-0000-0000-0000-000000000131",
+  source_model_id: "gateway-image-model",
+  display_name: "Gateway Image",
+};
+
 const E2E_USER = {
   id: "00000000-0000-0000-0000-000000000090",
   email: "batch-user@example.test",
@@ -283,7 +297,12 @@ function routingChannel({
     upstream_credential_configured: !providerManaged,
     available_models:
       apiFormat === "open_ai_images" ? ["gpt-image-2"] : ["gpt-5-codex"],
-    test_model: apiFormat === "open_ai_images" ? null : "gpt-5-codex",
+    test_model:
+      providerManaged || apiFormat === "open_ai_images"
+        ? null
+        : "gpt-5-codex",
+    test_pricing_model_id:
+      providerManaged || apiFormat === "open_ai_images" ? null : E2E_MODEL.id,
     created_at: "2026-07-29T12:00:00.000Z",
     updated_at: "2026-07-29T12:00:00.000Z",
   };
@@ -316,62 +335,82 @@ const E2E_ROUTING_CHANNELS = [
 ];
 
 export const E2E_SEARCH_MODEL_RULE = {
-  id: "00000000-0000-0000-0000-000000000125",
-  client_model: "gateway-search-model",
-  api_format: "open_ai_responses",
-  upstream_model_id: "00000000-0000-0000-0000-000000000130",
-  upstream_model_enabled: true,
-  upstream_model: "gpt-5",
-  description: "Standalone web search routing.",
-  routing_tiers: [
+  id: "00000000-0000-0000-0000-000000000124",
+  model_id: E2E_SEARCH_MODEL.id,
+  client_model: E2E_SEARCH_MODEL.source_model_id,
+  model_display_name: E2E_SEARCH_MODEL.display_name,
+  model_provider_name: E2E_SEARCH_MODEL.provider_name,
+  model_enabled: true,
+  protocol_rules: [
     {
-      priority: 0,
-      selection_strategy: "weighted_random",
-      channel_groups: [
+      id: "00000000-0000-0000-0000-000000000125",
+      model_rule_id: "00000000-0000-0000-0000-000000000124",
+      api_format: "open_ai_responses",
+      description: "Standalone web search routing.",
+      routing_tiers: [
         {
-          channel_group_id: E2E_CODEX_GROUP_ID,
-          channel_selection: "all",
-          default_weight: 100,
-          channels: [],
+          priority: 0,
+          selection_strategy: "weighted_random",
+          channel_groups: [
+            {
+              channel_group_id: E2E_CODEX_GROUP_ID,
+              channel_selection: "all",
+              upstream_model: "gpt-5-codex",
+              default_weight: 100,
+              channels: [],
+            },
+          ],
         },
       ],
+      enabled: true,
+      routing_status: "ready",
+      target_channel_count: 1,
+      model_capable_channel_count: 1,
+      active_channel_count: 1,
+      updated_at: "2026-08-05T00:00:00.000Z",
     },
   ],
-  enabled: true,
-  routing_status: "ready",
-  target_channel_count: 1,
-  model_capable_channel_count: 1,
-  active_channel_count: 1,
+  created_at: "2026-08-05T00:00:00.000Z",
   updated_at: "2026-08-05T00:00:00.000Z",
 };
 
 export const E2E_IMAGE_MODEL_RULE = {
-  id: "00000000-0000-0000-0000-000000000126",
-  client_model: "gateway-image-model",
-  api_format: "open_ai_images",
-  upstream_model_id: "00000000-0000-0000-0000-000000000131",
-  upstream_model_enabled: true,
-  upstream_model: "gpt-image-2",
-  description: "Image generation and editing routing.",
-  routing_tiers: [
+  id: "00000000-0000-0000-0000-000000000127",
+  model_id: E2E_IMAGE_MODEL.id,
+  client_model: E2E_IMAGE_MODEL.source_model_id,
+  model_display_name: E2E_IMAGE_MODEL.display_name,
+  model_provider_name: E2E_IMAGE_MODEL.provider_name,
+  model_enabled: true,
+  protocol_rules: [
     {
-      priority: 0,
-      selection_strategy: "weighted_random",
-      channel_groups: [
+      id: "00000000-0000-0000-0000-000000000126",
+      model_rule_id: "00000000-0000-0000-0000-000000000127",
+      api_format: "open_ai_images",
+      description: "Image generation and editing routing.",
+      routing_tiers: [
         {
-          channel_group_id: E2E_CODEX_IMAGES_GROUP.id,
-          channel_selection: "all",
-          default_weight: 100,
-          channels: [],
+          priority: 0,
+          selection_strategy: "weighted_random",
+          channel_groups: [
+            {
+              channel_group_id: E2E_CODEX_IMAGES_GROUP.id,
+              channel_selection: "all",
+              upstream_model: "gpt-image-2",
+              default_weight: 100,
+              channels: [],
+            },
+          ],
         },
       ],
+      enabled: true,
+      routing_status: "ready",
+      target_channel_count: 1,
+      model_capable_channel_count: 1,
+      active_channel_count: 1,
+      updated_at: "2026-08-05T00:00:00.000Z",
     },
   ],
-  enabled: true,
-  routing_status: "ready",
-  target_channel_count: 1,
-  model_capable_channel_count: 1,
-  active_channel_count: 1,
+  created_at: "2026-08-05T00:00:00.000Z",
   updated_at: "2026-08-05T00:00:00.000Z",
 };
 
@@ -954,7 +993,10 @@ export async function mockConsoleApi(page: Page): Promise<void> {
       return route.fulfill({ status: 200, json: [E2E_API_KEY_POLICY] });
     }
     if (path === "/console/v1/models" && method === "GET") {
-      return route.fulfill({ status: 200, json: [E2E_MODEL] });
+      return route.fulfill({
+        status: 200,
+        json: [E2E_MODEL, E2E_SEARCH_MODEL, E2E_IMAGE_MODEL],
+      });
     }
     if (
       path === `/console/v1/models/${E2E_MODEL.id}` &&

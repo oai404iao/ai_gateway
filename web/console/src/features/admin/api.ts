@@ -30,7 +30,10 @@ import type {
   ModelImportRequest,
   ModelImportResponse,
   ModelInput,
-  ModelRuleInput,
+  ModelProtocolRuleCreateInput,
+  ModelProtocolRuleInput,
+  ModelProtocolRuleView,
+  ModelRuleCreateInput,
   ModelRuleView,
   ModelSyncPreview,
   ModelSyncPreviewRequest,
@@ -274,6 +277,8 @@ const MODELS_KEY = ["console", "models"] as const;
 const modelDetailKey = (id: string) => ["console", "models", id] as const;
 const RULES_KEY = ["console", "model-rules"] as const;
 const ruleDetailKey = (id: string) => ["console", "model-rules", id] as const;
+const protocolRuleDetailKey = (modelRuleId: string, protocolId: string) =>
+  ["console", "model-rules", modelRuleId, "protocols", protocolId] as const;
 export const useModels = makeList<ControlPlaneModel>("/models", MODELS_KEY);
 export const useModel = makeDetail<ControlPlaneModel>("/models", modelDetailKey);
 export const useCreateModel = makeCreate<ModelInput, MutationResponse>("/models", MODELS_KEY);
@@ -438,15 +443,68 @@ export function useRecoverChannel() {
 // ---- Model Rules ----
 export const useModelRules = makeList<ModelRuleView>("/routing/model-rules", RULES_KEY);
 export const useModelRule = makeDetail<ModelRuleView>("/routing/model-rules", ruleDetailKey);
-export const useCreateModelRule = makeCreate<ModelRuleInput, MutationResponse>(
+export const useCreateModelRule = makeCreate<ModelRuleCreateInput, MutationResponse>(
   "/routing/model-rules",
   RULES_KEY,
 );
-export const useUpdateModelRule = makeUpdate<ModelRuleInput>(
-  "/routing/model-rules",
-  RULES_KEY,
-  ruleDetailKey,
-);
+export function useCreateModelProtocolRule(modelRuleId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: ModelProtocolRuleCreateInput) =>
+      apiPost<MutationResponse>(
+        `/routing/model-rules/${modelRuleId}/protocols`,
+        input,
+      ),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: RULES_KEY });
+      void queryClient.invalidateQueries({ queryKey: ruleDetailKey(modelRuleId) });
+    },
+  });
+}
+export function useModelProtocolRule(modelRuleId: string, protocolId: string) {
+  const query = useQuery({
+    queryKey: protocolRuleDetailKey(modelRuleId, protocolId),
+    queryFn: () =>
+      apiGetDetail<ModelProtocolRuleView>(
+        `/routing/model-rules/${modelRuleId}/protocols/${protocolId}`,
+      ),
+    enabled: Boolean(modelRuleId) && Boolean(protocolId),
+  });
+  return {
+    data: query.data,
+    etag: query.data?.etag ?? "",
+    isLoading: query.isLoading,
+    error: query.error,
+    refetch: query.refetch,
+  };
+}
+export function useUpdateModelProtocolRule(
+  modelRuleId: string,
+  protocolId: string,
+) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      input,
+      ifMatch,
+    }: {
+      input: ModelProtocolRuleInput;
+      ifMatch: string;
+    }) =>
+      apiPut<MutationResponse>(
+        `/routing/model-rules/${modelRuleId}/protocols/${protocolId}`,
+        input,
+        ifMatch,
+      ),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: RULES_KEY });
+      void queryClient.invalidateQueries({ queryKey: ruleDetailKey(modelRuleId) });
+      void queryClient.invalidateQueries({
+        queryKey: protocolRuleDetailKey(modelRuleId, protocolId),
+      });
+    },
+  });
+}
 
 // ---- Proxies ----
 const PROXIES_KEY = ["console", "proxies"] as const;

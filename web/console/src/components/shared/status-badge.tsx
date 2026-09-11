@@ -51,6 +51,10 @@ function statusLabel(value: string | boolean | null | undefined): string {
       return translate("Cancelled");
     case "ready":
       return translate("Ready");
+    case "draft":
+      return translate("Draft");
+    case "model_disabled":
+      return translate("Model disabled");
     case "temporarily_unavailable":
       return translate("Temporarily unavailable");
     case "disconnected":
@@ -72,6 +76,7 @@ function statusVariant(value: string | boolean | null | undefined): Variant {
   if (
     value === "suspended" ||
     value === "invited" ||
+    value === "draft" ||
     value === "rejected" ||
     value === "temporarily_unavailable"
   ) {
@@ -80,6 +85,7 @@ function statusVariant(value: string | boolean | null | undefined): Variant {
   if (
     value === "revoked" ||
     value === "disabled" ||
+    value === "model_disabled" ||
     value === "failed" ||
     value === "disconnected"
   ) {

@@ -157,6 +157,7 @@ impl ChannelModelDiscoveryInput {
             upstream_api_key,
             available_models: Vec::new(),
             test_model: None,
+            test_pricing_model_id: None,
         }
     }
 }

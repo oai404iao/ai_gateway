@@ -188,9 +188,11 @@ Chat Completions、Responses 与 Images 之间转换。
 
 每个 Codex OAuth 凭证属于一个共享 Connector pool，并对应独立的 Responses 与 Images
 provider-managed `channels` 记录。因此 API Key 授权、独立 outbound proxy、请求日志和
-Responses Session affinity 继续使用统一路由系统。priority、selection strategy 和 routing
-weight 由具体 Responses/Images model rule 的 tiers 分别拥有，不是 credential/channel 属性，
-也不会在两个 projection 之间同步。普通 Channel CRUD 和批量编辑不能修改这些 managed channels。
+Responses Session affinity 继续使用统一路由系统。priority、selection strategy、routing
+weight 和上游 wire model 由顶层计价模型下的具体 Responses/Images 协议规则 target 分别拥有，
+不是 credential/channel 属性，也不会在两个 projection 之间同步。`all` 只展开声明支持其 target
+模型的 projection，`selected` 为每条 projection 分别选择模型。普通 Channel CRUD 和批量编辑
+不能修改这些 managed channels。
 
 ### 请求准备
 

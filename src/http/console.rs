@@ -39,11 +39,12 @@ use crate::{
         CodexCredentialImportInput, CodexCredentialUpdateInput, CodexCredentialView,
         CodexOauthStartInput, CodexQuotaWindowHistory, ConfigTemplateCreateInput,
         ConfigTemplateInput, ConsoleApiKey, ControlPlaneMutation, CostStatisticsFilter,
-        InviteUserInput, ModelInput, ModelRuleInput, ProxyCreateInput, ProxyInput,
-        RequestLogFilter, RequestLogRepository, SelfApiKeyCreate, SelfApiKeyUpdate,
-        SelfCodexQuotaCredentialView, SelfCodexQuotaWindowHistory, SpendLeaderboardFilter,
-        SpendLeaderboardPeriod, StatisticsGranularity, SystemSettingsInput, UserBatchUpdateInput,
-        UserGroupInput, UserInput, UserSettingsInput, UserUpdateInput,
+        InviteUserInput, ModelInput, ModelProtocolRuleCreateInput, ModelProtocolRuleInput,
+        ModelRuleCreateInput, ProxyCreateInput, ProxyInput, RequestLogFilter, RequestLogRepository,
+        SelfApiKeyCreate, SelfApiKeyUpdate, SelfCodexQuotaCredentialView,
+        SelfCodexQuotaWindowHistory, SpendLeaderboardFilter, SpendLeaderboardPeriod,
+        StatisticsGranularity, SystemSettingsInput, UserBatchUpdateInput, UserGroupInput,
+        UserInput, UserSettingsInput, UserUpdateInput,
     },
     runtime_config::ConfigError,
 };
@@ -236,9 +237,14 @@ pub fn router(state: ConsoleState) -> Router {
             "/console/v1/routing/model-rules",
             get(list_rules).post(create_rule),
         )
+        .route("/console/v1/routing/model-rules/{id}", get(get_rule))
         .route(
-            "/console/v1/routing/model-rules/{id}",
-            get(get_rule).put(update_rule),
+            "/console/v1/routing/model-rules/{id}/protocols",
+            post(create_protocol_rule),
+        )
+        .route(
+            "/console/v1/routing/model-rules/{id}/protocols/{protocol_id}",
+            get(get_protocol_rule).put(update_protocol_rule),
         )
         .route(
             "/console/v1/providers/codex-oauth/channel-groups/{id}/credentials",
@@ -1950,7 +1956,7 @@ async fn list_rules(
 async fn create_rule(
     State(state): State<ConsoleState>,
     Extension(principal): Extension<ConsolePrincipal>,
-    Json(input): Json<ModelRuleInput>,
+    Json(input): Json<ModelRuleCreateInput>,
 ) -> Result<(StatusCode, Json<MutationResponse>), ConsoleError> {
     mutate_created(&state, principal, ControlPlaneMutation::CreateRule(input)).await
 }
@@ -1962,18 +1968,56 @@ async fn get_rule(
     get_resource(state, id, Resource::Rule).await
 }
 
-async fn update_rule(
+async fn create_protocol_rule(
     State(state): State<ConsoleState>,
     Extension(principal): Extension<ConsolePrincipal>,
     Path(id): Path<Uuid>,
+    Json(input): Json<ModelProtocolRuleCreateInput>,
+) -> Result<(StatusCode, Json<MutationResponse>), ConsoleError> {
+    mutate_created(
+        &state,
+        principal,
+        ControlPlaneMutation::CreateProtocolRule {
+            model_rule_id: id,
+            input,
+        },
+    )
+    .await
+}
+
+async fn get_protocol_rule(
+    State(state): State<ConsoleState>,
+    Path((id, protocol_id)): Path<(Uuid, Uuid)>,
+) -> Result<Response, ConsoleError> {
+    let protocol = state
+        .coordinator
+        .lists()
+        .await?
+        .model_rules
+        .into_iter()
+        .find(|rule| rule.id == id)
+        .and_then(|rule| {
+            rule.protocol_rules
+                .into_iter()
+                .find(|protocol| protocol.id == protocol_id)
+        })
+        .ok_or(ConsoleError::NotFound)?;
+    resource_response(to_json(protocol))
+}
+
+async fn update_protocol_rule(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Path((id, protocol_id)): Path<(Uuid, Uuid)>,
     headers: HeaderMap,
-    Json(input): Json<ModelRuleInput>,
+    Json(input): Json<ModelProtocolRuleInput>,
 ) -> Result<Json<MutationResponse>, ConsoleError> {
     mutate(
         &state,
         principal,
-        ControlPlaneMutation::UpdateRule {
-            id,
+        ControlPlaneMutation::UpdateProtocolRule {
+            model_rule_id: id,
+            id: protocol_id,
             input,
             expected_updated_at: if_match(&headers)?,
         },
@@ -2696,8 +2740,7 @@ fn control_plane_error_message(error: &ControlPlaneError) -> &'static str {
 fn routing_dependency_invalid(reason: &str) -> bool {
     matches!(
         reason,
-        "enabled model rule references a disabled upstream model"
-            | "model rule references a missing channel group"
+        "model rule references a missing channel group"
             | "model rule references a cross-format channel group"
             | "model rule references a missing channel"
             | "model rule references a cross-format or cross-group channel"

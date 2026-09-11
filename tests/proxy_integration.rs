@@ -839,6 +839,7 @@ fn configured_proxy_with_policy_and_transforms(
             _ => vec![],
         },
         test_model: None,
+        test_pricing_model_id: None,
     };
     let key = |secret: &str, formats: Vec<&str>, groups: Vec<Uuid>, permissions: Vec<&str>| {
         ApiKeyRecord {
@@ -871,9 +872,9 @@ fn configured_proxy_with_policy_and_transforms(
             id: Uuid::new_v4(),
             client_model: model.into(),
             api_format: format.into(),
-            upstream_model_id: Uuid::new_v4(),
-            upstream_model_enabled: true,
-            upstream_model_currency: "USD".into(),
+            model_id: Uuid::new_v4(),
+            model_enabled: true,
+            model_currency: "USD".into(),
             price_unit_tokens: 1_000_000,
             price_effective_at: chrono::Utc::now(),
             input_unit_price: if transforms.filter_fast_mode {
@@ -911,16 +912,17 @@ fn configured_proxy_with_policy_and_transforms(
                     "request_multipliers": [],
                 })
             },
-            upstream_model: upstream.into(),
             routing_tiers: vec![ModelRuleRoutingTier {
                 priority: 0,
                 selection_strategy: "weighted_random".into(),
                 channel_groups: vec![ModelRuleChannelGroupTarget {
                     channel_group_id,
                     channel_selection: "selected".into(),
+                    upstream_model: None,
                     default_weight: None,
                     channels: vec![ModelRuleChannelWeight {
                         channel_id,
+                        upstream_model: Some(upstream.into()),
                         weight: 1,
                     }],
                 }],
@@ -1004,6 +1006,7 @@ fn configured_proxy_with_policy_and_transforms(
                     .channels
                     .push(ModelRuleChannelWeight {
                         channel_id: images_alt,
+                        upstream_model: Some("gpt-image-2".into()),
                         weight: 1,
                     });
                 rule
@@ -1014,6 +1017,7 @@ fn configured_proxy_with_policy_and_transforms(
                     .channels
                     .push(ModelRuleChannelWeight {
                         channel_id: images_alt,
+                        upstream_model: Some("gpt-image-2".into()),
                         weight: 1,
                     });
                 rule
@@ -1228,6 +1232,7 @@ fn session_affinity_proxy(first_upstream_url: &str, second_upstream_url: &str) -
         upstream_api_key: Some(UPSTREAM_KEY.into()),
         available_models: vec!["affinity-model".into()],
         test_model: None,
+        test_pricing_model_id: None,
     };
     let records = ControlPlaneRecords {
         api_keys: vec![ApiKeyRecord {
@@ -1266,9 +1271,9 @@ fn session_affinity_proxy(first_upstream_url: &str, second_upstream_url: &str) -
             id: model_rule_id,
             client_model: "affinity-model".into(),
             api_format: "open_ai_chat_completions".into(),
-            upstream_model_id: Uuid::new_v4(),
-            upstream_model_enabled: true,
-            upstream_model_currency: "USD".into(),
+            model_id: Uuid::new_v4(),
+            model_enabled: true,
+            model_currency: "USD".into(),
             price_unit_tokens: 1_000_000,
             price_effective_at: chrono::Utc::now(),
             input_unit_price: Default::default(),
@@ -1279,13 +1284,13 @@ fn session_affinity_proxy(first_upstream_url: &str, second_upstream_url: &str) -
                 "long_context_tiers": [],
                 "request_multipliers": [],
             }),
-            upstream_model: "affinity-model".into(),
             routing_tiers: vec![ModelRuleRoutingTier {
                 priority: 0,
                 selection_strategy: "weighted_round_robin".into(),
                 channel_groups: vec![ModelRuleChannelGroupTarget {
                     channel_group_id: group_id,
                     channel_selection: "all".into(),
+                    upstream_model: Some("affinity-model".into()),
                     default_weight: Some(1),
                     channels: vec![],
                 }],

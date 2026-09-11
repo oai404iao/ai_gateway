@@ -996,6 +996,7 @@ impl CompiledChannelGroup {
 pub struct CompiledCandidate {
     channel_slot: usize,
     channel: Arc<CompiledChannel>,
+    upstream_model: Arc<str>,
     weight: u32,
 }
 impl CompiledCandidate {
@@ -1010,13 +1011,24 @@ impl CompiledCandidate {
     }
 
     #[must_use]
+    pub(crate) fn upstream_model(&self) -> &Arc<str> {
+        &self.upstream_model
+    }
+
+    #[must_use]
     pub(crate) const fn weight(&self) -> u32 {
         self.weight
     }
 
-    pub(crate) fn new(channel_slot: usize, channel: Arc<CompiledChannel>, weight: i32) -> Self {
+    pub(crate) fn new(
+        channel_slot: usize,
+        channel: Arc<CompiledChannel>,
+        upstream_model: Arc<str>,
+        weight: i32,
+    ) -> Self {
         Self {
             channel_slot,
+            upstream_model,
             weight: u32::try_from(weight).expect("compiled positive route weight"),
             channel,
         }
@@ -1065,6 +1077,8 @@ impl CompiledRouteTier {
         }]);
         for candidate in candidates.iter() {
             hasher.update(candidate.channel().id().as_bytes());
+            hasher.update(candidate.upstream_model().as_bytes());
+            hasher.update([0]);
             hasher.update(candidate.weight().to_le_bytes());
         }
         let fingerprint = hasher.finalize().into();
@@ -1087,10 +1101,9 @@ impl CompiledRouteTier {
 pub struct CompiledModelRule {
     route_slot: usize,
     id: Uuid,
-    upstream_model_id: Uuid,
+    model_id: Uuid,
     client_model: Arc<str>,
     api_format: ApiFormat,
-    upstream_model: Arc<str>,
     price_snapshot: ModelPriceSnapshot,
     advanced_billing: CompiledAdvancedBilling,
     tiers: Arc<[CompiledRouteTier]>,
@@ -1175,8 +1188,8 @@ impl CompiledModelRule {
         self.id
     }
     #[must_use]
-    pub fn upstream_model_id(&self) -> Uuid {
-        self.upstream_model_id
+    pub fn model_id(&self) -> Uuid {
+        self.model_id
     }
     #[must_use]
     pub fn client_model(&self) -> &str {
@@ -1185,10 +1198,6 @@ impl CompiledModelRule {
     #[must_use]
     pub fn api_format(&self) -> ApiFormat {
         self.api_format
-    }
-    #[must_use]
-    pub fn upstream_model(&self) -> &str {
-        &self.upstream_model
     }
     #[must_use]
     pub fn price_snapshot(&self) -> &ModelPriceSnapshot {
@@ -1247,10 +1256,9 @@ impl CompiledModelRule {
     pub(crate) fn new_with_unavailable_candidates(
         route_slot: usize,
         id: Uuid,
-        upstream_model_id: Uuid,
+        model_id: Uuid,
         client_model: Arc<str>,
         api_format: ApiFormat,
-        upstream_model: Arc<str>,
         price_snapshot: ModelPriceSnapshot,
         advanced_billing: CompiledAdvancedBilling,
         tiers: Arc<[CompiledRouteTier]>,
@@ -1261,10 +1269,9 @@ impl CompiledModelRule {
         Self {
             route_slot,
             id,
-            upstream_model_id,
+            model_id,
             client_model,
             api_format,
-            upstream_model,
             price_snapshot,
             advanced_billing,
             tiers,
@@ -1395,7 +1402,7 @@ pub struct CompiledRuntimeConfig {
     model_rules: CompiledModelRoutes,
     channels: HashMap<Uuid, Arc<CompiledChannel>>,
     probe_channels: HashMap<Uuid, Arc<CompiledChannel>>,
-    scheduled_test_models: HashMap<Arc<str>, Arc<CompiledScheduledTestModel>>,
+    scheduled_test_models: HashMap<Uuid, Arc<CompiledScheduledTestModel>>,
     groups: HashMap<Uuid, Arc<CompiledChannelGroup>>,
     proxies: HashMap<Uuid, Arc<CompiledProxy>>,
     templates: HashMap<Uuid, Arc<CompiledConfigTemplate>>,
@@ -1468,7 +1475,7 @@ impl CompiledRuntimeConfig {
         model_rules: HashMap<ModelRouteKey, Arc<CompiledModelRule>>,
         channels: HashMap<Uuid, Arc<CompiledChannel>>,
         probe_channels: HashMap<Uuid, Arc<CompiledChannel>>,
-        scheduled_test_models: HashMap<Arc<str>, Arc<CompiledScheduledTestModel>>,
+        scheduled_test_models: HashMap<Uuid, Arc<CompiledScheduledTestModel>>,
         groups: HashMap<Uuid, Arc<CompiledChannelGroup>>,
         proxies: HashMap<Uuid, Arc<CompiledProxy>>,
         templates: HashMap<Uuid, Arc<CompiledConfigTemplate>>,
@@ -1520,8 +1527,11 @@ impl CompiledRuntimeConfig {
         self.channels.get(&id).cloned()
     }
     #[must_use]
-    pub fn scheduled_test_model(&self, model: &str) -> Option<Arc<CompiledScheduledTestModel>> {
-        self.scheduled_test_models.get(model).cloned()
+    pub fn scheduled_test_model(
+        &self,
+        channel_id: Uuid,
+    ) -> Option<Arc<CompiledScheduledTestModel>> {
+        self.scheduled_test_models.get(&channel_id).cloned()
     }
     #[must_use]
     pub fn group(&self, id: Uuid) -> Option<Arc<CompiledChannelGroup>> {

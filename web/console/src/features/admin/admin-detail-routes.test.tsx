@@ -11,6 +11,7 @@ import {
   CONFIG_TEMPLATE,
   CONTROL_PLANE_USER,
   MODEL,
+  MODEL_PROTOCOL_RULE,
   MODEL_RULE,
   PROXY,
   REGISTRATION_INVITATION_CODE,
@@ -38,10 +39,9 @@ const createRoutes = [
   ["/admin/user-groups/new", /create user group/i],
   ["/admin/registration-invitation-codes/new", /create registration code/i],
   ["/admin/api-key-policies/new", /create policy/i],
-  ["/admin/models/new", /create upstream model/i],
+  ["/admin/models/new", /create pricing model/i],
   ["/admin/routing/channel-groups/new", /create group/i],
   ["/admin/routing/channels/new", /create channel/i],
-  ["/admin/routing/model-rules/new", /create rule/i],
   ["/admin/network/proxies/new", /create proxy/i],
   ["/admin/transforms/templates/new", /create template/i],
 ] as const;
@@ -54,11 +54,14 @@ const editRoutes = [
     /save registration code/i,
   ],
   [`/admin/api-key-policies/${API_KEY_POLICY.id}`, /save policy/i],
-  [`/admin/models/${MODEL.id}`, /save upstream model/i],
+  [`/admin/models/${MODEL.id}`, /save pricing model/i],
   [`/admin/models/${MODEL.id}/pricing`, /save model pricing/i],
   [`/admin/routing/channel-groups/${CHANNEL_GROUP.id}`, /save group/i],
   [`/admin/routing/channels/${CHANNEL.id}`, /save channel/i],
-  [`/admin/routing/model-rules/${MODEL_RULE.id}`, /save rule/i],
+  [
+    `/admin/routing/model-rules/${MODEL_RULE.id}/protocols/${MODEL_PROTOCOL_RULE.id}`,
+    /save protocol/i,
+  ],
   [`/admin/network/proxies/${PROXY.id}`, /save proxy/i],
   [`/admin/transforms/templates/${CONFIG_TEMPLATE.id}`, /save template/i],
 ] as const;
@@ -76,6 +79,15 @@ describe("Admin detail routes", () => {
     renderAppAt(path);
 
     expect(await screen.findByRole("button", { name: buttonName })).toBeInTheDocument();
+  });
+
+  it("opens a priced model rule at its protocol list", async () => {
+    seedAuthenticatedSession();
+    renderAppAt(`/admin/routing/model-rules/${MODEL_RULE.id}`);
+
+    expect(
+      await screen.findByRole("link", { name: /open chat completions/i }),
+    ).toBeInTheDocument();
   });
 
   it("localizes channel editing while retaining API format product names", async () => {

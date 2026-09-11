@@ -30,6 +30,16 @@ Versioning.
 
 ### Changed
 
+- Replace flat per-format model rules with at most one routing profile per
+  priced client model and protocol children whose formats are immutable. Route
+  targets now select their own advertised upstream wire models while billing
+  remains attached to the client pricing model; migration 0057 preserves
+  protocol UUIDs, rejects legacy client aliases, and requires a coordinated
+  stop-the-world cutover.
+- Simplify Console model setup into focused pricing-model, Channel, and
+  hierarchical protocol-routing views. Scheduled Channel probes now pair an
+  independently selected pricing model with their upstream test model, and
+  remain unavailable for Images and provider-managed Channels.
 - Decouple Codex sharing seats from user groups, allow cars to start with
   vacant seats, and split self-service API Key targets into seat-owned sharing
   credentials versus ordinary API Key Policy groups/channels. A sharing-only

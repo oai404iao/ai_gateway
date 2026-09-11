@@ -22,6 +22,7 @@ import type {
   ControlPlaneModel,
   ControlPlaneUser,
   LoginResponse,
+  ModelProtocolRuleView,
   ModelRuleView,
   PersonalUsageReport,
   ProxyTestResponse,
@@ -313,6 +314,7 @@ export const CHANNEL: ChannelView = {
   upstream_credential_configured: true,
   available_models: ["openai/gpt-4o-mini"],
   test_model: "openai/gpt-4o-mini",
+  test_pricing_model_id: "00000000-0000-0000-0000-000000000030",
   created_at: "2026-01-02T00:00:00.000Z",
   updated_at: "2026-01-02T00:00:00.000Z",
 };
@@ -379,13 +381,10 @@ export const MODEL: ControlPlaneModel = {
   updated_at: "2026-01-01T00:00:00.000Z",
 };
 
-export const MODEL_RULE: ModelRuleView = {
+export const MODEL_PROTOCOL_RULE: ModelProtocolRuleView = {
   id: "00000000-0000-0000-0000-000000000025",
-  client_model: "gateway-chat-model",
+  model_rule_id: "00000000-0000-0000-0000-000000000024",
   api_format: "open_ai_chat_completions",
-  upstream_model_id: MODEL.id,
-  upstream_model_enabled: true,
-  upstream_model: MODEL.source_model_id,
   description: null,
   routing_tiers: [
     {
@@ -395,6 +394,7 @@ export const MODEL_RULE: ModelRuleView = {
         {
           channel_group_id: CHANNEL_GROUP.id,
           channel_selection: "all",
+          upstream_model: MODEL.source_model_id,
           default_weight: 100,
           channels: [],
         },
@@ -409,13 +409,22 @@ export const MODEL_RULE: ModelRuleView = {
   updated_at: "2026-01-02T00:00:00.000Z",
 };
 
-export const SEARCH_MODEL_RULE: ModelRuleView = {
+export const MODEL_RULE: ModelRuleView = {
+  id: MODEL_PROTOCOL_RULE.model_rule_id,
+  model_id: MODEL.id,
+  client_model: MODEL.source_model_id,
+  model_display_name: MODEL.display_name,
+  model_provider_name: MODEL.provider_name,
+  model_enabled: MODEL.enabled,
+  protocol_rules: [MODEL_PROTOCOL_RULE],
+  created_at: "2026-01-02T00:00:00.000Z",
+  updated_at: "2026-01-02T00:00:00.000Z",
+};
+
+const SEARCH_PROTOCOL_RULE: ModelProtocolRuleView = {
   id: "00000000-0000-0000-0000-000000000125",
-  client_model: "gateway-search-model",
+  model_rule_id: "00000000-0000-0000-0000-000000000124",
   api_format: "open_ai_responses",
-  upstream_model_id: MODEL.id,
-  upstream_model_enabled: true,
-  upstream_model: "gpt-5",
   description: "Standalone web search routing.",
   routing_tiers: [
     {
@@ -425,6 +434,7 @@ export const SEARCH_MODEL_RULE: ModelRuleView = {
         {
           channel_group_id: CODEX_QUOTA_GROUP.id,
           channel_selection: "all",
+          upstream_model: "gpt-5",
           default_weight: 100,
           channels: [],
         },
@@ -439,13 +449,22 @@ export const SEARCH_MODEL_RULE: ModelRuleView = {
   updated_at: "2026-08-05T00:00:00.000Z",
 };
 
-export const IMAGE_MODEL_RULE: ModelRuleView = {
+export const SEARCH_MODEL_RULE: ModelRuleView = {
+  id: SEARCH_PROTOCOL_RULE.model_rule_id,
+  model_id: MODEL.id,
+  client_model: MODEL.source_model_id,
+  model_display_name: MODEL.display_name,
+  model_provider_name: MODEL.provider_name,
+  model_enabled: MODEL.enabled,
+  protocol_rules: [SEARCH_PROTOCOL_RULE],
+  created_at: "2026-08-05T00:00:00.000Z",
+  updated_at: "2026-08-05T00:00:00.000Z",
+};
+
+const IMAGE_PROTOCOL_RULE: ModelProtocolRuleView = {
   id: "00000000-0000-0000-0000-000000000126",
-  client_model: "gateway-image-model",
+  model_rule_id: "00000000-0000-0000-0000-000000000127",
   api_format: "open_ai_images",
-  upstream_model_id: MODEL.id,
-  upstream_model_enabled: true,
-  upstream_model: "gpt-image-2",
   description: "Image generation and editing routing.",
   routing_tiers: [
     {
@@ -455,6 +474,7 @@ export const IMAGE_MODEL_RULE: ModelRuleView = {
         {
           channel_group_id: "00000000-0000-0000-0000-00000000c002",
           channel_selection: "all",
+          upstream_model: "gpt-image-2",
           default_weight: 100,
           channels: [],
         },
@@ -469,6 +489,17 @@ export const IMAGE_MODEL_RULE: ModelRuleView = {
   updated_at: "2026-08-05T00:00:00.000Z",
 };
 
+export const IMAGE_MODEL_RULE: ModelRuleView = {
+  id: IMAGE_PROTOCOL_RULE.model_rule_id,
+  model_id: MODEL.id,
+  client_model: MODEL.source_model_id,
+  model_display_name: MODEL.display_name,
+  model_provider_name: MODEL.provider_name,
+  model_enabled: MODEL.enabled,
+  protocol_rules: [IMAGE_PROTOCOL_RULE],
+  created_at: "2026-08-05T00:00:00.000Z",
+  updated_at: "2026-08-05T00:00:00.000Z",
+};
 
 
 export const REQUEST_LOG: RequestLogView = {
@@ -486,7 +517,7 @@ export const REQUEST_LOG: RequestLogView = {
   reasoning_effort: "high",
   fast_mode: true,
   upstream_model: MODEL.source_model_id,
-  model_rule_id: MODEL_RULE.id,
+  model_rule_id: MODEL_PROTOCOL_RULE.id,
   channel_group_id: CHANNEL_GROUP.id,
   channel_group_name: CHANNEL_GROUP.name,
   channel_id: CHANNEL.id,

@@ -437,12 +437,14 @@ impl ProxyService {
             rule,
             channel,
             channel_slot,
+            upstream_model,
             session_affinity: selected_session_affinity,
             lease,
         } = route;
-        let mut current_rule = rule;
+        let current_rule = rule;
         let mut current_channel = channel;
         let mut current_channel_slot = channel_slot;
+        let mut current_upstream_model = upstream_model;
         let mut current_session_affinity = selected_session_affinity;
         let request_multiplier =
             request_billing_multiplier_for_body(current_rule.advanced_billing(), &original_body);
@@ -457,6 +459,7 @@ impl ProxyService {
             api_operation,
             &current_rule,
             &current_channel,
+            &current_upstream_model,
             lease,
             admission,
             started_wall_at,
@@ -527,6 +530,7 @@ impl ProxyService {
                         rule,
                         channel,
                         channel_slot,
+                        upstream_model,
                         session_affinity: selected_session_affinity,
                         lease,
                     } = route;
@@ -537,15 +541,16 @@ impl ProxyService {
                     completion.replace_route_before_dispatch(
                         &rule,
                         &channel,
+                        &upstream_model,
                         lease,
                         self.automatic_disable.clone(),
                         snapshot.system_settings().automatic_disable().clone(),
                         selected_session_affinity.as_ref(),
                         request_billing_multiplier,
                     );
-                    current_rule = rule;
                     current_channel = channel;
                     current_channel_slot = channel_slot;
+                    current_upstream_model = upstream_model;
                     current_session_affinity = selected_session_affinity;
                     continue;
                 }
@@ -564,10 +569,10 @@ impl ProxyService {
                 completion.finish_with_proxy_error(RequestOutcome::ClientRequestError, &error);
                 return Err(error);
             }
-            let model_rewritten = parsed.model != current_rule.upstream_model();
+            let model_rewritten = parsed.model != current_upstream_model.as_ref();
             let body = match original_body
                 .clone()
-                .rewrite_model(&parsed.model, current_rule.upstream_model())
+                .rewrite_model(&parsed.model, &current_upstream_model)
                 .await
             {
                 Ok(value) => value,
@@ -777,6 +782,7 @@ impl ProxyService {
                         rule,
                         channel,
                         channel_slot,
+                        upstream_model,
                         session_affinity: selected_session_affinity,
                         lease,
                     } = route;
@@ -789,15 +795,16 @@ impl ProxyService {
                     completion.retry_with_route(
                         &rule,
                         &channel,
+                        &upstream_model,
                         lease,
                         self.automatic_disable.clone(),
                         snapshot.system_settings().automatic_disable().clone(),
                         selected_session_affinity.as_ref(),
                         request_billing_multiplier,
                     );
-                    current_rule = rule;
                     current_channel = channel;
                     current_channel_slot = channel_slot;
+                    current_upstream_model = upstream_model;
                     current_session_affinity = selected_session_affinity;
                     attempt = attempt.saturating_add(1);
                     tracing::warn!(
@@ -907,11 +914,11 @@ impl ProxyService {
             client_model: client_model.to_owned(),
             reasoning_effort: log_metadata.reasoning_effort.clone(),
             fast_mode: log_metadata.fast_mode,
-            upstream_model: Some(rule.upstream_model().to_owned()),
+            upstream_model: None,
             model_rule_id: Some(rule.id()),
             channel_group_id: None,
             channel_id: None,
-            model_id: Some(rule.upstream_model_id()),
+            model_id: Some(rule.model_id()),
             outcome: RequestLogOutcome::Failed,
             response_status_code: Some(error.status.as_u16()),
             streamed: request_protocol.is_streamed(),
@@ -1932,9 +1939,9 @@ fn encode_upstream_request_body(
 fn rewrite_model_alias(
     original_body: Bytes,
     client_model: &str,
-    rule: &CompiledModelRule,
+    upstream_model: &str,
 ) -> Result<Bytes, ProxyError> {
-    if client_model == rule.upstream_model() {
+    if client_model == upstream_model {
         return Ok(original_body);
     }
 
@@ -1944,10 +1951,7 @@ fn rewrite_model_alias(
     let object = value.as_object_mut().ok_or_else(|| {
         ProxyError::invalid_request("Request body must contain a JSON object.", "model")
     })?;
-    object.insert(
-        "model".to_owned(),
-        Value::String(rule.upstream_model().to_owned()),
-    );
+    object.insert("model".to_owned(), Value::String(upstream_model.to_owned()));
     serde_json::to_vec(&value)
         .map(Bytes::from)
         .map_err(|_| ProxyError::invalid_request("Request body cannot be rewritten.", "model"))
@@ -2645,6 +2649,7 @@ impl CompletionGuard {
         api_operation: ApiOperation,
         rule: &CompiledModelRule,
         channel: &CompiledChannel,
+        upstream_model: &str,
         lease: ChannelLease,
         admission: AdmissionLease,
         started_wall_at: chrono::DateTime<chrono::Utc>,
@@ -2663,11 +2668,11 @@ impl CompletionGuard {
                 client_model: client_model.to_owned(),
                 reasoning_effort: log_metadata.reasoning_effort.clone(),
                 fast_mode: log_metadata.fast_mode,
-                upstream_model: rule.upstream_model().to_owned(),
+                upstream_model: upstream_model.to_owned(),
                 model_rule_id: rule.id(),
                 channel_group_id: channel.group_id(),
                 channel_id: channel.id(),
-                model_id: rule.upstream_model_id(),
+                model_id: rule.model_id(),
                 api_format,
                 api_operation,
                 request_source,
@@ -2739,6 +2744,7 @@ impl CompletionGuard {
         &mut self,
         rule: &CompiledModelRule,
         channel: &CompiledChannel,
+        upstream_model: &str,
         lease: ChannelLease,
         automatic_disable_service: Option<AutomaticDisableService>,
         automatic_disable_settings: AutomaticDisableSettings,
@@ -2749,11 +2755,11 @@ impl CompletionGuard {
             previous.request_failed();
         }
         if let Some(context) = &mut self.context {
-            context.upstream_model = rule.upstream_model().to_owned();
+            context.upstream_model = upstream_model.to_owned();
             context.model_rule_id = rule.id();
             context.channel_group_id = channel.group_id();
             context.channel_id = channel.id();
-            context.model_id = rule.upstream_model_id();
+            context.model_id = rule.model_id();
             context.first_byte_at = None;
             context.upstream_status = None;
             context.client_visible_status = None;
@@ -2783,6 +2789,7 @@ impl CompletionGuard {
         &mut self,
         rule: &CompiledModelRule,
         channel: &CompiledChannel,
+        upstream_model: &str,
         lease: ChannelLease,
         automatic_disable_service: Option<AutomaticDisableService>,
         automatic_disable_settings: AutomaticDisableSettings,
@@ -2793,11 +2800,11 @@ impl CompletionGuard {
             previous.request_failed();
         }
         if let Some(context) = &mut self.context {
-            context.upstream_model = rule.upstream_model().to_owned();
+            context.upstream_model = upstream_model.to_owned();
             context.model_rule_id = rule.id();
             context.channel_group_id = channel.group_id();
             context.channel_id = channel.id();
-            context.model_id = rule.upstream_model_id();
+            context.model_id = rule.model_id();
             context.first_byte_at = None;
             context.upstream_status = None;
             context.client_visible_status = None;

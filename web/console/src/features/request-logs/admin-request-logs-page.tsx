@@ -19,7 +19,19 @@ export function AdminRequestLogsPage() {
       users={users.data ?? []}
       apiKeys={apiKeys.data ?? []}
       modelOptions={
-        modelRules.data?.flatMap((rule) => [rule.client_model, rule.upstream_model]) ?? []
+        modelRules.data?.flatMap((rule) => [
+          rule.client_model,
+          ...rule.protocol_rules.flatMap((protocol) =>
+            protocol.routing_tiers.flatMap((tier) =>
+              tier.channel_groups.flatMap((target) => [
+                ...(target.upstream_model ? [target.upstream_model] : []),
+                ...target.channels.flatMap((channel) =>
+                  channel.upstream_model ? [channel.upstream_model] : [],
+                ),
+              ]),
+            ),
+          ),
+        ]) ?? []
       }
     />
   );

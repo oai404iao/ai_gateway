@@ -35,7 +35,7 @@ describe("ModelDetailPage", () => {
     await waitFor(() => {
       expect(window.location.pathname).toBe("/admin/models/new");
     });
-    expect(await screen.findByLabelText("Source model id")).toHaveValue("");
+    expect(await screen.findByLabelText("Client model id")).toHaveValue("");
     expect(screen.getByLabelText("Display name")).toHaveValue(
       `${MODEL.display_name} copy`,
     );
@@ -75,12 +75,18 @@ describe("ModelDetailPage", () => {
     const user = userEvent.setup();
     renderAppAt(`/admin/models/${MODEL.id}`);
 
+    expect(await screen.findByLabelText("Client model id")).toBeDisabled();
+    expect(
+      screen.getByText(
+        "The client model ID cannot change after a model rule is created.",
+      ),
+    ).toBeInTheDocument();
     const editor = await screen.findByLabelText(/advanced billing/i);
     expect(
       screen.getByRole("button", { name: /configure pricing/i }),
     ).toBeInTheDocument();
     fireEvent.change(editor, { target: { value: JSON.stringify(advancedBilling) } });
-    await user.click(screen.getByRole("button", { name: /save upstream model/i }));
+    await user.click(screen.getByRole("button", { name: /save pricing model/i }));
 
     await waitFor(() => {
       expect(submitted).toBeDefined();

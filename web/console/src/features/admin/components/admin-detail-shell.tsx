@@ -6,8 +6,10 @@ import { Separator } from "@/components/ui/separator";
 import { PageHeader } from "@/components/shared/page-header";
 import { AsyncResource } from "@/components/shared/async-resource";
 import { useI18n } from "@/app/i18n";
-import { ConfigurationNav } from "@/features/admin/model-setup/configuration-workbench";
-import type { ConfigurationLens } from "@/features/admin/model-setup/configuration-graph";
+import {
+  ConfigurationNav,
+  type ConfigurationLens,
+} from "@/features/admin/model-setup/configuration-navigation";
 
 interface AdminDetailShellProps {
   title: string;
@@ -63,7 +65,7 @@ export function AdminDetailShell({
           <>
             {headerActions}
             <Button variant="ghost" size="sm" disabled={saving} onClick={onBack ?? (() => navigate(backPath))}>
-              <ArrowLeft data-icon="inline-start" /> {configurationLens && backPath.includes("selected=") ? t("Back to workbench") : backLabel ?? t("Back")}
+              <ArrowLeft data-icon="inline-start" /> {backLabel ?? t("Back")}
             </Button>
           </>
         }
@@ -78,9 +80,9 @@ export function AdminDetailShell({
                   {detailCard}
                   <Card size="sm">
                     <CardHeader><CardTitle>{t("Editing one resource")}</CardTitle>
-                      <CardDescription>{t("Related resources are not changed automatically. Return to the workbench to inspect the complete request path.")}</CardDescription>
+                      <CardDescription>{t("Related resources are not changed automatically.")}</CardDescription>
                     </CardHeader>
-                    <CardContent><Button variant="outline" size="sm" disabled={saving} onClick={onBack ?? (() => navigate(backPath))}>{t("Back to workbench")}</Button></CardContent>
+                    <CardContent><Button variant="outline" size="sm" disabled={saving} onClick={onBack ?? (() => navigate(backPath))}>{backLabel ?? t("Back")}</Button></CardContent>
                   </Card>
                 </aside>
               </div>
