@@ -7,6 +7,8 @@ Versioning.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-09-14
+
 ### Added
 
 - Opt-in single-instance Codex sharing with fixed seats, provider-aligned USD

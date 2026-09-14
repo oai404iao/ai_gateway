@@ -1,6 +1,6 @@
 [package]
 name = "ai-gateway"
-version = "0.10.6"
+version = "0.11.0"
 edition = "2024"
 description = "High-performance LLM request forwarding gateway"
 license = "AGPL-3.0-only"
