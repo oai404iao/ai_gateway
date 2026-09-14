@@ -221,7 +221,7 @@ describe("UserDetailPage", () => {
     await user.click(await screen.findByRole("button", { name: "Delete user" }));
     const confirmation = await screen.findByRole("alertdialog");
     expect(
-      within(confirmation).getByText(/revokes every session, invitation, and API key/i),
+      within(confirmation).getByText(/deletes every API key with its stored secret/i),
     ).toBeInTheDocument();
     await user.click(
       within(confirmation).getByRole("button", { name: "Delete user" }),

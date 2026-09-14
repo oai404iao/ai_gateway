@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiGet, apiGetDetail, apiPost, apiPut } from "@/api/client";
+import { apiGet, apiGetDetail, apiPost, apiPut, apiSend } from "@/api/client";
 import type {
   ApiHostsView,
   ApiKeyView,
@@ -83,6 +83,20 @@ export function useRevokeOwnApiKey() {
       apiPost<MutationResponse>(`/me/api-keys/${id}/revoke`, reason),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: LIST_KEY });
+    },
+  });
+}
+
+export function useDeleteOwnApiKey(id: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ ifMatch }: { ifMatch: string }) =>
+      apiSend<MutationResponse>(`/me/api-keys/${id}`, "DELETE", undefined, {
+        ifMatch,
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: LIST_KEY });
+      queryClient.removeQueries({ queryKey: detailKey(id) });
     },
   });
 }

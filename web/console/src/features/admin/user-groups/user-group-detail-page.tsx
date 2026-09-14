@@ -152,17 +152,11 @@ export function UserGroupDetailPage() {
       toast.success(t("User group deleted"));
       navigate("/admin/user-groups", { replace: true });
     } catch (error) {
-      if (error instanceof ApiError && error.code === "user_group_in_use") {
-        toast.error(
-          t(
-            "Move every member out of this group and reassign its registration codes before deleting it.",
-          ),
-        );
-      } else if (
-        error instanceof ApiError &&
-        error.code === "protected_user_group"
-      ) {
+      if (error instanceof ApiError && error.code === "protected_user_group") {
         toast.error(t("Built-in default groups cannot be deleted."));
+      } else if (error instanceof ApiError && error.isConflict) {
+        toast.error(t("This user group was changed elsewhere. Reloading."));
+        await detail.refetch();
       } else {
         toast.error(error instanceof Error ? error.message : t("Delete failed"));
       }
@@ -389,7 +383,7 @@ export function UserGroupDetailPage() {
                 <CardHeader>
                   <CardTitle>{t("Danger zone")}</CardTitle>
                   <CardDescription>
-                    {t("Deleting a custom group is permanent and audited.")}
+                    {t("Deleting a custom group is permanent and audited. Members and registration codes are handled automatically.")}
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="flex flex-col items-start gap-4">
@@ -404,15 +398,17 @@ export function UserGroupDetailPage() {
                     <>
                       {group.member_count > 0 ? (
                         <Alert>
-                          <AlertTitle>{t("Group still has members")}</AlertTitle>
+                          <AlertTitle>{t("Members will be reassigned")}</AlertTitle>
                           <AlertDescription>
-                            {t("Move every member out of this group before deleting it.")}
+                            {t("{count} members will move to the built-in group matching their role.", {
+                              count: group.member_count,
+                            })}
                           </AlertDescription>
                         </Alert>
                       ) : null}
                       <Button
                         variant="destructive"
-                        disabled={pending || group.member_count > 0}
+                        disabled={pending}
                         onClick={() => setDeleteOpen(true)}
                       >
                         {remove.isPending ? (
@@ -433,7 +429,7 @@ export function UserGroupDetailPage() {
         onOpenChange={setDeleteOpen}
         title={t("Delete user group?")}
         description={t(
-          "This permanently deletes the empty group. This action cannot be undone.",
+          "This hides the group permanently, moves its members to their built-in role group, disables associated registration codes, and removes Codex quota visibility. This action cannot be undone.",
         )}
         confirmLabel={t("Delete user group")}
         destructive

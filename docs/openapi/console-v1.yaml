@@ -424,6 +424,25 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorBody" }
+    delete:
+      tags: [Self]
+      operationId: deleteOwnApiKey
+      description: |
+        Irreversibly hides the Key, revokes it, and erases its stored secret.
+        Request logs and audit history retain the Key UUID.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+        - $ref: "#/components/parameters/IfMatch"
+      responses:
+        "200":
+          description: Key deleted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
 
   /me/api-keys/{id}/revoke:
     post:
@@ -667,9 +686,9 @@ paths:
       operationId: deleteUser
       description: |
         Irreversibly anonymizes the user, revokes every session, invitation,
-        and API key, and hides the account from management lists. Request logs
-        and audit history retain their user id. Administrators cannot delete
-        their own account.
+        and API key, erases the API Key secrets, and hides those identity
+        records from management lists. Request logs and audit history retain
+        their user and Key ids. Administrators cannot delete their own account.
       security: [{ bearerAuth: [] }]
       parameters:
         - $ref: "#/components/parameters/PathId"
@@ -995,8 +1014,10 @@ paths:
       tags: [UserGroups]
       operationId: deleteUserGroup
       description: |
-        Deletes an empty custom group. The built-in default user and
-        administrator groups are protected.
+        Irreversibly hides a custom group. Existing members move to the
+        built-in group matching their role, associated registration codes are
+        disabled, and Codex quota visibility assignments are removed. The
+        built-in default user and administrator groups are protected.
       security: [{ bearerAuth: [] }]
       parameters:
         - $ref: "#/components/parameters/PathId"
@@ -1371,6 +1392,26 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/Unprocessable" }
+    delete:
+      tags: [ApiKeys]
+      operationId: deleteApiKey
+      description: |
+        Irreversibly hides the Key, revokes it, and erases its stored secret.
+        Request logs and audit history retain the Key UUID.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+        - $ref: "#/components/parameters/IfMatch"
+      responses:
+        "200":
+          description: Key deleted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
 
   /api-keys/{id}/revoke:
     post:

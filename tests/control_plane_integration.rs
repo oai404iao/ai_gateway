@@ -2000,6 +2000,12 @@ async fn direct_seat_migration_preserves_existing_money_and_pending_reservations
         .execute(&database.pool)
         .await
         .unwrap();
+    sqlx::raw_sql(include_str!(
+        "../migrations/0058_identity_soft_deletion.sql"
+    ))
+    .execute(&database.pool)
+    .await
+    .unwrap();
     let snapshot = compile_runtime_config(repository.load_runtime().await.unwrap()).unwrap();
     sharing.publish(snapshot.sharing());
     sharing.flush().await.unwrap();

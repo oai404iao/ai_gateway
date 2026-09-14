@@ -252,7 +252,11 @@ export interface paths {
         get: operations["getOwnApiKey"];
         put: operations["updateOwnApiKey"];
         post?: never;
-        delete?: never;
+        /**
+         * @description Irreversibly hides the Key, revokes it, and erases its stored secret.
+         *     Request logs and audit history retain the Key UUID.
+         */
+        delete: operations["deleteOwnApiKey"];
         options?: never;
         head?: never;
         patch?: never;
@@ -438,9 +442,9 @@ export interface paths {
         post?: never;
         /**
          * @description Irreversibly anonymizes the user, revokes every session, invitation,
-         *     and API key, and hides the account from management lists. Request logs
-         *     and audit history retain their user id. Administrators cannot delete
-         *     their own account.
+         *     and API key, erases the API Key secrets, and hides those identity
+         *     records from management lists. Request logs and audit history retain
+         *     their user and Key ids. Administrators cannot delete their own account.
          */
         delete: operations["deleteUser"];
         options?: never;
@@ -604,8 +608,10 @@ export interface paths {
         put: operations["updateUserGroup"];
         post?: never;
         /**
-         * @description Deletes an empty custom group. The built-in default user and
-         *     administrator groups are protected.
+         * @description Irreversibly hides a custom group. Existing members move to the
+         *     built-in group matching their role, associated registration codes are
+         *     disabled, and Codex quota visibility assignments are removed. The
+         *     built-in default user and administrator groups are protected.
          */
         delete: operations["deleteUserGroup"];
         options?: never;
@@ -777,7 +783,11 @@ export interface paths {
         get: operations["getApiKey"];
         put: operations["updateApiKey"];
         post?: never;
-        delete?: never;
+        /**
+         * @description Irreversibly hides the Key, revokes it, and erases its stored secret.
+         *     Request logs and audit history retain the Key UUID.
+         */
+        delete: operations["deleteApiKey"];
         options?: never;
         head?: never;
         patch?: never;
@@ -4220,6 +4230,34 @@ export interface operations {
             };
         };
     };
+    deleteOwnApiKey: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description ETag from the preceding GET; stale values yield `409`. */
+                "If-Match": components["parameters"]["IfMatch"];
+            };
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Key deleted. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MutationResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+        };
+    };
     revokeOwnApiKey: {
         parameters: {
             query?: never;
@@ -5452,6 +5490,35 @@ export interface operations {
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
             422: components["responses"]["Unprocessable"];
+        };
+    };
+    deleteApiKey: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description ETag from the preceding GET; stale values yield `409`. */
+                "If-Match": components["parameters"]["IfMatch"];
+            };
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Key deleted. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MutationResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
         };
     };
     revokeApiKey: {

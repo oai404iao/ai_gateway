@@ -211,6 +211,23 @@ const E2E_SESSIONS = [
 ];
 
 export const E2E_API_KEY_SECRET = "sk-e2e-retrievable-api-key";
+export const E2E_API_KEY = {
+  id: "00000000-0000-0000-0000-000000000011",
+  name: "e2e key",
+  secret: E2E_API_KEY_SECRET,
+  status: "active",
+  expires_at: null,
+  allowed_api_formats: ["open_ai_chat_completions"],
+  permissions: ["proxy", "models.read"],
+  allowed_group_ids: ["00000000-0000-0000-0000-000000000021"],
+  allowed_channel_ids: [],
+  requests_per_minute: 60,
+  max_concurrent_requests: 4,
+  quota_limit_amount: "10.00",
+  quota_used_amount: "1.25",
+  created_at: "2026-01-03T00:00:00.000Z",
+  updated_at: "2026-01-03T00:00:00.000Z",
+};
 export const E2E_CODEX_GROUP_ID = "00000000-0000-0000-0000-00000000c001";
 export const E2E_CODEX_CREDENTIAL_ID =
   "00000000-0000-0000-0000-00000000c002";
@@ -1038,25 +1055,29 @@ export async function mockConsoleApi(page: Page): Promise<void> {
     if (path === "/console/v1/me/api-keys" && method === "GET") {
       return route.fulfill({
         status: 200,
-        json: [
-          {
-            id: "00000000-0000-0000-0000-000000000011",
-            name: "e2e key",
-            secret: E2E_API_KEY_SECRET,
-            status: "active",
-            expires_at: null,
-            allowed_api_formats: ["open_ai_chat_completions"],
-            permissions: ["proxy", "models.read"],
-            allowed_group_ids: ["00000000-0000-0000-0000-000000000021"],
-            allowed_channel_ids: [],
-            requests_per_minute: 60,
-            max_concurrent_requests: 4,
-            quota_limit_amount: "10.00",
-            quota_used_amount: "1.25",
-            created_at: "2026-01-03T00:00:00.000Z",
-            updated_at: "2026-01-03T00:00:00.000Z",
-          },
-        ],
+        json: [E2E_API_KEY],
+      });
+    }
+    if (
+      path === `/console/v1/me/api-keys/${E2E_API_KEY.id}` &&
+      method === "GET"
+    ) {
+      return route.fulfill({
+        status: 200,
+        headers: { ETag: `"${E2E_API_KEY.updated_at}"` },
+        json: E2E_API_KEY,
+      });
+    }
+    if (
+      path === `/console/v1/me/api-keys/${E2E_API_KEY.id}` &&
+      method === "DELETE"
+    ) {
+      return route.fulfill({
+        status: 200,
+        json: {
+          id: E2E_API_KEY.id,
+          correlation_id: "00000000-0000-0000-0000-000000000012",
+        },
       });
     }
     if (path === "/console/v1/me/api-hosts" && method === "GET") {

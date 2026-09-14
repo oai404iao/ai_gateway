@@ -69,6 +69,14 @@
 删除顶层 `service_tier`，因此后续日志元数据、请求计费倍率、Session affinity、Transform 和
 Connector 都只观察过滤后的请求。
 
+### 身份资源软删除
+
+用户、用户组和 API Key 使用不可恢复的墓碑式软删除。活动数据查询必须同时过滤
+`deleted_at IS NULL`；请求日志、结算和审计查询仍按原 UUID 读取墓碑。删除用户会匿名化身份并
+软删除其 Key；删除自定义用户组会把成员迁移到按角色选择的内置默认组、禁用关联注册码并移除
+Codex quota 可见性；直接删除 Key 会覆盖其明文 secret。活动记录使用部分唯一索引，因此删除后
+可以用相同邮箱或自然名称创建新 UUID。完整阶段边界见[控制面软删除](soft-deletion.md)。
+
 ### 系统设置
 
 `system_settings` 不是预留表。固定的 `forwarding_policy` 文档保存并热更新以下策略：

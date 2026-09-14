@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { BrowserRouter } from "react-router";
@@ -197,6 +197,32 @@ describe("ApiKeysPage", () => {
     await waitFor(() => {
       expect(screen.getByRole("button", { name: /revoke api key/i })).toBeInTheDocument();
     });
+  });
+
+  it("deletes a key with the detail ETag", async () => {
+    seedAuthenticatedSession();
+    let deleted = false;
+    server.use(
+      http.delete("/console/v1/me/api-keys/:id", ({ request }) => {
+        deleted = request.headers.get("If-Match") === `"${OWN_API_KEY.updated_at}"`;
+        return HttpResponse.json({
+          id: OWN_API_KEY.id,
+          correlation_id: "33333333-0000-0000-0000-000000000001",
+        });
+      }),
+    );
+    const user = userEvent.setup();
+    renderAppAt(`/api-keys/${OWN_API_KEY.id}`);
+
+    await user.click(
+      await screen.findByRole("button", { name: "Delete API key" }),
+    );
+    const confirmation = await screen.findByRole("alertdialog");
+    await user.click(
+      within(confirmation).getByRole("button", { name: "Delete API key" }),
+    );
+
+    await waitFor(() => expect(deleted).toBe(true));
   });
 
   it("shows allowed channel group names instead of UUIDs on key details", async () => {

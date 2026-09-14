@@ -186,6 +186,7 @@ export function useDeleteUser(id: string) {
       apiSend<MutationResponse>(`/users/${id}`, "DELETE", undefined, { ifMatch }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: USERS_KEY });
+      void queryClient.invalidateQueries({ queryKey: ADMIN_KEYS_KEY });
       void queryClient.removeQueries({ queryKey: userDetailKey(id) });
     },
   });
@@ -224,6 +225,14 @@ export function useDeleteUserGroup(id: string) {
       }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: USER_GROUPS_KEY });
+      void queryClient.invalidateQueries({ queryKey: USERS_KEY });
+      void queryClient.invalidateQueries({ queryKey: REGISTRATION_CODES_KEY });
+      void queryClient.invalidateQueries({
+        queryKey: ["console", "me", "api-key-options"],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["console", "me", "codex-quotas"],
+      });
       void queryClient.removeQueries({ queryKey: userGroupDetailKey(id) });
     },
   });
@@ -316,6 +325,19 @@ export function useRevokeAdminApiKey() {
       apiPost<MutationResponse>(`/api-keys/${id}/revoke`, reason),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ADMIN_KEYS_KEY });
+    },
+  });
+}
+export function useDeleteAdminApiKey(id: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ ifMatch }: { ifMatch: string }) =>
+      apiSend<MutationResponse>(`/api-keys/${id}`, "DELETE", undefined, {
+        ifMatch,
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ADMIN_KEYS_KEY });
+      queryClient.removeQueries({ queryKey: adminKeyDetailKey(id) });
     },
   });
 }

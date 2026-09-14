@@ -15,6 +15,9 @@ Versioning.
   member usage pages. Sharing search fails closed until monetary usage exists.
 - Codex pool-wide sharing-only access mode, with unbound-credential and identity
   alias protection, synchronized Responses/Images controls and versioned Console editing.
+- Irreversible soft deletion for users, user groups, and API Keys. User deletion
+  now erases Key secrets, custom-group deletion reassigns members and disables
+  registration codes, and owners can delete Keys from the Console.
 
 ### Security
 
