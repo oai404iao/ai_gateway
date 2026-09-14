@@ -616,7 +616,7 @@ SHA-256 哈希，明文仅在创建响应中返回一次，之后无法查看或
 - `DELETE /console/v1/me/sessions/{id}`
 - `GET/POST /console/v1/me/api-keys`
 - `GET /console/v1/me/api-key-options`
-- `GET/PUT /console/v1/me/api-keys/{id}`
+- `GET/PUT/DELETE /console/v1/me/api-keys/{id}`
 - `POST /console/v1/me/api-keys/{id}/revoke`
 - `GET /console/v1/me/request-logs?limit=50`
 - `GET /console/v1/me/request-logs/{id}`
@@ -634,6 +634,9 @@ Console HTTP 请求的最后访问时间。按 ID 撤销当前 session 时，响
 `GET /console/v1/me/api-key-options` 获取当前可选列表；创建或更新 API Key 时，从该列表中选择
 `allowed_group_ids` / `allowed_channel_ids`，并为该 Key 独立配置 RPM、最大并发和可选额度上限。
 API 格式由所选目标自动推导，自助创建 Key 的权限固定为 `proxy` 和 `models.read`。
+撤销 Key 只会把状态永久改为 `revoked`，记录仍在 Console 中可见。带详情 `ETag` 调用
+`DELETE /console/v1/me/api-keys/{id}` 会进一步擦除保存的明文 secret、写入墓碑并从普通列表和
+详情隐藏该 Key；请求日志和审计历史继续保留原 Key UUID。
 
 Policy 不再保存额度、RPM、并发、格式、权限或最大活动 Key 数，也不会反向修改既有 Key 的实际限制。
 未分配策略、策略已禁用或提交了策略范围外的目标时，接口分别返回
@@ -702,9 +705,10 @@ Provider 托管的 Codex Channel 继续通过专用凭据页面管理。计价�
 批量操作不能暂停或禁用其自己的账户。
 
 `DELETE /console/v1/users/{id}` 需要 `If-Match` 和 Console 二次确认。删除不会物理移除用户主键：
-服务会清空邮箱与密码、匿名化显示名称、撤销全部会话、未接受邀请和 API Key，并从管理列表隐藏
-该用户；请求日志和审计记录继续保留原 user ID。管理员不能删除自己，也不能删除最后一个活跃的
-非系统管理员。匿名化后原邮箱可重新使用。
+服务会清空邮箱与密码、匿名化显示名称、撤销全部会话和未接受邀请，并软删除该用户的所有普通
+API Key。每个 Key 的明文 secret 会被覆盖，用户与 Key 都从管理列表隐藏；请求日志和审计记录继续
+保留原 user ID 和 Key ID。管理员不能删除自己，也不能删除最后一个活跃的非系统管理员。匿名化后
+原邮箱可重新使用。
 
 用户组通过 `/console/v1/user-groups` 管理。每个组可设置一个默认 API Key Policy，并通过
 `visible_codex_quota_group_ids` 选择成员可只读查看额度的 canonical Codex Responses Channel
@@ -714,8 +718,9 @@ Group；普通 OpenAI-compatible group、Codex Images projection、重复 ID 或
 `/service_tier` 请求计费倍率也不会命中。该策略适用于 Chat Completions、Responses HTTP/SSE
 和 Responses WebSocket，且不会影响其他请求字段。修改后，没有用户级覆盖的组成员立即使用新策略，
 Codex 额度可见性和 Fast 过滤也立即按当前用户组生效。
-自定义组只有在没有成员时才能删除；内置默认用户组和默认管理员组始终受保护。仍被注册邀请码引用的
-用户组同样不能删除，必须先把相关邀请码调整到其他组。
+删除自定义组会保留其墓碑并释放组名：普通成员迁移到内置默认用户组，管理员迁移到内置默认管理员
+组，关联注册邀请码自动禁用，Codex quota 可见性关系被移除。用户现有 API Key 的目标快照不变，
+但继承策略和 Fast 过滤会按迁移后的用户组立即重算。内置默认用户组和默认管理员组始终受保护。
 
 注册邀请码通过 `/console/v1/registration-invitation-codes` 管理。列表和详情只返回名称、启用状态、
 次数、过期时间、用户组、初始额度和使用统计，不返回明文或哈希。详情 `GET` 返回 `ETag`，调整名称、

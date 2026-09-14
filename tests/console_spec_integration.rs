@@ -2161,24 +2161,6 @@ async fn registration_invitation_code_settings_are_versioned_and_adjustable() {
         rust_decimal::Decimal::new(7_525, 2)
     );
 
-    let group_path = format!("/console/v1/user-groups/{target_group_id}");
-    let group_detail = request(&app, "GET", &group_path, serde_json::json!({}), &[]).await;
-    assert_eq!(group_detail.status(), StatusCode::OK);
-    let group_etag = group_detail.headers()[header::ETAG]
-        .to_str()
-        .unwrap()
-        .to_owned();
-    let delete_group = request(
-        &app,
-        "DELETE",
-        &group_path,
-        serde_json::json!({}),
-        &[("if-match", &group_etag)],
-    )
-    .await;
-    assert_eq!(delete_group.status(), StatusCode::CONFLICT);
-    assert_eq!(body_json(delete_group).await["error"], "user_group_in_use");
-
     let disabled = unauthenticated_request(
         &app,
         "POST",
@@ -2257,6 +2239,143 @@ async fn registration_invitation_code_settings_are_versioned_and_adjustable() {
             .await
             .unwrap();
     assert_eq!(used_count, 1);
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn user_group_delete_reassigns_members_and_disables_registration_codes() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+    let group_name = format!("soft-delete-group-{}", Uuid::new_v4());
+    let created = request(
+        &app,
+        "POST",
+        "/console/v1/user-groups",
+        serde_json::json!({
+            "name": group_name,
+            "description": "temporary assignment",
+            "default_api_key_policy_id": null,
+            "visible_codex_quota_group_ids": [],
+            "filter_fast_mode": true,
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let group_id = Uuid::parse_str(body_json(created).await["id"].as_str().unwrap()).unwrap();
+
+    let member_user = Uuid::new_v4();
+    let member_admin = Uuid::new_v4();
+    for (id, role) in [(member_user, "user"), (member_admin, "admin")] {
+        sqlx::query(
+            "INSERT INTO users \
+             (id,email,display_name,role,status,user_group_id) \
+             VALUES ($1,$2,$3,$4,'active',$5)",
+        )
+        .bind(id)
+        .bind(format!("{role}-{id}@example.test"))
+        .bind(format!("{role}-{id}"))
+        .bind(role)
+        .bind(group_id)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    }
+
+    let code = request(
+        &app,
+        "POST",
+        "/console/v1/registration-invitation-codes",
+        serde_json::json!({
+            "name": format!("soft-delete-code-{group_id}"),
+            "invitation_code": format!("SOFT-DELETE-{}", group_id.simple()),
+            "max_uses": null,
+            "expires_at": null,
+            "enabled": true,
+            "user_group_id": group_id,
+            "initial_balance_amount": "0",
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(code.status(), StatusCode::CREATED);
+    let code_id = Uuid::parse_str(body_json(code).await["id"].as_str().unwrap()).unwrap();
+
+    let path = format!("/console/v1/user-groups/{group_id}");
+    let detail = request(&app, "GET", &path, serde_json::json!({}), &[]).await;
+    assert_eq!(detail.status(), StatusCode::OK);
+    let etag = detail.headers()[header::ETAG].to_str().unwrap().to_owned();
+    assert_eq!(body_json(detail).await["member_count"], 2);
+
+    let deleted = request(
+        &app,
+        "DELETE",
+        &path,
+        serde_json::json!({}),
+        &[("if-match", &etag)],
+    )
+    .await;
+    assert_eq!(deleted.status(), StatusCode::OK);
+
+    let tombstone: (Option<chrono::DateTime<chrono::Utc>>, Option<Uuid>) =
+        sqlx::query_as("SELECT deleted_at,deleted_by FROM user_groups WHERE id=$1")
+            .bind(group_id)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert!(tombstone.0.is_some());
+    assert_eq!(tombstone.1, Some(app.user_id));
+
+    let assignments: Vec<(Uuid, Uuid)> =
+        sqlx::query_as("SELECT id,user_group_id FROM users WHERE id=ANY($1) ORDER BY id")
+            .bind(vec![member_user, member_admin])
+            .fetch_all(&database.pool)
+            .await
+            .unwrap();
+    for (id, assigned_group) in assignments {
+        assert_eq!(
+            assigned_group,
+            if id == member_admin {
+                ai_gateway::persistence::DEFAULT_ADMIN_GROUP_ID
+            } else {
+                DEFAULT_USER_GROUP_ID
+            }
+        );
+    }
+    let code_enabled: bool =
+        sqlx::query_scalar("SELECT enabled FROM registration_invitation_codes WHERE id=$1")
+            .bind(code_id)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert!(!code_enabled);
+    assert_eq!(
+        request(&app, "GET", &path, serde_json::json!({}), &[])
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+
+    let recreated = request(
+        &app,
+        "POST",
+        "/console/v1/user-groups",
+        serde_json::json!({
+            "name": group_name,
+            "description": null,
+            "default_api_key_policy_id": null,
+            "visible_codex_quota_group_ids": [],
+            "filter_fast_mode": false,
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(recreated.status(), StatusCode::CREATED);
+    assert_ne!(
+        body_json(recreated).await["id"],
+        serde_json::Value::String(group_id.to_string())
+    );
+
     database.cleanup().await;
 }
 
@@ -3407,10 +3526,131 @@ async fn user_batch_updates_are_atomic_and_cover_supported_fields() {
     database.cleanup().await;
 }
 
-/// Deleting a user anonymizes the retained owner row and revokes every live
-/// credential instead of cascading away request-log/audit ownership.
 #[tokio::test]
-async fn user_delete_anonymizes_and_revokes_credentials() {
+async fn api_key_delete_erases_secret_hides_tombstone_and_releases_name() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+    let key_id = Uuid::new_v4();
+    let key_name = format!("soft-delete-key-{key_id}");
+    let secret = format!("sk-soft-delete-{}", Uuid::new_v4().simple());
+    sqlx::query(
+        "INSERT INTO api_keys \
+         (id,user_id,name,secret_value,status,allowed_api_formats,permissions, \
+          allowed_group_ids,allowed_channel_ids) \
+         VALUES ($1,$2,$3,$4,'active', \
+                 ARRAY['open_ai_chat_completions']::api_format[], \
+                 ARRAY['proxy']::text[],'{}','{}')",
+    )
+    .bind(key_id)
+    .bind(app.user_id)
+    .bind(&key_name)
+    .bind(&secret)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            "/console/v1/system/reload",
+            serde_json::json!({}),
+            &[],
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    assert!(app.runtime.snapshot().authenticate(&secret).is_some());
+
+    let path = format!("/console/v1/me/api-keys/{key_id}");
+    let detail = request(&app, "GET", &path, serde_json::json!({}), &[]).await;
+    assert_eq!(detail.status(), StatusCode::OK);
+    let etag = detail.headers()[header::ETAG].to_str().unwrap().to_owned();
+    let deleted = request(
+        &app,
+        "DELETE",
+        &path,
+        serde_json::json!({}),
+        &[("if-match", &etag)],
+    )
+    .await;
+    assert_eq!(deleted.status(), StatusCode::OK);
+    assert!(app.runtime.snapshot().authenticate(&secret).is_none());
+    assert_eq!(
+        request(&app, "GET", &path, serde_json::json!({}), &[])
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+
+    let tombstone: (
+        String,
+        String,
+        Option<chrono::DateTime<chrono::Utc>>,
+        Option<Uuid>,
+    ) = sqlx::query_as(
+        "SELECT status,secret_value,deleted_at,deleted_by FROM api_keys WHERE id=$1",
+    )
+    .bind(key_id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(tombstone.0, "revoked");
+    assert_eq!(tombstone.1, format!("deleted-api-key-{key_id}"));
+    assert!(tombstone.2.is_some());
+    assert_eq!(tombstone.3, Some(app.user_id));
+
+    let replacement_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO api_keys \
+         (id,user_id,name,secret_value,status,allowed_api_formats,permissions, \
+          allowed_group_ids,allowed_channel_ids) \
+         VALUES ($1,$2,$3,$4,'disabled', \
+                 ARRAY['open_ai_chat_completions']::api_format[], \
+                 ARRAY['proxy']::text[],'{}','{}')",
+    )
+    .bind(replacement_id)
+    .bind(app.user_id)
+    .bind(&key_name)
+    .bind(format!("sk-replacement-{}", Uuid::new_v4().simple()))
+    .execute(&database.pool)
+    .await
+    .expect("a deleted Key releases its owner-scoped name");
+
+    let admin_path = format!("/console/v1/api-keys/{replacement_id}");
+    let detail = request(&app, "GET", &admin_path, serde_json::json!({}), &[]).await;
+    assert_eq!(detail.status(), StatusCode::OK);
+    let etag = detail.headers()[header::ETAG].to_str().unwrap().to_owned();
+    assert_eq!(
+        request(
+            &app,
+            "DELETE",
+            &admin_path,
+            serde_json::json!({}),
+            &[("if-match", &etag)],
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    let delete_audits: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_logs \
+         WHERE object_type='api_key' AND action IN ('self_delete','delete') \
+           AND object_id=ANY($1)",
+    )
+    .bind(vec![key_id, replacement_id])
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(delete_audits, 2);
+
+    database.cleanup().await;
+}
+
+/// Deleting a user anonymizes the retained owner row and tombstones every Key
+/// instead of cascading away request-log/audit ownership.
+#[tokio::test]
+async fn user_delete_anonymizes_and_tombstones_api_keys() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
     let user_id = Uuid::new_v4();
@@ -3418,6 +3658,7 @@ async fn user_delete_anonymizes_and_revokes_credentials() {
     let session_id = Uuid::new_v4();
     let invitation_id = Uuid::new_v4();
     let email = format!("delete-{user_id}@example.test");
+    let api_key_secret = format!("sk-delete-{}", Uuid::new_v4().simple());
     sqlx::query(
         "INSERT INTO users \
          (id,email,display_name,role,status,password_hash,balance_amount) \
@@ -3439,7 +3680,7 @@ async fn user_delete_anonymizes_and_revokes_credentials() {
     )
     .bind(api_key_id)
     .bind(user_id)
-    .bind(format!("sk-delete-{}", Uuid::new_v4().simple()))
+    .bind(&api_key_secret)
     .execute(&database.pool)
     .await
     .unwrap();
@@ -3501,12 +3742,35 @@ async fn user_delete_anonymizes_and_revokes_credentials() {
     assert_eq!(retained.2, "disabled");
     assert!(retained.3.is_some());
     assert_eq!(retained.4, DEFAULT_USER_GROUP_ID);
-    let key_status: String = sqlx::query_scalar("SELECT status FROM api_keys WHERE id=$1")
-        .bind(api_key_id)
-        .fetch_one(&database.pool)
+    let key_tombstone: (
+        String,
+        String,
+        Option<chrono::DateTime<chrono::Utc>>,
+        Option<Uuid>,
+    ) = sqlx::query_as(
+        "SELECT status,secret_value,deleted_at,deleted_by FROM api_keys WHERE id=$1",
+    )
+    .bind(api_key_id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(key_tombstone.0, "revoked");
+    assert_eq!(key_tombstone.1, format!("deleted-api-key-{api_key_id}"));
+    assert_ne!(key_tombstone.1, api_key_secret);
+    assert!(key_tombstone.2.is_some());
+    assert_eq!(key_tombstone.3, Some(app.user_id));
+    assert_eq!(
+        request(
+            &app,
+            "GET",
+            &format!("/console/v1/api-keys/{api_key_id}"),
+            serde_json::json!({}),
+            &[],
+        )
         .await
-        .unwrap();
-    assert_eq!(key_status, "revoked");
+        .status(),
+        StatusCode::NOT_FOUND
+    );
     let session_revoked: bool =
         sqlx::query_scalar("SELECT revoked_at IS NOT NULL FROM user_sessions WHERE id=$1")
             .bind(session_id)

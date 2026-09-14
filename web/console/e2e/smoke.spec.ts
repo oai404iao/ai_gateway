@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import {
   E2E_ADMIN_USER_GROUP_ID,
+  E2E_API_KEY,
   E2E_API_KEY_SECRET,
   E2E_CODEX_CREDENTIAL,
   E2E_CODEX_CREDENTIAL_ID,
@@ -206,6 +207,32 @@ test.describe("Console SPA smoke", () => {
     await expect(keyValue).toHaveValue(`sk-${"•".repeat(24)}`);
     await page.getByRole("button", { name: "Show full API key" }).click();
     await expect(keyValue).toHaveValue(E2E_API_KEY_SECRET);
+  });
+
+  test("a user can permanently delete an API key", async ({ page }) => {
+    await mockConsoleApi(page);
+    await page.goto("/login");
+    await page.getByLabel(/email/i).fill("admin@example.com");
+    await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
+    await page.getByRole("button", { name: /sign in/i }).click();
+    await page.getByRole("link", { name: "API Keys" }).click();
+    await page.getByText(E2E_API_KEY.name, { exact: true }).click();
+    await expect(page).toHaveURL(new RegExp(`/api-keys/${E2E_API_KEY.id}$`));
+
+    await page.getByRole("button", { name: "Delete API key" }).click();
+    const deleteRequest = page.waitForRequest(
+      (request) =>
+        request.url().endsWith(`/console/v1/me/api-keys/${E2E_API_KEY.id}`) &&
+        request.method() === "DELETE",
+    );
+    await page
+      .getByRole("alertdialog")
+      .getByRole("button", { name: "Delete API key" })
+      .click();
+    const request = await deleteRequest;
+    expect(request.headers()["if-match"]).toBe(`"${E2E_API_KEY.updated_at}"`);
+    await expect(page).toHaveURL(/\/api-keys$/);
+    await expect(page.getByText("API key deleted")).toBeVisible();
   });
 
   test("users can only read sanitized Codex quota windows", async ({ page }) => {

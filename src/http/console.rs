@@ -107,7 +107,9 @@ pub fn router(state: ConsoleState) -> Router {
         .route("/console/v1/me/api-hosts", get(get_api_hosts))
         .route(
             "/console/v1/me/api-keys/{id}",
-            get(get_own_api_key).put(update_own_api_key),
+            get(get_own_api_key)
+                .put(update_own_api_key)
+                .delete(delete_own_api_key),
         )
         .route(
             "/console/v1/me/api-keys/{id}/revoke",
@@ -202,7 +204,7 @@ pub fn router(state: ConsoleState) -> Router {
         )
         .route(
             "/console/v1/api-keys/{id}",
-            get(get_api_key).put(update_api_key),
+            get(get_api_key).put(update_api_key).delete(delete_api_key),
         )
         .route("/console/v1/api-keys/{id}/revoke", post(revoke_api_key))
         .route(
@@ -1052,6 +1054,19 @@ async fn update_own_api_key(
     Ok(Json(mutation_response(result)))
 }
 
+async fn delete_own_api_key(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Json<MutationResponse>, ConsoleError> {
+    let result = state
+        .coordinator
+        .delete_own_api_key(principal.user_id(), id, if_match(&headers)?)
+        .await?;
+    Ok(Json(mutation_response(result)))
+}
+
 async fn revoke_own_api_key(
     State(state): State<ConsoleState>,
     Extension(principal): Extension<ConsolePrincipal>,
@@ -1352,6 +1367,7 @@ async fn delete_user_group(
         principal,
         ControlPlaneMutation::DeleteUserGroup {
             id,
+            deleted_by: principal.user_id(),
             expected_updated_at: if_match(&headers)?,
         },
     )
@@ -1604,6 +1620,24 @@ async fn update_api_key(
         ControlPlaneMutation::UpdateApiKey {
             id,
             input,
+            expected_updated_at: if_match(&headers)?,
+        },
+    )
+    .await
+}
+
+async fn delete_api_key(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Json<MutationResponse>, ConsoleError> {
+    mutate(
+        &state,
+        principal,
+        ControlPlaneMutation::DeleteApiKey {
+            id,
+            deleted_by: principal.user_id(),
             expected_updated_at: if_match(&headers)?,
         },
     )
@@ -2766,7 +2800,6 @@ fn repository_error_message(error: &crate::persistence::RepositoryError) -> &'st
             "routing_dependency_invalid"
         }
         crate::persistence::RepositoryError::ProtectedUserGroup => "protected_user_group",
-        crate::persistence::RepositoryError::UserGroupInUse => "user_group_in_use",
         crate::persistence::RepositoryError::ProxyInUse => "proxy_in_use",
         crate::persistence::RepositoryError::CannotDeleteSelf => "cannot_delete_self",
         crate::persistence::RepositoryError::LastAdministrator => "last_administrator",
@@ -2810,7 +2843,6 @@ fn repository_status(error: &crate::persistence::RepositoryError) -> StatusCode 
         crate::persistence::RepositoryError::NotFound => StatusCode::NOT_FOUND,
         crate::persistence::RepositoryError::Conflict
         | crate::persistence::RepositoryError::ProtectedUserGroup
-        | crate::persistence::RepositoryError::UserGroupInUse
         | crate::persistence::RepositoryError::ProxyInUse
         | crate::persistence::RepositoryError::CannotDeleteSelf
         | crate::persistence::RepositoryError::LastAdministrator

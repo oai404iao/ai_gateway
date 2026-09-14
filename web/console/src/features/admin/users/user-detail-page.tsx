@@ -839,7 +839,7 @@ export function UserDetailPage() {
         onOpenChange={setDeleteOpen}
         title={t("Delete user?")}
         description={t(
-          "This anonymizes the account and revokes every session, invitation, and API key. Request logs and audit history are preserved. This action cannot be undone.",
+          "This anonymizes the account, revokes every session and invitation, and deletes every API key with its stored secret. Request logs and audit history are preserved. This action cannot be undone.",
         )}
         confirmLabel={t("Delete user")}
         destructive

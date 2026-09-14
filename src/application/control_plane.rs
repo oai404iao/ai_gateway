@@ -587,6 +587,39 @@ impl ControlPlaneCoordinator {
         })
     }
 
+    pub async fn delete_own_api_key(
+        &self,
+        actor: Uuid,
+        id: Uuid,
+        expected_updated_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<MutationResult, ControlPlaneError> {
+        let _guard = self.serial.lock().await;
+        let mut transaction = self.repository.begin_serializable().await?;
+        if !self
+            .repository
+            .active_user_exists(&mut transaction, actor)
+            .await?
+        {
+            return Err(ControlPlaneError::InvalidActor);
+        }
+        let result = self
+            .repository
+            .delete_own_api_key(&mut transaction, actor, id, expected_updated_at)
+            .await?;
+        let candidate = self.compile_transaction(&mut transaction).await?;
+        self.validate_candidate(&candidate)?;
+        let correlation_id = Uuid::new_v4();
+        self.repository
+            .insert_self_audit(&mut transaction, actor, &result, correlation_id)
+            .await?;
+        transaction.commit().await.map_err(RepositoryError::from)?;
+        self.publish(candidate);
+        Ok(MutationResult {
+            correlation_id: Some(correlation_id),
+            ..result
+        })
+    }
+
     pub async fn model_source_ids(&self) -> Result<Vec<String>, ControlPlaneError> {
         Ok(self.repository.model_source_ids().await?)
     }

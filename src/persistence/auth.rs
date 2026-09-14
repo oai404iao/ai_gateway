@@ -279,7 +279,7 @@ impl AuthRepository {
     pub async fn profile(&self, user_id: Uuid) -> Result<Option<ConsoleProfile>, RepositoryError> {
         sqlx::query_as::<_, ConsoleProfile>(
             "SELECT id,email,display_name,role,status,balance_amount,created_at,updated_at \
-             FROM users WHERE id=$1",
+             FROM users WHERE id=$1 AND deleted_at IS NULL",
         )
         .bind(user_id)
         .fetch_optional(&self.pool)
@@ -293,7 +293,8 @@ impl AuthRepository {
         display_name: &str,
     ) -> Result<Option<ConsoleProfile>, RepositoryError> {
         sqlx::query_as::<_, ConsoleProfile>(
-            "UPDATE users SET display_name=$2 WHERE id=$1 AND status='active' \
+            "UPDATE users SET display_name=$2 \
+             WHERE id=$1 AND status='active' AND deleted_at IS NULL \
              RETURNING id,email,display_name,role,status,balance_amount,created_at,updated_at",
         )
         .bind(user_id)
@@ -342,7 +343,8 @@ impl AuthRepository {
              SET password_hash=$2,password_changed_at=now(),auth_version=auth_version+1, \
                  password_change_required=false,temporary_password_issued_at=NULL, \
                  temporary_password_expires_at=NULL \
-             WHERE id=$1 AND status='active' AND NOT password_change_required",
+             WHERE id=$1 AND status='active' AND NOT password_change_required \
+               AND deleted_at IS NULL",
         )
         .bind(user_id)
         .bind(password_hash)
@@ -569,6 +571,7 @@ impl AuthRepository {
                  password_change_required=false,temporary_password_issued_at=NULL, \
                  temporary_password_expires_at=NULL \
              WHERE lower(email)=lower($1) AND role='admin' AND status='active' \
+               AND deleted_at IS NULL \
              RETURNING id,email,auth_version",
         )
         .bind(email)
@@ -735,7 +738,14 @@ impl AuthRepository {
         let invitation = sqlx::query_as::<_, RegistrationInvitationCodeForUse>(
             "SELECT id,max_uses,used_count,expires_at,enabled,user_group_id, \
                     initial_balance_amount \
-             FROM registration_invitation_codes WHERE code_hash=$1 FOR UPDATE",
+             FROM registration_invitation_codes AS code \
+             WHERE code.code_hash=$1 \
+               AND EXISTS ( \
+                   SELECT 1 FROM user_groups AS user_group \
+                   WHERE user_group.id=code.user_group_id \
+                     AND user_group.deleted_at IS NULL \
+               ) \
+             FOR UPDATE OF code",
         )
         .bind(code_hash)
         .fetch_optional(&mut *transaction)
@@ -840,11 +850,15 @@ impl AuthRepository {
             UserRole::User => DEFAULT_USER_GROUP_ID,
             UserRole::Admin => DEFAULT_ADMIN_GROUP_ID,
         });
-        let group_exists =
-            sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM user_groups WHERE id=$1)")
-                .bind(user_group_id)
-                .fetch_one(&mut *transaction)
-                .await?;
+        let group_exists = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS( \
+                SELECT 1 FROM user_groups \
+                WHERE id=$1 AND deleted_at IS NULL \
+            )",
+        )
+        .bind(user_group_id)
+        .fetch_one(&mut *transaction)
+        .await?;
         if !group_exists {
             transaction.rollback().await?;
             return Err(RepositoryError::Validation);
@@ -1166,7 +1180,10 @@ async fn ensure_active_admin(
     user_id: Uuid,
 ) -> Result<(), RepositoryError> {
     let admin = sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS(SELECT 1 FROM users WHERE id=$1 AND status='active' AND role='admin')",
+        "SELECT EXISTS( \
+            SELECT 1 FROM users \
+            WHERE id=$1 AND status='active' AND role='admin' AND deleted_at IS NULL \
+        )",
     )
     .bind(user_id)
     .fetch_one(&mut **transaction)
@@ -1182,11 +1199,15 @@ async fn ensure_registration_user_group(
     transaction: &mut Transaction<'_, Postgres>,
     user_group_id: Uuid,
 ) -> Result<(), RepositoryError> {
-    let exists =
-        sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM user_groups WHERE id=$1)")
-            .bind(user_group_id)
-            .fetch_one(&mut **transaction)
-            .await?;
+    let exists = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS( \
+            SELECT 1 FROM user_groups \
+            WHERE id=$1 AND deleted_at IS NULL \
+        )",
+    )
+    .bind(user_group_id)
+    .fetch_one(&mut **transaction)
+    .await?;
     if exists {
         Ok(())
     } else {

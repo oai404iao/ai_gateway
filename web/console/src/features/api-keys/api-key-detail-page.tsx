@@ -33,6 +33,7 @@ import { DetailField } from "@/components/shared/detail-field";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import {
+  useDeleteOwnApiKey,
   useOwnApiKey,
   useOwnApiKeyOptions,
   useRevokeOwnApiKey,
@@ -93,9 +94,11 @@ export function ApiKeyDetailPage() {
   const options = useOwnApiKeyOptions();
   const update = useUpdateOwnApiKey(id);
   const revoke = useRevokeOwnApiKey();
+  const remove = useDeleteOwnApiKey(id);
   const { t } = useI18n();
   const [submitting, setSubmitting] = useState(false);
   const [revokeOpen, setRevokeOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
   const [revokeReason, setRevokeReason] = useState("");
   const formValues: EditValues = data
     ? {
@@ -158,6 +161,21 @@ export function ApiKeyDetailPage() {
       navigate("/api-keys", { replace: true });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t("Revoke failed"));
+    }
+  };
+
+  const confirmDelete = async () => {
+    setDeleteOpen(false);
+    try {
+      await remove.mutateAsync({ ifMatch: etag });
+      toast.success(t("API key deleted"));
+      navigate("/api-keys", { replace: true });
+    } catch (error) {
+      if (error instanceof ApiError && error.isConflict) {
+        toast.error(t("This key was changed by another session. Reload before deleting it."));
+      } else {
+        toast.error(error instanceof Error ? error.message : t("Delete failed"));
+      }
     }
   };
 
@@ -232,7 +250,7 @@ export function ApiKeyDetailPage() {
     <div className="flex flex-col gap-6">
       <PageHeader
         title={key ? key.name : t("API key")}
-        description={t("View, rename, enable, disable, or revoke this key.")}
+        description={t("View, rename, enable, disable, revoke, or delete this key.")}
         actions={
           <Button variant="ghost" size="sm" onClick={() => navigate("/api-keys")}>
             <ArrowLeft data-icon="inline-start" /> {t("Back")}
@@ -456,15 +474,30 @@ export function ApiKeyDetailPage() {
             <Card>
               <CardHeader>
                 <CardTitle className="text-destructive">{t("Danger zone")}</CardTitle>
-                <CardDescription>{t("Revocation is permanent and audited.")}</CardDescription>
+                <CardDescription>
+                  {t("Revocation keeps the Key visible. Deletion also erases its secret and hides it permanently.")}
+                </CardDescription>
               </CardHeader>
-              <CardContent>
+              <CardContent className="flex flex-wrap gap-3">
                 <Button
                   variant="destructive"
                   onClick={() => setRevokeOpen(true)}
-                  disabled={key.status === "revoked"}
+                  disabled={
+                    key.status === "revoked" ||
+                    remove.isPending ||
+                    revoke.isPending ||
+                    submitting
+                  }
                 >
                   {t("Revoke API key")}
+                </Button>
+                <Button
+                  variant="destructive"
+                  onClick={() => setDeleteOpen(true)}
+                  disabled={remove.isPending || revoke.isPending || submitting}
+                >
+                  {remove.isPending ? <Spinner data-icon="inline-start" /> : null}
+                  {t("Delete API key")}
                 </Button>
               </CardContent>
             </Card>
@@ -493,6 +526,17 @@ export function ApiKeyDetailPage() {
         confirmLabel={t("Revoke")}
         destructive
         onConfirm={confirmRevoke}
+      />
+      <ConfirmDialog
+        open={deleteOpen}
+        onOpenChange={setDeleteOpen}
+        title={t("Delete API key?")}
+        description={t(
+          "This revokes the Key, erases its stored secret, and removes it from the Console. Request logs and audit history keep the Key ID. This action cannot be undone.",
+        )}
+        confirmLabel={t("Delete API key")}
+        destructive
+        onConfirm={() => void confirmDelete()}
       />
     </div>
   );

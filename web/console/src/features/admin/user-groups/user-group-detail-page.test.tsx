@@ -30,14 +30,14 @@ describe("UserGroupDetailPage", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("confirms deletion of an empty custom group", async () => {
+  it("confirms deletion and reassignment for a populated custom group", async () => {
     seedAuthenticatedSession();
     const customGroup = {
       ...USER_GROUP,
       id: "00000000-0000-0000-0000-000000000199",
       name: "Contractors",
       system_role: null,
-      member_count: 0,
+      member_count: 3,
     };
     let deleted = false;
     server.use(
@@ -57,8 +57,12 @@ describe("UserGroupDetailPage", () => {
     const user = userEvent.setup();
     renderAppAt(`/admin/user-groups/${customGroup.id}`);
 
+    expect(await screen.findByText("Members will be reassigned")).toBeInTheDocument();
+    expect(
+      screen.getByText("3 members will move to the built-in group matching their role."),
+    ).toBeInTheDocument();
     await user.click(
-      await screen.findByRole("button", { name: "Delete user group" }),
+      screen.getByRole("button", { name: "Delete user group" }),
     );
     const confirmation = await screen.findByRole("alertdialog");
     await user.click(

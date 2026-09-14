@@ -1269,6 +1269,7 @@ pub enum ControlPlaneMutation {
     },
     DeleteUserGroup {
         id: Uuid,
+        deleted_by: Uuid,
         expected_updated_at: DateTime<Utc>,
     },
     CreateModel(ModelInput),
@@ -1287,6 +1288,11 @@ pub enum ControlPlaneMutation {
     UpdateApiKey {
         id: Uuid,
         input: ApiKeyUpdate,
+        expected_updated_at: DateTime<Utc>,
+    },
+    DeleteApiKey {
+        id: Uuid,
+        deleted_by: Uuid,
         expected_updated_at: DateTime<Utc>,
     },
     RevokeApiKey {
@@ -4606,6 +4612,10 @@ fn generate_api_key_secret() -> String {
     format!("sk-{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
 }
 
+fn deleted_api_key_secret(id: Uuid) -> String {
+    format!("deleted-api-key-{id}")
+}
+
 impl ControlPlaneRepository {
     #[must_use]
     pub fn new(pool: PgPool) -> Self {
@@ -4661,9 +4671,11 @@ impl ControlPlaneRepository {
                  WHERE key.id=$1
                    AND key.user_id=$2
                    AND key.is_system
+                   AND key.deleted_at IS NULL
                    AND user_account.is_system
                    AND user_account.status='active'
                    AND user_account.role='admin'
+                   AND user_account.deleted_at IS NULL
              )",
         )
         .bind(SYSTEM_PROBE_API_KEY_ID)
@@ -4888,7 +4900,7 @@ impl ControlPlaneRepository {
     pub async fn load_transaction(
         transaction: &mut Transaction<'_, Postgres>,
     ) -> Result<ControlPlaneRecords, RepositoryError> {
-        let api_keys = sqlx::query_as::<_, ApiKeyRecord>("SELECT k.id, k.user_id, u.status AS user_status, u.websocket_enabled AS user_websocket_enabled, g.filter_fast_mode AS user_filter_fast_mode, k.secret_value, k.status, k.expires_at, k.allowed_api_formats::text[] AS allowed_api_formats, k.permissions, k.allowed_group_ids, k.allowed_channel_ids, k.requests_per_minute, k.max_concurrent_requests, k.quota_limit_amount, k.quota_used_amount FROM api_keys k JOIN users u ON u.id = k.user_id JOIN user_groups g ON g.id=u.user_group_id WHERE NOT k.is_system ORDER BY k.id").fetch_all(&mut **transaction).await?;
+        let api_keys = sqlx::query_as::<_, ApiKeyRecord>("SELECT k.id, k.user_id, u.status AS user_status, u.websocket_enabled AS user_websocket_enabled, g.filter_fast_mode AS user_filter_fast_mode, k.secret_value, k.status, k.expires_at, k.allowed_api_formats::text[] AS allowed_api_formats, k.permissions, k.allowed_group_ids, k.allowed_channel_ids, k.requests_per_minute, k.max_concurrent_requests, k.quota_limit_amount, k.quota_used_amount FROM api_keys k JOIN users u ON u.id = k.user_id AND u.deleted_at IS NULL JOIN user_groups g ON g.id=u.user_group_id AND g.deleted_at IS NULL WHERE NOT k.is_system AND k.deleted_at IS NULL ORDER BY k.id").fetch_all(&mut **transaction).await?;
         let models = sqlx::query_as::<_, ModelRecord>("SELECT id,source_model_id,currency,price_unit_tokens,price_effective_at,input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,advanced_billing FROM models ORDER BY id").fetch_all(&mut **transaction).await?;
         let model_rules = sqlx::query_as::<_, ModelRuleRecordRow>(
             "SELECT r.id,m.source_model_id AS client_model,r.api_format::text AS api_format, \
@@ -4969,7 +4981,10 @@ impl ControlPlaneRepository {
         id: Uuid,
     ) -> Result<bool, RepositoryError> {
         Ok(sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM users WHERE id = $1 AND status = 'active')",
+            "SELECT EXISTS( \
+                SELECT 1 FROM users \
+                WHERE id=$1 AND status='active' AND deleted_at IS NULL \
+            )",
         )
         .bind(id)
         .fetch_one(&mut **transaction)
@@ -4982,7 +4997,10 @@ impl ControlPlaneRepository {
         id: Uuid,
     ) -> Result<bool, RepositoryError> {
         Ok(sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM users WHERE id = $1 AND status = 'active' AND role = 'admin')",
+            "SELECT EXISTS( \
+                SELECT 1 FROM users \
+                WHERE id=$1 AND status='active' AND role='admin' AND deleted_at IS NULL \
+            )",
         )
         .bind(id)
         .fetch_one(&mut **transaction)
@@ -5088,7 +5106,7 @@ impl ControlPlaneRepository {
                     COALESCE(u.default_api_key_policy_id,g.default_api_key_policy_id) AS effective_api_key_policy_id, \
                     u.websocket_enabled,u.balance_amount,u.created_at,u.updated_at \
              FROM users AS u \
-             JOIN user_groups AS g ON g.id=u.user_group_id \
+             JOIN user_groups AS g ON g.id=u.user_group_id AND g.deleted_at IS NULL \
              WHERE NOT u.is_system AND u.deleted_at IS NULL ORDER BY u.id",
         )
         .fetch_all(&self.pool)
@@ -5107,13 +5125,14 @@ impl ControlPlaneRepository {
                     g.created_at,g.updated_at \
              FROM user_groups AS g \
              LEFT JOIN users AS u ON u.user_group_id=g.id \
+             WHERE g.deleted_at IS NULL \
              GROUP BY g.id \
              ORDER BY g.system_role NULLS LAST,g.name,g.id",
         )
         .fetch_all(&self.pool)
         .await?;
         let models = sqlx::query_as::<_, ControlPlaneModel>("SELECT id,source_model_id,display_name,provider_name,enabled,price_unit_tokens,input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,price_effective_at,advanced_billing,last_synced_at,created_at,updated_at FROM models ORDER BY id").fetch_all(&self.pool).await?;
-        let api_keys = sqlx::query_as::<_, ControlPlaneApiKey>("SELECT k.id, k.user_id, u.status AS user_status, k.name, k.secret_value AS secret, k.status, k.expires_at, k.allowed_api_formats::text[] AS allowed_api_formats, k.permissions, k.allowed_group_ids, k.allowed_channel_ids, k.requests_per_minute, k.max_concurrent_requests, k.quota_limit_amount, k.quota_used_amount, k.updated_at FROM api_keys k JOIN users u ON u.id=k.user_id WHERE NOT k.is_system AND u.deleted_at IS NULL ORDER BY k.id").fetch_all(&self.pool).await?;
+        let api_keys = sqlx::query_as::<_, ControlPlaneApiKey>("SELECT k.id, k.user_id, u.status AS user_status, k.name, k.secret_value AS secret, k.status, k.expires_at, k.allowed_api_formats::text[] AS allowed_api_formats, k.permissions, k.allowed_group_ids, k.allowed_channel_ids, k.requests_per_minute, k.max_concurrent_requests, k.quota_limit_amount, k.quota_used_amount, k.updated_at FROM api_keys k JOIN users u ON u.id=k.user_id WHERE NOT k.is_system AND k.deleted_at IS NULL AND u.deleted_at IS NULL ORDER BY k.id").fetch_all(&self.pool).await?;
         let api_key_policies = sqlx::query_as::<_, ControlPlaneApiKeyPolicy>("SELECT id,name,allowed_group_ids,allowed_channel_ids,enabled,created_at,updated_at FROM api_key_policies ORDER BY id").fetch_all(&self.pool).await?;
         let channel_groups = sqlx::query_as::<_, ControlPlaneChannelGroup>("SELECT id,name,api_format::text AS api_format,connector_kind,connector_pool_id,request_compression,sharing_only,enabled,status_statistics_enabled,updated_at FROM channel_groups ORDER BY id").fetch_all(&self.pool).await?;
         let channels = sqlx::query_as::<_, ControlPlaneChannelRow>("SELECT c.id,c.channel_group_id,c.api_format::text AS api_format,g.connector_kind,(g.connector_kind <> 'openai_compatible') AS provider_managed,c.name,c.base_url,CASE WHEN g.connector_kind='codex_oauth' THEN (c.enabled AND COALESCE(co.enabled,false)) ELSE c.enabled END AS enabled,c.supports_websocket,c.supports_standalone_web_search,c.auto_disabled,c.auto_disabled_reason,c.auto_disable_allowed,c.billing_multiplier,c.proxy_id,c.config_template_id,c.connect_timeout_ms,c.response_header_timeout_ms,c.stream_idle_timeout_ms,c.upstream_auth_kind,c.upstream_auth_header_name,(c.upstream_api_key IS NOT NULL) AS upstream_credential_configured,c.available_models,c.test_model,c.test_pricing_model_id,c.created_at,c.updated_at FROM channels c JOIN channel_groups g ON g.id=c.channel_group_id LEFT JOIN codex_oauth_credential_channels projection ON projection.channel_id=c.id LEFT JOIN codex_oauth_credentials co ON co.channel_id=projection.credential_id WHERE g.connector_kind <> 'codex_oauth' OR (co.channel_id IS NOT NULL AND co.deleted_at IS NULL) ORDER BY c.id").fetch_all(&self.pool).await?;
@@ -5260,7 +5279,9 @@ impl ControlPlaneRepository {
             "SELECT id,name,secret_value AS secret,status,expires_at,allowed_api_formats::text[] AS allowed_api_formats, \
                     permissions,allowed_group_ids,allowed_channel_ids,requests_per_minute,max_concurrent_requests, \
                     quota_limit_amount,quota_used_amount,created_at,updated_at \
-             FROM api_keys WHERE user_id=$1 AND NOT is_system ORDER BY created_at DESC,id DESC",
+             FROM api_keys \
+             WHERE user_id=$1 AND NOT is_system AND deleted_at IS NULL \
+             ORDER BY created_at DESC,id DESC",
         )
         .bind(user_id)
         .fetch_all(&self.pool)
@@ -5277,7 +5298,8 @@ impl ControlPlaneRepository {
             "SELECT id,name,secret_value AS secret,status,expires_at,allowed_api_formats::text[] AS allowed_api_formats, \
                     permissions,allowed_group_ids,allowed_channel_ids,requests_per_minute,max_concurrent_requests, \
                     quota_limit_amount,quota_used_amount,created_at,updated_at \
-             FROM api_keys WHERE id=$1 AND user_id=$2 AND NOT is_system",
+             FROM api_keys \
+             WHERE id=$1 AND user_id=$2 AND NOT is_system AND deleted_at IS NULL",
         )
         .bind(id)
         .bind(user_id)
@@ -5293,7 +5315,7 @@ impl ControlPlaneRepository {
         let policy = sqlx::query_as::<_, SelfApiKeyPolicy>(
             "SELECT p.id,p.name,p.allowed_group_ids,p.allowed_channel_ids,p.enabled \
              FROM users AS u \
-             JOIN user_groups AS g ON g.id=u.user_group_id \
+             JOIN user_groups AS g ON g.id=u.user_group_id AND g.deleted_at IS NULL \
              JOIN api_key_policies AS p \
                ON p.id=COALESCE(u.default_api_key_policy_id,g.default_api_key_policy_id) \
              WHERE u.id=$1 AND u.status='active' AND u.deleted_at IS NULL",
@@ -5459,7 +5481,7 @@ impl ControlPlaneRepository {
         let current = sqlx::query_as::<_, SelfApiKeyCurrent>(
             "SELECT allowed_group_ids,allowed_channel_ids \
              FROM api_keys \
-             WHERE id=$1 AND user_id=$2 FOR UPDATE",
+             WHERE id=$1 AND user_id=$2 AND deleted_at IS NULL FOR UPDATE",
         )
         .bind(id)
         .bind(user_id)
@@ -5500,7 +5522,8 @@ impl ControlPlaneRepository {
                  allowed_api_formats=CASE WHEN $6 THEN $7::api_format[] ELSE allowed_api_formats END, \
                  allowed_group_ids=$8,allowed_channel_ids=$9,requests_per_minute=$10, \
                  max_concurrent_requests=$11,quota_limit_amount=$12 \
-             WHERE id=$1 AND user_id=$2 AND updated_at=$13 AND status <> 'revoked' \
+             WHERE id=$1 AND user_id=$2 AND updated_at=$13 \
+               AND status <> 'revoked' AND deleted_at IS NULL \
              RETURNING updated_at",
         )
         .bind(id)
@@ -5543,9 +5566,13 @@ impl ControlPlaneRepository {
             return Err(RepositoryError::Validation);
         }
         let before = key_audit_for_user(transaction, id, user_id).await?;
+        if !before["deleted_at"].is_null() {
+            return Err(RepositoryError::NotFound);
+        }
         let updated_at = sqlx::query_scalar(
             "UPDATE api_keys SET status='revoked' \
-             WHERE id=$1 AND user_id=$2 AND status <> 'revoked' RETURNING updated_at",
+             WHERE id=$1 AND user_id=$2 AND status <> 'revoked' \
+               AND deleted_at IS NULL RETURNING updated_at",
         )
         .bind(id)
         .bind(user_id)
@@ -5563,6 +5590,24 @@ impl ControlPlaneRepository {
             updated_at,
             correlation_id: None,
         })
+    }
+
+    pub async fn delete_own_api_key(
+        &self,
+        transaction: &mut Transaction<'_, Postgres>,
+        user_id: Uuid,
+        id: Uuid,
+        expected_updated_at: DateTime<Utc>,
+    ) -> Result<MutationResult, RepositoryError> {
+        api_key_soft_delete(
+            transaction,
+            id,
+            Some(user_id),
+            user_id,
+            expected_updated_at,
+            "self_delete",
+        )
+        .await
     }
 
     pub async fn update_users_batch(
@@ -5790,8 +5835,9 @@ impl ControlPlaneRepository {
             } => user_group_insert(transaction, id, input, false, Some(expected_updated_at)).await,
             ControlPlaneMutation::DeleteUserGroup {
                 id,
+                deleted_by,
                 expected_updated_at,
-            } => user_group_delete(transaction, id, expected_updated_at).await,
+            } => user_group_soft_delete(transaction, id, deleted_by, expected_updated_at).await,
             ControlPlaneMutation::CreateModel(input) => {
                 model_insert(transaction, Uuid::new_v4(), input, true, None).await
             }
@@ -5801,6 +5847,7 @@ impl ControlPlaneRepository {
                 expected_updated_at,
             } => model_insert(transaction, id, input, false, Some(expected_updated_at)).await,
             ControlPlaneMutation::CreateApiKey(input) => {
+                ensure_api_key_owner_exists(transaction, input.user_id).await?;
                 validate_admin_api_key_input(
                     &input.name,
                     &input.allowed_api_formats,
@@ -5854,7 +5901,10 @@ impl ControlPlaneRepository {
                     input.quota_limit_amount,
                 )?;
                 let before = key_audit(transaction, id).await?;
-                let updated_at = sqlx::query_scalar("UPDATE api_keys SET name=$2,status=$3,expires_at=$4,allowed_api_formats=$5::api_format[],permissions=$6,allowed_group_ids=$7,allowed_channel_ids=$8,requests_per_minute=$9,max_concurrent_requests=$10,quota_limit_amount=$11 WHERE id=$1 AND updated_at=$12 AND NOT (status='revoked' AND $3 <> 'revoked') RETURNING updated_at")
+                if !before["deleted_at"].is_null() {
+                    return Err(RepositoryError::NotFound);
+                }
+                let updated_at = sqlx::query_scalar("UPDATE api_keys SET name=$2,status=$3,expires_at=$4,allowed_api_formats=$5::api_format[],permissions=$6,allowed_group_ids=$7,allowed_channel_ids=$8,requests_per_minute=$9,max_concurrent_requests=$10,quota_limit_amount=$11 WHERE id=$1 AND updated_at=$12 AND deleted_at IS NULL AND NOT (status='revoked' AND $3 <> 'revoked') RETURNING updated_at")
                     .bind(id).bind(&input.name).bind(&input.status).bind(input.expires_at).bind(&input.allowed_api_formats).bind(&input.permissions).bind(&input.allowed_group_ids).bind(&input.allowed_channel_ids).bind(input.requests_per_minute).bind(input.max_concurrent_requests).bind(input.quota_limit_amount).bind(expected_updated_at).fetch_optional(&mut **transaction).await?.ok_or(RepositoryError::Conflict)?;
                 Ok(MutationResult {
                     id,
@@ -5868,13 +5918,33 @@ impl ControlPlaneRepository {
                     correlation_id: None,
                 })
             }
+            ControlPlaneMutation::DeleteApiKey {
+                id,
+                deleted_by,
+                expected_updated_at,
+            } => {
+                api_key_soft_delete(
+                    transaction,
+                    id,
+                    None,
+                    deleted_by,
+                    expected_updated_at,
+                    "delete",
+                )
+                .await
+            }
             ControlPlaneMutation::RevokeApiKey { id, reason } => {
                 if reason.trim().is_empty() {
                     return Err(RepositoryError::Validation);
                 }
                 let before = key_audit(transaction, id).await?;
+                if !before["deleted_at"].is_null() {
+                    return Err(RepositoryError::NotFound);
+                }
                 let updated_at = sqlx::query_scalar(
-                    "UPDATE api_keys SET status='revoked' WHERE id=$1 AND status <> 'revoked' RETURNING updated_at",
+                    "UPDATE api_keys SET status='revoked' \
+                     WHERE id=$1 AND status <> 'revoked' AND deleted_at IS NULL \
+                     RETURNING updated_at",
                 )
                 .bind(id)
                 .fetch_optional(&mut **transaction)
@@ -6107,7 +6177,7 @@ async fn load_optional_self_api_key_policy(
     let policy = sqlx::query_as::<_, SelfApiKeyPolicy>(
         "SELECT p.id,p.name,p.allowed_group_ids,p.allowed_channel_ids,p.enabled \
          FROM users AS u \
-         JOIN user_groups AS g ON g.id=u.user_group_id \
+         JOIN user_groups AS g ON g.id=u.user_group_id AND g.deleted_at IS NULL \
          JOIN api_key_policies AS p \
            ON p.id=COALESCE(u.default_api_key_policy_id,g.default_api_key_policy_id) \
          WHERE u.id=$1 AND u.status='active' AND u.deleted_at IS NULL \
@@ -6364,13 +6434,81 @@ async fn validate_policy_targets(
     Ok(())
 }
 
+async fn api_key_soft_delete(
+    transaction: &mut Transaction<'_, Postgres>,
+    id: Uuid,
+    owner_id: Option<Uuid>,
+    deleted_by: Uuid,
+    expected_updated_at: DateTime<Utc>,
+    action: &'static str,
+) -> Result<MutationResult, RepositoryError> {
+    let before = if let Some(owner_id) = owner_id {
+        key_audit_for_user(transaction, id, owner_id).await?
+    } else {
+        key_audit(transaction, id).await?
+    };
+    if !before["deleted_at"].is_null() {
+        return Err(RepositoryError::NotFound);
+    }
+
+    let secret = deleted_api_key_secret(id);
+    let updated_at = if let Some(owner_id) = owner_id {
+        sqlx::query_scalar(
+            "UPDATE api_keys SET \
+             status='revoked',secret_value=$4,deleted_at=now(),deleted_by=$3 \
+             WHERE id=$1 AND user_id=$2 AND updated_at=$5 \
+               AND deleted_at IS NULL AND NOT is_system \
+             RETURNING updated_at",
+        )
+        .bind(id)
+        .bind(owner_id)
+        .bind(deleted_by)
+        .bind(&secret)
+        .bind(expected_updated_at)
+        .fetch_optional(&mut **transaction)
+        .await?
+    } else {
+        sqlx::query_scalar(
+            "UPDATE api_keys SET \
+             status='revoked',secret_value=$3,deleted_at=now(),deleted_by=$2 \
+             WHERE id=$1 AND updated_at=$4 \
+               AND deleted_at IS NULL AND NOT is_system \
+             RETURNING updated_at",
+        )
+        .bind(id)
+        .bind(deleted_by)
+        .bind(&secret)
+        .bind(expected_updated_at)
+        .fetch_optional(&mut **transaction)
+        .await?
+    }
+    .ok_or(RepositoryError::Conflict)?;
+
+    let after = if let Some(owner_id) = owner_id {
+        key_audit_for_user(transaction, id, owner_id).await?
+    } else {
+        key_audit(transaction, id).await?
+    };
+    Ok(MutationResult {
+        id,
+        object_type: "api_key",
+        action,
+        before_redacted: before,
+        after_redacted: after,
+        created_secret: None,
+        reason: Some("API key deleted and secret erased".into()),
+        updated_at,
+        correlation_id: None,
+    })
+}
+
 async fn key_audit_for_user(
     transaction: &mut Transaction<'_, Postgres>,
     id: Uuid,
     user_id: Uuid,
 ) -> Result<Value, RepositoryError> {
     let value = sqlx::query_scalar::<_, Value>(
-        "SELECT json_build_object('id',id,'user_id',user_id,'name',name,'status',status,'expires_at',expires_at,'allowed_api_formats',allowed_api_formats,'permissions',permissions,'allowed_group_ids',allowed_group_ids,'allowed_channel_ids',allowed_channel_ids,'requests_per_minute',requests_per_minute,'max_concurrent_requests',max_concurrent_requests,'quota_limit_amount',quota_limit_amount,'quota_used_amount',quota_used_amount,'created_at',created_at,'updated_at',updated_at) FROM api_keys WHERE id=$1 AND user_id=$2 AND NOT is_system FOR UPDATE",
+        "SELECT json_build_object('id',id,'user_id',user_id,'name',name,'status',status,'expires_at',expires_at,'allowed_api_formats',allowed_api_formats,'permissions',permissions,'allowed_group_ids',allowed_group_ids,'allowed_channel_ids',allowed_channel_ids,'requests_per_minute',requests_per_minute,'max_concurrent_requests',max_concurrent_requests,'quota_limit_amount',quota_limit_amount,'quota_used_amount',quota_used_amount,'deleted_at',deleted_at,'deleted_by',deleted_by,'created_at',created_at,'updated_at',updated_at) FROM api_keys WHERE id=$1 AND user_id=$2 AND NOT is_system FOR UPDATE",
     )
     .bind(id)
     .bind(user_id)
@@ -6384,7 +6522,7 @@ async fn key_audit(
     id: Uuid,
 ) -> Result<Value, RepositoryError> {
     let value = sqlx::query_scalar::<_, Value>(
-        "SELECT json_build_object('id',id,'user_id',user_id,'name',name,'status',status,'expires_at',expires_at,'allowed_api_formats',allowed_api_formats,'permissions',permissions,'allowed_group_ids',allowed_group_ids,'allowed_channel_ids',allowed_channel_ids,'requests_per_minute',requests_per_minute,'max_concurrent_requests',max_concurrent_requests,'quota_limit_amount',quota_limit_amount,'quota_used_amount',quota_used_amount,'created_at',created_at,'updated_at',updated_at) FROM api_keys WHERE id=$1 AND NOT is_system FOR UPDATE",
+        "SELECT json_build_object('id',id,'user_id',user_id,'name',name,'status',status,'expires_at',expires_at,'allowed_api_formats',allowed_api_formats,'permissions',permissions,'allowed_group_ids',allowed_group_ids,'allowed_channel_ids',allowed_channel_ids,'requests_per_minute',requests_per_minute,'max_concurrent_requests',max_concurrent_requests,'quota_limit_amount',quota_limit_amount,'quota_used_amount',quota_used_amount,'deleted_at',deleted_at,'deleted_by',deleted_by,'created_at',created_at,'updated_at',updated_at) FROM api_keys WHERE id=$1 AND NOT is_system FOR UPDATE",
     )
     .bind(id)
     .fetch_optional(&mut **transaction)
@@ -6454,6 +6592,8 @@ async fn user_group_audit(
             'filter_fast_mode',g.filter_fast_mode, \
             'system_role',g.system_role, \
             'member_count',count(u.id) FILTER (WHERE u.deleted_at IS NULL AND NOT u.is_system), \
+            'deleted_at',g.deleted_at, \
+            'deleted_by',g.deleted_by, \
             'created_at',g.created_at, \
             'updated_at',g.updated_at \
          ) \
@@ -6777,15 +6917,38 @@ fn default_user_group_id(role: &str) -> Result<Uuid, RepositoryError> {
     }
 }
 
+async fn ensure_api_key_owner_exists(
+    transaction: &mut Transaction<'_, Postgres>,
+    id: Uuid,
+) -> Result<(), RepositoryError> {
+    let exists = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS( \
+            SELECT 1 FROM users \
+            WHERE id=$1 AND deleted_at IS NULL AND NOT is_system \
+        )",
+    )
+    .bind(id)
+    .fetch_one(&mut **transaction)
+    .await?;
+    if exists {
+        Ok(())
+    } else {
+        Err(RepositoryError::Validation)
+    }
+}
+
 async fn ensure_user_group_exists(
     transaction: &mut Transaction<'_, Postgres>,
     id: Uuid,
 ) -> Result<(), RepositoryError> {
-    let exists =
-        sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM user_groups WHERE id=$1)")
-            .bind(id)
-            .fetch_one(&mut **transaction)
-            .await?;
+    let exists = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS( \
+            SELECT 1 FROM user_groups WHERE id=$1 AND deleted_at IS NULL \
+        )",
+    )
+    .bind(id)
+    .fetch_one(&mut **transaction)
+    .await?;
     if exists {
         Ok(())
     } else {
@@ -6884,6 +7047,9 @@ async fn user_group_insert(
     } else {
         user_group_audit(transaction, id).await?
     };
+    if !create && !before["deleted_at"].is_null() {
+        return Err(RepositoryError::NotFound);
+    }
     if let Some(policy_id) = input.default_api_key_policy_id {
         let current_policy_id = before["default_api_key_policy_id"]
             .as_str()
@@ -6909,7 +7075,8 @@ async fn user_group_insert(
         sqlx::query_scalar(
             "UPDATE user_groups SET \
              name=$2,description=$3,default_api_key_policy_id=$4,filter_fast_mode=$5 \
-             WHERE id=$1 AND updated_at=$6 RETURNING updated_at",
+             WHERE id=$1 AND updated_at=$6 AND deleted_at IS NULL \
+             RETURNING updated_at",
         )
         .bind(id)
         .bind(&input.name)
@@ -6940,12 +7107,16 @@ async fn user_group_insert(
     })
 }
 
-async fn user_group_delete(
+async fn user_group_soft_delete(
     transaction: &mut Transaction<'_, Postgres>,
     id: Uuid,
+    deleted_by: Uuid,
     expected_updated_at: DateTime<Utc>,
 ) -> Result<MutationResult, RepositoryError> {
     let before = user_group_audit(transaction, id).await?;
+    if !before["deleted_at"].is_null() {
+        return Err(RepositoryError::NotFound);
+    }
     let current_updated_at: DateTime<Utc> = serde_json::from_value(before["updated_at"].clone())
         .map_err(|_| RepositoryError::Validation)?;
     if current_updated_at != expected_updated_at {
@@ -6954,35 +7125,55 @@ async fn user_group_delete(
     if !before["system_role"].is_null() {
         return Err(RepositoryError::ProtectedUserGroup);
     }
-    if before["member_count"].as_i64().unwrap_or_default() > 0 {
-        return Err(RepositoryError::UserGroupInUse);
-    }
-    let registration_code_count = sqlx::query_scalar::<_, i64>(
-        "SELECT count(*) FROM registration_invitation_codes WHERE user_group_id=$1",
+
+    let reassigned_users = sqlx::query(
+        "UPDATE users SET user_group_id=CASE role \
+             WHEN 'admin' THEN $2 ELSE $3 END \
+         WHERE user_group_id=$1 AND deleted_at IS NULL AND NOT is_system",
     )
     .bind(id)
-    .fetch_one(&mut **transaction)
+    .bind(DEFAULT_ADMIN_GROUP_ID)
+    .bind(DEFAULT_USER_GROUP_ID)
+    .execute(&mut **transaction)
     .await?;
-    if registration_code_count > 0 {
-        return Err(RepositoryError::UserGroupInUse);
-    }
-    let deleted = sqlx::query("DELETE FROM user_groups WHERE id=$1 AND updated_at=$2")
+
+    let disabled_codes = sqlx::query(
+        "UPDATE registration_invitation_codes SET enabled=false \
+         WHERE user_group_id=$1 AND enabled",
+    )
+    .bind(id)
+    .execute(&mut **transaction)
+    .await?;
+    sqlx::query("DELETE FROM user_group_codex_quota_visibility WHERE user_group_id=$1")
         .bind(id)
-        .bind(expected_updated_at)
         .execute(&mut **transaction)
         .await?;
-    if deleted.rows_affected() != 1 {
-        return Err(RepositoryError::Conflict);
-    }
+
+    let updated_at = sqlx::query_scalar(
+        "UPDATE user_groups SET deleted_at=now(),deleted_by=$2 \
+         WHERE id=$1 AND updated_at=$3 AND deleted_at IS NULL \
+         RETURNING updated_at",
+    )
+    .bind(id)
+    .bind(deleted_by)
+    .bind(expected_updated_at)
+    .fetch_optional(&mut **transaction)
+    .await?
+    .ok_or(RepositoryError::Conflict)?;
+
     Ok(MutationResult {
         id,
         object_type: "user_group",
         action: "delete",
         before_redacted: before,
-        after_redacted: json!({}),
+        after_redacted: user_group_audit(transaction, id).await?,
         created_secret: None,
-        reason: None,
-        updated_at: expected_updated_at,
+        reason: Some(format!(
+            "{} users reassigned; {} registration invitation codes disabled",
+            reassigned_users.rows_affected(),
+            disabled_codes.rows_affected()
+        )),
+        updated_at,
         correlation_id: None,
     })
 }
@@ -7271,10 +7462,15 @@ async fn user_soft_delete(
     .execute(&mut **transaction)
     .await?;
     sqlx::query(
-        "UPDATE api_keys SET status='revoked' \
-         WHERE user_id=$1 AND status<>'revoked' AND NOT is_system",
+        "UPDATE api_keys SET \
+         status='revoked', \
+         secret_value='deleted-api-key-' || id::text, \
+         deleted_at=now(), \
+         deleted_by=$2 \
+         WHERE user_id=$1 AND deleted_at IS NULL AND NOT is_system",
     )
     .bind(id)
+    .bind(deleted_by)
     .execute(&mut **transaction)
     .await?;
 
@@ -7285,7 +7481,7 @@ async fn user_soft_delete(
         before_redacted: before,
         after_redacted: user_audit(transaction, id).await?,
         created_secret: None,
-        reason: Some("user anonymized and credentials revoked".into()),
+        reason: Some("user anonymized and API keys deleted".into()),
         updated_at,
         correlation_id: None,
     })
@@ -8621,8 +8817,6 @@ pub enum RepositoryError {
     RoutingDependencyInvalid,
     #[error("the built-in user group is protected")]
     ProtectedUserGroup,
-    #[error("the user group still has members")]
-    UserGroupInUse,
     #[error("the proxy is still assigned to a channel or pending OAuth flow")]
     ProxyInUse,
     #[error("an administrator cannot delete their own account")]

@@ -851,8 +851,8 @@ const zhCN: Record<string, string> = {
     "不能删除当前登录的管理员账户。",
   "Create another active administrator before deleting this user.":
     "删除该用户前，请先创建另一个活跃管理员。",
-  "This anonymizes the account and revokes every session, invitation, and API key. Request logs and audit history are preserved. This action cannot be undone.":
-    "此操作会匿名化账户并撤销全部会话、邀请和 API 密钥；请求日志与审计历史会保留，且无法撤销。",
+  "This anonymizes the account, revokes every session and invitation, and deletes every API key with its stored secret. Request logs and audit history are preserved. This action cannot be undone.":
+    "此操作会匿名化账户、撤销全部会话和邀请，并删除所有 API 密钥及其已存储 secret；请求日志与审计历史会保留，且无法撤销。",
   "Delete failed": "删除失败",
   "Assign one group to each user and inherit its default API policy.":
     "每个用户属于一个用户组，并继承该组的默认 API 策略。",
@@ -885,19 +885,17 @@ const zhCN: Record<string, string> = {
   "User group updated": "用户组已更新",
   "This user group was changed elsewhere. Reloading.":
     "此用户组已在其他位置修改，正在重新加载。",
-  "Deleting a custom group is permanent and audited.":
-    "删除自定义用户组不可撤销，且会记录审计日志。",
+  "Deleting a custom group is permanent and audited. Members and registration codes are handled automatically.":
+    "删除自定义用户组不可撤销，且会记录审计日志；成员和注册邀请码会自动处理。",
   "Protected default group": "受保护的默认组",
   "Built-in default groups cannot be deleted.": "内置默认用户组不能删除。",
-  "Group still has members": "用户组仍有成员",
-  "Move every member out of this group before deleting it.":
-    "删除前请先将所有成员移出该用户组。",
-  "Move every member out of this group and reassign its registration codes before deleting it.":
-    "删除前请先将所有成员移出该用户组，并重新分配引用该组的注册邀请码。",
+  "Members will be reassigned": "成员将被重新分配",
+  "{count} members will move to the built-in group matching their role.":
+    "{count} 名成员将迁移到与其角色匹配的内置用户组。",
   "Delete user group": "删除用户组",
   "Delete user group?": "删除用户组？",
-  "This permanently deletes the empty group. This action cannot be undone.":
-    "此操作会永久删除空用户组，且无法撤销。",
+  "This hides the group permanently, moves its members to their built-in role group, disables associated registration codes, and removes Codex quota visibility. This action cannot be undone.":
+    "此操作会永久隐藏该组，将成员迁移到对应的内置角色组，禁用关联注册邀请码，并移除 Codex 配额可见性；操作无法撤销。",
   "User group deleted": "用户组已删除",
   "Create and adjust reusable invitation codes for self-service registration.":
     "创建并调整用于自助注册的可复用邀请码。",
@@ -1660,8 +1658,10 @@ const zhCN: Record<string, string> = {
   "This key was changed by another session. Reloading.": "此密钥已被其他会话修改，正在重新加载。",
   "Review the highlighted API key fields.": "请检查标记的 API 密钥字段。",
   "API key revoked": "API 密钥已撤销",
+  "API key deleted": "API 密钥已删除",
   "Revoke failed": "撤销失败",
-  "View, rename, enable, disable, or revoke this key.": "查看、重命名、启用、禁用或撤销此密钥。",
+  "View, rename, enable, disable, revoke, or delete this key.":
+    "查看、重命名、启用、禁用、撤销或删除此密钥。",
   "Details": "详情",
   "Authorization fields are managed by your policy.": "授权字段由您的策略管理。",
   "Formats are derived from the selected targets; permissions are fixed at creation.":
@@ -1676,12 +1676,19 @@ const zhCN: Record<string, string> = {
   "Renaming or disabling takes effect immediately.": "重命名或禁用会立即生效。",
   "Expires at (optional)": "过期时间（可选）",
   "Save changes": "保存更改",
-  "Revocation is permanent and audited.": "撤销不可恢复，且会记录审计日志。",
+  "Revocation keeps the Key visible. Deletion also erases its secret and hides it permanently.":
+    "撤销后仍会显示该密钥；删除还会擦除 secret 并永久隐藏该密钥。",
   "Revoke API key": "撤销 API 密钥",
   "Revoke API key?": "撤销 API 密钥？",
   "This permanently disables the key and records an audit entry.": "这会永久禁用该密钥并记录审计日志。",
   "Reason (optional)": "原因（可选）",
   "Revoke": "撤销",
+  "Delete API key": "删除 API 密钥",
+  "Delete API key?": "删除 API 密钥？",
+  "This revokes the Key, erases its stored secret, and removes it from the Console. Request logs and audit history keep the Key ID. This action cannot be undone.":
+    "此操作会撤销密钥、擦除已存储的 secret，并将其从 Console 中移除；请求日志和审计历史仍保留密钥 ID。操作无法撤销。",
+  "This key was changed by another session. Reload before deleting it.":
+    "此密钥已被其他会话修改，请重新加载后再删除。",
   "API key created": "API 密钥已创建",
   "Your personal client keys for the OpenAI-compatible data plane.":
     "用于 OpenAI 兼容数据平面的个人客户端密钥。",
