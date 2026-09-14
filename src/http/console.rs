@@ -34,17 +34,17 @@ use crate::{
     domain::{ConsolePrincipal, UserRole},
     persistence::{
         ApiKeyCreate, ApiKeyPolicyInput, ApiKeyUpdate, ChannelBatchUpdateInput, ChannelCreateInput,
-        ChannelGroupInput, ChannelGroupStatusWindow, ChannelInput, ChannelRecoverInput,
-        CodexCredentialBatchInput, CodexCredentialExportBundle, CodexCredentialExportInput,
-        CodexCredentialImportInput, CodexCredentialUpdateInput, CodexCredentialView,
-        CodexOauthStartInput, CodexQuotaWindowHistory, ConfigTemplateCreateInput,
-        ConfigTemplateInput, ConsoleApiKey, ControlPlaneMutation, CostStatisticsFilter,
-        InviteUserInput, ModelInput, ModelProtocolRuleCreateInput, ModelProtocolRuleInput,
-        ModelRuleCreateInput, ProxyCreateInput, ProxyInput, RequestLogFilter, RequestLogRepository,
-        SelfApiKeyCreate, SelfApiKeyUpdate, SelfCodexQuotaCredentialView,
-        SelfCodexQuotaWindowHistory, SpendLeaderboardFilter, SpendLeaderboardPeriod,
-        StatisticsGranularity, SystemSettingsInput, UserBatchUpdateInput, UserGroupInput,
-        UserInput, UserSettingsInput, UserUpdateInput,
+        ChannelDeletionImpact, ChannelGroupInput, ChannelGroupStatusWindow, ChannelInput,
+        ChannelRecoverInput, CodexCredentialBatchInput, CodexCredentialExportBundle,
+        CodexCredentialExportInput, CodexCredentialImportInput, CodexCredentialUpdateInput,
+        CodexCredentialView, CodexOauthStartInput, CodexQuotaWindowHistory,
+        ConfigTemplateCreateInput, ConfigTemplateInput, ConsoleApiKey, ControlPlaneMutation,
+        CostStatisticsFilter, DeletionConfirmationInput, InviteUserInput, ModelInput,
+        ModelProtocolRuleCreateInput, ModelProtocolRuleInput, ModelRuleCreateInput,
+        ProxyCreateInput, ProxyInput, RequestLogFilter, RequestLogRepository, SelfApiKeyCreate,
+        SelfApiKeyUpdate, SelfCodexQuotaCredentialView, SelfCodexQuotaWindowHistory,
+        SpendLeaderboardFilter, SpendLeaderboardPeriod, StatisticsGranularity, SystemSettingsInput,
+        UserBatchUpdateInput, UserGroupInput, UserInput, UserSettingsInput, UserUpdateInput,
     },
     runtime_config::ConfigError,
 };
@@ -213,7 +213,11 @@ pub fn router(state: ConsoleState) -> Router {
         )
         .route(
             "/console/v1/routing/channel-groups/{id}",
-            get(get_group).put(update_group),
+            get(get_group).put(update_group).delete(delete_group),
+        )
+        .route(
+            "/console/v1/routing/channel-groups/{id}/deletion-impact",
+            get(get_group_deletion_impact),
         )
         .route(
             "/console/v1/routing/channels",
@@ -229,7 +233,11 @@ pub fn router(state: ConsoleState) -> Router {
         )
         .route(
             "/console/v1/routing/channels/{id}",
-            get(get_channel).put(update_channel),
+            get(get_channel).put(update_channel).delete(delete_channel),
+        )
+        .route(
+            "/console/v1/routing/channels/{id}/deletion-impact",
+            get(get_channel_deletion_impact),
         )
         .route(
             "/console/v1/routing/channels/{id}/recover",
@@ -1704,6 +1712,35 @@ async fn update_group(
     .await
 }
 
+async fn get_group_deletion_impact(
+    State(state): State<ConsoleState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<ChannelDeletionImpact>, ConsoleError> {
+    Ok(Json(
+        state.coordinator.channel_group_deletion_impact(id).await?,
+    ))
+}
+
+async fn delete_group(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(input): Json<DeletionConfirmationInput>,
+) -> Result<Json<MutationResponse>, ConsoleError> {
+    mutate(
+        &state,
+        principal,
+        ControlPlaneMutation::DeleteGroup {
+            id,
+            deleted_by: principal.user_id(),
+            expected_updated_at: if_match(&headers)?,
+            confirmation_token: input.confirmation_token,
+        },
+    )
+    .await
+}
+
 async fn list_channels(
     State(state): State<ConsoleState>,
 ) -> Result<Json<serde_json::Value>, ConsoleError> {
@@ -1775,6 +1812,33 @@ async fn update_channel(
             id,
             input,
             expected_updated_at: if_match(&headers)?,
+        },
+    )
+    .await
+}
+
+async fn get_channel_deletion_impact(
+    State(state): State<ConsoleState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<ChannelDeletionImpact>, ConsoleError> {
+    Ok(Json(state.coordinator.channel_deletion_impact(id).await?))
+}
+
+async fn delete_channel(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(input): Json<DeletionConfirmationInput>,
+) -> Result<Json<MutationResponse>, ConsoleError> {
+    mutate(
+        &state,
+        principal,
+        ControlPlaneMutation::DeleteChannel {
+            id,
+            deleted_by: principal.user_id(),
+            expected_updated_at: if_match(&headers)?,
+            confirmation_token: input.confirmation_token,
         },
     )
     .await
@@ -2799,6 +2863,8 @@ fn repository_error_message(error: &crate::persistence::RepositoryError) -> &'st
         crate::persistence::RepositoryError::RoutingDependencyInvalid => {
             "routing_dependency_invalid"
         }
+        crate::persistence::RepositoryError::DeletionImpactChanged => "deletion_impact_changed",
+        crate::persistence::RepositoryError::ProviderManagedResource => "provider_managed_resource",
         crate::persistence::RepositoryError::ProtectedUserGroup => "protected_user_group",
         crate::persistence::RepositoryError::ProxyInUse => "proxy_in_use",
         crate::persistence::RepositoryError::CannotDeleteSelf => "cannot_delete_self",
@@ -2842,6 +2908,8 @@ fn repository_status(error: &crate::persistence::RepositoryError) -> StatusCode 
         crate::persistence::RepositoryError::SharingCredentialInUse => StatusCode::CONFLICT,
         crate::persistence::RepositoryError::NotFound => StatusCode::NOT_FOUND,
         crate::persistence::RepositoryError::Conflict
+        | crate::persistence::RepositoryError::DeletionImpactChanged
+        | crate::persistence::RepositoryError::ProviderManagedResource
         | crate::persistence::RepositoryError::ProtectedUserGroup
         | crate::persistence::RepositoryError::ProxyInUse
         | crate::persistence::RepositoryError::CannotDeleteSelf

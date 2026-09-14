@@ -1510,6 +1510,64 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/Unprocessable" }
+    delete:
+      tags: [ChannelGroups]
+      operationId: deleteChannelGroup
+      description: |
+        Irreversibly tombstones one ordinary OpenAI-compatible group and all
+        of its channels. Routing targets, API Keys, API Key Policies, and
+        quota-visibility assignments are normalized or unbound atomically.
+        Provider-managed groups must use their connector lifecycle.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DeletionConfirmationInput" }
+      responses:
+        "200":
+          description: Channel group and its ordinary channels deleted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Resource version or confirmed deletion impact changed, or the group is provider-managed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorBody" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /routing/channel-groups/{id}/deletion-impact:
+    get:
+      tags: [ChannelGroups]
+      operationId: previewChannelGroupDeletion
+      description: |
+        Returns the authoritative current dependency impact and a confirmation
+        token. DELETE recomputes the impact transactionally and rejects a stale
+        token so the administrator must review changed consequences.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "200":
+          description: Current deletion impact.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChannelDeletionImpact" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Provider-managed groups must use their connector lifecycle.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorBody" }
 
   /routing/channels:
     get:
@@ -1638,6 +1696,64 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/Unprocessable" }
+    delete:
+      tags: [Channels]
+      operationId: deleteChannel
+      description: |
+        Irreversibly tombstones one ordinary OpenAI-compatible channel,
+        erases its upstream URL, credential, network settings, and transforms, and atomically
+        normalizes routing targets plus API Key and Policy assignments.
+        Provider-managed channels must use their connector lifecycle.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DeletionConfirmationInput" }
+      responses:
+        "200":
+          description: Channel deleted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Resource version or confirmed deletion impact changed, or the channel is provider-managed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorBody" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /routing/channels/{id}/deletion-impact:
+    get:
+      tags: [Channels]
+      operationId: previewChannelDeletion
+      description: |
+        Returns the authoritative current dependency impact and a confirmation
+        token. DELETE recomputes the impact transactionally and rejects a stale
+        token so the administrator must review changed consequences.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+      responses:
+        "200":
+          description: Current deletion impact.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChannelDeletionImpact" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Provider-managed channels must use their connector lifecycle.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorBody" }
 
   /routing/channels/{id}/recover:
     post:
@@ -3986,6 +4102,81 @@ components:
               nullable: true
               description: Stored upstream credential returned for administrator review and editing.
 
+    ChannelDeletionImpact:
+      type: object
+      required:
+        [resource_type, resource_id, confirmation_token, channels,
+         model_protocol_rules, api_keys, api_key_policies,
+         quota_visibility_user_groups]
+      properties:
+        resource_type:
+          type: string
+          enum: [channel, channel_group]
+        resource_id: { type: string, format: uuid }
+        confirmation_token:
+          type: string
+          description: Opaque fingerprint of the current dependencies and normalization outcome; valid only while the impact is unchanged.
+        channels:
+          type: array
+          description: Ordinary channels that will become non-secret tombstones.
+          items: { $ref: "#/components/schemas/DeletionImpactChannel" }
+        model_protocol_rules:
+          type: array
+          description: Protocol routing rules whose targets, tiers, enabled state, or effective candidates will change.
+          items:
+            { $ref: "#/components/schemas/DeletionImpactModelProtocolRule" }
+        api_keys:
+          type: array
+          description: Non-deleted API Keys from which the deleted targets will be removed.
+          items: { $ref: "#/components/schemas/DeletionImpactNamedResource" }
+        api_key_policies:
+          type: array
+          description: API Key Policies from which the deleted targets will be removed.
+          items: { $ref: "#/components/schemas/DeletionImpactNamedResource" }
+        quota_visibility_user_groups:
+          type: array
+          description: User groups whose matching Codex quota-visibility assignment will be removed.
+          items: { $ref: "#/components/schemas/DeletionImpactNamedResource" }
+
+    DeletionImpactChannel:
+      type: object
+      required: [id, channel_group_id, name]
+      properties:
+        id: { type: string, format: uuid }
+        channel_group_id: { type: string, format: uuid }
+        name: { type: string }
+
+    DeletionImpactNamedResource:
+      type: object
+      required: [id, name]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+
+    DeletionImpactModelProtocolRule:
+      type: object
+      required:
+        [id, model_rule_id, client_model, api_format,
+         removed_channel_group_ids, removed_channel_ids,
+         removed_tier_priorities, will_disable]
+      properties:
+        id: { type: string, format: uuid }
+        model_rule_id: { type: string, format: uuid }
+        client_model: { type: string }
+        api_format: { $ref: "#/components/schemas/ApiFormat" }
+        removed_channel_group_ids:
+          type: array
+          items: { type: string, format: uuid }
+        removed_channel_ids:
+          type: array
+          items: { type: string, format: uuid }
+        removed_tier_priorities:
+          type: array
+          items: { type: integer, minimum: 0 }
+        will_disable:
+          type: boolean
+          description: True when normalization removes the final tier from an enabled protocol rule.
+
     CodexCredentialStatus:
       type: string
       enum: [active, draining, unavailable, disabled]
@@ -5536,6 +5727,16 @@ components:
         multiplier:
           allOf: [{ $ref: "#/components/schemas/Decimal" }]
           description: Non-negative multiplier applied uniformly to input, cached-input, cache-write, and output unit prices in this window.
+
+    DeletionConfirmationInput:
+      type: object
+      additionalProperties: false
+      required: [confirmation_token]
+      properties:
+        confirmation_token:
+          type: string
+          minLength: 1
+          description: Token returned by the corresponding deletion-impact endpoint after administrator review.
 
     ChannelGroupInput:
       type: object

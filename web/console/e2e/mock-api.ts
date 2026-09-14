@@ -350,6 +350,7 @@ const E2E_ROUTING_CHANNELS = [
     providerManaged: true,
   }),
 ];
+export const E2E_STANDARD_CHANNEL_ID = E2E_ROUTING_CHANNELS[0].id;
 
 export const E2E_SEARCH_MODEL_RULE = {
   id: "00000000-0000-0000-0000-000000000124",
@@ -1227,6 +1228,65 @@ export async function mockConsoleApi(page: Page): Promise<void> {
     }
     if (path === "/console/v1/routing/channels" && method === "GET") {
       return route.fulfill({ status: 200, json: E2E_ROUTING_CHANNELS });
+    }
+    if (
+      path === `/console/v1/routing/channels/${E2E_STANDARD_CHANNEL_ID}` &&
+      method === "GET"
+    ) {
+      const channel = E2E_ROUTING_CHANNELS.find(
+        (candidate) => candidate.id === E2E_STANDARD_CHANNEL_ID,
+      );
+      return route.fulfill({
+        status: 200,
+        headers: { ETag: `"${channel?.updated_at}"` },
+        json: {
+          ...channel,
+          override_document: {},
+          upstream_api_key: "e2e-upstream-secret",
+        },
+      });
+    }
+    if (
+      path ===
+        `/console/v1/routing/channels/${E2E_STANDARD_CHANNEL_ID}/deletion-impact` &&
+      method === "GET"
+    ) {
+      const channel = E2E_ROUTING_CHANNELS.find(
+        (candidate) => candidate.id === E2E_STANDARD_CHANNEL_ID,
+      );
+      return route.fulfill({
+        status: 200,
+        json: {
+          resource_type: "channel",
+          resource_id: E2E_STANDARD_CHANNEL_ID,
+          confirmation_token: "v1.e2e-channel-deletion",
+          channels: [
+            {
+              id: E2E_STANDARD_CHANNEL_ID,
+              channel_group_id: E2E_STANDARD_GROUP_ID,
+              name: channel?.name,
+            },
+          ],
+          model_protocol_rules: [],
+          api_keys: [{ id: E2E_API_KEY.id, name: E2E_API_KEY.name }],
+          api_key_policies: [
+            { id: E2E_API_KEY_POLICY.id, name: E2E_API_KEY_POLICY.name },
+          ],
+          quota_visibility_user_groups: [],
+        },
+      });
+    }
+    if (
+      path === `/console/v1/routing/channels/${E2E_STANDARD_CHANNEL_ID}` &&
+      method === "DELETE"
+    ) {
+      return route.fulfill({
+        status: 200,
+        json: {
+          id: E2E_STANDARD_CHANNEL_ID,
+          correlation_id: "00000000-0000-0000-0000-0000000003ff",
+        },
+      });
     }
     if (path === "/console/v1/routing/model-rules" && method === "GET") {
       return route.fulfill({

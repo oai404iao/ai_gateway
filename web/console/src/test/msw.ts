@@ -11,6 +11,7 @@ import {
   API_KEY_OPTIONS,
   API_KEY_POLICY,
   CHANNEL,
+  CHANNEL_DELETION_IMPACT,
   CHANNEL_DETAIL,
   CHANNEL_GROUP,
   CHANNEL_GROUP_STATUS_REPORT,
@@ -195,10 +196,32 @@ export const handlers = [
       headers: { ETag: `"${CHANNEL_GROUP.updated_at}"` },
     }),
   ),
+  http.get("/console/v1/routing/channel-groups/:id/deletion-impact", () =>
+    HttpResponse.json({
+      ...CHANNEL_DELETION_IMPACT,
+      resource_type: "channel_group",
+      resource_id: CHANNEL_GROUP.id,
+    }),
+  ),
+  http.delete("/console/v1/routing/channel-groups/:id", () =>
+    HttpResponse.json({
+      id: CHANNEL_GROUP.id,
+      correlation_id: "99999999-0000-0000-0000-000000000010",
+    }),
+  ),
   http.get("/console/v1/routing/channels", () => HttpResponse.json([CHANNEL])),
   http.get("/console/v1/routing/channels/:id", () =>
     HttpResponse.json(CHANNEL_DETAIL, {
       headers: { ETag: `"${CHANNEL.updated_at}"` },
+    }),
+  ),
+  http.get("/console/v1/routing/channels/:id/deletion-impact", () =>
+    HttpResponse.json(CHANNEL_DELETION_IMPACT),
+  ),
+  http.delete("/console/v1/routing/channels/:id", () =>
+    HttpResponse.json({
+      id: CHANNEL.id,
+      correlation_id: "99999999-0000-0000-0000-000000000011",
     }),
   ),
   http.post("/console/v1/routing/channels/models/discover", () =>

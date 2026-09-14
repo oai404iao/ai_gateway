@@ -8,6 +8,7 @@ import { AppRouter } from "@/app/router";
 import { server, seedAuthenticatedSession } from "@/test/msw";
 import {
   CHANNEL,
+  CHANNEL_DELETION_IMPACT,
   CHANNEL_DETAIL,
   CHANNEL_GROUP,
   CONFIG_TEMPLATE,
@@ -46,6 +47,46 @@ async function waitForHydratedChannelForm(name: string) {
 }
 
 describe("ChannelDetailPage", () => {
+  it("keeps provider-managed channels out of the ordinary deletion path", async () => {
+    seedAuthenticatedSession();
+    const managedGroup: ChannelGroupView = {
+      ...CHANNEL_GROUP,
+      id: "00000000-0000-0000-0000-000000000128",
+      api_format: "open_ai_responses",
+      connector_kind: "codex_oauth",
+    };
+    const managedChannel: ChannelDetailView = {
+      ...CHANNEL_DETAIL,
+      id: "00000000-0000-0000-0000-000000000129",
+      channel_group_id: managedGroup.id,
+      api_format: "open_ai_responses",
+      connector_kind: "codex_oauth",
+      provider_managed: true,
+      name: "managed channel",
+      available_models: ["gpt-5"],
+    };
+    server.use(
+      http.get("/console/v1/routing/channel-groups", () =>
+        HttpResponse.json([managedGroup]),
+      ),
+      http.get("/console/v1/routing/channels/:id", () =>
+        HttpResponse.json(managedChannel, {
+          headers: { ETag: `"${managedChannel.updated_at}"` },
+        }),
+      ),
+    );
+    renderAppAt(`/admin/routing/channels/${managedChannel.id}`);
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe(
+        `/admin/providers/codex-oauth/${managedGroup.id}`,
+      );
+    });
+    expect(
+      screen.queryByRole("button", { name: "Delete channel" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("selects an existing compatible config template", async () => {
     seedAuthenticatedSession();
     let submitted: ChannelInput | undefined;
@@ -409,6 +450,85 @@ describe("ChannelDetailPage", () => {
     await waitFor(() => expect(submitted?.available_models).toEqual([]));
     expect(submitted?.test_model).toBeNull();
     expect(submitted?.test_pricing_model_id).toBeNull();
+  });
+
+  it("requires another confirmation when the deletion impact changes", async () => {
+    seedAuthenticatedSession();
+    const updatedImpact = {
+      ...CHANNEL_DELETION_IMPACT,
+      confirmation_token: "v1.updated-channel-impact",
+      api_keys: [
+        ...CHANNEL_DELETION_IMPACT.api_keys,
+        {
+          id: "00000000-0000-0000-0000-000000000099",
+          name: "newly affected key",
+        },
+      ],
+    };
+    let previewCount = 0;
+    const submittedTokens: string[] = [];
+    server.use(
+      http.get(
+        "/console/v1/routing/channels/:id/deletion-impact",
+        () => {
+          previewCount += 1;
+          return HttpResponse.json(
+            previewCount === 1 ? CHANNEL_DELETION_IMPACT : updatedImpact,
+          );
+        },
+      ),
+      http.delete(
+        "/console/v1/routing/channels/:id",
+        async ({ request }) => {
+          const body = (await request.json()) as {
+            confirmation_token: string;
+          };
+          submittedTokens.push(body.confirmation_token);
+          if (submittedTokens.length === 1) {
+            return HttpResponse.json(
+              { error: "deletion_impact_changed" },
+              { status: 409 },
+            );
+          }
+          return HttpResponse.json({
+            id: CHANNEL.id,
+            correlation_id: "99999999-0000-0000-0000-000000000013",
+          });
+        },
+      ),
+    );
+    const user = userEvent.setup();
+    renderAppAt(`/admin/routing/channels/${CHANNEL.id}`);
+
+    await waitForHydratedChannelForm(CHANNEL.name);
+    await user.click(screen.getByRole("button", { name: "Delete channel" }));
+    let dialog = await screen.findByRole("alertdialog", {
+      name: "Delete channel?",
+    });
+    await user.click(
+      within(dialog).getByRole("button", { name: "Delete channel" }),
+    );
+
+    expect(
+      await screen.findByText(
+        "Deletion impact changed. Review the updated preview.",
+      ),
+    ).toBeVisible();
+    dialog = await screen.findByRole("alertdialog", {
+      name: "Delete channel?",
+    });
+    expect(within(dialog).getByText("newly affected key")).toBeVisible();
+    await user.click(
+      within(dialog).getByRole("button", { name: "Delete channel" }),
+    );
+
+    await waitFor(() => {
+      expect(submittedTokens).toEqual([
+        CHANNEL_DELETION_IMPACT.confirmation_token,
+        updatedImpact.confirmation_token,
+      ]);
+    });
+    expect(window.location.pathname).toBe("/admin/routing/channels");
   });
 
   it("adds and removes available upstream models as a token list", async () => {

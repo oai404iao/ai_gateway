@@ -4,6 +4,7 @@ import { useConfigurationDraft } from "@/features/admin/model-setup/use-configur
 import { ConfigurationSaveBar } from "@/features/admin/model-setup/configuration-save-bar";
 import { z } from "zod";
 import { toast } from "sonner";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import {
@@ -25,17 +26,21 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Spinner } from "@/components/ui/spinner";
+import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { AdminDetailShell } from "@/features/admin/components/admin-detail-shell";
 import { DetailField } from "@/components/shared/detail-field";
 import { StatusBadge } from "@/components/shared/status-badge";
 import {
   useChannelGroup,
   useCreateChannelGroup,
+  useDeleteChannelGroup,
+  usePreviewChannelGroupDeletion,
   useUpdateChannelGroup,
 } from "@/features/admin/api";
 import { ApiError, controlPlaneMutationErrorMessage } from "@/api/errors";
 import type {
   ApiFormat,
+  ChannelDeletionImpact,
   ChannelGroupInput,
   ConnectorKind,
   RequestCompression,
@@ -50,6 +55,7 @@ import {
 } from "@/lib/permissions";
 import { useI18n } from "@/app/i18n";
 import { safeAdminReturnPath } from "@/features/admin/model-setup/model-setup-navigation";
+import { DeletionImpactSummary } from "@/features/admin/routing/deletion-impact-summary";
 
 const schema = z.object({
   name: z.string().min(1, "Name is required.").max(100),
@@ -82,14 +88,21 @@ export function ChannelGroupDetailPage() {
     "/admin/routing/channels",
   );
   const returnsToSetup = returnTo.startsWith("/admin/model-setup");
-  const { data, etag, isLoading, error } = useChannelGroup(id);
+  const { data, etag, isLoading, error, refetch } = useChannelGroup(id);
   const create = useCreateChannelGroup();
   const update = useUpdateChannelGroup(id);
+  const previewDeletion = usePreviewChannelGroupDeletion(id);
+  const remove = useDeleteChannelGroup(id);
   const { t } = useI18n();
   const [state, setState] = useState<FormState>(empty);
   const [submitting, setSubmitting] = useState(false);
-  const { dirty, markDirty, markSaved, navigate, navigationGuard } = useConfigurationDraft(submitting);
+  const pending =
+    submitting || previewDeletion.isPending || remove.isPending;
+  const { dirty, markDirty, markSaved, navigate, navigationGuard } =
+    useConfigurationDraft(pending);
   const [validation, setValidation] = useState<z.ZodError | null>(null);
+  const [deletionImpact, setDeletionImpact] =
+    useState<ChannelDeletionImpact | null>(null);
 
   useEffect(() => {
     if (data) {
@@ -155,15 +168,70 @@ export function ChannelGroupDetailPage() {
     return message ? t(message) : undefined;
   };
 
+  const previewDelete = async () => {
+    try {
+      setDeletionImpact(await previewDeletion.mutateAsync());
+    } catch (error) {
+      if (
+        error instanceof ApiError &&
+        error.code === "provider_managed_resource"
+      ) {
+        toast.error(
+          t("Provider-managed groups must use their connector lifecycle."),
+        );
+      } else {
+        toast.error(error instanceof Error ? error.message : t("Delete failed"));
+      }
+    }
+  };
+
+  const deleteGroup = async () => {
+    const confirmedImpact = deletionImpact;
+    if (!confirmedImpact) return;
+    setDeletionImpact(null);
+    try {
+      await remove.mutateAsync({
+        ifMatch: etag,
+        confirmationToken: confirmedImpact.confirmation_token,
+      });
+      markSaved();
+      toast.success(t("Channel group deleted"));
+      navigate(returnTo, { replace: true });
+    } catch (error) {
+      if (
+        error instanceof ApiError &&
+        error.code === "deletion_impact_changed"
+      ) {
+        try {
+          setDeletionImpact(await previewDeletion.mutateAsync());
+          toast.error(
+            t("Deletion impact changed. Review the updated preview."),
+          );
+        } catch (previewError) {
+          toast.error(
+            previewError instanceof Error
+              ? previewError.message
+              : t("Delete failed"),
+          );
+        }
+      } else if (error instanceof ApiError && error.isConflict) {
+        toast.error(t("This group was changed elsewhere. Reloading."));
+        await refetch();
+      } else {
+        toast.error(error instanceof Error ? error.message : t("Delete failed"));
+      }
+    }
+  };
+
   return (
     <AdminDetailShell
       configurationLens="supply"
       navigationGuard={navigationGuard}
-      saving={submitting}
+      saving={pending}
       onBack={() => navigate(returnTo)}
       actionBar={
-        <ConfigurationSaveBar dirty={dirty} saving={submitting} onCancel={() => navigate(returnTo)}>
-          <Button onClick={submit} disabled={submitting}>
+        <ConfigurationSaveBar dirty={dirty} saving={pending} onCancel={() => navigate(returnTo)}>
+          <Button onClick={submit} disabled={pending}>
             {submitting ? <Spinner data-icon="inline-start" /> : null}
             {isNew ? t("Create group") : t("Save group")}
           </Button>
@@ -370,6 +438,58 @@ export function ChannelGroupDetailPage() {
                 </Button>
               ) : null}
             </div>
+            {!isNew && data ? (
+              <div className="mt-6 flex flex-col items-start gap-4 border-t pt-6">
+                <div className="flex flex-col gap-1.5">
+                  <h3 className="font-semibold">{t("Danger zone")}</h3>
+                  <p className="text-muted-foreground text-sm">
+                    {t(
+                      "Deleting a channel group is permanent and audited. Its ordinary channels and current dependencies are handled automatically.",
+                    )}
+                  </p>
+                </div>
+                {data.data.connector_kind === "openai_compatible" ? (
+                  <Button
+                    variant="destructive"
+                    disabled={pending}
+                    onClick={() => void previewDelete()}
+                  >
+                    {previewDeletion.isPending || remove.isPending ? (
+                      <Spinner data-icon="inline-start" />
+                    ) : null}
+                    {t("Delete channel group")}
+                  </Button>
+                ) : (
+                  <Alert>
+                    <AlertTitle>{t("Provider-managed group")}</AlertTitle>
+                    <AlertDescription>
+                      {t(
+                        "Provider-managed groups must use their connector lifecycle.",
+                      )}
+                    </AlertDescription>
+                  </Alert>
+                )}
+              </div>
+            ) : null}
+            <ConfirmDialog
+              open={Boolean(deletionImpact)}
+              onOpenChange={(open) => {
+                if (!open) setDeletionImpact(null);
+              }}
+              title={t("Delete channel group?")}
+              description={t(
+                "Review the current server-calculated impact. The group and listed channels become permanent tombstones, stored upstream URLs, credentials, network settings, and transforms are erased, and this action cannot be undone.",
+              )}
+              content={
+                deletionImpact ? (
+                  <DeletionImpactSummary impact={deletionImpact} />
+                ) : undefined
+              }
+              confirmLabel={t("Delete channel group")}
+              destructive
+              confirmDisabled={pending}
+              onConfirm={() => void deleteGroup()}
+            />
           </CardContent>
         </Card>
       }

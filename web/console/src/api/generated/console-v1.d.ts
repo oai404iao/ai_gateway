@@ -835,6 +835,33 @@ export interface paths {
         get: operations["getChannelGroup"];
         put: operations["updateChannelGroup"];
         post?: never;
+        /**
+         * @description Irreversibly tombstones one ordinary OpenAI-compatible group and all
+         *     of its channels. Routing targets, API Keys, API Key Policies, and
+         *     quota-visibility assignments are normalized or unbound atomically.
+         *     Provider-managed groups must use their connector lifecycle.
+         */
+        delete: operations["deleteChannelGroup"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/routing/channel-groups/{id}/deletion-impact": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * @description Returns the authoritative current dependency impact and a confirmation
+         *     token. DELETE recomputes the impact transactionally and rejects a stale
+         *     token so the administrator must review changed consequences.
+         */
+        get: operations["previewChannelGroupDeletion"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -900,6 +927,33 @@ export interface paths {
         };
         get: operations["getChannel"];
         put: operations["updateChannel"];
+        post?: never;
+        /**
+         * @description Irreversibly tombstones one ordinary OpenAI-compatible channel,
+         *     erases its upstream URL, credential, network settings, and transforms, and atomically
+         *     normalizes routing targets plus API Key and Policy assignments.
+         *     Provider-managed channels must use their connector lifecycle.
+         */
+        delete: operations["deleteChannel"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/routing/channels/{id}/deletion-impact": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * @description Returns the authoritative current dependency impact and a confirmation
+         *     token. DELETE recomputes the impact transactionally and rejects a stale
+         *     token so the administrator must review changed consequences.
+         */
+        get: operations["previewChannelDeletion"];
+        put?: never;
         post?: never;
         delete?: never;
         options?: never;
@@ -2319,6 +2373,49 @@ export interface components {
             /** @description Stored upstream credential returned for administrator review and editing. */
             upstream_api_key: string | null;
         };
+        ChannelDeletionImpact: {
+            /** @enum {string} */
+            resource_type: "channel" | "channel_group";
+            /** Format: uuid */
+            resource_id: string;
+            /** @description Opaque fingerprint of the current dependencies and normalization outcome; valid only while the impact is unchanged. */
+            confirmation_token: string;
+            /** @description Ordinary channels that will become non-secret tombstones. */
+            channels: components["schemas"]["DeletionImpactChannel"][];
+            /** @description Protocol routing rules whose targets, tiers, enabled state, or effective candidates will change. */
+            model_protocol_rules: components["schemas"]["DeletionImpactModelProtocolRule"][];
+            /** @description Non-deleted API Keys from which the deleted targets will be removed. */
+            api_keys: components["schemas"]["DeletionImpactNamedResource"][];
+            /** @description API Key Policies from which the deleted targets will be removed. */
+            api_key_policies: components["schemas"]["DeletionImpactNamedResource"][];
+            /** @description User groups whose matching Codex quota-visibility assignment will be removed. */
+            quota_visibility_user_groups: components["schemas"]["DeletionImpactNamedResource"][];
+        };
+        DeletionImpactChannel: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            channel_group_id: string;
+            name: string;
+        };
+        DeletionImpactNamedResource: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+        };
+        DeletionImpactModelProtocolRule: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            model_rule_id: string;
+            client_model: string;
+            api_format: components["schemas"]["ApiFormat"];
+            removed_channel_group_ids: string[];
+            removed_channel_ids: string[];
+            removed_tier_priorities: number[];
+            /** @description True when normalization removes the final tier from an enabled protocol rule. */
+            will_disable: boolean;
+        };
         /** @enum {string} */
         CodexCredentialStatus: "active" | "draining" | "unavailable" | "disabled";
         CodexCredentialView: {
@@ -3324,6 +3421,10 @@ export interface components {
             end_time: string;
             /** @description Non-negative multiplier applied uniformly to input, cached-input, cache-write, and output unit prices in this window. */
             multiplier: components["schemas"]["Decimal"];
+        };
+        DeletionConfirmationInput: {
+            /** @description Token returned by the corresponding deletion-impact endpoint after administrator review. */
+            confirmation_token: string;
         };
         ChannelGroupInput: {
             name: string;
@@ -5659,6 +5760,82 @@ export interface operations {
             422: components["responses"]["Unprocessable"];
         };
     };
+    deleteChannelGroup: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description ETag from the preceding GET; stale values yield `409`. */
+                "If-Match": components["parameters"]["IfMatch"];
+            };
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeletionConfirmationInput"];
+            };
+        };
+        responses: {
+            /** @description Channel group and its ordinary channels deleted. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MutationResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description Resource version or confirmed deletion impact changed, or the group is provider-managed. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            422: components["responses"]["Unprocessable"];
+        };
+    };
+    previewChannelGroupDeletion: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current deletion impact. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChannelDeletionImpact"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description Provider-managed groups must use their connector lifecycle. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     listChannels: {
         parameters: {
             query?: never;
@@ -5823,6 +6000,82 @@ export interface operations {
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
             422: components["responses"]["Unprocessable"];
+        };
+    };
+    deleteChannel: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description ETag from the preceding GET; stale values yield `409`. */
+                "If-Match": components["parameters"]["IfMatch"];
+            };
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeletionConfirmationInput"];
+            };
+        };
+        responses: {
+            /** @description Channel deleted. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MutationResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description Resource version or confirmed deletion impact changed, or the channel is provider-managed. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            422: components["responses"]["Unprocessable"];
+        };
+    };
+    previewChannelDeletion: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current deletion impact. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChannelDeletionImpact"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description Provider-managed channels must use their connector lifecycle. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
         };
     };
     recoverChannel: {
