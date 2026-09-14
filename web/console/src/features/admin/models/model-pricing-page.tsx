@@ -442,11 +442,11 @@ export function ModelPricingPage() {
           baselineEtag.current = refreshed.data.etag;
           form.reset(pricingFormForModel(refreshed.data.data));
           setReloadRequired(false);
-          toast.error(t("This upstream model was changed elsewhere. Reloading."));
+          toast.error(t("This pricing model was changed elsewhere. Reloading."));
         } else {
           setReloadRequired(true);
           toast.error(
-            t("This upstream model changed elsewhere, but the latest version could not be reloaded."),
+            t("This pricing model changed elsewhere, but the latest version could not be reloaded."),
           );
         }
       } else {
@@ -496,7 +496,7 @@ export function ModelPricingPage() {
       description={t("Configure base USD prices and weekly UTC peak or off-peak multipliers.")}
       backPath={returnTo}
       backLabel={t(
-        returnsToSetup ? "Back to model setup" : "Back to upstream model",
+        returnsToSetup ? "Back to model setup" : "Back to pricing model",
       )}
       isLoading={isLoading}
       error={data ? null : error}

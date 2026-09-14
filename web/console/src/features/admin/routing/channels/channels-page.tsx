@@ -1,6 +1,6 @@
 import { type ReactNode, useEffect, useMemo, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router";
-import { ConfigurationTableView, ConfigurationWorkbench } from "@/features/admin/model-setup/configuration-workbench";
+import { useNavigate } from "react-router";
+import { ConfigurationTableView } from "@/features/admin/model-setup/configuration-navigation";
 import {
   CheckCheck,
   ChevronDown,
@@ -192,10 +192,11 @@ function StandardGroupCard({
 }
 
 export function ChannelsPage() {
-  const [params] = useSearchParams();
-  return params.get("mode") === "table"
-    ? <ConfigurationTableView lens="supply"><ChannelsTable /></ConfigurationTableView>
-    : <ConfigurationWorkbench lens="supply" />;
+  return (
+    <ConfigurationTableView lens="supply">
+      <ChannelsTable />
+    </ConfigurationTableView>
+  );
 }
 
 function ChannelsTable() {
@@ -598,7 +599,7 @@ function ChannelsTable() {
               onClick={() => navigate(MODEL_SETUP_PATH)}
             >
               <Workflow data-icon="inline-start" />
-              {t("Guided model setup")}
+              {t("Model setup")}
             </Button>
             <Button
               variant="outline"

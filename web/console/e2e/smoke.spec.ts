@@ -5,14 +5,13 @@ import {
   E2E_CODEX_CREDENTIAL,
   E2E_CODEX_CREDENTIAL_ID,
   E2E_CODEX_GROUP_ID,
-  E2E_IMAGE_MODEL_RULE,
   E2E_MODEL,
   E2E_STANDARD_GROUP_ID,
   mockConsoleApi,
 } from "./mock-api";
 
 test.describe("Console SPA smoke", () => {
-  test("model setup unifies the supplier-to-route workflow", async ({
+  test("model setup links the focused pricing, channel, and routing views", async ({
     page,
   }) => {
     await mockConsoleApi(page);
@@ -21,47 +20,20 @@ test.describe("Console SPA smoke", () => {
     await page.getByLabel(/email/i).fill("admin@example.com");
     await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
     await page.getByRole("button", { name: /sign in/i }).click();
-    await page.getByRole("link", { name: "Model configuration" }).click();
-    await page.getByRole("link", { name: "Guided model setup" }).click();
+    await page.goto("/admin/model-setup");
 
     await expect(page).toHaveURL(/\/admin\/model-setup$/);
     await expect(
       page.getByRole("heading", { name: "Model setup" }),
     ).toBeVisible();
+    await expect(page.getByText("1. Pricing models")).toBeVisible();
+    await expect(page.getByText("2. Channels")).toBeVisible();
+    await expect(page.getByText("3. Model rules")).toBeVisible();
+    await page.getByRole("button", { name: "Manage routing" }).click();
+    await expect(page).toHaveURL(/\/admin\/routing\/model-rules$/);
     await expect(
-      page.getByText("One flow from endpoint to client model"),
+      page.getByRole("heading", { name: "Model Rules" }),
     ).toBeVisible();
-
-    const stageCards = [
-      page.locator('[data-setup-step="1"]'),
-      page.locator('[data-setup-step="2"]'),
-      page.locator('[data-setup-step="3"]'),
-      page.locator('[data-setup-step="4"]'),
-    ];
-    const stageBoxes = await Promise.all(
-      stageCards.map(async (card) => {
-        await expect(card).toBeVisible();
-        return card.boundingBox();
-      }),
-    );
-    expect(stageBoxes.every((box) => box !== null)).toBe(true);
-    expect(stageBoxes[0]!.x).toBeLessThan(stageBoxes[1]!.x);
-    expect(stageBoxes[1]!.x).toBeLessThan(stageBoxes[2]!.x);
-    expect(stageBoxes[2]!.x).toBeLessThan(stageBoxes[3]!.x);
-
-    await page.getByRole("button", { name: "Copy supplier" }).click();
-    const copyDialog = page.getByRole("dialog");
-    await expect(copyDialog).toBeVisible();
-    await expect(
-      copyDialog.getByRole("button", { name: /standard-upstream-1/ }),
-    ).toBeVisible();
-    await expect(copyDialog.getByText("Personal Plus")).toHaveCount(0);
-    await page.keyboard.press("Escape");
-
-    await page.getByRole("tab", { name: "Groups and suppliers" }).click();
-    await expect(page).toHaveURL(/view=suppliers/);
-    await expect(page.getByText("standard-group-1")).toBeVisible();
-    await expect(page.getByText("standard-upstream-1")).toBeVisible();
   });
 
   test("model pricing has prominent entry points and a weekday-aware two-column workspace", async ({
@@ -73,16 +45,15 @@ test.describe("Console SPA smoke", () => {
     await page.getByLabel(/email/i).fill("admin@example.com");
     await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
     await page.getByRole("button", { name: /sign in/i }).click();
-    await page.getByRole("link", { name: "Model configuration" }).click();
-    await page.getByRole("link", { name: "Models & pricing What upstream models cost" }).click();
+    await page.goto("/admin/models");
 
-    const pricingAction = page.getByRole("link", {
-      name: "Configure pricing",
+    const pricingAction = page.getByRole("button", {
+      name: `Configure pricing for ${E2E_MODEL.display_name}`,
     });
     await expect(pricingAction).toBeVisible();
     await pricingAction.click();
     await expect(page).toHaveURL(
-      new RegExp(`/admin/models/${E2E_MODEL.id}/pricing\\?`),
+      new RegExp(`/admin/models/${E2E_MODEL.id}/pricing$`),
     );
 
     const basePrices = page.getByText("Base prices", { exact: true });
@@ -475,7 +446,7 @@ test.describe("Console SPA smoke", () => {
     await page.evaluate((path) => {
       window.history.pushState({}, "", path);
       window.dispatchEvent(new PopStateEvent("popstate"));
-    }, "/admin/routing/channels?mode=table");
+    }, "/admin/routing/channels");
 
     await expect(page.getByRole("heading", { name: "Channels" })).toBeVisible();
     const codexPool = page.getByRole("region", {

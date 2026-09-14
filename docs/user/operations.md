@@ -46,7 +46,7 @@ Console listener 提供。无论是否启用 UI，本文件描述的 API 行为�
 
 服务不读取 dotenv。JWT Ed25519 私钥和公钥通过受限文件路径配置，不写入 TOML。
 
-### 升级到模型规则路由层级
+### 模型规则硬切换升级
 
 migration `0052_model_rule_routing_tiers.sql` 是路由 schema 的硬切换。升级多实例部署时必须先停止
 所有旧 Gateway，再由新版本应用 migration；不能让旧实例在 migration 后继续接收 Console 或
@@ -58,6 +58,23 @@ Codex flow weight。
 如果这两类 group 在同一旧 priority 下使用不同 selection strategy，即使相关 group 当前禁用，
 这种 latent conflict 也会使 migration 明确中止。先在旧版本中统一冲突策略，再重试 migration。
 成功启动一个新版本实例并确认完整快照可编译后，才能恢复同版本实例和流量。
+
+`0057_model_rule_hierarchy.sql` 是第二次不能滚动混跑的模型规则硬切换。它把已配置价格的
+`models.source_model_id` 固定为客户端模型身份，将旧规则保留为其下的格式协议规则，并把上游
+wire model 下沉到每个 group/channel target。升级前必须确认所有旧规则都满足：
+
+```sql
+SELECT rule.id, rule.client_model, model.source_model_id
+FROM model_rules AS rule
+JOIN models AS model ON model.id = rule.upstream_model_id
+WHERE rule.client_model <> model.source_model_id;
+```
+
+查询必须返回零行。migration 遇到任一旧客户端别名会在修改 schema 前中止；请先在旧版本中删除
+或改正冲突规则，不能依赖兼容别名。还需确保每个非空 `channels.test_model` 都能匹配现有价格
+模型，并先清除 Images 或 provider-managed Channel 上的旧定时测试配置。协议规则 ID 和历史
+`request_logs.model_rule_id` 会保留。升级完成后，一个计价模型最多有一个顶层规则，顶层下可
+分别配置多个 API 格式协议。
 
 ### 紧急重置管理员密码
 
@@ -214,25 +231,35 @@ boundary padding 分别最多 `8 KiB`、`16 KiB` 与 `1 KiB`，防止畸形 fram
 `400 image_edit_json_transform_unsupported`。Header 和响应 Header 变换仍照常执行。当前不接受
 JSON/data URL 形式的公开客户端 edit 请求。
 
-配置 Images 路由时，渠道组、渠道、模型规则和 API Key 的格式均使用
-`open_ai_images`。Images 渠道不支持 `test_model`，不会进入定时付费探测；Session
-粘性、SSE 变换和 WebSocket 也不适用于该格式。普通 Header 变换、请求 JSON 变换、模型别名、
+配置 Images 路由时，渠道组、渠道、顶层模型规则下的协议规则和 API Key 格式均使用
+`open_ai_images`；顶层模型规则自身没有格式。Images 渠道不支持 `test_model`，不会进入定时付费探测；Session
+粘性、SSE 变换和 WebSocket 也不适用于该格式。普通 Header 变换、请求 JSON 变换、目标模型改写、
 被动健康、准入、请求日志和结算仍沿用统一数据面基础设施。
 
 ### 模型规则路由层级
 
-priority、selection strategy 和 routing weight 都在 model rule 上配置，不再是 Channel Group、
-Channel 或 Codex credential 的属性。每条规则包含一个或多个非负 priority tier；较小数值优先，
-每个 tier 选择一种 `weighted_random` 或 `weighted_round_robin`。只有当前最低可用 tier 参与
-选择，权重只比较该 tier 内通过格式、模型能力、operation capability、启用、授权和健康检查的
-渠道，不会跨 tier 抵消优先级。
+每个已配置价格的 `models.source_model_id` 都是客户端可请求的模型身份，最多创建一个顶层 model
+rule。顶层规则本身只组织格式协议；每种 API 格式最多一个协议规则。协议创建后格式不可修改，
+停用协议可以无 routing tier 并显示为 `draft`，启用前必须配置至少一个非空 tier。若计价模型被
+禁用，其所有协议优先显示为 `model_disabled`，并从运行时路由隐藏。
+
+priority、selection strategy 和 routing weight 都在协议规则上配置，不再是 Channel Group、
+Channel 或 Codex credential 的属性。每条已配置协议可包含多个非负 priority tier；较小数值
+优先，每个 tier 选择一种 `weighted_random` 或 `weighted_round_robin`。只有当前最低可用 tier
+参与选择，权重只比较该 tier 内通过格式、目标模型能力、operation capability、启用、授权和健康
+检查的渠道，不会跨 tier 抵消优先级。计费始终使用顶层绑定的价格模型；实际转发模型来自最终
+选中的 route target，重试到另一目标时可以随目标改变。
 
 每个 tier 通过 Channel Group target 选择候选：
 
-- `all`：动态包含该组当前及以后新增的全部渠道。它要求正数默认权重；Console 新建规则时默认
-  `100`，并可为个别渠道设置正数覆盖。
-- `selected`：只包含显式列出的渠道，每个渠道必须有正数权重；Console 新选择渠道时初始化为
-  `100`。以后加入 group 的渠道不会自动进入该规则。
+- `all`：target 必须从组内 Channel 的 `available_models` 并集中选择一个上游模型，并要求正数
+  默认权重。运行时只展开声明支持该模型的当前渠道；以后加入 group 且支持同一模型的渠道会自动
+  进入。Console 默认权重为 `100`，可为个别渠道设置仅权重覆盖。
+- `selected`：只包含显式列出的渠道，每条渠道分别从自己的 `available_models` 选择上游模型并
+  设置正数权重；Console 初始权重为 `100`。以后加入 group 的渠道不会自动进入该规则。
+
+Console 不提供自由输入上游模型；服务端也会在协议保存时校验模型能力。后续修改 Channel
+`available_models` 可以让既有规则变为 `disconnected`，但不会偷偷替换其目标模型。
 
 Channel Group 继续保存 API 格式、Connector、启用、请求压缩和状态统计等池级资源配置；Channel
 继续保存端点、上游鉴权、模型能力、Transform、网络、计费和健康配置。API Key Policy 与 Key
@@ -283,15 +310,17 @@ Codex 渠道组可开启整池同步的“仅拼车使用”模式；未绑定�
      label、enable、account ID、user ID、Token、quota threshold 和逐凭证代理分配；还可以
      在同一页面新增、编辑或删除代理，并把导入文件中的代理映射到现有代理。最终仍逐条调用
      服务端凭证验证与导入接口，因此失败条目可在保留其他草稿的情况下修正和重试。
-4. 为返回的 Codex model slug 创建或启用本地 model，并创建 Responses model rule。按需要建立
-   routing tiers；用 `all` target 让该 group 当前和未来凭证 projection 使用规则默认权重，或用
-   `selected` 显式选择凭证及权重。
+4. 创建或启用客户端计价 model，并在其顶层 model rule 下添加 Responses 协议。按需要建立
+   routing tiers；在 `all` target 中从该 group 的 Channel 能力选择 Codex model slug，让当前
+   和未来支持该 slug 的凭证 projection 使用规则默认权重；或用 `selected` 为每条凭证分别选择
+   slug 及权重。
 5. Codex OAuth Responses managed channel 自动声明 standalone web search 能力。客户端若使用
    Codex 自定义 provider，还必须把 provider base URL 指向 Gateway 的 `/v1`，并设置
    `supports_standalone_web_search = true`。
-6. 如需图片生成或编辑，为 `gpt-image-2` 创建或启用本地 model，创建独立的
-   `open_ai_images` model rule，为自动创建的 Images Channel Group 单独配置 routing tiers，
-   并显式启用该 group。Responses 的 routing assignment 不会同步到 Images。
+6. 如需图片生成或编辑，在同一或另一计价 model rule 下添加独立的
+   `open_ai_images` 协议，为自动创建的 Images Channel Group 单独配置 routing tiers，并在
+   target 中选择 `gpt-image-2`，再显式启用该 group。Responses 的 routing assignment 不会
+   同步到 Images。
 7. 确保调用方 API Key 允许所需格式、`proxy` 权限和对应格式的 Channel Group。服务不会自动把
    Images format、group 或 channel 加入现有 API Key、Policy 或规则。
 8. 需要跨 Responses 与 Search 请求固定同一订阅账户时，在系统设置中启用 Session affinity，并
@@ -303,7 +332,7 @@ Codex 渠道组可开启整池同步的“仅拼车使用”模式；未绑定�
 继续作为稳定的凭证 ID；Images 使用独立 Channel ID，因此两个格式的被动健康和日志不会混合。
 普通 Channel 详情、批量编辑和 model discovery 接口不能修改这些 channels；label、enable、
 proxy 和 quota threshold 必须在 Codex 凭证页维护。凭证和 managed channels 不保存 routing
-weight；权重只在引用它们的 Responses/Images model rule 上配置。
+weight 或上游模型映射；两者只在引用它们的 Responses/Images 协议规则 target 上配置。
 每个凭证的 outbound proxy 独立生效，并由现有 reqwest client registry 按网络与超时策略复用。
 凭证 enable、quota 和 refresh 状态由两个 projection 共享的 Connector 运行时持有；底层 managed
 channels 保留为路由壳，使已绑定 Responses Session
@@ -641,30 +670,22 @@ workspace/member 身份、Token、代理、运行状态、错误或 reset-credit
 - 系统转发设置：`GET` / `PUT /console/v1/system/settings`（管理员；`PUT` 使用 `If-Match`，保存后立即发布快照）
 - 手动重载：`POST /console/v1/system/reload`
 
-管理员浏览器 Console 的“模型配置”入口默认打开客户端路由视角
-`/admin/routing/model-rules`。同一工作台还提供渠道供给
-`/admin/routing/channels` 和模型价格 `/admin/models` 两个视角：
-左侧搜索、筛选和选择配置，右侧查看客户端调用名称、上游价格、优先级层和渠道来源。
-点击关联资源即可切换视角并定位到该资源，不需要记住名称再去其他页面搜索。
-窄屏先展示目录，选择后进入关系面板；“返回配置目录”恢复列表。
+管理员浏览器 Console 的“模型配置”入口默认打开计价模型规则列表
+`/admin/routing/model-rules`，并提供 `/admin/models`、`/admin/routing/channels` 与模型规则三个
+专用列表之间的固定导航。复杂的关系检查器、表格模式分支和规则 Quick Add 已移除；批量 Channel
+操作及普通资源复制仍位于对应的专用列表或详情页。
 
-“待检查”是配置检查入口，不是实时探活：路由状态使用网关返回值，模型视角提示停用或未被规则引用
-的价格记录，供给视角提示停用或没有启用且未自动禁用渠道的组。Codex 的共享凭据池在目录中只占
-一项，但不同 API 格式的组保持独立开关。批量编辑、渠道恢复和规则快速添加位于“表格与批量工具”。
-从工作台进入编辑，保存成功后返回原筛选与选择位置；保存只修改当前资源，不会自动修改其关联资源。
-未保存的修改在离开编辑器或浏览器后退时需要确认。
+模型规则列表每个计价模型只显示一行。`/admin/routing/model-rules/:id` 列出该模型的格式协议，
+缺失协议可创建为停用的空草稿；实际 priority、target、weight 与上游模型在
+`/admin/routing/model-rules/:id/protocols/:protocolId` 编辑。协议格式只在创建时选择，详情页不
+提供修改入口。离开有未保存修改的协议或其他资源详情页时仍会确认。
 
-`/admin/model-setup` 保留为“模型接入向导”。页面按
-“渠道组 → 供应商端点 → 模型与价格 → 模型规则”展示完整流程，并在同一处提供添加或复制供应商、
-添加或复制模型、发布规则、路由链路预览和配置缺口提示。这里的“供应商端点”对应控制面的普通
-OpenAI-compatible Channel；Channel Group 仍是同 API 格式端点的资源池。复制供应商只复用连接、
-变换、模型能力和 group membership 等 Channel 资源配置，只能选择与来源相同 API 格式的渠道组，
-不复制上游凭据或 model-rule routing assignment，保存前必须重新输入凭据。新 Channel 会动态加入
-引用该 group 的 `all` target，但不会加入 `selected` target；Provider 托管的 Codex
-渠道继续通过专用凭据页面管理，不能走普通复制流程。复制模型会复用供应商和价格配置，但要求填写
-新的唯一 `source_model_id`，且不会复制普通模型详情响应中不存在的目录 `source_payload`。
-原有 `/admin/routing/channels/:id`、`/admin/models/:id` 和
-`/admin/routing/model-rules/:id` 保留为完整编辑入口。
+`/admin/model-setup` 现在是计价模型、Channel、模型规则三步入口，只显示各专用管理面的资源数量
+和跳转按钮，不复制编辑器、关系图或跨资源发布流程。普通 OpenAI-compatible Channel 仍可在自身
+页面复制连接、Transform、模型能力和 group membership，但不复制上游凭据或 routing assignment；
+Provider 托管的 Codex Channel 继续通过专用凭据页面管理。计价模型复制会复用供应商和价格配置，
+但要求填写新的唯一 `source_model_id`，且不会复制普通模型详情响应中不存在的目录
+`source_payload`。
 
 用户详情支持带 `If-Match` 的 `PATCH /console/v1/users/{id}`，只修改请求中出现的字段；
 例如仅提交 `balance_amount` 不会重写邮箱、角色、用户组、策略或状态。用户级
@@ -833,13 +854,17 @@ API Key 和小时/天聚合粒度，不提供用户或渠道筛选，响应中�
 - `scheduled_testing.prompt`：测试 prompt，默认 `reply '1'`。
 
 渠道的 `auto_disable_allowed` 必须为 true 才会被自动禁用；`test_model` 必须从该渠道的
-`available_models` 中选择，并匹配已配置模型的 `source_model_id`，以便保存价格快照。定时测试按渠道 API 格式发出非流式 Chat Completions 或 Responses 请求，
+`available_models` 中选择，并且必须同时选择一个现有 `test_pricing_model_id`。前者是实际发送
+给上游的 wire model，后者独立提供价格快照，两者不要求同名。定时测试按渠道 API 格式发出非流式 Chat Completions 或 Responses 请求，
 并复用该渠道的代理、超时、变换和上游鉴权配置。Images 渠道不能配置 `test_model`，
-不会被定时测试。手工禁用的渠道与禁用渠道组不会被测试。
-
+provider-managed Codex Channel 也不能单独配置这两个字段；这些渠道不会被定时测试。手工禁用的
+渠道与禁用渠道组不会被测试。
 
 定时测试日志写入 `request_logs`，`request_source` 为 `scheduled_test`。它们使用系统内置、
-管理员角色的内部 API Key。网关会解析响应中的 token 用量，并按该模型的不可变价格快照、模型高级计费规则和渠道计费倍率计算成本；结算会扣减该系统管理员账户余额并累计其内部 API Key 的额度用量，不会归属到任何普通用户。系统内部身份不会出现在用户和 API Key 管理列表中。自动禁用和自动恢复都会写入系统审计日志并立即发布新的路由快照。
+管理员角色的内部 API Key。网关会解析响应中的 token 用量，并按所选计价模型的不可变价格快照、
+模型高级计费规则和渠道计费倍率计算成本；结算会扣减该系统管理员账户余额并累计其内部 API Key
+的额度用量，不会归属到任何普通用户。系统内部身份不会出现在用户和 API Key 管理列表中。自动
+禁用和自动恢复都会写入系统审计日志并立即发布新的路由快照。
 管理员也可以在渠道列表中直接启用、禁用或手工恢复渠道。手工恢复只清除
 `auto_disabled` 与其原因，不会改变渠道显式的 `enabled` 值，并使用列表中的
 `updated_at` 做并发版本检查。

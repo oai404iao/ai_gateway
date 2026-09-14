@@ -1,6 +1,44 @@
 import { describe, expect, it } from "vitest";
-import { CHANNEL, CHANNEL_GROUP, MODEL_RULE } from "@/test/fixtures";
+import {
+  CHANNEL,
+  CHANNEL_GROUP,
+  MODEL,
+  MODEL_PROTOCOL_RULE,
+  MODEL_RULE,
+} from "@/test/fixtures";
 import { channelUpdateRoutingImpact } from "@/features/admin/routing/routing-validation";
+
+function selectedChannelRule(channelId: string) {
+  return {
+    ...MODEL_RULE,
+    protocol_rules: [
+      {
+        ...MODEL_PROTOCOL_RULE,
+        routing_tiers: [
+          {
+            priority: 0,
+            selection_strategy: "weighted_random" as const,
+            channel_groups: [
+              {
+                channel_group_id: CHANNEL_GROUP.id,
+                channel_selection: "selected" as const,
+                upstream_model: null,
+                default_weight: null,
+                channels: [
+                  {
+                    channel_id: channelId,
+                    upstream_model: MODEL.source_model_id,
+                    weight: 100,
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+}
 
 describe("channelUpdateRoutingImpact", () => {
   it("warns when disabling the only active target makes a route temporarily unavailable", () => {
@@ -10,29 +48,11 @@ describe("channelUpdateRoutingImpact", () => {
         { ...CHANNEL, enabled: false },
         [CHANNEL],
         [CHANNEL_GROUP],
-        [
-          {
-            ...MODEL_RULE,
-            routing_tiers: [
-              {
-                priority: 0,
-                selection_strategy: "weighted_random",
-                channel_groups: [
-                  {
-                    channel_group_id: CHANNEL_GROUP.id,
-                    channel_selection: "selected",
-                    default_weight: null,
-                    channels: [{ channel_id: CHANNEL.id, weight: 100 }],
-                  },
-                ],
-              },
-            ],
-          },
-        ],
+        [selectedChannelRule(CHANNEL.id)],
       ),
     ).toEqual([
       expect.objectContaining({
-        ruleId: MODEL_RULE.id,
+        protocolRuleId: MODEL_PROTOCOL_RULE.id,
         previousStatus: "ready",
         nextStatus: "temporarily_unavailable",
       }),
@@ -99,25 +119,7 @@ describe("channelUpdateRoutingImpact", () => {
         { ...CHANNEL, enabled: false },
         [CHANNEL, selected],
         [CHANNEL_GROUP],
-        [
-          {
-            ...MODEL_RULE,
-            routing_tiers: [
-              {
-                priority: 0,
-                selection_strategy: "weighted_random",
-                channel_groups: [
-                  {
-                    channel_group_id: CHANNEL_GROUP.id,
-                    channel_selection: "selected",
-                    default_weight: null,
-                    channels: [{ channel_id: selected.id, weight: 100 }],
-                  },
-                ],
-              },
-            ],
-          },
-        ],
+        [selectedChannelRule(selected.id)],
       ),
     ).toEqual([]);
   });

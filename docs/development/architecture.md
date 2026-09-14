@@ -65,14 +65,17 @@ Browser or Console client
    契约时删除。当前只校验顶层字段，允许字段内部的嵌套结构仍由上游解释。随后按 API Key
    快照中的用户组策略执行可选 Fast 过滤：启用时删除顶层 `service_tier`，因此后续日志元数据、
    请求倍率、Session affinity、Transform 和 Connector 都只观察过滤后的请求。
-6. 从分 API 格式索引按 `(api_format, client_model)` 取得预编译模型路由。每条规则拥有一个或
-   多个按非负 `priority` 排序的 routing tier；数值越小越先尝试，每个 tier 独立选择
-   `weighted_random` 或 `weighted_round_robin`。tier 内的 group target 为 `all` 时，编译器
-   动态展开该组当前全部渠道并应用正数默认权重及可选逐渠道覆盖，因此以后加入该组的渠道也会在
-   下次快照发布时自动进入规则；`selected` 则只展开显式列出的正权重渠道。Console 新建规则时
-   将 `all` 默认权重和新选择的显式 Channel 权重都初始化为 `100`。规则另存目标渠道
-   位图和与 `channels.available_models` 求交后的模型兼容位图；没有模型兼容渠道的规则仍保留为
-   可发布的断开状态。
+6. 从分 API 格式索引按 `(api_format, client_model)` 取得预编译协议路由。`client_model`
+   来自唯一绑定到顶层 routing profile 的计价 `models.source_model_id`；一个 profile 可包含
+   多个格式唯一的协议规则。协议规则拥有按非负 `priority` 排序的 routing tier；数值越小越先
+   尝试，每个 tier 独立选择 `weighted_random` 或 `weighted_round_robin`。停用的协议可以作为
+   无 tier 的 `draft` 保存，启用协议必须至少有一个非空 tier。
+   tier 内的 group target 为 `all` 时，target 自己保存一个上游 wire model；编译器只展开该组
+   `available_models` 包含该模型的当前渠道，并应用正数默认权重及可选逐渠道权重覆盖。因此以后
+   加入该组且声明同一模型的渠道会在下次快照发布时自动进入规则。`selected` 则让每条显式渠道
+   分别保存其上游 wire model 和正数权重。Console 只能从目标渠道声明的 `available_models`
+   中选择这些模型，服务端在协议更新时再次验证。协议规则另存目标渠道位图和模型兼容位图；
+   后续渠道能力变化可使已发布规则进入断开状态。
 7. `accessible_routes` 通常按模型兼容渠道完成 O(1) 授权判断；只有规则全局没有任何模型兼容
    渠道时，才退回目标渠道位图，使原本已授权的断开规则仍可识别。随后使用渠道授权位图过滤
    实际模型兼容候选，并依次应用 operation capability、Session 粘性、规则中最低可用
@@ -83,7 +86,8 @@ Browser or Console client
    `/v1/models` 额外要求 API Key 范围与模型兼容位图相交，所以不公布断开规则。
    Standalone web search 只允许
    `supports_standalone_web_search = true` 的 Responses 渠道。
-8. 必要时改写顶层模型别名，并按“模板默认值 → 渠道覆盖”应用受限变换。普通 JSON 沿用
+8. 将客户端计价模型标识改写为最终候选携带的上游 wire model，并按“模板默认值 → 渠道覆盖”
+   应用受限变换。普通 JSON 沿用
    JSON Patch；multipart edit 在无需别名时原样回放，需要别名时流式等价重建，只执行 Header
    变换而不执行请求 JSON Transform。Standalone web search 同样禁止 Request JSON Transform，
    但保留模型别名和 Header/响应 Header Transform。只要 body 被别名、JSON Transform 或 provider adapter
@@ -275,14 +279,16 @@ API Key 不受影响。临时密码登录只创建 `purpose = password_change` �
 除刷新、退出和完成密码重置外拒绝所有 Console 路由。用户提交不同于临时密码的新密码后，事务原子
 清除临时状态并撤销全部受限 Session，随后签发新的普通 Session。
 
-路由快照为渠道和模型路由分配进程内 dense slot。每个模型规则 tier 保存自己的 priority、
-selection strategy 和连续的 `CompiledCandidate(slot, channel, route_weight)` 数组；这里的
-weight 来自该模型规则的 group target 默认值或逐渠道赋值，不是 Channel 资源字段。相同授权范围
+路由快照为渠道和模型路由分配进程内 dense slot。每个协议规则 tier 保存自己的 priority、
+selection strategy 和连续的
+`CompiledCandidate(slot, channel, upstream_model, route_weight)` 数组；这里的
+模型与 weight 都来自协议规则 target，不是 Channel 的路由配置字段。计费快照始终来自顶层
+profile 绑定的价格模型，不随重试选中的上游 wire model 改变。相同授权范围
 的 API Key 共享
 `AuthorizationProfile`，其中包含允许渠道和预计算的可达路由位图。可达路由通常按模型兼容
 渠道授权；规则全局断开时改用目标渠道，以便原本已授权的请求得到明确的运行时不可用结果。
-模型规则另存模型兼容渠道位图，用于 `/v1/models` 可见性；因此删除最后一个渠道模型不会阻止
-发布，但会把规则标记为 `disconnected` 并从模型列表移除。模型查找、模型可达性判断和候选授权
+协议规则另存模型兼容渠道位图，用于 `/v1/models` 可见性；因此后续从 Channel 删除最后一个匹配
+模型不会阻止发布，但会把协议规则标记为 `disconnected` 并从模型列表移除。模型查找、模型可达性判断和候选授权
 均不创建请求级集合，也不按候选 UUID 回查快照；临时禁用和被动健康冷却不影响模型列表。
 
 渠道健康、in-flight 和 half-open claim 使用渠道级原子状态；渠道状态注册表和平滑
@@ -293,7 +299,7 @@ dense channel slot 数组，因此正常选择路径没有全局渠道状态锁�
 Channel Group 不再保存 priority 或 selection strategy，Channel 和 Codex credential 也不再保存
 routing weight。Group 继续承担格式、Connector、启用、请求压缩和状态统计等资源配置；Channel
 继续承担端点、鉴权、模型能力、变换、网络、计费和健康状态。路由层级与权重只由引用这些资源的
-模型规则拥有。
+模型 profile 下的协议规则拥有。
 
 ## 请求日志耐久链路
 

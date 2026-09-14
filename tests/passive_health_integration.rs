@@ -117,7 +117,30 @@ fn proxy_fixture_with_retry(
     routing: RoutingRuntime,
     request_retry: RequestRetrySettings,
 ) -> ProxyFixture {
+    let upstream_models = vec!["model".to_owned(); upstream_urls.len()];
+    proxy_fixture_with_retry_and_models(
+        upstream_urls,
+        priorities,
+        &upstream_models,
+        allowed_indices,
+        upstream,
+        routing,
+        request_retry,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn proxy_fixture_with_retry_and_models(
+    upstream_urls: &[String],
+    priorities: &[i32],
+    upstream_models: &[String],
+    allowed_indices: &[usize],
+    upstream: UpstreamConfig,
+    routing: RoutingRuntime,
+    request_retry: RequestRetrySettings,
+) -> ProxyFixture {
     assert_eq!(upstream_urls.len(), priorities.len());
+    assert_eq!(upstream_urls.len(), upstream_models.len());
     let group_ids = (0..upstream_urls.len())
         .map(|_| Uuid::new_v4())
         .collect::<Vec<_>>();
@@ -125,13 +148,16 @@ fn proxy_fixture_with_retry(
         .map(|_| Uuid::new_v4())
         .collect::<Vec<_>>();
     let mut routing_tiers = BTreeMap::<i32, Vec<ModelRuleChannelGroupTarget>>::new();
-    for (group_id, priority) in group_ids.iter().zip(priorities) {
+    for ((group_id, priority), upstream_model) in
+        group_ids.iter().zip(priorities).zip(upstream_models)
+    {
         routing_tiers
             .entry(*priority)
             .or_default()
             .push(ModelRuleChannelGroupTarget {
                 channel_group_id: *group_id,
                 channel_selection: "all".into(),
+                upstream_model: Some(upstream_model.clone()),
                 default_weight: Some(1),
                 channels: vec![],
             });
@@ -182,39 +208,43 @@ fn proxy_fixture_with_retry(
             .iter()
             .zip(group_ids.iter())
             .zip(upstream_urls)
-            .map(|((id, group_id), base_url)| ChannelRecord {
-                id: *id,
-                channel_group_id: *group_id,
-                api_format: "open_ai_chat_completions".into(),
-                name: id.to_string(),
-                base_url: base_url.clone(),
-                enabled: true,
-                supports_websocket: false,
-                supports_standalone_web_search: false,
-                auto_disabled: false,
-                auto_disable_allowed: false,
-                billing_multiplier: rust_decimal::Decimal::ONE,
-                proxy_id: None,
-                config_template_id: None,
-                override_document: serde_json::json!({}),
-                connect_timeout_ms: None,
-                response_header_timeout_ms: None,
-                stream_idle_timeout_ms: None,
-                upstream_auth_kind: "none".into(),
-                upstream_auth_header_name: None,
-                upstream_api_key: None,
-                available_models: vec!["model".into()],
-                test_model: None,
-            })
+            .zip(upstream_models)
+            .map(
+                |(((id, group_id), base_url), upstream_model)| ChannelRecord {
+                    id: *id,
+                    channel_group_id: *group_id,
+                    api_format: "open_ai_chat_completions".into(),
+                    name: id.to_string(),
+                    base_url: base_url.clone(),
+                    enabled: true,
+                    supports_websocket: false,
+                    supports_standalone_web_search: false,
+                    auto_disabled: false,
+                    auto_disable_allowed: false,
+                    billing_multiplier: rust_decimal::Decimal::ONE,
+                    proxy_id: None,
+                    config_template_id: None,
+                    override_document: serde_json::json!({}),
+                    connect_timeout_ms: None,
+                    response_header_timeout_ms: None,
+                    stream_idle_timeout_ms: None,
+                    upstream_auth_kind: "none".into(),
+                    upstream_auth_header_name: None,
+                    upstream_api_key: None,
+                    available_models: vec![upstream_model.clone()],
+                    test_model: None,
+                    test_pricing_model_id: None,
+                },
+            )
             .collect(),
         models: vec![],
         model_rules: vec![ModelRuleRecord {
             id: Uuid::new_v4(),
             client_model: "model".into(),
             api_format: "open_ai_chat_completions".into(),
-            upstream_model_id: Uuid::new_v4(),
-            upstream_model_enabled: true,
-            upstream_model_currency: "USD".into(),
+            model_id: Uuid::new_v4(),
+            model_enabled: true,
+            model_currency: "USD".into(),
             price_unit_tokens: 1_000_000,
             price_effective_at: chrono::Utc::now(),
             input_unit_price: Default::default(),
@@ -225,7 +255,6 @@ fn proxy_fixture_with_retry(
                 "long_context_tiers": [],
                 "request_multipliers": [],
             }),
-            upstream_model: "model".into(),
             routing_tiers,
             enabled: true,
         }],
@@ -303,6 +332,37 @@ async fn hang_before_headers(State(state): State<HeaderHangState>) -> Response {
     pending().await
 }
 
+#[derive(Clone)]
+struct CapturedModelState {
+    models: Arc<Mutex<Vec<String>>>,
+}
+
+impl CapturedModelState {
+    fn capture(&self, body: &Bytes) {
+        self.models
+            .lock()
+            .unwrap()
+            .push(String::from_utf8_lossy(body).into_owned());
+    }
+}
+
+async fn capture_model_then_hang(State(state): State<CapturedModelState>, body: Bytes) -> Response {
+    state.capture(&body);
+    pending().await
+}
+
+async fn capture_model_then_succeed(
+    State(state): State<CapturedModelState>,
+    body: Bytes,
+) -> Response {
+    state.capture(&body);
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"id":"completion"}"#))
+        .unwrap()
+}
+
 #[tokio::test]
 async fn header_timeout_makes_one_attempt_and_remains_neutral_for_ordinary_channels() {
     let (accepted_tx, accepted_rx) = oneshot::channel();
@@ -342,6 +402,76 @@ async fn header_timeout_makes_one_attempt_and_remains_neutral_for_ordinary_chann
         .unwrap();
     assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
     assert_eq!(attempts.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn retry_rewrites_each_attempt_with_its_target_owned_upstream_model() {
+    let first_models = Arc::new(Mutex::new(Vec::new()));
+    let second_models = Arc::new(Mutex::new(Vec::new()));
+    let first = start_server(
+        Router::new()
+            .route("/v1/chat/completions", post(capture_model_then_hang))
+            .with_state(CapturedModelState {
+                models: Arc::clone(&first_models),
+            }),
+    )
+    .await;
+    let second = start_server(
+        Router::new()
+            .route("/v1/chat/completions", post(capture_model_then_succeed))
+            .with_state(CapturedModelState {
+                models: Arc::clone(&second_models),
+            }),
+    )
+    .await;
+    let fixture = proxy_fixture_with_retry_and_models(
+        &[
+            format!("http://{}", first.address),
+            format!("http://{}", second.address),
+        ],
+        &[0, 1],
+        &["wire-primary".into(), "wire-fallback".into()],
+        &[0, 1],
+        upstream_config(2, 2),
+        RoutingRuntime::new(PassiveHealthPolicy::default()),
+        RequestRetrySettings::default(),
+    );
+    let pricing_model_id = fixture
+        .runtime
+        .snapshot()
+        .model_rule(
+            ai_gateway::domain::ApiFormat::OpenAiChatCompletions,
+            "model",
+        )
+        .unwrap()
+        .model_id();
+    let logs = fixture.logs.clone();
+    let gateway = start_server(http::router(fixture.service)).await;
+
+    let response = timeout(WAIT, request(&client(), gateway.address).send())
+        .await
+        .unwrap()
+        .unwrap();
+    let status = response.status();
+    let response_body = response.bytes().await.unwrap();
+    assert_eq!(
+        *first_models.lock().unwrap(),
+        [r#"{"model":"wire-primary"}"#]
+    );
+    assert_eq!(
+        *second_models.lock().unwrap(),
+        [r#"{"model":"wire-fallback"}"#]
+    );
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&response_body)
+    );
+    let events = logs.events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].upstream_model.as_deref(), Some("wire-fallback"));
+    assert_eq!(events[0].model_id, Some(pricing_model_id));
 }
 
 #[tokio::test]

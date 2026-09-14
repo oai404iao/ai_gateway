@@ -4669,11 +4669,10 @@ async fn system_settings_are_versioned_audited_and_updated_via_console() {
     database.cleanup().await;
 }
 
-/// A model rule chooses exactly one upstream model record. Its forwarded
-/// model identifier and its price snapshot come from that same record; the
-/// API no longer accepts a separate priced-model/upstream-model pair.
+/// A parent model rule owns one priced client identity. Its protocol children
+/// have immutable formats and choose wire models from their target channels.
 #[tokio::test]
-async fn model_rule_uses_its_upstream_model_as_the_price_source() {
+async fn model_rule_hierarchy_separates_pricing_from_target_models() {
     let database = TestDatabase::new().await;
     let app = app(database.pool.clone()).await;
     let effective_at = chrono::Utc::now().to_rfc3339();
@@ -4682,8 +4681,8 @@ async fn model_rule_uses_its_upstream_model_as_the_price_source() {
         "POST",
         "/console/v1/models",
         serde_json::json!({
-            "source_model_id": "spec-upstream-model",
-            "display_name": "Spec upstream model",
+            "source_model_id": "spec-priced-client",
+            "display_name": "Spec priced client",
             "enabled": true,
             "price_unit_tokens": 1000000,
             "input_unit_price": "0.1",
@@ -4723,7 +4722,7 @@ async fn model_rule_uses_its_upstream_model_as_the_price_source() {
             "base_url": "https://upstream.example.test",
             "enabled": true,
             "upstream_auth_kind": "none",
-            "available_models": ["spec-upstream-model"],
+            "available_models": ["spec-wire-model"],
         }),
         &[],
     )
@@ -4731,252 +4730,96 @@ async fn model_rule_uses_its_upstream_model_as_the_price_source() {
     assert_eq!(channel.status(), StatusCode::CREATED);
     let channel_id = body_json(channel).await["id"].as_str().unwrap().to_owned();
 
-    let other_group = request(
-        &app,
-        "POST",
-        "/console/v1/routing/channel-groups",
-        serde_json::json!({
-            "name": "spec-rule-other-group",
-            "api_format": "open_ai_chat_completions",
-            "enabled": true,
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(other_group.status(), StatusCode::CREATED);
-    let other_group_id = body_json(other_group).await["id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    let cross_format_group = request(
-        &app,
-        "POST",
-        "/console/v1/routing/channel-groups",
-        serde_json::json!({
-            "name": "spec-rule-responses-group",
-            "api_format": "open_ai_responses",
-            "enabled": true,
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(cross_format_group.status(), StatusCode::CREATED);
-    let cross_format_group_id = body_json(cross_format_group).await["id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-
-    for (index, invalid_target) in [
-        serde_json::json!({
-            "channel_group_id": uuid::Uuid::new_v4(),
-            "channel_selection": "all",
-            "default_weight": 1,
-            "channels": []
-        }),
-        serde_json::json!({
-            "channel_group_id": cross_format_group_id,
-            "channel_selection": "all",
-            "default_weight": 1,
-            "channels": []
-        }),
-        serde_json::json!({
-            "channel_group_id": other_group_id,
-            "channel_selection": "selected",
-            "default_weight": null,
-            "channels": [{"channel_id": channel_id, "weight": 1}]
-        }),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let invalid = request(
-            &app,
-            "POST",
-            "/console/v1/routing/model-rules",
-            serde_json::json!({
-                "client_model": format!("spec-invalid-reference-{index}"),
-                "api_format": "open_ai_chat_completions",
-                "upstream_model_id": model_id,
-                "routing_tiers": [{
-                    "priority": 0,
-                    "selection_strategy": "weighted_random",
-                    "channel_groups": [invalid_target]
-                }],
-                "enabled": true,
-            }),
-            &[],
-        )
-        .await;
-        assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        assert_eq!(
-            body_json(invalid).await,
-            serde_json::json!({"error": "routing_dependency_invalid"})
-        );
-    }
-
-    for (index, invalid_routing_tiers) in [
-        serde_json::json!([{
-            "priority": 0,
-            "selection_strategy": "weighted_random",
-            "channel_groups": [{
-                "channel_group_id": group_id,
-                "channel_selection": "all",
-                "default_weight": null,
-                "channels": []
-            }]
-        }]),
-        serde_json::json!([{
-            "priority": 0,
-            "selection_strategy": "weighted_random",
-            "channel_groups": [{
-                "channel_group_id": group_id,
-                "channel_selection": "all",
-                "default_weight": 0,
-                "channels": []
-            }]
-        }]),
-        serde_json::json!([{
-            "priority": 0,
-            "selection_strategy": "weighted_random",
-            "channel_groups": [{
-                "channel_group_id": group_id,
-                "channel_selection": "selected",
-                "channels": [{"channel_id": channel_id, "weight": 1}]
-            }]
-        }]),
-        serde_json::json!([{
-            "priority": 0,
-            "selection_strategy": "weighted_random",
-            "channel_groups": [{
-                "channel_group_id": group_id,
-                "channel_selection": "selected",
-                "default_weight": 1,
-                "channels": [{"channel_id": channel_id, "weight": 1}]
-            }]
-        }]),
-        serde_json::json!([{
-            "priority": 0,
-            "selection_strategy": "weighted_random",
-            "channel_groups": [{
-                "channel_group_id": group_id,
-                "channel_selection": "selected",
-                "default_weight": null,
-                "channels": []
-            }]
-        }]),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let invalid = request(
-            &app,
-            "POST",
-            "/console/v1/routing/model-rules",
-            serde_json::json!({
-                "client_model": "spec-invalid-client-model",
-                "api_format": "open_ai_chat_completions",
-                "upstream_model_id": model_id,
-                "routing_tiers": invalid_routing_tiers,
-                "enabled": true,
-            }),
-            &[],
-        )
-        .await;
-        assert_eq!(
-            invalid.status(),
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "invalid routing case {index} unexpectedly succeeded"
-        );
-    }
-
-    let all_channels_rule = request(
+    let parent = request(
         &app,
         "POST",
         "/console/v1/routing/model-rules",
-        serde_json::json!({
-            "client_model": "spec-all-channels-model",
-            "api_format": "open_ai_chat_completions",
-            "upstream_model_id": model_id,
-            "routing_tiers": [{
-                "priority": 0,
-                "selection_strategy": "weighted_random",
-                "channel_groups": [{
-                    "channel_group_id": group_id,
-                    "channel_selection": "all",
-                    "default_weight": 5,
-                    "channels": []
-                }]
-            }],
-            "enabled": true,
-        }),
+        serde_json::json!({"model_id": model_id}),
         &[],
     )
     .await;
-    assert_eq!(all_channels_rule.status(), StatusCode::CREATED);
-    let all_channels_rule_id = body_json(all_channels_rule).await["id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    let all_channels_rule = request(
-        &app,
-        "GET",
-        &format!("/console/v1/routing/model-rules/{all_channels_rule_id}"),
-        serde_json::json!({}),
-        &[],
-    )
-    .await;
-    assert_eq!(all_channels_rule.status(), StatusCode::OK);
+    assert_eq!(parent.status(), StatusCode::CREATED);
+    let parent_id = body_json(parent).await["id"].as_str().unwrap().to_owned();
     assert_eq!(
-        body_json(all_channels_rule).await["routing_tiers"],
-        serde_json::json!([{
-            "priority": 0,
-            "selection_strategy": "weighted_random",
-            "channel_groups": [{
-                "channel_group_id": group_id,
-                "channel_selection": "all",
-                "default_weight": 5,
-                "channels": []
-            }]
-        }])
+        request(
+            &app,
+            "POST",
+            "/console/v1/routing/model-rules",
+            serde_json::json!({"model_id": model_id}),
+            &[],
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
     );
 
-    let rule = request(
-        &app,
-        "POST",
-        "/console/v1/routing/model-rules",
-        serde_json::json!({
-            "client_model": "spec-client-model",
-            "api_format": "open_ai_chat_completions",
-            "upstream_model_id": model_id,
-            "routing_tiers": [{
-                "priority": 3,
-                "selection_strategy": "weighted_round_robin",
-                "channel_groups": [{
-                    "channel_group_id": group_id,
-                    "channel_selection": "selected",
-                    "default_weight": null,
-                    "channels": [{
-                        "channel_id": channel_id,
-                        "weight": 7
-                    }]
-                }]
-            }],
-            "enabled": true,
-        }),
-        &[],
-    )
-    .await;
-    assert_eq!(rule.status(), StatusCode::CREATED);
-    let rule_id = body_json(rule).await["id"].as_str().unwrap().to_owned();
-
-    let detail = request(
+    let parent = request(
         &app,
         "GET",
-        &format!("/console/v1/routing/model-rules/{rule_id}"),
+        &format!("/console/v1/routing/model-rules/{parent_id}"),
         serde_json::json!({}),
         &[],
     )
     .await;
+    assert_eq!(parent.status(), StatusCode::OK);
+    let parent = body_json(parent).await;
+    assert_eq!(parent["model_id"], model_id);
+    assert_eq!(parent["client_model"], "spec-priced-client");
+    assert_eq!(parent["protocol_rules"], serde_json::json!([]));
+    assert!(parent.get("api_format").is_none());
+    assert!(parent.get("upstream_model").is_none());
+
+    let protocol = request(
+        &app,
+        "POST",
+        &format!("/console/v1/routing/model-rules/{parent_id}/protocols"),
+        serde_json::json!({"api_format": "open_ai_chat_completions"}),
+        &[],
+    )
+    .await;
+    assert_eq!(protocol.status(), StatusCode::CREATED);
+    let protocol_id = body_json(protocol).await["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            &format!("/console/v1/routing/model-rules/{parent_id}/protocols"),
+            serde_json::json!({"api_format": "open_ai_chat_completions"}),
+            &[],
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    let responses_protocol = request(
+        &app,
+        "POST",
+        &format!("/console/v1/routing/model-rules/{parent_id}/protocols"),
+        serde_json::json!({"api_format": "open_ai_responses"}),
+        &[],
+    )
+    .await;
+    assert_eq!(responses_protocol.status(), StatusCode::CREATED);
+    let parent_with_protocols = request(
+        &app,
+        "GET",
+        &format!("/console/v1/routing/model-rules/{parent_id}"),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    let parent_with_protocols = body_json(parent_with_protocols).await;
+    assert_eq!(
+        parent_with_protocols["protocol_rules"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+
+    let protocol_path =
+        format!("/console/v1/routing/model-rules/{parent_id}/protocols/{protocol_id}");
+    let detail = request(&app, "GET", &protocol_path, serde_json::json!({}), &[]).await;
     assert_eq!(detail.status(), StatusCode::OK);
     let etag = detail
         .headers()
@@ -4986,169 +4829,162 @@ async fn model_rule_uses_its_upstream_model_as_the_price_source() {
         .unwrap()
         .to_owned();
     let detail = body_json(detail).await;
-    assert_eq!(detail["upstream_model_id"], model_id);
-    assert_eq!(detail["upstream_model"], "spec-upstream-model");
-    assert_eq!(
-        detail["routing_tiers"],
-        serde_json::json!([{
-            "priority": 3,
-            "selection_strategy": "weighted_round_robin",
-            "channel_groups": [{
-                "channel_group_id": group_id,
-                "channel_selection": "selected",
-                "default_weight": null,
-                "channels": [{
-                    "channel_id": channel_id,
-                    "weight": 7
-                }]
-            }]
-        }])
-    );
-    assert!(detail.get("channel_group_ids").is_none());
-    assert!(detail.get("channel_ids").is_none());
-    assert_eq!(detail["routing_status"], "ready");
-    assert_eq!(detail["target_channel_count"], 1);
-    assert_eq!(detail["model_capable_channel_count"], 1);
-    assert_eq!(detail["active_channel_count"], 1);
-    assert!(detail.get("model_id").is_none());
+    assert_eq!(detail["model_rule_id"], parent_id);
+    assert_eq!(detail["api_format"], "open_ai_chat_completions");
+    assert_eq!(detail["routing_status"], "draft");
+    assert_eq!(detail["enabled"], false);
+    assert_eq!(detail["routing_tiers"], serde_json::json!([]));
 
-    let updated_input = serde_json::json!({
-        "client_model": "spec-client-model",
-        "api_format": "open_ai_chat_completions",
-        "upstream_model_id": model_id,
-        "routing_tiers": [{
-            "priority": 4,
-            "selection_strategy": "weighted_random",
-            "channel_groups": [{
-                "channel_group_id": group_id,
-                "channel_selection": "selected",
-                "default_weight": null,
-                "channels": [{
-                    "channel_id": channel_id,
-                    "weight": 11
+    let target = |upstream_model: &str| {
+        serde_json::json!({
+            "description": "Target-owned wire model",
+            "routing_tiers": [{
+                "priority": 3,
+                "selection_strategy": "weighted_round_robin",
+                "channel_groups": [{
+                    "channel_group_id": group_id,
+                    "channel_selection": "selected",
+                    "upstream_model": null,
+                    "default_weight": null,
+                    "channels": [{
+                        "channel_id": channel_id,
+                        "upstream_model": upstream_model,
+                        "weight": 7
+                    }]
                 }]
-            }]
-        }],
-        "enabled": true,
-    });
+            }],
+            "enabled": true,
+        })
+    };
+    let mut format_mutation = target("spec-wire-model");
+    format_mutation["api_format"] = serde_json::json!("open_ai_responses");
+    let immutable_format = request(
+        &app,
+        "PUT",
+        &protocol_path,
+        format_mutation,
+        &[("if-match", &etag)],
+    )
+    .await;
+    assert_eq!(immutable_format.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let mut missing_description = target("spec-wire-model");
+    missing_description
+        .as_object_mut()
+        .unwrap()
+        .remove("description");
+    let missing_description = request(
+        &app,
+        "PUT",
+        &protocol_path,
+        missing_description,
+        &[("if-match", &etag)],
+    )
+    .await;
+    assert_eq!(
+        missing_description.status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+
+    let mut missing_channel_model = target("spec-wire-model");
+    missing_channel_model["routing_tiers"][0]["channel_groups"][0]["channels"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("upstream_model");
+    let missing_channel_model = request(
+        &app,
+        "PUT",
+        &protocol_path,
+        missing_channel_model,
+        &[("if-match", &etag)],
+    )
+    .await;
+    assert_eq!(
+        missing_channel_model.status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+
+    let invalid_all = request(
+        &app,
+        "PUT",
+        &protocol_path,
+        serde_json::json!({
+            "description": null,
+            "routing_tiers": [{
+                "priority": 0,
+                "selection_strategy": "weighted_random",
+                "channel_groups": [{
+                    "channel_group_id": group_id,
+                    "channel_selection": "all",
+                    "upstream_model": "not-advertised",
+                    "default_weight": 100,
+                    "channels": []
+                }]
+            }],
+            "enabled": true
+        }),
+        &[("if-match", &etag)],
+    )
+    .await;
+    assert_eq!(invalid_all.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        body_json(invalid_all).await,
+        serde_json::json!({"error": "routing_dependency_invalid"})
+    );
+
+    let invalid = request(
+        &app,
+        "PUT",
+        &protocol_path,
+        target("not-advertised"),
+        &[("if-match", &etag)],
+    )
+    .await;
+    assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        body_json(invalid).await,
+        serde_json::json!({"error": "routing_dependency_invalid"})
+    );
+
+    let updated_input = target("spec-wire-model");
     let updated = request(
         &app,
         "PUT",
-        &format!("/console/v1/routing/model-rules/{rule_id}"),
+        &protocol_path,
         updated_input.clone(),
         &[("if-match", &etag)],
     )
     .await;
     assert_eq!(updated.status(), StatusCode::OK);
-
-    let audit: (serde_json::Value, serde_json::Value) = sqlx::query_as(
-        "SELECT before_redacted,after_redacted \
-         FROM audit_logs \
-         WHERE object_type='model_rule' AND object_id=$1 AND action='update' \
-         ORDER BY occurred_at DESC LIMIT 1",
-    )
-    .bind(Uuid::parse_str(&rule_id).unwrap())
-    .fetch_one(&database.pool)
-    .await
-    .unwrap();
-    assert_eq!(audit.0["routing_tiers"], detail["routing_tiers"]);
-    assert_eq!(audit.1["routing_tiers"], updated_input["routing_tiers"]);
+    let current = request(&app, "GET", &protocol_path, serde_json::json!({}), &[]).await;
+    let current = body_json(current).await;
+    assert_eq!(current["routing_status"], "ready");
+    assert_eq!(current["routing_tiers"], updated_input["routing_tiers"]);
+    assert_eq!(current["target_channel_count"], 1);
+    assert_eq!(current["model_capable_channel_count"], 1);
+    assert_eq!(current["active_channel_count"], 1);
 
     let stale = request(
         &app,
         "PUT",
-        &format!("/console/v1/routing/model-rules/{rule_id}"),
+        &protocol_path,
         updated_input,
         &[("if-match", &etag)],
     )
     .await;
     assert_eq!(stale.status(), StatusCode::CONFLICT);
-    let update_audit_count: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM audit_logs \
-         WHERE object_type='model_rule' AND object_id=$1 AND action='update'",
+    let audit: (serde_json::Value, serde_json::Value) = sqlx::query_as(
+        "SELECT before_redacted,after_redacted \
+         FROM audit_logs \
+         WHERE object_type='model_protocol_rule' AND object_id=$1 AND action='update'",
     )
-    .bind(Uuid::parse_str(&rule_id).unwrap())
+    .bind(Uuid::parse_str(&protocol_id).unwrap())
     .fetch_one(&database.pool)
     .await
     .unwrap();
-    assert_eq!(update_audit_count, 1);
+    assert_eq!(audit.0["routing_tiers"], serde_json::json!([]));
+    assert_eq!(audit.1["routing_tiers"], current["routing_tiers"]);
 
-    let group_detail = request(
-        &app,
-        "GET",
-        &format!("/console/v1/routing/channel-groups/{group_id}"),
-        serde_json::json!({}),
-        &[],
-    )
-    .await;
-    let group_etag = group_detail
-        .headers()
-        .get(header::ETAG)
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .to_owned();
-    let invalid_group_move = request(
-        &app,
-        "PUT",
-        &format!("/console/v1/routing/channel-groups/{group_id}"),
-        serde_json::json!({
-            "name": "spec-rule-group",
-            "api_format": "open_ai_responses",
-            "connector_kind": "openai_compatible",
-            "enabled": true,
-        }),
-        &[("if-match", &group_etag)],
-    )
-    .await;
-    assert_eq!(
-        invalid_group_move.status(),
-        StatusCode::UNPROCESSABLE_ENTITY
-    );
-    assert_eq!(
-        body_json(invalid_group_move).await,
-        serde_json::json!({"error": "routing_dependency_invalid"})
-    );
-
-    let channel_detail = request(
-        &app,
-        "GET",
-        &format!("/console/v1/routing/channels/{channel_id}"),
-        serde_json::json!({}),
-        &[],
-    )
-    .await;
-    let channel_etag = channel_detail
-        .headers()
-        .get(header::ETAG)
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .to_owned();
-    let invalid_channel_move = request(
-        &app,
-        "PUT",
-        &format!("/console/v1/routing/channels/{channel_id}"),
-        serde_json::json!({
-            "channel_group_id": other_group_id,
-            "api_format": "open_ai_chat_completions",
-            "name": "spec-rule-channel",
-            "base_url": "https://upstream.example.test",
-            "enabled": true,
-            "upstream_auth_kind": "none",
-            "available_models": ["spec-upstream-model"],
-        }),
-        &[("if-match", &channel_etag)],
-    )
-    .await;
-    assert_eq!(
-        invalid_channel_move.status(),
-        StatusCode::UNPROCESSABLE_ENTITY
-    );
-    assert_eq!(
-        body_json(invalid_channel_move).await,
-        serde_json::json!({"error": "routing_dependency_invalid"})
-    );
     database.cleanup().await;
 }
 

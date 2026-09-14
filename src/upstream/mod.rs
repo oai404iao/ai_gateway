@@ -792,6 +792,7 @@ mod tests {
                     upstream_api_key: None,
                     available_models: vec!["upstream".into()],
                     test_model: None,
+                    test_pricing_model_id: None,
                 }],
                 models: vec![],
                 model_rules: vec![],

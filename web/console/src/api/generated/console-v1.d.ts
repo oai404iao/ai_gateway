@@ -942,7 +942,39 @@ export interface paths {
             cookie?: never;
         };
         get: operations["getModelRule"];
-        put: operations["updateModelRule"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/routing/model-rules/{id}/protocols": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["createModelProtocolRule"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/routing/model-rules/{id}/protocols/{protocol_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getModelProtocolRule"];
+        put: operations["updateModelProtocolRule"];
         post?: never;
         delete?: never;
         options?: never;
@@ -1470,10 +1502,10 @@ export interface components {
         /** @enum {string} */
         SelectionStrategy: "weighted_random" | "weighted_round_robin";
         /**
-         * @description `ready` has at least one active model-capable channel; `temporarily_unavailable` has a model-capable target but none is currently active; `disconnected` has no target channel advertising the upstream model; `disabled` means the rule itself is disabled.
+         * @description `model_disabled` takes precedence and means the priced client model is disabled; `draft` has no routing tiers and cannot be enabled; `ready` has at least one active model-capable channel; `temporarily_unavailable` has a model-capable target but none is currently active; `disconnected` has no target channel advertising its target-owned upstream model; `disabled` means the protocol rule is disabled.
          * @enum {string}
          */
-        ModelRuleRoutingStatus: "ready" | "temporarily_unavailable" | "disconnected" | "disabled";
+        ModelRuleRoutingStatus: "draft" | "model_disabled" | "ready" | "temporarily_unavailable" | "disconnected" | "disabled";
         /** @enum {string} */
         ConnectorKind: "openai_compatible" | "codex_oauth";
         /**
@@ -2248,7 +2280,7 @@ export interface components {
             auto_disabled_reason: string | null;
             /** @description Allows system automatic-disable rules to temporarily remove this channel from routing. */
             auto_disable_allowed: boolean;
-            /** @description Multiplies the selected upstream model prices before request settlement. */
+            /** @description Multiplies the applicable pricing-model rates before request settlement. */
             billing_multiplier: components["schemas"]["Decimal"];
             /** Format: uuid */
             proxy_id: string | null;
@@ -2261,8 +2293,13 @@ export interface components {
             upstream_auth_header_name: string | null;
             upstream_credential_configured: boolean;
             available_models: string[];
-            /** @description Available upstream model used by periodic scheduled tests. It must also match a configured model source ID so usage and cost can be settled. */
+            /** @description Available upstream wire model used by periodic scheduled tests; unsupported for Images and provider-managed channels. */
             test_model: string | null;
+            /**
+             * Format: uuid
+             * @description Priced client model used to settle a scheduled test. Required exactly when test_model is set and resolved only by this ID, never inferred from the wire-model string.
+             */
+            test_pricing_model_id: string | null;
             created_at: components["schemas"]["DateTime"];
             updated_at: components["schemas"]["DateTime"];
         };
@@ -2550,35 +2587,42 @@ export interface components {
             correlation_id: string;
         };
         /**
-         * @description Explicit route weight for one channel. Weights are compared only
-         *     among eligible candidates in the same routing tier.
+         * @description A selected channel and its upstream wire model, or a weight override
+         *     for an all-channel group target. `upstream_model` is required for
+         *     selected channels and null for all-channel weight overrides.
          */
         ModelRuleChannelWeight: {
             /** Format: uuid */
             channel_id: string;
+            /** @description Required for a selected target and must appear in that channel's available_models; null for an all-channel weight override. */
+            upstream_model: string | null;
             weight: number;
         };
         /**
          * @description Selects candidates from one channel group. `all` requires a positive
-         *     `default_weight`; entries in `channels` may override that weight.
-         *     `selected` requires `default_weight` to be null and `channels` to be
-         *     nonempty.
+         *     `default_weight` and one group-level `upstream_model`; entries in
+         *     `channels` may override only the weight. `selected` requires both
+         *     defaults to be null and every selected channel to carry its own
+         *     upstream model and positive weight.
          */
         ModelRuleChannelGroupTarget: {
             /** Format: uuid */
             channel_group_id: string;
             /** @enum {string} */
             channel_selection: "all" | "selected";
+            /** @description Required for `all`, selected from the union of member channels' available_models; null for `selected`. */
+            upstream_model: string | null;
             /** @description Positive default for `all`; null for `selected`. */
             default_weight: number | null;
             /**
-             * @description Per-channel weight overrides for `all`, or the complete nonempty
-             *     channel selection for `selected`.
+             * @description Per-channel weight overrides with a null upstream model for
+             *     `all`, or the complete nonempty channel/model selection for
+             *     `selected`.
              */
             channels: components["schemas"]["ModelRuleChannelWeight"][];
         };
         /**
-         * @description One model-rule routing tier. Lower priority wins. Selection strategy
+         * @description One protocol-rule routing tier. Lower priority wins. Selection strategy
          *     and weights apply only among eligible candidates in this tier.
          */
         ModelRuleRoutingTier: {
@@ -2586,15 +2630,27 @@ export interface components {
             selection_strategy: components["schemas"]["SelectionStrategy"];
             channel_groups: components["schemas"]["ModelRuleChannelGroupTarget"][];
         };
+        /** @description One priced client-model routing profile and its format-specific protocol rules. */
         ModelRuleView: {
             /** Format: uuid */
             id: string;
-            client_model: string;
-            api_format: components["schemas"]["ApiFormat"];
             /** Format: uuid */
-            upstream_model_id: string;
-            upstream_model_enabled: boolean;
-            upstream_model: string;
+            model_id: string;
+            client_model: string;
+            model_display_name: string;
+            model_provider_name: string | null;
+            model_enabled: boolean;
+            protocol_rules: components["schemas"]["ModelProtocolRuleView"][];
+            created_at: components["schemas"]["DateTime"];
+            updated_at: components["schemas"]["DateTime"];
+        };
+        /** @description One protocol rule under a priced client model; its API format is immutable. */
+        ModelProtocolRuleView: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            model_rule_id: string;
+            api_format: components["schemas"]["ApiFormat"];
             description: string | null;
             /** @description Ordered routing tiers; lower numeric priority wins. */
             routing_tiers: components["schemas"]["ModelRuleRoutingTier"][];
@@ -2602,9 +2658,9 @@ export interface components {
             routing_status: components["schemas"]["ModelRuleRoutingStatus"];
             /** @description Distinct channels selected directly or through a target group. */
             target_channel_count: number;
-            /** @description Target channels whose available_models contain the upstream model. */
+            /** @description Target channels whose available_models contain their assigned upstream model. */
             model_capable_channel_count: number;
-            /** @description Model-capable target channels currently eligible for routing. */
+            /** @description Target/model pairs currently eligible for routing. */
             active_channel_count: number;
             updated_at: components["schemas"]["DateTime"];
         };
@@ -3299,7 +3355,7 @@ export interface components {
              */
             auto_disable_allowed: boolean;
             /**
-             * @description Non-negative multiplier applied to upstream model prices for settlement.
+             * @description Non-negative multiplier applied to the applicable pricing-model rates for settlement.
              * @default 1
              */
             billing_multiplier: components["schemas"]["Decimal"];
@@ -3315,8 +3371,13 @@ export interface components {
             upstream_auth_header_name?: string | null;
             upstream_api_key?: string | null;
             available_models?: string[];
-            /** @description Must be one of available_models when set. */
+            /** @description Must be one of available_models when set; unsupported for Images and provider-managed channels. */
             test_model?: string | null;
+            /**
+             * Format: uuid
+             * @description Required exactly when test_model is set and resolved only by this ID; unsupported for Images and provider-managed channels.
+             */
+            test_pricing_model_id?: string | null;
         };
         ChannelInput: {
             /** Format: uuid */
@@ -3359,8 +3420,13 @@ export interface components {
             upstream_auth_header_name?: string | null;
             upstream_api_key?: string | null;
             available_models?: string[];
-            /** @description Must be one of available_models when set. */
+            /** @description Must be one of available_models when set; unsupported for Images and provider-managed channels. */
             test_model?: string | null;
+            /**
+             * Format: uuid
+             * @description Required exactly when test_model is set and resolved only by this ID; unsupported for Images and provider-managed channels.
+             */
+            test_pricing_model_id?: string | null;
         };
         ChannelModelDiscoveryInput: {
             api_format: components["schemas"]["ApiFormat"];
@@ -3395,7 +3461,7 @@ export interface components {
         ChannelBatchChanges: {
             enabled?: boolean;
             auto_disable_allowed?: boolean;
-            /** @description Non-negative multiplier applied to upstream model prices for settlement. */
+            /** @description Non-negative multiplier applied to the applicable pricing-model rates for settlement. */
             billing_multiplier?: components["schemas"]["Decimal"];
         };
         ChannelBatchUpdateInput: {
@@ -3411,14 +3477,20 @@ export interface components {
             /** @description Version copied from the channel list response. */
             updated_at: components["schemas"]["DateTime"];
         };
-        ModelRuleInput: {
-            client_model: string;
-            api_format: components["schemas"]["ApiFormat"];
+        /** @description Creates the sole routing profile for an existing priced model. */
+        ModelRuleCreateInput: {
             /** Format: uuid */
-            upstream_model_id: string;
-            description?: string | null;
+            model_id: string;
+        };
+        /** @description Creates a disabled empty protocol draft; the format is immutable. */
+        ModelProtocolRuleCreateInput: {
+            api_format: components["schemas"]["ApiFormat"];
+        };
+        ModelProtocolRuleInput: {
+            description: string | null;
             /** @description Ordered routing tiers; lower numeric priority wins. */
             routing_tiers: components["schemas"]["ModelRuleRoutingTier"][];
+            /** @description Must be false when routing_tiers is empty. */
             enabled: boolean;
         };
         ProxyCreateInput: {
@@ -5748,7 +5820,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ModelRuleInput"];
+                "application/json": components["schemas"]["ModelRuleCreateInput"];
             };
         };
         responses: {
@@ -5763,6 +5835,7 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
             422: components["responses"]["Unprocessable"];
         };
     };
@@ -5792,7 +5865,65 @@ export interface operations {
             404: components["responses"]["NotFound"];
         };
     };
-    updateModelRule: {
+    createModelProtocolRule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModelProtocolRuleCreateInput"];
+            };
+        };
+        responses: {
+            /** @description Draft protocol rule created. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MutationResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["Unprocessable"];
+        };
+    };
+    getModelProtocolRule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["PathId"];
+                protocol_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Protocol rule detail. */
+            200: {
+                headers: {
+                    ETag: components["headers"]["ETag"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelProtocolRuleView"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    updateModelProtocolRule: {
         parameters: {
             query?: never;
             header: {
@@ -5801,12 +5932,13 @@ export interface operations {
             };
             path: {
                 id: components["parameters"]["PathId"];
+                protocol_id: string;
             };
             cookie?: never;
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ModelRuleInput"];
+                "application/json": components["schemas"]["ModelProtocolRuleInput"];
             };
         };
         responses: {

@@ -69,15 +69,15 @@ attempt 不会在中途观察到新设置；OAuth authorization、Models 与 quo
 - 普通 channel create/update/batch API 在 repository 层拒绝 provider-managed channel；
 - provider mutation 在同一控制面事务中更新凭证与 channel、写 audit、编译候选快照并发布。
 
-Codex credential 和两个 projection channel 都不拥有 routing weight。权重、priority 与 selection
-strategy 属于具体 model rule 的 routing tier；Responses 和 Images rule 独立引用各自的 group/
-channel projection，不在两个格式之间同步路由赋值。若 rule 以 `all` 引用 Codex group，新接入的
-credential 会作为新 group channel 自动使用该 rule 的正数默认权重；`selected` rule 必须显式
-加入对应 projection。
+Codex credential 和两个 projection channel 都不拥有 routing weight 或目标模型映射。权重、
+priority、selection strategy 和上游 wire model 属于顶层计价模型下的具体协议规则 target；
+Responses 和 Images 协议独立引用各自的 group/channel projection，不在两个格式之间同步路由
+赋值。若协议以 `all` 引用 Codex group，新接入且声明支持该 target 模型的 credential 会自动
+使用正数默认权重；`selected` 必须显式加入对应 projection 并选择其模型。
 
 新建 Codex Responses group 时会同时创建一个默认关闭的 Images group。migration 对现有 group 和
 凭证执行同样投影，但不会增加 API Key format、Policy、模型规则或可访问路由。管理员必须显式启用
-Images group，并配置 `gpt-image-2` 的本地模型、Images rule 和权限。
+Images group，并配置客户端计价模型、指向 `gpt-image-2` 的 Images 协议 target 和权限。
 
 凭证的持久身份不是单独的 workspace account ID，而是
 `(connector_pool_id, account_id?, user_id)`，并要求 account ID 与 user ID 至少存在一个。
@@ -143,8 +143,8 @@ channel。
 
 原生凭证导出 Bundle 当前为 version 2，包含 Token、身份、enable/quota 和可选 proxy 数据，但
 不包含 routing weight。高级导入器会忽略旧原生 Bundle 或外部凭证对象中的 `weight` 并显示
-warning；导入完成后，凭证是否进入规则及其权重完全由现有 model rule 的 `all`/`selected`
-assignment 决定。
+warning；导入完成后，凭证是否进入规则、使用哪个上游模型及其权重完全由现有协议规则的
+`all`/`selected` assignment 决定。
 
 ## Quota 与 Session 粘性
 

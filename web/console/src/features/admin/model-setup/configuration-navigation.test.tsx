@@ -1,10 +1,9 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { describe, expect, it } from "vitest";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { BrowserRouter } from "react-router";
-import { describe, expect, it } from "vitest";
 import { AppProviders } from "@/app/providers";
 import { AppRouter } from "@/app/router";
-import { MODEL } from "@/test/fixtures";
 import { seedAuthenticatedSession } from "@/test/msw";
 
 function renderAppAt(path: string) {
@@ -18,21 +17,23 @@ function renderAppAt(path: string) {
   );
 }
 
-describe("ModelsPage", () => {
-  it("provides a direct pricing action without opening the general model editor", async () => {
+describe("configuration navigation", () => {
+  it("moves between the focused model configuration lists", async () => {
     seedAuthenticatedSession();
     const user = userEvent.setup();
     renderAppAt("/admin/models");
 
+    const navigation = await screen.findByRole("navigation", {
+      name: "Model routing configuration",
+    });
     await user.click(
-      await screen.findByRole("button", { name: /configure pricing/i }),
+      screen.getByRole("button", { name: "Model rules" }),
     );
 
-    await waitFor(() => {
-      expect(window.location.pathname).toBe(`/admin/models/${MODEL.id}/pricing`);
-    });
+    expect(window.location.pathname).toBe("/admin/routing/model-rules");
+    expect(navigation).toBeInTheDocument();
     expect(
-      await screen.findByText(/multiplier calculator/i),
+      await screen.findByRole("heading", { name: "Model Rules" }),
     ).toBeInTheDocument();
   });
 });

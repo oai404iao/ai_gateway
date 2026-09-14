@@ -70,8 +70,9 @@ edit 路径：
   转发解码或重编码后的流。
 
 普通 OpenAI-compatible 渠道的模型名不在代码中硬编码；管理员必须配置 Images 渠道、可用上游
-模型、计价模型和模型规则。Codex OAuth projection 是 provider-specific 例外，当前按核对的
-Codex image tool 声明 `gpt-image-2`，管理员仍须创建对应本地模型与 Images model rule。
+模型、客户端计价模型，并在其 Images 协议规则 target 中选择上游模型。Codex OAuth projection
+是 provider-specific 例外，当前按核对的 Codex image tool 声明 `gpt-image-2`；管理员仍须创建
+计价模型和 Images 协议规则，并让 target 显式选择该 wire model。
 
 ## 差异与限制
 

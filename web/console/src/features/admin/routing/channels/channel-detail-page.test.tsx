@@ -253,6 +253,7 @@ describe("ChannelDetailPage", () => {
       api_format: "open_ai_images",
       name: "images-generation",
       test_model: null,
+      test_pricing_model_id: null,
       supports_websocket: false,
       override_document: {
         version: 1,
@@ -399,12 +400,15 @@ describe("ChannelDetailPage", () => {
         name: /save routing degradation/i,
       }),
     ).toBeInTheDocument();
-    expect(screen.getByText(MODEL_RULE.client_model)).toBeInTheDocument();
+    expect(screen.getAllByText(MODEL_RULE.client_model).length).toBeGreaterThan(
+      0,
+    );
     expect(screen.getByText("Disconnected")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /save anyway/i }));
 
     await waitFor(() => expect(submitted?.available_models).toEqual([]));
     expect(submitted?.test_model).toBeNull();
+    expect(submitted?.test_pricing_model_id).toBeNull();
   });
 
   it("adds and removes available upstream models as a token list", async () => {

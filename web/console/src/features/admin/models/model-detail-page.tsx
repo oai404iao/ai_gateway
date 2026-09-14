@@ -33,7 +33,12 @@ import { AdminDetailShell } from "@/features/admin/components/admin-detail-shell
 import { DecimalField } from "@/components/shared/decimal-field";
 import { DetailField } from "@/components/shared/detail-field";
 import { StatusBadge } from "@/components/shared/status-badge";
-import { useCreateModel, useModel, useUpdateModel } from "@/features/admin/api";
+import {
+  useCreateModel,
+  useModel,
+  useModelRules,
+  useUpdateModel,
+} from "@/features/admin/api";
 import { ApiError } from "@/api/errors";
 import type { ModelInput } from "@/api/types";
 import { formatDateTime } from "@/lib/dates";
@@ -46,7 +51,7 @@ import {
 } from "@/features/admin/model-setup/model-setup-navigation";
 
 const schema = z.object({
-  source_model_id: z.string().min(1, "Source model id is required."),
+  source_model_id: z.string().min(1, "Client model id is required."),
   display_name: z.string().min(1, "Display name is required."),
   provider_name: z.string().nullable(),
   enabled: z.boolean(),
@@ -109,6 +114,7 @@ export function ModelDetailPage() {
   const returnsToSetup = returnTo.startsWith("/admin/model-setup");
   const { data, etag, isLoading, error } = useModel(id);
   const copySource = useModel(copyFrom ?? "");
+  const modelRules = useModelRules();
   const create = useCreateModel();
   const update = useUpdateModel(id);
   const { t } = useI18n();
@@ -119,6 +125,9 @@ export function ModelDetailPage() {
   const [initializedCopyFrom, setInitializedCopyFrom] = useState<string | null>(
     null,
   );
+  const clientModelIdLocked =
+    !isNew &&
+    modelRules.data?.some((rule) => rule.model_id === id) !== false;
   const copyInitialized =
     !copyFrom || initializedCopyFrom === copyFrom;
 
@@ -232,17 +241,17 @@ export function ModelDetailPage() {
       if (isNew) {
         await create.mutateAsync(input);
         markSaved();
-        toast.success(t("Upstream model created"));
+        toast.success(t("Pricing model created"));
         navigate(returnTo, { replace: true });
       } else {
         await update.mutateAsync({ input, ifMatch: etag });
         markSaved();
-        toast.success(t("Upstream model updated"));
+        toast.success(t("Pricing model updated"));
         if (searchParams.has("returnTo")) navigate(returnTo, { replace: true });
       }
     } catch (error) {
       if (error instanceof ApiError && error.isConflict) {
-        toast.error(t("This upstream model was changed elsewhere. Reloading."));
+        toast.error(t("This pricing model was changed elsewhere. Reloading."));
       } else {
         toast.error(error instanceof Error ? error.message : t("Save failed"));
       }
@@ -266,21 +275,21 @@ export function ModelDetailPage() {
         <ConfigurationSaveBar dirty={dirty} saving={submitting} onCancel={() => navigate(returnTo)}>
           <Button onClick={submit} disabled={submitting}>
             {submitting ? <Spinner data-icon="inline-start" /> : null}
-            {isNew ? t(copyFrom ? "Create copied model" : "Create upstream model") : t("Save upstream model")}
+            {isNew ? t(copyFrom ? "Create copied model" : "Create pricing model") : t("Save pricing model")}
           </Button>
         </ConfigurationSaveBar>
       }
       title={
         copyFrom
-          ? t("Copy upstream model")
+          ? t("Copy pricing model")
           : isNew
-            ? t("New upstream model")
-            : state.display_name || t("Upstream model")
+            ? t("New pricing model")
+            : state.display_name || t("Pricing model")
       }
-      description={t("An upstream model identifier with its USD billing price.")}
+      description={t("A client-visible model identifier with its USD billing price.")}
       backPath={returnTo}
       backLabel={
-        returnsToSetup ? t("Back to model setup") : t("Back to upstream models")
+        returnsToSetup ? t("Back to model setup") : t("Back to pricing models")
       }
       isLoading={
         isLoading ||
@@ -381,7 +390,7 @@ export function ModelDetailPage() {
         <Card>
           <CardHeader>
             <CardTitle>
-              {isNew ? t("Create upstream model") : t("Edit upstream model")}
+              {isNew ? t("Create pricing model") : t("Edit pricing model")}
             </CardTitle>
             <CardDescription>
               {t("USD prices are per the configured price unit tokens.")}
@@ -395,20 +404,28 @@ export function ModelDetailPage() {
                   <AlertTitle>{t("Review the copied model")}</AlertTitle>
                   <AlertDescription>
                     {t(
-                      "Pricing and provider settings were copied. Enter a unique source model ID; catalog source payload is not copied.",
+                      "Pricing and provider settings were copied. Enter a unique client model ID; catalog source payload is not copied.",
                     )}
                   </AlertDescription>
                 </Alert>
               ) : null}
               <FieldGroup className="grid gap-5 xl:grid-cols-2">
                 <Field data-invalid={Boolean(fieldError("source_model_id"))}>
-                  <FieldLabel htmlFor="source_model_id">{t("Source model id")}</FieldLabel>
+                  <FieldLabel htmlFor="source_model_id">{t("Client model id")}</FieldLabel>
                   <Input
                     id="source_model_id"
                     value={state.source_model_id}
+                    disabled={clientModelIdLocked}
                     onChange={(event) => patch({ source_model_id: event.target.value })}
                     aria-invalid={Boolean(fieldError("source_model_id"))}
                   />
+                  {clientModelIdLocked ? (
+                    <FieldDescription>
+                      {t(
+                        "The client model ID cannot change after a model rule is created.",
+                      )}
+                    </FieldDescription>
+                  ) : null}
                   {fieldError("source_model_id") ? (
                     <FieldError>{fieldError("source_model_id")}</FieldError>
                   ) : null}

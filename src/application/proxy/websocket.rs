@@ -28,7 +28,7 @@ use crate::{
     admission::AdmissionError,
     domain::{
         ApiFormat, ApiKeyPermission, ApiOperation, CompiledApiKey, CompiledChannel,
-        CompiledModelRule, RequestLogSource, RequestProtocol,
+        RequestLogSource, RequestProtocol,
     },
     request_policy::{
         RequestInterface, RequestPolicyLayer, apply_client_fast_mode_filter,
@@ -410,6 +410,7 @@ impl ResponsesWebSocketSession {
             rule,
             channel,
             channel_slot,
+            upstream_model,
             session_affinity,
             lease,
         } = match route {
@@ -471,6 +472,7 @@ impl ResponsesWebSocketSession {
             ApiOperation::Responses,
             &rule,
             &channel,
+            &upstream_model,
             lease,
             admission,
             started_wall_at,
@@ -488,9 +490,9 @@ impl ResponsesWebSocketSession {
         };
         let max_attempts = max_retries.saturating_add(1);
         let mut attempt = 1_u32;
-        let mut current_rule = rule;
         let mut current_channel = channel;
         let mut current_channel_slot = channel_slot;
+        let mut current_upstream_model = upstream_model;
         let mut current_session_affinity = session_affinity;
         let mut current_preferred_channel_hit = preferred_channel == Some(current_channel.id());
         let connector_seed = affinity
@@ -558,6 +560,7 @@ impl ResponsesWebSocketSession {
                         rule,
                         channel,
                         channel_slot,
+                        upstream_model,
                         session_affinity,
                         lease,
                     } = route;
@@ -566,15 +569,16 @@ impl ResponsesWebSocketSession {
                     completion.replace_route_before_dispatch(
                         &rule,
                         &channel,
+                        &upstream_model,
                         lease,
                         self.proxy.automatic_disable.clone(),
                         snapshot.system_settings().automatic_disable().clone(),
                         session_affinity.as_ref(),
                         request_multiplier,
                     );
-                    current_rule = rule;
                     current_channel = channel;
                     current_channel_slot = channel_slot;
+                    current_upstream_model = upstream_model;
                     current_session_affinity = session_affinity;
                     current_preferred_channel_hit = false;
                     continue;
@@ -585,7 +589,7 @@ impl ResponsesWebSocketSession {
                 &original_body,
                 &parsed,
                 &api_key,
-                &current_rule,
+                &current_upstream_model,
                 &current_channel,
                 &snapshot,
                 connector,
@@ -716,6 +720,7 @@ impl ResponsesWebSocketSession {
                                 rule,
                                 channel,
                                 channel_slot,
+                                upstream_model,
                                 session_affinity,
                                 lease,
                             } = route;
@@ -724,6 +729,7 @@ impl ResponsesWebSocketSession {
                             completion.retry_with_route(
                                 &rule,
                                 &channel,
+                                &upstream_model,
                                 lease,
                                 self.proxy.automatic_disable.clone(),
                                 snapshot.system_settings().automatic_disable().clone(),
@@ -740,9 +746,9 @@ impl ResponsesWebSocketSession {
                                 max_retries,
                                 "retrying Responses WebSocket setup on another channel"
                             );
-                            current_rule = rule;
                             current_channel = channel;
                             current_channel_slot = channel_slot;
+                            current_upstream_model = upstream_model;
                             current_session_affinity = session_affinity;
                             current_preferred_channel_hit = false;
                             attempt = attempt.saturating_add(1);
@@ -864,7 +870,7 @@ impl ResponsesWebSocketSession {
         original_body: &Bytes,
         parsed: &ParsedWebSocketRequest,
         api_key: &CompiledApiKey,
-        rule: &CompiledModelRule,
+        upstream_model: &str,
         channel: &CompiledChannel,
         snapshot: &crate::domain::CompiledRuntimeConfig,
         connector: PreparedConnectorAttempt,
@@ -872,7 +878,7 @@ impl ResponsesWebSocketSession {
         client_body_changed: bool,
     ) -> Result<PreparedWebSocketAttempt, ProxyError> {
         let transforms = channel.upstream_policy().effective_transforms();
-        let body = rewrite_model_alias(original_body.clone(), &parsed.model, rule)?;
+        let body = rewrite_model_alias(original_body.clone(), &parsed.model, upstream_model)?;
         let body = apply_json_patch_plan(body, transforms.request_json())
             .map_err(|_| ProxyError::transform_failed())?;
         let body = connector

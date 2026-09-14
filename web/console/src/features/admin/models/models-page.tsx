@@ -1,5 +1,5 @@
-import { useNavigate, useSearchParams } from "react-router";
-import { ConfigurationTableView, ConfigurationWorkbench } from "@/features/admin/model-setup/configuration-workbench";
+import { useNavigate } from "react-router";
+import { ConfigurationTableView } from "@/features/admin/model-setup/configuration-navigation";
 import { Calculator, Copy, Workflow } from "lucide-react";
 import { AdminListPage } from "@/features/admin/components/admin-list-page";
 import { Button } from "@/components/ui/button";
@@ -15,10 +15,11 @@ import {
 } from "@/features/admin/model-setup/model-setup-navigation";
 
 export function ModelsPage() {
-  const [params] = useSearchParams();
-  return params.get("mode") === "table"
-    ? <ConfigurationTableView lens="models"><ModelsTable /></ConfigurationTableView>
-    : <ConfigurationWorkbench lens="models" />;
+  return (
+    <ConfigurationTableView lens="models">
+      <ModelsTable />
+    </ConfigurationTableView>
+  );
 }
 
 function ModelsTable() {
@@ -29,13 +30,13 @@ function ModelsTable() {
   const groupedModels = providerGroups.flatMap((group) => group.models);
   return (
     <AdminListPage
-      title={t("Upstream Models")}
-      description={t("Upstream model identifiers and their USD prices. Prices carry an effective timestamp.")}
+      title={t("Pricing Models")}
+      description={t("Client-visible model identifiers and their USD prices. Prices carry an effective timestamp.")}
       query={{ data: groupedModels, isLoading, error }}
       rowKey={(model) => model.id}
       detailPath={(model) => `/admin/models/${model.id}`}
       groupBy={(model) => model.provider_name?.trim() || t("Unspecified provider")}
-      createLabel={t("New upstream model")}
+      createLabel={t("New pricing model")}
       onCreate={() => navigate("/admin/models/new")}
       headerActions={
         <Button
@@ -43,7 +44,7 @@ function ModelsTable() {
           onClick={() => navigate(MODEL_SETUP_PATH)}
         >
           <Workflow data-icon="inline-start" />
-          {t("Guided model setup")}
+          {t("Model setup")}
         </Button>
       }
       columns={[

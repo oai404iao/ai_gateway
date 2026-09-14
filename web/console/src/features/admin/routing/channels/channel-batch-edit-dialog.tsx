@@ -230,7 +230,7 @@ export function ChannelBatchEditDialog({
               aria-invalid={Boolean(fieldError("billing_multiplier"))}
             />
             <FieldDescription>
-              {t("Multiplies the upstream model price used for request settlement.")}
+              {t("Multiplies the applicable pricing model rates used for request settlement.")}
             </FieldDescription>
             {fieldError("billing_multiplier") ? (
               <FieldError>{fieldError("billing_multiplier")}</FieldError>

@@ -181,6 +181,13 @@ const ModelRuleDetailPage = lazy(() =>
     default: m.ModelRuleDetailPage,
   })),
 );
+const ModelProtocolRuleDetailPage = lazy(() =>
+  import(
+    "@/features/admin/routing/model-rules/model-protocol-rule-detail-page"
+  ).then((m) => ({
+    default: m.ModelProtocolRuleDetailPage,
+  })),
+);
 const CodexOauthPage = lazy(
   () => import("@/features/admin/providers/codex-oauth/codex-oauth-page"),
 );
@@ -328,6 +335,10 @@ function appRouteElements() {
               <Route
                 path="/admin/routing/model-rules/:id"
                 element={<ModelRuleDetailPage />}
+              />
+              <Route
+                path="/admin/routing/model-rules/:id/protocols/:protocolId"
+                element={<ModelProtocolRuleDetailPage />}
               />
               <Route
                 path="/admin/providers/codex-oauth/:id"

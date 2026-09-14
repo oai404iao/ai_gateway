@@ -61,21 +61,19 @@ pnpm e2e:install            # install Playwright Chromium + OS deps (first run)
 - `src/test/` — vitest setup, MSW server, deterministic fixtures.
 - `e2e/` — Playwright browser smoke tests (API mocked at the network layer).
 
-## Model configuration workspace
+## Model configuration
 
-The sidebar's **Model configuration** entry opens a relationship-first
-workbench. The existing model-rule, channel, and model list URLs are three
-views of the same directory/inspector layout. Search, filters, pagination,
-and selection live in the URL; related-resource links lead directly to their
-inspector. `?mode=table` exposes table and batch tools, while
-`/admin/model-setup` remains the guided creation flow.
+The sidebar's **Model configuration** entry opens the priced-model rule list.
+Fixed navigation connects the dedicated pricing-model, Channel, and model-rule
+lists; `/admin/model-setup` is a lightweight three-step entry point rather than
+a duplicate editor.
 
-Configuration editors retain the existing single-resource mutations and
-ETags, return to their source context after saving, and protect unsaved drafts.
-Production uses `AppRouterProvider` (data router) so browser Back is blocked
-as well as app navigation. Regression coverage is in
-`src/features/admin/model-setup/configuration-*.test.*` and
-`e2e/configuration-workbench.spec.ts`, including mobile, Chinese, and dark mode.
+Each priced client model has at most one top-level model rule. Its detail page
+lists format-specific protocol children whose formats are immutable, and each
+protocol editor owns its priority tiers, Channel targets, weights, and
+target-selected upstream models. Editors retain single-resource ETag mutations
+and protect unsaved drafts. Regression coverage lives beside the focused pages
+and in `e2e/model-routing.spec.ts`.
 
 ## API contract
 

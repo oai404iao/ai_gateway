@@ -22,7 +22,8 @@ Chat Completions、Responses、Codex standalone web search、非流式 JSON Imag
 - 支持 OpenAI Chat Completions、Responses、Codex standalone web search、非流式 JSON
   Images generation 和 multipart Images edit；
   三种格式绝不相互回退。
-- 按 `(客户端模型名, API 格式)` 路由，由模型规则拥有优先级层级、选择策略和渠道权重。
+- 每个计价客户端模型拥有一个顶层模型规则，其下按 API 格式配置协议规则；协议规则各自拥有
+  优先级层级与选择策略，其中每个 target 保存上游模型和渠道权重。
 - 特殊上游通过单进程内 Connector 接入，不增加 sidecar 或第二次网络跳转。首个
   Codex OAuth Connector 支持订阅凭证、每账户代理、Token 刷新、额度感知 draining
   以及共享凭证的 provider-managed Responses HTTP/SSE/WebSocket/Search 与 Images
@@ -171,12 +172,12 @@ curl --request POST http://127.0.0.1:3001/console/v1/auth/login \
 2. 所需 API 格式与 Connector 的**渠道组**。新建 Codex OAuth Responses 组时会同时创建一个
    共享凭证池、默认停用的 Images 组。
 3. 该渠道组内的**渠道**：配置上游 URL、上游凭据和支持的上游模型名。
-4. 一个**模型规则**：将客户端模型名映射到一个模型记录和路由目标；该模型记录的
-   `source_model_id` 同时是上游 wire 模型名和请求计价来源。
+4. 为该计价模型创建一个顶层**模型规则**，再添加所需格式的协议规则；每条路由 target 从目标
+   Channel 的能力中选择实际发送的上游 wire 模型。
 5. 一个客户端 **API Key**：至少授予 `proxy` 权限；如需调用 `/v1/models`，还要授予 `models.read`。
 
-即使使用同一个上游提供商或模型名，Chat Completions、Responses 与 Images 路由仍是
-三套独立配置。请使用 Console API 管理控制面，不要直接编辑控制面数据表。
+按需在同一计价模型下分别创建 Chat Completions、Responses 与 Images 协议规则；三种格式的
+路由 target 仍相互独立。请使用 Console API 管理控制面，不要直接编辑控制面数据表。
 
 Console 路由覆盖与运行行为详见[运行与接口说明](docs/user/operations.md)。
 
@@ -259,7 +260,7 @@ curl --request POST "$GATEWAY_URL/v1/chat/completions" \
   }'
 ```
 
-对于 Responses，请先配置独立的 `open_ai_responses` 模型规则，再发送正常的 Responses 请求：
+对于 Responses，请先在计价模型规则下配置独立的 `open_ai_responses` 协议规则，再发送请求：
 
 ```bash
 curl --request POST "$GATEWAY_URL/v1/responses" \
@@ -271,8 +272,8 @@ curl --request POST "$GATEWAY_URL/v1/responses" \
   }'
 ```
 
-对于 Images generation，请配置独立的 `open_ai_images` 渠道组、渠道、模型规则与 API Key
-权限，然后发送 JSON 请求：
+对于 Images generation，请配置独立的 `open_ai_images` 渠道组、渠道、协议规则与 API Key
+权限，并让 target 选择对应上游模型，然后发送 JSON 请求：
 
 ```bash
 curl --request POST "$GATEWAY_URL/v1/images/generations" \

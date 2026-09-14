@@ -1649,7 +1649,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/ModelRuleInput" }
+            schema: { $ref: "#/components/schemas/ModelRuleCreateInput" }
       responses:
         "201":
           description: Created.
@@ -1658,6 +1658,7 @@ paths:
               schema: { $ref: "#/components/schemas/MutationResponse" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/Unprocessable" }
 
   /routing/model-rules/{id}:
@@ -1678,18 +1679,69 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
-    put:
+
+  /routing/model-rules/{id}/protocols:
+    post:
       tags: [ModelRules]
-      operationId: updateModelRule
+      operationId: createModelProtocolRule
       security: [{ bearerAuth: [] }]
       parameters:
         - $ref: "#/components/parameters/PathId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ModelProtocolRuleCreateInput" }
+      responses:
+        "201":
+          description: Draft protocol rule created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /routing/model-rules/{id}/protocols/{protocol_id}:
+    get:
+      tags: [ModelRules]
+      operationId: getModelProtocolRule
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+        - name: protocol_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Protocol rule detail.
+          headers:
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ModelProtocolRuleView" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [ModelRules]
+      operationId: updateModelProtocolRule
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+        - name: protocol_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
         - $ref: "#/components/parameters/IfMatch"
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/ModelRuleInput" }
+            schema: { $ref: "#/components/schemas/ModelProtocolRuleInput" }
       responses:
         "200":
           description: Updated.
@@ -2720,12 +2772,15 @@ components:
       enum: [weighted_random, weighted_round_robin]
     ModelRuleRoutingStatus:
       type: string
-      enum: [ready, temporarily_unavailable, disconnected, disabled]
+      enum: [draft, model_disabled, ready, temporarily_unavailable, disconnected, disabled]
       description: >
-        `ready` has at least one active model-capable channel;
+        `model_disabled` takes precedence and means the priced client model is
+        disabled; `draft` has no routing tiers and cannot be enabled; `ready`
+        has at least one active model-capable channel;
         `temporarily_unavailable` has a model-capable target but none is
         currently active; `disconnected` has no target channel advertising
-        the upstream model; `disabled` means the rule itself is disabled.
+        its target-owned upstream model; `disabled` means the protocol rule is
+        disabled.
     ConnectorKind:
       type: string
       enum: [openai_compatible, codex_oauth]
@@ -3826,7 +3881,8 @@ components:
          billing_multiplier, proxy_id,
          config_template_id, connect_timeout_ms, response_header_timeout_ms,
          stream_idle_timeout_ms, upstream_auth_kind, upstream_auth_header_name,
-         upstream_credential_configured, available_models, test_model, created_at, updated_at]
+         upstream_credential_configured, available_models, test_model,
+         test_pricing_model_id, created_at, updated_at]
       properties:
         id: { type: string, format: uuid }
         channel_group_id: { type: string, format: uuid }
@@ -3851,7 +3907,7 @@ components:
           description: Allows system automatic-disable rules to temporarily remove this channel from routing.
         billing_multiplier:
           allOf: [{ $ref: "#/components/schemas/Decimal" }]
-          description: Multiplies the selected upstream model prices before request settlement.
+          description: Multiplies the applicable pricing-model rates before request settlement.
         proxy_id: { type: string, format: uuid, nullable: true }
         config_template_id: { type: string, format: uuid, nullable: true }
         connect_timeout_ms: { type: integer, nullable: true }
@@ -3866,7 +3922,12 @@ components:
         test_model:
           type: string
           nullable: true
-          description: Available upstream model used by periodic scheduled tests. It must also match a configured model source ID so usage and cost can be settled.
+          description: Available upstream wire model used by periodic scheduled tests; unsupported for Images and provider-managed channels.
+        test_pricing_model_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Priced client model used to settle a scheduled test. Required exactly when test_model is set and resolved only by this ID, never inferred from the wire-model string.
         created_at: { $ref: "#/components/schemas/DateTime" }
         updated_at: { $ref: "#/components/schemas/DateTime" }
 
@@ -4293,11 +4354,16 @@ components:
       type: object
       additionalProperties: false
       description: |
-        Explicit route weight for one channel. Weights are compared only
-        among eligible candidates in the same routing tier.
-      required: [channel_id, weight]
+        A selected channel and its upstream wire model, or a weight override
+        for an all-channel group target. `upstream_model` is required for
+        selected channels and null for all-channel weight overrides.
+      required: [channel_id, upstream_model, weight]
       properties:
         channel_id: { type: string, format: uuid }
+        upstream_model:
+          type: string
+          nullable: true
+          description: Required for a selected target and must appear in that channel's available_models; null for an all-channel weight override.
         weight: { type: integer, minimum: 1, maximum: 2147483647 }
 
     ModelRuleChannelGroupTarget:
@@ -4305,15 +4371,21 @@ components:
       additionalProperties: false
       description: |
         Selects candidates from one channel group. `all` requires a positive
-        `default_weight`; entries in `channels` may override that weight.
-        `selected` requires `default_weight` to be null and `channels` to be
-        nonempty.
-      required: [channel_group_id, channel_selection, default_weight, channels]
+        `default_weight` and one group-level `upstream_model`; entries in
+        `channels` may override only the weight. `selected` requires both
+        defaults to be null and every selected channel to carry its own
+        upstream model and positive weight.
+      required:
+        [channel_group_id, channel_selection, upstream_model, default_weight, channels]
       properties:
         channel_group_id: { type: string, format: uuid }
         channel_selection:
           type: string
           enum: [all, selected]
+        upstream_model:
+          type: string
+          nullable: true
+          description: Required for `all`, selected from the union of member channels' available_models; null for `selected`.
         default_weight:
           type: integer
           minimum: 1
@@ -4323,15 +4395,16 @@ components:
         channels:
           type: array
           description: |
-            Per-channel weight overrides for `all`, or the complete nonempty
-            channel selection for `selected`.
+            Per-channel weight overrides with a null upstream model for
+            `all`, or the complete nonempty channel/model selection for
+            `selected`.
           items: { $ref: "#/components/schemas/ModelRuleChannelWeight" }
 
     ModelRuleRoutingTier:
       type: object
       additionalProperties: false
       description: |
-        One model-rule routing tier. Lower priority wins. Selection strategy
+        One protocol-rule routing tier. Lower priority wins. Selection strategy
         and weights apply only among eligible candidates in this tier.
       required: [priority, selection_strategy, channel_groups]
       properties:
@@ -4344,21 +4417,37 @@ components:
 
     ModelRuleView:
       type: object
+      description: One priced client-model routing profile and its format-specific protocol rules.
       required:
-        [id, client_model, api_format, upstream_model_id, upstream_model_enabled, upstream_model,
-         description, routing_tiers, enabled, routing_status,
-         target_channel_count, model_capable_channel_count, active_channel_count, updated_at]
+        [id, model_id, client_model, model_display_name, model_provider_name,
+         model_enabled, protocol_rules, created_at, updated_at]
       properties:
         id: { type: string, format: uuid }
+        model_id: { type: string, format: uuid }
         client_model: { type: string }
+        model_display_name: { type: string }
+        model_provider_name: { type: string, nullable: true }
+        model_enabled: { type: boolean }
+        protocol_rules:
+          type: array
+          items: { $ref: "#/components/schemas/ModelProtocolRuleView" }
+        created_at: { $ref: "#/components/schemas/DateTime" }
+        updated_at: { $ref: "#/components/schemas/DateTime" }
+
+    ModelProtocolRuleView:
+      type: object
+      description: One protocol rule under a priced client model; its API format is immutable.
+      required:
+        [id, model_rule_id, api_format, description, routing_tiers, enabled,
+         routing_status, target_channel_count, model_capable_channel_count,
+         active_channel_count, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        model_rule_id: { type: string, format: uuid }
         api_format: { $ref: "#/components/schemas/ApiFormat" }
-        upstream_model_id: { type: string, format: uuid }
-        upstream_model_enabled: { type: boolean }
-        upstream_model: { type: string }
         description: { type: string, nullable: true }
         routing_tiers:
           type: array
-          minItems: 1
           description: Ordered routing tiers; lower numeric priority wins.
           items: { $ref: "#/components/schemas/ModelRuleRoutingTier" }
         enabled: { type: boolean }
@@ -4370,11 +4459,11 @@ components:
         model_capable_channel_count:
           type: integer
           minimum: 0
-          description: Target channels whose available_models contain the upstream model.
+          description: Target channels whose available_models contain their assigned upstream model.
         active_channel_count:
           type: integer
           minimum: 0
-          description: Model-capable target channels currently eligible for routing.
+          description: Target/model pairs currently eligible for routing.
         updated_at: { $ref: "#/components/schemas/DateTime" }
 
     ProxyView:
@@ -5464,7 +5553,7 @@ components:
         billing_multiplier:
           allOf: [{ $ref: "#/components/schemas/Decimal" }]
           default: "1"
-          description: Non-negative multiplier applied to upstream model prices for settlement.
+          description: Non-negative multiplier applied to the applicable pricing-model rates for settlement.
         proxy_id: { type: string, format: uuid, nullable: true }
         config_template_id: { type: string, format: uuid, nullable: true }
         override_document: { $ref: "#/components/schemas/JsonValue" }
@@ -5480,7 +5569,12 @@ components:
         test_model:
           type: string
           nullable: true
-          description: Must be one of available_models when set.
+          description: Must be one of available_models when set; unsupported for Images and provider-managed channels.
+        test_pricing_model_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Required exactly when test_model is set and resolved only by this ID; unsupported for Images and provider-managed channels.
 
     ChannelInput:
       type: object
@@ -5527,7 +5621,12 @@ components:
         test_model:
           type: string
           nullable: true
-          description: Must be one of available_models when set.
+          description: Must be one of available_models when set; unsupported for Images and provider-managed channels.
+        test_pricing_model_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Required exactly when test_model is set and resolved only by this ID; unsupported for Images and provider-managed channels.
 
     ChannelModelDiscoveryInput:
       type: object
@@ -5575,7 +5674,7 @@ components:
         auto_disable_allowed: { type: boolean }
         billing_multiplier:
           allOf: [{ $ref: "#/components/schemas/Decimal" }]
-          description: Non-negative multiplier applied to upstream model prices for settlement.
+          description: Non-negative multiplier applied to the applicable pricing-model rates for settlement.
 
     ChannelBatchUpdateInput:
       type: object
@@ -5605,20 +5704,35 @@ components:
           allOf: [{ $ref: "#/components/schemas/DateTime" }]
           description: Version copied from the channel list response.
 
-    ModelRuleInput:
+    ModelRuleCreateInput:
       type: object
-      required: [client_model, api_format, upstream_model_id, routing_tiers, enabled]
+      additionalProperties: false
+      description: Creates the sole routing profile for an existing priced model.
+      required: [model_id]
       properties:
-        client_model: { type: string }
+        model_id: { type: string, format: uuid }
+
+    ModelProtocolRuleCreateInput:
+      type: object
+      additionalProperties: false
+      description: Creates a disabled empty protocol draft; the format is immutable.
+      required: [api_format]
+      properties:
         api_format: { $ref: "#/components/schemas/ApiFormat" }
-        upstream_model_id: { type: string, format: uuid }
+
+    ModelProtocolRuleInput:
+      type: object
+      additionalProperties: false
+      required: [description, routing_tiers, enabled]
+      properties:
         description: { type: string, nullable: true }
         routing_tiers:
           type: array
-          minItems: 1
           description: Ordered routing tiers; lower numeric priority wins.
           items: { $ref: "#/components/schemas/ModelRuleRoutingTier" }
-        enabled: { type: boolean }
+        enabled:
+          type: boolean
+          description: Must be false when routing_tiers is empty.
 
     ProxyCreateInput:
       type: object

@@ -340,16 +340,25 @@ async fn seed(
             ApiKind::ChatCompletions => (chat_group_id, chat_channel_id),
             ApiKind::Responses => (responses_group_id, responses_channel_id),
         };
+        let model_rule_profile_id = Uuid::new_v4();
         let model_rule_id = Uuid::new_v4();
         sqlx::query(
+            "INSERT INTO model_routing_profiles
+             (id,model_id)
+             VALUES ($1,$2)",
+        )
+        .bind(model_rule_profile_id)
+        .bind(model_ids[&scenario.name])
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
             "INSERT INTO model_rules
-             (id,client_model,api_format,upstream_model_id,enabled)
-             VALUES ($1,$2,$3::api_format,$4,true)",
+             (id,model_routing_profile_id,api_format,enabled)
+             VALUES ($1,$2,$3::api_format,true)",
         )
         .bind(model_rule_id)
-        .bind(&scenario.model)
+        .bind(model_rule_profile_id)
         .bind(scenario.api_kind.database_name())
-        .bind(model_ids[&scenario.name])
         .execute(&mut *transaction)
         .await?;
         sqlx::query(
@@ -374,13 +383,15 @@ async fn seed(
         .await?;
         sqlx::query(
             "INSERT INTO model_rule_routing_channels
-             (model_rule_id,api_format,channel_group_id,channel_id,weight)
-             VALUES ($1,$2::api_format,$3,$4,1)",
+             (model_rule_id,api_format,channel_group_id,channel_id,
+              upstream_model,weight)
+             VALUES ($1,$2::api_format,$3,$4,$5,1)",
         )
         .bind(model_rule_id)
         .bind(scenario.api_kind.database_name())
         .bind(group_id)
         .bind(channel_id)
+        .bind(&scenario.model)
         .execute(&mut *transaction)
         .await?;
     }

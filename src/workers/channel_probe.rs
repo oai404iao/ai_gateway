@@ -128,11 +128,8 @@ async fn run_probe_round(
         .collect::<Vec<_>>();
 
     for channel in channels {
-        let model = channel
-            .test_model()
-            .expect("selected scheduled test channels always have a test model");
         let billing_model = snapshot
-            .scheduled_test_model(model)
+            .scheduled_test_model(channel.id())
             .expect("runtime compilation validates scheduled test model pricing");
         let result = probe_channel(
             &snapshot.system_settings().upstream_timeouts(),

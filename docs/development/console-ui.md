@@ -115,36 +115,28 @@ docs/openapi/console-v1.yaml
   长上下文档位和请求倍率，并省略不在普通详情响应中的 `source_payload`。桌面布局使用左侧价格/
   星期时段编辑区和右侧 sticky 计算、摘要、保存工具栏，窄屏按 DOM 顺序降级为单栏。星期 Toggle
   Group 必须保持至少一个 UTC 开始星期，旧响应缺少 `weekdays` 时在表单层归一化为全周。
-- `/admin/model-setup` 是渠道组、普通供应商 Channel、模型价格和模型规则之上的前端编排页，
-  复用既有 list/detail/mutation hooks，不引入另一套 Console API 或原子批量写入语义。复制入口的
-  URL 只能携带资源 UUID 和经过校验的 `/admin/*` 返回路径，不能序列化凭据或完整资源。普通
-  Channel 复制默认清空 `upstream_api_key`，且目标渠道组被限制为来源 API 格式；Codex
-  provider-managed Channel 不进入复制候选；
-  模型复制清空全局唯一的 `source_model_id`，并明确提示普通详情响应不包含的 `source_payload`
-  不会复制。
+- `/admin/model-setup` 是计价模型、Channel 和协议路由三个专用管理面的轻量入口，不复制这些
+  页面中的编辑器或状态推导。普通 Channel 和计价模型的复制仍由各自列表/详情页负责；复制 URL
+  只能携带资源 UUID 和经过校验的 `/admin/*` 返回路径，不能序列化凭据或完整资源。
 
-### 配置工作台
+### 模型配置导航与层级编辑
 
-模型配置侧边栏入口默认打开 `/admin/routing/model-rules`。三个列表路由复用
-`model-setup/configuration-workbench.tsx`，分别是客户端路由、渠道供给和模型价格视角，
-而不是按数据库资源排列的多个折叠列表：
+模型配置侧边栏入口默认打开 `/admin/routing/model-rules`。`configuration-navigation.tsx` 只
+提供计价模型、Channel 和模型规则之间的统一导航；各资源使用自己的表格和详情页，不再维护重复的
+目录/检查器状态或 `?mode=table` 分支。
 
-- 桌面左侧是可搜索、按格式或供应商筛选的分页目录，右侧是请求路径和关联资源面板；
-  窄屏在目录和选中面板之间切换。目录每页 24 项，单组渠道每页 8 项。
-- `q`、`facet`、`state`、`page`、`selected` 保存在 URL；资源间关联跳转用 UUID 定位。
-  失效的显式选择显示不可用提示，不能静默展示另一个资源。
-- `configuration-graph.ts` 只推导资源引用关系。路由状态和可路由渠道计数使用 API 返回值，
-  不把模型能力列表或本地开关推断为实时健康。`all` 和 `selected` 目标必须区别处理。
-- 同一 Codex pool 在目录中合并，但 Responses/Images group 的开关、能力和路由分别展示；
-  凭据仍进入专用管理页面，普通 Channel 的复制和批量操作不能编辑托管凭据。
-- `?mode=table` 是显式的表格/批量工具；保留批量渠道编辑、恢复、组禁用和规则快速添加。
-  `/admin/model-setup` 保留为创建流程向导，不再充当日常配置总览。
-- 渠道组、渠道、模型、规则编辑器使用统一双栏详情和 sticky 操作栏；价格编辑器保留专用
-  计算布局。通过工作台进入的编辑器保存成功后返回经过校验的 `returnTo`，保持原筛选和选择；
-  每次保存仍只提交一个既有资源，没有跨资源原子保存。
+- 模型规则列表每个计价模型只显示一行，并在同一行列出其协议及状态。创建顶层规则时，只能从已
+  启用且尚未绑定顶层规则的计价模型中选择。
+- `/admin/routing/model-rules/:id` 显示不可编辑的客户端计价身份，以及 Chat Completions、
+  Responses 和 Images 协议入口。缺失协议由此创建为停用的空 `draft`。
+- `/admin/routing/model-rules/:id/protocols/:protocolId` 是实际路由编辑器。协议格式不可编辑；
+  `all` target 从组内 Channel 的 `available_models` 并集选择模型，`selected` target 为每条
+  Channel 分别选择模型。自由文本上游模型输入已移除。
+- 渠道组、渠道、计价模型和协议规则编辑器继续使用统一双栏详情和 sticky 操作栏；价格编辑器
+  保留专用计算布局。每次保存仍只提交一个资源，没有跨资源原子保存。
 - 生产使用 data router 的 `useBlocker` 保护 PUSH/REPLACE/浏览器 POP；表单草稿不持久化。
   Declarative `AppRouter` 留给组件测试，fallback 保护应用链接和返回操作；真正的 POP
-  保护由 `e2e/configuration-workbench.spec.ts` 验证。页面刷新/关闭由 `beforeunload` 保护。
+  保护由详情页测试覆盖。页面刷新/关闭由 `beforeunload` 保护。
 
 ## 7. 开发与生产运行
 

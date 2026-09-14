@@ -21,6 +21,7 @@ import {
   DEFAULT_USER_GROUP,
   EXPIRED_SESSION,
   MODEL,
+  MODEL_PROTOCOL_RULE,
   MODEL_RULE,
   NEW_API_KEY_SECRET,
   OWN_CODEX_QUOTA,
@@ -220,6 +221,13 @@ export const handlers = [
     HttpResponse.json(MODEL_RULE, {
       headers: { ETag: `"${MODEL_RULE.updated_at}"` },
     }),
+  ),
+  http.get(
+    "/console/v1/routing/model-rules/:id/protocols/:protocolId",
+    () =>
+      HttpResponse.json(MODEL_PROTOCOL_RULE, {
+        headers: { ETag: `"${MODEL_PROTOCOL_RULE.updated_at}"` },
+      }),
   ),
   http.get("/console/v1/network/proxies", () => HttpResponse.json([PROXY])),
   http.get("/console/v1/network/proxies/:id", () =>

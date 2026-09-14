@@ -421,6 +421,8 @@ pub struct ModelRecord {
 #[serde(deny_unknown_fields)]
 pub struct ModelRuleChannelWeight {
     pub channel_id: Uuid,
+    #[serde(deserialize_with = "deserialize_required_nullable_string")]
+    pub upstream_model: Option<String>,
     pub weight: i32,
 }
 
@@ -428,6 +430,7 @@ pub struct ModelRuleChannelWeight {
 pub struct ModelRuleChannelGroupTarget {
     pub channel_group_id: Uuid,
     pub channel_selection: String,
+    pub upstream_model: Option<String>,
     pub default_weight: Option<i32>,
     pub channels: Vec<ModelRuleChannelWeight>,
 }
@@ -437,6 +440,7 @@ pub struct ModelRuleChannelGroupTarget {
 struct ModelRuleChannelGroupTargetWire {
     channel_group_id: Uuid,
     channel_selection: String,
+    upstream_model: Value,
     default_weight: Value,
     channels: Vec<ModelRuleChannelWeight>,
 }
@@ -454,9 +458,17 @@ impl<'de> Deserialize<'de> for ModelRuleChannelGroupTarget {
                     .map_err(|error| serde::de::Error::custom(error.to_string()))?,
             ),
         };
+        let upstream_model = match wire.upstream_model {
+            Value::Null => None,
+            value => Some(
+                serde_json::from_value(value)
+                    .map_err(|error| serde::de::Error::custom(error.to_string()))?,
+            ),
+        };
         Ok(Self {
             channel_group_id: wire.channel_group_id,
             channel_selection: wire.channel_selection,
+            upstream_model,
             default_weight,
             channels: wire.channels,
         })
@@ -476,9 +488,9 @@ pub struct ModelRuleRecord {
     pub id: Uuid,
     pub client_model: String,
     pub api_format: String,
-    pub upstream_model_id: Uuid,
-    pub upstream_model_enabled: bool,
-    pub upstream_model_currency: String,
+    pub model_id: Uuid,
+    pub model_enabled: bool,
+    pub model_currency: String,
     pub price_unit_tokens: i64,
     pub price_effective_at: DateTime<Utc>,
     pub input_unit_price: rust_decimal::Decimal,
@@ -486,7 +498,6 @@ pub struct ModelRuleRecord {
     pub cache_write_unit_price: rust_decimal::Decimal,
     pub output_unit_price: rust_decimal::Decimal,
     pub advanced_billing: Value,
-    pub upstream_model: String,
     pub routing_tiers: Vec<ModelRuleRoutingTier>,
     pub enabled: bool,
 }
@@ -496,9 +507,9 @@ struct ModelRuleRecordRow {
     id: Uuid,
     client_model: String,
     api_format: String,
-    upstream_model_id: Uuid,
-    upstream_model_enabled: bool,
-    upstream_model_currency: String,
+    model_id: Uuid,
+    model_enabled: bool,
+    model_currency: String,
     price_unit_tokens: i64,
     price_effective_at: DateTime<Utc>,
     input_unit_price: rust_decimal::Decimal,
@@ -506,7 +517,6 @@ struct ModelRuleRecordRow {
     cache_write_unit_price: rust_decimal::Decimal,
     output_unit_price: rust_decimal::Decimal,
     advanced_billing: Value,
-    upstream_model: String,
     routing_tiers: sqlx::types::Json<Vec<ModelRuleRoutingTier>>,
     enabled: bool,
 }
@@ -517,9 +527,9 @@ impl From<ModelRuleRecordRow> for ModelRuleRecord {
             id: row.id,
             client_model: row.client_model,
             api_format: row.api_format,
-            upstream_model_id: row.upstream_model_id,
-            upstream_model_enabled: row.upstream_model_enabled,
-            upstream_model_currency: row.upstream_model_currency,
+            model_id: row.model_id,
+            model_enabled: row.model_enabled,
+            model_currency: row.model_currency,
             price_unit_tokens: row.price_unit_tokens,
             price_effective_at: row.price_effective_at,
             input_unit_price: row.input_unit_price,
@@ -527,7 +537,6 @@ impl From<ModelRuleRecordRow> for ModelRuleRecord {
             cache_write_unit_price: row.cache_write_unit_price,
             output_unit_price: row.output_unit_price,
             advanced_billing: row.advanced_billing,
-            upstream_model: row.upstream_model,
             routing_tiers: row.routing_tiers.0,
             enabled: row.enabled,
         }
@@ -567,6 +576,7 @@ pub struct ChannelRecord {
     pub upstream_api_key: Option<String>,
     pub available_models: Vec<String>,
     pub test_model: Option<String>,
+    pub test_pricing_model_id: Option<Uuid>,
 }
 impl fmt::Debug for ChannelRecord {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -950,6 +960,8 @@ pub struct ChannelCreateInput {
     pub available_models: Vec<String>,
     #[serde(default)]
     pub test_model: Option<String>,
+    #[serde(default)]
+    pub test_pricing_model_id: Option<Uuid>,
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -992,6 +1004,8 @@ pub struct ChannelInput {
     pub available_models: Vec<String>,
     #[serde(default)]
     pub test_model: Option<String>,
+    #[serde(default)]
+    pub test_pricing_model_id: Option<Uuid>,
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1029,11 +1043,18 @@ impl ChannelBatchChanges {
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ModelRuleInput {
-    pub client_model: String,
+pub struct ModelRuleCreateInput {
+    pub model_id: Uuid,
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelProtocolRuleCreateInput {
     pub api_format: String,
-    pub upstream_model_id: Uuid,
-    #[serde(default)]
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelProtocolRuleInput {
+    #[serde(deserialize_with = "deserialize_required_nullable_string")]
     pub description: Option<String>,
     pub routing_tiers: Vec<ModelRuleRoutingTier>,
     pub enabled: bool,
@@ -1101,6 +1122,12 @@ where
 {
     Option::<String>::deserialize(deserializer).map(Some)
 }
+fn deserialize_required_nullable_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer)
+}
 fn deserialize_optional_uuid<'de, D>(deserializer: D) -> Result<Option<Option<Uuid>>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -1134,6 +1161,7 @@ struct ChannelMutationInput {
     upstream_api_key: Option<Option<String>>,
     available_models: Vec<String>,
     test_model: Option<String>,
+    test_pricing_model_id: Option<Uuid>,
 }
 impl From<ChannelCreateInput> for ChannelMutationInput {
     fn from(value: ChannelCreateInput) -> Self {
@@ -1158,6 +1186,7 @@ impl From<ChannelCreateInput> for ChannelMutationInput {
             upstream_api_key: Some(value.upstream_api_key),
             available_models: value.available_models,
             test_model: value.test_model,
+            test_pricing_model_id: value.test_pricing_model_id,
         }
     }
 }
@@ -1184,6 +1213,7 @@ impl From<ChannelInput> for ChannelMutationInput {
             upstream_api_key: value.upstream_api_key,
             available_models: value.available_models,
             test_model: value.test_model,
+            test_pricing_model_id: value.test_pricing_model_id,
         }
     }
 }
@@ -1279,10 +1309,15 @@ pub enum ControlPlaneMutation {
         id: Uuid,
         expected_updated_at: DateTime<Utc>,
     },
-    CreateRule(ModelRuleInput),
-    UpdateRule {
+    CreateRule(ModelRuleCreateInput),
+    CreateProtocolRule {
+        model_rule_id: Uuid,
+        input: ModelProtocolRuleCreateInput,
+    },
+    UpdateProtocolRule {
+        model_rule_id: Uuid,
         id: Uuid,
-        input: ModelRuleInput,
+        input: ModelProtocolRuleInput,
         expected_updated_at: DateTime<Utc>,
     },
     CreateProxy(ProxyCreateInput),
@@ -1910,6 +1945,7 @@ pub struct ControlPlaneChannel {
     pub upstream_credential_configured: bool,
     pub available_models: Vec<String>,
     pub test_model: Option<String>,
+    pub test_pricing_model_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -1941,6 +1977,7 @@ pub struct ControlPlaneChannelDetail {
     pub upstream_credential_configured: bool,
     pub available_models: Vec<String>,
     pub test_model: Option<String>,
+    pub test_pricing_model_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -1970,6 +2007,7 @@ struct ControlPlaneChannelRow {
     upstream_credential_configured: bool,
     available_models: Vec<String>,
     test_model: Option<String>,
+    test_pricing_model_id: Option<Uuid>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -2000,6 +2038,7 @@ impl From<ControlPlaneChannelRow> for ControlPlaneChannel {
             upstream_credential_configured: value.upstream_credential_configured,
             available_models: value.available_models,
             test_model: value.test_model,
+            test_pricing_model_id: value.test_pricing_model_id,
             created_at: value.created_at,
             updated_at: value.updated_at,
         }
@@ -2008,6 +2047,8 @@ impl From<ControlPlaneChannelRow> for ControlPlaneChannel {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelRuleRoutingStatus {
+    Draft,
+    ModelDisabled,
     Ready,
     TemporarilyUnavailable,
     Disconnected,
@@ -2017,11 +2058,21 @@ pub enum ModelRuleRoutingStatus {
 #[derive(Serialize)]
 pub struct ControlPlaneModelRule {
     pub id: Uuid,
+    pub model_id: Uuid,
     pub client_model: String,
+    pub model_display_name: String,
+    pub model_provider_name: Option<String>,
+    pub model_enabled: bool,
+    pub protocol_rules: Vec<ControlPlaneModelProtocolRule>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+pub struct ControlPlaneModelProtocolRule {
+    pub id: Uuid,
+    pub model_rule_id: Uuid,
     pub api_format: String,
-    pub upstream_model_id: Uuid,
-    pub upstream_model_enabled: bool,
-    pub upstream_model: String,
     pub description: Option<String>,
     pub routing_tiers: Vec<ModelRuleRoutingTier>,
     pub enabled: bool,
@@ -2035,20 +2086,30 @@ pub struct ControlPlaneModelRule {
 #[derive(FromRow)]
 struct ControlPlaneModelRuleRow {
     id: Uuid,
+    model_id: Uuid,
     client_model: String,
+    model_display_name: String,
+    model_provider_name: Option<String>,
+    model_enabled: bool,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+}
+
+#[derive(FromRow)]
+struct ControlPlaneModelProtocolRuleRow {
+    id: Uuid,
+    model_rule_id: Uuid,
     api_format: String,
-    upstream_model_id: Uuid,
-    upstream_model_enabled: bool,
-    upstream_model: String,
+    model_enabled: bool,
     description: Option<String>,
     routing_tiers: sqlx::types::Json<Vec<ModelRuleRoutingTier>>,
     enabled: bool,
     updated_at: DateTime<Utc>,
 }
 
-impl ControlPlaneModelRule {
+impl ControlPlaneModelProtocolRule {
     fn from_row(
-        row: ControlPlaneModelRuleRow,
+        row: ControlPlaneModelProtocolRuleRow,
         groups: &[ControlPlaneChannelGroup],
         channels: &[ControlPlaneChannel],
     ) -> Self {
@@ -2080,10 +2141,23 @@ impl ControlPlaneModelRule {
                 continue;
             }
             target_channel_count += 1;
+            let upstream_model = group_targets
+                .get(&channel.channel_group_id)
+                .and_then(|group| {
+                    if group.channel_selection == "all" {
+                        group.upstream_model.as_deref()
+                    } else {
+                        group
+                            .channels
+                            .iter()
+                            .find(|selected| selected.channel_id == channel.id)
+                            .and_then(|selected| selected.upstream_model.as_deref())
+                    }
+                });
             if !channel
                 .available_models
                 .iter()
-                .any(|model| model == &row.upstream_model)
+                .any(|model| Some(model.as_str()) == upstream_model)
             {
                 continue;
             }
@@ -2098,22 +2172,23 @@ impl ControlPlaneModelRule {
                 active_channel_count += 1;
             }
         }
-        let routing_status = if !row.enabled {
+        let routing_status = if !row.model_enabled {
+            ModelRuleRoutingStatus::ModelDisabled
+        } else if routing_tiers.is_empty() {
+            ModelRuleRoutingStatus::Draft
+        } else if !row.enabled {
             ModelRuleRoutingStatus::Disabled
-        } else if row.upstream_model_enabled && active_channel_count > 0 {
+        } else if active_channel_count > 0 {
             ModelRuleRoutingStatus::Ready
-        } else if row.upstream_model_enabled && model_capable_channel_count > 0 {
+        } else if model_capable_channel_count > 0 {
             ModelRuleRoutingStatus::TemporarilyUnavailable
         } else {
             ModelRuleRoutingStatus::Disconnected
         };
         Self {
             id: row.id,
-            client_model: row.client_model,
+            model_rule_id: row.model_rule_id,
             api_format: row.api_format,
-            upstream_model_id: row.upstream_model_id,
-            upstream_model_enabled: row.upstream_model_enabled,
-            upstream_model: row.upstream_model,
             description: row.description,
             routing_tiers,
             enabled: row.enabled,
@@ -2121,6 +2196,26 @@ impl ControlPlaneModelRule {
             target_channel_count,
             model_capable_channel_count,
             active_channel_count,
+            updated_at: row.updated_at,
+        }
+    }
+}
+
+impl ControlPlaneModelRule {
+    fn from_row(
+        row: ControlPlaneModelRuleRow,
+        mut protocol_rules: Vec<ControlPlaneModelProtocolRule>,
+    ) -> Self {
+        protocol_rules.sort_unstable_by(|left, right| left.api_format.cmp(&right.api_format));
+        Self {
+            id: row.id,
+            model_id: row.model_id,
+            client_model: row.client_model,
+            model_display_name: row.model_display_name,
+            model_provider_name: row.model_provider_name,
+            model_enabled: row.model_enabled,
+            protocol_rules,
+            created_at: row.created_at,
             updated_at: row.updated_at,
         }
     }
@@ -4796,11 +4891,11 @@ impl ControlPlaneRepository {
         let api_keys = sqlx::query_as::<_, ApiKeyRecord>("SELECT k.id, k.user_id, u.status AS user_status, u.websocket_enabled AS user_websocket_enabled, g.filter_fast_mode AS user_filter_fast_mode, k.secret_value, k.status, k.expires_at, k.allowed_api_formats::text[] AS allowed_api_formats, k.permissions, k.allowed_group_ids, k.allowed_channel_ids, k.requests_per_minute, k.max_concurrent_requests, k.quota_limit_amount, k.quota_used_amount FROM api_keys k JOIN users u ON u.id = k.user_id JOIN user_groups g ON g.id=u.user_group_id WHERE NOT k.is_system ORDER BY k.id").fetch_all(&mut **transaction).await?;
         let models = sqlx::query_as::<_, ModelRecord>("SELECT id,source_model_id,currency,price_unit_tokens,price_effective_at,input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,advanced_billing FROM models ORDER BY id").fetch_all(&mut **transaction).await?;
         let model_rules = sqlx::query_as::<_, ModelRuleRecordRow>(
-            "SELECT r.id,r.client_model,r.api_format::text AS api_format,r.upstream_model_id, \
-                    m.enabled AS upstream_model_enabled,m.currency AS upstream_model_currency, \
+            "SELECT r.id,m.source_model_id AS client_model,r.api_format::text AS api_format, \
+                    m.id AS model_id,m.enabled AS model_enabled,m.currency AS model_currency, \
                     m.price_unit_tokens,m.price_effective_at,m.input_unit_price, \
                     m.cached_input_unit_price,m.cache_write_unit_price,m.output_unit_price, \
-                    m.advanced_billing,m.source_model_id AS upstream_model, \
+                    m.advanced_billing, \
                     COALESCE(( \
                         SELECT jsonb_agg(jsonb_build_object( \
                             'priority',tier.priority, \
@@ -4809,10 +4904,12 @@ impl ControlPlaneRepository {
                                 SELECT jsonb_agg(jsonb_build_object( \
                                     'channel_group_id',target.channel_group_id, \
                                     'channel_selection',target.channel_selection, \
+                                    'upstream_model',target.upstream_model, \
                                     'default_weight',target.default_weight, \
                                     'channels',COALESCE(( \
                                         SELECT jsonb_agg(jsonb_build_object( \
                                             'channel_id',channel_weight.channel_id, \
+                                            'upstream_model',channel_weight.upstream_model, \
                                             'weight',channel_weight.weight \
                                         ) ORDER BY channel_weight.channel_id) \
                                         FROM model_rule_routing_channels AS channel_weight \
@@ -4830,7 +4927,8 @@ impl ControlPlaneRepository {
                     ),'[]'::jsonb) AS routing_tiers, \
                     r.enabled \
              FROM model_rules AS r \
-             JOIN models AS m ON m.id=r.upstream_model_id \
+             JOIN model_routing_profiles AS profile ON profile.id=r.model_routing_profile_id \
+             JOIN models AS m ON m.id=profile.model_id \
              ORDER BY r.id",
         )
         .fetch_all(&mut **transaction)
@@ -4839,7 +4937,7 @@ impl ControlPlaneRepository {
         .map(Into::into)
         .collect();
         let groups = sqlx::query_as::<_, ChannelGroupRecord>("SELECT id, name, api_format::text AS api_format, connector_kind, request_compression, sharing_only, enabled FROM channel_groups ORDER BY id").fetch_all(&mut **transaction).await?;
-        let channels = sqlx::query_as::<_, ChannelRecord>("SELECT id, channel_group_id, api_format::text AS api_format, name, base_url, enabled, supports_websocket, supports_standalone_web_search, auto_disabled, auto_disable_allowed, billing_multiplier, proxy_id, config_template_id, override_document, connect_timeout_ms, response_header_timeout_ms, stream_idle_timeout_ms, upstream_auth_kind, upstream_auth_header_name, upstream_api_key, available_models, test_model FROM channels ORDER BY id").fetch_all(&mut **transaction).await?;
+        let channels = sqlx::query_as::<_, ChannelRecord>("SELECT id, channel_group_id, api_format::text AS api_format, name, base_url, enabled, supports_websocket, supports_standalone_web_search, auto_disabled, auto_disable_allowed, billing_multiplier, proxy_id, config_template_id, override_document, connect_timeout_ms, response_header_timeout_ms, stream_idle_timeout_ms, upstream_auth_kind, upstream_auth_header_name, upstream_api_key, available_models, test_model, test_pricing_model_id FROM channels ORDER BY id").fetch_all(&mut **transaction).await?;
         let proxies = sqlx::query_as::<_, ProxyRecord>("SELECT id, name, proxy_url, username, password, no_proxy_hosts, enabled FROM proxies ORDER BY id").fetch_all(&mut **transaction).await?;
         let templates = sqlx::query_as::<_, ConfigTemplateRecord>(
             "SELECT id, name, description, document, enabled FROM config_templates ORDER BY id",
@@ -5018,12 +5116,24 @@ impl ControlPlaneRepository {
         let api_keys = sqlx::query_as::<_, ControlPlaneApiKey>("SELECT k.id, k.user_id, u.status AS user_status, k.name, k.secret_value AS secret, k.status, k.expires_at, k.allowed_api_formats::text[] AS allowed_api_formats, k.permissions, k.allowed_group_ids, k.allowed_channel_ids, k.requests_per_minute, k.max_concurrent_requests, k.quota_limit_amount, k.quota_used_amount, k.updated_at FROM api_keys k JOIN users u ON u.id=k.user_id WHERE NOT k.is_system AND u.deleted_at IS NULL ORDER BY k.id").fetch_all(&self.pool).await?;
         let api_key_policies = sqlx::query_as::<_, ControlPlaneApiKeyPolicy>("SELECT id,name,allowed_group_ids,allowed_channel_ids,enabled,created_at,updated_at FROM api_key_policies ORDER BY id").fetch_all(&self.pool).await?;
         let channel_groups = sqlx::query_as::<_, ControlPlaneChannelGroup>("SELECT id,name,api_format::text AS api_format,connector_kind,connector_pool_id,request_compression,sharing_only,enabled,status_statistics_enabled,updated_at FROM channel_groups ORDER BY id").fetch_all(&self.pool).await?;
-        let channels = sqlx::query_as::<_, ControlPlaneChannelRow>("SELECT c.id,c.channel_group_id,c.api_format::text AS api_format,g.connector_kind,(g.connector_kind <> 'openai_compatible') AS provider_managed,c.name,c.base_url,CASE WHEN g.connector_kind='codex_oauth' THEN (c.enabled AND COALESCE(co.enabled,false)) ELSE c.enabled END AS enabled,c.supports_websocket,c.supports_standalone_web_search,c.auto_disabled,c.auto_disabled_reason,c.auto_disable_allowed,c.billing_multiplier,c.proxy_id,c.config_template_id,c.connect_timeout_ms,c.response_header_timeout_ms,c.stream_idle_timeout_ms,c.upstream_auth_kind,c.upstream_auth_header_name,(c.upstream_api_key IS NOT NULL) AS upstream_credential_configured,c.available_models,c.test_model,c.created_at,c.updated_at FROM channels c JOIN channel_groups g ON g.id=c.channel_group_id LEFT JOIN codex_oauth_credential_channels projection ON projection.channel_id=c.id LEFT JOIN codex_oauth_credentials co ON co.channel_id=projection.credential_id WHERE g.connector_kind <> 'codex_oauth' OR (co.channel_id IS NOT NULL AND co.deleted_at IS NULL) ORDER BY c.id").fetch_all(&self.pool).await?;
+        let channels = sqlx::query_as::<_, ControlPlaneChannelRow>("SELECT c.id,c.channel_group_id,c.api_format::text AS api_format,g.connector_kind,(g.connector_kind <> 'openai_compatible') AS provider_managed,c.name,c.base_url,CASE WHEN g.connector_kind='codex_oauth' THEN (c.enabled AND COALESCE(co.enabled,false)) ELSE c.enabled END AS enabled,c.supports_websocket,c.supports_standalone_web_search,c.auto_disabled,c.auto_disabled_reason,c.auto_disable_allowed,c.billing_multiplier,c.proxy_id,c.config_template_id,c.connect_timeout_ms,c.response_header_timeout_ms,c.stream_idle_timeout_ms,c.upstream_auth_kind,c.upstream_auth_header_name,(c.upstream_api_key IS NOT NULL) AS upstream_credential_configured,c.available_models,c.test_model,c.test_pricing_model_id,c.created_at,c.updated_at FROM channels c JOIN channel_groups g ON g.id=c.channel_group_id LEFT JOIN codex_oauth_credential_channels projection ON projection.channel_id=c.id LEFT JOIN codex_oauth_credentials co ON co.channel_id=projection.credential_id WHERE g.connector_kind <> 'codex_oauth' OR (co.channel_id IS NOT NULL AND co.deleted_at IS NULL) ORDER BY c.id").fetch_all(&self.pool).await?;
         let channels = channels.into_iter().map(Into::into).collect::<Vec<_>>();
         let model_rule_rows = sqlx::query_as::<_, ControlPlaneModelRuleRow>(
-            "SELECT r.id,r.client_model,r.api_format::text AS api_format,r.upstream_model_id, \
-                    m.enabled AS upstream_model_enabled,m.source_model_id AS upstream_model, \
-                    r.description, \
+            "SELECT profile.id,model.id AS model_id, \
+                    model.source_model_id AS client_model, \
+                    model.display_name AS model_display_name, \
+                    model.provider_name AS model_provider_name, \
+                    model.enabled AS model_enabled, \
+                    profile.created_at,profile.updated_at \
+             FROM model_routing_profiles AS profile \
+             JOIN models AS model ON model.id=profile.model_id \
+             ORDER BY model.source_model_id,profile.id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        let protocol_rule_rows = sqlx::query_as::<_, ControlPlaneModelProtocolRuleRow>(
+            "SELECT r.id,r.model_routing_profile_id AS model_rule_id, \
+                    r.api_format::text AS api_format,m.enabled AS model_enabled,r.description, \
                     COALESCE(( \
                         SELECT jsonb_agg(jsonb_build_object( \
                             'priority',tier.priority, \
@@ -5032,10 +5142,12 @@ impl ControlPlaneRepository {
                                 SELECT jsonb_agg(jsonb_build_object( \
                                     'channel_group_id',target.channel_group_id, \
                                     'channel_selection',target.channel_selection, \
+                                    'upstream_model',target.upstream_model, \
                                     'default_weight',target.default_weight, \
                                     'channels',COALESCE(( \
                                         SELECT jsonb_agg(jsonb_build_object( \
                                             'channel_id',channel_weight.channel_id, \
+                                            'upstream_model',channel_weight.upstream_model, \
                                             'weight',channel_weight.weight \
                                         ) ORDER BY channel_weight.channel_id) \
                                         FROM model_rule_routing_channels AS channel_weight \
@@ -5053,14 +5165,29 @@ impl ControlPlaneRepository {
                     ),'[]'::jsonb) AS routing_tiers, \
                     r.enabled,r.updated_at \
              FROM model_rules AS r \
-             JOIN models AS m ON m.id=r.upstream_model_id \
+             JOIN model_routing_profiles AS profile ON profile.id=r.model_routing_profile_id \
+             JOIN models AS m ON m.id=profile.model_id \
              ORDER BY r.id",
         )
         .fetch_all(&self.pool)
         .await?;
+        let mut protocols_by_rule = HashMap::<Uuid, Vec<ControlPlaneModelProtocolRule>>::new();
+        for row in protocol_rule_rows {
+            protocols_by_rule
+                .entry(row.model_rule_id)
+                .or_default()
+                .push(ControlPlaneModelProtocolRule::from_row(
+                    row,
+                    &channel_groups,
+                    &channels,
+                ));
+        }
         let model_rules = model_rule_rows
             .into_iter()
-            .map(|row| ControlPlaneModelRule::from_row(row, &channel_groups, &channels))
+            .map(|row| {
+                let protocols = protocols_by_rule.remove(&row.id).unwrap_or_default();
+                ControlPlaneModelRule::from_row(row, protocols)
+            })
             .collect();
         let proxies = sqlx::query_as::<_, ControlPlaneProxy>("SELECT id,name,regexp_replace(regexp_replace(proxy_url, '^([^:/?#]+://)[^/?#]*@', E'\\1'), '[?#].*$', '') AS proxy_url,no_proxy_hosts,enabled,(username IS NOT NULL OR password IS NOT NULL) AS credential_configured,created_at,updated_at FROM proxies ORDER BY id").fetch_all(&self.pool).await?;
         let config_templates = sqlx::query_as::<_, ControlPlaneConfigTemplate>("SELECT id,name,description,document->>'api_format' AS api_format,enabled,created_at,updated_at FROM config_templates ORDER BY id").fetch_all(&self.pool).await?;
@@ -5097,7 +5224,7 @@ impl ControlPlaneRepository {
         id: Uuid,
     ) -> Result<Option<ControlPlaneChannelDetail>, RepositoryError> {
         sqlx::query_as::<_, ControlPlaneChannelDetail>(
-            "SELECT c.id,c.channel_group_id,c.api_format::text AS api_format,g.connector_kind,(g.connector_kind <> 'openai_compatible') AS provider_managed,c.name,c.base_url,CASE WHEN g.connector_kind='codex_oauth' THEN (c.enabled AND COALESCE(co.enabled,false)) ELSE c.enabled END AS enabled,c.supports_websocket,c.supports_standalone_web_search,c.auto_disabled,c.auto_disabled_reason,c.auto_disable_allowed,c.billing_multiplier,c.proxy_id,c.config_template_id,c.override_document,c.connect_timeout_ms,c.response_header_timeout_ms,c.stream_idle_timeout_ms,c.upstream_auth_kind,c.upstream_auth_header_name,c.upstream_api_key,(c.upstream_api_key IS NOT NULL) AS upstream_credential_configured,c.available_models,c.test_model,c.created_at,c.updated_at FROM channels c JOIN channel_groups g ON g.id=c.channel_group_id LEFT JOIN codex_oauth_credential_channels projection ON projection.channel_id=c.id LEFT JOIN codex_oauth_credentials co ON co.channel_id=projection.credential_id WHERE c.id=$1 AND (g.connector_kind <> 'codex_oauth' OR (co.channel_id IS NOT NULL AND co.deleted_at IS NULL))",
+            "SELECT c.id,c.channel_group_id,c.api_format::text AS api_format,g.connector_kind,(g.connector_kind <> 'openai_compatible') AS provider_managed,c.name,c.base_url,CASE WHEN g.connector_kind='codex_oauth' THEN (c.enabled AND COALESCE(co.enabled,false)) ELSE c.enabled END AS enabled,c.supports_websocket,c.supports_standalone_web_search,c.auto_disabled,c.auto_disabled_reason,c.auto_disable_allowed,c.billing_multiplier,c.proxy_id,c.config_template_id,c.override_document,c.connect_timeout_ms,c.response_header_timeout_ms,c.stream_idle_timeout_ms,c.upstream_auth_kind,c.upstream_auth_header_name,c.upstream_api_key,(c.upstream_api_key IS NOT NULL) AS upstream_credential_configured,c.available_models,c.test_model,c.test_pricing_model_id,c.created_at,c.updated_at FROM channels c JOIN channel_groups g ON g.id=c.channel_group_id LEFT JOIN codex_oauth_credential_channels projection ON projection.channel_id=c.id LEFT JOIN codex_oauth_credentials co ON co.channel_id=projection.credential_id WHERE c.id=$1 AND (g.connector_kind <> 'codex_oauth' OR (co.channel_id IS NOT NULL AND co.deleted_at IS NULL))",
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -5786,13 +5913,29 @@ impl ControlPlaneRepository {
                 expected_updated_at,
             } => channel_recover(transaction, id, expected_updated_at).await,
             ControlPlaneMutation::CreateRule(input) => {
-                rule_insert(transaction, Uuid::new_v4(), input, true, None).await
+                model_routing_profile_insert(transaction, Uuid::new_v4(), input).await
             }
-            ControlPlaneMutation::UpdateRule {
+            ControlPlaneMutation::CreateProtocolRule {
+                model_rule_id,
+                input,
+            } => {
+                model_protocol_rule_create(transaction, model_rule_id, Uuid::new_v4(), input).await
+            }
+            ControlPlaneMutation::UpdateProtocolRule {
+                model_rule_id,
                 id,
                 input,
                 expected_updated_at,
-            } => rule_insert(transaction, id, input, false, Some(expected_updated_at)).await,
+            } => {
+                model_protocol_rule_update(
+                    transaction,
+                    model_rule_id,
+                    id,
+                    input,
+                    expected_updated_at,
+                )
+                .await
+            }
             ControlPlaneMutation::CreateProxy(input) => {
                 proxy_insert(transaction, Uuid::new_v4(), input).await
             }
@@ -6368,7 +6511,7 @@ async fn channel_audit(
     // Audit snapshots remain allowlisted even though authorized detail reads
     // expose the stored credential and transform document for editing.
     let value = sqlx::query_scalar::<_, Value>(
-        "SELECT json_build_object('id',id,'channel_group_id',channel_group_id,'api_format',api_format,'name',name,'base_url',base_url,'enabled',enabled,'supports_websocket',supports_websocket,'supports_standalone_web_search',supports_standalone_web_search,'auto_disabled',auto_disabled,'auto_disabled_reason',auto_disabled_reason,'auto_disable_allowed',auto_disable_allowed,'billing_multiplier',billing_multiplier,'proxy_id',proxy_id,'config_template_id',config_template_id,'connect_timeout_ms',connect_timeout_ms,'response_header_timeout_ms',response_header_timeout_ms,'stream_idle_timeout_ms',stream_idle_timeout_ms,'upstream_auth_kind',upstream_auth_kind,'upstream_auth_header_name',upstream_auth_header_name,'upstream_credential_configured',(upstream_api_key IS NOT NULL),'available_models',available_models,'test_model',test_model,'created_at',created_at,'updated_at',updated_at) FROM channels WHERE id=$1 FOR UPDATE",
+        "SELECT json_build_object('id',id,'channel_group_id',channel_group_id,'api_format',api_format,'name',name,'base_url',base_url,'enabled',enabled,'supports_websocket',supports_websocket,'supports_standalone_web_search',supports_standalone_web_search,'auto_disabled',auto_disabled,'auto_disabled_reason',auto_disabled_reason,'auto_disable_allowed',auto_disable_allowed,'billing_multiplier',billing_multiplier,'proxy_id',proxy_id,'config_template_id',config_template_id,'connect_timeout_ms',connect_timeout_ms,'response_header_timeout_ms',response_header_timeout_ms,'stream_idle_timeout_ms',stream_idle_timeout_ms,'upstream_auth_kind',upstream_auth_kind,'upstream_auth_header_name',upstream_auth_header_name,'upstream_credential_configured',(upstream_api_key IS NOT NULL),'available_models',available_models,'test_model',test_model,'test_pricing_model_id',test_pricing_model_id,'created_at',created_at,'updated_at',updated_at) FROM channels WHERE id=$1 FOR UPDATE",
     )
     .bind(id)
     .fetch_optional(&mut **transaction)
@@ -6377,6 +6520,26 @@ async fn channel_audit(
         return Err(RepositoryError::NotFound);
     };
     Ok(value)
+}
+async fn model_routing_profile_audit(
+    transaction: &mut Transaction<'_, Postgres>,
+    id: Uuid,
+) -> Result<Value, RepositoryError> {
+    sqlx::query_scalar::<_, Value>(
+        "SELECT jsonb_build_object( \
+             'id',profile.id, \
+             'model_id',profile.model_id, \
+             'client_model',model.source_model_id, \
+             'created_at',profile.created_at, \
+             'updated_at',profile.updated_at) \
+         FROM model_routing_profiles AS profile \
+         JOIN models AS model ON model.id=profile.model_id \
+         WHERE profile.id=$1 FOR UPDATE OF profile",
+    )
+    .bind(id)
+    .fetch_optional(&mut **transaction)
+    .await?
+    .ok_or(RepositoryError::NotFound)
 }
 async fn rule_audit(
     transaction: &mut Transaction<'_, Postgres>,
@@ -6392,10 +6555,12 @@ async fn rule_audit(
                                 SELECT jsonb_agg(jsonb_build_object( \
                                     'channel_group_id',target.channel_group_id, \
                                     'channel_selection',target.channel_selection, \
+                                    'upstream_model',target.upstream_model, \
                                     'default_weight',target.default_weight, \
                                     'channels',COALESCE(( \
                                         SELECT jsonb_agg(jsonb_build_object( \
                                             'channel_id',channel_weight.channel_id, \
+                                            'upstream_model',channel_weight.upstream_model, \
                                             'weight',channel_weight.weight \
                                         ) ORDER BY channel_weight.channel_id) \
                                         FROM model_rule_routing_channels AS channel_weight \
@@ -7450,7 +7615,12 @@ async fn channel_insert(
     if input.supports_standalone_web_search && input.api_format != "open_ai_responses" {
         return Err(RepositoryError::Validation);
     }
-    if input.api_format == "open_ai_images" && input.test_model.is_some() {
+    if input.api_format == "open_ai_images"
+        && (input.test_model.is_some() || input.test_pricing_model_id.is_some())
+    {
+        return Err(RepositoryError::Validation);
+    }
+    if input.test_model.is_some() != input.test_pricing_model_id.is_some() {
         return Err(RepositoryError::Validation);
     }
     if input.test_model.as_ref().is_some_and(|model| {
@@ -7461,13 +7631,12 @@ async fn channel_insert(
     }) {
         return Err(RepositoryError::Validation);
     }
-    if let Some(test_model) = input.test_model.as_deref() {
-        let configured = sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM models WHERE source_model_id=$1)",
-        )
-        .bind(test_model)
-        .fetch_one(&mut **transaction)
-        .await?;
+    if let Some(test_pricing_model_id) = input.test_pricing_model_id {
+        let configured =
+            sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM models WHERE id=$1)")
+                .bind(test_pricing_model_id)
+                .fetch_one(&mut **transaction)
+                .await?;
         if !configured {
             return Err(RepositoryError::Validation);
         }
@@ -7480,10 +7649,10 @@ async fn channel_insert(
         channel_audit(transaction, id).await?
     };
     let updated_at = if create {
-        sqlx::query_scalar("INSERT INTO channels (id,channel_group_id,api_format,name,base_url,enabled,billing_multiplier,proxy_id,config_template_id,override_document,connect_timeout_ms,response_header_timeout_ms,stream_idle_timeout_ms,upstream_auth_kind,upstream_auth_header_name,upstream_api_key,available_models,test_model,auto_disable_allowed,supports_websocket,supports_standalone_web_search) VALUES ($1,$2,$3::api_format,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) RETURNING updated_at").bind(id).bind(input.channel_group_id).bind(&input.api_format).bind(&input.name).bind(&input.base_url).bind(input.enabled).bind(input.billing_multiplier.unwrap_or_else(default_billing_multiplier)).bind(input.proxy_id).bind(input.config_template_id).bind(&override_document).bind(input.connect_timeout_ms).bind(input.response_header_timeout_ms).bind(input.stream_idle_timeout_ms).bind(&input.upstream_auth_kind).bind(&input.upstream_auth_header_name).bind(input.upstream_api_key.flatten()).bind(&input.available_models).bind(&input.test_model).bind(input.auto_disable_allowed).bind(input.supports_websocket).bind(input.supports_standalone_web_search).fetch_one(&mut **transaction).await?
+        sqlx::query_scalar("INSERT INTO channels (id,channel_group_id,api_format,name,base_url,enabled,billing_multiplier,proxy_id,config_template_id,override_document,connect_timeout_ms,response_header_timeout_ms,stream_idle_timeout_ms,upstream_auth_kind,upstream_auth_header_name,upstream_api_key,available_models,test_model,test_pricing_model_id,auto_disable_allowed,supports_websocket,supports_standalone_web_search) VALUES ($1,$2,$3::api_format,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) RETURNING updated_at").bind(id).bind(input.channel_group_id).bind(&input.api_format).bind(&input.name).bind(&input.base_url).bind(input.enabled).bind(input.billing_multiplier.unwrap_or_else(default_billing_multiplier)).bind(input.proxy_id).bind(input.config_template_id).bind(&override_document).bind(input.connect_timeout_ms).bind(input.response_header_timeout_ms).bind(input.stream_idle_timeout_ms).bind(&input.upstream_auth_kind).bind(&input.upstream_auth_header_name).bind(input.upstream_api_key.flatten()).bind(&input.available_models).bind(&input.test_model).bind(input.test_pricing_model_id).bind(input.auto_disable_allowed).bind(input.supports_websocket).bind(input.supports_standalone_web_search).fetch_one(&mut **transaction).await?
     } else {
         let credential_present = input.upstream_api_key.is_some();
-        sqlx::query_scalar("UPDATE channels SET channel_group_id=$2,api_format=$3::api_format,name=$4,base_url=$5,enabled=$6,billing_multiplier=COALESCE($7,billing_multiplier),proxy_id=$8,config_template_id=$9,override_document=CASE WHEN $10 THEN $11 ELSE override_document END,connect_timeout_ms=$12,response_header_timeout_ms=$13,stream_idle_timeout_ms=$14,upstream_auth_kind=$15,upstream_auth_header_name=$16,upstream_api_key=CASE WHEN $17 THEN $18 ELSE upstream_api_key END,available_models=$19,test_model=$20,auto_disable_allowed=$21,supports_websocket=$22,supports_standalone_web_search=$23 WHERE id=$1 AND updated_at=$24 RETURNING updated_at").bind(id).bind(input.channel_group_id).bind(&input.api_format).bind(&input.name).bind(&input.base_url).bind(input.enabled).bind(input.billing_multiplier).bind(input.proxy_id).bind(input.config_template_id).bind(override_document_present).bind(&override_document).bind(input.connect_timeout_ms).bind(input.response_header_timeout_ms).bind(input.stream_idle_timeout_ms).bind(&input.upstream_auth_kind).bind(&input.upstream_auth_header_name).bind(credential_present).bind(input.upstream_api_key.flatten()).bind(&input.available_models).bind(&input.test_model).bind(input.auto_disable_allowed).bind(input.supports_websocket).bind(input.supports_standalone_web_search).bind(expected_updated_at.expect("PUT version")).fetch_optional(&mut **transaction).await?.ok_or(RepositoryError::Conflict)?
+        sqlx::query_scalar("UPDATE channels SET channel_group_id=$2,api_format=$3::api_format,name=$4,base_url=$5,enabled=$6,billing_multiplier=COALESCE($7,billing_multiplier),proxy_id=$8,config_template_id=$9,override_document=CASE WHEN $10 THEN $11 ELSE override_document END,connect_timeout_ms=$12,response_header_timeout_ms=$13,stream_idle_timeout_ms=$14,upstream_auth_kind=$15,upstream_auth_header_name=$16,upstream_api_key=CASE WHEN $17 THEN $18 ELSE upstream_api_key END,available_models=$19,test_model=$20,test_pricing_model_id=$21,auto_disable_allowed=$22,supports_websocket=$23,supports_standalone_web_search=$24 WHERE id=$1 AND updated_at=$25 RETURNING updated_at").bind(id).bind(input.channel_group_id).bind(&input.api_format).bind(&input.name).bind(&input.base_url).bind(input.enabled).bind(input.billing_multiplier).bind(input.proxy_id).bind(input.config_template_id).bind(override_document_present).bind(&override_document).bind(input.connect_timeout_ms).bind(input.response_header_timeout_ms).bind(input.stream_idle_timeout_ms).bind(&input.upstream_auth_kind).bind(&input.upstream_auth_header_name).bind(credential_present).bind(input.upstream_api_key.flatten()).bind(&input.available_models).bind(&input.test_model).bind(input.test_pricing_model_id).bind(input.auto_disable_allowed).bind(input.supports_websocket).bind(input.supports_standalone_web_search).bind(expected_updated_at.expect("PUT version")).fetch_optional(&mut **transaction).await?.ok_or(RepositoryError::Conflict)?
     };
     Ok(MutationResult {
         id,
@@ -7550,52 +7719,158 @@ async fn channel_recover(
     })
 }
 
-async fn rule_insert(
+async fn model_routing_profile_insert(
     transaction: &mut Transaction<'_, Postgres>,
     id: Uuid,
-    input: ModelRuleInput,
-    create: bool,
-    expected_updated_at: Option<DateTime<Utc>>,
+    input: ModelRuleCreateInput,
 ) -> Result<MutationResult, RepositoryError> {
-    if ApiFormat::parse(&input.api_format).is_none()
-        || input.client_model.trim().is_empty()
+    let model_enabled =
+        sqlx::query_scalar::<_, bool>("SELECT enabled FROM models WHERE id=$1 FOR UPDATE")
+            .bind(input.model_id)
+            .fetch_optional(&mut **transaction)
+            .await?
+            .ok_or(RepositoryError::NotFound)?;
+    if !model_enabled {
+        return Err(RepositoryError::Validation);
+    }
+    let already_exists = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM model_routing_profiles WHERE model_id=$1)",
+    )
+    .bind(input.model_id)
+    .fetch_one(&mut **transaction)
+    .await?;
+    if already_exists {
+        return Err(RepositoryError::Conflict);
+    }
+    let updated_at = sqlx::query_scalar(
+        "INSERT INTO model_routing_profiles (id,model_id) VALUES ($1,$2) \
+         ON CONFLICT (model_id) DO NOTHING \
+         RETURNING updated_at",
+    )
+    .bind(id)
+    .bind(input.model_id)
+    .fetch_optional(&mut **transaction)
+    .await?
+    .ok_or(RepositoryError::Conflict)?;
+    Ok(MutationResult {
+        id,
+        object_type: "model_rule",
+        action: "create",
+        before_redacted: json!({}),
+        after_redacted: model_routing_profile_audit(transaction, id).await?,
+        created_secret: None,
+        reason: None,
+        updated_at,
+        correlation_id: None,
+    })
+}
+
+async fn model_protocol_rule_create(
+    transaction: &mut Transaction<'_, Postgres>,
+    model_rule_id: Uuid,
+    id: Uuid,
+    input: ModelProtocolRuleCreateInput,
+) -> Result<MutationResult, RepositoryError> {
+    if ApiFormat::parse(&input.api_format).is_none() {
+        return Err(RepositoryError::Validation);
+    }
+    let profile_exists = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM model_routing_profiles WHERE id=$1 FOR UPDATE)",
+    )
+    .bind(model_rule_id)
+    .fetch_one(&mut **transaction)
+    .await?;
+    if !profile_exists {
+        return Err(RepositoryError::NotFound);
+    }
+    let already_exists = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS( \
+             SELECT 1 FROM model_rules \
+             WHERE model_routing_profile_id=$1 AND api_format=$2::api_format)",
+    )
+    .bind(model_rule_id)
+    .bind(&input.api_format)
+    .fetch_one(&mut **transaction)
+    .await?;
+    if already_exists {
+        return Err(RepositoryError::Conflict);
+    }
+    let updated_at = sqlx::query_scalar(
+        "INSERT INTO model_rules \
+         (id,model_routing_profile_id,api_format,description,enabled) \
+         VALUES ($1,$2,$3::api_format,NULL,false) \
+         ON CONFLICT (model_routing_profile_id,api_format) DO NOTHING \
+         RETURNING updated_at",
+    )
+    .bind(id)
+    .bind(model_rule_id)
+    .bind(&input.api_format)
+    .fetch_optional(&mut **transaction)
+    .await?
+    .ok_or(RepositoryError::Conflict)?;
+    Ok(MutationResult {
+        id,
+        object_type: "model_protocol_rule",
+        action: "create",
+        before_redacted: json!({}),
+        after_redacted: rule_audit(transaction, id).await?,
+        created_secret: None,
+        reason: None,
+        updated_at,
+        correlation_id: None,
+    })
+}
+
+async fn model_protocol_rule_update(
+    transaction: &mut Transaction<'_, Postgres>,
+    model_rule_id: Uuid,
+    id: Uuid,
+    input: ModelProtocolRuleInput,
+    expected_updated_at: DateTime<Utc>,
+) -> Result<MutationResult, RepositoryError> {
+    if (input.enabled && input.routing_tiers.is_empty())
         || !valid_model_rule_routing_tiers(&input.routing_tiers)
     {
         return Err(RepositoryError::Validation);
     }
-    let before = if create {
-        json!({})
-    } else {
-        rule_audit(transaction, id).await?
-    };
-    let updated_at = if create {
-        validate_model_rule_routing_references(
-            transaction,
-            &input.api_format,
-            &input.routing_tiers,
-        )
+    let current = sqlx::query_as::<_, (String, DateTime<Utc>)>(
+        "SELECT api_format::text,updated_at \
+         FROM model_rules \
+         WHERE id=$1 AND model_routing_profile_id=$2 \
+         FOR UPDATE",
+    )
+    .bind(id)
+    .bind(model_rule_id)
+    .fetch_optional(&mut **transaction)
+    .await?
+    .ok_or(RepositoryError::NotFound)?;
+    if current.1 != expected_updated_at {
+        return Err(RepositoryError::Conflict);
+    }
+    let api_format = current.0;
+    validate_model_rule_routing_references(transaction, &api_format, &input.routing_tiers).await?;
+    let before = rule_audit(transaction, id).await?;
+    sqlx::query("DELETE FROM model_rule_routing_tiers WHERE model_rule_id=$1")
+        .bind(id)
+        .execute(&mut **transaction)
         .await?;
-        sqlx::query_scalar("INSERT INTO model_rules (id,client_model,api_format,upstream_model_id,description,enabled) VALUES ($1,$2,$3::api_format,$4,$5,$6) RETURNING updated_at").bind(id).bind(&input.client_model).bind(&input.api_format).bind(input.upstream_model_id).bind(&input.description).bind(input.enabled).fetch_one(&mut **transaction).await?
-    } else {
-        sqlx::query("DELETE FROM model_rule_routing_tiers WHERE model_rule_id=$1")
-            .bind(id)
-            .execute(&mut **transaction)
-            .await?;
-        let updated_at = sqlx::query_scalar("UPDATE model_rules SET client_model=$2,api_format=$3::api_format,upstream_model_id=$4,description=$5,enabled=$6 WHERE id=$1 AND updated_at=$7 RETURNING updated_at").bind(id).bind(&input.client_model).bind(&input.api_format).bind(input.upstream_model_id).bind(&input.description).bind(input.enabled).bind(expected_updated_at.expect("PUT version")).fetch_optional(&mut **transaction).await?.ok_or(RepositoryError::Conflict)?;
-        validate_model_rule_routing_references(
-            transaction,
-            &input.api_format,
-            &input.routing_tiers,
-        )
-        .await?;
-        updated_at
-    };
-    insert_model_rule_routing_tiers(transaction, id, &input.api_format, &input.routing_tiers)
-        .await?;
+    let updated_at = sqlx::query_scalar(
+        "UPDATE model_rules \
+         SET description=$3,enabled=$4 \
+         WHERE id=$1 AND model_routing_profile_id=$2 \
+         RETURNING updated_at",
+    )
+    .bind(id)
+    .bind(model_rule_id)
+    .bind(&input.description)
+    .bind(input.enabled)
+    .fetch_one(&mut **transaction)
+    .await?;
+    insert_model_rule_routing_tiers(transaction, id, &api_format, &input.routing_tiers).await?;
     Ok(MutationResult {
         id,
-        object_type: "model_rule",
-        action: if create { "create" } else { "update" },
+        object_type: "model_protocol_rule",
+        action: "update",
         before_redacted: before,
         after_redacted: rule_audit(transaction, id).await?,
         created_secret: None,
@@ -7606,9 +7881,6 @@ async fn rule_insert(
 }
 
 fn valid_model_rule_routing_tiers(tiers: &[ModelRuleRoutingTier]) -> bool {
-    if tiers.is_empty() {
-        return false;
-    }
     let mut priorities = HashSet::with_capacity(tiers.len());
     let mut group_ids = HashSet::new();
     for tier in tiers {
@@ -7633,8 +7905,26 @@ fn valid_model_rule_routing_tiers(tiers: &[ModelRuleRoutingTier]) -> bool {
                 return false;
             }
             match group.channel_selection.as_str() {
-                "all" if group.default_weight.is_some_and(|weight| weight > 0) => {}
-                "selected" if group.default_weight.is_none() && !group.channels.is_empty() => {}
+                "all"
+                    if group.default_weight.is_some_and(|weight| weight > 0)
+                        && group
+                            .upstream_model
+                            .as_deref()
+                            .is_some_and(|model| !model.trim().is_empty())
+                        && group
+                            .channels
+                            .iter()
+                            .all(|channel| channel.upstream_model.is_none()) => {}
+                "selected"
+                    if group.default_weight.is_none()
+                        && group.upstream_model.is_none()
+                        && !group.channels.is_empty()
+                        && group.channels.iter().all(|channel| {
+                            channel
+                                .upstream_model
+                                .as_deref()
+                                .is_some_and(|model| !model.trim().is_empty())
+                        }) => {}
                 _ => return false,
             }
         }
@@ -7663,6 +7953,43 @@ async fn validate_model_rule_routing_references(
     .await?;
     if usize::try_from(matching_group_count).ok() != Some(group_ids.len()) {
         return Err(RepositoryError::RoutingDependencyInvalid);
+    }
+
+    let all_group_targets = tiers
+        .iter()
+        .flat_map(|tier| &tier.channel_groups)
+        .filter(|group| group.channel_selection == "all")
+        .map(|group| {
+            (
+                group.channel_group_id,
+                group
+                    .upstream_model
+                    .as_deref()
+                    .expect("validated all-channel target model"),
+            )
+        })
+        .collect::<Vec<_>>();
+    if !all_group_targets.is_empty() {
+        let (target_group_ids, upstream_models): (Vec<_>, Vec<_>) =
+            all_group_targets.into_iter().unzip();
+        let matching_target_count = sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) \
+             FROM unnest($1::uuid[],$2::text[]) AS target(channel_group_id,upstream_model) \
+             WHERE EXISTS ( \
+                 SELECT 1 \
+                 FROM channels AS channel \
+                 WHERE channel.channel_group_id=target.channel_group_id \
+                   AND channel.api_format=$3::api_format \
+                   AND target.upstream_model=ANY(channel.available_models))",
+        )
+        .bind(&target_group_ids)
+        .bind(&upstream_models)
+        .bind(api_format)
+        .fetch_one(&mut **transaction)
+        .await?;
+        if usize::try_from(matching_target_count).ok() != Some(target_group_ids.len()) {
+            return Err(RepositoryError::RoutingDependencyInvalid);
+        }
     }
 
     let channel_targets = tiers
@@ -7695,6 +8022,50 @@ async fn validate_model_rule_routing_references(
     if usize::try_from(matching_channel_count).ok() != Some(channel_ids.len()) {
         return Err(RepositoryError::RoutingDependencyInvalid);
     }
+
+    let selected_channel_targets = tiers
+        .iter()
+        .flat_map(|tier| &tier.channel_groups)
+        .filter(|group| group.channel_selection == "selected")
+        .flat_map(|group| {
+            group.channels.iter().map(move |channel| {
+                (
+                    channel.channel_id,
+                    group.channel_group_id,
+                    channel
+                        .upstream_model
+                        .as_deref()
+                        .expect("validated selected-channel target model"),
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    if !selected_channel_targets.is_empty() {
+        let (channel_ids, remaining): (Vec<_>, Vec<_>) = selected_channel_targets
+            .into_iter()
+            .map(|(channel_id, group_id, upstream_model)| (channel_id, (group_id, upstream_model)))
+            .unzip();
+        let (channel_group_ids, upstream_models): (Vec<_>, Vec<_>) = remaining.into_iter().unzip();
+        let matching_model_count = sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) \
+             FROM unnest($1::uuid[],$2::uuid[],$3::text[]) \
+                 AS target(channel_id,channel_group_id,upstream_model) \
+             JOIN channels AS channel \
+               ON channel.id=target.channel_id \
+              AND channel.channel_group_id=target.channel_group_id \
+              AND channel.api_format=$4::api_format \
+              AND target.upstream_model=ANY(channel.available_models)",
+        )
+        .bind(&channel_ids)
+        .bind(&channel_group_ids)
+        .bind(&upstream_models)
+        .bind(api_format)
+        .fetch_one(&mut **transaction)
+        .await?;
+        if usize::try_from(matching_model_count).ok() != Some(channel_ids.len()) {
+            return Err(RepositoryError::RoutingDependencyInvalid);
+        }
+    }
     Ok(())
 }
 
@@ -7719,27 +8090,29 @@ async fn insert_model_rule_routing_tiers(
         for group in &tier.channel_groups {
             sqlx::query(
                 "INSERT INTO model_rule_routing_groups \
-                 (model_rule_id,api_format,priority,channel_group_id,channel_selection,default_weight) \
-                 VALUES ($1,$2::api_format,$3,$4,$5,$6)",
+                 (model_rule_id,api_format,priority,channel_group_id,channel_selection,upstream_model,default_weight) \
+                 VALUES ($1,$2::api_format,$3,$4,$5,$6,$7)",
             )
             .bind(model_rule_id)
             .bind(api_format)
             .bind(tier.priority)
             .bind(group.channel_group_id)
             .bind(&group.channel_selection)
+            .bind(&group.upstream_model)
             .bind(group.default_weight)
             .execute(&mut **transaction)
             .await?;
             for channel in &group.channels {
                 sqlx::query(
                     "INSERT INTO model_rule_routing_channels \
-                     (model_rule_id,api_format,channel_group_id,channel_id,weight) \
-                     VALUES ($1,$2::api_format,$3,$4,$5)",
+                     (model_rule_id,api_format,channel_group_id,channel_id,upstream_model,weight) \
+                     VALUES ($1,$2::api_format,$3,$4,$5,$6)",
                 )
                 .bind(model_rule_id)
                 .bind(api_format)
                 .bind(group.channel_group_id)
                 .bind(channel.channel_id)
+                .bind(&channel.upstream_model)
                 .bind(channel.weight)
                 .execute(&mut **transaction)
                 .await?;

@@ -514,15 +514,16 @@ async fn gateway_harness_with_controls(
             upstream_api_key: Some(UPSTREAM_KEY.into()),
             available_models: vec![UPSTREAM_MODEL.into()],
             test_model: None,
+            test_pricing_model_id: None,
         }],
         models: vec![],
         model_rules: vec![ModelRuleRecord {
             id: Uuid::new_v4(),
             client_model: CLIENT_MODEL.into(),
             api_format: "open_ai_responses".into(),
-            upstream_model_id: Uuid::new_v4(),
-            upstream_model_enabled: true,
-            upstream_model_currency: "USD".into(),
+            model_id: Uuid::new_v4(),
+            model_enabled: true,
+            model_currency: "USD".into(),
             price_unit_tokens: 1_000_000,
             price_effective_at: chrono::Utc::now(),
             input_unit_price: Decimal::ONE,
@@ -544,16 +545,17 @@ async fn gateway_harness_with_controls(
                     "request_multipliers": [],
                 })
             },
-            upstream_model: UPSTREAM_MODEL.into(),
             routing_tiers: vec![ModelRuleRoutingTier {
                 priority: 0,
                 selection_strategy: "weighted_random".into(),
                 channel_groups: vec![ModelRuleChannelGroupTarget {
                     channel_group_id: group_id,
                     channel_selection: "selected".into(),
+                    upstream_model: None,
                     default_weight: None,
                     channels: vec![ModelRuleChannelWeight {
                         channel_id,
+                        upstream_model: Some(UPSTREAM_MODEL.into()),
                         weight: 1,
                     }],
                 }],
