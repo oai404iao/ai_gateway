@@ -1284,6 +1284,11 @@ pub enum ControlPlaneMutation {
         input: ModelInput,
         expected_updated_at: DateTime<Utc>,
     },
+    DeleteModel {
+        id: Uuid,
+        deleted_by: Uuid,
+        expected_updated_at: DateTime<Utc>,
+    },
     CreateApiKey(ApiKeyCreate),
     CreateApiKeyPolicy(ApiKeyPolicyInput),
     UpdateApiKeyPolicy {
@@ -5073,7 +5078,7 @@ impl ControlPlaneRepository {
         transaction: &mut Transaction<'_, Postgres>,
     ) -> Result<ControlPlaneRecords, RepositoryError> {
         let api_keys = sqlx::query_as::<_, ApiKeyRecord>("SELECT k.id, k.user_id, u.status AS user_status, u.websocket_enabled AS user_websocket_enabled, g.filter_fast_mode AS user_filter_fast_mode, k.secret_value, k.status, k.expires_at, k.allowed_api_formats::text[] AS allowed_api_formats, k.permissions, k.allowed_group_ids, k.allowed_channel_ids, k.requests_per_minute, k.max_concurrent_requests, k.quota_limit_amount, k.quota_used_amount FROM api_keys k JOIN users u ON u.id = k.user_id AND u.deleted_at IS NULL JOIN user_groups g ON g.id=u.user_group_id AND g.deleted_at IS NULL WHERE NOT k.is_system AND k.deleted_at IS NULL ORDER BY k.id").fetch_all(&mut **transaction).await?;
-        let models = sqlx::query_as::<_, ModelRecord>("SELECT id,source_model_id,currency,price_unit_tokens,price_effective_at,input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,advanced_billing FROM models ORDER BY id").fetch_all(&mut **transaction).await?;
+        let models = sqlx::query_as::<_, ModelRecord>("SELECT id,source_model_id,currency,price_unit_tokens,price_effective_at,input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,advanced_billing FROM models WHERE deleted_at IS NULL ORDER BY id").fetch_all(&mut **transaction).await?;
         let model_rules = sqlx::query_as::<_, ModelRuleRecordRow>(
             "SELECT r.id,m.source_model_id AS client_model,r.api_format::text AS api_format, \
                     m.id AS model_id,m.enabled AS model_enabled,m.currency AS model_currency, \
@@ -5112,7 +5117,7 @@ impl ControlPlaneRepository {
                     r.enabled \
              FROM model_rules AS r \
              JOIN model_routing_profiles AS profile ON profile.id=r.model_routing_profile_id \
-             JOIN models AS m ON m.id=profile.model_id \
+             JOIN models AS m ON m.id=profile.model_id AND m.deleted_at IS NULL \
              ORDER BY r.id",
         )
         .fetch_all(&mut **transaction)
@@ -5309,7 +5314,7 @@ impl ControlPlaneRepository {
         )
         .fetch_all(&self.pool)
         .await?;
-        let models = sqlx::query_as::<_, ControlPlaneModel>("SELECT id,source_model_id,display_name,provider_name,enabled,price_unit_tokens,input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,price_effective_at,advanced_billing,last_synced_at,created_at,updated_at FROM models ORDER BY id").fetch_all(&self.pool).await?;
+        let models = sqlx::query_as::<_, ControlPlaneModel>("SELECT id,source_model_id,display_name,provider_name,enabled,price_unit_tokens,input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,price_effective_at,advanced_billing,last_synced_at,created_at,updated_at FROM models WHERE deleted_at IS NULL ORDER BY id").fetch_all(&self.pool).await?;
         let api_keys = sqlx::query_as::<_, ControlPlaneApiKey>("SELECT k.id, k.user_id, u.status AS user_status, k.name, k.secret_value AS secret, k.status, k.expires_at, k.allowed_api_formats::text[] AS allowed_api_formats, k.permissions, k.allowed_group_ids, k.allowed_channel_ids, k.requests_per_minute, k.max_concurrent_requests, k.quota_limit_amount, k.quota_used_amount, k.updated_at FROM api_keys k JOIN users u ON u.id=k.user_id WHERE NOT k.is_system AND k.deleted_at IS NULL AND u.deleted_at IS NULL ORDER BY k.id").fetch_all(&self.pool).await?;
         let api_key_policies = sqlx::query_as::<_, ControlPlaneApiKeyPolicy>("SELECT id,name,allowed_group_ids,allowed_channel_ids,enabled,created_at,updated_at FROM api_key_policies ORDER BY id").fetch_all(&self.pool).await?;
         let channel_groups = sqlx::query_as::<_, ControlPlaneChannelGroup>("SELECT id,name,api_format::text AS api_format,connector_kind,connector_pool_id,request_compression,sharing_only,enabled,status_statistics_enabled,updated_at FROM channel_groups WHERE deleted_at IS NULL ORDER BY id").fetch_all(&self.pool).await?;
@@ -5323,7 +5328,7 @@ impl ControlPlaneRepository {
                     model.enabled AS model_enabled, \
                     profile.created_at,profile.updated_at \
              FROM model_routing_profiles AS profile \
-             JOIN models AS model ON model.id=profile.model_id \
+             JOIN models AS model ON model.id=profile.model_id AND model.deleted_at IS NULL \
              ORDER BY model.source_model_id,profile.id",
         )
         .fetch_all(&self.pool)
@@ -5363,7 +5368,7 @@ impl ControlPlaneRepository {
                     r.enabled,r.updated_at \
              FROM model_rules AS r \
              JOIN model_routing_profiles AS profile ON profile.id=r.model_routing_profile_id \
-             JOIN models AS m ON m.id=profile.model_id \
+             JOIN models AS m ON m.id=profile.model_id AND m.deleted_at IS NULL \
              ORDER BY r.id",
         )
         .fetch_all(&self.pool)
@@ -6060,6 +6065,11 @@ impl ControlPlaneRepository {
                 input,
                 expected_updated_at,
             } => model_insert(transaction, id, input, false, Some(expected_updated_at)).await,
+            ControlPlaneMutation::DeleteModel {
+                id,
+                deleted_by,
+                expected_updated_at,
+            } => model_soft_delete(transaction, id, deleted_by, expected_updated_at).await,
             ControlPlaneMutation::CreateApiKey(input) => {
                 ensure_api_key_owner_exists(transaction, input.user_id).await?;
                 validate_admin_api_key_input(
@@ -6293,10 +6303,13 @@ impl ControlPlaneRepository {
     }
 
     pub async fn model_source_ids(&self) -> Result<Vec<String>, RepositoryError> {
-        sqlx::query_scalar("SELECT source_model_id FROM models ORDER BY source_model_id")
-            .fetch_all(&self.pool)
-            .await
-            .map_err(RepositoryError::from)
+        sqlx::query_scalar(
+            "SELECT source_model_id FROM models \
+             WHERE deleted_at IS NULL ORDER BY source_model_id",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(RepositoryError::from)
     }
 
     /// Applies explicitly selected catalog entries. Existing source-model IDs
@@ -6310,7 +6323,8 @@ impl ControlPlaneRepository {
         let mut results = Vec::with_capacity(inputs.len());
         for input in inputs {
             let existing_id = sqlx::query_scalar::<_, Uuid>(
-                "SELECT id FROM models WHERE source_model_id=$1 FOR UPDATE",
+                "SELECT id FROM models \
+                 WHERE source_model_id=$1 AND deleted_at IS NULL FOR UPDATE",
             )
             .bind(&input.source_model_id)
             .fetch_optional(&mut **transaction)
@@ -6877,7 +6891,7 @@ async fn model_audit(
     id: Uuid,
 ) -> Result<Value, RepositoryError> {
     let value = sqlx::query_scalar::<_, Value>(
-        "SELECT json_build_object('id',id,'source_model_id',source_model_id,'display_name',display_name,'provider_name',provider_name,'enabled',enabled,'price_unit_tokens',price_unit_tokens,'input_unit_price',input_unit_price,'cached_input_unit_price',cached_input_unit_price,'cache_write_unit_price',cache_write_unit_price,'output_unit_price',output_unit_price,'price_effective_at',price_effective_at,'advanced_billing',advanced_billing,'last_synced_at',last_synced_at,'created_at',created_at,'updated_at',updated_at) FROM models WHERE id=$1 FOR UPDATE",
+        "SELECT json_build_object('id',id,'source_model_id',source_model_id,'display_name',display_name,'provider_name',provider_name,'enabled',enabled,'price_unit_tokens',price_unit_tokens,'input_unit_price',input_unit_price,'cached_input_unit_price',cached_input_unit_price,'cache_write_unit_price',cache_write_unit_price,'output_unit_price',output_unit_price,'price_effective_at',price_effective_at,'advanced_billing',advanced_billing,'last_synced_at',last_synced_at,'deleted_at',deleted_at,'deleted_by',deleted_by,'created_at',created_at,'updated_at',updated_at) FROM models WHERE id=$1 FOR UPDATE",
     )
     .bind(id)
     .fetch_optional(&mut **transaction)
@@ -6995,6 +7009,7 @@ async fn load_channel_deletion_plan(
          JOIN model_routing_profiles AS profile \
            ON profile.id=rule.model_routing_profile_id \
          JOIN models AS model ON model.id=profile.model_id \
+          AND model.deleted_at IS NULL \
          WHERE EXISTS ( \
              SELECT 1 FROM model_rule_routing_groups AS group_target \
              WHERE group_target.model_rule_id=rule.id \
@@ -8111,6 +8126,9 @@ async fn model_insert(
     } else {
         model_audit(transaction, id).await?
     };
+    if !create && !before["deleted_at"].is_null() {
+        return Err(RepositoryError::NotFound);
+    }
     let updated_at = if create {
         sqlx::query_scalar("INSERT INTO models (id,source_model_id,display_name,provider_name,enabled,currency,price_unit_tokens,input_unit_price,cached_input_unit_price,cache_write_unit_price,output_unit_price,price_effective_at,advanced_billing,source_payload) VALUES ($1,$2,$3,$4,$5,'USD',$6,$7,$8,$9,$10,$11,$12,$13) RETURNING updated_at")
             .bind(id)
@@ -8129,7 +8147,7 @@ async fn model_insert(
             .fetch_one(&mut **transaction)
             .await?
     } else {
-        sqlx::query_scalar("UPDATE models SET source_model_id=$2,display_name=$3,provider_name=$4,enabled=$5,currency='USD',price_unit_tokens=$6,input_unit_price=$7,cached_input_unit_price=$8,cache_write_unit_price=$9,output_unit_price=$10,price_effective_at=$11,advanced_billing=CASE WHEN $12 THEN $13 ELSE advanced_billing END,source_payload=CASE WHEN $14 THEN $15 ELSE source_payload END WHERE id=$1 AND updated_at=$16 RETURNING updated_at")
+        sqlx::query_scalar("UPDATE models SET source_model_id=$2,display_name=$3,provider_name=$4,enabled=$5,currency='USD',price_unit_tokens=$6,input_unit_price=$7,cached_input_unit_price=$8,cache_write_unit_price=$9,output_unit_price=$10,price_effective_at=$11,advanced_billing=CASE WHEN $12 THEN $13 ELSE advanced_billing END,source_payload=CASE WHEN $14 THEN $15 ELSE source_payload END WHERE id=$1 AND updated_at=$16 AND deleted_at IS NULL RETURNING updated_at")
             .bind(id)
             .bind(&input.source_model_id)
             .bind(&input.display_name)
@@ -8162,6 +8180,73 @@ async fn model_insert(
         correlation_id: None,
     })
 }
+
+async fn model_soft_delete(
+    transaction: &mut Transaction<'_, Postgres>,
+    id: Uuid,
+    deleted_by: Uuid,
+    expected_updated_at: DateTime<Utc>,
+) -> Result<MutationResult, RepositoryError> {
+    let before = model_audit(transaction, id).await?;
+    if !before["deleted_at"].is_null() {
+        return Err(RepositoryError::NotFound);
+    }
+    let current_updated_at: DateTime<Utc> = serde_json::from_value(before["updated_at"].clone())
+        .map_err(|_| RepositoryError::Validation)?;
+    if current_updated_at != expected_updated_at {
+        return Err(RepositoryError::Conflict);
+    }
+
+    let disabled_protocol_rules = sqlx::query(
+        "UPDATE model_rules AS rule \
+         SET enabled=false \
+         FROM model_routing_profiles AS profile \
+         WHERE profile.model_id=$1 \
+           AND rule.model_routing_profile_id=profile.id \
+           AND rule.enabled",
+    )
+    .bind(id)
+    .execute(&mut **transaction)
+    .await?
+    .rows_affected();
+    let cleared_scheduled_tests = sqlx::query(
+        "UPDATE channels \
+         SET test_model=NULL,test_pricing_model_id=NULL \
+         WHERE test_pricing_model_id=$1",
+    )
+    .bind(id)
+    .execute(&mut **transaction)
+    .await?
+    .rows_affected();
+    let updated_at = sqlx::query_scalar(
+        "UPDATE models \
+         SET enabled=false,deleted_at=now(),deleted_by=$2 \
+         WHERE id=$1 AND updated_at=$3 AND deleted_at IS NULL \
+         RETURNING updated_at",
+    )
+    .bind(id)
+    .bind(deleted_by)
+    .bind(expected_updated_at)
+    .fetch_optional(&mut **transaction)
+    .await?
+    .ok_or(RepositoryError::Conflict)?;
+
+    Ok(MutationResult {
+        id,
+        object_type: "model",
+        action: "delete",
+        before_redacted: before,
+        after_redacted: model_audit(transaction, id).await?,
+        created_secret: None,
+        reason: Some(format!(
+            "{disabled_protocol_rules} protocol rules disabled; \
+             {cleared_scheduled_tests} scheduled test references cleared"
+        )),
+        updated_at,
+        correlation_id: None,
+    })
+}
+
 async fn import_model(
     transaction: &mut Transaction<'_, Postgres>,
     input: SyncedModelInput,
@@ -8216,7 +8301,7 @@ async fn sync_model_price(
     let current_advanced_billing: Value = sqlx::query_scalar(
         "SELECT advanced_billing
          FROM models
-         WHERE id=$1 AND source_model_id=$2
+         WHERE id=$1 AND source_model_id=$2 AND deleted_at IS NULL
          FOR UPDATE",
     )
     .bind(id)
@@ -8239,7 +8324,7 @@ async fn sync_model_price(
              advanced_billing=$8,
              source_payload=$9,
              last_synced_at=$7
-         WHERE id=$1 AND source_model_id=$2
+         WHERE id=$1 AND source_model_id=$2 AND deleted_at IS NULL
          RETURNING updated_at",
     )
     .bind(id)
@@ -8628,11 +8713,13 @@ async fn channel_insert(
         return Err(RepositoryError::Validation);
     }
     if let Some(test_pricing_model_id) = input.test_pricing_model_id {
-        let configured =
-            sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM models WHERE id=$1)")
-                .bind(test_pricing_model_id)
-                .fetch_one(&mut **transaction)
-                .await?;
+        let configured = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS( \
+                 SELECT 1 FROM models WHERE id=$1 AND deleted_at IS NULL)",
+        )
+        .bind(test_pricing_model_id)
+        .fetch_one(&mut **transaction)
+        .await?;
         if !configured {
             return Err(RepositoryError::Validation);
         }
@@ -8726,12 +8813,14 @@ async fn model_routing_profile_insert(
     id: Uuid,
     input: ModelRuleCreateInput,
 ) -> Result<MutationResult, RepositoryError> {
-    let model_enabled =
-        sqlx::query_scalar::<_, bool>("SELECT enabled FROM models WHERE id=$1 FOR UPDATE")
-            .bind(input.model_id)
-            .fetch_optional(&mut **transaction)
-            .await?
-            .ok_or(RepositoryError::NotFound)?;
+    let model_enabled = sqlx::query_scalar::<_, bool>(
+        "SELECT enabled FROM models \
+         WHERE id=$1 AND deleted_at IS NULL FOR UPDATE",
+    )
+    .bind(input.model_id)
+    .fetch_optional(&mut **transaction)
+    .await?
+    .ok_or(RepositoryError::NotFound)?;
     if !model_enabled {
         return Err(RepositoryError::Validation);
     }
@@ -8777,7 +8866,12 @@ async fn model_protocol_rule_create(
         return Err(RepositoryError::Validation);
     }
     let profile_exists = sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS(SELECT 1 FROM model_routing_profiles WHERE id=$1 FOR UPDATE)",
+        "SELECT EXISTS( \
+             SELECT 1 \
+             FROM model_routing_profiles AS profile \
+             JOIN models AS model ON model.id=profile.model_id \
+             WHERE profile.id=$1 AND model.deleted_at IS NULL \
+             FOR UPDATE OF profile,model)",
     )
     .bind(model_rule_id)
     .fetch_one(&mut **transaction)
@@ -8836,10 +8930,14 @@ async fn model_protocol_rule_update(
         return Err(RepositoryError::Validation);
     }
     let current = sqlx::query_as::<_, (String, DateTime<Utc>)>(
-        "SELECT api_format::text,updated_at \
-         FROM model_rules \
-         WHERE id=$1 AND model_routing_profile_id=$2 \
-         FOR UPDATE",
+        "SELECT rule.api_format::text,rule.updated_at \
+         FROM model_rules AS rule \
+         JOIN model_routing_profiles AS profile \
+           ON profile.id=rule.model_routing_profile_id \
+         JOIN models AS model \
+           ON model.id=profile.model_id AND model.deleted_at IS NULL \
+         WHERE rule.id=$1 AND rule.model_routing_profile_id=$2 \
+         FOR UPDATE OF rule,profile,model",
     )
     .bind(id)
     .bind(model_rule_id)

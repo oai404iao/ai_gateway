@@ -197,7 +197,10 @@ pub fn router(state: ConsoleState) -> Router {
             post(preview_models_sync),
         )
         .route("/console/v1/catalog/models/import", post(import_models))
-        .route("/console/v1/models/{id}", get(get_model).put(update_model))
+        .route(
+            "/console/v1/models/{id}",
+            get(get_model).put(update_model).delete(delete_model),
+        )
         .route(
             "/console/v1/api-keys",
             get(list_api_keys).post(create_api_key),
@@ -1585,6 +1588,24 @@ async fn update_model(
         ControlPlaneMutation::UpdateModel {
             id,
             input,
+            expected_updated_at: if_match(&headers)?,
+        },
+    )
+    .await
+}
+
+async fn delete_model(
+    State(state): State<ConsoleState>,
+    Extension(principal): Extension<ConsolePrincipal>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Json<MutationResponse>, ConsoleError> {
+    mutate(
+        &state,
+        principal,
+        ControlPlaneMutation::DeleteModel {
+            id,
+            deleted_by: principal.user_id(),
             expected_updated_at: if_match(&headers)?,
         },
     )

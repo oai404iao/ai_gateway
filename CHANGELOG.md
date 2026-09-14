@@ -23,6 +23,10 @@ Versioning.
   automatic routing/API Key/Policy/quota unbinding, empty-rule normalization,
   secret and transform erasure, and dedicated lifecycle protection for
   provider-managed Codex resources.
+- Irreversible priced-model tombstones that disable and hide protocol routes,
+  clear scheduled-test pricing references, release client model IDs for new
+  UUIDs, preserve historical request facts, and complete the shared Console
+  deletion experience.
 
 ### Security
 

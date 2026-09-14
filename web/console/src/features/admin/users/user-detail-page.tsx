@@ -799,39 +799,35 @@ export function UserDetailPage() {
               </CardContent>
             </Card>
 
-            <Card>
-              <CardHeader>
-                <CardTitle>{t("Danger zone")}</CardTitle>
-                <CardDescription>
-                  {t("Deleting a user is permanent and audited.")}
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="flex flex-col items-start gap-4">
-                {currentUser?.id === user.id ? (
-                  <Alert>
-                    <AlertTitle>{t("Current administrator account")}</AlertTitle>
-                    <AlertDescription>
-                      {t("You cannot delete your own administrator account.")}
-                    </AlertDescription>
-                  </Alert>
-                ) : null}
-                <Button
-                  type="button"
-                  variant="destructive"
-                  disabled={
-                    remove.isPending ||
-                    submitting !== null ||
-                    currentUser?.id === user.id
-                  }
-                  onClick={() => setDeleteOpen(true)}
-                >
-                  {remove.isPending ? <Spinner data-icon="inline-start" /> : null}
-                  {t("Delete user")}
-                </Button>
-              </CardContent>
-            </Card>
           </>
         ) : null
+      }
+      dangerZone={
+        user ? (
+          <div className="flex flex-col items-start gap-4">
+            {currentUser?.id === user.id ? (
+              <Alert>
+                <AlertTitle>{t("Current administrator account")}</AlertTitle>
+                <AlertDescription>
+                  {t("You cannot delete your own administrator account.")}
+                </AlertDescription>
+              </Alert>
+            ) : null}
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={
+                remove.isPending ||
+                submitting !== null ||
+                currentUser?.id === user.id
+              }
+              onClick={() => setDeleteOpen(true)}
+            >
+              {remove.isPending ? <Spinner data-icon="inline-start" /> : null}
+              {t("Delete user")}
+            </Button>
+          </div>
+        ) : undefined
       }
       />
       <ConfirmDialog

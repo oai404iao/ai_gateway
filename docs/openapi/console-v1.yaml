@@ -1275,6 +1275,27 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/Unprocessable" }
+    delete:
+      tags: [Models]
+      operationId: deleteModel
+      description: |
+        Irreversibly hides the pricing model, disables every protocol rule
+        under its routing profile, and clears scheduled-test pricing
+        references. Request logs, audit history, and the old UUID remain.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/PathId"
+        - $ref: "#/components/parameters/IfMatch"
+      responses:
+        "200":
+          description: Model deleted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MutationResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
 
   /catalog/models/sync/preview:
     post:

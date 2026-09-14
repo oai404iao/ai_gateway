@@ -224,7 +224,8 @@ export function ChannelGroupDetailPage() {
   };
 
   return (
-    <AdminDetailShell
+    <>
+      <AdminDetailShell
       configurationLens="supply"
       navigationGuard={navigationGuard}
       saving={pending}
@@ -438,61 +439,54 @@ export function ChannelGroupDetailPage() {
                 </Button>
               ) : null}
             </div>
-            {!isNew && data ? (
-              <div className="mt-6 flex flex-col items-start gap-4 border-t pt-6">
-                <div className="flex flex-col gap-1.5">
-                  <h3 className="font-semibold">{t("Danger zone")}</h3>
-                  <p className="text-muted-foreground text-sm">
-                    {t(
-                      "Deleting a channel group is permanent and audited. Its ordinary channels and current dependencies are handled automatically.",
-                    )}
-                  </p>
-                </div>
-                {data.data.connector_kind === "openai_compatible" ? (
-                  <Button
-                    variant="destructive"
-                    disabled={pending}
-                    onClick={() => void previewDelete()}
-                  >
-                    {previewDeletion.isPending || remove.isPending ? (
-                      <Spinner data-icon="inline-start" />
-                    ) : null}
-                    {t("Delete channel group")}
-                  </Button>
-                ) : (
-                  <Alert>
-                    <AlertTitle>{t("Provider-managed group")}</AlertTitle>
-                    <AlertDescription>
-                      {t(
-                        "Provider-managed groups must use their connector lifecycle.",
-                      )}
-                    </AlertDescription>
-                  </Alert>
-                )}
-              </div>
-            ) : null}
-            <ConfirmDialog
-              open={Boolean(deletionImpact)}
-              onOpenChange={(open) => {
-                if (!open) setDeletionImpact(null);
-              }}
-              title={t("Delete channel group?")}
-              description={t(
-                "Review the current server-calculated impact. The group and listed channels become permanent tombstones, stored upstream URLs, credentials, network settings, and transforms are erased, and this action cannot be undone.",
-              )}
-              content={
-                deletionImpact ? (
-                  <DeletionImpactSummary impact={deletionImpact} />
-                ) : undefined
-              }
-              confirmLabel={t("Delete channel group")}
-              destructive
-              confirmDisabled={pending}
-              onConfirm={() => void deleteGroup()}
-            />
           </CardContent>
         </Card>
       }
-    />
+      dangerZone={
+        !isNew && data ? (
+          data.data.connector_kind === "openai_compatible" ? (
+            <Button
+              variant="destructive"
+              disabled={pending}
+              onClick={() => void previewDelete()}
+            >
+              {previewDeletion.isPending || remove.isPending ? (
+                <Spinner data-icon="inline-start" />
+              ) : null}
+              {t("Delete channel group")}
+            </Button>
+          ) : (
+            <Alert>
+              <AlertTitle>{t("Provider-managed group")}</AlertTitle>
+              <AlertDescription>
+                {t(
+                  "Provider-managed groups must use their connector lifecycle.",
+                )}
+              </AlertDescription>
+            </Alert>
+          )
+        ) : undefined
+      }
+      />
+      <ConfirmDialog
+        open={Boolean(deletionImpact)}
+        onOpenChange={(open) => {
+          if (!open) setDeletionImpact(null);
+        }}
+        title={t("Delete channel group?")}
+        description={t(
+          "Review the current server-calculated impact. The group and listed channels become permanent tombstones, stored upstream URLs, credentials, network settings, and transforms are erased, and this action cannot be undone.",
+        )}
+        content={
+          deletionImpact ? (
+            <DeletionImpactSummary impact={deletionImpact} />
+          ) : undefined
+        }
+        confirmLabel={t("Delete channel group")}
+        destructive
+        confirmDisabled={pending}
+        onConfirm={() => void deleteGroup()}
+      />
+    </>
   );
 }

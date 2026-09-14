@@ -1,6 +1,6 @@
 # 控制面软删除
 
-> 状态：部分实现。阶段一和阶段二已覆盖身份、授权、普通渠道及渠道组；模型将在阶段三实现。
+> 状态：当前。三个阶段已覆盖身份、授权、普通渠道、渠道组和计价模型。
 
 ## 目标与边界
 
@@ -116,6 +116,32 @@ Codex OAuth 组及其 Responses/Images managed channels 返回
 `409 deletion_impact_changed`，Console 获取新预览并要求再次确认。根资源自身的并发修改仍由
 `If-Match` 独立检测。
 
+## 阶段三语义
+
+### 计价模型
+
+管理员通过 `DELETE /console/v1/models/{id}` 和详情 `ETag` 进行不可恢复删除。串行化事务先停用该
+模型 routing profile 下全部已启用协议规则，再清除所有 Channel 成对设置的 `test_model` /
+`test_pricing_model_id`，最后停用模型并写入 `deleted_at`/`deleted_by`。Profile、协议规则、routing
+tier 和 target 行继续保留，已有 `request_logs.model_id` / `model_rule_id` 与审计引用因此保持有效。
+
+普通模型列表、详情、models.dev 同步匹配、运行时价格表和协议规则查询只读取活动模型。墓碑的
+`source_model_id` 由部分唯一索引释放；手工创建或目录导入同名模型会得到新 UUID，不会更新或恢复
+旧墓碑。新协议规则和 Channel 定时测试不能引用墓碑模型，数据库触发器同时拒绝恢复、修改或硬删除
+模型墓碑。
+
+删除不移除 Channel 的 `available_models`。该字段描述上游 wire model 能力，不等同于
+`test_pricing_model_id` 指向的计价身份，也可能仍被其他活动模型的 route target 使用。
+
+### 历史查询与 Console
+
+请求日志继续使用请求发生时保存的客户端/上游模型字符串、计价模型 UUID、协议规则 UUID 和价格
+快照，因此模型删除或同名 UUID 重建不会改写历史日志、统计或结算。活动目录不会为了展示历史事实
+重新暴露墓碑。
+
+管理员详情页统一使用同一危险操作区和不可恢复确认对话框。模型确认会明确提示协议规则停用、定时
+测试解绑和历史保留；用户、用户组、普通渠道及渠道组继续显示各自的保护条件或权威影响预览。
+
 ## 验证
 
 每个阶段需要覆盖 migration、仓储、Console 契约、组件和浏览器流程。阶段一重点验证：
@@ -134,6 +160,14 @@ Codex OAuth 组及其 Responses/Images managed channels 返回
   自动停用。
 - API Key、API Key Policy 和 quota 可见性引用自动解绑，旧影响 token 不会执行删除。
 - Codex managed channel/group 与直接 SQL 硬删除保护不变。
+
+阶段三重点验证：
+
+- 模型删除后从 Console 列表、详情、模型规则和运行时快照消失，全部协议规则保留但已停用。
+- 所有 Channel 的匹配定时测试计价引用成对清空，且不能重新引用墓碑模型。
+- 原 `source_model_id` 可创建新 UUID；models.dev 同步不会更新旧墓碑。
+- 历史请求日志继续返回原模型、协议规则及渠道事实，审计保留删除 actor 和自动处理摘要。
+- 模型墓碑不可恢复、修改或硬删除，Console 组件与浏览器流程均要求不可恢复确认。
 
 相关来源：
 

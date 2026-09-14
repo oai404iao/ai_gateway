@@ -1038,6 +1038,18 @@ export async function mockConsoleApi(page: Page): Promise<void> {
         },
       });
     }
+    if (
+      path === `/console/v1/models/${E2E_MODEL.id}` &&
+      method === "DELETE"
+    ) {
+      return route.fulfill({
+        status: 200,
+        json: {
+          id: E2E_MODEL.id,
+          correlation_id: "00000000-0000-0000-0000-000000000031",
+        },
+      });
+    }
     if (path === "/console/v1/network/proxies" && method === "GET") {
       return route.fulfill({ status: 200, json: [] });
     }

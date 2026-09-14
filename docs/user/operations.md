@@ -735,6 +735,12 @@ Codex 额度可见性和 Fast 过滤也立即按当前用户组生效。
 测试不再显示墓碑，但历史请求日志与审计记录仍保留旧 UUID 的非敏感名称。完整语义见
 [控制面软删除](../development/soft-deletion.md)。
 
+计价模型详情页也提供统一的危险操作区。`DELETE /console/v1/models/{id}` 使用 `If-Match`，
+先停用并隐藏该模型 routing profile 下的全部协议规则，再成对清空所有 Channel 对它的定时测试
+计价引用，最后保留停用的模型墓碑。原 `source_model_id` 可由新 UUID 复用；手工创建和
+models.dev 导入都不会复活旧墓碑。请求日志继续保存旧模型 UUID、协议规则 UUID、客户端/上游
+模型字符串和请求时价格快照，因此删除及同名重建不会改写历史查询或结算。
+
 注册邀请码通过 `/console/v1/registration-invitation-codes` 管理。列表和详情只返回名称、启用状态、
 次数、过期时间、用户组、初始额度和使用统计，不返回明文或哈希。详情 `GET` 返回 `ETag`，调整名称、
 最大次数、过期时间、启用状态、用户组或初始额度时必须用 `PUT` 携带 `If-Match`；最大次数不能调低到
@@ -876,7 +882,7 @@ API Key 和小时/天聚合粒度，不提供用户或渠道筛选，响应中�
 给上游的 wire model，后者独立提供价格快照，两者不要求同名。定时测试按渠道 API 格式发出非流式 Chat Completions 或 Responses 请求，
 并复用该渠道的代理、超时、变换和上游鉴权配置。Images 渠道不能配置 `test_model`，
 provider-managed Codex Channel 也不能单独配置这两个字段；这些渠道不会被定时测试。手工禁用的
-渠道与禁用渠道组不会被测试。
+渠道与禁用渠道组不会被测试。删除所选计价模型会自动清空这两个字段；已删除模型不能再次被选择。
 
 定时测试日志写入 `request_logs`，`request_source` 为 `scheduled_test`。它们使用系统内置、
 管理员角色的内部 API Key。网关会解析响应中的 token 用量，并按所选计价模型的不可变价格快照、

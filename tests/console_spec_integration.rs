@@ -19,6 +19,7 @@ use ai_gateway::{
         ControlPlaneCoordinator, ModelSyncService, ProxyTestService, SystemMetricsService,
         hash_console_password,
     },
+    domain::ApiFormat,
     http::console::{self, ConsoleState},
     models_dev::ModelsDevClient,
     persistence::{
@@ -3914,6 +3915,402 @@ async fn user_delete_anonymizes_and_tombstones_api_keys() {
         body_json(self_delete).await,
         serde_json::json!({"error": "cannot_delete_self"})
     );
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn model_delete_hides_routing_clears_probes_and_preserves_history() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+    let source_model_id = format!("soft-delete-model-{}", Uuid::new_v4().simple());
+    let model = request(
+        &app,
+        "POST",
+        "/console/v1/models",
+        serde_json::json!({
+            "source_model_id": source_model_id,
+            "display_name": "Soft delete model",
+            "provider_name": "Example",
+            "enabled": true,
+            "price_unit_tokens": 1_000_000,
+            "input_unit_price": "0.10",
+            "cached_input_unit_price": "0.01",
+            "cache_write_unit_price": "0.02",
+            "output_unit_price": "0.20",
+            "price_effective_at": "2026-01-01T00:00:00Z",
+            "advanced_billing": {
+                "long_context_tiers": [],
+                "request_multipliers": [],
+                "time_multipliers": []
+            },
+            "source_payload": {"origin": "soft-delete-test"}
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(model.status(), StatusCode::CREATED);
+    let model_id = Uuid::parse_str(body_json(model).await["id"].as_str().unwrap()).unwrap();
+
+    let group = request(
+        &app,
+        "POST",
+        "/console/v1/routing/channel-groups",
+        serde_json::json!({
+            "name": format!("model-delete-group-{model_id}"),
+            "api_format": "open_ai_chat_completions",
+            "enabled": true,
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(group.status(), StatusCode::CREATED);
+    let group_id = Uuid::parse_str(body_json(group).await["id"].as_str().unwrap()).unwrap();
+    let channel = request(
+        &app,
+        "POST",
+        "/console/v1/routing/channels",
+        serde_json::json!({
+            "channel_group_id": group_id,
+            "api_format": "open_ai_chat_completions",
+            "name": "model-delete-channel",
+            "base_url": "https://model-delete.example.test",
+            "enabled": true,
+            "upstream_auth_kind": "none",
+            "available_models": ["model-delete-wire"],
+            "test_model": "model-delete-wire",
+            "test_pricing_model_id": model_id,
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(channel.status(), StatusCode::CREATED);
+    let channel_id = Uuid::parse_str(body_json(channel).await["id"].as_str().unwrap()).unwrap();
+
+    let profile = request(
+        &app,
+        "POST",
+        "/console/v1/routing/model-rules",
+        serde_json::json!({"model_id": model_id}),
+        &[],
+    )
+    .await;
+    assert_eq!(profile.status(), StatusCode::CREATED);
+    let profile_id = Uuid::parse_str(body_json(profile).await["id"].as_str().unwrap()).unwrap();
+    let protocol = request(
+        &app,
+        "POST",
+        &format!("/console/v1/routing/model-rules/{profile_id}/protocols"),
+        serde_json::json!({"api_format": "open_ai_chat_completions"}),
+        &[],
+    )
+    .await;
+    assert_eq!(protocol.status(), StatusCode::CREATED);
+    let protocol_id = Uuid::parse_str(body_json(protocol).await["id"].as_str().unwrap()).unwrap();
+    let protocol_path =
+        format!("/console/v1/routing/model-rules/{profile_id}/protocols/{protocol_id}");
+    let protocol_detail = request(&app, "GET", &protocol_path, serde_json::json!({}), &[]).await;
+    let protocol_etag = protocol_detail.headers()[header::ETAG]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let configured = request(
+        &app,
+        "PUT",
+        &protocol_path,
+        serde_json::json!({
+            "description": "Deleted model route",
+            "routing_tiers": [{
+                "priority": 0,
+                "selection_strategy": "weighted_random",
+                "channel_groups": [{
+                    "channel_group_id": group_id,
+                    "channel_selection": "all",
+                    "upstream_model": "model-delete-wire",
+                    "default_weight": 100,
+                    "channels": []
+                }]
+            }],
+            "enabled": true
+        }),
+        &[("if-match", &protocol_etag)],
+    )
+    .await;
+    assert_eq!(configured.status(), StatusCode::OK);
+    assert!(
+        app.runtime
+            .snapshot()
+            .model_rule(ApiFormat::OpenAiChatCompletions, &source_model_id)
+            .is_some()
+    );
+
+    let key_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO api_keys \
+         (id,user_id,name,secret_value,status,allowed_api_formats,permissions, \
+          allowed_group_ids,allowed_channel_ids) \
+         VALUES ($1,$2,'model delete history',$3,'active', \
+                 ARRAY['open_ai_chat_completions']::api_format[],ARRAY['proxy'], \
+                 ARRAY[$4]::uuid[],'{}')",
+    )
+    .bind(key_id)
+    .bind(app.user_id)
+    .bind(format!("model-delete-history-{key_id}"))
+    .bind(group_id)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let historical_log_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO request_logs \
+         (id,started_at,completed_at,user_id,api_key_id,api_format,api_operation, \
+          client_model,upstream_model,model_rule_id,channel_group_id,channel_id, \
+          outcome,streamed,total_duration_ms,model_id) \
+         VALUES ($1,now(),now(),$2,$3,'open_ai_chat_completions','chat_completions', \
+                 $4,'model-delete-wire',$5,$6,$7,'succeeded',false,10,$8)",
+    )
+    .bind(historical_log_id)
+    .bind(app.user_id)
+    .bind(key_id)
+    .bind(&source_model_id)
+    .bind(protocol_id)
+    .bind(group_id)
+    .bind(channel_id)
+    .bind(model_id)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+
+    let model_path = format!("/console/v1/models/{model_id}");
+    let model_detail = request(&app, "GET", &model_path, serde_json::json!({}), &[]).await;
+    assert_eq!(model_detail.status(), StatusCode::OK);
+    let model_etag = model_detail.headers()[header::ETAG]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let deleted = request(
+        &app,
+        "DELETE",
+        &model_path,
+        serde_json::json!({}),
+        &[("if-match", &model_etag)],
+    )
+    .await;
+    assert_eq!(deleted.status(), StatusCode::OK);
+
+    let tombstone: (bool, Option<chrono::DateTime<chrono::Utc>>, Option<Uuid>) =
+        sqlx::query_as("SELECT enabled,deleted_at,deleted_by FROM models WHERE id=$1")
+            .bind(model_id)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert!(!tombstone.0);
+    assert!(tombstone.1.is_some());
+    assert_eq!(tombstone.2, Some(app.user_id));
+    let retained_rule: (bool, i64) = sqlx::query_as(
+        "SELECT enabled,(SELECT count(*) FROM model_rule_routing_tiers \
+                         WHERE model_rule_id=model_rules.id) \
+         FROM model_rules WHERE id=$1",
+    )
+    .bind(protocol_id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(retained_rule, (false, 1));
+    let probe: (Option<String>, Option<Uuid>) =
+        sqlx::query_as("SELECT test_model,test_pricing_model_id FROM channels WHERE id=$1")
+            .bind(channel_id)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert_eq!(probe, (None, None));
+    assert!(
+        app.runtime
+            .snapshot()
+            .model_rule(ApiFormat::OpenAiChatCompletions, &source_model_id)
+            .is_none()
+    );
+    assert_eq!(
+        request(&app, "GET", &model_path, serde_json::json!({}), &[])
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(
+            &app,
+            "GET",
+            &format!("/console/v1/routing/model-rules/{profile_id}"),
+            serde_json::json!({}),
+            &[],
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    let visible_models = body_json(
+        request(
+            &app,
+            "GET",
+            "/console/v1/models",
+            serde_json::json!({}),
+            &[],
+        )
+        .await,
+    )
+    .await;
+    assert!(
+        visible_models
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|model| model["id"] != model_id.to_string())
+    );
+    assert!(
+        ControlPlaneRepository::new(database.pool.clone())
+            .model_source_ids()
+            .await
+            .unwrap()
+            .iter()
+            .all(|candidate| candidate != &source_model_id)
+    );
+
+    let historical_log = body_json(
+        request(
+            &app,
+            "GET",
+            &format!("/console/v1/request-logs/{historical_log_id}"),
+            serde_json::json!({}),
+            &[],
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(historical_log["client_model"], source_model_id);
+    assert_eq!(
+        historical_log["channel_group_name"],
+        format!("model-delete-group-{model_id}")
+    );
+    assert_eq!(historical_log["channel_name"], "model-delete-channel");
+    let historical_ids: (Option<Uuid>, Option<Uuid>) =
+        sqlx::query_as("SELECT model_id,model_rule_id FROM request_logs WHERE id=$1")
+            .bind(historical_log_id)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert_eq!(historical_ids, (Some(model_id), Some(protocol_id)));
+    let deletion_audit: (serde_json::Value, Option<String>) = sqlx::query_as(
+        "SELECT after_redacted,reason FROM audit_logs \
+         WHERE object_type='model' AND object_id=$1 AND action='delete'",
+    )
+    .bind(model_id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert!(deletion_audit.0["deleted_at"].is_string());
+    assert_eq!(deletion_audit.0["deleted_by"], app.user_id.to_string());
+    assert!(
+        deletion_audit
+            .1
+            .is_some_and(|reason| reason.contains("1 protocol rules disabled"))
+    );
+
+    let deleted_probe_reference = sqlx::query(
+        "UPDATE channels \
+         SET test_model='model-delete-wire',test_pricing_model_id=$2 \
+         WHERE id=$1",
+    )
+    .bind(channel_id)
+    .bind(model_id)
+    .execute(&database.pool)
+    .await
+    .unwrap_err();
+    assert_eq!(
+        deleted_probe_reference
+            .as_database_error()
+            .and_then(sqlx::error::DatabaseError::code)
+            .as_deref(),
+        Some("23514")
+    );
+    let reenabled_rule = sqlx::query("UPDATE model_rules SET enabled=true WHERE id=$1")
+        .bind(protocol_id)
+        .execute(&database.pool)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        reenabled_rule
+            .as_database_error()
+            .and_then(sqlx::error::DatabaseError::code)
+            .as_deref(),
+        Some("23514")
+    );
+
+    let replacement = request(
+        &app,
+        "POST",
+        "/console/v1/models",
+        serde_json::json!({
+            "source_model_id": source_model_id,
+            "display_name": "Replacement model",
+            "provider_name": "Example",
+            "enabled": false,
+            "price_unit_tokens": 1_000_000,
+            "input_unit_price": "0.11",
+            "cached_input_unit_price": "0.01",
+            "cache_write_unit_price": "0.02",
+            "output_unit_price": "0.21",
+            "price_effective_at": "2026-01-02T00:00:00Z",
+            "advanced_billing": {
+                "long_context_tiers": [],
+                "request_multipliers": [],
+                "time_multipliers": []
+            },
+            "source_payload": {}
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(replacement.status(), StatusCode::CREATED);
+    let replacement_id =
+        Uuid::parse_str(body_json(replacement).await["id"].as_str().unwrap()).unwrap();
+    assert_ne!(replacement_id, model_id);
+    let matching_models: Vec<(Uuid, Option<chrono::DateTime<chrono::Utc>>)> = sqlx::query_as(
+        "SELECT id,deleted_at FROM models \
+         WHERE source_model_id=$1 ORDER BY deleted_at NULLS FIRST",
+    )
+    .bind(&source_model_id)
+    .fetch_all(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(matching_models.len(), 2);
+    assert_eq!(matching_models[0], (replacement_id, None));
+    assert_eq!(matching_models[1].0, model_id);
+    assert!(matching_models[1].1.is_some());
+
+    let tombstone_update = sqlx::query("UPDATE models SET display_name='changed' WHERE id=$1")
+        .bind(model_id)
+        .execute(&database.pool)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        tombstone_update
+            .as_database_error()
+            .and_then(sqlx::error::DatabaseError::code)
+            .as_deref(),
+        Some("23514")
+    );
+    let hard_delete = sqlx::query("DELETE FROM models WHERE id=$1")
+        .bind(model_id)
+        .execute(&database.pool)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        hard_delete
+            .as_database_error()
+            .and_then(sqlx::error::DatabaseError::code)
+            .as_deref(),
+        Some("23514")
+    );
+
     database.cleanup().await;
 }
 

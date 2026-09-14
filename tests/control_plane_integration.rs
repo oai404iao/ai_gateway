@@ -1242,7 +1242,8 @@ async fn insert_model_rule_fixture(
         let pricing_model_id = if upstream_model == client_model {
             upstream_model_id
         } else {
-            sqlx::query_scalar(
+            let candidate_id = Uuid::new_v4();
+            let inserted = sqlx::query_scalar(
                 "INSERT INTO models ( \
                      id,source_model_id,display_name,provider_name,enabled,currency, \
                      price_unit_tokens,input_unit_price,cached_input_unit_price, \
@@ -1252,16 +1253,41 @@ async fn insert_model_rule_fixture(
                         input_unit_price,cached_input_unit_price,cache_write_unit_price, \
                         output_unit_price,price_effective_at,advanced_billing,source_payload \
                  FROM models WHERE id=$3 \
-                 ON CONFLICT (source_model_id) DO UPDATE \
-                 SET source_model_id=EXCLUDED.source_model_id \
+                 ON CONFLICT DO NOTHING \
                  RETURNING id",
             )
-            .bind(Uuid::new_v4())
+            .bind(candidate_id)
             .bind(client_model)
             .bind(upstream_model_id)
-            .fetch_one(&mut *transaction)
+            .fetch_optional(&mut *transaction)
             .await
-            .unwrap()
+            .unwrap();
+            match inserted {
+                Some(id) => id,
+                None => {
+                    let has_model_tombstones = sqlx::query_scalar::<_, bool>(
+                        "SELECT EXISTS( \
+                             SELECT 1 FROM information_schema.columns \
+                             WHERE table_schema=current_schema() \
+                               AND table_name='models' \
+                               AND column_name='deleted_at')",
+                    )
+                    .fetch_one(&mut *transaction)
+                    .await
+                    .unwrap();
+                    let query = if has_model_tombstones {
+                        "SELECT id FROM models \
+                         WHERE source_model_id=$1 AND deleted_at IS NULL"
+                    } else {
+                        "SELECT id FROM models WHERE source_model_id=$1"
+                    };
+                    sqlx::query_scalar(query)
+                        .bind(client_model)
+                        .fetch_one(&mut *transaction)
+                        .await
+                        .unwrap()
+                }
+            }
         };
         let profile_id = sqlx::query_scalar::<_, Uuid>(
             "SELECT id FROM model_routing_profiles WHERE model_id=$1",
@@ -2007,6 +2033,10 @@ async fn direct_seat_migration_preserves_existing_money_and_pending_reservations
     .await
     .unwrap();
     sqlx::raw_sql(include_str!("../migrations/0059_channel_soft_deletion.sql"))
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    sqlx::raw_sql(include_str!("../migrations/0060_model_soft_deletion.sql"))
         .execute(&database.pool)
         .await
         .unwrap();
@@ -7235,7 +7265,7 @@ async fn models_dev_catalog_apply_is_explicit_and_updates_selected_existing_pric
     );
 
     let missing_price_import = admin_request(
-        app,
+        app.clone(),
         "POST",
         "/console/v1/catalog/models/import",
         serde_json::json!({
@@ -7254,6 +7284,64 @@ async fn models_dev_catalog_apply_is_explicit_and_updates_selected_existing_pric
     .await
     .unwrap();
     assert_eq!(price_sync_audits, 1);
+
+    let detail = admin_request(
+        app.clone(),
+        "GET",
+        &format!("/console/v1/models/{model_id}"),
+        serde_json::json!({}),
+    )
+    .await;
+    let etag = detail.headers()["etag"].to_str().unwrap().to_owned();
+    assert_eq!(
+        admin_request_with_headers(
+            app.clone(),
+            "DELETE",
+            &format!("/console/v1/models/{model_id}"),
+            serde_json::json!({}),
+            &[("if-match", &etag)],
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    let preview = admin_request(
+        app.clone(),
+        "POST",
+        "/console/v1/catalog/models/sync/preview",
+        serde_json::json!({"provider_ids":["provider-a"]}),
+    )
+    .await;
+    let preview: serde_json::Value =
+        serde_json::from_slice(&preview.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(preview["models"][0]["action"], "import");
+    let reimported = admin_request(
+        app,
+        "POST",
+        "/console/v1/catalog/models/import",
+        serde_json::json!({
+            "selections":[{"provider_id":"provider-a","model_id":"catalog-model"}]
+        }),
+    )
+    .await;
+    assert_eq!(reimported.status(), StatusCode::OK);
+    let reimported: serde_json::Value =
+        serde_json::from_slice(&reimported.into_body().collect().await.unwrap().to_bytes())
+            .unwrap();
+    assert_eq!(reimported["imported_count"], 1);
+    assert_eq!(reimported["updated_count"], 0);
+    let catalog_rows: Vec<(Uuid, Option<chrono::DateTime<chrono::Utc>>)> = sqlx::query_as(
+        "SELECT id,deleted_at FROM models \
+         WHERE source_model_id='catalog-model' ORDER BY deleted_at NULLS FIRST",
+    )
+    .fetch_all(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(catalog_rows.len(), 2);
+    assert_ne!(catalog_rows[0].0, model_id);
+    assert!(catalog_rows[0].1.is_none());
+    assert_eq!(catalog_rows[1].0, model_id);
+    assert!(catalog_rows[1].1.is_some());
     database.cleanup().await;
 }
 

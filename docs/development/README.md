@@ -11,7 +11,7 @@
   转发、Codex 凭证共享投影，以及 replayable 大 body 边界。
 - [数据库与控制面架构](database-architecture.md)：当前持久化实体组、快照编译和 schema
   修改流程；逐列结构以 migration 为准。
-- [控制面软删除](soft-deletion.md)：不可恢复墓碑语义、自动解绑边界和三阶段实施计划。
+- [控制面软删除](soft-deletion.md)：不可恢复墓碑语义、自动解绑边界和三阶段实施记录。
 - [Console 认证与授权设计记录](console-auth.md)
 - [Console Web UI 架构与开发指南](console-ui.md)：当前 Base UI 技术栈、会话、安全、构建和测试。
 - [请求日志耐久化流水线](request-log-durability.md)
