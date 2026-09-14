@@ -81,6 +81,38 @@ test.describe("Console SPA smoke", () => {
     ).toBeDisabled();
   });
 
+  test("an administrator permanently deletes a pricing model", async ({
+    page,
+  }) => {
+    await mockConsoleApi(page);
+    await page.goto("/login");
+    await page.getByLabel(/email/i).fill("admin@example.com");
+    await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
+    await page.getByRole("button", { name: /sign in/i }).click();
+    await page.goto(`/admin/models/${E2E_MODEL.id}`);
+
+    await page.getByRole("button", { name: "Delete pricing model" }).click();
+    const dialog = page.getByRole("alertdialog", {
+      name: "Delete pricing model?",
+    });
+    await expect(
+      dialog.getByText(/clears scheduled test pricing references/i),
+    ).toBeVisible();
+    const deleteRequest = page.waitForRequest(
+      (request) =>
+        request.url().endsWith(`/console/v1/models/${E2E_MODEL.id}`) &&
+        request.method() === "DELETE",
+    );
+    await dialog
+      .getByRole("button", { name: "Delete pricing model" })
+      .click();
+
+    const request = await deleteRequest;
+    expect(request.headers()["if-match"]).toBe(`"${E2E_MODEL.updated_at}"`);
+    await expect(page).toHaveURL(/\/admin\/models$/);
+    await expect(page.getByText("Pricing model deleted")).toBeVisible();
+  });
+
   test("login page renders and a successful login reaches the account shell", async ({
     page,
   }) => {

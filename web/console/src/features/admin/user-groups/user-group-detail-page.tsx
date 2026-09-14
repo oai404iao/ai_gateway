@@ -378,51 +378,48 @@ export function UserGroupDetailPage() {
               </CardContent>
             </Card>
 
-            {!isNew && group ? (
-              <Card>
-                <CardHeader>
-                  <CardTitle>{t("Danger zone")}</CardTitle>
-                  <CardDescription>
-                    {t("Deleting a custom group is permanent and audited. Members and registration codes are handled automatically.")}
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="flex flex-col items-start gap-4">
-                  {group.system_role ? (
-                    <Alert>
-                      <AlertTitle>{t("Protected default group")}</AlertTitle>
-                      <AlertDescription>
-                        {t("Built-in default groups cannot be deleted.")}
-                      </AlertDescription>
-                    </Alert>
-                  ) : (
-                    <>
-                      {group.member_count > 0 ? (
-                        <Alert>
-                          <AlertTitle>{t("Members will be reassigned")}</AlertTitle>
-                          <AlertDescription>
-                            {t("{count} members will move to the built-in group matching their role.", {
-                              count: group.member_count,
-                            })}
-                          </AlertDescription>
-                        </Alert>
-                      ) : null}
-                      <Button
-                        variant="destructive"
-                        disabled={pending}
-                        onClick={() => setDeleteOpen(true)}
-                      >
-                        {remove.isPending ? (
-                          <Spinner data-icon="inline-start" />
-                        ) : null}
-                        {t("Delete user group")}
-                      </Button>
-                    </>
-                  )}
-                </CardContent>
-              </Card>
-            ) : null}
           </div>
         }
+      dangerZone={
+        !isNew && group ? (
+          <div className="flex flex-col items-start gap-4">
+            {group.system_role ? (
+              <Alert>
+                <AlertTitle>{t("Protected default group")}</AlertTitle>
+                <AlertDescription>
+                  {t("Built-in default groups cannot be deleted.")}
+                </AlertDescription>
+              </Alert>
+            ) : (
+              <>
+                {group.member_count > 0 ? (
+                  <Alert>
+                    <AlertTitle>{t("Members will be reassigned")}</AlertTitle>
+                    <AlertDescription>
+                      {t(
+                        "{count} members will move to the built-in group matching their role.",
+                        {
+                          count: group.member_count,
+                        },
+                      )}
+                    </AlertDescription>
+                  </Alert>
+                ) : null}
+                <Button
+                  variant="destructive"
+                  disabled={pending}
+                  onClick={() => setDeleteOpen(true)}
+                >
+                  {remove.isPending ? (
+                    <Spinner data-icon="inline-start" />
+                  ) : null}
+                  {t("Delete user group")}
+                </Button>
+              </>
+            )}
+          </div>
+        ) : undefined
+      }
       />
       <ConfirmDialog
         open={deleteOpen}

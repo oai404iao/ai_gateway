@@ -36,6 +36,8 @@
   `open_ai_images`。
 - `models.source_model_id` 是客户端请求使用的模型标识及计价身份。每个 `models` 行最多由一个
   `model_routing_profiles` 顶层规则引用；被引用后 `source_model_id` 不可修改。
+- 活动模型的 `source_model_id` 由部分唯一索引约束。模型墓碑保留原标识和价格事实，但不进入
+  Console、目录同步匹配或运行时快照；同名重建使用新 UUID。
 - `model_rules` 现在是 profile 下按 `(model_routing_profile_id, api_format)` 唯一的协议规则。
   顶层 profile 不重复保存格式、启用状态或上游模型；协议格式创建后不可修改。
 - 上游 wire model 属于具体 route target。`model_rule_routing_groups.upstream_model` 只用于
@@ -71,7 +73,7 @@ Connector 都只观察过滤后的请求。
 
 ### 控制面资源软删除
 
-用户、用户组和 API Key 使用不可恢复的墓碑式软删除。活动数据查询必须同时过滤
+用户、用户组、API Key 和计价模型使用不可恢复的墓碑式软删除。活动数据查询必须同时过滤
 `deleted_at IS NULL`；请求日志、结算和审计查询仍按原 UUID 读取墓碑。删除用户会匿名化身份并
 软删除其 Key；删除自定义用户组会把成员迁移到按角色选择的内置默认组、禁用关联注册码并移除
 Codex quota 可见性；直接删除 Key 会覆盖其明文 secret。活动记录使用部分唯一索引，因此删除后
@@ -87,7 +89,11 @@ proxy、超时、测试和模型能力配置；组墓碑会同时处理所有普
 groups/channels 保持 connector pool 专用生命周期，普通删除接口返回
 `provider_managed_resource`；数据库触发器拒绝渠道和渠道组的直接硬删除。
 
-模型墓碑属于后续阶段。
+删除计价模型会先停用其 profile 下全部协议规则，并成对清空 Channel 的 `test_model` /
+`test_pricing_model_id`，再停用模型并写入墓碑。Profile、协议规则、tier 和 target 继续保留，
+但活动管理查询与完整运行时快照按父模型 `deleted_at IS NULL` 隐藏它们。模型自然标识可由新 UUID
+复用；目录同步只匹配活动模型，不会刷新墓碑。数据库触发器拒绝模型恢复、墓碑修改、硬删除，以及
+定时测试或新路由重新引用墓碑。
 
 ### 系统设置
 
@@ -163,6 +169,8 @@ terminal RequestLogEvent
 `seats` JSON；同时把旧 Key 经 group target 可达的现有拼车投影回填为显式 channel target，
 不改写席位顺序、金额、窗口、账本身份或在途预占。
 `0057_model_rule_hierarchy.sql` 的停机升级和别名预检见上文；不得绕过预检手工删除旧列。
+`0060_model_soft_deletion.sql` 为模型增加不可恢复墓碑、活动标识部分唯一索引和引用保护；该
+migration 不删除 profile、协议规则或历史外键。
 金额预占不写入余额实体，而由本地耐久 WAL 拥有；后台仅使用既有请求日志对账。
 详见 [Codex 拼车实现](codex-sharing.md)。
 

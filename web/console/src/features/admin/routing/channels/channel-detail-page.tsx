@@ -1419,32 +1419,22 @@ export function ChannelDetailPage() {
               </CardContent>
             </Card>
 
-            {!isNew && data && !data.data.provider_managed ? (
-              <Card className="xl:col-span-2">
-                <CardHeader>
-                  <CardTitle>{t("Danger zone")}</CardTitle>
-                  <CardDescription>
-                    {t(
-                      "Deleting a channel is permanent and audited. Current routing and authorization dependencies are removed automatically.",
-                    )}
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <Button
-                    variant="destructive"
-                    disabled={pending}
-                    onClick={() => void previewDelete()}
-                  >
-                    {previewDeletion.isPending || remove.isPending ? (
-                      <Spinner data-icon="inline-start" />
-                    ) : null}
-                    {t("Delete channel")}
-                  </Button>
-                </CardContent>
-              </Card>
-            ) : null}
           </div>
         }
+      dangerZone={
+        !isNew && data && !data.data.provider_managed ? (
+          <Button
+            variant="destructive"
+            disabled={pending}
+            onClick={() => void previewDelete()}
+          >
+            {previewDeletion.isPending || remove.isPending ? (
+              <Spinner data-icon="inline-start" />
+            ) : null}
+            {t("Delete channel")}
+          </Button>
+        ) : undefined
+      }
       />
       <ChannelModelPickerDialog
         open={modelPickerOpen}

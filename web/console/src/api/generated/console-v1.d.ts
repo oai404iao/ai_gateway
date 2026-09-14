@@ -719,7 +719,12 @@ export interface paths {
         get: operations["getModel"];
         put: operations["updateModel"];
         post?: never;
-        delete?: never;
+        /**
+         * @description Irreversibly hides the pricing model, disables every protocol rule
+         *     under its routing profile, and clears scheduled-test pricing
+         *     references. Request logs, audit history, and the old UUID remain.
+         */
+        delete: operations["deleteModel"];
         options?: never;
         head?: never;
         patch?: never;
@@ -5427,6 +5432,35 @@ export interface operations {
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
             422: components["responses"]["Unprocessable"];
+        };
+    };
+    deleteModel: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description ETag from the preceding GET; stale values yield `409`. */
+                "If-Match": components["parameters"]["IfMatch"];
+            };
+            path: {
+                id: components["parameters"]["PathId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Model deleted. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MutationResponse"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
         };
     };
     previewModelsSync: {

@@ -30,11 +30,13 @@ import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Spinner } from "@/components/ui/spinner";
 import { AdminDetailShell } from "@/features/admin/components/admin-detail-shell";
+import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { DecimalField } from "@/components/shared/decimal-field";
 import { DetailField } from "@/components/shared/detail-field";
 import { StatusBadge } from "@/components/shared/status-badge";
 import {
   useCreateModel,
+  useDeleteModel,
   useModel,
   useModelRules,
   useUpdateModel,
@@ -112,15 +114,19 @@ export function ModelDetailPage() {
     "/admin/models",
   );
   const returnsToSetup = returnTo.startsWith("/admin/model-setup");
-  const { data, etag, isLoading, error } = useModel(id);
+  const { data, etag, isLoading, error, refetch } = useModel(id);
   const copySource = useModel(copyFrom ?? "");
   const modelRules = useModelRules();
   const create = useCreateModel();
   const update = useUpdateModel(id);
+  const remove = useDeleteModel(id);
   const { t } = useI18n();
   const [state, setState] = useState<FormState>(empty);
   const [submitting, setSubmitting] = useState(false);
-  const { dirty, markDirty, markSaved, navigate, navigationGuard } = useConfigurationDraft(submitting);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const pending = submitting || remove.isPending;
+  const { dirty, markDirty, markSaved, navigate, navigationGuard } =
+    useConfigurationDraft(pending);
   const [validation, setValidation] = useState<z.ZodError | null>(null);
   const [initializedCopyFrom, setInitializedCopyFrom] = useState<string | null>(
     null,
@@ -265,15 +271,33 @@ export function ModelDetailPage() {
     return message ? t(message) : undefined;
   };
 
+  const deleteModel = async () => {
+    setDeleteOpen(false);
+    try {
+      await remove.mutateAsync({ ifMatch: etag });
+      markSaved();
+      toast.success(t("Pricing model deleted"));
+      navigate(returnTo, { replace: true });
+    } catch (error) {
+      if (error instanceof ApiError && error.isConflict) {
+        await refetch();
+        toast.error(t("This pricing model was changed elsewhere. Reloading."));
+      } else {
+        toast.error(error instanceof Error ? error.message : t("Delete failed"));
+      }
+    }
+  };
+
   return (
-    <AdminDetailShell
+    <>
+      <AdminDetailShell
       configurationLens="models"
       navigationGuard={navigationGuard}
-      saving={submitting}
+      saving={pending}
       onBack={() => navigate(returnTo)}
       actionBar={
-        <ConfigurationSaveBar dirty={dirty} saving={submitting} onCancel={() => navigate(returnTo)}>
-          <Button onClick={submit} disabled={submitting}>
+        <ConfigurationSaveBar dirty={dirty} saving={pending} onCancel={() => navigate(returnTo)}>
+          <Button onClick={submit} disabled={pending}>
             {submitting ? <Spinner data-icon="inline-start" /> : null}
             {isNew ? t(copyFrom ? "Create copied model" : "Create pricing model") : t("Save pricing model")}
           </Button>
@@ -546,6 +570,32 @@ export function ModelDetailPage() {
           </CardContent>
         </Card>
       }
-    />
+      dangerZone={
+        !isNew && data ? (
+          <Button
+            type="button"
+            variant="destructive"
+            disabled={pending}
+            onClick={() => setDeleteOpen(true)}
+          >
+            {remove.isPending ? <Spinner data-icon="inline-start" /> : null}
+            {t("Delete pricing model")}
+          </Button>
+        ) : undefined
+      }
+      />
+      <ConfirmDialog
+        open={deleteOpen}
+        onOpenChange={setDeleteOpen}
+        title={t("Delete pricing model?")}
+        description={t(
+          "This disables and hides every protocol rule for the model, clears scheduled test pricing references, and preserves request logs and audit history. This action cannot be undone.",
+        )}
+        confirmLabel={t("Delete pricing model")}
+        destructive
+        confirmDisabled={pending}
+        onConfirm={() => void deleteModel()}
+      />
+    </>
   );
 }

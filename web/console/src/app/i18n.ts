@@ -74,6 +74,7 @@ const zhCN: Record<string, string> = {
   "Pricing Models": "计价模型",
   "Pricing model": "计价模型",
   "Pricing model created": "计价模型已创建",
+  "Pricing model deleted": "计价模型已删除",
   "Pricing model updated": "计价模型已更新",
   "Protocol rule": "协议规则",
   "Protocol rule created": "协议规则已创建",
@@ -86,6 +87,10 @@ const zhCN: Record<string, string> = {
   "Supported protocols": "支持的协议",
   "This pricing model was changed elsewhere. Reloading.":
     "该计价模型已被其他操作修改，正在重新加载。",
+  "Delete pricing model": "删除计价模型",
+  "Delete pricing model?": "删除计价模型？",
+  "This disables and hides every protocol rule for the model, clears scheduled test pricing references, and preserves request logs and audit history. This action cannot be undone.":
+    "这会停用并隐藏该模型的全部协议规则，清除定时测试计价引用，并保留请求日志和审计历史。此操作无法撤销。",
   "The client model ID cannot change after a model rule is created.":
     "创建模型规则后，客户端模型 ID 不可修改。",
   "This protocol is already configured.": "该协议已配置。",

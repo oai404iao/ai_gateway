@@ -304,6 +304,24 @@ export function useUpdateModel(id: string) {
     },
   });
 }
+export function useDeleteModel(id: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ ifMatch }: { ifMatch: string }) =>
+      apiSend<MutationResponse>(`/models/${id}`, "DELETE", undefined, {
+        ifMatch,
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: MODELS_KEY });
+      void queryClient.invalidateQueries({ queryKey: RULES_KEY });
+      void queryClient.invalidateQueries({ queryKey: CHANNELS_KEY });
+      void queryClient.invalidateQueries({
+        queryKey: ["console", "control-plane-lists"],
+      });
+      queryClient.removeQueries({ queryKey: modelDetailKey(id) });
+    },
+  });
+}
 
 // ---- Admin API Keys ----
 const ADMIN_KEYS_KEY = ["console", "admin-api-keys"] as const;

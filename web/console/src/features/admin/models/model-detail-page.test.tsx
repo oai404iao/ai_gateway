@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { BrowserRouter } from "react-router";
@@ -92,5 +92,43 @@ describe("ModelDetailPage", () => {
       expect(submitted).toBeDefined();
     });
     expect(submitted?.advanced_billing).toEqual(advancedBilling);
+  });
+
+  it("permanently deletes a pricing model after confirming its effects", async () => {
+    seedAuthenticatedSession();
+    let ifMatch: string | null = null;
+    server.use(
+      http.delete("/console/v1/models/:id", ({ request }) => {
+        ifMatch = request.headers.get("if-match");
+        return HttpResponse.json({
+          id: MODEL.id,
+          correlation_id: "33333333-0000-0000-0000-000000000001",
+        });
+      }),
+    );
+
+    const user = userEvent.setup();
+    renderAppAt(`/admin/models/${MODEL.id}`);
+
+    await user.click(
+      await screen.findByRole("button", { name: "Delete pricing model" }),
+    );
+    const confirmation = screen.getByRole("alertdialog", {
+      name: "Delete pricing model?",
+    });
+    expect(
+      within(confirmation).getByText(/clears scheduled test pricing references/i),
+    ).toBeInTheDocument();
+    await user.click(
+      within(confirmation).getByRole("button", {
+        name: "Delete pricing model",
+      }),
+    );
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe("/admin/models");
+    });
+    expect(ifMatch).toBe(`"${MODEL.updated_at}"`);
+    expect(await screen.findByText("Pricing model deleted")).toBeInTheDocument();
   });
 });
