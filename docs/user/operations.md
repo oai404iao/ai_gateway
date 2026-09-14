@@ -722,6 +722,19 @@ Codex 额度可见性和 Fast 过滤也立即按当前用户组生效。
 组，关联注册邀请码自动禁用，Codex quota 可见性关系被移除。用户现有 API Key 的目标快照不变，
 但继承策略和 Fast 过滤会按迁移后的用户组立即重算。内置默认用户组和默认管理员组始终受保护。
 
+普通渠道和渠道组详情页的危险操作区会先读取服务端删除影响，再要求管理员确认永久删除。预览列出
+将墓碑化的渠道，以及自动解绑的模型协议规则、API Key、API Key Policy 和 quota 可见性。执行时
+同时校验详情 `ETag` 和影响确认 token：根资源变化返回 `409 concurrent_update`；任何依赖变化
+返回 `409 deletion_impact_changed`，Console 会显示新预览并要求再次确认。Codex OAuth managed
+资源返回 `409 provider_managed_resource`，必须从 Codex 凭证管理入口使用对应 connector
+生命周期。
+
+渠道墓碑会擦除保存的上游 URL、凭据、Transform、proxy、超时、测试和模型能力配置；渠道组删除会
+对组内全部普通渠道执行相同处理。路由 target、空 selected group 和空 tier 会自动清理，失去最后一个 tier
+的协议规则自动停用。删除后可以用相同自然名称创建新 UUID；普通目录、详情、运行时和状态/定时
+测试不再显示墓碑，但历史请求日志与审计记录仍保留旧 UUID 的非敏感名称。完整语义见
+[控制面软删除](../development/soft-deletion.md)。
+
 注册邀请码通过 `/console/v1/registration-invitation-codes` 管理。列表和详情只返回名称、启用状态、
 次数、过期时间、用户组、初始额度和使用统计，不返回明文或哈希。详情 `GET` 返回 `ETag`，调整名称、
 最大次数、过期时间、启用状态、用户组或初始额度时必须用 `PUT` 携带 `If-Match`；最大次数不能调低到

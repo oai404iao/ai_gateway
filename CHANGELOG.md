@@ -18,6 +18,11 @@ Versioning.
 - Irreversible soft deletion for users, user groups, and API Keys. User deletion
   now erases Key secrets, custom-group deletion reassigns members and disables
   registration codes, and owners can delete Keys from the Console.
+- Irreversible tombstones for ordinary Channels and Channel Groups, with an
+  authoritative deletion-impact preview, changed-impact reconfirmation,
+  automatic routing/API Key/Policy/quota unbinding, empty-rule normalization,
+  secret and transform erasure, and dedicated lifecycle protection for
+  provider-managed Codex resources.
 
 ### Security
 

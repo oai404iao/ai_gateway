@@ -6,6 +6,7 @@ import type {
   ChannelBatchUpdateResponse,
   ChannelRecoverInput,
   ChannelCreateInput,
+  ChannelDeletionImpact,
   ApiKeyCreateInput,
   ApiKeyPolicyInput,
   ApiKeyPolicyView,
@@ -366,6 +367,56 @@ export function useUpdateChannelGroup(id: string) {
     },
   });
 }
+export function usePreviewChannelGroupDeletion(id: string) {
+  return useMutation({
+    mutationFn: () =>
+      apiGet<ChannelDeletionImpact>(
+        `/routing/channel-groups/${id}/deletion-impact`,
+      ),
+  });
+}
+export function useDeleteChannelGroup(id: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      ifMatch,
+      confirmationToken,
+    }: {
+      ifMatch: string;
+      confirmationToken: string;
+    }) =>
+      apiSend<MutationResponse>(
+        `/routing/channel-groups/${id}`,
+        "DELETE",
+        { confirmation_token: confirmationToken },
+        { ifMatch },
+      ),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: GROUPS_KEY });
+      void queryClient.invalidateQueries({ queryKey: CHANNELS_KEY });
+      void queryClient.invalidateQueries({ queryKey: RULES_KEY });
+      void queryClient.invalidateQueries({ queryKey: ADMIN_KEYS_KEY });
+      void queryClient.invalidateQueries({ queryKey: POLICIES_KEY });
+      void queryClient.invalidateQueries({ queryKey: USER_GROUPS_KEY });
+      void queryClient.invalidateQueries({
+        queryKey: ["console", "me", "api-keys"],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["console", "me", "api-key-options"],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["console", "me", "codex-quotas"],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["console", "statistics", "channel-group-status"],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["console", "control-plane-lists"],
+      });
+      queryClient.removeQueries({ queryKey: groupDetailKey(id) });
+    },
+  });
+}
 export function useSetChannelGroupEnabled() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -429,6 +480,47 @@ export function useUpdateChannel(id: string) {
       void queryClient.invalidateQueries({ queryKey: CHANNELS_KEY });
       void queryClient.invalidateQueries({ queryKey: channelDetailKey(id) });
       void queryClient.invalidateQueries({ queryKey: RULES_KEY });
+    },
+  });
+}
+export function usePreviewChannelDeletion(id: string) {
+  return useMutation({
+    mutationFn: () =>
+      apiGet<ChannelDeletionImpact>(`/routing/channels/${id}/deletion-impact`),
+  });
+}
+export function useDeleteChannel(id: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      ifMatch,
+      confirmationToken,
+    }: {
+      ifMatch: string;
+      confirmationToken: string;
+    }) =>
+      apiSend<MutationResponse>(
+        `/routing/channels/${id}`,
+        "DELETE",
+        { confirmation_token: confirmationToken },
+        { ifMatch },
+      ),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: CHANNELS_KEY });
+      void queryClient.invalidateQueries({ queryKey: GROUPS_KEY });
+      void queryClient.invalidateQueries({ queryKey: RULES_KEY });
+      void queryClient.invalidateQueries({ queryKey: ADMIN_KEYS_KEY });
+      void queryClient.invalidateQueries({ queryKey: POLICIES_KEY });
+      void queryClient.invalidateQueries({
+        queryKey: ["console", "me", "api-keys"],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["console", "me", "api-key-options"],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["console", "control-plane-lists"],
+      });
+      queryClient.removeQueries({ queryKey: channelDetailKey(id) });
     },
   });
 }

@@ -1,6 +1,6 @@
 # 控制面软删除
 
-> 状态：部分实现。阶段一覆盖用户、用户组和 API Key；渠道、渠道组和模型将在后续阶段实现。
+> 状态：部分实现。阶段一和阶段二已覆盖身份、授权、普通渠道及渠道组；模型将在阶段三实现。
 
 ## 目标与边界
 
@@ -24,10 +24,10 @@
 
 ### 阶段二：渠道与渠道组
 
-- 为普通 OpenAI-compatible 渠道和渠道组增加墓碑。
+- 普通 OpenAI-compatible 渠道和渠道组使用墓碑。
 - 删除渠道组时软删除其渠道，并从模型路由、API Key、API Key Policy 和 quota 可见性中自动解绑。
-- 规范化受影响的 selected target、空 tier 和空协议规则。
-- 增加权威删除影响预览；影响变化时要求管理员重新确认。
+- 受影响的 selected target、空 tier 和空协议规则会自动规范化。
+- 删除前使用权威影响预览；影响变化时要求管理员重新确认。
 - Codex 托管渠道及 connector pool 生命周期不复用普通删除路径。
 
 ### 阶段三：模型与收尾
@@ -78,8 +78,43 @@ Codex 拼车席位保留原用户 UUID 作为历史成员；数据面只承认�
 审计写入和提交后，才通过 `ArcSwap` 发布新快照。旧快照中的在途请求可以结束并继续结算；
 新请求不能认证已删除的用户或 Key。
 
-明文 API Key 不进入删除后的管理响应或审计快照。直接 SQL `DELETE` 由数据库触发器拒绝，
-避免绕过墓碑和历史外键。
+明文 API Key 和上游渠道凭据不进入删除影响或删除后的审计快照。直接 SQL `DELETE` 由数据库
+触发器拒绝，避免绕过墓碑和历史外键。
+
+## 阶段二语义
+
+### 普通渠道
+
+管理员先读取 `GET /console/v1/routing/channels/{id}/deletion-impact`，再用详情 `ETag` 和预览返回的
+`confirmation_token` 调用 `DELETE /console/v1/routing/channels/{id}`。删除事务会：
+
+1. 从 `selected` target 和 `all` target 的逐渠道权重覆盖中移除该渠道。
+2. 删除因此为空的 `selected` target 和 tier；协议规则失去最后一个 tier 时自动停用。
+3. 从未删除 API Key 和 API Key Policy 的显式渠道数组中移除该 UUID。
+4. 停用渠道，清除自动禁用状态、上游 URL、代理、超时、转换模板、渠道转换、上游凭据、模型能力和
+   定时测试引用，再写入墓碑。
+
+渠道名称在同一组中可以由新的 UUID 复用。请求日志和审计事实仍按旧 UUID 读取墓碑；普通列表、
+详情、运行时快照、定时测试和 API Key 可选项均隐藏旧记录。
+
+### 普通渠道组
+
+渠道组使用对应的 `/deletion-impact` 与 `DELETE` 接口。删除会先对组内全部普通渠道执行上述墓碑
+处理，再移除整个组的模型路由 target、API Key/API Key Policy group 与 child-channel 引用，以及
+匹配的 quota 可见性关系。组级状态监控同时关闭，空 tier 和空协议规则按同一规则规范化。组名可由
+新的 UUID 复用。
+
+Codex OAuth 组及其 Responses/Images managed channels 返回
+`provider_managed_resource`，必须继续通过凭证和 connector pool 的专用生命周期管理，不能借普通
+删除路径重置身份、quota 或共享账本。
+
+### 权威影响确认
+
+影响预览列出将成为墓碑的渠道、路由将变化的协议规则、需解绑的 API Key/API Key Policy，以及将
+删除 quota 可见性的用户组。`confirmation_token` 对当前资源版本和上述依赖快照取指纹。删除事务在
+`SERIALIZABLE` 隔离级别中重新计算；依赖新增、移除或变化后，旧 token 返回
+`409 deletion_impact_changed`，Console 获取新预览并要求再次确认。根资源自身的并发修改仍由
+`If-Match` 独立检测。
 
 ## 验证
 
@@ -90,6 +125,15 @@ Codex 拼车席位保留原用户 UUID 作为历史成员；数据面只承认�
 - Key secret 已被覆盖，原 secret 立即无法认证，名称可以重新使用。
 - 删除前已经写入或在途产生的请求日志仍可正常结算。
 - 系统记录、当前管理员和最后一个活动管理员保护不变。
+
+阶段二重点验证：
+
+- 普通渠道/渠道组删除后从列表、详情、运行时快照、定时测试和可选项消失，自然名称可复用。
+- 渠道组的所有 child channels 都写入非敏感墓碑，上游凭据和转换配置已清除。
+- 路由 channel/group target、空 tier 和空协议规则按预览结果规范化；失去最后一个 tier 的协议
+  自动停用。
+- API Key、API Key Policy 和 quota 可见性引用自动解绑，旧影响 token 不会执行删除。
+- Codex managed channel/group 与直接 SQL 硬删除保护不变。
 
 相关来源：
 

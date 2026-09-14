@@ -1449,7 +1449,17 @@ const zhCN: Record<string, string> = {
   "Back to groups": "返回渠道组",
   "Channel group created": "渠道组已创建",
   "Channel group updated": "渠道组已更新",
+  "Channel group deleted": "渠道组已删除",
   "This group was changed elsewhere. Reloading.": "此渠道组已在其他位置修改，正在重新加载。",
+  "Delete channel group": "删除渠道组",
+  "Delete channel group?": "删除渠道组？",
+  "Deleting a channel group is permanent and audited. Its ordinary channels and current dependencies are handled automatically.":
+    "删除渠道组不可撤销且会记录审计日志；其普通渠道和当前依赖会自动处理。",
+  "Review the current server-calculated impact. The group and listed channels become permanent tombstones, stored upstream URLs, credentials, network settings, and transforms are erased, and this action cannot be undone.":
+    "请核对服务端当前计算的影响。该组及列出的渠道将成为永久墓碑，保存的上游 URL、凭据、网络设置和转换配置会被擦除，且无法撤销。",
+  "Provider-managed group": "Provider 托管渠道组",
+  "Provider-managed groups must use their connector lifecycle.":
+    "Provider 托管渠道组必须通过对应 Connector 生命周期管理。",
   "Disable group": "禁用渠道组",
   "Disable group {name}": "禁用渠道组 {name}",
   "Disable channel group?": "禁用渠道组？",
@@ -1471,7 +1481,31 @@ const zhCN: Record<string, string> = {
   "Back to channels": "返回渠道",
   "Channel created": "渠道已创建",
   "Channel updated": "渠道已更新",
+  "Channel deleted": "渠道已删除",
   "This channel was changed elsewhere. Reloading.": "此渠道已在其他位置修改，正在重新加载。",
+  "Delete channel": "删除渠道",
+  "Delete channel?": "删除渠道？",
+  "Deleting a channel is permanent and audited. Current routing and authorization dependencies are removed automatically.":
+    "删除渠道不可撤销且会记录审计日志；当前路由和授权依赖会自动移除。",
+  "Review the current server-calculated impact. The channel becomes a permanent tombstone, its stored upstream URL, credential, network settings, and transforms are erased, and this action cannot be undone.":
+    "请核对服务端当前计算的影响。该渠道将成为永久墓碑，保存的上游 URL、凭据、网络设置和转换配置会被擦除，且无法撤销。",
+  "Provider-managed channels must use their connector lifecycle.":
+    "Provider 托管渠道必须通过对应 Connector 生命周期管理。",
+  "Deletion impact changed. Review the updated preview.":
+    "删除影响已变化，请重新核对更新后的预览。",
+  "No routing or authorization dependencies will be changed.":
+    "不会修改任何路由或授权依赖。",
+  "Channels to delete ({count})": "将删除的渠道（{count}）",
+  "Protocol rules affected ({count})": "受影响的协议规则（{count}）",
+  "will be disabled": "将被停用",
+  "Group targets removed: {count}": "将移除的渠道组目标：{count}",
+  "Channel routes removed: {count}": "将移除的渠道路由：{count}",
+  "Tiers removed: {priorities}": "将移除的层级：{priorities}",
+  "API keys to unbind ({count})": "将解绑的 API Key（{count}）",
+  "API key policies to unbind ({count})":
+    "将解绑的 API Key Policy（{count}）",
+  "Quota visibility assignments to remove ({count})":
+    "将移除的额度可见性关系（{count}）",
   "Create channel": "创建渠道",
   "Edit channel": "编辑渠道",
   "Save channel": "保存渠道",

@@ -9,12 +9,12 @@ use uuid::Uuid;
 use crate::{
     domain::AutomaticDisableTrigger,
     persistence::{
-        ApiHostsView, ChannelBatchUpdateInput, CodexCredentialBatchInput, CodexCredentialCreate,
-        CodexCredentialUpdateInput, ConsoleApiKey, ConsoleAuditLog, ControlPlaneChannelDetail,
-        ControlPlaneConfigTemplateDetail, ControlPlaneLists, ControlPlaneMutation,
-        ControlPlaneRepository, MutationResult, RepositoryError, SelfApiKeyCreate,
-        SelfApiKeyOptions, SelfApiKeyUpdate, SyncedModelInput, SystemSettingsView,
-        UserBatchUpdateInput, UserSettingsInput, UserSettingsView,
+        ApiHostsView, ChannelBatchUpdateInput, ChannelDeletionImpact, CodexCredentialBatchInput,
+        CodexCredentialCreate, CodexCredentialUpdateInput, ConsoleApiKey, ConsoleAuditLog,
+        ControlPlaneChannelDetail, ControlPlaneConfigTemplateDetail, ControlPlaneLists,
+        ControlPlaneMutation, ControlPlaneRepository, MutationResult, RepositoryError,
+        SelfApiKeyCreate, SelfApiKeyOptions, SelfApiKeyUpdate, SyncedModelInput,
+        SystemSettingsView, UserBatchUpdateInput, UserSettingsInput, UserSettingsView,
     },
     routing::{
         PassiveHealthPolicy, RoutingRuntime, SessionAffinityCacheClearResult,
@@ -148,6 +148,20 @@ impl ControlPlaneCoordinator {
         id: Uuid,
     ) -> Result<Option<ControlPlaneChannelDetail>, ControlPlaneError> {
         Ok(self.repository.control_plane_channel_detail(id).await?)
+    }
+
+    pub async fn channel_group_deletion_impact(
+        &self,
+        id: Uuid,
+    ) -> Result<ChannelDeletionImpact, ControlPlaneError> {
+        Ok(self.repository.channel_group_deletion_impact(id).await?)
+    }
+
+    pub async fn channel_deletion_impact(
+        &self,
+        id: Uuid,
+    ) -> Result<ChannelDeletionImpact, ControlPlaneError> {
+        Ok(self.repository.channel_deletion_impact(id).await?)
     }
 
     pub async fn config_template_detail(

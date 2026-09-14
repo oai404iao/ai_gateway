@@ -7,6 +7,7 @@ import {
   E2E_CODEX_CREDENTIAL_ID,
   E2E_CODEX_GROUP_ID,
   E2E_MODEL,
+  E2E_STANDARD_CHANNEL_ID,
   E2E_STANDARD_GROUP_ID,
   mockConsoleApi,
 } from "./mock-api";
@@ -233,6 +234,43 @@ test.describe("Console SPA smoke", () => {
     expect(request.headers()["if-match"]).toBe(`"${E2E_API_KEY.updated_at}"`);
     await expect(page).toHaveURL(/\/api-keys$/);
     await expect(page.getByText("API key deleted")).toBeVisible();
+  });
+
+  test("an administrator reviews server impact before deleting a channel", async ({
+    page,
+  }) => {
+    await mockConsoleApi(page);
+    await page.goto("/login");
+    await page.getByLabel(/email/i).fill("admin@example.com");
+    await page.getByLabel(/^password$/i).fill("correct-horse-battery-staple");
+    await page.getByRole("button", { name: /sign in/i }).click();
+    await page.goto(`/admin/routing/channels/${E2E_STANDARD_CHANNEL_ID}`);
+
+    await expect(
+      page.getByRole("button", { name: "Delete channel" }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "Delete channel" }).click();
+    const dialog = page.getByRole("alertdialog", { name: "Delete channel?" });
+    await expect(dialog.getByText("Channels to delete (1)")).toBeVisible();
+    await expect(dialog.getByText("e2e key")).toBeVisible();
+    await expect(dialog.getByText("default")).toBeVisible();
+
+    const deleteRequest = page.waitForRequest(
+      (request) =>
+        request.url().endsWith(
+          `/console/v1/routing/channels/${E2E_STANDARD_CHANNEL_ID}`,
+        ) && request.method() === "DELETE",
+    );
+    await dialog.getByRole("button", { name: "Delete channel" }).click();
+    const request = await deleteRequest;
+    expect(request.headers()["if-match"]).toBe(
+      '"2026-07-29T12:00:00.000Z"',
+    );
+    expect(request.postDataJSON()).toEqual({
+      confirmation_token: "v1.e2e-channel-deletion",
+    });
+    await expect(page).toHaveURL(/\/admin\/routing\/channels$/);
+    await expect(page.getByText("Channel deleted")).toBeVisible();
   });
 
   test("users can only read sanitized Codex quota windows", async ({ page }) => {

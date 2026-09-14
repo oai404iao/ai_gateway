@@ -9,6 +9,7 @@ import type {
   AdminApiKeyView,
   ApiKeyPolicyView,
   ApiKeyView,
+  ChannelDeletionImpact,
   ChannelDetailView,
   ChannelGroupStatusReport,
   ChannelGroupView,
@@ -419,6 +420,34 @@ export const MODEL_RULE: ModelRuleView = {
   protocol_rules: [MODEL_PROTOCOL_RULE],
   created_at: "2026-01-02T00:00:00.000Z",
   updated_at: "2026-01-02T00:00:00.000Z",
+};
+
+export const CHANNEL_DELETION_IMPACT: ChannelDeletionImpact = {
+  resource_type: "channel",
+  resource_id: CHANNEL.id,
+  confirmation_token: "v1.test-channel-impact",
+  channels: [
+    {
+      id: CHANNEL.id,
+      channel_group_id: CHANNEL_GROUP.id,
+      name: CHANNEL.name,
+    },
+  ],
+  model_protocol_rules: [
+    {
+      id: MODEL_PROTOCOL_RULE.id,
+      model_rule_id: MODEL_RULE.id,
+      client_model: MODEL_RULE.client_model,
+      api_format: MODEL_PROTOCOL_RULE.api_format,
+      removed_channel_group_ids: [CHANNEL_GROUP.id],
+      removed_channel_ids: [CHANNEL.id],
+      removed_tier_priorities: [0],
+      will_disable: true,
+    },
+  ],
+  api_keys: [{ id: ADMIN_API_KEY.id, name: ADMIN_API_KEY.name }],
+  api_key_policies: [{ id: API_KEY_POLICY.id, name: API_KEY_POLICY.name }],
+  quota_visibility_user_groups: [],
 };
 
 const SEARCH_PROTOCOL_RULE: ModelProtocolRuleView = {

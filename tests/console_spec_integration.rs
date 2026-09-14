@@ -363,6 +363,95 @@ async fn app_with_proxy_test_endpoint(
     }
 }
 
+async fn seed_test_protocol_rule(
+    pool: &PgPool,
+    channel_group_id: Uuid,
+    channel_id: Uuid,
+    channel_selection: &str,
+    upstream_model: &str,
+) -> (Uuid, Uuid) {
+    let model_id = Uuid::new_v4();
+    let profile_id = Uuid::new_v4();
+    let rule_id = Uuid::new_v4();
+    let source_model_id = format!("deletion-priced-{model_id}");
+    let mut transaction = pool.begin().await.unwrap();
+    sqlx::query(
+        "INSERT INTO models \
+         (id,source_model_id,display_name,enabled,currency,price_unit_tokens, \
+          input_unit_price,cached_input_unit_price,cache_write_unit_price, \
+          output_unit_price,price_effective_at) \
+         VALUES ($1,$2,$2,true,'USD',1000000,0,0,0,0,now())",
+    )
+    .bind(model_id)
+    .bind(&source_model_id)
+    .execute(&mut *transaction)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO model_routing_profiles (id,model_id) VALUES ($1,$2)")
+        .bind(profile_id)
+        .bind(model_id)
+        .execute(&mut *transaction)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO model_rules \
+         (id,model_routing_profile_id,api_format,enabled) \
+         VALUES ($1,$2,'open_ai_chat_completions',false)",
+    )
+    .bind(rule_id)
+    .bind(profile_id)
+    .execute(&mut *transaction)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO model_rule_routing_tiers \
+         (model_rule_id,api_format,priority,selection_strategy) \
+         VALUES ($1,'open_ai_chat_completions',0,'weighted_random')",
+    )
+    .bind(rule_id)
+    .execute(&mut *transaction)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO model_rule_routing_groups \
+         (model_rule_id,api_format,priority,channel_group_id, \
+          channel_selection,upstream_model,default_weight) \
+         VALUES ( \
+             $1,'open_ai_chat_completions',0,$2,$3, \
+             CASE WHEN $3='all' THEN $4 ELSE NULL END, \
+             CASE WHEN $3='all' THEN 100 ELSE NULL END)",
+    )
+    .bind(rule_id)
+    .bind(channel_group_id)
+    .bind(channel_selection)
+    .bind(upstream_model)
+    .execute(&mut *transaction)
+    .await
+    .unwrap();
+    if channel_selection == "selected" {
+        sqlx::query(
+            "INSERT INTO model_rule_routing_channels \
+             (model_rule_id,api_format,channel_group_id,channel_id, \
+              upstream_model,weight) \
+             VALUES ($1,'open_ai_chat_completions',$2,$3,$4,100)",
+        )
+        .bind(rule_id)
+        .bind(channel_group_id)
+        .bind(channel_id)
+        .bind(upstream_model)
+        .execute(&mut *transaction)
+        .await
+        .unwrap();
+    }
+    sqlx::query("UPDATE model_rules SET enabled=true WHERE id=$1")
+        .bind(rule_id)
+        .execute(&mut *transaction)
+        .await
+        .unwrap();
+    transaction.commit().await.unwrap();
+    (profile_id, rule_id)
+}
+
 async fn proxy_test_ip_api(
     headers: HeaderMap,
 ) -> Result<(HeaderMap, Json<serde_json::Value>), StatusCode> {
@@ -5249,6 +5338,779 @@ async fn model_rule_hierarchy_separates_pricing_from_target_models() {
     assert_eq!(audit.0["routing_tiers"], serde_json::json!([]));
     assert_eq!(audit.1["routing_tiers"], current["routing_tiers"]);
 
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn channel_deletion_reconfirms_changed_impact_and_normalizes_dependencies() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+    let group = request(
+        &app,
+        "POST",
+        "/console/v1/routing/channel-groups",
+        serde_json::json!({
+            "name": "channel-delete-group",
+            "api_format": "open_ai_chat_completions",
+            "enabled": true,
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(group.status(), StatusCode::CREATED);
+    let group_id = Uuid::parse_str(body_json(group).await["id"].as_str().unwrap()).unwrap();
+    let channel = request(
+        &app,
+        "POST",
+        "/console/v1/routing/channels",
+        serde_json::json!({
+            "channel_group_id": group_id,
+            "api_format": "open_ai_chat_completions",
+            "name": "channel-delete-target",
+            "base_url": "https://delete-target.example.test",
+            "enabled": true,
+            "auto_disable_allowed": true,
+            "billing_multiplier": "1.25",
+            "connect_timeout_ms": 1000,
+            "response_header_timeout_ms": 2000,
+            "stream_idle_timeout_ms": 3000,
+            "override_document": {
+                "version": 1,
+                "api_format": "open_ai_chat_completions",
+                "request_headers": {"set": {"x-delete-test": "present"}}
+            },
+            "upstream_auth_kind": "bearer",
+            "upstream_api_key": "delete-upstream-secret",
+            "available_models": ["delete-wire-model"],
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(channel.status(), StatusCode::CREATED);
+    let channel_id = Uuid::parse_str(body_json(channel).await["id"].as_str().unwrap()).unwrap();
+    let (_profile_id, rule_id) = seed_test_protocol_rule(
+        &database.pool,
+        group_id,
+        channel_id,
+        "selected",
+        "delete-wire-model",
+    )
+    .await;
+    let fallback_group = request(
+        &app,
+        "POST",
+        "/console/v1/routing/channel-groups",
+        serde_json::json!({
+            "name": "channel-delete-fallback-group",
+            "api_format": "open_ai_chat_completions",
+            "enabled": true,
+        }),
+        &[],
+    )
+    .await;
+    let fallback_group_id =
+        Uuid::parse_str(body_json(fallback_group).await["id"].as_str().unwrap()).unwrap();
+    let fallback_channel = request(
+        &app,
+        "POST",
+        "/console/v1/routing/channels",
+        serde_json::json!({
+            "channel_group_id": fallback_group_id,
+            "api_format": "open_ai_chat_completions",
+            "name": "channel-delete-fallback",
+            "base_url": "https://delete-fallback.example.test",
+            "enabled": true,
+            "upstream_auth_kind": "none",
+            "available_models": ["delete-fallback-wire"],
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(fallback_channel.status(), StatusCode::CREATED);
+    let mut routing_transaction = database.pool.begin().await.unwrap();
+    sqlx::query(
+        "INSERT INTO model_rule_routing_tiers \
+         (model_rule_id,api_format,priority,selection_strategy) \
+         VALUES ($1,'open_ai_chat_completions',1,'weighted_random')",
+    )
+    .bind(rule_id)
+    .execute(&mut *routing_transaction)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO model_rule_routing_groups \
+         (model_rule_id,api_format,priority,channel_group_id, \
+          channel_selection,upstream_model,default_weight) \
+         VALUES ($1,'open_ai_chat_completions',1,$2,'all', \
+                 'delete-fallback-wire',100)",
+    )
+    .bind(rule_id)
+    .bind(fallback_group_id)
+    .execute(&mut *routing_transaction)
+    .await
+    .unwrap();
+    routing_transaction.commit().await.unwrap();
+    let key_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO api_keys \
+         (id,user_id,name,secret_value,status,allowed_api_formats,permissions, \
+          allowed_group_ids,allowed_channel_ids) \
+         VALUES ($1,$2,'channel delete key',$3,'active', \
+                 ARRAY['open_ai_chat_completions']::api_format[],ARRAY['proxy'], \
+                 ARRAY[$4]::uuid[],ARRAY[$5]::uuid[])",
+    )
+    .bind(key_id)
+    .bind(app.user_id)
+    .bind(format!("channel-delete-key-{key_id}"))
+    .bind(group_id)
+    .bind(channel_id)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let policy_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO api_key_policies \
+         (id,name,allowed_group_ids,allowed_channel_ids,enabled) \
+         VALUES ($1,$2,'{}',ARRAY[$3]::uuid[],true)",
+    )
+    .bind(policy_id)
+    .bind(format!("channel-delete-policy-{policy_id}"))
+    .bind(channel_id)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let historical_log_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO request_logs \
+         (id,started_at,completed_at,user_id,api_key_id,api_format,api_operation, \
+          client_model,upstream_model,model_rule_id,channel_group_id,channel_id, \
+          outcome,streamed,total_duration_ms) \
+         VALUES ($1,now(),now(),$2,$3,'open_ai_chat_completions','chat_completions', \
+                 'channel-delete-client','delete-wire-model',$4,$5,$6, \
+                 'succeeded',false,10)",
+    )
+    .bind(historical_log_id)
+    .bind(app.user_id)
+    .bind(key_id)
+    .bind(rule_id)
+    .bind(group_id)
+    .bind(channel_id)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+
+    let detail_path = format!("/console/v1/routing/channels/{channel_id}");
+    let detail = request(&app, "GET", &detail_path, serde_json::json!({}), &[]).await;
+    assert_eq!(detail.status(), StatusCode::OK);
+    let etag = detail.headers()[header::ETAG].to_str().unwrap().to_owned();
+    let impact_path = format!("{detail_path}/deletion-impact");
+    let impact = request(&app, "GET", &impact_path, serde_json::json!({}), &[]).await;
+    assert_eq!(impact.status(), StatusCode::OK);
+    let impact = body_json(impact).await;
+    assert_eq!(impact["resource_type"], "channel");
+    assert_eq!(impact["channels"][0]["id"], channel_id.to_string());
+    assert_eq!(impact["model_protocol_rules"][0]["id"], rule_id.to_string());
+    assert_eq!(
+        impact["model_protocol_rules"][0]["removed_tier_priorities"],
+        serde_json::json!([0])
+    );
+    assert_eq!(impact["model_protocol_rules"][0]["will_disable"], false);
+    assert_eq!(impact["api_keys"][0]["id"], key_id.to_string());
+    assert_eq!(impact["api_key_policies"][0]["id"], policy_id.to_string());
+    let stale_token = impact["confirmation_token"].as_str().unwrap().to_owned();
+
+    let late_policy_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO api_key_policies \
+         (id,name,allowed_group_ids,allowed_channel_ids,enabled) \
+         VALUES ($1,$2,'{}',ARRAY[$3]::uuid[],true)",
+    )
+    .bind(late_policy_id)
+    .bind(format!("late-channel-delete-policy-{late_policy_id}"))
+    .bind(channel_id)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let stale_delete = request(
+        &app,
+        "DELETE",
+        &detail_path,
+        serde_json::json!({"confirmation_token": stale_token}),
+        &[("if-match", &etag)],
+    )
+    .await;
+    assert_eq!(stale_delete.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        body_json(stale_delete).await,
+        serde_json::json!({"error": "deletion_impact_changed"})
+    );
+
+    let current_impact =
+        body_json(request(&app, "GET", &impact_path, serde_json::json!({}), &[]).await).await;
+    assert_ne!(
+        current_impact["confirmation_token"],
+        impact["confirmation_token"]
+    );
+    assert_eq!(
+        current_impact["api_key_policies"].as_array().unwrap().len(),
+        2
+    );
+    let deleted = request(
+        &app,
+        "DELETE",
+        &detail_path,
+        serde_json::json!({
+            "confirmation_token": current_impact["confirmation_token"]
+        }),
+        &[("if-match", &etag)],
+    )
+    .await;
+    assert_eq!(deleted.status(), StatusCode::OK);
+
+    let tombstone: serde_json::Value = sqlx::query_scalar(
+        "SELECT jsonb_build_object( \
+             'enabled',enabled,'auto_disabled',auto_disabled, \
+             'auto_disable_allowed',auto_disable_allowed, \
+             'base_url',base_url,'billing_multiplier',billing_multiplier, \
+             'proxy_id',proxy_id,'config_template_id',config_template_id, \
+             'override_document',override_document, \
+             'connect_timeout_ms',connect_timeout_ms, \
+             'response_header_timeout_ms',response_header_timeout_ms, \
+             'stream_idle_timeout_ms',stream_idle_timeout_ms, \
+             'upstream_auth_kind',upstream_auth_kind, \
+             'upstream_auth_header_name',upstream_auth_header_name, \
+             'upstream_api_key',upstream_api_key, \
+             'available_models',available_models,'test_model',test_model, \
+             'test_pricing_model_id',test_pricing_model_id, \
+             'deleted_at',deleted_at,'deleted_by',deleted_by) \
+         FROM channels WHERE id=$1",
+    )
+    .bind(channel_id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(tombstone["enabled"], false);
+    assert_eq!(tombstone["auto_disabled"], false);
+    assert_eq!(tombstone["auto_disable_allowed"], false);
+    assert_eq!(tombstone["base_url"], "https://deleted.invalid");
+    assert_eq!(tombstone["billing_multiplier"].as_f64(), Some(1.0));
+    assert_eq!(tombstone["override_document"], serde_json::json!({}));
+    assert!(tombstone["connect_timeout_ms"].is_null());
+    assert!(tombstone["response_header_timeout_ms"].is_null());
+    assert!(tombstone["stream_idle_timeout_ms"].is_null());
+    assert_eq!(tombstone["upstream_auth_kind"], "none");
+    assert!(tombstone["upstream_api_key"].is_null());
+    assert_eq!(tombstone["available_models"], serde_json::json!([]));
+    assert!(tombstone["deleted_at"].is_string());
+    assert_eq!(tombstone["deleted_by"], app.user_id.to_string());
+
+    let key_targets: (Vec<Uuid>, Vec<Uuid>) =
+        sqlx::query_as("SELECT allowed_group_ids,allowed_channel_ids FROM api_keys WHERE id=$1")
+            .bind(key_id)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert_eq!(key_targets, (vec![group_id], vec![]));
+    let policy_targets: Vec<Vec<Uuid>> = sqlx::query_scalar(
+        "SELECT allowed_channel_ids FROM api_key_policies \
+         WHERE id=ANY($1) ORDER BY id",
+    )
+    .bind(vec![policy_id, late_policy_id])
+    .fetch_all(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(policy_targets, vec![Vec::<Uuid>::new(), Vec::<Uuid>::new()]);
+    let normalized_rule: (bool, i64) = sqlx::query_as(
+        "SELECT enabled,(SELECT count(*) FROM model_rule_routing_tiers \
+                         WHERE model_rule_id=model_rules.id) \
+         FROM model_rules WHERE id=$1",
+    )
+    .bind(rule_id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(normalized_rule, (true, 1));
+    assert!(app.runtime.snapshot().channel(channel_id).is_none());
+    let historical_log = body_json(
+        request(
+            &app,
+            "GET",
+            &format!("/console/v1/request-logs/{historical_log_id}"),
+            serde_json::json!({}),
+            &[],
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(historical_log["channel_group_name"], "channel-delete-group");
+    assert_eq!(historical_log["channel_name"], "channel-delete-target");
+    let deletion_audit: (serde_json::Value, Option<String>) = sqlx::query_as(
+        "SELECT after_redacted,reason FROM audit_logs \
+         WHERE object_type='channel' AND object_id=$1 AND action='delete'",
+    )
+    .bind(channel_id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        deletion_audit.0["upstream_credential_configured"],
+        serde_json::json!(false)
+    );
+    assert!(deletion_audit.0.get("upstream_api_key").is_none());
+    assert!(
+        deletion_audit
+            .1
+            .is_some_and(|reason| reason.contains("protocol rules affected"))
+    );
+    assert_eq!(
+        request(&app, "GET", &detail_path, serde_json::json!({}), &[],)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    let visible_channels = body_json(
+        request(
+            &app,
+            "GET",
+            "/console/v1/routing/channels",
+            serde_json::json!({}),
+            &[],
+        )
+        .await,
+    )
+    .await;
+    assert!(
+        visible_channels
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|channel| channel["id"] != channel_id.to_string())
+    );
+    let key_path = format!("/console/v1/api-keys/{key_id}");
+    let key_detail = request(&app, "GET", &key_path, serde_json::json!({}), &[]).await;
+    let key_etag = key_detail.headers()[header::ETAG]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let key_detail = body_json(key_detail).await;
+    let key_reattach = request(
+        &app,
+        "PUT",
+        &key_path,
+        serde_json::json!({
+            "name": key_detail["name"],
+            "status": key_detail["status"],
+            "expires_at": key_detail["expires_at"],
+            "allowed_api_formats": key_detail["allowed_api_formats"],
+            "permissions": key_detail["permissions"],
+            "allowed_group_ids": [group_id],
+            "allowed_channel_ids": [channel_id],
+            "requests_per_minute": key_detail["requests_per_minute"],
+            "max_concurrent_requests": key_detail["max_concurrent_requests"],
+            "quota_limit_amount": key_detail["quota_limit_amount"],
+        }),
+        &[("if-match", &key_etag)],
+    )
+    .await;
+    assert_eq!(key_reattach.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let policy_path = format!("/console/v1/api-key-policies/{policy_id}");
+    let policy_detail = request(&app, "GET", &policy_path, serde_json::json!({}), &[]).await;
+    let policy_etag = policy_detail.headers()[header::ETAG]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let policy_detail = body_json(policy_detail).await;
+    let policy_reattach = request(
+        &app,
+        "PUT",
+        &policy_path,
+        serde_json::json!({
+            "name": policy_detail["name"],
+            "allowed_group_ids": [],
+            "allowed_channel_ids": [channel_id],
+            "enabled": policy_detail["enabled"],
+        }),
+        &[("if-match", &policy_etag)],
+    )
+    .await;
+    assert_eq!(policy_reattach.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let reused = request(
+        &app,
+        "POST",
+        "/console/v1/routing/channels",
+        serde_json::json!({
+            "channel_group_id": group_id,
+            "api_format": "open_ai_chat_completions",
+            "name": "channel-delete-target",
+            "base_url": "https://replacement.example.test",
+            "enabled": true,
+            "upstream_auth_kind": "none",
+            "available_models": ["replacement-wire"],
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(reused.status(), StatusCode::CREATED);
+    assert_ne!(body_json(reused).await["id"], channel_id.to_string());
+
+    let tombstone_update_error = sqlx::query("UPDATE channels SET name=$2 WHERE id=$1")
+        .bind(channel_id)
+        .bind("mutated tombstone")
+        .execute(&database.pool)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        tombstone_update_error
+            .as_database_error()
+            .and_then(sqlx::error::DatabaseError::code)
+            .as_deref(),
+        Some("23514")
+    );
+    let hard_delete_error = sqlx::query("DELETE FROM channels WHERE id=$1")
+        .bind(channel_id)
+        .execute(&database.pool)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        hard_delete_error
+            .as_database_error()
+            .and_then(sqlx::error::DatabaseError::code)
+            .as_deref(),
+        Some("23514")
+    );
+    database.cleanup().await;
+}
+
+#[tokio::test]
+async fn channel_group_deletion_cascades_tombstones_and_unbinds_every_dependency() {
+    let database = TestDatabase::new().await;
+    let app = app(database.pool.clone()).await;
+    let group_name = "group-delete-target";
+    let group = request(
+        &app,
+        "POST",
+        "/console/v1/routing/channel-groups",
+        serde_json::json!({
+            "name": group_name,
+            "api_format": "open_ai_chat_completions",
+            "enabled": true,
+            "status_statistics_enabled": true,
+        }),
+        &[],
+    )
+    .await;
+    let group_id = Uuid::parse_str(body_json(group).await["id"].as_str().unwrap()).unwrap();
+    let mut channel_ids = Vec::new();
+    for name in ["group-delete-a", "group-delete-b"] {
+        let channel = request(
+            &app,
+            "POST",
+            "/console/v1/routing/channels",
+            serde_json::json!({
+                "channel_group_id": group_id,
+                "api_format": "open_ai_chat_completions",
+                "name": name,
+                "base_url": "https://group-delete.example.test",
+                "enabled": true,
+                "upstream_auth_kind": "none",
+                "available_models": ["group-delete-wire"],
+            }),
+            &[],
+        )
+        .await;
+        assert_eq!(channel.status(), StatusCode::CREATED);
+        channel_ids
+            .push(Uuid::parse_str(body_json(channel).await["id"].as_str().unwrap()).unwrap());
+    }
+    let (_profile_id, rule_id) = seed_test_protocol_rule(
+        &database.pool,
+        group_id,
+        channel_ids[0],
+        "all",
+        "group-delete-wire",
+    )
+    .await;
+    let key_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO api_keys \
+         (id,user_id,name,secret_value,status,allowed_api_formats,permissions, \
+          allowed_group_ids,allowed_channel_ids) \
+         VALUES ($1,$2,'group delete key',$3,'active', \
+                 ARRAY['open_ai_chat_completions']::api_format[],ARRAY['proxy'], \
+                 ARRAY[$4]::uuid[],ARRAY[$5]::uuid[])",
+    )
+    .bind(key_id)
+    .bind(app.user_id)
+    .bind(format!("group-delete-key-{key_id}"))
+    .bind(group_id)
+    .bind(channel_ids[0])
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let policy_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO api_key_policies \
+         (id,name,allowed_group_ids,allowed_channel_ids,enabled) \
+         VALUES ($1,$2,ARRAY[$3]::uuid[],ARRAY[$4]::uuid[],true)",
+    )
+    .bind(policy_id)
+    .bind(format!("group-delete-policy-{policy_id}"))
+    .bind(group_id)
+    .bind(channel_ids[1])
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO user_group_codex_quota_visibility \
+         (user_group_id,channel_group_id) VALUES ($1,$2)",
+    )
+    .bind(DEFAULT_USER_GROUP_ID)
+    .bind(group_id)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+
+    let detail_path = format!("/console/v1/routing/channel-groups/{group_id}");
+    let detail = request(&app, "GET", &detail_path, serde_json::json!({}), &[]).await;
+    let etag = detail.headers()[header::ETAG].to_str().unwrap().to_owned();
+    let impact = body_json(
+        request(
+            &app,
+            "GET",
+            &format!("{detail_path}/deletion-impact"),
+            serde_json::json!({}),
+            &[],
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(impact["resource_type"], "channel_group");
+    assert_eq!(impact["channels"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        impact["model_protocol_rules"][0]["removed_channel_group_ids"],
+        serde_json::json!([group_id])
+    );
+    assert_eq!(impact["model_protocol_rules"][0]["will_disable"], true);
+    assert_eq!(impact["api_keys"][0]["id"], key_id.to_string());
+    assert_eq!(impact["api_key_policies"][0]["id"], policy_id.to_string());
+    assert_eq!(
+        impact["quota_visibility_user_groups"][0]["id"],
+        DEFAULT_USER_GROUP_ID.to_string()
+    );
+
+    let deleted = request(
+        &app,
+        "DELETE",
+        &detail_path,
+        serde_json::json!({
+            "confirmation_token": impact["confirmation_token"]
+        }),
+        &[("if-match", &etag)],
+    )
+    .await;
+    assert_eq!(deleted.status(), StatusCode::OK);
+
+    let group_tombstone: (
+        bool,
+        bool,
+        Option<chrono::DateTime<chrono::Utc>>,
+        Option<Uuid>,
+    ) = sqlx::query_as(
+        "SELECT enabled,status_statistics_enabled,deleted_at,deleted_by \
+             FROM channel_groups WHERE id=$1",
+    )
+    .bind(group_id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert!(!group_tombstone.0);
+    assert!(!group_tombstone.1);
+    assert!(group_tombstone.2.is_some());
+    assert_eq!(group_tombstone.3, Some(app.user_id));
+    let channel_tombstones: Vec<(Uuid, bool, Option<chrono::DateTime<chrono::Utc>>)> =
+        sqlx::query_as(
+            "SELECT id,enabled,deleted_at FROM channels \
+             WHERE channel_group_id=$1 ORDER BY id",
+        )
+        .bind(group_id)
+        .fetch_all(&database.pool)
+        .await
+        .unwrap();
+    assert_eq!(channel_tombstones.len(), 2);
+    assert!(
+        channel_tombstones
+            .iter()
+            .all(|(_, enabled, deleted_at)| !enabled && deleted_at.is_some())
+    );
+    let key_targets: (Vec<Uuid>, Vec<Uuid>) =
+        sqlx::query_as("SELECT allowed_group_ids,allowed_channel_ids FROM api_keys WHERE id=$1")
+            .bind(key_id)
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+    assert_eq!(key_targets, (vec![], vec![]));
+    let policy_targets: (Vec<Uuid>, Vec<Uuid>) = sqlx::query_as(
+        "SELECT allowed_group_ids,allowed_channel_ids \
+         FROM api_key_policies WHERE id=$1",
+    )
+    .bind(policy_id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(policy_targets, (vec![], vec![]));
+    let visibility_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM user_group_codex_quota_visibility \
+         WHERE channel_group_id=$1",
+    )
+    .bind(group_id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(visibility_count, 0);
+    let normalized_rule: (bool, i64) = sqlx::query_as(
+        "SELECT enabled,(SELECT count(*) FROM model_rule_routing_tiers \
+                         WHERE model_rule_id=model_rules.id) \
+         FROM model_rules WHERE id=$1",
+    )
+    .bind(rule_id)
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(normalized_rule, (false, 0));
+    assert!(
+        channel_ids
+            .iter()
+            .all(|id| app.runtime.snapshot().channel(*id).is_none())
+    );
+    assert_eq!(
+        request(&app, "GET", &detail_path, serde_json::json!({}), &[],)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    let visible_groups = body_json(
+        request(
+            &app,
+            "GET",
+            "/console/v1/routing/channel-groups",
+            serde_json::json!({}),
+            &[],
+        )
+        .await,
+    )
+    .await;
+    assert!(
+        visible_groups
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|group| group["id"] != group_id.to_string())
+    );
+    let child_reattach = request(
+        &app,
+        "POST",
+        "/console/v1/routing/channels",
+        serde_json::json!({
+            "channel_group_id": group_id,
+            "api_format": "open_ai_chat_completions",
+            "name": "invalid-deleted-parent",
+            "base_url": "https://invalid.example.test",
+            "enabled": false,
+            "upstream_auth_kind": "none",
+            "available_models": [],
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(child_reattach.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let replacement = request(
+        &app,
+        "POST",
+        "/console/v1/routing/channel-groups",
+        serde_json::json!({
+            "name": group_name,
+            "api_format": "open_ai_chat_completions",
+            "enabled": true,
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(replacement.status(), StatusCode::CREATED);
+    assert_ne!(body_json(replacement).await["id"], group_id.to_string());
+
+    let hard_delete_error = sqlx::query("DELETE FROM channel_groups WHERE id=$1")
+        .bind(group_id)
+        .execute(&database.pool)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        hard_delete_error
+            .as_database_error()
+            .and_then(sqlx::error::DatabaseError::code)
+            .as_deref(),
+        Some("23514")
+    );
+
+    let managed_group = request(
+        &app,
+        "POST",
+        "/console/v1/routing/channel-groups",
+        serde_json::json!({
+            "name": "managed-delete-protection",
+            "api_format": "open_ai_responses",
+            "connector_kind": "codex_oauth",
+            "enabled": true,
+        }),
+        &[],
+    )
+    .await;
+    assert_eq!(managed_group.status(), StatusCode::CREATED);
+    let managed_group_id = body_json(managed_group).await["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let managed_impact = request(
+        &app,
+        "GET",
+        &format!("/console/v1/routing/channel-groups/{managed_group_id}/deletion-impact"),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(managed_impact.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        body_json(managed_impact).await,
+        serde_json::json!({"error": "provider_managed_resource"})
+    );
+    let managed_channel_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO channels \
+         (id,channel_group_id,api_format,name,base_url,enabled, \
+          upstream_auth_kind,available_models) \
+         VALUES ($1,$2,'open_ai_responses',$3,'https://managed.example.test', \
+                 false,'none',ARRAY['gpt-5']::text[])",
+    )
+    .bind(managed_channel_id)
+    .bind(Uuid::parse_str(&managed_group_id).unwrap())
+    .bind(format!("managed-delete-protection-{managed_channel_id}"))
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let managed_channel_impact = request(
+        &app,
+        "GET",
+        &format!("/console/v1/routing/channels/{managed_channel_id}/deletion-impact"),
+        serde_json::json!({}),
+        &[],
+    )
+    .await;
+    assert_eq!(managed_channel_impact.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        body_json(managed_channel_impact).await,
+        serde_json::json!({"error": "provider_managed_resource"})
+    );
     database.cleanup().await;
 }
 

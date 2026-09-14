@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { BrowserRouter } from "react-router";
 import { AppProviders } from "@/app/providers";
 import { AppRouter } from "@/app/router";
 import { server, seedAuthenticatedSession } from "@/test/msw";
-import { CHANNEL_GROUP } from "@/test/fixtures";
+import {
+  CHANNEL_DELETION_IMPACT,
+  CHANNEL_GROUP,
+} from "@/test/fixtures";
 import type { ChannelGroupInput } from "@/api/types";
 
 function renderAppAt(path: string) {
@@ -114,11 +117,97 @@ describe("ChannelGroupDetailPage", () => {
       );
     });
     await user.click(screen.getByRole("combobox", { name: "Request compression" }));
-    await user.click(screen.getByRole("option", { name: "Zstandard (zstd)" }));
+    await user.click(
+      await screen.findByRole("option", { name: "Zstandard (zstd)" }),
+    );
     await user.click(screen.getByRole("button", { name: /save group/i }));
 
     await waitFor(() => {
       expect(submitted?.request_compression).toBe("zstd");
     });
+  });
+
+  it("keeps provider-managed groups out of the ordinary deletion path", async () => {
+    seedAuthenticatedSession();
+    const managedGroup = {
+      ...CHANNEL_GROUP,
+      id: "00000000-0000-0000-0000-000000000123",
+      api_format: "open_ai_responses" as const,
+      connector_kind: "codex_oauth",
+      provider_managed: true,
+    };
+    server.use(
+      http.get("/console/v1/routing/channel-groups/:id", () =>
+        HttpResponse.json(managedGroup, {
+          headers: { ETag: `"${managedGroup.updated_at}"` },
+        }),
+      ),
+    );
+    renderAppAt(`/admin/routing/channel-groups/${managedGroup.id}`);
+
+    expect(await screen.findByText("Provider-managed group")).toBeVisible();
+    expect(
+      screen.getByText(
+        "Provider-managed groups must use their connector lifecycle.",
+      ),
+    ).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: "Delete channel group" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("previews authoritative dependencies before deleting an ordinary group", async () => {
+    seedAuthenticatedSession();
+    const impact = {
+      ...CHANNEL_DELETION_IMPACT,
+      resource_type: "channel_group" as const,
+      resource_id: CHANNEL_GROUP.id,
+    };
+    let ifMatch: string | null = null;
+    let confirmationToken: string | undefined;
+    server.use(
+      http.get(
+        "/console/v1/routing/channel-groups/:id/deletion-impact",
+        () => HttpResponse.json(impact),
+      ),
+      http.delete(
+        "/console/v1/routing/channel-groups/:id",
+        async ({ request }) => {
+          ifMatch = request.headers.get("If-Match");
+          confirmationToken = (
+            (await request.json()) as { confirmation_token: string }
+          ).confirmation_token;
+          return HttpResponse.json({
+            id: CHANNEL_GROUP.id,
+            correlation_id: "99999999-0000-0000-0000-000000000012",
+          });
+        },
+      ),
+    );
+    const user = userEvent.setup();
+    renderAppAt(`/admin/routing/channel-groups/${CHANNEL_GROUP.id}`);
+
+    await screen.findByRole("button", { name: "Delete channel group" });
+    await user.click(
+      screen.getByRole("button", { name: "Delete channel group" }),
+    );
+    const dialog = await screen.findByRole("alertdialog", {
+      name: "Delete channel group?",
+    });
+    expect(
+      within(dialog).getByText(`Channels to delete (${impact.channels.length})`),
+    ).toBeVisible();
+    expect(within(dialog).getByText(impact.channels[0].name)).toBeVisible();
+    expect(within(dialog).getByText(/will be disabled/i)).toBeVisible();
+    expect(within(dialog).getByText("Tiers removed: 0")).toBeVisible();
+
+    await user.click(
+      within(dialog).getByRole("button", { name: "Delete channel group" }),
+    );
+    await waitFor(() => {
+      expect(confirmationToken).toBe(impact.confirmation_token);
+    });
+    expect(ifMatch).toBe(`"${CHANNEL_GROUP.updated_at}"`);
+    expect(window.location.pathname).toBe("/admin/routing/channels");
   });
 });

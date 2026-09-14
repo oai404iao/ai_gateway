@@ -69,13 +69,25 @@
 删除顶层 `service_tier`，因此后续日志元数据、请求计费倍率、Session affinity、Transform 和
 Connector 都只观察过滤后的请求。
 
-### 身份资源软删除
+### 控制面资源软删除
 
 用户、用户组和 API Key 使用不可恢复的墓碑式软删除。活动数据查询必须同时过滤
 `deleted_at IS NULL`；请求日志、结算和审计查询仍按原 UUID 读取墓碑。删除用户会匿名化身份并
 软删除其 Key；删除自定义用户组会把成员迁移到按角色选择的内置默认组、禁用关联注册码并移除
 Codex quota 可见性；直接删除 Key 会覆盖其明文 secret。活动记录使用部分唯一索引，因此删除后
 可以用相同邮箱或自然名称创建新 UUID。完整阶段边界见[控制面软删除](soft-deletion.md)。
+
+普通渠道和渠道组也使用不可恢复墓碑。删除预览对 child channels、模型协议规则、API Key、
+API Key Policy 和 quota 可见性依赖生成确认 token；DELETE 在 `SERIALIZABLE` 事务中重新计算，
+影响变化时以 `deletion_impact_changed` 失败。渠道墓碑会清除 secret、上游 URL、Transform、
+proxy、超时、测试和模型能力配置；组墓碑会同时处理所有普通 child channels。删除事务解绑授权
+引用，移除路由 target，
+删除空 selected group 与空 tier，并在协议规则无 tier 时将其停用。运行时和普通管理查询仅加载
+活动渠道/组，历史 request log 和 audit 仍通过墓碑 UUID 读取稳定名称。Codex OAuth managed
+groups/channels 保持 connector pool 专用生命周期，普通删除接口返回
+`provider_managed_resource`；数据库触发器拒绝渠道和渠道组的直接硬删除。
+
+模型墓碑属于后续阶段。
 
 ### 系统设置
 

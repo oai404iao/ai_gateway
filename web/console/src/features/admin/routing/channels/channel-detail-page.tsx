@@ -46,9 +46,11 @@ import {
   useChannels,
   useConfigTemplates,
   useCreateChannel,
+  useDeleteChannel,
   useDiscoverChannelModels,
   useModelRules,
   useModels,
+  usePreviewChannelDeletion,
   useProxies,
   useUpdateChannel,
 } from "@/features/admin/api";
@@ -56,6 +58,7 @@ import { ApiError, controlPlaneMutationErrorMessage } from "@/api/errors";
 import type {
   ApiFormat,
   ChannelCreateInput,
+  ChannelDeletionImpact,
   ChannelInput,
   ChannelModelDiscoveryInput,
   UpstreamAuthKind,
@@ -71,6 +74,7 @@ import {
   safeAdminReturnPath,
   validResourceId,
 } from "@/features/admin/model-setup/model-setup-navigation";
+import { DeletionImpactSummary } from "@/features/admin/routing/deletion-impact-summary";
 
 function isAllowedBaseUrl(value: string): boolean {
   try {
@@ -228,10 +232,12 @@ export function ChannelDetailPage() {
     "/admin/routing/channels",
   );
   const returnsToSetup = returnTo.startsWith("/admin/model-setup");
-  const { data, etag, isLoading, error } = useChannel(id);
+  const { data, etag, isLoading, error, refetch } = useChannel(id);
   const copySource = useChannel(copyFrom ?? "");
   const create = useCreateChannel();
   const update = useUpdateChannel(id);
+  const previewDeletion = usePreviewChannelDeletion(id);
+  const remove = useDeleteChannel(id);
   const discoverModels = useDiscoverChannelModels();
   const groups = useChannelGroups();
   const channels = useChannels();
@@ -242,12 +248,17 @@ export function ChannelDetailPage() {
   const { t } = useI18n();
   const [state, setState] = useState<FormState>(empty);
   const [submitting, setSubmitting] = useState(false);
-  const { dirty, markDirty, markSaved, navigate, navigationGuard } = useConfigurationDraft(submitting);
+  const pending =
+    submitting || previewDeletion.isPending || remove.isPending;
+  const { dirty, markDirty, markSaved, navigate, navigationGuard } =
+    useConfigurationDraft(pending);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const modelPickerTriggerId = "channel-model-picker-trigger";
   const [discoveredModels, setDiscoveredModels] = useState<string[]>([]);
   const [validation, setValidation] = useState<z.ZodError | null>(null);
   const [routingImpact, setRoutingImpact] = useState<ChannelRoutingImpact[]>([]);
+  const [deletionImpact, setDeletionImpact] =
+    useState<ChannelDeletionImpact | null>(null);
   const [overrideDocumentValidation, setOverrideDocumentValidation] = useState<string | null>(
     null,
   );
@@ -667,6 +678,61 @@ export function ChannelDetailPage() {
     }
   };
 
+  const previewDelete = async () => {
+    try {
+      setDeletionImpact(await previewDeletion.mutateAsync());
+    } catch (error) {
+      if (
+        error instanceof ApiError &&
+        error.code === "provider_managed_resource"
+      ) {
+        toast.error(
+          t("Provider-managed channels must use their connector lifecycle."),
+        );
+      } else {
+        toast.error(error instanceof Error ? error.message : t("Delete failed"));
+      }
+    }
+  };
+
+  const deleteChannel = async () => {
+    const confirmedImpact = deletionImpact;
+    if (!confirmedImpact) return;
+    setDeletionImpact(null);
+    try {
+      await remove.mutateAsync({
+        ifMatch: etag,
+        confirmationToken: confirmedImpact.confirmation_token,
+      });
+      markSaved();
+      toast.success(t("Channel deleted"));
+      navigate(returnTo, { replace: true });
+    } catch (error) {
+      if (
+        error instanceof ApiError &&
+        error.code === "deletion_impact_changed"
+      ) {
+        try {
+          setDeletionImpact(await previewDeletion.mutateAsync());
+          toast.error(
+            t("Deletion impact changed. Review the updated preview."),
+          );
+        } catch (previewError) {
+          toast.error(
+            previewError instanceof Error
+              ? previewError.message
+              : t("Delete failed"),
+          );
+        }
+      } else if (error instanceof ApiError && error.isConflict) {
+        toast.error(t("This channel was changed elsewhere. Reloading."));
+        await refetch();
+      } else {
+        toast.error(error instanceof Error ? error.message : t("Delete failed"));
+      }
+    }
+  };
+
   const fieldError = (path: string) => {
     const message = validation?.issues.find((issue) => issue.path.join(".") === path)?.message;
     return message ? t(message) : undefined;
@@ -687,11 +753,11 @@ export function ChannelDetailPage() {
       <AdminDetailShell
         configurationLens="supply"
         navigationGuard={navigationGuard}
-        saving={submitting}
+        saving={pending}
         onBack={() => navigate(returnTo)}
         actionBar={
-          <ConfigurationSaveBar dirty={dirty} saving={submitting} onCancel={() => navigate(returnTo)}>
-            <Button onClick={() => void submit()} disabled={submitting}>
+          <ConfigurationSaveBar dirty={dirty} saving={pending} onCancel={() => navigate(returnTo)}>
+            <Button onClick={() => void submit()} disabled={pending}>
               {submitting ? <Spinner data-icon="inline-start" /> : null}
               {isNew ? t("Create channel") : t("Save channel")}
             </Button>
@@ -1338,17 +1404,45 @@ export function ChannelDetailPage() {
                     />
                   </Field>
                   <Field orientation="horizontal">
-                    <FieldLabel htmlFor="channel_enabled">{t("Enabled")}</FieldLabel>
+                    <FieldLabel htmlFor="channel_enabled">
+                      {t("Enabled")}
+                    </FieldLabel>
                     <Switch
                       id="channel_enabled"
                       checked={state.enabled}
-                      onCheckedChange={(checked) => patch({ enabled: Boolean(checked) })}
-                  />
-                </Field>
+                      onCheckedChange={(checked) =>
+                        patch({ enabled: Boolean(checked) })
+                      }
+                    />
+                  </Field>
                 </FieldGroup>
               </CardContent>
             </Card>
 
+            {!isNew && data && !data.data.provider_managed ? (
+              <Card className="xl:col-span-2">
+                <CardHeader>
+                  <CardTitle>{t("Danger zone")}</CardTitle>
+                  <CardDescription>
+                    {t(
+                      "Deleting a channel is permanent and audited. Current routing and authorization dependencies are removed automatically.",
+                    )}
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <Button
+                    variant="destructive"
+                    disabled={pending}
+                    onClick={() => void previewDelete()}
+                  >
+                    {previewDeletion.isPending || remove.isPending ? (
+                      <Spinner data-icon="inline-start" />
+                    ) : null}
+                    {t("Delete channel")}
+                  </Button>
+                </CardContent>
+              </Card>
+            ) : null}
           </div>
         }
       />
@@ -1408,6 +1502,25 @@ export function ChannelDetailPage() {
             ))}
           </ul>
         }
+      />
+      <ConfirmDialog
+        open={Boolean(deletionImpact)}
+        onOpenChange={(open) => {
+          if (!open) setDeletionImpact(null);
+        }}
+        title={t("Delete channel?")}
+        description={t(
+          "Review the current server-calculated impact. The channel becomes a permanent tombstone, its stored upstream URL, credential, network settings, and transforms are erased, and this action cannot be undone.",
+        )}
+        content={
+          deletionImpact ? (
+            <DeletionImpactSummary impact={deletionImpact} />
+          ) : undefined
+        }
+        confirmLabel={t("Delete channel")}
+        destructive
+        confirmDisabled={pending}
+        onConfirm={() => void deleteChannel()}
       />
     </>
   );
