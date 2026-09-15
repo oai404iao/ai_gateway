@@ -7,6 +7,8 @@ Versioning.
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-09-15
+
 ### Added
 
 - Add configurable 4xx/5xx HTTP status failover for replayable ordinary
